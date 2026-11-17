@@ -9,14 +9,14 @@ import {
 } from '../fleet-sprint/runner.js';
 
 // =============================================================================
-// apra-fleet-lgz0.1.1: exercises the pure helpers backing the upcoming Clock
-// Skew Check phase at Sprint Setup (wiring lands in apra-fleet-lgz0.1.2).
-// These are advisory-only, so the overriding property under test throughout
-// is "never throws, degrades to an unparsable/false result instead."
+// apra-fleet-lgz0.1.1: exercises the pure helpers backing the Clock Skew Check
+// phase at Sprint Setup (phases/clock-skew-check.mjs, re-exported by
+// runner.js). These are advisory-only, so the overriding property under test
+// throughout is "never throws, degrades to an unparsable/false result instead."
 // =============================================================================
 
 test('probe constants are the expected cross-shell commands', () => {
-    assert.equal(CLOCK_SKEW_PROBE_POSIX, 'date +%s%3N');
+    assert.equal(CLOCK_SKEW_PROBE_POSIX, 'date +%s');
     assert.equal(CLOCK_SKEW_PROBE_WINDOWS, '[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()');
 });
 
@@ -25,9 +25,16 @@ test('parseEpochMillis extracts a clean digit-only reading', () => {
     assert.equal(parseEpochMillis('  1699999999123  '), 1699999999123);
 });
 
+test('parseEpochMillis scales an epoch-seconds reading (date +%s) to millis', () => {
+    assert.equal(parseEpochMillis('1699999999\n'), 1699999999000);
+    assert.equal(parseEpochMillis('1699999999'), 1699999999000);
+});
+
 test('parseEpochMillis returns null (never NaN, never throws) on unparsable output', () => {
     assert.equal(parseEpochMillis('date: illegal option -- 3'), null);
     assert.equal(parseEpochMillis('1699999999%3N'), null);
+    // BSD/macOS date has no %N: `date +%s%3N` prints the seconds plus a literal "3N".
+    assert.equal(parseEpochMillis('16999999993N'), null);
     assert.equal(parseEpochMillis(''), null);
     assert.equal(parseEpochMillis(undefined), null);
     assert.equal(parseEpochMillis(null), null);

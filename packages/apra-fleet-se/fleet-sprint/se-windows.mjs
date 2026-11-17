@@ -1,0 +1,281 @@
+// se-windows.mjs -- PowerShell member-bound command primitives for a Windows
+// member with no Git-for-Windows bash shell recorded.
+//
+// Deliberately NOT a subclass of SePosixCommands: what this member's shell
+// receives is PowerShell text, so essentially nothing on the POSIX surface is
+// reusable. (The Git-for-Windows implementation is the opposite case -- it
+// receives bash text and therefore does extend the POSIX base.)
+//
+// Like its sibling, this file imports nothing from apra-fleet core and needs
+// no build step. The PowerShell envelope below is a deliberate MIRROR of
+// core's src/os/windows.ts wrapPowerShellEncoded(), not a reuse of it: this
+// package cannot import core.
+
+import { assertSafeRelativePath, assertSafeExcludePattern, assertSafeFileLine, FILE_PROBE_PRESENT, FILE_PROBE_ABSENT } from './se-posix.mjs';
+
+/**
+ * PowerShell command primitives for a Windows member.
+ */
+export class SeWindowsCommands {
+  /** Stable identifier for logging/tests. */
+  get shell() {
+    return 'powershell';
+  }
+
+  /**
+   * The deployed git-credential helper is a .bat on a PowerShell Windows
+   * member (core's windows gitCredentialHelperWrite writes
+   * "$env:USERPROFILE\.fleet-git-credential-<label>.bat").
+   */
+  get credentialHelperSuffix() {
+    return '.bat';
+  }
+
+  /**
+   * Wrap a PowerShell script into the envelope this package dispatches to a
+   * Windows member.
+   *
+   * Every part of this shape is load-bearing:
+   *  - `$ErrorActionPreference = 'Stop'` + try/catch makes a NON-TERMINATING
+   *    PowerShell failure surface as a non-zero exit instead of a false
+   *    success;
+   *  - `-EncodedCommand` (base64 UTF-16LE) removes every quoting question
+   *    about which shell the transport hands the string to -- it is valid to
+   *    launch from PowerShell or from cmd.exe;
+   *  - the `$LASTEXITCODE` check before the trailing `exit 0` preserves a
+   *    NATIVE command's exit code (e.g. the credential-helper .bat invoked
+   *    below) that the trailing `exit 0` would otherwise mask -- without it a
+   *    broken helper reports success with no `password=` line.
+   *
+   * Byte-identical to the string runner.js builds today.
+   * @param {string} script
+   * @returns {string}
+   */
+  wrapForMember(script) {
+    const guarded = `$ErrorActionPreference = 'Stop'; try { ${script}; if ($LASTEXITCODE -ne $null -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; exit 0 } catch { Write-Error $_; exit 1 }`;
+    return `powershell -EncodedCommand ${Buffer.from(guarded, 'utf16le').toString('base64')}`;
+  }
+
+  /**
+   * A path under the MEMBER's home directory, expanded ON THE MEMBER.
+   * `$env:USERPROFILE` rather than a JavaScript-resolved home path is
+   * deliberate and is the one shell expansion this layer permits: core's
+   * Windows credential write used exactly this token, so an independently
+   * probed home could point somewhere the file was never written.
+   * @param {string} relative
+   * @returns {string}
+   */
+  homePath(relative) {
+    const rel = String(relative).replace(/^[\\/]+/, '').replace(/\//g, '\\');
+    return `$env:USERPROFILE\\${rel}`;
+  }
+
+  /**
+   * Invoke an executable with PowerShell's call operator, so PowerShell
+   * EXECUTES it instead of echoing the quoted path back as a string (which
+   * exits 0 and looks like success).
+   *
+   * Pass `path` UNQUOTED: this adds the double quotes itself (the POSIX
+   * implementation deliberately adds none -- see its quoting contract).
+   * @param {string} path unquoted
+   * @param {string} [args]
+   * @returns {string}
+   */
+  invoke(path, args = '') {
+    const suffix = String(args || '').trim();
+    return suffix ? `& "${path}" ${suffix}` : `& "${path}"`;
+  }
+
+  /**
+   * @param {string} label
+   * @returns {string}
+   */
+  credentialHelperPath(label) {
+    return this.homePath(`.fleet-git-credential-${label}${this.credentialHelperSuffix}`);
+  }
+
+  /**
+   * Unlike the POSIX branch (kept unvalidated for byte-identical
+   * back-compat), the label here is interpolated into a PowerShell
+   * double-quoted string and a filename, so shell metacharacters are refused
+   * outright.
+   * @param {string} label
+   * @returns {{ command: string, descriptor: string }}
+   */
+  readCredentialHelper(label) {
+    if (!/^[A-Za-z0-9._-]+$/.test(String(label))) {
+      throw new Error(`Refusing to build a Windows credential-read command for unsafe VCS credential label '${label}' (allowed: letters, digits, '.', '_', '-').`);
+    }
+    const descriptor = this.credentialHelperPath(label);
+    return { command: this.wrapForMember(this.invoke(descriptor)), descriptor };
+  }
+
+  /**
+   * PowerShell twin of SePosixCommands.readCredentialHelperUsername: runs the
+   * helper and passes ONLY its `username=` line through, member-side, so the
+   * `password=` (token) line never leaves the member.
+   * @param {string} label
+   * @returns {{ command: string, descriptor: string }}
+   */
+  readCredentialHelperUsername(label) {
+    if (!/^[A-Za-z0-9._-]+$/.test(String(label))) {
+      throw new Error(`Refusing to build a credential username-read command for unsafe VCS credential label '${label}' (allowed: letters, digits, '.', '_', '-').`);
+    }
+    const descriptor = this.credentialHelperPath(label);
+    return { command: this.wrapForMember(`${this.invoke(descriptor)} | Where-Object { $_ -like 'username=*' }`), descriptor };
+  }
+
+  /**
+   * Escape a SQL string so it survives as ONE double-quoted argument in
+   * PowerShell. A backtick is PowerShell's escape character: a literal
+   * backtick is a doubled backtick, a literal quote is `` `" ``, and a
+   * literal `$` is `` `$ `` (otherwise PowerShell expands it as a variable).
+   * Byte-identical to dolt-settle.mjs's escapeSqlForShell('win32', sql).
+   * @param {string} sql
+   * @returns {string}
+   */
+  escapeSqlArg(sql) {
+    const bq = String.fromCharCode(96);
+    return String(sql)
+      .split(bq).join(bq + bq)
+      .replace(/\$/g, `${bq}$`)
+      .replace(/"/g, `${bq}"`);
+  }
+
+  /**
+   * PowerShell twin of SePosixCommands.ensureGitExcluded: idempotently add
+   * `entry` as a line of the exclude file git itself resolves
+   * (`git rev-parse --git-path info/exclude`, run in the work folder), creating
+   * its directory if missing; silent exit-0 no-op outside a git repo or with
+   * no git on PATH.
+   *
+   * Shape notes (all load-bearing):
+   *  - the git call sits in its own try/catch because wrapForMember sets
+   *    $ErrorActionPreference = 'Stop', under which Windows PowerShell 5.1
+   *    turns a redirected native stderr line ("fatal: not a git repository")
+   *    into a terminating error;
+   *  - $global:LASTEXITCODE is reset at the end so the envelope's native
+   *    exit-code check does not turn git's non-repo exit 128 into a failure;
+   *  - the line is written with an explicit LF ([char]10) and -NoNewline,
+   *    not Add-Content's platform CRLF, and no backtick escape is used
+   *    anywhere -- the only variables are script-local ones this string
+   *    assigns; nothing reads the member's environment ($env:, ~/).
+   * Callers: member-call.mjs runRemote (args-file cleanup);
+   * beads-identity-check.mjs member beads set-up (new untracked beads paths
+   * are excluded so the target work tree stays clean).
+   * @param {string} entry validated
+   * @returns {string}
+   */
+  ensureGitExcluded(entry) {
+    const e = assertSafeExcludePattern(entry, 'git-exclude entry');
+    const script = [
+      `$excl = $null`,
+      `try { $out = @(git rev-parse --git-path info/exclude 2>$null); if ($LASTEXITCODE -eq 0 -and $out.Count -gt 0) { $excl = [string]$out[0] } } catch { $excl = $null }`,
+      `if ($excl) { `
+        + `$dir = Split-Path -Parent $excl; `
+        + `if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }; `
+        + `$raw = ''; if (Test-Path -LiteralPath $excl) { $raw = [string](Get-Content -LiteralPath $excl -Raw) }; `
+        + `if (@($raw -split '\\r?\\n') -notcontains '${e}') { `
+        + `$lf = [string][char]10; $prefix = ''; if ($raw.Length -gt 0 -and -not $raw.EndsWith($lf)) { $prefix = $lf }; `
+        + `Add-Content -LiteralPath $excl -NoNewline -Value ($prefix + '${e}' + $lf) } }`,
+      `$global:LASTEXITCODE = 0`,
+    ].join('; ');
+    return this.wrapForMember(script);
+  }
+
+  /**
+   * Delete a work-folder-relative file, never erroring when it is absent.
+   * Caller: member-call.mjs runRemote (engine-side args-file delete).
+   * @param {string} relPath validated
+   * @returns {string}
+   */
+  removeFile(relPath) {
+    const p = assertSafeRelativePath(relPath, 'file path');
+    return this.wrapForMember(`if (Test-Path -LiteralPath '${p}') { Remove-Item -LiteralPath '${p}' -Force }`);
+  }
+
+  /**
+   * PowerShell twin of SePosixCommands.fileExistsProbe: prints exactly
+   * FILE_PROBE_PRESENT or FILE_PROBE_ABSENT, literal path only, no member
+   * environment reads. Read-only.
+   * Caller: member-provisioning.mjs permission-config preflight.
+   * @param {string} relPath validated
+   * @returns {string}
+   */
+  fileExistsProbe(relPath) {
+    const p = assertSafeRelativePath(relPath, 'file path');
+    return this.wrapForMember(`if (Test-Path -LiteralPath '${p}') { Write-Output '${FILE_PROBE_PRESENT}' } else { Write-Output '${FILE_PROBE_ABSENT}' }`);
+  }
+
+  /**
+   * PowerShell twin of SePosixCommands.gitLsRemoteProbe: sets
+   * GIT_TERMINAL_PROMPT=0 and GCM_INTERACTIVE=never in this one-shot
+   * process's environment (the envelope is a fresh powershell, so nothing
+   * persists), then `git ls-remote origin HEAD` with no credential.helper
+   * override. The envelope's $LASTEXITCODE check surfaces git's exit code.
+   * @returns {string}
+   */
+  gitLsRemoteProbe() {
+    return this.wrapForMember("$env:GIT_TERMINAL_PROMPT='0'; $env:GCM_INTERACTIVE='never'; git ls-remote origin HEAD");
+  }
+
+  /**
+   * PowerShell twin of SePosixCommands.ensureFile: create the file (and its
+   * parent directory) when absent; an existing file is never truncated.
+   * Only literal paths, no member environment reads.
+   * Caller: beads-identity-check.mjs member beads set-up.
+   * @param {string} relPath validated
+   * @returns {string}
+   */
+  ensureFile(relPath) {
+    const p = assertSafeRelativePath(relPath, 'file path');
+    const slash = p.lastIndexOf('/');
+    const dir = slash > 0 ? p.slice(0, slash) : '';
+    const parts = [];
+    if (dir) parts.push(`if (-not (Test-Path -LiteralPath '${dir}')) { New-Item -ItemType Directory -Force -Path '${dir}' | Out-Null }`);
+    parts.push(`if (-not (Test-Path -LiteralPath '${p}')) { New-Item -ItemType File -Path '${p}' | Out-Null }`);
+    return this.wrapForMember(parts.join('; '));
+  }
+
+  /**
+   * PowerShell twin of SePosixCommands.ensureLine: make `line` a whole line
+   * of the file (created with its parent directory when absent), appended
+   * with an explicit LF and -NoNewline like ensureGitExcluded; nothing else
+   * in the file is touched. Only script-local variables, no environment reads.
+   * Caller: beads-identity-check.mjs member beads set-up.
+   * @param {string} relPath validated
+   * @param {string} line validated
+   * @returns {string}
+   */
+  ensureLine(relPath, line) {
+    const p = assertSafeRelativePath(relPath, 'file path');
+    const l = assertSafeFileLine(line);
+    const slash = p.lastIndexOf('/');
+    const dir = slash > 0 ? p.slice(0, slash) : '';
+    const parts = [];
+    if (dir) parts.push(`if (-not (Test-Path -LiteralPath '${dir}')) { New-Item -ItemType Directory -Force -Path '${dir}' | Out-Null }`);
+    parts.push(
+      `$raw = ''; if (Test-Path -LiteralPath '${p}') { $raw = [string](Get-Content -LiteralPath '${p}' -Raw) }; `
+      + `if (@($raw -split '\\r?\\n') -notcontains '${l}') { `
+      + `$lf = [string][char]10; $prefix = ''; if ($raw.Length -gt 0 -and -not $raw.EndsWith($lf)) { $prefix = $lf }; `
+      + `Add-Content -LiteralPath '${p}' -NoNewline -Value ($prefix + '${l}' + $lf) }`,
+    );
+    return this.wrapForMember(parts.join('; '));
+  }
+
+  /**
+   * This member's OWN shell already IS PowerShell, so a script destined for
+   * it needs no envelope at all -- returning it unchanged is what keeps
+   * every non-gitbash Windows member's dispatched script byte-identical to
+   * today (apra-fleet-7dir.21). Contrast with SeWindowsGitbashCommands'
+   * override, which DOES need to wrap the same script for a bash shell to
+   * invoke it.
+   * @param {string} script
+   * @returns {string}
+   */
+  wrapPowerShellScript(script) {
+    return String(script);
+  }
+}
+
+export default SeWindowsCommands;

@@ -5,6 +5,7 @@ import { AsyncLocalStorage } from 'async_hooks';
 import { calculateCost } from './pricing.mjs';
 import { WorkflowError, MemberNotFoundError, AgentOutputError, AgentDispatchError, CommandError, FleetTransportError, BudgetExceededError, CancelledError } from './errors.mjs';
 import { hashText, computeActivityKey } from './journal.mjs';
+import { fleetToolFailureOf, commandFailureOf } from '@apralabs/apra-fleet-client';
 
 export { WorkflowError, MemberNotFoundError, AgentOutputError, AgentDispatchError, CommandError, FleetTransportError, BudgetExceededError, CancelledError } from './errors.mjs';
 
@@ -246,20 +247,48 @@ function summarizeExtractionAttempts(attempts) {
 }
 
 /**
- * Builds the lean repair re-ask prompt sent to the SAME member after an
- * invalid structured-output attempt. apra-fleet-02s.3: repair re-asks now
- * force `resume: true` (see the payload construction below), so the member's
- * session already has the original prompt/schema and its own invalid
- * output in context -- re-embedding all of that here would just re-spend
- * tokens re-sending what the resumed session already has. Only the
- * validation errors plus a short corrected-JSON instruction are needed.
- * @param {string} errorsText
+ * Builds the repair re-ask prompt sent to the SAME member after an invalid
+ * structured-output attempt.
+ *
+ * HISTORY -- this deliberately REVERSES apra-fleet-02s.3, which shrank this
+ * to a lean reminder (validation errors only) on the theory that the forced
+ * `resume: true` on repair (see the payload construction below) guarantees
+ * the member's session still holds the original prompt and schema.
+ * apra-fleet-dnri: that assumption does not always hold. Observed live on
+ * 2026-08-20, a reviewer dispatch that failed schema validation twice was
+ * re-asked with only the validator text; the resumed session did not carry
+ * the task inputs, so the agent had no base branch, no branch and no work
+ * ids, correctly refused to guess, and its refusal was read as a real
+ * verdict -- aborting the whole sprint. Resume is an optimization, not a
+ * guarantee, so the re-ask must be self-contained on its own.
+ *
+ * BOUNDED ON PURPOSE (the original token-cost decision still stands): only
+ * `initialPrompt` is reattached -- the caller's original prompt plus the same
+ * schema instruction the initial dispatch appended. The invalid response
+ * text, the session transcript and any per-attempt accumulated history are
+ * NOT re-embedded, and callers must always pass the ORIGINAL `initialPrompt`
+ * (never the previous round's repair prompt), so the reattached portion is
+ * byte-identical on every repair round and the prompt does not grow.
+ *
+ * The reattachment is framed as REFERENCE material, not as a fresh order:
+ * when the repair re-ask resumes the failed attempt's own session (see the
+ * resume disposition at the dispatch payload below) the member may have
+ * already done the underlying work, and a prompt that restates the task can
+ * read as an instruction to redo it.
+ *
+ * @param {string} errorsText - Summary of every failed extraction attempt.
+ * @param {string} initialPrompt - The fully-resolved original dispatch prompt
+ *   (caller prompt + appended schema instruction), unchanged.
  */
-function buildRepairPrompt(errorsText) {
+function buildRepairPrompt(errorsText, initialPrompt) {
     return `Your previous response could not be used.\n\n` +
         `Validation errors:\n${errorsText}\n\n` +
-        `Please respond again with corrected JSON only, strictly conforming to the schema from your previous instructions. ` +
-        `Do not include any commentary, explanation, or text outside the JSON.`;
+        `For reference, the original request and the required JSON schema were:\n` +
+        `--- BEGIN ORIGINAL REQUEST ---\n${initialPrompt}\n--- END ORIGINAL REQUEST ---\n\n` +
+        `Do NOT redo any work you have already completed for this request -- report the ` +
+        `result you already determined. Respond again with corrected JSON only, strictly ` +
+        `conforming to the schema above. Do not include any commentary, explanation, or ` +
+        `text outside the JSON.`;
 }
 
 /**
@@ -297,6 +326,9 @@ function buildRepairPrompt(errorsText) {
  *   legitimate 15+ minute reviewer dispatch was client-timed-out at 930s while the remote
  *   session kept running.
  * @property {number} [max_turns] - Max turns for conversational tools
+ * @property {boolean} [fail_on_permission_denial] - Passed to execute_prompt: a tool call the
+ *   member CLI refused fails the dispatch (reason 'permission_denied') instead of riding on a
+ *   successful reply as permissionWarning. fleet-sprint sets it on every role dispatch.
  * @property {'low'|'medium'|'high'|'xhigh'|'max'} [effort] - Effort parameter for fleet routing
  * @property {string} [agentType] - Agent persona to activate on the member
  * @property {boolean|string} [resume] - Resume the previous session on the member if one exists.
@@ -329,10 +361,13 @@ function buildRepairPrompt(errorsText) {
  * @property {number} [schemaRetries] - Only meaningful when `schema` is set. Bounded number
  *   of repair re-asks to the SAME member after a parse/validation failure, before giving up
  *   and throwing AgentOutputError. Defaults to 2 (so up to 3 total dispatches: 1 original +
- *   2 repairs). Each repair re-ask FORCES `resume: true` (apra-fleet-02s.3) so the member's
- *   session already has the original prompt/schema and its own invalid output in context --
- *   the re-ask itself is a lean reminder containing only the ajv validation/parse errors
- *   plus a corrected-JSON instruction, not a re-embedding of the full original prompt/output.
+ *   2 repairs). Each repair re-ask FORCES `resume: true` (apra-fleet-02s.3) so any real work
+ *   the member already performed for this request is preserved rather than redone -- but the
+ *   re-ask is SELF-CONTAINED and does not depend on that resume carrying context
+ *   (apra-fleet-dnri): it reattaches the original prompt plus the schema instruction as
+ *   reference, alongside the ajv validation/parse errors and a corrected-JSON instruction.
+ *   The reattached portion is identical on every repair round (the invalid output, the
+ *   session transcript and per-attempt history are never embedded), so repairs do not grow.
  *   Each attempt emits its own activity:start/activity:end pair and is cost-accounted
  *   individually. (apra-fleet-unw.8)
  * @property {number} [busyWaitMs] - How long (ms) to keep waiting-and-retrying when the
@@ -379,6 +414,15 @@ function buildRepairPrompt(errorsText) {
  *   return type. `CancelledError` (cooperative `requestStop()`) is never
  *   soft-caught -- it always throws, regardless of this option.
  *   (apra-fleet-unw.17)
+ * @property {boolean} [pauseExempt] - When true, the call skips the
+ *   cooperative pause gate: it runs even while the run is paused, and it is
+ *   not counted as an in-flight activity, so it neither blocks behind a pause
+ *   nor holds one back from engaging. It is not journaled for replay either
+ *   (no sequence number is consumed), so a resumed run's replay order does
+ *   not depend on how many such calls ran. Meant for short, read-only probes
+ *   a paused script issues while it waits on an external condition. A
+ *   requestStop() still cancels it (the run's stop signal is passed through
+ *   as for any command).
  */
 
 export class FleetWorkflow extends EventEmitter {
@@ -386,10 +430,14 @@ export class FleetWorkflow extends EventEmitter {
      * @param {import('../fleet-client/api.mjs').ApraFleet} fleetApi 
      * @param {any} args 
      */
-    constructor(fleetApi, args = {}) {
+    constructor(fleetApi, args = {}, logPrefix = '') {
         super();
         this.fleetApi = fleetApi;
         this.args = args;
+        // (apra-fleet-20i.1.1) Optional per-run scenario label prepended to
+        // the [Workflow Log]/[Dispatch]/[Command] console.log lines below.
+        // Defaults to '' so existing callers get byte-identical output.
+        this.logPrefix = logPrefix;
         this.currentPhase = null;
         this.budget = {
             total: null,
@@ -420,6 +468,50 @@ export class FleetWorkflow extends EventEmitter {
         // controller.signal (via _currentSignal()) when the caller doesn't
         // pass its own opts.signal. See runWithContext()/requestStop() below.
         this._activeControllers = new Map();
+
+        // (apra-fleet-p2to.1) Cooperative pause/resume gate. This is the
+        // GENERIC engine primitive -- a soft, deferred barrier at every
+        // agent()/command() entry -- NOT a journaled interrupt(). See
+        // requestPause()/requestResume()/setPauseGuard() and _pauseGate()
+        // below for the full semantics. All state is instance-level (like
+        // requestStop()'s _activeControllers), so a single pause quiesces
+        // every run sharing this FleetWorkflow instance.
+        //
+        //   _pauseRequested : a pause has been asked for but has not yet
+        //                     "taken effect" (still draining in-flight work
+        //                     and/or waiting on the pause guard).
+        //   _paused         : the pause has taken effect at a clean-state
+        //                     boundary -- zero in-flight activities and the
+        //                     guard (if any) permitted it. New agent()/
+        //                     command() calls block at the gate while true.
+        //   _pauseGuard     : optional predicate (set via setPauseGuard) that
+        //                     defers a requested pause until it returns truthy
+        //                     -- i.e. lets the workflow script declare where a
+        //                     clean-state boundary actually is. Null means
+        //                     "any zero-in-flight point is a boundary".
+        //   _inFlight       : count of agent()/command() dispatches that have
+        //                     passed the gate and not yet completed. 'paused'
+        //                     is only declared when this reaches zero.
+        //   _pauseWaiters   : { resolve, reject } for every call currently
+        //                     blocked at the gate. requestResume() resolves
+        //                     them (they re-check and proceed); requestStop()
+        //                     rejects them with a CancelledError so a paused
+        //                     run tears down instead of hanging.
+        //   _preResumeHook  : optional async hook (set via setPreResumeHook)
+        //                     that requestResume() awaits as a HARD BARRIER
+        //                     before it clears pause state, releases any gate
+        //                     waiter, or emits 'resumed' -- so a caller's
+        //                     re-reserve/resync completes strictly ahead of the
+        //                     first post-resume dispatch. A hook rejection
+        //                     rejects requestResume() (the run stays paused)
+        //                     rather than being swallowed. Null means no
+        //                     barrier -- resume proceeds immediately.
+        this._pauseRequested = false;
+        this._paused = false;
+        this._pauseGuard = null;
+        this._preResumeHook = null;
+        this._inFlight = 0;
+        this._pauseWaiters = [];
     }
 
     // Returns the active per-run store (see runStorage above), or
@@ -497,13 +589,242 @@ export class FleetWorkflow extends EventEmitter {
      * @param {string} [reason]
      */
     requestStop(reason = 'Workflow run cancelled via requestStop()') {
+        // (apra-fleet-p2to.1) A stop supersedes any pause: reject every call
+        // blocked at the pause gate with a CancelledError so a paused run
+        // unwinds instead of hanging forever, and clear the pause state so a
+        // late-arriving activity doesn't re-block. The gate promise rejecting
+        // is what makes "requestStop() while paused tears down" work -- the
+        // blocked agent()/command() re-throws the CancelledError, which
+        // unwinds the run exactly like an aborted in-flight dispatch does.
+        this._pauseRequested = false;
+        this._paused = false;
+        const waiters = this._pauseWaiters;
+        this._pauseWaiters = [];
+        for (const waiter of waiters) {
+            waiter.reject(new CancelledError(`[Workflow Error] ${reason}`));
+        }
         for (const controller of this._activeControllers.values()) {
             controller.abort(new CancelledError(`[Workflow Error] ${reason}`));
         }
     }
 
+    /**
+     * (apra-fleet-p2to.1) Registers (or clears, with `null`) the pause guard:
+     * a predicate consulted whenever a requested-but-not-yet-engaged pause is
+     * about to take effect. A pause only engages -- transitions to `_paused`
+     * and fires 'paused' -- when in-flight work has drained to zero AND this
+     * guard returns truthy. That lets a workflow script defer a mid-run pause
+     * to a boundary IT considers clean (e.g. "between phases", "not inside a
+     * transaction") rather than the mere between-activities gaps the engine
+     * can see on its own. A null guard (the default) treats every
+     * zero-in-flight point as an acceptable boundary. The guard is called with
+     * no arguments; a throwing guard is treated as "not at a boundary yet"
+     * (fail-closed: keep deferring rather than pause at a point the script
+     * couldn't vouch for) and logged.
+     *
+     * Generic engine hook only -- it carries no fleet-sprint (or any other
+     * caller's) semantics; the meaning of "clean" is entirely the guard's.
+     *
+     * @param {(() => boolean) | null} fn
+     */
+    setPauseGuard(fn) {
+        if (fn !== null && typeof fn !== 'function') {
+            throw new TypeError('[Workflow Error] setPauseGuard() requires a function or null');
+        }
+        this._pauseGuard = fn;
+        // Setting the guard at what the script now considers a clean boundary
+        // may be exactly the moment a deferred pause can finally engage.
+        this._maybeEngagePause();
+    }
+
+    /**
+     * (apra-fleet-p2to.1.3) Registers (or clears, with null) an async
+     * pre-resume hook that requestResume() awaits as a HARD BARRIER before it
+     * clears pause state, releases any gate waiter, or emits 'resumed'. This is
+     * the point at which a caller re-grabs/re-syncs whatever it released at
+     * pause (fleet-sprint's member re-reserve/resync) with the guarantee that
+     * the work completes strictly BEFORE the first post-resume agent()/
+     * command() dispatch -- no race with the resumed sprint loop.
+     *
+     * The hook is awaited; if it rejects, requestResume() rejects too and the
+     * run stays paused (pause state is never cleared on the reject path), so a
+     * failure surfaces to the caller instead of being silently swallowed --
+     * consistent with reReserveOnResume()'s rethrow contract.
+     *
+     * Generic engine hook only -- it carries no caller-specific semantics.
+     *
+     * @param {((reason: string) => (void | Promise<void>)) | null} fn
+     */
+    setPreResumeHook(fn) {
+        if (fn !== null && typeof fn !== 'function') {
+            throw new TypeError('[Workflow Error] setPreResumeHook() requires a function or null');
+        }
+        this._preResumeHook = fn;
+    }
+
+    /**
+     * (apra-fleet-p2to.1) Requests a cooperative pause of every run sharing
+     * this instance. Fires 'pause:requested' immediately, but the pause is
+     * DEFERRED: it only takes effect ('paused' fires, new dispatches block) at
+     * a clean-state boundary -- zero in-flight activities and, if a pause
+     * guard is set, that guard returning truthy. Calling it while already
+     * paused or pause-requested is a no-op.
+     *
+     * (apra-fleet-hzeb.3) Also exposed on the script context (see
+     * _bindPrimitives), so a running workflow script can initiate a pause
+     * for a condition only IT can detect (e.g. a provider usage/rate limit
+     * signal) -- not just the dashboard/operator via requestStop()'s sibling
+     * instance-level API. A script-initiated pause is indistinguishable from
+     * an operator-initiated one downstream: it fires the exact same
+     * 'pause:requested'/'paused'/'resumed' events, so any existing listener
+     * (the dashboard viewer's state.pause wiring, fleet-sprint's
+     * cli.mjs `on('paused', releaseForPause)` /
+     * `setPreResumeHook(reReserveForResume)`) engages for it unchanged.
+     *
+     * @param {string} [reason]
+     * @param {{ resumeAt?: string, source?: string }} [opts] - Optional
+     *   metadata carried on the 'pause:requested' payload (apra-fleet-hzeb.3):
+     *   `resumeAt` is an ISO-8601 timestamp (or any caller-defined string) the
+     *   caller expects the condition to clear by -- e.g. a provider's
+     *   usage-limit reset time -- surfaced by the dashboard viewer in the
+     *   paused banner. `source` identifies what requested the pause (e.g.
+     *   `'usage_limit'`) for the same display purpose. Both are purely
+     *   informational to the engine, which does not interpret or act on
+     *   them. Omitting `opts` is fully backwards compatible with existing
+     *   single-arg callers.
+     */
+    requestPause(reason = 'Workflow run paused via requestPause()', opts = {}) {
+        if (this._paused || this._pauseRequested) return;
+        this._pauseRequested = true;
+        this.emit('pause:requested', this._pauseEventPayload({
+            reason,
+            resumeAt: opts.resumeAt ?? null,
+            source: opts.source ?? null
+        }));
+        // If we're already quiescent (nothing in flight, guard permits), the
+        // pause engages right now; otherwise it engages later as in-flight
+        // work drains (_exitActivity) or the guard opens (setPauseGuard).
+        this._maybeEngagePause();
+    }
+
+    /**
+     * (apra-fleet-p2to.1) Resumes a paused (or merely pause-requested) run.
+     * Clears the pause state and releases every call blocked at the gate so
+     * they proceed. Fires 'resumed'. No-op if not paused/pause-requested.
+     *
+     * (apra-fleet-p2to.1.3) When a pre-resume hook is registered (see
+     * setPreResumeHook), it is awaited as a HARD BARRIER FIRST -- while the run
+     * is still paused, so no gate waiter is released and no new dispatch slips
+     * through -- and only once it resolves are the waiters released and
+     * 'resumed' emitted. This guarantees the caller's re-reserve/resync
+     * completes strictly ahead of the first post-resume dispatch. A hook
+     * rejection propagates out of requestResume() with the pause state left
+     * intact (run stays paused), rather than being swallowed.
+     *
+     * @param {string} [reason]
+     * @returns {Promise<void>}
+     */
+    async requestResume(reason = 'Workflow run resumed via requestResume()') {
+        if (!this._paused && !this._pauseRequested) return;
+        // Barrier: drain the pre-resume hook BEFORE touching pause state. The
+        // run is still paused here, so waiters remain blocked and any fresh
+        // agent()/command() dispatch blocks at the gate -- the hook's work
+        // (e.g. member re-reserve/resync) cannot race the resumed loop. A
+        // rejection here surfaces to the caller with pause state untouched, so
+        // the run stays parked instead of resuming on a half-restored state.
+        if (this._preResumeHook) {
+            await this._preResumeHook(reason);
+        }
+        this._paused = false;
+        this._pauseRequested = false;
+        const waiters = this._pauseWaiters;
+        this._pauseWaiters = [];
+        for (const waiter of waiters) {
+            waiter.resolve();
+        }
+        this.emit('resumed', this._pauseEventPayload({ reason }));
+    }
+
+    // (apra-fleet-p2to.1) Phase/group (and runId) labels for pause lifecycle
+    // events, read from the active run store when there is one (falling back
+    // to the legacy instance-level fields), so subscribers can attribute a
+    // pause to where the run actually was -- exactly like log()/phase() do.
+    _pauseEventPayload(extra = {}) {
+        return {
+            phase: this._currentPhase(),
+            group: this._currentGroup(),
+            runId: this._currentRunId(),
+            ...extra
+        };
+    }
+
+    // (apra-fleet-p2to.1) True when a requested pause is allowed to take
+    // effect right now: null guard means "any zero-in-flight point is clean";
+    // otherwise the script's guard decides. A throwing guard fails closed
+    // (keep deferring) rather than pausing at an unvouched-for point.
+    _guardPermitsPause() {
+        if (!this._pauseGuard) return true;
+        try {
+            return !!this._pauseGuard();
+        } catch (err) {
+            console.error(`[Workflow] pause guard threw (deferring pause): ${err && err.message ? err.message : err}`);
+            return false;
+        }
+    }
+
+    // (apra-fleet-p2to.1) Engage a requested pause iff we're at a clean-state
+    // boundary: pause requested, not already paused, zero in-flight activities
+    // and the guard permits. Idempotent and cheap -- called from every point
+    // that can move us toward quiescence (requestPause, _exitActivity when the
+    // last activity drains, setPauseGuard opening the boundary, and the gate
+    // itself). This is the ONLY place 'paused' is emitted, which guarantees
+    // 'paused' can never fire while activities are still in flight.
+    _maybeEngagePause() {
+        if (!this._pauseRequested || this._paused) return;
+        if (this._inFlight > 0) return;
+        if (!this._guardPermitsPause()) return;
+        this._paused = true;
+        this.emit('paused', this._pauseEventPayload());
+    }
+
+    // (apra-fleet-p2to.1) The pause gate, awaited at the very start of every
+    // agent()/command() call (before it becomes in-flight). If a pause is
+    // engaged the call blocks here until requestResume() releases it (the
+    // awaited promise resolves) or requestStop() tears it down (the promise
+    // rejects with a CancelledError, which propagates out of agent()/command()
+    // and unwinds the run). A requested-but-not-yet-engaged pause is given a
+    // chance to engage first (this arrival at a gate is itself a between-
+    // activities boundary), so a pause requested while the run is idle takes
+    // effect on the next dispatch rather than slipping one through.
+    async _pauseGate() {
+        this._maybeEngagePause();
+        while (this._paused) {
+            await new Promise((resolve, reject) => {
+                this._pauseWaiters.push({ resolve, reject });
+            });
+            // Released by requestResume(); re-check in case another pause was
+            // requested in the meantime before we fall through to dispatch.
+            this._maybeEngagePause();
+        }
+    }
+
+    // (apra-fleet-p2to.1) In-flight bookkeeping bracketing the actual dispatch
+    // in agent()/command(). A call is "in flight" from the moment it clears
+    // the gate until it fully settles; 'paused' is withheld until this count
+    // returns to zero (see _maybeEngagePause), which is what "paused only at
+    // zero in-flight activities" means.
+    _enterActivity() {
+        this._inFlight += 1;
+    }
+
+    _exitActivity() {
+        this._inFlight = Math.max(0, this._inFlight - 1);
+        // Draining the last in-flight activity may complete a deferred pause.
+        this._maybeEngagePause();
+    }
+
     log(msg) {
-        console.log(`[Workflow Log] ${msg}`);
+        console.log(`${this.logPrefix}[Workflow Log] ${msg}`);
         this.emit('log', { phase: this._currentPhase(), msg, runId: this._currentRunId() });
     }
 
@@ -599,7 +920,17 @@ export class FleetWorkflow extends EventEmitter {
     // tier. Increments budget._pricedReal/_pricedFallback so
     // buildCostAnalysis() (runner.js) can honestly report which source
     // priced a run's total.
+    //
+    // A usage block that carries the provider's own per-dispatch cost
+    // (usage.cost_usd: the Claude CLI's list-price figure, already reduced
+    // to this dispatch's share by the server) is charged exactly that -- no
+    // recompute. Token pricing is only the fallback for a provider or result
+    // that reports no cost.
     async _resolveCost(opts, usage, budget) {
+        if (usage && typeof usage.cost_usd === 'number' && Number.isFinite(usage.cost_usd)) {
+            budget._pricedReal++;
+            return usage.cost_usd;
+        }
         const tier = opts.model;
         if (tier === 'cheap' || tier === 'standard' || tier === 'premium') {
             const memberKey = opts.member_id || opts.member_name;
@@ -609,7 +940,18 @@ export class FleetWorkflow extends EventEmitter {
                 if (entry && typeof entry.promptPrice === 'number' && typeof entry.completionPrice === 'number') {
                     const pTokens = usage.input_tokens || 0;
                     const cTokens = usage.output_tokens || 0;
-                    const cost = (pTokens / 1_000_000) * entry.promptPrice + (cTokens / 1_000_000) * entry.completionPrice;
+                    // Prompt-cache tokens are billed separately from (not inside)
+                    // input_tokens and must be priced too, or a cache-heavy run
+                    // is undercounted several-fold. An older server whose
+                    // pricing entry has no cache rates prices them at the plain
+                    // prompt rate: an over- rather than under-estimate, so a
+                    // budget ceiling still holds.
+                    const crTokens = usage.cache_read_input_tokens || 0;
+                    const cwTokens = usage.cache_creation_input_tokens || 0;
+                    const cacheReadPrice = typeof entry.cacheReadPrice === 'number' ? entry.cacheReadPrice : entry.promptPrice;
+                    const cacheWritePrice = typeof entry.cacheWritePrice === 'number' ? entry.cacheWritePrice : entry.promptPrice;
+                    const cost = (pTokens / 1_000_000) * entry.promptPrice + (cTokens / 1_000_000) * entry.completionPrice
+                        + (crTokens / 1_000_000) * cacheReadPrice + (cwTokens / 1_000_000) * cacheWritePrice;
                     budget._pricedReal++;
                     return cost;
                 }
@@ -624,15 +966,29 @@ export class FleetWorkflow extends EventEmitter {
      * @param {string} prompt
      * @param {AgentOptions} [opts]
      */
+    // (apra-fleet-p2to.1) Public entry: passes through the cooperative pause
+    // gate, then brackets the real dispatch with in-flight bookkeeping so a
+    // pause only declares 'paused' once every such dispatch has settled. The
+    // try/finally guarantees the in-flight count is balanced on every exit
+    // path (success, throw, or a gate-rejecting requestStop()).
     async agent(prompt, opts = {}) {
         if (!opts.member_name && !opts.member_id) {
             throw new Error(`[Workflow Error] agent() requires either member_name or member_id`);
         }
+        await this._pauseGate();
+        this._enterActivity();
+        try {
+            return await this._agentDispatch(prompt, opts);
+        } finally {
+            this._exitActivity();
+        }
+    }
 
+    async _agentDispatch(prompt, opts = {}) {
         const effectivePhase = opts.phase || this._currentPhase();
         const runId = this._currentRunId();
         if (effectivePhase) {
-            console.log(`[Dispatch] phase: ${effectivePhase} | member: ${opts.member_name || opts.member_id} | label: ${opts.label || 'none'}`);
+            console.log(`${this.logPrefix}[Dispatch] phase: ${effectivePhase} | member: ${opts.member_name || opts.member_id} | label: ${opts.label || 'none'}`);
         }
 
         let compiledSchema = null;
@@ -665,6 +1021,14 @@ export class FleetWorkflow extends EventEmitter {
 
         let currentPrompt = initialPrompt;
         let lastActivityMeta = null;
+        // apra-fleet-dnri: the session id reported by the attempt that just
+        // failed, used as an EXPLICIT resume target by the repair dispatch of
+        // the NEXT iteration (see the resume disposition comment on the
+        // payload below). Declared outside the loop because the capture site
+        // sits after the payload is built within the same iteration. It is
+        // re-assigned (or cleared) on every turn, so a repair round never
+        // reuses an older round's id.
+        let failedAttemptSessionId = null;
         const budget = this._currentBudget();
 
         // (apra-fleet-unw.11, F6) Journal replay. `replayKey` is computed
@@ -781,6 +1145,47 @@ export class FleetWorkflow extends EventEmitter {
             lastActivityMeta = activityMeta;
             this.emit('activity:start', activityMeta);
 
+            // apra-fleet-dnri -- RESUME DISPOSITION for a schema-repair
+            // re-ask, corrected after a live reproduction:
+            //
+            // A repair dispatch SHOULD continue the session that produced the
+            // invalid output -- by repair time the member may already have
+            // done real, side-effecting work for this request (files edited,
+            // commits made, tracker items claimed), and a fresh session with
+            // the task restated invites it to redo that work. But the naive
+            // way of asking for that -- a bare boolean `true` -- does NOT
+            // mean "the session that just failed". execute_prompt resolves
+            // `resume: true` to `explicitResumeId ?? agent.sessionId`, i.e.
+            // the member's single globally-stored LAST session, shared across
+            // every role with no task scoping. Observed live: a doer's repair
+            // retry landed in the immediately-prior plan-reviewer session and
+            // came back with reviewer-shaped output carrying a field that is
+            // not in the doer schema at all.
+            //
+            // So the repair dispatch names the session EXPLICITLY, by id
+            // (execute_prompt's resume accepts a session-id string for
+            // exactly this). When no id was reported for the failed attempt
+            // (a provider without resume support, or a dispatch that returned
+            // none), we degrade LOUDLY to a fresh, self-contained session and
+            // pass the boolean `false` EXPLICITLY -- never `undefined`, since
+            // execute_prompt's schema declares `.default(true)` on this field
+            // and an omitted key would silently restore the exact
+            // wrong-session bug above.
+            //
+            // Correctness does not depend on the resume landing: the repair
+            // prompt reattaches the original prompt and schema itself (see
+            // buildRepairPrompt), so the re-ask works whether or not the
+            // resumed session still carries the original context.
+            let repairResume = false;
+            if (isRepair) {
+                if (typeof failedAttemptSessionId === 'string' && failedAttemptSessionId) {
+                    repairResume = failedAttemptSessionId;
+                } else {
+                    console.error(`[Agent Schema Repair] DEGRADED: no session id was reported for the attempt that just failed on member '${opts.member_name || opts.member_id}', so this repair re-ask CANNOT target that session and is being dispatched in a FRESH session (resume: false). Any side-effecting work the member already did for this request is not visible to it; the repair prompt is self-contained, so the re-ask is still answerable.`);
+                    repairResume = false;
+                }
+            }
+
             const payload = {
                 prompt: currentPrompt,
                 model: opts.model,
@@ -790,21 +1195,18 @@ export class FleetWorkflow extends EventEmitter {
                 timeout_s: opts.timeout_s,
                 max_total_s: opts.max_total_s,
                 max_turns: opts.max_turns,
+                // Opt-in strict permission handling (see AgentOptions).
+                fail_on_permission_denial: opts.fail_on_permission_denial,
                 effort: opts.effort,
                 agent: opts.agentType,
                 // apra-fleet-eft.29.1: pass-through opt-in, see AgentOptions.sprint_id above.
                 sprint_id: opts.sprint_id,
                 // F10: default to a self-contained (non-resumed) session for
                 // the INITIAL dispatch of a workflow-authored prompt. See
-                // AgentOptions.resume above and apra-fleet-unw.3.
-                // apra-fleet-02s.3: a schema-repair re-ask (isRepair===true)
-                // is a different case -- it now FORCES resume:true,
-                // regardless of opts.resume, so the member's session already
-                // has the original prompt/schema and its own invalid output
-                // in context; buildRepairPrompt() was shrunk accordingly to a
-                // lean reminder (validation errors only), since re-sending
-                // that context fresh every repair round would waste tokens.
-                resume: isRepair ? true : (opts.resume ?? false),
+                // AgentOptions.resume above and apra-fleet-unw.3. The
+                // non-repair value is unchanged; the repair value is resolved
+                // above (apra-fleet-dnri).
+                resume: isRepair ? repairResume : (opts.resume ?? false),
                 // apra-fleet-unw.5: opts pass-through only, no control-flow change here.
                 timeoutMs: opts.timeoutMs,
                 // apra-fleet-unw.10: defaults to the active run's cooperative
@@ -838,6 +1240,31 @@ export class FleetWorkflow extends EventEmitter {
                     }
                 }
 
+                // apra-fleet-dnri: naming the failed attempt's session id
+                // explicitly (above) converts one previously self-healing
+                // case into a hard failure. execute_prompt rejects an
+                // unknown/expired EXPLICIT id up front with
+                // {isError, reason: 'session_not_found'}, making no LLM call,
+                // and its transparent retry-in-a-fresh-session recovery is
+                // gated on `resume === true`, so it does not apply here. Left
+                // alone, the dispatch-error branch below would turn that into
+                // an AgentDispatchError and abort the whole step -- worse
+                // than the boolean behaviour this replaced.
+                // Scope is deliberately narrow: for REPAIR dispatches only,
+                // for that ONE reason, re-dispatch exactly once with the SAME
+                // repair prompt in a fresh self-contained session, inside the
+                // existing maxRepairs budget. No new retry framework, no new
+                // budget, no broader error taxonomy.
+                if (
+                    isRepair
+                    && result && result.structuredContent && result.structuredContent.isError
+                    && result.structuredContent.reason === 'session_not_found'
+                ) {
+                    console.error(`[Agent Schema Repair] the session targeted by this repair re-ask (${payload.resume}) is gone or expired on member '${opts.member_name || opts.member_id}'; re-dispatching the same repair prompt once in a fresh self-contained session (resume: false).`);
+                    payload.resume = false;
+                    result = await this.fleetApi.executePrompt(payload);
+                }
+
                 // execute_prompt's dispatch-level structuredContent (added
                 // alongside the display text -- see src/tools/execute-prompt.ts)
                 // reports real per-call token usage AND classifies dispatch
@@ -847,6 +1274,12 @@ export class FleetWorkflow extends EventEmitter {
                 // predate this field.
                 const structured = result && result.structuredContent;
                 const reportedUsage = (structured && structured.usage) || result.usage;
+                // A successful dispatch whose session refused tool calls that
+                // must never be granted (Claude auto mode: classifier or deny
+                // rule). The reply is complete; this is a warning only.
+                if (structured && !structured.isError && structured.permissionWarning && typeof structured.permissionWarning.hint === 'string') {
+                    console.error(`[Agent Permission Warning] member '${opts.member_name || opts.member_id}': ${structured.permissionWarning.hint}`);
+                }
 
                 // apra-fleet-unw.4: never fabricate usage. If the fleet result
                 // didn't report real token usage, both usage and cost are
@@ -891,7 +1324,39 @@ export class FleetWorkflow extends EventEmitter {
                     // result.usage is null and cost is null -- the viewer then
                     // tallies it as an unknown-cost activity rather than fiction.
                     this.emit('activity:end', { ...activityMeta, error: text, duration, usage: result.usage, cost, success: false });
-                    throw new AgentDispatchError(`[Workflow Error] Agent dispatch failed (${structured.reason || 'unknown'}): ${text}`, { details: { text, reason: structured.reason, member: opts.member_name || opts.member_id } });
+                    // apra-fleet-hzeb.2: pure pass-through, no policy decisions here --
+                    // when execute_prompt relayed a provider usage-limit signal
+                    // (reason: 'usage_limit'), forward its usageLimit block and the
+                    // in-flight sessionId onto AgentDispatchError.details unchanged, so
+                    // the fleet-sprint pause/resume policy can read
+                    // err.details.usageLimit.resumeAt / err.details.sessionId directly
+                    // instead of re-parsing the failure text. A permission_denied
+                    // result forwards its permissionDenied block the same way, and
+                    // dispatched:false (nothing was sent to the member) is kept so a
+                    // caller can tell a setup-time failure from one where the agent ran.
+                    throw new AgentDispatchError(`[Workflow Error] Agent dispatch failed (${structured.reason || 'unknown'}): ${text}`, { details: { text, reason: structured.reason, member: opts.member_name || opts.member_id, ...(structured.usageLimit ? { usageLimit: structured.usageLimit } : {}), ...(structured.permissionDenied ? { permissionDenied: structured.permissionDenied } : {}), ...(structured.sessionId ? { sessionId: structured.sessionId } : {}), ...(structured.dispatched === false ? { dispatched: false } : {}) } });
+                }
+
+                // A fleet TOOL/TRANSPORT failure that carries no
+                // structuredContent classification: the MCP server turns a
+                // tool handler that THREW (e.g. an SSH channel that could not
+                // be opened) into `{content:[{text: err.message}], isError:
+                // true}`, so the text is the bare transport error, never the
+                // LLM's answer. Classify it as a dispatch failure HERE, before
+                // any schema extraction, so it is never fed to the bounded
+                // schema-repair loop (which can only re-ask the model and
+                // cannot fix a broken channel). The caller's own retry ladder
+                // decides whether to re-dispatch. Structured `result.isError`
+                // first; an anchored text shape only as a fallback (see
+                // fleetToolFailureOf in the fleet client).
+                const toolFailure = fleetToolFailureOf(result);
+                if (toolFailure) {
+                    const memberLabel = opts.member_name || opts.member_id;
+                    const text = toolFailure.text || 'no error text reported';
+                    const transportMsg = `transport failure dispatching to member '${memberLabel}': ${text}`;
+                    console.error(`[Agent API Error]`, transportMsg);
+                    this.emit('activity:end', { ...activityMeta, error: transportMsg, duration, usage: result.usage, cost, success: false });
+                    throw new AgentDispatchError(`[Workflow Error] Agent dispatch failed (transport_failure): ${transportMsg}`, { details: { text, reason: 'transport_failure', signal: toolFailure.source, member: memberLabel } });
                 }
 
                 // apra-fleet-eft.78.3: surface the resumable session id
@@ -907,6 +1372,21 @@ export class FleetWorkflow extends EventEmitter {
                 // engine falls back to a fresh session (a capability signal, not
                 // a provider-name check). Best-effort: a throwing callback must
                 // never break the dispatch.
+                // apra-fleet-dnri: record THIS attempt's session id so that,
+                // if its output turns out to be schema-invalid, the repair
+                // dispatch of the next iteration can resume exactly this
+                // session by id rather than whatever session the member
+                // happens to have stored last. Assigned unconditionally (to
+                // null when the provider reported none) so a later round can
+                // never silently reuse an earlier round's id -- a provider may
+                // mint a new id per turn. Deliberately NOT nested inside the
+                // opts.onSessionId gate below: most callers pass no callback,
+                // and gating the capture on it would mean the explicit-id
+                // path never runs for them.
+                failedAttemptSessionId = (structured && typeof structured.sessionId === 'string' && structured.sessionId)
+                    ? structured.sessionId
+                    : null;
+
                 if (
                     structured
                     && typeof structured.sessionId === 'string'
@@ -992,8 +1472,9 @@ export class FleetWorkflow extends EventEmitter {
 
                     if (attempt < maxRepairs) {
                         // Bounded repair: re-dispatch to the SAME member with
-                        // a fresh, self-contained prompt (original prompt +
-                        // invalid output + ajv errors). This attempt is still
+                        // a self-contained prompt (ajv errors + the original
+                        // prompt/schema reattached as reference, but NOT the
+                        // invalid output). This attempt is still
                         // recorded as its own activity:end (success: false)
                         // so the journal/dashboard show it as a distinct step
                         // before the repair attempt that follows.
@@ -1011,7 +1492,11 @@ export class FleetWorkflow extends EventEmitter {
                         // dashboard's structured activity data.
                         console.error(`[Agent API Error]`, repairMsg);
                         this.emit('activity:end', { ...activityMeta, error: repairMsg, output: text, duration, usage: result.usage, cost, success: false });
-                        currentPrompt = buildRepairPrompt(errorsText);
+                        // apra-fleet-dnri: always re-derive from
+                        // `initialPrompt`, never from `currentPrompt` --
+                        // otherwise repair round 2 would nest round 1's
+                        // prompt and the re-ask would grow per attempt.
+                        currentPrompt = buildRepairPrompt(errorsText, initialPrompt);
                         continue;
                     }
 
@@ -1083,7 +1568,35 @@ export class FleetWorkflow extends EventEmitter {
      * @param {string} cmd
      * @param {CommandOptions} [opts]
      */
+    // (apra-fleet-p2to.1) Public entry: same pause-gate + in-flight bracketing
+    // as agent() above. The member-argument guard runs before the gate so a
+    // malformed call fails fast rather than blocking on a pause.
     async command(cmd, opts = {}) {
+        if (!opts.member_name && !opts.member_id) {
+            throw new Error(`[Workflow Error] command() requires either member_name or member_id`);
+        }
+        // opts.pauseExempt (see CommandOptions): no gate, no in-flight
+        // bookkeeping -- a read-only probe a paused script issues while it
+        // waits. A stop still cancels it through the run's stop signal.
+        if (opts.pauseExempt) {
+            const signal = opts.signal ?? this._currentSignal();
+            if (signal && signal.aborted) {
+                throw signal.reason instanceof CancelledError
+                    ? signal.reason
+                    : new CancelledError('[Workflow Error] command() not started: the run was stopped');
+            }
+            return this._commandDispatch(cmd, opts);
+        }
+        await this._pauseGate();
+        this._enterActivity();
+        try {
+            return await this._commandDispatch(cmd, opts);
+        } finally {
+            this._exitActivity();
+        }
+    }
+
+    async _commandDispatch(cmd, opts = {}) {
         // (apra-fleet-unw.17, A4) `opts.failSoft`: when set, a command
         // failure that would otherwise throw (a well-formed `isError`
         // result -> CommandError, a "Member not found" text sniff ->
@@ -1106,14 +1619,14 @@ export class FleetWorkflow extends EventEmitter {
             if (!failSoft) throw err;
             return { ok: false, output: '', error: err.message };
         };
-        if (!opts.member_name && !opts.member_id) {
-            throw new Error(`[Workflow Error] command() requires either member_name or member_id`);
-        }
+        // (apra-fleet-p2to.2.3) The member-argument guard lives solely in the
+        // public command() entrypoint above; _commandDispatch() is only ever
+        // reached through it, so a second copy here was dead code. Removed.
 
         const effectivePhase = opts.phase || this._currentPhase();
         const runId = this._currentRunId();
         if (!opts.silent) {
-            console.log(`[Command] phase: ${effectivePhase} | member: ${opts.member_name || opts.member_id} | label: ${opts.label || 'none'}`);
+            console.log(`${this.logPrefix}[Command] phase: ${effectivePhase} | member: ${opts.member_name || opts.member_id} | label: ${opts.label || 'none'}`);
         }
 
         let finalCmd = cmd;
@@ -1131,7 +1644,9 @@ export class FleetWorkflow extends EventEmitter {
         const store = this._store();
         let sequence = null;
         let replayKey = null;
-        if (store && store.activitySeq) {
+        // A pause-exempt call is never journaled for replay (see
+        // CommandOptions.pauseExempt): it takes no sequence number.
+        if (store && store.activitySeq && !opts.pauseExempt) {
             // (apra-fleet-unw2.14, N6) See agent()/_nextSequence(): numeric at
             // the top level, hierarchical/order-independent inside parallel().
             sequence = this._nextSequence(store);
@@ -1252,8 +1767,17 @@ export class FleetWorkflow extends EventEmitter {
                 throw new MemberNotFoundError(`[Workflow Error] ${outText}`, { details: { text: outText, member: opts.member_name || opts.member_id } });
             }
 
-            if (result.isError) {
-                const err = new CommandError(`[Command Failed] ${outText}`, { details: { text: outText, command: finalCmd } });
+            // A command that never produced an exit code -- the exec timed
+            // out, the transport failed, the member could not be started --
+            // is a failure, never a success. The server flags it with
+            // structuredContent.isError + reason (exitCode -1); older servers
+            // sent only the bare "Failed to execute command on ..." text, which
+            // commandFailureOf() also recognizes. The MCP-level result.isError
+            // flag is covered by the same helper. The reason rides on
+            // err.details so callers can tell a timeout from a transport error.
+            const failure = commandFailureOf(result);
+            if (failure) {
+                const err = new CommandError(`[Command Failed] ${failure.message}`, { details: { text: outText, command: finalCmd, reason: failure.reason } });
                 this.emit('activity:end', { ...activityMeta, error: err.message, duration, success: false });
                 throw err;
             }
@@ -1583,7 +2107,31 @@ export class FleetWorkflow extends EventEmitter {
             publishState: this.publishState.bind(this),
             workflow: this.workflow.bind(this),
             group: this.group.bind(this),
-            endGroup: this.endGroup.bind(this)
+            endGroup: this.endGroup.bind(this),
+            // (apra-fleet-p2to.1) Script-facing: lets the workflow declare
+            // where a clean-state boundary is so a deferred pause engages
+            // there.
+            setPauseGuard: this.setPauseGuard.bind(this),
+            // (apra-fleet-hzeb.3) Script-facing pause/resume: a running
+            // script may PARK ITSELF on a condition only it can detect (a
+            // provider usage/rate limit, an external gate) by calling these
+            // directly -- they are the exact same requestPause()/
+            // requestResume() the dashboard/operator use, so a
+            // script-initiated pause fires the identical 'pause:requested'/
+            // 'paused'/'resumed' lifecycle events as an operator-initiated
+            // one. requestStop() remains instance-only/operator-only -- a
+            // script has no business tearing down its own run.
+            requestPause: this.requestPause.bind(this),
+            requestResume: this.requestResume.bind(this),
+            // Script-facing, read-only view of the active run's cooperative
+            // cancellation: the AbortSignal requestStop() aborts (its reason
+            // is the CancelledError), or undefined outside a runWithContext()
+            // run. Lets a script that waits on a timer -- with no
+            // agent()/command() blocked at the pause gate -- still see an
+            // operator stop at once, and avoid re-pausing after one (a pause
+            // requested after requestStop() would block the next dispatch at
+            // the gate with nothing left to release it).
+            stopSignal: () => this._currentSignal()
         };
     }
 

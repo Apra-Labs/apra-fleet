@@ -26,11 +26,13 @@ const check = (cond, msg) => assert.ok(cond, msg);
 // phase logs during Sprint Setup, before Develop even starts -- happens
 // identically to a real sprint's first phase, without a real remote member.
 //
-// The phase's probe commands ('date +%s%3N' / the PowerShell equivalent) are
-// not git/gh/bd, so buildMockFleetApi's default behavior actually runs the
-// POSIX one for REAL against the local shell in tempDir -- exactly what the
-// "healthy member" scenario below wants (same host, same clock, ~0 skew, no
-// fabrication needed). The "skewed"/"threshold"/"probe failure" scenarios
+// The shared test runCmd (helpers/bd-replay.mjs) answers the POSIX probe
+// ('date +%s') with the host's own
+// clock by default (a synced member) rather than exec'ing it, so the command
+// log is identical on every host OS -- exactly what the "healthy member"
+// scenario below wants (~0 skew, no fabrication of a skew). The real-shell
+// proof is the reality-check test at the end of this file. The
+// "skewed"/"threshold"/"probe failure" scenarios
 // instead use the harness's commandStdoutOverride/commandFailurePattern hooks
 // (commandStdoutOverride added by this task -- commandFailurePattern alone
 // can only inject a failure, never a specific successful reading) to control
@@ -72,7 +74,7 @@ function escapeRegExp(s) {
 // 1. Healthy member: probe returns an epoch inside [hubT0, hubT1] -> a
 //    'Clock Skew Check' phase ran for that member, and NO warning logged.
 // -----------------------------------------------------------------------
-test('mock sprint: healthy member (real same-host probe) -> Clock Skew Check phase runs, no warning logged', async () => {
+test('mock sprint: healthy member (host-clock probe answer) -> Clock Skew Check phase runs, no warning logged', async () => {
     await withScenarioMarkers('lgz0.1.3 (1): healthy member, silent phase', async () => {
         const scenario = await runDevelopLoopScenario('lgz013-healthy', {
             ...baseScenarioOptions,
@@ -91,16 +93,16 @@ test('mock sprint: healthy member (real same-host probe) -> Clock Skew Check pha
         const warnings = scenario.logs.filter((m) => WARNING_RE.test(m));
         check(warnings.length === 0, `Expected NO clock-skew warning for a healthy (same-host) member, got: ${JSON.stringify(warnings)}`);
         const unmeasured = scenario.logs.filter((m) => UNMEASURED_RE.test(m));
-        check(unmeasured.length === 0, `Expected the real probe to succeed on a healthy host (no 'could not measure' advisory), got: ${JSON.stringify(unmeasured)}`);
+        check(unmeasured.length === 0, `Expected the probe to succeed on a healthy member (no 'could not measure' advisory), got: ${JSON.stringify(unmeasured)}`);
     });
 });
 
 // -----------------------------------------------------------------------
-// 2. Skewed member: probe returns hubT1 + 215000 (the real fleet-win-dev1
-//    case) -> exactly one WARNING is logged, naming the member and a skew
+// 2. Skewed member: probe returns hubT1 + 215000 (a ~215s skew observed on a
+//    real Windows member) -> exactly one WARNING is logged, naming the member and a skew
 //    value in the ~215s range; the sprint still proceeds past Sprint Setup.
 // -----------------------------------------------------------------------
-test('mock sprint: skewed member (probe reads hubT1 + 215s, the real fleet-win-dev1 case) -> exactly one WARNING, sprint proceeds', async () => {
+test('mock sprint: skewed member (probe reads hubT1 + 215s, an observed real-member skew) -> exactly one WARNING, sprint proceeds', async () => {
     await withScenarioMarkers('lgz0.1.3 (2): skewed member -> warning, no abort', async () => {
         const scenario = await runDevelopLoopScenario('lgz013-skewed', {
             ...baseScenarioOptions,

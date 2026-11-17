@@ -1,30 +1,34 @@
+import { escapePowerShellArgInner } from '../utils/shell-escape.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { v4 as uuid } from 'uuid';
 import { z } from 'zod';
+import { knownRepoRemoteUrl } from '../services/member-remote-url.js';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getProvider } from '../providers/index.js';
-import { getAgentOS, touchAgent, getStoredPid } from '../utils/agent-helpers.js';
+import { getAgentOS, getAgentShell, touchAgent, getStoredPid, isPosixShellMember } from '../utils/agent-helpers.js';
 import { updateAgent } from '../services/registry.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { isRetryable, authErrorAdvice, workspaceNotTrustedAdvice, type PromptErrorCategory } from '../utils/prompt-errors.js';
-import { buildAuthEnvPrefix } from '../utils/auth-env.js';
+import { stageAuthEnv, removeMemberSecretFile, SecretDeliveryError, type StagedAuthEnv } from '../services/member-secret-env.js';
 import { writeStatusline } from '../services/statusline.js';
 import { getModelOverride } from '../services/user-config.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
-import { getStallDetector, resolveSessionLogPath } from '../services/stall/index.js';
+import { getStallDetector, resolveSessionLogPath, type StallReason } from '../services/stall/index.js';
 import { getCachedMemberPathContext } from '../services/member-home.js';
 import { provisionAgents, remoteAgentsDir, loadCanonicalAgentSet } from '../services/agent-provisioner.js';
+import { ensureNoProjectAgentShadows } from '../services/agent-shadow.js';
 import { escapeWindowsArg, escapeDoubleQuoted } from '../os/os-commands.js';
 import { resolveTilde } from './execute-command.js';
 import { clearStoredPid } from '../utils/agent-helpers.js';
 import { tryKillPid, isPidAlive } from '../utils/pid-helpers.js';
 import { recoverOrphanedDispatch, isRemoteProcessAlive } from '../services/orphan-recovery.js';
+import { hasSecretToken } from '../services/secret-token.js';
 import { seedWorkspaceTrust } from '../utils/workspace-trust.js';
 import { durableOutputPath } from '../os/linux.js';
-import { LogScope, maskSecrets, truncateForLog, logWarn } from '../utils/log-helpers.js';
+import { LogScope, logLine, logWarn, maskSecrets, truncateForLog } from '../utils/log-helpers.js';
 import { getLogPreviewChars } from '../services/user-config.js';
 import { validateSubstitutionKeys, applySubstitutions } from '../services/substitution-engine.js';
 import { sessionRegistry } from '../services/session-registry.js';
@@ -32,23 +36,63 @@ import { getTokenIssuer } from '../services/token-issuer.js';
 import { resolveExpectedDemand, checkContextAdmission, recordSessionUsage } from '../services/context-admission.js';
 import { recordKnownSession, isKnownSession } from '../services/known-sessions.js';
 import { resolveBudgetScope, evaluateBudget, recordAndEvaluate, type BudgetUsageBlock } from '../services/budget-awareness.js';
+import { dispatchCostFromCumulative } from '../services/session-cost.js';
 import { sendMessage } from './send-message.js';
+import { serverVersion } from '../version.js';
 import { registerPending } from '../services/pending-responses.js';
+import { inFlightAgents } from '../services/in-flight-agents.js';
 import type { Agent, SSHExecResult } from '../types.js';
 import type { AgentStrategy } from '../services/strategy.js';
 import type { ProviderAdapter } from '../providers/index.js';
-import type { ParsedResponse } from '../providers/provider.js';
+import type { ParsedResponse, PermissionDenial, TokenUsage, UsageLimitSignal } from '../providers/provider.js';
 import { isMaxTurnsResponse } from '../providers/provider.js';
+import { preflightCheck } from '../services/preflight-check.js';
+import { ensureAgyProject } from '../services/agy-project.js';
+import { sessionMcpInjectionAvailable, sessionMcpConfigPath, sessionMcpConfigIsPerDispatch, writeSessionMcpConfig, resolveSessionMcpAlwaysLoad } from '../services/session-mcp-config.js';
+
+
+/**
+ * execute_prompt's structured `usage` block. The cache counts are billed
+ * prompt tokens reported separately from input_tokens (0 when the provider
+ * reports none). DECISION: total_tokens stays input_tokens + output_tokens --
+ * it is the context-window figure fleet-sprint's context admission reads, and
+ * cache tokens are not added to it so admission behaviour is unchanged. Cost
+ * consumers use cost_usd when present and otherwise price the four counts
+ * themselves (see estimateDispatchCost).
+ */
+export interface StructuredUsage {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_input_tokens: number;
+  cache_creation_input_tokens: number;
+  total_tokens: number;
+  /** USD this dispatch cost as the provider CLI reported it (Claude: the
+   *  per-dispatch delta of total_cost_usd). Absent when the provider reports
+   *  no cost; a cost consumer must use this figure when present and price
+   *  the token counts only when it is absent. */
+  cost_usd?: number;
+}
+
+export function toStructuredUsage(u: TokenUsage): StructuredUsage {
+  return {
+    input_tokens: u.input_tokens,
+    output_tokens: u.output_tokens,
+    cache_read_input_tokens: u.cache_read_input_tokens ?? 0,
+    cache_creation_input_tokens: u.cache_creation_input_tokens ?? 0,
+    total_tokens: u.input_tokens + u.output_tokens,
+    ...(typeof u.cost_usd === 'number' ? { cost_usd: u.cost_usd } : {}),
+  };
+}
 
 export interface ExecutePromptStructured {
   isError?: boolean;
-  reason?: 'busy' | 'reserved' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'orphan_recovery_timeout' | 'workspace_not_trusted' | 'auth' | 'server' | 'overloaded' | 'insufficient_context_headroom' | 'budget_exhausted' | 'session_not_found' | 'stalled';
+  reason?: 'busy' | 'reserved' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'orphan_recovery_timeout' | 'workspace_not_trusted' | 'auth' | 'server' | 'overloaded' | 'insufficient_context_headroom' | 'budget_exhausted' | 'session_not_found' | 'fork_unsupported' | 'stalled' | 'agent_never_started' | 'max_total_time' | 'preflight_offline' | 'preflight_auth_missing' | 'preflight_auth_expired' | 'usage_limit' | 'permission_denied' | 'secret_delivery_unavailable';
   // The LLM's actual reply text on success. Callers that dispatch execute_prompt
   // via an MCP client only ever see structuredContent (the content array is
   // dropped when structuredContent is also present) -- this field exists so the
   // reply reaches them at all, rather than being stranded in the display text.
   response?: string;
-  usage?: { input_tokens: number; output_tokens: number; total_tokens: number };
+  usage?: StructuredUsage;
   sessionId?: string;
   /** Present on an 'insufficient_context_headroom' rejection (apra-fleet-eft.81.1). */
   detail?: { demand: number; headroom: number; window: number };
@@ -62,8 +106,33 @@ export interface ExecutePromptStructured {
    *  'provider' (from a provider-native getUsage()) vs 'estimated' (fleet-side
    *  token-count fallback). */
   budgetUsage?: BudgetUsageBlock;
+  /** Present on a 'usage_limit' rejection (apra-fleet-hzeb.2) -- the provider's
+   *  detectUsageLimit() signal verbatim, so a caller (notably fleet-sprint) can
+   *  read resumeAt/resumeAtSource/message without re-parsing the failure text. */
+  usageLimit?: UsageLimitSignal;
+  /** Present on a 'permission_denied' failure: the member CLI refused tool
+   *  calls (actions, concrete targets, the compose_permissions grants that
+   *  would allow them, and a hint). Any partial reply is in `response`. For
+   *  Claude only with fail_on_permission_denial; AGY always. Also present as
+   *  an extra field on a typed failure (max_turns_exhausted, auth, server,
+   *  overloaded, workspace_not_trusted) or a non-strict Claude failure whose
+   *  turn carried refusals -- the typed reason wins. */
+  permissionDenied?: PermissionDenial;
+  /** Present on a SUCCESSFUL dispatch whose session refused tool calls
+   *  without failing it: a healable:false refusal (Claude auto/bypass mode:
+   *  safety classifier or deny rule -- never grant it), or any Claude refusal
+   *  when fail_on_permission_denial was not set. A warning, not a failure. */
+  permissionWarning?: PermissionDenial;
+  /** false when nothing was dispatched to the member: a max_total_time
+   *  failure that ran out of budget during setup (cloud start, before the
+   *  first attempt). Absent on every other result. */
+  dispatched?: false;
   [key: string]: unknown;
 }
+
+/** Failure classes that win over a permission denial carried in the same
+ *  result: the caller acts on these (resume, re-provision, retry later). */
+const TYPED_FAILURE_CATEGORIES: ReadonlySet<PromptErrorCategory> = new Set<PromptErrorCategory>(['auth', 'server', 'overloaded', 'workspace_not_trusted', 'max_turns']);
 
 export interface ExecutePromptResult {
   text: string;
@@ -76,14 +145,26 @@ export const executePromptSchema = z.object({
   session_id: z.string().optional().describe('Shorthand for explicit session resume. Equivalent to resume: "<session_id>". If provided, takes precedence over resume.'),
   resume: z.union([z.boolean(), z.string()]).default(true).describe(
     'Session-resume control (default: true). ' +
-    'true = best-effort resume of the member\'s stored last session (a stale/unknown stored session transparently falls back to a fresh session). ' +
+    'true = best-effort resume of the member\'s stored last session (a stale/unknown stored session, or one recorded by a different server build, transparently falls back to a fresh session). ' +
     'false = always start a fresh session. ' +
     'A session-id STRING = EXPLICIT resume of exactly that session, preferred over the member\'s stored session -- the caller asserts this prompt depends on that session\'s prior context, so an unknown/expired id is a TERMINAL error ' +
     '(structured {isError, reason: "session_not_found"}, NO LLM call, and NO fresh-session fallback) rather than a silent wrong-context dispatch.'
   ),
-  timeout_s: z.number().default(300).describe('Inactivity timeout in seconds -- the command is killed after this many seconds without any stdout/stderr output (default: 300s / 5 minutes)'),
-  max_total_s: z.number().optional().describe('Hard ceiling in seconds -- the command is killed after this total elapsed time regardless of activity. If omitted, there is no total time limit.'),
+  fork: z.union([z.boolean(), z.string()]).optional().describe(
+    'Branch a NEW session from an existing one instead of continuing it in place. ' +
+    'Mirrors resume\'s shape, but BRANCHES rather than continues: it mints a distinct new ' +
+    'session id seeded from the source session\'s context, leaving the source session itself ' +
+    'untouched. true = fork from the member\'s stored last session. A session-id STRING = fork ' +
+    'from exactly that session. Mutually exclusive with resume (any non-default value, i.e. ' +
+    'false or a session-id string) and with session_id (a resume shorthand) -- specifying fork ' +
+    'together with either is rejected as a validation error before any member resolution or LLM ' +
+    'call. NOTE: this field only covers the schema + the mutual-exclusivity guard; actual fork ' +
+    'MODE RESOLUTION (minting/wiring the forked session) is implemented separately.'
+  ),
+  timeout_s: z.number().default(300).describe('Inactivity timeout in seconds -- always drives the stall detector\'s per-dispatch baseline threshold, measured against the member\'s own session transcript activity (default: 300s / 5 minutes). Omitting it yields a 300s baseline, a deliberate change from the previously silent 150s stall-detector default. Per-provider, it ALSO arms the exec-level rolling timer against this dispatch\'s stdout/stderr channel for Codex and Copilot, which have no pollable transcript; Claude and AGY take that exec-channel ceiling from max_total_s instead; and OpenCode keeps BOTH signals armed at once (this exec-channel timer plus coarse log-directory-mtime polling, combined with OR semantics -- either advancing counts as not-stalled), since its transcript signal is directory-level only, not a per-turn file (see ProviderAdapter.execTimeoutSource()).'),
+  max_total_s: z.number().optional().describe('Hard ceiling in seconds, measured from the moment the call is received (setup such as member readiness and preflight counts) -- the command is killed after this total elapsed time regardless of activity and the call returns reason max_total_time. If omitted, there is no total time limit.'),
   max_turns: z.number().min(1).max(500).optional().describe('Max turns for claude -p (default: 50)'),
+  fail_on_permission_denial: z.boolean().optional().describe('Strict permission handling (default: false). true = a tool call the member CLI refused fails the dispatch with reason "permission_denied" and a permissionDenied block (suggestedGrants to heal it with compose_permissions), even when the reply looks complete -- except a Claude refusal with healable:false (auto/bypass mode: safety classifier or deny rule) on a complete reply, which is only a permissionWarning. Omitted/false = each provider keeps its earlier behaviour: a complete Claude reply is a success carrying the refusals in permissionWarning; AGY refusals still fail permission_denied. Either way a max_turns / auth / server / overloaded result keeps its own reason, with the refusals attached as permissionDenied.'),
   model: z.string().optional().describe('Model tier ("cheap", "standard", "premium") or a specific model ID for power users. Prefer tier names -- the server resolves them to the correct model per provider. If omitted, defaults to the standard tier. Applies to both new and resumed sessions.'),
   substitutions: z.record(z.string(), z.string()).optional().describe(
     'Optional map of token name to replacement value. ' +
@@ -94,17 +175,15 @@ export const executePromptSchema = z.object({
   agent: z.string().optional().describe(
     'Optional agent name to activate. ' +
     'For Claude: invokes claude --agent <name>. ' +
-    'For Gemini: prepends @<name> to the prompt on every dispatch. ' +
-    'For AGY: prepends @<name> to the prompt on every dispatch (same as Gemini). ' +
-    'Substitution runs before the @<name> prepend. ' +
+    'For AGY: invokes agy --agent <name>. ' +
     'Agent file must exist at the provider-specific path on the member: ' +
     'Claude: <workFolder>/.claude/agents/<name>.md or ~/.claude/agents/<name>.md; ' +
-    'Gemini: <workFolder>/.gemini/agents/<name>.md or ~/.gemini/agents/<name>.md; ' +
-    'AGY: <workFolder>/.gemini/antigravity-cli/agents/<name>.md or ~/.gemini/antigravity-cli/agents/<name>.md -- ' +
+    'AGY: <workFolder>/.gemini/antigravity-cli/agents/<name>.md or ~/.gemini/antigravity-cli/agents/<name>.md; ' +
+    'OpenCode: <workFolder>/.opencode/agents/<name>.md or ~/.config/opencode/agents/<name>.md -- ' +
     'the call is rejected with a clear error if neither is present.'
   ),
   sprint_id: z.string().optional().describe(
-    'Opaque identity of the sprint issuing this dispatch (apra-fleet-eft.29.1). ' +
+    'Opaque identity of the sprint issuing this dispatch. ' +
     'When provided, the server-side member-reservation check (see reservedBy below) ' +
     'compares this value directly against the reservation instead of falling back to ' +
     'this server process\'s APRA_FLEET_SPRINT_ID env var -- the same per-call value ' +
@@ -113,7 +192,7 @@ export const executePromptSchema = z.object({
     'omitting it preserves the pre-existing env-var-based behavior exactly.'
   ),
   expected_context_tokens: z.number().positive().optional().describe(
-    'Optional estimate (apra-fleet-eft.81.1) of how many tokens this dispatch will add ' +
+    'Optional estimate of how many tokens this dispatch will add ' +
     'to the target session\'s context. When set (or context_size is set), the server ' +
     'compares it against the session\'s remaining context-window headroom BEFORE ' +
     'invoking the LLM: too little headroom rejects the call with ' +
@@ -123,7 +202,7 @@ export const executePromptSchema = z.object({
     'fields disables the check entirely -- pre-existing behavior is unchanged.'
   ),
   context_size: z.enum(['S', 'M', 'L']).optional().describe(
-    'Optional size-bucket shorthand for expected_context_tokens (apra-fleet-eft.81.1): ' +
+    'Optional size-bucket shorthand for expected_context_tokens: ' +
     'S/M/L map to configured token estimates (fleet defaults, overridable via ' +
     'config.json\'s contextAdmission.sizeBucketTokens). Ignored when expected_context_tokens ' +
     'is also set. The auto-sprint engine supplies this from the dispatched task\'s size ' +
@@ -149,6 +228,52 @@ ${output}`;
     : `[FAIL] Prompt failed on "${agentName}":
 ${output}`;
 }
+
+// apra-fleet-25yl.2.1: the exec-level rolling deadline used for a provider
+// whose ExecTimeoutSource is 'total_ceiling' when the caller supplied NO
+// max_total_s -- i.e. there is no ceiling to mirror. 24h: large enough that it
+// can never bind before any realistic dispatch or client-side deadline, and
+// small enough to stay inside the int32 range setTimeout accepts (Infinity or
+// MAX_SAFE_INTEGER overflow to "fire immediately", which would invert the
+// decoupling into an instant kill). The alternative -- falling back to
+// timeout_s -- is deliberately NOT taken: that is the exact coupling this
+// removes, and for these providers timeout_s belongs to the StallDetector.
+const EXEC_TIMER_NEVER_BINDS_MS = 86_400_000;
+
+const FAILURE_STDERR_TAIL_CHARS = 2000;
+const FAILURE_STDERR_TAIL_LINES = 20;
+const FAILURE_EVENT_CHARS = 1000;
+
+/**
+ * GitHub #585: the diagnostic payload logged when execute_prompt's dispatch
+ * exits non-zero -- the TAIL of stderr (the end is where CLIs print the
+ * fatal error), capped by lines and characters, plus the last JSON
+ * result/error event on stdout, capped. Redaction happens in logLine.
+ */
+export function formatPromptFailureTail(result: Pick<SSHExecResult, 'code' | 'stdout' | 'stderr'>): string {
+  let stderrTail = (result.stderr ?? '').trimEnd();
+  const lines = stderrTail.split('\n');
+  if (lines.length > FAILURE_STDERR_TAIL_LINES) stderrTail = lines.slice(-FAILURE_STDERR_TAIL_LINES).join('\n');
+  if (stderrTail.length > FAILURE_STDERR_TAIL_CHARS) stderrTail = stderrTail.slice(-FAILURE_STDERR_TAIL_CHARS);
+
+  let lastEvent: string | undefined;
+  const outLines = (result.stdout ?? '').split('\n');
+  for (let i = outLines.length - 1; i >= 0 && lastEvent === undefined; i--) {
+    const line = outLines[i].trim();
+    if (!line.startsWith('{')) continue;
+    try {
+      const ev = JSON.parse(line) as { type?: unknown; is_error?: unknown; error?: unknown; subtype?: unknown };
+      if (ev.type === 'result' || ev.type === 'error' || ev.is_error === true || ev.error !== undefined) {
+        lastEvent = line.length > FAILURE_EVENT_CHARS ? line.slice(0, FAILURE_EVENT_CHARS) + '...[truncated]' : line;
+      }
+    } catch { /* not a JSON event line */ }
+  }
+  return JSON.stringify({ exit: result.code, stderrTail, ...(lastEvent !== undefined ? { lastEvent } : {}) });
+}
+
+/** GitHub #563: max_total_s time held back from every attempt for prompt-file
+ *  cleanup and the response (see cleanupReserveMs in executePrompt). */
+export const EXECUTE_PROMPT_CLEANUP_RESERVE_MS = 5000;
 
 const SERVER_RETRY_DELAY_MS = 5000;
 
@@ -180,17 +305,26 @@ async function writePromptFile(agent: Agent, strategy: AgentStrategy, promptFile
     fs.writeFileSync(promptFilePath, content, 'utf-8');
     return;
   }
-  const agentOs = getAgentOS(agent);
   const promptFileName = path.basename(promptFilePath);
   const remoteDir = path.dirname(promptFilePath);
   const chunks = chunkContent(content);
 
-  if (agentOs === 'windows') {
+  // apra-fleet-7dir.5.4: the PowerShell branch below is shell-INDEPENDENT as a
+  // string (a single base64 `powershell -EncodedCommand` invocation, safe to
+  // run from bash too), so a gitbash member would survive it. It is routed to
+  // the POSIX branch anyway, so that one member class speaks exactly one shell
+  // end to end: the sibling deletePromptFile's PowerShell branch cannot clean
+  // up the durable stdout mirror (a POSIX /tmp path only bash resolves), and
+  // splitting write/delete across two shells for one member would be the
+  // harder invariant to keep true. The `cd "<folder>"` this branch emits is
+  // the same POSIX form LinuxCommands.buildAgentPromptCommand already uses for
+  // every gitbash dispatch, so it adds no new path-quoting exposure.
+  if (!isPosixShellMember(agent)) {
     const escapedFolder = escapeWindowsArg(remoteDir);
     for (let i = 0; i < chunks.length; i++) {
       const setup = i === 0 ? `New-Item -Path '${escapedFolder}' -ItemType Directory -Force | Out-Null; ` : '';
       const cmdlet = i === 0 ? 'Set-Content' : 'Add-Content';
-      const psScript = `${setup}Set-Location "${escapedFolder}"; ${cmdlet} -Path "${promptFileName}" -Value '${chunks[i].replace(/'/g, "''")}' -NoNewline -Encoding UTF8`;
+      const psScript = `${setup}Set-Location "${escapedFolder}"; ${cmdlet} -Path "${promptFileName}" -Value '${escapePowerShellArgInner(chunks[i])}' -NoNewline -Encoding UTF8`;
       const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
       // eslint-disable-next-line no-await-in-loop -- each chunk must land before the next appends
       await strategy.execCommand(`powershell -EncodedCommand ${encoded}`);
@@ -215,13 +349,20 @@ async function deletePromptFile(agent: Agent, strategy: AgentStrategy, promptFil
     }
     return;
   }
-  const agentOs = getAgentOS(agent);
   const promptFileName = path.basename(promptFilePath);
   const remoteDir = path.dirname(promptFilePath);
 
-  if (agentOs === 'windows') {
+  // apra-fleet-7dir.5.4: gitbash members take the POSIX branch, matching
+  // writePromptFile above -- the durable stdout mirror in `extraPaths` lives
+  // at a POSIX /tmp path PowerShell would resolve to a different directory
+  // entirely.
+  if (!isPosixShellMember(agent)) {
     const escapedFolder = escapeWindowsArg(remoteDir);
-    const psScript = `Set-Location "${escapedFolder}"; Remove-Item "${promptFileName}" -Force -ErrorAction SilentlyContinue`;
+    // extraPaths here are only staged credential files (absolute member
+    // paths); PowerShell members have no durable stdout mirror.
+    // Removed first, by absolute path, independent of the work folder.
+    const extras = extraPaths.map(p => `Remove-Item -LiteralPath '${escapePowerShellArgInner(p)}' -Force -ErrorAction SilentlyContinue; `).join('');
+    const psScript = `${extras}Set-Location "${escapedFolder}"; Remove-Item "${promptFileName}" -Force -ErrorAction SilentlyContinue`;
     const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
     await strategy.execCommand(`powershell -EncodedCommand ${encoded}`).catch(() => { /* ignore */ });
   } else {
@@ -229,7 +370,10 @@ async function deletePromptFile(agent: Agent, strategy: AgentStrategy, promptFil
     // apra-fleet-6z8.1: the durable stdout mirror is cleaned up in the SAME
     // round trip as the prompt file -- no extra exec per dispatch.
     const extras = extraPaths.map(p => ` "${escapeDoubleQuoted(p)}"`).join('');
-    await strategy.execCommand(`cd "${escapedFolder}" && rm -f ${promptFileName}${extras}`).catch(() => { /* ignore */ });
+    // extraPaths are absolute (durable mirror, staged credential files): removed
+    // unconditionally, even when the work folder is gone and the cd fails.
+    const extrasRm = extras ? `rm -f${extras}; ` : '';
+    await strategy.execCommand(`${extrasRm}cd "${escapedFolder}" && rm -f ${promptFileName}`).catch(() => { /* ignore */ });
   }
 }
 
@@ -242,12 +386,19 @@ export function resolveModelForTier(agent: Agent, tier: string, provider: Provid
   return provider.modelForTier(tier as 'cheap' | 'standard' | 'premium');
 }
 
-const SECURE_TOKEN_RE = /\{\{secure\.[a-zA-Z0-9_-]{1,64}\}\}/;
+/**
+ * apra-fleet-b4g.6: the auto-harvest dispatch (below) is a server-internal
+ * kb_harvest call, not an LLM-supplied repo_remote_url like the other kb_*
+ * tools' hot paths (apra-fleet-b4g.1). Re-exported from
+ * services/member-remote-url.ts, which documents the no-guessing rule and is
+ * shared with member_detail (the fleet-sprint engine's only source for it).
+ */
+export { knownRepoRemoteUrl };
 
 /**
  * The sprint id this server process dispatches on behalf of, or undefined when
  * run outside a sprint (e.g. a manual cli.mjs invocation). Sourced from
- * APRA_FLEET_SPRINT_ID, which the auto-sprint spawner stamps into the per-sprint
+ * APRA_FLEET_SPRINT_ID, which the fleet-sprint spawner stamps into the per-sprint
  * server's environment (apra-fleet-eft.10.3). Read on every dispatch so a
  * reservation set/cleared mid-run is observed without a restart.
  */
@@ -258,7 +409,7 @@ export function currentSprintId(): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
-export const inFlightAgents = new Set<string>();
+export { inFlightAgents };
 
 // Member ids whose remote agent files (planner.md, doer.md, _shared/, schemas/, ...)
 // have already been probed/refreshed this server process uptime -- the #336
@@ -301,7 +452,15 @@ async function ensureAgentFilesProvisioned(agent: Agent): Promise<void> {
 // (d) AbortSignal/MCP client cancellation -> abortHandler kills PID, execCommand resolves, finally clears
 // (e) stale session retry -> retried without session ID; finally clears on success or failure
 // (f) server overload retry -> retried after delay; finally clears on success or failure
-// (g) early returns before inFlightAgents.add: busy state never entered
+// (g) early returns before inFlightAgents.add (busy-rejection, reservation
+//     conflict, no-LLM member): busy state never entered
+// (h) preflight: the lock is claimed just before the preflight await (moved
+//     here from the interactive/subprocess split further below, to close the
+//     busy-check-to-lock-claim race window -- that split no longer calls
+//     .add() itself, it relies on the claim made here). Both the {ok: false}
+//     result path and preflightCheck() itself throwing release the lock
+//     explicitly inline, since both return/rethrow before reaching any
+//     finally block below
 
 /**
  * apra-fleet-idb: liveness probe for a busy-locked member's backing process.
@@ -347,7 +506,7 @@ async function findDeadLockPid(agent: Agent, workspaceId: string): Promise<numbe
   if (subprocessPid !== undefined) {
     const alive = agent.agentType === 'local'
       ? isPidAlive(subprocessPid)
-      : await isRemoteProcessAlive(getStrategy(agent), subprocessPid);
+      : await isRemoteProcessAlive(getStrategy(agent), subprocessPid, getAgentOS(agent), getAgentShell(agent));
     if (!alive) return subprocessPid;
   }
 
@@ -476,8 +635,49 @@ async function executePromptInteractive(
 }
 
 export async function executePrompt(input: ExecutePromptInput, extra?: any): Promise<string | ExecutePromptResult> {
-  if (SECURE_TOKEN_RE.test(input.prompt)) {
-    return 'error: execute_prompt prompt contains {{secure.NAME}} token. Secrets must never be passed to LLM prompts. Use execute_command with {{secure.NAME}} instead.';
+  // GitHub #563: max_total_s is measured from HERE, handler entry -- cloud
+  // readiness, preflight and agent provisioning are all charged to it, since
+  // the client's own deadline (max_total_s + a fixed grace) starts at the call.
+  const handlerStartedAt = Date.now();
+  if (hasSecretToken(input.prompt)) {
+    return 'error: execute_prompt prompt contains {{secret.NAME}} token. Secrets must never be passed to LLM prompts. Use execute_command with {{secret.NAME}} instead.';
+  }
+
+  // apra-fleet-3swo.42: normalise `fork` ONCE, here, before any predicate is
+  // derived from it. Previously `forkRequested` (below) checked
+  // input.fork.length > 0 (untrimmed) while `explicitForkId` (further down)
+  // checked input.fork.trim().length > 0 -- for a whitespace-only fork id the
+  // two disagreed (forkRequested true, explicitForkId undefined), which
+  // silently routed a caller's explicit-but-invalid fork id into the
+  // fork===true best-effort path and could hand back a plain FRESH session
+  // with no error. Both forkRequested and explicitForkId are now derived from
+  // this single normalised value, so an all-whitespace or empty string can
+  // never disagree with itself. Trimming a boolean/undefined value is a
+  // no-op -- the ternary passes it through unchanged.
+  const forkArg = typeof input.fork === 'string' ? input.fork.trim() : input.fork;
+  // fork/resume mutual-exclusivity guard (apra-fleet-lmtg.4): fork branches a
+  // NEW session from an existing one, resume continues IN PLACE -- the two
+  // are semantically incompatible, so a call requesting both is rejected here,
+  // before any member resolution or LLM invocation, rather than silently
+  // preferring one. session_id is documented as pure resume shorthand, so its
+  // mere presence also conflicts with fork even when the `resume` field
+  // itself still holds its default. "Non-default resume" means any value
+  // other than the schema default `true` (i.e. `false`, or an explicit
+  // session-id string) -- default-true resume is left alone since fork mode
+  // resolution (next task) supersedes it.
+  // Deliberately NOT `forkArg.length > 0`: any STRING value of fork (including
+  // '' and whitespace-only, once trimmed to '') is a fork REQUEST -- just one
+  // whose explicit id turns out to be invalid (see explicitForkId below),
+  // rejected with a terminal session_not_found rather than silently treated
+  // as "no fork requested at all".
+  const forkRequested = forkArg === true || typeof forkArg === 'string';
+  if (forkRequested) {
+    if (input.session_id !== undefined) {
+      return 'error: execute_prompt cannot set both "fork" and "session_id" -- session_id is resume shorthand, and fork branches a new session instead of resuming. Specify only one.';
+    }
+    if (input.resume !== true) {
+      return 'error: execute_prompt cannot set both "fork" and a non-default "resume" -- fork branches a new session instead of resuming. Specify only one.';
+    }
   }
 
   // Validate substitution keys before any I/O or member resolution.
@@ -507,7 +707,30 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   if (typeof agentOrError === 'string') return agentOrError;
   let agent: Agent;
   try {
-    agent = await ensureCloudReady(agentOrError as Agent); // auto-start if stopped
+    // GitHub #563 review: a cold cloud start can take minutes. Bound it by the
+    // max_total_s budget (minus the cleanup reserve) so a slow start returns
+    // the typed max_total_time error before the client's own deadline. The
+    // start itself keeps going in the background; the next call finds the
+    // instance running.
+    const cloudBudgetMs = input.max_total_s !== undefined
+      ? Math.max(0, input.max_total_s * 1000 - Math.min(EXECUTE_PROMPT_CLEANUP_RESERVE_MS, Math.floor(input.max_total_s * 100)) - (Date.now() - handlerStartedAt))
+      : undefined;
+    const ready = ensureCloudReady(agentOrError as Agent); // auto-start if stopped
+    if (cloudBudgetMs === undefined) {
+      agent = await ready;
+    } else {
+      let budgetTimer: ReturnType<typeof setTimeout> | undefined;
+      const outOfBudget = new Promise<null>((resolve) => { budgetTimer = setTimeout(() => resolve(null), cloudBudgetMs); });
+      const raced = await Promise.race([ready, outOfBudget]).finally(() => clearTimeout(budgetTimer));
+      if (raced === null) {
+        ready.catch(() => { /* background start; outcome surfaces on the next call */ });
+        return {
+          text: `[FAIL] execute_prompt on "${(agentOrError as Agent).friendlyName}" exceeded max_total_s (${input.max_total_s}s) while waiting for the cloud member to start -- the start continues in the background; retry shortly.`,
+          structuredContent: { isError: true, reason: 'max_total_time', dispatched: false },
+        };
+      }
+      agent = raced;
+    }
   } catch (err: any) {
     return `[FAIL] Failed to execute prompt on "${(agentOrError as Agent).friendlyName}": ${err.message}`;
   }
@@ -572,6 +795,76 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     return `[FAIL] "${agent.friendlyName}" has no LLM provider (llm_provider: "none") -- it is a plain command executor. Use execute_command instead.`;
   }
 
+  // Claim the busy lock BEFORE the preflight await, not after (as it
+  // originally was further below at the interactive/subprocess split).
+  // preflightCheck can take up to ~30s on a cache miss; leaving the busy-check
+  // (line ~546) and the lock claim ~150 lines apart left a window where two
+  // near-simultaneous dispatches to the same member could both pass the busy
+  // check (neither had claimed the lock yet), both await preflight, and both
+  // proceed to double-dispatch. Every return path from here to the
+  // interactive/subprocess split below (currently only the preflight-failure
+  // return immediately following) must release this lock explicitly, since
+  // it now returns AFTER the lock is claimed instead of before.
+  inFlightAgents.add(agent.id);
+  // apra-fleet-c98q: if anything between this claim and a try/finally that
+  // owns the release throws (e.g. an SSH drop in writePromptFile), release
+  // the lock and stall entry here and rethrow. Body deliberately not
+  // reindented to keep this release fix minimal.
+  let claimGuardActive = true;
+  try {
+
+  // Peek at session state early so the preflight check can skip interactive
+  // members whose dispatch routes through a live MCP push channel, not SSH.
+  const earlyWorkspaceId = getTokenIssuer().workspaceId();
+  const earlySession = sessionRegistry.get(earlyWorkspaceId, agent.id);
+  const isChannelCapable = !!earlySession?.channelCapable;
+
+  // Pre-dispatch readiness check (apra-fleet preflight-check): verify
+  // connectivity and LLM auth BEFORE the expensive prompt dispatch
+  // (writePromptFile + CLI invocation). Catches expired OAuth, missing
+  // credentials, and offline members in <1s instead of burning a full
+  // round trip. Local members and interactive sessions are excluded
+  // (local shares this machine's credentials; interactive sessions have
+  // their own liveness probes). The check is cached for 60s so
+  // back-to-back dispatches do not add latency.
+  if (agent.agentType !== 'local' && !isChannelCapable) {
+    let preflight: Awaited<ReturnType<typeof preflightCheck>>;
+    try {
+      preflight = await preflightCheck(agent);
+    } catch (err) {
+      // preflightCheck's own synchronous prologue (getStrategy/getProvider)
+      // and its internal exec calls are not fully guarded -- if it throws
+      // instead of resolving {ok: false}, the lock claimed above would
+      // otherwise leak forever (no pid captured yet for findDeadLockPid's
+      // stale-lock self-heal to recognize). Release and propagate unchanged
+      // -- this preserves the exact same exception the caller would have
+      // seen before the lock was claimed this early.
+      inFlightAgents.delete(agent.id);
+      throw err;
+    }
+    if (!preflight.ok) {
+      // R2-F5: use preflight-specific reason codes so fleet-sprint can
+      // distinguish pre-dispatch failures from in-dispatch ones and avoid
+      // inappropriate self-heal loops (e.g. re-provisioning auth when the
+      // member is simply offline).
+      const preflightReason: ExecutePromptStructured['reason'] =
+        preflight.code === 'offline' ? 'preflight_offline'
+        : preflight.code === 'auth_expired' ? 'preflight_auth_expired'
+        : preflight.code === 'auth_missing' ? 'preflight_auth_missing'
+        : 'dispatch_failed';
+      // Release the lock claimed above -- this return happens before the
+      // interactive/subprocess split's own add+finally cleanup ever runs.
+      inFlightAgents.delete(agent.id);
+      return {
+        text: `[FAIL] Pre-dispatch check failed for "${agent.friendlyName}": ${preflight.reason}`,
+        structuredContent: {
+          isError: true,
+          reason: preflightReason,
+        },
+      };
+    }
+  }
+
   // Interactive routing (apra-fleet-2xs.8/us9.8, docs/cloud-fleet-architecture.md
   // section 6): if this member has a live MCP session connected right now,
   // route via send_message + wait-for-response instead of spawning a
@@ -590,15 +883,18 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // but the routing decision itself must be provider-agnostic: whatever the
   // provider, a session is only an interactive-routing candidate if it
   // actually declared that capability at MCP initialize time (recorded as
-  // SessionState.channelCapable below). Gemini/Codex are confirmed [FAIL]
-  // today (no equivalent push mechanism) and so never end up channelCapable in
+  // SessionState.channelCapable below). Codex is confirmed [FAIL]
+  // today (no equivalent push mechanism) and so never ends up channelCapable in
   // practice, but that is a fact about what each provider adapter currently
   // advertises, not a name-based pre-filter here -- any provider that
   // implements the same MCP channel capability is picked up automatically. A
-  // member CAN still have a live sessionRegistry entry (registerMcpEndpoint
-  // gives it basic MCP tool access, apra-fleet-fnz.1-3) without that meaning
+  // member CAN still have a live sessionRegistry entry (its per-folder
+  // apra-fleet MCP entry gives it basic MCP tool access) without that meaning
   // it can receive or act on this push -- routing to it anyway would silently
   // spend the full timeout_s waiting for a response that can never arrive.
+  // R2-F3: re-query session registry after the preflight await (10-20s) so
+  // interactive routing sees sessions that became channelCapable during that
+  // window, rather than using the stale pre-preflight snapshot.
   const workspaceId = getTokenIssuer().workspaceId();
   const rawSession = sessionRegistry.get(workspaceId, agent.id);
   // apra-fleet-eft.74.1: interactive routing requires the EXPLICIT channel
@@ -663,9 +959,19 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     deadScope.info(`member claude process (pid ${interactivePid}) for "${agent.friendlyName}" is dead -- evicting the stale interactive session and re-dispatching fresh (non-interactive)`);
     interactiveSession = undefined;
   }
+  // Project-level <workFolder>/.claude/agents files take precedence over the
+  // user-level role set; quarantine untracked shadows, report tracked ones on
+  // every dispatch. Runs before the interactive/subprocess split so both paths
+  // are covered, local members included. Independent of the user-level
+  // provisioning below (compares against the canonical set). Never throws.
+  const shadowWarning = await ensureNoProjectAgentShadows(agent);
+  if (shadowWarning) heuristicWarningSuffix += `\n\n[WARN] ${shadowWarning}`;
   if (interactiveSession?.server) {
-    inFlightAgents.add(agent.id);
+    // Lock already claimed above, before the preflight await -- do not
+    // re-add here (Set.add would be a harmless no-op, but keeping a second
+    // add site invites the lock and its release to drift out of sync).
     writeStatusline(new Map([[agent.id, 'busy']]));
+    claimGuardActive = false;
     try {
       return await executePromptInteractive(agent, renderedPrompt, input, workspaceId, heuristicWarningSuffix);
     } finally {
@@ -674,11 +980,33 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     }
   }
 
-  inFlightAgents.add(agent.id);
+  // Lock already claimed above, before the preflight await.
+
+  // AGY: every dispatch is bound to the member's own agy project with
+  // --project; without it agy silently runs under the machine-wide
+  // default-cli-project. A member without a verified project (registered
+  // before project binding, or whose project file is gone/corrupt) gets one
+  // here. Failure is terminal -- never a dispatch without --project.
+  let agyProjectId: string | undefined;
+  if (agent.llmProvider === 'agy') {
+    try {
+      agyProjectId = (await ensureAgyProject(agent)).projectId;
+    } catch (e: any) {
+      inFlightAgents.delete(agent.id);
+      writeStatusline(new Map([[agent.id, 'idle']]));
+      return {
+        text: `[FAIL] execute_prompt on "${agent.friendlyName}" rejected -- the member's agy project could not be provisioned: ${e?.message ?? String(e)}. No LLM call was made.`,
+        structuredContent: { isError: true, reason: 'dispatch_failed' },
+      };
+    }
+  }
 
   await ensureAgentFilesProvisioned(agent);
   const stallDetector = getStallDetector();
   let clearedByStall = false;
+  // GitHub #562: which stall fired -- a frozen transcript, or a session log
+  // that never appeared at its authoritative path (the agent never started).
+  let stallReason: StallReason = 'stalled';
   // apra-fleet-3c9.1: a CONFIRMED stall must not only kill the remote pid but
   // also cancel the in-flight strategy.execCommand() promise. Before this, the
   // client kept waiting out its full deriveTimeoutMs deadline after the
@@ -688,6 +1016,12 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // confirmed stall settles the pending dispatch immediately and surfaces a
   // typed 'stalled' error instead of hanging.
   const stallAbortController = new AbortController();
+  // apra-fleet-25yl.1.2: input.timeout_s is the real per-dispatch stall
+  // baseline now, not merely an inactivity kill on stdout/stderr -- see the
+  // schema description on `timeout_s` above. A caller that omits timeout_s
+  // gets a 300s baseline (the schema default), a deliberate change from the
+  // previously silent 150s DEFAULT_STALL_THRESHOLD_MS fallback.
+  const stallThresholdMs = (input.timeout_s ?? 300) * 1000;
   stallDetector.add(agent.id, {
     sessionId: null,
     logFilePath: null,
@@ -698,13 +1032,16 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     memberName: agent.friendlyName,
     provisional: true,
     stallReported: false,
-    onStall: () => {
+    thresholdMs: stallThresholdMs,
+    onStall: (reason) => {
+      stallReason = reason ?? 'stalled';
       // Stall detector already wrote 'unknown' to the statusline before calling here.
       // Our job: clear in-process state so the member can accept new calls.
       // clearedByStall prevents the eventually-resolving finally block from clobbering
       // a new execute_prompt that may have already claimed the member.
       inFlightAgents.delete(agent.id);
       clearedByStall = true;
+      claimGuardActive = false;
       // apra-fleet-6z8.2: a CONFIRMED stall means the remote turn made no
       // progress of any kind for the whole threshold. Clearing bookkeeping
       // alone left that wedged process running indefinitely on the member --
@@ -727,10 +1064,8 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     : `${resolvedWorkFolder}/${promptFileName}`;
 
   const strategy = getStrategy(agent);
-  const cmds = getOsCommands(getAgentOS(agent));
+  const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
   const provider = getProvider(agent.llmProvider);
-
-  const authPrefix = buildAuthEnvPrefix(agent, getAgentOS(agent));
 
   const tiers = provider.modelTiers();
   let resolvedModel = input.model || 'standard';
@@ -754,7 +1089,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     resolvedModel = tiers[resolvedModel as keyof typeof tiers] ?? resolvedModel;
   }
 
-  const scope = new LogScope('execute_prompt', `[${resolvedModel}] resume=${input.resume} timeout=${input.timeout_s ?? 300}s ${truncateForLog(maskSecrets(input.prompt), getLogPreviewChars())}`, agent);
+  const scope = new LogScope('execute_prompt', `[${resolvedModel}] resume=${input.resume} fork=${input.fork} timeout=${input.timeout_s ?? 300}s ${truncateForLog(maskSecrets(input.prompt), getLogPreviewChars())}`, agent);
 
   // Resume semantics (apra-fleet-eft.78.1). `resume` is boolean | string:
   //  - true   -> best-effort resume of the member's stored last session; a
@@ -768,13 +1103,44 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   const explicitResumeId = (typeof input.session_id === 'string' && input.session_id.trim().length > 0)
     ? input.session_id.trim()
     : (typeof input.resume === 'string' && input.resume.length > 0 ? input.resume : undefined);
-  const resumeRequested = input.resume === true || explicitResumeId !== undefined;
+  // Fork semantics (apra-fleet-lmtg.5) mirror resume's SHAPE but BRANCH instead
+  // of continuing in place. `fork` is boolean | string:
+  //  - true   -> best-effort fork of the member's stored last session; a
+  //              stale/unknown stored session logs a warning and falls back to a
+  //              plain FRESH session (analogous to resume=true), never a hard error.
+  //  - string -> EXPLICIT fork of exactly that source id -- an unknown/expired
+  //              source is a TERMINAL session_not_found (like an explicit resume).
+  // The mutual-exclusivity guard above only lets fork through with resume at its
+  // DEFAULT (true), so fork must SUPERSEDE that default resume here: a fork
+  // request forces resuming off so the dispatch mints a fresh distinct output
+  // session id instead of continuing the stored one in place.
+  // apra-fleet-3swo.42: derived from the SAME normalised forkArg the top-of-
+  // function mutual-exclusivity guard computed forkRequested from (no second,
+  // independently-trimmed copy of the rule). Deliberately NOT gated on
+  // `.length > 0`: an explicit fork string that trims to '' (fork: '' or
+  // fork: '   ') must still be an EXPLICIT id -- just an invalid one -- so it
+  // takes the explicit-id branch below (terminal session_not_found, no LLM
+  // call) instead of being mistaken for the fork===true best-effort path.
+  const explicitForkId = typeof forkArg === 'string' ? forkArg : undefined;
+  // forkRequested is already computed at the top of executePrompt for the
+  // fork/resume mutual-exclusivity guard (apra-fleet-lmtg.4) -- reuse it here.
+  const resumeRequested = (input.resume === true || explicitResumeId !== undefined) && !forkRequested;
   const resumeTargetId = explicitResumeId ?? agent.sessionId;
-  // An explicit-id resume must never silently degrade to a fresh session: that
-  // is exactly the wrong-context dispatch this feature forbids. resume=true and
-  // resume=false keep their pre-existing transparent recovery.
-  const allowFreshSessionFallback = explicitResumeId === undefined;
-  const resuming = !!(resumeRequested && resumeTargetId && provider.supportsResume());
+  // An explicit-id resume OR an explicit-id fork must never silently degrade to a
+  // fresh session: that is exactly the wrong-context dispatch this feature
+  // forbids. resume=true/false and fork=true keep their transparent recovery.
+  const allowFreshSessionFallback = explicitResumeId === undefined && explicitForkId === undefined;
+  // A DEFAULT resume (resume=true) of a stored session recorded under another
+  // server build -- or before builds were stamped -- starts fresh: that
+  // session's transcript lists tools/MCP config this build no longer serves,
+  // and resuming it can end with no tool run yet a "successful" reply.
+  // Explicit-id resumes are the caller's assertion and are left alone.
+  const staleBuildSession = input.resume === true && explicitResumeId === undefined && !forkRequested
+    && !!agent.sessionId && agent.sessionServerVersion !== serverVersion;
+  if (staleBuildSession) {
+    logWarn('execute_prompt', `"${agent.friendlyName}": stored session "${agent.sessionId}" was recorded by server build ${agent.sessionServerVersion ?? '(unrecorded, older build)'}, this server is ${serverVersion} -- starting a fresh session instead of resuming it`, agent);
+  }
+  const resuming = !!(resumeRequested && resumeTargetId && provider.supportsResume()) && !staleBuildSession;
   const isCallerMinted = provider.sessionIdStrategy().type === 'caller-minted';
   const mintedId = isCallerMinted
     ? (resuming ? resumeTargetId! : uuid())
@@ -802,7 +1168,83 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     }
   }
 
-  const promptOpts = {
+  // Fork mode resolution (apra-fleet-lmtg.5). Resolved AFTER the resume gate
+  // (the two are mutually exclusive, guarded before member resolution). Fork
+  // requires a fork-capable provider; when active it produces a ForkDescriptor
+  // that buildAgentPromptCommand (fork-prov lane, apra-fleet-lmtg.2) turns into
+  // the provider's own source-seeded, new-session-id fork invocation.
+  let forkActive = false;
+  let forkSourceId: string | undefined;
+  if (forkRequested) {
+    // fork requires provider.supportsFork(): a fork request against a provider
+    // whose CLI cannot fork is surfaced as a clear TERMINAL error, never
+    // silently downgraded to a plain fresh/resume dispatch (the wrong behavior).
+    if (!provider.supportsFork?.()) {
+      scope.abort(`fork rejected -- provider "${provider.name}" does not support fork-mode dispatch (no LLM call)`);
+      inFlightAgents.delete(agent.id);
+      stallDetector.remove(agent.id);
+      writeStatusline(new Map([[agent.id, 'idle']]));
+      return {
+        text: `[FAIL] execute_prompt on "${agent.friendlyName}" rejected -- provider "${provider.name}" does not support fork-mode dispatch. No LLM call was made. Re-dispatch without fork (resume=true/false), or use a fork-capable provider.`,
+        structuredContent: { isError: true, reason: 'fork_unsupported' },
+      };
+    }
+    if (explicitForkId !== undefined) {
+      // Terminal source-not-found gate, mirroring the explicit-resume gate: an
+      // unknown/expired source id has no context to branch from, so reject
+      // BEFORE any spawn with a structured session_not_found and NO LLM call.
+      const forkable = isKnownSession(agent.id, explicitForkId) || explicitForkId === agent.sessionId;
+      if (!forkable) {
+        scope.abort(`explicit fork rejected -- source session "${explicitForkId}" is unknown/expired (no LLM call)`);
+        inFlightAgents.delete(agent.id);
+        stallDetector.remove(agent.id);
+        writeStatusline(new Map([[agent.id, 'idle']]));
+        return {
+          text: `[FAIL] execute_prompt on "${agent.friendlyName}" rejected -- source session "${explicitForkId}" cannot be forked (unknown or expired). No LLM call was made. Rebuild the context and re-dispatch with a full, self-contained prompt (fork=false/resume=false), or fork=true for best-effort branching from the member's stored session.`,
+          structuredContent: { isError: true, reason: 'session_not_found', sessionId: explicitForkId },
+        };
+      }
+      forkSourceId = explicitForkId;
+      forkActive = true;
+    } else {
+      // fork === true: best-effort branch from the member's stored last session.
+      // A stale/unknown stored session (or none at all) is NOT a hard error --
+      // log a warning and fall through to a plain FRESH session, mirroring
+      // resume=true's transparent recovery.
+      const stored = agent.sessionId;
+      if (stored && isKnownSession(agent.id, stored)) {
+        forkSourceId = stored;
+        forkActive = true;
+      } else {
+        scope.info(`fork=true: stored session ${stored ? `"${stored}" is stale/unknown` : 'is absent'} -- falling back to a fresh session`);
+        forkActive = false;
+      }
+    }
+  }
+
+  // Mint a fresh distinct output session id for the forked conversation (never
+  // reuse the source id): mintedId is already a freshly minted uuid here because
+  // fork forced resuming off above (see resumeRequested). It IS emitted as an
+  // explicit `--session-id` CLI flag in fork mode (see ForkDescriptor.newSessionId
+  // and provider.forkFlag) -- the CLI honors a caller-supplied session id even
+  // when forking, so we pre-mint and pass it rather than scraping the CLI's own
+  // minted id back out of the response afterward. The same id also drives
+  // recordKnownSession, the stall-detector log path, and the post-dispatch
+  // session bookkeeping below.
+  const forkDescriptor = forkActive && forkSourceId
+    ? { sourceSessionId: forkSourceId, newSessionId: mintedId ?? uuid() }
+    : undefined;
+
+  // Per-session member MCP config (Claude --mcp-config): the dispatched
+  // session gets the ?member=<uuid> apra-fleet server whatever the folder or
+  // user config says. Path resolved here so every retry (freshOpts spreads
+  // promptOpts) carries it; the file is written with the prompt file below,
+  // and a failed write clears it (fallback: the session's own MCP config).
+  const sessionMcpPath = sessionMcpInjectionAvailable(agent)
+    ? sessionMcpConfigPath(agent, resolvedWorkFolder)
+    : undefined;
+
+  const promptOpts: Parameters<typeof cmds.buildAgentPromptCommand>[1] = {
     folder: resolvedWorkFolder,
     promptFile: promptFileName,
     sessionId: mintedId,
@@ -813,13 +1255,16 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     maxTurns: input.max_turns,
     inv: scope.getInv(),
     agentName: input.agent,
+    fork: forkDescriptor,
+    projectId: agyProjectId,
+    ...(sessionMcpPath ? { mcpConfigPath: sessionMcpPath } : {}),
   };
 
   // apra-fleet issue #390: session log paths live on the MEMBER's machine, under
   // the MEMBER's home directory, joined with the MEMBER's OS convention. Before
   // this, every remote member got a HUB-home path (os.homedir()) joined with the
   // HUB's path convention -- a path that can never exist on the member, which
-  // silently disabled stall detection for Claude/Gemini and manufactured
+  // silently disabled stall detection for Claude and manufactured
   // false-positive stall kills for AGY/OpenCode.
   //
   // This resolution is deliberately SYNCHRONOUS (cached probe result, else the
@@ -838,22 +1283,100 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       resolvedLogPath = null;
     }
   }
+  // GitHub #562: a path built from a local or probed home is authoritative --
+  // if it never appears, the agent never started. A username-convention guess
+  // is not, and a missing file there stays a warning.
+  // Known causes of a transcript landing somewhere else make the path a
+  // guess too: a relocated Claude config dir (CLAUDE_CONFIG_DIR, in this
+  // process for a local member or in the member's configured env vars), or a
+  // local POSIX work folder reached through a symlink (the CLI names the
+  // project dir after the physical cwd).
+  const claudeConfigRelocated = (agent.llmProvider ?? 'claude') === 'claude' && (
+    Object.keys(agent.encryptedEnvVars ?? {}).includes('CLAUDE_CONFIG_DIR')
+    || (agent.agentType === 'local' && !!process.env.CLAUDE_CONFIG_DIR)
+  );
+  let localCwdIsSymlinked = false;
+  if (agent.agentType === 'local' && process.platform !== 'win32') {
+    try {
+      const real = fs.realpathSync(resolvedWorkFolder);
+      localCwdIsSymlinked = real.replace(/\/+$/, '') !== path.resolve(resolvedWorkFolder).replace(/\/+$/, '');
+    } catch {
+      localCwdIsSymlinked = true; // cannot resolve -> not authoritative
+    }
+  }
+  const logPathAuthoritative = (memberPathCtx.source === 'local' || memberPathCtx.source === 'probe')
+    && !claudeConfigRelocated && !localCwdIsSymlinked;
   stallDetector.update(agent.id, {
     sessionId: activePreSpawnSid,
     logFilePath: resolvedLogPath,
     provisional: !resolvedLogPath,
+    thresholdMs: stallThresholdMs,
+    logPathAuthoritative: !!resolvedLogPath && logPathAuthoritative,
   });
 
-  const claudeCmd = authPrefix + cmds.buildAgentPromptCommand(provider, promptOpts);
+  let claudeCmd = cmds.buildAgentPromptCommand(provider, promptOpts);
 
   // apra-fleet-6z8.1: the per-invocation durable stdout mirror the unix prompt
-  // wrapper tees to (see durableOutputPath / buildAgentPromptCommand). Windows
-  // members have no such companion tee, so recovery is skipped for them.
-  const durablePath = getAgentOS(agent) === 'windows' ? undefined : durableOutputPath(scope.getInv());
-  const dispatchStartedAt = Date.now();
+  // wrapper tees to (see durableOutputPath / buildAgentPromptCommand). A
+  // PowerShell Windows member has no such companion tee, so recovery is
+  // skipped for it.
+  //
+  // apra-fleet-7dir.5.4: a Windows member registered as gitbash runs
+  // WindowsGitBashCommands, which INHERITS LinuxCommands.buildAgentPromptCommand
+  // -- so it has already been teeing its stdout to /tmp/.fleet-out-<inv>.json
+  // on every dispatch, with nothing reading it and (because extraPaths was
+  // empty) nothing deleting it. Enabling the mirror for gitbash both turns
+  // recovery on for that member class and makes the file get cleaned up.
+  // This gate and the `unsupported` flag passed to recoverOrphanedDispatch
+  // below are ONE decision: recoverOrphanedDispatch short-circuits on
+  // `unsupported || !durablePath`, so they must always agree -- hence the
+  // single shared predicate.
+  //
+  // LOCAL agents are deliberately excluded from the flip: orphan recovery
+  // exists for a torn-down SSH channel, which a local spawn does not have, and
+  // deletePromptFile's local branch would fs.unlinkSync('/tmp/...') through
+  // Node on Windows (resolving to C:\tmp), not the MSYS /tmp bash teed to.
+  // Non-Windows members (local or remote) keep today's behaviour verbatim.
+  const durableMirrorSupported = getAgentOS(agent) !== 'windows'
+    || (getAgentShell(agent) === 'gitbash' && agent.agentType !== 'local');
+  const durablePath = durableMirrorSupported ? durableOutputPath(scope.getInv()) : undefined;
+  // GitHub #563: the shared deadline is anchored at handler entry, not here --
+  // setup awaits above (cloud readiness, preflight, provisioning) count.
+  const dispatchStartedAt = handlerStartedAt;
 
-  const timeoutMs = (input.timeout_s ?? 300) * 1000;
   const maxTotalMs = input.max_total_s !== undefined ? input.max_total_s * 1000 : undefined;
+  // Time kept back from every attempt's budget for the finally-block prompt
+  // file cleanup and the response, so the whole call settles inside
+  // max_total_s and well within the client's max_total_s + grace window.
+  // Fixed 5s, capped at 10% of a very small max_total_s.
+  const cleanupReserveMs = maxTotalMs !== undefined
+    ? Math.min(EXECUTE_PROMPT_CLEANUP_RESERVE_MS, Math.floor(maxTotalMs / 10))
+    : 0;
+  // apra-fleet-25yl.2.1: the exec-level ROLLING (inactivity) deadline handed to
+  // strategy.execCommand() is no longer provider-blind. It used to be
+  // `timeout_s` for everyone, which is a false kill for the batch-only
+  // providers (they emit nothing on this channel until the turn ends) and the
+  // only working stall signal for the providers with no pollable transcript.
+  // The per-provider answer lives in ONE named place -- ProviderAdapter
+  // .execTimeoutSource() -- so a newly added provider must state its own
+  // (a compile error if it does not) instead of inheriting a default branch.
+  //
+  // NOTE: input.timeout_s still reaches the StallDetector as thresholdMs for
+  // EVERY provider (see stallThresholdMs above). This decision governs the
+  // exec-channel timer only; it must not be used to skip that threading.
+  const execTimeoutSource = provider.execTimeoutSource();
+  const timeoutMs = execTimeoutSource === 'inactivity_timeout'
+    ? (input.timeout_s ?? 300) * 1000
+    // 'total_ceiling': mirror max_total_s, which can never bind before the
+    // caller's own hard ceiling does (a rolling inactivity window of
+    // max_total_s starts at dispatch start and only ever resets later).
+    // max_total_s ABSENT: there is no ceiling to mirror, so use a documented
+    // never-binds-first constant rather than silently falling back to
+    // timeout_s (which is exactly the coupling this change removes). It is
+    // deliberately a finite value well inside the int32 range setTimeout
+    // accepts -- Infinity or Number.MAX_SAFE_INTEGER would overflow and fire
+    // on the next tick, inverting this fix into an instant kill.
+    : (maxTotalMs ?? EXEC_TIMER_NEVER_BINDS_MS);
 
   // apra-fleet-y8q.1: every retry below (dispatch-exception, stale-session,
   // server-overloaded) re-dispatches with a FRESH session but used to reuse the
@@ -875,19 +1398,17 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   // pre-existing behavior).
   function retryBudget(): { timeoutMs: number; maxTotalMs: number | undefined; exhausted: boolean } {
     if (maxTotalMs === undefined) return { timeoutMs, maxTotalMs: undefined, exhausted: false };
-    const remaining = Math.max(0, maxTotalMs - (Date.now() - dispatchStartedAt));
+    const remaining = Math.max(0, maxTotalMs - cleanupReserveMs - (Date.now() - dispatchStartedAt));
     return { timeoutMs: Math.min(timeoutMs, remaining), maxTotalMs: remaining, exhausted: remaining <= 0 };
   }
 
   // Agent file validation -- verify named agent exists before any CLI invocation
   if (input.agent) {
-    const provName = provider.name;
-    // AGY uses ~/.gemini/antigravity-cli/ as its config root, not ~/.agy/
-    const agentRelDir = provName === 'agy' ? '.gemini/antigravity-cli/agents' : `.${provName}/agents`;
+    const dirs = provider.agentDirectories(input.agent);
     let agentFound = false;
     if (agent.agentType === 'local') {
-      const projPath = path.join(resolvedWorkFolder, agentRelDir, `${input.agent}.md`);
-      const userPath = path.join(os.homedir(), agentRelDir, `${input.agent}.md`);
+      const projPath = path.join(resolvedWorkFolder, dirs.project);
+      const userPath = path.join(os.homedir(), dirs.home);
       agentFound = fs.existsSync(projPath) || fs.existsSync(userPath);
       if (!agentFound) {
         inFlightAgents.delete(agent.id);
@@ -897,7 +1418,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       }
     } else {
       // Canonical PM role agents (planner/doer/reviewer/plan-reviewer/...) are
-      // already guaranteed present in ~/${agentRelDir} by
+      // already guaranteed present in ~/dirs.home by
       // ensureAgentFilesProvisioned() above (ln ~576, which ran provisionAgents()
       // for this exact member earlier in this same call) -- trust that instead
       // of re-probing the remote here. This also SIDESTEPS the bug this check
@@ -909,8 +1430,8 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       // sprint via a Windows remote member always failed plan-review with
       // "agent 'plan-reviewer' not found").
       const canonicalRelPath = `${input.agent}.md`;
-      agentFound = remoteAgentsDir(provName) !== null
-        && loadCanonicalAgentSet(provName).some((f) => f.relPath === canonicalRelPath);
+      agentFound = remoteAgentsDir(provider.name) !== null
+        && loadCanonicalAgentSet(provider.name).some((f) => f.relPath === canonicalRelPath);
 
       if (!agentFound) {
         // Not part of the canonical PM set (e.g. a project-local custom
@@ -918,9 +1439,9 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         // via this repo's own getOsCommands() abstraction (src/os/*.ts,
         // already used the same way by list-members.ts/member-detail.ts for
         // credential-file checks) instead of a single hardcoded shell dialect.
-        const cmds = getOsCommands(getAgentOS(agent));
-        const projPath = `${resolvedWorkFolder}/${agentRelDir}/${input.agent}.md`;
-        const userPath = `~/${agentRelDir}/${input.agent}.md`;
+        const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
+        const projPath = `${resolvedWorkFolder}/${dirs.project}`;
+        const userPath = `~/${dirs.home}`;
         const [projResult, userResult] = await Promise.all([
           strategy.execCommand(cmds.credentialFileCheck(projPath), 10000),
           strategy.execCommand(cmds.credentialFileCheck(userPath), 10000),
@@ -932,7 +1453,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         inFlightAgents.delete(agent.id);
         stallDetector.remove(agent.id);
         writeStatusline(new Map([[agent.id, 'idle']]));
-        return `execute_prompt: agent "${input.agent}" not found on "${agent.friendlyName}".\n\nExpected at:\n  ${resolvedWorkFolder}/${agentRelDir}/${input.agent}.md\n  ~/${agentRelDir}/${input.agent}.md`;
+        return `execute_prompt: agent "${input.agent}" not found on "${agent.friendlyName}".\n\nExpected at:\n  ${resolvedWorkFolder}/${dirs.project}\n  ~/${dirs.home}`;
       }
     }
   }
@@ -985,11 +1506,62 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     }
   }
 
-  // Kill any leftover session from a previous (possibly zombie) execute_prompt call
-  await tryKillPid(agent, strategy, cmds);
+  // Stage the first attempt's credential file BEFORE touching the member
+  // (kill, prompt write, dispatch). A delivery failure (relay member, SFTP
+  // subsystem disabled) is deterministic: a typed failure, never retried.
+  const stagedEnvPaths: string[] = [];
+  /** Per-dispatch session MCP config files to remove with the prompt file. */
+  const sessionMcpCleanup: string[] = [];
+  let preStaged: StagedAuthEnv | undefined;
+  try {
+    preStaged = await stageAuthEnv(agent);
+  } catch (err) {
+    if (!(err instanceof SecretDeliveryError)) throw err;
+    scope.abort(`secret delivery unavailable (no LLM call)`);
+    inFlightAgents.delete(agent.id);
+    stallDetector.remove(agent.id);
+    writeStatusline(new Map([[agent.id, 'idle']]));
+    return {
+      text: `[FAIL] execute_prompt on "${agent.friendlyName}" rejected -- ${err.message} No LLM call was made.`,
+      structuredContent: { isError: true, reason: 'secret_delivery_unavailable' },
+    };
+  }
+  if (preStaged.path) stagedEnvPaths.push(preStaged.path);
 
-  // Write the rendered prompt (with substitutions applied) to the prompt file before execution
-  await writePromptFile(agent, strategy, promptFilePath, renderedPrompt);
+  try {
+    // Kill any leftover session from a previous (possibly zombie) execute_prompt call
+    await tryKillPid(agent, strategy, cmds);
+
+    // Write the rendered prompt (with substitutions applied) to the prompt file before execution
+    await writePromptFile(agent, strategy, promptFilePath, renderedPrompt);
+  } catch (err) {
+    if (preStaged.path) await removeMemberSecretFile(agent, preStaged.path);
+    throw err;
+  }
+  if (sessionMcpPath) {
+    const memberExec = (cmd: string, t?: number) => strategy.execCommand(cmd, t);
+    // Non-deferral of the member's kb_*/code_* tools (Claude: alwaysLoad in
+    // the session config). When it cannot be applied the config is still
+    // attached, the tools stay deferred, and the cause is logged.
+    const loadPolicy = await resolveSessionMcpAlwaysLoad(
+      agent,
+      provider.mcpAlwaysLoadMinVersion?.(),
+      cmds.agentVersion(provider),
+      memberExec,
+    );
+    if (loadPolicy.warning) scope.warn(`session MCP config: ${loadPolicy.warning}`);
+    const wrote = await writeSessionMcpConfig(agent, sessionMcpPath, memberExec, { alwaysLoad: loadPolicy.alwaysLoad });
+    if (wrote.ok) {
+      if (sessionMcpConfigIsPerDispatch(agent)) sessionMcpCleanup.push(sessionMcpPath);
+    } else {
+      // Fallback, never zero: dispatch without the flag; the session then
+      // uses the per-folder / user-scope apra-fleet entry it would have had.
+      scope.warn(`session MCP config not written (${wrote.detail}); dispatching without --mcp-config`);
+      delete promptOpts.mcpConfigPath;
+      claudeCmd = cmds.buildAgentPromptCommand(provider, promptOpts);
+      if (sessionMcpConfigIsPerDispatch(agent)) sessionMcpCleanup.push(sessionMcpPath);
+    }
+  }
 
   // apra-fleet-6z8.1: remembered for the lease-of-life gate below -- the pid
   // outlives the SSH channel that reported it, and is the only way to tell a
@@ -1009,6 +1581,8 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         sessionId: mintedId,
         logFilePath: logPath,
         provisional: !logPath,
+        thresholdMs: stallThresholdMs,
+        logPathAuthoritative: !!logPath && logPathAuthoritative,
       });
     }
   };
@@ -1028,22 +1602,242 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     ? AbortSignal.any([extra.signal, stallAbortController.signal])
     : stallAbortController.signal;
 
+  // GitHub #563 review: when the inactivity window is as long as the attempt's
+  // remaining max_total_s budget (timeout_s >= max_total_s -- every
+  // fleet-sprint dispatch, and Claude's total-ceiling mode), both timers come
+  // due together and the inactivity one, armed first, wins the tie. That
+  // kill IS the max_total_s ceiling, so it is classified as max_total_time.
+  let lastAttempt: { timeoutMs: number; maxTotalMs: number | undefined } | undefined;
+  // Stored auth env vars reach the CLI through a per-attempt owner-only file
+  // the command loads and deletes (stageAuthEnv) -- never as inline values in
+  // the command line, which would sit in the member shell's argv (readable
+  // via ps) for the whole dispatch. Each attempt stages its own file because
+  // the prefix deletes it once loaded; any file a failed attempt left behind
+  // is removed with the prompt file at the end.
+  // The first attempt uses the file staged before dispatch (preStaged).
+  // The session whose saved cost total the last dispatched invocation started
+  // from: the resumed session (or a fork's source) for the original command,
+  // nothing for every fresh-session retry. Read by parseDispatch below.
+  // Compared against the UNPREFIXED cmd: the auth-env prefix is added here,
+  // per attempt, so it never affects the resume-cost-delta decision.
+  let lastAttemptContinues: string | undefined;
+  const dispatchAttempt = async (cmd: string, attemptTimeoutMs: number, attemptMaxTotalMs: number | undefined) => {
+    lastAttempt = { timeoutMs: attemptTimeoutMs, maxTotalMs: attemptMaxTotalMs };
+    lastAttemptContinues = cmd === claudeCmd
+      ? (forkDescriptor ? forkDescriptor.sourceSessionId : (resuming ? resumeTargetId : undefined))
+      : undefined;
+    let staged = preStaged;
+    preStaged = undefined;
+    if (!staged) {
+      staged = await stageAuthEnv(agent);
+      if (staged.path) stagedEnvPaths.push(staged.path);
+    }
+    return strategy.execCommand(staged.prefix + cmd, attemptTimeoutMs, attemptMaxTotalMs, onPidCaptured, dispatchSignal);
+  };
+  const isMaxTotalKill = (err: unknown): boolean => {
+    const msg = (err as { message?: unknown })?.message;
+    if (maxTotalMs === undefined || typeof msg !== 'string') return false;
+    if (/exceeded max total time/i.test(msg)) return true;
+    return /of inactivity/i.test(msg) && lastAttempt?.maxTotalMs !== undefined
+      && lastAttempt.timeoutMs >= lastAttempt.maxTotalMs;
+  };
+
   // Mark agent as busy in statusline
   writeStatusline(new Map([[agent.id, 'busy']]));
 
   let _epExitCode: number | 'error' = 'error';
   let _epError: string | undefined;
-  let _epUsage: { input_tokens: number; output_tokens: number } | undefined;
+  let _epUsage: TokenUsage | undefined;
   let _epOffline = false;
+  // The last session id a provider parse produced. Typed failures that follow a
+  // parse (max_turns_exhausted, empty_response, dispatch_failed) carry it so an
+  // explicit-id resume of that exact session passes isKnownSession.
+  let _epParsedSid: string | undefined;
+  const sessionIdField = (sid: string | undefined): { sessionId?: string } => {
+    if (!sid) return {};
+    recordKnownSession(agent.id, sid);
+    return { sessionId: sid };
+  };
+  // GitHub #563: the typed result for a dispatch that ran out of max_total_s
+  // (measured from handler entry), so callers never see a raw transport timeout.
+  // dispatched=false: the budget ran out before anything was sent to the
+  // member, so callers can skip publishing work that cannot exist.
+  const maxTotalTimeResult = (dispatched = true): ExecutePromptResult => ({
+    text: dispatched
+      ? `[FAIL] execute_prompt on "${agent.friendlyName}" exceeded max_total_s (${input.max_total_s}s, measured from the call, including setup) -- the dispatch was stopped.`
+      : `[FAIL] execute_prompt on "${agent.friendlyName}" exceeded max_total_s (${input.max_total_s}s, measured from the call) during setup -- nothing was dispatched.`,
+    structuredContent: { isError: true, reason: 'max_total_time', ...(dispatched ? {} : { dispatched: false as const }) },
+  });
   // apra-fleet-6a7.1: gates the exit-0/empty-stdout workspace_not_trusted
   // self-heal-and-retry below to exactly one attempt per call, mirroring
   // runGitStep's authHealAttempted shape (fleet-sprint/runner.js:616) -- a
   // repeat trust failure after the heal is terminal, never looped.
   let trustHealAttempted = false;
+  // apra-fleet-hzeb.2: a provider usage/quota limit (e.g. Claude's 429) can
+  // never be cured by a fresh session, so it must short-circuit the
+  // stale-session and server-overloaded retries below rather than burning the
+  // shared retryBudget() waiting out a window that is already known. Checked
+  // immediately after EVERY provider.parseResponse(result) call in the
+  // dispatch path (initial dispatch, stale-session retry, overloaded retry,
+  // orphan recovery, trust-heal retry) -- and regardless of result.code,
+  // since a 0-exit result event whose text carries the limit message must not
+  // be returned as a success response either.
+  // The member's OS reaches the parser (agy's permission-denial hint differs on Windows).
+  // unattended + model let the provider tell which permission mode the
+  // session ran in (Claude: a denial in auto mode is never healable).
+  const parseCtx = { agentOs: agent.os, unattended: agent.unattended, model: resolvedModel };
+  // Session-id assertion: the returned id must match the one we minted/resumed.
+  // apra-fleet-lmtg.5: a fork now gets the SAME assertion as any other
+  // caller-minted session. mintedId is explicitly passed to the CLI as
+  // --session-id even in fork mode (provider.forkFlag/buildForkFlag), and the
+  // CLI honors it -- so it is no longer a placeholder the CLI silently
+  // discards, and a genuine mismatch is a real signal worth catching rather
+  // than something to exempt. Shared by the success path and the
+  // permission_denied early return so the two cannot drift apart.
+  const sessionExpectation = (p: ParsedResponse): { expectedSid: string | undefined; isMismatch: boolean } => {
+    const expectedSid = resuming ? resumeTargetId : (isCallerMinted ? mintedId : undefined);
+    return { expectedSid, isMismatch: !!(expectedSid && p.sessionId && p.sessionId !== expectedSid) };
+  };
+  // A mismatch on an EXPLICIT resume/fork with no fresh-session fallback is
+  // terminal: the caller asked for that exact session and did not get it.
+  const mismatchIsTerminal = (): boolean =>
+    !allowFreshSessionFallback && (explicitResumeId !== undefined || explicitForkId !== undefined);
+  // The terminal session_not_found failure for such a mismatch, with the
+  // returned session's usage still recorded. `extra` rides on structuredContent
+  // (the permission_denied path attaches its denial).
+  const terminalMismatchFailure = async (p: ParsedResponse, expectedSid: string | undefined, extra: Record<string, unknown> = {}): Promise<ExecutePromptResult> => {
+    inFlightAgents.delete(agent.id);
+    stallDetector.remove(agent.id);
+    writeStatusline(new Map([[agent.id, 'idle']]));
+    clearStoredPid(agent.id);
+    if (p.sessionId) {
+      recordKnownSession(agent.id, p.sessionId);
+    }
+    if (p.usage) {
+      const prev = agent.tokenUsage ?? { input: 0, output: 0 };
+      updateAgent(agent.id, {
+        tokenUsage: {
+          input: prev.input + p.usage.input_tokens,
+          output: prev.output + p.usage.output_tokens,
+        },
+      });
+      recordSessionUsage(p.sessionId ?? expectedSid, p.usage);
+      if (budgetScope) {
+        await recordAndEvaluate({ scope: budgetScope, agent, provider, tier: resolvedTier, usage: p.usage });
+      }
+    }
+    return {
+      text: `[FAIL] execute_prompt on "${agent.friendlyName}" failed -- resumed session mismatch. Expected session "${expectedSid}", but provider returned "${p.sessionId}".`,
+      structuredContent: {
+        isError: true,
+        reason: 'session_not_found',
+        sessionId: expectedSid,
+        returnedSessionId: p.sessionId,
+        ...(p.usage ? { usage: toStructuredUsage(p.usage) } : {}),
+        ...extra,
+      },
+    };
+  };
+  // apra-fleet-eft.78.1: mark the session this dispatch actually landed on as
+  // known/resumable for this member (so a later explicit-id resume of it passes
+  // the terminal session_not_found gate), and hand the stall detector the
+  // session's real log path.
+  const recordLandedSession = (finalSid: string | undefined): void => {
+    if (!finalSid) return;
+    recordKnownSession(agent.id, finalSid);
+    let postLogPath: string | null = null;
+    try {
+      postLogPath = resolveSessionLogPath(agent.llmProvider ?? 'claude', finalSid, resolvedWorkFolder, memberPathCtx.homeDir, memberPathCtx.targetOs);
+    } catch {
+      postLogPath = null;
+    }
+    stallDetector.update(agent.id, {
+      sessionId: finalSid,
+      logFilePath: postLogPath,
+      provisional: !postLogPath,
+      thresholdMs: stallThresholdMs,
+      logPathAuthoritative: !!postLogPath && logPathAuthoritative,
+    });
+  };
+  // The session/usage/budget/PID bookkeeping a dispatch that RAN gets, for an
+  // early return that is not the success path (permission_denied): the
+  // member's stored session advances (a mismatched id is not persisted, as on
+  // the success path) so a later resume continues this turn, the stall
+  // detector learns the landed session, the spend reaches the member total,
+  // the session total and the budget, and the stored PID is cleared. Same
+  // order and side effects as the success path.
+  const recordDispatchBookkeeping = async (p: ParsedResponse, expectation = sessionExpectation(p)): Promise<void> => {
+    const { expectedSid, isMismatch } = expectation;
+    if (isMismatch) touchAgent(agent.id, undefined);
+    else touchAgent(agent.id, p.sessionId ?? expectedSid);
+    recordLandedSession(p.sessionId ?? expectedSid);
+    clearStoredPid(agent.id);
+    if (p.usage) {
+      const prev = agent.tokenUsage ?? { input: 0, output: 0 };
+      updateAgent(agent.id, {
+        tokenUsage: { input: prev.input + p.usage.input_tokens, output: prev.output + p.usage.output_tokens },
+      });
+      recordSessionUsage(p.sessionId ?? mintedId, p.usage);
+      if (budgetScope) await recordAndEvaluate({ scope: budgetScope, agent, provider, tier: resolvedTier, usage: p.usage });
+    }
+  };
+  // Every provider.parseResponse in the dispatch path goes through this, so
+  // a provider-reported cumulative session cost (Claude total_cost_usd) is
+  // turned into THIS dispatch's cost exactly once per invocation, on every
+  // path (success and failure alike), and the session's baseline advances.
+  // The per-dispatch figure rides on usage.cost_usd; when the baseline of a
+  // continued session is unknown it is left off and cost consumers price the
+  // token counts instead.
+  const parseDispatch = (r: SSHExecResult): ParsedResponse => {
+    const p = provider.parseResponse(r, parseCtx);
+    _epParsedSid = p.sessionId;
+    if (typeof p.sessionCostUsd === 'number') {
+      const landedOn = p.sessionId ?? (lastAttemptContinues && !forkDescriptor ? lastAttemptContinues : undefined);
+      const cost = dispatchCostFromCumulative(p.sessionCostUsd, landedOn, lastAttemptContinues);
+      if (cost !== undefined && p.usage) p.usage = { ...p.usage, cost_usd: cost };
+    }
+    return p;
+  };
+  const checkUsageLimit = (r: SSHExecResult, p: ParsedResponse): ExecutePromptResult | null => {
+    const signal = provider.detectUsageLimit(r, p);
+    if (!signal) return null;
+    // Accurate finally-block exit logging (scope.fail, not scope.abort) even
+    // when this fires on the very first parse, before the shared
+    // `_epExitCode = result.code` assignment below would otherwise run.
+    _epExitCode = r.code;
+    scope.info(`usage limit detected -- resumes ~${signal.resumeAt} (${signal.resumeAtSource})`);
+    // Session bookkeeping mirrors the max_turns path: record/touch the
+    // session id when present so fleet-sprint can resume the SAME session
+    // after the pause instead of starting a fresh one that has lost context.
+    if (p.sessionId) {
+      recordKnownSession(agent.id, p.sessionId);
+      touchAgent(agent.id, p.sessionId);
+    }
+    return {
+      text: `[FAIL] execute_prompt on "${agent.friendlyName}" hit a provider usage limit (resumes ~${signal.resumeAt}, ${signal.resumeAtSource}): ${signal.message}`,
+      structuredContent: {
+        isError: true,
+        reason: 'usage_limit',
+        usageLimit: signal,
+        ...(p.sessionId ? { sessionId: p.sessionId } : {}),
+        ...(p.usage ? { usage: toStructuredUsage(p.usage) } : {}),
+      },
+    };
+  };
+  claimGuardActive = false;
   try {
     let result;
+    // GitHub #563: the FIRST attempt is capped by the same shared budget as
+    // any retry (max_total_s since handler entry, minus the cleanup reserve),
+    // not handed a fresh full max_total_s after setup already spent some.
+    const firstBudget = retryBudget();
+    if (firstBudget.exhausted) {
+      _epExitCode = 'error';
+      _epError = 'max_total_s exhausted before dispatch';
+      return maxTotalTimeResult(false);
+    }
     try {
-      result = await strategy.execCommand(claudeCmd, timeoutMs, maxTotalMs, onPidCaptured, dispatchSignal);
+      result = await dispatchAttempt(claudeCmd, firstBudget.timeoutMs, firstBudget.maxTotalMs);
     } catch (dispatchErr: any) {
       // apra-fleet-02s.1: a genuine command-execution exception (e.g. an
       // inactivity timeout, or any other error strategy.execCommand throws)
@@ -1073,12 +1867,16 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       if (budget.exhausted) throw dispatchErr;
       scope.info(`[${resolvedModel}] retrying -- dispatch exception: ${dispatchErr.message}`);
       await tryKillPid(agent, strategy, cmds);
-      const freshOpts = { ...promptOpts, sessionId: isCallerMinted ? uuid() : undefined, resuming: false };
-      const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
-      result = await strategy.execCommand(retryCmd, budget.timeoutMs, budget.maxTotalMs, onPidCaptured, dispatchSignal);
+      const freshOpts = { ...promptOpts, sessionId: isCallerMinted ? uuid() : undefined, resuming: false, fork: undefined };
+      const retryCmd = cmds.buildAgentPromptCommand(provider, freshOpts);
+      result = await dispatchAttempt(retryCmd, budget.timeoutMs, budget.maxTotalMs);
     }
-    let parsed = provider.parseResponse(result);
+    let parsed = parseDispatch(result);
     if (parsed.usage) _epUsage = parsed.usage;
+    {
+      const usageLimitResult = checkUsageLimit(result, parsed);
+      if (usageLimitResult) return usageLimitResult;
+    }
 
     // apra-fleet-eft.40.3: workspace-not-trusted degrades composed permissions
     // (project-scoped allow entries silently dropped) without killing the CLI process --
@@ -1091,7 +1889,8 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     if (result.code !== 0 && provider.classifyError(result.stderr || result.stdout) === 'workspace_not_trusted') {
       return {
         text: `[FAIL] ${workspaceNotTrustedAdvice(agent.friendlyName)}\n${result.stderr || result.stdout}`,
-        structuredContent: { isError: true, reason: 'workspace_not_trusted' },
+        // A typed failure keeps its own reason; an incidental refusal rides along.
+        structuredContent: { isError: true, reason: 'workspace_not_trusted', ...(parsed.permissionDenial ? { permissionDenied: parsed.permissionDenial } : {}) },
       };
     }
 
@@ -1099,18 +1898,27 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
     // ONLY the best-effort resume=true mode gets this transparent retry-fresh
     // recovery. An explicit session-id resume (string) deliberately does NOT --
     // its caller asserted context dependence, so a not-found id is terminal.
-    if (result.code !== 0 && input.resume === true && agent.sessionId) {
+    // apra-fleet-lmtg.5: gate on allowFreshSessionFallback too, so an explicit
+    // fork (fork="<id>") never degrades here. The mutual-exclusivity guard keeps
+    // input.resume at its default true for ANY fork request, so `input.resume
+    // === true` alone would also fire for an explicit fork -- a silent
+    // wrong-context fresh dispatch the explicit-fork gate exists to prevent.
+    // allowFreshSessionFallback is false only for explicit resume/fork; it stays
+    // true for resume=true and fork=true, which the AC permits to degrade.
+    if (result.code !== 0 && allowFreshSessionFallback && input.resume === true && agent.sessionId) {
       // apra-fleet-y8q.1: share the remaining max_total_s budget with this
       // retry too -- skip it outright once exhausted (see retryBudget above).
       const staleBudget = retryBudget();
       if (!staleBudget.exhausted) {
         scope.info(`[${resolvedModel}] retrying -- stale session`);
         await tryKillPid(agent, strategy, cmds);
-        const freshOpts = { ...promptOpts, sessionId: isCallerMinted ? uuid() : undefined, resuming: false };
-        const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
-        result = await strategy.execCommand(retryCmd, staleBudget.timeoutMs, staleBudget.maxTotalMs, onPidCaptured, dispatchSignal);
-        parsed = provider.parseResponse(result);
+        const freshOpts = { ...promptOpts, sessionId: isCallerMinted ? uuid() : undefined, resuming: false, fork: undefined };
+        const retryCmd = cmds.buildAgentPromptCommand(provider, freshOpts);
+        result = await dispatchAttempt(retryCmd, staleBudget.timeoutMs, staleBudget.maxTotalMs);
+        parsed = parseDispatch(result);
         if (parsed.usage) _epUsage = parsed.usage;
+        const usageLimitResult = checkUsageLimit(result, parsed);
+        if (usageLimitResult) return usageLimitResult;
       }
     }
 
@@ -1125,16 +1933,85 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         scope.info(`[${resolvedModel}] retrying -- server overloaded`);
         await tryKillPid(agent, strategy, cmds);
         await new Promise(r => setTimeout(r, SERVER_RETRY_DELAY_MS));
-        const freshOpts = { ...promptOpts, sessionId: isCallerMinted ? uuid() : undefined, resuming: false };
-        const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
-        result = await strategy.execCommand(retryCmd, overloadBudget.timeoutMs, overloadBudget.maxTotalMs, onPidCaptured, dispatchSignal);
-        parsed = provider.parseResponse(result);
+        const freshOpts = { ...promptOpts, sessionId: isCallerMinted ? uuid() : undefined, resuming: false, fork: undefined };
+        const retryCmd = cmds.buildAgentPromptCommand(provider, freshOpts);
+        result = await dispatchAttempt(retryCmd, overloadBudget.timeoutMs, overloadBudget.maxTotalMs);
+        parsed = parseDispatch(result);
         if (parsed.usage) _epUsage = parsed.usage;
+        const usageLimitResult = checkUsageLimit(result, parsed);
+        if (usageLimitResult) return usageLimitResult;
       }
     }
 
     _epExitCode = result.code;
+
+    // Permission refusals (parsed.permissionDenial). Order matters:
+    //
+    // 1. A TYPED failure is classified first and wins: a max_turns-terminated
+    //    turn, or a nonzero exit the provider classifies as auth / server /
+    //    overloaded / workspace_not_trusted. Its reason is what a caller acts
+    //    on (fleet-sprint resumes a max_turns turn, re-provisions on auth);
+    //    an incidental refusal inside such a turn rides along as an extra
+    //    `permissionDenied` field and never turns it into permission_denied.
+    //
+    // 2. Otherwise the caller's choice decides. `fail_on_permission_denial`
+    //    (fleet-sprint passes it) makes any refusal a `permission_denied`
+    //    failure the caller can heal with compose_permissions -- except a
+    //    denial the provider marks healable:false (Claude auto/bypass mode:
+    //    safety classifier or deny rule) on a complete reply, which is only a
+    //    warning. Without the flag each provider keeps its v0.4.3 semantics:
+    //    Claude's reply stands (a complete reply is a success carrying the
+    //    refusals as `permissionWarning`; an incomplete one gets its ordinary
+    //    classification with the denial attached), while AGY -- whose headless
+    //    denials exit 0 with an empty reply -- still fails permission_denied.
+    const denial = parsed.permissionDenial;
+    const strictDenials = input.fail_on_permission_denial === true || provider.name !== 'claude';
+    const typedFailure = isMaxTurnsResponse(parsed)
+      || (result.code !== 0 && TYPED_FAILURE_CATEGORIES.has(provider.classifyError(result.stderr || result.stdout)));
+    const replyComplete = result.code === 0 && !parsed.isError && !!parsed.result?.trim();
+    let permissionWarning: PermissionDenial | undefined;
+    // A denial carried along on a non-permission outcome (typed failure, or
+    // non-strict Claude whose reply was not complete).
+    let carriedDenial: PermissionDenial | undefined;
+    if (denial) {
+      if (typedFailure) {
+        carriedDenial = denial;
+      } else if (replyComplete && (denial.healable === false || !strictDenials)) {
+        permissionWarning = denial;
+        logWarn('permission_denied_incidental', `"${agent.friendlyName}" (${denial.permissionMode ?? 'unknown'} mode): ${denial.hint} -- reply complete, reported as a warning${denial.healable === false ? '; never auto-granted' : ''}.`);
+      } else if (strictDenials) {
+        const partial = parsed.result?.trim() ? parsed.result.trim() : undefined;
+        // The turn ran: keep the session, usage, budget and PID bookkeeping
+        // a completed dispatch gets, so a later resume continues THIS session
+        // and the spend is recorded.
+        const expectation = sessionExpectation(parsed);
+        if (expectation.isMismatch) {
+          scope.info(`session-id mismatch: expected=${expectation.expectedSid} got=${parsed.sessionId} -- not persisting`);
+          if (mismatchIsTerminal()) return await terminalMismatchFailure(parsed, expectation.expectedSid, { permissionDenied: denial });
+        }
+        await recordDispatchBookkeeping(parsed, expectation);
+        return {
+          text: `[FAIL] execute_prompt on "${agent.friendlyName}": permission denied -- ${denial.hint}${partial ? `\n[partial response]\n${partial}` : ''}`,
+          structuredContent: {
+            isError: true,
+            reason: 'permission_denied',
+            permissionDenied: denial,
+            ...(partial ? { response: partial } : {}),
+            ...(parsed.sessionId ? { sessionId: parsed.sessionId } : {}),
+            ...(_epUsage ? { usage: toStructuredUsage(_epUsage) } : {}),
+          },
+        };
+      } else {
+        carriedDenial = denial;
+      }
+    }
+    const carriedDenialField = carriedDenial ? { permissionDenied: carriedDenial } : {};
+
     if (result.code !== 0) {
+      // GitHub #585: a failed dispatch used to log only exit=N. Log a capped
+      // stderr tail plus the last result/error event (logLine applies the
+      // usual secret redaction). Success paths log nothing extra.
+      logLine('prompt_failure_output', formatPromptFailureTail(result), { id: agent.id, friendlyName: agent.friendlyName }, scope.getInv());
       // apra-fleet-391: surface an auth failure as a STRUCTURED reason (not
       // just prose in `text`) so callers -- notably fleet-sprint's
       // isAuthDispatchError -- can key off it directly instead of regexing
@@ -1169,7 +2046,9 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
           // 10-hour run with dozens of max_turns exhaustions reporting
           // stats.totalCost of $0). Attach it here whenever it's available so
           // the caller can record the real partial cost instead of nothing.
-          ...(_epUsage ? { usage: { input_tokens: _epUsage.input_tokens, output_tokens: _epUsage.output_tokens, total_tokens: _epUsage.input_tokens + _epUsage.output_tokens } } : {}),
+          ...(_epUsage ? { usage: toStructuredUsage(_epUsage) } : {}),
+          ...sessionIdField(parsed.sessionId),
+          ...carriedDenialField,
         },
       };
     }
@@ -1200,8 +2079,16 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         cmds,
         pid: capturedPid,
         durablePath,
-        unsupported: getAgentOS(agent) === 'windows',
-        maxWaitMs: maxTotalMs !== undefined ? Math.max(maxTotalMs - (Date.now() - dispatchStartedAt), 0) : undefined,
+        // apra-fleet-7dir.5.4: the SAME predicate that decides `durablePath`
+        // above -- the mirror and recovery are one decision, and enabling
+        // either alone is inert (no file to read / a file nothing reads).
+        unsupported: !durableMirrorSupported,
+        os: getAgentOS(agent),
+        // Live for gitbash members now that `unsupported` no longer
+        // short-circuits every Windows member: it selects the POSIX
+        // `kill -0` / `cat` probes over the PowerShell ones (apra-fleet-7dir.2.4).
+        shell: getAgentShell(agent),
+        maxWaitMs: maxTotalMs !== undefined ? retryBudget().maxTotalMs : undefined,
         scope,
       });
 
@@ -1216,11 +2103,14 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       if (recovery.status === 'recovered' && recovery.stdout) {
         // Feed the durable output through the normal provider parse path,
         // exactly as if it had arrived on the original channel.
-        const recoveredParsed = provider.parseResponse({ stdout: recovery.stdout, stderr: result.stderr ?? '', code: 0 });
+        const recoveredResult: SSHExecResult = { stdout: recovery.stdout, stderr: result.stderr ?? '', code: 0 };
+        const recoveredParsed = parseDispatch(recoveredResult);
         if (recoveredParsed.result && recoveredParsed.result.trim() !== '') {
           scope.info(`recovered the real result from the durable output file after a false-alarm empty_response (waited ${Math.round((recovery.waitedMs ?? 0) / 1000)}s)`);
           parsed = recoveredParsed;
           if (parsed.usage) _epUsage = parsed.usage;
+          const usageLimitResult = checkUsageLimit(recoveredResult, recoveredParsed);
+          if (usageLimitResult) return usageLimitResult;
         }
       }
 
@@ -1246,11 +2136,13 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
         const healBudget = retryBudget();
         if (!healBudget.exhausted) {
           await tryKillPid(agent, strategy, cmds);
-          const freshOpts = { ...promptOpts, sessionId: isCallerMinted ? uuid() : undefined, resuming: false };
-          const retryCmd = authPrefix + cmds.buildAgentPromptCommand(provider, freshOpts);
-          result = await strategy.execCommand(retryCmd, healBudget.timeoutMs, healBudget.maxTotalMs, onPidCaptured, dispatchSignal);
-          parsed = provider.parseResponse(result);
+          const freshOpts = { ...promptOpts, sessionId: isCallerMinted ? uuid() : undefined, resuming: false, fork: undefined };
+          const retryCmd = cmds.buildAgentPromptCommand(provider, freshOpts);
+          result = await dispatchAttempt(retryCmd, healBudget.timeoutMs, healBudget.maxTotalMs);
+          parsed = parseDispatch(result);
           if (parsed.usage) _epUsage = parsed.usage;
+          const usageLimitResult = checkUsageLimit(result, parsed);
+          if (usageLimitResult) return usageLimitResult;
         }
       }
 
@@ -1261,71 +2153,21 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
           text: trustClassified
             ? `[FAIL] ${workspaceNotTrustedAdvice(agent.friendlyName)}\n${stderrTail}`
             : `[FAIL] execute_prompt on "${agent.friendlyName}" exited 0 but produced no parseable output (empty result -- the member CLI likely died mid-turn without printing its result envelope).${stderrTail ? `\n[stderr tail]\n${stderrTail}` : ''}`,
-          structuredContent: { isError: true, reason: trustClassified ? 'workspace_not_trusted' : 'empty_response' },
+          structuredContent: { isError: true, reason: trustClassified ? 'workspace_not_trusted' : 'empty_response', ...(trustClassified ? {} : sessionIdField(parsed.sessionId)), ...carriedDenialField },
         };
       }
     }
 
-    // Session-id assertion: returned id must match the one we minted/resumed
-    const expectedSid = resuming ? resumeTargetId : (isCallerMinted ? mintedId : undefined);
-    const isMismatch = expectedSid && parsed.sessionId && parsed.sessionId !== expectedSid;
+    // Session-id assertion (see sessionExpectation).
+    const { expectedSid, isMismatch } = sessionExpectation(parsed);
     if (isMismatch) {
       scope.info(`session-id mismatch: expected=${expectedSid} got=${parsed.sessionId} -- not persisting`);
-      if (!allowFreshSessionFallback && explicitResumeId !== undefined) {
-        inFlightAgents.delete(agent.id);
-        stallDetector.remove(agent.id);
-        writeStatusline(new Map([[agent.id, 'idle']]));
-        clearStoredPid(agent.id);
-        if (parsed.sessionId) {
-          recordKnownSession(agent.id, parsed.sessionId);
-        }
-        if (parsed.usage) {
-          const prev = agent.tokenUsage ?? { input: 0, output: 0 };
-          updateAgent(agent.id, {
-            tokenUsage: {
-              input: prev.input + parsed.usage.input_tokens,
-              output: prev.output + parsed.usage.output_tokens,
-            },
-          });
-          recordSessionUsage(parsed.sessionId ?? expectedSid, parsed.usage);
-          if (budgetScope) {
-            await recordAndEvaluate({ scope: budgetScope, agent, provider, tier: resolvedTier, usage: parsed.usage });
-          }
-        }
-        return {
-          text: `[FAIL] execute_prompt on "${agent.friendlyName}" failed -- resumed session mismatch. Expected session "${expectedSid}", but provider returned "${parsed.sessionId}".`,
-          structuredContent: {
-            isError: true,
-            reason: 'session_not_found',
-            sessionId: expectedSid,
-            returnedSessionId: parsed.sessionId,
-            ...(parsed.usage ? { usage: { ...parsed.usage, total_tokens: parsed.usage.input_tokens + parsed.usage.output_tokens } } : {}),
-          },
-        };
-      }
+      if (mismatchIsTerminal()) return await terminalMismatchFailure(parsed, expectedSid);
       touchAgent(agent.id, undefined);
     } else {
       touchAgent(agent.id, parsed.sessionId ?? expectedSid);
     }
-    // apra-fleet-eft.78.1: mark the session this dispatch actually landed on as
-    // known/resumable for this member, so a later explicit-id resume of it
-    // passes the terminal session_not_found gate above instead of being
-    // rejected as unknown.
-    const finalSid = parsed.sessionId ?? expectedSid;
-    if (finalSid) {
-      recordKnownSession(agent.id, finalSid);
-      let postLogPath: string | null = null;
-      try {
-        postLogPath = resolveSessionLogPath(agent.llmProvider ?? 'claude', finalSid, resolvedWorkFolder, memberPathCtx.homeDir, memberPathCtx.targetOs);
-      } catch {
-        postLogPath = null;
-      }
-      stallDetector.update(agent.id, {
-        sessionId: finalSid,
-        logFilePath: postLogPath,
-        provisional: !postLogPath,
-      });
-    }
+    recordLandedSession(parsed.sessionId ?? expectedSid);
     clearStoredPid(agent.id);
 
     if (parsed.usage) {
@@ -1363,15 +2205,76 @@ ${parsed.result}`;
 
 ---
 session: ${parsed.sessionId}`;
+    // Auto-harvest learnings from session output (fire-and-forget)
+    if (parsed.result) {
+      // apra-fleet-tm7.2: always pass resolvedWorkFolder, local or remote.
+      // getKbProviders(undefined) falls back to slugFor(process.cwd()) --
+      // the FLEET SERVER's own cwd, not any generic 'default' -- so omitting
+      // repo_path for remote members would silently route their harvested
+      // learnings into the server's own repo KB (the exact defect apra-fleet-tm7
+      // describes).
+      //
+      // apra-fleet-b4g.6: repo_remote_url (apra-fleet-b4g.1) is how a REMOTE
+      // member's call reaches the SAME shared project KB a local clone would --
+      // without it, resolvedWorkFolder is a path on the remote host that will
+      // almost never exist on this (fleet server) machine, resolveProjectSlug's
+      // git calls on it fail with ENOENT, and it falls through to the literal
+      // 'default' slug, pooling every such member's harvest into one shared,
+      // useless bucket (no cross-repo contamination, but no real routing
+      // either). knownRepoRemoteUrl() forwards it whenever the member's own
+      // registration record already carries a genuine URL. It deliberately does
+      // NOT construct one from agent.gitRepos' bare "owner/repo" access-list
+      // entries (see src/services/vcs/github.ts's own
+      // https://github.com/${repo}.git construction for a DIFFERENT, narrower
+      // purpose -- connectivity testing) or shell out to the member host to
+      // discover it: guessing a URL that turns out wrong would route the
+      // harvest into a KB slug that does not match the repo's real local-clone
+      // slug, which is worse than today's honest 'default' degradation. When no
+      // genuine URL is known, behaviour is unchanged from before this fix.
+      // KB-TRUST PHASE 1 (apra-fleet-4wz.8): report the harvest counters. This is
+      // the highest-volume KB writer and its result was previously discarded
+      // entirely, so entries_rejected -- the fail-closed signal -- was invisible
+      // on the one path that produces most of it. Rejections are EXPECTED to
+      // dominate here: harvest's regex extraction frequently yields no file
+      // paths at all, and an entry with no basis is refused by design. A high
+      // rejected count is the invariant working, not a regression to tune away.
+      void import('./kb-harvest.js')
+        .then(({ kbHarvest }) =>
+          // Explicit in-process anchor (not a tool input): this harvest is for
+          // the dispatched member's repo, not the server's own session.
+          kbHarvest({
+            session_transcript: parsed.result,
+            session_id: parsed.sessionId,
+          }, { folder: resolvedWorkFolder, remoteUrl: knownRepoRemoteUrl(agent) })
+        )
+        .then((raw: string) => {
+          try {
+            const r = JSON.parse(raw) as { entries_captured: number; entries_updated: number; entries_skipped: number; entries_rejected: number; entries_failed?: number };
+            const failed = r.entries_failed ?? 0;
+            if (r.entries_captured || r.entries_updated || r.entries_skipped || r.entries_rejected || failed) {
+              logLine('kb_harvest', `auto-harvest: captured=${r.entries_captured} updated=${r.entries_updated} skipped=${r.entries_skipped} rejected=${r.entries_rejected} failed=${failed}`);
+            }
+          } catch {
+            // A non-JSON payload is not worth failing a fire-and-forget harvest over.
+          }
+        })
+        .catch((err: Error) => logWarn('kb_harvest', `auto-harvest failed: ${err.message}`));
+    }
+
     if (heuristicWarningSuffix) output += heuristicWarningSuffix;
+    // A refusal that did not fail the dispatch (incidental, or carried on a
+    // turn that still exited 0) rides on the success as a warning.
+    const successWarning = permissionWarning ?? carriedDenial;
+    if (successWarning) output += `\n\n[WARN] ${successWarning.hint}`;
     return {
       text: output,
       structuredContent: {
         response: parsed.result,
-        ...(_epUsage ? { usage: { input_tokens: _epUsage.input_tokens, output_tokens: _epUsage.output_tokens, total_tokens: _epUsage.input_tokens + _epUsage.output_tokens } } : {}),
+        ...(_epUsage ? { usage: toStructuredUsage(_epUsage) } : {}),
         ...(parsed.sessionId ? { sessionId: parsed.sessionId } : {}),
         ...(contextWarning ? { contextWarning } : {}),
         ...(budgetUsage ? { budgetUsage } : {}),
+        ...(successWarning ? { permissionWarning: successWarning } : {}),
       },
     };
   } catch (err: any) {
@@ -1379,6 +2282,13 @@ session: ${parsed.sessionId}`;
     // NOT the MCP client). Surface it as a typed 'stalled' error so the dispatch
     // settles here -- well under the client hard timeout -- instead of being
     // mislabeled dispatch_failed or waiting out the full deadline.
+    if (stallAbortController.signal.aborted && !extra?.signal?.aborted && (stallReason as StallReason) === 'agent_never_started') {
+      _epError = 'dispatch aborted: agent never started (session log never appeared)';
+      return {
+        text: `[FAIL] execute_prompt on "${agent.friendlyName}" was aborted: the agent never started -- its session log never appeared at the expected path within the inactivity threshold (timeout_s). Its process was killed and the dispatch cancelled.`,
+        structuredContent: { isError: true, reason: 'agent_never_started' },
+      };
+    }
     if (stallAbortController.signal.aborted && !extra?.signal?.aborted) {
       _epError = 'dispatch aborted by confirmed stall';
       return {
@@ -1386,16 +2296,21 @@ session: ${parsed.sessionId}`;
         structuredContent: { isError: true, reason: 'stalled' },
       };
     }
+    // GitHub #563: the shared max_total_s ceiling fired -- a typed error.
+    if (isMaxTotalKill(err)) {
+      _epError = err.message;
+      return maxTotalTimeResult();
+    }
     // Only mark offline for genuine SSH/network connection failures, not for cancellations
     _epOffline = !!(err.message && /ssh|network|econnrefused|ehostunreach|connection timed out/i.test(err.message));
     _epError = err.message;
     return {
       text: `[FAIL] Failed to execute prompt on "${agent.friendlyName}": ${err.message}`,
-      structuredContent: { isError: true, reason: 'dispatch_failed' },
+      structuredContent: { isError: true, reason: 'dispatch_failed', ...sessionIdField(_epParsedSid) },
     };
   } finally {
     extra?.signal?.removeEventListener('abort', abortHandler);
-    const _epTok = _epUsage ? ` in=${_epUsage.input_tokens} out=${_epUsage.output_tokens}` : '';
+    const _epTok = _epUsage ? ` in=${_epUsage.input_tokens} out=${_epUsage.output_tokens} cache_read=${_epUsage.cache_read_input_tokens ?? 0} cache_write=${_epUsage.cache_creation_input_tokens ?? 0}` : '';
     if (_epExitCode === 'error') scope.abort(`${_epError ?? 'exception'}${_epTok}`);
     else if (_epExitCode !== 0) scope.fail(`exit=${_epExitCode}${_epTok}`);
     else scope.ok(`exit=0${_epTok}`);
@@ -1406,6 +2321,16 @@ session: ${parsed.sessionId}`;
       inFlightAgents.delete(agent.id);
     }
     stallDetector.remove(agent.id);
-    await deletePromptFile(agent, strategy, promptFilePath, durablePath ? [durablePath] : []);
+    await deletePromptFile(agent, strategy, promptFilePath, [...(durablePath ? [durablePath] : []), ...stagedEnvPaths, ...sessionMcpCleanup]);
+  }
+  } catch (err) {
+    if (claimGuardActive) {
+      inFlightAgents.delete(agent.id);
+      getStallDetector().remove(agent.id);
+      // The stall detector writes busy(mm:ss) on every tick once its entry
+      // exists; removing the entry alone would leave that busy persisted.
+      writeStatusline(new Map([[agent.id, 'idle']]));
+    }
+    throw err;
   }
 }

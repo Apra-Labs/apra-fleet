@@ -1,12 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
+import { escapePowerShellArg } from '../utils/shell-escape.js';
+import { windowsExecutable } from '../os/windows-executable.js';
 
 /** Provider -> auth env var name */
 const PROVIDER_AUTH_ENV: Record<string, string> = {
   claude: 'ANTHROPIC_API_KEY',
-  gemini: 'GEMINI_API_KEY',
   codex: 'OPENAI_API_KEY',
   copilot: 'COPILOT_GITHUB_TOKEN',
   agy: 'ANTIGRAVITY_API_KEY',
@@ -21,9 +22,9 @@ export async function runAuth(args: string[]): Promise<void> {
   }
 
   console.error('Usage:');
-  console.error('  apra-fleet auth --oauth [--llm <provider>] [<token> | secure.<name> | --secure <name>]');
-  console.error('  apra-fleet auth --oauth --member <name> [<token> | secure.<name> | --secure <name>]');
-  console.error('  apra-fleet auth --api-key [--llm <provider>] [<token> | secure.<name> | --secure <name>]');
+  console.error('  apra-fleet auth --oauth [--llm <provider>] [<token> | secret.<name> | --secret <name>]');
+  console.error('  apra-fleet auth --oauth --member <name> [<token> | secret.<name> | --secret <name>]');
+  console.error('  apra-fleet auth --api-key [--llm <provider>] [<token> | secret.<name> | --secret <name>]');
   process.exit(1);
 }
 
@@ -31,7 +32,7 @@ export async function runAuth(args: string[]): Promise<void> {
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-/** Parse args shared by --oauth and --api-key: --llm, --secure, --member, positional token. */
+/** Parse args shared by --oauth and --api-key: --llm, --secret (--secure legacy alias), --member, positional token. */
 async function parseTokenArgs(
   args: string[],
   modeFlag: string,
@@ -39,14 +40,18 @@ async function parseTokenArgs(
   const llmIdx = args.indexOf('--llm');
   const llmArg = llmIdx !== -1 && llmIdx + 1 < args.length ? args[llmIdx + 1] : null;
 
+  // --secure is the deprecated spelling of --secret (still accepted, no hard-fail).
+  const secretIdx = args.indexOf('--secret');
   const secureIdx = args.indexOf('--secure');
-  const secureName = secureIdx !== -1 && secureIdx + 1 < args.length ? args[secureIdx + 1] : null;
+  const usedLegacyFlag = secretIdx === -1 && secureIdx !== -1;
+  const flagIdx = secretIdx !== -1 ? secretIdx : secureIdx;
+  const secretName = flagIdx !== -1 && flagIdx + 1 < args.length ? args[flagIdx + 1] : null;
 
   const memberIdx = args.indexOf('--member');
   const memberArg = memberIdx !== -1 && memberIdx + 1 < args.length ? args[memberIdx + 1] : null;
 
   const skipNext = new Set<number>();
-  for (const flag of ['--llm', '--secure', '--member']) {
+  for (const flag of ['--llm', '--secret', '--secure', '--member']) {
     const idx = args.indexOf(flag);
     if (idx !== -1) { skipNext.add(idx); skipNext.add(idx + 1); }
   }
@@ -56,10 +61,14 @@ async function parseTokenArgs(
     if (args[i] === modeFlag) continue;
     if (args[i].startsWith('-')) {
       console.error(`Error: Unknown option "${args[i]}".`);
-      console.error(`Usage: apra-fleet auth ${modeFlag} [--llm <provider>] [<token> | secure.<name> | --secure <name>]`);
+      console.error(`Usage: apra-fleet auth ${modeFlag} [--llm <provider>] [<token> | secret.<name> | --secret <name>]`);
       process.exit(1);
     }
     positionals.push(args[i]);
+  }
+
+  if (usedLegacyFlag) {
+    console.error('[deprecated] --secure is deprecated -- use --secret (still accepted for now)');
   }
 
   // Provider
@@ -78,7 +87,18 @@ async function parseTokenArgs(
 
   // Token
   const rawOrRef = positionals[0] ?? null;
-  const storeRef = secureName ?? (rawOrRef?.startsWith('secure.') ? rawOrRef.slice('secure.'.length) : null);
+  let usedLegacyPrefix = false;
+  let prefixedRef: string | null = null;
+  if (rawOrRef?.startsWith('secret.')) {
+    prefixedRef = rawOrRef.slice('secret.'.length);
+  } else if (rawOrRef?.startsWith('secure.')) {
+    prefixedRef = rawOrRef.slice('secure.'.length);
+    usedLegacyPrefix = true;
+  }
+  if (usedLegacyPrefix) {
+    console.error('[deprecated] secure.<name> is deprecated -- use secret.<name> (still accepted for now)');
+  }
+  const storeRef = secretName ?? prefixedRef;
 
   let token: string;
   if (storeRef) {
@@ -97,7 +117,7 @@ async function parseTokenArgs(
     token = rawOrRef;
   } else {
     console.error('✗ No token provided.');
-    console.error(`Usage: apra-fleet auth ${modeFlag} [--llm <provider>] [<token> | secure.<name> | --secure <name>]`);
+    console.error(`Usage: apra-fleet auth ${modeFlag} [--llm <provider>] [<token> | secret.<name> | --secret <name>]`);
     process.exit(1);
     throw new Error(); // unreachable
   }
@@ -225,14 +245,25 @@ function bareTokenSyntheticSessionFields(): Record<string, unknown> {
   };
 }
 
-function deepMerge(
+// Keys that would reach Object.prototype through plain-object assignment.
+// The source is a JSON.parse result (a user-pasted credential blob or the
+// existing credentials file), where "__proto__" is an ordinary own key.
+const UNSAFE_MERGE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
+export function deepMerge(
   target: Record<string, unknown>,
   source: Record<string, unknown>,
 ): Record<string, unknown> {
   for (const key of Object.keys(source)) {
+    if (UNSAFE_MERGE_KEYS.has(key)) continue;
     const sv = source[key];
     if (sv && typeof sv === 'object' && !Array.isArray(sv)) {
-      const tv = (target[key] as Record<string, unknown> | undefined) ?? {};
+      // Own plain-object values only: an inherited member (e.g. toString)
+      // must never become the merge target.
+      const own = Object.prototype.hasOwnProperty.call(target, key) ? target[key] : undefined;
+      const tv = own && typeof own === 'object' && !Array.isArray(own)
+        ? own as Record<string, unknown>
+        : {};
       target[key] = deepMerge(tv, sv as Record<string, unknown>);
     } else {
       target[key] = sv;
@@ -248,7 +279,7 @@ async function handleOAuth(args: string[]): Promise<void> {
   // member's registry.json encryptedEnvVars.CLAUDE_CODE_OAUTH_TOKEN instead
   // of writing a credentials file. This is the PRIMARY, cross-platform
   // smoke-test path (register_member/update_member's own persisted field --
-  // see src/utils/auth-env.ts#buildAuthEnvPrefix and src/os/*.ts#getCleanEnv):
+  // see src/services/member-secret-env.ts#stageAuthEnv and src/os/*.ts#getCleanEnv):
   // LocalStrategy's clean-env dispatch (env -i ... bash -l -c ...) exports
   // this env var directly into the child shell for every dispatch, which the
   // real Claude CLI accepts without needing a synthesized credentials-file
@@ -260,7 +291,7 @@ async function handleOAuth(args: string[]): Promise<void> {
   const credPatch = getOAuthCredentialPatch(provider, token);
   if (!credPatch) {
     console.error(`✗ Provider "${provider}" does not support OAuth token provisioning.`);
-    console.error(`  Gemini and other API-key-only providers: use apra-fleet auth --api-key instead.`);
+    console.error(`  API-key-only providers: use apra-fleet auth --api-key instead.`);
     process.exit(1);
     return;
   }
@@ -339,8 +370,10 @@ async function provisionEnvVarForMember(provider: string, token: string, memberN
     const { encryptPassword } = await import('../utils/crypto.js');
     const { updateAgent } = await import('../services/registry.js');
     const bearerToken = extractBearerTokenFromSecret(token);
+    // Drop a stored API key: it would outrank the OAuth token at dispatch.
+    const { ANTHROPIC_API_KEY: _staleApiKey, ...otherVars } = agentOrError.encryptedEnvVars ?? {};
     const updated = updateAgent(agentOrError.id, {
-      encryptedEnvVars: { ...agentOrError.encryptedEnvVars, [envVarName]: encryptPassword(bearerToken) },
+      encryptedEnvVars: { ...otherVars, [envVarName]: encryptPassword(bearerToken) },
     });
     if (!updated) {
       console.error(`✗ Failed to update member "${memberName}" -- not found in registry.`);
@@ -350,6 +383,9 @@ async function provisionEnvVarForMember(provider: string, token: string, memberN
     console.log(`✓ ${envVarName} provisioned for member "${updated.friendlyName}"`);
     console.log(`  Stored encrypted in registry.json's encryptedEnvVars (never plaintext).`);
     console.log(`  LocalStrategy's clean-env dispatch injects it into every dispatch's child shell.`);
+    if (_staleApiKey) {
+      console.log(`  Cleared the member's stored ANTHROPIC_API_KEY (it would take precedence over ${envVarName}).`);
+    }
   } catch (err: any) {
     console.error(`✗ Failed to provision member env var: ${err.message}`);
     process.exit(1);
@@ -362,9 +398,24 @@ async function provisionEnvVarForMember(provider: string, token: string, memberN
 
 function setApiKeyInProfiles(envVarName: string, value: string): void {
   if (process.platform === 'win32') {
-    // Windows: set as user-level persistent environment variable
-    const escaped = value.replace(/'/g, "''"); // PowerShell single-quote escape
-    execSync(`powershell -Command "[Environment]::SetEnvironmentVariable('${envVarName}', '${escaped}', 'User')"`, { stdio: 'pipe' });
+    // Windows: set as user-level persistent environment variable. The script is
+    // passed via -EncodedCommand with no cmd.exe in between, so only PowerShell
+    // parses it; escapePowerShellArg doubles every PowerShell single-quote
+    // character (ASCII ' and U+2018..U+201B), so the value stays inside the
+    // single-quoted literal.
+    const script = `[Environment]::SetEnvironmentVariable(${escapePowerShellArg(envVarName)}, ${escapePowerShellArg(value)}, 'User')`;
+    const encoded = Buffer.from(script, 'utf16le').toString('base64');
+    // Resolve outside the try: the resolver error carries no secret and a
+    // missing PowerShell must not be masked by the generic status message.
+    const powershellExe = windowsExecutable('powershell.exe');
+    try {
+      execFileSync(powershellExe, ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded], { stdio: 'pipe', windowsHide: true });
+    } catch (err: any) {
+      // Node's error message embeds the full command line (and PowerShell's
+      // stderr can echo the script), both of which carry the key -- never
+      // surface either; report only the exit status.
+      throw new Error(`powershell exited with status ${err?.status ?? 'unknown'} while setting ${envVarName}`);
+    }
     return;
   }
 

@@ -5,7 +5,7 @@ import { z } from 'zod';
 import { getStrategy } from '../services/strategy.js';
 import { touchAgent } from '../utils/agent-helpers.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
-import { writeStatusline } from '../services/statusline.js';
+import { markBusy } from '../services/member-busy.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
 import { isContainedInWorkFolder } from '../utils/platform.js';
 import { LogScope } from '../utils/log-helpers.js';
@@ -111,10 +111,10 @@ export async function sendFiles(input: SendFilesInput, extra?: any): Promise<str
     if (!result.ok) return result.error;
 
     // Write transformed content to temp dir preserving basenames; transfer those paths.
-    const tmpId = `apra-fleet-subst-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    tempDir = path.join(os.tmpdir(), tmpId);
     try {
-      fs.mkdirSync(tempDir, { recursive: true });
+      // mkdtemp: atomic, unpredictable, owner-only (0700) -- the substituted
+      // content may carry resolved secrets and os.tmpdir() can be shared.
+      tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-subst-'));
       transferPaths = input.local_paths.map((p, i) => {
         const tmpPath = path.join(tempDir!, path.basename(p));
         fs.writeFileSync(tmpPath, result.outputs[i], 'utf-8');
@@ -145,7 +145,7 @@ export async function sendFiles(input: SendFilesInput, extra?: any): Promise<str
   const dest = resolvedPath ?? agent.workFolder;
   const scope = new LogScope('send_files', `${input.local_paths.length} file(s) -> ${dest}`, agent);
 
-  writeStatusline(new Map([[agent.id, 'busy']]));
+  const releaseBusy = markBusy(agent.id);
 
   try {
     const result = await strategy.transferFiles(transferPaths, input.dest_subdir, extra?.signal);
@@ -179,12 +179,15 @@ export async function sendFiles(input: SendFilesInput, extra?: any): Promise<str
     else
       scope.ok(`${result.success.length} file(s)`);
 
+    releaseBusy();
     return output;
   } catch (err: any) {
-    writeStatusline(new Map([[agent.id, 'offline']]));
+    const isOffline = agent.agentType !== 'local' && !!(err.message && /ssh|network|econnrefused|ehostunreach|connection timed out/i.test(err.message));
+    releaseBusy(isOffline ? 'offline' : 'idle');
     scope.abort(err.message);
     return `Failed to upload files to "${agent.friendlyName}": ${err.message}`;
   } finally {
+    releaseBusy();
     if (tempDir) {
       try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
     }

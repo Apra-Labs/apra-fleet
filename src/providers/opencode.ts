@@ -1,12 +1,36 @@
-import type { ProviderAdapter, PromptOptions, ParsedResponse, RegisterMcpEndpointOptions, RegisterMcpEndpointResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, TargetOS } from './provider.js';
-import { joinForOS, resolveHomeDir } from './provider.js';
+import type { ProviderAdapter, PromptOptions, ParsedResponse, UsageLimitSignal, MemberMcpSyncContext, MemberMcpSyncResult, WorkspaceTrustExecFn, EnsureWorkspaceTrustedResult, SessionIdStrategy, ExecTimeoutSource, TargetOS } from './provider.js';
+import { joinForOS, resolveHomeDir, defaultUsageLimitSignal } from './provider.js';
 import type { LlmProvider, SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { escapeDoubleQuoted } from '../os/os-commands.js';
+import type { MemberShell } from '../os/os-commands.js';
+import { logWarn } from '../utils/log-helpers.js';
 import { sanitizeSessionId } from '../os/os-commands.js';
-import fs from 'node:fs';
-import path from 'node:path';
-import os from 'node:os';
+import { transformAgentForOpenCode } from '../cli/agent-transform.js';
+import { isPosixShell } from '../utils/agent-helpers.js';
+import {
+  deleteMemberFile,
+  joinMemberPath,
+  pruneLegacyMcpInMemberFile,
+  readMemberJson,
+  MemberConfigError,
+  MemberConfigNotJsonError,
+  isGitTracked,
+  memberFileExists,
+  writeMemberJson,
+  writeSecretBearingConfig,
+  LEGACY_MEMBER_MCP_SERVER_NAME,
+  MEMBER_MCP_SERVER_NAME,
+} from '../services/member-config-io.js';
+
+/** Work-folder-relative project config opencode reads MCP servers from. */
+export const OPENCODE_PROJECT_CONFIG = 'opencode.json';
+
+/** True when an opencode.json mcp entry is the one compose wrote for `memberId`. */
+function isOwnMemberEntry(entry: unknown, memberId: string): boolean {
+  return !!entry && typeof entry === 'object' && typeof (entry as { url?: unknown }).url === 'string'
+    && ((entry as { url: string }).url).endsWith(`?member=${encodeURIComponent(memberId)}`);
+}
 
 export class OpenCodeProvider implements ProviderAdapter {
   readonly name: LlmProvider = 'opencode';
@@ -23,7 +47,10 @@ export class OpenCodeProvider implements ProviderAdapter {
     return 'opencode --version 2>&1';
   }
 
-  installCommand(os: 'linux' | 'macos' | 'windows'): string {
+  // `shell` is intentionally unused: no windows branch exists here -- `npm
+  // install -g` runs unchanged from any shell (apra-fleet-7dir.2.7: named
+  // here as an adapter needing no per-shell variant, not skipped silently).
+  installCommand(os: 'linux' | 'macos' | 'windows', _shell?: MemberShell): string {
     if (os === 'linux') {
       return 'curl -fsSL https://opencode.ai/install | bash';
     }
@@ -39,7 +66,17 @@ export class OpenCodeProvider implements ProviderAdapter {
   }
 
   permissionModeAutoFlag(): string | null {
-    return null;
+    return '--auto';
+  }
+
+  resolvePermissionFlag(unattended: false | 'auto' | 'dangerous' | undefined): string {
+    if (unattended === 'auto' || unattended === 'dangerous') {
+      if (unattended === 'dangerous') {
+        logWarn('opencode', "WARNING: unattended='dangerous' is not supported for opencode -- falling back to --auto (no classifier safety). Ensure deny rules are configured.");
+      }
+      return this.permissionModeAutoFlag() ?? '';
+    }
+    return '';
   }
 
   modelTiers(): Record<'cheap' | 'standard' | 'premium', string> {
@@ -60,12 +97,39 @@ export class OpenCodeProvider implements ProviderAdapter {
     return `-m "${escapeDoubleQuoted(model)}"`;
   }
 
+  agentDirectories(agentName: string): { project: string; home: string } {
+    return {
+      project: `.opencode/agents/${agentName}.md`,
+      home: `.config/opencode/agents/${agentName}.md`,
+    };
+  }
+
+  transformAgent(content: string, relPath: string): string {
+    return transformAgentForOpenCode(content, relPath);
+  }
+
+  agentNameFlag(_agentName: string): string {
+    return '';
+  }
+
   classifyError(output: string): PromptErrorCategory {
     if (/command not found|is not recognized as an internal or external command/i.test(output)) return 'unknown';
     if (/connection refused|ECONNREFUSED/i.test(output)) return 'server';
     if (/timeout|ETIMEDOUT/i.test(output)) return 'server';
-    if (/rate limit|\b429\b/i.test(output)) return 'overloaded';
+    // apra-fleet-hzeb.1: widened to the shared overloaded/quota set (previously
+    // lacked 529, quota/usage/credit-limit, resource_exhausted) so opencode
+    // quota exhaustion classifies consistently with the other adapters.
+    if (/\b429\b|\b529\b|overloaded|rate limit|quota exceeded|resource_exhausted|credit limit|usage limit/i.test(output)) return 'overloaded';
     return 'unknown';
+  }
+
+  // apra-fleet-hzeb.1: OpenCode has no distinct usage-limit event surface, so key off
+  // the raw output using the shared quota detector (guessed resume window).
+  // A successful dispatch (code 0 and !isError) must NEVER be classified as a
+  // usage limit, even if stdout transcripts happen to mention 429 in token metrics.
+  detectUsageLimit(result: SSHExecResult, parsed: ParsedResponse): UsageLimitSignal | null {
+    if (result.code === 0 && !parsed.isError) return null;
+    return defaultUsageLimitSignal(result.stderr || (parsed.isError ? parsed.result : ''));
   }
 
   headlessInvocation(promptLiteral: string): string {
@@ -87,9 +151,8 @@ export class OpenCodeProvider implements ProviderAdapter {
     if (model) {
       cmd += ` ${this.modelFlag(model)}`;
     }
-    if (unattended === 'dangerous') {
-      cmd += ` ${this.skipPermissionsFlag()}`;
-    }
+    const permFlag = this.resolvePermissionFlag(unattended);
+    if (permFlag) cmd += ` ${permFlag}`;
     cmd += ` ${this.jsonOutputFlag()}`;
     const resume = this.resumeFlag(sessionId, resuming);
     if (resume) {
@@ -111,6 +174,19 @@ export class OpenCodeProvider implements ProviderAdapter {
     return { type: 'provider-minted' };
   }
 
+  // apra-fleet-25yl.2.1: keep BOTH signals armed for OpenCode, with OR
+  // semantics -- either the exec channel advancing or the log-directory mtime
+  // advancing means not-stalled. resolveSessionLogPath() below returns '' while
+  // resolveSessionLogDir() returns a real directory, so OpenCode's file-side
+  // signal is coarse directory polling only; keeping the exec-level timer as
+  // well is the conservative default. Narrowing this to one mechanism (i.e.
+  // flipping to 'total_ceiling') requires a separate LIVE responsiveness check
+  // of what OpenCode actually emits mid-turn -- it was deliberately not
+  // attempted here, so do not flip it on reasoning alone.
+  execTimeoutSource(): ExecTimeoutSource {
+    return 'inactivity_timeout';
+  }
+
   resolveSessionLogPath(_sessionId: string, _workFolder: string, _homeDir?: string | null, _targetOs?: TargetOS): string {
     return '';
   }
@@ -118,7 +194,7 @@ export class OpenCodeProvider implements ProviderAdapter {
   resolveSessionLogDir(_workFolder: string, homeDir?: string | null, targetOs?: TargetOS): string | null {
     const home = resolveHomeDir(homeDir);
     if (!home) return null;
-    return joinForOS(targetOs, home, '.local', 'share', 'opencode', 'storage', 'chats');
+    return joinForOS(targetOs, home, '.local', 'share', 'opencode', 'log');
   }
 
   resumeFlag(sessionId?: string, resuming?: boolean): string {
@@ -182,11 +258,111 @@ export class OpenCodeProvider implements ProviderAdapter {
     return ['.opencode/settings.json'];
   }
 
+  // `_allow` (the composed Claude-format permission list, including any
+  // `mcp__<server>__<tool>` entries) has no destination here: OpenCode's own
+  // `permission:` schema only has the three coarse categories below (edit/write/bash)
+  // -- no per-tool or per-server MCP granularity exists to map onto (confirmed against
+  // docs/opencode-exploration.md's live investigation). MCP tool access under OpenCode
+  // is all-or-nothing at the SERVER level: the member's per-folder apra-fleet entry in
+  // <workFolder>/opencode.json (syncMemberMcpEntry) is enabled outright, and the fleet
+  // server itself serves a ?member= session only the member allowlist. Do not add MCP
+  // entries to the returned permission object; OpenCode's schema would not understand them.
   composePermissionConfig(role: 'doer' | 'reviewer', _allow: string[] = []): Array<Record<string, unknown> | string> {
     if (role === 'doer') {
       return [{ permission: { edit: 'allow', write: 'allow', bash: 'allow' } }];
     }
     return [{ permission: { edit: 'deny', write: 'allow', bash: 'allow' } }];
+  }
+
+  /** Writes (or removes) mcp['apra-fleet'] in <workFolder>/opencode.json -- the
+   *  project-scope config opencode reads -- and prunes the retired
+   *  apra-fleet-member entry there and in the global
+   *  ~/.config/opencode/opencode.json. opencode gets no MCP deny rules: the
+   *  server already serves a member session only the member allowlist. On
+   *  removal the file is deleted when nothing else remains in it. */
+  async syncMemberMcpEntry(ctx: MemberMcpSyncContext): Promise<MemberMcpSyncResult> {
+    const { agent, url } = ctx;
+    const isWindows = ctx.agentOs === 'windows';
+    const posix = isPosixShell(isWindows, ctx.shell);
+    const file = joinMemberPath(agent.workFolder, OPENCODE_PROJECT_CONFIG, isWindows, ctx.shell);
+
+    let config: Record<string, unknown>;
+    try {
+      config = await readMemberJson(ctx.execCommand, file, posix);
+    } catch (e) {
+      // JSONC (comments / trailing commas) is common in opencode.json: report it
+      // as a typed, recoverable status and never rewrite the file.
+      if (e instanceof MemberConfigNotJsonError) {
+        throw new MemberConfigNotJsonError(file, 'is not strict JSON (JSONC comments or trailing commas?)', 'opencode-config-unparseable');
+      }
+      throw e;
+    }
+    const mcp: Record<string, unknown> = (config.mcp && typeof config.mcp === 'object' && !Array.isArray(config.mcp))
+      ? config.mcp as Record<string, unknown>
+      : {};
+    const hadLegacy = LEGACY_MEMBER_MCP_SERVER_NAME in mcp;
+    delete mcp[LEGACY_MEMBER_MCP_SERVER_NAME];
+    // Check if the file actually exists on disk (even if empty or {})
+    const fileExists = await memberFileExists(ctx.execCommand, file, posix);
+    let detail: string;
+    if (url !== null) {
+      const cur = mcp[MEMBER_MCP_SERVER_NAME] as Record<string, unknown> | undefined;
+      // The member install's access secret rides as an http header (opencode
+      // remote MCP `headers`); without it the server refuses the session.
+      const wanted: Record<string, unknown> = { type: 'remote', url, enabled: true, ...(ctx.headers ? { headers: ctx.headers } : {}) };
+      const current = !!cur && typeof cur === 'object' && JSON.stringify(cur) === JSON.stringify(wanted);
+      if (current && !hadLegacy) {
+        detail = `opencode: ${file} already up to date`;
+      } else {
+        if (fileExists && await isGitTracked(ctx.execCommand, agent.workFolder, OPENCODE_PROJECT_CONFIG, isWindows, posix)) {
+          throw new MemberConfigError(
+            'E-OPENCODE-CONFIG-TRACKED',
+            'opencode-config-tracked',
+            file,
+            `E-OPENCODE-CONFIG-TRACKED: ${file} is tracked by git; compose left it untouched (writing the member URL would dirty the repo). Untrack it or add the apra-fleet MCP entry to it yourself.`,
+          );
+        }
+        mcp[MEMBER_MCP_SERVER_NAME] = wanted;
+        config.mcp = mcp;
+        if (ctx.headers) {
+          await writeSecretBearingConfig(ctx, file, JSON.stringify(config, null, 2) + '\n', posix);
+        } else {
+          await writeMemberJson(ctx.execCommand, file, config, posix);
+        }
+        detail = `opencode: wrote ${MEMBER_MCP_SERVER_NAME} in ${file}`;
+      }
+    } else if (fileExists && await isGitTracked(ctx.execCommand, agent.workFolder, OPENCODE_PROJECT_CONFIG, isWindows, posix)) {
+      detail = `opencode: ${file} is tracked by git; left untouched`;
+    } else if (ctx.removeOnlyOwnEntry && !hadLegacy && !isOwnMemberEntry(mcp[MEMBER_MCP_SERVER_NAME], agent.id)) {
+      // Only THIS member's entry (?member=<uuid>) is removed; the owner's own
+      // apra-fleet entry (e.g. a full install) is never touched.
+      detail = `opencode: no member MCP entry of this member in ${file}`;
+    } else {
+      if (!ctx.removeOnlyOwnEntry || isOwnMemberEntry(mcp[MEMBER_MCP_SERVER_NAME], agent.id)) delete mcp[MEMBER_MCP_SERVER_NAME];
+      if (Object.keys(mcp).length > 0) config.mcp = mcp; else delete config.mcp;
+      if (Object.keys(config).length === 0) {
+        await deleteMemberFile(ctx.execCommand, file, posix);
+        detail = `opencode: removed ${file}`;
+      } else {
+        await writeMemberJson(ctx.execCommand, file, config, posix);
+        detail = `opencode: removed ${MEMBER_MCP_SERVER_NAME} from ${file}`;
+      }
+    }
+
+    if (ctx.memberHomeDir) {
+      const globalFile = joinMemberPath(ctx.memberHomeDir.trim(), '.config/opencode/opencode.json', isWindows, ctx.shell);
+      try {
+        if (await pruneLegacyMcpInMemberFile(ctx.execCommand, globalFile, posix)) {
+          detail += `; pruned apra-fleet-member from ${globalFile}`;
+        }
+      } catch (e) {
+        // The global config is only pruned best-effort (it is often JSONC):
+        // an unreadable/unparseable one is left alone and never fails compose.
+        if (!(e instanceof MemberConfigError)) throw e;
+        detail += `; skipped pruning ${globalFile} (${e.code})`;
+      }
+    }
+    return { workFolderFiles: [OPENCODE_PROJECT_CONFIG], detail };
   }
 
   supportsOAuthCopy(): boolean {
@@ -217,51 +393,7 @@ export class OpenCodeProvider implements ProviderAdapter {
     return `${setupCmd}Write-Output "FLEET_PID:$pid"; ${filePath} ${argList}`;
   }
 
-  async registerMcpEndpoint(opts: RegisterMcpEndpointOptions): Promise<RegisterMcpEndpointResult> {
-    // OpenCode has no non-interactive registration verb for token-based auth --
-    // `opencode mcp auth <server>` is for interactive OAuth entry only, not a
-    // pre-minted bearer token from the hub/local server. Its native config file
-    // (opencode.json) supports remote MCP servers with bearer-auth headers
-    // natively: { type: 'remote', url, headers: { Authorization: 'Bearer ...' } }.
-    // Live-verified: a local HTTP listener confirmed OpenCode sends the
-    // Authorization header exactly as configured (see docs/member-onboarding-journey.md
-    // 3a and apra-fleet-fnz.3). Read-modify-write, same shape as AGY, scoped by
-    // `opts.scope`: 'project' writes workFolder/opencode.json, 'user' writes the
-    // global ~/.config/opencode/opencode.json.
-    const configFile = opts.scope === 'project'
-      ? path.join(opts.workFolder, 'opencode.json')
-      : path.join(os.homedir(), '.config', 'opencode', 'opencode.json');
-
-    fs.mkdirSync(path.dirname(configFile), { recursive: true });
-
-    let settings: Record<string, unknown> = {};
-    if (fs.existsSync(configFile)) {
-      try {
-        settings = JSON.parse(fs.readFileSync(configFile, 'utf-8'));
-      } catch {
-        // malformed file -- start fresh rather than write on top of unparseable state
-        settings = {};
-      }
-    }
-
-    const mcp = (settings.mcp as Record<string, unknown> | undefined) ?? {};
-    mcp['apra-fleet-member'] = {
-      type: 'remote',
-      url: opts.url,
-      enabled: true,
-      headers: { Authorization: `Bearer ${opts.token}` },
-    };
-    settings.mcp = mcp;
-
-    fs.writeFileSync(configFile, JSON.stringify(settings, null, 2) + '\n');
-
-    return {
-      mechanism: 'config-file-merge',
-      detail: `merged apra-fleet-member into ${configFile} (mcp.apra-fleet-member, remote+bearer-auth headers)`,
-    };
-  }
-
-  async ensureWorkspaceTrusted(_workFolder: string, _execCommand: WorkspaceTrustExecFn, _agentOs?: 'linux' | 'macos' | 'windows'): Promise<EnsureWorkspaceTrustedResult> {
+  async ensureWorkspaceTrusted(_workFolder: string, _execCommand: WorkspaceTrustExecFn, _agentOs?: 'linux' | 'macos' | 'windows', _shell?: MemberShell): Promise<EnsureWorkspaceTrustedResult> {
     // apra-fleet-eft.40 provider trust matrix: OpenCode has a first-run trust/onboarding
     // gate too (docs/opencode-exploration.md:92-97), but it is ALREADY handled via the
     // validated --dangerously-skip-permissions flag on `opencode run` (same doc, checklist

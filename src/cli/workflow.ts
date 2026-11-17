@@ -196,8 +196,9 @@ yourself always wins):
   APRA_FLEET_SE_SCHEMAS_DIR    the installed agent role schemas
 
 Set APRA_FLEET_TRANSPORT=http|stdio to force how the workflow reaches the fleet
-server. Default: attach to a running HTTP singleton if one is healthy, else
-self-spawn a stdio server (docs/adr-workflow-server-resolution.md).`;
+server. Default: attach to the shared HTTP server if it is healthy; if it is
+not running, start it (as 'apra-fleet start' does) and attach
+(docs/adr-workflow-server-resolution.md).`;
 }
 
 /** Installed workflows, name-sorted. Built-ins are the names in .installed.json. */

@@ -1,5 +1,5 @@
 // =============================================================================
-// Auto-sprint supervisor -- live-detail reverse proxy (apra-fleet-eft.6.4,
+// fleet-sprint supervisor -- live-detail reverse proxy (apra-fleet-eft.6.4,
 // Plan Part 2.3)
 // =============================================================================
 //
@@ -50,7 +50,9 @@ import http from 'node:http';
 import fsp from 'node:fs/promises';
 import { escapeHtml } from '@apralabs/apra-fleet-workflow/viewer/html-utils';
 import { getTerminalRunStatePath } from '@apralabs/apra-fleet-workflow/viewer/run-state-paths';
+import { ADMITTED_REQUEST_STRIP_HEADERS } from '@apralabs/apra-fleet-workflow/viewer/request-guard';
 import { withTimestamps } from './log-timestamp.mjs';
+import { createChildPortResolver } from './child-port.mjs';
 
 /** Hop-by-hop headers that must never be forwarded verbatim across a proxy. */
 const HOP_BY_HOP = Object.freeze([
@@ -88,15 +90,29 @@ export function rewriteChildHtml(html, prefix) {
         .split("'/events'").join("'" + prefix + "/events'")
         .split("'/state?").join("'" + prefix + "/state?")
         .split("'/stop'").join("'" + prefix + "/stop'")
+        // (apra-fleet-p2to.3.1) the child viewer's own Pause/Resume buttons
+        // (apra-fleet-p2to.2.1, viewer/index.mjs's pauseWorkflow()/
+        // resumeWorkflow()) call these two absolute app-paths -- rewritten
+        // here exactly like '/stop' so the live-proxied view's buttons
+        // re-enter this proxy instead of hitting the supervisor root.
+        .split("'/pause'").join("'" + prefix + "/pause'")
+        .split("'/resume'").join("'" + prefix + "/resume'")
         .split("'/save_logs'").join("'" + prefix + "/save_logs'")
         .split("'/extensions/").join("'" + prefix + "/extensions/")
         .split("'/activities/").join("'" + prefix + "/activities/");
 }
 
-/** Copy request headers for the upstream call, dropping host/encoding/hop-by-hop. */
+/**
+ * Copy request headers for the upstream call, dropping host/encoding/hop-by-hop
+ * and the browser-origin/token headers: the supervisor's route() guard already
+ * admitted this request against the SUPERVISOR's origin, and the child viewer
+ * (a different port, same guard) would otherwise read the supervisor's Origin
+ * as cross-site and refuse the forwarded POST.
+ */
 function upstreamRequestHeaders(req) {
     const headers = { ...req.headers };
     delete headers.host;
+    for (const h of ADMITTED_REQUEST_STRIP_HEADERS) delete headers[h];
     // SSE passthrough must stay uncompressed and unbuffered -- never let the
     // child gzip a stream we need to flush event-by-event.
     delete headers['accept-encoding'];
@@ -310,20 +326,13 @@ export function createLiveProxy(deps = {}) {
     const logger = withTimestamps(deps.logger ?? console);
     const logError = (...a) => (logger.error ?? logger.log)?.(...a);
 
-    // Default port resolution: sprintId -> ledger childPid -> spawner live port.
-    // The ledger deliberately does NOT persist ports; the spawner is the live
+    // Default port resolution: sprintId -> ledger childPid -> spawner live port
+    // (child-port.mjs, shared with the dashboard's per-row summary pull). The
+    // ledger deliberately does NOT persist ports; the spawner is the live
     // pid->port bookkeeping (freshly spawned OR re-adopted across a restart), so
     // a finished/crashed child (no live entry) resolves to `undefined` and the
     // request falls through to history.
-    function defaultResolvePort(sprintId) {
-        if (!ledger || typeof ledger.get !== 'function') return undefined;
-        const entry = ledger.get(sprintId);
-        const pid = entry && entry.childPid;
-        if (!Number.isInteger(pid)) return undefined;
-        if (!spawner || typeof spawner.getLiveEntry !== 'function') return undefined;
-        const live = spawner.getLiveEntry(pid);
-        return live && Number.isInteger(live.port) ? live.port : undefined;
-    }
+    const defaultResolvePort = createChildPortResolver({ ledger, spawner });
     const resolvePort = deps.resolvePort ?? defaultResolvePort;
 
     const renderHistory = deps.renderHistory
@@ -397,6 +406,15 @@ export function createLiveProxy(deps = {}) {
     const handleEvents = makeSubpath(() => '/events');
     const handleState = makeSubpath((url) => '/state' + (url && url.search ? url.search : ''));
     const handleStop = makeSubpath(() => '/stop');
+    // (apra-fleet-p2to.3.1) Proxy the child's own cooperative POST /pause and
+    // /resume (apra-fleet-p2to.2.1, viewer/index.mjs), which forward to the
+    // engine's requestPause()/requestResume() -- NEVER the kill+force-release
+    // route the Sprint Stack's Stop button uses (POST /api/reservations/
+    // :sprintId/force-release, dashboard.mjs). Same makeSubpath() plumbing as
+    // handleStop above: a request arriving after the child is gone answers
+    // 404 cleanly rather than a dead socket.
+    const handlePause = makeSubpath(() => '/pause');
+    const handleResume = makeSubpath(() => '/resume');
     const handleSaveLogs = makeSubpath(() => '/save_logs');
 
     // apra-fleet-04g.1: the generic on-demand-detail route (extension id +
@@ -427,6 +445,21 @@ export function createLiveProxy(deps = {}) {
         proxyStream({ host, port, childPath, req, res, logError });
     }
 
+    // The generic extension action route (extension id + action id from the
+    // URL), POST with a JSON body: the decisions banner's answer form.
+    async function handleExtensionAction(req, res, ctx) {
+        const sprintId = ctx?.params?.id;
+        if (!sprintId) { sendPlain(res, 400, 'missing sprint id in path'); return; }
+        const port = safeResolvePort(sprintId);
+        if (!Number.isInteger(port)) {
+            sendPlain(res, 404, `sprint '${sprintId}' is no longer live`);
+            return;
+        }
+        const childPath = '/extensions/' + encodeURIComponent(ctx?.params?.extId ?? '')
+            + '/actions/' + encodeURIComponent(ctx?.params?.actionId ?? '');
+        proxyStream({ host, port, childPath, req, res, logError });
+    }
+
     return {
         name: 'live-proxy',
         resolvePort: safeResolvePort,
@@ -435,8 +468,11 @@ export function createLiveProxy(deps = {}) {
         handleEvents,
         handleState,
         handleStop,
+        handlePause,
+        handleResume,
         handleSaveLogs,
         handleExtensionDetail,
+        handleExtensionAction,
         handleActivityOutput,
     };
 }
@@ -452,7 +488,12 @@ export function registerLiveRoutes(supervisor, proxy) {
     supervisor.route('GET', '/sprints/:id/live/events', proxy.handleEvents);
     supervisor.route('GET', '/sprints/:id/live/state', proxy.handleState);
     supervisor.route('POST', '/sprints/:id/live/stop', proxy.handleStop);
+    // (apra-fleet-p2to.3.1) Cooperative pause/resume proxy routes -- see
+    // createLiveProxy()'s handlePause/handleResume doc comment above.
+    supervisor.route('POST', '/sprints/:id/live/pause', proxy.handlePause);
+    supervisor.route('POST', '/sprints/:id/live/resume', proxy.handleResume);
     supervisor.route('POST', '/sprints/:id/live/save_logs', proxy.handleSaveLogs);
     supervisor.route('GET', '/sprints/:id/live/extensions/:extId/detail/:itemId', proxy.handleExtensionDetail);
+    supervisor.route('POST', '/sprints/:id/live/extensions/:extId/actions/:actionId', proxy.handleExtensionAction);
     supervisor.route('GET', '/sprints/:id/live/activities/:activityId/output', proxy.handleActivityOutput);
 }

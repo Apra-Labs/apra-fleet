@@ -127,6 +127,24 @@ describe('memberDetail auth detection', () => {
     expect(result.llm_cli.auth).not.toContain('OAuth');
   });
 
+  it('detects a Claude Code OAuth token env var as env-token auth', async () => {
+    const member = makeTestAgent({ friendlyName: 'oauth-token-only' });
+    addAgent(member);
+    setupDefaultMock();
+
+    mockExecCommand.mockImplementation(async (cmd: string) => {
+      if (cmd.includes('.credentials.json')) return { stdout: 'missing', stderr: '', code: 0 };
+      if (cmd.includes('CLAUDE_CODE_OAUTH_TOKEN')) return { stdout: 'sk-ant-oat', stderr: '', code: 0 };
+      if (cmd.includes('ANTHROPIC_API_KEY')) return { stdout: '', stderr: '', code: 0 };
+      if (cmd.includes('--version')) return { stdout: '1.0.42', stderr: '', code: 0 };
+      if (cmd.includes('pgrep') || cmd.includes('wmic process')) return { stdout: 'idle', stderr: '', code: 0 };
+      return { stdout: 'N/A', stderr: '', code: 0 };
+    });
+
+    const result = JSON.parse(await memberDetail({ member_id: member.id, format: 'json' }));
+    expect(result.llm_cli.auth).toBe('api-key');
+  });
+
   it('strips provider prefix from version string', async () => {
     const member = makeTestAgent({ friendlyName: 'prefixed-version' });
     addAgent(member);
@@ -142,5 +160,48 @@ describe('memberDetail auth detection', () => {
 
     const result = JSON.parse(await memberDetail({ member_id: member.id, format: 'json' }));
     expect(result.llm_cli.version).toBe('1.0.42');
+  });
+});
+
+describe('memberDetail statusline writes', () => {
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+  });
+
+  function mockProbe(processOut: string) {
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 3 });
+    mockExecCommand.mockImplementation(async (cmd: string) => {
+      if (cmd.includes('.credentials.json')) return { stdout: 'missing', stderr: '', code: 0 };
+      if (cmd.includes('ANTHROPIC_API_KEY')) return { stdout: '', stderr: '', code: 0 };
+      if (cmd.includes('--version')) return { stdout: '1.0.42', stderr: '', code: 0 };
+      if (cmd.includes('pgrep') || cmd.includes('wmic process')) return { stdout: processOut, stderr: '', code: 0 };
+      return { stdout: 'N/A', stderr: '', code: 0 };
+    });
+  }
+
+  it('a probed busy is not persisted (no owner would ever clear it)', async () => {
+    const { readMemberStatus } = await import('../src/services/statusline.js');
+    const member = makeTestAgent({ friendlyName: 'probe-busy' });
+    addAgent(member);
+    mockProbe('fleet-busy');
+    const result = JSON.parse(await memberDetail({ member_id: member.id, format: 'json' }));
+    expect(result.session.status).toBe('busy');
+    expect(readMemberStatus(member.id)).toBe('idle');
+  });
+
+  it('a probed idle clears a stale stored busy', async () => {
+    const { readMemberStatus, writeStatusline } = await import('../src/services/statusline.js');
+    const member = makeTestAgent({ friendlyName: 'probe-idle' });
+    addAgent(member);
+    writeStatusline(new Map([[member.id, 'busy']]));
+    mockProbe('idle');
+    const result = JSON.parse(await memberDetail({ member_id: member.id, format: 'json' }));
+    expect(result.session.status).toBe('idle');
+    expect(readMemberStatus(member.id)).toBe('idle');
   });
 });

@@ -3,6 +3,7 @@ import assert from 'node:assert';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs/promises';
+import fsSync from 'fs';
 import os from 'os';
 import { FleetWorkflow, BudgetExceededError } from '@apralabs/apra-fleet-workflow';
 import { WorkflowEngine } from '@apralabs/apra-fleet-workflow/engine';
@@ -15,6 +16,18 @@ import { runCmd } from './helpers/bd-replay.mjs';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const scriptPath = path.join(__dirname, '../fleet-sprint/runner.js');
+
+// apra-fleet-ot2z.14: runner.js's main() acquires the machine-local sprint
+// pidfile mutex (fleet-sprint/sprint-lock.mjs) keyed on (branch, members)
+// against the OS-tmpdir-wide default lock directory unless
+// APRA_FLEET_SPRINT_LOCK_DIR is set. This file's `branch: 'auto-sprint/
+// budget-live'` is a fixed literal shared by every test below, so without
+// isolation it could spuriously collide with an unrelated REAL fleet-sprint
+// concurrently running on the same host under `--test-concurrency=8`. Node's
+// test runner spawns one process per test file, so setting this once at
+// module scope (a fresh throwaway dir for this file's whole process
+// lifetime) safely isolates every test here without affecting other files.
+process.env.APRA_FLEET_SPRINT_LOCK_DIR = fsSync.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-sprint-lock-budget-live-'));
 
 // N10 (apra-fleet-unw2.8): regression coverage for "cost/budget is live",
 // i.e. that a real auto-sprint run (a) actually debits budget._spent
@@ -175,8 +188,16 @@ function buildMockFleetApi(tempDir, epicBead, taskId, dispatched, { pricingByMem
             if (/^git remote get-url origin\b/.test(opts.command)) {
                 return mockCmdResult(0, 'https://github.com/mock-org/mock-repo.git', '');
             }
+            // Review diff base: the engine needs a commit SHA back.
+            if (/^git merge-base origin\/\S+ \S+\s*$/.test(opts.command)) {
+                return mockCmdResult(0, 'c0ffee0000000000000000000000000000c0ffee', '');
+            }
             if (/^(git|gh)\s/.test(opts.command)) {
                 return mockCmdResult(0, 'ok (mocked -- no real git remote in this mock sprint)', '');
+            }
+            // Harvest's git-exclude script: hermetic success, never the host shell.
+            if (/^if excl=\$\(git rev-parse --git-path info\/exclude /.test(opts.command)) {
+                return mockCmdResult(0, '', '');
             }
             const { err, stdout, stderr } = await runCmd(opts.command, tempDir);
             if (err) {
@@ -348,7 +369,7 @@ describe('apra-fleet-unw2.8 (N10): live budget accounting', () => {
         const dispatched = [];
         try {
             // Deliberately priced far outside pricing.mjs's fallback rows
-            // (premium: $15/$75 per 1M) so a match against these numbers
+            // (premium: $4/$20 per 1M) so a match against these numbers
             // can only come from the real-pricing path, never a
             // coincidental fallback hit.
             const mockFleetApi = buildMockFleetApi(tempDir, epicBead, taskId, dispatched, {
@@ -371,11 +392,11 @@ describe('apra-fleet-unw2.8 (N10): live budget accounting', () => {
             // USAGE = 1000 prompt + 500 completion tokens per dispatch.
             // Real 'cheap' rate: 1000/1e6*1000 + 500/1e6*2000 = 1 + 1 = 2.00 per dispatch (doer).
             // Real 'premium' rate: same numbers = 2.00 per dispatch (planner/plan-reviewer/reviewer/final-review).
-            // pricing.mjs's fallback premium row would give only 0.0525 per dispatch --
+            // pricing.mjs's fallback premium row would give only 0.014 per dispatch --
             // a run that used the fallback for these would total far less than 2.00 per priced dispatch.
             const doerDispatch = dispatched.find((d) => d.agent === 'doer');
             assert.ok(doerDispatch, 'Expected a doer dispatch to have happened.');
-            assert.ok(totalCost >= 2.0, `Expected totalCost to reflect the real per-member rate (>= $2.00 for at least one dispatch), got ${totalCost} -- this would be far lower ($0.0525-scale) if the tier-band fallback was used instead of real pricing.`);
+            assert.ok(totalCost >= 2.0, `Expected totalCost to reflect the real per-member rate (>= $2.00 for at least one dispatch), got ${totalCost} -- this would be far lower ($0.014-scale) if the tier-band fallback was used instead of real pricing.`);
         } finally {
             await teardown(tempDir);
         }
@@ -390,12 +411,12 @@ describe('apra-fleet-unw2.8 (N10): live budget accounting', () => {
             const engine = new WorkflowEngine(workflow);
 
             // The planner dispatch alone (FIXED_ROLE_TIER.planner = 'premium',
-            // priced identically to the old 'opus' row:
-            // 1000 prompt tokens * $15/1M + 500 completion tokens * $75/1M =
-            // 0.015 + 0.0375 = $0.0525) already exceeds this ceiling once
+            // priced like the 'opus' row, Opus 5.5 list price:
+            // 1000 prompt tokens * $4/1M + 500 completion tokens * $20/1M =
+            // 0.004 + 0.01 = $0.014) already exceeds this ceiling once
             // its cost is debited, so the very next dispatch (plan-reviewer)
             // must be refused before it ever reaches the fleet.
-            const args = { ...baseArgs(epicBead), budget: 0.05 };
+            const args = { ...baseArgs(epicBead), budget: 0.01 };
 
             await assert.rejects(
                 () => engine.executeFile(scriptPath, args, true),

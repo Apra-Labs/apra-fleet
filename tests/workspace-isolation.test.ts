@@ -35,7 +35,7 @@ import { sendMessage } from '../src/tools/send-message.js';
 import { createHttpTransport, HttpTransportHandle } from '../src/services/http-transport.js';
 import { fleetEvents } from '../src/services/event-bus.js';
 import { addAgent } from '../src/services/registry.js';
-import { backupAndResetRegistry, restoreRegistry, makeTestLocalAgent } from './test-helpers.js';
+import { backupAndResetRegistry, restoreRegistry, makeTestLocalAgent, memberSecretRequestInit } from './test-helpers.js';
 
 function noopTools(_server: McpServer): void {
   // no tools needed
@@ -271,7 +271,7 @@ describe('(e) event broadcast is scoped to the local workspace', () => {
     if (opts.member) url.searchParams.set('member', opts.member);
     return new StreamableHTTPClientTransport(url, {
       reconnectionOptions: { maxRetries: 0, maxReconnectionDelay: 100, initialReconnectionDelay: 100, reconnectionDelayGrowFactor: 1 },
-      ...(opts.token ? { requestInit: { headers: { Authorization: `Bearer ${opts.token}` } } } : {}),
+      requestInit: opts.token ? { headers: { Authorization: `Bearer ${opts.token}` } } : memberSecretRequestInit(),
     });
   }
 
@@ -383,6 +383,7 @@ describe('(f) URL ?member= fallback keys identity on the member UUID', () => {
     url.searchParams.set('member', member);
     return new StreamableHTTPClientTransport(url, {
       reconnectionOptions: { maxRetries: 0, maxReconnectionDelay: 100, initialReconnectionDelay: 100, reconnectionDelayGrowFactor: 1 },
+      requestInit: memberSecretRequestInit(),
     });
   }
 
@@ -394,7 +395,8 @@ describe('(f) URL ?member= fallback keys identity on the member UUID', () => {
     const handle = await createHttpTransport({ registerTools: noopTools, preferredPort: 0 });
     handles.push(handle);
 
-    const client = new Client({ name: 'member-client', version: '1.0.0' }, { capabilities: {} });
+    // Channel-capable: a tool-only ?member= session never registers.
+    const client = new Client({ name: 'member-client', version: '1.0.0' }, { capabilities: { experimental: { 'claude/channel': {} } } });
     clients.push(client);
     await client.connect(makeTransport(handle.port, agent.id));
 
@@ -412,7 +414,8 @@ describe('(f) URL ?member= fallback keys identity on the member UUID', () => {
     const handle = await createHttpTransport({ registerTools: noopTools, preferredPort: 0 });
     handles.push(handle);
 
-    const client = new Client({ name: 'member-client', version: '1.0.0' }, { capabilities: {} });
+    // Channel-capable: a tool-only ?member= session never registers.
+    const client = new Client({ name: 'member-client', version: '1.0.0' }, { capabilities: { experimental: { 'claude/channel': {} } } });
     clients.push(client);
     await client.connect(makeTransport(handle.port, 'legacy-name-member'));
 

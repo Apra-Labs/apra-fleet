@@ -2,7 +2,7 @@
 
 OpenCode is an open-source AI coding assistant (opencode.ai) that works as both a
 **fleet member** (a worker that receives tasks) and an **orchestrator** (the PM agent
-that dispatches tasks to other members). Unlike Claude Code or Gemini CLI, OpenCode
+that dispatches tasks to other members). Unlike Claude Code, OpenCode
 is provider-agnostic -- it routes to self-hosted Ollama models, Google Gemini, cloud
 APIs, or OpenCode Go's hosted open-source models.
 
@@ -207,14 +207,19 @@ curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra
 curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-linux-x64 -o apra-fleet-installer && chmod +x apra-fleet-installer && ./apra-fleet-installer --llm opencode
 ```
 
+**Linux (ARM64 / aarch64)**
+```bash
+curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-linux-arm64 -o apra-fleet-installer && chmod +x apra-fleet-installer && ./apra-fleet-installer --llm opencode
+```
+
 **Windows (x64)** -- run in PowerShell:
 ```powershell
-Invoke-WebRequest -Uri https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-win-x64.exe -OutFile apra-fleet-installer.exe; .\apra-fleet-installer.exe --llm opencode
+curl.exe -fL -o apra-fleet-installer.exe https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-win-x64.exe; .\apra-fleet-installer.exe --llm opencode
 ```
 
 After install, restart OpenCode to load the MCP server. All fleet tools
 (`register_member`, `execute_prompt`, `fleet_status`, etc.) will be available
-inside OpenCode sessions, and OpenCode can dispatch work to Claude Code, Gemini,
+inside OpenCode sessions, and OpenCode can dispatch work to Claude Code, Antigravity,
 or other fleet members.
 
 **Note on Gemini compatibility:** If OpenCode is used as orchestrator with a Google

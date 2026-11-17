@@ -1,0 +1,55 @@
+{
+  "attribution": {
+    "commit": "",
+    "pr": ""
+  },
+  "permissions": {
+    "allow": [
+      "Edit", "Write",
+      "Edit(skills/**)", "Write(skills/**)",
+      "Edit(packages/apra-fleet-se/fleet-sprint/**)", "Write(packages/apra-fleet-se/fleet-sprint/**)"
+    ]
+  },
+  "hooks": {
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "command": "bd prime --no-memories",
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      },
+      {
+        "hooks": [
+          {
+            "command": "node scripts/beads-session-memories.mjs +all+ +orchestrator+",
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "command": "bd prime --no-memories",
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      },
+      {
+        "hooks": [
+          {
+            "command": "node scripts/beads-session-memories.mjs +all+ +orchestrator+",
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      }
+    ]
+  }
+}

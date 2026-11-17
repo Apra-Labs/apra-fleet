@@ -70,8 +70,11 @@ describe('loadCanonicalAgentSet', () => {
     ]);
 
     const planner = set.find(f => f.relPath === 'planner.md')!;
-    expect(planner.content).toBe(FAKE_AGENT_ASSETS[0].content);
-    expect(planner.sha256).toBe(sha256(FAKE_AGENT_ASSETS[0].content));
+    // Body untouched; the tools allowlist gains the member MCP grants (a role
+    // runs as `claude --agent planner`, whose list filters the session).
+    expect(planner.content.replace(/^tools:.*$/m, '')).toBe(FAKE_AGENT_ASSETS[0].content.replace(/^tools:.*$/m, ''));
+    expect(planner.content).toMatch(/^tools: \[Read, Grep, mcp__apra-fleet__code_graph, .*mcp__apra-fleet__kb_query.*\]$/m);
+    expect(planner.sha256).toBe(sha256(planner.content));
     expect(planner.sha256).toMatch(/^[0-9a-f]{64}$/);
   });
 
@@ -101,7 +104,6 @@ describe('loadCanonicalAgentSet', () => {
 describe('remoteAgentsDir', () => {
   it('maps each provider to its home-relative agents dir', () => {
     expect(remoteAgentsDir('claude')).toBe('.claude/agents');
-    expect(remoteAgentsDir('gemini')).toBe('.gemini/agents');
     expect(remoteAgentsDir('agy')).toBe('.gemini/antigravity-cli/agents');
     expect(remoteAgentsDir('opencode')).toBe('.config/opencode/agents');
   });
@@ -423,7 +425,12 @@ describe('hashFilesRecursive (os-commands)', () => {
     const decoded = Buffer.from(encoded, 'base64').toString('utf16le');
     expect(decoded).toContain('Join-Path $HOME');
     expect(decoded).toContain('.claude\\agents');
-    expect(decoded).toContain('Get-FileHash');
+    // Hashes via [System.Security.Cryptography.SHA256] directly, not the
+    // Get-FileHash cmdlet -- see the hashFilesRecursive() comment in
+    // src/os/windows.ts for why the cmdlet is unreliable on Windows
+    // PowerShell 5.1.
+    expect(decoded).not.toContain('Get-FileHash');
+    expect(decoded).toContain('System.Security.Cryptography.SHA256');
     expect(decoded).toContain('SHA256');
     expect(decoded).toContain('.ToLower()');
   });

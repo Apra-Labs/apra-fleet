@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { getAgentOrFail, getAgentOS, touchAgent, checkVcsTokenExpiry, getStoredPid, setStoredPid, clearStoredPid } from '../src/utils/agent-helpers.js';
 import { addAgent, getAgent } from '../src/services/registry.js';
 import type { Agent } from '../src/types.js';
+import { serverVersion } from '../src/version.js';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 
 const makeAgent = makeTestAgent;
@@ -60,6 +61,14 @@ describe('touchAgent', () => {
     touchAgent('no-sess-test');
     expect(getAgent('no-sess-test')!.sessionId).toBe('keep-me');
   });
+
+  it('stamps the recording server build with a new sessionId; a bare touch keeps the stamp', () => {
+    addAgent(makeAgent({ id: 'stamp-test', sessionId: 'old', sessionServerVersion: 'v0.4.3_f390e2' }));
+    touchAgent('stamp-test');
+    expect(getAgent('stamp-test')!.sessionServerVersion).toBe('v0.4.3_f390e2');
+    touchAgent('stamp-test', 'new-session');
+    expect(getAgent('stamp-test')!.sessionServerVersion).toBe(serverVersion);
+  });
 });
 
 describe('checkVcsTokenExpiry', () => {
@@ -98,6 +107,46 @@ describe('checkVcsTokenExpiry', () => {
     const result = checkVcsTokenExpiry(member, now);
     expect(result).toContain('1 minute');
     expect(result).not.toContain('1 minutes');
+  });
+
+  // apra-fleet-5co8.5.1: the 10-minute threshold was sized for hour-lived
+  // GitHub App tokens; an Azure DevOps PAT lives for months, so a warning that
+  // only fires in its last 10 minutes is useless. The day-scale threshold is
+  // gated on the provider so GitHub behaviour is untouched.
+  it('warns days ahead for an azure-devops PAT nearing expiry', () => {
+    const now = new Date('2026-03-24T10:00:00Z');
+    const member = makeAgent({ vcsProvider: 'azure-devops', vcsTokenExpiresAt: '2026-03-27T10:00:00Z' });
+    const result = checkVcsTokenExpiry(member, now);
+    expect(result).toContain('⚠️');
+    expect(result).toContain('3 days');
+    expect(result).toContain('consider refreshing');
+  });
+
+  it('uses singular "day" for 1 day remaining on azure-devops', () => {
+    const now = new Date('2026-03-24T10:00:00Z');
+    const member = makeAgent({ vcsProvider: 'azure-devops', vcsTokenExpiresAt: '2026-03-25T09:00:00Z' });
+    const result = checkVcsTokenExpiry(member, now);
+    expect(result).toContain('1 day');
+    expect(result).not.toContain('1 days');
+  });
+
+  it('stays silent for an azure-devops PAT further out than the day-scale threshold', () => {
+    const now = new Date('2026-03-24T10:00:00Z');
+    const member = makeAgent({ vcsProvider: 'azure-devops', vcsTokenExpiresAt: '2026-06-24T10:00:00Z' });
+    expect(checkVcsTokenExpiry(member, now)).toBeNull();
+  });
+
+  it('does NOT day-scale warn for github, even inside the 7-day window', () => {
+    const now = new Date('2026-03-24T10:00:00Z');
+    const member = makeAgent({ vcsProvider: 'github', vcsTokenExpiresAt: '2026-03-27T10:00:00Z' });
+    expect(checkVcsTokenExpiry(member, now)).toBeNull();
+  });
+
+  it('still applies the 10-minute threshold to an azure-devops token', () => {
+    const now = new Date('2026-03-24T10:55:00Z');
+    const member = makeAgent({ vcsProvider: 'azure-devops', vcsTokenExpiresAt: '2026-03-24T11:00:00Z' });
+    const result = checkVcsTokenExpiry(member, now);
+    expect(result).toContain('5 minute');
   });
 });
 

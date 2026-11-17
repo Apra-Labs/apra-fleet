@@ -17,6 +17,7 @@ Apra Fleet is a multi-agent orchestration layer that lets a PM agent delegate wo
 - [SSH Setup](docs/ssh-setup.md): Enabling SSH access on a remote machine.
 - [Out-of-Band Auth](docs/features/oob-auth.md): Securely managing credentials and passwords for fleet members.
 - [Git Authentication](docs/design-git-auth.md): How git authentication works across fleet members.
+- [GitHub App Setup](docs/github-app-setup.md): What to set up before setup_git_app, and the exact App permissions each git_access level requests.
 
 ## Features
 

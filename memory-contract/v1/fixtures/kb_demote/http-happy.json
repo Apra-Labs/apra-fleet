@@ -1,0 +1,21 @@
+{
+  "tool": "kb_demote",
+  "case": "http-happy",
+  "kind": "happy",
+  "request": {
+    "id": "4593e2f8-a104-40cb-acf1-3dc41afa8f4b",
+    "reason": "Re-checked src/widget.ts: the export is a constant only in this fixture, so CONFIRMED overstates it.",
+    "evidence_files": [
+      "src/widget.ts"
+    ]
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"id\":\"4593e2f8-a104-40cb-acf1-3dc41afa8f4b\",\"previous_confidence\":\"CONFIRMED\",\"new_confidence\":\"INFERRED\"}"
+      }
+    ]
+  },
+  "session": "HTTP_A"
+}

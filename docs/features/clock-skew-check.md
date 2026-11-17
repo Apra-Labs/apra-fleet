@@ -25,20 +25,24 @@ sprint burned its dispatch retries against it.
 ## What it does
 
 `fleet-sprint`'s Sprint Setup group runs a `Clock Skew Check` phase once
-per dispatched member, immediately after the `Ensure Sprint Branch` phase
-and before any real work is dispatched to that member. For each member it:
+per branch-ensured member, immediately after the `Ensure Sprint Branch` phase
+and before any real work is dispatched to that member
+(`packages/apra-fleet-se/fleet-sprint/phases/clock-skew-check.mjs`, called
+from `phases/ensure-sprint-branch.mjs`). For each member it:
 
 1. Captures `hubT0 = Date.now()`.
-2. Runs a member-side epoch-milliseconds probe (POSIX `date`, with a
-   PowerShell fallback for Windows members) through the same command
-   dispatch path used elsewhere in the runner.
+2. Runs a member-side epoch probe through the same command dispatch path
+   used elsewhere in the runner: POSIX `date +%s` (epoch seconds, which
+   GNU, BSD/macOS and busybox `date` all support), with a PowerShell
+   fallback that reports epoch milliseconds for Windows members.
 3. Captures `hubT1 = Date.now()`.
 4. Computes skew by bracketing: if the member's reported epoch falls
    inside `[hubT0, hubT1]`, skew is zero (a round trip cannot distinguish
    a perfectly-synced clock from a small drift within the round-trip
    window, so zero is the honest answer for anything the bracket can't
-   resolve). Otherwise skew is the signed distance outside whichever
-   bracket edge was closest.
+   resolve). The lower edge is floored to the whole second, since a
+   seconds reading truncates. Otherwise skew is the signed distance
+   outside whichever bracket edge was closest.
 5. Compares `|skew|` against a threshold and logs a WARNING naming the
    member and the measured skew (direction and magnitude) if it's
    exceeded. A member whose probe could not be read at all (both the POSIX
@@ -63,8 +67,9 @@ abort.
 separate hardcoded constant.** The check exists specifically to warn about
 skew large enough to break the stall detector's timing assumption, so its
 threshold is defined as a fraction of the stall detector's own
-configurable threshold (env-overridable, with the same default the stall
-detector uses) rather than an independent magic number. If an operator
+configurable threshold (a quarter of `STALL_THRESHOLD_MS`, falling back to
+120000 when it is unset or unparsable) rather than an independent magic
+number. If an operator
 retunes the stall threshold, the clock-skew warning threshold moves with
 it automatically.
 

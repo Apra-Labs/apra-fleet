@@ -1,9 +1,15 @@
 import { execSync } from 'node:child_process';
 import type { OsCommands, ProviderAdapter, PromptOptions } from './os-commands.js';
-import { escapeDoubleQuoted, escapeGrepPattern, sanitizeSessionId } from './os-commands.js';
+import { escapeDoubleQuoted, escapeGrepPattern, sanitizeSessionId, GIT_LS_REMOTE_OK_MARKER } from './os-commands.js';
 import { escapeShellArg } from '../utils/shell-escape.js';
 
-const CLI_PATH = 'export PATH="$HOME/.local/bin:$PATH" && unset ANTIGRAVITY_SOURCE_METADATA GEMINI_SOURCE_METADATA CLAUDE_SOURCE_METADATA COPILOT_SOURCE_METADATA CODEX_SOURCE_METADATA && ';
+// The member's own fleet bin dir (<home>/.apra-fleet/bin: the member-install
+// apra-fleet, dolt, and bd when the installer could not place it on the system
+// PATH) is APPENDED, never prepended, so a tool the user already has on PATH
+// stays authoritative. $HOME is expanded by the member's own POSIX shell: these
+// builders have no probed home to resolve in JS, same as the .local/bin entry.
+export const FLEET_BIN_PATH_POSIX = '$HOME/.apra-fleet/bin';
+const CLI_PATH = `export PATH="$HOME/.local/bin:$PATH:${FLEET_BIN_PATH_POSIX}" && unset ANTIGRAVITY_SOURCE_METADATA CLAUDE_SOURCE_METADATA COPILOT_SOURCE_METADATA CODEX_SOURCE_METADATA && `;
 
 /**
  * Wrap a bash command string with PID capture.
@@ -90,9 +96,12 @@ export class LinuxCommands implements OsCommands {
   // --- Process check ---
 
   fleetProcessCheck(folder: string, sessionId?: string, processName?: string): string {
+    if (processName === '') return 'echo "idle"';
     const pname = processName ?? 'claude';
-    // Use bracket trick to avoid pgrep matching its own grep process
-    const bracketName = `[${pname[0]}]${pname.slice(1)}`;
+    // Use bracket trick plus boundaries to avoid pgrep matching its own grep process
+    // or folder names that contain the process name as a substring (e.g. fleet-agy).
+    // Note: use POSIX [[:space:]] instead of \s because BSD/macOS pgrep -f does not support \s.
+    const bracketName = `(^|/|[[:space:]])[${pname[0]}]${pname.slice(1)}([[:space:]]|$)`;
     const folderPattern = escapeGrepPattern(folder);
     const fleetMatch = sessionId
       ? `grep -E "(${folderPattern}|${escapeGrepPattern(sanitizeSessionId(sessionId))})"`
@@ -124,9 +133,22 @@ export class LinuxCommands implements OsCommands {
   }
 
   buildAgentPromptCommand(provider: ProviderAdapter, opts: PromptOptions): string {
-    const { folder } = opts;
+    const { folder, fork } = opts;
     const escapedFolder = escapeDoubleQuoted(folder);
-    const providerCmd = provider.buildPromptCommand(opts);
+    // apra-fleet-lmtg.2: fork mode seeds a NEW session from an existing one's
+    // transcript and must not also carry an ordinary resume/session-id flag
+    // (mutually exclusive intents). provider.buildPromptCommand()'s own
+    // sessionId/resuming branch predates fork descriptors, so when a fork
+    // descriptor is present and the provider supports it, build the base
+    // command with sessionId/resuming suppressed and splice in the
+    // provider's own fork invocation instead. Absent a fork descriptor (or a
+    // non-fork-capable provider), behavior is unchanged.
+    const forkFlag = (fork && provider.supportsFork?.())
+      ? provider.forkFlag?.(fork.sourceSessionId, fork.newSessionId)
+      : undefined;
+    const providerCmd = forkFlag
+      ? `${provider.buildPromptCommand({ ...opts, sessionId: undefined, resuming: undefined })} ${forkFlag}`
+      : provider.buildPromptCommand(opts);
     // Provider command starts with `cd "folder" && <cli> ...`
     // Inject PATH prepend after the cd so the binary is findable
     const cdPrefix = `cd "${escapedFolder}" && `;
@@ -201,8 +223,20 @@ export class LinuxCommands implements OsCommands {
     return `mkdir -p "$(dirname "${shellPath(p)}")" && printf '%s' "${escaped}" > "${shellPath(p)}" && chmod 600 "${shellPath(p)}"`;
   }
 
+  credentialFileInstall(stagedPath: string, destPath: string): string {
+    const p = shellPath(expandHome(destPath));
+    const s = escapeShellArg(stagedPath);
+    return `mkdir -p "$(dirname "${p}")" && mv -f ${s} "${p}" && chmod 600 "${p}"`;
+  }
+
   credentialFileRemove(destPath: string): string {
     return `rm -f "${shellPath(expandHome(destPath))}"`;
+  }
+
+  credentialFileMoveAside(destPath: string, suffix: string): string {
+    if (!/^[A-Za-z0-9._-]+$/.test(suffix)) throw new Error('Invalid backup suffix: ' + suffix);
+    const p = shellPath(expandHome(destPath));
+    return `if [ -f "${p}" ]; then mv -f "${p}" "${p}${suffix}" && echo moved; fi`;
   }
 
   apiKeyCheck(envVarName?: string): string {
@@ -211,14 +245,23 @@ export class LinuxCommands implements OsCommands {
     return `bash -l -c 'echo "\${${varName}:0:10}"'`;
   }
 
-  setEnv(name: string, value: string): string[] {
+  /** Shell profiles that receive a persisted env var (unsetEnv cleans the same set). */
+  protected envProfileFiles(): string[] {
+    return ['~/.bashrc', '~/.profile'];
+  }
+
+  // The profile line keeps the historical `export NAME="..."` shape so
+  // unsetEnv's sed (and members provisioned by earlier releases) match it.
+  persistEnvFileContent(name: string, value: string): string {
     if (!/^[A-Z_][A-Z0-9_]*$/i.test(name)) throw new Error('Invalid env var name: ' + name);
-    const escaped = escapeDoubleQuoted(value);
-    return [
-      `echo 'export ${name}="${escaped}"' >> ~/.bashrc`,
-      `echo 'export ${name}="${escaped}"' >> ~/.profile`,
-      `export ${name}="${escaped}"`,
-    ];
+    return `export ${name}="${escapeDoubleQuoted(value)}"\n`;
+  }
+
+  persistEnvFromFile(name: string, filePath: string): string {
+    if (!/^[A-Z_][A-Z0-9_]*$/i.test(name)) throw new Error('Invalid env var name: ' + name);
+    const q = escapeShellArg(filePath);
+    const appends = this.envProfileFiles().map(f => `cat ${q} >> ${f}`).join(' && ');
+    return `{ ${appends}; }; _fleet_rc=$?; rm -f ${q}; exit $_fleet_rc`;
   }
 
   unsetEnv(name: string): string[] {
@@ -228,10 +271,6 @@ export class LinuxCommands implements OsCommands {
       `sed -i '/export ${name}=/d' ~/.profile 2>/dev/null || true`,
       `unset ${name}`,
     ];
-  }
-
-  envPrefix(name: string, value: string): string {
-    return `${name}="${escapeDoubleQuoted(value)}"`;
   }
 
   // --- Git credential helper ---
@@ -256,12 +295,41 @@ export class LinuxCommands implements OsCommands {
     return `printf '#!/bin/sh\\necho "protocol=https"\\necho "host=${escapedHost}"\\necho "username=${escapedUser}"\\necho "password=${escapedToken}"\\n' > "${credFile}" && chmod 600 "${credFile}" && chmod +x "${credFile}" && git config --global --replace-all "credential.${credUrl}.helper" "" && git config --global --add "credential.${credUrl}.helper" "${credFile}"`;
   }
 
+  gitCredentialHelperRemoveLegacyFile(): string {
+    // File only -- deliberately no `git config --unset-all`. $HOME (not `~`)
+    // for the same reason gitCredentialHelperWrite uses it: `~` is not
+    // tilde-expanded inside double quotes.
+    return `rm -f "$HOME/.fleet-git-credential"`;
+  }
+
+  gitCredentialHelperRead(label?: string): { command: string; path: string } {
+    // Same $HOME-not-`~` reasoning as gitCredentialHelperWrite above: the path
+    // is resolved by the member's own shell from $HOME, never by a caller
+    // supplying an expansion of its own, and the label is escaped for the
+    // double-quoted context it lands in.
+    const credFile = label ? `$HOME/.fleet-git-credential-${escapeDoubleQuoted(label)}` : '$HOME/.fleet-git-credential';
+    // The helper is an executable script that prints
+    // "protocol=/host=/username=/password=" when run with no arguments.
+    return { command: `"${credFile}"`, path: credFile };
+  }
+
   gitCredentialHelperRemove(host: string, label?: string, scopeUrl?: string): string {
     const escapedHost = escapeDoubleQuoted(host);
     const credFile = label ? `$HOME/.fleet-git-credential-${escapeDoubleQuoted(label)}` : '$HOME/.fleet-git-credential';
     // scope_url is passed through escapeDoubleQuoted and embedded inside a double-quoted git config arg — safe against injection.
     const credUrl = scopeUrl ? escapeDoubleQuoted(scopeUrl) : `https://${escapedHost}`;
     return `rm -f "${credFile}" && git config --global --unset-all "credential.${credUrl}.helper" 2>/dev/null || true`;
+  }
+
+  ghAuthLogin(token: string, hostname = 'github.com'): string {
+    const escapedToken = escapeDoubleQuoted(token);
+    const escapedHostname = escapeDoubleQuoted(hostname);
+    // gh CLI has its own credential store (~/.config/gh/hosts.yml), entirely
+    // separate from the git credential helper written above -- gh never reads
+    // that file. `gh auth login --with-token` is gh's own non-interactive
+    // enrollment path. Best-effort: if `gh` isn't installed, no-op rather than
+    // fail the whole VCS auth deployment over an optional CLI.
+    return `if command -v gh >/dev/null 2>&1; then echo "${escapedToken}" | gh auth login --hostname "${escapedHostname}" --with-token; else echo "gh CLI not installed -- skipped gh auth login" >&2; fi`;
   }
 
   // --- SSH key deployment ---
@@ -279,14 +347,21 @@ export class LinuxCommands implements OsCommands {
 
   // --- Local exec ---
 
+  // apra-fleet-byp: name bash explicitly. Without a shell here, LocalStrategy
+  // falls back to Node's `shell: true`, which is /bin/sh -- dash on Debian and
+  // Ubuntu. buildAgentPromptCommand emits `set -o pipefail` (see the comment at
+  // its `opts.inv` branch), which dash rejects outright:
+  //   /bin/sh: 1: set: Illegal option -o pipefail
+  // That aborts the command before the CLI ever runs, so every local dispatch
+  // on those distros failed with reason='nonzero_exit'.
   cleanExec(command: string): { command: string; env?: Record<string, string>; shell?: string } {
-    return { command, env: this.getCleanEnv() };
+    return { command, env: this.getCleanEnv(), shell: '/bin/bash' };
   }
 
   // --- Shell ---
 
   wrapInWorkFolder(folder: string, command: string): string {
-    return `cd "${escapeDoubleQuoted(folder)}" && ${command}`;
+    return `cd "${escapeDoubleQuoted(folder)}" && export PATH="$PATH:${FLEET_BIN_PATH_POSIX}" && ${command}`;
   }
 
   wrapPidCapture(command: string): string {
@@ -297,6 +372,22 @@ export class LinuxCommands implements OsCommands {
 
   gitCurrentBranch(folder: string): string {
     return `git -C "${escapeDoubleQuoted(folder)}" branch --show-current 2>/dev/null || true`;
+  }
+
+  gitRemoteOrigin(folder: string): string {
+    const f = escapeDoubleQuoted(folder);
+    return `git -C "${f}" remote get-url origin 2>/dev/null || git -C "${f}" config --get remote.origin.url 2>/dev/null || true`;
+  }
+
+  gitLsRemoteNonInteractive(url: string): string {
+    return `GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git ls-remote ${escapeShellArg(url)} HEAD && echo ${GIT_LS_REMOTE_OK_MARKER}`;
+  }
+
+  httpGetStatusWithBearer(url: string, token: string): string {
+    // printf is a shell builtin (sh/dash/bash/zsh), so the token is not on
+    // curl's argv; curl reads the header from stdin (-H @-). It is still on
+    // the outer `bash -c` argv that runs this string (see os-commands.ts).
+    return `printf 'Authorization: Bearer %s\\n' ${escapeShellArg(token)} | curl -sS -o /dev/null -w '%{http_code}' -H @- ${escapeShellArg(url)}`;
   }
 
   // --- Process management ---

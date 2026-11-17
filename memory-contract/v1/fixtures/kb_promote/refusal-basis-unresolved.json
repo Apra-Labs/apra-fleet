@@ -1,0 +1,14 @@
+{
+  "tool": "kb_promote",
+  "case": "refusal-basis-unresolved",
+  "kind": "refusal",
+  "request": {
+    "id": "e50e3742-5ae8-491c-8a8e-dc46547b4cc4",
+    "reason": "Second promotion attempted after the cited basis file was deleted."
+  },
+  "error": {
+    "message": "Cannot promote an entry whose basis does not resolve: missing src/soon-to-be-deleted.ts. Entry: e50e3742-5ae8-491c-8a8e-dc46547b4cc4",
+    "thrown": true
+  },
+  "expected_error_code": "E-PROMOTE-BASIS-UNRESOLVED"
+}

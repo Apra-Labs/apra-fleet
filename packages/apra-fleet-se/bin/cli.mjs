@@ -7,17 +7,21 @@ import { existsSync, realpathSync } from 'node:fs';
 import { FleetWorkflow } from '@apralabs/apra-fleet-workflow';
 import { WorkflowEngine } from '@apralabs/apra-fleet-workflow/engine';
 import { createDashboardViewer } from '@apralabs/apra-fleet-workflow/viewer';
-import { StreamableHttpTransport } from '@apralabs/apra-fleet-client/transport';
 import { McpClient } from '@apralabs/apra-fleet-client/client';
 import { ApraFleet } from '@apralabs/apra-fleet-client';
 import {
     resolveFleetServerCommand as sharedResolveFleetServerCommand,
     resolveFleetServerConnection as sharedResolveFleetServerConnection,
+    createFleetHttpTransport,
     getServerInfoPath,
 } from '@apralabs/apra-fleet-client/server-resolution';
-import { beadsExtension } from '../fleet-sprint/viewer-extensions.mjs';
-import { validateIssueId, validateBranchName, checkMemberTopology, createMemberReservationClient } from '../fleet-sprint/runner.js';
+import { beadsExtension, kbCodeIntelExtension, decisionsExtension } from '../fleet-sprint/viewer-extensions.mjs';
+import { DECISION_PAUSE_SOURCE } from '../fleet-sprint/decision-wait.mjs';
+import { validateIssueId, validateBranchName, validateBranchPair, createMemberReservationClient, resyncReacquiredMember, commandResultToSoftGit } from '../fleet-sprint/runner.js';
 import { normalizeRole } from '../fleet-sprint/contracts.mjs';
+import { prepareLaunchTopology, toAlignCommandResult } from '../fleet-sprint/member-align.mjs';
+import { ROLE_BACKLOG, resolveBacklogRoleAlias, selectBacklogMember, formatBacklogSelection } from '../fleet-sprint/backlog-role.mjs';
+import { BEADS_IDENTITY_PROBES, parseBeadsIdentity, formatBeadsIdentity, parseExpectedIdentity } from '../fleet-sprint/beads-identity.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -155,15 +159,39 @@ export function buildOptionsSpec() {
         // a direct/standalone CLI launch (no supervisor) falls back to
         // --branch for this identity, exactly as before this flag existed.
         'run-id': { type: 'string' },
+        // The beads identity (JSON, serializeExpectedIdentity output) every
+        // member's bd must resolve to, injected by the supervisor's spawner;
+        // env fallback FLEET_SPRINT_EXPECT_BEADS. Omitted (direct launch):
+        // the runner takes the expectation from the backlog member.
+        'expect-beads': { type: 'string' },
+        // Operator-notification config for a pending decision (JSON; env
+        // fallback FLEET_SPRINT_DECISION_NOTIFY). See decision-notify.mjs.
+        'decision-notify': { type: 'string' },
         budget: { type: 'string' },
         // Stabilization Issue 32: per-dispatch time budget in seconds
         // (timeout_s == max_total_s at every dispatch; integ ceiling 2x).
         'dispatch-timeout-s': { type: 'string' },
+        // apra-fleet-hzeb.4.2: the CLI-overridable usage-limit pause budgets.
+        // Both optional; omitted, the runner uses USAGE_LIMIT_BUDGET_DEFAULTS.
+        'usage-limit-max-wait-s': { type: 'string' },
+        'usage-limit-max-reprobes': { type: 'string' },
         // apra-fleet-eft.8.5: explicitly opt a multi-member run into synced
         // topology mode (orchestrator-bracketed git sync -- same-origin +
         // dolt-probe precondition, differing HEADs allowed). Omitted => legacy
         // shared-workspace mode (same-HEAD). Mode is never inferred silently.
         sync: { type: 'boolean' },
+        // Explicitly skip the once-per-sprint regression pass (forwarded as the
+        // runner's skip_regression arg; the supervisor sets it from the launch
+        // body's phases.regression:"skip"). Never silent: logged, and reported in
+        // the sprint analysis and the PR body.
+        'skip-regression': { type: 'boolean' },
+        // Reviewer KB demotion loop switch: on (default) or off. Forwarded as the
+        // runner's kb_demotion_loop arg, which rejects any other value loudly.
+        'kb-demotion-loop': { type: 'string' },
+        // --ci-gate is DELIBERATELY NOT WIRED (2026-10-01): the runner's
+        // ci_gate arg is disabled until the CI-as-quality-resource epic
+        // (apra-fleet-dv8i) designs the flow -- see fleet-sprint/sprint-args.mjs.
+        // 'ci-gate': { type: 'string' },
         help: { type: 'boolean', short: 'h' },
     };
 }
@@ -193,16 +221,39 @@ Options:
                                 Normally set automatically to the supervisor's sprintId when this
                                 sprint is supervisor-spawned; omitted (direct/standalone launch)
                                 falls back to --branch, exactly as before this flag existed.
+      --expect-beads <json>    Beads identity every member must resolve to, as JSON
+                                ({"beadsDir","prefix","syncRemote","repoRemote"}). Normally injected by
+                                the supervisor; env fallback FLEET_SPRINT_EXPECT_BEADS. Omitted: the
+                                backlog member's own 'bd where' becomes the expectation and every
+                                other member must match it. A mismatch aborts before any bd mutation.
+      --decision-notify <json>  Where to notify the operator of a pending decision, as JSON
+                                ({"message_member","email":{provider,from,to,host,port,user,secure},
+                                "dashboard_url","timeout_s"}); env fallback FLEET_SPRINT_DECISION_NOTIFY.
+                                Credentials stay in the fleet credential store. message_member
+                                defaults to "orchestrator" (the operator's channel-capable
+                                session); a channel with no target is logged once at launch.
       --budget <usd>            USD ceiling for this run's total estimated spend. Optional;
                                 omitted (the default) means unlimited, identical to prior behavior.
-      --dispatch-timeout-s <s>  Per-dispatch time budget in seconds (default 3600). Applied as both
-                                the inactivity timeout and the hard ceiling on every agent dispatch
-                                (the integration-test dispatch ceiling is 2x). Lower it for small
-                                sprints so a hung dispatch costs minutes, not an hour. Minimum 60.
+      --dispatch-timeout-s <s>  Per-dispatch time budget in seconds (default 9000). The hard ceiling
+                                on every agent dispatch (integration-test ceiling 2x, regression-test
+                                ceiling 3x); the inactivity timeout is this value capped at 1800.
+                                Lower it for small sprints so a hung dispatch costs minutes, not
+                                hours. Minimum 60.
+      --usage-limit-max-wait-s <s>   Total wall-clock seconds a dispatch may stay paused across all
+                                usage-limit reprobes before giving up (typed sprint abort). Optional;
+                                omitted uses the runner default. Minimum 60.
+      --usage-limit-max-reprobes <n> Max usage-limit reprobe attempts before giving up, independent
+                                of elapsed wait. Optional; omitted uses the runner default. Minimum 1.
       --sync                   Use synced topology mode (orchestrator-bracketed git sync):
                                 members may sit on differing HEADs but must share the same
                                 origin URL and pass a 'bd dolt pull' probe. Omitted (default)
                                 uses legacy shared-workspace mode (all members on the same HEAD).
+      --skip-regression        Skip the once-per-sprint regression pass. Logged, and stated in the
+                                sprint analysis and the PR body. Integration tests still run.
+      --kb-demotion-loop <on|off>
+                               Reviewer KB demotion loop (default: on). 'off' offers the reviewer no
+                               demotion candidates and issues no kb_demote; the log says so. Any
+                               other value is rejected.
   -h, --help                   Show this help message.
 `.trim();
 
@@ -234,7 +285,18 @@ export function parseCliArgs(argv) {
  * @returns {Promise<object|undefined>}
  */
 export async function resolveRoleMap(rawValue, deps = {}) {
-    if (rawValue === undefined) return undefined;
+    return (await resolveRoleMapWithWarnings(rawValue, deps)).roleMap;
+}
+
+/**
+ * Same as resolveRoleMap() but also returns the backlog-alias deprecation
+ * warnings, so main() can print them and forward them to the runner (which
+ * logs them in the run log -- the rewritten roleMap no longer carries the
+ * deprecated key, so the runner could not detect it itself).
+ * @returns {Promise<{ roleMap: object|undefined, warnings: string[] }>}
+ */
+export async function resolveRoleMapWithWarnings(rawValue, deps = {}) {
+    if (rawValue === undefined) return { roleMap: undefined, warnings: [] };
     const readFile = deps.readFile || fs.readFile;
 
     let jsonText = rawValue;
@@ -267,12 +329,12 @@ export async function resolveRoleMap(rawValue, deps = {}) {
     // contracts.normalizeRole() (trim + lowercase) HERE -- this is where
     // roleMap keys first enter the system from a user-supplied
     // `--role-map`/`@file.json` value, so callers of `resolveRoleMap()`
-    // (including this CLI's own pre-transport `orchestratorMember` lookup
+    // (including this CLI's own pre-transport `backlogMember` lookup
     // below, and runner.js's `validateArgs()`, which normalizes again
     // defensively for callers that bypass the CLI and pass a raw roleMap
     // straight to `engine.executeFile()`) can rely on keys already being in
     // canonical lowercase form. This also covers the 'orchestrator'
-    // application-level pseudo-role key (see runner.js's ROLE_ORCHESTRATOR
+    // application-level pseudo-role key (see runner.js's ROLE_BACKLOG
     // doc comment) -- it is not a vendored contracts.ROLES member but is
     // still just a plain string key here, so the same normalization applies.
     const normalized = {};
@@ -287,7 +349,12 @@ export async function resolveRoleMap(rawValue, deps = {}) {
         normalized[key] = members;
     }
 
-    return normalized;
+    // Deprecated 'orchestrator' key -> 'backlog'; a conflict throws.
+    try {
+        return resolveBacklogRoleAlias(normalized);
+    } catch (err) {
+        throw new Error(`Error: --role-map ${err.message}`);
+    }
 }
 
 /**
@@ -303,7 +370,7 @@ export async function resolveRoleMap(rawValue, deps = {}) {
  * }} opts
  * @returns {object}
  */
-export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goal, maxCycles, requirementsFile, roleMap, budget, dispatchTimeoutS, serviceUrl }) {
+export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goal, maxCycles, requirementsFile, roleMap, roleMapWarnings, budget, dispatchTimeoutS, usageLimitMaxWaitS, usageLimitMaxReprobes, serviceUrl, runId, expectBeads, skipRegression, kbDemotionLoop, ciGate, decisionNotify }) {
     const args = {
         target_issues: targetIssues,
         members,
@@ -314,14 +381,90 @@ export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goa
     };
     if (requirementsFile !== undefined) args.requirementsFile = requirementsFile;
     if (roleMap !== undefined) args.roleMap = roleMap;
+    if (Array.isArray(roleMapWarnings) && roleMapWarnings.length > 0) args.roleMapWarnings = roleMapWarnings;
     if (budget !== undefined) args.budget = budget;
     if (dispatchTimeoutS !== undefined) args.dispatch_timeout_s = dispatchTimeoutS;
+    // apra-fleet-hzeb.4.2: the CLI-overridable usage-limit pause budgets,
+    // forwarded to runner.js's validateArgs() when supplied (omitted keeps the
+    // runner's USAGE_LIMIT_BUDGET_DEFAULTS).
+    if (usageLimitMaxWaitS !== undefined) args.usage_limit_max_wait_s = usageLimitMaxWaitS;
+    if (usageLimitMaxReprobes !== undefined) args.usage_limit_max_reprobes = usageLimitMaxReprobes;
     // apra-fleet-f34.1: forwarded straight through to runner.js's validateArgs()
     // (args.serviceUrl), which is what actually switches it onto the
     // HTTP-backed dolt-mutex/id-allocator clients (fleet-sprint/runner.js
     // ~5013-5052). Omitted when not supplied -- unchanged fallback behavior.
     if (serviceUrl !== undefined) args.serviceUrl = serviceUrl;
+    // apra-fleet-5co8.37: this launch's reservation identity (the supervisor's
+    // --run-id, or the branch name for a direct launch -- the SAME key members
+    // are reserved under below). runner.js threads it into the deployer's
+    // dispatch so deploy.md's active-sprints gate can recognize this sprint's
+    // OWN reservation instead of stopping on it.
+    if (runId !== undefined) args.run_id = runId;
+    // Only forwarded when set, so a default launch's runner args are unchanged.
+    if (skipRegression === true) args.skip_regression = true;
+    // Forwarded verbatim when set; validateArgs rejects anything but on/off.
+    if (kbDemotionLoop !== undefined) args.kb_demotion_loop = kbDemotionLoop;
+    // The raw --expect-beads JSON, forwarded verbatim; runner.js's
+    // validateArgs() parses it (validateExpectBeads) and rejects bad JSON.
+    if (expectBeads !== undefined) args.expect_beads = expectBeads;
+    if (decisionNotify !== undefined) args.decision_notify = decisionNotify;
+    // --ci-gate is not wired (apra-fleet-dv8i); ci_gate is never forwarded.
+    // if (ciGate !== undefined) args.ci_gate = ciGate;
     return args;
+}
+
+/**
+ * Resolves the `--expect-beads` value: the flag wins, else the
+ * FLEET_SPRINT_EXPECT_BEADS env var, else undefined (no expectation).
+ * @param {string|undefined} flagValue
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {string|undefined}
+ */
+export function resolveExpectBeads(flagValue, env = process.env) {
+    if (typeof flagValue === 'string' && flagValue.trim()) return flagValue;
+    const fromEnv = env.FLEET_SPRINT_EXPECT_BEADS;
+    if (typeof fromEnv === 'string' && fromEnv.trim()) return fromEnv;
+    return undefined;
+}
+
+/**
+ * Runs `bd where --json` on the BACKLOG MEMBER (never locally -- the
+ * sprint's bd commands run in that member's workFolder, see
+ * checkIssuesExistOnMember below) so the startup banner can show which
+ * .beads the sprint is about to mutate, and so a member with no beads
+ * database is reported plainly (as a WARNING with the fix -- the `bd show`
+ * precondition right after it is what actually fails a member whose bd
+ * cannot answer). The runner re-probes every member and does the hard
+ * expected-vs-actual comparison; this is display only.
+ * @param {{ member: string, runCommand: (cmd: string, member: string) => Promise<string> }} opts
+ * @returns {Promise<{ ok: boolean, identity: object|null, message: string }>}
+ */
+export async function probeBeadsIdentityOnMember({ member, runCommand }) {
+    const raw = {};
+    const fix = `To fix: run 'bd where' in the member's workFolder; ensure bd is installed there and the folder contains the project's .beads.`;
+    for (const [key, cmd] of Object.entries(BEADS_IDENTITY_PROBES)) {
+        try {
+            raw[key] = await runCommand(cmd, member);
+        } catch (err) {
+            if (key === 'where') {
+                return {
+                    ok: false,
+                    identity: null,
+                    message: `Warning: no beads database found at member '${member}'s workFolder ('${cmd}' failed: ${err && err.message ? err.message : String(err)}); the beads identity cannot be shown and is not verified for this member. ${fix}`,
+                };
+            }
+            raw[key] = '';
+        }
+    }
+    const identity = parseBeadsIdentity(raw);
+    if (!identity.beadsDir) {
+        return {
+            ok: false,
+            identity: null,
+            message: `Warning: no beads database found at member '${member}'s workFolder ('${BEADS_IDENTITY_PROBES.where}' returned no database path: ${String(raw.where || '').trim() || '(no output)'}); the beads identity cannot be shown and is not verified for this member. ${fix}`,
+        };
+    }
+    return { ok: true, identity, message: formatBeadsIdentity(identity, { label: `[Precondition] member '${member}'` }) };
 }
 
 /**
@@ -373,9 +516,9 @@ export function resolveMemberValidation({ rawMembers, registeredNames, allowMiss
 }
 
 /**
- * Verifies every target issue exists, run on the ORCHESTRATOR MEMBER via the
+ * Verifies every target issue exists, run on the BACKLOG MEMBER via the
  * fleet transport (`runBdShow`) -- NOT on the local machine. The sprint's own
- * `bd` commands run against the orchestrator member's beads DB (see
+ * `bd` commands run against the backlog member's beads DB (see
  * fleet-sprint/runner.js's SUPPORTED-TOPOLOGY NOTE), which can be a different
  * database than whatever is local to wherever this CLI process happens to
  * run. Checking locally could pass (or worse, resolve a same-named-but-
@@ -445,6 +588,110 @@ export function attachViewerErrorHandler(server, port, opts = {}) {
     return server;
 }
 
+// (apra-fleet-p2to.4.2) Owner-checked re-reserve executed on the workflow's
+// 'resumed' event. reReserveForResume() re-grabs every member released at pause
+// and, on the happy path, re-syncs each; if any member was claimed by another
+// sprint while we were paused it throws a MemberReservationResumeError that
+// NAMES exactly those members.
+//
+// The prior review (PR #397) reopened this bead because the 'resumed' handler
+// wrapped that call in `.catch(console.error)`, which SWALLOWED the naming
+// throw: the sprint then resumed anyway while holding ZERO reservations, and
+// the designed clean-failure path never fired. This helper is the fix -- it
+// does NOT swallow. On failure it re-pauses the run (requestPause) so no further
+// dispatch lands on a member this sprint no longer owns, and then RETHROWS so
+// the failure -- and precisely which members block the resume -- is surfaced to
+// the operator instead of lost to a console.error line. Extracted and exported
+// so the rethrow-and-name behavior is unit-testable without a live engine.
+// Launch ordering: launch alignment (prepareLaunchTopology) stashes WIP and
+// switches branches on members, so it must never run on a member another
+// sprint holds -- that sprint's in-flight work would be moved under it. Reserve
+// first (reserveForLaunch reports members another sprint already holds and
+// then hands back what it took), align only when nothing is held, and release
+// every reservation again when alignment refuses or throws, so a refused
+// launch leaves no reservation behind. Exported so the ordering is unit-
+// testable without a live server.
+export async function reserveThenAlign({ sprintReservation, align } = {}) {
+    const { held } = await sprintReservation.reserveForLaunch();
+    if (held.length > 0) {
+        return {
+            ok: false,
+            reserved: false,
+            message: `member(s) ${held.join(', ')} are reserved by another running sprint, so no member was aligned or changed. Wait for that sprint to finish or release its reservation (member_reservation), then launch again.`,
+        };
+    }
+    let topology;
+    try {
+        topology = await align();
+    } catch (err) {
+        await sprintReservation.releaseAll();
+        throw err;
+    }
+    if (!topology || !topology.ok) {
+        await sprintReservation.releaseAll();
+        return { ...(topology || { ok: false, message: 'launch alignment returned no result' }), reserved: false };
+    }
+    return { ...topology, reserved: true };
+}
+
+export async function reReserveOnResume({ sprintReservation, resyncMember, requestPause, log = () => {} } = {}) {
+    try {
+        return await sprintReservation.reReserveForResume({ resyncMember });
+    } catch (err) {
+        const msg = err && err.message ? err.message : String(err);
+        // Re-park the run: the resume cannot proceed on a reservation set we no
+        // longer fully own. This keeps the sprint from silently continuing on
+        // zero reservations (the exact regression the review flagged).
+        if (typeof requestPause === 'function') {
+            requestPause(`resume blocked -- ${msg}`);
+        }
+        log(`[member-reservation] resume failed (run re-paused; free the named members and resume again): ${msg}`);
+        // Surface, do not swallow: the operator must see which members block the
+        // resume (MemberReservationResumeError.members names them).
+        throw err;
+    }
+}
+
+// Reservation handling across a cooperative pause/resume, by pause source.
+// A pause hands every member reservation back (so another sprint may use the
+// members while this one is parked) and the matching resume re-acquires them
+// owner-checked and resyncs each one -- EXCEPT the paused-awaiting-decision
+// pause (source 'needs_decision', fleet-sprint/decision-wait.mjs): that run is
+// waiting on an operator, not on a member, and may wait hours, so it keeps
+// every reservation (no other sprint can take a member meanwhile) and touches
+// no member; its resume then has nothing to re-acquire or resync. The source
+// comes from the 'pause:requested' payload ('paused' carries none). The
+// re-reserve runs only for a pause whose 'paused' handler actually released.
+// Exported so the per-source behaviour is unit-testable without a live engine.
+export function wirePauseReservations({ workflow, releaseForPause, reReserve, log = () => {} }) {
+    let pauseSource = null;
+    let released = false;
+    workflow.on('pause:requested', (payload) => {
+        pauseSource = payload && payload.source ? payload.source : null;
+    });
+    workflow.on('paused', () => {
+        if (pauseSource === DECISION_PAUSE_SOURCE) {
+            log('[member-reservation] paused awaiting an operator decision: keeping every member reservation for the wait.');
+            return;
+        }
+        released = true;
+        // Started synchronously in the 'paused' event, as before; best-effort
+        // (a release hiccup must never fail a pause).
+        const failed = (err) => console.error('[member-reservation] release-on-pause failed:', err && err.message ? err.message : err);
+        try {
+            Promise.resolve(releaseForPause()).catch(failed);
+        } catch (err) {
+            failed(err);
+        }
+    });
+    workflow.setPreResumeHook(async (reason) => {
+        if (!released) return undefined;
+        const result = await reReserve(reason);
+        released = false;
+        return result;
+    });
+}
+
 async function main() {
     const { values } = parseCliArgs(process.argv.slice(2));
 
@@ -482,6 +729,18 @@ async function main() {
     // (unchanged pre-existing behavior in that case).
     const effectiveRunId = values['run-id'] || branchName;
     const dispatchTimeoutS = values['dispatch-timeout-s'] !== undefined ? Number(values['dispatch-timeout-s']) : undefined;
+    // apra-fleet-hzeb.4.2: the CLI-overridable usage-limit pause budgets.
+    const usageLimitMaxWaitS = values['usage-limit-max-wait-s'] !== undefined ? Number(values['usage-limit-max-wait-s']) : undefined;
+    const usageLimitMaxReprobes = values['usage-limit-max-reprobes'] !== undefined ? Number(values['usage-limit-max-reprobes']) : undefined;
+    // --expect-beads (flag, else FLEET_SPRINT_EXPECT_BEADS). Parsed here too
+    // so malformed JSON fails before any fleet connection; the runner's
+    // validateArgs() re-validates the raw string it is handed.
+    const expectBeads = resolveExpectBeads(values['expect-beads']);
+    const expectedBeads = expectBeads !== undefined ? parseExpectedIdentity(expectBeads) : null;
+    if (expectBeads !== undefined && !expectedBeads) {
+        console.error(`Error: --expect-beads is not valid JSON: ${expectBeads}`);
+        process.exit(1);
+    }
 
     // --- A7 defense-in-depth: reject shell-unsafe issue ids / branch names
     // BEFORE any bd/fleet dispatch happens. runner.js re-validates these
@@ -490,11 +749,14 @@ async function main() {
     // is somehow bypassed -- both layers share the exact same validators
     // (imported from runner.js) so there is a single source of truth.
     let roleMap;
+    let roleMapWarnings = [];
     try {
         targetIssues.forEach(validateIssueId);
         validateBranchName(branchName, 'branch');
         validateBranchName(baseBranch, 'base');
-        roleMap = await resolveRoleMap(values['role-map']);
+        validateBranchPair(branchName, baseBranch);
+        ({ roleMap, warnings: roleMapWarnings } = await resolveRoleMapWithWarnings(values['role-map']));
+        for (const w of roleMapWarnings) console.warn(`Warning: ${w}`);
     } catch (err) {
         console.error(`Error: ${err.message}`);
         process.exit(1);
@@ -522,6 +784,18 @@ async function main() {
         process.exit(1);
     }
 
+    // apra-fleet-hzeb.4.2: same strict-parsing posture as --dispatch-timeout-s
+    // above; mirrors (does not replace) runner.js validateArgs's own checks.
+    if (usageLimitMaxWaitS !== undefined && (!Number.isInteger(usageLimitMaxWaitS) || usageLimitMaxWaitS < 60)) {
+        console.error(`Error: --usage-limit-max-wait-s must be an integer >= 60 (seconds), got "${values['usage-limit-max-wait-s']}".`);
+        process.exit(1);
+    }
+
+    if (usageLimitMaxReprobes !== undefined && (!Number.isInteger(usageLimitMaxReprobes) || usageLimitMaxReprobes < 1)) {
+        console.error(`Error: --usage-limit-max-reprobes must be an integer >= 1, got "${values['usage-limit-max-reprobes']}".`);
+        process.exit(1);
+    }
+
     if (budget !== undefined && (!Number.isFinite(budget) || budget < 0)) {
         console.error(`Error: --budget must be a non-negative finite number (USD ceiling), got "${values.budget}".`);
         process.exit(1);
@@ -532,7 +806,7 @@ async function main() {
     // 1. Attach to the fleet MCP transport FIRST, so member validation, the
     // "bd show" issue precondition (below), and the sprint itself all run
     // against the same live client/connection -- and so the issue
-    // precondition can target the orchestrator MEMBER rather than the local
+    // precondition can target the backlog MEMBER rather than the local
     // machine (apra-fleet-unw2.16, N14 (d): the sprint's own `bd` commands
     // run on the member via the fleet transport, which can be a different
     // database than whatever is local to this CLI process).
@@ -546,7 +820,17 @@ async function main() {
     // fail fast with a typed error naming the missing connection config --
     // silently self-spawning a private stdio server here would defeat the
     // whole point of sharing one fleet-server connection across N children.
-    const connection = await resolveFleetServerConnection();
+    let connection;
+    try {
+        connection = await resolveFleetServerConnection();
+    } catch (err) {
+        // e.g. the server was stopped with 'apra-fleet stop', or auto-start
+        // refused/failed: print the actionable message on stderr (the
+        // supervisor surfaces a launch's stderr tail), not a stack trace.
+        console.error(`Error: ${err && err.message ? err.message : err}`);
+        process.exit(1);
+        return;
+    }
     if (connection.mode !== 'http') {
         const err = new FleetServerUnreachableError(
             'No reachable apra-fleet HTTP singleton was found. cli.mjs no longer ' +
@@ -562,53 +846,89 @@ async function main() {
         process.exit(1);
         return;
     }
-    const transport = new StreamableHttpTransport(connection.url);
+    // Reconnecting HTTP transport: if the shared server dies mid-run it is
+    // re-probed (and auto-started when gone) before the next request; a request
+    // is retried once only when it provably never reached the server.
+    const transport = createFleetHttpTransport(connection, { dirname: __dirname, exists: existsSync });
     await transport.start();
+    // Every exit below releases the server session first: stop() alone leaves
+    // it (and its McpServer) open on the fleet server until idle eviction.
+    const closeFleetTransport = () => transport.close().catch(() => { /* best effort */ });
     const mcpClient = new McpClient(transport);
 
     const fleetApi = new ApraFleet(mcpClient);
 
     // 2. Validate members exist via the fleet's list_members tool.
     let validMembers = [];
+    // apra-fleet: names flagged unreservable in the SAME list_members read --
+    // hoisted out of this try block so the topology filter below (item 4) can
+    // key on the actual unreservable flag, not on roleMap.backlog
+    // membership (which would also match a real, git-having dispatch member
+    // that is ADDITIONALLY role-mapped as backlog, and wrongly skip its
+    // legitimate same-HEAD topology check).
+    let unreservableNames = new Set();
     try {
         const listRes = await fleetApi.listMembers({ format: 'json' });
         const text = listRes && listRes.content && listRes.content[0] ? listRes.content[0].text : JSON.stringify(listRes);
         const parsed = JSON.parse(text);
         const registeredNames = new Set((parsed.members || []).map(m => m.name));
+        unreservableNames = new Set((parsed.members || []).filter(m => m && m.unreservable).map(m => m.name));
         const result = resolveMemberValidation({ rawMembers, registeredNames, allowMissingMembers });
         if (!result.ok) {
             console.error(result.message);
-            transport.stop();
+            await closeFleetTransport();
             process.exit(1);
         }
         if (result.message) console.warn(result.message);
         validMembers = result.validMembers;
     } catch (err) {
         console.error(`Error: Failed to list fleet members: ${err.message}`);
-        transport.stop();
+        await closeFleetTransport();
         process.exit(1);
     }
 
-    // 3. bd show issue precondition -- run on the orchestrator MEMBER via the
+    // 3. bd show issue precondition -- run on the backlog MEMBER via the
     // fleet transport (apra-fleet-unw2.16, N14 (d)), immediately after the
     // transport/initialize handshake above and before any sprint phase
-    // begins. The orchestrator member mirrors fleet-sprint/runner.js's
-    // `getMemberForRole(ROLE_ORCHESTRATOR)` resolution: roleMap.orchestrator[0]
+    // begins. The backlog member mirrors fleet-sprint/runner.js's
+    // `getMemberForRole(ROLE_BACKLOG)` resolution: roleMap.backlog[0]
     // if configured, else the first valid member. `roleMap` here is already
     // key-normalized by `resolveRoleMap()` above (N15, apra-fleet-unw2.11),
-    // so the canonical lowercase 'orchestrator' key is the only one that can
+    // so the canonical lowercase 'backlog' key is the only one that can
     // be present -- this must NOT read a capitalized 'Orchestrator' key (the
     // N15 finding: that stray casing silently never matched a roleMap
     // author's natural lowercase key).
-    const orchestratorMember = (roleMap && roleMap.orchestrator && roleMap.orchestrator[0]) || validMembers[0];
+    const backlogSelection = selectBacklogMember({ roleMap, members: validMembers });
+    const backlogMember = backlogSelection.member;
+    const backlogSelectionLine = formatBacklogSelection(backlogSelection);
+    if (backlogSelectionLine) console.log(backlogSelectionLine);
+    const runProbe = async (cmd, member) => {
+        const res = await fleetApi.executeCommand({ command: cmd, member_name: member });
+        const text = res && res.content && res.content[0] ? res.content[0].text : '';
+        if (res && res.isError) throw new Error(text || 'unknown error');
+        const exitCode = res && res.structuredContent && typeof res.structuredContent.exitCode === 'number' ? res.structuredContent.exitCode : 0;
+        if (exitCode !== 0) throw new Error(text || `exit code ${exitCode}`);
+        return res && res.structuredContent && typeof res.structuredContent.stdout === 'string' ? res.structuredContent.stdout : text;
+    };
+    // Which .beads the backlog member's bd resolves to -- probed BEFORE
+    // the `bd show` precondition below so a member with no beads database
+    // is reported plainly (a warning with the fix) ahead of the bare bd
+    // error that precondition would otherwise be the first to show, and
+    // shown in the banner. A failed probe is a warning, not an exit: the
+    // existing preconditions decide. The runner repeats this for every
+    // member and hard-fails only a mismatch against --expect-beads.
+    const beadsProbe = await probeBeadsIdentityOnMember({ member: backlogMember, runCommand: runProbe });
+    if (!beadsProbe.ok) {
+        console.warn(beadsProbe.message);
+    }
     const issueCheck = await checkIssuesExistOnMember({
         targetIssues,
-        member: orchestratorMember,
+        member: backlogMember,
         runBdShow: async (id, member) => fleetApi.executeCommand({ command: `bd show ${id}`, member_name: member }),
     });
     if (!issueCheck.ok) {
         console.error(issueCheck.message);
-        transport.stop();
+        await closeFleetTransport();
         process.exit(1);
     }
 
@@ -616,7 +936,7 @@ async function main() {
     //
     // LEGACY mode (default): the runner's cross-member coherence relies on
     // every member sharing one workspace/DB -- every orchestrator-side `bd`
-    // command runs against the orchestrator member's beads DB, and the sprint
+    // command runs against the backlog member's beads DB, and the sprint
     // git branch is only coherent if every member operates on the same working
     // state. Enforce that by comparing `git rev-parse HEAD` across members and
     // refusing to start on a mismatch.
@@ -637,28 +957,99 @@ async function main() {
         }
         return res && res.content && res.content[0] ? res.content[0].text : '';
     };
-    const topology = await checkMemberTopology({
+    // apra-fleet: exclude any member flagged `unreservable` from this
+    // git-identity/git-remote probe -- such a member (e.g. a shared
+    // fleet-sprint orchestrator, docs/design-orchestrator-worktree-model-v2.md)
+    // may have no real checkout at all, and `git rev-parse HEAD` on one
+    // hard-fails the launch (process.exit(1) just below). Deliberately keyed
+    // on the `unreservable` FLAG, not on roleMap.backlog membership: a
+    // real, git-having dispatch member that is ADDITIONALLY role-mapped as
+    // backlog (a supported topology, runner.js's branchEnsureMembers
+    // dedupe comment) must still pass its legitimate same-HEAD check against
+    // the other dispatch members -- filtering on roleMap.backlog alone
+    // would silently skip that check instead of just skipping a git-less
+    // member. This only matters when an operator also lists a shared member
+    // in --members (redundant with roleMap.backlog, and not required);
+    // a normal launch that passes the shared backlog member ONLY via
+    // roleMap.backlog was never affected.
+    const topologyMembersFiltered = validMembers.filter((m) => !unreservableNames.has(m));
+    // Degrade back to the unfiltered list if excluding unreservable members
+    // would empty it out entirely -- checkMemberTopology refuses to start on
+    // an empty member list, and an operator who names ONLY unreservable
+    // members in --members (unusual, but not this check's job to forbid) gets
+    // the ORIGINAL single-member-trivial-pass behavior rather than a topology
+    // error about having no members at all.
+    const topologyMembers = topologyMembersFiltered.length > 0 ? topologyMembersFiltered : validMembers;
+    // apra-fleet-rsd9.1.1: in legacy mode, first ALIGN every topology member
+    // to the sprint base (fetch, preserve WIP in a named stash, check out the
+    // sprint branch -- see fleet-sprint/member-align.mjs), then run the
+    // topology check against the aligned state. Members that merely sat on
+    // other commits no longer refuse the launch; only what cannot be
+    // reconciled automatically (unreachable member, differing origin, base
+    // missing on origin, fetch auth failure, diverged sprint branch) does,
+    // and then before any member is moved. Synced mode is unchanged.
+    const runAlignGit = async (cmd, member) => {
+        try {
+            return toAlignCommandResult(await fleetApi.executeCommand({ command: cmd, member_name: member }));
+        } catch (err) {
+            return toAlignCommandResult(undefined, err);
+        }
+    };
+    // eft.26.1 reservation: a sprint launched directly through this CLI
+    // (never routed through the supervisor's POST /api/sprints) reserves its
+    // members server-side, on the SAME opaque sprint id runner.js uses for the
+    // dolt-mutex/allocator (the sprint branch name), so the supervisor's
+    // overlap guard and execute_prompt's dispatch-time reservedBy check can see
+    // it. It is taken BEFORE launch alignment (reserveThenAlign) and released
+    // on EVERY exit path below: a refused alignment, a viewer port failure,
+    // normal success, a caught failure/stall-abort, or SIGINT.
+    const sprintReservation = createMemberReservationClient({
+        callTool: (name, args) => mcpClient.callTool(name, args),
         members: validMembers,
+        sprintId: branchName,
+        log: (msg) => console.log(msg),
+    });
+    // Ctrl-C between the reserve and the sprint's own SIGINT handler (below)
+    // must not leave the members reserved.
+    const onLaunchSigint = () => {
+        sprintReservation.releaseAll()
+            .catch((err) => console.error('[member-reservation] release-on-SIGINT failed:', err))
+            .finally(async () => {
+                await closeFleetTransport();
+                process.exit(130);
+            });
+    };
+    process.once('SIGINT', onLaunchSigint);
+    const topology = await reserveThenAlign({ sprintReservation, align: () => prepareLaunchTopology({
+        members: topologyMembers,
         mode: syncedMode ? 'synced' : 'legacy',
+        baseBranch,
+        branch: branchName,
+        runGit: runAlignGit,
+        log: (msg) => console.log(msg),
         getIdentity: (member) => runCommand('git rev-parse HEAD', member),
         getOriginUrl: (member) => runCommand('git remote get-url origin', member),
         doltProbe: (member) => runCommand('bd dolt pull', member),
-    });
+    }) });
     if (!topology.ok) {
         console.error(`Error: ${topology.message}`);
-        transport.stop();
+        await closeFleetTransport();
         process.exit(1);
     }
     if (!topology.singleMember) {
         console.log(topology.message);
     }
 
-    console.log('Starting Auto-Sprint');
+    console.log('Starting fleet-sprint');
     console.log(`Target Issues: ${targetIssues.join(', ')}`);
     console.log(`Sprint Branch: ${branchName} (Base: ${baseBranch})`);
     console.log(`Goal Constraint: ${goal}`);
     console.log(`Max Cycles: ${maxCycles}`);
     console.log(`Active Members (${validMembers.length}): ${validMembers.join(', ')}`);
+    console.log(`Beads: ${formatBeadsIdentity(beadsProbe.identity, { label: `backlog '${backlogMember}'` })}`);
+    if (expectedBeads) {
+        console.log(`Beads: ${formatBeadsIdentity(expectedBeads, { label: 'expected (--expect-beads)' })}`);
+    }
 
     const workflow = new FleetWorkflow(fleetApi);
     const engine = new WorkflowEngine(workflow);
@@ -666,7 +1057,9 @@ async function main() {
     const server = createDashboardViewer(workflow, {
         port: viewerPort,
         name: 'Fleet-Sprint',
-        dashboardExtensions: [beadsExtension],
+        // kbCodeIntelExtension: its own tab (per-member, per-dispatch kb_* and
+        // code_* call counts), separate from the Tasks tab.
+        dashboardExtensions: [beadsExtension, kbCodeIntelExtension, decisionsExtension],
         // apra-fleet-eft.37.1/37.2: the core viewer now speaks opts.runId
         // (opts.sprintId is a deprecated BOUNDARY-COMPAT alias -- never use
         // it from here).
@@ -685,11 +1078,18 @@ async function main() {
         runId: effectiveRunId,
         // BOUNDARY-COMPAT/user-facing convention (apra-fleet-eft.37.1): core's
         // crash-net snapshot defaults are domain-neutral (workflow-logs/run_)
-        // now that sprintId->runId is renamed; auto-sprint keeps its historical
+        // now that sprintId->runId is renamed; fleet-sprint keeps its historical
         // sprint-logs/sprint_<HHMMSS>.json convention by passing these
         // explicitly rather than picking up the new core defaults.
         stateSnapshotDir: 'sprint-logs',
         stateSnapshotPrefix: 'sprint_',
+        // apra-fleet-dm5.2: publish the fields buildRunTitle() (apra-fleet-
+        // dm5.1) reads off state.args so the viewer header shows
+        // "<members> working <targetIssues> (<goal>)" instead of just the
+        // workflow name for a fleet-sprint run. Purely additive -- the core
+        // viewer's state.args stays optional/null for any other workflow
+        // that doesn't pass launchArgs, and no existing state key changes.
+        launchArgs: { members: validMembers, targetIssues, goal },
     });
 
     // apra-fleet-unw2.16, N14 (e): the viewer port was hardcoded with no
@@ -701,14 +1101,18 @@ async function main() {
         onError: (message) => {
             viewerFailed = true;
             console.error(`Error: ${message}`);
-            transport.stop();
-            process.exit(1);
+            sprintReservation.releaseAll()
+                .catch((err) => console.error('[member-reservation] release on viewer failure failed:', err && err.message ? err.message : err))
+                .finally(async () => {
+                    await closeFleetTransport();
+                    process.exit(1);
+                });
         },
     });
 
-    console.log(`Dashboard live at http://localhost:${viewerPort}`);
+    console.log(`Dashboard live at http://127.0.0.1:${viewerPort}`);
 
-    if (viewerFailed) return; // process.exit already called synchronously above
+    if (viewerFailed) return; // onError releases the reservations, then exits
 
     // apra-fleet-eft.26.1 (Reservation interop gap, Hole 1): a sprint
     // launched directly through this CLI (never routed through the
@@ -720,13 +1124,67 @@ async function main() {
     // for the dolt-mutex/allocator (the sprint branch name), and release on
     // EVERY exit path below: normal success, a caught failure/stall-abort,
     // or SIGINT.
-    const sprintReservation = createMemberReservationClient({
-        callTool: (name, args) => mcpClient.callTool(name, args),
-        members: validMembers,
-        sprintId: branchName,
+    // (The members were reserved above, before launch alignment.)
+
+    // apra-fleet-p2to.4.2: reservation handling across a cooperative
+    // pause/resume (apra-fleet-p2to.1's engine primitive). On 'paused' hand
+    // every member back so another sprint may use it while this one is parked;
+    // on 'resumed' re-acquire them OWNER-CHECKED (a member another sprint
+    // grabbed while we were paused fails the resume, NAMING it) and re-sync
+    // every re-acquired member (git fetch + decideEnsureBranchAction probe +
+    // bd dolt pull) unconditionally before work continues. The 'paused' handler
+    // is best-effort (a release hiccup must never fail a pause). The 'resumed'
+    // handler, by contrast, FAILS the resume when a member was taken while
+    // paused: reReserveForResume's throw (an unavailable member) is surfaced --
+    // the run is re-paused and the error rethrown -- so the operator sees
+    // exactly which members block the resume instead of the sprint silently
+    // continuing on zero reservations.
+    // `ok` is derived from the command's real exit code (via
+    // commandResultToSoftGit), NOT from an isError flag: execute_command never
+    // sets isError on a non-zero exit, so reading it here would make every git
+    // command -- including the `git merge-base --is-ancestor` tip comparison --
+    // look successful and silently reset committed-but-unpushed work. See
+    // commandResultToSoftGit()'s doc comment in runner.js.
+    const runGitSoft = async (cmd, member) => {
+        const res = await fleetApi.executeCommand({ command: cmd, member_name: member });
+        return commandResultToSoftGit(res);
+    };
+    // (apra-fleet-p2to.1.3) The re-reserve + per-member resync is registered as
+    // an AWAITABLE pre-resume hook, not a fire-and-forget 'resumed' listener.
+    // requestResume() drains this hook as a hard barrier -- while the run is
+    // still paused, so no post-resume agent()/command() dispatch can land ahead
+    // of it -- and only then releases the gate waiters and emits 'resumed'. The
+    // re-reserve therefore completes strictly BEFORE the first post-resume
+    // dispatch, closing the race the old 'resumed' handler left open.
+    //
+    // reReserveOnResume() does NOT swallow a re-reserve failure (the old
+    // `.catch(console.error)` did, silently resuming on zero reservations). It
+    // rethrows the MemberReservationResumeError that NAMES the unavailable
+    // members; because the hook runs before requestResume() clears pause state,
+    // that rejection leaves the run parked (still paused) and propagates out of
+    // requestResume() to the resume caller instead of being lost -- the operator
+    // sees exactly which members block the resume. requestPause() is still
+    // passed for the exported helper's standalone contract; here it is a no-op
+    // because the run has not yet been unpaused.
+    // A decision pause keeps its reservations (see wirePauseReservations).
+    wirePauseReservations({
+        workflow,
+        releaseForPause: () => sprintReservation.releaseForPause(),
         log: (msg) => console.log(msg),
+        reReserve: () => reReserveOnResume({
+            sprintReservation,
+            resyncMember: (member) => resyncReacquiredMember({
+                member,
+                branch: branchName,
+                baseBranch,
+                runGit: (cmd) => runGitSoft(cmd, member),
+                doltPull: (m) => runCommand('bd dolt pull', m),
+                log: (msg) => console.log(msg),
+            }),
+            requestPause: (reason) => workflow.requestPause(reason),
+            log: (msg) => console.error(msg),
+        }),
     });
-    await sprintReservation.reserveAll();
 
     let reservationReleased = false;
     const releaseReservationOnce = async () => {
@@ -743,8 +1201,12 @@ async function main() {
     const onSigint = () => {
         releaseReservationOnce()
             .catch((err) => console.error('[member-reservation] release-on-SIGINT failed:', err))
-            .finally(() => process.exit(130));
+            .finally(async () => {
+                await closeFleetTransport();
+                process.exit(130);
+            });
     };
+    process.removeListener('SIGINT', onLaunchSigint);
     process.once('SIGINT', onSigint);
 
     try {
@@ -759,9 +1221,18 @@ async function main() {
                 maxCycles,
                 requirementsFile,
                 roleMap,
+                roleMapWarnings,
                 budget,
                 dispatchTimeoutS,
+                usageLimitMaxWaitS,
+                usageLimitMaxReprobes,
                 serviceUrl,
+                runId: effectiveRunId,
+                expectBeads,
+                decisionNotify: (values['decision-notify'] || process.env.FLEET_SPRINT_DECISION_NOTIFY || '').trim() || undefined,
+                skipRegression: Boolean(values['skip-regression']),
+                kbDemotionLoop: values['kb-demotion-loop'],
+                // ciGate: values['ci-gate'],  -- not wired (apra-fleet-dv8i)
             }),
             // apra-fleet-eft.75.1: wires this already-connected mcpClient
             // through to runner.js's createMemberSessionGuard (see its doc
@@ -776,7 +1247,7 @@ async function main() {
         await releaseReservationOnce();
         console.log('Sprint finished:', res);
         server.close();
-        transport.stop();
+        await closeFleetTransport();
         process.exit(0);
     } catch (err) {
         process.removeListener('SIGINT', onSigint);
@@ -796,7 +1267,7 @@ async function main() {
         const graceMs = Number(process.env.AUTO_SPRINT_FAILURE_GRACE_MS ?? 5 * 60 * 1000);
         if (graceMs > 0) {
             console.log(
-                `Sprint FAILED. Dashboard remains live at http://localhost:${viewerPort} for ` +
+                `Sprint FAILED. Dashboard remains live at http://127.0.0.1:${viewerPort} for ` +
                 `${Math.round(graceMs / 1000)}s so you can inspect the final state -- press Ctrl-C to exit sooner.`
             );
             await new Promise((resolve) => {
@@ -809,13 +1280,29 @@ async function main() {
             });
         }
         server.close();
-        transport.stop();
+        await closeFleetTransport();
         process.exit(process.exitCode || 1);
     }
 }
 
 function isMainModule() {
     try {
+        // Never self-execute when this module is loaded as a test file under a
+        // Node test runner. `node --test <file>` sets NODE_TEST_CONTEXT in the
+        // process that evaluates the file AND leaves process.argv[1] pointing at
+        // that file, so the URL comparison below would otherwise treat the test
+        // load as a direct CLI run and fire main() for real. The Phase-4
+        // move-only probe (scripts/phase4-moveonly-probe.mjs) does exactly this:
+        // it copies cli.mjs to a sibling `.phase4probe-cli.mjs` and runs
+        // `node --test` on it, so without this guard main() runs, exits 1 on the
+        // missing required flags, and the CURRENT revision fails to corroborate
+        // as an ANCHOR_DESYNC -- turning the move-only gate red. NODE_TEST_CONTEXT
+        // is stripped from the probe's spawn env, but `node --test` re-injects it
+        // into the file's own process, so it is a reliable "loaded as a test"
+        // signal. A production CLI launch (node bin/cli.mjs ...) and the workflow
+        // import trampoline (src/cli/workflow.ts, which is not a node --test run)
+        // never have it set, so both keep self-executing.
+        if (process.env.NODE_TEST_CONTEXT) return false;
         if (process.argv[1] === undefined) return false;
         const invokedUrl = pathToFileURL(process.argv[1]).href;
         const moduleUrl = import.meta.url;

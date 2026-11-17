@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/schemas/kb_reconcile_prefilter.response.json#",
+  "x-invariant": [
+    "INV-09"
+  ],
+  "$ref": "#/$defs/v1-kb_reconcile_prefilter-response",
+  "$defs": {
+    "v1-kb_reconcile_prefilter-response": {
+      "type": "object",
+      "properties": {
+        "content": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "text"
+              },
+              "text": {
+                "type": "string"
+              },
+              "annotations": {
+                "type": "object",
+                "properties": {
+                  "audience": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "user",
+                        "assistant"
+                      ]
+                    }
+                  },
+                  "priority": {
+                    "type": "number"
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "type",
+              "text"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 1,
+          "maxItems": 3
+        },
+        "structuredContent": {
+          "type": "object",
+          "additionalProperties": {}
+        },
+        "parsed": {
+          "type": "object",
+          "properties": {
+            "pairs": {
+              "type": "number"
+            },
+            "resolved": {
+              "type": "array",
+              "items": {}
+            },
+            "left_for_agent": {
+              "type": "array",
+              "items": {}
+            },
+            "skipped_directive": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "pairs",
+            "resolved",
+            "left_for_agent",
+            "skipped_directive"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "content"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { sessionRegistry } from '../services/session-registry.js';
 import { fleetEvents } from '../services/event-bus.js';
 import { logLine } from '../utils/log-helpers.js';
+import { resolveSessionCaller } from '../utils/session-caller.js';
 
 /**
  * Status lifecycle + response/ack path (apra-fleet-2xs.7).
@@ -39,7 +40,7 @@ export async function reportStatus(input: ReportStatusInput, extra?: any): Promi
     return 'error: report_status must be called from a connected interactive session (no session ID on this call).';
   }
 
-  const session = sessionRegistry.findBySessionId(sessionId);
+  const { session } = resolveSessionCaller(sessionId);
   if (!session) {
     return 'error: no registered member session found for this connection.';
   }

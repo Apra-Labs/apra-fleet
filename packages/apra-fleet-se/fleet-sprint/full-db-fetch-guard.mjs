@@ -29,7 +29,24 @@
 //      bypasses the shared cache) is ever issued -- only the single,
 //      reviewed, canonical command text is allowed to match the "unscoped
 //      full list" shape at all.
+//
+// TWO SCAN MODES. checkFullDbFetchLog() (below) is the original RUNTIME mode:
+// it walks a phase-tagged command log from a real mock-sprint run and enforces
+// both rules. checkFullDbFetchModules() is the SOURCE mode added when the
+// guards were generalized onto the shared guarded-module list
+// (./guarded-modules.mjs): it scans registered module source for rule 2 only
+// -- a full-DB-SHAPED `bd list` command literal whose text is not the single
+// documented FULL_DB_FETCH_CMD. Rule 1 (coalescing) is inherently dynamic and
+// cannot be judged from source, so source mode never attempts it. Source mode
+// exists so that a NEW ad hoc full-list call site added to a newly extracted
+// module is caught statically, at the same moment every other mechanical guard
+// picks that module up, instead of only when a mock-sprint run happens to
+// traverse it.
 // =============================================================================
+
+import fs from 'fs';
+import path from 'path';
+import { guardedModulePaths } from './guarded-modules.mjs';
 
 /** The single documented, cache-backed full-DB fetch command (runner.js's fetchAllBeadsShared()). */
 export const FULL_DB_FETCH_CMD = 'bd list --all --limit 0 --json';
@@ -115,4 +132,89 @@ export function checkFullDbFetchLog(entries) {
 /** Convenience: count of full-DB-shaped fetches (any text) across the whole log, for sanity assertions. */
 export function countFullDbFetches(entries) {
     return entries.filter((e) => e && typeof e.command === 'string' && FULL_DB_SHAPE_RE.test(e.command)).length;
+}
+
+// =============================================================================
+// SOURCE MODE -- rule 2 over the shared guarded-module list.
+// =============================================================================
+
+// Pulls a candidate `bd list ...` command substring out of a source line,
+// stopping at the enclosing JS string/template delimiter so the surrounding
+// syntax is not mistaken for part of the command text.
+const BD_LIST_CANDIDATE_RE = /bd\s+list\b[^'"`\n]*/g;
+
+function isCommentLine(text) {
+    const trimmed = text.trim();
+    return trimmed.startsWith('//') || trimmed.startsWith('*') || trimmed.startsWith('/*');
+}
+
+function isImportLine(text) {
+    return /^\s*(import\b|export\b.*\bfrom\b|(const|let|var)\s.*\brequire\s*\()/.test(text);
+}
+
+/**
+ * Scans whole-file source `src` for unscoped-full-list-shaped `bd list`
+ * command literals (rule 2). Returns an array of { line, command } for every
+ * full-DB-shaped command whose text is not the single documented
+ * FULL_DB_FETCH_CMD. Full-line comments (prose that merely QUOTES the
+ * canonical command -- runner.js's fetchAllBeadsShared doc comment does
+ * exactly this) and import/require lines are carved out, matching the sibling
+ * guards in this directory.
+ */
+export function findFullDbFetchSourceViolations(src) {
+    const lines = src.split('\n');
+    const violations = [];
+    for (let i = 0; i < lines.length; i++) {
+        const text = lines[i];
+        if (isCommentLine(text) || isImportLine(text)) continue;
+        BD_LIST_CANDIDATE_RE.lastIndex = 0;
+        let m;
+        while ((m = BD_LIST_CANDIDATE_RE.exec(text)) !== null) {
+            const command = m[0].trim();
+            if (!FULL_DB_SHAPE_RE.test(command)) continue;
+            if (command === FULL_DB_FETCH_CMD) continue;
+            violations.push({ line: i + 1, command });
+        }
+    }
+    return violations;
+}
+
+/**
+ * Reads and scans the source file at `filePath`, returning { violations },
+ * each entry a human-readable message naming the offending file:line, the
+ * offending command text, and the single documented call site it must route
+ * through.
+ */
+export function checkFullDbFetchPath(filePath) {
+    const src = fs.readFileSync(filePath, 'utf8');
+    const fileLabel = path.basename(filePath);
+    const violations = findFullDbFetchSourceViolations(src).map(({ line, command }) =>
+        `${fileLabel}:${line} issues an unscoped full-DB-shaped 'bd list' command with unexpected text ` +
+        `("${command}") -- route it through runner.js's cache-backed fetchAllBeadsShared()/bdListScoped(), ` +
+        `whose single documented command text is "${FULL_DB_FETCH_CMD}".`
+    );
+    return { violations };
+}
+
+/**
+ * Aggregate entry point: scans every module in the SHARED guarded-module list
+ * (./guarded-modules.mjs) and returns the union of their source-mode
+ * violations, each attributed to the file it came from. Follows
+ * checkModules() in dispatch-safety-guard.mjs -- the reference
+ * implementation. Defines no list of its own.
+ *
+ * @param {string[]} [paths]
+ * @returns {{ violations: string[], files: string[] }}
+ */
+export function checkFullDbFetchModules(paths = guardedModulePaths()) {
+    if (!Array.isArray(paths)) {
+        throw new TypeError('checkFullDbFetchModules(paths): paths must be an array of file paths');
+    }
+    const violations = [];
+    const files = [];
+    for (const p of paths) {
+        files.push(path.basename(p));
+        violations.push(...checkFullDbFetchPath(p).violations);
+    }
+    return { violations, files };
 }

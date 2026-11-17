@@ -3,7 +3,9 @@ import assert from 'node:assert';
 import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
+import { spawnSync } from 'node:child_process';
 import { validateNewTask, createChildBeadWithAllocatedId, appendRejectedFindingToParentNotes } from '../fleet-sprint/runner.js';
+import { buildFallbackNewTask } from '../fleet-sprint/abort.mjs';
 
 // apra-fleet-eft.56.2, transport hardened for eft.73.1: regression pin for the
 // reviewer-free-text body seam (createChildBeadWithAllocatedId /
@@ -81,6 +83,21 @@ const NOOP_ALLOCATOR = {
     async release() { return true; },
 };
 
+// apra-fleet-j918.6.4: every test above emulates the member by extracting the
+// base64 argument straight out of the `node -e ...` command STRING (see
+// extractStageBase64) and decoding it in-process -- the emitted command is
+// never actually handed to a shell. That leaves the real quoting contract
+// (CLAUDE.md: a member-bound command string must not rely on shell-level
+// `$`-expansion, since the member's shell may be PowerShell, not POSIX)
+// unverified. This closes that gap for the POSIX shell family: a real bash
+// on PATH is required (gated below, matching test/se-os-commands-shell-
+// matrix.test.mjs's degrade-loudly convention) to actually run the emitted
+// command and read back what it really wrote to disk.
+const BASH_AVAILABLE = spawnSync('bash', ['-c', 'echo ok'], { encoding: 'utf8' }).status === 0;
+const BASH_SKIP = BASH_AVAILABLE
+    ? false
+    : 'DEGRADED: no bash on PATH, so the emitted node -e staging command cannot be round-tripped through a real POSIX shell on this host.';
+
 describe('createChildBeadWithAllocatedId / appendRejectedFindingToParentNotes -- member-staged body round-trip (apra-fleet-eft.56.2 / eft.73.1)', () => {
     test("description with '=' and '&' round-trips intact via member-staged --body-file", async () => {
         const description = 'Set APRA_FLEET_BD_MOCK=off; also test accessToken + synthesized & "quoted" values.';
@@ -123,12 +140,60 @@ describe('createChildBeadWithAllocatedId / appendRejectedFindingToParentNotes --
         assert.strictEqual(extractQuotedFlagValue(createCmd, '--body-file'), stagedPaths[0]);
     });
 
+    test('an arrow title and a Unicode-arrow description are sanitised and the description round-trips via --body-file', async () => {
+        const validation = validateNewTask({
+            title: 'Retry a -> b when x >= 3',
+            description: 'Flow: queue \u2192 worker \u21D2 store.',
+            priority: 'P2',
+        });
+        assert.strictEqual(validation.ok, true, validation.reason);
+        assert.strictEqual(validation.title, 'Retry a to b when x at least 3');
+        // The title was mapped, so the original title is kept (escaped) on top.
+        assert.strictEqual(
+            validation.description,
+            'Original title (JSON-escaped, non-ASCII as \\uXXXX): "Retry a -> b when x >= 3"\n\nFlow: queue -> worker => store.',
+        );
+        const { command, calls, readBodyOf } = makeMemberEmulatingCommand();
+        await createChildBeadWithAllocatedId({
+            command, allocator: NOOP_ALLOCATOR, member: 'local',
+            title: validation.title, description: validation.description, priority: validation.priority,
+            parentId: 'parent-1',
+        });
+        const createCmd = calls[calls.length - 1].cmd;
+        assert.ok(createCmd.includes('"Retry a to b when x at least 3"'), createCmd);
+        assert.ok(!createCmd.includes('->'), `arrow description must never be inlined: ${createCmd}`);
+        assert.strictEqual(await readBodyOf(createCmd), validation.description);
+    });
+
+    test('a fallback newTask (unsanitisable title) carries the ASCII-escaped original title via --body-file', async () => {
+        const original = 'Leak in "$HOME" path \u2192 caf\u00E9';
+        const fallback = buildFallbackNewTask({ title: original, description: 'Body text.', priority: 'P1' });
+        assert.ok(fallback && fallback.ok);
+        assert.strictEqual(fallback.title, 'Leak in HOME path to caf');
+        const { command, calls, readBodyOf } = makeMemberEmulatingCommand();
+        await createChildBeadWithAllocatedId({
+            command, allocator: NOOP_ALLOCATOR, member: 'local',
+            title: fallback.title, description: fallback.description, priority: fallback.priority,
+            parentId: 'parent-1',
+        });
+        const createCmd = calls[calls.length - 1].cmd;
+        assert.ok(!createCmd.includes('$HOME'), `original title must never reach the command string: ${createCmd}`);
+        const body = await readBodyOf(createCmd);
+        assert.strictEqual(
+            body,
+            'Original title (JSON-escaped, non-ASCII as \\uXXXX): "Leak in \\"$HOME\\" path \\u2192 caf\\u00E9"\n\nBody text.',
+        );
+        assert.match(body, /^[\t\n\r\x20-\x7E]+$/);
+    });
+
     test('a residual validation failure is appended verbatim to the parent bead notes and logged', async () => {
-        // A title that fails SAFE_TEXT_RE (backticks) -- validateNewTask()
-        // rejects it, so this newTask must never reach createChildBeadWithAllocatedId
-        // at all; instead it is appended verbatim to the parent's notes.
+        // A title that fails SAFE_TEXT_RE ($(...) command substitution --
+        // unlike a backtick, this is NOT sanitized, see apra-fleet-vk0a) --
+        // validateNewTask() rejects it, so this newTask must never reach
+        // createChildBeadWithAllocatedId at all; instead it is appended
+        // verbatim to the parent's notes.
         const newTask = {
-            title: 'Run `whoami` and report',
+            title: 'Run $(whoami) and report',
             description: 'Safe-looking description with = and & chars intact.',
             priority: 'P1',
         };
@@ -247,13 +312,16 @@ describe('createChildBeadWithAllocatedId / appendRejectedFindingToParentNotes --
         });
 
         assert.strictEqual(result.childId, 'parent-1.3');
-        // Three dispatches: member-side staging, bd create, bd update (link).
-        assert.strictEqual(calls.length, 3, `expected staging + create + parent-link dispatches, got ${JSON.stringify(calls.map((c) => c.cmd))}`);
-        const createCmd = calls[1].cmd;
+        // Four dispatches: the explicit-id collision probe (bd show), member-side
+        // staging, bd create, bd update (link).
+        assert.strictEqual(calls.length, 4, `expected collision-probe + staging + create + parent-link dispatches, got ${JSON.stringify(calls.map((c) => c.cmd))}`);
+        const probeCmd = calls[0].cmd;
+        assert.strictEqual(probeCmd, 'bd show parent-1.3 --json', 'the explicit-id path must probe for a pre-existing bead before creating');
+        const createCmd = calls[2].cmd;
         assert.match(createCmd, /^bd create /);
         assert.match(createCmd, /--id parent-1\.3(\s|$)/, 'the create must carry the allocator-minted explicit id');
         assert.ok(!createCmd.includes('--parent'), `the create must NOT carry --parent alongside --id: ${createCmd}`);
-        const linkCmd = calls[2].cmd;
+        const linkCmd = calls[3].cmd;
         assert.strictEqual(linkCmd, 'bd update parent-1.3 --parent parent-1', 'the explicit parent edge must be recorded by a separate bd update');
 
         assert.deepStrictEqual(
@@ -263,11 +331,14 @@ describe('createChildBeadWithAllocatedId / appendRejectedFindingToParentNotes --
         );
     });
 
-    // The parent edge is NOT best-effort: if the link dispatch fails, the
-    // reservation is released and the error propagates (persistNewTaskBestEffort
+    // The parent edge is NOT best-effort: if the link dispatch fails, the `bd
+    // create` has ALREADY landed, so the reservation is CONFIRMED -- never
+    // released, since releasing an id that is genuinely occupied would hand
+    // it back out and collide on the next allocation (apra-fleet-btj9.2) --
+    // and a distinct, orphan-naming error propagates (persistNewTaskBestEffort
     // then degrades to parent-bead notes) rather than silently leaving a child
     // that `bd show` records no PARENT for.
-    test('a failing parent-link dispatch releases the reservation and rethrows', async () => {
+    test('a failing parent-link dispatch confirms the reservation (never releases) and rethrows a distinct orphan error', async () => {
         const calls = [];
         const command = async (cmd) => {
             calls.push(cmd);
@@ -292,9 +363,9 @@ describe('createChildBeadWithAllocatedId / appendRejectedFindingToParentNotes --
                 priority: 'P2',
                 parentId: 'parent-1',
             }),
-            /simulated link failure/,
+            /child bead 'parent-1\.4' was created but is UNLINKED/,
         );
-        assert.deepStrictEqual(allocatorCalls.map((c) => c.fn), ['release'], 'a failed link must release, never confirm');
+        assert.deepStrictEqual(allocatorCalls.map((c) => c.fn), ['confirm'], 'a failed link must confirm (the create genuinely landed), never release');
     });
 
     // Defense in depth: an allocated id that does not sit under the requested
@@ -324,5 +395,49 @@ describe('createChildBeadWithAllocatedId / appendRejectedFindingToParentNotes --
         );
         assert.deepStrictEqual(calls, [], 'no bd command may be dispatched for an out-of-namespace id');
         assert.deepStrictEqual(allocatorCalls.map((c) => c.fn), ['release']);
+    });
+
+    test('real shell: the member-side node -e staging command actually executes under bash and byte-exact round-trips spaces/double-quotes/$/backtick', { skip: BASH_SKIP }, async () => {
+        const payload = 'Payload has spaces, "double quotes", a $DOLLAR sign, and a `backtick` mark.';
+        // Redirect the CHILD node process's os.tmpdir() into a sandbox this
+        // test owns and tears down, so the staged file never lands outside
+        // the test sandbox even though stageCommandBodyMemberSide hardcodes
+        // os.tmpdir() internally.
+        const sandbox = await fs.mkdtemp(path.join(os.tmpdir(), 'stage-realshell-'));
+        try {
+            const calls = [];
+            const command = async (cmd, opts) => {
+                calls.push({ cmd, opts });
+                if (/^node -e "/.test(cmd)) {
+                    // Unlike every other test in this file, hand the REAL
+                    // emitted command string to a REAL bash -- exactly the
+                    // shape a POSIX member's command() implementation would.
+                    const res = spawnSync('bash', ['-c', cmd], { encoding: 'utf8', env: { ...process.env, TMPDIR: sandbox, TEMP: sandbox, TMP: sandbox } });
+                    assert.strictEqual(res.status, 0, `staging command must execute cleanly under real bash.\ncommand: ${cmd}\nstderr: ${res.stderr}`);
+                    return res.stdout.trim();
+                }
+                return '';
+            };
+
+            await createChildBeadWithAllocatedId({
+                command,
+                allocator: NOOP_ALLOCATOR,
+                member: 'local',
+                title: 'Real-shell staging round-trip',
+                description: payload,
+                priority: 'P1',
+                parentId: 'parent-1',
+            });
+
+            assert.strictEqual(calls.length, 2, 'expected a member-side staging dispatch then a bd create dispatch');
+            const createCmd = calls[1].cmd;
+            const stagedPath = extractQuotedFlagValue(createCmd, '--body-file');
+            assert.ok(stagedPath, `expected a --body-file path sourced from the real staging command's stdout: ${createCmd}`);
+            assert.ok(stagedPath.startsWith(sandbox), `staged file must land inside this test's sandbox tempdir, not the host's real tmpdir: ${stagedPath}`);
+            const onDisk = await fs.readFile(stagedPath, 'utf-8');
+            assert.strictEqual(onDisk, payload, 'the payload must survive REAL bash quoting + REAL node base64 decode byte-for-byte');
+        } finally {
+            await fs.rm(sandbox, { recursive: true, force: true });
+        }
     });
 });

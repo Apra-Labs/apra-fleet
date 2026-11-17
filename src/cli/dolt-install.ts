@@ -42,7 +42,7 @@ export class UnsupportedDoltPlatformError extends Error {
 /**
  * Resolves the dolthub/dolt v2.2.0 release asset for the given platform/arch.
  * Throws UnsupportedDoltPlatformError rather than silently no-op'ing on an
- * unsupported combo (e.g. win32/arm64, linux/arm64 -- not published upstream
+ * unsupported combo (e.g. win32/arm64 -- not published upstream
  * for this pinned version).
  */
 export function resolveDoltAsset(platform: string, arch: string): DoltAsset {
@@ -56,6 +56,9 @@ export function resolveDoltAsset(platform: string, arch: string): DoltAsset {
     archiveType = 'zip';
   } else if (platform === 'linux' && arch === 'x64') {
     assetName = 'dolt-linux-amd64.tar.gz';
+    archiveType = 'tar.gz';
+  } else if (platform === 'linux' && arch === 'arm64') {
+    assetName = 'dolt-linux-arm64.tar.gz';
     archiveType = 'tar.gz';
   } else if (platform === 'darwin' && arch === 'x64') {
     assetName = 'dolt-darwin-amd64.tar.gz';
@@ -255,8 +258,8 @@ export interface DoltVerifyDeps {
     getEphemeralPort: () => Promise<number>;
     waitForConnect: (port: number, timeoutMs: number) => Promise<boolean>;
   };
-  /** Terminates the spawned dolt sql-server child. Platform-specific (mirrors stop.ts). */
-  killChild: (child: ChildProcess) => void;
+  /** Terminates the spawned dolt sql-server child in bounded time (see killChild). */
+  killChild: (child: ChildProcess) => void | Promise<void>;
 }
 
 function isPortFree(port: number): Promise<boolean> {
@@ -308,21 +311,54 @@ function waitForConnect(port: number, timeoutMs: number): Promise<boolean> {
   });
 }
 
-/** Platform-specific child termination, mirroring the convention in cli/stop.ts. */
-function killChild(child: ChildProcess): void {
-  if (child.pid === undefined || child.killed) return;
-  if (process.platform === 'win32') {
-    try {
-      execFileSync('taskkill', ['/F', '/T', '/PID', String(child.pid)], { stdio: 'ignore' });
-    } catch {
-      // best-effort
+/** Seams for killChild so tests drive both OS branches on any runner. */
+export interface KillChildOpts {
+  platform?: NodeJS.Platform;
+  execFileSync?: typeof execFileSync;
+  /** Bounded wait (ms) for the child to exit after each kill attempt. Default 3000. */
+  waitMs?: number;
+  warn?: (msg: string) => void;
+}
+
+function childAlive(child: ChildProcess): boolean {
+  return child.exitCode === null && child.signalCode === null;
+}
+
+function waitForExit(child: ChildProcess, ms: number): Promise<boolean> {
+  if (!childAlive(child)) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const onExit = () => { clearTimeout(timer); resolve(true); };
+    const timer = setTimeout(() => { child.removeListener('exit', onExit); resolve(!childAlive(child)); }, ms);
+    child.once('exit', onExit);
+  });
+}
+
+/**
+ * Terminate the dolt verify child in bounded time on every OS. child.kill()
+ * first (TerminateProcess on Windows, SIGKILL on POSIX): it needs no WMI, so it
+ * works for a standard user on a network (SSH) logon, where taskkill /T is
+ * denied. taskkill /F /T is only the Windows fallback. The child is always unref'd so a survivor can never
+ * keep the installer from exiting; a survivor is reported, not silently left.
+ */
+export async function killChild(child: ChildProcess, opts: KillChildOpts = {}): Promise<void> {
+  const platform = opts.platform ?? process.platform;
+  const waitMs = opts.waitMs ?? 3000;
+  try {
+    if (child.pid === undefined || !childAlive(child)) return;
+    try { child.kill(platform === 'win32' ? undefined : 'SIGKILL'); } catch { /* fallback below */ }
+    if (await waitForExit(child, waitMs)) return;
+    // POSIX already sent SIGKILL (the child is not a process-group leader, so
+    // there is no tree to kill); Windows falls back to taskkill /T.
+    if (platform === 'win32') {
+      try {
+        (opts.execFileSync ?? execFileSync)('taskkill', ['/F', '/T', '/PID', String(child.pid)], { stdio: 'ignore', windowsHide: true, timeout: 10_000 });
+      } catch { /* denied: reported below */ }
+      if (await waitForExit(child, waitMs)) return;
     }
-  } else {
-    try {
-      child.kill('SIGKILL');
-    } catch {
-      // best-effort
-    }
+    const how = platform === 'win32' ? `Stop-Process -Id ${child.pid} -Force` : `kill -9 ${child.pid}`;
+    (opts.warn ?? ((m: string) => console.warn(m)))(`    [!] the dolt verify server (pid ${child.pid}) did not exit; stop it by hand: ${how}`);
+  } finally {
+    try { child.unref(); } catch { /* best-effort */ }
   }
 }
 
@@ -334,7 +370,7 @@ const realVerifyDeps: DoltVerifyDeps = {
     rmSync: (dir, opts) => fs.rmSync(dir, opts),
   },
   net: { isPortFree, getEphemeralPort, waitForConnect },
-  killChild,
+  killChild: (child) => killChild(child),
 };
 
 /**
@@ -386,6 +422,7 @@ export async function verifyDolt(
 
     child = deps.spawn(doltPath, ['sql-server', '--port', String(port), '--data-dir', scratchDir], {
       stdio: 'ignore',
+      windowsHide: true,
     });
 
     let spawnError: Error | undefined;
@@ -410,7 +447,7 @@ export async function verifyDolt(
     return { version, serverOk: false, reason: (err as Error).message };
   } finally {
     if (child) {
-      deps.killChild(child);
+      await deps.killChild(child);
     }
     if (scratchDir) {
       try {

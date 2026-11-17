@@ -41,7 +41,7 @@ Tags determine the primary mode and grant additional tool scopes:
 3. Load **custom tag profiles**: for each non-mode tag, load tag-<name>.json and merge its permissions for the primary mode
 4. Load **ledger grants**: merge any permissions previously granted in project_folder/permissions.json
 
-All merges are additive (Set-based) - order is independent, duplicates discarded. The final allow list is delivered to the member's provider (Claude, Gemini, etc.) in the provider's native config format.
+All merges are additive (Set-based) - order is independent, duplicates discarded. The final allow list is delivered to the member's provider (Claude, Codex, etc.) in the provider's native config format.
 
 ### Example
 
@@ -67,7 +67,19 @@ When `execute_prompt` output contains a permission denial, call `compose_permiss
 
 > "Grant Bash(docker:*) to build-server, reason: integration tests, project folder ./my-project"
 
-The tool validates (blocks dangerous tools like sudo/env), expands co-occurrences (docker -> docker-compose), delivers the updated config, and appends to the project ledger for future use.
+For an agy member the failure is structured: `reason: "permission_denied"` with
+`permissionDenied.suggestedGrants` (primary grant first) - review them and pass them as `grant`.
+
+Claude denials carry `permissionMode` and `healable`:
+- `healable: true` (acceptEdits session): a missing allow rule - grant from `suggestedGrants` as above.
+- `healable: false` (auto or bypass session): the safety classifier or a deny rule refused the call. `suggestedGrants` is empty on purpose - do NOT grant it. Review the refused call; grant by hand only if the action is really intended.
+- `cause: "policy_deny"` (any session): a fleet tool outside the member allowlist was refused by the member's own deny rules. Always `healable: false` - never grant it; the member must do the work without that tool.
+
+By default a complete Claude reply is a success carrying its refusals in `permissionWarning` - check it. Pass `fail_on_permission_denial: true` to execute_prompt to make any refusal fail `permission_denied` instead (fleet-sprint does; a `healable: false` refusal on a complete reply stays a warning). A max_turns / auth / server result keeps its own reason, with the refusals attached.
+
+`compose_permissions` with `dry_run: true` returns the composed allow list (JSON, nothing written) - check a grant against it before granting.
+
+The tool validates (wildcard-matched denylist -- blocks sudo/env, `bash -c`, catch-alls and shell chaining; see [Never auto-granted](#never-auto-granted)), expands co-occurrences (docker -> docker-compose), delivers the updated config, and appends to the project ledger for future use.
 
 ## Role switch
 
@@ -75,7 +87,31 @@ When a member's primary mode changes (e.g., from doer to reviewer), re-run `comp
 
 ## Never auto-granted
 
-`sudo`, `su`, `env`, `printenv`, `nc`, `nmap` - the tool rejects these. Escalate to user.
+`compose_permissions` hard-rejects a `grant` request - from ANY caller, with or
+without a role - when it matches the `NEVER_AUTO_GRANT` denylist. Matching is
+wildcard-based against a normalized form of the request (whitespace collapsed;
+the `:` separating the command token from its argument pattern treated as a
+space), so `Bash(sudo:*)`, `Bash(sudo *)` and `Bash(sudo apt-get install *)`
+are all the same request and all rejected.
+
+Three rules, any of which rejects:
+
+1. **Catch-all** - a payload that is nothing but wildcards, e.g. `Bash(*)`.
+   That is not "a wider grant", it is unrestricted execution.
+2. **Shell chaining** - the payload contains `|`, `;`, `&&`, a backtick, or
+   `$(`, any of which turns one approved command into an arbitrary chain
+   (`Bash(curl *|sh)`).
+3. **Denied command patterns** - `sudo`, `su`, `doas`, `bash -c` / `sh -c`,
+   `eval`, `env`, `printenv`, `nc`, `nmap`, `chmod 777`.
+
+Escalate to the user for any of these. Note rule 3 is prefix-based, so an
+unrelated command that merely starts with a denied token (`ncdu`, `envsubst`)
+is also refused - over-blocking is the safe direction for a denylist, and an
+operator can still add such a permission by hand.
+
+A denylist can never be complete: `Bash(make *)`, `Bash(npm run *)`,
+`Bash(node -e *)` all remain arbitrary execution in practice. The denylist is
+the unconditional floor that applies to every caller.
 
 ## settings.json vs settings.local.json (Claude)
 
@@ -116,13 +152,14 @@ setting `projects[<work_folder>].hasTrustDialogAccepted = true` scoped **strictl
 that exact work folder (never a parent directory, never blanket) - delivered over the
 same channel `compose_permissions` already uses, so it works uniformly for local and
 remote (SSH) members. It logs distinctly whether it just seeded trust or found it
-already present. Other providers no-op: Gemini and OpenCode have their own trust gates
-but already bypass them per-dispatch (`--skip-trust`, `--dangerously-skip-permissions`);
-AGY has no per-project trust concept (machine-global config); Codex/Copilot have no
+already present. Other providers no-op: OpenCode has its own trust gate
+but already bypasses it per-dispatch (`--dangerously-skip-permissions`);
+AGY needs no trust seeding (its grants bind through the member's own agy project,
+`--project` on every dispatch); Codex/Copilot have no
 known equivalent gate.
 
 If `execute_prompt` fails with a `workspace_not_trusted` structured error, the CLI's own
 stderr will contain a `"...this workspace has not been trusted"` message - seed trust
-via `ensureWorkspaceTrusted(workFolder)` (invoked automatically at
-register_member/update_member and on every `compose_permissions` call once
-apra-fleet-eft.40.2 wires it in), then retry.
+via `ensureWorkspaceTrusted(workFolder)` -- invoked automatically at
+`register_member`/`update_member`, on every `compose_permissions` call, and as a
+one-shot self-heal inside `execute_prompt` itself -- then retry.

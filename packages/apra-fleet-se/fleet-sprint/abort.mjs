@@ -1,0 +1,669 @@
+// Typed sprint-abort detection, abort-path PR publish and the newTask
+// validation/persistence helpers for fleet-sprint (apra-fleet-3swo.3.6).
+// Moved verbatim out of runner.js -- runner.js re-exports isTypedAbortError,
+// finalizeAbort and persistNewTaskBestEffort so existing importers keep
+// working. This is a move-only extraction: predicate logic, the finalizeAbort
+// degrade-on-failed-provider-resolution path, and the persistNewTaskBestEffort
+// non-fatal fallback ladder are all unchanged.
+//
+// Scope note (apra-fleet-3swo.3.6): the bead names only two new files
+// (abort.mjs, branch-ensure.mjs) for three conceptual clusters -- abort
+// predicates, the pure branch-selection helper, and newTask
+// validation/persistence. branch-ensure.mjs's name is unambiguous (the
+// branch-selection helper only), so the newTask validation/persistence
+// cluster is folded into this file to stay within the bead's three-file
+// budget (abort.mjs, branch-ensure.mjs, runner.js) rather than adding a
+// fourth file for a small, self-contained cluster.
+//
+// SAFE_TEXT_RE, runGitStep, sanitizePrText and stageCommandBodyMemberSide stay
+// in runner.js (out of this bead's scope -- each has a second, non-moving
+// caller: SAFE_TEXT_RE/sanitizePrText also gate the Publish PR step's text,
+// runGitStep is the main withGitSync dispatch bracket's own helper, and
+// stageCommandBodyMemberSide also backs createChildBeadWithAllocatedId) and
+// are imported back here; findDoltDivergedCause similarly stays (used
+// elsewhere in runner.js) and is imported back for isTypedAbortError. The
+// resulting runner.js <-> abort.mjs cycle is safe because every use is inside
+// a function body, never at module-evaluation time.
+import { CommandError, BudgetExceededError, CancelledError } from '@apralabs/apra-fleet-workflow';
+import {
+    SprintPlanRejectedError, StalledSprintError, ReviewerContractViolationError, GitDivergedError,
+    UsageLimitWaitExhaustedError,
+} from './errors.mjs';
+import { ApraFleet } from '@apralabs/apra-fleet-client';
+import { resolveProvider, capabilities as vcsCapabilities } from './vcs-module.mjs';
+import { raiseVcsPrForMember, PR_SKIPPED_NO_MCP_CLIENT } from './vcs-auth.mjs';
+import { buildSprintPrBody } from './pr-body.mjs';
+import {
+    findDoltDivergedCause, runGitStep, sanitizePrText, stageCommandBodyMemberSide, SAFE_TEXT_RE,
+} from './runner.js';
+
+/**
+ * Follow-up-task persistence is bookkeeping -- it must NEVER abort the sprint.
+ * Every persistence path degrades instead of throwing: bd create ->
+ * parent-bead notes -> this run log, in that order.
+ */
+export async function persistNewTaskBestEffort({ createFn, command, member, parentId, newTask, cycle, log = () => {}, stage }) {
+    try {
+        // createFn's return value (when it forwards createChildBeadWithAllocatedId's
+        // { childId }) lets callers log exactly which bead id was created, not just
+        // a count. Existing callers that ignore the return value are unaffected --
+        // this is still truthy either way.
+        const result = await createFn();
+        return result ?? true;
+    } catch (err) {
+        // Child ids the failed attempts consumed (never re-pooled), so the
+        // notes fallback names them alongside the finding.
+        const consumed = Array.isArray(err && err.consumedIds) ? err.consumedIds.filter(Boolean) : [];
+        const consumedNote = consumed.length > 0 ? ` [consumed child ids: ${consumed.join(', ')}]` : '';
+        log(`[fleet-sprint] newTask bd create FAILED (non-fatal, ${stage}): ${err.message}${consumedNote} -- falling back to parent-bead notes.`);
+        try {
+            await appendRejectedFindingToParentNotes({
+                command, member, parentId, newTask,
+                reason: `bd create failed (${stage}): ${err.message}${consumedNote}`, cycle, log,
+            });
+        } catch (err2) {
+            log(`[fleet-sprint] newTask persistence FAILED at every level (non-fatal, ${stage}); finding preserved VERBATIM in this run log: ${JSON.stringify(newTask)} -- last error: ${err2.message}`);
+        }
+        return false;
+    }
+}
+
+const SAFE_DESCRIPTION_RE = /^[\t\n\r\x20-\x7E]+$/;
+const SAFE_PRIORITY_RE = /^P[0-4]$/;
+
+// Unicode arrow code points the newTask sanitisers recognise (kept as \u
+// escapes so this source stays ASCII-only):
+//   right:        U+2192, U+27F6, U+21A6, U+2794, U+279C, U+27A1, U+2B62, U+21E8
+//   double right: U+21D2, U+27F9
+//   left:         U+2190, U+27F5      double left: U+21D0, U+27F8
+//   both:         U+2194, U+27F7      double both: U+21D4, U+27FA
+const UNICODE_RIGHT_ARROW_RE = /[\u2192\u27F6\u21A6\u2794\u279C\u27A1\u2B62\u21E8]/g;
+const UNICODE_DOUBLE_RIGHT_ARROW_RE = /[\u21D2\u27F9]/g;
+const UNICODE_LEFT_ARROW_RE = /[\u2190\u27F5]/g;
+const UNICODE_DOUBLE_LEFT_ARROW_RE = /[\u21D0\u27F8]/g;
+const UNICODE_BOTH_ARROW_RE = /[\u2194\u27F7]/g;
+const UNICODE_DOUBLE_BOTH_ARROW_RE = /[\u21D4\u27FA]/g;
+
+/**
+ * Fixed substitution table for newTask DESCRIPTIONS. Description only has to
+ * pass SAFE_DESCRIPTION_RE (printable ASCII), so every entry maps to its
+ * plain-ASCII spelling: Unicode arrows become `->` / `=>` / `<-` / `<=` /
+ * `<->` / `<=>`, Unicode comparison signs become `>=` / `<=` / `!=`.
+ */
+const DESCRIPTION_SUBSTITUTIONS = [
+    [/[\u2014\u2013]/g, '--'], // em dash (\u2014), en dash (\u2013)
+    [/[\u2018\u2019]/g, "'"], // curly single quotes (\u2018 \u2019)
+    [/[\u201C\u201D]/g, '"'], // curly double quotes (\u201C \u201D)
+    [/\u2026/g, '...'], // horizontal ellipsis (\u2026)
+    [UNICODE_DOUBLE_BOTH_ARROW_RE, '<=>'],
+    [UNICODE_BOTH_ARROW_RE, '<->'],
+    [UNICODE_DOUBLE_RIGHT_ARROW_RE, '=>'],
+    [UNICODE_RIGHT_ARROW_RE, '->'],
+    [UNICODE_DOUBLE_LEFT_ARROW_RE, '<='],
+    [UNICODE_LEFT_ARROW_RE, '<-'],
+    [/\u2265/g, '>='], // greater-than or equal (\u2265)
+    [/\u2264/g, '<='], // less-than or equal (\u2264)
+    [/\u2260/g, '!='], // not equal (\u2260)
+];
+
+/**
+ * Fixed substitution table for newTask TITLES. Title must pass SAFE_TEXT_RE,
+ * which admits none of `>`, `<`, `=`, `&`, so arrows and comparison operators
+ * are spelled out as words. ORDER MATTERS: multi-character tokens come before
+ * the single characters they contain (`<=>` before `<=` before `<`, `->`
+ * before a lone `>`, `>=` before `=`), and the Unicode dash rewrite runs
+ * first so an em-dash arrow (U+2014 followed by `>`) is caught by the `->`
+ * entry. Every replacement is space-padded; sanitizeNewTaskTitle() collapses
+ * runs of spaces and trims afterwards.
+ */
+const TITLE_SUBSTITUTIONS = [
+    [/[\u2014\u2013]/g, '--'], // em dash (\u2014), en dash (\u2013)
+    [/[\u2018\u2019]/g, "'"], // curly single quotes (\u2018 \u2019)
+    [/[\u201C\u201D]/g, "'"], // curly double quotes -> single quote (a literal `"` stays disallowed in title, unlike description)
+    [/\u2026/g, '...'], // horizontal ellipsis (\u2026)
+    [/`/g, "'"], // backtick (Markdown inline-code marker) -> single quote
+    // Bidirectional arrows first (they contain both `<` and `>`).
+    [UNICODE_DOUBLE_BOTH_ARROW_RE, ' to/from '],
+    [UNICODE_BOTH_ARROW_RE, ' to/from '],
+    [/<=+>|<-+>/g, ' to/from '],
+    // Right arrows.
+    [UNICODE_DOUBLE_RIGHT_ARROW_RE, ' to '],
+    [UNICODE_RIGHT_ARROW_RE, ' to '],
+    [/-+>|=+>/g, ' to '],
+    // Unicode left arrows. An ASCII `<-` is deliberately NOT treated as an
+    // arrow (`x<-1` is more often a comparison), so it falls through to ` lt `.
+    [UNICODE_DOUBLE_LEFT_ARROW_RE, ' from '],
+    [UNICODE_LEFT_ARROW_RE, ' from '],
+    // Comparison operators, multi-character before single.
+    [/\u2265/g, ' at least '], // greater-than or equal (\u2265)
+    [/\u2264/g, ' at most '], // less-than or equal (\u2264)
+    [/\u2260/g, ' ne '], // not equal (\u2260)
+    [/>=/g, ' at least '],
+    [/<=/g, ' at most '],
+    [/!=/g, ' ne '],
+    [/==+/g, ' eq '],
+    [/&&/g, ' and '],
+    [/>/g, ' gt '],
+    [/</g, ' lt '],
+    [/=/g, ' eq '],
+    [/&/g, ' and '],
+];
+
+function applySubstitutions(text, table) {
+    let out = text;
+    for (const [re, replacement] of table) out = out.replace(re, replacement);
+    return out;
+}
+
+/**
+ * Rewrites common non-ASCII punctuation LLM reviewers routinely emit in
+ * newTask descriptions -- em/en dashes, curly quotes, ellipsis, Unicode
+ * arrows and comparison signs -- to ASCII equivalents before
+ * SAFE_DESCRIPTION_RE validation, so a description is not rejected wholesale
+ * over characters that lose no meaning when normalized. This is a FIXED
+ * substitution table (DESCRIPTION_SUBSTITUTIONS), not a general Unicode
+ * stripper: anything still outside the allowlist afterwards is still a hard
+ * rejection. See sanitizeNewTaskTitle() below for title's own, stricter table.
+ * @param {string} description
+ * @returns {string}
+ */
+export function sanitizeNewTaskDescription(description) {
+    return applySubstitutions(String(description ?? ''), DESCRIPTION_SUBSTITUTIONS);
+}
+
+/**
+ * Same idea as sanitizeNewTaskDescription() above, for title -- but with a
+ * STRICTER substitution table (TITLE_SUBSTITUTIONS), since title still has
+ * to pass the tighter SAFE_TEXT_RE shell-safety allowlist afterwards (it is
+ * interpolated inline into a `bd create "..."` command; description is not).
+ * Every substitution here maps to characters SAFE_TEXT_RE already admits, so
+ * this never reopens the injection surface that allowlist exists to close --
+ * it only rescues titles that would otherwise be needlessly rejected over
+ * benign, common LLM punctuation choices:
+ *  - arrows (`->`, `=>`, Unicode right arrows) -> " to ", Unicode left
+ *    arrows -> " from ", bidirectional arrows -> " to/from ";
+ *  - `>=` / `<=` -> " at least " / " at most ", `!=` -> " ne ", lone `>` /
+ *    `<` -> " gt " / " lt ", `=` -> " eq ", `&` -> " and ";
+ * then runs of spaces are collapsed and the result is trimmed. Observed live (apra-fleet-vk0a's sibling
+ * finding): a reviewer wrote a title referencing a CLI command in backticks
+ * (`` `apra-fleet status` ``, ordinary Markdown inline-code style), which
+ * SAFE_TEXT_RE rejects outright (backtick is excluded as a POSIX
+ * command-substitution risk) -- the finding was then silently demoted to a
+ * freetext note on the parent bead instead of becoming its own actionable
+ * task. Backtick has no special meaning in a bd title (bd has no
+ * code-formatting concept), so it is rewritten to a single quote here rather
+ * than dropped or preserved. A literal `"`/`$`/backslash in a title is NOT
+ * rewritten (there is no safe ASCII stand-in that preserves meaning without
+ * reopening the injection question) -- those still hard-reject via
+ * SAFE_TEXT_RE below, exactly as before this function existed.
+ * @param {string} title
+ * @returns {string}
+ */
+export function sanitizeNewTaskTitle(title) {
+    return applySubstitutions(String(title ?? ''), TITLE_SUBSTITUTIONS)
+        .replace(/ {2,}/g, ' ')
+        .trim();
+}
+
+/**
+ * Escapes a value to pure printable ASCII: JSON.stringify (quotes, control
+ * characters, backslashes) plus \uXXXX for every remaining non-ASCII UTF-16
+ * code unit. The result always passes SAFE_DESCRIPTION_RE and JSON.parse
+ * decodes it back to the original string.
+ * @param {unknown} value
+ * @returns {string}
+ */
+export function escapeToAsciiJson(value) {
+    return JSON.stringify(String(value ?? '')).replace(
+        /[^\x20-\x7E]/g,
+        (ch) => `\\u${ch.charCodeAt(0).toString(16).toUpperCase().padStart(4, '0')}`,
+    );
+}
+
+const FALLBACK_TITLE_PLACEHOLDER = 'Follow-up finding (original title not shell-safe)';
+
+// Prefix of the description line that preserves a reviewer's original title
+// whenever the filed title differs from it (mapped, dash-stripped, or a
+// fallback). Shared by validateNewTask() and buildFallbackNewTask().
+const ORIGINAL_TITLE_LABEL = 'Original title (JSON-escaped, non-ASCII as \\uXXXX): ';
+
+/**
+ * Builds a filable variant of a newTask whose TITLE still fails
+ * validateNewTask() after sanitizeNewTaskTitle(). The catch-all strip applies
+ * ONLY here, to this fallback title: every character SAFE_TEXT_RE does not
+ * admit becomes a space (spaces collapsed, trimmed; a fixed placeholder when
+ * nothing survives). The ORIGINAL title is preserved at the top of the
+ * description, escaped by escapeToAsciiJson() so SAFE_DESCRIPTION_RE passes.
+ * The result is re-validated through validateNewTask(); a priority or
+ * description failure is NOT rescued -- null is returned and the caller keeps
+ * its normal rejection path.
+ * @param {{ title: unknown, description: unknown, priority: unknown }} newTask
+ * @returns {{ ok: true, title: string, description: string, priority: string } | null}
+ */
+export function buildFallbackNewTask(newTask) {
+    // Only a TITLE failure is rescued: priority and description must already
+    // pass on their own (checked with a known-safe stand-in title).
+    if (!validateNewTask({ ...(newTask || {}), title: FALLBACK_TITLE_PLACEHOLDER }).ok) return null;
+    const originalTitle = newTask && newTask.title;
+    const stripped = sanitizeNewTaskTitle(originalTitle)
+        .replace(/[^A-Za-z0-9 .,:;!?()'_/+[\]-]/g, ' ')
+        .replace(/ {2,}/g, ' ')
+        .trim()
+        // Strip leading dashes here too, so validateNewTask() receives a
+        // title it will not change and does not prepend a second
+        // original-title line quoting this intermediate fallback title.
+        .replace(/^[-\s]+/, '');
+    const fallbackTitle = stripped && SAFE_TEXT_RE.test(stripped) ? stripped : FALLBACK_TITLE_PLACEHOLDER;
+    const originalDescription = String((newTask && newTask.description) ?? '');
+    const description = `${ORIGINAL_TITLE_LABEL}${escapeToAsciiJson(originalTitle)}\n\n${originalDescription}`;
+    const result = validateNewTask({ title: fallbackTitle, description, priority: newTask && newTask.priority });
+    return result.ok ? result : null;
+}
+
+/**
+ * Validates one reviewer-authored newTask entry. `title` is checked against
+ * SAFE_TEXT_RE because it is interpolated inline into a `bd create` command
+ * string; `description` is checked against the more permissive
+ * SAFE_DESCRIPTION_RE because it travels via `bd create --body-file` and is
+ * never shell-interpolated (see createChildBeadWithAllocatedId). Returns
+ * either `{ ok: true, title, description, priority }` (safe to use) or
+ * `{ ok: false, reason }`. A rejected entry must never reach `command()` as a
+ * `bd create` interpolation; rejection is non-fatal and the sprint continues.
+ * @param {{ title: unknown, description: unknown, priority: unknown }} newTask
+ * @returns {{ ok: true, title: string, description: string, priority: string } | { ok: false, reason: string }}
+ */
+export function validateNewTask(newTask) {
+    const priority = String(newTask && newTask.priority);
+    if (!SAFE_PRIORITY_RE.test(priority)) {
+        return { ok: false, reason: `priority '${priority}' does not match required pattern ${SAFE_PRIORITY_RE}` };
+    }
+    const sanitizedTitle = sanitizeNewTaskTitle(newTask && newTask.title);
+    if (!sanitizedTitle || !SAFE_TEXT_RE.test(sanitizedTitle)) {
+        return { ok: false, reason: `title fails safe-character allowlist ${SAFE_TEXT_RE} (or is empty): ${JSON.stringify(sanitizedTitle)}` };
+    }
+    // The title is the first positional argument of `bd create`, so a leading
+    // '-' would be parsed as a flag. Strip leading dashes (and the whitespace
+    // after them) shell-independently. A title that is only dashes becomes
+    // empty and is rejected below, falling through to the parent-notes
+    // fallback.
+    const title = sanitizedTitle.replace(/^[-\s]+/, '');
+    if (!title) {
+        return { ok: false, reason: `title is empty after removing leading dashes: ${JSON.stringify(sanitizedTitle)}` };
+    }
+    // Whenever the filed title differs from the reviewer's original -- mapped
+    // by sanitizeNewTaskTitle() (`Map<K, V>` -> `Map lt K, V gt`,
+    // `--flag=value` -> `--flag eq value`) or dash-stripped above -- keep the
+    // ORIGINAL title, escaped to ASCII by escapeToAsciiJson(), at the top of
+    // the description so nothing is lost. Whitespace-only differences
+    // (trimming, collapsed runs of spaces) lose no information and do not
+    // count as a change.
+    const rawTitle = String((newTask && newTask.title) ?? '');
+    let description = sanitizeNewTaskDescription(newTask && newTask.description);
+    if (description && title !== rawTitle.replace(/ {2,}/g, ' ').trim()) {
+        description = `${ORIGINAL_TITLE_LABEL}${escapeToAsciiJson(rawTitle)}\n\n${description}`;
+    }
+    if (!description || !SAFE_DESCRIPTION_RE.test(description)) {
+        return { ok: false, reason: `description fails ASCII-printable validation ${SAFE_DESCRIPTION_RE} (or is empty): ${JSON.stringify(description)}` };
+    }
+    return { ok: true, title, description, priority };
+}
+
+/**
+ * Persists a newTask that failed validateNewTask() into the parent bead's
+ * notes, raw and unmodified (title/description/priority plus the rejection
+ * reason), so a rejected finding is still recoverable by a human or the next
+ * planner even though it was not filed as its own child bead. The note body
+ * goes through the same member-side staging seam as the description path
+ * (stageCommandBodyMemberSide) and is never interpolated into a shell string.
+ *
+ * A failure to append is logged AND re-thrown. Every call site wraps this in
+ * its own try/catch whose purpose is to log the raw finding verbatim as the
+ * last fallback rung; swallowing the failure here would make that rung
+ * unreachable on exactly the path it exists to cover. Re-throwing is still
+ * non-fatal to the sprint -- the caller's catch is what contains it.
+ * @param {{ command: Function, member: string, parentId: string, newTask: unknown, reason: string, cycle?: string|number, log?: Function }} opts
+ */
+export async function appendRejectedFindingToParentNotes({ command, member, parentId, newTask, reason, cycle, log = () => {} }) {
+    const raw = {
+        cycle,
+        rejectionReason: reason,
+        title: newTask && newTask.title,
+        description: newTask && newTask.description,
+        priority: newTask && newTask.priority,
+    };
+    const noteBody = `[fleet-sprint newTask REJECTED -- residual validation failure, appended verbatim]\n${JSON.stringify(raw, null, 2)}`;
+    try {
+        const noteFile = await stageCommandBodyMemberSide({
+            command, member, content: noteBody,
+            label: `Stage rejected newTask finding for ${parentId} notes`,
+        });
+        await command(
+            `bd note ${parentId} --file "${noteFile}"`,
+            { member_name: member, silent: true, label: `Append rejected newTask finding to ${parentId} notes` }
+        );
+        log(`Rejected newTask finding appended verbatim to '${parentId}' notes (residual validation failure: ${reason}).`);
+    } catch (err) {
+        log(`[newTask notes-fallback] FAILED to append rejected finding to '${parentId}' notes: ${err.message}`);
+        throw err;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Typed sprint-abort detection
+// ---------------------------------------------------------------------------
+//
+// The single predicate deciding whether an error thrown out of
+// runSprintCycle() is a "sprint-abort" the caller routes through
+// finalizeAbort() plus a terminal history record, as opposed to an unexpected
+// failure that keeps the plain grace-window/exit-1 path with no PR and no
+// history record. The intended set is:
+//   - StalledSprintError, SprintPlanRejectedError and
+//     ReviewerContractViolationError (errors.mjs), which this runner throws
+//     itself, plus BudgetExceededError, which the workflow package throws on
+//     its behalf;
+//   - GitDivergedError and DoltDivergedError, the state-integrity divergences.
+//     A divergence means the single-writer invariant this engine relies on is
+//     already violated (or the shared beads DB genuinely cannot be
+//     fast-forwarded), so no retry or later phase can recover the run -- it
+//     must terminate with an operator-visible record. A DoltDivergedError also
+//     arrives WRAPPED one level down inside a PostDispatchSyncError (the D-push
+//     bracket's shape), so membership is decided by findDoltDivergedCause()
+//     walking the cause chain rather than by the outermost class. That the
+//     divergences belong in this set is not an inference: main()'s typed-abort
+//     catch below already calls resolveTerminalReason()/captureDoltConflictDump()
+//     precisely to report them as the distinct BEADS_SYNC_CONFLICT terminal
+//     state, which is dead code unless they reach it;
+//   - UsageLimitWaitExhaustedError (apra-fleet-hzeb.4.1/.4.2): the usage-limit
+//     pause/reprobe controller's own give-up error, thrown once its budget
+//     (role-policies.mjs's USAGE_LIMIT_BUDGET_DEFAULTS) is spent with no
+//     successful resume. A member still rate-limited past every allowed wait
+//     is as terminal as a stalled sprint -- no retry or later phase recovers it
+//     either -- so it gets the same finalizeAbort()/[ABORTED]-PR treatment;
+//   - the plain `Error` pre-sprint validation failures, which are not
+//     WorkflowError subclasses and are identified by the stable
+//     'Pre-sprint validation failed:' message prefix every such throw site
+//     uses.
+//
+// Everything else is deliberately EXCLUDED, and the check is an explicit class
+// list rather than the blanket `instanceof WorkflowError` it used to be --
+// which swept in every routine, non-terminal failure and turned it into a
+// spurious `verdict: 'ABORTED'`:
+//   - CancelledError: a cooperative cancellation is a requested shutdown, not
+//     an aborted sprint, and must keep flowing through its own 'cancelled'
+//     status path;
+//   - AgentOutputError, AgentDispatchError, FleetTransportError, CommandError:
+//     dispatch-level failures each phase's own retry/soft-fail policy owns;
+//   - GitSyncError, DoltSyncError, and a PostDispatchSyncError whose cause
+//     chain carries NO divergence: transient sync failures that are retried in
+//     place and, if they still surface, are ordinary run failures rather than
+//     sprint aborts;
+//   - SprintLockHeldError: structurally unreachable here. acquireSprintLock()
+//     runs in main() BEFORE its try block, so a held lock never reaches this
+//     predicate; there is also no sprint of our own to finalize when another
+//     engine already owns the branch.
+export function isTypedAbortError(err) {
+    if (!err || err instanceof CancelledError) return false;
+    if (err instanceof StalledSprintError) return true;
+    if (err instanceof SprintPlanRejectedError) return true;
+    if (err instanceof ReviewerContractViolationError) return true;
+    if (err instanceof BudgetExceededError) return true;
+    if (err instanceof GitDivergedError) return true;
+    if (err instanceof UsageLimitWaitExhaustedError) return true;
+    // Bare DoltDivergedError, or one wrapped inside a PostDispatchSyncError.
+    if (findDoltDivergedCause(err)) return true;
+    return typeof err.message === 'string' && err.message.startsWith('Pre-sprint validation failed:');
+}
+
+// ---------------------------------------------------------------------------
+// Abort-path PR publish
+// ---------------------------------------------------------------------------
+//
+// The ordinary Publish PR step only runs when the sprint reaches a final
+// PASS/FAIL verdict. A sprint that instead aborts by throwing a typed error
+// would otherwise propagate straight to the CLI's top-level catch with no
+// branch push and no PR, leaving any work a doer already committed visible
+// only to someone willing to dig through git history. Called from the
+// typed-abort catch site with the causing error, finalizeAbort():
+//   1. counts commits on the sprint branch beyond base, which decides whether
+//      there is anything for a human to look at;
+//   2. with >=1 commit, pushes the branch and raises an idempotent
+//      'fleet-sprint [ABORTED]: <branch>' PR whose body carries the error's
+//      code/message/details, sanitized by sanitizePrText for the same reason
+//      the PASS/FAIL step sanitizes reviewer notes;
+//   3. with 0 commits, raises no PR -- there is no diff, so the PR would be
+//      noise -- and reports that in its return value, so the caller can still
+//      write a terminal history record.
+// `command` and `log` are dependency-injected rather than closed over
+// `context`, so this is callable both from the catch site and directly from
+// unit tests with a mock `command`.
+/**
+ * @param {{
+ *   error: { code?: string, message?: string, details?: unknown },
+ *   branch: string,
+ *   baseBranch: string,
+ *   member: string,
+ *   command: (cmd: string, opts: object) => Promise<any>,
+ *   log?: (msg: string) => void,
+ *   onAuthFailure?: (info: { member: string, label: string, cmd?: string, error: string, source: 'git'|'dolt', failureKind: string }) => Promise<void>,
+ *   callTool?: (name: string, args: object) => Promise<any>,
+ * }} opts
+ * @returns {Promise<{ prUrl: string|null, reason: string, pushed: boolean, commitCount: number }>}
+ */
+export async function finalizeAbort({ error, branch, baseBranch, member, command, log = () => {}, onAuthFailure, callTool, runId }) {
+    // Built up-front (not just at the PR-creation step further down) so the
+    // SAME ApraFleet client can also resolve `member`'s VCS provider
+    // (apra-fleet-417.7) for the runGitStep calls below -- avoids
+    // constructing a second client just for that lookup. `null` when no
+    // callTool is wired (e.g. a mock-sprint scenario with no MCP client);
+    // every downstream use already guards on this being non-null.
+    const fleetApi = typeof callTool === 'function' ? new ApraFleet({ callTool }) : null;
+
+    // apra-fleet-417.7: resolve `member`'s VCS provider ONCE up-front so the
+    // git failures below (fetch/rev-list/push) classify via that member's own
+    // provider chain, not just the default 'github' one. Fails closed to
+    // `undefined` (today's default chain) on any error -- a provider-
+    // resolution hiccup here must never abort an otherwise-recoverable abort
+    // finalization.
+    let provider;
+    if (fleetApi) {
+        try {
+            ({ provider } = await resolveProvider(member, { fleetApi }));
+        } catch (err) {
+            log(`finalizeAbort: could not resolve member '${member}'s VCS provider for git-failure classification (falling back to the default provider chain, no verdict change for GitHub members): ${err.message}`);
+        }
+    }
+
+    // 1. How many commits (if any) does the sprint branch carry beyond base?
+    // Every command() call below passes an explicit `member_name` -- this
+    // runner never lets a git/gh dispatch fall back to an ambient member.
+    //
+    // `member` need not be a member that ever checked out a LOCAL branch named
+    // `baseBranch`; it may only have the sprint branch. A bare
+    // `git rev-list base..branch` would then fail with "unknown revision", so
+    // fetch first and diff against the remote-tracking ref, which is always
+    // resolvable: baseBranch is the ref the sprint branch was created from.
+    //
+    // apra-fleet-5d5.1: these three git calls now go through runGitStep()
+    // (the same helper the main withGitSync dispatch bracket uses) instead of
+    // calling `command()` directly, so a git-auth failure here gets the SAME
+    // provision_vcs_auth self-heal-and-retry-once treatment instead of being
+    // silently swallowed (live: apra-fleet-l7n Cycle 3 abort hit exactly this
+    // -- "Authentication failed ... Password authentication is not
+    // supported" while writing the terminal history record, with no self-heal
+    // available). runGitStep never throws; a non-ok result here is re-thrown
+    // as a CommandError so finalizeAbort()'s own external throw-on-failure
+    // contract (see main()'s catch site, which falls back to "no PR lookup"
+    // on any thrown error) is unchanged for callers.
+    const fetchRes = await runGitStep({
+        command, member, cmd: `git fetch origin ${baseBranch}`,
+        label: `Fetch base branch '${baseBranch}' for abort-path diff`,
+        log, maxTransientRetries: 1, onAuthFailure, provider,
+    });
+    if (!fetchRes.ok) {
+        throw new CommandError(
+            `[Abort Finalize Failed] git fetch origin ${baseBranch} failed: ${fetchRes.error}`,
+            { details: { branch, baseBranch, error: fetchRes.error, kind: fetchRes.kind } }
+        );
+    }
+    const revListRes = await runGitStep({
+        command, member, cmd: `git rev-list --count origin/${baseBranch}..${branch}`,
+        label: `Count commits beyond base for abort-path branch '${branch}'`,
+        log, maxTransientRetries: 1, onAuthFailure, provider,
+    });
+    if (!revListRes.ok) {
+        throw new CommandError(
+            `[Abort Finalize Failed] git rev-list --count origin/${baseBranch}..${branch} failed: ${revListRes.error}`,
+            { details: { branch, baseBranch, error: revListRes.error, kind: revListRes.kind } }
+        );
+    }
+    const commitCount = parseInt(String(revListRes.output).trim(), 10) || 0;
+
+    if (commitCount < 1) {
+        log(`finalizeAbort: branch '${branch}' has 0 commits beyond '${baseBranch}' -- no [ABORTED] PR raised (zero-commit-abort policy).`);
+        return { prUrl: null, reason: 'zero-commit-abort', pushed: false, commitCount };
+    }
+
+    // 2. There is real work on the branch -- publish it and raise the PR.
+    const pushRes = await runGitStep({
+        command, member, cmd: `git push -u origin ${branch}`,
+        label: `Push abort-path sprint branch '${branch}'`,
+        log, maxTransientRetries: 1, onAuthFailure, provider,
+    });
+    if (!pushRes.ok) {
+        throw new CommandError(
+            `[Abort Finalize Failed] git push -u origin ${branch} failed: ${pushRes.error}`,
+            { details: { branch, baseBranch, error: pushRes.error, kind: pushRes.kind } }
+        );
+    }
+
+    // Same origin-remote gate as the Publish PR step, via
+    // VCSModule.capabilities(): a remote whose provider cannot open a PR (a
+    // file:// bare mirror, or any other host with no hosting API support)
+    // must never hit raiseVcsPrForMember()'s doomed REST call, which would
+    // surface as a hard-to-diagnose failure while the sprint is already
+    // aborting. Resolving the remote is itself failSoft -- an unresolvable
+    // remote fails closed to canOpenPullRequest:false -- so a probe hiccup
+    // here degrades to "PR skipped", never a thrown error. The branch above
+    // is already pushed either way.
+    const originUrlRes = await command('git remote get-url origin', {
+        member_name: member,
+        silent: true,
+        failSoft: true,
+        label: 'Resolve origin remote URL for abort-path PR gate',
+    });
+    const originUrl = originUrlRes.ok ? originUrlRes.output.trim() : '';
+    const abortPathCapabilities = vcsCapabilities(originUrl);
+    if (!abortPathCapabilities.canOpenPullRequest) {
+        log(`finalizeAbort: origin remote '${originUrl || '(unresolved)'}' cannot open a pull request (host: ${abortPathCapabilities.host || 'unknown'}) -- skipping [ABORTED] PR creation; branch '${branch}' is still pushed.`);
+        return { prUrl: null, reason: 'non-hosted-remote', pushed: true, commitCount };
+    }
+
+    const prTitle = `fleet-sprint [ABORTED]: ${branch}`;
+    // The error's code/message/details can originate from agent output, and
+    // this text is embedded in a VCSModule-built PR body -- same sanitization
+    // rationale as the PASS/FAIL Publish PR step.
+    const safeCode = sanitizePrText(error && error.code);
+    const safeMessage = sanitizePrText(error && error.message);
+    const safeDetails = sanitizePrText(
+        error && error.details !== undefined ? JSON.stringify(error.details) : ''
+    );
+    // Same markdown body builder as the PASS/FAIL Publish PR step
+    // (pr-body.mjs), so an abort after an earlier PASS/FAIL run also rewrites
+    // the existing PR and carries that run forward in its history.
+    const abortNow = new Date();
+    const buildAbortBody = (previousBody = '') => buildSprintPrBody({
+        verdict: 'ABORTED',
+        branch,
+        baseBranch,
+        runId,
+        now: abortNow,
+        notesHeading: 'Abort details',
+        notes: [
+            'The sprint ABORTED before reaching a final PASS/FAIL verdict.',
+            '',
+            safeCode ? `- Error code: ${safeCode}` : null,
+            safeMessage ? `- Error message: ${safeMessage}` : null,
+            safeDetails ? `- Error details: ${safeDetails}` : null,
+        ].filter((line) => line !== null).join('\n'),
+        // A set-aside stall (StalledSprintError) carries the run's set-aside
+        // records; rendered as the "Set aside this run" section.
+        setAside: error && Array.isArray(error.setAside) ? error.setAside : [],
+        waited: error && Array.isArray(error.waited) ? error.waited : [],
+        previousBody,
+    });
+    const prBody = buildAbortBody();
+
+    // The reverted gh-based PR creation is gone (apra-fleet-tfx.8): raise the [ABORTED] PR via
+    // VCSModule's orchestrator-built curl command, dispatched to `member`
+    // through execute_command, using a push+pr credential minted
+    // just-in-time immediately before this one call (never at sprint setup).
+    // (fleetApi is built at the top of this function, above.)
+    if (!fleetApi) {
+        // Graceful degradation (apra-fleet-tfx.8.1): raising the [ABORTED] PR
+        // needs an MCP client to mint a just-in-time push+pr credential on
+        // `member`. When no callTool is wired (e.g. a mock-sprint scenario
+        // that never opted into an MCP client), the abort-path branch is
+        // ALREADY pushed above -- so instead of an unconditional hard-throw
+        // that would break every such pre-existing scenario, this degrades to
+        // a typed 'pr-skipped-no-mcp-client' outcome: a clear log line, the
+        // pushed branch still returned to the caller, only the auto-raised PR
+        // skipped. In production callTool is always wired (bin/cli.mjs), so
+        // this branch never runs there; it exists purely so PR creation is not
+        // a hard MCP dependency for callers that legitimately have none.
+        log(`[Publish Abort PR Skipped] no MCP callTool available to mint a push+pr credential for member '${member}' -- branch '${branch}' is pushed but the [ABORTED] PR was not raised.`);
+        return { prUrl: null, reason: PR_SKIPPED_NO_MCP_CLIENT, pushed: true, commitCount };
+    }
+    const prResult = await raiseVcsPrForMember({
+        fleetApi,
+        command,
+        member,
+        base: baseBranch,
+        head: branch,
+        title: prTitle,
+        body: prBody,
+        log,
+        logPrefix: '[Publish Abort PR]',
+        // Already resolved just above (the origin-remote PR-capability gate)
+        // via a real git-capable member -- skip re-deriving it a second time
+        // by shelling out to `member`, which may be backlogMember and
+        // have no git checkout of its own to read a remote from.
+        remoteUrlOverride: originUrl,
+        updateExisting: ({ body: oldBody }) => ({ title: prTitle, body: buildAbortBody(oldBody) }),
+    });
+
+    if (!prResult.ok) {
+        if (prResult.credentialAbsent) {
+            log(`finalizeAbort: [Publish Abort PR] NO [ABORTED] pull request was opened for branch '${branch}' -> '${baseBranch}': no PR credential is deployed (branch is pushed). Deploy a credential to get PRs: ${prResult.error}`);
+            return { prUrl: null, reason: 'pr-auth-failed', pushed: true, commitCount };
+        }
+        if (prResult.authFailure) {
+            // apra-fleet-647.1.1.1: a PR auth failure survives the reactive
+            // one-shot self-heal+retry inside raiseVcsPrForMember (i.e. the
+            // credential is still no good after re-provisioning) -- degrade
+            // to a logged, non-throwing outcome instead of a CommandError, so
+            // finalizeAbort() -- whose whole job is to record a sprint abort
+            // -- can never itself be killed by the very auth failure it is
+            // trying to report. The branch is still pushed (`pushed: true`)
+            // even though the [ABORTED] PR could not be raised.
+            log(`finalizeAbort: [Publish Abort PR] failed with an auth failure that survived the reactive self-heal retry for branch '${branch}' -> '${baseBranch}': ${prResult.error} -- degrading (not throwing) so the abort can still be recorded.`);
+            return { prUrl: null, reason: 'pr-auth-failed', pushed: true, commitCount };
+        }
+        throw new CommandError(
+            `[Publish Abort PR Failed] VCSModule create-pull-request failed for branch '${branch}' -> '${baseBranch}': ${prResult.error}`,
+            { details: { branch, baseBranch, error: prResult.error } }
+        );
+    }
+    if (prResult.alreadyExists) {
+        // Idempotent: the desired end state -- a PR open for this branch --
+        // already holds, so this is swallowed rather than thrown.
+        log(`finalizeAbort: an [ABORTED] PR for branch '${branch}' already exists -- treating as idempotent success.`);
+        if (prResult.updated) {
+            log(`finalizeAbort: updated the existing PR for branch '${branch}' to this run's verdict (ABORTED)${prResult.prUrl ? `: ${prResult.prUrl}` : ''}.`);
+        } else {
+            log(`finalizeAbort: WARNING: could NOT update the existing PR for branch '${branch}' to this run's verdict (ABORTED) -- its title/body may still show an earlier run's verdict; update it by hand. Cause: ${prResult.updateError || '(unknown)'}`);
+        }
+        return { prUrl: prResult.prUrl, reason: 'already-exists', pushed: true, commitCount };
+    }
+
+    return { prUrl: prResult.prUrl, reason: 'aborted-pr-created', pushed: true, commitCount };
+}

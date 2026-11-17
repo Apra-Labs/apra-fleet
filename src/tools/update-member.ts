@@ -6,13 +6,20 @@ import { collectOobPassword } from '../services/auth-socket.js';
 import { credentialResolve } from '../services/credential-store.js';
 import { isValidIcon, resolveIcon, DEFAULT_ICON } from '../services/icons.js';
 import { writeStatusline } from '../services/statusline.js';
-import { logLine } from '../utils/log-helpers.js';
+import { logLine, logWarn } from '../utils/log-helpers.js';
+import { findSecretTokens, legacyTokenWarning } from '../services/secret-token.js';
+import { invalidatePreflightCache } from '../services/preflight-check.js';
 import type { Agent } from '../types.js';
 import { CURATED_CHEAP_MODELS, CURATED_STANDARD_MODELS, CURATED_PREMIUM_MODELS } from '../cli/config.js';
 import { validateOpenCodeModelTiers } from '../utils/opencode-model-validation.js';
 import { provisionAgents, remoteAgentsDir } from '../services/agent-provisioner.js';
+import { recheckProjectAgentShadows, invalidateProjectAgentShadowCache } from '../services/agent-shadow.js';
 import { getStrategy } from '../services/strategy.js';
 import { seedWorkspaceTrust } from '../utils/workspace-trust.js';
+import { ensureAgyProject } from '../services/agy-project.js';
+import { beadsStatusNote, refreshMemberFleetMcp, getMemberFleetMcpDeps, fleetInstallWarning } from '../services/member-fleet-install.js';
+import { composePermissions, removeComposedMemberConfig, missingClaudeAllowRules } from './compose-permissions.js';
+import { memberMcpAllowRules } from '../services/member-config-io.js';
 import { isFullyQualifiedPath, workFolderNotAbsoluteError } from '../utils/work-folder-validation.js';
 
 export const updateMemberSchema = z.object({
@@ -29,16 +36,16 @@ export const updateMemberSchema = z.object({
   port: z.number().optional().describe('New SSH port (remote members only)'),
   username: z.string().optional().describe('New SSH username (remote members only)'),
   auth_type: z.enum(['password', 'key']).optional().describe('New auth method (remote members only)'),
-  password: z.string().optional().describe('New SSH password. Omit for secure out-of-band entry — a password prompt will open in a separate terminal window. Supports {{secure.NAME}} token — value is resolved from the credential store before use.'),
+  password: z.string().optional().describe('New SSH password. Omit for out-of-band entry — a password prompt will open in a separate terminal window. Supports {{secret.NAME}} token — value is resolved from the credential store before use.'),
   rotate_password: z.boolean().optional().describe(
-    'Trigger secure out-of-band password re-entry for a member already using password auth. '
+    'Trigger out-of-band password re-entry for a member already using password auth. '
     + 'A password prompt will open in a separate terminal window. Ignored if auth_type is not password.'
   ),
   key_path: z.string().optional().describe('Path to SSH private key. Used for both regular SSH connections and cloud instance lifecycle.'),
   work_folder: z.string()
     .regex(/^[^<>\n\r]+$/, 'work_folder must not contain angle brackets or newlines')
     .optional()
-    .describe('New working directory on target machine. For non-local (remote/relay) members, must be a fully-qualified/absolute path (e.g. "/home/bella/repo" or "C:\\Users\\bella\\repo") -- "~" and relative paths are rejected, since they are never resolved for a non-local member.'),
+    .describe('New working directory on target machine. For non-local (remote/relay) members, must be a fully-qualified/absolute path (e.g. "/home/bella/repo" or "C:\\Users\\bella\\repo") -- "~" and relative paths are rejected, since they are never resolved for a non-local member. A folder may hold at most one LLM member and one LLM-less (llm_provider none) member.'),
   git_access: z.enum(['read', 'push', 'admin', 'issues', 'full']).optional().describe('Git access level for this member'),
   git_repos: z.array(z.string()).optional().describe('Git repositories this member can access (e.g. ["Apra-Labs/ApraPipes"])'),
   icon: z.string().optional().describe('Override the auto-assigned emoji icon. Use named aliases: blue-circle, green-square, red-circle, etc. (8 colors × 2 shapes: circle, square). Or pass raw emoji.'),
@@ -47,7 +54,7 @@ export const updateMemberSchema = z.object({
   cloud_profile: z.string().optional().describe('AWS CLI profile name'),
   cloud_idle_timeout_min: z.number().optional().describe('Minutes of inactivity before auto-stop'),
   cloud_activity_command: z.string().optional().describe('Custom shell command for workload detection. Must output "busy" or "idle". Pass empty string to clear.'),
-  llm_provider: z.enum(['claude', 'gemini', 'codex', 'copilot', 'agy', 'opencode']).optional().describe('Change the LLM provider for this member.'),
+  llm_provider: z.enum(['claude', 'codex', 'copilot', 'agy', 'opencode']).optional().describe('Change the LLM provider for this member.'),
   model_cheap: z.enum(CURATED_CHEAP_MODELS).optional().describe('Change custom cheap model'),
   model_standard: z.enum(CURATED_STANDARD_MODELS).optional().describe('Change custom standard model'),
   model_premium: z.enum(CURATED_PREMIUM_MODELS).optional().describe('Change custom premium model'),
@@ -59,12 +66,17 @@ export const updateMemberSchema = z.object({
   unattended: z.preprocess(
     (v) => v === false ? 'false' : v,
     z.enum(['false', 'auto', 'dangerous'])
-  ).optional().describe('Permission mode for unattended execution. Pass "false" to reset to interactive prompts; "auto" = auto-approve safe operations; "dangerous" = skip all permission checks.'),
+  ).optional().describe('Permission mode for unattended execution. Pass "false" to reset to interactive prompts; "auto" = auto-approve safe operations (Claude: --permission-mode auto; on a model without auto-mode support, such as Haiku, the dispatch runs acceptEdits instead); "dangerous" = skip all permission checks.'),
   category: z.string().max(64).optional().describe('Group label for this member (e.g. "doers", "reviewers"). Pass empty string to clear.'),
   tags: z.array(z.string().max(64, 'Each tag must be 64 characters or fewer'))
     .max(10, 'At most 10 tags are allowed')
     .optional()
     .describe('Free-form labels for this member (max 10 tags, each max 64 chars). Empty array clears all tags; non-empty array replaces existing tags.'),
+  code_intel_provider: z.enum(['codebase-memory', 'gitnexus', 'none']).optional().describe('Change the code-intelligence provider for this member.'),
+  unreservable: z.boolean().optional().describe('Mark this member as never exclusively reservable, so it can be shared by more than one sprint at once (e.g. a member filling fleet-sprint\'s shared "backlog" role). reserve/release/force_release become no-op successes and overlap guards skip it.'),
+  shell: z.enum(['gitbash', 'pwsh7', 'powershell5']).optional().describe('Override the probed Windows shell for this member (gitbash, pwsh7, or powershell5). Windows members only -- ignored for non-windows members.'),
+  vcs_provider: z.enum(['github', 'bitbucket', 'azure-devops', 'none']).optional().describe('Directly set (override) this member\'s VCS provider -- an explicit operator value, never auto-detected. Use this to correct a wrong auto-detect from register_member, or to set the provider for a member with no credentials to provision (so provision_vcs_auth is not required just to record it). Pass "none" to clear it, declaring the member deliberately has no VCS provider.'),
+  fleet_install: z.enum(['auto', 'skip', 'replace-full']).optional().describe('Upgrade or skip the member\'s own apra-fleet install. "auto": for a remote member, probe it and install/upgrade apra-fleet when it is missing or older than this orchestrator (build-aware), self-register, write its per-folder apra-fleet MCP entry and verify a MEMBER session, even when nothing else changed; an install/upgrade that ran (or an install that only now became available) also adds the member apra-fleet tool rules to a claude member\'s permission allow-list through compose_permissions grant mode, keeping its role and grants (a NOTICE says so; a failure is a WARNING); local members only get the MEMBER-session probe. An install without the member-install marker (a full install) is never touched by "auto". "replace-full": everything "auto" does, plus an explicit opt-in to REPLACE such a full install with a member install (back up data and fleet.key to a timestamped dir, uninstall with the installed binary, stop the linux fleet-supervisor unit, move data aside, run the current installer in member mode, self-register); refused with no destructive command when the marker probe fails. "skip": no install (a refresh triggered by another change runs with install off). Omit to keep the default: install only on a provider change. The result reports the recoverable fleetMcp status (re-probe with member_detail refresh:true). A requested install/upgrade that cannot happen (no release for this build, checksum or download failure, unsupported platform, full install present, ...) never fails the update: it adds a WARNING naming the consequence, the exact reason and OS-correct manual install steps (also in fleetMcp.manualInstall).'),
 });
 
 export type UpdateMemberInput = z.infer<typeof updateMemberSchema>;
@@ -92,17 +104,33 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
     return workFolderNotAbsoluteError(input.work_folder, 'Member was NOT updated.');
   }
 
+  // Same constraint as register_member: unreservable is reserved for
+  // llm_provider: 'none' members. Evaluate the RESULTING state (this update's
+  // values where given, else the existing row's), not just this call's inputs
+  // in isolation -- either "set unreservable while already claude/codex/etc."
+  // or "switch llm_provider away from none while already unreservable" must
+  // both be rejected.
+  const resultingUnreservable = input.unreservable ?? existing.unreservable ?? false;
+  const resultingLlmProvider = input.llm_provider ?? existing.llmProvider ?? 'claude';
+  if (resultingUnreservable && resultingLlmProvider !== 'none') {
+    return '❌ "unreservable" requires llm_provider: "none" -- it is reserved for plain command-executor members that never receive an agent dispatch. Member was NOT updated.';
+  }
+
+  // A change of LLM kind can create a same-kind clash in an unchanged folder,
+  // since a folder may hold one LLM member and one LLM-less member.
+  const llmKindChanged = ((existing.llmProvider ?? 'claude') === 'none') !== (resultingLlmProvider === 'none');
   const needsUniquenessCheck = existing.agentType === 'remote'
-    ? (hostChanged || portChanged || folderChanged)
-    : folderChanged;
+    ? (hostChanged || portChanged || folderChanged || llmKindChanged)
+    : (folderChanged || llmKindChanged);
 
   if (needsUniquenessCheck) {
     const newHost = input.host ?? existing.host;
     const newPort = input.port ?? existing.port;
     const newFolder = input.work_folder ?? existing.workFolder;
-    if (hasDuplicateFolder(existing.agentType, newFolder, newHost, newPort, existing.id)) {
+    if (hasDuplicateFolder(existing.agentType, newFolder, newHost, newPort, existing.id, resultingLlmProvider)) {
       const scope = existing.agentType === 'local' ? 'this machine' : `host ${newHost}:${newPort}`;
-      return `❌ Another member already uses folder "${newFolder}" on ${scope}. Update rejected.`;
+      const kind = resultingLlmProvider === 'none' ? 'LLM-less' : 'LLM';
+      return `❌ Another ${kind} member already uses folder "${newFolder}" on ${scope} (a folder may hold one LLM member and one LLM-less member). Update rejected.`;
     }
   }
 
@@ -114,24 +142,26 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
     return `❌ Invalid icon "${input.icon}". Use a named alias (e.g., blue-circle, red-square, green-square) or a valid emoji.`;
   }
 
-  // Resolve {{secure.NAME}} tokens in password field
+  // Resolve {{secret.NAME}} / legacy {{secure.NAME}} tokens in password field
   let resolvedPassword = input.password;
+  let passwordLegacyNames: string[] = [];
   if (resolvedPassword) {
-    const TOKEN_RE = /\{\{secure\.([a-zA-Z0-9_-]{1,64})\}\}/g;
-    let match: RegExpExecArray | null;
+    const tokens = findSecretTokens(resolvedPassword);
     let resolved = resolvedPassword;
-    const tokenNames = new Set<string>();
-    while ((match = TOKEN_RE.exec(resolvedPassword)) !== null) {
-      tokenNames.add(match[1]);
-    }
+    const tokenNames = new Set(tokens.map((t) => t.name));
+    passwordLegacyNames = tokens.filter((t) => t.legacy).map((t) => t.name);
     for (const name of tokenNames) {
       const entry = credentialResolve(name, existing.friendlyName);
       if (!entry) return `❌ Credential "${name}" not found. Run credential_store_set first. Member was NOT updated.`;
       if ('denied' in entry) return `❌ ${entry.denied} Member was NOT updated.`;
       if ('expired' in entry) return `❌ ${entry.expired} Member was NOT updated.`;
-      resolved = resolved.replaceAll(`{{secure.${name}}}`, entry.plaintext);
+      resolved = resolved.replaceAll(`{{secret.${name}}}`, entry.plaintext);
+      resolved = resolved.replaceAll(`{{secure.${name}}}`, entry.plaintext); // legacy spelling
     }
     resolvedPassword = resolved;
+    if (passwordLegacyNames.length > 0) {
+      logWarn('update_member', legacyTokenWarning(passwordLegacyNames), { id: existing.id, friendlyName: existing.friendlyName });
+    }
   }
 
   // Out-of-band password collection:
@@ -148,6 +178,7 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
 
   const updates: Record<string, unknown> = {};
   const warnings: string[] = [];
+  if (passwordLegacyNames.length > 0) warnings.push(legacyTokenWarning(passwordLegacyNames));
 
   // --- model_tiers normalization ---
   if (input.model_tiers !== undefined) {
@@ -185,6 +216,15 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
   if (input.llm_provider !== undefined) updates.llmProvider = input.llm_provider;
   if (input.category !== undefined) updates.category = input.category.trim() || undefined;
   if (input.tags !== undefined) updates.tags = input.tags.length === 0 ? undefined : input.tags;
+  if (input.code_intel_provider !== undefined) updates.codeIntelProvider = input.code_intel_provider;
+  if (input.unreservable !== undefined) updates.unreservable = input.unreservable;
+  if (input.shell !== undefined) updates.shell = input.shell;
+  // Explicit operator override -- never auto-detected (that only happens in
+  // register_member). 'none' clears vcsProvider, matching how register_member
+  // records it (Agent.vcsProvider has no 'none' member -- see src/types.ts).
+  if (input.vcs_provider !== undefined) {
+    updates.vcsProvider = input.vcs_provider === 'none' ? undefined : input.vcs_provider;
+  }
   if (input.model_cheap !== undefined) updates.modelCheap = input.model_cheap;
   if (input.model_standard !== undefined) updates.modelStandard = input.model_standard;
   if (input.model_premium !== undefined) updates.modelPremium = input.model_premium;
@@ -222,12 +262,35 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
     }
   }
 
+  // Switching a member TO agy: create (or re-verify) its own agy project
+  // before recording the switch, so an agy member always has a bindable
+  // --project id. Evaluated on the resulting member (new host/folder/shell).
+  if (input.llm_provider === 'agy' && (existing.llmProvider ?? 'claude') !== 'agy') {
+    const preview: Agent = { ...existing, ...updates };
+    try {
+      const ensured = await ensureAgyProject(preview, { persist: false });
+      updates.agyProjectId = ensured.projectId;
+    } catch (e: any) {
+      return `ERROR: could not create the agy project for "${existing.friendlyName}": ${e?.message ?? String(e)}\nMember was NOT updated.`;
+    }
+  }
+
   const updated = updateInRegistry(existing.id, updates);
   if (!updated) {
     return `Failed to update member "${existing.id}".`;
   }
   logLine('update_member', `id=${updated.id} name=${updated.friendlyName}`, updated);
   writeStatusline();
+
+  // Invalidate preflight cache when connection or credential identity changes
+  const identityChanged = hostChanged || portChanged ||
+    input.username !== undefined ||
+    input.auth_type !== undefined || resolvedPassword !== undefined ||
+    preEncryptedPassword !== undefined || input.key_path !== undefined ||
+    input.llm_provider !== undefined;
+  if (identityChanged) {
+    invalidatePreflightCache(existing.id);
+  }
 
   // --- Re-provision role-agent files for remote members ---
   // Cheap (one probe round trip when up to date); also doubles as the manual retry
@@ -255,6 +318,123 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
     await seedWorkspaceTrust(updated, undefined, 'update_member');
   }
 
+  // Provider switch OR work-folder move: remove exactly what
+  // compose_permissions wrote for the member as it was BEFORE this update (old
+  // provider, old folder/host -- its permission files, its per-folder
+  // apra-fleet MCP entry and the exclude lines), then re-compose for the
+  // member as it is now, so the new folder gets its ?member= entry at once
+  // (until then a session there would see the FULL user-scope entry) and the
+  // old folder is left with no stale member entry. Skipped entirely when
+  // neither the provider nor the work folder changed.
+  const oldProvider = existing.llmProvider ?? 'claude';
+  const newProvider = updated.llmProvider ?? 'claude';
+  const providerChanged = oldProvider !== newProvider;
+  const workFolderMoved = updated.workFolder !== existing.workFolder;
+  if (providerChanged || workFolderMoved) {
+    const why = providerChanged
+      ? `Provider switch ${oldProvider} -> ${newProvider}`
+      : `Work folder move ${existing.workFolder} -> ${updated.workFolder}`;
+    const oldWhat = providerChanged ? `the old ${oldProvider} config` : `the config in the old work folder`;
+    try {
+      const removed = await removeComposedMemberConfig(existing);
+      logLine('update_member', `${why}: removed old config (${removed.join('; ') || 'nothing to remove'})`, updated);
+    } catch (e: any) {
+      warnings.push(`${why}: could not remove ${oldWhat}: ${e?.message ?? String(e)}`);
+    }
+    let composeResult: string;
+    try {
+      composeResult = await composePermissions({ member_id: updated.id, role: 'doer', tags: updated.tags });
+    } catch (e: any) {
+      composeResult = `compose_permissions threw: ${e?.message ?? String(e)}`;
+    }
+    if (!composeResult.startsWith('\u2705')) {
+      const asciiDetail = composeResult.replace(/^[^\x00-\x7F]+\s*/, '');
+      warnings.push(providerChanged
+        ? `ERROR: provider switched to ${newProvider} but compose_permissions failed -- the member has no ${newProvider} permission/MCP config: ${asciiDetail}`
+        : `ERROR: work folder moved to ${updated.workFolder} but compose_permissions failed -- the new folder has no member permission/MCP config: ${asciiDetail}`);
+    }
+  }
+
+  // fleetMcp: a provider change re-runs the member install with --llm <new
+  // provider>; a name or work-folder change re-runs `register-member --id` on
+  // the member's own install. Best-effort: the update itself already succeeded
+  // and the outcome is a recorded, recoverable status (apra-fleet-b4g.56).
+  const nameChanged = updated.friendlyName !== existing.friendlyName;
+  let fleetMcpLine: string | undefined;
+  // "replace-full" is "auto" plus the opt-in full-install replacement.
+  const fleetInstallAuto = input.fleet_install === 'auto' || input.fleet_install === 'replace-full';
+  if (providerChanged || nameChanged || workFolderMoved || fleetInstallAuto) {
+    try {
+      // 'skip' disables the install; 'auto' installs a remote member (upgrading
+      // only when missing/older); omitted keeps the provider-change-only default.
+      const install = input.fleet_install === 'skip'
+        ? false
+        : (providerChanged || fleetInstallAuto) && updated.agentType !== 'local';
+      const status = await refreshMemberFleetMcp(updated, getMemberFleetMcpDeps(), {
+        install,
+        forceInstall: providerChanged && input.fleet_install !== 'skip',
+        // An install also (re)writes the per-folder MCP entry before it is
+        // checked, so one fleet_install:"auto" call ends at fleetMcp=available.
+        writeMcpEntry: install,
+        replaceFull: install && input.fleet_install === 'replace-full',
+      });
+      fleetMcpLine = status.state === 'available'
+        ? `available${status.version ? ` (apra-fleet ${status.version})` : ''}${(status.installFailure || status.replacedFullInstall) && status.detail ? ` -- ${status.installFailure ? 'warning: ' : ''}${status.detail}` : ''}`
+        : `unavailable (${status.reason ?? 'unknown'})${status.detail ? ` -- ${status.detail}` : ''}`;
+      fleetMcpLine += beadsStatusNote(status);
+      // A requested install that did not happen never fails the update: it is
+      // a prominent WARNING with the consequence, reason and manual steps.
+      const installWarning = fleetInstallWarning(updated.friendlyName, status);
+      if (installWarning) {
+        fleetMcpLine += installWarning.startsWith('NOTICE') ? ' (see NOTICE below)' : ' (see WARNING below)';
+        warnings.unshift(installWarning);
+      }
+      // A fresh install/upgrade/replace -- or an install that only now became
+      // usable (e.g. a failed autostart fixed by `apra-fleet start`) -- can
+      // serve member tools a claude member's allow list does not grant yet
+      // (opencode keeps no client-side tool list; agy/codex/copilot get no
+      // member install here). Grant mode ADDS the member tool rules to the
+      // existing allow list, so the member's role and reactive grants are kept.
+      // Skipped when the provider or folder block above already composed.
+      // Also runs whenever the install is available, not only on a recorded
+      // transition: a member_detail refresh between `apra-fleet start` and
+      // this update already recorded available. The grant is skipped (no
+      // NOTICE, no file rewrite) when the allow list already has every rule.
+      const mayNeedMemberRules = status.fleetInstalledAt !== existing.fleetMcp?.fleetInstalledAt
+        || !!status.replacedFullInstall
+        || status.state === 'available';
+      if (install && mayNeedMemberRules && !providerChanged && !workFolderMoved && (updated.llmProvider ?? 'claude') === 'claude'
+        && (await missingClaudeAllowRules(updated, memberMcpAllowRules())).length > 0) {
+        let recompose: string;
+        try {
+          recompose = await composePermissions({ member_id: updated.id, role: 'doer', tags: updated.tags, grant: memberMcpAllowRules() });
+        } catch (e: any) {
+          recompose = `compose_permissions threw: ${e?.message ?? String(e)}`;
+        }
+        if (!recompose.startsWith('\u2705')) {
+          const asciiDetail = recompose.replace(/^[^\x00-\x7F]+\s*/, '');
+          warnings.push(`WARNING: apra-fleet was installed/upgraded on the member but compose_permissions failed -- its permission allow-list was not refreshed, so its LLM may refuse fleet tools the new install serves. Retry with compose_permissions {member_id, role}: ${asciiDetail}`);
+        } else {
+          warnings.push('NOTICE: the member apra-fleet tool rules were added to its permission allow-list (existing rules and grants kept).');
+        }
+      }
+    } catch (e: any) {
+      fleetMcpLine = `unavailable (probe-failed) -- ${e?.message ?? String(e)}`;
+    }
+  }
+
+  // Re-check project-level agent files that would shadow the managed role set
+  // (the work folder or provider may have changed). The dispatch-time cache is
+  // always invalidated; the check itself runs only when the member is reachable
+  // (local members always). Never throws.
+  invalidateProjectAgentShadowCache(updated.id);
+  const shadowReachable = updated.agentType !== 'remote' || agentProvisionResult !== undefined
+    || remoteAgentsDir(updated.llmProvider ?? 'claude') === null;
+  if (shadowReachable) {
+    const shadowWarning = await recheckProjectAgentShadows(updated);
+    if (shadowWarning) warnings.push(shadowWarning);
+  }
+
   let result = `✅ Member "${updated.friendlyName}" updated.\n\n`;
   result += `  Icon:    ${updated.icon ?? DEFAULT_ICON}\n`;
   result += `  ID:      ${updated.id}\n`;
@@ -268,6 +448,12 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
     result += `  Auth:    ${updated.authType}\n`;
   }
   result += `  Provider: ${updated.llmProvider ?? 'claude'}\n`;
+  if (updated.llmProvider === 'agy' && updated.agyProjectId) {
+    result += `  AGY project: ${updated.agyProjectId}\n`;
+  }
+  if (input.vcs_provider !== undefined) {
+    result += `  VCS Provider: ${updated.vcsProvider ?? 'none'}\n`;
+  }
   if (updated.modelCheap) result += `  Model Cheap: ${updated.modelCheap}\n`;
   if (updated.modelStandard) result += `  Model Standard: ${updated.modelStandard}\n`;
   if (updated.modelPremium) result += `  Model Premium: ${updated.modelPremium}\n`;
@@ -284,6 +470,7 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
     const mt = updated.modelTiers;
     result += `  Model Tiers: cheap=${mt.cheap ?? '-'} standard=${mt.standard ?? '-'} premium=${mt.premium ?? '-'}\n`;
   }
+  if (fleetMcpLine) result += `  fleetMcp: ${fleetMcpLine}\n`;
 
   if (warnings.length > 0) {
     result += '\n';

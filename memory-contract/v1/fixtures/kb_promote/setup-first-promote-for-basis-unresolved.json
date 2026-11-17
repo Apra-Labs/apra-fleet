@@ -1,0 +1,17 @@
+{
+  "tool": "kb_promote",
+  "case": "setup-first-promote-for-basis-unresolved",
+  "kind": "happy",
+  "request": {
+    "id": "e50e3742-5ae8-491c-8a8e-dc46547b4cc4",
+    "reason": "First promotion (UNVERIFIED -> INFERRED) while the basis file still exists."
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"id\":\"e50e3742-5ae8-491c-8a8e-dc46547b4cc4\",\"previous_confidence\":\"INFERRED\",\"new_confidence\":\"CONFIRMED\"}"
+      }
+    ]
+  }
+}

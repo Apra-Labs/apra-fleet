@@ -159,8 +159,8 @@ describe('runInstall --workflows none: byte-identical existing-step behavior', (
     const logs = logSpy.mock.calls.map(c => c.join(' ')).join('\n');
     expect(logs).not.toContain('Installing workflow runtime');
     // Pre-workflow-subsystem numbering preserved: base=6 steps (no skills, no service in dev
-    // mode) +1 dolt (apra-fleet-ire.3, unconditional) = 7.
-    expect(logs).toContain('[7/7]');
+    // mode) +1 dolt (apra-fleet-ire.3, unconditional) +1 KB/code-intelligence setup = 8.
+    expect(logs).toContain('[8/8]');
 
     const writeCalls = vi.mocked(fs.writeFileSync).mock.calls.map(c => c[0].toString());
     expect(writeCalls.some(p => p.startsWith(NODE_MODULES_DIR))).toBe(false);
@@ -752,5 +752,44 @@ describe('buildDevManifest ships packages/apra-fleet-se/workflow.json (regressio
 
     expect(Array.isArray(pkg.files)).toBe(true);
     expect(pkg.files).toContain('packages/apra-fleet-se/workflow.json');
+  });
+});
+
+// An npm install runs the supervisor from the packed tree
+// (~/.apra-fleet/workflows/fleet-sprint/bin/serve.mjs). serve.mjs imports
+// ../src/supervisor/*, which the "files" allowlist did not ship, so the
+// supervisor could not load on an npm install while a dev checkout (files on
+// disk regardless of `files`) never saw it. Walk serve.mjs's relative import
+// graph and require every reached file to be covered by `files`.
+describe('package.json "files" ships every module the supervisor (bin/serve.mjs) imports', () => {
+  it('each file reachable from packages/apra-fleet-se/bin/serve.mjs via relative imports is in the packed payload', async () => {
+    const fsReal = await vi.importActual<typeof import('node:fs')>('node:fs');
+    const pathReal = await vi.importActual<typeof import('node:path')>('node:path');
+
+    const testDir = pathReal.dirname(fileURLToPath(import.meta.url));
+    const projectRoot = pathReal.resolve(testDir, '..');
+    const pkg = JSON.parse(fsReal.readFileSync(pathReal.join(projectRoot, 'package.json'), 'utf-8')) as { files?: string[] };
+    const files = pkg.files ?? [];
+    const shipped = (rel: string) => files.some((f) => (f.endsWith('/') ? rel.startsWith(f) : rel === f));
+
+    const importRe = /(?:from\s+|import\s*\(\s*)['"](\.{1,2}\/[^'"]+)['"]/g;
+    const start = pathReal.join(projectRoot, 'packages', 'apra-fleet-se', 'bin', 'serve.mjs');
+    const seen = new Set<string>();
+    const queue = [start];
+    while (queue.length > 0) {
+      const abs = queue.pop()!;
+      if (seen.has(abs)) continue;
+      seen.add(abs);
+      const text = fsReal.readFileSync(abs, 'utf-8');
+      for (const m of text.matchAll(importRe)) {
+        const next = pathReal.resolve(pathReal.dirname(abs), m[1]);
+        if (fsReal.existsSync(next) && fsReal.statSync(next).isFile()) queue.push(next);
+      }
+    }
+
+    const reached = [...seen].map((abs) => pathReal.relative(projectRoot, abs).split(pathReal.sep).join('/'));
+    expect(reached.some((rel) => rel.startsWith('packages/apra-fleet-se/src/supervisor/'))).toBe(true);
+    const missing = reached.filter((rel) => !shipped(rel));
+    expect(missing, `not covered by package.json "files": ${missing.join(', ')}`).toEqual([]);
   });
 });

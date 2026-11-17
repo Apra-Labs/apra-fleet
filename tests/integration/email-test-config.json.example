@@ -1,0 +1,13 @@
+{
+  "smtp": {
+    "host": "smtp.example.com",
+    "port": 587,
+    "user": "test@example.com",
+    "from": "noreply@example.com",
+    "testTo": "recipient@example.com"
+  },
+  "sendgrid": {
+    "from": "noreply@example.com",
+    "testTo": "recipient@example.com"
+  }
+}

@@ -19,21 +19,26 @@ covers only:
 
 ## 1. `--issue` is comma-separated at the CLI, an array at the runner
 
-`bin/cli.mjs` (`parseCliArgs()`, around line 468):
+`bin/cli.mjs` (in `parseCliArgs()`):
 
 ```js
 const targetIssues = values.issue.split(',').map(s => s.trim()).filter(Boolean);
 ```
 
 So `--issue epic-1,epic-2` becomes `['epic-1', 'epic-2']`, and this array is
-forwarded to the runner as `target_issues` (`buildRunnerArgs()`, line ~306-308).
-**The CLI supports multiple target issues.** This is a different contract
-from the supervisor's `POST /api/sprints` HTTP endpoint, whose `issue` field
-is a single string passed straight to `validateIssueId()` (which rejects a
-comma as an invalid character) -- see `packages/apra-fleet-se/docs/supervisor-api.md`
-and the filed gap `apra-fleet-ymf`. If you need multi-issue scope over HTTP
-today, there is no supported field for it; only the CLI (`--issue a,b`) and
-the raw runner arg (`target_issues: ['a','b']`) accept more than one id.
+forwarded to the runner as `target_issues` by `buildRunnerArgs()`.
+**The CLI supports multiple target issues.** `--issue` is not a repeatable
+flag (nothing in the option spec is declared `multiple: true`), so a second
+`--issue` overwrites the first -- the comma-separated form is the only way to
+pass more than one id.
+
+The supervisor's `POST /api/sprints` endpoint takes the same shape: its
+`issue` field is a string that `splitIssueIds()` comma-splits, trims and
+filters before validating **each** id individually with `validateIssueId()`.
+Because `ISSUE_ID_PATTERN` does not include a comma, that split has to happen
+first -- handing the un-split `"a,b"` to `validateIssueId()` would 400. See
+`packages/apra-fleet-se/docs/supervisor-api.md`. The raw runner arg
+(`target_issues: ['a','b']`) is the third equivalent form.
 
 ## 2. Two validation layers, one set of regexes
 
@@ -54,7 +59,7 @@ final gate before any `command()`/`agent()` dispatch). Both layers throw the
 same `[Arg Contract] Invalid issue id "..."` / `[Arg Contract] Invalid ...
 branch name "..."` message shape.
 
-### Runner's own `validateArgs()` contract (`fleet-sprint/runner.js`, ~line 2421)
+### Runner's own `validateArgs()` contract (`fleet-sprint/runner.js`)
 
 Called once, at the top of `main(context)`, on the raw `args` object passed
 in (by the CLI's `engine.executeFile()` call, or directly by a test/other
@@ -67,15 +72,150 @@ Required:
 - `target_issues` (non-empty string array) OR legacy `target_issue` (string) -- at least one of the two; `target_issues` is preferred. Each entry validated with `validateIssueId`.
 - `members` (non-empty string array, every entry a non-empty string).
 - `branch` (string, `validateBranchName`).
-- `base_branch` (string, `validateBranchName`).
+- `base_branch` (string, `validateBranchName`). Must differ from `branch` (`validateBranchPair`; `refs/heads/` and `origin/` prefixes are ignored when comparing).
 
 Optional (defaults applied inside `validateArgs()`):
 - `goal` -- default `'P1/P2'`; must match `GOAL_PATTERN`.
-- `max_cycles`, `requirementsFile`, `roleMap`, `budget`, `dispatch_timeout_s`, `serviceUrl`, `assignee`, `doer_worklist_mode`, `resume_model_switch`, `worklist_effort_budget`, `callTool` -- see `KNOWN_ARG_KEYS` in the source for the authoritative, currently-recognized set and which of these have a CLI flag vs. are programmatic-only.
+- `max_cycles`, `requirementsFile`, `roleMap`, `budget`, `dispatch_timeout_s`, `usage_limit_max_wait_s`, `usage_limit_max_reprobes`, `serviceUrl`, `run_id`, `expect_beads`, `assignee`, `doer_worklist_mode`, `resume_model_switch`, `worklist_effort_budget`, `azdevops_pat_secret_name`, `callTool` -- see `KNOWN_ARG_KEYS` in the source for the authoritative, currently-recognized set and which of these have a CLI flag vs. are programmatic-only. `usage_limit_max_wait_s` (integer >= 60) and `usage_limit_max_reprobes` (integer >= 1) are the CLI-overridable usage-limit pause budgets (`--usage-limit-max-wait-s` / `--usage-limit-max-reprobes`); omitted, they fall back to `role-policies.mjs`'s `USAGE_LIMIT_BUDGET_DEFAULTS`.
+
+**NOT WIRED (2026-10-01).** `ci_gate` / `--ci-gate` are disabled: `ci_gate` is
+not in `KNOWN_ARG_KEYS` (passing it fails as an unknown arg) and the CLI has no
+`--ci-gate` flag. The gate below runs CI per reviewer dispatch, which conflicts
+with the agreed direction (CI never blocks or reaches doer/reviewer loops; the
+integration-test phase owns CI through one reopenable bead; per-push vs
+end-of-cycle triggering per project). It stays in the code, unconfigured, until
+the CI-as-quality-resource epic (apra-fleet-dv8i) designs the flow. The text
+below describes the module as built, not a supported option.
+
+`ci_gate` (as built; CLI `--ci-gate <json>`, forwarded verbatim) configured
+the engine CI gate (`fleet-sprint/ci-gate.mjs`). Shape:
+`{"workflow": "<workflow file name or id>", "timeout_s": <positive integer, default 3600>}`.
+`validateArgs()` (`validateCiGate`) rejects bad JSON, a non-object, unknown
+keys, a missing/malformed `workflow` (must match `^[A-Za-z0-9._-]+$`) and a
+non-positive or non-integer `timeout_s` with an `[Arg Contract] Invalid ci_gate...`
+error, before any dispatch. Behavior:
+- Absent: no CI calls at all, and exactly one `[CI Gate] CI gate not configured ...` log line per sprint.
+- Set: before each reviewer dispatch the ORCHESTRATOR resolves the sprint
+  branch head sha on the remote, locates the run of that workflow already
+  triggered for that sha (or triggers one on the branch), polls it to
+  completion bounded by `timeout_s`, and records run id, url, head sha and
+  per-job conclusion in the sprint log. The reviewer prompt carries that result
+  and tells the reviewer CI is engine-verified and never to ask the doer to
+  trigger CI. An unchanged head reuses its previous PASS/FAIL result.
+- Never a silent pass: a refused trigger (e.g. HTTP 403 "Resource not
+  accessible by integration") is logged as an ERROR naming the missing
+  permission and the credential in use and recorded `FAILED-TO-RUN`; a run
+  that does not finish in time is recorded `TIMEOUT` with the run url; a
+  remote whose VCS provider has no CI-trigger support (only `github` declares
+  one today) is recorded `FAILED-TO-RUN` naming the provider.
+- Credential: the orchestrator's just-in-time push+pr VCS credential (the same
+  one Publish PR mints), run through `vcs_credential_exec` -- doers never need
+  CI permissions.
+
+`expect_beads` (raw `--expect-beads` JSON, forwarded verbatim) is parsed by
+`validateArgs()` via `validateExpectBeads` -- bad JSON is rejected at
+validation, before any dispatch. Argv resolution order: `--expect-beads`
+flag, then env `FLEET_SPRINT_EXPECT_BEADS`, then unset (the backlog
+member's own `bd where` becomes the expectation). Before any `bd` mutation,
+`verifyBeadsIdentity()` probes the backlog member then every other
+member (`bd where --json`, `bd config get sync.remote --json`, `git remote
+get-url origin`) and throws `BeadsIdentityError` (reason `MISMATCH`) -- text:
+`Beads identity check failed: member '<member>' resolves to a different beads
+database than expected (...) -- <field>: expected '<x>', actual '<y>'.
+Refusing to mutate beads on it.` -- on the first field that resolved on BOTH
+sides and differs. It also throws (reason `MISSING_TOOL`) when a `bd` probe
+fails because `bd` itself is not installed or not on PATH on a member,
+naming the member and the fix. No bypass flag. Any other probe that fails or
+resolves nothing is NOT fatal: it logs `[beads-identity] WARNING: member '<m>' could not report
+<field> ('<probe>' -> <error>); not compared. To fix: ...` (or `... reports
+no beads database in its workFolder ...` when `bd where` itself fails, in
+which case that member has no identity entry at all), leaves that field out
+of the comparison, and the sprint proceeds (except a beads-reading member
+with no database -- see member beads set-up below). When no expectation was supplied
+and the orchestrator's own probe resolved nothing, one warning says no
+cross-member check happens this sprint and how to restore it. The published
+`beadsIdentity` state carries `warnings: string[]` plus a per-member
+`unresolved: string[]`, and `setUp: string[]` (members set up below).
+
+Member beads set-up: a member a beads-reading role is mapped to (planner,
+plan-reviewer, doer, reviewer, integ/regression test runners, harvester --
+not deployer/ci-watcher; plus the backlog member when `--expect-beads` is
+supplied) that reports no beads database, or a database with no
+`sync.remote` while the expectation names one, is set up BEFORE any dispatch
+from the expected `syncRemote`, all through `command()`. A member already
+resolving to a different project (prefix/sync.remote/origin resolved and
+different) is a `MISMATCH` first, with nothing written. "Has a database"
+means `bd where` reports a `database_path` (a committed config.yaml with
+issue-prefix yields a prefix but no database). Otherwise: `git ls-files`
+snapshot of modified/untracked beads paths; VCS credential ensured;
+per-shell commands creating `.beads/config.yaml` when absent (bd refuses
+`config set` without it) and recording `sync.remote: "<url>"` in the
+untracked `.beads/config.local.yaml`; `bd config set sync.remote <url>`; no
+DB: `bd bootstrap --dry-run --json` (must plan a clone from `<url>`), `bd
+bootstrap --yes`; DB without sync.remote: `bd dolt remote list --json`, `bd
+dolt remote add origin <url>` only when origin is absent (a different
+origin is refused), then a pull through `DoltSync.syncBefore` (fatal, with
+the reactive VCS-auth self-heal). A beads file the user had already
+modified gets a warning (the set-up cannot restore it); a work folder below
+the repository root gets root-relative exclude entries. Finally (success or failure) every
+tracked beads file the set-up changed is restored (`git checkout --`) and
+every new untracked beads path is added to git info/exclude, so the
+member's `git status` is clean and a doer's `git add -A` stages nothing
+from the set-up. The member is then re-probed and must match. Any failure -- including no expected
+remote, a non-clone bootstrap plan, a remote not passable verbatim to every
+shell, or bd reporting a schema migration against an older-schema remote -- throws
+`BeadsIdentityError` reason `BEADS_SETUP_FAILED`
+(`Beads preflight failed: member '<m>' <cause>. ... To fix: <fix>.`) with zero
+dispatches. An existing matching database is never touched.
 
 An unknown key throws `[Arg Contract] Unknown arg(s): <keys>. Known args: <allowlist>.` immediately -- this is the fastest way to discover whether a given engine feature (e.g. `assignee`, `doer_worklist_mode`) is wired to a CLI flag yet: if `bin/cli.mjs` never sets it, it stays at its default forever for CLI-launched sprints.
 
-## 3. `--issue` scope resolution (`bdListScoped()`, `fleet-sprint/runner.js` ~line 5099)
+### Dormant argument audit (apra-fleet-3swo.7.13)
+
+Three `KNOWN_ARG_KEYS` -- `assignee`, `doer_worklist_mode`, `resume_model_switch`
+-- are validated and fully wired to a real consumer, but have no CLI flag and
+no caller in this repo (`bin/cli.mjs`'s `buildRunnerArgs()` does not set any of
+them, and no workflow under `packages/apra-fleet-se/apra-pm` does either --
+both verified by a repo-wide search). Each was audited and PRODUCTIZED, not
+pruned: all three are load-bearing, tested engine capabilities reachable
+through `WorkflowEngine.executeFile()` -- the same invocation path
+`bin/cli.mjs` and the supervisor use -- for any caller that sets them
+programmatically (a future CLI flag, the supervisor's own `POST /api/sprints`
+body, or a direct engine invocation), not dead code left over from an
+abandoned feature.
+
+- **`assignee`** -- narrows the shared `bd list` query to `--assignee <id>`
+  (`fleet-sprint/beads-scope.mjs`) and drives the develop-phase claiming
+  branch's batched `bd update <ids...> --claim --json`
+  (`fleet-sprint/phases/develop.mjs`), which can narrow a streak down to only
+  the beads it actually won. Exercised directly against the real
+  `beadsScopeConfig()`/`claimBeadsBatched()` functions by
+  `test/beads-scope-extraction.test.mjs` ("`--assignee` narrows a filtered
+  read, and scope still filters the result") and
+  `test/claim-beads-batched.test.mjs`. Intended use: a deployment running more
+  than one sprint against the same beads project, so two sprints never select
+  the same bead -- a scenario this repo's single-sprint CLI does not exercise
+  today, hence no flag.
+- **`doer_worklist_mode: 'batch'`** -- one dispatch carries a doer's whole
+  ordered worklist instead of one dispatch per streak. Exercised end-to-end
+  through the real `WorkflowEngine.executeFile()` path by
+  `test/mock-sprint-worklist-batch.test.mjs`.
+- **`resume_model_switch`** -- lets a resumed-sequence worklist carry mixed
+  model tiers when the doer pool's provider supports changing model on a
+  resumed session (`fleet-sprint/worklists.mjs`'s `resolveWorklistTierPolicy`).
+  Exercised end-to-end through the real `WorkflowEngine.executeFile()` path by
+  `test/mock-sprint-worklist-resume.test.mjs`, and unit-tested against the real
+  `resolveWorklistTierPolicy()` by `test/worklist-assignment.test.mjs`.
+
+None of the three needed a CLI flag added to satisfy "productize": the bar is
+documentation + a real test against the real consumer + a real invocation
+path, and `WorkflowEngine.executeFile()` (not `bin/cli.mjs` specifically) is
+that path for a programmatic caller. A future CLI flag remains a legitimate,
+separately-scoped follow-up if a real operator need for `--assignee`/
+`--doer-worklist-mode`/`--resume-model-switch` shows up; nothing about this
+audit blocks it.
+
+## 3. `--issue` scope resolution (`bdListScoped()`, `fleet-sprint/runner.js`)
 
 This is the algorithm that turns the sprint's target issue id(s) into the
 set of beads every dispatch (planner, doer, reviewer) is allowed to see and

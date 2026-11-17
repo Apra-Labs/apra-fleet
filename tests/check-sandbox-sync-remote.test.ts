@@ -3,6 +3,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+// @ts-expect-error -- plain .mjs helper, no type declarations
+import { execBdSync } from '../scripts/lib/exec-bd.mjs';
+import { bdChildEnv } from './helpers/bd-child-env.js';
 import {
   isSyncRemoteActive,
   parseActiveSyncRemoteValue,
@@ -27,6 +30,18 @@ import {
 // Sandbox-only: this suite never contacts the real fleet-e2e-toy Dolt
 // remote. Git repos used here are local-only (no network), created fresh
 // under os.tmpdir() and removed afterward.
+//
+// my-beads-db-27m.25: on a dev host running this suite from inside a real
+// beads workspace (e.g. via the bd-managed sprint tooling), BEADS_DIR is set
+// in the ambient environment and points at THAT workspace's own database --
+// not this file's scratch '.beads/embeddeddolt' fixture below. Every 'bd'
+// child process this file spawns must NOT inherit it: bd resolves BEADS_DIR
+// before it looks at cwd, so an inherited BEADS_DIR makes the real bd child
+// query the unrelated ambient database instead of the fixture, producing a
+// false result.ok===false. Mirrors the BD_CHILD_ENV pattern already proven in
+// tests/2cc-win-bd-invocation-integ.test.ts (apra-fleet-2cc.3 / my-beads-db-27m.14).
+// (shared helper: tests/helpers/bd-child-env.ts)
+const BD_CHILD_ENV: NodeJS.ProcessEnv = bdChildEnv();
 
 describe('defaultSandboxPath', () => {
   it('is the parent directory of the repo path (matches "$HOME/toy-repo" -> "$HOME")', () => {
@@ -323,6 +338,14 @@ describe('parseDoltRemoteList', () => {
   it('throws when the parsed JSON is not an array', () => {
     expect(() => parseDoltRemoteList('{"name":"origin"}')).toThrow();
   });
+
+  // apra-fleet-b4g.3: `bd dolt remote list --json` prints the literal `null`
+  // (not `[]`) when no Dolt remotes are configured -- this must be treated
+  // as "no remotes" rather than an "not an array" parse error.
+  it('treats a literal null (including whitespace-padded) as an empty list', () => {
+    expect(parseDoltRemoteList('null')).toEqual([]);
+    expect(parseDoltRemoteList('null\n')).toEqual([]);
+  });
 });
 
 describe('checkDoltRemoteAbsent: Dolt-level remote resolves-inside-sandbox (apra-fleet-eft.18.6 retarget of apra-fleet-eft.30)', () => {
@@ -418,26 +441,68 @@ describe('checkDoltRemoteAbsent: Dolt-level remote resolves-inside-sandbox (apra
       // Also create a minimal config.yaml so the repo looks initialized.
       fs.writeFileSync(path.join(beadsDir, 'config.yaml'), 'sync:\n  remote: file://sandbox-local\n');
 
-      // NO deps.execFileSync injected -- this exercises the real filesystem check
-      // against the embeddeddolt layout. The function should recognize the database
-      // and attempt to run bd, not short-circuit with "nothing wired yet".
-      const result = checkDoltRemoteAbsent(repoPath, tmpDir);
+      // my-beads-db-27m.25: strip the ambient BEADS_DIR from process.env for the
+      // duration of this call, rather than injecting deps.execFileSync.
+      // checkDoltRemoteAbsent's own filesystem quick-check (scripts/check-
+      // sandbox-sync-remote.mjs:427) is gated on `if (!deps.execFileSync)` --
+      // any deps injection here, even one that still shells out for real, would
+      // skip that quick-check branch entirely and make this test's key
+      // assertion below unfalsifiable. Passing no deps keeps that branch (the
+      // thing under test) running, while the real 'bd' child it spawns still
+      // does not inherit BEADS_DIR because it is deleted from process.env below.
+      const savedBeadsDir = process.env.BEADS_DIR;
+      delete process.env.BEADS_DIR;
+      let result;
+      try {
+        result = checkDoltRemoteAbsent(repoPath, tmpDir);
+      } finally {
+        if (savedBeadsDir !== undefined) {
+          process.env.BEADS_DIR = savedBeadsDir;
+        }
+      }
       expect(result.ok).toBe(true);
       // The key assertion: the message must NOT be the "no Dolt database initialized"
       // message that the old code would have returned when it failed to recognize
       // embeddeddolt. Instead, it should report either an actual Dolt remote status
       // or an error from trying to run bd.
       expect(result.message).not.toMatch(/no Dolt database initialized/);
-      // Since we created an empty embeddeddolt with no actual Dolt config,
-      // the message should indicate that bd ran and found no remotes (or found
-      // whatever remotes are configured in this minimal setup).
-      expect(result.message).toMatch(/Dolt-level remotes|unavailable/);
+      // apra-fleet-b4g.3: the loose `/Dolt-level remotes|unavailable/` assertion
+      // this used to have let the test pass vacuously on a machine without `bd`
+      // on PATH (the "unavailable" fallback message satisfies it without ever
+      // reaching parseDoltRemoteList). Detect whether `bd` is actually reachable
+      // and assert the specific outcome for that environment, so a real `bd`
+      // installation always exercises the parser this test is meant to cover.
+      // The probe MUST use the same execBdSync helper as the code under test.
+      // A bare execFileSync('bd', ...) throws on Windows -- npm installs `bd` as
+      // a .cmd shim, which execFileSync cannot spawn without a shell -- so this
+      // computed bdAvailable=false on windows-latest while checkDoltRemoteAbsent
+      // (which routes through execBdSync's resolved bin/bd.js) DID reach bd,
+      // failing as: expected 'OK: Dolt-level remotes in ...' to match /unavailable/.
+      // execBdSync is also the injection-safe path -- see scripts/lib/exec-bd.mjs.
+      let bdAvailable = true;
+      try {
+        execBdSync(['--version'], { stdio: 'ignore', env: BD_CHILD_ENV });
+      } catch {
+        bdAvailable = false;
+      }
+      if (bdAvailable) {
+        expect(result.message).toMatch(/Dolt-level remotes/);
+      } else {
+        expect(result.message).toMatch(/unavailable/);
+      }
 
     } finally {
-      // Clean up: on Windows, file locks may persist briefly after the function call,
-      // so retry cleanup with delays to allow locks to be released.
+      // Clean up: on Windows, file locks may persist after the function call --
+      // this test spawns a REAL `bd` (no execFileSync injected), and bd's own
+      // dolt process can take longer than a few hundred ms to release its
+      // handle on tmpDir under CI load (observed live: a loaded windows-latest
+      // runner still held the lock past a 10x50ms=500ms budget -- see
+      // EBUSY_RETRY_DELAY_MS=200 in src/cli/workflow-assets.ts for the same
+      // class of Windows EBUSY retry elsewhere in this codebase). 30x200ms=6s
+      // gives real headroom without slowing the common (already-released) case,
+      // since the loop exits on the first successful attempt.
       if (tmpDir) {
-        const cleanupAttempts = 10;
+        const cleanupAttempts = 30;
         for (let i = 0; i < cleanupAttempts; i++) {
           try {
             fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -445,7 +510,7 @@ describe('checkDoltRemoteAbsent: Dolt-level remote resolves-inside-sandbox (apra
           } catch (err) {
             if (i === cleanupAttempts - 1) throw err;
             // Small delay before retry to allow file handles to be released
-            await new Promise((resolve) => setTimeout(resolve, 50));
+            await new Promise((resolve) => setTimeout(resolve, 200));
           }
         }
       }

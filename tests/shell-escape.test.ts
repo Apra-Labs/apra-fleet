@@ -1,11 +1,52 @@
 import { describe, it, expect } from 'vitest';
 import {
   escapeShellArg,
+  escapeShellArgInner,
+  escapePowerShellArg,
+  escapePowerShellArgInner,
   escapeDoubleQuoted,
   escapeWindowsArg,
   escapeGrepPattern,
+  escapeSedBasicRegex,
+  escapeAppleScriptString,
+  quoteWindowsArgv,
   sanitizeSessionId,
 } from '../src/utils/shell-escape.js';
+
+describe('escapeSedBasicRegex', () => {
+  it('leaves a well-formed ssh key (type + base64) unchanged except for /', () => {
+    expect(escapeSedBasicRegex('ssh-ed25519 AAAA+b/c=')).toBe('ssh-ed25519 AAAA+b\\/c=');
+  });
+
+  it('escapes backslash first, then BRE metacharacters and the / delimiter', () => {
+    expect(escapeSedBasicRegex('a\\.b*[c]^$/')).toBe('a\\\\\\.b\\*\\[c\\]\\^\\$\\/');
+  });
+});
+
+describe('quoteWindowsArgv', () => {
+  it('leaves simple args bare and quotes empty/space-containing ones', () => {
+    expect(quoteWindowsArgv('--set')).toBe('--set');
+    expect(quoteWindowsArgv('C:\\a\\b')).toBe('C:\\a\\b');
+    expect(quoteWindowsArgv('')).toBe('""');
+    expect(quoteWindowsArgv('a b')).toBe('"a b"');
+  });
+
+  it('escapes quotes and doubles backslashes only before a quote or the closing quote', () => {
+    expect(quoteWindowsArgv('a"b')).toBe('"a\\"b"');
+    expect(quoteWindowsArgv('a\\"b')).toBe('"a\\\\\\"b"');
+    expect(quoteWindowsArgv('C:\\dir with space\\')).toBe('"C:\\dir with space\\\\"');
+  });
+});
+
+describe('escapeAppleScriptString', () => {
+  it('doubles backslashes before escaping double quotes', () => {
+    expect(escapeAppleScriptString('a\\"b')).toBe('a\\\\\\"b');
+  });
+
+  it('leaves plain text unchanged', () => {
+    expect(escapeAppleScriptString("it's $HOME")).toBe("it's $HOME");
+  });
+});
 
 describe('escapeShellArg', () => {
   it('wraps in single quotes and escapes embedded single quotes', () => {
@@ -18,6 +59,98 @@ describe('escapeShellArg', () => {
   it('neutralizes command injection attempts', () => {
     expect(escapeShellArg('$(whoami)')).toBe("'$(whoami)'");
     expect(escapeShellArg('`rm -rf /`')).toBe("'`rm -rf /`'");
+  });
+});
+
+describe('escapePowerShellArg', () => {
+  it('wraps in single quotes and doubles embedded single quotes', () => {
+    expect(escapePowerShellArg('hello')).toBe("'hello'");
+    expect(escapePowerShellArg("it's")).toBe("'it''s'");
+    expect(escapePowerShellArg("a'b'c")).toBe("'a''b''c'");
+  });
+
+  // PowerShell also ends a single-quoted literal on U+2018..U+201B. Built
+  // with fromCharCode so this source file stays ASCII.
+  const SMART_QUOTES = [0x2018, 0x2019, 0x201a, 0x201b].map((c) => String.fromCharCode(c));
+
+  for (const q of SMART_QUOTES) {
+    it(`doubles U+${q.charCodeAt(0).toString(16).toUpperCase()} as itself`, () => {
+      expect(escapePowerShellArgInner(`a${q}b`)).toBe(`a${q}${q}b`);
+      expect(escapePowerShellArg(`${q}; Write-Output pwned; ${q}`)).toBe(`'${q}${q}; Write-Output pwned; ${q}${q}'`);
+    });
+  }
+
+  it('leaves strings without single-quote characters unchanged', () => {
+    const plain = 'C:\\Program Files\\x "y" $env:PATH `z`';
+    expect(escapePowerShellArgInner(plain)).toBe(plain);
+  });
+
+  it.skipIf(process.platform !== 'win32')(
+    'round-trips hostile smart-quote values literally through real powershell -EncodedCommand',
+    async () => {
+      const { execFileSync } = await import('node:child_process');
+      const rsq = String.fromCharCode(0x2019);
+      const values = [
+        `a${rsq}; Write-Output pwned; ${rsq}b`,
+        `${SMART_QUOTES.join('x')}'mixed'${rsq}`,
+      ];
+      for (const v of values) {
+        const script = `[Console]::OutputEncoding = [Text.Encoding]::UTF8; [Console]::Out.Write(${escapePowerShellArg(v)})`;
+        const out = execFileSync(
+          'powershell',
+          ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
+          { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] },
+        );
+        expect(out).toBe(v);
+      }
+    },
+    30000,
+  );
+});
+
+// apra-fleet-3swo.7.16 criterion 2 (anti-drift invariant): escapeShellArg and
+// escapePowerShellArg must be DEFINED IN TERMS OF their respective *Inner
+// helpers, not merely happen to agree with them today. Asserting the
+// invariant here -- rather than trusting a read of the source -- is what
+// stops a future edit to one of the four functions from silently
+// desynchronizing the wrapping form from the interior-only form that
+// vcs-credential-exec.ts's inline placeholder mode relies on.
+describe('escapeShellArgInner / escapePowerShellArgInner anti-drift invariant', () => {
+  const samples = [
+    'hello',
+    "it's",
+    "a'b'c",
+    '',
+    "'",
+    "''",
+    "'''",
+    'say "hi"',
+    '$(whoami)',
+    '`rm -rf /`',
+    "a'b\"c$d`e!f",
+    "multi\nline'value",
+  ];
+
+  it('escapeShellArg(s) === "\'" + escapeShellArgInner(s) + "\'" for every sample', () => {
+    for (const s of samples) {
+      expect(escapeShellArg(s)).toBe("'" + escapeShellArgInner(s) + "'");
+    }
+  });
+
+  it('escapePowerShellArg(s) === "\'" + escapePowerShellArgInner(s) + "\'" for every sample', () => {
+    for (const s of samples) {
+      expect(escapePowerShellArg(s)).toBe("'" + escapePowerShellArgInner(s) + "'");
+    }
+  });
+
+  it('escapeShellArgInner escapes a single quote as \'\\\'\' with no surrounding quotes', () => {
+    expect(escapeShellArgInner("it's")).toBe("it'\\''s");
+    expect(escapeShellArgInner("'")).toBe("'\\''");
+  });
+
+  it('escapePowerShellArgInner escapes a single quote by doubling it, with no surrounding quotes', () => {
+    expect(escapePowerShellArgInner("it's")).toBe("it''s");
+    expect(escapePowerShellArgInner("'")).toBe("''");
   });
 });
 

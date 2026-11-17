@@ -77,7 +77,7 @@ test('(a) a completed-phase fixture renders the formatted duration', () => {
     };
     render(phaseEl, phase);
 
-    assert.equal(phaseEl.durationEl.textContent, '5.0s', 'a completed phase must show formatTime(phaseEndedAt - phaseStartedAt)');
+    assert.equal(phaseEl.durationEl.textContent, '5s', 'a completed phase must show formatTime(phaseEndedAt - phaseStartedAt)');
     assert.equal(phaseEl.durationEl.dataset.rendered, 'done', 'a completed phase must be marked as frozen so later re-renders never recompute it');
 });
 
@@ -123,6 +123,21 @@ test('(b) a live-phase fixture ticks from the mocked clock, with no server fetch
     }
 });
 
+test('apra-fleet-x8r.6: a frozen phase with an end timestamp but no/invalid start timestamp renders "-", not "NaNs"', () => {
+    const render = extractPhaseDurationRenderer();
+    const phaseEl = createFakePhaseEl();
+
+    // phaseEndedAt is set (so the render block takes the "frozen" branch and
+    // computes phaseEndedAt - phaseStartedAt), but phaseStartedAt is missing,
+    // so new Date(undefined).getTime() is NaN and the subtraction yields NaN.
+    const phase = {
+        phaseEndedAt: new Date(1_700_000_005_000).toISOString()
+    };
+    render(phaseEl, phase);
+
+    assert.equal(phaseEl.durationEl.textContent, '-', 'a NaN duration must render the missing-value placeholder, not "NaNs"');
+});
+
 test('(d) after a simulated reload, an earlier completed phase still shows its frozen duration, not a live tick', () => {
     const render = extractPhaseDurationRenderer();
 
@@ -142,14 +157,14 @@ test('(d) after a simulated reload, an earlier completed phase still shows its f
         const phaseEl = createFakePhaseEl();
 
         render(phaseEl, earlierPhase);
-        assert.equal(phaseEl.durationEl.textContent, '42.0s', 'reloaded earlier phase must show its frozen total, not elapsed-since-reload');
+        assert.equal(phaseEl.durationEl.textContent, '42s', 'reloaded earlier phase must show its frozen total, not elapsed-since-reload');
         assert.equal(phaseEl.durationEl.dataset.rendered, 'done', 'reloaded earlier phase must be marked frozen immediately');
 
         // Further re-renders (e.g. the normal refresh/SSE cadence continuing
         // to tick other, still-live phases) must not perturb it.
         mockNow += 60_000;
         render(phaseEl, earlierPhase);
-        assert.equal(phaseEl.durationEl.textContent, '42.0s', 'a frozen earlier-phase duration must not keep counting up after reload');
+        assert.equal(phaseEl.durationEl.textContent, '42s', 'a frozen earlier-phase duration must not keep counting up after reload');
     } finally {
         Date.now = realNow;
     }

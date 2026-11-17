@@ -1,6 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { checkFullDbFetchLog, countFullDbFetches, FULL_DB_FETCH_CMD } from '../fleet-sprint/full-db-fetch-guard.mjs';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import {
+    checkFullDbFetchLog,
+    checkFullDbFetchModules,
+    findFullDbFetchSourceViolations,
+    countFullDbFetches,
+    FULL_DB_FETCH_CMD,
+} from '../fleet-sprint/full-db-fetch-guard.mjs';
+import { guardedModulePaths, guardedModuleBasenames } from '../fleet-sprint/guarded-modules.mjs';
 import { runOnce, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
 
 // =============================================================================
@@ -108,4 +118,90 @@ test('mock sprint: command log has no duplicate full-DB fetch per phase and no u
             `Full activityLog: ${JSON.stringify(run.activityLog, null, 2)}`
         );
     });
+});
+
+// =============================================================================
+// SOURCE MODE over the SHARED guarded-module list
+// (fleet-sprint/guarded-modules.mjs).
+//
+// checkFullDbFetchLog() above is the runtime mode and is unchanged. Source
+// mode enforces rule 2 only -- a full-DB-SHAPED `bd list` literal whose text
+// is not the single documented FULL_DB_FETCH_CMD -- statically, over every
+// module registered in the shared list, so an ad hoc full-list call site added
+// to a newly extracted module is caught at the same moment every other
+// mechanical guard picks that module up. Rule 1 (coalescing) is inherently
+// dynamic and is deliberately not attempted from source.
+// =============================================================================
+
+test('source mode: the shared guarded-module list is clean today', () => {
+    const { violations, files } = checkFullDbFetchModules();
+    // Compared against basenames, not GUARDED_MODULES verbatim -- see
+    // guardedModuleBasenames()'s doc comment (apra-fleet-3swo.14).
+    assert.deepEqual(files, guardedModuleBasenames(), 'the default scan set is exactly the shared list');
+    assert.deepEqual(violations, [], `expected no source-mode violations, got: ${JSON.stringify(violations, null, 2)}`);
+});
+
+test('source mode: adding a newly extracted module to the shared list makes the guard scan it', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'full-db-fetch-list-'));
+    const fixture = path.join(dir, 'extracted-module.mjs');
+    try {
+        fs.writeFileSync(
+            fixture,
+            [
+                "import { bdListScoped } from './runner.js';",
+                '',
+                'export async function loadEverything(command, member) {',
+                // Seeded regression: a NEW ad hoc full-list call site whose
+                // text is not the single documented one (flags reordered,
+                // --json dropped) -- exactly what rule 2 exists to catch.
+                "    return command('bd list --limit 0 --all', { member_name: member });",
+                '}',
+            ].join('\n'),
+            'utf8'
+        );
+
+        const { violations, files } = checkFullDbFetchModules(guardedModulePaths([fixture]));
+        assert.deepEqual(files, [...guardedModuleBasenames(), 'extracted-module.mjs']);
+        assert.equal(violations.length, 1, `expected exactly one violation, got: ${JSON.stringify(violations, null, 2)}`);
+        assert.match(violations[0], /^extracted-module\.mjs:4 /, 'the violation must name the fixture\'s own file and line');
+        assert.match(violations[0], /"bd list --limit 0 --all"/, 'the violation must quote the offending command text');
+        assert.ok(violations[0].includes(FULL_DB_FETCH_CMD), 'the violation must name the single documented command it must route through');
+
+        // Clear the seeded violation -> clean report. The canonical command
+        // text itself is NOT a violation; that is the documented call site.
+        fs.writeFileSync(
+            fixture,
+            [
+                "import { bdListScoped } from './runner.js';",
+                '',
+                'export async function loadEverything(command, member) {',
+                `    return command('${FULL_DB_FETCH_CMD}', { member_name: member });`,
+                '}',
+            ].join('\n'),
+            'utf8'
+        );
+        assert.deepEqual(checkFullDbFetchModules(guardedModulePaths([fixture])).violations, []);
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+test('source mode: full-line comments quoting the canonical command are carved out', () => {
+    // runner.js's own fetchAllBeadsShared() doc comment quotes the command in
+    // prose; a differently-shaped one quoted in prose must not be a violation
+    // either -- only live code counts.
+    const src = [
+        '// historical note: this used to issue `bd list --limit 0 --all` before the cache landed',
+        ' * and the doc comment above still mentions bd list --all --limit 0 --json',
+    ].join('\n');
+    assert.deepEqual(findFullDbFetchSourceViolations(src), []);
+});
+
+test('source mode: a scoped bd list is never a violation, whatever its flags', () => {
+    const src = "await command('bd list --parent EPIC-1 --status=open --json', { member_name: m });";
+    assert.deepEqual(findFullDbFetchSourceViolations(src), []);
+});
+
+test('source mode: checkFullDbFetchModules rejects a non-array argument', () => {
+    assert.throws(() => checkFullDbFetchModules('runner.js'), /must be an array/);
 });

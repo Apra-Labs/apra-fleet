@@ -1,4 +1,4 @@
-// apra-fleet-unw.15 -- typed error(s) local to the auto-sprint runner.
+// apra-fleet-unw.15 -- typed error(s) local to the fleet-sprint runner.
 //
 // SprintPlanRejectedError is sprint-specific (it is only ever thrown by
 // runner.js's Plan phase) so it lives here rather than in
@@ -50,6 +50,15 @@ import { WorkflowError } from '@apralabs/apra-fleet-workflow';
 //   UNSUPPORTED_OPERATION The requested action is not implemented for this
 //                         provider. A programming/config error; retrying and
 //                         re-authenticating are both pointless.
+//   MISSING_TOOL          The command's binary (bd, dolt, git, ...) could not
+//                         be found on the member at all: PowerShell's "is not
+//                         recognized as the name of a cmdlet", cmd.exe's "is
+//                         not recognized as an internal or external command",
+//                         POSIX "command not found" / ": not found", exit code
+//                         127, spawn ENOENT. Checked BEFORE every provider
+//                         rule (GitHub #616). Never retried and never routed
+//                         to the credential self-heal -- re-provisioning
+//                         cannot install a binary or fix a PATH.
 //   UNKNOWN               Explicitly unrecognized. Never retried, never
 //                         self-healed -- an unmatched stderr must surface, not
 //                         be guessed at.
@@ -68,6 +77,7 @@ export const VCS_FAILURE_KINDS = Object.freeze({
     EMPTY_REMOTE: 'EMPTY_REMOTE',
     REMOTE_UNREACHABLE: 'REMOTE_UNREACHABLE',
     UNSUPPORTED_OPERATION: 'UNSUPPORTED_OPERATION',
+    MISSING_TOOL: 'MISSING_TOOL',
     UNKNOWN: 'UNKNOWN',
 });
 
@@ -135,23 +145,38 @@ export class SprintPlanRejectedError extends WorkflowError {
  * @property {string[]} [thrashIds] - N9: bead ids reopened more than the
  *   reopen-thrash threshold this sprint, i.e. the beads most likely
  *   responsible for a close/reopen oscillation stall
+ * @property {string[]} [blockerIds] - apra-fleet-mjo: the bead ids still open
+ *   at/above goal priority when the stall was declared, i.e. exactly what an
+ *   operator must clear. Counts alone cannot answer "blocked on what?".
+ *   Also names every bead set aside for the run (doer-BLOCKED and its
+ *   dependents), plus the pseudo-id 'deploy' when the deploy is set aside.
+ * @property {Record<string, string>} [blockerReasons] - blocker id -> reason
+ *   (with first-seen cycle/round) for the set-aside blockers.
+ * @property {object[]} [setAside] - the run's set-aside records, rendered as
+ *   the "Set aside this run" report section (see ./set-aside.mjs).
  */
 export class StalledSprintError extends WorkflowError {
     /**
      * @param {string} message
-     * @param {{ staleCycles?: number, closedCountHistory?: number[], highWaterClosedCount?: number, thrashIds?: string[], cycle?: number, details?: object, cause?: unknown }} [opts]
+     * @param {{ staleCycles?: number, closedCountHistory?: number[], highWaterClosedCount?: number, thrashIds?: string[], blockerIds?: string[], blockerReasons?: Record<string, string>, setAside?: object[], waited?: object[], cycle?: number, details?: object, cause?: unknown }} [opts]
      */
     constructor(message, opts = {}) {
-        const { staleCycles = null, closedCountHistory = [], highWaterClosedCount = null, thrashIds = [], cycle, details, cause } = opts;
+        const { staleCycles = null, closedCountHistory = [], highWaterClosedCount = null, thrashIds = [], blockerIds = [], blockerReasons = {}, setAside = [], waited = [], cycle, details, cause } = opts;
         super(message, {
             code: 'SPRINT_STALLED',
-            details: { staleCycles, closedCountHistory, highWaterClosedCount, thrashIds, cycle, ...details },
+            details: { staleCycles, closedCountHistory, highWaterClosedCount, thrashIds, blockerIds, blockerReasons, setAside, cycle, ...details },
             cause,
         });
         this.staleCycles = staleCycles;
         this.closedCountHistory = closedCountHistory;
         this.highWaterClosedCount = highWaterClosedCount;
         this.thrashIds = thrashIds;
+        this.blockerIds = blockerIds;
+        this.blockerReasons = blockerReasons;
+        this.setAside = setAside;
+        // The run's wait records (./set-aside.mjs collectWaitEntries): the
+        // "Waited this run" line of an [ABORTED] PR body.
+        this.waited = waited;
     }
 }
 
@@ -342,6 +367,109 @@ export class DoltSyncError extends WorkflowError {
     }
 }
 
+/** Stable error code of DoltWindowsSpawnLimitError. */
+export const DOLT_WINDOWS_SPAWN_LIMIT_CODE = 'DOLT_WINDOWS_SPAWN_LIMIT';
+
+/**
+ * A D-pull/D-push that kept failing because Windows refused to start bd/dolt's
+ * git child processes (CreateProcess ERROR_NOT_ENOUGH_MEMORY, the Windows
+ * process-creation limit) until its transient retry budget ran out. A
+ * DoltSyncError subtype, so every existing DoltSyncError handler (degrade/fatal
+ * policy, classifySyncError -> 'transient') still applies; the stable `code`
+ * lets a caller tell it apart from a generic sync failure.
+ */
+export class DoltWindowsSpawnLimitError extends DoltSyncError {
+    /**
+     * @param {string} message
+     * @param {{ member?: string|null, doltOutput?: string|null, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(message, opts = {}) {
+        super(message, { ...opts, details: { kind: 'transient', cause: 'windows-spawn-limit', ...opts.details } });
+        this.name = 'DoltWindowsSpawnLimitError';
+        this.code = DOLT_WINDOWS_SPAWN_LIMIT_CODE;
+    }
+}
+
+/** Stable error code of DoltLockHeldError. */
+export const DOLT_BEADS_LOCK_HELD_CODE = 'DOLT_BEADS_LOCK_HELD';
+
+/**
+ * A D-pull/D-push that was still waiting after the lock-holder watchdog fired
+ * while a process OTHER than this sync (one that started before the sync
+ * attempt did) held a beads lock on the member. Raised in bounded time instead
+ * of waiting out the inactivity timeout; `details.holders` lists each holder
+ * ({ pid, ageS, lock, commandLine }). A DoltSyncError subtype, so every
+ * existing DoltSyncError handler still applies.
+ */
+export class DoltLockHeldError extends DoltSyncError {
+    /**
+     * @param {string} message
+     * @param {{ member?: string|null, doltOutput?: string|null, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(message, opts = {}) {
+        super(message, { ...opts, details: { kind: 'lock-held', ...opts.details } });
+        this.name = 'DoltLockHeldError';
+        this.code = DOLT_BEADS_LOCK_HELD_CODE;
+    }
+}
+
+/**
+ * Thrown by preflightBeadsHealthGate() when the backlog member's beads clone
+ * holds local schema migrations bd auto-applied but never published (the
+ * pre-dispatch D-pull fails "local changes would be stomped by merge") AND the
+ * publish-and-retry heal could not recover. A DoltSyncError subtype, so every
+ * existing DoltSyncError handler still applies; the message names the cause
+ * and the exact fix commands.
+ */
+export class UnpublishedSchemaMigrationsError extends DoltSyncError {
+    /**
+     * @param {string} message
+     * @param {{ member?: string|null, doltOutput?: string|null, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(message, opts = {}) {
+        super(message, { ...opts, details: { kind: 'unpublished-schema-migrations', ...opts.details } });
+        this.name = 'UnpublishedSchemaMigrationsError';
+    }
+}
+
+/**
+ * apra-fleet dolt-settle redesign (see fleet-sprint/docs/dolt-sync-redesign.md
+ * Part 5) -- thrown by settleDoltConflicts() when a member has no usable,
+ * correctly-pinned `dolt` binary and settle's own install/repair ladder
+ * (probe -> install -> kill-blocking-process-and-retry -> warn-and-fall-back-
+ * to-a-functionally-probed-alternative) could not produce one. This is an
+ * ordinary operational/infra failure under the existing degraded/fatal
+ * taxonomy -- NOT an escalation tier, exactly the same posture as
+ * DoltSyncError for "server wouldn't start". It is deliberately NOT thrown
+ * for the "wrong version but a functional fallback was found and passed its
+ * preflight" case (Part 5.6) -- that path proceeds with a warning instead;
+ * this error is reserved for "no runnable dolt at all" or "unsupported
+ * platform/arch with nothing usable already present".
+ *
+ * @property {string|null} member - the member with no usable dolt binary
+ * @property {string|null} probedPath - the path settle probed/attempted to install to
+ * @property {string|null} probeOutput - the raw probe/install failure output
+ * @property {string|null} repairCommand - the exact manual command an operator can run to fix this
+ */
+export class DoltBinaryUnavailableError extends WorkflowError {
+    /**
+     * @param {string} message
+     * @param {{ member?: string|null, probedPath?: string|null, probeOutput?: string|null, repairCommand?: string|null, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(message, opts = {}) {
+        const { member = null, probedPath = null, probeOutput = null, repairCommand = null, details, cause } = opts;
+        super(message, {
+            code: 'DOLT_BINARY_UNAVAILABLE',
+            details: { member, probedPath, probeOutput, repairCommand, ...details },
+            cause,
+        });
+        this.member = member;
+        this.probedPath = probedPath;
+        this.probeOutput = probeOutput;
+        this.repairCommand = repairCommand;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Non-retryable dispatch failures (stabilization Issue 43 / smoke rehearsal)
 // ---------------------------------------------------------------------------
@@ -360,7 +488,17 @@ export class DoltSyncError extends WorkflowError {
 // AgentDispatchError -- checked FIRST below since it can't be fooled by
 // auth-like noise in an unrelated failure's message text; the regex remains
 // as a fallback for older/mocked errors that only ever set `.message`.
-const NON_RETRYABLE_DISPATCH_RE = /authentication failed|not logged in|workspace not trusted|has not been trusted/i;
+// The server refuses a dispatch (no LLM call made) when the member's stored
+// credential env vars cannot be delivered without a command line: a relay
+// member or one with SFTP disabled. Deterministic -- the member's channel does
+// not change between attempts -- so it is non-retryable. It is deliberately
+// NOT an LLM-auth failure (isAuthDispatchError): the credential is present
+// but undeliverable, so provision_llm_auth self-heal cannot fix it; the
+// operator must enable SFTP or clear/provide the credential on the member.
+export const SECRET_DELIVERY_UNAVAILABLE_REASON = 'secret_delivery_unavailable';
+export const SECRET_DELIVERY_UNAVAILABLE_REMEDY = 'enable SFTP on the member, or clear its stored credentials (provision_llm_auth with clear_stored_credentials) and provide the credential on the member itself';
+
+const NON_RETRYABLE_DISPATCH_RE = /authentication failed|failed to authenticate|oauth session expired|could not be refreshed|not logged in|workspace not trusted|has not been trusted/i;
 
 /**
  * True when a dispatch error can NEVER be fixed by retrying (auth /
@@ -371,7 +509,9 @@ const NON_RETRYABLE_DISPATCH_RE = /authentication failed|not logged in|workspace
  */
 export function isNonRetryableDispatchError(err) {
     const reason = err?.details?.reason;
-    if (reason === 'auth' || reason === 'workspace_not_trusted') return true;
+    if (reason === 'auth' || reason === 'workspace_not_trusted'
+        || reason === 'preflight_auth_missing' || reason === 'preflight_auth_expired'
+        || reason === SECRET_DELIVERY_UNAVAILABLE_REASON) return true;
     return NON_RETRYABLE_DISPATCH_RE.test(String(err?.message ?? ''));
 }
 
@@ -379,7 +519,7 @@ export function isNonRetryableDispatchError(err) {
 // LLM credential failure (as opposed to workspace-trust, which
 // provision_llm_auth cannot fix -- that needs an operator to run `claude
 // --dangerously-skip-permissions` or trust the folder interactively).
-const AUTH_DISPATCH_RE = /authentication failed|not logged in/i;
+const AUTH_DISPATCH_RE = /authentication failed|failed to authenticate|oauth session expired|could not be refreshed|not logged in/i;
 
 /**
  * True when a dispatch error is specifically an LLM auth/credential failure
@@ -389,7 +529,8 @@ const AUTH_DISPATCH_RE = /authentication failed|not logged in/i;
  * @returns {boolean}
  */
 export function isAuthDispatchError(err) {
-    if (err?.details?.reason === 'auth') return true;
+    const reason = err?.details?.reason;
+    if (reason === 'auth' || reason === 'preflight_auth_missing' || reason === 'preflight_auth_expired') return true;
     return AUTH_DISPATCH_RE.test(String(err?.message ?? ''));
 }
 
@@ -416,6 +557,20 @@ export function isAuthDispatchError(err) {
 //                                 remote pid and aborted the in-flight dispatch
 //                                 (apra-fleet-3c9.1). Like the others, no test
 //                                 verdict was ever produced.
+//   - 'agent_never_started'     -- the member's session log never appeared at
+//                                 its authoritative path within the inactivity
+//                                 threshold; the process was killed before it
+//                                 ever ran the task.
+//   - 'max_total_time'          -- the dispatch ran out of max_total_s (measured
+//                                 from the call, setup included) and was
+//                                 stopped. Before this reason existed the same
+//                                 kill surfaced as 'dispatch_failed'.
+//   - 'transport_failure'       -- the fleet tool call itself failed at the
+//                                 transport (e.g. the SSH channel to the member
+//                                 could not be opened) and the server reported
+//                                 it as a bare tool error, not a classified
+//                                 execute_prompt result (agent() in the
+//                                 workflow engine). No result envelope exists.
 //
 // For an integ-test-runner dispatch, all of these mean "no test verdict was
 // ever produced" -- the run never reported pass or fail. Treating them as a
@@ -424,7 +579,7 @@ export function isAuthDispatchError(err) {
 // check on an infra fault. Callers use this classifier to (a) retry once via a
 // session resume and (b) failing that, record the cycle as INCONCLUSIVE rather
 // than a test FAIL -- exactly as the part-2 stale-evidence path already does.
-const INFRA_DISPATCH_REASONS = new Set(['empty_response', 'dispatch_failed', 'orphan_recovery_timeout', 'stalled']);
+const INFRA_DISPATCH_REASONS = new Set(['empty_response', 'dispatch_failed', 'orphan_recovery_timeout', 'stalled', 'agent_never_started', 'max_total_time', 'preflight_offline', 'transport_failure']);
 
 /**
  * True when a dispatch error is an INFRASTRUCTURE failure (the member CLI never
@@ -435,6 +590,86 @@ const INFRA_DISPATCH_REASONS = new Set(['empty_response', 'dispatch_failed', 'or
  */
 export function isInfraDispatchFailure(err) {
     return INFRA_DISPATCH_REASONS.has(err?.details?.reason);
+}
+
+// ---------------------------------------------------------------------------
+// apra-fleet-hzeb.4.1 -- usage-limit dispatch classification
+// ---------------------------------------------------------------------------
+//
+// execute_prompt relays a provider's usage-limit signal (e.g. Claude's 429
+// classified via detectUsageLimit) as a structured `details.reason ===
+// 'usage_limit'` on the AgentDispatchError it throws (src/tools/execute-
+// prompt.ts), mirroring the existing `details.reason` classifiers above
+// (isInfraDispatchFailure, isNonRetryableDispatchError). This is the ONLY
+// vocabulary a caller may key on -- NEVER regex on message text, since a
+// usage-limit message is provider-specific prose that can drift or be
+// localized (see isInfraDispatchFailure's own header for the same
+// discipline).
+export const USAGE_LIMIT_DISPATCH_REASON = 'usage_limit';
+
+/**
+ * True when a dispatch error is a provider usage-limit hit, keyed off the
+ * server's structured `details.reason` -- never on message text.
+ * @param {unknown} err
+ * @returns {boolean}
+ */
+export function isUsageLimitDispatchError(err) {
+    return err?.details?.reason === USAGE_LIMIT_DISPATCH_REASON;
+}
+
+/**
+ * The provider's usage-limit signal object (see providers/provider.ts's
+ * UsageLimitSignal contract) carried on a usage-limit dispatch error, or
+ * `null` when the error carries none (e.g. it is not a usage-limit error at
+ * all, or a provider that classified the reason but supplied no signal
+ * detail).
+ * @param {unknown} err
+ * @returns {object|null}
+ */
+export function usageLimitOf(err) {
+    return err?.details?.usageLimit ?? null;
+}
+
+/**
+ * Thrown by the fleet-sprint usage-limit pause/resume controller
+ * (apra-fleet-hzeb.4.2, the follow-up to this task) when a dispatch has been
+ * paused and re-probed until its budget (USAGE_LIMIT_MAX_WAIT_S /
+ * USAGE_LIMIT_MAX_REPROBES in role-policies.mjs) is exhausted with no
+ * successful resume. Registered in isTypedAbortError() (abort.mjs) so a
+ * give-up routes through finalizeAbort() / an [ABORTED] PR, exactly like
+ * every other unrecoverable sprint-abort class in that curated list -- a
+ * member permanently rate-limited past every allowed wait/reprobe is exactly
+ * as terminal as a stalled sprint or an unmergeable divergence.
+ *
+ * @property {string|null} member - the member whose dispatch hit the usage limit
+ * @property {string|null} roleLabel - the role/label of the dispatch that was paused
+ * @property {number|null} firstHitAt - epoch ms of the first usage-limit hit
+ * @property {number|null} lastResumeAt - epoch ms of the provider's last reported resumeAt
+ * @property {number} reprobes - how many re-probe attempts were made before giving up
+ * @property {number} waitedMs - total wall-clock time spent paused across all reprobes
+ */
+export class UsageLimitWaitExhaustedError extends WorkflowError {
+    /**
+     * @param {string} message
+     * @param {{ member?: string|null, roleLabel?: string|null, firstHitAt?: number|null, lastResumeAt?: number|null, reprobes?: number, waitedMs?: number, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(message, opts = {}) {
+        const {
+            member = null, roleLabel = null, firstHitAt = null, lastResumeAt = null,
+            reprobes = 0, waitedMs = 0, details, cause,
+        } = opts;
+        super(message, {
+            code: 'USAGE_LIMIT_WAIT_EXHAUSTED',
+            details: { member, roleLabel, firstHitAt, lastResumeAt, reprobes, waitedMs, ...details },
+            cause,
+        });
+        this.member = member;
+        this.roleLabel = roleLabel;
+        this.firstHitAt = firstHitAt;
+        this.lastResumeAt = lastResumeAt;
+        this.reprobes = reprobes;
+        this.waitedMs = waitedMs;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -569,4 +804,388 @@ export class PostDispatchSyncError extends WorkflowError {
  */
 export function isPostDispatchSyncFailure(err) {
     return err instanceof PostDispatchSyncError;
+}
+
+// ---------------------------------------------------------------------------
+// apra-fleet-p2to.4.2 -- resume could not re-reserve every member
+// ---------------------------------------------------------------------------
+
+/**
+ * Thrown when a cooperative resume (after a pause released this sprint's member
+ * reservations) cannot re-acquire one or more members because another sprint
+ * claimed them while this one was paused -- an OWNER-CHECKED re-reserve, so we
+ * refuse to silently continue on top of a member some other sprint now owns.
+ *
+ * The whole point of this error is that it NAMES the unavailable members, so an
+ * operator reading the failed resume knows exactly which members to free (or
+ * which other sprint to stop) before retrying the resume -- rather than a
+ * generic "resume failed" with no actionable detail.
+ *
+ * @property {string[]} members - the members that could NOT be re-reserved on
+ *   resume (each already reserved by a different sprint).
+ */
+export class MemberReservationResumeError extends WorkflowError {
+    /**
+     * @param {string[]} unavailableMembers
+     * @param {{ details?: object, cause?: unknown }} [opts]
+     */
+    constructor(unavailableMembers = [], opts = {}) {
+        const members = Array.isArray(unavailableMembers) ? unavailableMembers : [];
+        const { details, cause } = opts;
+        super(
+            `[Workflow Error] Resume failed: could not re-reserve ${members.length} member(s) ` +
+            `released at pause -- ${members.join(', ')} ` +
+            `${members.length === 1 ? 'is' : 'are'} now reserved by another sprint. ` +
+            `Free ${members.length === 1 ? 'it' : 'them'} (or stop the other sprint) before resuming.`,
+            {
+                code: 'MEMBER_RESERVATION_RESUME_FAILED',
+                details: { members, ...details },
+                cause,
+            }
+        );
+        this.members = members;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// apra-fleet-3swo.4.9 -- sync-bracket mutual-exclusion violation
+// ---------------------------------------------------------------------------
+
+/**
+ * Thrown by git-sync.mjs's createSyncBrackets() when two brackets sharing the
+ * same `exclusiveKey` genuinely OVERLAP rather than nest -- i.e. the bracket
+ * that opened FIRST closes while a bracket that opened LATER (for the same
+ * key) is still open. Proper nesting (LIFO open/close for the same key) never
+ * throws this; only a crossing close does, which is precisely the shape a
+ * broken bracket pairing (or a regression in the external serialization gate
+ * that is supposed to keep code-writing dispatches sequential, e.g. runner.js
+ * 's `globalDoerTurn`) would produce. Every OTHER key stays fully
+ * independent: two brackets with different `exclusiveKey`s (or no key at all)
+ * may overlap in any order and never trigger this -- that is legitimate,
+ * relied-upon concurrency (e.g. multiple members' D-pushes serialized by
+ * their own dolt push mutex, not by this counter).
+ *
+ * @property {string} exclusiveKey - the shared key the two brackets collided on.
+ * @property {string} closingLabel - the bracket that was closing when the
+ *   violation was detected.
+ * @property {string[]} stillOpenLabels - the other bracket(s) sharing this key
+ *   that were still open at that moment.
+ */
+export class ConcurrentSyncBracketError extends WorkflowError {
+    /**
+     * @param {string} message
+     * @param {{ exclusiveKey: string, closingLabel: string, stillOpenLabels: string[], details?: object, cause?: unknown }} opts
+     */
+    constructor(message, opts = {}) {
+        const { exclusiveKey, closingLabel, stillOpenLabels = [], details, cause } = opts;
+        super(message, {
+            code: 'CONCURRENT_SYNC_BRACKET',
+            details: { exclusiveKey, closingLabel, stillOpenLabels, ...details },
+            cause,
+        });
+        this.exclusiveKey = exclusiveKey;
+        this.closingLabel = closingLabel;
+        this.stillOpenLabels = stillOpenLabels;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Pre-sprint validation refusals
+// ---------------------------------------------------------------------------
+//
+// Every refusal raised by runSprintCycle's pre-sprint validation block, as a
+// closed machine-readable vocabulary. Before this existed the block threw bare
+// `Error`s whose only discriminator was their prose, so a caller could not
+// tell "there is genuinely no ready work" (an operator-facing, often benign
+// outcome) from "this backlog member's bd clone cannot see the target beads at
+// all" (a sync fault) or "the scope is deadlocked" (a graph fault) without
+// substring-matching a human-readable sentence.
+//
+//   TARGET_NOT_VISIBLE   One or more target issue ids are not present in the
+//                        backlog member's own bd clone AT ALL. NOT the
+//                        same as those beads being closed: they are invisible
+//                        here, usually because they were created/mutated on a
+//                        different clone that was never dolt-pushed to the
+//                        shared remote. A SYNC fault, fixable by syncing.
+//   NOTHING_TO_DO        The scope resolves to zero open/in-progress/blocked/
+//                        deferred beads -- every target issue is genuinely
+//                        done. Benign: there is no work, not a fault.
+//   CYCLE_REPAIR_FAILED  The scope is deadlocked by parent-child + blocks
+//                        cycle(s), the precise offending edges were computed,
+//                        and the mechanical auto-repair (`bd dep remove`)
+//                        ITSELF failed. Distinct from DEADLOCKED: the fix is
+//                        known and was attempted, but could not be applied.
+//   DEADLOCKED           Not-done beads remain in scope but none are ready,
+//                        and the repairable cycle shape does not explain it.
+//                        Needs a human to break the dependency deadlock.
+//
+// NOT in this vocabulary, deliberately: the VERIFY-ONLY sprint path. An empty
+// ready set with implementation-complete beads routed to verify PROCEEDS, so
+// it is not a refusal and must never raise. Nor is the stale-in-progress
+// reclaim a refusal -- it runs BEFORE any of these are raised, precisely
+// because an empty `--ready` set can be an artifact of an interrupted run
+// rather than an absence of work.
+export const PRE_SPRINT_REFUSAL_REASONS = Object.freeze({
+    TARGET_NOT_VISIBLE: 'TARGET_NOT_VISIBLE',
+    NOTHING_TO_DO: 'NOTHING_TO_DO',
+    CYCLE_REPAIR_FAILED: 'CYCLE_REPAIR_FAILED',
+    DEADLOCKED: 'DEADLOCKED',
+    // GitHub #717: a goal-priority bead is blocked only by verify-routed beads
+    // and the Integration Test phase cannot run (no integ-test-playbook.md or
+    // no deploy.md), so it can never become ready.
+    VERIFY_BLOCKED: 'VERIFY_BLOCKED',
+});
+
+/**
+ * Thrown when runSprintCycle's pre-sprint validation refuses to start a
+ * sprint. Adds a machine-readable `reason` discriminator (one of
+ * PRE_SPRINT_REFUSAL_REASONS) to what was previously an untyped `Error`
+ * distinguishable only by its prose.
+ *
+ * The human-readable message is deliberately UNCHANGED from the prose each
+ * refusal already emitted -- this adds a type and a discriminator, it does not
+ * restyle the operator-facing text.
+ *
+ * Like the other sprint-fatal errors here it is never caught inside the
+ * pre-sprint block, so it unwinds runWithContext()'s promise and fails the run
+ * before any dispatch occurs.
+ *
+ * @property {string} reason - one of PRE_SPRINT_REFUSAL_REASONS
+ * @property {string|null} scope - the sprint filter the refusal was raised for
+ * @property {string[]} [invisibleTargets] - TARGET_NOT_VISIBLE: the ids missing
+ *   from the backlog member's clone
+ * @property {Array<{blockedIssue: string, blockedBy: string}>} [cyclePairs] -
+ *   CYCLE_REPAIR_FAILED: the parent-child + blocks edge pairs whose removal
+ *   was attempted
+ * @property {string[]} [deadlockedIds] - DEADLOCKED: the not-done bead ids that
+ *   remain in scope with none ready
+ */
+export class PreSprintValidationError extends WorkflowError {
+    /**
+     * @param {string} message
+     * @param {{ reason: string, scope?: string|null, invisibleTargets?: string[], cyclePairs?: Array<{blockedIssue: string, blockedBy: string}>, deadlockedIds?: string[], details?: object, cause?: unknown }} opts
+     */
+    constructor(message, opts = {}) {
+        const { reason, scope = null, invisibleTargets, cyclePairs, deadlockedIds, details, cause } = opts;
+        if (!Object.prototype.hasOwnProperty.call(PRE_SPRINT_REFUSAL_REASONS, String(reason))) {
+            // A refusal with no recognized discriminator is the exact failure
+            // this type exists to prevent, so it fails loudly at construction
+            // rather than shipping an untyped refusal wearing a typed name.
+            throw new TypeError(
+                `PreSprintValidationError requires a reason from PRE_SPRINT_REFUSAL_REASONS ` +
+                `(${Object.keys(PRE_SPRINT_REFUSAL_REASONS).join(', ')}); got ${JSON.stringify(reason)}`
+            );
+        }
+        super(message, {
+            code: 'PRE_SPRINT_VALIDATION',
+            details: { reason, scope, invisibleTargets, cyclePairs, deadlockedIds, ...details },
+            cause,
+        });
+        this.reason = reason;
+        this.scope = scope;
+        if (invisibleTargets) this.invisibleTargets = invisibleTargets;
+        if (cyclePairs) this.cyclePairs = cyclePairs;
+        if (deadlockedIds) this.deadlockedIds = deadlockedIds;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Beads identity (which .beads a member's bd actually resolves to)
+// ---------------------------------------------------------------------------
+
+export const BEADS_IDENTITY_FAILURE_REASONS = Object.freeze({
+    MISMATCH: 'MISMATCH',
+    // The member cannot run bd at all (not installed / not on PATH): every
+    // bd a role or the engine runs there would fail mid-sprint, so refuse up
+    // front.
+    MISSING_TOOL: 'MISSING_TOOL',
+    // A beads-reading member had no usable beads database (or no
+    // sync.remote) and the preflight could not set one up from the sprint's
+    // expected beads remote -- dispatching would hand the role a database
+    // that does not hold the sprint's issues, so refuse up front.
+    BEADS_SETUP_FAILED: 'BEADS_SETUP_FAILED',
+});
+
+/**
+ * Thrown by verifyBeadsIdentity (beads-identity-check.mjs) BEFORE any
+ * mutating bd command when a member's probed identity (`bd where` / `bd
+ * config get sync.remote` / `git remote get-url origin`) DIFFERS from the
+ * expected one (the supervisor's expectation, or the backlog member's
+ * own identity) on a field that resolved on both sides (reason MISMATCH), or
+ * when a member cannot run bd at all -- a bd probe failed because bd is not
+ * installed or not on PATH (reason MISSING_TOOL), so every later bd command
+ * there would fail too, or (reason BEADS_SETUP_FAILED) when a beads-reading
+ * member had no database / no sync.remote and setting it up from the
+ * expected remote failed. Any other probe that fails or cannot be parsed is a
+ * logged warning, never this error.
+ *
+ * A WorkflowError so main()'s terminal record names the reason, but
+ * deliberately NOT a typed abort: nothing has been dispatched or mutated, so
+ * there is no partial work for finalizeAbort() to push or open a PR for.
+ *
+ * @property {string} reason - one of BEADS_IDENTITY_FAILURE_REASONS
+ * @property {string} member - the member whose identity mismatched
+ * @property {Array<{field: string, expected: string, actual: string}>} [mismatches]
+ */
+export class BeadsIdentityError extends WorkflowError {
+    /**
+     * @param {string} message
+     * @param {{ reason: string, member: string, mismatches?: Array<{field: string, expected: string, actual: string}>, details?: object, cause?: unknown }} opts
+     */
+    constructor(message, opts = {}) {
+        const { reason, member, mismatches, details, cause } = opts;
+        if (!Object.prototype.hasOwnProperty.call(BEADS_IDENTITY_FAILURE_REASONS, String(reason))) {
+            throw new TypeError(
+                `BeadsIdentityError requires a reason from BEADS_IDENTITY_FAILURE_REASONS ` +
+                `(${Object.keys(BEADS_IDENTITY_FAILURE_REASONS).join(', ')}); got ${JSON.stringify(reason)}`
+            );
+        }
+        super(message, {
+            code: 'BEADS_IDENTITY',
+            details: { reason, member, mismatches, ...details },
+            cause,
+        });
+        this.reason = reason;
+        this.member = member;
+        if (mismatches) this.mismatches = mismatches;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Member permission config (the provider's composed per-folder config)
+// ---------------------------------------------------------------------------
+
+/**
+ * Thrown by the member permission-config preflight
+ * (member-provisioning.mjs createPermissionConfigPreflight) BEFORE any
+ * dispatch when a dispatch member's composed per-folder permission config
+ * (its provider's permissionConfigPaths(), as reported by member_detail) is
+ * missing from its work folder -- a re-clone, `git clean -xdf` or fresh
+ * worktree drops it -- and re-composing it with compose_permissions failed or
+ * did not bring it back, or it could not be probed at all. Dispatching would
+ * hand the role a session whose tool calls (e.g. bd) are refused as
+ * "requires approval".
+ *
+ * Like BeadsIdentityError, a WorkflowError but deliberately NOT a typed
+ * abort: nothing has been dispatched, so there is no partial work to push.
+ *
+ * @property {string} member - the member whose config is missing
+ * @property {string[]} files - the missing (or unprobeable) config file(s)
+ * @property {string} role - the compose_permissions role the fix names
+ */
+export class MemberPermissionConfigError extends WorkflowError {
+    /**
+     * @param {string} message
+     * @param {{ member: string, files?: string[], role?: string, details?: object, cause?: unknown }} opts
+     */
+    constructor(message, opts = {}) {
+        const { member, files = [], role, details, cause } = opts;
+        super(message, {
+            code: 'MEMBER_PERMISSION_CONFIG',
+            details: { member, files, role, ...details },
+            cause,
+        });
+        this.member = member;
+        this.files = files;
+        this.role = role;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Agent permission refusals during a dispatch (reason 'permission_denied')
+// ---------------------------------------------------------------------------
+//
+// execute_prompt reports a dispatch whose member CLI refused tool calls for
+// lack of a grant as a structured `reason: 'permission_denied'` with a
+// `permissionDenied` block ({ actions, denials, suggestedGrants, hint,
+// signals }); the workflow layer forwards both onto AgentDispatchError.details.
+// It is a MISSING-PERMISSION failure, healed by compose_permissions -- never a
+// role outcome. In particular the refusal text must never be fed to a caller
+// as a plan-review/review verdict. Keyed on the structured reason only, like
+// isUsageLimitDispatchError: never on the provider's prose.
+export const PERMISSION_DENIED_DISPATCH_REASON = 'permission_denied';
+
+/**
+ * True when a dispatch error is an agent permission refusal.
+ * @param {unknown} err
+ * @returns {boolean}
+ */
+export function isPermissionDeniedDispatchError(err) {
+    return err?.details?.reason === PERMISSION_DENIED_DISPATCH_REASON;
+}
+
+/**
+ * The permissionDenied block carried on a permission-refusal dispatch error,
+ * normalised to `{ actions: string[], denials: {action, target?,
+ * suggestedGrants?}[], suggestedGrants: string[], hint: string,
+ * permissionMode?: string, healable?: boolean }`, or null when the error
+ * carries none. `healable: false` means the session's permission mode (Claude
+ * auto/bypass) makes the refusal a classifier or deny-rule decision that no
+ * grant may ever override.
+ * @param {unknown} err
+ * @returns {{actions: string[], denials: Array<{action: string, target?: string, suggestedGrants?: string[]}>, suggestedGrants: string[], hint: string, permissionMode?: string, healable?: boolean}|null}
+ */
+export function permissionDeniedOf(err) {
+    const d = err?.details?.permissionDenied;
+    if (!d || typeof d !== 'object') return null;
+    const strings = (v) => (Array.isArray(v) ? v.filter((x) => typeof x === 'string') : []);
+    const denials = Array.isArray(d.denials)
+        ? d.denials.filter((x) => x && typeof x.action === 'string')
+            .map((x) => ({
+                action: x.action,
+                ...(typeof x.target === 'string' ? { target: x.target } : {}),
+                ...(Array.isArray(x.suggestedGrants) ? { suggestedGrants: strings(x.suggestedGrants) } : {}),
+            }))
+        : [];
+    return {
+        actions: strings(d.actions),
+        denials,
+        suggestedGrants: strings(d.suggestedGrants),
+        hint: typeof d.hint === 'string' ? d.hint : '',
+        ...(typeof d.permissionMode === 'string' ? { permissionMode: d.permissionMode } : {}),
+        ...(typeof d.healable === 'boolean' ? { healable: d.healable } : {}),
+    };
+}
+
+/**
+ * Thrown by the dispatch engine (dispatch-role.mjs) when a role's dispatch
+ * was refused tool calls and the progressive heal (createPermissionDenialHeal:
+ * grant within the member's composed policy, retry, repeat while each heal
+ * adds a new grant) can make no further progress. Ends the sprint naming the
+ * member, the denied actions and the fix; no plan-review or review round is
+ * ever charged for it.
+ *
+ * A WorkflowError (so the run records a terminal reason) but deliberately
+ * NOT a typed abort, like MemberPermissionConfigError: the fix is a member
+ * grant, after which the sprint is simply re-run.
+ *
+ * @property {string} member - the member whose tool calls were refused
+ * @property {string|null} role - the sprint role whose dispatch was refused
+ * @property {string[]} actions - the denied actions (e.g. 'Bash "bd show x"')
+ * @property {string[]} suggestedGrants - compose_permissions grants that would allow them
+ * @property {string[]} rejectedGrants - suggested grants outside the role policy, never auto-added
+ * @property {string} step - 'heal' (compose_permissions failed or no heal is wired),
+ *   'not_healable' (auto/bypass-mode refusal: classifier or deny rule, never granted),
+ *   'no_progress' (refused again after its grant, outside policy, NEVER_AUTO_GRANT, or no
+ *   grant maps to the call) or 'cap' (heal limit per member per sprint or per ladder reached)
+ */
+export class MemberPermissionDeniedError extends WorkflowError {
+    /**
+     * @param {string} message
+     * @param {{ member: string, role?: string|null, actions?: string[], suggestedGrants?: string[], rejectedGrants?: string[], step: string, details?: object, cause?: unknown }} opts
+     */
+    constructor(message, opts = {}) {
+        const { member, role = null, actions = [], suggestedGrants = [], rejectedGrants = [], step, details, cause } = opts;
+        super(message, {
+            code: 'MEMBER_PERMISSION_DENIED',
+            details: { member, role, actions, suggestedGrants, rejectedGrants, step, ...details },
+            cause,
+        });
+        this.member = member;
+        this.role = role;
+        this.actions = actions;
+        this.suggestedGrants = suggestedGrants;
+        this.rejectedGrants = rejectedGrants;
+        this.step = step;
+    }
 }

@@ -44,7 +44,7 @@ describe('apra-fleet-dv5.6: real per-member pricing preferred over tier-band fal
         await wf.agent('hello', { member_name: KNOWN_MEMBER, model: 'premium' });
 
         // Real rate: 1000/1e6 * 100 + 500/1e6 * 200 = 0.1 + 0.1 = 0.2
-        // (pricing.mjs's 'premium' fallback row would give 0.015 + 0.0375 = 0.0525 -- must NOT match that.)
+        // (pricing.mjs's 'premium' fallback row, Opus 5.5 list price, would give 0.004 + 0.01 = 0.014 -- must NOT match that.)
         assert.strictEqual(endMeta.cost, 0.2);
         assert.strictEqual(wf.budget.pricingSummary().real, 1);
         assert.strictEqual(wf.budget.pricingSummary().fallback, 0);
@@ -63,8 +63,8 @@ describe('apra-fleet-dv5.6: real per-member pricing preferred over tier-band fal
 
         await wf.agent('hello', { member_name: KNOWN_MEMBER, model: 'premium' });
 
-        // pricing.mjs 'premium' fallback row: 1000/1e6*15 + 500/1e6*75 = 0.015 + 0.0375 = 0.0525
-        assert.strictEqual(endMeta.cost, 0.0525);
+        // pricing.mjs 'premium' fallback row (Opus 5.5 list price): 1000/1e6*4 + 500/1e6*20 = 0.004 + 0.01 = 0.014
+        assert.strictEqual(endMeta.cost, 0.014);
         assert.strictEqual(wf.budget.pricingSummary().real, 0);
         assert.strictEqual(wf.budget.pricingSummary().fallback, 1);
     });
@@ -80,7 +80,7 @@ describe('apra-fleet-dv5.6: real per-member pricing preferred over tier-band fal
         const result = await wf.agent('hello', { member_name: KNOWN_MEMBER, model: 'premium' });
 
         assert.strictEqual(result, 'Mock response to: hello');
-        assert.strictEqual(endMeta.cost, 0.0525);
+        assert.strictEqual(endMeta.cost, 0.014);
         assert.strictEqual(wf.budget.pricingSummary().fallback, 1);
     });
 

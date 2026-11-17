@@ -1,8 +1,85 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import type { Agent } from '../types.js';
 import type { AgentStrategy } from '../services/strategy.js';
 import { getStrategy } from '../services/strategy.js';
+import { getMemberHomeDir } from '../services/member-home.js';
 import { getProvider } from '../providers/index.js';
+import { writeMemberSecretFile, removeMemberSecretFile } from '../services/member-secret-env.js';
+import type { WorkspaceTrustTransport, MemberSecretFileChannel } from '../providers/provider.js';
+import { getAgentShell } from './agent-helpers.js';
 import { logLine, logWarn } from './log-helpers.js';
+
+/**
+ * Out-of-band file channel for ensureWorkspaceTrusted (GitHub #499): places
+ * `content` at `~/<relPath>` on the member WITHOUT embedding it in a command
+ * line, by composing two primitives the codebase already has --
+ * getMemberHomeDir (os.homedir() for a local member, the cached probe for a
+ * remote one) and AgentStrategy.transferFiles (fs copy locally, SFTP over
+ * SSH). The content is staged in a private temp dir on this host only long
+ * enough for the transfer.
+ *
+ * Returns undefined for a relay member: RelayStrategy.transferFiles lands in
+ * the receiving spoke's received-files sandbox, not its home, so the adapter
+ * must use exec-based (chunked) delivery there instead.
+ */
+/** The owner-only secret-file channel of `agent` (writeMemberSecretFile): content
+ *  reaches the member without a command line, or the write fails loudly. */
+export function memberSecretFileChannelFor(agent: Agent): MemberSecretFileChannel {
+  return {
+    write: (content: string) => writeMemberSecretFile(agent, content, 'claude-config'),
+    remove: (filePath: string) => removeMemberSecretFile(agent, filePath),
+  };
+}
+
+export function workspaceTrustTransportFor(agent: Agent, strat: AgentStrategy): WorkspaceTrustTransport | undefined {
+  if (agent.agentType === 'relay') return undefined;
+  return {
+    writeHomeFile: async (relPath: string, content: string): Promise<void> => {
+      const probed = await getMemberHomeDir(agent);
+      if (!probed) throw new Error('member home directory could not be resolved');
+      const home = sftpHomePath(probed, agent.os);
+      const relDir = path.dirname(relPath).replace(/\\/g, '/');
+      const targetDir = relDir && relDir !== '.' ? `${home}/${relDir}` : home;
+      const staging = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-trust-'));
+      const local = path.join(staging, path.basename(relPath));
+      try {
+        fs.writeFileSync(local, content, { encoding: 'utf8' });
+        const result = await strat.transferFiles([local], targetDir);
+        if (result.failed.length > 0) {
+          throw new Error(`transfer of ~/${relPath} failed: ${result.failed[0].error}`);
+        }
+      } finally {
+        fs.rmSync(staging, { recursive: true, force: true });
+      }
+    },
+    readHomeFile: async (relPath: string): Promise<{ found: boolean; content?: string } | undefined> => {
+      if (agent.agentType !== 'local') return undefined;
+      const probed = await getMemberHomeDir(agent);
+      if (!probed) return undefined;
+      const home = sftpHomePath(probed, agent.os);
+      const filePath = path.join(home, relPath);
+      if (fs.existsSync(filePath)) {
+        return { found: true, content: fs.readFileSync(filePath, 'utf8') };
+      }
+      return { found: false };
+    },
+  };
+}
+
+/**
+ * A gitbash Windows member's probed home is an MSYS path (/c/Users/name). The
+ * SFTP server on that host is Win32-OpenSSH, which does NOT understand MSYS
+ * paths -- it would treat it as an absolute path and create C:\c\Users\name.
+ * Rewrite the drive prefix to the Windows form (C:/Users/name) before handing
+ * it to transferFiles; every other spelling passes through unchanged.
+ */
+export function sftpHomePath(home: string, agentOs: Agent['os']): string {
+  if (agentOs !== 'windows') return home;
+  const m = home.match(/^\/([A-Za-z])\/(.*)$/);
+  return m ? `${m[1].toUpperCase()}:/${m[2]}` : home;
+}
 
 /**
  * Idempotently seeds Claude workspace trust for `agent`'s work folder
@@ -24,14 +101,31 @@ import { logLine, logWarn } from './log-helpers.js';
  *   compose_permissions, should pass it instead of paying for a second lookup).
  * @param tag Log tag identifying the call site (e.g. 'register_member').
  */
+
 export async function seedWorkspaceTrust(agent: Agent, strategy?: AgentStrategy, tag = 'workspace-trust'): Promise<void> {
   try {
     const provider = getProvider(agent.llmProvider);
     const strat = strategy ?? getStrategy(agent);
+    // The trust file lives in the member HOME regardless of where the
+    // provider's permission files live, so always resolve the home in JS
+    // (os.homedir() locally, the cached probe remotely): the adapter builds
+    // every member-side path from it and never lets the member shell expand
+    // $env:USERPROFILE / $HOME, which can disagree with the file channel.
+    const memberHomeDir = await getMemberHomeDir(agent);
     const result = await provider.ensureWorkspaceTrusted(
       agent.workFolder,
       (command: string, timeoutMs?: number) => strat.execCommand(command, timeoutMs),
       agent.os,
+      // The member's REGISTERED shell, not just its OS: a gitbash Windows
+      // member needs POSIX trust-seeding strings (apra-fleet-7dir.2.8).
+      getAgentShell(agent),
+      // File channel so a merged ~/.claude.json never rides a command line
+      // (GitHub #499); the adapter then tries the secret file and otherwise fails.
+      workspaceTrustTransportFor(agent, strat),
+      memberHomeDir,
+      // Owner-only secret file when the file channel is unavailable: the
+      // content never rides a command line (the write fails loudly instead).
+      memberSecretFileChannelFor(agent),
     );
     logLine(tag, `workspace trust for "${agent.friendlyName}": ${result.detail}`, agent);
   } catch (e: any) {

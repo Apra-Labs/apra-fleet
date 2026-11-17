@@ -15,12 +15,14 @@ repo). Every other schema/endpoint that requires auth references
 
 ## What's in here
 
-- `src/schemas/` -- Zod schemas: `Workspace`, `Project`, `Member` (provider
-  enum includes `'none'` per us9.14), `JWTClaims`, `UsageRecord`,
-  `ActivityEvent`, `Installer`, `AdminUser`.
-- `src/endpoints.ts` -- one entry per route in
-  `fleet-dashboard/README.md`'s "State & API sketch", with request/response
-  Zod shapes. Auth-gated entries carry `auth: JWTClaimsSchema`.
+- `src/schemas/` -- Zod schemas: `Workspace`, `Project`, `Member` (whose
+  provider enum includes `'none'`, for a plain command executor with no
+  LLM), `JWTClaims`, `UsageRecord`, `ActivityEvent`, `Installer`,
+  `AdminUser`.
+- `src/endpoints.ts` -- one entry per route in the fleet-dashboard repo's
+  "State & API sketch" (fleet-dashboard is a separate, private repo; only
+  its published contract is visible here), with request/response Zod
+  shapes. Auth-gated entries carry `auth: JWTClaimsSchema`.
 - `src/openapi.ts` -- generates an OpenAPI 3.1 document from the SAME Zod
   schemas above (via `@asteasolutions/zod-to-openapi`) -- no hand-written,
   dual-maintained spec.
@@ -55,8 +57,7 @@ the registry choice is finalized.)
 
 ## Consuming from fleet-dashboard
 
-Once fleet-dashboard's real frontend/backend moves past the hi-fi prototype,
-depend on this package like any other npm dependency:
+Depend on this package like any other npm dependency:
 
 ```bash
 npm install @apralabs/fleet-api-contract
@@ -66,11 +67,15 @@ npm install @apralabs/fleet-api-contract
 import { JWTClaimsSchema, MemberSchema, Endpoints } from '@apralabs/fleet-api-contract';
 ```
 
-## Contract testing in hub-service
+## Contract testing
 
-The hub-service (apra-fleet-us9.4) should validate real handler responses
-against these schemas at runtime, not just at the type level -- this catches
-wire-format drift (an extra/missing field) that `tsc` cannot. See
-`tests/hub-service/installers.contract.test.ts` in the main repo for the
-pattern: import the schema from this package, call the real handler, and
-`Schema.parse()` the actual response.
+Validate real handler responses against these schemas at runtime, not just
+at the type level -- this catches wire-format drift (an extra or missing
+field) that `tsc` cannot. See `tests/hub-service/installers.contract.test.ts`
+in the main repo for the pattern: import the schema from this package, call
+the real handler, and `Schema.parse()` the actual response.
+
+Note that `src/hub-service/` is reference-only: fleet-dashboard is the sole
+tier-3 persistence layer (see `docs/adr-tier3-ownership.md`). Its tests
+remain as an executable specification of the wire-format and
+security-isolation semantics this contract describes.

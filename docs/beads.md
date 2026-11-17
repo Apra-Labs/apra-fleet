@@ -1,6 +1,6 @@
 <!-- llm-context: Reference for how Apra Fleet uses Beads, the bundled open-source issue tracker. Consult when a user asks about bd commands, task tracking, sprint epics, backlog management, or the PM skill's persistent task state. -->
 <!-- keywords: Beads, bd, task, epic, sprint, backlog, pm, lifecycle, dependency, issue tracker, bd ready, bd create, bd close -->
-<!-- see-also: ../README.md (PM skill overview), ../skills/pm/SKILL.md (PM skill reference), ../skills/pm/beads.md (internal PM Beads rules) -->
+<!-- see-also: ../README.md (PM skill overview), ../packages/apra-fleet-se/apra-pm/skills/pm/SKILL.md (PM skill reference), ../packages/apra-fleet-se/apra-pm/skills/pm/beads.md (internal PM Beads rules) -->
 
 # Beads -- Fleet's Persistent Task Tracker
 
@@ -97,4 +97,4 @@ recovery ladder.
 
 ---
 
-See [skills/pm/SKILL.md](../skills/pm/SKILL.md) for the full PM skill reference.
+See [the PM skill](../packages/apra-fleet-se/apra-pm/skills/pm/SKILL.md) for the full PM skill reference.

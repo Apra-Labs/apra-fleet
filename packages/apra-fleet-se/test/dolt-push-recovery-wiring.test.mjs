@@ -1,30 +1,35 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { doltPushAfter } from '../fleet-sprint/dolt-sync.mjs';
-import { buildDoltRecoveryLadder } from '../fleet-sprint/dolt-recovery-tier2.mjs';
-import { DoltDivergedError } from '../fleet-sprint/errors.mjs';
+import { doltPushAfter, doltPullBefore, preflightBeadsHealthGate, repair } from '../fleet-sprint/dolt-sync.mjs';
+import { buildSettleCallback, detectMemberPlatform } from '../fleet-sprint/dolt-settle.mjs';
+import { DoltDivergedError, DoltSyncError } from '../fleet-sprint/errors.mjs';
 
 // =============================================================================
-// apra-fleet-vkc.1 -- the recovery ladder is WIRED into doltPushAfter()'s
-// divergence terminal.
+// settleDoltConflicts() is WIRED at BOTH divergence terminals (docs/dolt-sync-
+// redesign.md Parts 2.3/2.4), replacing the retired Path A -> Path B -> Tier 2
+// ladder.
 //
-// These tests drive the REAL, unmocked doltPushAfter() (not a stand-in) with an
-// injected command() that reproduces a divergence surviving the bounded
-// first-successful-pusher-wins reconcile, and prove that:
-//   - with a `recover` ladder wired, a real doltPushAfter() divergence REACHES
-//     dolt-recovery.mjs (Path A) -- the `SELECT * FROM dolt_conflicts` gate
-//     query is actually issued -- and, when Path A resolves it, the D-push is
-//     reported reconciled/recovered instead of throwing;
-//   - when the whole ladder fails to close the clone, the DoltDivergedError
-//     still surfaces (runner.js classifies it as the terminal
-//     BEADS_SYNC_CONFLICT) and Tier 2 is dispatched;
-//   - with NO recover callback wired, doltPushAfter() behaves exactly as it did
-//     before vkc.1 -- the divergence propagates immediately.
+// These tests drive the REAL, unmocked doltPushAfter()/doltPullBefore() (not a
+// stand-in) with an injected command() that reproduces a divergence, and prove:
+//   - a push divergence that outlives the bounded reconcile RUNS settle, and a
+//     settle that resolves reports the D-push reconciled/recovered instead of
+//     throwing;
+//   - a PULL divergence -- which had no recovery seam at all before this --
+//     runs settle too, and the readiness gate inherits it;
+//   - a settle that fails OPERATIONALLY surfaces the original
+//     DoltDivergedError (runner.js classifies it as BEADS_SYNC_CONFLICT); it is
+//     never re-labelled, never escalated to an LLM, and never retried;
+//   - with NO settle callback wired, both brackets behave exactly as before.
 // =============================================================================
 
 const DIVERGENCE_STDERR =
     'error: failed to push some refs to origin/main\n'
     + 'hint: Updates were rejected because the remote contains work that you do not have locally.';
+
+const PULL_CONFLICT_STDERR =
+    'error: local changes would be stomped by merge\n'
+    + 'CONFLICT (content): Merge conflict in table issues\n'
+    + 'Automatic merge failed; fix conflicts and then commit the result.';
 
 const OK = { ok: true, output: '', error: null };
 const fail = (error) => ({ ok: false, output: '', error });
@@ -48,80 +53,54 @@ function makeQueuedCommand(script) {
     return { command, calls };
 }
 
-test('a real doltPushAfter() divergence reaches dolt-recovery.mjs (Path A) and is resolved when the gate passes', async () => {
-    // D-push -> diverged; reconcile pull -> ok; re-push -> diverged (terminal);
-    // then Path A's own post-resolve pull/push succeed.
-    const { command } = makeQueuedCommand({
-        'bd dolt push': [fail(DIVERGENCE_STDERR), fail(DIVERGENCE_STDERR), OK],
-        'bd dolt pull': [OK],
-    });
-
-    const sqlQueries = [];
-    const sql = async (query) => {
-        const q = String(query);
-        sqlQueries.push(q);
-        if (/SELECT \* FROM dolt_conflicts/i.test(q)) {
-            // A plain single-row `issues` conflict: passes both of Path A's gates.
-            return { ok: true, rows: [{ table: 'issues', num_conflicts: 1 }] };
-        }
-        if (/SELECT \* FROM dolt_log/i.test(q)) {
-            return { ok: true, rows: [{ commit_hash: 'ours' }, { commit_hash: 'theirs' }] };
-        }
-        return { ok: true, rows: [] };
+// A settle stand-in with the exact shape buildSettleCallback() returns.
+function fakeSettle({ ok = true, resolvedTables = ['issues'], throws = null } = {}) {
+    const invocations = [];
+    const settle = async (ctx) => {
+        invocations.push(ctx);
+        if (throws) throw throws;
+        return { ok, resolvedTables, warnings: [], doltVersionUsed: '2.2.0' };
     };
-    let meta = { dolt_mode: 'embedded', remote: 'origin' };
-    const recover = buildDoltRecoveryLadder('local', {
-        command,
-        sql,
-        spawnSqlServer: async () => ({ stop: () => {} }),
-        allocatePort: () => 3999,
-        readMetadata: async () => meta,
-        writeMetadata: async (m) => { meta = m; },
-    });
+    return { settle, invocations };
+}
 
-    const outcome = await doltPushAfter('local', {
-        command, checkSyncRemoteConfigured: remoteConfigured, recover,
-    });
+// --- push terminal ---------------------------------------------------------
 
-    assert.equal(outcome.ok, true);
-    assert.equal(outcome.recovered, true);
-    assert.equal(outcome.recoveryTier, 'path-a');
-    // The load-bearing proof that dolt-recovery.mjs was actually reached: its
-    // deterministic conflict gate query was issued.
-    assert.ok(
-        sqlQueries.some((q) => /SELECT \* FROM dolt_conflicts/i.test(q)),
-        'expected Path A (dolt-recovery.mjs) to issue its dolt_conflicts gate query',
-    );
-});
-
-test('when the whole ladder fails to close the clone, doltPushAfter() still surfaces DoltDivergedError and Tier 2 is dispatched', async () => {
-    // Path A self-defers (no sql runtime injected); Path B fails on an
-    // unrecognized bootstrap error -> Tier 2 escalation dispatches the agent.
+test('a real doltPushAfter() divergence runs settle, and a resolved settle reports the D-push recovered', async () => {
     const { command } = makeQueuedCommand({
         'bd dolt push': [fail(DIVERGENCE_STDERR)],
         'bd dolt pull': [OK],
-        'bd bootstrap': [fail('fatal: some unrecognized bootstrap failure')],
     });
+    const { settle, invocations } = fakeSettle({ resolvedTables: ['issues', 'labels'] });
 
-    let dispatched = 0;
-    const agent = async () => { dispatched += 1; return { ok: true }; };
-    const recover = buildDoltRecoveryLadder('local', {
-        command,
-        agent,
-        // Path B fs seams, injected so no real disk is touched.
-        readConfig: async () => ({ exists: true, raw: 'sync:\n  remote: origin\n', hasSyncRemote: true }),
-        removePath: async () => {},
-        listLocalState: async () => ['(test) nothing to discard'],
-    });
+    const outcome = await doltPushAfter('local', { command, checkSyncRemoteConfigured: remoteConfigured, settle });
 
-    await assert.rejects(
-        () => doltPushAfter('local', { command, checkSyncRemoteConfigured: remoteConfigured, recover }),
-        (err) => err instanceof DoltDivergedError,
-    );
-    assert.equal(dispatched, 1, 'expected Tier 2 to dispatch the recovery agent once');
+    assert.equal(outcome.ok, true);
+    assert.equal(outcome.recovered, true);
+    assert.equal(outcome.reconciled, true);
+    assert.deepEqual(outcome.settledTables, ['issues', 'labels']);
+    assert.equal(invocations.length, 1, 'settle must be invoked exactly once -- no retry loop, no tiers');
+    assert.match(invocations[0].operation, /push/i);
+    assert.ok(invocations[0].error instanceof DoltDivergedError, 'settle receives the typed divergence it is being asked to settle');
 });
 
-test('with NO recover callback wired, doltPushAfter() propagates the divergence immediately (pre-vkc.1 behavior preserved)', async () => {
+test('a settle that fails operationally still surfaces DoltDivergedError -- never re-labelled, never escalated', async () => {
+    const { command } = makeQueuedCommand({
+        'bd dolt push': [fail(DIVERGENCE_STDERR)],
+        'bd dolt pull': [OK],
+    });
+    const { settle, invocations } = fakeSettle({ throws: new Error('ephemeral sql-server would not start') });
+    const logs = [];
+
+    await assert.rejects(
+        () => doltPushAfter('local', { command, checkSyncRemoteConfigured: remoteConfigured, settle, log: (m) => logs.push(m) }),
+        (err) => err instanceof DoltDivergedError,
+    );
+    assert.equal(invocations.length, 1, 'a failing settle is attempted once, never retried');
+    assert.ok(logs.some((l) => /infra failure, NOT an unresolvable conflict/.test(l)), 'the log must distinguish an operational failure from an unresolvable conflict');
+});
+
+test('with NO settle callback wired, doltPushAfter() propagates the divergence immediately (pre-settle behavior preserved)', async () => {
     const { command } = makeQueuedCommand({
         'bd dolt push': [fail(DIVERGENCE_STDERR)],
         'bd dolt pull': [OK],
@@ -132,42 +111,142 @@ test('with NO recover callback wired, doltPushAfter() propagates the divergence 
     );
 });
 
-// =============================================================================
-// Post-review fix (apra-fleet-vkc.1): runner.js's syncMemberAfterOrdered()
-// wires the ladder with enablePathB:false and NO readConfig/removePath/
-// listLocalState injected -- exactly the production call-site shape. Without
-// this flag, Path B would fall through to its fs-backed defaults (plain Node
-// `fs` calls with no member argument), discarding and re-bootstrapping
-// whatever process is RUNNING the test/orchestrator, not the wedged member,
-// and reporting `pushed:true` while silently losing the mutation that
-// triggered the divergence. This test proves that shape never touches local
-// state and instead escalates cleanly to Tier 2.
-// =============================================================================
+// --- pull terminal (previously recovery-free) ------------------------------
 
-test('runner.js production wiring (enablePathB:false, no fs seams injected): a real divergence never touches local fs and escalates straight to Tier 2', async () => {
-    const { command, calls } = makeQueuedCommand({
-        'bd dolt push': [fail(DIVERGENCE_STDERR)],
-        'bd dolt pull': [OK],
-    });
+test('a doltPullBefore() divergence -- which had NO recovery seam before -- runs settle and self-heals', async () => {
+    const { command } = makeQueuedCommand({ 'bd dolt pull': [fail(PULL_CONFLICT_STDERR)] });
+    const { settle, invocations } = fakeSettle();
 
-    let dispatched = 0;
-    const agent = async () => { dispatched += 1; return { ok: true }; };
+    const outcome = await doltPullBefore('local', { command, checkSyncRemoteConfigured: remoteConfigured, settle });
 
-    // The EXACT opts shape runner.js:syncMemberAfterOrdered passes -- no sql
-    // runtime (Path A self-defers), no readConfig/removePath/listLocalState
-    // (would only matter if Path B ran), enablePathB:false.
-    const recover = buildDoltRecoveryLadder('fleet-mac', { command, agent, log: () => {}, enablePathB: false });
+    assert.equal(outcome.ok, true);
+    assert.equal(outcome.recovered, true);
+    assert.deepEqual(outcome.settledTables, ['issues']);
+    assert.equal(invocations.length, 1);
+    assert.match(invocations[0].operation, /pull/i);
+});
 
+test('the readiness gate inherits the same pull-side settle (a wedged clone no longer hard-aborts the sprint)', async () => {
+    const { command } = makeQueuedCommand({ 'bd dolt pull': [fail(PULL_CONFLICT_STDERR)] });
+    const { settle } = fakeSettle();
+    const outcome = await preflightBeadsHealthGate('local', { command, checkSyncRemoteConfigured: remoteConfigured, settle });
+    assert.equal(outcome.ok, true);
+    assert.equal(outcome.recovered, true);
+});
+
+test('a pull divergence with no settle wired, or with a settle that fails, still aborts with DoltDivergedError', async () => {
+    const noSettle = makeQueuedCommand({ 'bd dolt pull': [fail(PULL_CONFLICT_STDERR)] });
     await assert.rejects(
-        () => doltPushAfter('fleet-mac', { command, checkSyncRemoteConfigured: remoteConfigured, recover }),
+        () => doltPullBefore('local', { command: noSettle.command, checkSyncRemoteConfigured: remoteConfigured }),
         (err) => err instanceof DoltDivergedError,
     );
 
-    assert.equal(dispatched, 1, 'expected Tier 2 to dispatch the recovery agent once');
+    const failing = makeQueuedCommand({ 'bd dolt pull': [fail(PULL_CONFLICT_STDERR)] });
+    const { settle } = fakeSettle({ throws: new Error('no usable dolt binary') });
+    await assert.rejects(
+        () => doltPullBefore('local', { command: failing.command, checkSyncRemoteConfigured: remoteConfigured, settle }),
+        (err) => err instanceof DoltDivergedError,
+    );
+});
 
-    // The load-bearing proof Path B never ran ANY of its steps: no bootstrap
-    // and no push-republish command was ever issued beyond the ordinary D-push
-    // bracket's own pull/push (both already queued above and consumed).
-    const bootstrapCalls = calls.filter((c) => c.cmd.includes('bd bootstrap'));
-    assert.equal(bootstrapCalls.length, 0, 'Path B must never issue a bootstrap command when enablePathB:false');
+// --- repair(): the operator entry point onto the same function -------------
+
+test('repair() runs settle, not a ladder, and reports the settled tables', async () => {
+    const { command } = makeQueuedCommand({});
+    const { settle, invocations } = fakeSettle({ resolvedTables: ['issues'] });
+    const result = await repair('local', { command, settle });
+    assert.equal(result.repaired, true);
+    assert.equal(invocations.length, 1, 'settle called exactly once');
+    assert.deepEqual(result.result.resolvedTables, ['issues']);
+    assert.equal(result.tier, undefined, 'there are no tiers any more');
+});
+
+test('repair() reports an operational settle failure without throwing, and refuses without a command()', async () => {
+    const { command } = makeQueuedCommand({});
+    const { settle } = fakeSettle({ throws: new Error('server would not start') });
+    const failed = await repair('local', { command, settle });
+    assert.equal(failed.repaired, false);
+    assert.equal(failed.escalation, 'settle-operational-failure');
+
+    const unconfigured = await repair('local', {});
+    assert.equal(unconfigured.repaired, false);
+    assert.match(unconfigured.escalation, /requires an injected command/);
+});
+
+// =============================================================================
+// apra-fleet-7h6n.3: the EXACT production wiring shape runner.js uses --
+// buildSettleCallback(member, { command, log }) with no platform supplied,
+// threaded into the D-push bracket -- used to be proven here by re-deriving
+// dolt-settle.test.mjs's own full happy-path fixture (version probe,
+// freeport, POSIX/WMI spawn, SQL queries, teardown, republish) a second
+// time. That whole internal protocol (including the platform-gated spawn
+// choice and the no-`--user`/`--password` invariant) is already covered
+// exhaustively by dolt-settle.test.mjs; duplicating it here just to prove
+// "wiring" was a maintenance-doubling fixture, not a distinct assertion.
+//
+// Split into two much smaller, targeted pieces instead:
+//   1. detectMemberPlatform() (buildSettleCallback's own platform-probe
+//      seam) is unit-tested directly below -- no dolt-settle protocol
+//      involved at all.
+//   2. This wiring test keeps the REAL buildSettleCallback + doltPushAfter
+//      call (so it still proves runner.js's actual construction pattern
+//      integrates correctly), but stubs settle's own internal protocol to
+//      fail fast right after the platform probe -- enough to prove the
+//      platform WAS probed and that whatever settle() decides (recovered or
+//      not) is genuinely threaded through doltPushAfter, without re-scripting
+//      the full happy-path recovery (already proven via fakeSettle() above
+//      and via dolt-settle.test.mjs's own settleDoltConflicts tests).
+// =============================================================================
+
+test('detectMemberPlatform: probes process.platform/arch via command(), never assumes the orchestrator platform', async () => {
+    const calls = [];
+    const command = async (cmd, opts = {}) => {
+        calls.push({ cmd, opts });
+        return { ok: true, output: 'darwin arm64\n', error: null };
+    };
+    const result = await detectMemberPlatform({ command, member: 'fleet-mac' });
+    assert.deepEqual(result, { platform: 'darwin', arch: 'arm64' });
+    assert.ok(calls.some((c) => /process\.platform/.test(c.cmd)), 'must issue a process.platform probe command');
+    assert.ok(calls.every((c) => c.opts.member_name === 'fleet-mac'), 'the probe must carry explicit member_name');
+});
+
+test('detectMemberPlatform: passes the real arch through (aarch64 Linux is arm64; an unknown arch is not coerced to x64)', async () => {
+    const probe = (out) => async () => ({ ok: true, output: out, error: null });
+    assert.deepEqual(await detectMemberPlatform({ command: probe('linux arm64\n'), member: 'm' }), { platform: 'linux', arch: 'arm64' });
+    assert.deepEqual(await detectMemberPlatform({ command: probe('linux ia32\n'), member: 'm' }), { platform: 'linux', arch: 'ia32' });
+});
+
+test('detectMemberPlatform: an unparsable probe output throws rather than silently assuming a platform', async () => {
+    const command = async () => ({ ok: false, output: '', error: 'permission denied' });
+    await assert.rejects(() => detectMemberPlatform({ command, member: 'fleet-mac' }), DoltSyncError);
+});
+
+test('runner.js production wiring: settle is built via buildSettleCallback(member, {command, log}) with platform probed (not assumed), and its outcome is genuinely threaded through doltPushAfter', async () => {
+    const seen = [];
+    const command = async (cmd) => {
+        seen.push(cmd);
+        // Every D-push bracket attempt is rejected (a divergence outliving the
+        // bounded reconcile) -- the bracket's own bounded reconcile pull must
+        // still succeed so the SECOND push attempt is reached and settle is
+        // actually invoked, exactly like the real bracket's shape.
+        if (cmd.includes('bd dolt push')) return fail(DIVERGENCE_STDERR);
+        if (cmd.includes('bd dolt pull')) return OK;
+        if (cmd.includes('process.platform')) return { ok: true, output: 'linux x64\n', error: null };
+        // Everything settle needs BEYOND the platform probe (freeport, spawn,
+        // SQL dance, teardown, republish) is deliberately left unscripted --
+        // that whole protocol is dolt-settle.test.mjs's job, not this wiring
+        // test's. settle will fail operationally here, which is fine: this
+        // test only needs to prove settle was REACHED (via the real
+        // buildSettleCallback) and that its outcome propagates.
+        return { ok: false, output: '', error: 'unscripted command (intentionally out of scope for this wiring test)' };
+    };
+
+    const settle = buildSettleCallback('fleet-lin-dev1', { command, log: () => {} });
+    await assert.rejects(
+        () => doltPushAfter('fleet-lin-dev1', { command, checkSyncRemoteConfigured: remoteConfigured, settle }),
+        (err) => err instanceof DoltDivergedError,
+        'a settle that cannot complete its protocol must still surface the original DoltDivergedError, never swallowed',
+    );
+    assert.ok(seen.some((c) => c.includes('process.platform')), 'the member platform must be probed via buildSettleCallback, never assumed from the orchestrator');
+    assert.ok(!seen.some((c) => /--user|--password/.test(c)), 'settle must never pass --user/--password (the ga61 credential-prompt landmine), even on this early-failing path');
 });

@@ -5,6 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
+import { decodePowerShellEncodedCommand } from './test-helpers.js';
 
 const execAsync = promisify(exec);
 
@@ -14,12 +15,17 @@ const {
   mockLogLine,
   mockLogWarn,
   mockGetAgentOS,
+  mockGetAgentShell,
 } = vi.hoisted(() => ({
   mockGetAgent: vi.fn<(id: string) => Agent | undefined>(),
   mockExecCommand: vi.fn<(cmd: string, timeout?: number) => Promise<SSHExecResult>>(),
   mockLogLine: vi.fn(),
   mockLogWarn: vi.fn(),
   mockGetAgentOS: vi.fn<(agent: Agent) => string>(),
+  // apra-fleet-7dir.2.2: member-home.ts now also imports getAgentShell from
+  // this module; default to undefined (no registered shell) so every
+  // existing test here keeps its pre-shell-awareness behavior.
+  mockGetAgentShell: vi.fn<(agent: Agent) => string | undefined>(),
 }));
 
 vi.mock('../src/services/registry.js', () => ({
@@ -38,9 +44,14 @@ vi.mock('../src/utils/log-helpers.js', () => ({
 
 vi.mock('../src/utils/agent-helpers.js', () => ({
   getAgentOS: mockGetAgentOS,
+  getAgentShell: mockGetAgentShell,
+  // apra-fleet-7dir.2.5: stall-poller.ts's command builders now also derive
+  // a posix/PowerShell decision through isPosixShell -- mirror the real
+  // implementation here rather than re-mocking every call site's behavior.
+  isPosixShell: (os: string, shell?: string) => os !== 'windows' || shell === 'gitbash',
 }));
 
-import { pollLogFile, pollDirectoryActivity } from '../src/services/stall/stall-poller.js';
+import { pollLogFile, pollDirectoryActivity, pollRecentProjectTranscript } from '../src/services/stall/stall-poller.js';
 import { getProvider } from '../src/providers/index.js';
 import { clearMemberHomeDirCache } from '../src/services/member-home.js';
 
@@ -138,6 +149,137 @@ describe('pollLogFile', () => {
       );
     });
 
+    // apra-fleet: fleet-win-dev1 sprint apra-fleet-ivxi/u1qw/69pp, confirmed
+    // stall site d2e30668-83bd-422f-b439-25d0a92133f6. The transcript's last
+    // entry was this exact unresolved Bash tool_use (command/timeout verbatim
+    // from the raw transcript) -- fleet killed the dispatch at 136s idle even
+    // though the model itself had declared a 900000ms (15 min) budget for
+    // this specific call.
+    it('reads the pending tool_use timeout verbatim from a real stalled session (900000ms)', async () => {
+      const stdout = jsonLines(
+        { type: 'assistant', timestamp: '2026-08-14T12:38:34.128Z', model: 'claude-opus-5' },
+        {
+          type: 'assistant',
+          timestamp: '2026-08-14T12:38:36.128Z',
+          model: 'claude-opus-5',
+          message: {
+            role: 'assistant',
+            content: [
+              {
+                type: 'tool_use',
+                id: 'toolu_01WR9ZvHAmquoGZUSeYdm6wo',
+                name: 'Bash',
+                input: {
+                  command:
+                    'until grep -q "VITEST_EXIT=" /tmp/fulltest3.txt 2>/dev/null; do sleep 10; done; grep -E "Test Files|Tests  |VITEST_EXIT" /tmp/fulltest3.txt | tail -6',
+                  timeout: 900000,
+                },
+              },
+            ],
+          },
+        },
+      );
+      mockExecCommand.mockResolvedValue({ stdout, stderr: '', code: 0 });
+
+      const result = await pollLogFile('member-1', '/log.jsonl');
+      expect(result.pendingToolTimeoutMs).toBe(900000);
+    });
+
+    // apra-fleet: same sprint, confirmed stall site
+    // 963a1740-4a1c-4a63-b84f-8d6b9961aa2c -- last entry an unresolved Bash
+    // tool_use with an explicit 600000ms (10 min) budget, killed at 131s idle.
+    it('reads the pending tool_use timeout verbatim from a real stalled session (600000ms)', async () => {
+      const stdout = jsonLines({
+        type: 'assistant',
+        timestamp: '2026-08-14T11:38:42.451Z',
+        model: 'claude-opus-5',
+        message: {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'toolu_0159oAzyBrTcZcWoLJ72DGGX',
+              name: 'Bash',
+              input: {
+                command:
+                  'until [ -s /tmp/test.log ] && grep -q "TEST EXIT" /tmp/test.log 2>/dev/null; do sleep 5; done; echo done',
+                description: 'Wait until tests finish',
+                timeout: 600000,
+              },
+            },
+          ],
+        },
+      });
+      mockExecCommand.mockResolvedValue({ stdout, stderr: '', code: 0 });
+
+      const result = await pollLogFile('member-1', '/log.jsonl');
+      expect(result.pendingToolTimeoutMs).toBe(600000);
+    });
+
+    it('reports no pending tool timeout when the tail ends on plain assistant text, not a tool_use', async () => {
+      const stdout = jsonLines({
+        type: 'assistant',
+        timestamp: '2026-08-14T14:42:22.062Z',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'All steps completed and pushed successfully.' }] },
+      });
+      mockExecCommand.mockResolvedValue({ stdout, stderr: '', code: 0 });
+
+      const result = await pollLogFile('member-1', '/log.jsonl');
+      expect(result.pendingToolTimeoutMs).toBeNull();
+    });
+
+    it('reports no pending tool timeout when the pending tool_use has no timeout input', async () => {
+      const stdout = jsonLines({
+        type: 'assistant',
+        timestamp: '2026-08-14T14:32:31.803Z',
+        message: {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'toolu_01CyiQ9FZSM9jM6R4wdGCZw5',
+              name: 'Bash',
+              input: { command: 'node scripts/run-integ-suites.mjs --status --wait=45 2>&1 | head -14', description: 'Poll integ suite status' },
+            },
+          ],
+        },
+      });
+      mockExecCommand.mockResolvedValue({ stdout, stderr: '', code: 0 });
+
+      const result = await pollLogFile('member-1', '/log.jsonl');
+      expect(result.pendingToolTimeoutMs).toBeNull();
+    });
+
+    it('reports no pending tool timeout when the last entry is a resolved tool_result, not a pending tool_use', async () => {
+      const stdout = jsonLines(
+        {
+          type: 'assistant',
+          timestamp: '2026-08-14T10:00:00.000Z',
+          message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_x', name: 'Bash', input: { command: 'sleep 5', timeout: 900000 } }] },
+        },
+        {
+          type: 'user',
+          timestamp: '2026-08-14T10:00:05.000Z',
+          message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_x', content: 'done' }] },
+        },
+      );
+      mockExecCommand.mockResolvedValue({ stdout, stderr: '', code: 0 });
+
+      const result = await pollLogFile('member-1', '/log.jsonl');
+      expect(result.pendingToolTimeoutMs).toBeNull();
+    });
+
+    it('never reads a pending tool timeout for non-claude providers (gemini)', async () => {
+      mockGetAgent.mockReturnValue(makeAgent({ llmProvider: 'gemini' }));
+      const stdout = jsonLines({
+        $set: { lastUpdated: '2026-08-14T10:00:00.000Z' },
+      });
+      mockExecCommand.mockResolvedValue({ stdout, stderr: '', code: 0 });
+
+      const result = await pollLogFile('member-1', '/log.jsonl');
+      expect(result.pendingToolTimeoutMs).toBeNull();
+    });
+
     it('falls back to the raw tail when a single huge entry leaves no complete line', async () => {
       // The sampled window lands INSIDE one oversized tool_result: the leading
       // fragment is unparseable JSON, but the timestamp text is still there.
@@ -181,6 +323,35 @@ describe('pollLogFile', () => {
       expect(result.lastTimestamp).toBe('2026-05-05T10:07:00.000Z');
     });
 
+    // apra-fleet-qe83.2: reproduces the recorded missed-stall tail shape --
+    // a dated assistant entry padded large enough that the byte-capped tail
+    // read (`tail -n 20 | tail -c 65536`) truncates it entirely, followed by
+    // an attachment entry and a last-prompt entry, neither of which carries
+    // its own timestamp field. This is NOT the classification bug itself
+    // (that lives in stall-detector.ts's handling of a null lastTimestamp,
+    // see tests/stall-detector.test.ts's frozen-tail-null-timestamp block) --
+    // this test only pins that the extraction layer legitimately has nothing
+    // to report here, both before and after that fix.
+    it('returns no timestamp when the byte cap truncates the only dated entry and every trailing entry has none (apra-fleet-qe83.2)', async () => {
+      const fixture = fs.readFileSync(
+        path.join(__dirname, 'fixtures', 'stall-frozen-tail-no-timestamp.jsonl'),
+        'utf8'
+      );
+      // Mirror the exact POSIX pipeline pollLogFile issues:
+      // `tail -n ${TAIL_LINES} file | tail -c ${TAIL_BYTES}` (TAIL_LINES=20,
+      // TAIL_BYTES=65536 in src/services/stall/stall-poller.ts).
+      const lines = fixture.split('\n').filter(l => l.length > 0);
+      const tailedByLines = lines.slice(-20).join('\n') + '\n';
+      const TAIL_BYTES = 65536;
+      const stdout = tailedByLines.length > TAIL_BYTES
+        ? tailedByLines.slice(tailedByLines.length - TAIL_BYTES)
+        : tailedByLines;
+      mockExecCommand.mockResolvedValue({ stdout, stderr: '', code: 0 });
+
+      const result = await pollLogFile('member-1', '/log.jsonl');
+      expect(result.lastTimestamp).toBeNull();
+    });
+
     it('skips partial/unparseable lines at start of tail', async () => {
       const stdout = 'partial-json-line\n' + jsonLines(
         { type: 'assistant', timestamp: '2026-05-05T10:05:00.000Z' },
@@ -210,60 +381,8 @@ describe('pollLogFile', () => {
       mockGetAgentOS.mockReturnValue('windows');
       mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
       await pollLogFile('member-1', 'C:\\logs\\log.jsonl');
-      expect(mockExecCommand).toHaveBeenCalledWith(
-        expect.stringContaining('Get-Content -Tail'),
-        5000
-      );
-    });
-  });
-
-  describe('Gemini -- lastUpdated extraction from $set lines', () => {
-    beforeEach(() => {
-      mockGetAgent.mockReturnValue(makeAgent({ llmProvider: 'gemini' }));
-    });
-
-    it('extracts lastUpdated from the last $set line', async () => {
-      const stdout = jsonLines(
-        { type: 'user', content: 'hello' },
-        { '$set': { lastUpdated: '2026-05-05T10:03:00.000Z', other: 'field' } },
-      );
-      mockExecCommand.mockResolvedValue({ stdout, stderr: '', code: 0 });
-
-      const result = await pollLogFile('member-1', '/log.jsonl');
-      expect(result.lastTimestamp).toBe('2026-05-05T10:03:00.000Z');
-      expect(result.error).toBeUndefined();
-    });
-
-    it('picks the last $set line when multiple are present', async () => {
-      const stdout = jsonLines(
-        { '$set': { lastUpdated: '2026-05-05T10:00:00.000Z' } },
-        { '$set': { lastUpdated: '2026-05-05T10:05:00.000Z' } },
-      );
-      mockExecCommand.mockResolvedValue({ stdout, stderr: '', code: 0 });
-
-      const result = await pollLogFile('member-1', '/log.jsonl');
-      expect(result.lastTimestamp).toBe('2026-05-05T10:05:00.000Z');
-    });
-
-    it('returns null without format error when no $set lines exist', async () => {
-      const stdout = jsonLines({ type: 'user', content: 'hello' });
-      mockExecCommand.mockResolvedValue({ stdout, stderr: '', code: 0 });
-
-      const result = await pollLogFile('member-1', '/log.jsonl');
-      expect(result.lastTimestamp).toBeNull();
-      expect(mockLogLine).not.toHaveBeenCalledWith('stall_poll_format_error', expect.any(String));
-    });
-
-    it('logs stall_poll_format_error when $set entry is missing lastUpdated', async () => {
-      const stdout = jsonLines({ '$set': { otherField: 'value' } });
-      mockExecCommand.mockResolvedValue({ stdout, stderr: '', code: 0 });
-
-      const result = await pollLogFile('member-1', '/log.jsonl');
-      expect(result.lastTimestamp).toBeNull();
-      expect(mockLogLine).toHaveBeenCalledWith(
-        'stall_poll_format_error',
-        expect.stringContaining('$set entry missing lastUpdated')
-      );
+      const scripts = mockExecCommand.mock.calls.map(c => decodePowerShellEncodedCommand(c[0]));
+      expect(scripts.some(s => s.includes('Get-Content -Tail'))).toBe(true);
     });
   });
 
@@ -290,6 +409,31 @@ describe('pollLogFile', () => {
       const result = await pollLogFile('member-1', '/log.jsonl');
       expect(result.lastTimestamp).toBeNull();
       expect(result.error).toContain('Permission denied');
+    });
+
+    // apra-fleet-uob4: a broken PowerShell command is a read failure, not "file not yet created".
+    it('surfaces a PowerShell command-not-found/parse error as a read failure', async () => {
+      mockExecCommand.mockResolvedValue({
+        stdout: '',
+        stderr: "= : The term '=' is not recognized as the name of a cmdlet, function, script file, or operable program.\n    + CategoryInfo          : ObjectNotFound: (=:String) [], CommandNotFoundException",
+        code: 1,
+      });
+
+      const result = await pollLogFile('member-1', '/log.jsonl');
+      expect(result.lastTimestamp).toBeNull();
+      expect(result.error).toContain('not recognized');
+    });
+
+    it('treats a CLIXML-wrapped PowerShell missing-file error as not-yet-created', async () => {
+      mockExecCommand.mockResolvedValue({
+        stdout: '',
+        stderr: '#< CLIXML\r\n<Objs Version="1.1.0.1"><S S="Error">... : Cannot find _x000D__x000A_</S><S S="Error">path \'C:\\l\\x.jsonl\' because it does not _x000D__x000A_</S><S S="Error">exist._x000D__x000A_</S></Objs>',
+        code: 1,
+      });
+
+      const result = await pollLogFile('member-1', '/log.jsonl');
+      expect(result.lastTimestamp).toBeNull();
+      expect(result.error).toBeUndefined();
     });
 
     it('returns error when execCommand throws', async () => {
@@ -320,7 +464,7 @@ describe('pollLogFile', () => {
     it('parses mtimeMs from the PowerShell LastWriteTimeUtc command on Windows (already ms)', async () => {
       mockGetAgentOS.mockReturnValue('windows');
       mockExecCommand.mockImplementation(async (cmd: string) => {
-        if (cmd.includes('LastWriteTimeUtc')) {
+        if (decodePowerShellEncodedCommand(cmd).includes('LastWriteTimeUtc')) {
           return { stdout: '1700000000000\n', stderr: '', code: 0 };
         }
         return { stdout: '', stderr: '', code: 0 };
@@ -387,6 +531,46 @@ describe('pollLogFile', () => {
     });
   });
 
+  // GitHub #562 review: the second signal behind agent_never_started.
+  describe('pollRecentProjectTranscript', () => {
+    it('true when a recent transcript exists anywhere under the projects root', async () => {
+      mockGetAgent.mockReturnValue(makeAgent());
+      mockExecCommand.mockResolvedValue({ stdout: '/home/x/.claude/projects/-other/abc.jsonl\nFLEET_ROOT_OK\n', stderr: '', code: 0 });
+      expect(await pollRecentProjectTranscript('member-1', Date.now() - 120_000)).toBe(true);
+      const cmd = mockExecCommand.mock.calls[0][0];
+      expect(cmd).toContain('.claude');
+      expect(cmd).toContain('-mmin -');
+      expect(cmd).not.toMatch(/-home-user-project/); // the ROOT, not this member's own project dir
+    });
+
+    it('false when the root exists and holds no recent transcript', async () => {
+      mockGetAgent.mockReturnValue(makeAgent());
+      mockExecCommand.mockResolvedValue({ stdout: 'FLEET_ROOT_OK\n', stderr: '', code: 0 });
+      expect(await pollRecentProjectTranscript('member-1', Date.now() - 120_000)).toBe(false);
+    });
+
+    it('Windows: probes the root with -LiteralPath (a [ or ] in the home path is not a wildcard)', async () => {
+      mockGetAgent.mockReturnValue(makeAgent({ os: 'windows' }));
+      mockGetAgentOS.mockReturnValue('windows');
+      mockExecCommand.mockResolvedValue({ stdout: 'FLEET_ROOT_OK\r\n', stderr: '', code: 0 });
+      expect(await pollRecentProjectTranscript('member-1', Date.now() - 120_000)).toBe(false);
+      const cmd = decodePowerShellEncodedCommand(mockExecCommand.mock.calls[0][0]);
+      expect(cmd).toContain('Test-Path -LiteralPath');
+      expect(cmd).toContain('Get-ChildItem -LiteralPath');
+      expect(cmd).not.toMatch(/-Path '/);
+    });
+
+    it('null (unknown) when the root is missing, the probe fails, or the provider has no log dir', async () => {
+      mockGetAgent.mockReturnValue(makeAgent());
+      mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+      expect(await pollRecentProjectTranscript('member-1', Date.now())).toBeNull();
+      mockExecCommand.mockRejectedValue(new Error('ssh down'));
+      expect(await pollRecentProjectTranscript('member-1', Date.now())).toBeNull();
+      mockGetAgent.mockReturnValue(makeAgent({ llmProvider: 'none' }));
+      expect(await pollRecentProjectTranscript('member-1', Date.now())).toBeNull();
+    });
+  });
+
   describe('pollDirectoryActivity', () => {
     it('reports no signal available if agent not found or provider has no log dir', async () => {
       mockGetAgent.mockReturnValue(undefined);
@@ -424,6 +608,12 @@ describe('pollLogFile', () => {
      * depth-bound failure.
      */
     describe.skipIf(process.platform === 'darwin')('AGY brain-dir depth bound (SF-14)', () => {
+      // These tests really spawn the host shell (execAsync, capped at
+      // SHELL_EXEC_CAP_MS), so the default 5000ms vitest budget can be eaten by a
+      // slow runner's process-spawn latency (seen on Windows CI). Budget the
+      // cap plus headroom instead of a bare constant; assertions are unchanged.
+      const SHELL_EXEC_CAP_MS = 30_000;
+      const TEST_BUDGET_MS = SHELL_EXEC_CAP_MS * 2;
       const targetOs: 'windows' | 'linux' = process.platform === 'win32' ? 'windows' : 'linux';
       const agy = getProvider('agy');
       let fixtureHome: string;
@@ -455,13 +645,16 @@ describe('pollLogFile', () => {
           // your home"; here that answer is the fixture root). Every other
           // command -- i.e. the directory scan under test -- is executed for
           // real by the host shell.
-          if (cmd.includes('$HOME') || cmd.includes('USERPROFILE')) {
+          // Windows probe is delivered via wrapPowerShellEncoded (base64
+          // -EncodedCommand), not a raw inline string -- decode to inspect it.
+          const decodedCmd = decodePowerShellEncodedCommand(cmd);
+          if (decodedCmd.includes('$HOME') || decodedCmd.includes('USERPROFILE')) {
             return { stdout: fixtureHome, stderr: '', code: 0 };
           }
-          const { stdout, stderr } = await execAsync(cmd, { timeout: 30_000, maxBuffer: 1024 * 1024 });
+          const { stdout, stderr } = await execAsync(cmd, { timeout: SHELL_EXEC_CAP_MS, maxBuffer: 1024 * 1024 });
           return { stdout: String(stdout), stderr: String(stderr), code: 0 };
         });
-      });
+      }, TEST_BUDGET_MS);
 
       afterEach(() => {
         fs.rmSync(fixtureHome, { recursive: true, force: true });
@@ -471,7 +664,7 @@ describe('pollLogFile', () => {
       it('the generated scan command really finds the transcript nested under the brain dir', async () => {
         const activity = await pollDirectoryActivity('member-1');
 
-        const scanCmd = mockExecCommand.mock.calls.map(c => c[0]).find(c => c.includes('find ') || c.includes('Get-ChildItem'));
+        const scanCmd = mockExecCommand.mock.calls.map(c => decodePowerShellEncodedCommand(c[0])).find(c => c.includes('find ') || c.includes('Get-ChildItem'));
         expect(scanCmd).toBeDefined();
         expect(scanCmd).toContain(logDir);
 
@@ -481,11 +674,11 @@ describe('pollLogFile', () => {
         const actualMtime = fs.statSync(transcriptPath).mtimeMs;
         // POSIX branch reports whole seconds, so allow a 1s truncation window.
         expect(Math.abs(activity.mtimeMs! - actualMtime)).toBeLessThan(1500);
-      });
+      }, TEST_BUDGET_MS);
 
       it('the depth bound in the generated command covers the full AGY transcript layout', async () => {
         await pollDirectoryActivity('member-1');
-        const scanCmd = mockExecCommand.mock.calls.map(c => c[0]).find(c => c.includes('find ') || c.includes('Get-ChildItem'))!;
+        const scanCmd = mockExecCommand.mock.calls.map(c => decodePowerShellEncodedCommand(c[0])).find(c => c.includes('find ') || c.includes('Get-ChildItem'))!;
 
         // How far below the polled root the transcript actually lives, derived
         // from the provider (currently brain/<sessionId>/.system_generated/
@@ -507,6 +700,78 @@ describe('pollLogFile', () => {
           const bound = Number(/-maxdepth (\d+)/.exec(scanCmd)![1]);
           expect(bound).toBeGreaterThanOrEqual(requiredDepth);
         }
+      }, TEST_BUDGET_MS);
+    });
+
+    /**
+     * apra-fleet-9iaz.1: the false-stall-kill bug fixed on this streak was
+     * OpenCode-specific -- resolveSessionLogDir pointed at a directory that
+     * did not exist, so this poller saw no files at all and the provisional
+     * baseline timeout scored a healthy dispatch as "no progress". HEAD fixes
+     * the directory (see opencode.ts resolveSessionLogDir); this locks down
+     * that pollDirectoryActivity treats a PLAIN, non-jsonl file dropped in
+     * that directory (opencode.log, not a *.jsonl transcript) as a valid
+     * activity signal, since the generated find/Get-ChildItem scan has no
+     * extension filter -- and that OpenCode's capability probe still reports
+     * pollable (findLogFile's .jsonl-only filter in
+     * src/services/stall/find-log-file.ts is NOT on this live path).
+     */
+    describe.skipIf(process.platform === 'darwin')('OpenCode non-jsonl activity signal', () => {
+      const targetOs: 'windows' | 'linux' = process.platform === 'win32' ? 'windows' : 'linux';
+      const opencode = getProvider('opencode');
+      let fixtureHome: string;
+      let logDir: string;
+      let logFilePath: string;
+
+      beforeEach(() => {
+        clearMemberHomeDirCache();
+        fixtureHome = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'opencode-log-'));
+        logDir = opencode.resolveSessionLogDir('/work/repo', fixtureHome, targetOs)!;
+        // A plain, non-jsonl activity file -- exactly the shape that a
+        // .jsonl-only filter would miss.
+        logFilePath = path.join(logDir, 'opencode.log');
+        fs.mkdirSync(logDir, { recursive: true });
+        fs.writeFileSync(logFilePath, 'plain text log line, not jsonl\n');
+
+        mockGetAgent.mockReturnValue(makeAgent({
+          id: 'member-1',
+          agentType: 'remote',
+          username: 'bella',
+          llmProvider: 'opencode',
+          workFolder: '/work/repo',
+        }));
+        mockGetAgentOS.mockReturnValue(targetOs);
+        mockExecCommand.mockImplementation(async (cmd: string) => {
+          const decodedCmd = decodePowerShellEncodedCommand(cmd);
+          if (decodedCmd.includes('$HOME') || decodedCmd.includes('USERPROFILE')) {
+            return { stdout: fixtureHome, stderr: '', code: 0 };
+          }
+          const { stdout, stderr } = await execAsync(cmd, { timeout: 30_000, maxBuffer: 1024 * 1024 });
+          return { stdout: String(stdout), stderr: String(stderr), code: 0 };
+        });
+      });
+
+      afterEach(() => {
+        fs.rmSync(fixtureHome, { recursive: true, force: true });
+        clearMemberHomeDirCache();
+      });
+
+      it('capability probe still treats OpenCode as pollable (resolveSessionLogDir is non-null)', () => {
+        expect(opencode.resolveSessionLogDir('/work/repo', '/__fleet_capability_probe__', targetOs)).not.toBeNull();
+      });
+
+      it('reports activity from a plain non-jsonl log file, never scored as no progress', async () => {
+        const activity = await pollDirectoryActivity('member-1');
+
+        const scanCmd = mockExecCommand.mock.calls.map(c => decodePowerShellEncodedCommand(c[0])).find(c => c.includes('find ') || c.includes('Get-ChildItem'));
+        expect(scanCmd).toBeDefined();
+        expect(scanCmd).toContain(logDir);
+
+        expect(activity.signalAvailable).toBe(true);
+        expect(activity.mtimeMs).not.toBeNull();
+        const actualMtime = fs.statSync(logFilePath).mtimeMs;
+        // POSIX branch reports whole seconds, so allow a 1s truncation window.
+        expect(Math.abs(activity.mtimeMs! - actualMtime)).toBeLessThan(1500);
       });
     });
   });

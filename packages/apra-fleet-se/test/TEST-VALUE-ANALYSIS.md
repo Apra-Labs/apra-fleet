@@ -1,6 +1,17 @@
 # Test Suite Value Analysis -- packages/apra-fleet-se
 
-> **Point-in-time analysis artifact (2026-07-16). NOT committed, NOT a code change.**
+> **Point-in-time measurement record (2026-07-16). Read it as a dated
+> baseline, not as a description of the suite today** -- the suite has grown
+> well past the 25 files analysed here, and every number below is frozen at
+> the date in this header.
+>
+> It is retained deliberately rather than deleted: its before/after table is
+> the recorded provenance for the fixture durations in
+> `tests/check-integ-suite-budget.test.ts` and for the ~5-minute per-file
+> budget `scripts/check-integ-suite-budget.mjs` enforces (see
+> `INTEG-SUITE.md` step 7). Re-measuring the suite means writing a NEW
+> record, not editing these numbers.
+>
 > Ground truth: the TAP timing log from the verified clean run of
 > `node --test --test-concurrency=4 test/*.test.mjs` (268 tests / 64 suites / 0 fail,
 > wall clock 16m01s, exit 0). All durations below are the real `duration_ms` values

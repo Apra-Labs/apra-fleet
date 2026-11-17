@@ -36,6 +36,16 @@ const RUNNER_PATH = path.join(__dirname, '../fleet-sprint/runner.js');
 const NEUTRAL_METHOD_NAMES = new Set([
     'syncBefore',
     'syncAfter',
+    // sync.remote memo + remote-tip fingerprint seams (apra-fleet-akuv):
+    // exposed for the runner's command() wrapper and for test/operator
+    // hygiene, not part of the seven-method TaskDBModule contract, but still
+    // neutral vocabulary -- no 'dolt'/'beads'/'pull'/'push'.
+    'noteMemberCommand',
+    'noteMemberDispatchCompleted',
+    'invalidateSyncRemoteCache',
+    'getLastSyncedTip',
+    'setLastSyncedTip',
+    'clearLastSyncedTip',
     'status',
     'refreshView',
     'ensureReady',

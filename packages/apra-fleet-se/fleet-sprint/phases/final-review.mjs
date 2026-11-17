@@ -1,0 +1,524 @@
+// =============================================================================
+// PHASE MODULE: Final Review (apra-fleet-3swo.6.6).
+//
+// The NINTH of runSprintCycle's twelve phase() boundaries -- the sprint's
+// closing, evidence-based verdict. It D-pulls the orchestrator's beads clone so
+// the closing counts reflect every member's pushed state, dispatches the
+// REVIEWER persona over the whole sprint, and then has the ORCHESTRATOR -- never
+// the LLM -- apply every structured transition that verdict asks for (validated
+// newTask creation, guarded reopens) before D-pushing the beads it just mutated.
+// Moved verbatim out of runner.js: every prompt, log line, dispatch option,
+// validation branch and sync call is byte-identical to the inline version, so
+// the golden transcript is unchanged. Move-only, no behaviour change.
+//
+// WHERE THIS PHASE STARTS AND STOPS. It runs from its own phase() call to the
+// findings D-push that closes it. The `group('Finalization')` banner above the
+// call site stays in runner.js -- it wraps Finalization as a WHOLE (this phase,
+// Regression Test, Harvest and Publish PR), not this phase alone -- and
+// everything after the findings D-push belongs to the phases that follow.
+//
+// WHAT COMES BACK, AND WHY IT MATTERS THAT IT DOES. `finalVerdictResult` IS the
+// sprint's outcome: Publish PR reads its verdict and notes, and the analysis doc
+// the harvester writes renders it alongside `finalClosedCount` /
+// `finalOpenAtGoalCount`. Those three are the phase's return value rather than
+// closure writes. The ORDER this creates is load-bearing and is not merely
+// cosmetic: the once-per-sprint Regression Test phase runs AFTER this one
+// precisely so `finalVerdictResult` is already computed by the time it runs, so
+// a regression failure structurally CANNOT perturb the sprint verdict. See the
+// "6b. Regression Test" banner at its call site in runner.js for the full
+// statement of that guarantee, and ./regression-test.mjs's header for the other
+// half of it. `rejectedNewTasks` and `deployFailures`/`integFailures` are arrays
+// this phase pushes to or reads, so passing the arrays themselves is exactly
+// equivalent to the closure they replace.
+//
+// THE FINDINGS PUSH MUST STAY BRACKETED. The D-push at the end of this phase
+// used to be a BARE doltPushAfter() outside every bracket, so the clean-state
+// pause guard reported "safe to pause" while the Final Review findings were
+// mid-push (apra-fleet-3swo.4.1). It moved here as gitSync.pushBeadsAfter(),
+// the bracketed entry point, and must stay that way -- there is no unbracketed
+// way to reach doltPushAfter() from this module, and unbracketed-push-guard.mjs
+// enforces that now this file is registered in ../guarded-modules.mjs.
+//
+// THE GUARDED VERDICT PATH IS NOT OPTIONAL. This is one of the three verdict
+// sites that apply reopens, and all three go through the SHARED
+// applyGuardedReopens() helper in ../beads-transitions.mjs so a below-goal
+// bead named by a reviewer is never pulled back into a scope this sprint no
+// longer targets. That import moved here INTACT: this module must never grow a
+// private reopen loop or a private allowlist of its own (pinned by
+// test/beads-transitions-extraction.test.mjs, which scans phases/review.mjs,
+// phases/re-review.mjs and this file as separate sources and asserts which one
+// owns which of the three sites -- runner.js itself now owns none).
+//
+// WHY SOME HELPERS ARE INJECTED RATHER THAN IMPORTED. dispatchCtx, gitSync,
+// bdListScoped, decomposedParentIds, goalMax, kbPriming, kbWork,
+// getMemberForRole, childIdAllocator, sprintMutexId and args are
+// runSprintCycle-scoped locals, and NOT_DONE_STATUSES and resolveSettleShell
+// are runner-module-private, so there is nothing to import. computeChildFloor,
+// createChildBeadWithAllocatedId and sanitizePrText are exported BY runner.js;
+// importing them here would make phases/final-review.mjs <-> runner.js a
+// circular pair for the sake of three helpers, so they come through the state
+// argument instead -- the same rule ./review.mjs's and ./re-review.mjs's
+// headers state. The dependencies that live in real sibling modules
+// (dispatchRole/TURN_BASES, buildFinalVerdictPrompt, applyGuardedReopens/
+// parseIdWithReasonEntry, the abort.mjs newTask helpers, buildSettleCallback)
+// are imported directly.
+//
+// GUARD COVERAGE: registered as 'phases/final-review.mjs' in
+// ../guarded-modules.mjs. It took NO member_name-bearing command() call site
+// out of runner.js -- its bead reads go through the injected bdListScoped and
+// its writes through applyGuardedReopens and computeChildFloor/
+// createChildBeadWithAllocatedId, whose command() sites live in the modules
+// that already own them -- but it took ONE dispatchRole() site (the
+// final-review ladder), which is exactly what dispatch-safety-guard and the
+// phase 3 dispatch census read. It also owns a real gitSync bracket at each
+// end. Both the zero command() baseline and the one dispatch site are pinned
+// rather than assumed, so a future edit that reaches for a raw command() here
+// turns red instead of landing on an unguarded site.
+// =============================================================================
+
+import { dispatchRole, TURN_BASES } from '../dispatch-role.mjs';
+import { buildFinalVerdictPrompt } from '../prompts.mjs';
+import { resolveFinalReviewMergeBase } from '../git-topology.mjs';
+import { applyGuardedReopens, parseIdWithReasonEntry } from '../beads-transitions.mjs';
+import {
+    validateNewTask, buildFallbackNewTask, appendRejectedFindingToParentNotes, persistNewTaskBestEffort,
+} from '../abort.mjs';
+import { buildSettleCallback } from '../dolt-settle.mjs';
+// apra-fleet-rp7a.1: the SAME deferred split Cycle Evaluation applies. Shared
+// rather than re-implemented here, because the two counts disagreeing is
+// exactly the bug: the cycle loop would exit "satisfied" while this phase
+// reported the deferred bead as still open, and the evidence-based final
+// verdict would then FAIL a sprint the loop had just declared complete.
+import { partitionDeferredBeads } from '../beads-scope.mjs';
+import { applyDeployFailureVerdictGate, formatDeployFailureReason } from './deploy.mjs';
+import { applyVerifyBlockVerdictGate } from '../verify-block.mjs';
+
+/**
+ * Runs the Final Review phase: the sprint's closing evidence-based verdict,
+ * plus the orchestrator-applied transitions that verdict asks for.
+ *
+ * @param {object} state Explicit phase state; see this file's header.
+ * @returns {Promise<{
+ *   finalVerdictResult: object,
+ *   finalClosedCount: number,
+ *   finalOpenAtGoalCount: number,
+ *   finalDeferredAtGoalIds: string[],
+ * }>} The sprint verdict, the two closing counts the analysis doc renders, and
+ *   (apra-fleet-rp7a.1) the ids excluded from `finalOpenAtGoalCount` because
+ *   they are deferred -- carried out so the analysis doc can name what was
+ *   skipped rather than leaving it invisible behind a count of zero.
+ *   Every other output of this phase is an in-place mutation of an array the
+ *   caller still holds, or a bead/KB write already performed.
+ */
+export async function runFinalReviewPhase({
+    // Presentation + dispatch seams.
+    phase,
+    log,
+    command,
+    dispatchCtx,
+    // Sprint identity/config.
+    args,
+    validated,
+    targetIssues,
+    backlogMember,
+    finalCycleLabel,
+    sprintState,
+    // The git/beads sync brackets this phase's pre-read D-pull and its
+    // post-mutation findings D-push go through.
+    gitSync,
+    // Evidence this phase reads (deployFailures/integFailures) or pushes to
+    // (rejectedNewTasks); never reassigned by this phase (see header).
+    deployFailures,
+    integFailures,
+    rejectedNewTasks,
+    verifyEverIds,
+    // The LAST cycle's deploy failure ({cycle, notes}), or null when that
+    // deploy succeeded or no deploy.md exists. Non-null forces a FAIL verdict
+    // (see the deploy-failure verdict gate in ./deploy.mjs).
+    lastDeployFailure = null,
+    // GitHub #715: bead ids a failed doer of this run left 'in_progress' that
+    // hit the in-run re-dispatch cap and were left as they are. Named in the
+    // verdict notes (never changes the verdict) so a human sees them.
+    reclaimCappedIds = [],
+    // GitHub #717: the named verify-block deadlock diagnosis the cycle loop
+    // exited on, or null. Non-null forces a FAIL verdict (never PASS).
+    verifyBlockDiagnosis = null,
+    // runSprintCycle-scoped locals and runner-module-private values, injected
+    // rather than imported (see header).
+    bdListScoped,
+    decomposedParentIds,
+    goalMax,
+    // Bead ids this sprint has dispatched or closed: a below-goal reopen of
+    // one of them is applied, not deferred (see isDeferredScopeReopen).
+    workedOnIds,
+    NOT_DONE_STATUSES,
+    kbPriming,
+    kbInjection,
+    kbSprintContext,
+    kbWork,
+    getMemberForRole,
+    childIdAllocator,
+    sprintMutexId,
+    resolveSettleShell,
+    // Exported BY runner.js; injected to avoid a circular import (see header).
+    computeChildFloor,
+    createChildBeadWithAllocatedId,
+    sanitizePrText,
+    // (member) => Promise<sha>: the review diff base (merge-base of a freshly
+    // fetched origin/<base> and the branch) on that member. Injected so this
+    // phase issues no fleet command of its own; it throws on failure.
+    reviewMergeBaseFor,
+}) {
+    phase(`Final Review C${finalCycleLabel}`);
+
+    // D-pull the orchestrator's beads clone BEFORE the final-review counts so
+    // the sprint's closing evidence (finalOpenAtGoal / finalClosedCount)
+    // reflects every member's D-pushed beads state, not the orchestrator's
+    // stale local copy.
+    // Thread the backlog member's REGISTERED shell into dolt-settle,
+    // guarded on args.callTool the same way the pre-dispatch bracket is
+    // (apra-fleet-7dir.24).
+    const finalReviewSettleShell = await resolveSettleShell({ args, member: backlogMember, log, sprintState });
+    await gitSync.syncBeadsBefore(backlogMember, { fatal: true, settle: buildSettleCallback(backlogMember, { command, log, shell: finalReviewSettleShell }) });
+    const [finalOpenAtGoalRaw, finalOpenAtGoalParentIds, finalClosedBeads] = await Promise.all([
+        bdListScoped(`--status=${NOT_DONE_STATUSES} --priority-max=${goalMax} --json`),
+        decomposedParentIds(),
+        bdListScoped('--status=closed --json'),
+    ]);
+    // apra-fleet-rp7a.1: deferred beads are dropped from the closing count for
+    // the same reason Cycle Evaluation drops them -- the dispatcher never
+    // offers a deferred bead, so it is not work this sprint left undone. Their
+    // ids are kept and surfaced as their own evidence line (below) rather than
+    // silently folded away, so the final reviewer judges "finished with N
+    // beads deliberately deferred", not "finished with N beads still open".
+    const { active: finalOpenAtGoal, deferredIds: finalDeferredAtGoalIds } =
+        partitionDeferredBeads(finalOpenAtGoalRaw.filter((b) => !finalOpenAtGoalParentIds.has(b.id)));
+    const finalClosedCount = finalClosedBeads.length;
+    // apra-fleet-jfo.2: same structural blind spot as the per-cycle exit
+    // check -- verify-routed beads are decomposed parents, so they never
+    // appear in finalOpenAtGoal (post-filtered via decomposedParentIds()),
+    // so a sprint that exhausted MAX_CYCLES with Deploy failing every time
+    // could otherwise reach Final Review reporting "0 open bead(s)" while
+    // the verify-routed targets were never actually re-verified. Surface it
+    // as explicit evidence rather than leaving the Final Review to
+    // rubber-stamp PASS on an incomplete count. Guarded on
+    // `verifyEverIds.size > 0` -- see the per-cycle check above for why.
+    // Uses the same fresh finalClosedBeads read as finalClosedCount above,
+    // not fetchAllBeadsShared()'s cache (apra-fleet-66u.2).
+    let finalUnclosedVerifyIds = [];
+    if (verifyEverIds.size > 0) {
+        const finalClosedIds = new Set(finalClosedBeads.map((b) => b.id));
+        finalUnclosedVerifyIds = [...verifyEverIds].filter((id) => !finalClosedIds.has(id));
+    }
+
+    let finalVerdictResult;
+    // The Final Review covers an entire epic's worth of work, categorically
+    // LARGER than a per-round review, so it gets an explicit budget plus the
+    // same same-session resume-and-continue treatment as the doer and per-round
+    // reviewer. Without it a large sprint's final review dies at the default
+    // turn limit and flips the whole sprint to a FAIL whose notes carry no
+    // findings at all.
+    // apra-fleet-nx7: offer the final reviewer the same INFERRED candidates a
+    // per-round reviewer gets. Fetched once, before the dispatch, so the retry
+    // and resume paths reuse the identical block rather than re-querying a
+    // KB that its own earlier promotions may have already changed.
+    // Candidates are read from (and the confirmations later committed to the
+    // bible on) the reviewer's repository kb_maintainer, whose KB every write
+    // is routed to.
+    const finalKbCandidates = await kbWork.promotionCandidates(getMemberForRole('reviewer'));
+    if (finalKbCandidates.length > 0) {
+        log(`[kb-work] offering ${finalKbCandidates.length} INFERRED entr(ies) to the final reviewer for promotion.`);
+    }
+    // The CONFIRMED entries the final reviewer may demote back to INFERRED.
+    // buildFinalVerdictPrompt has always accepted and rendered kbDemoteCandidates,
+    // but nothing ever passed it here, so that block was dead on this path and
+    // the final reviewer -- the one review that reads the WHOLE diff -- could
+    // never demote, exactly as it could never promote before promotion
+    // candidates were added above.
+    //
+    // SCOPE IS 'sprint', PASSED EXPLICITLY. Final review judges the entire
+    // sprint diff and has no round, so its changed-file scope is the
+    // cumulative baseBranch...branch diff. demotionCandidates never infers
+    // this from who called it -- see its doc comment.
+    //
+    // Fetched ONCE, BEFORE the dispatch, for the same reason the promotion
+    // candidates above are: the retry and resume paths then reuse the
+    // identical block rather than re-reading a KB this review's own
+    // demotions may already have changed. Best-effort like every other KB
+    // read: a cold or unreachable KB, or a diff that could not be computed,
+    // degrades to [] and must never fail the final review.
+    const finalKbDemoteCandidates = await kbWork.demotionCandidates(getMemberForRole('reviewer'), { scope: 'sprint' });
+    if (finalKbDemoteCandidates.length > 0) {
+        log(`[kb-work] offering ${finalKbDemoteCandidates.length} CONFIRMED entr(ies) to the final reviewer for demotion.`);
+    }
+    // apra-fleet-3swo.5.7: the final-review ladder -- its dispatch, its
+    // read-side git-sync bracket, its max_turns-exhaustion resume at doubled
+    // turns, its retry-once wrapper, its auth self-heal and its FAIL degrade --
+    // is now the 'final-review' row of fleet-sprint/role-policies.mjs.
+    //
+    // WHY THE HEAL SHORT-CIRCUIT IS POLICY DATA. Final Review is the LAST and
+    // most expensive dispatch of the sprint, and its verdict IS the sprint's
+    // outcome. An auth/trust failure is deterministic, so the generic
+    // retry-once ladder would only reproduce it -- but an LLM-auth failure gets
+    // exactly ONE self-heal, and on success the healed verdict is
+    // authoritative and MUST end the ladder: falling through to the generic
+    // retry as well would fire a SECOND full Final Review, silently discard the
+    // healed verdict (a PASS could become a FAIL) and double the cost. That is
+    // retry.authSelfHealShortCircuits. A heal that does NOT succeed leaves the
+    // channel walled off with no judgement to fabricate, so
+    // retry.rethrowsUnhealedNonRetryable propagates it rather than degrading to
+    // a FAIL nobody decided.
+    //
+    // Note Final Review has no role member of its own: it is the REVIEWER role,
+    // dispatching the reviewer persona over the whole sprint -- so its policy
+    // routes to getMemberForRole('reviewer'), unlike the per-round reviewer
+    // which takes the pool head.
+    // The diff range the final reviewer must use, computed on its own member.
+    // A failure throws and fails Final Review loudly: never a fallback to the
+    // member's (possibly stale) local base branch.
+    if (typeof reviewMergeBaseFor !== 'function') {
+        throw new Error('runFinalReviewPhase requires reviewMergeBaseFor (the review diff base resolver).');
+    }
+    // Retried once; a second failure ends the run loudly with a relaunch hint
+    // (the sprint's work is already on the remote branch).
+    const finalMergeBaseSha = await resolveFinalReviewMergeBase(reviewMergeBaseFor, {
+        member: getMemberForRole('reviewer'), branch: validated.branch, baseBranch: validated.baseBranch, log,
+    });
+    const finalReviewOutcome = await dispatchRole(dispatchCtx, 'final-review', {
+        prompt: buildFinalVerdictPrompt({
+            targetIssues,
+            branch: validated.branch,
+            baseBranch: validated.baseBranch,
+            mergeBaseSha: finalMergeBaseSha,
+            goal: validated.goal,
+            cyclesRun: finalCycleLabel,
+            closedCount: finalClosedCount,
+            openAtGoalCount: finalOpenAtGoal.length,
+            deployFailures,
+            integFailures,
+            rejectedNewTasks,
+            unclosedVerifyIds: finalUnclosedVerifyIds,
+            deferredAtGoalIds: finalDeferredAtGoalIds,
+            kbCandidates: finalKbCandidates,
+            kbDemoteCandidates: finalKbDemoteCandidates,
+            kbKnowledge: kbInjection ? undefined : kbPriming.knowledgeOf(getMemberForRole('reviewer')),
+            kbBlock: kbInjection
+                ? await kbInjection.blockFor({
+                    role: 'reviewer',
+                    member: getMemberForRole('reviewer'),
+                    context: { ...(kbSprintContext || {}) },
+                    captureChannel: true,
+                })
+                : undefined,
+        }),
+        resumePrompt: 'Continue your final review exactly where you left off in this same session -- do not restart or re-read the diff from scratch. ' +
+            `The diff range is ${finalMergeBaseSha}..${validated.branch} (use exactly this range for git diff and git log). ` +
+            'Weigh the remaining evidence and return your final PASS/FAIL verdict now (with newTasks findings if FAIL).',
+        roleLabel: 'Final Review',
+        label: 'Final Review',
+        resumeLabel: `Final Review (resume, max_turns=${TURN_BASES.FINAL_REVIEW_MAX_TURNS * 2})`,
+    });
+    finalVerdictResult = finalReviewOutcome.value;
+    // apra-fleet-b4g.102.1: a sprint whose last cycle's deploy failed never
+    // reaches Integration Test against a deployed build, so it can never PASS
+    // -- enforced here by the orchestrator rather than trusted to the LLM.
+    // Applied BEFORE anything below reads the verdict, so Publish PR (title,
+    // body), the analysis doc and the run status all see the forced FAIL.
+    if (lastDeployFailure) {
+        const llmVerdict = finalVerdictResult && finalVerdictResult.verdict;
+        finalVerdictResult = applyDeployFailureVerdictGate(finalVerdictResult, lastDeployFailure);
+        log(`Final Review: sprint verdict forced to FAIL (Final Review returned ${llmVerdict ?? '(none)'}) -- ${formatDeployFailureReason(lastDeployFailure)}`);
+    }
+    if (verifyBlockDiagnosis) {
+        const llmVerdict = finalVerdictResult && finalVerdictResult.verdict;
+        finalVerdictResult = applyVerifyBlockVerdictGate(finalVerdictResult, verifyBlockDiagnosis);
+        log(`Final Review: sprint verdict forced to FAIL (Final Review returned ${llmVerdict ?? '(none)'}) -- ${verifyBlockDiagnosis}`);
+    }
+    if (finalVerdictResult && Array.isArray(reclaimCappedIds) && reclaimCappedIds.length > 0) {
+        const cappedNote = `${reclaimCappedIds.length} bead(s) were left 'in_progress' by failed doer streaks of this sprint more often than the re-dispatch cap allows and were NOT re-laned again -- needs human investigation: ${reclaimCappedIds.join(', ')}.`;
+        const prior = typeof finalVerdictResult.notes === 'string' ? finalVerdictResult.notes : '';
+        finalVerdictResult = { ...finalVerdictResult, notes: prior ? `${prior}\n\n${cappedNote}` : cappedNote };
+        log(`Final Review: ${cappedNote}`);
+    }
+    // No duplicate log() dump -- see dispatchReview() for why.
+    // `finalVerdictResult.verdict` also surfaces via the generic,
+    // workflow-agnostic Result strip in the dashboard header (state.result --
+    // see src/viewer/index.mjs), a second independent reason a raw JSON
+    // re-print here would be redundant.
+
+    // apra-fleet-nx7: the final reviewer's KB decisions are executed through
+    // the same path every per-round review uses -- now as the 'final-review'
+    // row's 'kb-apply' postResult step (apra-fleet-3swo.5.7), which the engine
+    // runs immediately after a successful dispatch. Deliberately NOT gated on
+    // the VERDICT -- a fact can be verified even when the sprint as a whole
+    // fails, and the reviewer contract already says as much ("Not tied to the
+    // verdict"). It is gated on there BEING a verdict: a degraded FAIL is
+    // fabricated by the engine and carries no KB fields at all, so there is
+    // nothing to apply.
+
+    // Commit the final review round's confirmations to the bible on each
+    // repository's kb_maintainer (G-pull, kb_bible_commit, G-push) -- unless
+    // the verdict is FAIL: a FAIL sprint commits nothing further to the bible
+    // and its queued confirmations are not flushed. A degraded FAIL counts
+    // too: the engine fabricated it, so no reviewer stood behind it.
+    //
+    // Writes still queued behind a busy maintainer get one last attempt
+    // first (the commit itself applies them before committing); any that
+    // remain (an unreachable maintainer) are reported with a WARN, never
+    // dropped silently.
+    if (finalVerdictResult && finalVerdictResult.verdict === 'FAIL') {
+        if (typeof kbWork.seal === 'function') kbWork.seal('final review verdict FAIL');
+    } else if (typeof kbWork.commitRound === 'function') {
+        await kbWork.commitRound('final review');
+    } else if (typeof kbWork.flushAll === 'function') {
+        await kbWork.flushAll();
+    }
+    if (typeof kbWork.warnPending === 'function') kbWork.warnPending();
+
+    // Persist the Final Review's actionable findings to BEADS -- the only
+    // artifact the next sprint's planner reads (notes reach only the PR body
+    // and the analysis doc). NOT gated to FAIL: a PASS can still surface real
+    // secondary findings (defects that don't block this epic's own
+    // acceptance criteria) that would otherwise be lost prose with no
+    // follow-up mechanism. Same orchestrator-applies contract, allowlist
+    // validation, and id-allocator path as the per-round reviewer's
+    // newTasks; a rejected finding is logged and recorded, never sprint-fatal.
+    const finalNewTasks = Array.isArray(finalVerdictResult.newTasks) ? finalVerdictResult.newTasks : [];
+    let dPushNeededAfterFinalFindings = false;
+    if (finalNewTasks.length > 0) {
+        const createdIds = [];
+        let createdCountUnknownId = 0;
+        for (const newTask of finalNewTasks) {
+            let validation = validateNewTask(newTask);
+            if (!validation.ok) {
+                // Final Review findings are the handoff to the next sprint's
+                // planner and there is no later review round to resubmit
+                // them, so a finding whose only problem is a title the
+                // sanitiser could not rescue is still filed as a bead: under
+                // a catch-all-stripped fallback title, with the ORIGINAL
+                // title preserved (ASCII-escaped) in the description, which
+                // still travels via --body-file. Priority/description
+                // failures are not rescued and fall through to the rejection
+                // path below.
+                const fallback = buildFallbackNewTask(newTask);
+                if (fallback) {
+                    log(`Final Review newTasks: title failed the allowlist (${validation.reason}); filing under fallback title ${JSON.stringify(fallback.title)} with the original title escaped into the description.`);
+                    validation = fallback;
+                }
+            }
+            if (!validation.ok) {
+                log(`Final Review newTasks: REJECTED (not sent to bd create) -- ${validation.reason}`);
+                rejectedNewTasks.push({ cycle: finalCycleLabel, reason: validation.reason, raw: newTask });
+                // Never let a rejected finding vanish -- persist it verbatim to
+                // the parent bead's notes as a fallback. This is the
+                // highest-stakes site of the three: Final Review's findings
+                // are the handoff to the next sprint's planner. Non-fatal;
+                // degrades to the run log.
+                try {
+                    await appendRejectedFindingToParentNotes({
+                        command, member: backlogMember, parentId: targetIssues[0],
+                        newTask, reason: validation.reason, cycle: finalCycleLabel, log,
+                    });
+                } catch (noteErr) {
+                    log(`[fleet-sprint] rejected-finding notes fallback FAILED (non-fatal): ${noteErr.message}; finding preserved VERBATIM in this run log: ${JSON.stringify(newTask)}`);
+                }
+                continue;
+            }
+            const { title, description, priority } = validation;
+            const created = await persistNewTaskBestEffort({
+                command, member: backlogMember, parentId: targetIssues[0],
+                newTask, cycle: finalCycleLabel, log, stage: 'final-review',
+                createFn: async () => {
+                    const floor = await computeChildFloor({ command, member: backlogMember, parentId: targetIssues[0], log });
+                    return createChildBeadWithAllocatedId({
+                        command, allocator: childIdAllocator, member: backlogMember,
+                        title, description, priority, parentId: targetIssues[0],
+                        sprintId: sprintMutexId, floor, log,
+                        label: `Create follow-up task from Final Review findings: ${title}`,
+                    });
+                },
+            });
+            if (created) {
+                dPushNeededAfterFinalFindings = true;
+                if (created.childId) {
+                    createdIds.push(created.childId);
+                    log(`Final Review newTasks: created ${created.childId} ("${title}") under ${targetIssues[0]}.`);
+                } else {
+                    createdCountUnknownId += 1;
+                    log(`Final Review newTasks: created a follow-up task ("${title}") under ${targetIssues[0]} (bd-derived id, not tracked by the allocator).`);
+                }
+            }
+        }
+        if (createdIds.length > 0 || createdCountUnknownId > 0) {
+            log(`Final Review: persisted ${createdIds.length + createdCountUnknownId} finding(s) to beads as follow-up task(s) under ${targetIssues[0]}${createdIds.length > 0 ? `: ${createdIds.join(', ')}` : ''}.`);
+        }
+    }
+
+    // Beads the Final Review flagged for reopening -- each with its OWN
+    // reason (unlike the per-round reviewer's reopenIds, which shares one
+    // blanket `notes` string across every id this round). Same goal-scope
+    // guard as the per-round reviewer: never reopen a below-goal-priority
+    // bead into scope this sprint no longer targets. Reason is appended
+    // (never overwritten) via --append-notes so it never clobbers the
+    // bead's existing notes.
+    const finalReopenIds = Array.isArray(finalVerdictResult.reopenIds) ? finalVerdictResult.reopenIds : [];
+    if (finalReopenIds.length > 0) {
+        // Same guard, same fail-open, same skip log as the other two verdict
+        // sites -- only the entry shape ({id, reason}, both required) and the
+        // --append-notes command text are this site's own.
+        const reopenedIds = await applyGuardedReopens({
+            entries: finalReopenIds,
+            bdListScoped, goalMax, goal: validated.goal, log, command,
+            member: backlogMember,
+            workedOnIds,
+            logPrefix: 'Final Review reopenIds',
+            parseEntry: parseIdWithReasonEntry,
+            buildReopenCommand: ({ id, reason }) => {
+                // bd update has no --append-notes-file / --stdin equivalent for
+                // notes (only --body-file/--stdin, and only for description) --
+                // --append-notes only accepts an inline string. reason is
+                // LLM-authored free text, so it must go through the same
+                // flatten-to-single-line, shell-injection-safe sanitizer used
+                // for the PR body's notes, never interpolated raw.
+                const safeReason = sanitizePrText(reason);
+                if (!safeReason) {
+                    log(`Final Review reopenIds: SKIPPED '${id}' (reason sanitized to empty -- nothing safe to record).`);
+                    return null;
+                }
+                return {
+                    cmd: `bd update ${id} --status=open --append-notes "[Final Review C${finalCycleLabel}] Reopened -- ${safeReason}"`,
+                    label: `Reopen ${id} per Final Review verdict`,
+                };
+            },
+            onReopened: ({ id, reason }) => {
+                dPushNeededAfterFinalFindings = true;
+                log(`Final Review reopenIds: reopened ${id} -- ${sanitizePrText(reason)}`);
+            },
+            // A single bead's reopen failing must never abort Final Review;
+            // the reason is preserved verbatim in the run log instead.
+            onEntryError: ({ id, reason }, reopenErr) => {
+                log(`[fleet-sprint] Final Review reopen FAILED (non-fatal) for '${id}': ${reopenErr.message} -- reason preserved verbatim in this run log: ${reason}`);
+            },
+        });
+        if (reopenedIds.length > 0) {
+            log(`Final Review: reopened ${reopenedIds.length} bead(s): ${reopenedIds.join(', ')}.`);
+        }
+    }
+    if (dPushNeededAfterFinalFindings) {
+        // (apra-fleet-3swo.4.1) This D-push used to be a BARE doltPushAfter()
+        // outside every bracket, so the clean-state pause guard reported
+        // "safe to pause" while the Final Review findings were mid-push.
+        // pushBeadsAfter() is the bracketed entry point -- there is no
+        // unbracketed way to reach doltPushAfter() from this file any more.
+        await gitSync.pushBeadsAfter(backlogMember, { pushBeads: true });
+    }
+
+    return {
+        finalVerdictResult,
+        finalClosedCount,
+        finalOpenAtGoalCount: finalOpenAtGoal.length,
+        // apra-fleet-rp7a.1: carried out so the sprint analysis document names
+        // what was skipped, not just how many beads remained open.
+        finalDeferredAtGoalIds,
+    };
+}

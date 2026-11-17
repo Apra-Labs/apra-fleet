@@ -25,7 +25,12 @@ truth for what a caller (the CLI, or a test bypassing the CLI and calling
 
 - Rejects any key not in `KNOWN_ARG_KEYS` (`target_issues`, `target_issue`
   [legacy single-issue form], `members`, `branch`, `base_branch`, `goal`,
-  `max_cycles`, `requirementsFile`, `roleMap`, `budget`).
+  `max_cycles`, `requirementsFile`, `roleMap`, `budget`,
+  `dispatch_timeout_s`, `usage_limit_max_wait_s`,
+  `usage_limit_max_reprobes`, `serviceUrl`, `run_id`, `assignee`,
+  `doer_worklist_mode`, `resume_model_switch`, `worklist_effort_budget`,
+  `azdevops_pat_secret_name`, `callTool`). Several of these have no CLI flag
+  and are programmatic/test-only -- see `docs/fleet-sprint-cli-contract.md`.
 - Re-validates issue ids and branch names against the same
   `ISSUE_ID_PATTERN`/`BRANCH_NAME_PATTERN` the CLI already checked (A7
   defense-in-depth: a malformed id/branch name can never reach a `command()`
@@ -38,6 +43,27 @@ truth for what a caller (the CLI, or a test bypassing the CLI and calling
 
 Validation runs to completion, and only then does the very first `command()`
 dispatch happen -- a rejected/malformed arg produces zero fleet dispatches.
+
+### Dispatch timeout budgets are split: total ceiling vs. inactivity threshold
+
+Every role dispatch carries two distinct time budgets, not one:
+
+- `DISPATCH_TIMEOUT_S` (from `dispatch_timeout_s`, derived per-role) is the
+  hard total-duration ceiling for the dispatch -- the outer bound regardless
+  of whether the remote session is actively producing output.
+- `DISPATCH_INACTIVITY_TIMEOUT_S`, derived from `DISPATCH_TIMEOUT_S` via
+  `min(1800, DISPATCH_TIMEOUT_S)`, is the value actually threaded through as
+  the dispatch's `timeout_s` -- the inactivity/stall threshold a stalled
+  session is killed on. Capping this at 30 minutes independent of how large
+  the total ceiling is means a role with a very large total budget (hours)
+  does not also get a multi-hour grace period before a genuinely stalled
+  session is detected and killed; the stall threshold and the total-duration
+  ceiling are allowed to diverge, and normally do.
+
+Both values are passed to the underlying `execute_prompt` dispatch as
+distinct parameters (`timeout_s` for inactivity, `max_total_s` for the total
+ceiling); how a given dispatch server and its providers consume those two
+parameters is that server's own concern, not this engine's.
 
 ## Role -> member resolution
 
@@ -60,12 +86,12 @@ not a member of that enum -- this exists specifically to prevent a
 casing/typo mismatch from silently collapsing the doer/reviewer pool back to
 a single member.
 
-`orchestrator` is a deliberately **non-vendored, application-level
-pseudo-role** (the constant `ROLE_ORCHESTRATOR = 'orchestrator'`): it names
+`backlog` is a deliberately **non-vendored, application-level
+pseudo-role** (`orchestrator` is its deprecated alias, removed in v0.5): it names
 which physical member the orchestrating process itself (this script, issuing
 every `bd`/`git` command directly) runs as. It has no
 `packages/apra-fleet-se/apra-pm/agents/*.md` definition, no schema, and is never passed to
-`agent()`. `getMemberForRole(ROLE_ORCHESTRATOR)` resolves the orchestrator
+`agent()`. `getMemberForRole()` for this role resolves the backlog
 member the same way any other role resolves via `roleMap`/fallback.
 
 ## The cycle loop
@@ -149,6 +175,46 @@ prompt for a streak only includes feedback for the bead(s) that streak
 actually owns -- never a blanket broadcast of the whole verdict to every
 doer.
 
+### A permission-scope publish failure is "work done, publish blocked," not a failed streak
+
+A doer streak can complete and commit its work locally, and then have its
+post-dispatch git-sync push refused for a permission-scope reason (see
+"VCS provider abstraction" above) that no retry or self-heal can fix. Marking
+that streak `FAILED` and re-dispatching the same bead(s) next cycle wastes a
+full dispatch every remaining cycle against a gap that provably cannot close
+without an operator action, and worse, repeatedly re-attempts work that is
+already done and committed. This exact classification instead reports the
+streak as "work done, publish blocked": the operator referral is logged
+prominently, the affected bead ids are recorded for the rest of the sprint,
+and subsequent rounds/cycles exclude them from the ready-work set instead of
+re-dispatching. Every other post-dispatch sync failure classification
+(transient, auth-expired, diverged) is unaffected -- this is a narrow
+carve-out, not a change to the general failure-handling path.
+
+### Batched bead claiming is a dormant contract, not yet live behavior
+
+`claimBeadsBatched()` exists to replace a per-id claim loop with one `bd
+update <ids...> --claim --json` call issued by the backlog member before
+a streak is dispatched, but it only activates when a streak carries an
+`assignee` -- which no current caller sets (`validated.assignee` is always
+unset), so today it is dead code exercised only by its own unit tests, not a
+behavior change. Its claim/skip classification is intentionally naive: an id
+counts as claimed only if it comes back in the parsed JSON array from `bd`;
+every other id in the batch -- whether genuinely claimed by a different
+sprint, or already claimed by this same orchestrator from a prior round -- is
+classified identically as "skipped" and dropped from the streak's working set.
+The two cases are behaviorally indistinguishable to the caller today. A
+command-level failure (member unreachable, transient dispatch fault) degrades
+the whole batch to all-skipped rather than throwing, but a malformed-JSON
+response from `bd` itself stays fatal -- the failure modes are deliberately
+asymmetric because a parse failure means the claim state is truly unknown,
+while a thrown `command()` has a well-understood "nothing happened" meaning.
+**Before wiring any caller to set `assignee` and make this path live**, the
+same-assignee re-claim case must be pinned down first: if `bd`'s `--claim`
+JSON array omits ids already owned by the same assignee (an idempotent
+re-claim), this classifier would wrongly treat the orchestrator's own beads as
+"skipped by another sprint" and prune them from the streak.
+
 ### newTask validation (injection defense)
 
 Reviewer-proposed `newTasks` are LLM output that will be interpolated into a
@@ -173,7 +239,7 @@ are malformed.
 
 Runbook presence is checked via `probeFileExists()`, which shells out `node
 -e "console.log(require('fs').existsSync('<file>') ? 'found' : 'not
-found')"` on the orchestrator member with `failSoft: true` -- a probe failure
+found')"` on the backlog member with `failSoft: true` -- a probe failure
 (transient error, member-side quirk) is treated as "not found" (skip the
 phase) and logged as a warning, never fatal.
 
@@ -215,6 +281,36 @@ scope before deciding to exit -- it never trusts a stale `APPROVED` verdict
 left over from an earlier cycle. `lastReviewVerdict`/`reviewedThisCycle` are
 reset at the top of every cycle specifically to make this distinction
 possible.
+
+**Deferred beads are excluded from the "0 beads in scope" count above, using
+the exact same partitioning function the dispatcher's own ready-work query
+is built from.** A `deferred` bead never appears in `bd list --ready`, so the
+dispatcher already treats it as out of scope; if Cycle Evaluation instead
+re-derived "still open" from raw status without excluding deferred beads, a
+sprint whose only remaining beads were deliberately deferred could never
+reach the "0 beads" branch above, no matter how long it ran -- it would
+dispatch nothing every cycle (correctly) while evaluation kept reporting a
+non-zero open count, walking straight into stall detection below despite the
+scope being effectively finished. Sharing one partitioning function between
+the dispatcher's readiness query and this exit check is what keeps the two
+views from drifting apart; a sprint that exits this way names every deferred
+bead id explicitly (exit log line, the sprint analysis artifact, the
+final-verdict prompt) rather than silently dropping them from the record.
+
+A second, independent short-circuit exits the cycle loop as soon as every
+configured sprint root/target bead id is already closed, regardless of
+`lastReviewVerdict`. This covers the case where the root closes as a side
+effect of something other than the review path (for example, an
+integration-test pass verifying and force-closing the epic on its own) --
+once nothing remains in scope to route through review, the verdict can never
+reach `APPROVED` again through the ordinary path above, so without this
+second check the loop would grind forward every remaining cycle until stall
+detection (mis)reads the standstill as a stall. This check runs *after* the
+cycle's own review/re-review dispatch has already had its chance to run, so
+a root that closes via a side effect in the same cycle a genuinely fresh
+re-review would otherwise run does not skip that re-review; and it only
+applies when the sprint has an actual configured root/target scope, so a
+whole-database-fallback sprint (no configured root) is unaffected.
 
 ## Stall detection
 
@@ -270,20 +366,21 @@ runner-owned policy table, not a live read of fleet configuration):
 | `reviewer` | `premium` | Vendored contract: "always use model: premium" |
 | `deployer` | `standard` | Mostly mechanical: follow `deploy.md` |
 | `integ-test-runner` | `standard` | Mostly mechanical: follow `integ-test-playbook.md` |
-| `harvester` | `standard` | Docs/CHANGELOG synthesis, not code-critical |
+| `regression-test-runner` | `standard` | Mostly mechanical: follow `regression-test-playbook.md` |
+| `harvester` | `standard` | Docs synthesis, not code-critical |
+| `streakAssignment` | `cheap` | This runner's own "group these ready bead ids" call -- a small, fully-specified classification task with no vendored persona |
 
 These tier keywords (`cheap`/`standard`/`premium`) are resolved to a concrete
 model **per member, server-side** (`execute-prompt.ts`'s
 `resolveModelForTier()`, via each member's registered `model_tiers`) -- this
-is what makes a mixed-provider fleet (Claude, Gemini, Codex, Copilot,
-OpenCode, ...) work correctly. Earlier revisions of this runner hardcoded
-Claude-specific literal model names (`opus`/`sonnet`) here instead. That was
-a real bug, not a stylistic choice: a fixed `opus` dispatch to a non-Claude
-member was passed through verbatim as a literal model ID that meant nothing
-to that provider, silently assuming a Claude-only fleet regardless of the
-member's actual provider. The fix (apra-fleet-dv5) was to stop emitting
-Claude-specific literals here and use the provider-agnostic tier vocabulary
-instead.
+is what makes a mixed-provider fleet (Claude, AGY, Codex, Copilot,
+OpenCode, ...) work correctly. Never emit a provider-specific literal model
+name (`opus`, `sonnet`, ...) from this table or any other dispatch site: such
+a literal is passed through verbatim as a model ID, so a fixed `opus`
+dispatch to a non-Claude member means nothing to that provider and silently
+assumes a Claude-only fleet regardless of the member's actual provider. The
+tier vocabulary exists precisely so that resolution happens per member,
+server-side.
 
 `doer` dispatches instead price themselves off the **per-bead model tier**
 the planner recorded as beads metadata (`bd create ... --metadata
@@ -316,7 +413,7 @@ in preference order:
 
 The harvester's `costAnalysis` block (`buildCostAnalysis()`) reports which
 of these sourced each run's total -- all real, all fallback, or a mixed
-count -- so the CHANGELOG cost note stays honest about precision rather than
+count -- so the PR-body cost note stays honest about precision rather than
 implying uniform accuracy. A dispatch using an entirely unpriced model id
 (no match in either source) is still excluded from the tracked total, not
 backfilled with a fabricated number -- the fleet does not currently echo
@@ -330,7 +427,7 @@ Two distinct topology modes are supported, selected explicitly (never
 inferred) when the sprint starts:
 
 - **`legacy` mode** -- no cross-member sync layer. Every orchestrator `bd`
-  command runs against the orchestrator member's beads DB; a doer's own
+  command runs against the backlog member's beads DB; a doer's own
   `bd close` runs against its own member's DB; the sprint git branch is only
   coherent if every member operates on the same working state. This mode
   only coheres for **single-member** sprints (one member does everything) or
@@ -349,9 +446,21 @@ inferred) when the sprint starts:
 enforces the precondition for whichever mode is selected, and refuses to
 start rather than silently degrading:
 
-- **`legacy` mode precondition** -- compares an identity signal
-  (`git rev-parse HEAD`) across every configured member and refuses to start
-  on a mismatch. Single-member sprints trivially pass (nothing to compare). A
+- **`legacy` mode precondition** -- first aligns every member to the
+  sprint base (`fleet-sprint/member-align.mjs`, `prepareLaunchTopology()`):
+  pass 1 checks every member read-only (reachable, same `origin` URL, base
+  fetchable, sprint branch not diverged, working-tree status readable) and
+  refuses -- naming member, cause and fix -- before ANY member is moved if
+  one fails; pass 2 preserves uncommitted work in a named
+  `fleet-sprint[<branch>] auto-stash ...` stash and checks out the sprint
+  branch (`origin/<branch>` when it exists, else cut from `origin/<base>`,
+  via the same `decideEnsureBranchAction()` the Ensure Sprint Branch phase
+  uses), logging one `[Align] member '<m>': <from> -> <to>` line per member.
+  Members that were merely on other commits therefore no longer block the
+  launch, and nobody aligns members by hand. It then compares an identity
+  signal (`git rev-parse HEAD`) across every configured member and refuses to
+  start on a residual mismatch (a member keeping local-only commits on the
+  sprint branch). Single-member sprints trivially pass (nothing to compare). A
   member whose signal cannot be obtained is treated as a refusal, not a
   silent skip. This is a best-effort heuristic checked once at start, not an
   ongoing guarantee: two independent checkouts that merely happen to sit on
@@ -365,7 +474,7 @@ start rather than silently degrading:
 
 **Branch-ensure everywhere** (both modes) -- before the first doer round, the
 sprint branch is `git fetch`+`checkout -B`'d on every member in the union of
-the orchestrator/doer/reviewer pools (not just the orchestrator). At the top
+the backlog/doer/reviewer pools (not just the backlog member). At the top
 of every subsequent cycle, a non-destructive `git checkout <branch>`
 (`failSoft: true`) re-ensures each member is still on the sprint branch --
 deliberately not a `checkout -B ... origin/<base>`, which would discard any
@@ -388,13 +497,18 @@ VCSModule replaces that with a provider-agnostic seam:
   never pattern-matches host-specific text itself. Only the raw text is
   host-specific; the `kind` it resolves to never is.
 - **A provider registry**, one file per provider (GitHub and a generic-git
-  fallback ship built in; Azure DevOps/Bitbucket/GitLab are structured as
-  drop-in additions), each exporting a descriptor of failure-text patterns
-  plus a `capabilities()` table declaring which failure kinds that provider
-  can ever produce. Adding a provider is adding one file to the registry and
+  fallback ship built in; Bitbucket/GitLab are structured as drop-in
+  additions; Azure DevOps is fully registered, not just structured as one --
+  it carries its own host/URL parsing, failure classification, PR/comment
+  REST builders and a `capabilities()` table with `canOpenPullRequest: true`),
+  each exporting a descriptor of failure-text patterns plus a
+  `capabilities()` table declaring which failure kinds that provider can ever
+  produce. Adding a provider is adding one file to the registry and
   registering it -- not editing the runner's dispatch/classification logic.
   A synthetic/unregistered provider still classifies correctly through the
   generic-git fallback rather than falling through to `unknown` by default.
+  See the repo-root `docs/design-azure-devops-vcs-auth.md` for the Azure DevOps provider's
+  own credential-assembly, PR-response-mapping and PAT-lifetime details.
 - **The member registry, not a hardcoded literal, decides which provider
   applies.** A member's configured VCS provider is resolved from its
   registration and threaded into every classification and PR-creation call
@@ -414,6 +528,35 @@ VCSModule replaces that with a provider-agnostic seam:
   provider's real auth-failure text (not just the generic OpenSSH/git text
   that happens to port across hosts), because the cost of a miss is a false
   sprint-fatal abort on what is usually a routine, recoverable token expiry.
+- **A provider can declare a separate "permission-scope" classification
+  axis**, distinct from its ordinary auth-failure patterns, for the case
+  where the credential's *identity* is understood and valid but the
+  *principal* was never granted the specific permission the operation needs
+  (a fine-grained repo permission gating a specific path prefix, for
+  example). A permission-scope match wins outright, ahead of the provider's
+  normal failure-kind precedence -- because the host's permission-refusal
+  text commonly arrives wrapped inside the same generic rejection tail an
+  unrelated failure kind also matches, and reordering the whole precedence
+  table to fix one rule would re-read every other ambiguous pattern too --
+  and it is explicitly excluded from self-heal: re-minting the same
+  principal's credential reproduces the identical permission set, so the
+  self-heal-and-retry step is skipped entirely and the failure (with its own
+  operator-facing referral text, supplied by the provider) is returned
+  immediately. This is a strict narrowing carved out of what used to fall
+  through to the ordinary re-mintable auth-failure path; every other auth
+  classification a provider produces is unaffected by declaring this axis.
+- **Reading whether the self-heal callback itself succeeded must prefer the
+  structured result over any prose fallback.** `provision_vcs_auth` (like
+  the other provisioning tools) returns a structured `ok`/`reason` result
+  (see `docs/design-git-auth.md`), but MCP tool text can still carry
+  legacy-formatted prose for older callers. The outcome check for this
+  self-heal reads `structuredContent.ok` first, falling back to a `[FAIL]`
+  prose-prefix match only when structured content is absent -- a check that
+  keys on prose alone (e.g. a "does the text look like success" heuristic
+  built around a specific emoji or marker string) silently misreads a
+  well-formed structured failure as success the moment that marker text
+  changes or is retired, letting the sprint proceed to retry a push against
+  a credential that never actually got fixed.
 
 ## Orchestrator-bracketed git sync (`synced` mode)
 
@@ -449,6 +592,41 @@ than a single mechanism:
 
 A member with no genuine content conflict never leaves Tier 0; Tier 2 is a
 rare, explicitly-logged escalation, not the common path.
+
+**A brand-new sprint branch's first sync is a distinct precondition, not a
+Tier 1 conflict.** A sprint branch created only locally (never yet pushed)
+has nothing on the remote to fetch or rebase against; a pull-rebase attempted
+before that first push fails with git's exact, unambiguous "couldn't find
+remote ref" message. That message is recognized by one shared predicate used
+by both the pre-dispatch and post-dispatch sync steps (rather than each
+carrying its own copy of the same check), and on a match the escalation
+ladder above is bypassed entirely: no `git rebase --abort`, no Tier 2 agent
+dispatch -- the push is retried directly, which creates the branch on the
+remote. If that direct retry is itself rejected because a concurrent writer
+published the branch first, that is treated as a genuine divergence and
+raises the same typed diverged-sync error Tier 2's own failure path raises --
+this bypass only ever short-circuits the *conflict-resolution machinery* for
+one unambiguous precondition, never the divergence detection itself.
+
+### Crossing-bracket mutual exclusion
+
+`git-sync.mjs`'s `withOpenSyncBracket` detects a **crossing close** -- one
+sync bracket closing while a second, overlapping bracket for the same
+member is still open, which would otherwise let the two brackets' pull/push
+pairs interleave unpredictably. On a crossing close it raises
+`ConcurrentSyncBracketError`. That error is raised *after* the pause-guard
+re-registration for the bracket, with the bracketed body's own original
+error still attached as `cause`, so a caller inspecting the failure sees
+both facts -- the sync-safety violation and whatever the body itself was
+doing when it happened -- rather than the mutual-exclusion error silently
+replacing the real one. The pause-guard poke on this path is currently
+inert (the crossing-close condition itself already guarantees
+`openSyncBracketCount >= 1`, so the poke never actually changes anything
+there); it is kept anyway as hardening against a future refactor of the
+counter's invariants, not because it does anything today. Do not read the
+poke's presence there as evidence it is load-bearing -- check
+`openSyncBracketCount`'s invariant before removing it, not the other way
+round.
 
 ## Dolt sync discipline (`synced` mode)
 
@@ -493,13 +671,87 @@ reach):
   requested before the creation is trusted -- a mismatch is treated as a
   failed create, not silently accepted.
 
+#### The allocator's floor read must include closed children, and the create
+#### itself must be probed, not trusted
+
+Two independent gaps let the allocator hand out an id that already belongs
+to an existing bead. Current bd refuses `bd create --id <id>` on an
+occupied id (open or closed); older bd releases silently overwrote the
+occupant. Either way an occupied id costs the newTask its create, and once
+re-pooled it is re-minted on every later allocation. Both gaps had to close
+for the hazard to actually go away:
+
+- **Floor computation must count closed children.** The allocator seeds its
+  first allocation under a parent from a best-effort read of the parent's
+  existing direct children (`bd list --parent <id>`), so it never mints an
+  id colliding with a child created before the allocator's own persisted
+  state existed. `bd list --parent` excludes closed issues by default, so
+  once every existing child under a parent is closed, an unfiltered read
+  returns empty, the floor computes to 0, and the allocator re-mints
+  already-used ids (`.1`, `.2`, ...) that collide with the just-closed
+  originals. The fix reads with `bd list`'s documented `--all` flag ("show
+  all issues including closed"); `--status all` is a documented value for
+  `bd search`'s `-s` flag, not for `bd list`, and does not fix this. Every
+  failure mode of this read (a rejected flag, a dispatch timeout,
+  unparseable JSON) still collapses to the same best-effort floor of 0 by
+  design -- that return value is deliberate and unchanged -- but the failure
+  is now logged instead of vanishing into a bare catch, so a silent
+  mis-seed is at least observable in sprint output.
+- **The create itself must probe for an existing occupant first, regardless
+  of how it got its id.** The allocator handing back a genuinely free id is
+  the common case, but is not a guarantee an occupied-id create can safely
+  skip past: a crashed/partial prior run, a stale persisted high-water, or a
+  manually-created bead can leave an id occupied despite the allocator
+  believing otherwise. On the explicit-id path, the creator therefore probes
+  (`bd show <id> --json`) before ever calling `bd create --id`, and refuses
+  (releasing the reservation, throwing loudly) rather than dispatching a
+  create that cannot succeed if the id is already occupied. The probe's failure mode is
+  itself two-valued and must be told apart: `bd show <missing-id> --json`
+  does not exit 0 with an empty result, it exits non-zero with a documented
+  "no issues found" error payload -- so the probe's own catch block
+  classifies that payload as "id positively confirmed absent, proceed" and
+  treats every OTHER catch shape (unparseable output, a differently-shaped
+  error, a transport/dispatch fault) as "unknown, fail closed" rather than
+  assuming an unrecognized failure means the id is free. The null-allocator
+  fallback path (`bd create --parent`, no explicit id) needs no such probe:
+  `bd` mints the id itself in that case and cannot collide.
+
+**A failed create dispatch consumes its id and retries.** `release()` is
+only called for a failure before `bd create` is dispatched (staging the
+description). Once the create was dispatched, its failure does not prove the
+id is free (bd refusing a duplicate id means it is occupied; a transport
+fault can hide a create that landed), so the id is `confirm()`ed -- consumed,
+never re-pooled -- and the creator retries with a freshly allocated id, up to
+`CHILD_CREATE_MAX_ATTEMPTS` dispatches in total, logging each. A newTask that
+still fails falls back to the parent's notes (then the run log), as before.
+Separately, every `allocate()` that carries a `floor` drops
+pooled ids at or below it, whether or not the floor raises the high-water, so
+an occupied id that did reach the pool is never handed out again.
+
+**Reservation lifecycle after the create lands is asymmetric, and that
+asymmetry is load-bearing, not an oversight.** `release()` returns a
+reservation to the pool for reuse and is only ever correct while the id is
+still genuinely free; `confirm()` durably commits it. Once `bd create`
+itself has landed, the id is genuinely occupied, so the reservation is
+confirmed immediately (before the follow-up parent-link update and before
+any Dolt push) and **must never be released again**, no matter what fails
+next: a failure in the immediately-following `bd update <id> --parent
+<parentId>` link step, or in `confirm()` itself (an allocator transport
+fault), both throw a distinct, orphan-id-naming error so an operator can
+recover manually -- but neither one releases the id back to the pool, since
+doing so would hand the same, now-genuinely-occupied id to the next
+allocation and reproduce the exact collision this whole mechanism exists to
+prevent. `release()` fires in exactly one place: when staging the
+description or dispatching `bd create` itself fails, i.e. before the bead
+exists at all.
+
 ### Two coordination hosts, not one -- and why
 
 Both primitives exist in **two independent implementations that must stay
 semantically identical**, not because of duplication oversight but because
 neither host alone can reach every launch topology:
 
-- The **supervisor** (`fleet-se serve`) hosts the original mutex/allocator
+- The **supervisor** (`bin/serve.mjs`) hosts the original mutex/allocator
   (`src/supervisor/dolt-mutex.mjs`, `src/supervisor/id-allocator.mjs`) over
   its own HTTP routes, reachable by any sprint launched *through* the
   supervisor via `--service-url`. This covers supervisor-launched sprints
@@ -527,9 +779,11 @@ persistence) must be mirrored in both files by hand** -- there is no shared
 module enforcing this today.
 
 The one genuinely new piece in the MCP-hosted copy is the **transport
-adaptation**: the supervisor's HTTP acquire route can long-poll (it simply
-does not answer until the caller owns the mutex), but an MCP tool call
-cannot block indefinitely. The MCP-hosted mutex is therefore **ticketed**:
+adaptation**: the supervisor's HTTP acquire route can long-poll (headers go
+out at once, heartbeat whitespace follows every 30s, and the body completes
+only when the caller owns the mutex), but an MCP tool call cannot block
+indefinitely. The
+MCP-hosted mutex is therefore **ticketed**:
 `acquire` enqueues the real underlying `acquire()` promise exactly once and
 parks it server-side under a ticket id, returning `{ granted: false, ticket
 }` after a bounded wait; the caller re-polls with that ticket. The
@@ -611,6 +865,21 @@ open verification gap: a green end-to-end smoke run (a real sandboxed
 fleet-sprint driving a canary to closure with zero pushes reaching the real
 remote) is the only evidence that actually closes it, not passing mocked/unit
 coverage of the classifier and the bd-level check in isolation.
+
+### The pre-gate sync.remote probe is cached once per D-push attempt, not re-queried on failure
+
+The bd-level `sync.remote` check described above runs once, as a pre-gate,
+before a D-push attempt begins; its result is cached (as
+`syncRemoteConfiguredAtPreGate`) and reused on the failure path rather than
+re-invoking `checkSyncRemoteConfigured`/`isMemberSyncRemoteConfigured` a
+second time. This is deliberately an at-most-once probe per attempt: the
+member's `sync.remote` setting is not expected to change mid-attempt, and
+re-probing on the failure path would double the bd-level round-trips for no
+behavioral gain. The pre-gate's own skip branch (short-circuiting the whole
+push when the probe reports "unconfigured") is retained as defense-in-depth
+even though it is now logically redundant with the cached value being reused
+later -- removing it would require re-proving the whole fail-closed
+invariant above, for a saving that doesn't matter at this call frequency.
 
 **Push failures are classified before they are retried, not folded together.**
 A D-push rejection reaching this layer is first sorted into a distinct
@@ -766,7 +1035,7 @@ After the cycle loop exits (goal met, or `max_cycles` reached):
    still-open-at-goal count, every deploy/integ failure, every rejected
    `newTask`. The prompt explicitly instructs the reviewer to never
    rubber-stamp `PASS` regardless of that evidence.
-2. **Harvest** -- a `harvester` dispatch is given five pre-computed,
+2. **Harvest** -- a `harvester` dispatch is given pre-computed,
    verbatim-insert inputs: `analysisArtifactFile` (a deterministic path
    `docs/sprint-analysis-<branchSlug>.md`, where `branchSlug` is
    `computeBranchSlug(branch)` -- a human-readable branch-name prefix plus an
@@ -774,15 +1043,24 @@ After the cycle loop exits (goal met, or `max_cycles` reached):
    collide on slug, and no wall-clock timestamp is embedded so the path is
    stable across idempotent re-runs), `analysisText` (a markdown summary of
    the whole run: progress history, deploy/integ outcomes, rejected
-   newTasks, final verdict), and `costAnalysis` (a budget/spend summary,
-   honestly reporting "not tracked"/"unlimited" rather than fabricating a
-   number when the budget ceiling is unset or spend tracking is
-   unavailable). The harvester's own contract (`harvester.md`) says to write
-   `analysisText` verbatim and insert `costAnalysis` verbatim -- never
-   reformat or recompute either.
+   newTasks, final verdict, plus a `## Cost` section carrying the engine's
+   `costAnalysis` budget/spend summary, honestly reporting "not
+   tracked"/"unlimited" rather than fabricating a number when the budget
+   ceiling is unset or spend tracking is unavailable). The harvester's own
+   contract (`harvester.md`) says to write `analysisText` verbatim -- never
+   reformat or recompute it -- and never to `git add` or commit it: the
+   file stays an untracked local record. Before the dispatch the engine
+   adds `docs/sprint-analysis-*.md` to the harvester clone's
+   `.git/info/exclude` (`ensureGitExcluded`, built for the member's
+   OS/shell; idempotent), so the file never shows as dirty, is never
+   auto-stashed by a later branch ensure, and is never swept into a
+   commit; if that step fails the harvester is not dispatched. The
+   harvester writes no CHANGELOG entry; the cost block is rendered by
+   the engine in the PR body (`### Cost`).
 3. **Publish PR** -- pushes the sprint branch (`git push -u origin
    <branch>`), then raises (never merges) a PR via `gh pr create`, whose
-   title (`Auto-sprint [PASS|FAIL]: <branch>`) and body state the final
+   title (`fleet-sprint [PASS|FAIL]: <branch>`; PRs from before the
+   rename carry `Auto-sprint [...]`) and body state the final
    verdict plainly, with the reviewer's (sanitized) notes appended. PR
    creation is idempotent: a `gh pr create` failure whose message matches
    `/already exists/i` is treated as success (the desired end state -- a PR
@@ -791,7 +1069,14 @@ After the cycle loop exits (goal met, or `max_cycles` reached):
 
 The run's return value reflects the **final verdict**, not blanket success:
 `status: 'success'` only when `finalVerdictResult.verdict === 'PASS'`,
-otherwise `status: 'failed'` (while the PR is still published either way, per
+otherwise `status: 'failed'`. A PASS whose branch was pushed but whose PR was
+skipped for a VCS auth failure returns `status: 'success-with-warnings'` with
+`prSkipped` and a `warnings` array (`PR not opened: VCS auth failure (reason:
+auth-failure)`); the verdict stays PASS. The supervisor's `GET /api/sprints/:id`
+for a finished sprint lifts `resultStatus` and `warnings` from `state.result`,
+the watchdog FINISHED detail repeats them, and the viewer/History result strip
+shows an amber WARNING badge. Consumers must treat `success-with-warnings` as
+a success, not a failure or unknown (while the PR is still published either way, per
 the pm skill's "never suppress, never auto-merge" rule).
 
 ## The viewer
@@ -827,16 +1112,16 @@ off by default (zero I/O, zero behavior change, unless a caller opts in).
 
 **`fleet-sprint`'s CLI does not currently expose flags for this** --
 `bin/cli.mjs`'s call to `engine.executeFile()` passes neither `journal` nor
-`resumeJournal`, so every `fleet-se sprint` run today executes live with no
+`resumeJournal`, so every `fleet-sprint` run today executes live with no
 journal written. The mechanism is available to any direct caller of
 `engine.executeFile('fleet-sprint/runner.js', args, { journal: true })` (e.g.
 a test, or a future CLI flag), and this package's own tests exercise it
 (see `packages/apra-fleet-se/test/`), but there is no supported way to
-resume a crashed `fleet-se sprint` invocation from the CLI today.
+resume a crashed `fleet-sprint` invocation from the CLI today.
 
 ## Supervisor: reservation ledger and scope freshness (apra-fleet-eft.5)
 
-`fleet-se serve` (`bin/serve.mjs`, `src/supervisor/`) is a separate, always-on
+The supervisor (`bin/serve.mjs`, `src/supervisor/`) is a separate, always-on
 process from the per-sprint `bin/cli.mjs` invocation described above. It owns
 one combined reservation ledger (`src/supervisor/ledger.mjs`) that claims two
 axes per launched sprint in lockstep -- the reserved member set and the
@@ -845,17 +1130,32 @@ claim and release together.
 
 **Member-axis overlap** (`src/supervisor/api.mjs`, `defaultMemberOverlapGuard`):
 `POST /api/sprints` computes the full member union (`--members` plus every
-`roleMap` value, including the orchestrator role) and rejects the whole launch
+`roleMap` value, including the backlog role) and rejects the whole launch
 with a 409 if that union intersects any other active reservation's members,
 naming the conflicting sprint id and the specific overlapping member names.
 The check runs strictly before `ledger.claim()`, so a rejected launch never
 touches the ledger.
 
 **Issue-scope overlap** (`src/supervisor/scope-overlap.mjs`): re-expands each
-sprint's live parent-child subtree (via `bd list --parent`, one id at a time,
-walked breadth-first) at every launch attempt rather than trusting a
-launch-time snapshot, so a bead created mid-sprint under an already-claimed
-root is still detected.
+sprint's live parent-child subtree at every launch attempt rather than
+trusting a launch-time snapshot, so a bead created mid-sprint under an
+already-claimed root is still detected.
+
+Expansion is done from ONE bulk `bd list --all --limit 0 --json` per
+`checkLaunch()`, with the child index built in memory and both the request's
+roots and every ledger sprint's roots walked from that same index -- the same
+pattern `backlog.mjs` and `runner.js`'s `bdListScoped` use. It previously
+spawned one `bd list --parent <id>` subprocess per discovered node,
+sequentially, and then repeated the whole walk per active sprint, which turned
+a ~45-bead epic into minutes of pre-response latency (this guard is awaited
+before `POST /api/sprints` answers). The per-node walk survives only as an
+injectable test seam.
+
+The `--all` is load-bearing, not an optimization: `bd list` hides closed
+issues by default, so a CLOSED intermediate parent silently dropped its OPEN
+subtree from the overlap check, and two sprints with genuinely overlapping
+open work could both launch. The bulk version is strictly more complete than
+the per-node walk it replaced.
 
 **Known best-effort limitation -- scope freshness.** Both overlap checks above
 reason over the supervisor process's OWN service-local view of `bd` state.
@@ -891,7 +1191,7 @@ bug.
 
 ## Supervisor: process model
 
-`fleet-se serve` boots one always-on process that owns the reservation ledger
+The supervisor (`bin/serve.mjs`) boots one always-on process that owns the reservation ledger
 and an HTTP API, and never exits because a sprint finished or a sprint's child
 process crashed -- it exits only on an explicit shutdown request or signal.
 Each sprint runs as the *existing* per-sprint CLI, launched fully detached
@@ -964,6 +1264,55 @@ reuses the same request-validation helpers the CLI path already uses (never a
 second copy of the id/branch/member validation logic), so a malformed launch
 request is rejected identically regardless of entry point.
 
+## Supervisor: packaging self-containment
+
+The supervisor must run entirely from what an installed `apra-fleet` ships
+(npm install or the SEA binary) -- a user must never need a git checkout of
+the source repo just to keep it running. This is a standing invariant, not a
+one-time fix: `bin/serve.mjs` and everything reachable from it under
+`src/supervisor/*` and the `fleet-sprint/*` modules it imports must resolve
+entirely inside the packaged `apra-fleet-se` tree.
+
+The packaging boundary that matters is the exclude set applied recursively at
+every directory depth when building both the SEA asset tree
+(`scripts/gen-sea-config.mjs`) and the `apra-fleet install` tree
+(`src/cli/install.ts` `buildDevManifest()` ->
+`src/cli/workflow-assets.ts` `extractWorkflowSubsystemAssets()`):
+`test`, `docs`, `scripts`, `examples` are never shipped. A supervisor-reachable
+module that imports anything under a top-level `scripts/` directory (a
+repo-root-relative escape, e.g. `../../../../scripts/lib/foo.mjs`) will resolve
+in a dev git checkout but throw `ERR_MODULE_NOT_FOUND` the moment it runs from
+an installed tree, because `scripts/` is excluded from what gets shipped. The
+fix for a genuinely shared helper is to vendor a verbatim copy inside the
+packaged tree (e.g. `src/supervisor/lib/`) rather than reach out of it, and to
+mark the copy clearly as vendored (source of truth + why) so it doesn't drift
+silently. There is currently no automated guard keeping such a vendored copy
+in sync with its canonical source -- that is a known gap, kept in sync by hand
+today.
+
+Because this class of bug is easy to reintroduce one file at a time, the
+regression guard for it is graph-shaped rather than file-specific: walk the
+full static import graph from the installed `bin/serve.mjs` (using the exact
+same `buildDevManifest()`/`extractWorkflowSubsystemAssets()` path
+`apra-fleet install` itself uses to build the tree under test) and assert
+every resolved specifier stays inside the installed tree. That catches a
+future out-of-tree import from *any* supervisor-reachable module, not just a
+previously-broken file. A narrower test that only pins the previously-broken
+import path (boots `serve.mjs` from an installed tree and asserts a specific
+old import path is gone) is a useful smoke test but is a strict subset of the
+graph-shaped guard and does not substitute for it.
+
+One reachable module deliberately reads a source/build-only path at runtime
+without being a hard dependency on it: `fleet-sprint/contracts.mjs`'s schema
+loader tries a build artifact directory first, then falls back to the
+package-local (shipped) schema directory, then to hand-written literal
+schemas. A guarded, falling-back read of a source-only path is fine; an
+unguarded import of one is the self-containment bug this invariant exists to
+prevent. `test/installed-supervisor.test.mjs` is the enforcing guard: it
+builds a real installed tree and walks the full static import graph from the
+installed `bin/serve.mjs`, so it is also the authoritative, always-current
+enumeration of which modules the supervisor reaches.
+
 ## Dashboard
 
 The supervisor serves exactly one index page. It renders, in order: one
@@ -984,6 +1333,35 @@ duplicating. A Launch Sprint form (issue picker fed from Backlog rows, member/
 role assignment, goal selector, branch naming) submits through the exact same
 validated launch endpoint the CLI path uses, so it can never diverge from
 server-side validation.
+
+The Backlog's flat task list (`GET /api/backlog/tasks`, distinct from the
+tree endpoint above) accepts an optional `sort`/`dir` query-param pair,
+applied after the existing type/status/priority/model/q narrowing rather than
+before it -- sorting narrows-then-orders the same set the filters already
+produced, so `total` (the free/unclaimed count before filtering) is
+unaffected by which sort is chosen. Only `created_at` is a supported sort
+key today; `dir` is `asc` or `desc` (default `desc`). Rows come straight from
+`bd list --json`, where `created_at` is an ISO string -- a missing or
+unparseable value must never throw and must always sort last regardless of
+direction, since bad/absent timestamps are expected input, not an error
+condition. The sort itself is a decorate-sort-undecorate over each row's
+original index (not a bare comparator handed to `Array#sort`), because
+stability for equal or equally-invalid timestamps is a correctness
+requirement, not an incidental nicety, and `Array#sort`'s stability is not
+something this codebase wants to depend on across every JS engine it might
+run under. Omitting `sort` entirely leaves row order exactly as the
+type/status/priority/model/q narrowing produced it -- the sort path is
+strictly additive, never a hidden default ordering.
+
+On the client, the sort control is a single `<select>` that must drive two
+`currentFilters` keys (`sort` and `dir`) at once, which is why it carries its
+own `data-sort-field` attribute rather than reusing the generic
+`data-filter-field` wiring the other header selects use (that wiring only
+ever sets one `currentFilters` key per control). Choosing the neutral
+"Unsorted" option deletes both keys from `currentFilters` rather than setting
+them to empty strings, so the resulting query string omits `sort`/`dir`
+entirely and the server sees the same "no sort requested" state as an
+initial page load.
 
 Each running sprint's live detail view is reached through a path prefixed by
 the supervisor's own port (`/sprints/:id/live`, reverse-proxied to that
@@ -1071,3 +1449,309 @@ convergence, not an incidental refactor: two independently-maintained copies
 of the same resolution order are guaranteed to drift as the resolution rules
 evolve, silently reintroducing the exact "doubled servers, split state"
 failure mode a single shared helper exists to prevent.
+
+## Testing convention: proving a mocked fixture spawns no live subprocess
+
+Fixtures for supervisor-facing modules (dashboard, backlog, and similar) take
+seams like `listAllBeads`/`driftCheck` specifically so tests can avoid
+shelling out to a real `bd`/`git` against the developer's own live DB and
+repo. Those seams default to the real subprocess-calling implementation when
+omitted, so an incomplete fixture silently falls through to a live spawn
+instead of failing loudly -- the failure mode is invisible unless a test
+actively checks for it.
+
+**In-process mocking of `node:child_process` (`execFile`/`execFileSync`) does
+not reliably catch this.** A helper module that captures its own
+`execFile`/`execFileSync` reference via a named import at module-evaluation
+time keeps that binding even if a sibling module later mutates
+`child_process.execFile` -- the mutation does not redirect the
+already-resolved reference. The only technique that reliably intercepts every
+invocation shape (`execFile` vs `execFileSync`, with or without `{ shell:
+true }`) regardless of which internal helper or call style is used is an
+OS-level PATH shim: run the module under test as a real child process with a
+directory of fake `bd`/`git` executables prepended to `PATH`, each of which
+appends its own invocation to a marker file and exits 0. An empty marker file
+after the run proves no live subprocess was spawned; this is POSIX-only
+(the shim scripts are bash), gated behind `process.platform !== 'win32'`.
+
+A regression guard built this way should also validate that the child
+process it spawned actually exercised meaningful test coverage, not just that
+it exited 0 -- a child that spawned zero subtests, or crashed before running
+anything, would still report a clean marker file and a zero exit code,
+silently passing a vacuous check. Parse the child's own TAP summary line
+(`# tests`, `# pass`) and assert it clears a known floor.
+
+## Module decomposition: `runner.js` as a strangler-fig facade
+
+`runner.js` began as a single ~11,850-line file and has been decomposed
+into focused `fleet-sprint/*.mjs` modules (plus a `fleet-sprint/phases/*.mjs`
+directory, one file per sprint-cycle phase) while staying a drop-in facade
+for its importers and mock-sprint test fixtures. `runner.js` itself is now
+under 3,200 lines: a composition root that wires the phase modules together
+and re-exports the full facade surface, not a place new logic gets added.
+The approach was a strangler-fig extraction, not a rewrite:
+
+- **Move-only discipline.** An extraction commit relocates code verbatim
+  (plus import/export wiring); it does not change behavior. Any actual
+  behavior change ships as a separate, explicitly flagged commit, so a
+  facade regression and a genuine behavior regression are never entangled
+  in the same diff and either can be reverted independently.
+- **Facade re-exports.** Every symbol a module absorbs from `runner.js` is
+  re-exported from `runner.js` under its original name, so existing
+  importers and mock-sprint fixtures need no changes. Each extraction has a
+  paired "facade completeness" test asserting the re-export surface is
+  intact and the extracted module is behaviorally pure (no hidden
+  dependency on `runner.js`-local state).
+- **Extracted modules, by concern:** `vcs-auth.mjs` (VCS credential
+  resolution, self-heal, preflight), `sprint-args.mjs` (`validateArgs` and
+  option validation), `prompts.mjs` (the per-role prompt builders),
+  `worklists.mjs` (tier policy, effort-budget packing, streak worklists),
+  `abort.mjs` / `branch-ensure.mjs` (abort predicates, branch selection,
+  `newTask` validation), `mcp-result.mjs` (shared MCP result-text helpers),
+  `member-target.mjs` (the unified member-resolution registry), `member-
+  sync.mjs` / `git-topology.mjs` (per-member git ensure/resync and git-
+  failure classification), `member-provisioning.mjs` (credential/deploy-
+  permission provisioning for a member), `git-sync.mjs` (the `withGitSync`
+  dispatch bracket and the pause-bracket counter it owns), `coordination.mjs`
+  (dolt-push-mutex clients, the child-id allocator, the reservation-ledger
+  client), `kb.mjs` (knowledge-bank priming/query/capture, including logging
+  a rejected `kb_query` result instead of failing silently), `beads-
+  scope.mjs` (the scope-snapshot BFS and its invalidation contract --
+  `phase()` invalidates the shared snapshot at every phase boundary, not
+  just at planning time), `beads-transitions.mjs` (verdict-application
+  transitions, including the Re-Review site that previously applied a
+  verdict with no scope-ceiling guard), `beads-children.mjs` (bead-child
+  allocation helpers split out of `beads-scope.mjs`), `sprint-report.mjs` /
+  `newtask-text.mjs` (sprint-summary and newTask text formatting, including
+  the structured-findings-to-newTask-text translation described below),
+  `round-session.mjs` / `dispatch-failure.mjs` (per-round session bookkeeping
+  and dispatch-failure classification), and `fatal-diagnostics.mjs` (the
+  sprint-fatal diagnostics writer). The extraction slate that this epic
+  scoped is complete: every module the epic named has landed, `runner.js`
+  holds no unextracted concern pending its own module, and further module
+  splits are ordinary maintenance, not epic backlog.
+- **`phases/*.mjs`: one file per sprint-cycle phase.** `runSprintCycle`'s
+  body -- Ensure Sprint Branch, Plan, Replan, Develop, Review, Deploy, Integ
+  Test, Re-Review, Final Review, Regression Test, Harvest, Publish PR -- is
+  now twelve calls into `fleet-sprint/phases/*.mjs`, one module per phase,
+  in that fixed order. `runner.js` itself is a composition root: it wires
+  the phase modules together and re-exports the facade surface, and a
+  dedicated completeness test enumerates every `fleet-sprint/*.mjs` and
+  `phases/*.mjs` file against a discovered permitted set rather than a
+  literal list, so a phase slice that lands without registering its output
+  module fails that gate rather than silently escaping coverage.
+- **`role-policies.mjs` + `dispatch-role.mjs`: dispatch policy as data,
+  consumed by one engine.** Each sprint role (planner, plan-reviewer,
+  scoped-replan-planner, scoped-replan-plan-reviewer, streak-assignment,
+  doer, doer-resume, reviewer, final-review, deployer, integ-test-runner,
+  regression-test-runner, harvester -- 13 roles) is recorded in
+  `role-policies.mjs` as a frozen data table describing the axes every
+  hand-written ladder used to repeat -- git-sync bracket usage, turn budgets
+  and timeouts, watchdog arming, retry/degrade behavior, knowledge-injection
+  source, and pre/post-dispatch hooks -- keyed by symbolic references to the
+  constants that supply concrete values (turn budgets are runtime-derived,
+  so the table names the constant, not a number). `dispatch-role.mjs`
+  implements the single `dispatchRole(ctx, roleName, opts)` engine that
+  reads this table; every one of `runner.js`'s dispatch call sites routes
+  through it, so there is exactly one place a dispatch is constructed, not
+  a per-role hand-rolled ladder. `migratedRoleNames()` returns the roles
+  whose ladder has actually been migrated onto the engine -- do not infer a
+  migration from the policy table's existence alone, since the table can
+  (and did, mid-refactor) describe a role before its call site is switched
+  over. One deliberate asymmetry survives: `doer-resume` shares its policy
+  entry with `doer` (`ROLE_POLICIES['doer-resume'] ===
+  ROLE_POLICIES.doer.secondary`) but is dispatched from the same call site
+  as `doer` rather than its own, so the engine has 12 call sites against 13
+  named roles -- a documented gap, not a miscount.
+- **`inline-ladder-guard.mjs`** closes the gap a `dispatchRole` migration
+  could otherwise leave open: once a role is marked `migrated: true` in
+  `role-policies.mjs`, this guard scans for a surviving *inline* `agent()`
+  call site still routing to that role's member, catching a migration that
+  adds the new call but forgets to delete the old one (which would
+  double-dispatch, or silently race on whichever path executes first). The
+  guard's early-return-on-empty-list behavior means it asserts nothing
+  until at least one role is marked migrated -- with all 13 roles migrated,
+  it is now a live check on every one of them, not an inert placeholder.
+- **Every role's dispatch watchdog is explicit, not defaulted.** The
+  `role-policies.mjs` normalizer no longer silently defaults a role's
+  watchdog to disarmed: all 13 roles declare either `watchdog()` (armed,
+  with a stated rationale) or `noWatchdog()` (deliberately unarmed, also
+  with a stated rationale). `deployer`, `integ-test-runner` and
+  `regression-test-runner` are armed as long, unattended, single-dispatch
+  phases with no other client-side kill path. `resolveWatchdogTimeout` is
+  applied in both a role's primary `policy()` and its `secondary()` (used by
+  roles that build their own `watchdog()`, such as the four secondaries that
+  would otherwise have the already-resolved value overwritten by a naive
+  spread); every `budgets()` row keeps `maxTotalS >= timeoutS`, so an armed
+  watchdog's hard elapsed ceiling can never end up shorter than its own
+  per-turn timeout.
+- **A provider usage/rate limit pauses the run rather than failing the
+  dispatch.** When a role dispatch fails with a usage-limit signal
+  (`execute_prompt` relays the provider's `detectUsageLimit()` result as an
+  `AgentDispatchError` whose `details.reason === 'usage_limit'`, carrying the
+  `UsageLimitSignal` on `details.usageLimit`) and the role's policy sets
+  `retry.usageLimitPause`, `dispatchRole` hands the signal to
+  `ctx.onUsageLimit` -- the controller built by
+  `createUsageLimitPauseController` (`usage-limit-controller.mjs`) and wired in
+  `runner.js`. It uses the engine's **cooperative pause** primitive
+  (`requestPause`/`requestResume`, exposed on the script context) to park the
+  whole run until the provider's own `resumeAt` (never a locally invented 1h
+  window -- the guessed fallback lives in the provider adapter's signal),
+  clamped to `[USAGE_LIMIT_MIN_WAIT_S, USAGE_LIMIT_MAX_WAIT_S]`. Pausing
+  releases member reservations, the watchdog reads `PAUSED`, and the dashboard
+  shows the expected resume time. On wake, `requestResume`'s pre-resume hook
+  performs the **resume re-sync** (member re-reserve/resync as a hard barrier)
+  before the controller runs ONE real re-probe dispatch to the same member; a
+  fresh `usage_limit` re-pauses on a bounded reprobe backoff ladder, any other
+  probe outcome proceeds to let the real re-dispatch be the final test. A
+  resumed member re-dispatches the role **without consuming a retry attempt**;
+  a **retry budget** exhausted across `USAGE_LIMIT_MAX_WAIT_S` /
+  `USAGE_LIMIT_MAX_REPROBES` (in `role-policies.mjs`'s
+  `USAGE_LIMIT_BUDGET_DEFAULTS`; the wait and reprobe caps are CLI-overridable
+  via `usage_limit_max_wait_s` / `usage_limit_max_reprobes`) gives up with a
+  typed `UsageLimitWaitExhaustedError`, which `isTypedAbortError` routes
+  through `finalizeAbort()`/an `[ABORTED]` PR like every other terminal abort.
+  A cooperative stop (`requestStop` -> `CancelledError`) taken mid-pause is
+  never swallowed by the probe, so operator stop still tears the run down. The
+  hook fires strictly *outside* any git-sync bracket (`openSyncBracketCount ===
+  0`), which is what lets the clean-state pause guard engage the pause instead
+  of deferring it. Two known simplifications: (1) **the pause is sprint-wide,
+  not per-member** -- only the rate-limited member is re-probed while the run
+  is paused; every other member's dispatches are gated by the engine-level
+  pause rather than being individually probed for their own usage limit. (2)
+  **a pause longer than ~30 minutes can let the cloud idle manager
+  (`src/services/cloud/idle-manager.ts`, `DEFAULT_IDLE_TIMEOUT_MS`) suspend a
+  cloud member's VM** while it sits reservation-released during the pause;
+  `ensureCloudReady` (`src/tools/execute-prompt.ts`) transparently restarts it
+  on the probe dispatch that follows `requestResume`, so this is logged but
+  has no special handling in the controller itself.
+- **Pre-sprint validation refusals are typed.** `PreSprintValidationError`
+  (a `WorkflowError` subclass, `errors.mjs`) replaces an untyped `Error`
+  distinguishable only by prose with a `reason` discriminator drawn from a
+  frozen vocabulary (`TARGET_NOT_VISIBLE`, `NOTHING_TO_DO`,
+  `CYCLE_REPAIR_FAILED`, `DEADLOCKED`), plus reason-specific structured
+  fields (e.g. `invisibleTargets`, `cyclePairs`, `deadlockedIds`). The
+  human-readable message is unchanged from the prose each refusal already
+  emitted -- this adds a type and discriminator without restyling
+  operator-facing text -- and the error is never caught inside the
+  pre-sprint block, so it still fails the run before any dispatch occurs.
+  Constructing one with a `reason` outside the frozen vocabulary throws a
+  `TypeError` at construction, rather than shipping a refusal that only
+  looks typed.
+- **The plan-reviewer contract carries a structured, per-bead `findings`
+  array** (`apra-pm/agents/schemas/plan-reviewer-output.json`) alongside the
+  free-text `notes` field. Each entry is `{ id, kind, detail }`, where `kind`
+  is a closed vocabulary mirroring the plan-reviewer's numbered quality
+  criteria (`coverage`, `missing_test_task`, `acceptance_criteria`,
+  `task_size`, `dependency_wiring`, `scope_creep`, `duplicate_work`,
+  `feasibility`, `ready_work`, `model_metadata`, `lane_cohesion`, `other`).
+  `findings` is populated on every `CHANGES_NEEDED` verdict; an **empty**
+  array on `CHANGES_NEEDED` is the explicit "the objection is plan-wide,
+  names no individual bead" signal, distinct from a verdict that predates
+  the field entirely (no `findings` key at all), which callers still fall
+  back to reading `notes` for. This replaced `extractContestedBeadIds`'s
+  prose-scraping of `notes` to find contested bead ids -- contested-bead
+  routing now reads `findings` directly instead of pattern-matching
+  free text, and `newtask-text.mjs` carries the translation from a
+  `findings` array back into newTask text for the one channel that still
+  needs prose (task creation for a human/downstream reader).
+
+### The shared guarded-module list
+
+Several independent mechanical guards enforce invariants across
+`fleet-sprint/*` source (a shell-command-construction guard, a dolt-literal
+guard, a full-db-fetch guard, an unbracketed-push guard, the inline-ladder
+guard above). Each originally hard-coded its own single target file
+(`runner.js`). That wiring has a silent failure mode under decomposition:
+the moment a guarded construct moves out of `runner.js` into a newly
+extracted module, every guard pointed only at `runner.js` stops covering it
+while continuing to report a green baseline -- a false sense of safety, not
+an absence of risk.
+
+`guarded-modules.mjs` fixes this by being the single place a newly
+extracted module is registered; every guard consumes that shared list
+rather than keeping a private path array. Registering an extraction's
+output module here is part of the extraction commit itself, not a
+follow-up task -- an extraction that lands without this registration is
+incomplete even if every other test passes. A small, deliberate exemption
+list exists for modules that legitimately emit the exact constructs a guard
+flags (the per-shell command builders, which ARE the OS-branched surface
+other code is required to route through instead of hand-rolling shell
+syntax; `dolt-sync.mjs`, which legitimately owns the `bd dolt pull`/`bd dolt
+push` command strings). Per-guard violation counts (how many raw `command()`
+calls a given module is allowed) are derived from `guarded-modules.mjs` and
+compared by **basename**, not from a separate hard-coded literal, because
+each guard's own violation reporting labels a scanned file by
+`path.basename(p)` -- a baseline that compared full paths would not match
+what the guard actually reports.
+
+Basename comparison is deliberately NOT used, however, for the separate
+"is every `fleet-sprint/*.mjs`/`phases/*.mjs` file accounted for at all"
+completeness sweep (`guarded-modules-coverage.test.mjs`'s `isAccountedFor()`)
+-- that check compares **full relative paths**. A basename-only version of
+this specific check has a real collision hazard: once nested directories
+like `phases/` exist, a nested file can share a bare filename with an
+unrelated top-level registered module (`phases/index.mjs` vs.
+`vcs-providers/index.mjs`, `phases/errors.mjs` vs. `errors.mjs`) and would
+be silently reported as "already covered" by that unrelated module's
+registration, even though it was never registered itself. Both comparisons
+are correct for what each one is checking -- the distinction is per-guard
+reporting fidelity (basename) versus registration completeness (full path)
+-- so do not "fix" one by making it consistent with the other.
+
+#### An exempt-list guard is a different shape from a violation-count guard
+
+The explicit-id-create guard (enforcing the child-id collision-refusal
+invariant above -- no scanned module may dispatch a bead-CREATION command
+unless it lives in the one module paired with the probe-and-refuse seam)
+deliberately does not fit the per-module "N raw calls allowed" shape the
+other mechanical guards use. Its invariant is binary: exactly one module in
+the scanned set is allowed to contain a bead-creation dispatch at all, and
+every other scanned module must report zero, forever -- there is no
+legitimate count above zero to baseline elsewhere. It therefore keeps its
+own exemption constant (a single path, not a per-file violation-count map)
+alongside a shared list of the module paths it scans, both sourced from
+`guarded-modules.mjs` so a newly extracted module is still picked up
+automatically the same way the count-based guards are.
+
+The guard's own rule had to widen twice past its first cut, and both
+widenings generalize to any future mechanical scanner in this family:
+neither "does an explicit `--id` flag literal appear in this call" nor
+"is this call spelled through the literal identifier `command(`/`agent(`"
+survives a caller that assembles the flag from a variable or dispatches
+through a renamed/wrapped binding (a local helper, a destructured import, a
+method call). The rule that does survive both is shape-based rather than
+identifier-based: flag any string/template literal whose content begins
+with the dispatched command name and continues into what looks like an
+argument, regardless of which call expression carries it. A scanner in this
+family should default to a content-shape rule over an
+identifier/call-expression rule for exactly this reason -- the latter is
+trivially defeated by renaming or wrapping, the former is not.
+
+#### A source-text scanner that masks comments/strings must treat regex
+#### literals as opaque spans too, or a quote inside one desyncs the walk
+
+Every mechanical guard in this family that walks raw source text to find
+call sites or balanced ranges (`dispatch-safety-guard.mjs`'s
+`extractBalancedCall`, `unbracketed-push-guard.mjs`'s
+`findFunctionBodyRange`) does so over a comment-masked copy of the source,
+so a stray apostrophe in a prose comment is never misread as opening a real
+string. That masking pass has a second, less obvious hazard: a regex
+literal in real source can itself contain a quote or apostrophe in its body
+(a character class like `[.,:;!?()'_/+[\]-]`, or a literal like `/couldn't
+find remote ref/i`). A masking/depth-walk that recognizes strings but not
+regex literals reads that embedded quote as opening a real string and
+swallows everything up to the next matching quote -- including real
+comments, brackets, and parens in between -- silently desyncing the walk's
+positional accounting. The fix is to recognize and copy a regex literal
+through verbatim (masked the same way a string is: preserved, not
+stripped) BEFORE the string-literal branch gets a chance to misread the
+quote inside it, using a real regex-vs-division disambiguation heuristic
+(scan backward past whitespace to the last significant token; a `/`
+immediately following an identifier/number/`)`/`]`/`}`/closing-quote is
+division, everything else can open a regex). Any new source-text scanner
+added to this family must reuse the shared `maskComments()` /
+`canStartRegex()` / `skipRegexLiteral()` helpers rather than re-deriving
+this heuristic locally -- two independent guards got this wrong before
+converging on the shared helpers, which is a strong signal it is not safe
+to hand-roll again.

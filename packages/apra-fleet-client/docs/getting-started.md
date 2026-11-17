@@ -18,13 +18,14 @@ Inside this monorepo, add it as a workspace dependency:
 }
 ```
 
-## Recommended: `connectFleet()` (auto-picks stdio vs. HTTP)
+## Recommended: `connectFleet()` (auto-picks HTTP vs. stdio)
 
 For most callers, hand-picking a transport (the two sections below) is more
 than you need. `connectFleet()` from `@apralabs/apra-fleet-client/server-resolution`
 does it for you: it probes for a running HTTP singleton
 (`~/.apra-fleet/data/server.json` + a `/health` check), attaches to it if
-found, and otherwise self-spawns a stdio server -- performing whichever
+found, and otherwise (when it is verifiably gone) starts the shared HTTP
+server with `apra-fleet start` and attaches to that -- performing whichever
 handshake the chosen transport needs.
 
 ```js
@@ -36,7 +37,7 @@ console.log(`connected via ${mode}`);
 const status = await fleetApi.fleetStatus({ format: 'json' });
 console.log(status);
 
-transport.stop();
+await transport.close(); // releases the server session; stop() alone leaks it
 ```
 
 Set `APRA_FLEET_TRANSPORT=stdio` / `=http` to force a specific transport, or
@@ -78,7 +79,7 @@ const fleet = new ApraFleet(mcpClient);
 const status = await fleet.fleetStatus({ format: 'json' });
 console.log(status);
 
-transport.stop();
+await transport.close(); // releases the server session; stop() alone leaks it
 ```
 
 ## Connecting over HTTP+SSE (attaches to a running server)
@@ -87,8 +88,11 @@ transport.stop();
 import { StreamableHttpTransport } from '@apralabs/apra-fleet-client/transport';
 import { McpClient } from '@apralabs/apra-fleet-client/client';
 import { ApraFleet } from '@apralabs/apra-fleet-client';
+import { withFleetAccessSecret } from '@apralabs/apra-fleet-client/server-resolution';
 
-const transport = new StreamableHttpTransport('http://localhost:7523/mcp');
+// The server refuses an /mcp session without the install's access secret
+// (HTTP 401); withFleetAccessSecret() adds it from the local data dir.
+const transport = new StreamableHttpTransport('http://localhost:7523/mcp', withFleetAccessSecret());
 
 const ready = new Promise((resolve, reject) => {
   transport.once('ready', resolve);
@@ -103,7 +107,7 @@ const fleet = new ApraFleet(mcpClient);
 const members = await fleet.listMembers({ format: 'json' });
 console.log(members);
 
-transport.stop();
+await transport.close(); // releases the server session; stop() alone leaks it
 ```
 
 The HTTP transport performs its own `initialize` handshake internally
@@ -154,10 +158,15 @@ const result = await fleet.executeCommand({
 
 ## Cancelling an in-flight call
 
-Every `ApraFleet` method accepts an `AbortSignal`. Aborting stops the
-*local* wait -- it rejects the pending promise and frees client-side
-bookkeeping -- but it does not cancel a job the server has already
-accepted and started running.
+`executePrompt()` and `executeCommand()` accept `signal` (and `timeoutMs`)
+and consume them locally. The other `ApraFleet` methods forward their whole
+options object to the server, so passing `signal`/`timeoutMs` to them sends
+those keys as tool arguments rather than cancelling anything -- cancel those
+calls at a layer above instead.
+
+Aborting stops the *local* wait -- it rejects the pending promise and frees
+client-side bookkeeping -- but it does not cancel a job the server has
+already accepted and started running.
 
 ```js
 const controller = new AbortController();
@@ -237,6 +246,9 @@ Rejections carry a `.code` you can branch on:
 
 - `'TIMEOUT'` -- no response arrived within the client-side timeout window.
 - `'ABORTED'` -- the caller's `AbortSignal` fired before a response arrived.
+- `'TRANSPORT_CLOSED'` -- the underlying transport closed (a deliberate
+  `stop()`, or the SSE stream dying past its reconnect budget) while the
+  request was in flight. A connectivity event, not a request-level failure.
 - Anything else -- a plain `Error` whose message is the server's own
   JSON-RPC error message (e.g. an unknown member name, a malformed
   argument, or a failure that happened while the server ran the tool).
@@ -259,9 +271,15 @@ try {
 
 ## What this package will not do for you
 
-- It does not start, stop, or health-check the `apra-fleet` server
-  process itself (beyond spawning it as a child, for the stdio transport).
-- It does not retry failed or timed-out requests.
+- It does not manage the `apra-fleet` server's lifecycle. `connectFleet()`
+  will health-probe an existing HTTP singleton and start the shared
+  HTTP server (detached, via `apra-fleet start`) if it is gone, and `ApraFleet.shutdownServer()` asks a connected
+  server to terminate itself -- but nothing here supervises or installs the server.
+- It does not retry a request that produced a response or timed out. (The
+  HTTP transport does transparently retry a POST whose `fetch` rejected at
+  the connection level before any response was produced, and reopens its
+  persistent SSE stream on an idle/short read -- neither can duplicate work
+  the server already accepted.)
 - It does not provide idempotency keys, so retrying a call yourself after a
   client-side timeout can duplicate server-side work if the original
   request was in fact received and is still running.

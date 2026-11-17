@@ -26,7 +26,13 @@ Required:
 
 Common:
   --type <local|remote>    Member type (default: remote)
-  --llm <provider>         LLM provider: claude|gemini|codex|copilot|agy|opencode|none (default: claude)
+  --llm <provider>         LLM provider: claude|codex|copilot|agy|opencode|none (default: claude)
+  --id <uuid>              Register under this member id (idempotent: the same id again
+                           updates that entry; a folder owned by another id fails with
+                           E-FOLDER-TAKEN). This is the member self-registration
+                           form: permissions are NOT composed (the orchestrator
+                           composes them), so run compose_permissions yourself
+                           when using --id by hand.
   --category <label>       Optional group label (e.g. "doers")
   --tags <a,b,c>           Comma-separated free-form tags (max 10)
   --unattended <mode>      Permission mode: false|auto|dangerous
@@ -36,12 +42,15 @@ Remote members:
   --port <n>               SSH port (default: 22)
   --username <user>        SSH username (required for remote)
   --auth <password|key>    Authentication method (required for remote)
-  --password <pw>          SSH password (supports {{secure.NAME}} tokens)
+  --password <pw>          SSH password (supports {{secret.NAME}} tokens)
   --key-path <path>        Path to SSH private key
 
 Git access:
   --git-access <level>     read|push|admin|issues|full
   --git-repos <a,b>        Comma-separated repos (e.g. "Apra-Labs/ApraPipes")
+  --vcs-provider <p>       github|bitbucket|azure-devops|none. Omit to auto-detect
+                           from the member's git "origin" remote; "none" declares
+                           the member deliberately has no VCS provider.
 
 Models:
   --model-cheap <id>       Curated cheap model
@@ -53,11 +62,13 @@ Models:
 
 // Flags that take a value (everything else is treated as an error).
 const VALUE_FLAGS = new Set([
-  '--name', '--path', '--type', '--llm', '--category', '--tags', '--unattended',
+  '--name', '--path', '--id', '--type', '--llm', '--category', '--tags', '--unattended',
   '--host', '--port', '--username', '--auth', '--password', '--key-path',
-  '--git-access', '--git-repos',
+  '--git-access', '--git-repos', '--vcs-provider',
   '--model-cheap', '--model-standard', '--model-premium', '--model-tier',
 ]);
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 interface ParsedFlags {
   values: Record<string, string>;
@@ -109,6 +120,7 @@ function buildRawInput(parsed: ParsedFlags): Record<string, unknown> {
     '--password': 'password',
     '--key-path': 'key_path',
     '--git-access': 'git_access',
+    '--vcs-provider': 'vcs_provider',
     '--model-cheap': 'model_cheap',
     '--model-standard': 'model_standard',
     '--model-premium': 'model_premium',
@@ -153,8 +165,14 @@ export async function runRegisterMember(args: string[]): Promise<void> {
   }
 
   let raw: Record<string, unknown>;
+  let memberId: string | undefined;
   try {
-    raw = buildRawInput(parseFlags(args));
+    const flags = parseFlags(args);
+    raw = buildRawInput(flags);
+    memberId = flags.values['--id'];
+    if (memberId !== undefined && !UUID_RE.test(memberId)) {
+      throw new Error(`--id must be a UUID (got "${memberId}").`);
+    }
   } catch (err: any) {
     console.error(`Error: ${err.message}`);
     process.exitCode = 1;
@@ -187,7 +205,14 @@ export async function runRegisterMember(args: string[]): Promise<void> {
     return;
   }
 
-  const result = await registerMember(parsed);
+  // --id marks a member SELF-registration (the orchestrator runs it on the
+  // member's own install): permissions were already composed by the
+  // orchestrating server, and a member install has no skill profiles to compose
+  // from, so compose_permissions is skipped (RegisterMemberOptions.skipCompose).
+  const result = await registerMember(
+    parsed,
+    memberId ? { id: memberId, skipFleetMcp: true, skipCompose: true } : { skipFleetMcp: true },
+  );
   // registerMember returns a human-readable string. The success path always
   // contains "registered successfully"; every failure path returns a message
   // stating the member was NOT registered. Mirror that into an exit code.

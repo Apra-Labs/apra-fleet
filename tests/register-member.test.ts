@@ -3,7 +3,7 @@
  * auto-runs compose_permissions for the member's role/tags) so it cannot silently
  * regress back to requiring a separate manual compose_permissions call.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -29,11 +29,23 @@ vi.mock('../src/tools/compose-permissions.js', async (importOriginal) => {
 
 describe('register_member: auto-runs compose_permissions (apra-fleet-5oo.1 / apra-fleet-5oo.2)', () => {
   let workFolder: string;
+  const scratchHome = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-regmember-home-'));
+  afterAll(() => {
+    fs.rmSync(scratchHome, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+  });
   let actualCompose: typeof import('../src/tools/compose-permissions.js')['composePermissions'];
 
   beforeEach(async () => {
     backupAndResetRegistry();
     workFolder = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-regmember-compose-'));
+    // A real LocalStrategy runs here: compose writes the member's per-folder
+    // apra-fleet MCP entry into ~/.claude.json (home resolved via os.homedir())
+    // and trust seeding writes $HOME/.claude.json through the member shell,
+    // whose clean env is built (and cached) from HOME. Point both at ONE
+    // scratch home for the whole file so the real ~/.claude.json is never touched.
+    vi.stubEnv('HOME', scratchHome);
+    vi.stubEnv('USERPROFILE', scratchHome);
+    vi.spyOn(os, 'homedir').mockReturnValue(scratchHome);
     mockComposePermissions.mockReset();
     const actual = await vi.importActual<typeof import('../src/tools/compose-permissions.js')>('../src/tools/compose-permissions.js');
     actualCompose = actual.composePermissions;
@@ -41,7 +53,15 @@ describe('register_member: auto-runs compose_permissions (apra-fleet-5oo.1 / apr
 
   afterEach(() => {
     restoreRegistry();
-    fs.rmSync(workFolder, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    // my-beads-db-27m.13: registerMember/compose_permissions spawn several real
+    // subprocesses with cwd=workFolder (LocalStrategy.execCommand); on Windows the
+    // OS can briefly hold the directory handle past the child's reported exit,
+    // producing a transient EBUSY on rmdir. maxRetries=5/retryDelay=100 (500ms
+    // total) was not enough headroom -- widen it rather than let a timing race
+    // fail the next test in the file.
+    fs.rmSync(workFolder, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
     vi.resetModules();
   });
 
@@ -74,7 +94,11 @@ describe('register_member: auto-runs compose_permissions (apra-fleet-5oo.1 / apr
     // base-dev profile entry -- confirms the composed allowlist actually landed
     // in settings, not just an empty/placeholder array.
     expect(settings.permissions.allow).toContain('Bash(git:*)');
-  }, 15000);
+  // my-beads-db-27m.13: registerMember's real subprocess work (workspace-trust
+  // seeding + compose_permissions' several real execCommand round trips) measured
+  // 15-21s on a stock Windows dev host -- comfortably over the old 15000ms budget,
+  // which made this a deterministic (not flaky) failure. 45000ms leaves >2x margin.
+  }, 45000);
 
   it('AC2: reports "member not provisioned" instead of success when compose_permissions fails', async () => {
     mockComposePermissions.mockResolvedValue('compose_permissions threw: boom');
@@ -96,12 +120,17 @@ describe('register_member: auto-runs compose_permissions (apra-fleet-5oo.1 / apr
     // partially written by a later step that assumed provisioning succeeded.
     const settingsPath = path.join(workFolder, '.claude', 'settings.local.json');
     expect(fs.existsSync(settingsPath)).toBe(false);
-  });
+  // my-beads-db-27m.13: composePermissions is mocked here, but registerMember's own
+  // pre-compose real subprocess work (connection/version checks, agent provisioning,
+  // workspace-trust seeding) still measured ~8s on a stock Windows dev host --
+  // already over vitest's 5000ms default. 20000ms leaves >2x margin.
+  }, 20000);
 
   it('AC3: re-running compose_permissions for the same member is idempotent -- no duplicate allow entries, unrelated settings keys preserved', async () => {
     // Runs a full registerMember() (which itself invokes the real compose_permissions
-    // and workspace-trust seeding, ~5s observed for AC1 alone) plus a second real
-    // compose_permissions call -- comfortably exceeds vitest's 5000ms default.
+    // and workspace-trust seeding) plus a second real compose_permissions call --
+    // measured ~33s on a stock Windows dev host, comfortably exceeding vitest's
+    // 5000ms default. 60000ms leaves ~2x margin (my-beads-db-27m.13).
     mockComposePermissions.mockImplementation((input: any) => actualCompose(input));
 
     const { registerMember } = await import('../src/tools/register-member.js');
@@ -120,7 +149,7 @@ describe('register_member: auto-runs compose_permissions (apra-fleet-5oo.1 / apr
 
     // Seed an unrelated settings key (as another tool sharing this file might)
     // that a re-run of compose_permissions must preserve, not clobber.
-    before.mcpServers = { ...(before.mcpServers ?? {}), 'apra-fleet-member': { unrelated: true } };
+    before.mcpServers = { ...(before.mcpServers ?? {}), 'some-other-server': { unrelated: true } };
     fs.writeFileSync(settingsPath, JSON.stringify(before, null, 2));
 
     // Simulate re-registration (or any later re-run) invoking compose_permissions
@@ -131,6 +160,6 @@ describe('register_member: auto-runs compose_permissions (apra-fleet-5oo.1 / apr
     const uniqueAllow = new Set(after.permissions.allow);
     expect(after.permissions.allow.length).toBe(uniqueAllow.size);
     expect(after.permissions.allow.length).toBe(before.permissions.allow.length);
-    expect(after.mcpServers['apra-fleet-member']).toEqual({ unrelated: true });
-  }, 15000);
+    expect(after.mcpServers['some-other-server']).toEqual({ unrelated: true });
+  }, 60000);
 });

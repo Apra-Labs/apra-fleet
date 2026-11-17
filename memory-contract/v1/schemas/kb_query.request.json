@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/schemas/kb_query.request.json#",
+  "x-invariant": [
+    "INV-05",
+    "INV-08"
+  ],
+  "$ref": "#/$defs/v1-kb_query-request",
+  "$defs": {
+    "v1-kb_query-request": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Free-text search string. Required unless flagged_only is true or tag is provided."
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "context-cache",
+            "learning",
+            "knowledge",
+            "runbook"
+          ],
+          "description": "Filter by content type"
+        },
+        "tag": {
+          "type": "string",
+          "description": "Filter to entries whose tags array contains this value (exact match, ANDed alongside other filters -- not an FTS term). May be used alone (no query) to list all entries carrying the tag."
+        },
+        "limit": {
+          "type": "number",
+          "description": "Max L1 results (default 20)"
+        },
+        "include_stale": {
+          "type": "boolean",
+          "description": "Include stale and superseded entries (default false)"
+        },
+        "flagged_only": {
+          "type": "boolean",
+          "description": "Return all contradiction-flagged entries. When true, query is optional and full content is returned."
+        },
+        "expand_related": {
+          "type": "boolean",
+          "description": "Append entries connected to the top hits by a refines or contradiction_of edge, as related_claims. These are the KB's own judgements about its contents -- \"there is a newer framing of this\" and \"something disputes this\" -- which a text match cannot surface. shares_file/shares_symbol edges are NOT traversed: FTS over the same fields already finds those. Default false, in which case related_claims is absent."
+        },
+        "confidence": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "CONFIRMED",
+              "INFERRED",
+              "UNVERIFIED"
+            ]
+          },
+          "minItems": 1,
+          "description": "Only return entries whose confidence tier is in this list (e.g. [\"CONFIRMED\"]). Applies to l1_results, l2_expanded and related_claims alike. Default when omitted: [\"CONFIRMED\"] -- INFERRED and UNVERIFIED entries are returned only when listed explicitly. Ignored when flagged_only is true."
+        },
+        "exclude_disputed": {
+          "type": "boolean",
+          "description": "Drop entries on either side of an unresolved contradiction (flagged_for_review, or contradiction_of set). Applies to l1_results, l2_expanded and related_claims alike. Default true when confidence is omitted (CONFIRMED-undisputed default); default false when confidence is given explicitly. Ignored when flagged_only is true."
+        },
+        "own_scope": {
+          "type": "boolean",
+          "description": "MEMBER session only. A default CONFIRMED read is answered from the checkout bible view, where every row is untagged -- a tag: \"member:<id>\" filter can never match there. Set true to force the per-repo DB instead, with the caller's own ownerTag applied, so a member can read back a CONFIRMED row it itself promoted (e.g. to check what it may kb_demote). For a request naming CONFIRMED plus another tier it drops the bible half of the merged member read and returns only the own half (the caller's own captures at every requested tier). No effect for a FULL session, an in-process caller passing an explicit anchor, or a request naming only INFERRED/UNVERIFIED -- those already read the per-repo DB. It changes which store answers and nothing else, so to span everything kb_demote accepts combine it with confidence: [\"CONFIRMED\"] and include_stale: true: a stale or contradiction-flagged CONFIRMED row is still demotable, but the default read drops stale rows and (with no explicit confidence list) disputed ones. The widened read also returns superseded rows, which kb_demote refuses -- drop those yourself."
+        },
+        "repo_path": {
+          "description": "REMOVED -- do not pass. A call carrying it fails with E-SCOPE-KEY-REMOVED; the KB is always the calling session's own."
+        },
+        "repo": {
+          "description": "REMOVED -- do not pass. A call carrying it fails with E-SCOPE-KEY-REMOVED; the KB is always the calling session's own."
+        },
+        "repo_remote_url": {
+          "description": "REMOVED -- do not pass. A call carrying it fails with E-SCOPE-KEY-REMOVED; the KB is always the calling session's own."
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

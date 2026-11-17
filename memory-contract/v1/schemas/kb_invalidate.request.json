@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/schemas/kb_invalidate.request.json#",
+  "x-invariant": [
+    "INV-05"
+  ],
+  "$ref": "#/$defs/v1-kb_invalidate-request",
+  "$defs": {
+    "v1-kb_invalidate-request": {
+      "type": "object",
+      "properties": {
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "description": "File paths to invalidate (context-cache entries for these files will be marked stale)"
+        },
+        "ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "description": "Entry ids to discard (sets superseded_at; the entry drops from all reads). Exactly one of files or ids."
+        },
+        "repo_path": {
+          "description": "REMOVED -- do not pass. A call carrying it fails with E-SCOPE-KEY-REMOVED; the KB is always the calling session's own."
+        },
+        "repo": {
+          "description": "REMOVED -- do not pass. A call carrying it fails with E-SCOPE-KEY-REMOVED; the KB is always the calling session's own."
+        },
+        "repo_remote_url": {
+          "description": "REMOVED -- do not pass. A call carrying it fails with E-SCOPE-KEY-REMOVED; the KB is always the calling session's own."
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

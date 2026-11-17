@@ -1,6 +1,9 @@
 import type { AgentStrategy } from './strategy.js';
-import type { OsCommands } from '../os/os-commands.js';
+import type { OsCommands, MemberShell } from '../os/os-commands.js';
 import type { LogScope } from '../utils/log-helpers.js';
+import type { RemoteOS } from '../utils/platform.js';
+import { wrapPowerShellEncoded } from '../os/windows.js';
+import { isPosixShell } from '../utils/agent-helpers.js';
 
 /**
  * Lease-of-life recovery for a false-alarm "exit 0 / empty output" dispatch
@@ -61,6 +64,11 @@ export interface OrphanRecoveryOptions {
   durablePath?: string;
   /** True for members whose remote OS has no durable-tee companion support. */
   unsupported?: boolean;
+  /** Remote member's OS, for building an OS-appropriate probe command. Defaults to 'linux'. */
+  os?: RemoteOS;
+  /** Remote member's registered shell (only meaningful for Windows). A
+   *  gitbash member gets POSIX probe commands instead of PowerShell ones. */
+  shell?: MemberShell;
   /** Upper bound on the wait; defaults to the remaining max_total_s, else a ceiling. */
   maxWaitMs?: number;
   pollIntervalMs?: number;
@@ -88,12 +96,17 @@ const defaultSleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 export async function isRemoteProcessAlive(
   strategy: AgentStrategy,
   pid: number,
+  os: RemoteOS = 'linux',
+  shell?: MemberShell,
 ): Promise<boolean> {
   try {
-    const res = await strategy.execCommand(
-      `kill -0 ${pid} 2>/dev/null && echo ALIVE || echo DEAD`,
-      PROBE_TIMEOUT_MS,
-    );
+    // Windows has no `kill -0`; mirror the Get-Process idiom monitor-task.ts
+    // already uses for the same pid-alive check. A gitbash member gets the
+    // POSIX form instead -- it has a real `kill` (apra-fleet-7dir.2.4).
+    const cmd = isPosixShell(os, shell)
+      ? `kill -0 ${pid} 2>/dev/null && echo ALIVE || echo DEAD`
+      : wrapPowerShellEncoded(`if (Get-Process -Id ${pid} -ErrorAction SilentlyContinue) { echo ALIVE } else { echo DEAD }`);
+    const res = await strategy.execCommand(cmd, PROBE_TIMEOUT_MS);
     const out = (res.stdout || '').trim();
     if (/\bDEAD\b/.test(out)) return false;
     if (/\bALIVE\b/.test(out)) return true;
@@ -110,9 +123,17 @@ export async function isRemoteProcessAlive(
 export async function readDurableOutput(
   strategy: AgentStrategy,
   durablePath: string,
+  os: RemoteOS = 'linux',
+  shell?: MemberShell,
 ): Promise<string | null> {
   try {
-    const res = await strategy.execCommand(`cat "${durablePath}" 2>/dev/null`, PROBE_TIMEOUT_MS);
+    // Windows has no `cat`; mirror the Get-Content idiom monitor-task.ts
+    // already uses for reading a possibly-missing remote file. A gitbash
+    // member gets the POSIX form instead (apra-fleet-7dir.2.4).
+    const cmd = isPosixShell(os, shell)
+      ? `cat "${durablePath}" 2>/dev/null`
+      : wrapPowerShellEncoded(`if (Test-Path "${durablePath}") { Get-Content -Path "${durablePath}" -Raw } else { echo '' }`);
+    const res = await strategy.execCommand(cmd, PROBE_TIMEOUT_MS);
     const out = res.stdout ?? '';
     return out.trim() === '' ? null : out;
   } catch {
@@ -125,7 +146,7 @@ export async function readDurableOutput(
  * behavior should apply verbatim, so the caller's fallback path is unchanged.
  */
 export async function recoverOrphanedDispatch(opts: OrphanRecoveryOptions): Promise<OrphanRecoveryResult> {
-  const { strategy, cmds, pid, durablePath, unsupported, scope } = opts;
+  const { strategy, cmds, pid, durablePath, unsupported, scope, os = 'linux', shell } = opts;
   if (unsupported || pid === undefined || !durablePath) return { status: 'unsupported' };
 
   const pollIntervalMs = opts.pollIntervalMs
@@ -133,7 +154,7 @@ export async function recoverOrphanedDispatch(opts: OrphanRecoveryOptions): Prom
   const maxWaitMs = opts.maxWaitMs ?? envInt('ORPHAN_RECOVERY_MAX_WAIT_MS', DEFAULT_MAX_WAIT_MS);
   const sleep = opts.sleep ?? defaultSleep;
 
-  if (!(await isRemoteProcessAlive(strategy, pid))) {
+  if (!(await isRemoteProcessAlive(strategy, pid, os, shell))) {
     // Confirmed dead: today's behavior, unchanged.
     return { status: 'dead', waitedMs: 0 };
   }
@@ -153,10 +174,10 @@ export async function recoverOrphanedDispatch(opts: OrphanRecoveryOptions): Prom
     const remaining = maxWaitMs - waitedMs;
     await sleep(Math.min(pollIntervalMs, remaining));
     waitedMs = Math.max(Date.now() - start, waitedMs + Math.min(pollIntervalMs, remaining));
-    if (!(await isRemoteProcessAlive(strategy, pid))) break;
+    if (!(await isRemoteProcessAlive(strategy, pid, os, shell))) break;
   }
 
-  const stdout = await readDurableOutput(strategy, durablePath);
+  const stdout = await readDurableOutput(strategy, durablePath, os, shell);
   if (stdout === null) {
     scope?.info(`[orphan-recovery] pid=${pid} exited but ${durablePath} is missing/empty -- a genuine empty response`);
     return { status: 'empty', waitedMs };

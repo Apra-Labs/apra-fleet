@@ -1,5 +1,17 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { toLocalISOString } from '../src/services/stall/time-utils.js';
+
+// F1/D1: two assertions below pin that toLocalISOString shifts ONLY the hour
+// component while preserving minutes/seconds/millis. That invariant holds only
+// for whole-hour timezone offsets -- on a sub-hour zone (e.g. Asia/Kolkata
+// +05:30, the author's zone) toLocalISOString correctly shifts the minutes too,
+// so the "minutes preserved" checks legitimately fail. Force a fixed whole-hour
+// zone (Asia/Tokyo, +09:00, no DST) for those two tests so they pin the same
+// behavior deterministically on any machine, without weakening the assertion.
+// Node re-reads process.env.TZ for each new Date(), so vi.stubEnv takes effect.
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 describe('toLocalISOString', () => {
   it('should produce a valid ISO 8601 format with timezone offset', () => {
@@ -10,6 +22,8 @@ describe('toLocalISOString', () => {
   });
 
   it('should convert UTC time to local time with correct offset', () => {
+    // Whole-hour zone so the minute component is preserved (see file header).
+    vi.stubEnv('TZ', 'Asia/Tokyo');
     // Create a UTC time: 2026-05-05T10:30:00Z
     const utcMs = new Date('2026-05-05T10:30:00Z').getTime();
     const result = toLocalISOString(utcMs);
@@ -52,6 +66,8 @@ describe('toLocalISOString', () => {
   });
 
   it('should preserve minutes and seconds from UTC time', () => {
+    // Whole-hour zone so minutes/seconds are preserved (see file header).
+    vi.stubEnv('TZ', 'Asia/Tokyo');
     const ms = new Date('2026-05-05T10:45:30.123Z').getTime();
     const result = toLocalISOString(ms);
     expect(result).toContain('45:30.123');

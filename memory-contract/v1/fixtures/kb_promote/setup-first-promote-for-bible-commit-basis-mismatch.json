@@ -1,0 +1,17 @@
+{
+  "tool": "kb_promote",
+  "case": "setup-first-promote-for-bible-commit-basis-mismatch",
+  "kind": "happy",
+  "request": {
+    "id": "8c3610dd-18a5-4fbf-a5b5-98b699db77ae",
+    "reason": "First promotion (UNVERIFIED -> INFERRED) of the entry used by the basis_mismatch fixture."
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"id\":\"8c3610dd-18a5-4fbf-a5b5-98b699db77ae\",\"previous_confidence\":\"INFERRED\",\"new_confidence\":\"CONFIRMED\"}"
+      }
+    ]
+  }
+}

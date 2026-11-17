@@ -2,11 +2,11 @@
 
 **Status:** Accepted
 **Date:** 2026-08-02
-**Related:** revert of server-side `create_pull_request` (added 2026-08-01, commit c5e66566)
+**Related:** revert of a server-side `create_pull_request` MCP tool
 
 ## Context
 
-On 2026-08-01 a `create_pull_request` MCP tool was added that ran inside the fleet
+A `create_pull_request` MCP tool was briefly added that ran inside the fleet
 server process, minted its own GitHub App installation token, and called
 `POST https://api.github.com/repos/{repo}/pulls` directly from the server. That
 change crossed an architectural boundary that had never been written down

@@ -1,8 +1,8 @@
-# Beads — Persistent Task DB for Fleet Users
+# Beads - Persistent Task DB for Fleet Users
 
 Beads (`bd`) is a lightweight, dependency-aware task database installed automatically by `apra-fleet install`.
 
-**`bd` runs on the orchestrator via `Bash` — never expose `bd` commands to the user and never run `bd` via `execute_command` on a member.**
+**`bd` runs on the orchestrator via `Bash` - never expose `bd` commands to the user and never run `bd` via `execute_command` on a member.**
 
 ---
 
@@ -24,10 +24,14 @@ bd list --assignee <member>           # tasks for a specific member
 bd search "text" --status all --json  # find existing issues by title (use for dedup)
 ```
 
-**Never run `bd init` on a repo that already has a `.beads/` directory** — it pulls from
+**Never run `bd init` on a repo that already has a `.beads/` directory** - it pulls from
 remote and recreates the database, discarding local issue state. It is NOT idempotent.
 Only run it once, on a repo with no `.beads/` yet. For a fresh clone or recovering a
 missing/corrupt DB, prefer `bd bootstrap` (non-destructive) over `bd init`.
+
+If `bd dolt pull`/`push` instead fails with a real merge conflict ("merge conflicts in
+issues require operator resolution"), see `beads-conflict-resolution.md` - do not
+`bd init` your way out of it.
 
 ---
 
@@ -37,7 +41,7 @@ missing/corrupt DB, prefer `bd bootstrap` (non-destructive) over `bd init`.
 |----------|-----------|
 | Tracking work across multiple fleet sessions | `bd create` a task per work item; `bd update --assignee <member> --status in_progress` on dispatch |
 | Expressing dependencies between tasks | `bd dep add <blocked-id> <blocker-id>` |
-| Session restart — instant orientation | `bd ready` — shows all in-flight tasks without reading files |
+| Session restart - instant orientation | `bd ready` - shows all in-flight tasks without reading files |
 | Linking a PR to a task | `bd note <id> "PR: <url>"` |
 
 ---
@@ -46,10 +50,10 @@ missing/corrupt DB, prefer `bd bootstrap` (non-destructive) over `bd init`.
 
 | Priority | Meaning |
 |----------|---------|
-| `0` | Critical — must fix now |
-| `1` | High — next up |
-| `2` | Medium — current sprint (default if `-p` omitted) |
-| `3` | Low — backlog / deferred |
+| `0` | Critical - must fix now |
+| `1` | High - next up |
+| `2` | Medium - current sprint (default if `-p` omitted) |
+| `3` | Low - backlog / deferred |
 | `4` | Trivial |
 
 ---
@@ -61,11 +65,11 @@ missing/corrupt DB, prefer `bd bootstrap` (non-destructive) over `bd init`.
 bd init
 
 # Create a top-level epic for your current effort
-bd create "feat: add SFTP transport" -p 1    # → epic-id
+bd create "feat: add SFTP transport" -p 1    # -> epic-id
 
 # Break it into tasks
-bd create "T1: implement connection" -p 1 --parent <epic-id>   # → t1-id
-bd create "T2: add retry logic" -p 2 --parent <epic-id>        # → t2-id
+bd create "T1: implement connection" -p 1 --parent <epic-id>   # -> t1-id
+bd create "T2: add retry logic" -p 2 --parent <epic-id>        # -> t2-id
 bd dep add <t2-id> <t1-id>    # T2 blocked until T1 is done
 
 # Dispatch a member to T1
@@ -75,7 +79,7 @@ bd update <t1-id> --assignee <member> --status in_progress
 bd close <t1-id>
 bd ready    # confirms T2 is now unblocked
 
-# At completion — link PR
+# At completion - link PR
 bd close <epic-id>
 bd note <epic-id> "PR: https://github.com/org/repo/pull/42"
 ```

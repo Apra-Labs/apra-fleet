@@ -54,8 +54,14 @@ test('mock sprint: plan-reviewer transport failures on every round produce PlanR
         // dispatchReview()-mirrored ladder before the round is recorded as a
         // dispatch failure -- 6 plan-reviewer dispatches total, never a 7th.
         check(planReviewerCalls === 6, `Expected exactly 6 plan-reviewer dispatches (3 rounds x 2 attempts each), got ${planReviewerCalls}`);
+        // apra-fleet-3swo.5.3: the in-round retry is now announced by the
+        // shared dispatchRole engine rather than by a plan-reviewer-specific
+        // log line, so the wording changed while the BEHAVIOUR this test
+        // exists for -- two attempts per round, six dispatches, never a
+        // seventh, and the infra-flavored error -- is unchanged and still
+        // asserted above.
         check(
-            sc.logs.some((m) => m.includes('Plan Reviewer: dispatch-level failure on attempt 1 of 2')),
+            sc.logs.some((m) => m.includes('Plan Reviewer dispatch threw:') && m.includes('Retrying (attempt 2 of 2)')),
             `Expected the in-round retry log line, logs: ${JSON.stringify(sc.logs)}`
         );
     });

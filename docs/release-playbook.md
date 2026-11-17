@@ -2,6 +2,17 @@
 
 How to cut a release. That's it.
 
+## 0. Pre-release check: Windows standard (non-admin) account
+
+Windows CI runners are admin, so the user-level service path is verified by hand before every
+release that touches install/start/stop/status or `src/services/service-manager/windows.ts`: on a
+real STANDARD account (Windows Sandbox or a standard user on a fleet member), with the release
+candidate binary, run `apra-fleet install` (no elevation; status `installed (enabled)`), kill the
+server tree (`taskkill /F /T`) and confirm the task revives it within the trigger interval with no
+console window, `apra-fleet stop` keeps it stopped across two intervals (status shows stopped by
+user), `apra-fleet start` re-enables and starts it, and `apra-fleet uninstall` removes the task.
+Attach the evidence to the release PR.
+
 ## 1. Bump the version -- in both package.json AND version.json
 
 Both files must be bumped together, in the same commit. This is not
@@ -16,19 +27,19 @@ that commit.
 
 ```json
 // package.json
-"version": "0.3.6"
+"version": "X.Y.Z"
 ```
 
 ```json
 // version.json
-{ "version": "0.3.6" }
+{ "version": "X.Y.Z" }
 ```
 
 Commit the bump:
 
 ```bash
 git add package.json package-lock.json version.json
-git commit -m "chore: bump version to 0.3.6"
+git commit -m "chore: bump version to X.Y.Z"
 git push
 ```
 
@@ -39,14 +50,14 @@ in `.github/workflows/ci.yml`, which builds the binaries and creates the
 GitHub release.
 
 ```bash
-git tag v0.3.6
-git push origin v0.3.6
+git tag vX.Y.Z
+git push origin vX.Y.Z
 ```
 
 ## 3. Wait for CI
 
 ```bash
-gh run list --workflow=ci.yml --branch v0.3.6 --limit 3
+gh run list --workflow=ci.yml --branch vX.Y.Z --limit 3
 ```
 
 Wait until it shows `completed / success`.
@@ -59,11 +70,20 @@ not the final notes -- always replace them with a short, human-written
 summary:
 
 ```bash
-gh release view v0.3.6                 # see the auto-generated draft
-gh release edit v0.3.6 --notes "..."   # replace with a clean summary
+gh release view vX.Y.Z                 # see the auto-generated draft
+gh release edit vX.Y.Z --notes "..."   # replace with a clean summary
 ```
 
 Keep the summary short: what changed and why. It's fine to leave GitHub's
 "Full Changelog" link at the bottom for anyone who wants the raw commit diff.
+
+## 5. Pin the new release as the upgrade baseline
+
+The nightly install/upgrade proof (`regression.yml`) starts its upgrade
+passes from the newest baseline in `tests/integration/fresh-install/pins.json`
+and reports INCONCLUSIVE once a newer release exists. Add the new release
+there (its installer digests from
+`gh api repos/Apra-Labs/apra-fleet/releases/tags/vX.Y.Z --jq '.assets[] | "\(.name) \(.digest)"'`)
+in a PR to main.
 
 Done.

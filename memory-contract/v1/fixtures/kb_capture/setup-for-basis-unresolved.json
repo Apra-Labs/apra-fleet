@@ -1,0 +1,22 @@
+{
+  "tool": "kb_capture",
+  "case": "setup-for-basis-unresolved",
+  "kind": "happy",
+  "request": {
+    "type": "knowledge",
+    "title": "Entry whose basis file will be deleted before a second promote",
+    "summary": "Set up to demonstrate E-PROMOTE-BASIS-UNRESOLVED.",
+    "content": "This entry cites src/soon-to-be-deleted.ts, which is removed before the second promote call.",
+    "source_files": [
+      "src/soon-to-be-deleted.ts"
+    ]
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"id\":\"e50e3742-5ae8-491c-8a8e-dc46547b4cc4\",\"audn_decision\":\"add\",\"confidence_clamped\":false}"
+      }
+    ]
+  }
+}

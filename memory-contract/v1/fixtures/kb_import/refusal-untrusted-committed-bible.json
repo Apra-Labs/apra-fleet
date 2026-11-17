@@ -1,0 +1,12 @@
+{
+  "tool": "kb_import",
+  "case": "refusal-untrusted-committed-bible",
+  "kind": "refusal",
+  "request": {},
+  "error": {
+    "message": "E-KB-MAINTAINER-REQUIRED: kb_import in a member session without the kb_maintainer grant imports the committed .fleet/kb-canonical.json only when the maintainer side wrote or imported that exact bible, and this checkout's committed bible (blob a2d46f71f6a86084f15e0d5c22008d4a3e52f64b) was never recorded by it (a bible committed only in this checkout is not trusted at its own confidence); nothing was imported. Remediation: Import a bible the kb_maintainer published (kb_bible_commit) -- e.g. reset .fleet/kb-canonical.json to the base branch -- or run the import from the kb_maintainer session or a FULL session, which records the bible it imports.",
+    "thrown": true
+  },
+  "expected_error_code": "E-KB-MAINTAINER-REQUIRED",
+  "session": "PLAIN_B"
+}

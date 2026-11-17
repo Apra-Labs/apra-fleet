@@ -1,0 +1,15 @@
+{
+  "tool": "kb_resolve_contradiction",
+  "case": "refusal-already-superseded",
+  "kind": "refusal",
+  "request": {
+    "winnerId": "e7446900-9cfe-46d4-8d5b-caa4133104fb",
+    "loserId": "5b730253-c162-449f-9d2a-7e92397d2725",
+    "evidence": "Re-resolving an already-resolved contradiction pair."
+  },
+  "error": {
+    "message": "resolveContradiction: refused -- one or both entries are already superseded (winner=e7446900-9cfe-46d4-8d5b-caa4133104fb, loser=5b730253-c162-449f-9d2a-7e92397d2725)",
+    "thrown": true
+  },
+  "expected_error_code": "E-RESOLVE-ALREADY-SUPERSEDED"
+}

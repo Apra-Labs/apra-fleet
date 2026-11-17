@@ -4,6 +4,30 @@ Common symptoms and how to resolve them. If something here does not match what
 you see, search [GitHub Issues](https://github.com/Apra-Labs/apra-fleet/issues)
 or ask in [Discussions](https://github.com/Apra-Labs/apra-fleet/discussions).
 
+## MCP connection
+
+**Claude Code: `Dynamic Client Registration rejected (HTTP 404)` for apra-fleet**
+
+Cause: the server refuses an `/mcp` request without this install's access
+secret (header `X-Apra-Fleet-Member-Secret`, value in
+`~/.apra-fleet/data/member-access.key`) with HTTP 401. Claude Code treats the
+401 as "OAuth needed", tries dynamic client registration, gets 404, and shows
+that message instead of the server's explanation.
+
+Fix:
+
+1. Restart the Claude Code (or other LLM CLI) session. A session started
+   before `apra-fleet install` / upgrade keeps its old MCP config without the
+   secret.
+2. If it persists, an apra-fleet entry without the header in a local-scope
+   (`~/.claude.json` `projects[<path>].mcpServers`) or project-scope
+   (`<repo>/.mcp.json`) config is shadowing the user-scope one install writes
+   (Claude resolves local, then project, then user scope). Remove it, e.g.
+   `claude mcp remove apra-fleet --scope local` (or delete the entry from
+   `.mcp.json`), then restart the session. Re-running `apra-fleet install`
+   also rewrites local-scope apra-fleet entries for this server with the
+   secret.
+
 ## Members
 
 **Member shows as offline**
@@ -18,6 +42,59 @@ or ask in [Discussions](https://github.com/Apra-Labs/apra-fleet/discussions).
 Usually an expired auth token. Ask Fleet to "Provision auth for `<member>`".
 For VCS tokens specifically, re-run `provision_vcs_auth`.
 
+If it is the member's *first* dispatch after registration and the CLI exited
+with code 0 and no output at all, suspect workspace trust rather than auth:
+`execute_prompt` classifies an exit-0/empty-stdout dispatch against a
+never-trusted workspace as `workspace_not_trusted`, seeds trust, and retries
+once. See "Permission granted but still denied on Claude" below.
+
+**`Claude CLI auth check failed -- you may need to run provision_llm_auth` during registration**
+
+Normal for a new member. `register_member` still succeeds; run
+`provision_llm_auth` for that member to finish setting up authentication.
+
+Before provisioning: for the default OAuth flow, log in locally first (`/login`
+in a Claude Code session, or `claude auth login`) -- `provision_llm_auth` copies
+your credentials to the member. For the API-key flow, pass the key as the
+`api_key` parameter; a Claude Code OAuth token from `claude setup-token`
+(`sk-ant-oat...`) also goes in `api_key` and is set as `CLAUDE_CODE_OAUTH_TOKEN`
+(an `sk-ant-api...` key as `ANTHROPIC_API_KEY`). Without `api_key`, a credential
+already stored for the member is re-deployed rather than overwritten by your
+login (this is what cloud start and sprint self-heal do); pass
+`force_oauth_copy: true` to copy your local login instead and clear the stored
+credential. The tool checks token expiry before deploying; an expired
+access token with a live refresh token still deploys, and the member's CLI
+refreshes on first use.
+
+**`secret_delivery_unavailable` on execute_prompt / provision_llm_auth**
+
+The fleet delivers a member's stored credentials (API key, OAuth token, set by
+`provision_llm_auth` or `apra-fleet auth --member`) through an owner-only file
+written over SFTP -- never on the member's command line, where any local user
+could read it with `ps`. When no such channel exists, the dispatch is refused
+before any LLM call and is not retried:
+
+- SSH member with the SFTP subsystem disabled: enable it in the member's
+  `sshd_config` (`Subsystem sftp internal-sftp`, or the path to `sftp-server`)
+  and restart sshd.
+- Relay member (no safe channel exists), or you prefer not to enable SFTP:
+  provide the credential in that machine's own environment, then clear the
+  stored copy with `provision_llm_auth {member_name: "<name>", clear_stored_credentials: true}`
+  (registry only; works offline and over relay).
+
+`execute_command` still runs on such a member, without the stored credential
+env vars, and says so in its result (`storedEnvNotDelivered`).
+
+**`Failed to authenticate: OAuth session expired and could not be refreshed`**
+
+`execute_prompt` reports this as reason `auth`, and fleet-sprint runs
+`provision_llm_auth` for the member once and retries once (no generic server
+retries). If the heal fails, re-login on the source machine with `/login`, then
+run `provision_llm_auth`, or provision an API key. Copied OAuth sessions are
+shared and refresh-token-rotated across every holder, so a refresh on one
+machine can invalidate the copies elsewhere; use an API key for unattended
+members.
+
 **Auth error (401 / 403)**
 
 - GitHub App tokens: re-mint with `provision_vcs_auth`.
@@ -28,6 +105,15 @@ For VCS tokens specifically, re-run `provision_vcs_auth`.
 
 Check what actually happened on the member:
 ask Fleet to run `cat progress.json` on it.
+
+**Long-running background task fails to launch on a Windows member**
+
+`execute_command`'s `long_running` mode on Windows launches the task
+detached via `Invoke-CimMethod Win32_Process.Create` (WMI). If this fails,
+check that the WMI service (`Winmgmt`) is running on the member and that the
+fleet SSH user has permission to create processes via WMI -- `monitor_task`
+will otherwise report the task as immediately failed/missing rather than
+running.
 
 ## Permissions
 
@@ -40,9 +126,27 @@ Fleet can configure member permissions. Ask it to, for example, "Grant
 | Provider | Config location |
 |----------|-----------------|
 | Claude | `.claude/settings.local.json` |
-| Gemini | `.gemini/policies/` |
 | Codex | `.codex/config.toml` (approval mode) |
 | Copilot | `.github/copilot/settings.local.json` |
+
+**A Claude dispatch reports `permissionWarning`, or `permission_denied`**
+
+The member CLI refused a tool call. Check `healable`:
+
+- `healable: false` (auto or bypass mode): the safety classifier or a deny rule
+  refused it. That is a deliberate block, not a missing grant: `suggestedGrants`
+  is empty and fleet-sprint never grants it. Grant it by hand with
+  `compose_permissions` `grant` only if the action is really intended.
+- `healable: true` (acceptEdits mode, e.g. Haiku): a missing allow rule. Grant
+  from its `suggestedGrants`.
+
+By default a complete reply succeeds and only warns (`permissionWarning`). The
+dispatch fails `permission_denied` only when the caller passed
+`fail_on_permission_denial: true` (fleet-sprint does); even then a
+`healable: false` refusal on a complete reply stays a warning. Without the flag
+an incomplete reply keeps its ordinary reason (e.g. `empty_response`) with the
+refusals attached as `permissionDenied`. A max_turns, auth or server
+failure keeps its own reason, with the refusals attached as `permissionDenied`.
 
 **Permission granted but still denied on Claude**
 
@@ -51,6 +155,18 @@ project folder is a **trusted workspace**. If the member's work folder has
 never been opened and trusted in Claude Code directly, the permissions Fleet
 writes there are inert. Open the folder in Claude Code once and accept the
 trust prompt, then retry.
+
+**A deploy step is blocked at the permission pre-check even though similar commands are allowed**
+
+Check the allowlist for the *exact* subcommand the deploy step invokes, not
+just the binary name -- an allowlist entry scoped to one subcommand (e.g.
+`Bash(<tool> start)`) does not cover a different subcommand of the same
+binary (e.g. `Bash(<tool> run ...)`) even though both start the same
+long-running process. Read the deploy runbook's own Permissions section for
+the full list of required command prefixes and diff it against
+`.claude/settings.json` / `.claude/settings.local.json` before assuming the
+underlying operation itself is unsafe or needs a workaround -- add the
+missing prefix and re-trigger.
 
 ## Timeouts
 
@@ -71,7 +187,7 @@ A dispatch can end in two distinct ways:
 **A token or password appeared in command output**
 
 Store the secret with `credential_store_set`, then reference it as
-`{{secure.NAME}}` in `execute_command`. Fleet redacts it to `[REDACTED:NAME]`
+`{{secret.NAME}}` in `execute_command`. Fleet redacts it to `[REDACTED:NAME]`
 before the LLM ever sees the output. See
 [docs/features/oob-auth.md](features/oob-auth.md).
 
@@ -79,7 +195,7 @@ before the LLM ever sees the output. See
 
 Run `credential_store_delete name=<NAME>` then `credential_store_set
 name=<NAME>`. The new value is picked up immediately on the next
-`execute_command` that references `{{secure.NAME}}`.
+`execute_command` that references `{{secret.NAME}}`.
 
 ## Git
 
@@ -88,6 +204,176 @@ name=<NAME>`. The new value is picked up immediately on the next
 Minted VCS tokens may lack CI/CD permissions. Run those operations from your
 main AI coding session instead -- it has your full git credentials. See
 [docs/design-git-auth.md](design-git-auth.md).
+
+**`git push` from a Windows member hangs or fails silently with no auth prompt**
+
+If the member's git config has `credential.helper=manager` (Git Credential
+Manager), the helper tries to open an interactive prompt that cannot appear in
+a headless session, so the push stalls or fails without a useful error. Use a
+non-interactive credential source instead: `gh auth setup-git` (GitHub) or the
+token minted by `provision_vcs_auth`, which writes a scoped credential entry
+that needs no prompt.
+
+**git spawned by bd/dolt fails with "Not enough memory resources are available to process this command" (Windows)**
+
+Symptom: `bd dolt pull`/`bd dolt push` on a Windows host fails with
+`fork/exec C:\Program Files\Git\mingw64\bin\git.exe: Not enough memory
+resources are available to process this command`, while plenty of RAM is
+free. Dolt then appends `hint: dolt does not support interactive credential
+prompts`, which points at credentials -- it is not a credential problem: git
+never started, so no credential was consulted.
+
+Cause: the text is `ERROR_NOT_ENOUGH_MEMORY` (8) returned by Windows
+`CreateProcess`. With RAM free, the two known causes are (a) an oversized
+environment block handed to the child -- each hop (fleet server -> shell ->
+bd -> dolt -> git) copies the whole block -- and (b) desktop-heap
+exhaustion in a non-interactive session (service / scheduled-task context),
+which grows with the number of live console processes.
+
+Evidence (measured 2026-10-06):
+
+- NOT reproduced on Windows: no Windows member was reachable from the
+  session that did this work, so the failure itself was not re-triggered and
+  neither cause is confirmed on the affected host.
+- Product code that can inflate the block was found by reading it:
+  `WindowsCommands.getCleanEnv()` (src/os/windows.ts) builds `Path` as
+  Machine Path + `;` + User Path with no dedupe, and
+  `WindowsGitBashCommands.cleanExec()` (src/os/windows-gitbash.ts) passes the
+  fleet server's whole env to the child, including whatever PATH growth
+  nested Git Bash logins added.
+- `scripts/repro/win-env-block-size.mjs` measures a block (this process's
+  env, or a captured one via `--env-json`) before and after bounding. On the
+  Linux dev host the block was 1361 chars, 37 vars, PATH 12 entries and 0
+  duplicates. That is far under any limit, so a Linux measurement says nothing
+  about the Windows host. A synthetic Windows-shaped env (Machine + User Path,
+  3 nested Git Bash PATH prefixes, one 40000-char inherited variable)
+  measured 40636 chars and 20 PATH entries with 8 duplicates; after bounding
+  it was 408 chars and 12 entries with 0 duplicates, and the oversized
+  variable was dropped.
+- To confirm on the affected host, run the script there in the fleet
+  server's own context (`npm run build` first). A block near or above 32767
+  chars, or heavy PATH duplication, supports cause (a). A small block points
+  to cause (b): raise the non-interactive desktop heap (the third
+  `SharedSection` value under
+  `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\SubSystems\Windows`)
+  or run the fleet server in an interactive session.
+
+Fix in the product:
+
+- The env passed to local Windows children (both the PowerShell and the
+  Git Bash variants) is bounded by `boundChildEnv()`
+  (src/os/child-env-bound.ts). PATH entries are deduplicated
+  (case-insensitive, trailing slash ignored, first occurrence wins). If the
+  block is still over 32767 UTF-16 chars, the largest non-protected variables
+  are dropped until it fits. PATH, HOME/USERPROFILE, the Windows session
+  vars, git/ssh/proxy config, provider prefixes and anything credential-named
+  are never dropped. A warning is logged whenever a variable is dropped, or
+  when the protected variables alone exceed the cap.
+- The fleet-sprint Dolt sync (`surfaceDoltFailureText` in
+  packages/apra-fleet-se/fleet-sprint/dolt-sync.mjs) names the Windows
+  process-creation limit in the surfaced error and strips the misleading
+  credential hint lines. The failure is still classified as a transient spawn
+  outage and retried as before.
+- Go concurrency is bounded for bd/dolt started by fleet on Windows members.
+  dolt (a Go program) starts one git process per remote chunk at once, and
+  enough concurrent `CreateProcess` calls fail with this error even with a
+  small env block. Fleet sets `GOMAXPROCS=1` ONLY when it is not already set
+  (an operator value is never overridden) -- rule in src/os/go-concurrency.ts:
+  - local Windows members: the child env built by `getCleanEnv()` /
+    `WindowsGitBashCommands.cleanExec()`;
+  - remote Windows members: the agent launch command and the
+    `execute_command` wrapper, as a PowerShell or Git Bash statement chosen
+    per member shell. So `bd dolt pull/push` run by a dispatched agent, the
+    groomer, or `execute_command` inherits it. Linux/macOS members are
+    unchanged.
+  The default applies to the WHOLE fleet-started session on a Windows member,
+  not only to the bd/dolt process. Any Go program a dispatched agent runs there
+  (`go build`, `go test`, other Go tools) also runs with `GOMAXPROCS=1`, so it
+  is effectively serialized to one OS thread and can be slower than expected.
+
+  Override it by setting `GOMAXPROCS` yourself; fleet never replaces a value
+  that is already set. Set it as a Windows user environment variable on the
+  member (for example `[Environment]::SetEnvironmentVariable('GOMAXPROCS', '4', 'User')`),
+  then:
+
+  - Remote Windows member (PowerShell or Git Bash shell): the member picks it
+    up on the next SSH connection. The fleet server reuses an open connection
+    until it has been idle for 5 minutes, so wait that long or restart the
+    fleet server.
+  - Local Windows member, PowerShell shell: restart the fleet server
+    (`apra-fleet stop`, then `apra-fleet start`). The server reads the
+    machine and user environment once and caches it for its lifetime.
+  - Local Windows member, Git Bash shell: restart the fleet server too.
+    Commands run as a non-interactive `bash -c` with the server's own process
+    environment, so `~/.bashrc` is not read. The server sees the new user
+    variable only when it starts from a fresh environment (the service, or
+    `apra-fleet start` from a terminal opened after the change).
+
+  For one command only, set it in the command itself; the default is applied
+  before the command runs, so this needs no restart: `$env:GOMAXPROCS = '4';
+  go test ./...` (PowerShell) or `GOMAXPROCS=4 go test ./...` (Git Bash).
+
+  Trade-off: a raised value re-exposes `bd dolt pull/push` to the Windows
+  process-creation limit above, because dolt may start several git processes
+  at once. Keep `1` if sync fails with this error; raise it only when Go build
+  and test speed matters more than sync reliability on that member.
+
+  Upstream issue: https://github.com/gastownhall/beads/issues/7082
+
+Your own terminal (not started by fleet): fleet cannot set the env of a shell
+you opened yourself, so set the same default before running `bd dolt
+pull`/`bd dolt push` there:
+
+- PowerShell (this session): `$env:GOMAXPROCS = '1'`
+- PowerShell (persist for your user, new shells): `[Environment]::SetEnvironmentVariable('GOMAXPROCS', '1', 'User')`
+- cmd.exe: `set GOMAXPROCS=1` (persist: `setx GOMAXPROCS 1`)
+- Git Bash: `export GOMAXPROCS=1` (persist: add it to `~/.bashrc`)
+
+If you already set `GOMAXPROCS` to another value on purpose, fleet keeps it.
+
+**`bd init` errors "already initialized" on a second run**
+
+`bd init` is not idempotent. Any script or playbook that bootstraps beads must
+check for an existing `.beads/` directory (or `bd` reporting a database) before
+calling it, rather than treating the error as a failure.
+
+## Build & native dependencies
+
+**`npm ci`/`npm install` fails compiling a native module (e.g. `cpu-features`, an optional dependency of `ssh2`) via `node-gyp`**
+
+This is a toolchain/environment incompatibility, not a code defect -- do not
+patch the deploy or build scripts to work around it. On macOS it shows up as
+Xcode Command Line Tools' `libc++` headers rejecting newer C++20 constructs
+(`concept`, `requires`, `output_iterator_tag`/`contiguous_iterator_tag`) that
+the Node header set expects, once the Node major version and the installed
+CLT/node-gyp versions drift out of the combination that was actually tested.
+Resolve by aligning the toolchain, not the source tree: update Xcode Command
+Line Tools (`xcode-select --install` / reinstall), or build against a Node
+version known to match the installed CLT, or update `node-gyp` itself. Check
+the npm debug log path printed in the failure output for the exact compiler
+error before assuming this is the cause.
+
+### ssh2 runs without native crypto (silent pure-JS cipher fallback)
+
+**Symptom:** `npm ci` exits 0 but ssh2's optional addon `sshcrypto.node` was
+not built (no compiler / python / make). ssh2 then silently uses its pure-JS
+ciphers: SSH still works but is slower, and timing-sensitive tests such as
+`tests/sftp-subsystem-refusal.test.ts` can behave differently.
+
+**How to tell if native crypto is active (source/dev installs):**
+`node scripts/check-ssh2-native.mjs` exits 0 and prints the binding path when
+active; it exits 1 and names `sshcrypto.node` plus the fix when not. Fix:
+install build tools and run `npm rebuild ssh2` (or re-run `npm ci`). CI runs
+this check in the node_modules cache action before saving the cache, so a tree
+without the binding fails the job and is never cached.
+
+**Decision: apra-fleet does NOT warn at startup.** What was checked: the
+shipped single-executable binary is bundled by `scripts/build-sea.mjs` with
+`loader: { '.node': 'empty' }`, so `sshcrypto.node` is never part of the
+shipped binary and ssh2 always uses the JS cipher there. A startup warning
+would fire for every shipped install and carry no actionable remedy (users
+cannot rebuild a SEA binary), so it would be noise. The check is therefore a
+contributor/CI guard only, not a runtime feature. Users who install the npm package (`npm i -g @apralabs/apra-fleet`) can run `node <global-prefix>/lib/node_modules/@apralabs/apra-fleet/node_modules/ssh2/lib/protocol/crypto/build/Release/sshcrypto.node` presence check (file exists = native active); the same rebuild remedy applies.
 
 ## Stuck agents
 
@@ -106,6 +392,16 @@ For unexplained behavior -- missing output, silent failure, unexpected results
 $APRA_FLEET_DATA_DIR/logs/fleet-<pid>.log
 ```
 
+The logs are owner-only. On POSIX the data dir and `logs/` are 0700 and
+`fleet-<pid>.log` and the service log `fleet.log` are 0600; a server start
+tightens existing ones with chmod. On Windows the server removes inherited
+ACEs and grants only the current user full control
+(`icacls <path> /inheritance:r /grant:r <DOMAIN\user>:F`), because
+`APRA_FLEET_DATA_DIR` may point outside the user profile. A path that cannot
+be tightened produces a `log permissions:` warning line and the server keeps
+running. MCP session ids are logged only as their first 8 characters
+(`sid=1a2b3c4d...`): a full session id addresses the session.
+
 These are JSON lines. Filter by member or by tool with `jq`:
 
 ```bash
@@ -115,3 +411,44 @@ jq 'select(.tag == "<tool>")'       fleet-<pid>.log
 
 The **Fleet Logs** section of the fleet skill's `SKILL.md` has the full field
 reference and more `jq` examples.
+
+## Contributor gotchas
+
+Failure modes that look like success when working on this repo.
+
+**A `scripts/` entrypoint guard never fires on Windows**
+
+Comparing `import.meta.url` against a hand-built `"file://" + process.argv[1]`
+string never matches
+on Windows: `process.argv[1]` is a native path (`C:\path\to\s.mjs`), so the
+hand-built string has two slashes after the scheme, while `import.meta.url` is
+a properly encoded URL with three slashes and forward slashes throughout. The
+comparison is always false, `main()` never runs, and the script exits 0 having
+verified nothing -- indistinguishable from a real pass. Use
+`pathToFileURL(process.argv[1]).href` instead. Coverage for this class of
+defect must spawn the script as a real CLI process; an in-process `import()`
+does not exercise the guard at all.
+
+**`execFileSync('bd', [...])` fails with `spawnSync bd ENOENT` on Windows**
+
+The globally installed `bd` resolves on PATH to npm's `bd.cmd`/`bd.ps1` shims,
+which `CreateProcess` cannot exec directly. Adding `{ shell: true }` "fixes" it
+but reintroduces command injection, since Node joins the command and every
+array argument into one unquoted command line. The repo's shared helper
+(`scripts/lib/exec-bd.mjs` and its supervisor twin) instead parses the shim for
+the underlying `bin/bd.js` path and spawns
+`execFileSync(process.execPath, [scriptPath, ...args])` -- no shell involved.
+Route new `bd` call sites through that helper rather than reimplementing.
+
+**A green root test run can still miss a whole workspace**
+
+A workspace whose tests run under a different runner than the root (e.g.
+`node --test` alongside a root `vitest run`) is invisible to the root test
+command unless its script is explicitly chained in. Verify the root gate
+actually executes every workspace's suite before treating it as a gate.
+
+**When spawning an interactive CLI from Node, close stdin**
+
+`child_process.exec()` leaves the child's stdin connected to the parent. A CLI
+that checks for a TTY (such as `claude -p`) then waits forever for input that
+never arrives. Call `child.stdin?.end()` immediately after the spawn.

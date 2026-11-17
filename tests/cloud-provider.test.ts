@@ -232,7 +232,9 @@ vi.mock('../src/services/strategy.js', () => ({
   getStrategy: () => ({
     execCommand: mockCloudExec,
     testConnection: vi.fn().mockResolvedValue({ ok: true, latencyMs: 5 }),
-    transferFiles: vi.fn(),
+    transferFiles: async (paths: string[]) => ({ success: paths, failed: [] }),
+    writeSecretFile: async () => '/home/testuser/.apra-fleet-secret',
+    removeSecretFile: async () => undefined,
     close: vi.fn(),
   }),
 }));

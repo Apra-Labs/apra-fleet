@@ -27,6 +27,7 @@ import {
   fillFixturePlaceholders,
   fixtureToRegex,
 } from './helpers/regression-command-surface.js';
+import { hasNodeSqlite } from './helpers/node-sqlite-capability.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST_INDEX = path.resolve(__dirname, '..', 'dist', 'index.js');
@@ -57,7 +58,13 @@ describe('command-surface regression: --version and run --transport stdio (apra-
     expect(actual).toMatch(expectedPattern);
   });
 
-  it('run --transport stdio handshake is unchanged versus its fixture', async () => {
+  // apra-fleet-ytfy.6: this spawns the real built dist/index.js server, which
+  // (since PR #305) wires in the KB subsystem at startup and hard-crashes on
+  // a Node that lacks a working node:sqlite + FTS5 (<22.16.0) -- an
+  // environmental gap unrelated to this test's actual regression guard.
+  // Everything else in this file (the --version test above) runs unaffected,
+  // so only this one test is skipped rather than excluding the whole file.
+  it.skipIf(!hasNodeSqlite())('run --transport stdio handshake is unchanged versus its fixture', async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-regression-stdio-'));
 
     const transport = new StdioClientTransport({

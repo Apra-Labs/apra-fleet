@@ -1,0 +1,13 @@
+{
+  "tool": "kb_import",
+  "case": "refusal-bible-wrong-shape",
+  "kind": "refusal",
+  "request": {
+    "path": "<SCRATCH_REPO_A>/.fleet/wrong-shape.json"
+  },
+  "error": {
+    "message": "kb_import: bible file is not a JSON array of entries: <SCRATCH_REPO_A>/.fleet/wrong-shape.json",
+    "thrown": true
+  },
+  "expected_error_code": "E-BIBLE-WRONG-SHAPE"
+}

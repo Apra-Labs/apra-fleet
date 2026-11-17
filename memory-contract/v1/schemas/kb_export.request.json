@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/schemas/kb_export.request.json#",
+  "x-invariant": [
+    "INV-05"
+  ],
+  "$ref": "#/$defs/v1-kb_export-request",
+  "$defs": {
+    "v1-kb_export-request": {
+      "type": "object",
+      "properties": {
+        "scope": {
+          "type": "string",
+          "enum": [
+            "project",
+            "global"
+          ],
+          "description": "project (default, unchanged): export the project KB to .fleet/kb-canonical.json. global: export the GLOBAL KB to .fleet/kb-canonical-global.json in the calling session's own repo (in practice the apra-fleet platform repo, committed there so the installer can distribute it -- D8)."
+        },
+        "baseBranch": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The target base branch (the branch the entries merge into). Written to provenance.branch. Omitted: the export folder HEAD branch."
+        },
+        "baseCommit": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The base commit the entries were verified against. Written to provenance.commit. Omitted: the export folder HEAD commit."
+        },
+        "repo_path": {
+          "description": "REMOVED -- do not pass. A call carrying it fails with E-SCOPE-KEY-REMOVED; the KB is always the calling session's own."
+        },
+        "repo": {
+          "description": "REMOVED -- do not pass. A call carrying it fails with E-SCOPE-KEY-REMOVED; the KB is always the calling session's own."
+        },
+        "repo_remote_url": {
+          "description": "REMOVED -- do not pass. A call carrying it fails with E-SCOPE-KEY-REMOVED; the KB is always the calling session's own."
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

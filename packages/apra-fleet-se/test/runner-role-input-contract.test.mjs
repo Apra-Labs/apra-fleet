@@ -43,8 +43,8 @@ import { fileURLToPath } from 'node:url';
 // to make it pass -- it is meant to go green only when runner.js is fixed.
 //
 // harvester: wired for real in apra-fleet-unw2.10 (N12) -- runner.js's
-// buildHarvesterPrompt now consumes all five vendored-required inputs
-// (analysisArtifactFile/analysisText/costAnalysis/base-branch/branch), each
+// buildHarvesterPrompt now consumes all four vendored-required inputs
+// (analysisArtifactFile/analysisText/base-branch/branch), each
 // assembled from real per-run state (closedCountHistory, deploy/integ
 // failures, the final verdict, the live budget object). This assertion is
 // EXPECTED GREEN.
@@ -52,6 +52,14 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES_DIR = path.join(__dirname, '..', 'apra-pm', 'agents', 'schemas');
 const RUNNER_PATH = path.join(__dirname, '..', 'fleet-sprint', 'runner.js');
+// apra-fleet-3swo.3.4 moved all seven dispatch prompt builders (including
+// every one this file source-extracts) out of runner.js into prompts.mjs --
+// runner.js re-exports/imports them but no longer contains their
+// `function <name>(` text, so the builder-body extraction below must read
+// prompts.mjs. RUNNER_SOURCE stays runner.js: the plan-reviewer and
+// ci-watcher checks below assert against runner.js's own DISPATCH sites,
+// which did not move.
+const PROMPTS_PATH = path.join(__dirname, '..', 'fleet-sprint', 'prompts.mjs');
 
 // contracts.mjs resolves its vendored-schema dir at MODULE-LOAD time from
 // this env var (its documented test-only override), so it must be set before
@@ -67,6 +75,7 @@ if (previousOverride === undefined) {
 }
 
 const RUNNER_SOURCE = fs.readFileSync(RUNNER_PATH, 'utf-8');
+const PROMPTS_SOURCE = fs.readFileSync(PROMPTS_PATH, 'utf-8');
 
 // ---------------------------------------------------------------------------
 // Source-extraction helpers -- the revert-sensitive core
@@ -89,7 +98,6 @@ const PARAM_TO_SCHEMA_KEY = Object.freeze({
     expectedHeadSha: 'expectedHeadSha',
     analysisArtifactFile: 'analysisArtifactFile',
     analysisText: 'analysisText',
-    costAnalysis: 'costAnalysis',
 });
 
 // apra-pm PR#29 bumped doer-input/reviewer-input to @2, both adding a
@@ -115,7 +123,6 @@ const PLACEHOLDER = Object.freeze({
     expectedHeadSha: '0123456789abcdef0123456789abcdef01234567',
     analysisArtifactFile: 'docs/sprint-logs/unw2.md',
     analysisText: 'Sprint analysis text.',
-    costAnalysis: '$0.00 (estimate)',
     assignedBeadIds: ['apra-fleet-abc'],
     beadIds: ['apra-fleet-abc'],
     featureIds: ['apra-fleet-def'],
@@ -128,7 +135,7 @@ const PLACEHOLDER = Object.freeze({
  */
 function extractBuilderParams(fnName) {
     const re = new RegExp(`function ${fnName}\\(\\{([^}]*)\\}`);
-    const m = RUNNER_SOURCE.match(re);
+    const m = PROMPTS_SOURCE.match(re);
     if (!m) return null;
     return m[1]
         .split(',')
@@ -177,11 +184,11 @@ describe('runner role-input contract tripwire (N13; guards N1)', () => {
         // --metadata and must NOT instruct the old --notes convention.
         // EXPECTED RED pre-unw2.1 (runner still emits --notes="model: <tier>").
         test('buildPlannerPrompt uses the --metadata model-tier convention, not --notes (N1 divergence 1)', () => {
-            const start = RUNNER_SOURCE.indexOf('function buildPlannerPrompt');
-            assert.ok(start !== -1, 'buildPlannerPrompt not found in runner.js');
+            const start = PROMPTS_SOURCE.indexOf('function buildPlannerPrompt');
+            assert.ok(start !== -1, 'buildPlannerPrompt not found in prompts.mjs');
             // Bound the slice to the planner builder body (up to the next builder).
-            const end = RUNNER_SOURCE.indexOf('function buildStreakAssignmentPrompt', start);
-            const body = RUNNER_SOURCE.slice(start, end === -1 ? undefined : end);
+            const end = PROMPTS_SOURCE.indexOf('function buildStreakAssignmentPrompt', start);
+            const body = PROMPTS_SOURCE.slice(start, end === -1 ? undefined : end);
 
             assert.ok(
                 body.includes('--metadata'),
@@ -229,7 +236,7 @@ describe('runner role-input contract tripwire (N13; guards N1)', () => {
     describe('doer', () => {
         test('buildDoerPrompt supplies branch and assignedBeadIds', () => {
             const ctx = contextFromBuilder('buildDoerPrompt');
-            assert.ok(ctx !== null, 'buildDoerPrompt not found in runner.js');
+            assert.ok(ctx !== null, 'buildDoerPrompt not found in prompts.mjs');
 
             const result = validateRoleInput('doer', ctx);
             assert.strictEqual(
@@ -250,7 +257,7 @@ describe('runner role-input contract tripwire (N13; guards N1)', () => {
     describe('reviewer', () => {
         test('buildReviewerPrompt supplies base-branch, branch, and beadIds', () => {
             const ctx = contextFromBuilder('buildReviewerPrompt');
-            assert.ok(ctx !== null, 'buildReviewerPrompt not found in runner.js');
+            assert.ok(ctx !== null, 'buildReviewerPrompt not found in prompts.mjs');
 
             const result = validateRoleInput('reviewer', ctx);
             assert.strictEqual(
@@ -323,20 +330,20 @@ describe('runner role-input contract tripwire (N13; guards N1)', () => {
     // -- harvester -------------------------------------------------------
     // KNOWN contract violation today: buildHarvesterPrompt consumes only
     // { branch, baseBranch, targetIssues } and explicitly instructs the
-    // harvester to treat analysisText/costAnalysis as UNAVAILABLE, omitting
-    // all of analysisArtifactFile/analysisText/costAnalysis that
+    // harvester to treat analysisText as UNAVAILABLE, omitting
+    // all of analysisArtifactFile/analysisText that
     // harvester-input.json marks required. Wired for real (and flipped green)
     // in apra-fleet-unw2.10 (N12). Included but SKIPPED so it does not go red
     // here; the assertion body documents the failure it WILL guard once wired.
     describe('harvester', () => {
-        test('buildHarvesterPrompt supplies all five required harvester inputs (N12)', () => {
+        test('buildHarvesterPrompt supplies all four required harvester inputs (N12)', () => {
             const ctx = contextFromBuilder('buildHarvesterPrompt');
-            assert.ok(ctx !== null, 'buildHarvesterPrompt not found in runner.js');
+            assert.ok(ctx !== null, 'buildHarvesterPrompt not found in prompts.mjs');
             const result = validateRoleInput('harvester', ctx);
             assert.strictEqual(
                 result.valid,
                 true,
-                'harvester dispatch must supply analysisArtifactFile/analysisText/costAnalysis/'
+                'harvester dispatch must supply analysisArtifactFile/analysisText/'
                     + `base-branch/branch (N12); it omits at least one. errors=${JSON.stringify(result.errors)}`,
             );
         });

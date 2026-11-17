@@ -1,0 +1,187 @@
+import { z } from 'zod';
+import { KB_REMOVED_SCOPE_KEYS_SHAPE } from '../services/knowledge/kb-removed-scope-keys.js';
+import { getSelfKbProviders, type KbAnchor } from '../services/knowledge/kb-self.js';
+import { KbCaptureRejected } from '../services/knowledge/types.js';
+import { logWarn } from '../utils/log-helpers.js';
+import type { KBEntryInput, CaptureSource, AudnDecision } from '../services/knowledge/types.js';
+
+export const kbHarvestSchema = z.object({
+  session_transcript: z.string().optional()
+    .describe('Full session transcript text to scan for learnings'),
+  session_id: z.string().optional()
+    .describe('Session ID for attribution'),
+  // Removed pre-redesign scope keys: declared only so a caller still passing one
+  // is refused with E-SCOPE-KEY-REMOVED instead of silently re-scoped.
+  ...KB_REMOVED_SCOPE_KEYS_SHAPE,
+});
+
+export type KbHarvestInput = z.infer<typeof kbHarvestSchema>;
+
+interface ExtractedLearning {
+  title: string;
+  summary: string;
+  content: string;
+  source_files: string[];
+  symbols: string[];
+}
+
+const LEARNING_PATTERNS = [
+  /(?:^|\n)\s*(?:I found that|Note:|Warning:|Bug:|Gotcha:|This means)\s*[:\-]?\s*(.+?)(?:\n\n|\n(?=[A-Z])|$)/gis,
+  /(?:^|\n)\s*(?:The (?:issue|problem|fix|solution|root cause) (?:is|was))\s*[:\-]?\s*(.+?)(?:\n\n|\n(?=[A-Z])|$)/gis,
+  /(?:^|\n)\s*(?:Important:|Key insight:|Lesson learned:|TIL:)\s*(.+?)(?:\n\n|\n(?=[A-Z])|$)/gis,
+];
+
+/** Longest first_error text carried into the kb_harvest response. */
+const MAX_FIRST_ERROR_CHARS = 500;
+
+const FILE_PATH_RE = /(?:^|\s)((?:src|lib|tests?|docs?)\/[\w./-]+\.\w+)/g;
+const SYMBOL_RE = /`(\w{2,}(?:\.\w+)?(?:\(\))?)`/g;
+
+function extractFilePaths(text: string): string[] {
+  const matches = new Set<string>();
+  let m: RegExpExecArray | null;
+  const re = new RegExp(FILE_PATH_RE.source, FILE_PATH_RE.flags);
+  while ((m = re.exec(text)) !== null) {
+    matches.add(m[1]);
+  }
+  return [...matches];
+}
+
+function extractSymbols(text: string): string[] {
+  const matches = new Set<string>();
+  let m: RegExpExecArray | null;
+  const re = new RegExp(SYMBOL_RE.source, SYMBOL_RE.flags);
+  while ((m = re.exec(text)) !== null) {
+    const sym = m[1].replace(/\(\)$/, '');
+    if (sym.length >= 2 && !/^(the|and|for|not|but|was|are|has|had|can|will|this|that|with|from)$/i.test(sym)) {
+      matches.add(sym);
+    }
+  }
+  return [...matches];
+}
+
+function extractLearnings(transcript: string): ExtractedLearning[] {
+  const results: ExtractedLearning[] = [];
+  const seen = new Set<string>();
+
+  for (const pattern of LEARNING_PATTERNS) {
+    const re = new RegExp(pattern.source, pattern.flags);
+    let match: RegExpExecArray | null;
+    while ((match = re.exec(transcript)) !== null) {
+      const raw = match[1].trim();
+      if (raw.length < 20 || seen.has(raw)) continue;
+      seen.add(raw);
+
+      const title = raw.length > 80 ? raw.slice(0, 77) + '...' : raw;
+      const summary = raw.length > 200 ? raw.slice(0, 200) + '...' : raw;
+      const source_files = extractFilePaths(raw);
+      const symbols = extractSymbols(raw);
+
+      results.push({
+        title,
+        summary,
+        content: raw,
+        source_files,
+        symbols,
+      });
+    }
+  }
+
+  return results;
+}
+
+// T3.2 (F7, revised D7): kb_harvest is auto-dispatched fire-and-forget by
+// src/tools/execute-prompt.ts after every successful execute_prompt, which
+// passes the full session transcript -- the one thing the agent whose
+// session just ended does not itself have reliable access to. That autowire
+// is the ONLY path that produces entries; do not remove it (see
+// tests/knowledge/kb-harvest-autowire.test.ts). Calling this tool manually
+// with no session_transcript (the "call kb_harvest yourself at session end"
+// pattern once documented in the role prompts) is a no-op -- see the early
+// return below -- and that instruction has been removed from agents/doer.md,
+// agents/reviewer.md, etc. (they now note kb_harvest is an automatic
+// backstop, not something they need to call). This is a separate, low-trust,
+// regex-extracted path from a role's own kb_capture/kb_captures flow: every
+// entry captured here is forced to
+// confidence='UNVERIFIED' (never CONFIRMED, covered by the D1 clamp) with
+// author='harvest', source='harvest' so it is distinguishable in queries.
+export async function kbHarvest(input: KbHarvestInput, anchor?: KbAnchor): Promise<string> {
+  if (!input.session_transcript) {
+    return JSON.stringify({ entries_captured: 0, entries_updated: 0, entries_skipped: 0, entries_rejected: 0, entries_failed: 0 });
+  }
+
+  const providers = await getSelfKbProviders(anchor);
+  const provider = providers.project;
+
+  const learnings = extractLearnings(input.session_transcript);
+  let entries_captured = 0;
+  let entries_updated = 0;
+  let entries_skipped = 0;
+  let entries_rejected = 0;
+  let entries_failed = 0;
+  // The first non-rejection failure, reported only when nothing landed, so a
+  // harvest whose every capture failed (a broken DB, a server that is down)
+  // says why instead of hiding it in the count.
+  let first_error: string | undefined;
+
+  // D5 + revised D7 (T2.3): harvested entries are UNVERIFIED, regex-extracted,
+  // low-trust captures from the execute_prompt autowire -- distinct provenance
+  // from real KB-Agent captures (author='kb-agent', source='session'/'review').
+  const source: CaptureSource = 'harvest';
+
+  for (const learning of learnings) {
+    const entryInput: KBEntryInput = {
+      type: 'learning',
+      title: learning.title,
+      summary: learning.summary,
+      content: learning.content,
+      source_files: learning.source_files,
+      symbols: learning.symbols,
+      tags: input.session_id ? [`session:${input.session_id}`] : [],
+      content_hash: '',
+      content_hash_type: 'sha256',
+      flagged_for_review: false,
+      author: 'harvest',
+      source,
+      confidence: 'UNVERIFIED',
+    };
+
+    // Isolate each capture so one failure never costs the learnings after
+    // it: an unhandled throw here would abort the remaining entries and die
+    // silently, because auto-harvest is dispatched fire-and-forget with a bare
+    // .catch() in execute-prompt.ts. A capture refused for its basis
+    // (KB-TRUST PHASE 1: harvest's regex extraction often yields no file
+    // paths) is counted as rejected. Any other failure -- e.g. a remote KB
+    // server that is down, where the http provider queues nothing -- is
+    // logged with the entry title and counted as failed, so the caller sees
+    // that the harvest must be repeated.
+    let audn_decision: AudnDecision;
+    try {
+      ({ audn_decision } = await provider.capture(entryInput));
+    } catch (err) {
+      if (err instanceof KbCaptureRejected) {
+        entries_rejected++;
+        continue;
+      }
+      entries_failed++;
+      const message = err instanceof Error ? err.message : String(err);
+      first_error ??= message.length > MAX_FIRST_ERROR_CHARS ? `${message.slice(0, MAX_FIRST_ERROR_CHARS)}...` : message;
+      logWarn('kb-harvest', `capture of "${entryInput.title}" failed and was not stored: ${message}`);
+      continue;
+    }
+
+    if (audn_decision === 'add' || audn_decision === 'flagged') {
+      entries_captured++;
+    } else if (audn_decision === 'update') {
+      entries_updated++;
+    } else {
+      entries_skipped++;
+    }
+  }
+
+  const landed = entries_captured + entries_updated + entries_skipped;
+  return JSON.stringify({
+    entries_captured, entries_updated, entries_skipped, entries_rejected, entries_failed,
+    ...(landed === 0 && first_error !== undefined ? { first_error } : {}),
+  });
+}

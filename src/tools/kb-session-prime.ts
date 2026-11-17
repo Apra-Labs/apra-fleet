@@ -1,0 +1,533 @@
+import { z } from 'zod';
+import { KB_REMOVED_SCOPE_KEYS_SHAPE } from '../services/knowledge/kb-removed-scope-keys.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import { getSelfReadKb, getMemberSplitRead, mergeSplitById, type KbAnchor } from '../services/knowledge/kb-self.js';
+import { validateFilePaths } from '../services/knowledge/path-validation.js';
+import { HttpKbProvider } from '../services/knowledge/http-provider.js';
+import { extractBibleDemotions, tombstonedIds } from '../services/knowledge/bible-import.js';
+import { getProvider } from './code-intelligence.js';
+import type { KBEntry, MemoryProvider } from '../services/knowledge/types.js';
+import type { SqliteProvider } from '../services/knowledge/sqlite-provider.js';
+import { FLEET_DIR } from '../paths.js';
+
+export const kbSessionPrimeSchema = z.object({
+  confidence: z.array(z.enum(['CONFIRMED', 'INFERRED', 'UNVERIFIED'])).min(1).optional()
+    .describe('Only surface entries whose confidence tier is in this list. Default when omitted: ["CONFIRMED"] (undisputed) -- INFERRED and UNVERIFIED entries are surfaced only when listed explicitly.'),
+  session_files: z.array(z.string()).optional().describe('Files the agent expects to touch this session'),
+  hint_symbols: z.array(z.string()).optional().describe('Symbols likely to be relevant'),
+  hint_modules: z.array(z.string()).optional().describe('Module names likely to be relevant'),
+  // Removed pre-redesign scope keys: declared only so a caller still passing one
+  // is refused with E-SCOPE-KEY-REMOVED instead of silently re-scoped.
+  ...KB_REMOVED_SCOPE_KEYS_SHAPE,
+});
+
+export type KbSessionPrimeInput = z.infer<typeof kbSessionPrimeSchema>;
+
+// Graph-neighbor expansion caps (T1.3 P4b, design D4). Exported for tests.
+// NEIGHBOR_CAP: max distinct neighbor symbols carried into the extra KB query.
+export const NEIGHBOR_CAP = 10;
+// ADDED_ENTRY_CAP: max neighbor-derived KB entries appended to top_entries.
+export const ADDED_ENTRY_CAP = 5;
+
+// T3.5 (F8c, D8): fewer than this many top_entries after ALL merges above
+// (direct hits + global-append + graph-neighbor) counts as a cold local KB,
+// triggering the canonical-bible cold-seed below. Exported for tests.
+export const COLD_KB_MAX = 3;
+
+// Shape written by kb_export (T3.4) to <repo>/.fleet/kb-canonical.json.
+// Validated field-by-field below rather than trusted -- the file is
+// external input (hand-edited, stale from an older kb_export version, or
+// simply absent) and a bad shape must degrade to today's output, never throw
+// past the try/catch that wraps the whole cold-seed block.
+interface CanonicalBibleEntry {
+  id: string;
+  type: string;
+  title: string;
+  summary: string;
+  symbols: string[];
+  source_files: string[];
+  confidence?: string;
+  updated_at?: string;
+}
+
+// A bible file on disk is one of TWO shapes, and the read path must accept
+// both -- exactly as kb_import already does:
+//   - legacy: a bare JSON array of entries
+//   - v2 (what kb_export has written since KB-TRUST PHASE 3a):
+//     { version: 2, provenance: {commit, branch, entry_count}, entries: [...] }
+// Accepting only the bare array silently killed the cold-start fallback for
+// every bible the current exporter produces (apra-fleet's own bible holds 17
+// CONFIRMED entries prime could not read). Anything else -- a non-array
+// `entries`, a scalar, null -- yields [] so the caller's existing hard-skip
+// contract still applies.
+function bibleEntries(parsed: unknown): unknown[] {
+  if (Array.isArray(parsed)) return parsed;
+  if (parsed && typeof parsed === 'object') {
+    const envelope = (parsed as { entries?: unknown }).entries;
+    if (Array.isArray(envelope)) return envelope;
+  }
+  return [];
+}
+
+function isCanonicalBibleEntry(value: unknown): value is CanonicalBibleEntry {
+  if (!value || typeof value !== 'object') return false;
+  const e = value as Record<string, unknown>;
+  return (
+    typeof e.id === 'string' &&
+    typeof e.type === 'string' &&
+    typeof e.title === 'string' &&
+    typeof e.summary === 'string' &&
+    Array.isArray(e.symbols) &&
+    Array.isArray(e.source_files)
+  );
+}
+
+// Prefer canonical entries whose symbols overlap hint_symbols, or whose
+// source_files contain a hint_module as a substring (canonical entries carry
+// no separate "module" field -- hint_modules in practice are path-like
+// strings, e.g. "src/tools", that match against source_files directly).
+function canonicalMatchesHints(
+  entry: CanonicalBibleEntry,
+  hintSymbols: string[],
+  hintModules: string[],
+): boolean {
+  if (hintSymbols.length > 0 && entry.symbols.some(s => hintSymbols.includes(s))) return true;
+  if (hintModules.length > 0 && entry.source_files.some(f => hintModules.some(m => f.includes(m)))) return true;
+  return false;
+}
+
+// The cold-seed below reads <folder>/.fleet/kb-canonical.json, so it needs the
+// anchor folder to be a readable directory on THIS host. Returns null (rather
+// than throwing) when it is not -- a remote member's folder -- so the caller
+// can hard-skip per the existing non-fatal cold-seed contract.
+function localDirOrNull(folder: string): string | null {
+  if (!fs.existsSync(folder) || !fs.statSync(folder).isDirectory()) return null;
+  return folder;
+}
+
+// T3.5 (F9c, D8): `via` param added, defaulting to 'canonical-bible' so the
+// existing project-bible call site below is byte-for-byte unchanged. The new
+// global-bible cold-seed block passes via='canonical-bible-global' so those
+// entries are distinguishable in top_entries (D8's via marker requirement).
+function toCanonicalKBEntry(e: CanonicalBibleEntry, via: string = 'canonical-bible'): KBEntry & { via: string } {
+  return {
+    id: e.id,
+    type: e.type as KBEntry['type'],
+    title: e.title,
+    summary: e.summary,
+    content: '',
+    source_files: e.source_files,
+    symbols: e.symbols,
+    tags: [],
+    content_hash: '',
+    content_hash_type: 'sha256',
+    stale: false,
+    flagged_for_review: false,
+    author: via,
+    source: 'promotion',
+    confidence: (e.confidence as KBEntry['confidence']) ?? 'CONFIRMED',
+    created_at: e.updated_at ?? '',
+    use_count: 0,
+    via,
+  };
+}
+
+// Pull neighbor symbol names out of a code-intelligence `context` result.
+// The provider returns a normal MCP result object -- a `content` array of text
+// blocks plus an optional `isError` flag -- whose text block (when the symbol
+// is found) is a JSON string of shape:
+//   { status, symbol, incoming: { calls: [{ name }] }, outgoing: { calls: [...] } }
+// (see docs/code-intelligence-child-surface.md). Parse defensively: isError,
+// missing/!array content, no text block, unparseable JSON, or an ambiguous
+// candidate response (no incoming/outgoing) all mean "no neighbors".
+function parseContextNeighbors(result: unknown): string[] {
+  try {
+    if (!result || typeof result !== 'object') return [];
+    const r = result as { isError?: boolean; content?: unknown };
+    if (r.isError) return [];
+    if (!Array.isArray(r.content)) return [];
+    const textBlock = r.content.find(
+      (c): c is { type: string; text: string } =>
+        !!c && typeof c === 'object' && (c as { type?: unknown }).type === 'text' &&
+        typeof (c as { text?: unknown }).text === 'string',
+    );
+    if (!textBlock) return [];
+    const parsed = JSON.parse(textBlock.text) as {
+      incoming?: { calls?: unknown };
+      outgoing?: { calls?: unknown };
+    };
+    const names: string[] = [];
+    for (const group of [parsed.incoming?.calls, parsed.outgoing?.calls]) {
+      if (!Array.isArray(group)) continue;
+      for (const call of group) {
+        const name = (call as { name?: unknown })?.name;
+        if (typeof name === 'string' && name.length > 0) names.push(name);
+      }
+    }
+    return names;
+  } catch {
+    return [];
+  }
+}
+
+export async function kbSessionPrime(input: KbSessionPrimeInput, anchor?: KbAnchor): Promise<string> {
+  if (input.session_files?.length) validateFilePaths(input.session_files);
+
+  // Prime the calling session's own KB (kb-self.ts): a member session's work
+  // folder, else the server's folder. A remote member's folder is carried
+  // verbatim even though this host cannot see it -- SqliteProvider.
+  // anchorIsMissing() then declines to produce a freshness verdict rather
+  // than re-hashing against an unrelated tree.
+  // A MEMBER session primes from its checkout bible view unless it explicitly
+  // asks for INFERRED/UNVERIFIED (kb-self.ts getSelfReadKb).
+  // That explicit request is answered from the per-repo DB with only the
+  // caller's own captures (ownerTag): every block below honours it, and the
+  // bible cold-seeds are skipped (bible entries are nobody's own capture).
+  //
+  // A MEMBER request naming CONFIRMED plus another tier is split (kb-self.ts
+  // getMemberSplitRead): each half is primed by primeFrom below, the CONFIRMED
+  // half exactly as a CONFIRMED-only request (bible view, cold-seeds included,
+  // decided on that half's own entries), every requested tier from the
+  // per-repo DB owner-tagged (no cold-seed). The two results are then merged.
+  // Under an http project provider both halves are primed by
+  // the KB server: the CONFIRMED half unfiltered, the own half owner-tagged.
+  const split = await getMemberSplitRead(anchor, input.confidence, 'kb_session_prime');
+  if (split) {
+    const fromBible = await primeFrom(
+      { project: split.bible.project, global: split.bible.global, folder: split.anchor.folder },
+      input, split.bible.tiers, false,
+    );
+    const fromOwn = await primeFrom(
+      { project: split.own.project, global: split.own.global, folder: split.anchor.folder, ownerTag: split.own.ownerTag },
+      input, split.own.tiers, false,
+    );
+    return JSON.stringify(mergePrimed(fromBible, fromOwn, input));
+  }
+
+  // Under an http project provider a MEMBER prime of any tier
+  // is answered by the server; ownerTag is enforced the same way, fleet-side.
+  const { providers, anchor: resolved, ownerTag } = await getSelfReadKb(anchor, input.confidence);
+
+  // Default-trusted reads: CONFIRMED + undisputed unless the caller lists tiers.
+  const confidence = input.confidence?.length ? input.confidence : (['CONFIRMED'] as Tier[]);
+  const exclude_disputed = !input.confidence?.length;
+
+  return JSON.stringify(await primeFrom(
+    { project: providers.project, global: providers.global, folder: resolved.folder, ownerTag },
+    input, confidence, exclude_disputed,
+  ));
+}
+
+type Tier = NonNullable<KbSessionPrimeInput['confidence']>[number];
+type Primed = Awaited<ReturnType<MemoryProvider['prime']>>;
+
+/** One KB source a prime runs against. `ownerTag` set = own captures only, no bible cold-seed. */
+interface PrimeSource {
+  project: MemoryProvider;
+  global: SqliteProvider;
+  /** Repo root whose .fleet/kb-canonical.json the project-bible cold-seed reads. */
+  folder: string;
+  ownerTag?: string;
+}
+
+/**
+ * Merge the two halves of a MEMBER split prime. top_entries: every bible-half
+ * entry, then own-half entries the bible half did not already return (bible
+ * copy wins), with graph-neighbor additions capped at ADDED_ENTRY_CAP across
+ * the merged list (bible half first, so the CONFIRMED-only result survives
+ * intact). Files: a file fresh in either half is fresh (bible summary first);
+ * stale_files is the union minus those fresh files. session_warm and
+ * token_estimate are recomputed the way prime() computes them.
+ */
+function mergePrimed(bible: Primed, own: Primed, input: KbSessionPrimeInput): Primed {
+  let neighbors = 0;
+  const top_entries = mergeSplitById(bible.top_entries ?? [], own.top_entries ?? []).filter((e) => {
+    if ((e as { via?: string }).via !== 'graph-neighbor') return true;
+    neighbors += 1;
+    return neighbors <= ADDED_ENTRY_CAP;
+  });
+  const fresh_summaries = [...(bible.fresh_summaries ?? [])];
+  const freshFiles = new Set(fresh_summaries.map(r => r.file));
+  for (const r of own.fresh_summaries ?? []) {
+    if (freshFiles.has(r.file)) continue;
+    freshFiles.add(r.file);
+    fresh_summaries.push(r);
+  }
+  const stale_files = [...new Set([...(bible.stale_files ?? []), ...(own.stale_files ?? [])])]
+    .filter(f => !freshFiles.has(f));
+  let token_estimate = 0;
+  for (const e of top_entries) token_estimate += Math.ceil((e.summary?.length || 0) / 4);
+  for (const r of fresh_summaries) token_estimate += Math.ceil((r.summary?.length || 0) / 4);
+  return {
+    ...bible,
+    session_warm: input.session_files?.length ? stale_files.length === 0 : true,
+    stale_files,
+    top_entries,
+    fresh_summaries,
+    token_estimate,
+  };
+}
+
+async function primeFrom(
+  source: PrimeSource,
+  input: KbSessionPrimeInput,
+  confidence: Tier[],
+  exclude_disputed: boolean,
+): Promise<Primed> {
+  const providers = source;
+  const { ownerTag } = source;
+  const resolved = { folder: source.folder };
+
+  const result = await providers.project.prime({
+    confidence,
+    exclude_disputed,
+    owner_tag: ownerTag,
+    session_files: input.session_files,
+    hint_symbols: input.hint_symbols,
+    hint_modules: input.hint_modules,
+  });
+
+  // Append up to 3 global knowledge entries. D4 (T2.1): pass raw terms (a raw
+  // session file path or a hint symbol) via fts_terms -- query() sanitizes
+  // each term through ftsSafeTerm and OR-joins them centrally, so FTS-hostile
+  // characters in a raw file path ('/', '.') cannot throw into the catch
+  // below, and multiple terms surface entries matching ANY of them instead of
+  // requiring ALL of them (implicit AND, KB finding 83726d75 / feedback.md
+  // finding 3).
+  const searchTerms = input.session_files?.length ? input.session_files : (input.hint_symbols ?? []);
+  if (searchTerms.length) {
+    try {
+      const globalResult = await providers.global.query({
+        fts_terms: searchTerms,
+        l1_only: true,
+        limit: 10,
+        include_stale: false,
+        confidence,
+        exclude_disputed,
+        owner_tag: ownerTag,
+      });
+      const globalEntries = globalResult.results
+        .filter(e => e.type === 'knowledge')
+        .slice(0, 3);
+      if (globalEntries.length > 0) {
+        result.top_entries = [...(result.top_entries ?? []), ...globalEntries];
+      }
+    } catch {}
+  }
+
+  // Graph-neighbor expansion (T1.3 P4b, design D4). Join the code-intelligence
+  // graph one layer up so it works for both KB providers without touching
+  // SqliteProvider.prime / HttpKbProvider.prime. For each hint symbol, ask the
+  // CI provider for its neighbors (callers/callees via `context`), run ONE extra
+  // KB query batch over the collected neighbors, and append the resulting
+  // entries BELOW all direct hits. The ENTIRE block is a hard-skip: any failure
+  // (graph offline, no index, unparseable response, KB query error) leaves
+  // `result` exactly as prime returned it -- no throw, no error text. Also
+  // skipped when hint_symbols is empty/absent.
+  if (input.hint_symbols?.length) {
+    try {
+      const provider = await getProvider();
+
+      // Collect distinct neighbor names not already in hint_symbols, capped at
+      // NEIGHBOR_CAP. A per-symbol try/catch keeps one bad symbol from aborting
+      // the sweep.
+      const seen = new Set(input.hint_symbols);
+      const neighbors: string[] = [];
+      for (const symbol of input.hint_symbols) {
+        if (neighbors.length >= NEIGHBOR_CAP) break;
+        let ctxResult: unknown;
+        try {
+          ctxResult = await provider.context({ name: symbol });
+        } catch {
+          continue;
+        }
+        for (const name of parseContextNeighbors(ctxResult)) {
+          if (neighbors.length >= NEIGHBOR_CAP) break;
+          if (seen.has(name)) continue;
+          seen.add(name);
+          neighbors.push(name);
+        }
+      }
+
+      if (neighbors.length > 0) {
+        // D4 (T2.1): pass raw neighbor names via fts_terms -- query()
+        // sanitizes per-neighbor (a single FTS-hostile name degrades to
+        // skipping that neighbor rather than killing the whole batch query)
+        // AND OR-joins across neighbors so an entry matching ANY neighbor
+        // surfaces instead of requiring ALL of them (implicit AND).
+        const neighborResult = await providers.project.query({
+          fts_terms: neighbors,
+          l1_only: true,
+          limit: 10,
+          include_stale: false,
+          confidence,
+          exclude_disputed,
+          owner_tag: ownerTag,
+        });
+
+        // Merge below direct hits: skip ids already present (direct + global),
+        // mark each addition via "graph-neighbor", cap at ADDED_ENTRY_CAP.
+        const existingIds = new Set((result.top_entries ?? []).map(e => e.id));
+        const additions: Array<KBEntry & { via: string }> = [];
+        for (const entry of neighborResult.results) {
+          if (additions.length >= ADDED_ENTRY_CAP) break;
+          if (existingIds.has(entry.id)) continue;
+          existingIds.add(entry.id);
+          additions.push({ ...entry, via: 'graph-neighbor' });
+        }
+        if (additions.length > 0) {
+          result.top_entries = [...(result.top_entries ?? []), ...additions];
+        }
+      }
+    } catch {
+      // Hard skip: leave `result` exactly as prime returned it.
+    }
+  }
+
+  // T3.5 (F8c, D8): cold-KB seed from the canonical git bible -- LAST
+  // sequenced merge, after direct hits + global-append + graph-neighbor
+  // above. When the local KB still returns few top_entries (COLD_KB_MAX),
+  // fall back to <repo>/.fleet/kb-canonical.json (written by kb_export after
+  // promotion) so a fresh clone or cold project still gets team knowledge.
+  // Entries are marked via:'canonical-bible' and always appended BELOW every
+  // live-KB hit gathered above. Non-fatal: the entire block is a hard skip --
+  // missing file, unreadable/malformed JSON, or a bad shape leaves `result`
+  // exactly as built above (same contract as the neighbor block).
+  // Never under an http project provider: the KB server is the source of
+  // truth there, and the checkout bible is not read.
+  if (ownerTag === undefined && !(providers.project instanceof HttpKbProvider) && (result.top_entries ?? []).length < COLD_KB_MAX) {
+    try {
+      const repoRoot = localDirOrNull(resolved.folder);
+      const canonicalPath = repoRoot ? path.join(repoRoot, '.fleet', 'kb-canonical.json') : null;
+      if (canonicalPath && fs.existsSync(canonicalPath)) {
+        const raw = fs.readFileSync(canonicalPath, 'utf-8');
+        const parsedBible = JSON.parse(raw) as unknown;
+        const entries = bibleEntries(parsedBible);
+        // The bible's EXPLICIT demotion tombstones, via the one shared reader.
+        const dropped = tombstonedIds(extractBibleDemotions(parsedBible));
+
+        if (entries.length > 0) {
+          const existingIds = new Set((result.top_entries ?? []).map(e => e.id));
+          const hintSymbols = input.hint_symbols ?? [];
+          const hintModules = input.hint_modules ?? [];
+
+          const shaped = entries
+            .filter(isCanonicalBibleEntry)
+            .filter(e => !existingIds.has(e.id))
+            // A tombstoned id is demoted knowledge: never seed it, whatever the
+            // local row says (including when there is none).
+            .filter(e => !dropped.has(e.id));
+
+          // ONE skip predicate for the rest: seed a bible id only when this
+          // clone has NO row for it, or holds a LIVE CONFIRMED one. A row that
+          // exists but is INFERRED, stale, superseded or flagged_for_review is
+          // knowledge this clone has already stopped trusting, and re-seeding
+          // the bible's CONFIRMED copy of it would quietly undo that. Note what
+          // this deliberately is NOT: a demoted_at special case. Demotion is
+          // only one of the four ways a row stops being live CONFIRMED, and the
+          // single predicate covers it with no extra branch.
+          const liveness = providers.project.getLiveConfirmedState(shaped.map(e => e.id));
+          const valid = shaped.filter(e => liveness.get(e.id) !== false);
+
+          let ordered = valid;
+          if (hintSymbols.length > 0 || hintModules.length > 0) {
+            const matched = valid.filter(e => canonicalMatchesHints(e, hintSymbols, hintModules));
+            const matchedIds = new Set(matched.map(e => e.id));
+            const rest = valid.filter(e => !matchedIds.has(e.id));
+            ordered = [...matched, ...rest];
+          }
+
+          const additions: Array<KBEntry & { via: string }> = [];
+          for (const e of ordered) {
+            if (additions.length >= ADDED_ENTRY_CAP) break;
+            additions.push(toCanonicalKBEntry(e));
+          }
+
+          if (additions.length > 0) {
+            result.top_entries = [...(result.top_entries ?? []), ...additions];
+            // Delivery is retrieval. Live hits above were bumped by query()
+            // inside prime(); a bible entry never passes through query(), so
+            // without this it reaches an agent while staying invisible to
+            // use_count / last_accessed / kb_stats.retrieval -- which is
+            // exactly why hit_rate read 0 across six sprints. Awaited but
+            // isolated: telemetry must never cost us the priming result.
+            try {
+              await providers.project.touch(additions.map(e => e.id));
+            } catch {}
+          }
+        }
+      }
+    } catch {
+      // Hard skip: leave `result` exactly as built above.
+    }
+  }
+
+  // T3.5 (F9c, D8): global-bible cold-seed -- APPENDED AFTER the existing
+  // project-bible cold-seed block above (design Phasing note: F9 appends
+  // after the existing cold-seed block; this is deliberately the LAST merge
+  // in the whole function). Reads the INSTALLED global bible at
+  // FLEET_DIR/knowledge/global/kb-canonical-global.json -- the homedir-based
+  // machine-wide copy the T3.4 installer step places there (NOT anything
+  // under the session's repo root, unlike the project bible above). Entries
+  // are marked via:'canonical-bible-global' and ordered BELOW every
+  // project-bible entry (this block only ever appends, after the project
+  // block has already run). Re-checks the SAME shared COLD_KB_MAX threshold
+  // against top_entries as built by every merge above (direct hits + global-
+  // KB append + graph-neighbor + project-bible), so this runs only when the
+  // session is still cold after all of that. Same dedupe-by-id, same
+  // ADDED_ENTRY_CAP, and the identical hard-skip non-fatal contract as the
+  // project-bible block: missing file, unreadable/malformed JSON, or a bad
+  // shape leaves `result` exactly as built above -- warm sessions (>=
+  // COLD_KB_MAX) never reach this block at all.
+  if (ownerTag === undefined && (result.top_entries ?? []).length < COLD_KB_MAX) {
+    try {
+      const globalBiblePath = path.join(FLEET_DIR, 'knowledge', 'global', 'kb-canonical-global.json');
+      if (fs.existsSync(globalBiblePath)) {
+        const raw = fs.readFileSync(globalBiblePath, 'utf-8');
+        const entries = bibleEntries(JSON.parse(raw) as unknown);
+
+        if (entries.length > 0) {
+          const existingIds = new Set((result.top_entries ?? []).map(e => e.id));
+          const hintSymbols = input.hint_symbols ?? [];
+          const hintModules = input.hint_modules ?? [];
+
+          const valid = entries
+            .filter(isCanonicalBibleEntry)
+            .filter(e => !existingIds.has(e.id));
+
+          let ordered = valid;
+          if (hintSymbols.length > 0 || hintModules.length > 0) {
+            const matched = valid.filter(e => canonicalMatchesHints(e, hintSymbols, hintModules));
+            const matchedIds = new Set(matched.map(e => e.id));
+            const rest = valid.filter(e => !matchedIds.has(e.id));
+            ordered = [...matched, ...rest];
+          }
+
+          const additions: Array<KBEntry & { via: string }> = [];
+          for (const e of ordered) {
+            if (additions.length >= ADDED_ENTRY_CAP) break;
+            additions.push(toCanonicalKBEntry(e, 'canonical-bible-global'));
+          }
+
+          if (additions.length > 0) {
+            result.top_entries = [...(result.top_entries ?? []), ...additions];
+            // Delivery is retrieval. Live hits above were bumped by query()
+            // inside prime(); a bible entry never passes through query(), so
+            // without this it reaches an agent while staying invisible to
+            // use_count / last_accessed / kb_stats.retrieval -- which is
+            // exactly why hit_rate read 0 across six sprints. Awaited but
+            // isolated: telemetry must never cost us the priming result.
+            try {
+              await providers.project.touch(additions.map(e => e.id));
+            } catch {}
+          }
+        }
+      }
+    } catch {
+      // Hard skip: leave `result` exactly as built above.
+    }
+  }
+
+  return result;
+}

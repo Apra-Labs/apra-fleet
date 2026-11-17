@@ -13,22 +13,24 @@ The file transfer code (`send_files`, `receive_files`, and their underlying SFTP
 
 Without this test matrix, path-handling bugs can silently pass in CI (which runs on Linux) but fail in production when users on Windows try to transfer files to Windows members.
 
-### The sftp.ts Path Resolution Incident
+### The sftp.ts path-resolution gotcha
 
-In late 2025, file transfers from Linux to Windows members began failing with "No such file" errors ([GH issue #220](https://github.com/Apra-Labs/apra-fleet/issues/220)). Root cause analysis revealed that `src/services/sftp.ts` was using `path.posix.resolve()` to compute remote SFTP paths — a function that does NOT understand Windows drive letters.
+Never use `path.posix.resolve()` to compute a remote SFTP path: it does NOT
+understand Windows drive letters, and silently produces garbage rather than
+failing.
 
 ```javascript
-// This produced garbage:
-path.posix.resolve('C:/Users/Kashyap/repos', '_staging')
-// → '/home/kashyap/repos/apra/apra-fleet/C:/Users/Kashyap/repos/_staging'  ← BROKEN
+// This produces garbage:
+path.posix.resolve('C:/Users/someone/repos', '_staging')
+// -> '/home/someone/repos/apra/apra-fleet/C:/Users/someone/repos/_staging'  <- BROKEN
 ```
 
-The bug was introduced in commit aa9605f (PR #65) and predated the suspected PR #97. It went undetected because:
-1. No Windows members existed in the test environment when the bug was introduced
-2. CI runs on Linux, where path.posix.resolve works correctly for Linux-style paths
-3. Tests mocked the SFTP layer and never exercised the actual path resolution logic
+Use `resolveRemotePath()` in `src/utils/platform.ts` instead -- it handles all
+path styles and is tested against the full matrix.
 
-The fix (`resolveRemotePath()` in `src/utils/platform.ts`) correctly handles all path styles and is now tested against the full matrix.
+This class of bug is invisible without the matrix: CI runs on Linux, where
+`path.posix.resolve` works correctly for Linux-style paths, and tests that mock
+the SFTP layer never exercise path resolution at all.
 
 ### Matrix Coverage Rule
 
@@ -36,4 +38,4 @@ The fix (`resolveRemotePath()` in `src/utils/platform.ts`) correctly handles all
 1. Keep all rows of the cross-OS matrix passing
 2. Add a new matrix row if introducing a new transport mechanism or OS combination
 
-This rule ensures that regressions like #220 are caught before merging.
+This rule ensures cross-OS path regressions are caught before merging.

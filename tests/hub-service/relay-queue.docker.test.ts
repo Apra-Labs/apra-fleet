@@ -14,8 +14,8 @@
  * `docker info` succeeds yet `docker run postgres:16-alpine` fails (exit
  * 125, no matching manifest) -- OSType must be checked explicitly.
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { execSync } from 'node:child_process';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { execSync, spawnSync } from 'node:child_process';
 import { Pool } from 'pg';
 import { setPool, runMigrations, closePool } from '../../src/hub-service/db/pool.js';
 import { enqueue, fetchDeliverable, ack, sweepExpired } from '../../src/hub-service/relay-queue.js';
@@ -29,14 +29,55 @@ try {
 }
 
 const containerName = `apra-fleet-relay-test-${process.pid}`;
+const IMAGE = 'postgres:16-alpine';
 let pool: Pool;
+
+/** Run a docker command, returning its trimmed stdout or throwing with its stderr. */
+function docker(args: string[], timeoutMs: number): string {
+  const r = spawnSync('docker', args, { encoding: 'utf-8', timeout: timeoutMs });
+  if (r.status !== 0) {
+    const why = (r.stderr || r.error?.message || `exit ${r.status}`).trim();
+    throw new Error(`docker ${args.join(' ')} failed: ${why}`);
+  }
+  return r.stdout.trim();
+}
+
+/**
+ * Retry a docker infra step with backoff. Registry pulls and container
+ * starts fail transiently on CI runners (rate limits, network blips).
+ */
+async function withRetry<T>(label: string, attempts: number, fn: () => T): Promise<T> {
+  const errors: string[] = [];
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      return fn();
+    } catch (err) {
+      errors.push(`attempt ${i}: ${(err as Error).message}`);
+      if (i < attempts) await new Promise(r => setTimeout(r, 2_000 * i));
+    }
+  }
+  throw new Error(`${label} failed after ${attempts} attempts:\n${errors.join('\n')}`);
+}
+
+// Set when the docker INFRA (image pull / container start) is genuinely
+// unavailable after retries. Only then are the tests skipped, with this
+// reason; readiness, migration and assertion failures still fail the suite.
+let infraSkipReason: string | undefined;
 
 describe.skipIf(!dockerAvailable)('relay-queue: at-least-once delivery (real Postgres)', () => {
   beforeAll(async () => {
-    execSync(
-      `docker run -d --rm --name ${containerName} -e POSTGRES_PASSWORD=test -p 0:5432 postgres:16-alpine`,
-      { stdio: 'ignore' },
-    );
+    try {
+      await withRetry(`docker pull ${IMAGE}`, 3, () => docker(['pull', '--quiet', IMAGE], 90_000));
+      await withRetry(`docker run ${IMAGE}`, 3, () => {
+        // A failed start can leave a created container holding the name.
+        spawnSync('docker', ['rm', '-f', containerName], { stdio: 'ignore' });
+        return docker(['run', '-d', '--rm', '--name', containerName, '-e', 'POSTGRES_PASSWORD=test', '-p', '0:5432', IMAGE], 30_000);
+      });
+    } catch (err) {
+      infraSkipReason = `docker infra unavailable, skipping real-Postgres suite: ${(err as Error).message}`;
+      console.warn(infraSkipReason);
+      return;
+    }
     const portOutput = execSync(`docker port ${containerName} 5432`).toString().trim();
     const port = portOutput.split(':').pop();
 
@@ -60,10 +101,14 @@ describe.skipIf(!dockerAvailable)('relay-queue: at-least-once delivery (real Pos
 
     setPool(pool);
     await runMigrations(pool);
-  }, 45_000);
+  }, 450_000); // worst case: 3x90s pulls + 3x30s starts + backoff + 30s readiness
+
+  beforeEach((ctx) => {
+    ctx.skip(infraSkipReason !== undefined, infraSkipReason);
+  });
 
   afterAll(async () => {
-    await closePool();
+    if (infraSkipReason === undefined) await closePool();
     try {
       execSync(`docker rm -f ${containerName}`, { stdio: 'ignore' });
     } catch {

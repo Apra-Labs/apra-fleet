@@ -1,0 +1,13 @@
+{
+  "tool": "kb_import",
+  "case": "refusal-bible-not-found-at-ref",
+  "kind": "refusal",
+  "request": {
+    "ref": "refs/remotes/origin/no-such-branch"
+  },
+  "error": {
+    "message": "kb_import: bible file not found: refs/remotes/origin/no-such-branch:.fleet/kb-canonical.json",
+    "thrown": true
+  },
+  "expected_error_code": "E-BIBLE-NOT-FOUND"
+}

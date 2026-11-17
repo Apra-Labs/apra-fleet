@@ -107,7 +107,6 @@ describe('beads lifecycle hooks are preserved', () => {
 describe('provider instruction filenames are correct', () => {
   const expected: Record<LlmProvider, string> = {
     claude: 'CLAUDE.md',
-    gemini: 'GEMINI.md',
     codex: 'AGENTS.md',
     copilot: 'COPILOT.md',
     agy: 'AGY.md',

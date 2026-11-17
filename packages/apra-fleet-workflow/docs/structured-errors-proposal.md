@@ -1,20 +1,29 @@
-# Proposal: Structured Errors in apra-fleet MCP Server
+# Structured Errors in the apra-fleet MCP Server
 
-Design note: this proposes a server-side change to the apra-fleet MCP server (an external
-repository, outside this package) and is not yet implemented. Until it lands, the workflow
-layer in this package (`src/workflow/errors.mjs`) implements a client-side stopgap --
-classifying certain known failure text patterns (e.g. a missing member) into the typed error
-hierarchy described in `docs/apra-fleet-workflow-architecture.md` section 4.4 -- which this
-proposal's "Migration Path" step 3 anticipates replacing once the server ships either option
-below.
+**Status: partially adopted.** Option 2 below is implemented for the two tools the workflow
+layer depends on most -- `execute_prompt` and `execute_command` (`src/tools/` in this
+monorepo) return a `structuredContent` payload carrying `isError` plus a `reason` code
+(`'busy'`, `'reserved'`, `'session_not_found'`, `'insufficient_context_headroom'`,
+`'budget_exhausted'`, `'workspace_not_trusted'`, ...). `src/workflow/errors.mjs`'s
+`AgentDispatchError` is classified from exactly that payload.
+
+The rest of the tool surface has not adopted it. Some conditions -- notably "member not
+found" -- are still returned as ordinary success-shaped text, and the workflow layer
+classifies them with a text sniff (`text.startsWith('Member "') && text.includes('" not
+found.')` in `src/workflow/index.mjs`) into the typed hierarchy described in
+`docs/apra-fleet-workflow-architecture.md` section 4.4. That sniff is the remaining gap this
+document tracks; the design below is what the remaining tools should adopt.
 
 ## Problem Statement
 
-Currently, the `apra-fleet` MCP server embeds error strings within successful text payloads. This approach forces clients to implement fragile parsing logic to determine whether a tool call succeeded or failed by inspecting the text content. This is an anti-pattern that violates the principles of structured communication and makes error handling across the fleet unreliable.
+Where the `apra-fleet` MCP server embeds error strings within successful text payloads, it
+forces clients to implement fragile parsing logic to determine whether a tool call succeeded
+or failed by inspecting the text content. This is an anti-pattern that violates the
+principles of structured communication and makes error handling across the fleet unreliable.
 
-## Proposed Solution
+## The two options
 
-We propose updating the `apra-fleet` MCP server to provide structured errors across all its tool calls. This can be achieved in two primary ways:
+Structured errors across the remaining tool calls can be achieved in two ways:
 
 ### Option 1: Standard MCP JSON-RPC Error Codes (Recommended)
 
@@ -35,9 +44,9 @@ Leverage the existing MCP protocol's support for JSON-RPC error responses. When 
 }
 ```
 
-### Option 2: Standardized Payload Structure
+### Option 2: Standardized Payload Structure (the shape already adopted by `execute_prompt`/`execute_command`)
 
-If using JSON-RPC error responses is not feasible due to specific architectural constraints, we should standardize a JSON payload structure for all tool responses that explicitly indicates success or failure.
+Where JSON-RPC error responses are not feasible due to specific architectural constraints, standardize a JSON payload structure for tool responses that explicitly indicates success or failure. This is the shape the two dispatch tools already emit, under `structuredContent`.
 
 **Example Error Payload:**
 ```json
@@ -67,9 +76,14 @@ If using JSON-RPC error responses is not feasible due to specific architectural 
 3. **Improved Interoperability**: By adhering to standard MCP JSON-RPC error patterns (Option 1), `apra-fleet` will be more compatible with standard MCP clients and debugging tools.
 4. **Better Developer Experience**: Clear, typed error definitions make it easier for developers to integrate with the `apra-fleet` server.
 
-## Migration Path
+## Remaining work
 
-1. Define a standard set of error codes and messages for the `apra-fleet` server.
-2. Update the tool handlers in the `apra-fleet` server to return the structured errors.
-3. Publish a new version of the server and update clients to handle the new structured errors.
-4. (Optional) Provide a backward-compatibility layer or transition period if necessary, though a clean break is preferred if possible.
+1. Define a standard set of error codes and messages for the tools that do not yet emit one,
+   reusing the `reason` vocabulary the dispatch tools already established.
+2. Update those tool handlers to return the structured error.
+3. Route the client's JSON-RPC rejection path
+   (`McpClient.handleMessage`, `packages/apra-fleet-client/src/client/client.mjs`) through
+   the same classifier, so the same typed classes are raised regardless of which signal the
+   server used.
+4. Retire the "member not found" text sniff in `src/workflow/index.mjs` once
+   `MEMBER_NOT_FOUND` is reported structurally.

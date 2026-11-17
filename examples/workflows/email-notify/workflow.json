@@ -1,0 +1,5 @@
+{
+  "name": "email-notify",
+  "entry": "main.mjs",
+  "description": "Send an email using the credential store for secrets and inline config for everything else"
+}

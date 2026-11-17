@@ -17,6 +17,7 @@ import path from 'node:path';
 
 const root = path.resolve(__dirname, '..');
 const manifestPath = path.join(root, 'dist', 'sea-manifest.json');
+const configPath = path.join(root, 'dist', 'sea-config.json');
 
 describe('gen-sea-config.mjs -- generated SEA manifest', () => {
   let manifest: {
@@ -52,5 +53,23 @@ describe('gen-sea-config.mjs -- generated SEA manifest', () => {
   it('still includes plain role-agent files alongside the nested ones', () => {
     expect(Object.keys(manifest.agents)).toContain('doer.md');
     expect(Object.keys(manifest.agents)).toContain('planner.md');
+  });
+
+  // The fleet-status Claude Code mod section must match the dev-mode manifest
+  // (install.ts buildDevManifest) exactly, so the SEA binary and a dev/npm
+  // install lay out the same plugin -- and never ship the authoring-only
+  // generated type stubs, tests, or tsconfig.
+  it('claudePlugins section ships the fleet-status mod runtime files, same as the dev manifest', async () => {
+    const seaSection = (manifest as unknown as { claudePlugins: Record<string, string> }).claudePlugins;
+    expect(Object.keys(seaSection).sort()).toEqual([
+      'fleet-status/.claude-plugin/plugin.json',
+      'fleet-status/hooks/hooks.json',
+      'fleet-status/hooks/register.tsx',
+      'fleet-status/types/index.d.ts',
+    ]);
+    const { _buildDevManifestForTest } = await import('../src/cli/install.js');
+    expect(_buildDevManifestForTest(root).claudePlugins).toEqual(seaSection);
+    const config = JSON.parse(readFileSync(configPath, 'utf-8'));
+    for (const assetKey of Object.values(seaSection)) expect(config.assets[assetKey]).toBe(path.join(root, assetKey));
   });
 });

@@ -1,6 +1,6 @@
 {
   "name": "@apralabs/apra-fleet",
-  "version": "0.4.1",
+  "version": "0.4.5",
   "description": "MCP server for orchestrating multiple agentic AI instances (Claude, Gemini, Codex, Copilot, AGY) across machines via SSH",
   "author": "Apra Labs",
   "homepage": "https://github.com/Apra-Labs/apra-fleet",
@@ -23,10 +23,11 @@
     "apra-fleet": "dist/index.js"
   },
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=22.16.0"
   },
   "files": [
     "dist/",
+    "!dist/**/*.map",
     "hooks/",
     "scripts/fleet-statusline.sh",
     "scripts/agy-transcript-reader.js",
@@ -36,22 +37,29 @@
     "packages/apra-fleet-se/package.json",
     "packages/apra-fleet-se/fleet-sprint/",
     "packages/apra-fleet-se/bin/",
+    "packages/apra-fleet-se/src/",
     "packages/apra-fleet-se/apra-pm/agents/",
     "packages/apra-fleet-se/apra-pm/skills/",
     "packages/apra-fleet-workflow/src/",
     "packages/apra-fleet-workflow/package.json",
     "packages/apra-fleet-client/src/",
-    "packages/apra-fleet-client/package.json"
+    "packages/apra-fleet-client/package.json",
+    "plugins/claude-code/fleet-status/.claude-plugin/plugin.json",
+    "plugins/claude-code/fleet-status/hooks/",
+    "plugins/claude-code/fleet-status/types/"
   ],
   "publishConfig": {
     "access": "public"
   },
   "overrides": {
-    "undici": "^7.29.0"
+    "undici": "^7.30.1",
+    "fast-uri": "^4.2.3"
   },
   "scripts": {
     "build": "npm run build:contract && tsc",
     "build:contract": "npm run build --workspace=@apralabs/fleet-api-contract",
+    "contract:generate": "node memory-contract/v1/generate-contract.mjs",
+    "contract:check": "node memory-contract/v1/generate-contract.mjs --check",
     "gen:openapi": "npm run gen:openapi --workspace=@apralabs/fleet-api-contract",
     "dist-pm": "node scripts/dist-pm.mjs",
     "build:sea": "node scripts/build-sea.mjs",
@@ -61,7 +69,7 @@
     "start": "node dist/index.js",
     "dev": "tsc --watch",
     "pretest": "npm run build:contract",
-    "test": "vitest run",
+    "test": "node scripts/run-all-tests.mjs",
     "test:watch": "vitest",
     "smoke": "tsc && node dist/smoke-test.js",
     "prepare": "node scripts/install-hooks.mjs",
@@ -87,12 +95,12 @@
   "dependencies": {
     "@apralabs/apra-fleet-client": "file:packages/apra-fleet-client",
     "@inquirer/password": "^5.0.11",
-    "@modelcontextprotocol/sdk": "^1.27.0",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "ajv": "^8.12.0",
     "pg": "^8.22.0",
-    "smol-toml": "^1.6.1",
+    "smol-toml": "^1.7.1",
     "ssh2": "^1.17.0",
-    "undici": "^7.29.0",
+    "undici": "^7.30.1",
     "uuid": "^14.0.0",
     "zod": "^3.25.0"
   },
@@ -102,10 +110,13 @@
     "@types/pg": "^8.20.0",
     "@types/ssh2": "^1.15.0",
     "@types/uuid": "^10.0.0",
-    "esbuild": "^0.27.4",
+    "esbuild": "^0.28.2",
     "pg-mem": "^3.0.14",
     "postject": "^1.0.0-alpha.6",
     "typescript": "^5.5.0",
-    "vitest": "^4.0.18"
+    "vite": "^7.3.7",
+    "vitest": "^4.1.12",
+    "yaml": "^2.9.0",
+    "zod-to-json-schema": "^3.25.1"
   }
 }

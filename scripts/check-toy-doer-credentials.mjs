@@ -266,7 +266,7 @@ export function checkEnvVarNotJsonBlob(ciphertext, opts = {}) {
   if (isJsonShapedToken(plaintext)) {
     return {
       status: 'hard-fail',
-      message: `FAIL (apra-fleet-vak): encryptedEnvVars.${CREDENTIAL_ENV_VAR} decrypts to a JSON-shaped blob, not a bare OAuth access token -- this is the apra-fleet-vak regression (a full claudeAiOauth object stored verbatim). Check provisionEnvVarForMember (src/cli/auth.ts, apra-fleet-vak.1) actually extracted accessToken before writing encryptedEnvVars.`,
+      message: `FAIL: encryptedEnvVars.${CREDENTIAL_ENV_VAR} decrypts to a JSON-shaped blob, not a bare OAuth access token (a full claudeAiOauth object stored verbatim). Check provisionEnvVarForMember (src/cli/auth.ts) actually extracted accessToken before writing encryptedEnvVars.`,
     };
   }
   return {
@@ -405,7 +405,7 @@ export function checkCleanEnvCredentialsFile(fleetHome = defaultFleetHome(), dep
   if (!hasSufficientSessionShape(output)) {
     return {
       ok: false,
-      message: `NOT-PROVISIONED (clean-env path): '${credPath}' has an accessToken but no additional session field (claudeAiOauth.expiresAt/refreshToken/scopes/subscriptionType) -- the Claude CLI rejects such a file as "Not logged in". Seed the FULL claudeAiOauth object (see integ-test-playbook.md's credential-provisioning step), or provision via 'apra-fleet auth --oauth' (apra-fleet-eft.48.3), which always adds at least a synthetic expiresAt for bare tokens.`,
+      message: `NOT-PROVISIONED (clean-env path): '${credPath}' has an accessToken but no additional session field (claudeAiOauth.expiresAt/refreshToken/scopes/subscriptionType) -- the Claude CLI rejects such a file as "Not logged in". Seed the FULL claudeAiOauth object (see integ-test-playbook.md's credential-provisioning step), or provision via 'apra-fleet auth --oauth', which always adds at least a synthetic expiresAt for bare tokens.`,
     };
   }
   return {

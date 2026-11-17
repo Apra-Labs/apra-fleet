@@ -5,7 +5,7 @@ import { serverVersion } from '../version.js';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getProvider } from '../providers/index.js';
-import { getAgentOS, groupByCategory, formatAgentHost } from '../utils/agent-helpers.js';
+import { getAgentOS, getAgentShell, groupByCategory, formatAgentHost } from '../utils/agent-helpers.js';
 import type { Agent } from '../types.js';
 import { syncCloudCache } from '../services/cloud-sync.js';
 
@@ -23,7 +23,7 @@ async function getAuthStatus(agent: Agent): Promise<string> {
   if (agent.agentType === 'local' || agent.agentType === 'relay') return 'N/A';
 
   const os = getAgentOS(agent);
-  const cmds = getOsCommands(os);
+  const cmds = getOsCommands(os, getAgentShell(agent));
   const strategy = getStrategy(agent);
   const provider = getProvider(agent.llmProvider);
 
@@ -46,11 +46,14 @@ async function getAuthStatus(agent: Agent): Promise<string> {
   }
 
   let apiKeyExists = false;
-  if (provider.authEnvVar) {
+  // Every credential kind counts (e.g. CLAUDE_CODE_OAUTH_TOKEN as well as ANTHROPIC_API_KEY).
+  const authVars = provider.authEnvVarNames?.() ?? (provider.authEnvVar ? [provider.authEnvVar] : []);
+  for (const envVar of authVars) {
     try {
-      const apiKeyResult = await strategy.execCommand(cmds.apiKeyCheck(provider.authEnvVar), 5000);
+      const apiKeyResult = await strategy.execCommand(cmds.apiKeyCheck(envVar), 5000);
       if (apiKeyResult.stdout.trim().length > 5) {
         apiKeyExists = true;
+        break;
       }
     } catch { /* ignore */ }
   }
@@ -76,7 +79,7 @@ export async function listMembers(input?: ListMembersInput): Promise<string> {
     agents = agents.filter(a => filterTags.every(tag => a.tags?.includes(tag)));
   }
 
-  if (agents.length === 0) return 'No members registered.';
+  if (agents.length === 0 && format !== 'json') return 'No members registered.';
 
   const authStatusPromises = agents.map(getAuthStatus);
   const authStatuses = await Promise.all(authStatusPromises);
@@ -110,6 +113,7 @@ export async function listMembers(input?: ListMembersInput): Promise<string> {
         os: a.os ?? 'unknown',
         folder: a.workFolder,
         llmProvider: a.llmProvider ?? 'claude',
+        agyProjectId: a.llmProvider === 'agy' ? (a.agyProjectId ?? null) : undefined,
         llm_auth: authStatuses[i],
         ssh_auth: a.agentType === 'remote' ? a.authType : undefined,
         session: a.sessionId ?? null,
@@ -118,6 +122,7 @@ export async function listMembers(input?: ListMembersInput): Promise<string> {
         category: a.category ?? null,
         tags: a.tags ?? null,
         reservedBy: a.reservedBy ?? null,
+        unreservable: a.unreservable ?? false,
       })),
     });
   }
@@ -155,6 +160,9 @@ export async function listMembers(input?: ListMembersInput): Promise<string> {
       }
       if (a.reservedBy) {
         t += ` | reserved-by=${a.reservedBy}`;
+      }
+      if (a.unreservable) {
+        t += ` | unreservable`;
       }
       t += '\n';
     }

@@ -1,0 +1,901 @@
+{
+  "_meta": {
+    "purpose": "CLOSED set of stable machine error codes for the memory-contract/v1 tool surface. Source of truth for the error model; spec.md's 'Error model' section is prose that POINTS AT this file and adds no code absent from it. Projection into wire formats (the MCP error payload on bindings/mcp, the RFC 9457 shape in the openapi stub) is NOT done here -- it is a separate task that consumes this file.",
+    "sources": [
+      "memory-contract/v1/INVENTORY.md (section 5: error and refusal paths -- the provisional-name vocabulary this file makes canonical)",
+      "memory-contract/v1/methods.json (per-method error_codes citations; this file is a SUPERSET of what methods.json cites, because INVENTORY.md 5.2/5.3 also names tool-level throws that no MemoryProvider member raises)"
+    ],
+    "closed_set_rule": "The union of groups[].codes is the whole error vocabulary of this surface. Anything not in it is either listed in non_error_outcomes (a documented outcome that deliberately gets NO code) or in excluded_from_closed_set (deliberately absent, see the quarantine rule). A consumer that needs a code not present here has found a contract change, not a gap to fill by inventing one: add it here first.",
+    "one_code_one_group": "Every code appears in exactly one group. Groups are a partition, not tags.",
+    "group_definitions": {
+      "validation": "The request (or the input document a request names) is schema-invalid or references something structurally unusable. Decided from the caller's input alone, before any trust decision is made.",
+      "admission": "The entry is well-formed but not admissible into the KB, because it would be structurally unfalsifiable -- no cited basis, or a basis that does not resolve in this worktree.",
+      "authority": "An attempt to write trust ABOVE the INFERRED ceiling is refused. One policy, three branches (see anchor_policy_note): the silent clamp branch is a non-error outcome and gets no code; the promote-path branches below are its refusing branches.",
+      "governance": "A rule about who may retire, activate or override an entry refuses the operation. Includes every directive-activation attempt reachable from a tool: activation is CLI-only and always refused server-side.",
+      "conflict": "Two entries are in a contradiction relationship and the requested resolution cannot be applied to the pair as given. The FLAGGING of a contradiction is not in this group -- it is a non-error outcome (see non_error_outcomes E-CONTRADICTION-FLAGGED); only a refused RESOLUTION is an error here.",
+      "not_found": "A named id has no row.",
+      "provider_internal": "The provider or its configuration cannot serve the call at all. Not the caller's input, not a trust decision."
+    },
+    "surfaced_enum": {
+      "thrown": "Raised as an exception out of the call; the operation did not happen and the caller sees a failure.",
+      "response-field": "The call returns successfully; the refusal or rejection is reported in a named response field. The operation as REQUESTED did not happen.",
+      "silent": "No distinguishable signal exists today. The requested effect did not happen and the response looks like an ordinary success. These are the most easily missed refusals in the surface, which is exactly why they are named here."
+    },
+    "response_field_rule": "A code marked surfaced: 'response-field' MUST carry a `response_field` naming the response property that actually reports it, and that property must exist in the generated response schema of at least one of the code's raising tools. This is enforced by tests/memory-contract-taxonomy.test.ts. The rule exists because 'response-field' is the one surfaced value that makes a code projectable onto the wire WITHOUT the operation having failed -- so a code misfiled here projects a refusal that the kernel never performs, and no drift/parity guard can see it (they check internal consistency, and a misclassification is internally consistent). E-DIRECTIVE-QUARANTINE was filed this way in the T1 skeleton and is now a non_error_outcome; see its reason_no_code there.",
+    "projection_rule": "Only 'thrown' and 'response-field' codes are projectable into a wire error payload. A 'silent' code MUST NOT be projected into a wire enum: the server never emits it, so a consumer branching on it would branch on something unreachable. Silent codes are documented-only until a task gives them a real signal.",
+    "retryable_semantics": "true means retrying the IDENTICAL request unchanged can succeed. Changing the request (fixing a path, supplying a reason) is not a retry.",
+    "retryable_finding": "E-KB-HTTP-UNREACHABLE is the one retryable code in this closed set: under the http provider the KB server is the only source of truth, so an outage is thrown rather than degraded, and the provider queues nothing behind it, so the caller owns the retry. Every other transient failure in this surface is degraded to a non-error outcome rather than propagated as an error: the code_* adapters convert connect and dead-client failures into a structured offline result (see non_error_outcomes N-CODE-PROVIDER-OFFLINE), kb_stats swallows bible read failures, and kb_query swallows relatedClaims failures. E-KB-HTTP-SERVER-ERROR (a 5xx other than 503 answering a write or read; a 429 or 503 is E-KB-HTTP-UNREACHABLE) is deliberately not retryable: a write may already have been applied.",
+    "anchor_policy_note": "KB constraint, verified against source: the KB a kb_* call reads/writes is the CALLING SESSION's own (src/services/knowledge/kb-self.ts) -- there is no repo/scope request argument. ONE policy, THREE branches, and the closed set accounts for all three. (1) The session's folder cannot carry a KB identity (missing, not a git repository, no origin remote): every kb_* tool refuses before getKbProviders with E-SELF-NO-WORKFOLDER / E-SELF-NOT-A-REPO / E-SELF-NO-REMOTE. (2) A remote member's folder is on another host and its identity is its known origin remote: the READ tools (kb_session_prime, kb_stats) carry the folder verbatim and it stays honestly missing -- a non-error outcome, no code (non_error_outcomes N-ANCHOR-VERBATIM-MISSING). (3) The WRITING tools kb_export, kb_bible_commit and kb_import need that folder on this host and refuse with E-REPO-PATH-INVALID, before getKbProviders, so they never anchor anywhere else (no member session is served kb_export -- spec.md section 2.5a -- so for it this is defence in depth).",
+    "directive_activation_absence": {
+      "constraint": "The quarantine of directive activation is expressed by ABSENCE, not by a refusal shape. Any consumer of this file MUST NOT emit a path, an operation, a code, or a schema shape for approving, rejecting or activating a user-directive -- not even one that always refuses. A documented-but-forbidden route is still a route.",
+      "consequence_for_this_file": "The three CLI-only activation error codes named in INVENTORY.md 5.2 are in excluded_from_closed_set, not in any group. They are the error vocabulary OF the activation operations, so publishing them would document that those operations exist.",
+      "what_is_still_in_the_set": "The governance group DOES carry the server-side refusals of activation ATTEMPTS made through tool-reachable paths (E-PROMOTE-REFUSED-DIRECTIVE, E-RESOLVE-DIRECTIVE-PAIR). Those are answers this server really gives to requests it really accepts, and hiding them would misdescribe live behavior. The line is: refusals of attempts on existing routes are published; the error codes of the forbidden route itself are not. The quarantine of a directive CAPTURE is deliberately NOT in this group: that path does not refuse anything, it succeeds and stores a transformed entry, so it lives in non_error_outcomes as E-DIRECTIVE-QUARANTINE."
+    },
+    "raising_methods_shape": "Each raising_methods element cites a methods.json method (method_id + member) plus the tool the path is reachable through, and a position: 'provider' (raised inside the provider member) or 'pre-provider' (raised at the tool boundary before that member is reached -- mirrors methods.json X-1's error_codes_note). Every code has at least one raising method: there are no orphan codes.",
+    "ref_rule": "Every code in groups carries a $anchor equal to its code string, and every projection (bindings/mcp errors, the openapi x-error-catalog type URI) references a code as taxonomy.json#<CODE> -- by id, never by a positional JSON Pointer such as #/groups/<group>/codes/<index>. Codes may therefore be inserted, removed or reordered within or across groups without changing what any existing reference means. excluded_from_closed_set codes carry no $anchor (directive_activation_absence)."
+  },
+  "groups": {
+    "validation": {
+      "definition_ref": "_meta.group_definitions.validation",
+      "codes": [
+        {
+          "$anchor": "E-QUERY-NO-SELECTOR",
+          "code": "E-QUERY-NO-SELECTOR",
+          "meaning": "No query selector was supplied: none of query, tag or flagged_only is present, so there is nothing to search on.",
+          "raising_methods": [
+            { "method_id": "P-3", "member": "query", "tool": "kb_query", "position": "pre-provider" }
+          ],
+          "source": "src/tools/kb-query.ts:34",
+          "surfaced": "thrown",
+          "retryable": false,
+          "note": "kb_session_prime also reaches P-3 but cannot raise this: it builds its own selectors."
+        },
+        {
+          "$anchor": "E-SCOPE-KEY-REMOVED",
+          "code": "E-SCOPE-KEY-REMOVED",
+          "meaning": "A kb_* request carries a removed pre-redesign scope key (repo_path, repo or repo_remote_url). The KB a kb_* call acts on is always the calling session's own, so these keys are refused -- never silently stripped, which would re-point an old caller at a different KB. Nothing is resolved, opened or changed.",
+          "raising_methods": [
+            { "method_id": "P-2", "member": "capture", "tool": "kb_capture", "position": "pre-provider" },
+            { "method_id": "P-2", "member": "capture", "tool": "kb_harvest", "position": "pre-provider" },
+            { "method_id": "P-2", "member": "capture", "tool": "kb_import", "position": "pre-provider" },
+            { "method_id": "P-3", "member": "query", "tool": "kb_query", "position": "pre-provider" },
+            { "method_id": "P-3", "member": "query", "tool": "kb_session_prime", "position": "pre-provider" },
+            { "method_id": "P-4", "member": "context", "tool": "kb_context", "position": "pre-provider" },
+            { "method_id": "P-5", "member": "invalidate", "tool": "kb_invalidate", "position": "pre-provider" },
+            { "method_id": "P-7", "member": "prime", "tool": "kb_session_prime", "position": "pre-provider" },
+            { "method_id": "P-8", "member": "promote", "tool": "kb_promote", "position": "pre-provider" },
+            { "method_id": "P-10", "member": "stats", "tool": "kb_stats", "position": "pre-provider" },
+            { "method_id": "P-11", "member": "touch", "tool": "kb_session_prime", "position": "pre-provider" },
+            { "method_id": "P-12", "member": "relatedClaims", "tool": "kb_query", "position": "pre-provider" },
+            { "method_id": "X-1", "member": "list", "tool": "kb_list", "position": "pre-provider" },
+            { "method_id": "X-1", "member": "list", "tool": "kb_stats", "position": "pre-provider" },
+            { "method_id": "X-1", "member": "list", "tool": "kb_export", "position": "pre-provider" },
+            { "method_id": "X-1", "member": "list", "tool": "kb_bible_commit", "position": "pre-provider" },
+            { "method_id": "X-2", "member": "feedback", "tool": "kb_feedback", "position": "pre-provider" },
+            { "method_id": "X-3", "member": "freshnessSweep", "tool": "kb_freshness_sweep", "position": "pre-provider" },
+            { "method_id": "X-3", "member": "freshnessSweep", "tool": "kb_import", "position": "pre-provider" },
+            { "method_id": "X-4", "member": "resolveContradiction", "tool": "kb_resolve_contradiction", "position": "pre-provider" },
+            { "method_id": "X-5", "member": "reconcilePrefilter", "tool": "kb_reconcile_prefilter", "position": "pre-provider" },
+            { "method_id": "X-6", "member": "hasEntry", "tool": "kb_import", "position": "pre-provider" }
+          ],
+          "source": "src/services/knowledge/kb-removed-scope-keys.ts (assertNoRemovedKbScopeKeys), called by the kb_* tool wrapper in src/services/tool-registry.ts",
+          "surfaced": "thrown",
+          "retryable": false,
+          "remediation": "Drop the key: a member session acts on its registered work folder (a remote member's KB identity is its registered origin remote), a FULL session on its first MCP client root inside a git repository with an origin remote, or the fleet server's working folder when the client offers no roots. The thrown message names every removed key present and what replaces it.",
+          "note": "The three keys stay declared on every kb_* input schema (described as REMOVED) only so the MCP layer does not strip them before the wrapper can refuse them. Raised for every kb_* tool, including kb_setup, which reaches no provider method and so is not listed in raising_methods."
+        },
+        {
+          "$anchor": "E-PATH-TRAVERSAL",
+          "code": "E-PATH-TRAVERSAL",
+          "meaning": "A file list contains an absolute path or a parent-directory traversal.",
+          "raising_methods": [
+            { "method_id": "P-4", "member": "context", "tool": "kb_context", "position": "provider" },
+            { "method_id": "P-5", "member": "invalidate", "tool": "kb_invalidate", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/path-validation.ts:6 (absolute), :10 (traversal)",
+          "surfaced": "thrown",
+          "retryable": false
+        },
+        {
+          "$anchor": "E-REPO-PATH-INVALID",
+          "code": "E-REPO-PATH-INVALID",
+          "meaning": "The calling session's resolved folder is not a directory on this host (a remote member session), so a tool that writes into it refuses rather than writing anywhere else.",
+          "raising_methods": [
+            { "method_id": "X-1", "member": "list", "tool": "kb_export", "position": "pre-provider" },
+            { "method_id": "X-1", "member": "list", "tool": "kb_bible_commit", "position": "pre-provider" },
+            { "method_id": "P-2", "member": "capture", "tool": "kb_import", "position": "pre-provider" }
+          ],
+          "source": "src/tools/kb-export.ts (requireLocalFolder), src/tools/kb-bible-commit.ts (requireLocalFolder), src/tools/kb-import.ts (requireLocalFolder)",
+          "surfaced": "thrown",
+          "retryable": false,
+          "group_decision": "VALIDATION, not provider_internal. Decided deliberately rather than left to fall through to a generic internal code. The throw happens BEFORE getKbProviders, so no provider exists yet and nothing about the provider has failed. Filing it under provider_internal would also imply the wrong retry posture -- an internal error invites a retry, while this one can only be fixed by calling from a session on the member's own host. Both tools that raise it write into the folder, which is why they refuse where the verbatim-passthrough read tools tolerate a missing anchor (_meta.anchor_policy_note)."
+        },
+        {
+          "$anchor": "E-BIBLE-NOT-FOUND",
+          "code": "E-BIBLE-NOT-FOUND",
+          "meaning": "The resolved bible file does not exist (with ref: the named git ref does not hold it).",
+          "raising_methods": [
+            { "method_id": "P-2", "member": "capture", "tool": "kb_import", "position": "pre-provider" }
+          ],
+          "source": "src/tools/kb-import.ts:143",
+          "surfaced": "thrown",
+          "retryable": false,
+          "note": "No methods.json entry cites this code: it is a tool-boundary throw on the kb_import route, reached before P-2 capture. INVENTORY.md 5.2 is the authority for it."
+        },
+        {
+          "$anchor": "E-BIBLE-NOT-JSON",
+          "code": "E-BIBLE-NOT-JSON",
+          "meaning": "The bible file exists but is not valid JSON.",
+          "raising_methods": [
+            { "method_id": "P-2", "member": "capture", "tool": "kb_import", "position": "pre-provider" }
+          ],
+          "source": "src/tools/kb-import.ts:150",
+          "surfaced": "thrown",
+          "retryable": false
+        },
+        {
+          "$anchor": "E-BIBLE-WRONG-SHAPE",
+          "code": "E-BIBLE-WRONG-SHAPE",
+          "meaning": "The bible parses as JSON but is neither an entry array nor the v2/v3 envelope.",
+          "raising_methods": [
+            { "method_id": "P-2", "member": "capture", "tool": "kb_import", "position": "pre-provider" }
+          ],
+          "source": "src/tools/kb-import.ts:168",
+          "surfaced": "thrown",
+          "retryable": false
+        },
+        {
+          "$anchor": "E-BIBLE-MALFORMED",
+          "code": "E-BIBLE-MALFORMED",
+          "meaning": "A bible file exists but cannot be read as a bible (invalid JSON, or neither the legacy array nor the v2/v3 envelope). Raised by the shared bible reader, so it also fails a MEMBER session's read of its own checkout bible; it is never treated as an empty bible.",
+          "raising_methods": [
+            { "method_id": "P-2", "member": "capture", "tool": "kb_import", "position": "pre-provider" },
+            { "method_id": "P-3", "member": "query", "tool": "kb_query", "position": "pre-provider" },
+            { "method_id": "P-3", "member": "query", "tool": "kb_session_prime", "position": "pre-provider" },
+            { "method_id": "P-10", "member": "stats", "tool": "kb_stats", "position": "pre-provider" }
+          ],
+          "source": "src/services/knowledge/bible-import.ts (KbBibleError, readBibleEntries), src/services/knowledge/member-bible-view.ts",
+          "surfaced": "thrown",
+          "retryable": false,
+          "remediation": "Fix or regenerate the bible file (kb_export writes it), or restore it from git."
+        }
+      ]
+    },
+    "admission": {
+      "definition_ref": "_meta.group_definitions.admission",
+      "codes": [
+        {
+          "$anchor": "E-NO-BASIS",
+          "code": "E-NO-BASIS",
+          "meaning": "The entry cites zero source files, so the freshness sweep can never stale it -- it is structurally unfalsifiable and is refused. Exempt: user-directive, which is not a claim about code.",
+          "raising_methods": [
+            { "method_id": "P-2", "member": "capture", "tool": "kb_capture", "position": "provider" },
+            { "method_id": "P-2", "member": "capture", "tool": "kb_harvest", "position": "provider" },
+            { "method_id": "P-2", "member": "capture", "tool": "kb_import", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/sqlite-provider.ts (SqliteProvider.assertCheckableBasis, zero-files branch, KbCaptureRejected('no_source_files'))",
+          "surfaced": "thrown",
+          "retryable": false,
+          "note": "On the kb_import route this throw is caught per entry and counted -- see E-IMPORT-ENTRY-REJECTED."
+        },
+        {
+          "$anchor": "E-BASIS-MISSING-FILES",
+          "code": "E-BASIS-MISSING-FILES",
+          "meaning": "The cited source files do not resolve in this worktree. No exemption for harvest-sourced entries or for import mode.",
+          "raising_methods": [
+            { "method_id": "P-2", "member": "capture", "tool": "kb_capture", "position": "provider" },
+            { "method_id": "P-2", "member": "capture", "tool": "kb_harvest", "position": "provider" },
+            { "method_id": "P-2", "member": "capture", "tool": "kb_import", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/sqlite-provider.ts (SqliteProvider.assertCheckableBasis, unresolvable-files branch, KbCaptureRejected('missing_source_files'))",
+          "surfaced": "thrown",
+          "retryable": false
+        },
+        {
+          "$anchor": "E-IMPORT-ENTRY-REJECTED",
+          "code": "E-IMPORT-ENTRY-REJECTED",
+          "meaning": "A single bible entry failed admission (E-NO-BASIS or E-BASIS-MISSING-FILES) and was skipped and counted; the import as a whole still succeeds.",
+          "raising_methods": [
+            { "method_id": "P-2", "member": "capture", "tool": "kb_import", "position": "provider" }
+          ],
+          "source": "src/tools/kb-import.ts:222-234, surfaced as KbImportReport.rejected",
+          "surfaced": "response-field",
+          "response_field": "rejected",
+          "retryable": false,
+          "note": "Distinct from the 'skipped' counter, which covers per-entry SHAPE failures (isValidBibleEntry, src/tools/kb-import.ts:98-109) and pre-existing ids (:193-196). Only basis rejections land here. No methods.json entry cites this code."
+        }
+      ]
+    },
+    "authority": {
+      "definition_ref": "_meta.group_definitions.authority",
+      "codes": [
+        {
+          "$anchor": "E-PROMOTE-REASON-REQUIRED",
+          "code": "E-PROMOTE-REASON-REQUIRED",
+          "meaning": "The promotion carries no non-trivial reason (absent, or shorter than MIN_PROMOTE_REASON_LENGTH). Writing above INFERRED must record its evidence.",
+          "raising_methods": [
+            { "method_id": "P-8", "member": "promote", "tool": "kb_promote", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/sqlite-provider.ts (SqliteProvider.promote, reason-required guard, isNonTrivialPromoteReason)",
+          "surfaced": "thrown",
+          "retryable": false,
+          "see_also": ["Capture provenance and confidence clamp"]
+        },
+        {
+          "$anchor": "E-PROMOTE-BASIS-UNRESOLVED",
+          "code": "E-PROMOTE-BASIS-UNRESOLVED",
+          "meaning": "The entry cites zero source files, or one or more cited files no longer resolve in this worktree. An unfalsifiable or stale basis cannot earn CONFIRMED.",
+          "raising_methods": [
+            { "method_id": "P-8", "member": "promote", "tool": "kb_promote", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/sqlite-provider.ts (SqliteProvider.promote, basis-unresolved guard)",
+          "surfaced": "thrown",
+          "retryable": false,
+          "see_also": ["Capture provenance and confidence clamp"]
+        },
+        {
+          "$anchor": "E-PROMOTE-SUPERSEDED",
+          "code": "E-PROMOTE-SUPERSEDED",
+          "meaning": "The target entry is already superseded, so it has no standing to earn a higher tier.",
+          "raising_methods": [
+            { "method_id": "P-8", "member": "promote", "tool": "kb_promote", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/sqlite-provider.ts (SqliteProvider.promote, already-superseded guard)",
+          "surfaced": "thrown",
+          "retryable": false,
+          "group_decision": "AUTHORITY, not conflict. The refusal is about the target's standing to hold a higher tier, which is the same policy as the clamp; it is not about the semantics of a contradiction pair.",
+          "see_also": ["Superseding and AUDN matching"]
+        },
+        {
+          "$anchor": "E-DEMOTE-NOT-CONFIRMED",
+          "code": "E-DEMOTE-NOT-CONFIRMED",
+          "meaning": "The target entry is not CONFIRMED. kb_demote is not a ladder: it lowers CONFIRMED to INFERRED and nothing else, so an INFERRED or UNVERIFIED target is REFUSED rather than returned as an unchanged no-op -- a caller must never believe it lowered trust that was already at the floor.",
+          "raising_methods": [
+            { "method_id": "P-13", "member": "demote", "tool": "kb_demote", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/sqlite-provider.ts (SqliteProvider.demote, refusal 4 of 6)",
+          "surfaced": "thrown",
+          "retryable": false,
+          "see_also": ["Capture provenance and confidence clamp"]
+        },
+        {
+          "$anchor": "E-DEMOTE-REASON-REQUIRED",
+          "code": "E-DEMOTE-REASON-REQUIRED",
+          "meaning": "The demotion carries no non-trivial reason: shorter than MIN_DEMOTE_REASON_LENGTH once newlines are collapsed to spaces and the result trimmed (so a reason made only of whitespace or newlines collapses to empty and is refused). Withdrawing trust must record its evidence as strictly as granting it.",
+          "raising_methods": [
+            { "method_id": "P-13", "member": "demote", "tool": "kb_demote", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/sqlite-provider.ts (SqliteProvider.demote, refusal 5 of 6; normalizeDemoteReason)",
+          "surfaced": "thrown",
+          "retryable": false,
+          "see_also": ["Capture provenance and confidence clamp"]
+        },
+        {
+          "$anchor": "E-DEMOTE-EVIDENCE-UNRESOLVED",
+          "code": "E-DEMOTE-EVIDENCE-UNRESOLVED",
+          "meaning": "A cited evidence file does not resolve in this worktree, is not a regular file, or is not anchor-relative -- an absolute path, or one with a '..' segment, both of which name a location the anchor does not contain. The anchor-relative check (the shared validateFilePaths guard, same as E-PATH-TRAVERSAL) runs FIRST, so a path that happens to land on a real file outside the repo is refused too.",
+          "raising_methods": [
+            { "method_id": "P-13", "member": "demote", "tool": "kb_demote", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/sqlite-provider.ts (SqliteProvider.assertResolvableDemoteEvidence, refusal 6 of 6); under the http provider, src/services/knowledge/http-provider.ts (HttpKbProvider.demote refuses an absolute or '..' evidence path before sending; the server's own refusal is a 422 carrying this code, spec 2.9.1)",
+          "surfaced": "thrown",
+          "retryable": false,
+          "see_also": ["Capture provenance and confidence clamp"]
+        },
+        {
+          "$anchor": "E-DEMOTE-SUPERSEDED",
+          "code": "E-DEMOTE-SUPERSEDED",
+          "meaning": "The target entry is already superseded, so it has dropped out of every read path and lowering its confidence would be a write with no observable meaning.",
+          "raising_methods": [
+            { "method_id": "P-13", "member": "demote", "tool": "kb_demote", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/sqlite-provider.ts (SqliteProvider.demote, refusal 2 of 6)",
+          "surfaced": "thrown",
+          "retryable": false,
+          "group_decision": "AUTHORITY, not conflict -- the same reading as E-PROMOTE-SUPERSEDED: the refusal is about the target's standing to hold any tier at all, not about the semantics of a contradiction pair.",
+          "see_also": ["Superseding and AUDN matching"]
+        },
+        {
+          "$anchor": "E-KB-MAINTAINER-REQUIRED",
+          "code": "E-KB-MAINTAINER-REQUIRED",
+          "meaning": "kb_import in a MEMBER session that does not carry the kb_maintainer grant either named an explicit path other than the session's own .fleet/kb-canonical.json, or (without path / with its own path) found no committed copy of its own bible at HEAD. An explicit-path import keeps the bible's confidence, which is equivalent in power to kb_promote, so it needs the same grant; the own bible is trusted only as committed, never as the member-writable work-tree file. Nothing is imported.",
+          "raising_methods": [
+            { "method_id": "P-2", "member": "capture", "tool": "kb_import", "position": "pre-provider" }
+          ],
+          "source": "src/services/knowledge/kb-maintainer-grant.ts (KbMaintainerGrantError), raised by src/tools/kb-import.ts",
+          "surfaced": "thrown",
+          "retryable": false,
+          "remediation": "Call kb_import without path to import your own committed checkout bible (.fleet/kb-canonical.json at HEAD; commit it first if it is not committed), or run the import from the kb_maintainer session or a FULL session.",
+          "group_decision": "AUTHORITY, not provider_internal: the request is well formed and the KB could serve it; the refusal is the INFERRED-ceiling policy applied to a member session that may not write above it. Thrown before any KB is opened (spec.md section 2.5a).",
+          "see_also": ["Capture provenance and confidence clamp"]
+        }
+      ]
+    },
+    "governance": {
+      "definition_ref": "_meta.group_definitions.governance",
+      "absence_constraint_ref": "_meta.directive_activation_absence",
+      "codes": [
+        {
+          "$anchor": "E-RETIRE-NEEDS-KB-MAINTAINER",
+          "code": "E-RETIRE-NEEDS-KB-MAINTAINER",
+          "meaning": "A MEMBER session without the kb_maintainer grant tried to retire a live CONFIRMED entry: kb_invalidate named it (by id, or a CONFIRMED context-cache entry by file), or kb_capture named it in supersedes and AUDN matched it. Retiring it would remove it from the bible at the next kb_bible_commit, so it is left live and its id is reported in the response's refused list. kb_invalidate processes every other named entry as usual; kb_capture still stores the new entry, linked to the CONFIRMED one (refines, both live), and on a remote KB provider drops supersedes entirely (fail closed).",
+          "raising_methods": [
+            { "method_id": "P-5", "member": "invalidate", "tool": "kb_invalidate", "position": "provider" },
+            { "method_id": "P-2", "member": "capture", "tool": "kb_capture", "position": "provider" }
+          ],
+          "source": "src/tools/kb-invalidate.ts and src/tools/kb-capture.ts (keepConfirmed via memberLacksKbMaintainer), src/services/knowledge/sqlite-provider.ts (discard / invalidate / capture with keepConfirmed)",
+          "surfaced": "response-field",
+          "response_field": "refused",
+          "retryable": false,
+          "remediation": "Leave CONFIRMED entries to the kb_maintainer (the engine discards from its kb_maintainer session), or run the call from a FULL session.",
+          "group_decision": "GOVERNANCE, not authority: the refusal is about who may RETIRE an entry, regardless of the tier being written (no trust is raised).",
+          "see_also": ["Superseding and AUDN matching"]
+        },
+        {
+          "$anchor": "E-PROMOTE-REFUSED-DIRECTIVE",
+          "code": "E-PROMOTE-REFUSED-DIRECTIVE",
+          "meaning": "Promotion of a user-directive entry is refused outright; a directive can only become active through the CLI-only consent step.",
+          "raising_methods": [
+            { "method_id": "P-8", "member": "promote", "tool": "kb_promote", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/sqlite-provider.ts (SqliteProvider.promote, user-directive refusal)",
+          "surfaced": "thrown",
+          "retryable": false,
+          "see_also": ["Directive quarantine"]
+        },
+        {
+          "$anchor": "E-DEMOTE-REFUSED-DIRECTIVE",
+          "code": "E-DEMOTE-REFUSED-DIRECTIVE",
+          "meaning": "Demotion of a user-directive entry is refused outright. Directive state is human-terminal in BOTH directions: promote() refuses them so an agent cannot forge an active directive, and demote() refuses them so an agent cannot deactivate one a human set.",
+          "raising_methods": [
+            { "method_id": "P-13", "member": "demote", "tool": "kb_demote", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/sqlite-provider.ts (SqliteProvider.demote, refusal 3 of 6)",
+          "surfaced": "thrown",
+          "retryable": false,
+          "see_also": ["Directive quarantine"]
+        },
+        {
+          "$anchor": "E-RESOLVE-DIRECTIVE-PAIR",
+          "code": "E-RESOLVE-DIRECTIVE-PAIR",
+          "meaning": "The contradiction pair involves an ACTIVE user-directive; directives are never auto-resolved. Writes NOTHING.",
+          "raising_methods": [
+            { "method_id": "X-4", "member": "resolveContradiction", "tool": "kb_resolve_contradiction", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/sqlite-provider.ts (SqliteProvider.resolveContradiction, directive-pair refusal)",
+          "surfaced": "thrown",
+          "retryable": false,
+          "see_also": ["Directive quarantine"]
+        },
+        {
+          "$anchor": "E-SUPERSEDE-CONSENT-MISSING",
+          "code": "E-SUPERSEDE-CONSENT-MISSING",
+          "meaning": "A supersedes request took no effect: it applies only if AUDN independently matches that candidate under the dedup gates (same type, symbol overlap, file overlap, target not an ACTIVE user-directive). Otherwise the named target is NOT retired and the request falls through to the ordinary paths.",
+          "raising_methods": [
+            { "method_id": "P-2", "member": "capture", "tool": "kb_capture", "position": "provider" },
+            { "method_id": "P-2", "member": "capture", "tool": "kb_harvest", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/audn.ts:145-157 (makeAudnDecision, explicit-supersede branch)",
+          "surfaced": "silent",
+          "retryable": false,
+          "note": "Named here BECAUSE it is silent: audn_decision reports whatever the fallthrough decided, so a caller cannot today distinguish 'your supersede was applied' from 'your supersede was ignored'. Per _meta.projection_rule this code must not be projected into a wire enum until a signal exists.",
+          "see_also": ["Superseding and AUDN matching"]
+        },
+        {
+          "$anchor": "E-ACTIVE-DIRECTIVE-SUPERSEDE-GUARD",
+          "code": "E-ACTIVE-DIRECTIVE-SUPERSEDE-GUARD",
+          "meaning": "An ACTIVE (CONFIRMED) user-directive candidate can never be superseded or updated by any capture() path; the AUDN loop skips past it.",
+          "raising_methods": [
+            { "method_id": "P-2", "member": "capture", "tool": "kb_capture", "position": "provider" },
+            { "method_id": "P-2", "member": "capture", "tool": "kb_harvest", "position": "provider" },
+            { "method_id": "P-2", "member": "capture", "tool": "kb_import", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/audn.ts:224",
+          "surfaced": "silent",
+          "retryable": false,
+          "note": "The candidate degrades to flagged (if a contradiction signal was present) or is skipped, so the guard itself has no distinguishable signal. Same projection restriction as E-SUPERSEDE-CONSENT-MISSING.",
+          "see_also": ["Directive quarantine", "Superseding and AUDN matching"]
+        }
+      ]
+    },
+    "conflict": {
+      "definition_ref": "_meta.group_definitions.conflict",
+      "codes": [
+        {
+          "$anchor": "E-RESOLVE-NOT-A-PAIR",
+          "code": "E-RESOLVE-NOT-A-PAIR",
+          "meaning": "The two ids do not form a genuinely linked contradiction pair, so there is nothing to resolve. Writes NOTHING.",
+          "raising_methods": [
+            { "method_id": "X-4", "member": "resolveContradiction", "tool": "kb_resolve_contradiction", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/sqlite-provider.ts (SqliteProvider.resolveContradiction, not-a-pair refusal)",
+          "surfaced": "thrown",
+          "retryable": false
+        },
+        {
+          "$anchor": "E-RESOLVE-ALREADY-SUPERSEDED",
+          "code": "E-RESOLVE-ALREADY-SUPERSEDED",
+          "meaning": "One or both entries in the pair are already superseded, so the resolution cannot be applied. Writes NOTHING.",
+          "raising_methods": [
+            { "method_id": "X-4", "member": "resolveContradiction", "tool": "kb_resolve_contradiction", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/sqlite-provider.ts (SqliteProvider.resolveContradiction, already-superseded refusal)",
+          "surfaced": "thrown",
+          "retryable": false
+        }
+      ]
+    },
+    "not_found": {
+      "definition_ref": "_meta.group_definitions.not_found",
+      "codes": [
+        {
+          "$anchor": "E-ENTRY-NOT-FOUND",
+          "code": "E-ENTRY-NOT-FOUND",
+          "meaning": "The named entry id has no row.",
+          "raising_methods": [
+            { "method_id": "P-8", "member": "promote", "tool": "kb_promote", "position": "provider" },
+            { "method_id": "X-2", "member": "feedback", "tool": "kb_feedback", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/sqlite-provider.ts (SqliteProvider.promote entry-not-found guard, SqliteProvider.feedback entry-not-found guard)",
+          "surfaced": "thrown",
+          "retryable": false
+        },
+        {
+          "$anchor": "E-RESOLVE-MISSING-ENTRY",
+          "code": "E-RESOLVE-MISSING-ENTRY",
+          "meaning": "One or both ids of a contradiction pair do not exist. Writes NOTHING.",
+          "raising_methods": [
+            { "method_id": "X-4", "member": "resolveContradiction", "tool": "kb_resolve_contradiction", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/sqlite-provider.ts (SqliteProvider.resolveContradiction, missing-entry refusal)",
+          "surfaced": "thrown",
+          "retryable": false,
+          "note": "Kept distinct from E-ENTRY-NOT-FOUND rather than merged: it names a PAIR operation that wrote nothing, and INVENTORY.md 5.2 and methods.json X-4 both carry it under its own name."
+        }
+      ]
+    },
+    "provider_internal": {
+      "definition_ref": "_meta.group_definitions.provider_internal",
+      "codes": [
+        {
+          "$anchor": "E-PROVIDER-UNINITIALIZED",
+          "code": "E-PROVIDER-UNINITIALIZED",
+          "meaning": "A provider member was called before init(). A call-order defect, not a caller-input problem.",
+          "raising_methods": [
+            { "method_id": "P-2", "member": "capture", "tool": "kb_capture", "position": "provider" },
+            { "method_id": "P-3", "member": "query", "tool": "kb_query", "position": "provider" },
+            { "method_id": "P-4", "member": "context", "tool": "kb_context", "position": "provider" },
+            { "method_id": "P-5", "member": "invalidate", "tool": "kb_invalidate", "position": "provider" },
+            { "method_id": "P-7", "member": "prime", "tool": "kb_session_prime", "position": "provider" },
+            { "method_id": "P-8", "member": "promote", "tool": "kb_promote", "position": "provider" },
+            { "method_id": "P-10", "member": "stats", "tool": "kb_stats", "position": "provider" },
+            { "method_id": "P-11", "member": "touch", "tool": "kb_session_prime", "position": "provider" },
+            { "method_id": "P-12", "member": "relatedClaims", "tool": "kb_query", "position": "provider" },
+            { "method_id": "X-1", "member": "list", "tool": "kb_list", "position": "provider" },
+            { "method_id": "X-2", "member": "feedback", "tool": "kb_feedback", "position": "provider" },
+            { "method_id": "X-3", "member": "freshnessSweep", "tool": "kb_freshness_sweep", "position": "provider" },
+            { "method_id": "X-4", "member": "resolveContradiction", "tool": "kb_resolve_contradiction", "position": "provider" },
+            { "method_id": "X-5", "member": "reconcilePrefilter", "tool": "kb_reconcile_prefilter", "position": "provider" },
+            { "method_id": "X-6", "member": "hasEntry", "tool": "kb_import", "position": "provider" },
+            { "method_id": "X-8", "member": "getSourceFileBases", "tool": "kb_export", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/sqlite-provider.ts (SqliteProvider.getDb)",
+          "surfaced": "thrown",
+          "retryable": false,
+          "note": "methods.json also cites this code on P-6 getLinked and P-9 sync, which have no tool route (tools: []); every member reached through getDb can raise it. init() itself (P-1) has no throw site of its own -- its ABSENCE is what causes this code everywhere else."
+        },
+        {
+          "$anchor": "E-CODE-PROVIDER-UNCONFIGURED",
+          "code": "E-CODE-PROVIDER-UNCONFIGURED",
+          "meaning": "The resolved code-intelligence provider key has no entry in the PROVIDERS map (codebase-memory, gitnexus, none), so no provider can be constructed for the call.",
+          "raising_methods": [
+            { "method_id": "C-1", "member": "graph", "tool": "code_graph", "position": "pre-provider" },
+            { "method_id": "C-2", "member": "impact", "tool": "code_impact", "position": "pre-provider" },
+            { "method_id": "C-3", "member": "query", "tool": "code_query", "position": "pre-provider" },
+            { "method_id": "C-4", "member": "context", "tool": "code_context", "position": "pre-provider" },
+            { "method_id": "C-5", "member": "map", "tool": "code_map", "position": "pre-provider" },
+            { "method_id": "C-6", "member": "flow", "tool": "code_flow", "position": "pre-provider" },
+            { "method_id": "C-7", "member": "tests", "tool": "code_tests", "position": "pre-provider" }
+          ],
+          "source": "src/tools/code-intelligence.ts:131-135 (per-member codeIntelProvider override), :151-155 (global config.json provider field)",
+          "surfaced": "thrown",
+          "retryable": false,
+          "note": "getProvider() runs before the adapter's guarded entry point, so this throw is not converted into an offline result the way connect failures are (see non_error_outcomes N-CODE-PROVIDER-OFFLINE). The other code_* throws are the (self) resolution codes (E-SELF-NO-WORKFOLDER, E-SELF-NOT-A-REPO), E-CODE-INDEX-NOT-READY and E-CODE-INTEL-DISABLED."
+        },
+        {
+          "$anchor": "E-CODE-INDEX-NOT-READY",
+          "code": "E-CODE-INDEX-NOT-READY",
+          "meaning": "The active provider has no ready code index for the calling session's resolved (self) folder: no index exists yet, or one is still being built (gitnexus: <repo>/.gitnexus/meta.json absent while an analyze is running or has begun writing <repo>/.gitnexus/).",
+          "raising_methods": [
+            { "method_id": "C-1", "member": "graph", "tool": "code_graph", "position": "provider" },
+            { "method_id": "C-2", "member": "impact", "tool": "code_impact", "position": "provider" },
+            { "method_id": "C-3", "member": "query", "tool": "code_query", "position": "provider" },
+            { "method_id": "C-4", "member": "context", "tool": "code_context", "position": "provider" },
+            { "method_id": "C-5", "member": "map", "tool": "code_map", "position": "provider" },
+            { "method_id": "C-6", "member": "flow", "tool": "code_flow", "position": "provider" },
+            { "method_id": "C-7", "member": "tests", "tool": "code_tests", "position": "provider" }
+          ],
+          "source": "src/tools/code-intelligence-readiness.ts (codeIndexReadiness -- the one readiness check, ensureGitNexusIndexReady, assertCodeIndexReady, indexNotReadyError), called from callGitNexus (code-intelligence-gitnexus.ts) and callCodebaseMemory (code-intelligence-codebase-memory.ts)",
+          "surfaced": "thrown",
+          "retryable": false,
+          "remediation": "Wait retry_after_ms and retry the same call once when the message says an index build was started or is running; otherwise follow the message (call code_reindex, or fix what stops the server from building the index), then retry.",
+          "note": "Thrown by the adapter's pre-flight before the child process is ever spawned, so it is never converted into an offline result. Readiness states: building (an analyze is live -- including one rewriting an index whose meta.json still looks complete, which is never served meanwhile), interrupted (meta.json flagged incrementalInProgress with no live analyze found), inconsistent (the gitnexus registry, or the fleet record of its last finished build, names a different commit than meta.json) and missing. An answer is also discarded with this error when the index changed while the call ran (re-checked after the child answers). For a local gitnexus folder the pre-flight requests a background build for missing/interrupted/inconsistent (config-, cooldown- and single-flight-gated) before throwing, and the message says whether it was requested or why not; an automatic build that ends without a ready index pauses automatic builds for that folder until code_reindex or a server restart, and the message then names the failed result and its log; a remote member's folder is never built from this host. retryable stays false in the v1 sense (section 3.3): the caller cannot observe when the background build finishes, which the remediation states as wait-then-retry guidance rather than a backoff class. The error result keeps the one-line message and adds structuredContent (spec section 2.7): retry_after_ms (number, every state; 0 with retry_will_help false when no build is running and none could be requested), retry_will_help, state, build, heal, and progress {phase, elapsed_ms, last_line, line_count} while an analyze is recorded -- callers wait once for retry_after_ms, retry once, then fall back, never polling code_status."
+        },
+        {
+          "$anchor": "E-CODE-INTEL-DISABLED",
+          "code": "E-CODE-INTEL-DISABLED",
+          "meaning": "Code intelligence is off for the calling session: the resolved provider is 'none' (NullProvider), so no code_* call (including code_reindex and code_status, which resolve the provider before spawning or reading anything) can be answered. Always an error result, never an ok payload that merely says 'disabled'.",
+          "raising_methods": [
+            { "method_id": "C-1", "member": "graph", "tool": "code_graph", "position": "provider" },
+            { "method_id": "C-2", "member": "impact", "tool": "code_impact", "position": "provider" },
+            { "method_id": "C-3", "member": "query", "tool": "code_query", "position": "provider" },
+            { "method_id": "C-4", "member": "context", "tool": "code_context", "position": "provider" },
+            { "method_id": "C-5", "member": "map", "tool": "code_map", "position": "provider" },
+            { "method_id": "C-6", "member": "flow", "tool": "code_flow", "position": "provider" },
+            { "method_id": "C-7", "member": "tests", "tool": "code_tests", "position": "provider" },
+            { "method_id": "C-8", "member": "reindex", "tool": "code_reindex", "position": "provider" },
+            { "method_id": "C-9", "member": "status", "tool": "code_status", "position": "provider" }
+          ],
+          "source": "src/tools/code-intelligence.ts (NullProvider, every method; gateOnProvider for code_reindex/code_status), src/tools/code-intelligence-readiness.ts (codeIntelDisabledError)",
+          "surfaced": "thrown",
+          "retryable": false,
+          "remediation": "Pick a provider: update_member code_intel_provider ('gitnexus' or 'codebase-memory'), or set \"provider\" in the code-intelligence config.json, then retry.",
+          "group_decision": "PROVIDER_INTERNAL: 'none' is a valid configured provider, not a request error and not a misconfiguration (that is E-CODE-PROVIDER-UNCONFIGURED). The session's configuration cannot serve the call, so it is refused as an error rather than answered with a payload a caller would read as success."
+        },
+        {
+          "$anchor": "E-SELF-NO-WORKFOLDER",
+          "code": "E-SELF-NO-WORKFOLDER",
+          "meaning": "The calling session's folder does not exist or is not a directory: a member session's registered work folder is missing or unset (or the member is not registered), the fleet server's own working folder is gone, a FULL session's client offered MCP roots and none is a folder on this host, or asking that client for its roots failed (the one case of this code where retrying the same call can succeed; the message says so).",
+          "raising_methods": [
+            { "method_id": "P-2", "member": "capture", "tool": "kb_capture", "position": "pre-provider" },
+            { "method_id": "P-2", "member": "capture", "tool": "kb_harvest", "position": "pre-provider" },
+            { "method_id": "P-2", "member": "capture", "tool": "kb_import", "position": "pre-provider" },
+            { "method_id": "P-3", "member": "query", "tool": "kb_query", "position": "pre-provider" },
+            { "method_id": "P-3", "member": "query", "tool": "kb_session_prime", "position": "pre-provider" },
+            { "method_id": "P-4", "member": "context", "tool": "kb_context", "position": "pre-provider" },
+            { "method_id": "P-5", "member": "invalidate", "tool": "kb_invalidate", "position": "pre-provider" },
+            { "method_id": "P-7", "member": "prime", "tool": "kb_session_prime", "position": "pre-provider" },
+            { "method_id": "P-8", "member": "promote", "tool": "kb_promote", "position": "pre-provider" },
+            { "method_id": "P-10", "member": "stats", "tool": "kb_stats", "position": "pre-provider" },
+            { "method_id": "P-11", "member": "touch", "tool": "kb_session_prime", "position": "pre-provider" },
+            { "method_id": "P-12", "member": "relatedClaims", "tool": "kb_query", "position": "pre-provider" },
+            { "method_id": "X-1", "member": "list", "tool": "kb_list", "position": "pre-provider" },
+            { "method_id": "X-1", "member": "list", "tool": "kb_stats", "position": "pre-provider" },
+            { "method_id": "X-1", "member": "list", "tool": "kb_export", "position": "pre-provider" },
+            { "method_id": "X-1", "member": "list", "tool": "kb_bible_commit", "position": "pre-provider" },
+            { "method_id": "X-2", "member": "feedback", "tool": "kb_feedback", "position": "pre-provider" },
+            { "method_id": "X-3", "member": "freshnessSweep", "tool": "kb_freshness_sweep", "position": "pre-provider" },
+            { "method_id": "X-3", "member": "freshnessSweep", "tool": "kb_import", "position": "pre-provider" },
+            { "method_id": "X-4", "member": "resolveContradiction", "tool": "kb_resolve_contradiction", "position": "pre-provider" },
+            { "method_id": "X-5", "member": "reconcilePrefilter", "tool": "kb_reconcile_prefilter", "position": "pre-provider" },
+            { "method_id": "X-6", "member": "hasEntry", "tool": "kb_import", "position": "pre-provider" },
+            { "method_id": "C-1", "member": "graph", "tool": "code_graph", "position": "pre-provider" },
+            { "method_id": "C-2", "member": "impact", "tool": "code_impact", "position": "pre-provider" },
+            { "method_id": "C-3", "member": "query", "tool": "code_query", "position": "pre-provider" },
+            { "method_id": "C-4", "member": "context", "tool": "code_context", "position": "pre-provider" },
+            { "method_id": "C-5", "member": "map", "tool": "code_map", "position": "pre-provider" },
+            { "method_id": "C-6", "member": "flow", "tool": "code_flow", "position": "pre-provider" },
+            { "method_id": "C-7", "member": "tests", "tool": "code_tests", "position": "pre-provider" },
+            { "method_id": "C-8", "member": "reindex", "tool": "code_reindex", "position": "pre-provider" },
+            { "method_id": "C-9", "member": "status", "tool": "code_status", "position": "pre-provider" }
+          ],
+          "source": "src/services/knowledge/kb-self.ts (resolveSelfSession, validateSelfRepoFolder; kb_* via resolveSelfAnchor/validateSelfFolder, code_* via resolveCodeSelf in src/tools/code-intelligence.ts)",
+          "surfaced": "thrown",
+          "retryable": false,
+          "remediation": "Create the folder or re-register the member with an existing work folder (register_member / update_member).",
+          "group_decision": "PROVIDER_INTERNAL, not validation: no request field is wrong -- kb_* and code_* requests carry no scope argument. The configuration the session resolves to (its member registration or the server's working folder) cannot serve the call at all. Thrown before getKbProviders on every kb_* route, and before getProvider on every code_* route (position pre-provider). The thrown message carries a one-line 'Remediation:' clause."
+        },
+        {
+          "$anchor": "E-SELF-NOT-A-REPO",
+          "code": "E-SELF-NOT-A-REPO",
+          "meaning": "The calling session's folder exists but is not a git repository, so no KB identity can be derived from it and no code index is resolved for it.",
+          "raising_methods": [
+            { "method_id": "P-2", "member": "capture", "tool": "kb_capture", "position": "pre-provider" },
+            { "method_id": "P-2", "member": "capture", "tool": "kb_harvest", "position": "pre-provider" },
+            { "method_id": "P-2", "member": "capture", "tool": "kb_import", "position": "pre-provider" },
+            { "method_id": "P-3", "member": "query", "tool": "kb_query", "position": "pre-provider" },
+            { "method_id": "P-3", "member": "query", "tool": "kb_session_prime", "position": "pre-provider" },
+            { "method_id": "P-4", "member": "context", "tool": "kb_context", "position": "pre-provider" },
+            { "method_id": "P-5", "member": "invalidate", "tool": "kb_invalidate", "position": "pre-provider" },
+            { "method_id": "P-7", "member": "prime", "tool": "kb_session_prime", "position": "pre-provider" },
+            { "method_id": "P-8", "member": "promote", "tool": "kb_promote", "position": "pre-provider" },
+            { "method_id": "P-10", "member": "stats", "tool": "kb_stats", "position": "pre-provider" },
+            { "method_id": "P-11", "member": "touch", "tool": "kb_session_prime", "position": "pre-provider" },
+            { "method_id": "P-12", "member": "relatedClaims", "tool": "kb_query", "position": "pre-provider" },
+            { "method_id": "X-1", "member": "list", "tool": "kb_list", "position": "pre-provider" },
+            { "method_id": "X-1", "member": "list", "tool": "kb_stats", "position": "pre-provider" },
+            { "method_id": "X-1", "member": "list", "tool": "kb_export", "position": "pre-provider" },
+            { "method_id": "X-1", "member": "list", "tool": "kb_bible_commit", "position": "pre-provider" },
+            { "method_id": "X-2", "member": "feedback", "tool": "kb_feedback", "position": "pre-provider" },
+            { "method_id": "X-3", "member": "freshnessSweep", "tool": "kb_freshness_sweep", "position": "pre-provider" },
+            { "method_id": "X-3", "member": "freshnessSweep", "tool": "kb_import", "position": "pre-provider" },
+            { "method_id": "X-4", "member": "resolveContradiction", "tool": "kb_resolve_contradiction", "position": "pre-provider" },
+            { "method_id": "X-5", "member": "reconcilePrefilter", "tool": "kb_reconcile_prefilter", "position": "pre-provider" },
+            { "method_id": "X-6", "member": "hasEntry", "tool": "kb_import", "position": "pre-provider" },
+            { "method_id": "C-1", "member": "graph", "tool": "code_graph", "position": "pre-provider" },
+            { "method_id": "C-2", "member": "impact", "tool": "code_impact", "position": "pre-provider" },
+            { "method_id": "C-3", "member": "query", "tool": "code_query", "position": "pre-provider" },
+            { "method_id": "C-4", "member": "context", "tool": "code_context", "position": "pre-provider" },
+            { "method_id": "C-5", "member": "map", "tool": "code_map", "position": "pre-provider" },
+            { "method_id": "C-6", "member": "flow", "tool": "code_flow", "position": "pre-provider" },
+            { "method_id": "C-7", "member": "tests", "tool": "code_tests", "position": "pre-provider" },
+            { "method_id": "C-8", "member": "reindex", "tool": "code_reindex", "position": "pre-provider" },
+            { "method_id": "C-9", "member": "status", "tool": "code_status", "position": "pre-provider" }
+          ],
+          "source": "src/services/knowledge/kb-self.ts (resolveSelfSession, validateSelfRepoFolder; kb_* via resolveSelfAnchor/validateSelfFolder, code_* via resolveCodeSelf in src/tools/code-intelligence.ts)",
+          "surfaced": "thrown",
+          "retryable": false,
+          "remediation": "Run 'git init' (or clone the project) in the folder and add an origin remote.",
+          "group_decision": "PROVIDER_INTERNAL, not validation: no request field is wrong -- kb_* and code_* requests carry no scope argument. The configuration the session resolves to (its member registration or the server's working folder) cannot serve the call at all. Thrown before getKbProviders on every kb_* route, and before getProvider on every code_* route (position pre-provider). The thrown message carries a one-line 'Remediation:' clause."
+        },
+        {
+          "$anchor": "E-SELF-NO-REMOTE",
+          "code": "E-SELF-NO-REMOTE",
+          "meaning": "The calling session's folder has no origin remote (or a remote member has no single known origin remote), so it has no KB identity. Never silently mapped to a directory-name or 'default' KB.",
+          "raising_methods": [
+            { "method_id": "P-2", "member": "capture", "tool": "kb_capture", "position": "pre-provider" },
+            { "method_id": "P-2", "member": "capture", "tool": "kb_harvest", "position": "pre-provider" },
+            { "method_id": "P-2", "member": "capture", "tool": "kb_import", "position": "pre-provider" },
+            { "method_id": "P-3", "member": "query", "tool": "kb_query", "position": "pre-provider" },
+            { "method_id": "P-3", "member": "query", "tool": "kb_session_prime", "position": "pre-provider" },
+            { "method_id": "P-4", "member": "context", "tool": "kb_context", "position": "pre-provider" },
+            { "method_id": "P-5", "member": "invalidate", "tool": "kb_invalidate", "position": "pre-provider" },
+            { "method_id": "P-7", "member": "prime", "tool": "kb_session_prime", "position": "pre-provider" },
+            { "method_id": "P-8", "member": "promote", "tool": "kb_promote", "position": "pre-provider" },
+            { "method_id": "P-10", "member": "stats", "tool": "kb_stats", "position": "pre-provider" },
+            { "method_id": "P-11", "member": "touch", "tool": "kb_session_prime", "position": "pre-provider" },
+            { "method_id": "P-12", "member": "relatedClaims", "tool": "kb_query", "position": "pre-provider" },
+            { "method_id": "X-1", "member": "list", "tool": "kb_list", "position": "pre-provider" },
+            { "method_id": "X-1", "member": "list", "tool": "kb_stats", "position": "pre-provider" },
+            { "method_id": "X-1", "member": "list", "tool": "kb_export", "position": "pre-provider" },
+            { "method_id": "X-1", "member": "list", "tool": "kb_bible_commit", "position": "pre-provider" },
+            { "method_id": "X-2", "member": "feedback", "tool": "kb_feedback", "position": "pre-provider" },
+            { "method_id": "X-3", "member": "freshnessSweep", "tool": "kb_freshness_sweep", "position": "pre-provider" },
+            { "method_id": "X-3", "member": "freshnessSweep", "tool": "kb_import", "position": "pre-provider" },
+            { "method_id": "X-4", "member": "resolveContradiction", "tool": "kb_resolve_contradiction", "position": "pre-provider" },
+            { "method_id": "X-5", "member": "reconcilePrefilter", "tool": "kb_reconcile_prefilter", "position": "pre-provider" },
+            { "method_id": "X-6", "member": "hasEntry", "tool": "kb_import", "position": "pre-provider" }
+          ],
+          "source": "src/services/knowledge/kb-self.ts (resolveSelfAnchor, validateSelfFolder)",
+          "surfaced": "thrown",
+          "retryable": false,
+          "remediation": "Run 'git remote add origin <url>' in the folder (remote member: record the origin URL on the member's git_repos).",
+          "group_decision": "PROVIDER_INTERNAL, not validation: no request field is wrong -- kb_* requests carry no scope argument. The KB configuration the session resolves to (its member registration or the server's working folder) cannot serve the call at all. Thrown before getKbProviders, on every kb_* route (position pre-provider). The thrown message carries a one-line 'Remediation:' clause."
+        },
+        {
+          "$anchor": "E-MEMBER-VIEW-READ-ONLY",
+          "code": "E-MEMBER-VIEW-READ-ONLY",
+          "meaning": "kb_feedback was called in a MEMBER session. A member does not flag entries in the shared KB, under either provider: over a SQLite project KB its reads come from the read-only in-memory view of its own checkout bible, so a downvote would flag an entry the member cannot see in the shared per-repo DB; under an http KB provider the server's entries are shared by every member. Nothing is changed.",
+          "raising_methods": [
+            { "method_id": "X-2", "member": "feedback", "tool": "kb_feedback", "position": "pre-provider" }
+          ],
+          "source": "src/tools/kb-feedback.ts",
+          "surfaced": "thrown",
+          "retryable": false,
+          "remediation": "Run kb_feedback from a FULL session (no member identity), or flag the entry for review through the maintainer.",
+          "group_decision": "PROVIDER_INTERNAL, not validation: the request is well formed; the session kind cannot perform the operation. Thrown before any KB is opened and writes nothing."
+        },
+        {
+          "$anchor": "E-MEMBER-VIEW-REMOTE",
+          "code": "E-MEMBER-VIEW-REMOTE",
+          "meaning": "A remote MEMBER session's checkout bible could not be read from the member host (unreachable member, or the read command failed). The member view never falls back to the per-repo DB, so the call fails loudly.",
+          "raising_methods": [
+            { "method_id": "P-3", "member": "query", "tool": "kb_query", "position": "pre-provider" },
+            { "method_id": "P-3", "member": "query", "tool": "kb_session_prime", "position": "pre-provider" },
+            { "method_id": "P-10", "member": "stats", "tool": "kb_stats", "position": "pre-provider" }
+          ],
+          "source": "src/services/knowledge/member-bible-view.ts (remoteFail)",
+          "surfaced": "thrown",
+          "retryable": false,
+          "remediation": "Check the member is reachable (member_detail / update_member), then retry; the member must have its checkout bible at <work folder>/.fleet/kb-canonical.json.",
+          "group_decision": "PROVIDER_INTERNAL, not validation: the request is well formed; the member host the view is read from is unavailable."
+        },
+        {
+          "$anchor": "E-KB-HTTP-AUTH",
+          "code": "E-KB-HTTP-AUTH",
+          "meaning": "The remote (HTTP) KB provider takes its bearer token from a named fleet secret ({{secret.NAME}} token_ref), and that secret is missing, expired or unreadable (no request is sent), or the KB server rejected it with HTTP 401 on the request and again on one retry after re-reading the secret. The message names the secret and the reason (missing / expired / unreadable / rejected), never the value. Nothing is queued: a write that fails this way was not applied, and the caller decides whether to repeat it once the secret is fixed. Reads do not fall back to the local store. A literal-token config never raises this code: its 401 keeps the plain HTTP error it always had.",
+          "raising_methods": [
+            { "method_id": "P-2", "member": "capture", "tool": "kb_capture", "position": "provider" },
+            { "method_id": "P-3", "member": "query", "tool": "kb_query", "position": "provider" },
+            { "method_id": "P-3", "member": "query", "tool": "kb_session_prime", "position": "provider" },
+            { "method_id": "P-4", "member": "context", "tool": "kb_context", "position": "provider" },
+            { "method_id": "P-5", "member": "invalidate", "tool": "kb_invalidate", "position": "provider" },
+            { "method_id": "P-7", "member": "prime", "tool": "kb_session_prime", "position": "provider" },
+            { "method_id": "P-8", "member": "promote", "tool": "kb_promote", "position": "provider" },
+            { "method_id": "P-13", "member": "demote", "tool": "kb_demote", "position": "provider" },
+            { "method_id": "X-1", "member": "list", "tool": "kb_list", "position": "provider" },
+            { "method_id": "X-2", "member": "feedback", "tool": "kb_feedback", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/http-provider.ts (KbHttpAuthError, HttpKbProvider.request / resolveToken)",
+          "surfaced": "thrown",
+          "retryable": false,
+          "remediation": "Update the secret the KB config names: apra-fleet secret --set NAME --persist -y. The next KB call looks it up again; no restart and no kb_setup re-run is needed.",
+          "group_decision": "PROVIDER_INTERNAL, not validation: the request is well formed; the provider's configured credential cannot authenticate the call. Not retryable in the 3.3 sense: the identical request succeeds only after the secret is changed out of band. A MEMBER session's CONFIRMED read is served from its checkout bible and never reaches the provider, so it does not raise this code."
+        },
+        {
+          "$anchor": "E-BIBLE-BASIS-NOT-GIT",
+          "code": "E-BIBLE-BASIS-NOT-GIT",
+          "meaning": "The folder is not inside a git work tree, so file content at HEAD cannot be read and the bible's file hashes cannot be computed. Nothing is written.",
+          "raising_methods": [
+            { "method_id": "X-1", "member": "list", "tool": "kb_export", "position": "pre-provider" },
+            { "method_id": "X-1", "member": "list", "tool": "kb_bible_commit", "position": "pre-provider" }
+          ],
+          "source": "src/services/knowledge/file-hash.ts (KbHeadHashError)",
+          "surfaced": "thrown",
+          "retryable": false,
+          "remediation": "Run from a folder inside a git work tree with a resolvable HEAD.",
+          "group_decision": "PROVIDER_INTERNAL, not validation: the request is well formed; the environment cannot supply the git basis."
+        },
+        {
+          "$anchor": "E-KB-HTTP-UNSUPPORTED",
+          "code": "E-KB-HTTP-UNSUPPORTED",
+          "meaning": "The project KB is backed by the http provider and the operation cannot be served there. Either the provider has no such operation (kb_invalidate with ids: id-level discard; a MEMBER kb_invalidate with files: own-scope invalidate; a MEMBER kb_query flagged_only read), the call needs the optional demote route and the server does not list it (kb_demote; a MEMBER kb_query own_scope read, which exists to find what the caller may demote), or the KB server does not serve the route the call needs: GET /api/kb/capabilities does not list it, or an optional route answered 404/501 (except a 404 whose body code says the entry is unknown), or promote answered 404 without body code ENTRY_NOT_FOUND (a server that does not serve promote: upgrade it); or the capabilities read itself answered an error status other than 401, 404, 429, 501, a 5xx or a 409 PROJECT_MISMATCH (e.g. 403/405 from a gateway), or a body with some of {contract, routes, branch_aware} but not all, well typed. The message names the route or the capabilities read. Nothing is sent to an unlisted route and nothing is changed; no local store stands in.",
+          "raising_methods": [
+            { "method_id": "P-2", "member": "capture", "tool": "kb_capture", "position": "provider" },
+            { "method_id": "P-3", "member": "query", "tool": "kb_query", "position": "provider" },
+            { "method_id": "P-3", "member": "query", "tool": "kb_session_prime", "position": "provider" },
+            { "method_id": "P-4", "member": "context", "tool": "kb_context", "position": "provider" },
+            { "method_id": "P-5", "member": "invalidate", "tool": "kb_invalidate", "position": "provider" },
+            { "method_id": "P-7", "member": "prime", "tool": "kb_session_prime", "position": "provider" },
+            { "method_id": "P-8", "member": "promote", "tool": "kb_promote", "position": "provider" },
+            { "method_id": "P-13", "member": "demote", "tool": "kb_demote", "position": "provider" },
+            { "method_id": "X-1", "member": "list", "tool": "kb_list", "position": "provider" },
+            { "method_id": "X-2", "member": "feedback", "tool": "kb_feedback", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/http-provider.ts (KbHttpUnsupportedError), raised by HttpKbProvider.discard, HttpKbProvider.capabilities (a capabilities answer that is malformed, or a 4xx other than 401, 404, 429 and a 409 PROJECT_MISMATCH), HttpKbProvider.routeRequest (route not listed in GET /api/kb/capabilities, or an optional route answered 404/501), HttpKbProvider.promote (a promote 404 without body code ENTRY_NOT_FOUND), src/tools/kb-query.ts (MEMBER flagged_only; MEMBER own_scope when the server does not list demote) and src/tools/kb-invalidate.ts (MEMBER files)",
+          "surfaced": "thrown",
+          "retryable": false,
+          "remediation": "Use a KB server that serves the route the message names (its GET /api/kb/capabilities lists it) and answers that read with {contract, routes, branch_aware}, or run the operation from a session whose KB is the local SQLite provider (kb_setup provider sqlite). For kb_invalidate with ids, use kb_invalidate with files instead (from a non-MEMBER session); a MEMBER kb_invalidate with files and a MEMBER flagged_only read have no http equivalent.",
+          "group_decision": "PROVIDER_INTERNAL, not validation: the request is well formed; the configured provider cannot serve this operation at all."
+        },
+        {
+          "$anchor": "E-KB-HTTP-PROJECT-MISMATCH",
+          "code": "E-KB-HTTP-PROJECT-MISMATCH",
+          "meaning": "The project KB is backed by the http provider and the KB server it points at serves a different project: every request carries the caller project slug (X-KB-Project) and the server answered 409 naming both slugs. Nothing is read or written, and the local fallback store is not used: the server is reachable, it is the wrong one.",
+          "raising_methods": [
+            { "method_id": "P-2", "member": "capture", "tool": "kb_capture", "position": "provider" },
+            { "method_id": "P-3", "member": "query", "tool": "kb_query", "position": "provider" },
+            { "method_id": "P-4", "member": "context", "tool": "kb_context", "position": "provider" },
+            { "method_id": "P-5", "member": "invalidate", "tool": "kb_invalidate", "position": "provider" },
+            { "method_id": "P-7", "member": "prime", "tool": "kb_session_prime", "position": "provider" },
+            { "method_id": "P-8", "member": "promote", "tool": "kb_promote", "position": "provider" },
+            { "method_id": "P-13", "member": "demote", "tool": "kb_demote", "position": "provider" },
+            { "method_id": "X-1", "member": "list", "tool": "kb_list", "position": "provider" },
+            { "method_id": "X-2", "member": "feedback", "tool": "kb_feedback", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/http-provider.ts (KbHttpProjectMismatchError), raised by HttpKbProvider on a kb-server 409 PROJECT_MISMATCH reply",
+          "surfaced": "thrown",
+          "retryable": false,
+          "remediation": "Point this repo at the KB server for its own project (kb_setup provider http with that server url), or use a local SQLite KB (kb_setup provider sqlite).",
+          "group_decision": "PROVIDER_INTERNAL, not validation: the request is well formed; the configured server serves another project."
+        },
+        {
+          "$anchor": "E-KB-HTTP-UNREACHABLE",
+          "code": "E-KB-HTTP-UNREACHABLE",
+          "meaning": "The project KB is backed by the http provider and the KB server could not be reached (connection refused, DNS failure, timeout, reset), or it answered a 5xx or 429 (a restarting or rate-limiting server, or a gateway with no backend) to its capabilities read (GET /api/kb/capabilities), so the request itself was never sent, or it answered the request itself (a write or a read) with 429 or 503, which refuse a request before handling it; the message names the request (and the status). The KB server is the only source of truth under http: no read is answered from the checkout bible or a local store, and no write reports success. Nothing is queued by the provider: the caller owns the retry. The sprint engine keeps its own KB write queued on this code (and on E-KB-HTTP-AUTH) and repeats it on its next flush; an interactive or agent caller decides for itself.",
+          "raising_methods": [
+            { "method_id": "P-2", "member": "capture", "tool": "kb_capture", "position": "provider" },
+            { "method_id": "P-3", "member": "query", "tool": "kb_query", "position": "provider" },
+            { "method_id": "P-3", "member": "query", "tool": "kb_session_prime", "position": "provider" },
+            { "method_id": "P-4", "member": "context", "tool": "kb_context", "position": "provider" },
+            { "method_id": "P-5", "member": "invalidate", "tool": "kb_invalidate", "position": "provider" },
+            { "method_id": "P-7", "member": "prime", "tool": "kb_session_prime", "position": "provider" },
+            { "method_id": "P-8", "member": "promote", "tool": "kb_promote", "position": "provider" },
+            { "method_id": "P-13", "member": "demote", "tool": "kb_demote", "position": "provider" },
+            { "method_id": "X-1", "member": "list", "tool": "kb_list", "position": "provider" },
+            { "method_id": "X-2", "member": "feedback", "tool": "kb_feedback", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/http-provider.ts (KbHttpUnreachableError), raised by HttpKbProvider.request on a connection error, by HttpKbProvider.capabilities on a 5xx or 429 capabilities answer, and by HttpKbProvider.writeRequest / readRequest on a 429 or 503 answer to the request",
+          "surfaced": "thrown",
+          "retryable": true,
+          "remediation": "Start the KB server or restore the network path to it, then repeat the call; or use a local SQLite KB (kb_setup provider sqlite).",
+          "group_decision": "PROVIDER_INTERNAL, not validation: the request is well formed; the configured server cannot be reached. Retryable in the 3.3 sense: the failure is transient, the identical request succeeds once the server answers again, and the provider queues nothing behind it. A 429 or 503 answering the request itself is reported under this code because both refuse a request before handling it (rate limiting, a restarting server, a gateway with no backend). A timeout or reset after the request was sent is also reported under this code, so a write repeated after one may already have been applied once."
+        },
+        {
+          "$anchor": "E-KB-HTTP-SERVER-ERROR",
+          "code": "E-KB-HTTP-SERVER-ERROR",
+          "meaning": "The project KB is backed by the http provider and the KB server (or a gateway in front of it) answered a request itself with a 5xx other than 503 (a 429 or 503 is E-KB-HTTP-UNREACHABLE). For a write -- a capture, invalidate (files), feedback, promote or demote -- the request reached the server, so whether the write took effect is unknown (a 502 or 504 can follow a stored write); the provider does not retry it and queues nothing. For a read -- a query, context, prime or list -- nothing was read and no local store or bible answers instead. The message names the request and the status. Never a raw HTTP error.",
+          "raising_methods": [
+            { "method_id": "P-2", "member": "capture", "tool": "kb_capture", "position": "provider" },
+            { "method_id": "P-3", "member": "query", "tool": "kb_query", "position": "provider" },
+            { "method_id": "P-3", "member": "query", "tool": "kb_session_prime", "position": "provider" },
+            { "method_id": "P-4", "member": "context", "tool": "kb_context", "position": "provider" },
+            { "method_id": "P-5", "member": "invalidate", "tool": "kb_invalidate", "position": "provider" },
+            { "method_id": "P-7", "member": "prime", "tool": "kb_session_prime", "position": "provider" },
+            { "method_id": "P-8", "member": "promote", "tool": "kb_promote", "position": "provider" },
+            { "method_id": "P-13", "member": "demote", "tool": "kb_demote", "position": "provider" },
+            { "method_id": "X-1", "member": "list", "tool": "kb_list", "position": "provider" },
+            { "method_id": "X-2", "member": "feedback", "tool": "kb_feedback", "position": "provider" }
+          ],
+          "source": "src/services/knowledge/http-provider.ts (KbHttpServerError), raised by HttpKbProvider.writeRequest (capture, invalidate, feedback, promote, demote) and HttpKbProvider.readRequest (query, context, prime, list) on a 5xx answer other than 503",
+          "surfaced": "thrown",
+          "retryable": false,
+          "remediation": "Check the KB server (or the gateway in front of it). Once it answers normally, read the entry back (kb_query) before repeating the write, since the first attempt may have been applied.",
+          "group_decision": "PROVIDER_INTERNAL, not validation: the request is well formed; the configured server failed to answer it. Not retryable: repeating the identical write could apply it twice (the outcome of the first is unknown), and a server that always answers 500 would be retried forever. A read may be repeated once the server answers normally again."
+        }
+      ]
+    }
+  },
+  "non_error_outcomes": [
+    {
+      "name": "N-ANCHOR-VERBATIM-MISSING",
+      "outcome": "A remote member session's work folder (on another host) is carried to getKbProviders VERBATIM with no filesystem check, so the unreachable anchor stays honestly missing and freshness verdicts are declined rather than computed against an unrelated tree.",
+      "where": "src/services/knowledge/kb-self.ts (resolveSelfAnchor, remote branch), src/tools/kb-session-prime.ts, src/tools/kb-stats.ts, src/services/knowledge/sqlite-provider.ts (anchorIsMissing)",
+      "reason_no_code": "Nothing failed. These tools only READ, so a missing anchor is a legitimate answer ('no knowledge here yet'), and refusing would be worse than answering: the KB identity (the member's origin remote) is known even though the folder is not on this host. The WRITING tools on the same policy do refuse -- that branch has a code, E-REPO-PATH-INVALID."
+    },
+    {
+      "name": "E-CLAMP",
+      "outcome": "An incoming CONFIRMED on a non-directive type is DOWNGRADED to INFERRED, with a bracketed note appended to content. Reported as confidence_clamped: true in the kb_capture response; that flag is derived as 'stored confidence differs from requested', so it is not specific to this branch (a user-directive quarantined to UNVERIFIED also reports it).",
+      "where": "src/tools/kb-capture.ts:102-105 (UX copy), src/tools/kb-capture.ts:127-133 (confidence_clamped derivation), src/services/knowledge/sqlite-provider.ts (SqliteProvider.capture, confidence-clamp enforcement)",
+      "reason_no_code": "The capture SUCCEEDED; only the requested tier was lowered, and the lowering is reported in a documented success field. This is the silent branch of the one authority policy -- its refusing branches (the promote path) are the authority group's codes. Giving the clamp an error code would make the normal, expected path of every over-confident capture look like a failure."
+    },
+    {
+      "name": "E-DIRECTIVE-QUARANTINE",
+      "outcome": "A user-directive capture is FORCED to a PENDING PROPOSAL rather than stored as requested: confidence to UNVERIFIED, flagged_for_review set, a 'directive:pending' tag added, and scope forced to 'project'. The capture itself SUCCEEDS and returns an id; activation remains CLI-only and no server code path for it exists.",
+      "where": "src/services/knowledge/sqlite-provider.ts (SqliteProvider.capture, directive-quarantine enforcement)",
+      "reason_no_code": "The capture SUCCEEDED and stored a transformed entry -- capture() mutates the input and continues, it never throws. This is structurally the same class as E-CLAMP: a successful write with a forced downward transformation, not a refusal. It was previously classified surfaced: 'response-field', which was wrong on the taxonomy's own definition -- no named response field reports it as a quarantine. kb_capture returns {id, audn_decision, confidence_clamped}, and confidence_clamped is DERIVED as 'stored confidence differs from requested' (requested defaults to INFERRED when absent) in src/tools/kb-capture.ts:127-133, so a directive quarantined to UNVERIFIED reports confidence_clamped: true -- but that is the same success flag the CONFIRMED-to-INFERRED clamp sets, it names neither the quarantine nor the forced tag, flag or scope, and kb_harvest, kb_import and the HTTP route never populate it; kb_import surfaces only imported/skipped/rejected. Because the full transformation is observable only through a LATER read (tests/DEGRADATION.md D-8), it must not be projected onto the wire: an implementation built from a projection carrying it would REFUSE directive captures that this kernel ACCEPTS. Its refusing siblings on the same directive policy keep their codes in the governance group (E-PROMOTE-REFUSED-DIRECTIVE, E-RESOLVE-DIRECTIVE-PAIR)."
+    },
+    {
+      "name": "E-DEDUP-NONE",
+      "outcome": "AUDN decides audn_decision: none on exact content equality or a same-topic match with no contradiction signal; the capture is skipped.",
+      "where": "src/services/knowledge/audn.ts:180-183 (exact-match pre-pass), :231-233 (loop)",
+      "reason_no_code": "The KB already holds the claim, so the caller's intent is satisfied. Skipping a duplicate is the dedup gate working, not a refusal, and audn_decision already reports it precisely."
+    },
+    {
+      "name": "E-CONTRADICTION-FLAGGED",
+      "outcome": "Symbol overlap plus a contradiction signal (keyword hit or opposite polarity) stores the entry AND links it as contradiction_of the incumbent, reporting audn_decision: flagged.",
+      "where": "src/services/knowledge/audn.ts:196-206 (makeAudnDecision)",
+      "reason_no_code": "Flagging is the designed successful outcome of finding a conflict: both claims are kept and the disagreement is made visible for later resolution. The error side of contradictions is the REFUSED RESOLUTION, which is what the conflict group's codes cover."
+    },
+    {
+      "name": "N-CODE-PROVIDER-OFFLINE",
+      "outcome": "The code_* adapters' single guarded entry point catches connect and dead-client failures, resets the shared connection so the next call reconnects, and returns a structured offline result. (A missing or still-building index is NOT degraded this way: it throws E-CODE-INDEX-NOT-READY.)",
+      "where": "src/tools/code-intelligence-gitnexus.ts (callGitNexus catch, offlineResult), src/tools/code-intelligence-codebase-memory.ts (callCodebaseMemory catch, offlineResult)",
+      "reason_no_code": "Not in the T1.0.2 inventory; added here after reading the adapters, because it is the reason this closed set has no retryable code. The transient failure never reaches the caller as an error: it is converted into an actionable result at the provider boundary. Only configuration and readiness refusals throw on this side (E-CODE-PROVIDER-UNCONFIGURED, E-SELF-NO-WORKFOLDER, E-SELF-NOT-A-REPO, E-CODE-INDEX-NOT-READY, E-CODE-INTEL-DISABLED)."
+    },
+    {
+      "name": "E-STATS-UNSUPPORTED",
+      "outcome": "A provider that cannot compute stats returns {supported: false, reason} instead of throwing.",
+      "where": "src/services/knowledge/http-provider.ts:284-287 (design D4)",
+      "reason_no_code": "A documented not-supported result is part of the response schema. HttpKbProvider.stats answers this way when the KB config selects provider http."
+    },
+    {
+      "name": "E-BIBLE-READ-DEGRADED",
+      "outcome": "Any failure reading or comparing the canonical bible is swallowed; the response falls back to the absent/drift-zero bible shape.",
+      "where": "src/tools/kb-stats.ts:116-122 (nested catch blocks)",
+      "reason_no_code": "kb_stats never throws over the bible file by design: the bible is an optional enrichment of a health report, so degrading it must not fail the report."
+    },
+    {
+      "name": "E-RELATED-CLAIMS-DEGRADED",
+      "outcome": "A relatedClaims throw is caught; related_claims becomes [] and the query result still returns.",
+      "where": "src/tools/kb-query.ts:113-118",
+      "reason_no_code": "Related claims are an enrichment of a query result, not the result. Failing the whole query over them would be a worse answer than an empty list."
+    },
+    {
+      "name": "E-ROLE-UNKNOWN-DEGRADED",
+      "outcome": "An unrecognised role degrades to the literal 'unknown'; validateAuthor never throws.",
+      "where": "src/tools/kb-capture.ts:16-20 and src/tools/kb-feedback.ts:12-16 (duplicated, not shared)",
+      "reason_no_code": "Authorship is provenance metadata, not an access decision -- nothing is gated on the role -- so an unknown role is recorded honestly rather than refused."
+    }
+  ],
+  "excluded_from_closed_set": {
+    "rule_ref": "_meta.directive_activation_absence",
+    "codes": [
+      {
+        "code": "E-DIRECTIVE-NOT-FOUND",
+        "where": "src/services/knowledge/sqlite-provider.ts (SqliteProvider.approveDirective entry-not-found guard, SqliteProvider.rejectDirective entry-not-found guard)",
+        "reason_excluded": "An error code OF the CLI-only directive-activation operations. Publishing it would document that an approve/reject route exists on this surface. Not tool-reachable (methods.json not_in_scope)."
+      },
+      {
+        "code": "E-DIRECTIVE-WRONG-TYPE",
+        "where": "src/services/knowledge/sqlite-provider.ts (SqliteProvider.approveDirective wrong-type guard, SqliteProvider.rejectDirective wrong-type guard)",
+        "reason_excluded": "Same as E-DIRECTIVE-NOT-FOUND: activation-operation vocabulary, excluded by absence."
+      },
+      {
+        "code": "E-DIRECTIVE-ALREADY-DECIDED",
+        "where": "src/services/knowledge/sqlite-provider.ts (SqliteProvider.approveDirective already-rejected and already-active guards, SqliteProvider.rejectDirective already-rejected guard)",
+        "reason_excluded": "Same as E-DIRECTIVE-NOT-FOUND: activation-operation vocabulary, excluded by absence."
+      }
+    ]
+  }
+}

@@ -1,0 +1,2620 @@
+// node:sqlite, not better-sqlite3: the fleet server ships as a Node SEA, whose
+// require() resolves builtins only. better-sqlite3 reaches its native addon via
+// require('bindings')('better_sqlite3.node') -- a RUNTIME path require the SEA
+// routes to the builtin loader, producing "No such built-in module: <build-host
+// path>/dist/build/better_sqlite3.node". build-sea.mjs's loader {'.node':
+// 'empty'} hides this at build time, so the failure only ever surfaced at
+// runtime, on every kb_* call, non-fatally (every call site catches), which is
+// how a total KB outage stayed invisible. node:sqlite is a builtin, so it is
+// SEA-safe by construction. FTS5 is compiled in (kb_query depends on it).
+import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
+import path from 'node:path';
+import fs from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { FLEET_DIR } from '../../paths.js';
+import { resolveProjectSlug } from './project-slug.js';
+import {
+  hasContradictionKeywords,
+  symbolsOverlap,
+  filesOverlap,
+  makeFtsQuery,
+  makeAudnDecision,
+  orJoinFtsTerms,
+} from './audn.js';
+import { computeFileHashBatch } from './file-hash.js';
+import { validateFilePaths } from './path-validation.js';
+import { clampBibleTimeToNow, standingAgainstTombstone } from './bible-import.js';
+import { KbCaptureRejected, type DiscardResult, type RetireOptions } from './types.js';
+import type {
+  MemoryProvider,
+  KBEntry,
+  KBEntryInput,
+  CaptureOpts,
+  CaptureResult,
+  QueryOptions,
+  EntryTrustFilter,
+  KBResult,
+  FileContextResult,
+  PrimeOptions,
+  PrimedContext,
+  SyncOptions,
+  SyncResult,
+  Confidence,
+  CodeIntelCall,
+  ProviderStats,
+} from './types.js';
+
+const CONTENT_CAP = 4000;
+const TRUNCATION_SUFFIX = '...[truncated]';
+
+function truncateContent(content: string): string {
+  if (content.length <= CONTENT_CAP) return content;
+  return content.slice(0, CONTENT_CAP) + TRUNCATION_SUFFIX;
+}
+
+/**
+ * Minimum length of a kb_promote reason. Matches the length floor kb_harvest
+ * already applies to an extracted learning -- short enough that a real one-line
+ * citation passes, long enough that "ok" / "lgtm" / "verified" does not.
+ */
+const MIN_PROMOTE_REASON_LENGTH = 20;
+
+function isNonTrivialPromoteReason(reason?: string): boolean {
+  return (reason ?? '').trim().length >= MIN_PROMOTE_REASON_LENGTH;
+}
+
+/**
+ * Minimum length of a kb_demote reason, measured AFTER newlines are collapsed
+ * to spaces and the result trimmed. Same floor as kb_promote: withdrawing
+ * trust must be as auditable as granting it, and a reason that is only
+ * whitespace/newlines collapses to the empty string and is refused.
+ */
+const MIN_DEMOTE_REASON_LENGTH = 20;
+
+/**
+ * The single normalisation applied to a demote reason, used for BOTH the
+ * length gate and the note written into content -- so what was validated is
+ * exactly what is recorded. Every newline becomes a space (the note must stay
+ * one line, and must never be able to grow a second leading newline and so
+ * collide with the kb_feedback marker, which is two newlines + "[feedback ").
+ */
+function normalizeDemoteReason(reason: string): string {
+  return (reason ?? '').replace(/[\r\n]/g, ' ').trim();
+}
+
+/**
+ * The ONE demotion-note format, shared by kb_demote (demote()) and the bible
+ * tombstone path (applyBibleDemotion()), so a demotion that crosses clones
+ * reads identically to one applied locally.
+ *
+ * String concatenation (not a template literal) per the ASCII pre-commit hook
+ * gotcha: backslash-n escapes inside JS template literals false-positive on the
+ * hook's non-ASCII scan (same convention as promote()'s promotionNote and
+ * feedback()'s note).
+ *
+ * EXACTLY ONE leading newline. feedback() writes TWO ('\n\n[feedback ...'), so
+ * a demote note can never be mistaken for a feedback marker by anything
+ * scanning content for one.
+ */
+function buildDemotionNote(normalizedReason: string, evidence: string[], author: string): string {
+  const evidenceClause = evidence.length > 0 ? ' | evidence: ' + evidence.join(', ') : '';
+  return '\n[Demoted: ' + normalizedReason + evidenceClause + ' -- ' + (author || 'unknown') + ']';
+}
+
+/**
+ * The reason recorded when a demotion arrives through the committed project
+ * bible rather than a local kb_demote. Must clear MIN_DEMOTE_REASON_LENGTH.
+ */
+export const BIBLE_DEMOTION_REASON = 'demoted in the project bible';
+
+class NotImplementedError extends Error {
+  constructor(method: string) {
+    super(`SqliteProvider.${method}() not yet implemented`);
+    this.name = 'NotImplementedError';
+  }
+}
+
+// SQL for the opt-in retrieval-trust filters (QueryOptions.confidence /
+// exclude_disputed), shared by query() and relatedClaims() so the direct hits
+// and the graph-expanded claims of one kb_query obey the same rule. An empty
+// or absent filter yields no conditions -- the default-off contract.
+function trustFilterSql(filter: EntryTrustFilter | undefined): { conditions: string[]; params: SQLInputValue[] } {
+  const conditions: string[] = [];
+  const params: SQLInputValue[] = [];
+  if (filter?.confidence?.length) {
+    conditions.push(`e.confidence IN (${filter.confidence.map(() => '?').join(',')})`);
+    params.push(...filter.confidence);
+  }
+  if (filter?.exclude_disputed) {
+    conditions.push('e.flagged_for_review = 0 AND e.contradiction_of IS NULL');
+  }
+  if (filter?.owner_tag) {
+    conditions.push('EXISTS (SELECT 1 FROM json_each(e.tags) WHERE value = ?)');
+    params.push(filter.owner_tag);
+  }
+  return { conditions, params };
+}
+
+export class SqliteProvider implements MemoryProvider {
+  private db: DatabaseSync | null = null;
+  readonly dbPath: string;
+  readonly projectSlug: string;
+  /**
+   * Root of the repo this provider's KB is about. capture() resolves relative
+   * source_files against it, so the basis check is anchored to the repo the
+   * entry describes rather than to the fleet server's process.cwd() -- the
+   * repo-blindness failure class of apra-fleet-tm7. Undefined for the single
+   * shared global KB, which spans every repo and has no one root.
+   */
+  repoPath: string | undefined;
+
+  constructor(dbPath?: string, repoPath?: string) {
+    this.repoPath = repoPath;
+    if (dbPath !== undefined) {
+      this.dbPath = dbPath;
+      this.projectSlug = path.basename(dbPath, '.sqlite') || 'custom';
+    } else {
+      const slug = resolveProjectSlug();
+      this.projectSlug = slug;
+      const dir = path.join(FLEET_DIR, 'knowledge', slug);
+      fs.mkdirSync(dir, { recursive: true });
+      this.dbPath = path.join(dir, 'kb.sqlite');
+    }
+  }
+
+  /**
+   * Re-anchor after loading. Used only by the remote member bible view: the
+   * member's checkout is not on this host, so entries are imported with no
+   * anchor (the basis gate cannot check files here), then the remote folder is
+   * bound so freshness reads treat the anchor as missing and issue no verdict.
+   */
+  bindRepoPath(repoPath: string | undefined): void {
+    this.repoPath = repoPath;
+  }
+
+  async init(): Promise<void> {
+    if (this.db !== null) return;
+
+    const dir = path.dirname(this.dbPath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+
+    this.db = new DatabaseSync(this.dbPath);
+
+    // node:sqlite has no pragma() helper -- same statements, issued via exec().
+    this.db.exec('PRAGMA journal_mode=WAL');
+    this.db.exec('PRAGMA busy_timeout=5000');
+    this.db.exec('PRAGMA synchronous=NORMAL');
+    this.db.exec('PRAGMA cache_size=-20000');
+
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS entries (
+        id TEXT PRIMARY KEY,
+        type TEXT NOT NULL,
+        title TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        content TEXT NOT NULL,
+        source_files TEXT NOT NULL DEFAULT '[]',
+        symbols TEXT NOT NULL DEFAULT '[]',
+        module TEXT,
+        tags TEXT NOT NULL DEFAULT '[]',
+        content_hash TEXT NOT NULL DEFAULT '',
+        content_hash_type TEXT NOT NULL DEFAULT 'sha256',
+        stale INTEGER NOT NULL DEFAULT 0,
+        flagged_for_review INTEGER NOT NULL DEFAULT 0,
+        contradiction_of TEXT,
+        author TEXT NOT NULL DEFAULT '',
+        source TEXT NOT NULL DEFAULT 'doer',
+        confidence TEXT NOT NULL DEFAULT 'INFERRED',
+        scope TEXT NOT NULL DEFAULT 'project',
+        created_at TEXT NOT NULL,
+        superseded_at TEXT,
+        promoted_at TEXT,
+        use_count INTEGER NOT NULL DEFAULT 0,
+        last_accessed TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_entries_type ON entries(type);
+      CREATE INDEX IF NOT EXISTS idx_entries_confidence ON entries(confidence);
+      CREATE INDEX IF NOT EXISTS idx_entries_created_at ON entries(created_at);
+      CREATE INDEX IF NOT EXISTS idx_entries_superseded_at ON entries(superseded_at);
+      CREATE INDEX IF NOT EXISTS idx_entries_use_count ON entries(use_count);
+
+      CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(
+        title,
+        summary,
+        content,
+        tags,
+        content='entries',
+        content_rowid='rowid'
+      );
+
+      CREATE TRIGGER IF NOT EXISTS entries_ai AFTER INSERT ON entries BEGIN
+        INSERT INTO entries_fts(rowid, title, summary, content, tags)
+        VALUES (new.rowid, new.title, new.summary, new.content, new.tags);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS entries_ad AFTER DELETE ON entries BEGIN
+        INSERT INTO entries_fts(entries_fts, rowid, title, summary, content, tags)
+        VALUES ('delete', old.rowid, old.title, old.summary, old.content, old.tags);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS entries_au AFTER UPDATE ON entries BEGIN
+        INSERT INTO entries_fts(entries_fts, rowid, title, summary, content, tags)
+        VALUES ('delete', old.rowid, old.title, old.summary, old.content, old.tags);
+        INSERT INTO entries_fts(rowid, title, summary, content, tags)
+        VALUES (new.rowid, new.title, new.summary, new.content, new.tags);
+      END;
+
+      CREATE TABLE IF NOT EXISTS links (
+        from_id TEXT NOT NULL,
+        to_id TEXT NOT NULL,
+        link_type TEXT NOT NULL,
+        PRIMARY KEY (from_id, to_id, link_type)
+      );
+    `);
+
+    // Migration: add scope column to existing DBs
+    try {
+      this.db.exec("ALTER TABLE entries ADD COLUMN scope TEXT NOT NULL DEFAULT 'project'");
+    } catch {}
+
+    // T2.2 (F3 PART A, revised D3): additive column storing a JSON map of
+    // source_file -> content hash captured AT CAPTURE TIME, for ALL entry
+    // types (not just context-cache). No migration -- existing rows default
+    // to '{}' (no basis) and are treated fresh/unknown, never falsely stale
+    // (D1/D3 no-mass-migration). This is the freshness basis checkFreshness
+    // compares against at prime() time.
+    try {
+      this.db.exec("ALTER TABLE entries ADD COLUMN source_file_hashes TEXT NOT NULL DEFAULT '{}'");
+    } catch {}
+
+    // Why a row was retired (superseded_at set): 'superseded' (a contradiction
+    // loser, or replaced by a capture naming it in supersedes) or 'invalidated'
+    // (discarded by id through kb_invalidate). superseded_at alone cannot tell
+    // the two apart, and kb_bible_commit reports the reason for each bible
+    // entry it removes. Internal only: never surfaced on KBEntry. Rows retired
+    // before this column existed read NULL and count as 'superseded'.
+    try {
+      this.db.exec('ALTER TABLE entries ADD COLUMN retired_reason TEXT');
+    } catch {}
+
+    // Legacy bible import (v1/v2 entry, or a v3 entry without a valid carried
+    // map): source_file_hashes then holds THIS clone's file hashes, a
+    // freshness-only basis. 1 = that basis feeds staleness checks only and is
+    // never exported, never used for bible admission, never used for a
+    // mechanical contradiction win (getSourceFileBases / reconcile prefilter
+    // read it as no basis). Internal only: never surfaced on KBEntry. Existing
+    // rows default to 0.
+    try {
+      this.db.exec('ALTER TABLE entries ADD COLUMN local_basis_only INTEGER NOT NULL DEFAULT 0');
+    } catch {}
+
+    // kb_demote (CONFIRMED -> INFERRED): demoted_at records WHEN trust was
+    // withdrawn, demoted_basis_hashes the sha256 of each cited source file AS
+    // IT WAS ON DISK AT DEMOTE TIME. The second column is deliberately NOT a
+    // copy of source_file_hashes (which is the CAPTURE-time basis): the
+    // ping-pong guard built on top of it asks "has the tree moved on since we
+    // demoted?", and a capture-time copy answers the wrong question, so a file
+    // edited between capture and demote would look unchanged forever. Same
+    // guarded-ALTER pattern as scope/source_file_hashes above: it runs on a
+    // fresh DB (the columns are not in CREATE TABLE) and is a caught no-op on
+    // a DB that already has them.
+    try {
+      this.db.exec('ALTER TABLE entries ADD COLUMN demoted_at TEXT');
+    } catch {}
+    try {
+      this.db.exec("ALTER TABLE entries ADD COLUMN demoted_basis_hashes TEXT NOT NULL DEFAULT '{}'");
+    } catch {}
+
+    // The updated_at a bible carried for an entry this clone imported (capture
+    // opts.carriedUpdatedAt): when the exporting clone promoted it. Tombstones
+    // are judged against it (getBibleTrustTimes), never against the local
+    // import time. Internal only: never surfaced on KBEntry. NULL on every row
+    // that was not imported, and on rows imported before the column existed.
+    try {
+      this.db.exec('ALTER TABLE entries ADD COLUMN bible_updated_at TEXT');
+    } catch {}
+
+    // kb_import trust anchor: git blob ids of bibles the maintainer side wrote
+    // or imported (kb_bible_commit and FULL / kb_maintainer kb_import). A
+    // member session without the kb_maintainer grant imports its committed
+    // bible only when that bible's blob id is recorded here -- this hub-side
+    // database is the one place the member's own checkout cannot write. See
+    // services/knowledge/bible-blob-id.ts. Created idempotently; existing DBs
+    // start with no rows (a fresh hub is seeded by the maintainer side).
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS trusted_bible_blobs (
+        blob_id TEXT PRIMARY KEY,
+        source TEXT NOT NULL,
+        recorded_at TEXT NOT NULL
+      );
+    `);
+  }
+
+  /**
+   * Record `blobId` (a git object id of a bible's bytes) as written or
+   * imported by the maintainer side. Idempotent: re-recording keeps the first
+   * row. Only trusted callers (kb_bible_commit and kb_import from a FULL or
+   * kb_maintainer session) may call this.
+   */
+  recordTrustedBibleBlob(blobId: string, source: 'kb_bible_commit' | 'kb_import'): void {
+    this.getDb()
+      .prepare('INSERT OR IGNORE INTO trusted_bible_blobs (blob_id, source, recorded_at) VALUES (?, ?, ?)')
+      .run(blobId.toLowerCase(), source, new Date().toISOString());
+  }
+
+  /** True when `blobId` was recorded by recordTrustedBibleBlob. */
+  isTrustedBibleBlob(blobId: string): boolean {
+    const row = this.getDb()
+      .prepare('SELECT 1 AS ok FROM trusted_bible_blobs WHERE blob_id = ?')
+      .get(blobId.toLowerCase());
+    return row !== undefined;
+  }
+
+  private getDb(): DatabaseSync {
+    if (!this.db) throw new Error('SqliteProvider not initialized. Call init() first.');
+    return this.db;
+  }
+
+  private rowToEntry(row: Record<string, unknown>): KBEntry {
+    return {
+      id: row.id as string,
+      type: row.type as KBEntry['type'],
+      title: row.title as string,
+      summary: row.summary as string,
+      content: row.content as string,
+      source_files: JSON.parse((row.source_files as string) || '[]'),
+      symbols: JSON.parse((row.symbols as string) || '[]'),
+      module: row.module as string | undefined,
+      tags: JSON.parse((row.tags as string) || '[]'),
+      content_hash: row.content_hash as string,
+      content_hash_type: row.content_hash_type as 'git' | 'sha256',
+      stale: (row.stale as number) === 1,
+      flagged_for_review: (row.flagged_for_review as number) === 1,
+      contradiction_of: row.contradiction_of as string | undefined,
+      author: row.author as string,
+      source: row.source as KBEntry['source'],
+      confidence: row.confidence as Confidence,
+      scope: (row.scope as 'project' | 'global' | undefined) ?? 'project',
+      created_at: row.created_at as string,
+      superseded_at: row.superseded_at as string | undefined,
+      promoted_at: row.promoted_at as string | undefined,
+      // kb_demote columns. Tolerant of a row read before the migration ran
+      // (undefined) and of a legacy NULL/'' in demoted_basis_hashes.
+      demoted_at: (row.demoted_at as string | null | undefined) ?? undefined,
+      demoted_basis_hashes: JSON.parse((row.demoted_basis_hashes as string) || '{}'),
+      use_count: row.use_count as number,
+      last_accessed: row.last_accessed as string | undefined,
+    };
+  }
+
+  private insertEntry(
+    db: DatabaseSync,
+    id: string,
+    input: KBEntryInput,
+    content: string,
+    now: string,
+    sourceFileHashes: Record<string, string> = {},
+    localBasisOnly = false
+  ): void {
+    db.prepare(`
+      INSERT INTO entries (
+        id, type, title, summary, content,
+        source_files, symbols, module, tags,
+        content_hash, content_hash_type, stale,
+        flagged_for_review, contradiction_of,
+        author, source, confidence, scope, created_at,
+        source_file_hashes, local_basis_only,
+        superseded_at, promoted_at, use_count
+      ) VALUES (
+        ?, ?, ?, ?, ?,
+        ?, ?, ?, ?,
+        ?, ?, ?,
+        ?, ?,
+        ?, ?, ?, ?, ?,
+        ?, ?,
+        NULL, NULL, 0
+      )
+    `).run(
+      id,
+      input.type,
+      input.title,
+      input.summary,
+      content,
+      JSON.stringify(input.source_files ?? []),
+      JSON.stringify(input.symbols ?? []),
+      input.module ?? null,
+      JSON.stringify(input.tags ?? []),
+      input.content_hash ?? '',
+      input.content_hash_type ?? 'sha256',
+      0,
+      input.flagged_for_review ? 1 : 0,
+      input.contradiction_of ?? null,
+      input.author ?? '',
+      input.source,
+      input.confidence,
+      input.scope ?? 'project',
+      now,
+      JSON.stringify(sourceFileHashes),
+      localBasisOnly ? 1 : 0
+    );
+  }
+
+  /**
+   * Resolve a source_files entry for existence checking. Absolute paths pass
+   * through; relative paths anchor at this provider's repo. Mirrors the
+   * resolution computeFileHashBatch does with an explicit { cwd } root.
+   */
+  private resolveBasisFile(p: string): string {
+    return path.isAbsolute(p) || this.repoPath === undefined ? p : path.join(this.repoPath, p);
+  }
+
+  /**
+   * Basis files that are CHECKABLE and absent. A relative path with no repo root
+   * (the shared global KB) is not checkable and is therefore not reported --
+   * capture() and promote() must apply exactly the same rule, or an entry that
+   * was legitimately capturable would be permanently un-promotable.
+   */
+  private unresolvableBasisFiles(files: string[]): string[] {
+    return files.filter((f) => {
+      if (this.repoPath === undefined && !path.isAbsolute(f)) return false;
+      return !fs.existsSync(this.resolveBasisFile(f));
+    });
+  }
+
+  /**
+   * apra-fleet-b4g.4: TRUE when this provider carries a repo anchor that does
+   * not exist on this host -- the remote-member case, where repo_remote_url
+   * routes the call to the REAL shared project KB while repo_path names a
+   * Windows/remote work folder the fleet server cannot see.
+   *
+   * Such an anchor can verify NOTHING about this host's tree, so the freshness
+   * verdicts that depend on it (checkFreshness, freshnessSweep) are suppressed
+   * entirely rather than re-hashed against a tree that does not exist: every
+   * relative basis path would fail to resolve, basisFullyMatches would return
+   * false, and up to 10 healthy entries per prime call would be UPDATEd to
+   * stale=1 in the shared DB.
+   *
+   * Suppression is deliberately all-or-nothing rather than per-file (entries
+   * whose basis happens to be fully absolute are skipped too): a missing anchor
+   * means this host cannot speak to the tree the entry describes at all, and a
+   * half-rule that stales some entries and not others is harder to reason about
+   * than "no anchor, no verdict". The anchor is NOT replaced by process.cwd() --
+   * that is the apra-fleet-b4g.2 corruption mode.
+   *
+   * Note the write side needs no equivalent guard: capture() already fails
+   * closed here, because assertCheckableBasis rejects any cited source file
+   * that cannot be resolved under repoPath.
+   */
+  private anchorIsMissing(anchor: string | undefined = this.repoPath): boolean {
+    return anchor !== undefined && !fs.existsSync(anchor);
+  }
+
+  /**
+   * The Phase 1 fail-closed gate. See the call site in capture() for rationale.
+   * Throws KbCaptureRejected so batch writers can isolate and count a rejected
+   * entry while unexpected failures still propagate.
+   */
+  private assertCheckableBasis(input: KBEntryInput): void {
+    const files = input.source_files ?? [];
+
+    if (files.length === 0) {
+      if (input.type === 'user-directive') return;
+      throw new KbCaptureRejected(
+        'no_source_files',
+        'kb capture rejected: an entry must cite at least one source file. '
+          + 'An entry with no basis can never be staled by the freshness sweep, '
+          + 'so nothing can ever falsify it. Entry: ' + input.title
+      );
+    }
+
+    const missing = this.unresolvableBasisFiles(files);
+    if (missing.length > 0) {
+      throw new KbCaptureRejected(
+        'missing_source_files',
+        'kb capture rejected: source file(s) do not exist'
+          + (this.repoPath ? ' in ' + this.repoPath : '')
+          + ': ' + missing.join(', ') + '. Entry: ' + input.title
+      );
+    }
+  }
+
+  // T2.2 (F3 PART A): resolve a per-file hash basis for the given source_files
+  // at capture time, for ALL types. Files that do not resolve are simply
+  // absent from the returned map (not an error). Bounded to the caller's own
+  // source_files list. Non-fatal: any hashing error yields an empty basis
+  // rather than failing the capture.
+  /**
+   * The ONLY way this provider hashes source files: relative paths anchor at
+   * the provider repo (never process.cwd()) when one is set. Every call site
+   * goes through here so a new call cannot forget the anchor.
+   */
+  private hashAnchored(files: string[], anchor: string | undefined = this.repoPath): ReturnType<typeof computeFileHashBatch> {
+    return computeFileHashBatch(files, anchor !== undefined ? { cwd: anchor } : undefined);
+  }
+
+  private async computeSourceFileHashes(files: string[]): Promise<Record<string, string>> {
+    if (files.length === 0) return {};
+    try {
+      // Anchor relative basis paths at this provider's repo, the same root the
+      // capture gate checked them against and the one freshnessSweep(root) uses.
+      const hashes = await this.hashAnchored(files);
+      const map: Record<string, string> = {};
+      for (const file of Object.keys(hashes)) {
+        const result = hashes[file];
+        if (result) map[file] = result.hash;
+      }
+      return map;
+    } catch {
+      return {};
+    }
+  }
+
+  // T1.3 (F2/D2 HARDENED): the ANCHORED feedback-downvote marker. feedback()
+  // writes exactly '\n\n[feedback ' + new Date().toISOString() + '] ...'
+  // (see feedback()). The predicate below excludes any entry carrying this
+  // marker from revival, so a feedback-downvoted entry stays retired even if
+  // some later flow clears its flagged_for_review bit (the T3.1 winner path
+  // clears flags; the marker is the durable downvote record). We anchor to the
+  // two-newline prefix PLUS the ISO date shape ('[feedback ' + YYYY-MM-DDT)
+  // rather than a bare '[feedback ' substring: an entry whose content merely
+  // QUOTES the feedback-note format (e.g. a learning ABOUT the kb_feedback
+  // mechanism -- such entries exist in this very KB) must NOT be permanently
+  // excluded from revival once freshness-staled. Chosen pattern stated here and
+  // used verbatim by the shared predicate.
+  private static readonly FEEDBACK_MARKER_RE = /\n\n\[feedback \d{4}-\d{2}-\d{2}T/;
+
+  // T1.3 (F2/D2 HARDENED) -- THE UN-STALE PREDICATE (binding, verbatim):
+  //
+  //     stale = 1
+  //     AND superseded_at IS NULL
+  //     AND flagged_for_review = 0
+  //     AND content_hash != 'invalidated'
+  //     AND content NOT LIKE the ANCHORED feedback marker (FEEDBACK_MARKER_RE:
+  //         /\n\n\[feedback \d{4}-\d{2}-\d{2}T/ -- the newline+ISO-timestamp
+  //         form feedback() actually writes, NOT a bare substring)
+  //     AND the re-hash of the FULL stored basis matches current files
+  //
+  // That is precisely the freshness-staled population. stale=1 is set by FOUR
+  // actors -- freshness mismatch (prime/sweep), supersede (AUDN update, carries
+  // superseded_at), feedback downvote (carries flagged_for_review=1 AND the
+  // marker), and invalidate() (sets content_hash='invalidated', leaves
+  // flagged=0, superseded NULL, basis untouched) -- and ONLY the first may
+  // revive. This method evaluates the four NON-hash reason conjuncts; the
+  // caller owns the stale=1 gate and the full-basis re-hash (it batches the
+  // hashing). Shared by checkFreshness(), freshnessSweep(), and (T3.1)
+  // resolveContradiction() -- ONE implementation, never copied.
+  private freshnessRevivable(e: {
+    superseded_at?: string | null;
+    flagged_for_review: boolean;
+    content_hash: string;
+    content: string;
+  }): boolean {
+    if (e.superseded_at) return false;                 // supersede actor
+    if (e.flagged_for_review) return false;            // feedback flag standing
+    if (e.content_hash === 'invalidated') return false; // invalidate actor
+    if (SqliteProvider.FEEDBACK_MARKER_RE.test(e.content ?? '')) return false; // durable downvote
+    return true;
+  }
+
+  // T1.3 (F2/D2): the FULL-basis re-hash conjunct. Returns true only when the
+  // stored basis is non-empty AND every basis file resolves to a current hash
+  // equal to the stored one. An empty basis never matches (never revive on an
+  // empty/malformed basis); a partial match (some file changed/missing) is NOT
+  // a full match, so a multi-file entry with only one file matching is not
+  // revived. Complement (not a full match) is exactly "basis mismatch" used for
+  // the stale=1 direction.
+  private basisFullyMatches(
+    basis: Record<string, string>,
+    currentHashes: Record<string, { hash: string } | null | undefined>
+  ): boolean {
+    const files = Object.keys(basis);
+    if (files.length === 0) return false;
+    for (const file of files) {
+      const current = currentHashes[file];
+      if (!current || current.hash !== basis[file]) return false;
+    }
+    return true;
+  }
+
+  // Parse a stored source_file_hashes JSON map; returns null for empty or
+  // malformed bases (never falsely stale, never falsely revive).
+  private parseBasis(raw: string | null): Record<string, string> | null {
+    try {
+      const parsed = JSON.parse(raw || '{}') as Record<string, string>;
+      if (parsed && typeof parsed === 'object' && Object.keys(parsed).length > 0) return parsed;
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Read-only accessor for the stored per-file hash basis (source_file_hashes)
+   * of the given entry ids. Each requested id maps to its parsed basis, or null
+   * when the basis is empty/unparseable or the id is unknown. Used by kb_export's
+   * project-scope bible filter and kb_bible_commit admission; internal to this
+   * provider, not an MCP surface. A local freshness-only basis
+   * (local_basis_only = 1, a legacy bible import) maps to null: it was hashed
+   * from this clone, never verified, so it must never be exported or admit an
+   * entry to the bible.
+   */
+  getSourceFileBases(ids: string[]): Map<string, Record<string, string> | null> {
+    const out = new Map<string, Record<string, string> | null>();
+    for (const id of ids) out.set(id, null);
+    if (ids.length === 0) return out;
+    const db = this.getDb();
+    // Chunk to stay well under SQLite's bound-parameter limit.
+    const CHUNK = 500;
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const chunk = ids.slice(i, i + CHUNK);
+      const rows = db.prepare(
+        `SELECT id, source_file_hashes, local_basis_only FROM entries WHERE id IN (${chunk.map(() => '?').join(',')})`
+      ).all(...chunk) as { id: string; source_file_hashes: string | null; local_basis_only: number | null }[];
+      for (const row of rows) out.set(row.id, row.local_basis_only ? null : this.parseBasis(row.source_file_hashes));
+    }
+    return out;
+  }
+
+  /**
+   * The bible trust time of each given id that exists: when this clone's trust
+   * in the row dates from, as a bible records it. promoted_at when the row was
+   * promoted here; else the updated_at the bible carried when the row was
+   * imported (bible_updated_at); else null for an imported row from before that
+   * column existed -- its trust came from a bible, and the local import time
+   * says nothing about when it was promoted. Any other row falls back to
+   * created_at. An unknown id is absent from the map. Fed to
+   * standingAgainstTombstone (bible-import.ts) by kb_export, and used for the
+   * updated_at a bible writer records, so every clone compares the same value.
+   * Internal to this provider, not an MCP surface.
+   */
+  getBibleTrustTimes(ids: string[]): Map<string, string | null> {
+    const out = new Map<string, string | null>();
+    if (ids.length === 0) return out;
+    const db = this.getDb();
+    // Chunk to stay well under SQLite's bound-parameter limit (as above).
+    const CHUNK = 500;
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const chunk = ids.slice(i, i + CHUNK);
+      const rows = db.prepare(
+        `SELECT id, promoted_at, bible_updated_at, source, created_at FROM entries WHERE id IN (${chunk.map(() => '?').join(',')})`
+      ).all(...chunk) as Record<string, unknown>[];
+      for (const row of rows) out.set(row.id as string, this.bibleTrustTimeOf(row));
+    }
+    return out;
+  }
+
+  /** getBibleTrustTimes' rule for one raw row (needs promoted_at, bible_updated_at, source, created_at). */
+  private bibleTrustTimeOf(row: Record<string, unknown>): string | null {
+    if (typeof row.promoted_at === 'string') return row.promoted_at;
+    if (typeof row.bible_updated_at === 'string') return row.bible_updated_at;
+    if (row.source === 'import') return null;
+    return typeof row.created_at === 'string' ? row.created_at : null;
+  }
+
+  /**
+   * Read-only accessor for the demotion state of the given entry ids: the
+   * CURRENT confidence and demoted_at of each id that exists. An unknown id is
+   * simply absent from the map.
+   *
+   * Deliberately NOT routed through list(): list() excludes stale and superseded
+   * rows, and a demoted entry that later went stale is exactly the one whose
+   * tombstone other clones most need -- their bible still carries the entry.
+   * Policy (what counts as demoted enough to tombstone) lives in the caller
+   * (src/tools/kb-bible-commit.ts); this member only reports the two columns.
+   * Internal to this provider, not an MCP surface.
+   */
+  getDemotionState(ids: string[]): Map<string, { confidence: Confidence; demoted_at?: string }> {
+    const out = new Map<string, { confidence: Confidence; demoted_at?: string }>();
+    if (ids.length === 0) return out;
+    const db = this.getDb();
+    // Chunk to stay well under SQLite's bound-parameter limit (as above).
+    const CHUNK = 500;
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const chunk = ids.slice(i, i + CHUNK);
+      const rows = db.prepare(
+        `SELECT id, confidence, demoted_at FROM entries WHERE id IN (${chunk.map(() => '?').join(',')})`
+      ).all(...chunk) as { id: string; confidence: string; demoted_at: string | null }[];
+      for (const row of rows) {
+        out.set(row.id, {
+          confidence: row.confidence as Confidence,
+          demoted_at: row.demoted_at ?? undefined,
+        });
+      }
+    }
+    return out;
+  }
+
+  /**
+   * For each of the given ids that EXISTS locally, whether that row is LIVE
+   * CONFIRMED: confidence is CONFIRMED and the row is not stale, not superseded
+   * and not flagged_for_review.
+   *
+   * An id with NO local row is simply ABSENT from the map -- the caller must be
+   * able to tell "I hold a row and it is no longer trustworthy" (do not surface
+   * the bible's version of it) from "I have never seen this id" (the cold-seed
+   * case the bible exists to serve). A boolean-only return would conflate them.
+   *
+   * ONE predicate, deliberately not a demoted_at check. A demotion is only one
+   * of the ways a row stops being live CONFIRMED; staleness, supersession and a
+   * review flag are the others, and a cold seed that re-surfaced the bible's
+   * CONFIRMED copy of any of them would be re-asserting knowledge this clone has
+   * already stopped trusting. Reads the rows DIRECTLY rather than through list(),
+   * which filters stale and superseded rows out and so cannot report them.
+   */
+  getLiveConfirmedState(ids: string[]): Map<string, boolean> {
+    const out = new Map<string, boolean>();
+    if (ids.length === 0) return out;
+    const db = this.getDb();
+    // Chunk to stay well under SQLite's bound-parameter limit (as above).
+    const CHUNK = 500;
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const chunk = ids.slice(i, i + CHUNK);
+      const rows = db.prepare(
+        `SELECT id, confidence, stale, superseded_at, flagged_for_review FROM entries WHERE id IN (${chunk.map(() => '?').join(',')})`
+      ).all(...chunk) as {
+        id: string; confidence: string; stale: number;
+        superseded_at: string | null; flagged_for_review: number;
+      }[];
+      for (const row of rows) {
+        out.set(row.id, row.confidence === 'CONFIRMED'
+          && row.stale !== 1
+          && row.superseded_at === null
+          && row.flagged_for_review !== 1);
+      }
+    }
+    return out;
+  }
+
+  // T1.3 (F2/D2 HARDENED): freshness check bounded to the primed set, now
+  // BIDIRECTIONAL. Keyed off source_files with a per-file hash basis persisted
+  // at capture time (source_file_hashes) -- NOT content_hash, which is only ever
+  // set for context-cache entries that prime() already excludes from
+  // top_entries. Entries with no source_files, or an empty/unparseable stored
+  // basis, are left untouched (never falsely stale). For entries that DO have a
+  // basis, re-hash the union of basis files ONCE (bounded to the primed set,
+  // never the whole KB): a basis MISMATCH marks stale=1 and drops the entry from
+  // the returned list; a FULL basis match on an entry that is stale AND passes
+  // the shared un-stale predicate clears stale=0.
+  //
+  // CAVEAT (also on freshnessSweep): prime()'s candidate set EXCLUDES stale
+  // entries by definition (query filters stale=0), so in practice the un-stale
+  // direction here is a no-op -- prime alone CANNOT revive a staled entry.
+  // Branch-switch revival requires freshnessSweep() (invoked by kb_import in
+  // T2.1 and /pm kb-reconcile in T3.2), NOT just a prime. kb_stats stays
+  // read-only (D2). The un-stale branch is implemented here for consistency and
+  // to share the exact predicate, but the real revival surface is the sweep.
+  private async checkFreshness(db: DatabaseSync, entries: KBEntry[]): Promise<KBEntry[]> {
+    // apra-fleet-b4g.4: an anchor that does not exist on this host yields no
+    // freshness verdict at all -- see anchorIsMissing(). Returning the entries
+    // untouched keeps prime read-only for remote members instead of staling
+    // healthy entries in the shared project KB.
+    if (this.anchorIsMissing()) return entries;
+
+    const candidates = entries.filter(e => e.source_files.length > 0);
+    if (candidates.length === 0) return entries;
+
+    const candidateIds = candidates.map(e => e.id);
+    const rows = db.prepare(
+      `SELECT id, source_file_hashes FROM entries WHERE id IN (${candidateIds.map(() => '?').join(',')})`
+    ).all(...candidateIds) as { id: string; source_file_hashes: string | null }[];
+
+    const basisById = new Map<string, Record<string, string>>();
+    for (const row of rows) {
+      const basis = this.parseBasis(row.source_file_hashes);
+      if (basis) basisById.set(row.id, basis);
+    }
+    if (basisById.size === 0) return entries;
+
+    const entryById = new Map(entries.map(e => [e.id, e]));
+
+    const fileSet = new Set<string>();
+    for (const basis of basisById.values()) {
+      for (const file of Object.keys(basis)) fileSet.add(file);
+    }
+
+    // Anchor at the provider's own repo, the SAME root computeSourceFileHashes
+    // stored the basis against at capture time. Without this the two disagree
+    // whenever the process cwd is not the repo -- which is the normal case in
+    // the long-lived fleet server -- so every relative basis path would re-hash
+    // to a different value and prime would stale healthy entries on sight.
+    const currentHashes = await this.hashAnchored([...fileSet]);
+
+    const staleIds: string[] = [];
+    const unstaleIds: string[] = [];
+    for (const [id, basis] of basisById) {
+      const entry = entryById.get(id);
+      const matches = this.basisFullyMatches(basis, currentHashes);
+      if (!matches) {
+        staleIds.push(id);
+      } else if (entry && entry.stale && this.freshnessRevivable(entry)) {
+        unstaleIds.push(id);
+      }
+    }
+
+    if (staleIds.length > 0) {
+      db.prepare(
+        `UPDATE entries SET stale = 1 WHERE id IN (${staleIds.map(() => '?').join(',')})`
+      ).run(...staleIds);
+    }
+    if (unstaleIds.length > 0) {
+      db.prepare(
+        `UPDATE entries SET stale = 0 WHERE id IN (${unstaleIds.map(() => '?').join(',')})`
+      ).run(...unstaleIds);
+    }
+
+    const staleSet = new Set(staleIds);
+    return entries.filter(e => !staleSet.has(e.id));
+  }
+
+  // T1.3 (F2/D2 HARDENED) resolution R2: a bounded, full-KB bidirectional
+  // freshness sweep -- the revival surface that prime() cannot be (its candidate
+  // set excludes stale entries). Runs the SAME shared predicate in BOTH
+  // directions over ALL entries with a non-empty basis: a basis mismatch marks a
+  // currently-fresh entry stale=1; a full basis match revives a stale entry that
+  // passes freshnessRevivable() (superseded, feedback-downvoted, and invalidated
+  // entries stay retired). Bounded: ONE computeFileHashBatch over the union of
+  // all basis files (the KB is <1000 entries -- fine for an explicit command;
+  // NOT wired into prime). Exposed as MCP tool kb_freshness_sweep and invoked by
+  // kb_import (T2.1) and /pm kb-reconcile (T3.2).
+  //
+  // Return semantics: `checked` counts entries with a non-empty, parseable basis
+  // that were evaluated against the hash batch (entries with no/empty/malformed
+  // basis are neither staled nor revived nor counted). `staled` counts fresh
+  // entries newly marked stale on a mismatch; `unstaled` counts stale entries
+  // revived on a full match.
+  //
+  // T3.1 (D4 fold-in, Phase 2 review MEDIUM yashr-d8b): optional `root` anchors
+  // basis re-hashing at an explicit repo path (e.g. kb_import's --repo) WITHOUT
+  // a global process.chdir. Previously kb-import.ts's sweepAnchored() wrapped
+  // this call in process.chdir(repoAnchor)/process.chdir(prevCwd) across the
+  // await -- a global, process-wide mutation for the duration of the hashing
+  // that any other concurrent async work in the same process would also
+  // observe. Threading the anchor straight into computeFileHashBatch's { cwd }
+  // option removes that global side effect entirely; behavior is identical
+  // (relative basis paths still resolve against the intended repo root,
+  // absolute basis paths are unaffected either way). Omitting root preserves
+  // exact prior behavior (implicit process.cwd() resolution).
+  //
+  // apra-fleet-b4g.4 (acceptance criterion 5): when `root` is omitted the sweep
+  // now falls back to THIS PROVIDER'S anchor, not process.cwd(). kb_freshness_sweep
+  // (src/tools/kb-freshness-sweep.ts) called this with no root, so it re-hashed
+  // relative basis paths against the fleet server's own working directory while
+  // checkFreshness re-hashed the very same basis against repoPath -- two actors
+  // writing opposite stale verdicts for one entry. The provider anchor is the
+  // root the basis was stored against (computeSourceFileHashes), so it is the
+  // only correct default; an explicit root (kb_import's --repo) still wins, and
+  // a provider with no anchor at all (the shared global KB) keeps the previous
+  // implicit-cwd behaviour. A resolved anchor that does not exist on this host
+  // yields no verdict at all -- see anchorIsMissing().
+  async freshnessSweep(root?: string): Promise<{ checked: number; staled: number; unstaled: number }> {
+    const anchor = root ?? this.repoPath;
+    if (this.anchorIsMissing(anchor)) return { checked: 0, staled: 0, unstaled: 0 };
+    const db = this.getDb();
+    const rows = db.prepare(
+      `SELECT id, stale, superseded_at, flagged_for_review, content_hash, content, source_file_hashes
+       FROM entries`
+    ).all() as {
+      id: string;
+      stale: number;
+      superseded_at: string | null;
+      flagged_for_review: number;
+      content_hash: string;
+      content: string;
+      source_file_hashes: string | null;
+    }[];
+
+    const basisById = new Map<string, Record<string, string>>();
+    const rowById = new Map<string, typeof rows[number]>();
+    for (const row of rows) {
+      const basis = this.parseBasis(row.source_file_hashes);
+      if (basis) {
+        basisById.set(row.id, basis);
+        rowById.set(row.id, row);
+      }
+    }
+    if (basisById.size === 0) return { checked: 0, staled: 0, unstaled: 0 };
+
+    const fileSet = new Set<string>();
+    for (const basis of basisById.values()) {
+      for (const file of Object.keys(basis)) fileSet.add(file);
+    }
+    const currentHashes = await this.hashAnchored([...fileSet], anchor || undefined);
+
+    const staleIds: string[] = [];
+    const unstaleIds: string[] = [];
+    let checked = 0;
+    for (const [id, basis] of basisById) {
+      checked++;
+      const row = rowById.get(id)!;
+      const matches = this.basisFullyMatches(basis, currentHashes);
+      const isStale = row.stale === 1;
+      if (!matches) {
+        if (!isStale) staleIds.push(id); // freshness mismatch actor
+      } else if (isStale && this.freshnessRevivable({
+        superseded_at: row.superseded_at,
+        flagged_for_review: row.flagged_for_review === 1,
+        content_hash: row.content_hash,
+        content: row.content,
+      })) {
+        unstaleIds.push(id);
+      }
+    }
+
+    if (staleIds.length > 0) {
+      db.prepare(
+        `UPDATE entries SET stale = 1 WHERE id IN (${staleIds.map(() => '?').join(',')})`
+      ).run(...staleIds);
+    }
+    if (unstaleIds.length > 0) {
+      db.prepare(
+        `UPDATE entries SET stale = 0 WHERE id IN (${unstaleIds.map(() => '?').join(',')})`
+      ).run(...unstaleIds);
+    }
+
+    return { checked, staled: staleIds.length, unstaled: unstaleIds.length };
+  }
+
+  private findAudnCandidates(db: DatabaseSync, input: KBEntryInput): KBEntry[] {
+    const ftsQuery = makeFtsQuery(input.title);
+    if (!ftsQuery) return [];
+    try {
+      // D2 HALF B (candidate-discovery fix): candidates are discovered by symbol/
+      // title overlap across ALL entry types -- the same-type restriction was
+      // removed so cross-type contradictions (e.g. a 'knowledge' entry
+      // contradicting a 'learning' entry on shared symbols) are discoverable.
+      // makeAudnDecision re-imposes candidate.type === input.type for the
+      // dedup/update decisions; only the contradiction path stays cross-type.
+      const rows = db.prepare(`
+        SELECT e.* FROM entries e
+        JOIN entries_fts ON entries_fts.rowid = e.rowid
+        WHERE entries_fts MATCH ?
+          AND e.superseded_at IS NULL
+        ORDER BY rank
+        LIMIT 10
+      `).all(ftsQuery) as Record<string, unknown>[];
+      return rows.map(r => this.rowToEntry(r));
+    } catch {
+      return [];
+    }
+  }
+
+  private evaluateAudn(
+    db: DatabaseSync,
+    input: KBEntryInput,
+    candidates: KBEntry[],
+    newContent: string,
+    now: string,
+    sourceFileHashes: Record<string, string>,
+    localBasisOnly = false,
+    keepConfirmed = false
+  ): CaptureResult | null {
+    const decision = makeAudnDecision(input, candidates, newContent);
+    if (!decision) return null;
+
+    if (decision.decision === 'none') {
+      return { id: decision.matchedId, audn_decision: 'none' };
+    }
+
+    if (decision.decision === 'flagged') {
+      db.prepare('UPDATE entries SET flagged_for_review = 1 WHERE id = ?').run(decision.matchedId);
+      const newId = randomUUID();
+      this.insertEntry(db, newId, { ...input, ...decision.newEntryOverrides }, newContent, now, sourceFileHashes, localBasisOnly);
+      this.wireLinks(db, newId, input);
+      return { id: newId, audn_decision: 'flagged' };
+    }
+
+    if (decision.decision === 'update') {
+      const newId = randomUUID();
+
+      // keepConfirmed (a member session without the kb_maintainer grant): a
+      // CONFIRMED target is never retired by supersedes -- retiring it would
+      // remove it from the bible at the next kb_bible_commit. The capture
+      // takes the IMPLICIT path below instead (both live, 'refines' link) and
+      // the target id is reported, mirroring kb_invalidate's keepConfirmed.
+      const target = candidates.find(c => c.id === decision.matchedId);
+      const supersedeRefused = keepConfirmed && input.supersedes === decision.matchedId && target?.confidence === 'CONFIRMED';
+      if (input.supersedes === decision.matchedId && !supersedeRefused) {
+        // EXPLICIT: the caller named what it replaces and AUDN independently
+        // matched it. Retire it exactly as before -- superseded_at + stale = 1.
+        // D2 (F2a): both flags are required so the old row is excluded from
+        // query()/prime() by default (query filters stale = 0 independently of
+        // superseded_at). content_hash is left intact.
+        // flagged_for_review is deliberately NOT cleared here; that is
+        // resolveContradiction's behavior, and kb-review.md depends on the
+        // difference (a kept entry stays listed under flagged_only).
+        db.prepare("UPDATE entries SET superseded_at = ?, stale = 1, retired_reason = 'superseded' WHERE id = ?")
+          .run(now, decision.matchedId);
+        this.insertEntry(db, newId, input, newContent, now, sourceFileHashes, localBasisOnly);
+        this.wireLinks(db, newId, input);
+        return { id: newId, audn_decision: 'update' };
+      }
+
+      // IMPLICIT: same type, overlapping symbol and file, different content.
+      // That is a topicality signal, not consent to destroy -- two DISTINCT
+      // facts about one symbol used to eat each other. Link and keep both;
+      // curation retires what it means to retire, explicitly.
+      this.insertEntry(db, newId, input, newContent, now, sourceFileHashes, localBasisOnly);
+      this.wireLinks(db, newId, input);
+      db.prepare(
+        'INSERT OR IGNORE INTO links (from_id, to_id, link_type) VALUES (?, ?, ?)'
+      ).run(newId, decision.matchedId, 'refines');
+      return supersedeRefused
+        ? { id: newId, audn_decision: 'update', refused: [decision.matchedId] }
+        : { id: newId, audn_decision: 'update' };
+    }
+
+    return null;
+  }
+
+  /**
+   * LEGACY-ONLY as of 2026-08-03 (decided with KB-TRUST PHASE 1). The predicate
+   * below matches only rows whose source_files is empty -- "concept entries" --
+   * and capture() now refuses to create such a row at all. Every entry captured
+   * from here on carries a basis, so this can only ever match rows predating the
+   * Phase 1 gate. Staleness for basis-carrying entries is freshnessSweep()'s job
+   * instead; note the two mechanisms differ (a stale flag, not a confidence
+   * downgrade), so the INFERRED -> UNVERIFIED ladder simply stops firing for new
+   * knowledge. Tracked as apra-fleet-4wz.7. Kept as-is deliberately: legacy rows
+   * still exist in live KBs and must still decay.
+   */
+  private decayConceptEntries(db: DatabaseSync, days: number): void {
+    const cutoff = new Date(Date.now() - days * 86400 * 1000).toISOString();
+    // F1 (D1): only an ACTIVE directive (type='user-directive' AND
+    // confidence='CONFIRMED') is exempt from decay. A pending/rejected directive
+    // proposal is UNVERIFIED, so it is already below the INFERRED decay target
+    // and decay is not observable on it (L2). The rekeyed guard
+    // `NOT (type='user-directive' AND confidence='CONFIRMED')` keeps the
+    // invariant precise: a hypothetical INFERRED user-directive row would decay
+    // like any concept, while an ACTIVE directive never does.
+    db.prepare(`
+      UPDATE entries
+      SET confidence = 'UNVERIFIED'
+      WHERE confidence = 'INFERRED'
+        AND NOT (type = 'user-directive' AND confidence = 'CONFIRMED')
+        AND superseded_at IS NULL
+        AND (source_files = '[]' OR source_files IS NULL OR source_files = '')
+        AND (last_accessed IS NULL OR last_accessed < ?)
+        AND (promoted_at IS NULL OR promoted_at < ?)
+    `).run(cutoff, cutoff);
+  }
+
+  private wireLinks(db: DatabaseSync, newId: string, input: KBEntryInput): void {
+    const symbols = input.symbols ?? [];
+    const files = input.source_files ?? [];
+    if (symbols.length === 0 && files.length === 0) return;
+
+    const existingRows = db.prepare(
+      'SELECT id, symbols, source_files FROM entries WHERE id != ? AND superseded_at IS NULL'
+    ).all(newId) as { id: string; symbols: string; source_files: string }[];
+
+    const linkStmt = db.prepare(
+      'INSERT OR IGNORE INTO links (from_id, to_id, link_type) VALUES (?, ?, ?)'
+    );
+
+    for (const row of existingRows) {
+      const existingSymbols: string[] = JSON.parse(row.symbols || '[]');
+      const existingFiles: string[] = JSON.parse(row.source_files || '[]');
+      if (symbols.length > 0 && symbols.some(s => existingSymbols.includes(s))) {
+        linkStmt.run(newId, row.id, 'shares_symbol');
+      }
+      if (files.length > 0 && files.some(f => existingFiles.includes(f))) {
+        linkStmt.run(newId, row.id, 'shares_file');
+      }
+    }
+  }
+
+  async capture(input: KBEntryInput, opts?: CaptureOpts): Promise<CaptureResult> {
+    const db = this.getDb();
+    const now = new Date().toISOString();
+
+    // F1 (D1, closes yashr-9ha): capture() is the single choke point every
+    // MCP-reachable route flows through (the kb_capture handler AND the HTTP
+    // /api/kb/capture route on the KB server). Enforcing the directive
+    // proposal-transformation HERE -- not only in the kb_capture handler --
+    // means no capture route can mint an active directive. A user-directive
+    // captured over MCP is forced to a PENDING PROPOSAL: confidence downgraded
+    // to UNVERIFIED, flagged_for_review set, a 'directive:pending' tag added,
+    // and scope forced to 'project' (M1: a global proposal would be unreachable
+    // by the project CLI that approves it). Activation is CLI-only via the
+    // dedicated approveDirective/addDirective methods, which bypass capture().
+    if (input.type === 'user-directive') {
+      const existingTags = input.tags ?? [];
+      const tags = existingTags.includes('directive:pending')
+        ? existingTags
+        : [...existingTags, 'directive:pending'];
+      input = {
+        ...input,
+        confidence: 'UNVERIFIED',
+        flagged_for_review: true,
+        scope: 'project',
+        tags,
+      };
+    }
+
+    // KB-TRUST PHASE 1 (decided 2026-08-03): capture FAILS CLOSED on an
+    // uncheckable basis, and this is the ENFORCEMENT copy for the same reason
+    // the confidence clamp below is here -- three of the four capture call
+    // sites (kb_harvest, kb_import, the HTTP /api/kb/capture route) never touch
+    // the kb_capture handler, so a tool-layer check would be bypassed by most
+    // of the traffic.
+    //
+    // Rationale: freshnessSweep() builds its work set ONLY from entries with a
+    // parsed source_file_hashes basis, so an entry citing no files is never
+    // checked and can never be staled -- permanently CONFIRMED-able and
+    // structurally unfalsifiable. An entry citing files that do not exist is
+    // checkable and already wrong.
+    //
+    // NO exemption for source='harvest' or for importMode. Import is exempt
+    // from the confidence clamp only; an unfalsifiable entry must not enter
+    // through any path, including a legacy bible.
+    //
+    // user-directive IS exempt from the empty-basis half: a standing human
+    // instruction ("never force-push to main") is not a claim about code and
+    // cites no files by nature. It is still quarantined to an UNVERIFIED
+    // pending proposal by the directive gate above and can only be activated
+    // CLI-side, so it never reaches the bible on its own. A directive that DOES
+    // cite files is still held to those files existing.
+    this.assertCheckableBasis(input);
+
+    // T1.2 (F3, R3, KB 9462ab04): general confidence clamp -- the ENFORCEMENT
+    // copy. The kb_capture tool handler (kb-capture.ts) also clamps and returns
+    // a confidence_clamped UX flag to MCP callers, but the HTTP /api/kb/capture
+    // route calls provider.capture(JSON.parse(body)) directly
+    // (kb-server.ts:133-141), bypassing that handler and previously able to mint
+    // CONFIRMED for non-directive types. This block is the single enforcement
+    // choke point every route flows through: for NON-directive types an incoming
+    // CONFIRMED is downgraded to INFERRED with a bracketed content note that
+    // mirrors the handler's wording. CONFIRMED is minted ONLY by promote() and
+    // approveDirective/addDirective, all of which bypass capture() -- they are
+    // not exemptions here, they simply never reach this code.
+    //
+    // Ordering: the directive gate above has already forced user-directive
+    // entries to UNVERIFIED proposals, so this clamp never fires for them; the
+    // explicit type check keeps that intent legible. Keep this block AFTER the
+    // directive gate.
+    //
+    // T2.1 (F4, D3, MEDIUM-4) PROVENANCE NORMALIZATION -- runs BEFORE the clamp,
+    // AFTER the directive gate. insertEntry() persists input.source verbatim, so
+    // the two PRIVILEGED provenance values -- 'import' (the kb_import trusted
+    // channel) and 'promotion' (stamped only by promote(), which never calls
+    // capture()) -- must never be settable by a deserialized route body. When the
+    // internal import mode is NOT engaged, a caller-supplied source of 'import'
+    // or 'promotion' is OVERWRITTEN with 'unknown' (we mark provenance we cannot
+    // vouch for, rather than lying with 'session'). Under import mode the tool's
+    // own source='import' is legitimate and survives. Without this, an HTTP
+    // caller could stamp forged trusted-channel provenance (clamped, but
+    // mislabeled -- audits keyed on source='import' would trust forged rows).
+    if (!opts?.importMode && (input.source === 'import' || input.source === 'promotion')) {
+      input = { ...input, source: 'unknown' };
+    }
+
+    // T2.1 (F4, D3): import is the SOLE capture()-level exemption to this clamp.
+    // The internal import-mode flag is a SECOND parameter of capture() (opts),
+    // NEVER a field of the deserialized input (the HTTP route passes exactly one
+    // argument and the MCP handler builds input from zod fields, so a second
+    // parameter is structurally unreachable from any deserialized route -- R4).
+    // When import mode is engaged, a NON-directive entry keeps its bible
+    // confidence: the bible is a git-reviewed, human-merged artifact (the trusted
+    // channel) and re-clamping would demote the whole team's CONFIRMED knowledge
+    // on every import. The directive gate above still ran first, so a bible
+    // cannot smuggle an active directive even under import mode.
+    // String concatenation (not a template literal) per the ASCII pre-commit
+    // hook's backtick-escape false-positive.
+    if (!opts?.importMode && input.type !== 'user-directive' && input.confidence === 'CONFIRMED') {
+      input = {
+        ...input,
+        confidence: 'INFERRED',
+        content: input.content + '\n\n[confidence clamped: CONFIRMED requires kb_promote]',
+      };
+    }
+
+    const content = truncateContent(input.content);
+
+    // T2.2 (F3 PART A): capture() is the single choke point every caller
+    // (kb_capture, kb_harvest, future paths) goes through, so every entry
+    // gets a hash basis here regardless of type.
+    //
+    // Bible format v3: an IMPORT carrying a basis (opts.carriedBasis, honoured
+    // only under importMode, which no deserialized route can set) stores that
+    // map verbatim instead -- the basis the entry was verified against on the
+    // exporting clone. carriedBasis null (a v1/v2 entry, or an invalid carried
+    // map) hashes this clone's files into a LOCAL freshness-only basis
+    // (local_basis_only = 1): it lets the entry go stale when code drifts, but
+    // is never exported, never admits it to the bible and never wins a
+    // contradiction mechanically. Normal captures are unaffected.
+    const carried = opts?.importMode === true && opts.carriedBasis !== undefined;
+    const localBasisOnly = carried && opts?.carriedBasis === null;
+    const sourceFileHashes = carried && !localBasisOnly
+      ? { ...(opts?.carriedBasis ?? {}) }
+      : await this.computeSourceFileHashes(input.source_files ?? []);
+
+    // Verbatim (member bible view): the bible was reviewed and merged as a
+    // whole; AUDN against its own sibling entries would flag, re-id and
+    // demote them (a contradiction keyword in one summary disputes another
+    // CONFIRMED entry). Skip AUDN and keep the bible id.
+    const verbatim = opts?.verbatim === true && opts.importMode === true && opts.preferredId !== undefined;
+    const candidates = verbatim ? [] : this.findAudnCandidates(db, input);
+    if (candidates.length > 0) {
+      const result = this.evaluateAudn(db, input, candidates, content, now, sourceFileHashes, localBasisOnly, opts?.keepConfirmed === true);
+      if (result) return result;
+    }
+
+    // T2.1 (F4, D3, LOW-2): on the pure 'add' path, kb_import preserves the
+    // bible entry's id (opts.preferredId) so a re-import dedupes EXACTLY via the
+    // id-skip gate (kb_import checks hasEntry() before ever calling capture, so
+    // the id is guaranteed free here). AUDN's update/flagged branches above
+    // always mint a fresh randomUUID -- an id collision with different content is
+    // resolved by AUDN under a new id, never by overwriting the preserved id.
+    const id = opts?.preferredId ?? randomUUID();
+    this.insertEntry(db, id, input, content, now, sourceFileHashes, localBasisOnly);
+    if (opts?.importMode === true && opts.carriedUpdatedAt !== undefined) {
+      db.prepare('UPDATE entries SET bible_updated_at = ? WHERE id = ?').run(opts.carriedUpdatedAt, id);
+    }
+    this.wireLinks(db, id, input);
+    return { id, audn_decision: 'add' };
+  }
+
+  // T2.1 (F4, D3, LOW-2): existence check for kb_import's per-entry id-skip --
+  // the FIRST gate, run BEFORE capture()/AUDN. Idempotency cannot rely on AUDN
+  // alone: AUDN dedupe needs symbol AND file overlap (symbolsOverlap/filesOverlap
+  // return false on empty arrays), so a symbol-less or file-less bible entry
+  // would re-add on every import if AUDN were the only guard. Checks ALL rows
+  // (superseded/stale included) so a previously-absorbed entry never re-adds, and
+  // -- unlike query({ids}) -- bumps no use_count/last_accessed telemetry.
+  hasEntry(id: string): boolean {
+    const row = this.getDb().prepare('SELECT 1 FROM entries WHERE id = ?').get(id);
+    return row !== undefined;
+  }
+
+  // KB audit 2026-08-11: the write half of "delivery is retrieval".
+  //
+  // query() bumps use_count/last_accessed for everything it returns, but an
+  // entry delivered to an agent from the canonical-bible cold-seed never goes
+  // through query() -- it is parsed out of a JSON file. Since the sprint engine
+  // primes without hints, the bible is the ONLY thing it delivers, so every
+  // delivery was invisible to the retrieval telemetry and hit_rate read 0 while
+  // entries were genuinely being handed out.
+  //
+  // Existence-tolerant BY DESIGN, not by accident: a bible is exported from one
+  // machine and read on another, so an id with no local row is the normal case,
+  // not an error. Returns how many rows were actually bumped -- the caller can
+  // tell "delivered from our own KB" from "delivered from someone else's".
+  async touch(ids: string[]): Promise<number> {
+    if (ids.length === 0) return 0;
+    const db = this.getDb();
+    const placeholders = ids.map(() => '?').join(',');
+    const res = db.prepare(`
+      UPDATE entries SET use_count = use_count + 1, last_accessed = ?
+      WHERE id IN (${placeholders})
+    `).run(new Date().toISOString(), ...ids);
+    // node:sqlite types changes as number|bigint (bigint only past 2^53 rows).
+    return Number(res.changes);
+  }
+
+  async query(opts: QueryOptions): Promise<KBResult> {
+    const db = this.getDb();
+    const conditions: string[] = [];
+    const params: SQLInputValue[] = [];
+
+    // Direct ID lookup bypasses FTS and filters
+    if (opts.ids?.length) {
+      const placeholders = opts.ids.map(() => '?').join(',');
+      const rows = db.prepare(
+        `SELECT * FROM entries WHERE id IN (${placeholders})`
+      ).all(...opts.ids) as Record<string, unknown>[];
+
+      const results = rows.map(r => this.rowToEntry(r));
+      if (results.length > 0) {
+        db.prepare(`
+          UPDATE entries SET use_count = use_count + 1, last_accessed = ?
+          WHERE id IN (${results.map(() => '?').join(',')})
+        `).run(new Date().toISOString(), ...results.map(r => r.id));
+      }
+      return { results, total: results.length, l1_only: false };
+    }
+
+    if (!opts.include_superseded) {
+      conditions.push('e.superseded_at IS NULL');
+    }
+    if (!opts.include_stale) {
+      conditions.push('e.stale = 0');
+    }
+    if (opts.type) {
+      conditions.push('e.type = ?');
+      params.push(opts.type);
+    }
+    if (opts.tag) {
+      // T-tag-filter: exact-match WHERE clause via json_each, same pattern as
+      // list()'s symbol filter above. This is NOT an FTS term -- it is ANDed
+      // into `conditions`, which both the FTS-query branch (ftsWhere) and the
+      // plain-listing branch (where) already consume below, so it composes
+      // with `query` and other filters without touching the FTS/OR-join logic.
+      conditions.push('EXISTS (SELECT 1 FROM json_each(e.tags) WHERE value = ?)');
+      params.push(opts.tag);
+    }
+    if (opts.flagged_only) {
+      conditions.push('(e.flagged_for_review = 1 OR e.contradiction_of IS NOT NULL)');
+    } else {
+      // Retrieval-trust filters (opt-in). Not applied to flagged_only, whose
+      // whole purpose is listing the disputed entries these would drop.
+      const trust = trustFilterSql(opts);
+      conditions.push(...trust.conditions);
+      params.push(...trust.params);
+      // H2 (F1, D1, closes yashr-9ha): default retrieval NEVER surfaces a
+      // pending or rejected directive PROPOSAL (type='user-directive' with
+      // confidence != 'CONFIRMED'). Only an ACTIVE (CONFIRMED) directive
+      // surfaces. This is the surgical exclusion the pending representation
+      // alone does not provide (flagged UNVERIFIED rows otherwise match FTS).
+      // The flagged_only audit path is exempt (above) -- that is where a human
+      // finds pending proposals; kb_list uses a separate method and is likewise
+      // unaffected. prime() delegates here, so it inherits the exclusion.
+      conditions.push("NOT (e.type = 'user-directive' AND e.confidence != 'CONFIRMED')");
+    }
+
+    const where = conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : '';
+    const limit = opts.limit ?? 20;
+
+    let rows: Record<string, unknown>[];
+
+    if (opts.query || opts.fts_terms?.length) {
+      // ONE sanitization point. Free text is tokenized then OR-joined; internal
+      // callers pass discrete terms via fts_terms. Raw MATCH threw on '.', '-',
+      // '(', ')', '/' and implicit-AND'd multi-term queries to zero rows.
+      const ftsQuery = opts.fts_terms?.length
+        ? orJoinFtsTerms(opts.fts_terms)
+        : orJoinFtsTerms(opts.query!.match(/[A-Za-z0-9_]+/g) ?? []);
+      if (!ftsQuery) return { results: [], total: 0, l1_only: !!opts.l1_only };
+      const ftsWhere = conditions.length > 0 ? 'AND ' + conditions.join(' AND ') : '';
+      rows = db.prepare(`
+        SELECT e.* FROM entries e
+        JOIN entries_fts ON entries_fts.rowid = e.rowid
+        WHERE entries_fts MATCH ?
+        ${ftsWhere}
+        ORDER BY rank
+        LIMIT ?
+      `).all(ftsQuery, ...params, limit) as Record<string, unknown>[];
+    } else {
+      rows = db.prepare(`
+        SELECT e.* FROM entries e
+        ${where}
+        ORDER BY e.created_at DESC
+        LIMIT ?
+      `).all(...params, limit) as Record<string, unknown>[];
+    }
+
+    const results = rows.map(r => {
+      const entry = this.rowToEntry(r);
+      if (opts.l1_only) {
+        return { ...entry, content: '' };
+      }
+      return entry;
+    });
+
+    if (results.length > 0) {
+      db.prepare(`
+        UPDATE entries SET use_count = use_count + 1, last_accessed = ?
+        WHERE id IN (${results.map(() => '?').join(',')})
+      `).run(new Date().toISOString(), ...results.map(r => r.id));
+    }
+
+    return { results, total: results.length, l1_only: opts.l1_only ?? false };
+  }
+
+  async context(files: string[], confidence?: Confidence[], excludeDisputed?: boolean, ownerTag?: string): Promise<FileContextResult[]> {
+    const db = this.getDb();
+    const results: FileContextResult[] = [];
+    const confClause = (confidence?.length
+      ? `AND confidence IN (${confidence.map(() => '?').join(',')})`
+      : '') + (excludeDisputed ? ' AND flagged_for_review = 0 AND contradiction_of IS NULL' : '')
+      + (ownerTag ? ' AND EXISTS (SELECT 1 FROM json_each(tags) WHERE value = ?)' : '');
+    const confParams: SQLInputValue[] = confidence?.length ? [...confidence] : [];
+    if (ownerTag) confParams.push(ownerTag);
+
+    const fileEntries = new Map<string, KBEntry>();
+    for (const file of files) {
+      const rows = db.prepare(`
+        SELECT * FROM entries
+        WHERE type = 'context-cache'
+          AND superseded_at IS NULL
+          ${confClause}
+          AND EXISTS (SELECT 1 FROM json_each(source_files) WHERE value = ?)
+        ORDER BY created_at DESC
+        LIMIT 1
+      `).all(...confParams, file) as Record<string, unknown>[];
+
+      if (rows.length > 0) {
+        fileEntries.set(file, this.rowToEntry(rows[0]));
+      }
+    }
+
+    const hashes = await this.hashAnchored(files);
+
+    for (const file of files) {
+      const entry = fileEntries.get(file);
+      if (!entry) {
+        results.push({ file, status: 'missing' });
+        continue;
+      }
+
+      if (entry.content_hash === 'invalidated') {
+        results.push({ file, status: 'stale', reason: 'invalidated', entry_id: entry.id });
+        continue;
+      }
+
+      const hashResult = hashes[file];
+      if (!hashResult) {
+        results.push({ file, status: 'stale', reason: 'file_missing', entry_id: entry.id });
+        continue;
+      }
+
+      if (hashResult.hash === entry.content_hash) {
+        results.push({
+          file,
+          status: 'fresh',
+          summary: entry.summary,
+          content_hash: entry.content_hash,
+          entry_id: entry.id,
+        });
+      } else {
+        results.push({ file, status: 'stale', reason: 'hash_mismatch', entry_id: entry.id });
+      }
+    }
+
+    return results;
+  }
+
+  async discard(ids: string[], opts?: RetireOptions): Promise<DiscardResult> {
+    const db = this.getDb();
+    const result: DiscardResult = { discarded: [], not_found: [], already_discarded: [] };
+    if (opts?.keepConfirmed) result.refused = [];
+    const now = new Date().toISOString();
+    for (const id of new Set(ids)) {
+      const row = db.prepare('SELECT * FROM entries WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+      // An entry outside the caller's own scope is indistinguishable from an unknown id.
+      if (!row || (opts?.ownerTag && !this.rowToEntry(row).tags.includes(opts.ownerTag))) {
+        result.not_found.push(id);
+        continue;
+      }
+      if (row.superseded_at) {
+        result.already_discarded.push(id);
+        continue;
+      }
+      // A member session without the kb_maintainer grant may not retire a
+      // CONFIRMED entry: a discarded row is removed from the bible at the next
+      // kb_bible_commit, so this would be a bible removal without the grant.
+      if (opts?.keepConfirmed && row.confidence === 'CONFIRMED') {
+        result.refused!.push(id);
+        continue;
+      }
+      db.prepare("UPDATE entries SET superseded_at = ?, stale = 1, retired_reason = 'invalidated' WHERE id = ?").run(now, id);
+      result.discarded.push(id);
+    }
+    return result;
+  }
+
+  /**
+   * For each id this KB holds as RETIRED, why: 'superseded' or 'invalidated'.
+   * Ids that are unknown, or known and not retired, are absent from the map.
+   *
+   * Retired means superseded_at is set (reason from retired_reason; NULL, a
+   * row retired before that column existed, counts as 'superseded'), or
+   * content_hash = 'invalidated' (kb_invalidate by file) -> 'invalidated'.
+   *
+   * A merely STALE row (stale = 1 from the freshness sweep, superseded_at
+   * NULL, content_hash not 'invalidated') is NOT retired: staleness means the
+   * cited files moved, which the next capture or sweep can clear, while
+   * superseded and invalidated are explicit curation decisions. Only those two
+   * remove an entry from the bible (kb_bible_commit).
+   */
+  getRetirementReasons(ids: string[]): Map<string, 'superseded' | 'invalidated'> {
+    const db = this.getDb();
+    const out = new Map<string, 'superseded' | 'invalidated'>();
+    const stmt = db.prepare('SELECT superseded_at, retired_reason, content_hash FROM entries WHERE id = ?');
+    for (const id of new Set(ids)) {
+      const row = stmt.get(id) as { superseded_at: string | null; retired_reason: string | null; content_hash: string | null } | undefined;
+      if (!row) continue;
+      if (row.superseded_at) out.set(id, row.retired_reason === 'invalidated' ? 'invalidated' : 'superseded');
+      else if (row.content_hash === 'invalidated') out.set(id, 'invalidated');
+    }
+    return out;
+  }
+
+  async invalidate(files: string[], opts?: RetireOptions): Promise<{ invalidated: number; refused?: string[] }> {
+    const db = this.getDb();
+    let invalidated = 0;
+    // keepConfirmed: CONFIRMED rows are left untouched and reported (a
+    // file-invalidated row is retired, and so removed from the bible by the
+    // next kb_bible_commit -- see getRetirementReasons).
+    const refused = new Set<string>();
+    // MEMBER own-scope: only entries carrying the caller's member tag.
+    const ownerClause = opts?.ownerTag ? 'AND EXISTS (SELECT 1 FROM json_each(tags) WHERE value = ?)' : '';
+    const ownerParams: SQLInputValue[] = opts?.ownerTag ? [opts.ownerTag] : [];
+
+    for (const file of files) {
+      const candidates = db.prepare(`
+        SELECT id, confidence FROM entries
+        WHERE type = 'context-cache'
+          AND superseded_at IS NULL
+          ${ownerClause}
+          AND EXISTS (
+            SELECT 1 FROM json_each(source_files) WHERE value = ?
+          )
+      `).all(...ownerParams, file) as { id: string; confidence: string }[];
+      const rows = opts?.keepConfirmed ? candidates.filter(r => r.confidence !== 'CONFIRMED') : candidates;
+      if (opts?.keepConfirmed) for (const r of candidates) if (r.confidence === 'CONFIRMED') refused.add(r.id);
+
+      if (rows.length > 0) {
+        const ids = rows.map(r => r.id);
+        db.prepare(`
+          UPDATE entries
+          SET content_hash = 'invalidated', stale = 1
+          WHERE id IN (${ids.map(() => '?').join(',')})
+        `).run(...ids);
+        invalidated += ids.length;
+      }
+    }
+
+    return opts?.keepConfirmed ? { invalidated, refused: [...refused] } : { invalidated };
+  }
+
+  async getLinked(id: string): Promise<KBEntry[]> {
+    const db = this.getDb();
+    const rows = db.prepare(`
+      SELECT DISTINCT e.* FROM entries e
+      JOIN links l ON (l.from_id = ? AND l.to_id = e.id)
+                   OR (l.to_id = ? AND l.from_id = e.id)
+      WHERE e.superseded_at IS NULL
+    `).all(id, id) as Record<string, unknown>[];
+    return rows.map(r => this.rowToEntry(r));
+  }
+
+  // KB audit 2026-08-11: the first read of the KB's own graph.
+  //
+  // The KB writes 554 edges across three live stores and traverses none of them
+  // -- retrieval is pure FTS. This reads the two edge kinds FTS cannot stand in
+  // for. shares_file/shares_symbol (520 of the 554) are topicality, which an FTS
+  // match over the same fields already finds; `refines` and `contradiction_of`
+  // are the KB's JUDGEMENT about its own contents ("there is a newer framing of
+  // this", "something disputes this") and exist nowhere else.
+  //
+  // Both are traversed in BOTH directions on purpose. Given an entry, the useful
+  // question is not "what did this supersede" but "is there anything I should
+  // know about this claim" -- and a challenger captured a day later points AT
+  // the entry a doer is holding, not away from it. This is precisely the warehouse
+  // chain-A shape, where the incorrect entry outranks its two corrections on
+  // confidence tier and the edge is the only thing that says so.
+  //
+  // Superseded rows are excluded (they are already retired) and the input ids are
+  // never echoed back. `limit` caps the total, since this rides into a prompt.
+  //
+  // `filter` (optional) applies the same retrieval-trust filters kb_query's
+  // direct hits use, so a CONFIRMED-only caller cannot be handed an INFERRED or
+  // disputed claim through the graph instead.
+  async relatedClaims(ids: string[], limit: number = 5, filter?: EntryTrustFilter): Promise<KBEntry[]> {
+    if (ids.length === 0) return [];
+    const db = this.getDb();
+    const ph = ids.map(() => '?').join(',');
+    const trust = trustFilterSql(filter);
+    const trustWhere = trust.conditions.map(c => `AND ${c}`).join(' ');
+    const rows = db.prepare(`
+      SELECT DISTINCT e.* FROM entries e
+      WHERE e.superseded_at IS NULL
+        ${trustWhere}
+        AND e.id NOT IN (${ph})
+        AND (
+          EXISTS (
+            SELECT 1 FROM links l
+            WHERE l.link_type = 'refines'
+              AND ((l.from_id = e.id AND l.to_id IN (${ph}))
+                OR (l.to_id = e.id AND l.from_id IN (${ph})))
+          )
+          OR e.contradiction_of IN (${ph})
+          OR e.id IN (SELECT contradiction_of FROM entries WHERE id IN (${ph}) AND contradiction_of IS NOT NULL)
+        )
+      LIMIT ?
+    `).all(...trust.params, ...ids, ...ids, ...ids, ...ids, ...ids, limit) as Record<string, unknown>[];
+    return rows.map(r => this.rowToEntry(r));
+  }
+
+  async prime(opts: PrimeOptions): Promise<PrimedContext> {
+    this.decayConceptEntries(this.getDb(), opts.decay_after_days ?? 30);
+
+    const fileResults = opts.session_files?.length
+      ? await this.context(opts.session_files, opts.confidence, opts.exclude_disputed, opts.owner_tag)
+      : [];
+
+    const stale_files = fileResults
+      .filter(r => r.status === 'stale' || r.status === 'missing')
+      .map(r => r.file);
+
+    const fresh_summaries = fileResults.filter(r => r.status === 'fresh');
+
+    const session_warm = opts.session_files?.length
+      ? stale_files.length === 0
+      : true;
+
+    const searchTerms: string[] = [];
+    if (opts.hint_symbols?.length) searchTerms.push(...opts.hint_symbols);
+    if (opts.hint_modules?.length) searchTerms.push(...opts.hint_modules);
+
+    let top_entries: KBEntry[] = [];
+    if (searchTerms.length > 0) {
+      try {
+        // D4 (T2.1): OR-join across hint terms via the shared helper -- each
+        // term is still ftsSafeTerm-quoted (tokens WITHIN one term stay
+        // AND-joined), but terms are OR-joined so an entry matching ANY hint
+        // symbol/module surfaces instead of requiring ALL of them.
+        const l1 = await this.query({
+          fts_terms: searchTerms,
+          l1_only: true,
+          limit: 10,
+          include_stale: false,
+          confidence: opts.confidence,
+          exclude_disputed: opts.exclude_disputed,
+          owner_tag: opts.owner_tag,
+        });
+        top_entries = l1.results
+          .filter(e => e.type !== 'context-cache')
+          .map(e => ({ ...e, content: '' }));
+      } catch {
+        // FTS match may fail on unusual tokens
+      }
+    }
+
+    // T2.2 (F3 PART B): bounded, non-fatal freshness check keyed off
+    // source_files -- see checkFreshness. Any error (hash batch throws, DB
+    // error) degrades to leaving top_entries exactly as built above.
+    try {
+      top_entries = await this.checkFreshness(this.getDb(), top_entries);
+    } catch {
+      // graceful degradation: prime() returns today's output on any error
+    }
+
+    const recommended_code_calls: CodeIntelCall[] = [];
+    if (opts.hint_symbols?.length) {
+      for (const symbol of opts.hint_symbols) {
+        recommended_code_calls.push({ tool: 'code_context', args: { name: symbol } });
+      }
+    }
+    if (opts.session_files?.length) {
+      for (const file of opts.session_files) {
+        recommended_code_calls.push({ tool: 'code_impact', args: { target: file, direction: 'upstream' } });
+      }
+    }
+
+    let token_estimate = 0;
+    for (const entry of top_entries) {
+      token_estimate += Math.ceil((entry.summary?.length || 0) / 4);
+    }
+    for (const result of fresh_summaries) {
+      token_estimate += Math.ceil((result.summary?.length || 0) / 4);
+    }
+
+    return {
+      session_warm,
+      stale_files,
+      top_entries,
+      fresh_summaries,
+      recommended_code_calls,
+      token_estimate,
+    };
+  }
+
+  // T3.3 (F8a, D8): dedicated read-only listing for kb_list. CHOICE (stated
+  // per PLAN.md): a separate provider method rather than a query() option --
+  // query() bumps use_count/last_accessed unconditionally (its "retrieval
+  // means relevance" telemetry contract, exercised by retrieval paths like
+  // kb_query/prime), and kb_list's purpose is pure audit/inspection ("is the
+  // CONFIRMED set what we think it is") which should not perturb that
+  // telemetry. A dedicated method keeps the two contracts textually distinct
+  // instead of an easy-to-miss opt-out flag threaded through query(). Always
+  // excludes superseded entries, and stale ones unless include_stale is set
+  // (kb_list never sets it -- it is an audit-the-live-set tool, not a
+  // full-history query; the kb-server ownership lookup does).
+  async list(opts: {
+    confidence?: Confidence[];
+    type?: KBEntry['type'];
+    module?: string;
+    symbol?: string;
+    tag?: string;
+    limit?: number;
+    exclude_disputed?: boolean;
+    /** MEMBER own-scope: only entries tagged with this value (ANDed with `tag`). */
+    owner_tag?: string;
+    /** Also list stale entries (kb_list never sets it; the kb-server ownership lookup does). */
+    include_stale?: boolean;
+  }): Promise<KBEntry[]> {
+    const db = this.getDb();
+    const conditions: string[] = ['e.superseded_at IS NULL'];
+    if (!opts.include_stale) conditions.push('e.stale = 0');
+    const params: SQLInputValue[] = [];
+    if (opts.exclude_disputed) {
+      conditions.push('e.flagged_for_review = 0 AND e.contradiction_of IS NULL');
+    }
+
+    if (opts.confidence?.length) {
+      conditions.push(`e.confidence IN (${opts.confidence.map(() => '?').join(',')})`);
+      params.push(...opts.confidence);
+    }
+    if (opts.type) {
+      conditions.push('e.type = ?');
+      params.push(opts.type);
+    }
+    if (opts.module) {
+      conditions.push('e.module = ?');
+      params.push(opts.module);
+    }
+    if (opts.symbol) {
+      conditions.push('EXISTS (SELECT 1 FROM json_each(e.symbols) WHERE value = ?)');
+      params.push(opts.symbol);
+    }
+    if (opts.tag) {
+      conditions.push('EXISTS (SELECT 1 FROM json_each(e.tags) WHERE value = ?)');
+      params.push(opts.tag);
+    }
+    if (opts.owner_tag) {
+      conditions.push('EXISTS (SELECT 1 FROM json_each(e.tags) WHERE value = ?)');
+      params.push(opts.owner_tag);
+    }
+
+    const where = 'WHERE ' + conditions.join(' AND ');
+    const limitClause = opts.limit !== undefined ? 'LIMIT ?' : '';
+    if (opts.limit !== undefined) params.push(opts.limit);
+
+    const rows = db.prepare(`
+      SELECT e.* FROM entries e
+      ${where}
+      ORDER BY e.id ASC
+      ${limitClause}
+    `).all(...params) as Record<string, unknown>[];
+
+    return rows.map(r => this.rowToEntry(r));
+  }
+
+  async promote(
+    id: string,
+    reason?: string,
+    opts?: { ownerTag?: string },
+  ): Promise<{ id: string; confidence_before: Confidence; confidence_after: Confidence }> {
+    const db = this.getDb();
+    const row = db.prepare('SELECT * FROM entries WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    if (!row) throw new Error(`Entry not found: ${id}`);
+
+    const entry = this.rowToEntry(row);
+    // MEMBER own-scope: an entry the caller did not capture is indistinguishable
+    // from an unknown id (same message, so its existence is not disclosed).
+    if (opts?.ownerTag && !entry.tags.includes(opts.ownerTag)) throw new Error(`Entry not found: ${id}`);
+    if (entry.superseded_at) throw new Error(`Cannot promote superseded entry: ${id}`);
+
+    // H1 (F1, D1, closes yashr-9ha): promote() REFUSES any user-directive entry.
+    // The promote ladder (UNVERIFIED -> INFERRED -> CONFIRMED) would otherwise
+    // let two agent-callable kb_promote calls walk a pending directive proposal
+    // up to type='user-directive' + confidence='CONFIRMED' -- exactly the ACTIVE
+    // predicate -- re-opening the forge-a-directive attack through the side door.
+    // Directive activation is human-terminal ONLY, via the dedicated
+    // approveDirective() method (which does NOT delegate here). Refuse ENTIRELY
+    // so the pending/active state stays binary.
+    if (entry.type === 'user-directive') {
+      throw new Error(
+        'Cannot promote a user-directive via kb_promote (F1/D1): directive activation is human-terminal only. Run `apra-fleet kb approve-directive ' + id + '` (or `reject-directive ' + id + '` to discard).'
+      );
+    }
+
+    // KB-TRUST PHASE 1 (decided 2026-08-03): promotion is the ONLY path that
+    // mints CONFIRMED, so it carries two extra gates.
+    //
+    // (1) A promotion without a recorded evidence string is refused. The
+    // promote note is the only durable record of WHY an entry was trusted; a
+    // blank or throwaway reason makes a CONFIRMED entry as unauditable as the
+    // 97-entry bible this work exists to replace.
+    if (!isNonTrivialPromoteReason(reason)) {
+      throw new Error(
+        'kb_promote requires a reason recording the evidence for this promotion '
+          + '(at least ' + MIN_PROMOTE_REASON_LENGTH + ' characters stating what you checked). Entry: ' + id
+      );
+    }
+
+    // (2) An entry whose basis no longer resolves cannot be verified against
+    // the tree, so it cannot earn CONFIRMED. Zero source_files is included:
+    // capture now refuses those, but rows predating this rule still exist and
+    // are exactly the structurally unfalsifiable entries.
+    const unresolved = this.unresolvableBasisFiles(entry.source_files);
+    if (entry.source_files.length === 0 || unresolved.length > 0) {
+      throw new Error(
+        'Cannot promote an entry whose basis does not resolve: '
+          + (entry.source_files.length === 0
+            ? 'it cites no source files'
+            : 'missing ' + unresolved.join(', '))
+          + '. Entry: ' + id
+      );
+    }
+
+    const confidence_before = entry.confidence;
+    let confidence_after: Confidence;
+
+    if (confidence_before === 'UNVERIFIED') {
+      confidence_after = 'INFERRED';
+    } else if (confidence_before === 'INFERRED') {
+      confidence_after = 'CONFIRMED';
+    } else {
+      return { id, confidence_before, confidence_after: confidence_before };
+    }
+
+    const now = new Date().toISOString();
+    // String concatenation (not a template literal) per the ASCII pre-commit
+    // hook gotcha: backtick-n escapes inside JS template literals false-
+    // positive on the hook's non-ASCII scan.
+    const promotionNote = reason
+      ? '\n[Promoted: ' + reason + ' -- ' + (entry.author || 'unknown') + ']'
+      : '\n[Promoted -- ' + (entry.author || 'unknown') + ']';
+    const newContent = entry.content + promotionNote;
+
+    // D5 (T2.3): kb_promote is a tool-layer provenance event -- stamp
+    // source='promotion' on the promoted row. This is a deliberate D5
+    // choice: the row's provenance reflects the promotion mechanism rather
+    // than preserving the original capture source.
+    db.prepare('UPDATE entries SET confidence = ?, promoted_at = ?, content = ?, source = ? WHERE id = ?')
+      .run(confidence_after, now, newContent, 'promotion', id);
+
+    return { id, confidence_before, confidence_after };
+  }
+
+  /**
+   * Evidence paths cited by a demote. Deliberately STRICTER than the basis
+   * check promote() runs: a demote reason is an audit record, so a path that
+   * cannot be pointed at inside this provider's anchor is refused rather than
+   * recorded as an unverifiable string.
+   *
+   * Refuses, all with E-DEMOTE-EVIDENCE-UNRESOLVED:
+   *   - any path that is not anchor-relative -- an ABSOLUTE path, or one with
+   *     a '..' segment. Both are "out of the anchor": an absolute path names a
+   *     location the anchor does not contain, and was previously accepted and
+   *     recorded verbatim, which contradicted this very comment. The check is
+   *     delegated to validateFilePaths (path-validation.ts), the SAME guard
+   *     every other caller-supplied kb_* file list already runs (kb_capture,
+   *     kb_context, kb_invalidate, kb_session_prime and the HTTP routes), so
+   *     this is not a third hand-rolled path guard. It runs BEFORE existence,
+   *     so a path that happens to land on a real file outside the repo is
+   *     still refused, and it applies even on the shared-global no-anchor KB,
+   *     where nothing absolute could be verified against an anchor anyway;
+   *   - a path that does not resolve, via the SAME resolver promote uses
+   *     (unresolvableBasisFiles -> resolveBasisFile);
+   *   - a path that resolves to something that is not a regular file
+   *     (directories are not evidence).
+   */
+  private assertResolvableDemoteEvidence(id: string, files: string[]): void {
+    const refuse = (why: string, offenders: string[]): never => {
+      throw new Error(
+        'E-DEMOTE-EVIDENCE-UNRESOLVED: kb_demote evidence ' + why + ': '
+          + offenders.join(', ') + '. Entry: ' + id
+      );
+    };
+
+    // Per-file so the message can name EVERY offender, not just the first one
+    // validateFilePaths would throw on.
+    const traversing = files.filter((f) => {
+      try {
+        validateFilePaths([f]);
+        return false;
+      } catch {
+        return true;
+      }
+    });
+    if (traversing.length > 0) refuse('is absolute or traverses out of the anchor', traversing);
+
+    const unresolved = this.unresolvableBasisFiles(files);
+    if (unresolved.length > 0) refuse('does not resolve', unresolved);
+
+    const notFiles = files.filter((f) => {
+      const resolved = this.resolveBasisFile(f);
+      try {
+        return !fs.statSync(resolved).isFile();
+      } catch {
+        // Unreadable here means unresolvableBasisFiles already cleared it (the
+        // shared-global no-anchor case); nothing further to assert.
+        return false;
+      }
+    });
+    if (notFiles.length > 0) refuse('is not a file', notFiles);
+  }
+
+  /**
+   * The demote-time basis snapshot: sha256 of each cited source file AS IT IS
+   * ON DISK RIGHT NOW, keyed by the original (unresolved) path string, the
+   * same key convention source_file_hashes uses.
+   *
+   * This MUST NOT be derived from the source_file_hashes column. That column
+   * is the CAPTURE-time basis; copying it was the defect in the superseded
+   * upstream attempt, and it silently breaks the ping-pong guard that asks
+   * whether the tree has moved on SINCE the demotion. Files that cannot be
+   * read are simply absent from the map (a demote is still allowed on an
+   * entry whose basis has since disappeared -- unlike promote, which refuses).
+   *
+   * sha256 and not `git hash-object`: this snapshot is compared against a
+   * later re-read of the same files by the same code, so it must not depend on
+   * git being available or on the file being in a work tree.
+   */
+  private demoteBasisHashes(files: string[]): Record<string, string> {
+    const hashes: Record<string, string> = {};
+    for (const f of files) {
+      try {
+        hashes[f] = createHash('sha256').update(fs.readFileSync(this.resolveBasisFile(f))).digest('hex');
+      } catch {
+        // Unreadable/absent basis file: no entry, never a fabricated hash.
+      }
+    }
+    return hashes;
+  }
+
+  /**
+   * kb_demote: withdraw trust from a CONFIRMED entry, CONFIRMED -> INFERRED.
+   *
+   * The inverse of promote() in intent but NOT its mirror image in mechanics:
+   *
+   *  - it is NOT a ladder. Only CONFIRMED is demotable; INFERRED/UNVERIFIED
+   *    are REFUSED (E-DEMOTE-NOT-CONFIRMED), never silently returned as a
+   *    no-op, so a caller can never believe it lowered trust that was already
+   *    at the floor;
+   *  - promoted_at and source are left untouched. promote() stamps
+   *    source='promotion'; a demotion must not erase the provenance of the
+   *    promotion it is reversing, and promoted_at stays as the record of when
+   *    the (now withdrawn) trust was granted;
+   *  - a STALE entry MAY be demoted. Staleness is a freshness verdict, trust
+   *    is a separate axis, and the entries most worth demoting are exactly the
+   *    ones the sweep has already flagged;
+   *  - evidence is REQUIRED, like promote's resolvable basis: at least one
+   *    evidence file, each of which must resolve inside the anchor
+   *    (E-DEMOTE-EVIDENCE-UNRESOLVED otherwise).
+   *
+   * EVERY refusal is checked BEFORE any write, in the order below, and the
+   * order is load-bearing: the own-scope/unknown-id check comes first so a
+   * member can never learn that an entry it does not own exists by probing for
+   * a different refusal message.
+   */
+  async demote(
+    id: string,
+    reason: string,
+    evidenceFiles: string[],
+    opts?: { ownerTag?: string },
+  ): Promise<{ id: string; confidence_before: Confidence; confidence_after: Confidence }> {
+    const db = this.getDb();
+    const row = db.prepare('SELECT * FROM entries WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+
+    // (1) Unknown id. MEMBER own-scope: an entry the caller did not capture is
+    // indistinguishable from an unknown id -- the SAME message as promote(),
+    // so its existence is not disclosed.
+    if (!row) throw new Error('Entry not found: ' + id);
+    const entry = this.rowToEntry(row);
+    if (opts?.ownerTag && !entry.tags.includes(opts.ownerTag)) throw new Error('Entry not found: ' + id);
+
+    // (2) Superseded: the row is already out of every read path, so lowering
+    // its confidence would be a write with no observable meaning.
+    if (entry.superseded_at) {
+      throw new Error('E-DEMOTE-SUPERSEDED: cannot demote a superseded entry. Entry: ' + id);
+    }
+
+    // (3) user-directive: directives are human-terminal in BOTH directions.
+    // promote() refuses them so kb_promote cannot forge an active directive;
+    // demote() refuses them so an agent cannot deactivate one the human set.
+    if (entry.type === 'user-directive') {
+      throw new Error(
+        'E-DEMOTE-REFUSED-DIRECTIVE: cannot demote a user-directive via kb_demote: directive state is '
+          + 'human-terminal only. Run `apra-fleet kb reject-directive ' + id + '` to discard it. Entry: ' + id
+      );
+    }
+
+    // (4) Not CONFIRMED. A REFUSAL, not a no-op return: see the method comment.
+    if (entry.confidence !== 'CONFIRMED') {
+      throw new Error(
+        'E-DEMOTE-NOT-CONFIRMED: kb_demote lowers CONFIRMED to INFERRED only; this entry is '
+          + entry.confidence + '. Entry: ' + id
+      );
+    }
+
+    // (5) Reason floor, measured on the normalised reason -- so a reason made
+    // only of newlines collapses to empty and is refused here.
+    const normalizedReason = normalizeDemoteReason(reason);
+    if (normalizedReason.length < MIN_DEMOTE_REASON_LENGTH) {
+      throw new Error(
+        'E-DEMOTE-REASON-REQUIRED: kb_demote requires a reason recording why trust is being withdrawn '
+          + '(at least ' + MIN_DEMOTE_REASON_LENGTH + ' characters after collapsing newlines and trimming). Entry: ' + id
+      );
+    }
+
+    // (6) Evidence: REQUIRED, like promote's basis. Withdrawing trust needs a
+    // resolvable reason to believe less, not only a written one.
+    const evidence = evidenceFiles ?? [];
+    if (evidence.length === 0) {
+      throw new Error(
+        'E-DEMOTE-EVIDENCE-UNRESOLVED: kb_demote requires at least one evidence file backing the demotion '
+          + '(evidence_files). Entry: ' + id
+      );
+    }
+    this.assertResolvableDemoteEvidence(id, evidence);
+
+    // --- no refusal remains: everything below writes ---
+
+    const now = new Date().toISOString();
+    // The note format (one leading newline, ASCII-safe concatenation, the
+    // feedback-marker collision rule) lives in buildDemotionNote, shared with
+    // the bible tombstone path so both demotions read identically.
+    const demotionNote = buildDemotionNote(normalizedReason, evidence, entry.author);
+    const newContent = truncateContent(entry.content + demotionNote);
+
+    const confidence_before = entry.confidence;
+    const confidence_after: Confidence = 'INFERRED';
+
+    // ONE update. promoted_at and source are deliberately absent from the SET.
+    db.prepare(
+      'UPDATE entries SET confidence = ?, demoted_at = ?, demoted_basis_hashes = ?, content = ? WHERE id = ?'
+    ).run(
+      confidence_after,
+      now,
+      JSON.stringify(this.demoteBasisHashes(entry.source_files)),
+      newContent,
+      id,
+    );
+
+    return { id, confidence_before, confidence_after };
+  }
+
+  /**
+   * Apply ONE explicit demotion tombstone from a committed project bible to the
+   * local row, so a demotion recorded on another clone actually lands here.
+   *
+   * Returns true only when a row was written. Every "no" is a silent false, not
+   * a throw: a bible carries tombstones for the whole project and most clones
+   * hold only some of those ids, so an inapplicable tombstone is the normal
+   * case, not an error.
+   *
+   * The rules, each of which silently corrupts another clone's KB if got wrong:
+   *
+   *  - NEVER CREATE. A tombstoned id with no local row stays absent. A
+   *    tombstone withdraws trust in a row; it is not a way to author one.
+   *  - ONE RE-PROMOTION RULE. Demote only when standingAgainstTombstone
+   *    (bible-import.ts) says 'withdrawn' for the row's bible trust time
+   *    (getBibleTrustTimes): promoted_at, else the updated_at the bible carried
+   *    at import -- never the local import time. kb_export uses the same rule to
+   *    decide whether to re-add a tombstoned entry, so the two never disagree.
+   *  - demoted_at is stamped with the TOMBSTONE's value, not now(): it records
+   *    when trust was withdrawn, which happened on the other clone. That value
+   *    is clamped to now (clampBibleTimeToNow), so a future-dated tombstone
+   *    never stores a demoted_at that every later re-promotion falls before.
+   *  - NO ownerTag CHECK. Bible-imported rows carry no member tag (see
+   *    importBibleEntries, which builds its input with tags: [] and author
+   *    'unknown'), so an owner check here would make every imported row
+   *    permanently undemotable. The trust boundary for this path is the
+   *    git-reviewed bible file, not entry ownership.
+   *
+   * ABSENCE IS NEVER A DEMOTION: this method is only ever called for an id that
+   * carries an EXPLICIT tombstone. A local CONFIRMED row merely missing from the
+   * bible (a local-only promotion, or one refused by the basis filter) is never
+   * passed here and must stay untouched.
+   *
+   * Two refusals are inherited from demote() because they are invariants of the
+   * store, not of the local/remote distinction: a superseded row is already out
+   * of every read path (the write would have no observable meaning), and a
+   * user-directive is human-terminal in both directions -- a bible must not be
+   * able to deactivate a directive a human set here.
+   */
+  applyBibleDemotion(id: string, tombstoneAt: string): boolean {
+    const db = this.getDb();
+    const row = db.prepare('SELECT * FROM entries WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    // NEVER CREATE.
+    if (!row) return false;
+    const entry = this.rowToEntry(row);
+
+    if (entry.confidence !== 'CONFIRMED') return false;
+    if (entry.superseded_at) return false;
+    if (entry.type === 'user-directive') return false;
+
+    const demotedAt = clampBibleTimeToNow(tombstoneAt);
+    if (standingAgainstTombstone(this.bibleTrustTimeOf(row), demotedAt) !== 'withdrawn') return false;
+
+    const demotionNote = buildDemotionNote(BIBLE_DEMOTION_REASON, [], entry.author);
+    const newContent = truncateContent(entry.content + demotionNote);
+
+    // Same SET as demote(): promoted_at and source stay untouched, so the
+    // provenance of the promotion being reversed survives.
+    db.prepare(
+      'UPDATE entries SET confidence = ?, demoted_at = ?, demoted_basis_hashes = ?, content = ? WHERE id = ?'
+    ).run(
+      'INFERRED',
+      demotedAt,
+      JSON.stringify(this.demoteBasisHashes(entry.source_files)),
+      newContent,
+      id,
+    );
+    return true;
+  }
+
+  // T3.1 (F8, D7): kb_feedback downvote path -- marks an entry stale=1 +
+  // flagged_for_review=1 and appends an ASCII feedback note. NEVER deletes,
+  // NEVER touches confidence: a downvoted CONFIRMED entry stays
+  // CONFIRMED-but-stale-flagged; the human resolves it in kb-review.
+  // EXCEPTION (D7, verbatim): an ACTIVE user-directive (type='user-directive'
+  // AND confidence='CONFIRMED') outranks agent experience -- feedback flags it
+  // for review but must NOT stale it (the human decides in kb-review). This is
+  // keyed off ACTIVE directives only (type + CONFIRMED, same rekey as the T1.1
+  // supersede/decay guards) -- a pending directive proposal (confidence !=
+  // 'CONFIRMED') is not yet "active" and stales normally like any other entry.
+  async feedback(id: string, reason: string, author: string): Promise<KBEntry> {
+    const db = this.getDb();
+    const row = db.prepare('SELECT * FROM entries WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    if (!row) throw new Error('Entry not found: ' + id);
+    const entry = this.rowToEntry(row);
+
+    const now = new Date().toISOString();
+    // String concatenation (not a template literal) per the ASCII pre-commit
+    // hook gotcha: backtick-n/t/r escapes inside template literals
+    // false-positive on the hook's non-ASCII scan (same convention as
+    // promote()'s promotionNote above and kb-export.ts).
+    const note = '\n\n[feedback ' + now + '] ' + author + ': ' + reason;
+    const newContent = truncateContent(entry.content + note);
+
+    const isActiveDirective = entry.type === 'user-directive' && entry.confidence === 'CONFIRMED';
+
+    if (isActiveDirective) {
+      db.prepare('UPDATE entries SET flagged_for_review = 1, content = ? WHERE id = ?')
+        .run(newContent, id);
+    } else {
+      db.prepare('UPDATE entries SET stale = 1, flagged_for_review = 1, content = ? WHERE id = ?')
+        .run(newContent, id);
+    }
+
+    const updated = db.prepare('SELECT * FROM entries WHERE id = ?').get(id) as Record<string, unknown>;
+    return this.rowToEntry(updated);
+  }
+
+  // T3.1 (F5 step 3, D4 HARDENED): flaggedPairs() -- flagged entries joined to
+  // their contradiction_of counterpart. LIVENESS CONTRACT (binding, MEDIUM-3):
+  // pair membership requires ONLY superseded_at IS NULL on BOTH sides -- STALE
+  // MEMBERS MUST BE INCLUDED. Do NOT reuse the codebase's default "live"
+  // filter (superseded_at IS NULL AND stale = 0, as in list()/stats()/
+  // query()): the imported side of a pair is TYPICALLY stale after the
+  // post-import freshnessSweep, and the default filter would make this method
+  // return nothing and the prefilter silently no-op.
+  //
+  // PAIR ASYMMETRY (verified, KB a2781b82 + feedback.md): AUDN's contradiction
+  // branch inserts the NEW entry (the "challenger") with contradiction_of
+  // pointing at the OLD entry (the "original") and flagged_for_review lands on
+  // the OLD side ONLY (the new entry's flagged_for_review is explicitly false
+  // in newEntryOverrides). A genuine pair is therefore identified by
+  // challenger.contradiction_of = original.id -- NOT by flagged_for_review
+  // alone: a lone entry downvoted via feedback() also carries
+  // flagged_for_review = 1 but has no contradiction_of counterpart and must
+  // NEVER be returned here.
+  //
+  // Pairs involving an ACTIVE user-directive (type = 'user-directive' AND
+  // confidence = 'CONFIRMED') on EITHER side are excluded entirely -- an
+  // active directive can be the target of AUDN's contradiction path (the
+  // contradiction check runs before the AUDN active-directive supersede guard,
+  // see audn.ts), but directives outrank mechanics: the flag stays for a human
+  // via /pm kb-review, never the mechanical prefilter or the reconciler agent.
+  async flaggedPairs(): Promise<{ original: KBEntry; challenger: KBEntry }[]> {
+    const db = this.getDb();
+    const idRows = db.prepare(`
+      SELECT o.id as original_id, c.id as challenger_id
+      FROM entries c
+      JOIN entries o ON o.id = c.contradiction_of
+      WHERE c.contradiction_of IS NOT NULL
+        AND o.superseded_at IS NULL
+        AND c.superseded_at IS NULL
+        AND NOT (o.type = 'user-directive' AND o.confidence = 'CONFIRMED')
+        AND NOT (c.type = 'user-directive' AND c.confidence = 'CONFIRMED')
+    `).all() as { original_id: string; challenger_id: string }[];
+
+    const pairs: { original: KBEntry; challenger: KBEntry }[] = [];
+    for (const row of idRows) {
+      const originalRow = db.prepare('SELECT * FROM entries WHERE id = ?').get(row.original_id) as Record<string, unknown> | undefined;
+      const challengerRow = db.prepare('SELECT * FROM entries WHERE id = ?').get(row.challenger_id) as Record<string, unknown> | undefined;
+      if (!originalRow || !challengerRow) continue; // defensive; join guarantees both exist
+      pairs.push({ original: this.rowToEntry(originalRow), challenger: this.rowToEntry(challengerRow) });
+    }
+    return pairs;
+  }
+
+  // T3.1 (F5 step 3, D4 HARDENED HIGH-1/R7): the SINGLE write path for ALL
+  // reconcile resolutions -- both kb_reconcile_prefilter's mechanical wins and
+  // the T3.2 reconciler agent's code-decided wins. Deliberately NOT composed
+  // from promote() + feedback(): promote()'s one-step ladder cannot lift
+  // AUDN's UNVERIFIED contradiction-born entries directly to CONFIRMED, and
+  // neither promote() nor feedback() clears flagged_for_review or
+  // contradiction_of (KB a2781b82) -- this method is the only place both
+  // outcomes are produced together, atomically, for a pair.
+  //
+  // LINKAGE REFUSAL (re-review MEDIUM-1, binding): before writing ANYTHING,
+  // verify the two ids form a GENUINE contradiction pair --
+  // loser.contradiction_of === winner.id OR winner.contradiction_of ===
+  // loser.id (the AUDN pair asymmetry means the pointer sits on either side
+  // depending on which side happens to win) -- AND both rows exist AND
+  // neither is already superseded AND neither side is an ACTIVE
+  // user-directive. Refuse (throw) otherwise: NOTHING is written. Without this
+  // check any caller could mint CONFIRMED from any tier in ONE call and
+  // permanently retire an arbitrary unrelated entry.
+  //
+  // WINNER path -- explicit order (re-review MEDIUM-2, THE ORDER MATTERS):
+  //   (1) confidence = 'CONFIRMED' regardless of starting tier (the merged
+  //       code IS the verdict; reconcile is verdict-equivalent), with the
+  //       evidence note appended to content.
+  //   (2) clear the winner's flag fields FIRST: flagged_for_review = 0 AND
+  //       contradiction_of = NULL, unconditionally on the winner row -- the
+  //       pair asymmetry means exactly one of the two was actually set, so
+  //       clearing both is harmless on whichever side the winner is.
+  //   (3) THEN, and only then, evaluate the shared D2 freshnessRevivable
+  //       predicate (+ the full-basis re-hash conjunct) against the
+  //       POST-flag-clear row, and clear stale ONLY if it holds. Evaluating
+  //       the predicate BEFORE step (2) would self-defeat for a flagged
+  //       OLD-side winner (the predicate requires flagged_for_review = 0) --
+  //       it would end CONFIRMED but stale = 1 and silently vanish from the
+  //       kb_export bible. The durable exclusions (the anchored "[feedback "
+  //       marker, content_hash = 'invalidated') are UNAFFECTED by the
+  //       flag-clear, so a downvoted or invalidated winner still stays
+  //       retired: it wins the CONTRADICTION, not its reputation.
+  //
+  // LOSER: superseded_at = now + stale = 1 + flagged_for_review cleared
+  // (retired with an audit trail -- the existing loser invariant). NEVER
+  // deletes anything, on either side.
+  async resolveContradiction(
+    winnerId: string,
+    loserId: string,
+    evidence: string
+  ): Promise<{ winnerId: string; loserId: string }> {
+    const db = this.getDb();
+    const winnerRow = db.prepare('SELECT * FROM entries WHERE id = ?').get(winnerId) as Record<string, unknown> | undefined;
+    const loserRow = db.prepare('SELECT * FROM entries WHERE id = ?').get(loserId) as Record<string, unknown> | undefined;
+
+    if (!winnerRow || !loserRow) {
+      throw new Error('resolveContradiction: refused -- one or both entries do not exist (winner=' + winnerId + ', loser=' + loserId + ')');
+    }
+    const winner = this.rowToEntry(winnerRow);
+    const loser = this.rowToEntry(loserRow);
+
+    if (winner.superseded_at || loser.superseded_at) {
+      throw new Error('resolveContradiction: refused -- one or both entries are already superseded (winner=' + winnerId + ', loser=' + loserId + ')');
+    }
+
+    const linked = loser.contradiction_of === winner.id || winner.contradiction_of === loser.id;
+    if (!linked) {
+      throw new Error('resolveContradiction: refused -- ids do not form a genuine contradiction pair (winner=' + winnerId + ', loser=' + loserId + ')');
+    }
+
+    const isActiveDirective = (e: KBEntry): boolean => e.type === 'user-directive' && e.confidence === 'CONFIRMED';
+    if (isActiveDirective(winner) || isActiveDirective(loser)) {
+      throw new Error('resolveContradiction: refused -- pair involves an active user-directive; directives are never auto-resolved (winner=' + winnerId + ', loser=' + loserId + ')');
+    }
+
+    const now = new Date().toISOString();
+    // String concatenation (not a template literal) per the ASCII pre-commit
+    // hook gotcha: backtick-n/t/r escapes inside template literals
+    // false-positive on the hook's non-ASCII scan.
+    const evidenceNote = '\n\n[reconciled ' + now + '] winner over ' + loserId + ': ' + evidence;
+    const newContent = truncateContent(winner.content + evidenceNote);
+
+    // (1) confidence + evidence note, (2) flag-clear FIRST (both fields,
+    // unconditionally -- harmless on whichever side actually held a value).
+    db.prepare(
+      "UPDATE entries SET confidence = 'CONFIRMED', content = ?, flagged_for_review = 0, contradiction_of = NULL WHERE id = ?"
+    ).run(newContent, winnerId);
+
+    // (3) THEN evaluate the shared D2 predicate on the POST-flag-clear row.
+    const refreshedRow = db.prepare('SELECT * FROM entries WHERE id = ?').get(winnerId) as Record<string, unknown>;
+    const refreshedWinner = this.rowToEntry(refreshedRow);
+    if (refreshedWinner.stale) {
+      const revivable = this.freshnessRevivable({
+        superseded_at: refreshedWinner.superseded_at ?? null,
+        flagged_for_review: refreshedWinner.flagged_for_review,
+        content_hash: refreshedWinner.content_hash,
+        content: refreshedWinner.content,
+      });
+      if (revivable) {
+        const basis = this.parseBasis((refreshedRow as { source_file_hashes?: string | null }).source_file_hashes ?? null);
+        if (basis) {
+          const currentHashes = await this.hashAnchored(Object.keys(basis));
+          if (this.basisFullyMatches(basis, currentHashes)) {
+            db.prepare('UPDATE entries SET stale = 0 WHERE id = ?').run(winnerId);
+          }
+        }
+      }
+    }
+
+    // LOSER: audit trail, never deletes. contradiction_of is intentionally
+    // left as-is on the loser (harmless, and preserves which pair this row
+    // was once part of for later inspection); only flagged_for_review is
+    // cleared per the stated invariant.
+    db.prepare(
+      "UPDATE entries SET superseded_at = ?, stale = 1, flagged_for_review = 0, retired_reason = 'superseded' WHERE id = ?"
+    ).run(now, loserId);
+
+    return { winnerId, loserId };
+  }
+
+  // T3.1 (F5 step 3, D4 HARDENED, resolution R1): kb_reconcile_prefilter's
+  // provider backing. For each pair from flaggedPairs(), re-hash BOTH sides'
+  // FULL bases against the CURRENT worktree (one computeFileHashBatch over the
+  // union of every basis file across every pair -- same batching discipline as
+  // freshnessSweep): exactly one side fully matches -> that side WINS
+  // mechanically via resolveContradiction with the verbatim evidence string
+  // "hash-basis match on merged worktree" -- EXCEPT when the would-be loser is
+  // CONFIRMED: a CONFIRMED entry is never retired by hash basis alone, so such
+  // a pair is left for the reconciler agent. Both match, both mismatch, or
+  // EITHER side has an empty/missing basis -> left untouched for the T3.2
+  // reconciler agent. Directive pairs are already excluded by flaggedPairs()
+  // itself (MEDIUM-3 liveness contract); the explicit re-check here is
+  // belt-and-suspenders defense in depth and feeds the skipped_directive
+  // count honestly rather than assuming the upstream filter can never regress.
+  async reconcilePrefilter(): Promise<{
+    pairs: number;
+    resolved: { winnerId: string; loserId: string }[];
+    left_for_agent: { originalId: string; challengerId: string }[];
+    skipped_directive: number;
+  }> {
+    const pairs = await this.flaggedPairs();
+    const resolved: { winnerId: string; loserId: string }[] = [];
+    const left_for_agent: { originalId: string; challengerId: string }[] = [];
+    let skipped_directive = 0;
+
+    if (pairs.length === 0) {
+      return { pairs: 0, resolved, left_for_agent, skipped_directive };
+    }
+
+    const isActiveDirective = (e: KBEntry): boolean => e.type === 'user-directive' && e.confidence === 'CONFIRMED';
+
+    const liveTouchable = pairs.filter(pair => {
+      if (isActiveDirective(pair.original) || isActiveDirective(pair.challenger)) {
+        skipped_directive++;
+        return false;
+      }
+      return true;
+    });
+
+    const db = this.getDb();
+    const allIds = liveTouchable.flatMap(p => [p.original.id, p.challenger.id]);
+    const basisById = new Map<string, Record<string, string> | null>();
+    if (allIds.length > 0) {
+      // A local freshness-only basis (legacy bible import) counts as no basis
+      // here: it was never verified, so it must not win a pair mechanically.
+      const basisRows = db.prepare(
+        `SELECT id, source_file_hashes, local_basis_only FROM entries WHERE id IN (${allIds.map(() => '?').join(',')})`
+      ).all(...allIds) as { id: string; source_file_hashes: string | null; local_basis_only: number | null }[];
+      for (const row of basisRows) {
+        basisById.set(row.id, row.local_basis_only ? null : this.parseBasis(row.source_file_hashes));
+      }
+    }
+
+    const fileSet = new Set<string>();
+    for (const basis of basisById.values()) {
+      if (basis) for (const file of Object.keys(basis)) fileSet.add(file);
+    }
+    const currentHashes = await this.hashAnchored([...fileSet]);
+
+    for (const pair of liveTouchable) {
+      const originalBasis = basisById.get(pair.original.id) ?? null;
+      const challengerBasis = basisById.get(pair.challenger.id) ?? null;
+      const originalMatches = originalBasis ? this.basisFullyMatches(originalBasis, currentHashes) : false;
+      const challengerMatches = challengerBasis ? this.basisFullyMatches(challengerBasis, currentHashes) : false;
+
+      // A CONFIRMED entry is never retired by hash basis alone: a member can
+      // capture a contradiction against a drifted CONFIRMED entry, and basis
+      // match is no content judgement. Defer to the reconciler agent.
+      const wouldLose = originalMatches && !challengerMatches ? pair.challenger
+        : challengerMatches && !originalMatches ? pair.original : null;
+      if (wouldLose && wouldLose.confidence === 'CONFIRMED') {
+        left_for_agent.push({ originalId: pair.original.id, challengerId: pair.challenger.id });
+      } else if (originalMatches && !challengerMatches) {
+        await this.resolveContradiction(pair.original.id, pair.challenger.id, 'hash-basis match on merged worktree');
+        resolved.push({ winnerId: pair.original.id, loserId: pair.challenger.id });
+      } else if (challengerMatches && !originalMatches) {
+        await this.resolveContradiction(pair.challenger.id, pair.original.id, 'hash-basis match on merged worktree');
+        resolved.push({ winnerId: pair.challenger.id, loserId: pair.original.id });
+      } else {
+        left_for_agent.push({ originalId: pair.original.id, challengerId: pair.challenger.id });
+      }
+    }
+
+    return { pairs: pairs.length, resolved, left_for_agent, skipped_directive };
+  }
+
+  // --- F1 (D1) directive activation primitives ---
+  // These are the human-terminal trust surface for user-directives. They are
+  // called ONLY by the `apra-fleet kb ...` CLI commands (src/cli/kb-directives.ts)
+  // and are NEVER exposed over MCP: MCP has no user-vs-agent identity, so the
+  // only unforgeable channel is a command the human runs in their own terminal.
+  // approveDirective is DEDICATED (it does NOT delegate to promote(), which
+  // refuses user-directive entries outright per H1).
+
+  // Audit read (no use_count bump): all non-rejected directives -- pending
+  // proposals (UNVERIFIED + 'directive:pending') and active directives
+  // (CONFIRMED). Rejected directives are superseded and excluded.
+  async listDirectives(): Promise<KBEntry[]> {
+    const db = this.getDb();
+    const rows = db.prepare(`
+      SELECT * FROM entries
+      WHERE type = 'user-directive' AND superseded_at IS NULL
+      ORDER BY created_at DESC
+    `).all() as Record<string, unknown>[];
+    return rows.map(r => this.rowToEntry(r));
+  }
+
+  // Human approval: a pending proposal becomes an ACTIVE directive. Sets
+  // confidence='CONFIRMED', author='user' (the human at the terminal is the
+  // authority), clears flagged_for_review, drops the 'directive:pending' tag,
+  // and stamps promoted_at=now (activation is the promotion-equivalent event,
+  // keeping kb_export's updated_at and F5's promote_ratio coherent). From here
+  // all directive semantics apply (never decayed, top-tier retrieval, only a
+  // human supersede via reject).
+  async approveDirective(id: string): Promise<KBEntry> {
+    const db = this.getDb();
+    const row = db.prepare('SELECT * FROM entries WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    if (!row) throw new Error('Directive not found: ' + id);
+    const entry = this.rowToEntry(row);
+    if (entry.type !== 'user-directive') throw new Error('Not a user-directive: ' + id);
+    if (entry.superseded_at) throw new Error('Cannot approve a rejected directive: ' + id);
+    if (entry.confidence === 'CONFIRMED') throw new Error('Directive already active: ' + id);
+
+    const now = new Date().toISOString();
+    const tags = entry.tags.filter(t => t !== 'directive:pending');
+    db.prepare(
+      "UPDATE entries SET confidence = 'CONFIRMED', author = 'user', flagged_for_review = 0, tags = ?, promoted_at = ? WHERE id = ?"
+    ).run(JSON.stringify(tags), now, id);
+
+    const updated = db.prepare('SELECT * FROM entries WHERE id = ?').get(id) as Record<string, unknown>;
+    return this.rowToEntry(updated);
+  }
+
+  // Human rejection: works on a pending proposal OR an active directive (the
+  // approve-new + reject-old supersede flow, resolution 2). Marks superseded_at
+  // and stale so it drops from retrieval, but NEVER deletes and KEEPS the
+  // 'directive:pending' tag as an audit trail.
+  async rejectDirective(id: string): Promise<KBEntry> {
+    const db = this.getDb();
+    const row = db.prepare('SELECT * FROM entries WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    if (!row) throw new Error('Directive not found: ' + id);
+    const entry = this.rowToEntry(row);
+    if (entry.type !== 'user-directive') throw new Error('Not a user-directive: ' + id);
+    if (entry.superseded_at) throw new Error('Directive already rejected: ' + id);
+
+    const now = new Date().toISOString();
+    db.prepare('UPDATE entries SET superseded_at = ?, stale = 1 WHERE id = ?').run(now, id);
+
+    const updated = db.prepare('SELECT * FROM entries WHERE id = ?').get(id) as Record<string, unknown>;
+    return this.rowToEntry(updated);
+  }
+
+  // Direct human add: creates an ALREADY-ACTIVE directive (the human terminal is
+  // the trust root, D1). Bypasses capture() -- which would force the proposal
+  // representation -- and inserts directly at confidence='CONFIRMED',
+  // author='user', source='user-directive', promoted_at=now.
+  async addDirective(text: string, symbols?: string[]): Promise<KBEntry> {
+    const db = this.getDb();
+    const now = new Date().toISOString();
+    const id = randomUUID();
+    const title = text.length > 80 ? text.slice(0, 77) + '...' : text;
+    const summary = text.length > 200 ? text.slice(0, 197) + '...' : text;
+    const input: KBEntryInput = {
+      type: 'user-directive',
+      title,
+      summary,
+      content: text,
+      source_files: [],
+      symbols: symbols ?? [],
+      module: undefined,
+      tags: [],
+      content_hash: '',
+      content_hash_type: 'sha256',
+      flagged_for_review: false,
+      contradiction_of: undefined,
+      author: 'user',
+      source: 'user-directive',
+      confidence: 'CONFIRMED',
+      scope: 'project',
+    };
+    this.insertEntry(db, id, input, truncateContent(text), now);
+    db.prepare('UPDATE entries SET promoted_at = ? WHERE id = ?').run(now, id);
+    this.wireLinks(db, id, input);
+
+    const row = db.prepare('SELECT * FROM entries WHERE id = ?').get(id) as Record<string, unknown>;
+    return this.rowToEntry(row);
+  }
+
+  async sync(opts?: SyncOptions): Promise<SyncResult> {
+    return { synced: false, reason: 'local-only provider' };
+  }
+
+  // T2.1 (F5, D4): dedicated no-bump aggregation read, following the kb_list
+  // pattern -- every query below is a plain SELECT/COUNT/GROUP BY, never an
+  // UPDATE, so use_count/last_accessed telemetry is untouched (inspecting the
+  // KB's health is not "retrieval" for that purpose, same rationale as list()).
+  //
+  // "Live" (used for retrieval.hit_rate's denominator and coverage, per
+  // resolution 6 and D4) means superseded_at IS NULL AND stale = 0 --
+  // identical to list()'s and query()'s default filter. totals/stale/
+  // flagged/superseded below are deliberately UNFILTERED (whole-table counts)
+  // so they show full volume; only retrieval.hit_rate and coverage are
+  // liveness-scoped.
+  async stats(opts?: { symbols?: string[] }): Promise<ProviderStats> {
+    const db = this.getDb();
+
+    const byConfidenceRows = db.prepare(
+      'SELECT confidence, COUNT(*) as c FROM entries GROUP BY confidence'
+    ).all() as { confidence: Confidence; c: number }[];
+    const by_confidence: Record<Confidence, number> = { CONFIRMED: 0, INFERRED: 0, UNVERIFIED: 0 };
+    let total = 0;
+    for (const row of byConfidenceRows) {
+      by_confidence[row.confidence] = row.c;
+      total += row.c;
+    }
+
+    const byTypeRows = db.prepare(
+      'SELECT type, COUNT(*) as c FROM entries GROUP BY type'
+    ).all() as { type: KBEntry['type']; c: number }[];
+    const by_type: Record<KBEntry['type'], number> = {
+      'context-cache': 0,
+      'learning': 0,
+      'knowledge': 0,
+      'runbook': 0,
+      'user-directive': 0,
+    };
+    for (const row of byTypeRows) {
+      by_type[row.type] = row.c;
+    }
+
+    const staleRow = db.prepare('SELECT COUNT(*) as c FROM entries WHERE stale = 1').get() as { c: number };
+    const flaggedRow = db.prepare('SELECT COUNT(*) as c FROM entries WHERE flagged_for_review = 1').get() as { c: number };
+    const supersededRow = db.prepare('SELECT COUNT(*) as c FROM entries WHERE superseded_at IS NOT NULL').get() as { c: number };
+
+    const liveRow = db.prepare(
+      'SELECT COUNT(*) as c FROM entries WHERE superseded_at IS NULL AND stale = 0'
+    ).get() as { c: number };
+    const totalLive = liveRow.c;
+
+    const retrievedRow = db.prepare(
+      'SELECT COUNT(*) as c FROM entries WHERE use_count > 0 AND superseded_at IS NULL AND stale = 0'
+    ).get() as { c: number };
+    const totalUsesRow = db.prepare('SELECT COALESCE(SUM(use_count), 0) as s FROM entries').get() as { s: number };
+    const hit_rate = totalLive > 0 ? retrievedRow.c / totalLive : null;
+
+    const confirmedRow = db.prepare("SELECT COUNT(*) as c FROM entries WHERE confidence = 'CONFIRMED'").get() as { c: number };
+    const promotedRow = db.prepare('SELECT COUNT(*) as c FROM entries WHERE promoted_at IS NOT NULL').get() as { c: number };
+    const promote_ratio = confirmedRow.c > 0 ? promotedRow.c / confirmedRow.c : null;
+
+    const result: ProviderStats = {
+      totals: { by_confidence, by_type, total },
+      stale: staleRow.c,
+      flagged: flaggedRow.c,
+      superseded: supersededRow.c,
+      retrieval: { entries_retrieved: retrievedRow.c, total_uses: totalUsesRow.s, hit_rate },
+      promote_ratio,
+    };
+
+    if (opts?.symbols?.length) {
+      const symbolStmt = db.prepare(`
+        SELECT COUNT(*) as c FROM entries
+        WHERE confidence = 'CONFIRMED' AND superseded_at IS NULL AND stale = 0
+          AND EXISTS (SELECT 1 FROM json_each(symbols) WHERE value = ?)
+      `);
+      const symbols: Record<string, boolean> = {};
+      let trueCount = 0;
+      for (const symbol of opts.symbols) {
+        const row = symbolStmt.get(symbol) as { c: number };
+        const covered = row.c > 0;
+        symbols[symbol] = covered;
+        if (covered) trueCount++;
+      }
+      result.coverage = {
+        fraction: opts.symbols.length > 0 ? trueCount / opts.symbols.length : 0,
+        symbols,
+      };
+    }
+
+    return result;
+  }
+
+  close(): void {
+    this.db?.close();
+    this.db = null;
+  }
+}

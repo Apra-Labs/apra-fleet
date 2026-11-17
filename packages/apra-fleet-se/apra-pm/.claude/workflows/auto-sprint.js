@@ -24,7 +24,7 @@ export const meta = {
 //                        suite + toy-sprint smoke test, sandbox setup/reset/teardown);
 //                        informational only, files parent-less [regression][carry-over] bugs
 //   ci-watcher        -- polls CI; creates beads task if not configured
-//   harvester         -- docs, CHANGELOG, token summary, PR
+//   harvester         -- docs, token summary, PR
 //
 // Beads owns all work items and is the exit signal.
 // JS workflow owns all routing. No LLM ever decides whether to continue.
@@ -1277,6 +1277,158 @@ function worktreeNamesFor(sprintBranch, taskId, worktreeRoot) {
   };
 }
 
+// EXPORT SHRINK GUARD (my-beads-db-27m.12): replaces the unguarded
+// `git -C "${repo}" add .beads/issues.jsonl` step. Compares the id set of the freshly
+// written .beads/issues.jsonl against the ids committed at HEAD BEFORE staging it, so a
+// `bd export` run against a workspace whose Dolt DB has diverged from the repo's
+// committed export cannot silently clobber the committed id set (a line-count/size
+// check would miss this: the file can grow while still dropping most committed ids).
+// Mirrors the kb-export.ts shrink guard (src/tools/kb-export.ts, maybeAutoCommitBible):
+// written to disk but NOT staged/committed unless AUTO_SPRINT_ALLOW_EXPORT_SHRINK=1 is
+// set as an explicit operator opt-in.
+//
+// DUPLICATED (intentionally) from lib/export-shrink-guard.mjs's runExportShrinkGuard, so
+// this stays a single self-contained shell command -- the dispatched agent runs inside
+// an arbitrary target repo's checkout, not this monorepo, and cannot `require()` that
+// file. Keep both in sync when changing the algorithm (same convention as
+// lib/parse-sprint-args.mjs). Pure -- no I/O, just builds a command string -- so it lives
+// in this PURE_FUNCTIONS block and test/export-shrink-guard.test.mjs can extract and call
+// it the same way test/sprint-cost.test.mjs extracts computeSprintQuote.
+// repoPath is passed as a shell argument (process.argv[1]), NOT interpolated into the JS
+// source: node -e "code" runs inside an outer double-quoted shell string, and
+// JSON.stringify(repoPath) emits its own double quotes that terminate that string early,
+// leaving the shell to hand node a broken program (my-beads-db-27m.12 round-2 reopen).
+// Quoting the trailing "${repoPath}" argument matches every other `-C "${repo}"` call in
+// this file.
+//
+// DESIGN DECISION (predicate is "any dropped id", deliberately, not "loud warning" only):
+// the guard refuses to stage on ANY committed id missing from the fresh export, with no
+// narrower allowance for legitimate removals (compaction, deletion, an id moved out of
+// scope). A legitimate removal therefore looks identical to corruption from here and
+// stops the export from being committed on every later sprint until an operator notices
+// the EXPORT_GUARD_REFUSED line and either investigates or sets
+// AUTO_SPRINT_ALLOW_EXPORT_SHRINK=1. This is intentional: refusing (and requiring a human
+// to look) is judged safer than guessing which drops are legitimate, mirroring the
+// kb-export.ts shrink guard's same all-or-nothing predicate. The refusal is non-fatal to
+// the sprint, but it is NOT silent: both call sites pass their dispatch result through
+// detectExportGuardIssue() and log exportGuardLogLine() to the sprint log. If it ever
+// needs to be louder still (e.g. failing the sprint), change this predicate and its
+// counterpart in lib/export-shrink-guard.mjs together.
+//
+// FAIL CLOSED: the committed file is read with maxBuffer=256 MB (the 1 MB default threw
+// ENOBUFS on real backlogs and the old empty catch waved everything through). Whether
+// the export is tracked at HEAD is decided separately via `git ls-tree` (unborn HEAD ->
+// `rev-parse --verify -q HEAD` exits 1): only "not tracked" means an empty committed set.
+// Any other read failure prints EXPORT_GUARD_ERROR and stages nothing. git is invoked via
+// execFileSync argv arrays (no inner shell), so no extra quoting layer is involved.
+function buildExportShrinkGuardCmd(repoPath) {
+  return `node -e "` +
+    `const{execFileSync}=require('child_process');` +
+    `const fs=require('fs');` +
+    `const repo=process.argv[1];` +
+    `const P='.beads/issues.jsonl';` +
+    `function git(a,mb){return execFileSync('git',a,{cwd:repo,encoding:'utf8',stdio:['ignore','pipe','pipe'],maxBuffer:1048576*(mb||16)});}` +
+    `function why(e){return String((e&&(e.stderr||e.code||e.message))||e).trim().split(/\\n/)[0];}` +
+    `function fail(m){console.log('EXPORT_GUARD_ERROR: '+m+'. .beads/issues.jsonl NOT staged/committed (guard fails closed).');process.exit(0);}` +
+    `function ids(t){const s=new Set();for(const l of String(t||'').split(/\\n/)){const x=l.trim();if(!x)continue;try{const o=JSON.parse(x);if(o&&o.id)s.add(o.id);}catch(e){}}return s;}` +
+    `let tracked=false;` +
+    `try{tracked=git(['ls-tree','--name-only','HEAD','--',P]).trim()!=='';}catch(e){let unborn=false;try{git(['rev-parse','--verify','-q','HEAD']);}catch(e2){unborn=!!e2&&e2.status===1;}if(!unborn)fail('cannot list HEAD tree: '+why(e));}` +
+    `let before='';` +
+    `if(tracked){try{before=git(['show','HEAD:'+P],256);}catch(e){fail('cannot read committed HEAD:'+P+': '+why(e));}}` +
+    `const committed=ids(before);` +
+    `let after='';try{after=fs.readFileSync(repo+'/'+P,'utf8');}catch(e){after='';}` +
+    `const fresh=ids(after);` +
+    `const dropped=[...committed].filter(id=>!fresh.has(id));` +
+    `const allow=process.env.AUTO_SPRINT_ALLOW_EXPORT_SHRINK==='1';` +
+    `if(dropped.length>0&&!allow){` +
+      `console.log('EXPORT_GUARD_REFUSED: '+dropped.length+' committed id(s) missing from new export (e.g. '+dropped.slice(0,5).join(', ')+'). Written to disk but NOT staged/committed. Set AUTO_SPRINT_ALLOW_EXPORT_SHRINK=1 to override.');` +
+      `process.exit(0);` +
+    `}` +
+    `try{git(['add',P]);}catch(e){fail('git add failed: '+why(e));}` +
+    `console.log('EXPORT_GUARD_OK: staged .beads/issues.jsonl'+(dropped.length?' (override used, '+dropped.length+' dropped)':''));` +
+    `" "${repoPath}"`;
+}
+
+// Orchestrator-side detection of the guard's outcome in a dispatch result, so a refusal
+// or fail-closed error reaches the sprint log instead of dying in a Haiku transcript.
+// Accepts whatever dispatch()/dispatchShell() returned: a string, a {outputs:[...]}
+// shell result, or any object (nested strings are scanned). Returns
+// { kind: 'REFUSED'|'ERROR'|'OK', line } -- REFUSED/ERROR win over OK -- or null when no
+// EXPORT_GUARD_* marker is present. Pure.
+function detectExportGuardIssue(result) {
+  const texts = [];
+  const walk = (v, depth) => {
+    if (v == null || depth > 6) return;
+    if (typeof v === 'string') { texts.push(v); return; }
+    if (Array.isArray(v)) { v.forEach(x => walk(x, depth + 1)); return; }
+    if (typeof v === 'object') Object.keys(v).forEach(k => walk(v[k], depth + 1));
+  };
+  walk(result, 0);
+  const text = texts.join('\n');
+  const bad = text.match(/EXPORT_GUARD_(REFUSED|ERROR):[^\r\n]*/);
+  if (bad) return { kind: bad[1], line: bad[0].trim() };
+  const ok = text.match(/EXPORT_GUARD_OK:[^\r\n]*/);
+  if (ok) return { kind: 'OK', line: ok[0].trim() };
+  return null;
+}
+
+// Operator-facing sprint-log line for a detectExportGuardIssue() result, or null when
+// nothing needs flagging (OK). stepLabel names the call site (e.g. "plan-commit-c2").
+// A missing marker is flagged too, since the guard's outcome is then unknown. Pure.
+function exportGuardLogLine(detected, stepLabel) {
+  const where = stepLabel || 'beads export';
+  if (!detected) {
+    return `WARN: [export-guard] ${where}: no EXPORT_GUARD_* result seen -- cannot confirm ` +
+      `.beads/issues.jsonl was committed; check that dispatch's transcript.`;
+  }
+  if (detected.kind === 'REFUSED') {
+    return `WARNING: [export-guard] ${where}: beads export NOT committed -- ${detected.line} ` +
+      `Every later sprint will keep refusing until resolved. If the dropped ids were removed ` +
+      `on purpose (bd delete, compaction), rerun with AUTO_SPRINT_ALLOW_EXPORT_SHRINK=1 to ` +
+      `commit the smaller export; otherwise investigate the beads DB divergence.`;
+  }
+  if (detected.kind === 'ERROR') {
+    return `WARNING: [export-guard] ${where}: beads export NOT committed (guard failed closed) -- ` +
+      `${detected.line}`;
+  }
+  return null;
+}
+
+// The sprint analysis summary (sprint-logs/<branch>-<ts>.analysis.md) is written to the
+// working tree but NEVER committed. This builds the one command that lists its pattern
+// in the target clone's local git exclude file, so every later `git add -A` /
+// `git add sprint-logs/` skips it and it never shows as a local change. Same contract as
+// fleet-sprint's ensureGitExcluded: the exclude file is resolved by git itself
+// (`git rev-parse --git-path info/exclude`, so linked worktrees work), its directory is
+// created when missing, a missing trailing newline is repaired, and the line is
+// appended only when not already present (idempotent). Runs unchanged in a POSIX shell
+// and in PowerShell: node with argv (no inner shell), no `$`, no backticks, no double
+// quotes inside the program. Prints exactly one GIT_EXCLUDE_OK: or GIT_EXCLUDE_ERROR:
+// line. Pure -- builds a string only.
+const ANALYSIS_EXCLUDE_PATTERN = 'sprint-logs/*.analysis.md';
+function buildGitExcludeCmd(repoPath, pattern) {
+  return `node -e "` +
+    `const{execFileSync}=require('child_process');` +
+    `const fs=require('fs');const path=require('path');` +
+    `const repo=process.argv[1];const pat=process.argv[2];const NL=String.fromCharCode(10);` +
+    `try{` +
+      `const rel=execFileSync('git',['rev-parse','--git-path','info/exclude'],{cwd:repo,encoding:'utf8',stdio:['ignore','pipe','pipe']}).trim();` +
+      `if(!rel)throw new Error('git printed no exclude path');` +
+      `const f=path.resolve(repo,rel);` +
+      `fs.mkdirSync(path.dirname(f),{recursive:true});` +
+      `let t='';try{t=fs.readFileSync(f,'utf8');}catch(e){}` +
+      `if(t.split(/\\r?\\n/).includes(pat)){console.log('GIT_EXCLUDE_OK: already listed '+pat);}` +
+      `else{fs.appendFileSync(f,(t.length>0&&!t.endsWith(NL)?NL:'')+pat+NL);console.log('GIT_EXCLUDE_OK: added '+pat);}` +
+    `}catch(e){console.log('GIT_EXCLUDE_ERROR: '+String((e&&(e.stderr||e.message))||e).trim().split(NL)[0]);}` +
+  `" "${repoPath}" "${pattern}"`;
+}
+
+// True only when a dispatch result carries GIT_EXCLUDE_OK and no GIT_EXCLUDE_ERROR. Pure.
+function gitExcludeSucceeded(result) {
+  const text = typeof result === 'string' ? result : JSON.stringify(result || '');
+  return text.includes('GIT_EXCLUDE_OK:') && !text.includes('GIT_EXCLUDE_ERROR:');
+}
+
 // PURE_FUNCTIONS_END
 
 // ROLE_SCHEMAS_GENERATED_BEGIN -- do not hand-edit; run `node scripts/gen-auto-sprint-schemas.mjs` to regenerate from agents/schemas/*.json
@@ -1310,11 +1462,61 @@ const REVIEW_SCHEMA = {
       "type": "string",
       "enum": [
         "APPROVED",
-        "CHANGES_NEEDED"
+        "CHANGES_NEEDED",
+        "NEEDS-DECISION"
       ]
     },
     "notes": {
       "type": "string"
+    },
+    "decision": {
+      "type": "object",
+      "description": "REQUIRED when verdict is \"NEEDS-DECISION\", otherwise omit. The decision only a human operator can make before the named bead can go on. The orchestrator files it for an operator verbatim (never truncated), sets the bead aside for the rest of the run without re-dispatching it, and keeps working other ready beads. Use it only for a real choice between alternatives you cannot settle from the bead, its parent or the code -- not for a missing secret or an unmet prerequisite (BLOCKED), and not for an ordinary failure.",
+      "required": [
+        "beadId",
+        "question",
+        "options",
+        "recommendation"
+      ],
+      "properties": {
+        "beadId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The one bead under review that cannot be approved or sent back for rework until the decision is made. The orchestrator reopens it if it is closed and sets it aside."
+        },
+        "question": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The full question, self-contained: what was found, why it blocks the bead, and what must be decided. An operator reads only this and the options."
+        },
+        "options": {
+          "type": "array",
+          "minItems": 2,
+          "description": "At least two concrete alternatives, each with a short stable id (for example \"a\", \"b\") and its full text: what it means and what it costs.",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "text"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "text": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "recommendation": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The option id you recommend, followed by why."
+        }
+      }
     },
     "reopenIds": {
       "type": "array",
@@ -1328,6 +1530,10 @@ const REVIEW_SCHEMA = {
         "type": "string"
       }
     },
+    "buildFailing": {
+      "type": "boolean",
+      "description": "Optional. true when the project's build or test suite FAILS on the branch under review. On a CHANGES_NEEDED verdict the orchestrator guarantees a fix is dispatched: if none of your reopenIds can be reopened and no in-goal newTask covers it, it files an in-goal fix task carrying your notes. Omit or false when the build and tests pass."
+    },
     "newTasks": {
       "type": "array",
       "items": {
@@ -1339,7 +1545,8 @@ const REVIEW_SCHEMA = {
         ],
         "properties": {
           "title": {
-            "type": "string"
+            "type": "string",
+            "description": "Plain text only: letters, digits, space, and . , : ; ! ? ( ) ' _ / [ ] - -- nothing else. No backticks, double quotes, $, or backslash (the title is interpolated into a shell command downstream). Do NOT wrap a command/flag/filename in backticks here -- write it plain (e.g. \"Surface the service registration mode in the status output\") or move the formatted detail into description instead, which has no such restriction. NOT enforced as a hard schema constraint here (deliberately no \"pattern\"): a single out-of-allowlist newTask title must never make ajv reject/retry the WHOLE structured verdict (verdict, notes, reopenIds, and the other newTasks) -- see validateNewTask() in fleet-sprint/runner.js, the actual (per-item, non-fatal) enforcement point, applied after parsing."
           },
           "description": {
             "type": "string"
@@ -1349,8 +1556,189 @@ const REVIEW_SCHEMA = {
           }
         }
       }
+    },
+    "kb_promotions": {
+      "type": "array",
+      "description": "Entries this reviewer VERIFIED against the tree and is promoting to CONFIRMED. Reviewer-only: promotion is the sole path that mints CONFIRMED, and widening capture does not widen promotion. The engine makes the kb_promote calls.",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "reason"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The entry id, copied verbatim from the 'KNOWLEDGE BANK -- promotion candidates' block in your dispatch prompt. That block is the ONLY source of promotable ids -- do not call a kb_* tool to find one, and never invent one.",
+            "minLength": 1
+          },
+          "reason": {
+            "type": "string",
+            "description": "The evidence for this promotion -- what you actually checked. kb_promote refuses a trivial reason.",
+            "minLength": 20
+          }
+        }
+      }
+    },
+    "kb_discards": {
+      "type": "array",
+      "description": "Promotion candidates this reviewer showed to be WRONG and is discarding (the entry drops out of every later read). Reviewer-only, with the same evidence bar as kb_promotions. An id may not appear in both kb_promotions and kb_discards -- the engine refuses both. The engine makes the discard calls.",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "reason"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The entry id, copied verbatim from the 'KNOWLEDGE BANK -- promotion candidates' block in your dispatch prompt. That block is the ONLY source of discardable ids -- do not call a kb_* tool to find one, and never invent one.",
+            "minLength": 1
+          },
+          "reason": {
+            "type": "string",
+            "description": "The evidence that the entry is wrong -- what you actually checked that contradicts its claim.",
+            "minLength": 20
+          }
+        }
+      }
+    },
+    "kb_demotions": {
+      "type": "array",
+      "description": "CONFIRMED entries a re-check during this review shows do not hold -- whether you are now less certain of the claim or have shown it wrong -- demoted back to INFERRED. Not for a drifted or removed basis. Reviewer-only, with the same evidence bar as kb_promotions and kb_discards. An id may appear in only one of kb_promotions, kb_discards and kb_demotions -- the engine refuses it in all lists it appears in. The engine makes the demotion calls.",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "reason",
+          "evidence_files"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The entry id, copied verbatim from the 'KNOWLEDGE BANK -- demotion candidates' block in your dispatch prompt. That block is the ONLY source of demotable ids -- do not call a kb_* tool to find one, and never invent one.",
+            "minLength": 1
+          },
+          "reason": {
+            "type": "string",
+            "description": "What you re-checked this review that the claim does not hold up against.",
+            "minLength": 20
+          },
+          "evidence_files": {
+            "type": "array",
+            "description": "The repo-relative files you re-checked -- at least one, each a real file in the repo.",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
+    "kb_captures": {
+      "type": "array",
+      "description": "Durable knowledge this role verified during its run. The engine makes the kb_capture calls; the role only decides. Optional -- omit or send [] to capture nothing.",
+      "items": {
+        "type": "object",
+        "required": [
+          "type",
+          "title",
+          "summary",
+          "content",
+          "source_files"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "knowledge",
+              "learning",
+              "runbook"
+            ]
+          },
+          "title": {
+            "type": "string",
+            "minLength": 8
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 20
+          },
+          "content": {
+            "type": "string",
+            "description": "Full detail of the entry. REQUIRED -- a capture without it is rejected and persists nothing.",
+            "minLength": 40
+          },
+          "source_files": {
+            "type": "array",
+            "description": "Files that make this claim checkable. At least one is REQUIRED -- an entry with no basis is rejected, because the freshness sweep can never stale it.",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1
+          },
+          "symbols": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "toolUse": {
+      "type": "object",
+      "description": "How this run used the kb_* and code_* tools its role prompt expects (Step 0). Optional for backward compatibility, but expected: report \"unavailable\" or \"not_needed\" with a note rather than skipping the calls silently.",
+      "required": [
+        "kb",
+        "code"
+      ],
+      "properties": {
+        "kb": {
+          "type": "string",
+          "enum": [
+            "used",
+            "unavailable",
+            "not_needed"
+          ],
+          "description": "used = kb_query was called (kb_session_prime alone is not used)."
+        },
+        "code": {
+          "type": "string",
+          "enum": [
+            "used",
+            "unavailable",
+            "not_needed"
+          ],
+          "description": "used = code_impact, code_context or code_graph was called."
+        },
+        "note": {
+          "type": "string",
+          "description": "Why a value is not \"used\": which tool was missing or failed, or why no lookup was needed."
+        }
+      }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "verdict": {
+            "const": "NEEDS-DECISION"
+          }
+        },
+        "required": [
+          "verdict"
+        ]
+      },
+      "then": {
+        "required": [
+          "decision"
+        ]
+      }
+    }
+  ]
 };
 const PLAN_REVIEW_SCHEMA = {
   "$schema": "http://json-schema.org/draft-07/schema#",
@@ -1373,6 +1761,47 @@ const PLAN_REVIEW_SCHEMA = {
     },
     "notes": {
       "type": "string"
+    },
+    "findings": {
+      "type": "array",
+      "description": "Machine-readable per-bead findings: one entry per bead that must change, so a caller can route a CHANGES_NEEDED verdict without parsing notes. Populate on every CHANGES_NEEDED verdict. Return an empty array when the objection is genuinely plan-wide and names no individual bead -- an empty array is the explicit 'plan-wide' signal. Omit or return an empty array on APPROVED. Optional, and deliberately absent-tolerant for one release: a verdict produced against the previous contract still validates, and a caller may fall back to reading notes. notes stays the narration channel.",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "detail"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The bead this finding concerns, written exactly as it appears in taskAssignments (e.g. BD-14)."
+          },
+          "kind": {
+            "type": "string",
+            "description": "Which quality criterion failed, as a closed vocabulary mirroring the numbered criteria in the prose contract's Step 2. Use other only when no listed kind fits, and explain it in detail.",
+            "enum": [
+              "coverage",
+              "missing_test_task",
+              "acceptance_criteria",
+              "task_size",
+              "dependency_wiring",
+              "scope_creep",
+              "duplicate_work",
+              "feasibility",
+              "ready_work",
+              "model_metadata",
+              "lane_cohesion",
+              "other"
+            ]
+          },
+          "detail": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The human explanation for this bead: what is wrong and what would make it pass."
+          }
+        }
+      }
     },
     "taskAssignments": {
       "type": "array",
@@ -1419,7 +1848,8 @@ const DOER_STATUS_SCHEMA = {
       "type": "string",
       "enum": [
         "VERIFY",
-        "BLOCKED"
+        "BLOCKED",
+        "NEEDS-DECISION"
       ]
     },
     "closedIds": {
@@ -1430,8 +1860,166 @@ const DOER_STATUS_SCHEMA = {
     },
     "notes": {
       "type": "string"
+    },
+    "decision": {
+      "type": "object",
+      "description": "REQUIRED when status is \"NEEDS-DECISION\", otherwise omit. The decision only a human operator can make before the named bead can go on. The orchestrator files it for an operator verbatim (never truncated), sets the bead aside for the rest of the run without re-dispatching it, and keeps working other ready beads. Use it only for a real choice between alternatives you cannot settle from the bead, its parent or the code -- not for a missing secret or an unmet prerequisite (BLOCKED), and not for an ordinary failure.",
+      "required": [
+        "beadId",
+        "question",
+        "options",
+        "recommendation"
+      ],
+      "properties": {
+        "beadId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The one open bead id that cannot go on until the decision is made."
+        },
+        "question": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The full question, self-contained: what was found, why it blocks the bead, and what must be decided. An operator reads only this and the options."
+        },
+        "options": {
+          "type": "array",
+          "minItems": 2,
+          "description": "At least two concrete alternatives, each with a short stable id (for example \"a\", \"b\") and its full text: what it means and what it costs.",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "text"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "text": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "recommendation": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The option id you recommend, followed by why."
+        }
+      }
+    },
+    "blockedIds": {
+      "type": "array",
+      "description": "With status BLOCKED: the assigned bead ids you left open BECAUSE of the block -- not ids you merely did not reach (e.g. same-lane stop rule). The engine sets these beads, and every open bead depending on them, aside for the rest of the run. Optional -- omitted on a single-bead assignment it means that bead; omit or send [] with status VERIFY.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "kb_captures": {
+      "type": "array",
+      "description": "Durable knowledge this role verified during its run. The engine makes the kb_capture calls; the role only decides. Optional -- omit or send [] to capture nothing.",
+      "items": {
+        "type": "object",
+        "required": [
+          "type",
+          "title",
+          "summary",
+          "content",
+          "source_files"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "knowledge",
+              "learning",
+              "runbook"
+            ]
+          },
+          "title": {
+            "type": "string",
+            "minLength": 8
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 20
+          },
+          "content": {
+            "type": "string",
+            "description": "Full detail of the entry. REQUIRED -- kbCaptureSchema declares content as z.string().min(1), so a capture without it is rejected at the MCP boundary and persists nothing (apra-fleet-23c).",
+            "minLength": 40
+          },
+          "source_files": {
+            "type": "array",
+            "description": "Files that make this claim checkable. At least one is REQUIRED -- SqliteProvider.capture() rejects an entry with no basis, because the freshness sweep can never stale it.",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1
+          },
+          "symbols": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "toolUse": {
+      "type": "object",
+      "description": "How this run used the kb_* and code_* tools its role prompt expects (Step 0). Optional for backward compatibility, but expected: report \"unavailable\" or \"not_needed\" with a note rather than skipping the calls silently.",
+      "required": [
+        "kb",
+        "code"
+      ],
+      "properties": {
+        "kb": {
+          "type": "string",
+          "enum": [
+            "used",
+            "unavailable",
+            "not_needed"
+          ],
+          "description": "used = kb_query was called (kb_session_prime alone is not used)."
+        },
+        "code": {
+          "type": "string",
+          "enum": [
+            "used",
+            "unavailable",
+            "not_needed"
+          ],
+          "description": "used = code_impact, code_context or code_graph was called."
+        },
+        "note": {
+          "type": "string",
+          "description": "Why a value is not \"used\": which tool was missing or failed, or why no lookup was needed."
+        }
+      }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "NEEDS-DECISION"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "required": [
+          "decision"
+        ]
+      }
+    }
+  ]
 };
 const DEPLOYER_SCHEMA = {
   "$schema": "http://json-schema.org/draft-07/schema#",
@@ -1449,6 +2037,13 @@ const DEPLOYER_SCHEMA = {
     },
     "notes": {
       "type": "string"
+    },
+    "failedStep": {
+      "type": "string",
+      "enum": [
+        "permissions"
+      ],
+      "description": "Set to \"permissions\" ONLY when you returned deployed: false because you stopped at Step 0a (the deploy.md Permissions check) before running any deploy command. The orchestrator then does not dispatch the deploy again this run. Omit it for every other outcome, including any failure after a deploy command ran."
     }
   }
 };
@@ -1486,14 +2081,14 @@ const INTEG_RUN_SCHEMA = {
     },
     "deployedSha": {
       "type": "string",
-      "description": "The deploy-verified git commit part 2 (smoke test) actually ran against. Optional for backward compatibility, but an orchestrator that supplied a deployed SHA in the dispatch prompt treats a missing or mismatching value as INCONCLUSIVE evidence (never a pass). See integ-test-runner.md 'Part-2 evidence freshness'."
+      "description": "The git commit the verification actually ran against. Optional for backward compatibility, but an orchestrator that supplied a deployed SHA in the dispatch prompt treats a missing or mismatching value as INCONCLUSIVE evidence (never a pass). See integ-test-runner.md Step 4."
     },
     "verifySetClosed": {
       "type": "array",
       "items": {
         "type": "string"
       },
-      "description": "apra-fleet-jfo: verify-set bead ids (any issue_type, Step 1b) closed this run. Optional for backward compatibility -- absent/omitted on a dispatch that named no verify-set ids."
+      "description": "Verify-set bead ids (any issue_type, Step 1b) closed this run. Optional for backward compatibility -- absent/omitted on a dispatch that named no verify-set ids."
     },
     "verifySetLeftOpen": {
       "type": "array",
@@ -1512,7 +2107,7 @@ const INTEG_RUN_SCHEMA = {
           }
         }
       },
-      "description": "apra-fleet-jfo: verify-set bead ids (Step 1b) left open this run, with why (gap bug filed, or inconclusive). Optional for backward compatibility."
+      "description": "Verify-set bead ids (Step 1b) left open this run, with why (gap bug filed, or inconclusive). Optional for backward compatibility."
     },
     "observedFailures": {
       "type": "array",
@@ -1543,27 +2138,49 @@ const REGRESSION_RUN_SCHEMA = {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "apra-pm/regression-test-runner-output@1",
   "title": "regression-test-runner output",
-  "description": "Canonical machine-readable output contract for the regression-test-runner role. See agents/regression-test-runner.md Step 4 for the prose contract this mirrors. This result is informational: it never gates the current sprint's PASS/FAIL verdict -- failures carry over to a future sprint as parent-less [regression][carry-over] beads.",
+  "description": "Canonical machine-readable output contract for the regression-test-runner role. See agents/regression-test-runner.md Step 4 for the prose contract this mirrors. This result is informational: it never gates the current sprint's PASS/FAIL verdict -- failures carry over to a future sprint as parent-less [regression][carry-over] beads. The target repo's regression-test-playbook.md defines what the pass consists of; this contract does not assume any particular structure.",
   "type": "object",
   "required": [
     "passed",
-    "suitePassed",
-    "smokePassed",
     "bugsFiled",
     "summary"
   ],
   "properties": {
     "passed": {
       "type": "boolean",
-      "description": "True only if BOTH suitePassed and smokePassed are true AND no carry-over bug was filed this run."
+      "description": "True only if every part of the pass the playbook defines passed AND no carry-over bug was filed this run."
+    },
+    "sections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "passed"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The part's name exactly as the playbook names it."
+          },
+          "passed": {
+            "type": "boolean"
+          },
+          "detail": {
+            "type": "string",
+            "description": "Optional one-line result detail (counts, failing step)."
+          }
+        }
+      },
+      "description": "Per-part results, one entry per part the playbook defines (a playbook with a single part yields one entry). Omit only if the pass stopped before running any part."
     },
     "suitePassed": {
       "type": "boolean",
-      "description": "Result of playbook Part 1 -- the real-bd functional suite."
+      "description": "Deprecated legacy field from the earlier two-part contract; still accepted, never required. Report per-part results in sections instead."
     },
     "smokePassed": {
       "type": "boolean",
-      "description": "Result of playbook Part 2 -- the toy-sprint smoke test."
+      "description": "Deprecated legacy field from the earlier two-part contract; still accepted, never required. Report per-part results in sections instead."
     },
     "bugsFiled": {
       "type": "array",
@@ -1576,23 +2193,53 @@ const REGRESSION_RUN_SCHEMA = {
       "type": "string",
       "description": "One paragraph describing what was tested, what passed, what failed, and reiterating that the result is informational."
     },
+    "verdict": {
+      "type": "string",
+      "enum": [
+        "PASS",
+        "FAIL",
+        "INCONCLUSIVE"
+      ],
+      "description": "Optional. Present only when the playbook names a machine-written verdict file: copied from it verbatim, never authored by the runner. When present, passed must equal (verdict == \"PASS\"). INCONCLUSIVE means the pass could not prove anything either way; it is not a failure."
+    },
+    "testedSha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$",
+      "description": "Optional. The full commit sha the verdict file says was tested, copied verbatim from it."
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "verdictRef": {
+          "type": "string",
+          "description": "Where the verdict file lives (path or URL)."
+        },
+        "runUrl": {
+          "type": "string",
+          "description": "URL of the run that produced the verdict file."
+        },
+        "newFailures": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "New failure fingerprints, copied from the verdict file."
+        },
+        "inventoryMissing": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Required coverage items the run did not cover, copied from the verdict file."
+        }
+      },
+      "description": "Optional. Pointers to and key lists from the machine-written verdict file, copied verbatim from it."
+    },
     "smokeEvidence": {
       "type": "object",
-      "description": "Optional structured evidence from Part 2 (the toy-sprint smoke test), so the result is machine-checkable instead of self-reported prose.",
-      "properties": {
-        "versionStdout": {
-          "type": "string",
-          "description": "Verbatim stdout of running the toy CLI's --version on the sprint branch."
-        },
-        "canaryStatus": {
-          "type": "string",
-          "description": "The status field from `bd show gh-toy-4ef` (e.g. \"closed\")."
-        },
-        "toyRepoHeadSha": {
-          "type": "string",
-          "description": "The toy repo's head commit SHA after the toy sprint."
-        }
-      }
+      "additionalProperties": true,
+      "description": "Optional structured evidence, so the result is machine-checkable instead of self-reported prose. This schema does not define its shape -- the target repo's regression-test-playbook.md does (the field name is kept for compatibility). Omit if that playbook defines no structured evidence."
     }
   }
 };
@@ -1641,6 +2288,145 @@ const HARVEST_SCHEMA = {
     },
     "notes": {
       "type": "string"
+    },
+    "kb_captures": {
+      "type": "array",
+      "description": "Durable knowledge this role verified during its run. The engine makes the kb_capture calls; the role only decides. Optional -- omit or send [] to capture nothing.",
+      "items": {
+        "type": "object",
+        "required": [
+          "type",
+          "title",
+          "summary",
+          "content",
+          "source_files"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "knowledge",
+              "learning",
+              "runbook"
+            ]
+          },
+          "title": {
+            "type": "string",
+            "minLength": 8
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 20
+          },
+          "content": {
+            "type": "string",
+            "description": "Full detail of the entry. REQUIRED -- kbCaptureSchema declares content as z.string().min(1), so a capture without it is rejected at the MCP boundary and persists nothing (apra-fleet-23c).",
+            "minLength": 40
+          },
+          "source_files": {
+            "type": "array",
+            "description": "Files that make this claim checkable. At least one is REQUIRED -- SqliteProvider.capture() rejects an entry with no basis, because the freshness sweep can never stale it.",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1
+          },
+          "symbols": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  }
+};
+const PLANNER_SCHEMA = {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "apra-pm/planner-output@1",
+  "title": "planner output",
+  "description": "Canonical machine-readable output contract for the planner role. See agents/planner.md Step 4 (Validate your own DAG) and Step 0 (Knowledge Bank) for the prose contract this mirrors. The planner previously had no schema at all -- its dispatch ended 'Confirm with any text when done' -- so this is the contract that makes its output routable rather than free prose.",
+  "type": "object",
+  "required": [
+    "status",
+    "notes"
+  ],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": [
+        "OK",
+        "BLOCKED"
+      ]
+    },
+    "notes": {
+      "type": "string"
+    },
+    "featureIds": {
+      "type": "array",
+      "description": "Feature-level bead ids created or updated this round.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "taskIds": {
+      "type": "array",
+      "description": "Task-level bead ids created or updated this round.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "kb_captures": {
+      "type": "array",
+      "description": "IGNORED FOR THIS ROLE -- the planner has no apply path, so anything sent here is silently dropped rather than captured. Declared only for forward compatibility and shape-parity with the roles that do capture; always omit it or send []. Do not spend planning effort producing entries for it.",
+      "items": {
+        "type": "object",
+        "required": [
+          "type",
+          "title",
+          "summary",
+          "content",
+          "source_files"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "knowledge",
+              "learning",
+              "runbook"
+            ]
+          },
+          "title": {
+            "type": "string",
+            "minLength": 8
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 20
+          },
+          "content": {
+            "type": "string",
+            "description": "Full detail of the entry. REQUIRED -- kbCaptureSchema declares content as z.string().min(1), so a capture without it is rejected at the MCP boundary and persists nothing (apra-fleet-23c).",
+            "minLength": 40
+          },
+          "source_files": {
+            "type": "array",
+            "description": "Files that make this claim checkable. At least one is REQUIRED -- SqliteProvider.capture() rejects an entry with no basis, because the freshness sweep can never stale it.",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1
+          },
+          "symbols": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
     }
   }
 };
@@ -1737,6 +2523,270 @@ async function dispatchShell(cmds, opts) {
 // This is a convenience wrapper around Promise.all() for readability.
 async function parallel(tasks) {
   return Promise.all(tasks);
+}
+
+// -------------------------------------------------------- KB priming
+//
+// Dispatches a cheap agent to call kb_session_prime (and kb_import on first
+// call) and returns the top entries.  The workflow injects these entries
+// directly into agent prompts -- agents never need to call KB tools themselves.
+
+const KB_PRIMER_SCHEMA = {
+  type: 'object',
+  required: ['entries', 'sessionWarm', 'imported'],
+  properties: {
+    sessionWarm: { type: 'boolean' },
+    imported:    { type: 'boolean' },
+    entries: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['title', 'summary'],
+        properties: {
+          title:        { type: 'string' },
+          summary:      { type: 'string' },
+          confidence:   { type: 'string' },
+          flagged_for_review: { type: 'boolean' },
+          contradiction_of:   { type: ['string', 'null'] },
+          symbols:      { type: 'array', items: { type: 'string' } },
+          source_files: { type: 'array', items: { type: 'string' } },
+          type:         { type: 'string' },
+        },
+      },
+    },
+  },
+};
+
+let _kbImported = false;
+
+async function primeKB(repoPath) {
+  const importStep = _kbImported ? '' :
+    `Step 2: Import the bible into the KB database.\n` +
+    `  a. First check if "${repoPath}/.fleet/kb-canonical.json" exists (use Bash: test -f).\n` +
+    `  b. If it does NOT exist, run: echo $APRA_FLEET_DATA_DIR (using Bash) to get the data dir.\n` +
+    `     Then check if "$APRA_FLEET_DATA_DIR/kb-canonical.json" exists.\n` +
+    `  c. Call mcp__apra-fleet__kb_import with path set to the full path of the bible\n` +
+    `     file you found: "${repoPath}/.fleet/kb-canonical.json" (step a), or the\n` +
+    `     data dir path (step b, e.g. "/tmp/sprint-test/data-b/kb-canonical.json").\n` +
+    `     Pass no other scope argument -- kb tools always use your session's own KB.\n` +
+    `  d. If neither path has the bible, or the tool is unavailable, set imported=false and continue.\n`;
+  const stepNum = _kbImported ? 2 : 3;
+  try {
+    const result = await dispatch(
+      `You are a knowledge-base primer. Your ONLY job is to load KB tools, ` +
+      `optionally import the bible, call kb_session_prime, and return the results.\n\n` +
+      `Step 1: Call ToolSearch with query "select:mcp__apra-fleet__kb_session_prime` +
+      (_kbImported ? `"` : `,mcp__apra-fleet__kb_import"`) +
+      ` to load the tool schema(s).\n` +
+      importStep +
+      `Step ${stepNum}: Call mcp__apra-fleet__kb_session_prime with no arguments ` +
+      `(it always primes your session's own KB; it takes no repo/scope argument).\n` +
+      `Step ${stepNum + 1}: Parse the JSON string result. Extract the top_entries array.\n` +
+      `  For each entry return: title, summary, confidence, flagged_for_review, contradiction_of, symbols, source_files, type.\n` +
+      `  Do NOT return the content field.\n` +
+      `  Set sessionWarm from the result. Set imported to true if you ran kb_import successfully.\n\n` +
+      `If ToolSearch returns no KB tools, return {entries:[], sessionWarm:false, imported:false}.\n` +
+      `Return the structured result. Do not summarize or interpret.`,
+      {
+        model: MODEL_HAIKU,
+        label: 'kb-primer',
+        phase: 'Plan',
+        schema: KB_PRIMER_SCHEMA,
+        maxTurns: 10,
+      }
+    );
+    if (result && result.imported) _kbImported = true;
+    return result;
+  } catch (e) {
+    log(`KB primer failed: ${String(e).slice(0, 120)} -- proceeding without KB`);
+    return null;
+  }
+}
+
+// --- Engine-executed KB capture and promote (KB trust pipeline, Phase 2) ---
+//
+// Judgment stays with the role agent; EXECUTION moves to the engine. A role
+// returns kb_captures / kb_promotions in its structured output and never calls
+// a KB tool itself. Three consequences the old prose-only contract could not
+// give: promotion no longer depends on an agent remembering Step 5, every
+// promotion is logged with its stated evidence, and the engine can refuse a
+// promotion BEFORE it is attempted.
+//
+// RUNTIME CONSTRAINT: this workflow is executed by Claude's Workflow tool in a
+// VM with no filesystem, no require(), and no MCP tool access -- only dispatched
+// subagents can call tools (see scripts/gen-auto-sprint-schemas.mjs's header for
+// the same constraint biting a previous revision). fleet-sprint/runner.js runs
+// under a different engine and DOES get an injected callTool, so it calls the KB
+// tools directly. Here the engine validates and logs, then hands the vetted
+// payload to one cheap executor agent whose only job is to make the calls.
+
+// Promotion is the only path that mints CONFIRMED. Widening capture to four
+// roles deliberately does NOT widen promotion.
+const KB_PROMOTER_ROLES = new Set(['reviewer']);
+
+const KB_MIN_PROMOTE_REASON = 20;
+
+const KB_EXEC_SCHEMA = {
+  type: 'object',
+  required: ['captured', 'promoted'],
+  properties: {
+    captured: { type: 'number' },
+    promoted: { type: 'number' },
+    failed:   { type: 'number' },
+    notes:    { type: 'string' },
+  },
+};
+
+/**
+ * Validate what a role returned. Anything that would be refused downstream is
+ * dropped HERE, with a reason logged, so a bad payload never becomes a tool call.
+ * Returns { captures, promotions, rejected } -- all plain data.
+ */
+function vetKbWork(role, result) {
+  const captures = [];
+  const promotions = [];
+  const rejected = [];
+
+  const rawCaptures = (result && Array.isArray(result.kb_captures)) ? result.kb_captures : [];
+  for (const c of rawCaptures) {
+    if (!c || typeof c.title !== 'string' || typeof c.summary !== 'string') {
+      rejected.push(`${role}: capture missing title/summary`);
+      continue;
+    }
+    // Mirrors the Phase 1 provider invariant: an entry with no basis can never
+    // be staled by the freshness sweep, so nothing could ever falsify it.
+    if (!Array.isArray(c.source_files) || c.source_files.length === 0) {
+      rejected.push(`${role}: capture "${c.title}" cites no source files`);
+      continue;
+    }
+    if (!['knowledge', 'learning', 'runbook'].includes(c.type)) {
+      rejected.push(`${role}: capture "${c.title}" has unsupported type ${String(c.type)}`);
+      continue;
+    }
+    // apra-fleet-23c: kbCaptureSchema requires content (z.string().min(1)).
+    // Omitting it meant every kb_capture failed zod validation at the MCP
+    // boundary and persisted nothing. (This block had drifted out of sync with
+    // the canonical copy in lib/vet-kb-work.mjs -- restored to match exactly.)
+    if (typeof c.content !== 'string' || c.content.trim().length === 0) {
+      rejected.push(`${role}: capture "${c.title}" has no content`);
+      continue;
+    }
+    captures.push({
+      type: c.type,
+      title: c.title,
+      summary: c.summary,
+      content: c.content,
+      source_files: c.source_files,
+      symbols: Array.isArray(c.symbols) ? c.symbols : [],
+    });
+  }
+
+  const rawPromotions = (result && Array.isArray(result.kb_promotions)) ? result.kb_promotions : [];
+  if (rawPromotions.length > 0 && !KB_PROMOTER_ROLES.has(role)) {
+    rejected.push(`${role}: kb_promotions refused -- promotion is reviewer-only`);
+  } else {
+    for (const p of rawPromotions) {
+      if (!p || typeof p.id !== 'string' || p.id.length === 0) {
+        rejected.push(`${role}: promotion missing id`);
+        continue;
+      }
+      if (typeof p.reason !== 'string' || p.reason.trim().length < KB_MIN_PROMOTE_REASON) {
+        rejected.push(`${role}: promotion ${p.id} has no recorded evidence`);
+        continue;
+      }
+      promotions.push({ id: p.id, reason: p.reason.trim() });
+    }
+  }
+
+  // kb_discards is applied only by the fleet-sprint engine (maintainer-routed
+  // kb_invalidate). This legacy workflow has no discard path, so refuse and log
+  // rather than silently dropping a reviewer's DISCARD.
+  if (result && Array.isArray(result.kb_discards) && result.kb_discards.length > 0) {
+    rejected.push(`${role}: kb_discards refused -- not supported by this workflow (${result.kb_discards.length} dropped)`);
+  }
+
+  return { captures, promotions, rejected };
+}
+
+/**
+ * Execute vetted KB work. Returns null when there is nothing to do, so the
+ * common case costs no dispatch at all.
+ */
+async function runKbWork(repoPath, role, result) {
+  const { captures, promotions, rejected } = vetKbWork(role, result);
+
+  for (const r of rejected) log(`KB refused -- ${r}`);
+  // Every promotion is logged with its stated evidence, whether or not the call
+  // later succeeds. This log IS the audit trail the bible never had.
+  for (const p of promotions) log(`KB promote ${p.id} (${role}): ${p.reason}`);
+
+  if (captures.length === 0 && promotions.length === 0) return null;
+
+  try {
+    return await dispatch(
+      `You are a knowledge-base executor. Your ONLY job is to make the KB tool ` +
+      `calls listed below and report counts. Make NO judgment about whether an ` +
+      `entry is correct -- that decision has already been made and validated.\n\n` +
+      `Step 1: Call ToolSearch with query ` +
+      `"select:mcp__apra-fleet__kb_capture,mcp__apra-fleet__kb_promote".\n` +
+      `Step 2: For EACH object in captures below, call mcp__apra-fleet__kb_capture ` +
+      `with that object's fields verbatim (no repo/scope argument -- the tool ` +
+      `always writes your session's own KB). Do not reword, merge, split or ` +
+      `invent entries.\n` +
+      `Step 3: For EACH object in promotions below, call mcp__apra-fleet__kb_promote ` +
+      `with that object's id and reason verbatim.\n` +
+      `Step 4: Return the counts. A call refused by the tool counts in failed, ` +
+      `not captured/promoted -- report it, do not retry it with altered fields.\n\n` +
+      `captures: ${JSON.stringify(captures)}\n` +
+      `promotions: ${JSON.stringify(promotions)}\n\n` +
+      `If ToolSearch returns no KB tools, return {captured:0, promoted:0, failed:0}.`,
+      {
+        model: MODEL_HAIKU,
+        label: `kb-exec-${role}`,
+        phase: 'Develop',
+        schema: KB_EXEC_SCHEMA,
+        maxTurns: 20,
+      }
+    );
+  } catch (e) {
+    log(`KB executor failed for ${role}: ${String(e).slice(0, 120)} -- continuing`);
+    return null;
+  }
+}
+
+const KB_CHAR_BUDGET = 4000;
+
+// Only CONFIRMED entries outside any unresolved contradiction are injected --
+// the same rule as the fleet-sprint engine's KNOWLEDGE BANK block. INFERRED and
+// UNVERIFIED entries are unreviewed captures, and a flagged / contradiction_of
+// entry is one the KB itself marks as disputed. A missing tier is NOT treated as
+// CONFIRMED: the primer is an LLM relay, so an omitted field proves nothing.
+function isInjectableKbEntry(e) {
+  return Boolean(e)
+    && String(e.confidence || '').toUpperCase() === 'CONFIRMED'
+    && !e.flagged_for_review
+    && !e.contradiction_of;
+}
+
+function buildKBContext(kbResult) {
+  const entries = (kbResult && Array.isArray(kbResult.entries))
+    ? kbResult.entries.filter(isInjectableKbEntry)
+    : [];
+  if (entries.length === 0) {
+    return '';
+  }
+  let block = `\n--- Project Knowledge Bank (${entries.length} entries) ---\n` +
+    `Only CONFIRMED entries are included. If one contradicts what you observe in the code now, the code wins.\n\n`;
+  let len = block.length;
+  for (const e of entries) {
+    const line = `- [CONFIRMED] ${e.title}: ${e.summary}` +
+      (e.symbols && e.symbols.length ? ` (symbols: ${e.symbols.join(', ')})` : '') + '\n';
+    if (len + line.length > KB_CHAR_BUDGET) break;
+    block += line;
+    len += line.length;
+  }
+  block += `--- End Project Knowledge ---\n\n`;
+  return block;
 }
 
 // bd may prepend a `warning: ...` line to its --json stdout (notably bd 1.1.0's
@@ -2260,10 +3310,31 @@ const stamp = async (name) => {
 };
 await stamp('setup');
 
+// ---- KB PRIMING (once at sprint start; refreshed per cycle) ----
+let kbContext = '';
+{
+  const kbResult = await primeKB(repo);
+  if (kbResult) {
+    kbContext = buildKBContext(kbResult);
+    log(`KB primed: ${(kbResult.entries || []).length} entries, imported=${kbResult.imported}`);
+  } else {
+    log('KB priming unavailable -- proceeding without KB context');
+  }
+}
+
 while (cycleCount < maxCycles) {
   cycleCount++;
   cycleCostUsd = 0;
   log(`\n=== Cycle ${cycleCount}/${maxCycles} | goal: ${goal} ===`);
+
+  // ---- KB REFRESH (per cycle -- picks up entries captured in previous cycles) ----
+  if (cycleCount > 1) {
+    const kbRefresh = await primeKB(repo);
+    if (kbRefresh) {
+      kbContext = buildKBContext(kbRefresh);
+      log(`KB refreshed: ${(kbRefresh.entries || []).length} entries`);
+    }
+  }
 
   // ---------------------------------------------------------------- RESUME CHECK + CYCLE CHECKPOINT
 
@@ -2327,6 +3398,7 @@ while (cycleCount < maxCycles) {
     let plannerResult = null;
     if (!skipPlanner) {
       plannerResult = await dispatch(
+      kbContext +
       `Repo: ${repo}\nBranch: ${branch}\nBase branch: ${base_branch}\n` +
       `Sprint goals: ${rootSummary}\n` +
       (requirementsFile ? `Additional context: ${requirementsFile}\n` : '') +
@@ -2389,8 +3461,10 @@ while (cycleCount < maxCycles) {
           `Do NOT add new scope beyond the original sprint goals and open bugs/enhancements.\n` +
           `Do NOT re-create tasks that are already closed.\n`
         : '') +
-      `Confirm with any text when done.`,
-      { model: MODEL_OPUS, label: plannerLabel, phase: 'Plan', agentType: 'planner',
+      `Return status "OK" when the DAG is in place, or "BLOCKED" with notes if you\n` +
+      `could not create it. List the feature and task ids you created in featureIds\n` +
+      `and taskIds.`,
+      { model: MODEL_OPUS, label: plannerLabel, phase: 'Plan', schema: PLANNER_SCHEMA, agentType: 'planner',
         context: `planning sprint goals ${rootSummary}` }
     );
 
@@ -2398,6 +3472,7 @@ while (cycleCount < maxCycles) {
         log(`Planner returned null on cycle ${cycleCount} round ${pi} -- retrying`);
         continue;
       }
+      await runKbWork(repo, 'planner', plannerResult);
     }
 
     const planReviewerLabel = `plan-reviewer-c${cycleCount}-r${pi}`;
@@ -2467,14 +3542,18 @@ while (cycleCount < maxCycles) {
           `doer_tokens=${t.doerTokens} reviewer_tokens=${t.reviewerTokens} output_usd=${t.outputUsd.toFixed(4)}"`
         ),
         `bd export -o "${repo}/.beads/issues.jsonl"`,
-        `git -C "${repo}" add .beads/issues.jsonl`,
+        buildExportShrinkGuardCmd(repo),
         `git -C "${repo}" -c user.name='pm' -c user.email='pm@pm.local' commit --allow-empty -m "plan: approve task DAG"`,
         `git -C "${repo}" push origin ${branch}`,
       ];
-      await dispatchShell(planCommitCmds, {
+      const planCommitRes = await dispatchShell(planCommitCmds, {
         model: MODEL_HAIKU, label: `plan-commit-c${cycleCount}`, phase: 'Plan',
         maxTurns: planCommitCmds.length + 2,
       });
+      // Surface an export-guard refusal/error in the sprint log (non-fatal).
+      const planGuardLine = exportGuardLogLine(
+        detectExportGuardIssue(planCommitRes?.outputs ?? planCommitRes), `plan-commit-c${cycleCount}`);
+      if (planGuardLine) log(planGuardLine);
     } else {
       planFeedback = (planReview && planReview.notes) || '';
       log(`Plan needs changes: ${planFeedback.slice(0, 120)}`);
@@ -2637,6 +3716,7 @@ while (cycleCount < maxCycles) {
 
         const doerOutcomes = await parallel(okWt.map(w =>
           dispatch(
+            kbContext +
             `You are working in an ISOLATED git worktree -- other doers run concurrently in their own worktrees.\n` +
             `Worktree path: ${repo}/${w.path}  (cd into it first; you are on temp branch ${w.branch})\n` +
             `Work ONLY task ${w.id}. Do NOT work any other task.\n\n` +
@@ -2651,7 +3731,10 @@ while (cycleCount < maxCycles) {
             `Return status "VERIFY" when done. Return status "BLOCKED" only for your runbook's blocked cases (missing secret) -- never any other status.`,
             { model: w.model, label: `doer-c${cycleCount}-i${devIter}-${w.id}`, phase: 'Develop', schema: DOER_STATUS_SCHEMA,
               agentType: 'doer', context: `task ${w.id} (worktree)` }
-          ).then(r => ({ w, ok: !!r && r.status === 'VERIFY' })).catch(() => ({ w, ok: false }))
+          ).then(async r => {
+            await runKbWork(repo, 'doer', r);
+            return { w, ok: !!r && r.status === 'VERIFY' };
+          }).catch(() => ({ w, ok: false }))
         ));
 
         // Merge sequentially into the sprint branch (deterministic id order from computeDoerBatch).
@@ -2726,6 +3809,7 @@ while (cycleCount < maxCycles) {
       log(`Doer c${cycleCount}-i${devIter}: ${labelTaskIds(fittedIds)} [model=${streak.model}${streakEstUsd != null ? ` est=$${streakEstUsd.toFixed(4)}` : ''}]`);
 
       const doerResult = await dispatch(
+        kbContext +
         `Repo: ${repo}\nBranch: ${branch}\n\n` +
         (devFeedback
           ? `Reviewer feedback from the previous iteration (read feedback.md in ${repo} for full details):\n${devFeedback}\nAddress every finding before closing tasks.\n\n`
@@ -2744,6 +3828,7 @@ while (cycleCount < maxCycles) {
         { model: streak.model, label: doerLabel, phase: 'Develop', schema: DOER_STATUS_SCHEMA, agentType: 'doer',
           context: `tasks ${fittedIds.join(', ')}` }
       );
+      await runKbWork(repo, 'doer', doerResult);
 
       if (!doerResult) {
         log(`Doer returned null (streak ${streak.model}) -- resetting orphaned in_progress tasks and retrying`);
@@ -2799,6 +3884,7 @@ while (cycleCount < maxCycles) {
     // One reviewer pass covering all streaks worked this iteration.
     const reviewerLabel = `reviewer-c${cycleCount}-i${devIter}: ${labelTaskIds(workedIds)}`;
     const review = await dispatch(
+      kbContext +
       `Repo: ${repo}\nBranch: ${branch}\nBase branch: ${base_branch}\n` +
       `Sprint goals: ${rootSummary}\nTasks worked this iteration: ${workedIds.join(', ')}\n\n` +
       `Review ONLY the work done for the tasks listed above.\n` +
@@ -2815,6 +3901,7 @@ while (cycleCount < maxCycles) {
         context: `reviewing tasks ${workedIds.join(', ')}` }
     );
     log(`Reviewer c${cycleCount}-i${devIter}: ${(review && review.verdict) || 'null'} -- ${labelTaskIds(workedIds)}`);
+    await runKbWork(repo, 'reviewer', review);
 
     if (!approved(review)) {
       devFeedback = (review && review.notes) || '';
@@ -3049,6 +4136,7 @@ await dispatchShell(
 
 const finalReviewLabel = 'final-reviewer';
 const finalReview = await dispatch(
+  kbContext +
   `Repo: ${repo}\nBranch: ${branch}\nBase branch: ${base_branch}\n` +
   `Sprint goals: ${rootSummary}\nGoal: ${goal}\n` +
   (abortReason ? `Sprint ended early: ${abortReason}. Review what was completed.\n` : '') +
@@ -3062,6 +4150,7 @@ const finalReview = await dispatch(
   { model: MODEL_OPUS, label: finalReviewLabel, phase: 'Harvest', schema: REVIEW_SCHEMA, agentType: 'reviewer' }
 );
 log(`Final review: ${finalReview && finalReview.verdict || 'null'}`);
+await runKbWork(repo, 'reviewer', finalReview);
 
 if (!approved(finalReview)) {
   const notes = (finalReview && finalReview.notes) || '';
@@ -3074,7 +4163,7 @@ if (!approved(finalReview)) {
 // Placed deliberately AFTER the final-review verdict is decided (and after its early
 // return) and BEFORE harvest: the verdict is already computed, so a regression result
 // structurally CANNOT perturb the sprint's PASS/FAIL, and running it before harvest lets
-// the harvester mention it in the CHANGELOG. This is the ONLY dispatch of this role in a
+// the harvester mention it in the sprint docs. This is the ONLY dispatch of this role in a
 // sprint -- the per-cycle Test phase does feature closure only.
 //
 // SOFT FAIL, ALWAYS: a null / failed / schema-invalid / thrown result is logged and
@@ -3090,12 +4179,10 @@ if (regressionTestEnabled) {
       `Repo: ${repo}\nBranch: ${branch}\nCycles completed: ${cycleCount}\n` +
       `Sprint goals: ${rootSummary}\n\n` +
       `Follow your runbook (agents/regression-test-runner.md) and regression-test-playbook.md.\n` +
-      `This is the ONCE-PER-SPRINT regression pass. Run BOTH parts:\n` +
-      `  Part 1: the full functional suite against the real bd CLI, at branch HEAD.\n` +
-      `  Part 2: the toy-sprint smoke test -- bring the sandbox up with the playbook's\n` +
-      `          ## Setup section, run its ## Test scenario, and ALWAYS run the playbook's\n` +
-      `          ## Teardown before returning, pass or fail.\n\n` +
-      `File EVERY failure from either part as a STANDALONE bead: "bd create" with NO\n` +
+      `This is the ONCE-PER-SPRINT regression pass. Run every part the playbook defines,\n` +
+      `in its order, at branch HEAD; if it defines a ## Teardown, ALWAYS run it before\n` +
+      `returning, pass or fail.\n\n` +
+      `File EVERY failure from any part as a STANDALONE bead: "bd create" with NO\n` +
       `--parent flag, and do NOT "bd dep add" it to sprint root ${rootIds[0]}, to any\n` +
       `feature, or to any other bead in this sprint. Title each one\n` +
       `"[regression][carry-over] <short description>". The parent-less shape is the point:\n` +
@@ -3105,9 +4192,9 @@ if (regressionTestEnabled) {
       `carry-over bug rather than filing a second one for the same failure.\n\n` +
       `This sprint's verdict is ALREADY DECIDED (final review: APPROVED). Your result is\n` +
       `INFORMATIONAL and does not gate it -- do not present it as a gate.\n\n` +
-      `Return the full contract: passed (boolean), suitePassed (boolean), smokePassed\n` +
-      `(boolean), bugsFiled (array of the parent-less carry-over bead ids, [] if none),\n` +
-      `summary (one paragraph).`,
+      `Return the full contract: passed (boolean), sections (one {name, passed} per part\n` +
+      `the playbook defines, named as the playbook names it), bugsFiled (array of the\n` +
+      `parent-less carry-over bead ids, [] if none), summary (one paragraph).`,
       { model: MODEL_SONNET, label: 'regression-test-runner', phase: 'Harvest',
         schema: REGRESSION_RUN_SCHEMA, agentType: 'regression-test-runner' }
     );
@@ -3118,10 +4205,13 @@ if (regressionTestEnabled) {
   }
   if (regressionResult && typeof regressionResult.passed === 'boolean') {
     const _bugs = Array.isArray(regressionResult.bugsFiled) ? regressionResult.bugsFiled : [];
-    log(`Regression: suitePassed=${regressionResult.suitePassed}, smokePassed=${regressionResult.smokePassed}, passed=${regressionResult.passed}, carry-over bugs filed: ${_bugs.length}${_bugs.length ? ` [${_bugs.join(', ')}]` : ''}`);
+    const _parts = Array.isArray(regressionResult.sections) && regressionResult.sections.length
+      ? ` (${regressionResult.sections.map(s => `${s.name}: ${s.passed === true ? 'pass' : 'fail'}`).join(', ')})`
+      : '';
+    log(`Regression: passed=${regressionResult.passed}${_parts}, carry-over bugs filed: ${_bugs.length}${_bugs.length ? ` [${_bugs.join(', ')}]` : ''}`);
     log(`Regression summary: ${regressionResult.summary}`);
     regressionSummaryLine =
-      `passed=${regressionResult.passed} (suite=${regressionResult.suitePassed}, smoke=${regressionResult.smokePassed})` +
+      `passed=${regressionResult.passed}${_parts}` +
       `${_bugs.length ? `; carry-over beads filed: ${_bugs.join(', ')}` : '; no carry-over beads filed'}`;
   } else {
     log('Regression pass returned no usable result -- ignored (informational only; the sprint is unaffected)');
@@ -3157,8 +4247,25 @@ sprintSummary.summaryText += '\n' + executionSummary.summaryText;
 log('Sprint summary:\n' + sprintSummary.summaryText);
 const analysisArtifactFile = `sprint-logs/${sprintLogBranch}-${effectiveStartedAt}.analysis.md`;
 
+// The analysis file is written locally and never committed: list its pattern in this
+// clone's git exclude file BEFORE anything writes it, so the harvester's commits, the
+// fallback and beads-export-cleanup's `git add -A` / `git add sprint-logs/` all skip it.
+// Without the exclude those would sweep it in, so a failure stops the harvest loudly.
+const analysisExcludeRes = await dispatchShell(
+  [buildGitExcludeCmd(repo, ANALYSIS_EXCLUDE_PATTERN)],
+  { model: MODEL_HAIKU, label: 'analysis-git-exclude', phase: 'Harvest' }
+);
+if (!gitExcludeSucceeded(analysisExcludeRes)) {
+  log(`ERROR: could not add ${ANALYSIS_EXCLUDE_PATTERN} to the local git exclude file of ${repo} -- ` +
+    `harvest NOT run (its commits could sweep the uncommitted analysis file in). ` +
+    `Result: ${JSON.stringify(analysisExcludeRes)}`);
+  await clearSprintState(stateFileRel, 'state-clear-harvestfailed');
+  return { cycles: cycleCount, goalMet, goal, harvest: 'failed' };
+}
+
 const harvestLabel = 'harvester';
 const harvestResult = await dispatch(
+  kbContext +
   `Repo: ${repo}\nBranch: ${branch}\nBase branch: ${base_branch}\n` +
   `Sprint goals: ${rootSummary}\nCycles completed: ${cycleCount}\nGoal met: ${goalMet}\n` +
   `sprintLogFile: ${sprintLogFile}\n` +
@@ -3166,30 +4273,27 @@ const harvestResult = await dispatch(
   `The sprint is complete. Harvest the sprint artefacts.\n` +
   `Follow your runbook (agents/harvester.md).\n\n` +
   `IMPORTANT: Your FIRST action (Step 1 of your runbook) is to write the analysis artifact below ` +
-  `to "${repo}/${analysisArtifactFile}" and commit it before doing anything else.\n\n` +
+  `to "${repo}/${analysisArtifactFile}" before doing anything else. Do NOT git add or commit it: ` +
+  `it stays a local, git-excluded file.\n\n` +
   `analysisText (write this verbatim to ${analysisArtifactFile}):\n` +
   sprintSummary.summaryText + `\n\n` +
-  `costAnalysis (insert this block verbatim into CHANGELOG.md after the summary paragraph):\n` +
-  `${sprintAnalysis.analysisText}\n` +
-  `Final review notes to include in CHANGELOG:\n` +
-  `${(finalReview && finalReview.notes) || '(none)'}\n\n` +
   `Regression pass (once-per-sprint, informational -- does not gate this sprint):\n` +
   `${regressionSummaryLine}\n\n` +
   `Return status "OK" if successful, "FAILED" with notes otherwise.`,
   { model: MODEL_SONNET, label: harvestLabel, phase: 'Harvest', schema: HARVEST_SCHEMA, agentType: 'harvester' }
 );
+await runKbWork(repo, 'harvester', harvestResult);
 
 if (!harvestResult || harvestResult.status !== 'OK') {
   log(`Harvest failed: ${(harvestResult && harvestResult.notes) || 'null'} -- writing analysis fallback`);
-  // JS fallback: write .analysis.md directly from in-memory analysisText so the artifact
-  // is preserved in branch history even when the harvester agent is killed or crashes.
+  // JS fallback: write .analysis.md directly from in-memory analysisText so the local
+  // record exists even when the harvester agent is killed or crashes. Never staged or
+  // committed: the file is git-excluded above.
   const safeContent = sprintSummary.summaryText.replace(/'/g, "'\\''");
   await dispatchShell(
     [
       `mkdir -p "${repo}/sprint-logs"`,
       `printf '%s' '${safeContent}' > "${repo}/${analysisArtifactFile}"`,
-      `git -C "${repo}" add "${analysisArtifactFile}"`,
-      `git -C "${repo}" -c user.name='pm' -c user.email='pm@pm.local' commit --allow-empty -m "chore: sprint-analysis fallback ${branch} ${effectiveStartedAt}"`,
     ],
     { model: MODEL_HAIKU, label: 'harvest-analysis-fallback', phase: 'Harvest' }
   );
@@ -3207,11 +4311,6 @@ if (!harvestResult || harvestResult.status !== 'OK') {
 const updatedCalibration = computeUpdatedCalibration(calibration, sprintAnalysis, effectiveStartedAt, taskAssignments, logEntries);
 const calibrationJson = JSON.stringify(updatedCalibration, null, 2);
 
-const tokenEstimates = {
-  averages: Object.values(updatedCalibration.historical?.tuple_averages || {})
-};
-const tokenEstimatesJson = JSON.stringify(tokenEstimates).replace(/"/g, '\\"');
-
 await parallel([
   dispatch(
     `Write updated calibration file and commit.\n\n` +
@@ -3221,8 +4320,6 @@ await parallel([
     `Step 3: Commit the file:\n` +
     `  git -C "${repo}" add sprint-logs/calibration.json\n` +
     `  git -C "${repo}" commit -m "chore: update sprint calibration after ${cycleCount} cycle(s) on ${branch}"\n\n` +
-    `Step 4: Update token estimates memory:\n` +
-    `  bd remember "${tokenEstimatesJson}" --key token-estimates-json\n\n` +
     `If the file content is unchanged, the commit may be a no-op -- that is fine.\n` +
     `Return "OK" when done.`,
     { model: MODEL_HAIKU, label: 'calibration-update', phase: 'Harvest' }
@@ -3242,7 +4339,7 @@ await parallel([
 // Also remove sprint process files (requirements.md, feedback.md) from the PR net diff.
 // Step 1 stages any sprint-log entries written by fire-and-forget appendNewEntries
 // calls so the final cycle's JSONL lines are captured even when no later doer runs.
-await dispatch(
+const exportCleanupRes = await dispatch(
   `Persist beads state and clean sprint scaffolding from the PR diff.\n\n` +
   `Step 1 -- Stage sprint-logs and evict scaffold files from the working tree (unconditional):\n` +
   `  git -C "${repo}" add sprint-logs/\n` +
@@ -3250,9 +4347,13 @@ await dispatch(
   `  rm -f "${repo}/feedback.md" "${repo}/requirements.md" 2>/dev/null || true\n\n` +
   `Step 2 -- Export beads state:\n` +
   `  bd export -o "${repo}/.beads/issues.jsonl"\n` +
-  `  git -C "${repo}" add .beads/issues.jsonl\n` +
+  `  ${buildExportShrinkGuardCmd(repo)}\n` +
   `  git -C "${repo}" diff --cached --quiet || git -C "${repo}" -c user.name='pm' -c user.email='pm@pm.local' commit -m "chore: export beads state"\n` +
-  `  (The "diff --cached --quiet || commit" pattern only commits if something actually changed.)\n\n` +
+  `  (The "diff --cached --quiet || commit" pattern only commits if something actually changed.\n` +
+  `   The guard step above prints exactly one line starting with EXPORT_GUARD_OK,\n` +
+  `   EXPORT_GUARD_REFUSED or EXPORT_GUARD_ERROR. On REFUSED/ERROR nothing is staged, so the\n` +
+  `   commit is skipped; do not try to work around it -- continue with Step 3.\n` +
+  `   You MUST copy that EXPORT_GUARD_* line verbatim into your final reply.)\n\n` +
   `Step 3 -- Check what process files are still in the PR diff:\n` +
   `  git -C "${repo}" diff --name-only ${base_branch}...${branch}\n\n` +
   `Step 4 -- For each of requirements.md, feedback.md that appears in the diff:\n` +
@@ -3269,9 +4370,12 @@ await dispatch(
   `  The output must NOT contain requirements.md or feedback.md. If it does, repeat Step 4.\n\n` +
   `Step 6 -- Push all local commits to remote:\n` +
   `  git -C "${repo}" push origin ${branch}\n\n` +
-  `Return "OK" when done.`,
+  `Return "OK" when done, followed on its own line by the EXPORT_GUARD_* line from Step 2, verbatim.`,
   { model: MODEL_HAIKU, label: 'beads-export-cleanup', phase: 'Harvest' }
 );
+// Surface an export-guard refusal/error in the sprint log (non-fatal).
+const harvestGuardLine = exportGuardLogLine(detectExportGuardIssue(exportCleanupRes), 'beads-export-cleanup');
+if (harvestGuardLine) log(harvestGuardLine);
 
 // ------------------------------------------------------------------ DOLT PUSH
 
@@ -3307,7 +4411,7 @@ const harvestPr = await dispatch(
   `  - Cycles run: ${cycleCount}\n` +
   `  - Open items carried forward (if any): bd list --status=open and summarise\n` +
   `  - Final review notes: ${(finalReview && finalReview.notes) || '(none)'}\n` +
-  `  - Token cost summary from: bd recall token-estimates-json\n\n` +
+  `  - Cost analysis (verbatim, in a fenced code block):\n${sprintAnalysis.analysisText}\n\n` +
   `After creating the PR, return its number as prNumber (integer).`,
   { model: MODEL_SONNET, label: 'harvest-pr', phase: 'Harvest',
     schema: { type: 'object', required: ['prNumber'], properties: { prNumber: { type: 'number' }, prUrl: { type: 'string' } } } }

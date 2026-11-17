@@ -370,6 +370,11 @@ export function parseDoltRemoteList(output) {
   } catch (err) {
     throw new Error(`Unexpected 'bd dolt remote list --json' output: '${output}'`);
   }
+  // bd prints the literal JSON `null` (not `[]`) when no Dolt remotes are
+  // configured -- treat that as "no remotes" rather than a parse error.
+  if (list === null) {
+    return [];
+  }
   if (!Array.isArray(list)) {
     throw new Error(`Unexpected 'bd dolt remote list --json' output (not an array): '${output}'`);
   }
@@ -530,7 +535,7 @@ export function checkGitOriginNotHazard(repoPath, sandboxPath = defaultSandboxPa
     return {
       ok: false,
       message: hazardNamed
-        ? `FAIL: git 'origin' remote in '${repoPath}' is '${url}' -- points at ${HAZARD_REMOTE}, so any future 'bd dolt' invocation that auto-provisions a Dolt remote from git origin (apra-fleet-eft.30/eft.35) would re-wire straight back to the real remote even if the checks above currently report clean.`
+        ? `FAIL: git 'origin' remote in '${repoPath}' is '${url}' -- points at ${HAZARD_REMOTE}, so any future 'bd dolt' invocation that auto-provisions a Dolt remote from git origin would re-wire straight back to the real remote even if the checks above currently report clean.`
         : `FAIL: git 'origin' remote in '${repoPath}' is '${url}', which resolves outside the sandbox path '${sandboxPath}' -- it must resolve to a sandbox-local mirror instead.`,
     };
   }
@@ -558,7 +563,7 @@ function main() {
   // own docstring and the file-level "apra-fleet-eft.18.8 FINDING" comment
   // above for why this one no longer gates the exit code below.
   const outboundCheck = checkNoOutboundCommits(repoPath);
-  console.log(`[check-sandbox-sync-remote] ${outboundCheck.message}${outboundCheck.ok ? '' : ' (informational only -- does not fail this guard; see apra-fleet-eft.18.8)'}`);
+  console.log(`[check-sandbox-sync-remote] ${outboundCheck.message}${outboundCheck.ok ? '' : ' (informational only -- does not fail this guard)'}`);
 
   const doltRemoteCheck = checkDoltRemoteAbsent(repoPath, sandboxPath);
   console.log(`[check-sandbox-sync-remote] ${doltRemoteCheck.message}`);

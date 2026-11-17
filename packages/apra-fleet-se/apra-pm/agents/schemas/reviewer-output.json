@@ -5,34 +5,292 @@
   "title": "reviewer output",
   "description": "Canonical machine-readable output contract for the reviewer role. See agents/reviewer.md Step 5 for the prose contract this mirrors.",
   "type": "object",
-  "required": ["verdict", "notes", "reopenIds", "newTasks"],
+  "required": [
+    "verdict",
+    "notes",
+    "reopenIds",
+    "newTasks"
+  ],
   "properties": {
     "verdict": {
       "type": "string",
-      "enum": ["APPROVED", "CHANGES_NEEDED"]
+      "enum": [
+        "APPROVED",
+        "CHANGES_NEEDED",
+        "NEEDS-DECISION"
+      ]
     },
     "notes": {
       "type": "string"
     },
+    "decision": {
+      "type": "object",
+      "description": "REQUIRED when verdict is \"NEEDS-DECISION\", otherwise omit. The decision only a human operator can make before the named bead can go on. The orchestrator files it for an operator verbatim (never truncated), sets the bead aside for the rest of the run without re-dispatching it, and keeps working other ready beads. Use it only for a real choice between alternatives you cannot settle from the bead, its parent or the code -- not for a missing secret or an unmet prerequisite (BLOCKED), and not for an ordinary failure.",
+      "required": [
+        "beadId",
+        "question",
+        "options",
+        "recommendation"
+      ],
+      "properties": {
+        "beadId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The one bead under review that cannot be approved or sent back for rework until the decision is made. The orchestrator reopens it if it is closed and sets it aside."
+        },
+        "question": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The full question, self-contained: what was found, why it blocks the bead, and what must be decided. An operator reads only this and the options."
+        },
+        "options": {
+          "type": "array",
+          "minItems": 2,
+          "description": "At least two concrete alternatives, each with a short stable id (for example \"a\", \"b\") and its full text: what it means and what it costs.",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "text"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "text": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "recommendation": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The option id you recommend, followed by why."
+        }
+      }
+    },
     "reopenIds": {
       "type": "array",
-      "items": { "type": "string" }
+      "items": {
+        "type": "string"
+      }
     },
     "replanIds": {
       "type": "array",
-      "items": { "type": "string" }
+      "items": {
+        "type": "string"
+      }
+    },
+    "buildFailing": {
+      "type": "boolean",
+      "description": "Optional. true when the project's build or test suite FAILS on the branch under review. On a CHANGES_NEEDED verdict the orchestrator guarantees a fix is dispatched: if none of your reopenIds can be reopened and no in-goal newTask covers it, it files an in-goal fix task carrying your notes. Omit or false when the build and tests pass."
     },
     "newTasks": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["title", "description", "priority"],
+        "required": [
+          "title",
+          "description",
+          "priority"
+        ],
         "properties": {
-          "title": { "type": "string" },
-          "description": { "type": "string" },
-          "priority": { "type": "string" }
+          "title": {
+            "type": "string",
+            "description": "Plain text only: letters, digits, space, and . , : ; ! ? ( ) ' _ / [ ] - -- nothing else. No backticks, double quotes, $, or backslash (the title is interpolated into a shell command downstream). Do NOT wrap a command/flag/filename in backticks here -- write it plain (e.g. \"Surface the service registration mode in the status output\") or move the formatted detail into description instead, which has no such restriction. NOT enforced as a hard schema constraint here (deliberately no \"pattern\"): a single out-of-allowlist newTask title must never make ajv reject/retry the WHOLE structured verdict (verdict, notes, reopenIds, and the other newTasks) -- see validateNewTask() in fleet-sprint/runner.js, the actual (per-item, non-fatal) enforcement point, applied after parsing."
+          },
+          "description": {
+            "type": "string"
+          },
+          "priority": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "kb_promotions": {
+      "type": "array",
+      "description": "Entries this reviewer VERIFIED against the tree and is promoting to CONFIRMED. Reviewer-only: promotion is the sole path that mints CONFIRMED, and widening capture does not widen promotion. The engine makes the kb_promote calls.",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "reason"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The entry id, copied verbatim from the 'KNOWLEDGE BANK -- promotion candidates' block in your dispatch prompt. That block is the ONLY source of promotable ids -- do not call a kb_* tool to find one, and never invent one.",
+            "minLength": 1
+          },
+          "reason": {
+            "type": "string",
+            "description": "The evidence for this promotion -- what you actually checked. kb_promote refuses a trivial reason.",
+            "minLength": 20
+          }
+        }
+      }
+    },
+    "kb_discards": {
+      "type": "array",
+      "description": "Promotion candidates this reviewer showed to be WRONG and is discarding (the entry drops out of every later read). Reviewer-only, with the same evidence bar as kb_promotions. An id may not appear in both kb_promotions and kb_discards -- the engine refuses both. The engine makes the discard calls.",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "reason"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The entry id, copied verbatim from the 'KNOWLEDGE BANK -- promotion candidates' block in your dispatch prompt. That block is the ONLY source of discardable ids -- do not call a kb_* tool to find one, and never invent one.",
+            "minLength": 1
+          },
+          "reason": {
+            "type": "string",
+            "description": "The evidence that the entry is wrong -- what you actually checked that contradicts its claim.",
+            "minLength": 20
+          }
+        }
+      }
+    },
+    "kb_demotions": {
+      "type": "array",
+      "description": "CONFIRMED entries a re-check during this review shows do not hold -- whether you are now less certain of the claim or have shown it wrong -- demoted back to INFERRED. Not for a drifted or removed basis. Reviewer-only, with the same evidence bar as kb_promotions and kb_discards. An id may appear in only one of kb_promotions, kb_discards and kb_demotions -- the engine refuses it in all lists it appears in. The engine makes the demotion calls.",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "reason",
+          "evidence_files"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The entry id, copied verbatim from the 'KNOWLEDGE BANK -- demotion candidates' block in your dispatch prompt. That block is the ONLY source of demotable ids -- do not call a kb_* tool to find one, and never invent one.",
+            "minLength": 1
+          },
+          "reason": {
+            "type": "string",
+            "description": "What you re-checked this review that the claim does not hold up against.",
+            "minLength": 20
+          },
+          "evidence_files": {
+            "type": "array",
+            "description": "The repo-relative files you re-checked -- at least one, each a real file in the repo.",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
+    "kb_captures": {
+      "type": "array",
+      "description": "Durable knowledge this role verified during its run. The engine makes the kb_capture calls; the role only decides. Optional -- omit or send [] to capture nothing.",
+      "items": {
+        "type": "object",
+        "required": [
+          "type",
+          "title",
+          "summary",
+          "content",
+          "source_files"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "knowledge",
+              "learning",
+              "runbook"
+            ]
+          },
+          "title": {
+            "type": "string",
+            "minLength": 8
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 20
+          },
+          "content": {
+            "type": "string",
+            "description": "Full detail of the entry. REQUIRED -- a capture without it is rejected and persists nothing.",
+            "minLength": 40
+          },
+          "source_files": {
+            "type": "array",
+            "description": "Files that make this claim checkable. At least one is REQUIRED -- an entry with no basis is rejected, because the freshness sweep can never stale it.",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1
+          },
+          "symbols": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "toolUse": {
+      "type": "object",
+      "description": "How this run used the kb_* and code_* tools its role prompt expects (Step 0). Optional for backward compatibility, but expected: report \"unavailable\" or \"not_needed\" with a note rather than skipping the calls silently.",
+      "required": [
+        "kb",
+        "code"
+      ],
+      "properties": {
+        "kb": {
+          "type": "string",
+          "enum": [
+            "used",
+            "unavailable",
+            "not_needed"
+          ],
+          "description": "used = kb_query was called (kb_session_prime alone is not used)."
+        },
+        "code": {
+          "type": "string",
+          "enum": [
+            "used",
+            "unavailable",
+            "not_needed"
+          ],
+          "description": "used = code_impact, code_context or code_graph was called."
+        },
+        "note": {
+          "type": "string",
+          "description": "Why a value is not \"used\": which tool was missing or failed, or why no lookup was needed."
         }
       }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "verdict": {
+            "const": "NEEDS-DECISION"
+          }
+        },
+        "required": [
+          "verdict"
+        ]
+      },
+      "then": {
+        "required": [
+          "decision"
+        ]
+      }
+    }
+  ]
 }

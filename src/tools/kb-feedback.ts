@@ -1,0 +1,72 @@
+import { z } from 'zod';
+import { KB_REMOVED_SCOPE_KEYS_SHAPE } from '../services/knowledge/kb-removed-scope-keys.js';
+import { getSelfKbProviders, memberOwnerTag, type KbAnchor } from '../services/knowledge/kb-self.js';
+import { KbMemberViewError } from '../services/knowledge/member-bible-view.js';
+import { isSqliteProject } from '../services/knowledge/require-sqlite-project.js';
+import { HttpKbProvider } from '../services/knowledge/http-provider.js';
+import type { Author } from '../services/knowledge/types.js';
+
+// D5 (T2.3) pattern, DUPLICATED here rather than imported: src/tools/kb-capture.ts
+// is touched ONLY by T1.1 per PLAN.md's shared-file sequencing, so this tool
+// validates its own role hint against the same Author enum instead of
+// exporting a shared helper out of a file this task must not modify.
+const AUTHOR_VALUES: readonly Author[] = ['doer', 'reviewer', 'planner', 'plan-reviewer', 'kb-agent', 'kb-reconciler', 'harvest', 'pm', 'user'];
+
+export function validateAuthor(role: string | undefined): Author | 'unknown' {
+  if (role && (AUTHOR_VALUES as readonly string[]).includes(role)) {
+    return role as Author;
+  }
+  return 'unknown';
+}
+
+export const kbFeedbackSchema = z.object({
+  id: z.string().min(1).describe('ID of the KB entry the feedback applies to'),
+  reason: z.string().min(1).describe('What was wrong in practice -- appended to the entry content as an ASCII feedback note'),
+  role: z.string().optional()
+    .describe('Role hint for provenance: doer/reviewer/planner/plan-reviewer/kb-agent/harvest/pm/user. Validated server-side against the Author enum; invalid or absent stamps "unknown" in the note.'),
+  // Removed pre-redesign scope keys: declared only so a caller still passing one
+  // is refused with E-SCOPE-KEY-REMOVED instead of silently re-scoped.
+  ...KB_REMOVED_SCOPE_KEYS_SHAPE,
+});
+
+export type KbFeedbackInput = z.infer<typeof kbFeedbackSchema>;
+
+// D7 (F8): downvote a KB entry that proved wrong in practice. Marks stale=1 +
+// flagged_for_review=1 and appends an ASCII feedback note "[feedback <ISO>]
+// <validated-role>: <reason>" (CONTENT_CAP respected, enforced inside
+// SqliteProvider.feedback()). NEVER deletes and NEVER touches confidence -- a
+// downvoted CONFIRMED entry stays CONFIRMED-but-stale-flagged; the human
+// resolves it in kb-review. EXCEPTION: an ACTIVE user-directive is flagged for
+// review only (never staled) because directives outrank agent experience and
+// the human decides -- see SqliteProvider.feedback() for the exact guard.
+export async function kbFeedback(input: KbFeedbackInput, anchor?: KbAnchor): Promise<string> {
+  // A MEMBER session does not downvote entries in the shared KB, under either
+  // provider: a typed no-op that touches no store (checked before any provider
+  // is opened).
+  if (memberOwnerTag(anchor) !== undefined) {
+    throw new KbMemberViewError(
+      'E-MEMBER-VIEW-READ-ONLY',
+      '',
+      `kb_feedback is not available in a member session: a member session does not flag entries in the shared KB (over SQLite its reads come from the read-only checkout bible; under an http KB provider the server's entries are shared by every member); entry '${input.id}' was not changed.`,
+      'Run kb_feedback from a FULL session (no member identity), or flag the entry for review through the maintainer.',
+    );
+  }
+  const providers = await getSelfKbProviders(anchor);
+  const author = validateAuthor(input.role);
+  // An HTTP-backed KB: the remote server owns the entry and decides its
+  // stale/flagged state; its response is returned as is (an unreachable
+  // server is a thrown E-KB-HTTP-UNREACHABLE; nothing is queued). Confidence is never written or invented client-side.
+  if (providers.project instanceof HttpKbProvider) {
+    return JSON.stringify(await providers.project.feedback(input.id, input.reason, author));
+  }
+  if (!isSqliteProject(providers.project)) {
+    throw new Error('kb_feedback: this operation is not supported by the configured KB provider');
+  }
+  const entry = await providers.project.feedback(input.id, input.reason, author);
+  return JSON.stringify({
+    id: entry.id,
+    stale: entry.stale,
+    flagged_for_review: entry.flagged_for_review,
+    confidence: entry.confidence,
+  });
+}

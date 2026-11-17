@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/schemas/kb_context.request.json#",
+  "x-invariant": [
+    "INV-05"
+  ],
+  "$ref": "#/$defs/v1-kb_context-request",
+  "$defs": {
+    "v1-kb_context-request": {
+      "type": "object",
+      "properties": {
+        "confidence": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "CONFIRMED",
+              "INFERRED",
+              "UNVERIFIED"
+            ]
+          },
+          "minItems": 1,
+          "description": "Only consider cached file entries whose confidence tier is in this list. Default when omitted: [\"CONFIRMED\",\"INFERRED\"], undisputed entries only -- a context-cache entry is verified by its content hash, and captures are stored at most INFERRED, so a CONFIRMED-only default would report almost every file missing. UNVERIFIED entries are considered only when listed explicitly."
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "description": "File paths to check freshness for"
+        },
+        "repo_path": {
+          "description": "REMOVED -- do not pass. A call carrying it fails with E-SCOPE-KEY-REMOVED; the KB is always the calling session's own."
+        },
+        "repo": {
+          "description": "REMOVED -- do not pass. A call carrying it fails with E-SCOPE-KEY-REMOVED; the KB is always the calling session's own."
+        },
+        "repo_remote_url": {
+          "description": "REMOVED -- do not pass. A call carrying it fails with E-SCOPE-KEY-REMOVED; the KB is always the calling session's own."
+        }
+      },
+      "required": [
+        "files"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

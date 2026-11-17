@@ -3,7 +3,6 @@
   "toy": "https://github.com/Apra-Labs/fleet-e2e-toy",
   "suites": [
     { "id": "s1", "provider": "claude", "cli": "claude", "minCommits": 5, "expectedIssues": 3, "excludeGates": ["process-discipline"] },
-    { "id": "s7", "provider": "gemini", "cli": "gemini", "minCommits": 5, "expectedIssues": 3, "excludeGates": ["process-discipline"] },
     { "id": "s8", "provider": "agy", "cli": "agy", "minCommits": 5, "expectedIssues": 3, "excludeGates": ["process-discipline"] },
     { "id": "s9", "provider": "opencode", "cli": "opencode", "model": "opencode/mimo-v2.5-free", "scenario": "scenario-opencode.md", "minCommits": 5, "expectedIssues": 3, "excludeGates": ["process-discipline"] },
     { "id": "s10", "provider": "claude", "cli": "claude", "scenario": "scenario-auto-sprint.md", "minCommits": 3, "expectedIssues": 3, "excludeGates": ["process-discipline", "harvester-ran"], "expectArgsSkill": true }

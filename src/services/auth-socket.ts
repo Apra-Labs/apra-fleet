@@ -7,6 +7,8 @@ import { spawn, execSync, ChildProcess } from 'node:child_process';
 import { FLEET_DIR } from '../paths.js';
 import { encryptPassword } from '../utils/crypto.js';
 import { logError } from '../utils/log-helpers.js';
+import { windowsExecutable } from '../os/windows-executable.js';
+import { escapeShellArg, escapeAppleScriptString, quoteWindowsArgv } from '../utils/shell-escape.js';
 import { OOB_TIMEOUT_MS } from '../utils/oob-timeout.js';
 import { launchAuthWeb } from './auth-web.js';
 import { fleetEvents } from './event-bus.js';
@@ -49,7 +51,7 @@ function killProcess(pid: number): void {
   if (!pid) return;
   try {
     if (process.platform === 'win32') {
-      execSync(`taskkill /F /PID ${pid}`, { stdio: 'ignore' });
+      execSync(`taskkill /F /PID ${pid}`, { stdio: 'ignore', windowsHide: true });
     } else {
       process.kill(pid, 'SIGTERM');
     }
@@ -371,14 +373,18 @@ async function collectOobInput(
           }
         }
         const manualMsg = result.slice('fallback:'.length);
-        resolve({ fallback: `🔐 ${manualMsg}\n\nOnce the user has entered the ${inputType}, call ${toolName} again with the same parameters.` });
+        resolve({
+          fallback: mode === 'confirm'
+            ? `${manualMsg}\n\nOnce the user has entered the ${inputType}, call ${toolName} again with the same parameters.`
+            : `${manualMsg}\n\nThen call ${toolName} again with {{secret.NAME}} in place of the missing ${inputType}.`,
+        });
       }
     });
 
     const raceResult = await Promise.race([passwordPromise, cancellationPromise]);
 
     if (raceResult === null) {
-      // The terminal exited with code 0 (Windows `start /wait` always exits 0, even
+      // The terminal exited with code 0 (some terminal launchers exit 0 even
       // on user-close). Wait briefly for any in-flight socket message — if the user
       // genuinely submitted, the password arrives within milliseconds of process exit.
       // If nothing arrives in 500 ms, treat it as a user cancellation.
@@ -524,7 +530,21 @@ function getAuthCommand(memberName: string, extraArgs?: string[]): { cmd: string
   return { cmd: process.argv[0], args: [indexJs, ...cmdArgs] };
 }
 
-function buildHeadlessFallback(memberName: string, reason: string, context?: { command?: string; onMember?: string }, extraArgs?: string[]): string {
+/**
+ * The manual-entry instruction shown when no terminal (and no browser UI) can
+ * collect a credential. ASCII only.
+ *
+ * Credential-collection modes name the credential by the caller's prompt
+ * label (the `--prompt` value in `extraArgs`, e.g. a provider's
+ * missingCredential.promptFor text) and tell the operator to store it under
+ * a secret NAME of their choosing, then pass {{secret.NAME}}. The member name
+ * is never offered as a secret name: `secret --set <member>` stored the value
+ * under the member's name, which no credential field references.
+ *
+ * Confirm mode keeps `secret --confirm <name>`: there `memberName` IS the
+ * credential name being confirmed (see collectOobConfirm).
+ */
+export function buildHeadlessFallback(memberName: string, reason: string, context?: { command?: string; onMember?: string }, extraArgs?: string[]): string {
   const isConfirm = extraArgs?.includes('--confirm') ?? false;
   let contextLines = '';
   if (context?.onMember && context?.command) {
@@ -533,9 +553,16 @@ function buildHeadlessFallback(memberName: string, reason: string, context?: { c
     contextLines = `\n\n  Command: ${context.command}`;
   }
   if (isConfirm) {
-    return `fallback:${reason}${contextLines}\n\nRun this in a separate terminal to confirm:\n  ! apra-fleet secret --confirm ${memberName}\n\nAlternatively, pre-store the value with credential_store_set and reference it as {{secure.NAME}} in the credential field.`;
+    return `fallback:${reason}${contextLines}\n\nRun this in a separate terminal to confirm:\n  ! apra-fleet secret --confirm ${memberName}\n\nAlternatively, pre-store the value with credential_store_set and reference it as {{secret.NAME}} in the credential field.`;
   }
-  return `fallback:${reason}${contextLines}\n\nRun this in a separate terminal to provide the credential:\n  ! apra-fleet secret --set ${memberName}\n\nAlternatively, pre-store the value with credential_store_set and reference it as {{secure.NAME}} in the credential field.`;
+  const promptIdx = extraArgs?.indexOf('--prompt') ?? -1;
+  const promptLabel = extraArgs && promptIdx !== -1 && promptIdx + 1 < extraArgs.length
+    ? extraArgs[promptIdx + 1]
+    : (extraArgs?.includes('--api-key') ? `Enter API key for ${memberName}` : `Enter password for ${memberName}`);
+  return `fallback:${reason}${contextLines}\n\nNo terminal is available to ask for this credential: "${promptLabel}".`
+    + `\nStore it as a named fleet secret (choose any NAME, e.g. one per credential) in a separate terminal:`
+    + `\n  ! apra-fleet secret --set NAME --persist`
+    + `\n(or use credential_store_set), then pass {{secret.NAME}} in the credential field when calling the tool again.`;
 }
 
 /**
@@ -584,7 +611,7 @@ function findLinuxTerminal(): TerminalEntry | null {
   if (termProg && termProgramMap[termProg]) {
     const entry = termProgramMap[termProg];
     try {
-      execSync(`which ${entry.bin}`, { stdio: 'ignore' });
+      execSync(`which ${entry.bin}`, { stdio: 'ignore', windowsHide: true });
       return entry;
     } catch { /* not in PATH, fall through */ }
   }
@@ -613,11 +640,72 @@ function findLinuxTerminal(): TerminalEntry | null {
 
   for (const entry of candidates) {
     try {
-      execSync(`which ${entry.bin}`, { stdio: 'ignore' });
+      execSync(`which ${entry.bin}`, { stdio: 'ignore', windowsHide: true });
       return entry;
     } catch { /* not found */ }
   }
   return null;
+}
+
+/**
+ * Build the AppleScript that opens a macOS Terminal window, runs the auth
+ * command in it, and waits for it to finish. Terminal's `do script` hands the
+ * string to the user's login shell, so every argv element is POSIX
+ * single-quoted (member names and the --prompt text can carry spaces and
+ * caller-supplied host/username values), and the whole command is then escaped
+ * for the AppleScript string literal (backslash first, then double quote).
+ * The command writes its own exit code to `tmpFile` so the caller can read it.
+ * Exported for tests.
+ */
+export function buildMacTerminalAppleScript(fullArgs: string[], tmpFile: string): string {
+  const command = [...fullArgs.map(escapeShellArg), `; echo $? > ${escapeShellArg(tmpFile)}`].join(' ');
+  return `
+            tell application "Terminal"
+                activate
+                set w to do script "${escapeAppleScriptString(command)}"
+                delay 1
+                repeat while busy of w
+                    delay 0.5
+                end repeat
+            end tell
+          `;
+}
+
+/** Title of the Windows credential-entry console window (set by the child). */
+export const WINDOWS_AUTH_WINDOW_TITLE = 'Fleet Password Entry';
+
+/** Env var the `secret` CLI reads to title its console window on Windows. */
+export const OOB_WINDOW_TITLE_ENV = 'APRA_FLEET_OOB_WINDOW_TITLE';
+
+// Fixed launcher script: the executable and its argument line arrive via env
+// vars, so no caller-influenced text is ever parsed by cmd.exe or PowerShell.
+// Start-Process passes the argument line verbatim to CreateProcess, where the
+// child's CRT splits it (see quoteWindowsArgv).
+const WINDOWS_AUTH_LAUNCHER_PS = [
+  "$ErrorActionPreference = 'Stop'",
+  '$exe = $env:APRA_FLEET_OOB_EXE',
+  '$argLine = $env:APRA_FLEET_OOB_ARGS',
+  'Remove-Item Env:APRA_FLEET_OOB_EXE, Env:APRA_FLEET_OOB_ARGS -ErrorAction SilentlyContinue',
+  '$p = Start-Process -FilePath $exe -ArgumentList $argLine -Wait -PassThru',
+  'exit $p.ExitCode',
+].join('; ');
+
+/**
+ * Build the spawn() call that opens the Windows credential-entry console.
+ * Returns the file/argv for a hidden PowerShell launcher plus the env vars it
+ * reads. Exported for tests.
+ */
+export function buildWindowsAuthLaunch(fullArgs: string[]): { file: string; args: string[]; env: Record<string, string> } {
+  const [exe, ...rest] = fullArgs;
+  return {
+    file: windowsExecutable('powershell.exe'),
+    args: ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(WINDOWS_AUTH_LAUNCHER_PS, 'utf16le').toString('base64')],
+    env: {
+      APRA_FLEET_OOB_EXE: exe,
+      APRA_FLEET_OOB_ARGS: rest.map(quoteWindowsArgv).join(' '),
+      [OOB_WINDOW_TITLE_ENV]: WINDOWS_AUTH_WINDOW_TITLE,
+    },
+  };
 }
 
 /**
@@ -665,21 +753,7 @@ export function launchAuthTerminal(
         let exitCode = 1; // Default to cancellation
         const tmpFile = path.join(os.tmpdir(), `fleet-auth-exit-${Date.now()}`);
         try {
-          // The command to run in the terminal. It must be a single string.
-          // It writes its own exit code to a temp file so we can read it later.
-          const command = [...fullArgs, `; echo $? > "${tmpFile}"`].join(' ');
-
-          // AppleScript to launch terminal, run command, and wait for it to be "not busy".
-          const appleScript = `
-            tell application "Terminal"
-                activate
-                set w to do script "${command.replace(/"/g, '\\"')}"
-                delay 1
-                repeat while busy of w
-                    delay 0.5
-                end repeat
-            end tell
-          `;
+          const appleScript = buildMacTerminalAppleScript(fullArgs, tmpFile);
 
           const child = spawn('osascript', ['-']);
           child.stdin.write(appleScript);
@@ -712,11 +786,12 @@ export function launchAuthTerminal(
       })();
       return 'launched';
     } else if (platform === 'win32') {
-      // Windows: start /wait ensures that the parent cmd.exe process waits for the new
-      // terminal window to be closed. This allows us to capture the exit event.
-      // The title argument to start is required.
-      const spawnArgs = ['/c', 'start', 'Fleet Password Entry', '/wait', ...fullArgs];
-      child = spawn('cmd', spawnArgs, { stdio: 'ignore' });
+      // Windows: a hidden PowerShell launcher opens the new console window with
+      // Start-Process -Wait, so the exit event fires when that window closes.
+      // cmd.exe is deliberately not involved (it expands % and treats & | ^ as
+      // operators inside the --prompt text); see buildWindowsAuthLaunch.
+      const launch = buildWindowsAuthLaunch(fullArgs);
+      child = spawn(launch.file, launch.args, { stdio: 'ignore', windowsHide: true, env: { ...process.env, ...launch.env } });
       if (child.pid) {
         const pending = pendingRequests.get(memberName);
         if (pending) pending.spawned_pid = child.pid;
@@ -725,7 +800,7 @@ export function launchAuthTerminal(
       // Linux: find available terminal emulator and use its exec-flag convention.
       const terminal = findLinuxTerminal();
       if (!terminal) {
-        return `fallback:Could not find a terminal emulator. Ask the user to run manually:\n  ${[cmd, ...args].join(' ')}\nAlternatively, pre-store the value with credential_store_set and reference it as {{secure.NAME}} in the credential field.`;
+        return `fallback:Could not find a terminal emulator. Ask the user to run manually:\n  ${[cmd, ...args].join(' ')}\nAlternatively, pre-store the value with credential_store_set and reference it as {{secret.NAME}} in the credential field.`;
       }
       child = spawn(terminal.bin, [...terminal.execArgs, ...fullArgs], { detached: true, stdio: 'ignore' });
       if (child.pid) {
@@ -743,6 +818,6 @@ export function launchAuthTerminal(
 
     return 'launched';
   } catch (err: any) {
-    return `fallback:Could not open a terminal window. Ask the user to run manually:\n  ${[cmd, ...args].join(' ')}\nError: ${err.message}\nAlternatively, pre-store the value with credential_store_set and reference it as {{secure.NAME}} in the credential field.`;
+    return `fallback:Could not open a terminal window. Ask the user to run manually:\n  ${[cmd, ...args].join(' ')}\nError: ${err.message}\nAlternatively, pre-store the value with credential_store_set and reference it as {{secret.NAME}} in the credential field.`;
   }
 }

@@ -1,0 +1,25 @@
+{
+  "tool": "kb_capture",
+  "case": "happy-contradiction-b",
+  "kind": "happy",
+  "request": {
+    "type": "learning",
+    "title": "helperBar now works under concurrent calls",
+    "summary": "helperBar in src/helper.ts now works correctly for concurrent calls after a guard was added.",
+    "content": "helperBar now works: a re-entrancy guard was added so concurrent calls no longer collide.",
+    "source_files": [
+      "src/helper.ts"
+    ],
+    "symbols": [
+      "helperBar"
+    ]
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"id\":\"e7446900-9cfe-46d4-8d5b-caa4133104fb\",\"audn_decision\":\"flagged\",\"confidence_clamped\":false}"
+      }
+    ]
+  }
+}

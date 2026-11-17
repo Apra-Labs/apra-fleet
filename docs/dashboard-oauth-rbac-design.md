@@ -1,21 +1,33 @@
-<!-- llm-context: Design proposal (not yet implemented) for apra-fleet-us9.16 --
-     Dashboard OAuth + RBAC + admin provisioning, the human-user auth system for
-     fleet.apralabs.com. Distinct from member/workspace_id auth (docs/hub-spoke-master-plan.md
-     section 3, packages/fleet-api-contract/src/schemas/jwt.ts). Read this before
-     implementing us9.16 -- it exists specifically because that issue is flagged
-     Opus/security-sensitive (privilege-escalation risk in role/workspace-assignment
-     edge cases) and deserves a reviewed design before code, not a quick pass. -->
+<!-- llm-context: Design record for Dashboard OAuth + RBAC + admin provisioning, the
+     human-user auth system in src/hub-service/. Distinct from member/workspace_id auth
+     (docs/hub-spoke-master-plan.md section 3,
+     packages/fleet-api-contract/src/schemas/jwt.ts). Read for the threat model and the
+     privilege-escalation edge cases the implementation guards against; note that the
+     shipped schema differs from the model proposed below. -->
 <!-- keywords: OAuth, RBAC, dashboard auth, human user, pending approval, superadmin,
-     privilege escalation, apra-fleet-us9.16 -->
+     privilege escalation -->
 
-# Dashboard OAuth + RBAC Design Proposal (apra-fleet-us9.16)
+# Dashboard OAuth + RBAC Design
 
-Status: design proposal, not implemented. Written because this issue is explicitly
-flagged Opus/high-risk ("a real RBAC state machine... easy to get subtly wrong, e.g.
-privilege escalation via role/workspace-assignment edge cases") -- the appropriate
-next step is a reviewed design, not code written under time pressure. This document
-exists to make that design review possible without guessing at an external reference
-(`apra-lic-mgr`) this repo can't inspect.
+Status: implemented, with one deliberate divergence. The OAuth + RBAC + admin-approval
+system described here ships in `src/hub-service/` -- `users.ts` (`findOrCreateUser`,
+`approveUser`, `hasWorkspaceAccess`), `session-jwt.ts`, the OAuth callback and
+`/admin/users` routes with platform-admin gating in `http-server.ts`, the
+`db/migrations/005_dashboard_users_schema.sql` schema, and tests under
+`tests/hub-service/`.
+
+**Divergence from section 2 below:** this document proposes a per-workspace `role`
+column on `user_workspace_roles`. What shipped instead is a single uniform `role` on
+`users` plus `is_platform_admin`, with `user_workspace_roles` as a plain membership
+table carrying no role column -- see the migration's own header note for why. Read
+section 2 as the reasoning that was considered, not as the current schema.
+
+Like everything else in `src/hub-service/`, this is reference-only: the service is not
+deployed (see `docs/adr-tier3-ownership.md`).
+
+The document was written because the work is security-sensitive ("a real RBAC state
+machine... easy to get subtly wrong, e.g. privilege escalation via
+role/workspace-assignment edge cases") and deserved a reviewed design before code.
 
 ## 1. A genuine ambiguity in the existing contract, surfaced by trying to implement this
 

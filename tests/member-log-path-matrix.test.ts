@@ -41,6 +41,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import path from 'node:path';
 import os from 'node:os';
 import type { Agent, SSHExecResult } from '../src/types.js';
+import { decodePowerShellEncodedCommand } from './test-helpers.js';
 
 const { mockExecCommand, mockLogWarn } = vi.hoisted(() => ({
   mockExecCommand: vi.fn<(cmd: string, timeoutMs?: number) => Promise<SSHExecResult>>(),
@@ -284,8 +285,11 @@ describe('getMemberHomeDir -- probe, cache, and graceful failure', () => {
     expect(home).toBe(MEMBER_HOME[memberOs]);
     const cmd = mockExecCommand.mock.calls[0]![0];
     if (memberOs === 'windows') {
-      expect(cmd).toContain('USERPROFILE');
+      // Delivered via wrapPowerShellEncoded (base64 -EncodedCommand), not a
+      // raw inline string -- decode to inspect the actual script.
       expect(cmd).toContain('powershell');
+      const decoded = decodePowerShellEncodedCommand(cmd);
+      expect(decoded).toContain('USERPROFILE');
     } else {
       expect(cmd).toContain('$HOME');
       expect(cmd).not.toContain('USERPROFILE');

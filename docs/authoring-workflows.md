@@ -111,15 +111,16 @@ resolution order the launcher itself performs before your entry runs
 (`docs/adr-workflow-server-resolution.md`, binding on `src/cli/workflow.ts`):
 
 1. **Forced-transport override** -- `APRA_FLEET_TRANSPORT=stdio` skips
-   straight to stdio self-spawn; `APRA_FLEET_TRANSPORT=http` requires a
+   straight to a private stdio server; `APRA_FLEET_TRANSPORT=http` requires a
    healthy HTTP singleton or fails loudly (no silent stdio fallback).
 2. **HTTP singleton probe (the default)** -- attach to the already-running
    `apra-fleet` OS-service singleton (`checkRunningInstance()` against
    `~/.apra-fleet/data/server.json`, a pid-alive check plus a `/health`
    GET) via `StreamableHttpTransport`. Nothing is spawned.
-3. **stdio self-spawn fallback** -- only if no healthy HTTP singleton was
-   found, spawn a private server using `APRA_FLEET_SERVER_BIN`/`_CMD` (or
-   the bundled/dev-layout fallback), then connect with `StdioTransport`.
+3. **Start the shared HTTP server** -- if the singleton is verifiably gone,
+   run `apra-fleet start` (detached; waits for `/health`) and attach over
+   HTTP. A private stdio server is only used for the explicit stdio path
+   (`APRA_FLEET_TRANSPORT=stdio` or `APRA_FLEET_SERVER_CMD`/`_BIN`).
 
 This logic lives in exactly one place -- `@apralabs/apra-fleet-client`'s
 `server-resolution` subpath export -- and both `apra-fleet workflow` and
@@ -138,9 +139,12 @@ HTTP would double-initialize). Prefer this for new workflow code:
 ```js
 import { connectFleet } from '@apralabs/apra-fleet-client/server-resolution';
 
-const { mcpClient, fleetApi, mode } = await connectFleet({ env: process.env });
+const { mcpClient, fleetApi, mode, transport } = await connectFleet({ env: process.env });
 
 // fleetApi is an ApraFleet(mcpClient) wrapper; mcpClient.request(...) also works directly.
+
+// When done: release the server session (stop() alone leaves it open).
+await transport.close();
 ```
 
 A workflow that never needs the fleet server (like `hello-world`) can skip
@@ -177,6 +181,9 @@ if (resolution.mode === 'stdio') {
 }
 
 // mcpClient.request(...) / an ApraFleet(mcpClient) wrapper from here on.
+
+// When done: release the server session (stop() alone leaves it open).
+await transport.close();
 ```
 
 ## 6. Importing the shared engine/client
@@ -226,10 +233,26 @@ loads), follow the same resolution pattern documented in
    through the launcher, so the env var was never set.
 
 This is exactly the belt-and-braces pattern `fleet-sprint`'s installed
-workflow directory uses: `contracts.mjs` is not modified at all --
-`APRA_FLEET_SE_SCHEMAS_DIR` is already its tier-1 override -- and the
-`vendor/schemas/` copy inside `workflows/fleet-sprint/` is the tier-3 hit
-for a direct `node bin/cli.mjs` invocation.
+workflow directory uses: the explicit env-var override
+(`APRA_FLEET_SE_SCHEMAS_DIR`) is always checked first with no further
+fallback, and the `vendor/schemas/` copy inside `workflows/fleet-sprint/` is
+the fallback hit for a direct `node bin/cli.mjs` invocation.
+
+When neither of those applies (no env override, no direct-node fallback in
+play), `contracts.mjs`'s own resolution between its two built-in candidate
+directories is **freshness-first, not fixed-order**: if both a bundled
+(`dist/`) schemas directory and a package-local one exist on disk, it picks
+whichever one was more recently edited, rather than always preferring one
+location by convention. Freshness there is defined as the newest modification
+time among the `.json` files *inside* the directory (recursively), not the
+directory's own timestamp -- a directory's own mtime only moves on
+create/delete/rename of an entry and does not update when an existing file
+inside it is edited in place. This matters because a stale bundled copy left
+over from an old build can otherwise silently shadow a schema someone just
+edited in the package-local source tree, handing a dispatched agent an old
+schema with no error at all. When exactly one of the two candidates exists,
+that one is used with no freshness comparison; when neither exists, schema
+loading gracefully falls back to hand-written literal schemas.
 
 ## 8. Escape hatch: running a workflow with a system Node directly
 

@@ -94,31 +94,37 @@ export function validateRole(role) {
 // 2. Role-owned schema loader (apra-fleet-unw.22, packaging-safe per apra-fleet-bun)
 // ---------------------------------------------------------------------------
 //
-// Schema resolution is layout-aware and bundled-location-first (apra-fleet-
-// bun), because apra-fleet-se must resolve its apra-pm role schemas
-// correctly regardless of how it ended up on disk: a full monorepo git
-// clone (this repo, today), a standalone `npm install @apralabs/apra-fleet-
-// se`, or bundled into the root @apralabs/apra-fleet package's dist/auto-
-// sprint.mjs. `resolveSchemasDir()` below tries, in order:
+// Schema resolution is layout-aware and freshness-first between the two
+// bundled/local candidates (apra-fleet-ot2z.20), because apra-fleet-se must
+// resolve its apra-pm role schemas correctly regardless of how it ended up
+// on disk: a full monorepo git clone (this repo, today), a standalone `npm
+// install @apralabs/apra-fleet-se`, or bundled into the root
+// @apralabs/apra-fleet package's dist/auto-sprint.mjs. `resolveSchemasDir()`
+// below tries, in order:
 //
 //   1. process.env.APRA_FLEET_SE_SCHEMAS_DIR, if set -- an explicit
-//      override, used as-is with no further fallback. Tests use this to
-//      point at a fixture directory; any deployment may also use it to pin
-//      an exact schemas directory.
-//   2. <root>/dist/agents/schemas -- the sibling directory scripts/dist-
-//      pm.mjs ALREADY populates at the root package's `prepublishOnly`
-//      (cpSync of packages/apra-fleet-se/apra-pm/agents -> dist/agents, which includes its
-//      schemas/ subdir). This is what a dist/fleet-sprint.mjs bundle
-//      resolves once apra-fleet-3ns.2 ships it as a dist/ sibling -- no new
-//      copy step needed, this artifact already exists today.
-//   3. packages/apra-fleet-se/apra-pm/agents/schemas -- the package-local apra-pm 
-//      directory. This is what a standalone install of @apralabs/apra-fleet-se
-//      resolves, or a dev checkout.
+//      override, used as-is with no further fallback and no freshness
+//      lookup at all. Tests use this to point at a fixture directory; any
+//      deployment may also use it to pin an exact schemas directory.
+//   2. If only one of <root>/dist/agents/schemas (the sibling directory
+//      scripts/dist-pm.mjs populates at the root package's
+//      `prepublishOnly`, cpSync of packages/apra-fleet-se/apra-pm/agents ->
+//      dist/agents, which includes its schemas/ subdir) or
+//      packages/apra-fleet-se/apra-pm/agents/schemas (the package-local
+//      apra-pm directory) exists, resolve that one. This is the path every
+//      real deployment (standalone install, dist bundle, clean CI checkout)
+//      takes.
+//   3. If BOTH exist, resolve the NEWER one, where a directory's freshness
+//      is the MAXIMUM mtime over the .json files it contains, searched
+//      recursively (not the directory's own mtime, which only moves on
+//      entry create/delete/rename and would miss an in-place edit to an
+//      existing schema file). Ties resolve to dist, preserving the
+//      pre-apra-fleet-ot2z.20 behaviour.
 //
-// If none of 1-3 exist as a directory, `resolveSchemasDir()` returns `null`;
-// `loadVendorSchema` already treats a null/absent directory as the expected,
-// quiet graceful-degradation case (every schema falls back to its hand-
-// written literal in section 3) -- unchanged from before apra-fleet-bun.
+// If neither candidate exists as a directory, `resolveSchemasDir()` returns
+// `null`; `loadVendorSchema` already treats a null/absent directory as the
+// expected, quiet graceful-degradation case (every schema falls back to its
+// hand-written literal in section 3) -- unchanged from before apra-fleet-bun.
 const PACKAGE_ROOT = path.join(__dirname, '..');
 const REPO_ROOT = path.join(PACKAGE_ROOT, '..', '..');
 // Exported (not just module-local) so a drift guard test can compare the two
@@ -136,22 +142,64 @@ function isDirectory(candidate) {
 }
 
 /**
+ * Default freshness lookup for `resolveSchemasDir()`'s both-exist branch:
+ * the maximum mtime (ms) over every `.json` file found by a recursive walk
+ * of `dir`. Tolerates an unreadable or empty directory by treating it as
+ * freshness 0 rather than throwing -- a directory disappearing or being
+ * unreadable between the `exists()` check and this walk must not crash
+ * schema resolution.
+ * @param {string} dir
+ * @returns {number}
+ */
+function newestJsonMtimeMs(dir) {
+    let newest = 0;
+    let entries;
+    try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+        return 0;
+    }
+    for (const entry of entries) {
+        const entryPath = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+            newest = Math.max(newest, newestJsonMtimeMs(entryPath));
+        } else if (entry.isFile() && entry.name.endsWith('.json')) {
+            try {
+                newest = Math.max(newest, fs.statSync(entryPath).mtimeMs);
+            } catch {
+                // Unreadable file between readdir and stat -- ignore it.
+            }
+        }
+    }
+    return newest;
+}
+
+/**
  * Resolves the directory to load vendored role schemas from, per the
- * bundled-location-first precedence documented above. Exported (and
+ * freshness-first precedence documented above. Exported (and
  * side-effect-injectable via `deps`) so tests can exercise every branch in
  * isolation without needing real directories on disk for each case.
- * @param {{ env?: Record<string, string | undefined>, exists?: (candidate: string) => boolean }} [deps]
+ * @param {{ env?: Record<string, string | undefined>, exists?: (candidate: string) => boolean, newestJsonMtimeMs?: (dir: string) => number }} [deps]
  * @returns {string | null}
  */
 export function resolveSchemasDir(deps = {}) {
     const env = deps.env || process.env;
     const exists = deps.exists || isDirectory;
+    const freshnessOf = deps.newestJsonMtimeMs || newestJsonMtimeMs;
 
     const override = env.APRA_FLEET_SE_SCHEMAS_DIR;
     if (override) return override;
 
-    if (exists(DIST_BUNDLED_SCHEMAS_DIR)) return DIST_BUNDLED_SCHEMAS_DIR;
-    if (exists(PACKAGE_LOCAL_SCHEMAS_DIR)) return PACKAGE_LOCAL_SCHEMAS_DIR;
+    const distExists = exists(DIST_BUNDLED_SCHEMAS_DIR);
+    const localExists = exists(PACKAGE_LOCAL_SCHEMAS_DIR);
+
+    if (distExists && localExists) {
+        const localFreshness = freshnessOf(PACKAGE_LOCAL_SCHEMAS_DIR);
+        const distFreshness = freshnessOf(DIST_BUNDLED_SCHEMAS_DIR);
+        return localFreshness > distFreshness ? PACKAGE_LOCAL_SCHEMAS_DIR : DIST_BUNDLED_SCHEMAS_DIR;
+    }
+    if (distExists) return DIST_BUNDLED_SCHEMAS_DIR;
+    if (localExists) return PACKAGE_LOCAL_SCHEMAS_DIR;
 
     return null;
 }
@@ -233,9 +281,12 @@ export function majorVersionFromId(id) {
 export function assertVersionPin(role, schema, expectedMajor) {
     const actualMajor = majorVersionFromId(schema && schema.$id);
     if (actualMajor !== expectedMajor) {
+        // GENERIC-BOUNDARY-EXCEPTION: developer-facing Error about this product's own vendored schema --
+        // thrown at module load and read by an apra-fleet developer, never dispatched to a sprint
+        // agent; it must name the package whose vendored schema drifted (docs/generic-engine-boundary.md).
         throw new Error(
             `[contracts] Version-pin mismatch for role "${role}": this module was written against ` +
-                `schema $id major version ${expectedMajor}, but the vendored schema's $id is ` +
+                `schema $id major version ${expectedMajor}, but the vendored schema's $id is ` + // shell-guard-allow: "$id" here and on the next line is the JSON Schema $id property name (schema.$id), not a shell variable expansion -- this text is a thrown JS Error, never dispatched as a command string.
                 `${JSON.stringify(schema && schema.$id)}. A packages/apra-fleet-se/apra-pm package update changed this ` +
                 `role's contract -- update contracts.mjs (and re-verify every call site that consumes ` +
                 `this schema) before accepting the new vendored version.`,
@@ -265,11 +316,18 @@ export function assertVersionPin(role, schema, expectedMajor) {
 // signal for this second case.
 //
 // Roles allow-listed here are exempt because they legitimately have no
-// output schema file, by design (not by omission):
-//   - "planner": per the layering proposal, the planner's "output" IS the
-//     beads DAG it creates, not a structured verdict object -- there is no
-//     corresponding agents/schemas/planner-output.json anywhere, ever.
-export const ROLES_WITHOUT_OUTPUT_SCHEMA = Object.freeze(new Set(['planner']));
+// output schema file, by design (not by omission).
+//
+// EMPTY as of 2026-08-03. "planner" used to be listed here on the layering
+// proposal's reasoning that the planner's output IS the beads DAG it creates,
+// not a structured verdict object. The KB trust pipeline supersedes that: its
+// Capture-roles decision accepts kb_captures from doer, reviewer, planner and
+// harvester, and a role can only return a field the engine reads if it has an
+// output contract to carry it. agents/schemas/planner-output.json now exists,
+// so the planner is no longer schema-less and a MISSING planner-output.json is
+// once again a real defect worth warning about.
+// See docs/superpowers/specs/2026-08-03-kb-trust-pipeline-design.md, Phase 2.
+export const ROLES_WITHOUT_OUTPUT_SCHEMA = Object.freeze(new Set([]));
 
 /**
  * Emits a loud console.warn when `resolveSchemasDir()`'s resolved directory
@@ -368,10 +426,85 @@ const FALLBACK_planReviewerVerdict = {
     properties: {
         verdict: { type: 'string', enum: ['APPROVED', 'CHANGES_NEEDED'] },
         notes: { type: 'string' },
+        // apra-fleet-3swo.7.8: optional, deliberately NOT in `required` below
+        // -- mirrors packages/apra-fleet-se/apra-pm/agents/schemas/plan-reviewer-output.json.
+        // Machine-readable per-bead findings, so a CHANGES_NEEDED verdict can
+        // be routed to the beads it concerns WITHOUT scanning free-text notes
+        // for literal bead ids (the job extractContestedBeadIds does today in
+        // fleet-sprint/newtask-text.mjs; retiring that scraper is a separate
+        // task). An EMPTY array is meaningful -- it is the explicit
+        // "plan-wide objection, no individual bead named" signal, which is the
+        // same thing the prose scan expressed by matching no id. An ABSENT
+        // field is schema-valid and means "this verdict predates the findings
+        // contract", so the consumer may still fall back to notes for one
+        // release; keeping it out of `required` is what makes that fallback
+        // window possible.
+        findings: {
+            type: 'array',
+            items: {
+                type: 'object',
+                properties: {
+                    id: { type: 'string' },
+                    kind: {
+                        type: 'string',
+                        enum: [
+                            'coverage',
+                            'missing_test_task',
+                            'acceptance_criteria',
+                            'task_size',
+                            'dependency_wiring',
+                            'scope_creep',
+                            'duplicate_work',
+                            'feasibility',
+                            'ready_work',
+                            'model_metadata',
+                            'lane_cohesion',
+                            'other',
+                        ],
+                    },
+                    detail: { type: 'string', minLength: 1 },
+                },
+                required: ['id', 'kind', 'detail'],
+            },
+        },
         taskAssignments: { type: 'array', items: taskAssignmentSchema },
     },
     required: ['verdict', 'notes', 'taskAssignments'],
 };
+
+// The NEEDS-DECISION request a doer or reviewer returns (shared by both
+// fallbacks below). Mirrors the `decision` property of doer-output.json and
+// reviewer-output.json: a bead id, the full question, at least two options
+// each with an id and its text, and a recommendation.
+const FALLBACK_decisionRequest = {
+    type: 'object',
+    properties: {
+        beadId: { type: 'string', minLength: 1 },
+        question: { type: 'string', minLength: 1 },
+        options: {
+            type: 'array',
+            minItems: 2,
+            items: {
+                type: 'object',
+                properties: {
+                    id: { type: 'string', minLength: 1 },
+                    text: { type: 'string', minLength: 1 },
+                },
+                required: ['id', 'text'],
+            },
+        },
+        recommendation: { type: 'string', minLength: 1 },
+    },
+    required: ['beadId', 'question', 'options', 'recommendation'],
+};
+
+// `field` is NEEDS-DECISION -> `decision` is required.
+function needsDecisionRequires(field) {
+    return {
+        if: { properties: { [field]: { const: 'NEEDS-DECISION' } }, required: [field] },
+        then: { required: ['decision'] },
+    };
+}
 
 // Fallback for role "reviewer". Canonical source:
 // packages/apra-fleet-se/apra-pm/agents/schemas/reviewer-output.json.
@@ -379,8 +512,11 @@ const FALLBACK_reviewerVerdict = {
     $id: 'reviewerVerdict',
     type: 'object',
     properties: {
-        verdict: { type: 'string', enum: ['APPROVED', 'CHANGES_NEEDED'] },
+        verdict: { type: 'string', enum: ['APPROVED', 'CHANGES_NEEDED', 'NEEDS-DECISION'] },
         notes: { type: 'string' },
+        // Required when verdict is NEEDS-DECISION (allOf below). Mirrors
+        // reviewer-output.json.
+        decision: FALLBACK_decisionRequest,
         reopenIds: { type: 'array', items: { type: 'string' } },
         // apra-fleet-eft.67.2: optional, deliberately NOT in `required` below
         // -- mirrors packages/apra-fleet-se/apra-pm/agents/schemas/reviewer-output.json
@@ -391,6 +527,11 @@ const FALLBACK_reviewerVerdict = {
         // schema-valid and semantically a no-op, preserving pre-eft.67
         // behavior exactly.
         replanIds: { type: 'array', items: { type: 'string' } },
+        // Optional, NOT required: true when the build or test suite fails on
+        // the branch under review. Lets the orchestrator file an in-goal fix
+        // task when no reopen/newTask survives (ensureRedBranchFixTask in
+        // beads-transitions.mjs). Mirrors reviewer-output.json.
+        buildFailing: { type: 'boolean' },
         newTasks: {
             type: 'array',
             items: {
@@ -405,6 +546,7 @@ const FALLBACK_reviewerVerdict = {
         },
     },
     required: ['verdict', 'notes', 'reopenIds', 'newTasks'],
+    allOf: [needsDecisionRequires('verdict')],
 };
 
 // Fallback for role "doer". Canonical source:
@@ -413,11 +555,16 @@ const FALLBACK_doerReport = {
     $id: 'doerReport',
     type: 'object',
     properties: {
-        status: { type: 'string', enum: ['VERIFY', 'BLOCKED'] },
+        status: { type: 'string', enum: ['VERIFY', 'BLOCKED', 'NEEDS-DECISION'] },
         closedIds: { type: 'array', items: { type: 'string' } },
         notes: { type: 'string' },
+        // Required when status is NEEDS-DECISION (allOf below). Mirrors
+        // doer-output.json.
+        decision: FALLBACK_decisionRequest,
+        blockedIds: { type: 'array', items: { type: 'string' } },
     },
     required: ['status', 'closedIds', 'notes'],
+    allOf: [needsDecisionRequires('status')],
 };
 
 // NEW (apra-fleet-unw.16): no corresponding vendored agents/*.md file --
@@ -452,6 +599,7 @@ const FALLBACK_deployerReport = {
     properties: {
         deployed: { type: 'boolean' },
         notes: { type: 'string' },
+        failedStep: { type: 'string', enum: ['permissions'] },
     },
     required: ['deployed', 'notes'],
 };
@@ -520,20 +668,43 @@ const FALLBACK_regressionReport = {
     type: 'object',
     properties: {
         passed: { type: 'boolean' },
+        sections: {
+            type: 'array',
+            items: {
+                type: 'object',
+                properties: {
+                    name: { type: 'string' },
+                    passed: { type: 'boolean' },
+                    detail: { type: 'string' },
+                },
+                required: ['name', 'passed'],
+            },
+        },
+        // Deprecated two-part fields: still accepted, never required.
         suitePassed: { type: 'boolean' },
         smokePassed: { type: 'boolean' },
         bugsFiled: { type: 'array', items: { type: 'string' } },
         summary: { type: 'string' },
-        smokeEvidence: {
+        // Optional verdict fields, copied verbatim from a machine-written
+        // verdict file when the target playbook names one.
+        verdict: { type: 'string', enum: ['PASS', 'FAIL', 'INCONCLUSIVE'] },
+        testedSha: { type: 'string', pattern: '^[0-9a-f]{40}$' },
+        evidence: {
             type: 'object',
+            additionalProperties: true,
             properties: {
-                versionStdout: { type: 'string' },
-                canaryStatus: { type: 'string' },
-                toyRepoHeadSha: { type: 'string' },
+                verdictRef: { type: 'string' },
+                runUrl: { type: 'string' },
+                newFailures: { type: 'array', items: { type: 'string' } },
+                inventoryMissing: { type: 'array', items: { type: 'string' } },
             },
         },
+        smokeEvidence: {
+            type: 'object',
+            additionalProperties: true,
+        },
     },
-    required: ['passed', 'suitePassed', 'smokePassed', 'bugsFiled', 'summary'],
+    required: ['passed', 'bugsFiled', 'summary'],
 };
 
 // Fallback for role "ci-watcher". Canonical source:
@@ -612,6 +783,88 @@ export const finalVerdict = {
                     reason: { type: 'string' },
                 },
                 required: ['id', 'reason'],
+            },
+        },
+        // apra-fleet-nx7: the Final Review may promote KB entries, exactly as a
+        // per-round review can. Without this field the final reviewer -- the one
+        // role that has read the whole diff and run the full suite, i.e. the
+        // strongest evidence any promoter ever holds -- had no way to return a
+        // promotion decision, so knowledge captured in a sprint's last round was
+        // stranded at INFERRED with nobody left to verify it. Same {id, reason}
+        // shape as reviewer-output.json's kb_promotions, executed by the same
+        // kbWork.apply path. Optional: promoting nothing is the common answer.
+        kb_promotions: {
+            type: 'array',
+            items: {
+                type: 'object',
+                properties: {
+                    id: { type: 'string' },
+                    reason: { type: 'string' },
+                },
+                required: ['id', 'reason'],
+            },
+        },
+        // The Final Review's DISCARD judgement, mirroring reviewer-output.json's
+        // kb_discards: same {id, reason} shape as kb_promotions, executed by the
+        // same kbWork.apply path. Optional: discarding nothing is the common answer.
+        // The reason minLength is the engine's evidence bar (kb.mjs
+        // KB_MIN_PROMOTE_REASON, enforced in vetKbWork); kept as a literal so
+        // this schema module stays dependency-free, pinned equal by
+        // test/kb-review-judgements.test.mjs.
+        kb_discards: {
+            type: 'array',
+            description: 'Promotion candidates the final review showed to be WRONG and is discarding (the entry drops out of every later read). Same evidence bar as kb_promotions. An id may not appear in both kb_promotions and kb_discards -- the engine refuses both. The engine makes the discard calls.',
+            items: {
+                type: 'object',
+                properties: {
+                    id: {
+                        type: 'string',
+                        description: "The entry id, copied verbatim from the 'KNOWLEDGE BANK -- promotion candidates' block in your dispatch prompt. Never invent one.",
+                        minLength: 1,
+                    },
+                    reason: {
+                        type: 'string',
+                        description: 'The evidence that the entry is wrong -- what you actually checked that contradicts its claim.',
+                        minLength: 20,
+                    },
+                },
+                required: ['id', 'reason'],
+            },
+        },
+        // The Final Review's DEMOTE judgement, mirroring reviewer-output.json's
+        // kb_demotions: same {id, reason, evidence_files} shape as kb_discards,
+        // executed by the same kbWork.apply path. Optional: demoting nothing is
+        // the common answer. CONFIRMED to INFERRED only, and only for ids
+        // actually offered to this review round -- the basis-unchanged case,
+        // not drifted-or-removed basis (freshness staling already handles
+        // that). The reason minLength is the engine's evidence bar (kb.mjs
+        // KB_MIN_PROMOTE_REASON, enforced in vetKbWork); kept as a literal so
+        // this schema module stays dependency-free, pinned equal by
+        // test/kb-review-judgements.test.mjs.
+        kb_demotions: {
+            type: 'array',
+            description: 'CONFIRMED entries a re-check during this review shows do not hold -- whether you are now less certain of the claim or have shown it wrong -- demoted back to INFERRED. Not for a drifted or removed basis. Same evidence bar as kb_promotions and kb_discards. An id may appear in only one of kb_promotions, kb_discards and kb_demotions -- the engine refuses it in every list it appears in. The engine makes the demotion calls.',
+            items: {
+                type: 'object',
+                properties: {
+                    id: {
+                        type: 'string',
+                        description: "The entry id, copied verbatim from the 'KNOWLEDGE BANK -- demotion candidates' block in your dispatch prompt. Never invent one.",
+                        minLength: 1,
+                    },
+                    reason: {
+                        type: 'string',
+                        description: 'What you re-checked this review that the claim does not hold up against.',
+                        minLength: 20,
+                    },
+                    evidence_files: {
+                        type: 'array',
+                        description: 'The repo-relative files you re-checked -- at least one, each a real file in the repo.',
+                        minItems: 1,
+                        items: { type: 'string', minLength: 1 },
+                    },
+                },
+                required: ['id', 'reason', 'evidence_files'],
             },
         },
     },
@@ -858,6 +1111,53 @@ function longestBacktickRun(content) {
 }
 
 /**
+ * The pattern src/services/secret-token.ts (SECRET_TOKEN_RE) matches to
+ * reject a dispatch outright / redact untrusted content. Mirrored here as a
+ * literal rather than imported: this module deliberately has no dependency
+ * on the fleet server sources. Accepts both the canonical {{secret.NAME}}
+ * spelling and the deprecated {{secure.NAME}} one.
+ */
+const SECRET_TOKEN_RE_G = /\{\{(secret|secure)\.([a-zA-Z0-9_-]{1,64})\}\}/g;
+
+const SECRET_REDACTION_NOTE = 'NOTE: secret-token braces were redacted from the block above '
+    + '(secret.NAME is shown without its surrounding double braces). Write the braced form when '
+    + 'you actually use the token in an execute_command call.';
+
+/**
+ * Strips the surrounding double braces from any secret-token reference
+ * (either {{secret.NAME}} or the deprecated {{secure.NAME}}) in untrusted
+ * content, keeping the "secret.NAME"/"secure.NAME" text so it still reads.
+ *
+ * Why this must happen before the content reaches a prompt: execute_prompt
+ * rejects the ENTIRE dispatch -- no LLM call, an error string returned in
+ * place of a reply -- if the prompt matches that token pattern anywhere.
+ * The guard is right for caller-authored prompts, but injected content is
+ * not caller-authored: a knowledge-bank entry or an acceptance criterion
+ * that merely NAMES the token carries no secret, yet would silently fail
+ * every dispatch in a sprint. Redaction, not removal: the name is the part
+ * that makes the entry useful.
+ * @param {string} content
+ * @returns {{text: string, redacted: boolean}}
+ */
+function redactSecretTokens(content) {
+    let text = content;
+    let redacted = false;
+    // Run to a fixed point rather than a single pass: replacing the inner
+    // token in `{{{{secret.A}}}}` leaves `{{secret.A}}`, so the surrounding
+    // braces close over the redacted name and rebuild exactly the pattern
+    // being removed. Untrusted content is attacker-influenced free-text, so
+    // one pass is not enough. Guaranteed to terminate -- every replacement
+    // removes four brace characters, so `text` strictly shrinks.
+    for (;;) {
+        const next = text.replace(SECRET_TOKEN_RE_G, (_match, kind, name) => `${kind}.${name}`);
+        if (next === text) break;
+        text = next;
+        redacted = true;
+    }
+    return { text, redacted };
+}
+
+/**
  * Wraps `content` in a clearly delimited fenced block labeled as untrusted
  * inter-agent output, per feedback.md finding A7. Pure function: no I/O,
  * no side effects, safe to unit test directly.
@@ -882,14 +1182,16 @@ export function wrapUntrustedBlock(sourceLabel, content) {
     if (typeof content !== 'string') {
         throw new TypeError('[contracts] wrapUntrustedBlock requires content to be a string');
     }
-    const fenceLength = Math.max(MIN_FENCE_LENGTH, longestBacktickRun(content) + 1);
+    const { text: safeContent, redacted } = redactSecretTokens(content);
+    const fenceLength = Math.max(MIN_FENCE_LENGTH, longestBacktickRun(safeContent) + 1);
     const fence = '`'.repeat(fenceLength);
     return [
         UNTRUSTED_BLOCK_PREAMBLE,
         `Source: ${sourceLabel}`,
         `${fence}${UNTRUSTED_BLOCK_FENCE_LABEL}`,
-        content,
+        safeContent,
         fence,
+        ...(redacted ? [SECRET_REDACTION_NOTE] : []),
     ].join('\n');
 }
 
@@ -911,4 +1213,32 @@ export function appendSchemaInstruction(prompt, schema) {
         throw new TypeError('[contracts] appendSchemaInstruction requires a JSON schema object');
     }
     return `${prompt}\n\nOnly provide your response strictly as per this JSON schema:\n${JSON.stringify(schema, null, 2)}`;
+}
+
+// ---------------------------------------------------------------------------
+// 7. Credential-store name validation (apra-fleet-5co8.2.3)
+// ---------------------------------------------------------------------------
+//
+// Pattern for valid credential-store entry names, shared with src/tools/ (see
+// credential-store-set.ts). Used by the per-sprint Azure DevOps PAT secret
+// name override validation (runner.js's validateArgs).
+
+const CREDENTIAL_STORE_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
+
+/**
+ * Validates a credential-store entry name against the pattern used by
+ * credential_store_set (alphanumeric, underscores, hyphens, 1-64 chars).
+ * Throws with a clear message on rejection.
+ * @param {unknown} name
+ * @param {string} label - human-readable arg name, used in the error message
+ * @returns {string}
+ */
+export function validateCredentialStoreName(name, label) {
+    if (typeof name !== 'string' || name.length === 0 || !CREDENTIAL_STORE_NAME_PATTERN.test(name)) {
+        throw new Error(
+            `[Arg Contract] Invalid ${label} "${name}": must match ${CREDENTIAL_STORE_NAME_PATTERN} ` +
+            `(alphanumeric, underscores, hyphens, 1-64 chars).`
+        );
+    }
+    return name;
 }

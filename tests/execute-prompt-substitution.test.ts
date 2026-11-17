@@ -55,9 +55,25 @@ describe('execute_prompt -- substitutions surface tests', () => {
     vi.useRealTimers();
   });
 
-  // (q) Confirm early rejection: {{secure.NAME}} prompt triggers error before any exec
-  it('(q) prompt containing {{secure.NAME}} is rejected before staging -- no exec', async () => {
-    const member = makeTestAgent({ friendlyName: 'secure-reject' });
+  // (q) Confirm early rejection: {{secret.NAME}} prompt triggers error before any exec
+  it('(q) prompt containing {{secret.NAME}} is rejected before staging -- no exec', async () => {
+    const member = makeTestAgent({ friendlyName: 'secret-reject' });
+    addAgent(member);
+
+    const result = await executePrompt({
+      member_id: member.id,
+      prompt: 'authenticate with {{secret.github_pat}}',
+      resume: false,
+      timeout_s: 5,
+    });
+
+    expect(resultText(result)).toContain('{{secret.NAME}}');
+    expect(mockExecCommand).not.toHaveBeenCalled();
+  });
+
+  // (q2) Legacy spelling must be rejected the same way, no hard-fail elsewhere
+  it('(q2) prompt containing legacy {{secure.NAME}} is rejected before staging -- no exec', async () => {
+    const member = makeTestAgent({ friendlyName: 'secure-reject-legacy' });
     addAgent(member);
 
     const result = await executePrompt({
@@ -67,32 +83,49 @@ describe('execute_prompt -- substitutions surface tests', () => {
       timeout_s: 5,
     });
 
-    expect(resultText(result)).toContain('{{secure.NAME}}');
+    expect(resultText(result)).toContain('{{secret.NAME}}');
     expect(mockExecCommand).not.toHaveBeenCalled();
   });
 
-  // (r) SECURE invariant: substitutions resolves {{branch}} but {{secure.github_pat}} passes through
-  it('(r) {{branch}} substituted, {{secure.github_pat}} preserved verbatim, credential store not called', async () => {
+  // (r) SECRET invariant: substitutions resolves {{branch}} but {{secret.github_pat}} passes through
+  it('(r) {{branch}} substituted, {{secret.github_pat}} preserved verbatim, credential store not called', async () => {
     const member = makeTestAgent({ friendlyName: 'mixed-tokens' });
     addAgent(member);
 
-    // For this test, prompt has both {{secure.github_pat}} AND {{branch}}.
-    // The existing SECURE_TOKEN_RE guard would reject this prompt entirely!
+    // For this test, prompt has both {{secret.github_pat}} AND {{branch}}.
+    // The existing SECRET_TOKEN_RE guard would reject this prompt entirely!
     // So we need to verify the guard fires before substitution is applied.
     const { credentialResolve } = await import('../src/services/credential-store.js');
 
     const result = await executePrompt({
       member_id: member.id,
-      prompt: 'use {{secure.github_pat}} and {{branch}}',
+      prompt: 'use {{secret.github_pat}} and {{branch}}',
       resume: false,
       timeout_s: 5,
       substitutions: { branch: 'feat/x' },
     });
 
-    // The SECURE_TOKEN_RE guard fires first, before substitution.
-    expect(resultText(result)).toContain('{{secure.NAME}}');
+    // The SECRET_TOKEN_RE guard fires first, before substitution.
+    expect(resultText(result)).toContain('{{secret.NAME}}');
     expect(mockExecCommand).not.toHaveBeenCalled();
     expect(vi.mocked(credentialResolve)).not.toHaveBeenCalled();
+  });
+
+  // (r2) mixed {{secret.NAME}} and {{secure.NAME}} tokens in the same prompt: guard still fires first
+  it('(r2) prompt with mixed {{secret.NAME}} and {{secure.NAME}} tokens is rejected before staging', async () => {
+    const member = makeTestAgent({ friendlyName: 'mixed-spelling-tokens' });
+    addAgent(member);
+
+    const result = await executePrompt({
+      member_id: member.id,
+      prompt: 'use {{secret.a}} and {{secure.b}} and {{branch}}',
+      resume: false,
+      timeout_s: 5,
+      substitutions: { branch: 'feat/x' },
+    });
+
+    expect(resultText(result)).toContain('{{secret.NAME}}');
+    expect(mockExecCommand).not.toHaveBeenCalled();
   });
 
   // (s) happy path -- prompt with {{branch}}, substitution applied, member CLI launched

@@ -124,7 +124,11 @@ describe('execute-command: ensureCloudReady wiring', () => {
     mockEnsureCloudReady.mockRejectedValueOnce(new Error('Instance i-0abc is terminated'));
 
     const result = await executeCommand({ member_id: member.id, command: 'ls', timeout_s: 5 });
-    expect(result).toContain('Instance i-0abc is terminated');
+    const { text, structuredContent } = result as Exclude<typeof result, string>;
+    expect(text).toContain('Instance i-0abc is terminated');
+    expect(structuredContent?.isError).toBe(true);
+    expect(structuredContent?.reason).toBe('cloud_start_failed');
+    expect(structuredContent?.exitCode).toBe(-1);
     expect(mockExecCommand).not.toHaveBeenCalled();
   });
 });

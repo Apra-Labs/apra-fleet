@@ -43,12 +43,19 @@ test('childless leaf target: bdListScoped(\'\') includes the target itself, pre-
         const dispatched = [];
         const commandLog = [];
         const publishedStates = [];
+        let passed = false;
         try {
             const mockFleetApi = buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, {
                 planReviewerMode: 'approve-immediately',
                 addExtraTaskDuringPlan: false,
             });
-            const workflow = new FleetWorkflow(mockFleetApi, { targetRepo: tempDir });
+            // apra-fleet-20i.1.2: thread this scenario's own tag through as
+            // logPrefix (apra-fleet-20i.1.1's third FleetWorkflow constructor
+            // arg) so every [Workflow Log]/[Dispatch]/[Command] line is
+            // identifiable when scenarios interleave in test output. The
+            // real single-sprint CLI path (bin/cli.mjs) omits this arg and
+            // keeps the default '' prefix -- unaffected by this change.
+            const workflow = new FleetWorkflow(mockFleetApi, { targetRepo: tempDir }, '[childless-a] ');
             workflow.on('state', (evt) => publishedStates.push(evt));
             const engine = new WorkflowEngine(workflow);
 
@@ -83,13 +90,24 @@ test('childless leaf target: bdListScoped(\'\') includes the target itself, pre-
             // target and this list would never contain it).
             const beadsStates = publishedStates.filter((e) => e.namespace === 'beads');
             assert.ok(beadsStates.length > 0, 'expected at least one publishState("beads", ...) call');
+            // Every beads publish carries fetchedAt -- the ISO time the
+            // sprint-tree bd fetch completed -- which the beads extension's
+            // summarize() reports as computed_at.
+            for (const e of beadsStates) {
+                assert.strictEqual(typeof e.data.fetchedAt, 'string', `beads payload must carry fetchedAt: ${JSON.stringify(Object.keys(e.data))}`);
+                assert.ok(/^\d{4}-\d{2}-\d{2}T/.test(e.data.fetchedAt) && !Number.isNaN(Date.parse(e.data.fetchedAt)), `fetchedAt must be ISO: ${e.data.fetchedAt}`);
+            }
             const sawTargetInSprintTasks = beadsStates.some((e) => (e.data.sprintTasks || []).some((t) => t.id === epicBead.id));
             assert.ok(
                 sawTargetInSprintTasks,
                 `expected the childless target ${epicBead.id} to appear in sprintTasks (bdListScoped('') output); ` +
                     `sprintTasks snapshots seen: ${JSON.stringify(beadsStates.map((e) => (e.data.sprintTasks || []).map((t) => t.id)))}`
             );
+            passed = true;
         } finally {
+            // apra-fleet-20i.1.2: explicit per-scenario END marker keyed on
+            // the same tag just threaded through as logPrefix above.
+            console.log(`=== END scenario: childless-a (${passed ? 'PASS' : 'FAIL'}) ===`);
             await teardown(tempDir);
         }
     });

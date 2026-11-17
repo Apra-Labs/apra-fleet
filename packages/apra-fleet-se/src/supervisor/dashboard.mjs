@@ -1,5 +1,5 @@
 // =============================================================================
-// Auto-sprint supervisor -- sprint-stack index dashboard (apra-fleet-eft.6.1,
+// fleet-sprint supervisor -- sprint-stack index dashboard (apra-fleet-eft.6.1,
 // Plan Part 2.3)
 // =============================================================================
 //
@@ -25,21 +25,101 @@
 // "unknown" fallback, never a blank/throw) even when nothing is injected and
 // the ledger entry itself predates these fields.
 //
-// Claimed scope's bead count reuses eft.5.3's live subtree expansion
-// (`expandScope()` in ./scope-overlap.mjs) rather than a fresh reimplementation,
-// since "how many beads does this sprint currently claim" is exactly the same
-// live-expanded-subtree question that module already answers for overlap
-// detection.
+// Claimed scope's bead count answers the SAME "how many beads does this
+// sprint currently claim" question eft.5.3's expandScope() (./scope-
+// overlap.mjs) answers for the launch-time overlap guard -- but, as of
+// apra-fleet-c4s.1, computed purely IN-MEMORY off the single bulk
+// `listAllBeads()` fetch this render already makes below, via
+// `expandScopeInMemory()`/`buildChildIndex()` (backlog.mjs), the SAME
+// migration backlog.mjs's own buildClaimedBy() already made for this same
+// "one `bd` subprocess per discovered node" bug. `deps.expandScope` remains
+// the injectable test seam (and, if a caller still supplies it, the actual
+// expansion path used verbatim) -- production wiring (bin/serve.mjs) injects
+// nothing, so it always takes the in-memory path.
 // =============================================================================
 
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { EventEmitter } from 'node:events';
+import http from 'node:http';
 import { escapeHtml } from '@apralabs/apra-fleet-workflow/viewer/html-utils';
-import { expandScope, bdListChildren } from './scope-overlap.mjs';
 import { WATCHDOG_STATUS } from './watchdog.mjs';
 import { renderLaunchFormHtml, formatLaunchError } from './launch-form.mjs';
-import { renderBacklogPanelHtml } from './backlog.mjs';
+import { renderBacklogPanelHtml, normalizeBead, expandScopeInMemory, buildChildIndex } from './backlog.mjs';
+// apra-fleet-72o0 (dashboard follow-up): the claimed-scope count needs CLOSED
+// beads present in the bulk fetch -- a closed intermediate parent must still
+// surface its open descendants to expandScopeInMemory(), same correctness
+// requirement scope-overlap.mjs's launch guard already has. backlog.mjs's own
+// bdListAllBeads()/bdListAllBeadsRaw() deliberately omit `--all` (that fetch
+// feeds the visible backlog BOARD, which intentionally shows open work only)
+// -- reusing it here would repeat the closed-parent-hides-subtree hole. Use
+// scope-overlap.mjs's `--all` fetcher instead; it is the one
+// correctness-appropriate default.
+import { bdListAllBeadsWithClosed } from './scope-overlap.mjs';
+// The progress bar markup is shared with the fleet-sprint viewer; its
+// NUMBERS come from each child's own published summary (GET
+// /state?summary=1, see fetchChildSummary()/classifyChildSummary() below),
+// never from a supervisor-side recompute over the supervisor's beads clone
+// (vre7: that clone can be stale relative to the child's, rendering 0/N for
+// a sprint that has in fact closed work).
+import { renderProgressBarHtml } from '../../fleet-sprint/viewer-extensions.mjs';
+import { toBeadsSummary } from './beads-identity.mjs';
+import { createChildPortResolver } from './child-port.mjs';
+
+const execFileAsync = promisify(execFile);
 
 /**
- * Badge color per four-status classifier value; unknown values fall back to
+ * (apra-fleet-p2to.3.1) Base-drift indicator: how many commits the sprint's
+ * base branch (e.g. `main`) has picked up that are NOT yet reachable from the
+ * sprint's own branch -- `git rev-list --count <branch>..<base>` -- i.e. how
+ * far the sprint has fallen behind its base since it forked. Returns `null`
+ * (NEVER throws) when either ref is unknown, the local git checkout has no
+ * knowledge of one of them (a remote branch never fetched into this
+ * checkout, a sprint whose worktree lives elsewhere), or the git invocation
+ * otherwise fails -- "cannot determine drift" is always rendered distinctly
+ * from "zero drift" (renderSprintSection below), never conflated as 0.
+ * @param {string|null|undefined} branch
+ * @param {string|null|undefined} base
+ * @param {{ cwd?: string, exec?: (cmd: string, args: string[], opts: object) => Promise<{ stdout: string }> }} [opts]
+ * @returns {Promise<number|null>}
+ */
+export async function computeBaseDrift(branch, base, opts = {}) {
+    if (typeof branch !== 'string' || branch.length === 0) return null;
+    if (typeof base !== 'string' || base.length === 0) return null;
+    const cwd = opts.cwd ?? process.cwd();
+    const exec = opts.exec ?? execFileAsync;
+    try {
+        const { stdout } = await exec('git', ['rev-list', '--count', `${branch}..${base}`], { cwd, encoding: 'utf-8', windowsHide: true });
+        const n = parseInt(String(stdout).trim(), 10);
+        return Number.isFinite(n) && n >= 0 ? n : null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Renders the base-drift indicator for one row. `driftCount === null` means
+ * "unknown" (base/branch missing, or the git check failed/could not
+ * resolve either ref locally) -- rendered distinctly from a confirmed-zero
+ * drift, never silently coerced to either extreme.
+ * @param {number|null} driftCount
+ * @param {string|null} base
+ * @returns {string}
+ */
+function baseDriftIndicator(driftCount, base) {
+    const baseLabel = base ? escapeHtml(base) : 'base';
+    if (typeof driftCount !== 'number') {
+        return '<span style="color:#71717a; font-size:11px; font-style:italic;">Base drift: unknown</span>';
+    }
+    if (driftCount === 0) {
+        return '<span style="color:var(--success); font-size:11px;">Up to date with ' + baseLabel + '</span>';
+    }
+    return '<span style="color:var(--warning); font-size:11px;" title="commits on ' + baseLabel +
+        ' not yet merged into this branch">Base drift: ' + driftCount + ' commit(s) behind ' + baseLabel + '</span>';
+}
+
+/**
+ * Badge color per classifier status value; unknown values fall back to
  * grey. Uses the same `var(--success)`/`var(--warning)`/`var(--danger)`
  * tokens DASHBOARD_CSS defines below (and fleet-sprint's renderBeadsHtml
  * badges already reference) rather than independent hardcoded hex, so a live
@@ -47,6 +127,11 @@ import { renderBacklogPanelHtml } from './backlog.mjs';
  */
 const STATUS_BADGE_COLORS = Object.freeze({
     [WATCHDOG_STATUS.RUNNING_HEALTHY]: 'var(--success)',
+    // (apra-fleet-p2to.3.1) A live, engine-paused run is an intentional,
+    // operator-visible state -- not a health problem -- but still worth
+    // calling out at a glance, so it shares running-unresponsive's amber
+    // rather than success green or danger red.
+    [WATCHDOG_STATUS.PAUSED]: 'var(--warning)',
     [WATCHDOG_STATUS.RUNNING_UNRESPONSIVE]: 'var(--warning)',
     [WATCHDOG_STATUS.CRASHED]: 'var(--danger)',
     [WATCHDOG_STATUS.FINISHED]: 'var(--text-muted)',
@@ -88,15 +173,90 @@ function memberChip(member) {
 }
 
 /**
- * Renders one running sprint's section.
- * @param {SprintView} view
+ * Compact "how long ago" label for a pulled summary's computedAt: `12s`,
+ * `3m`, `2h`, `1d`. Returns null when the timestamp is missing/unparseable.
+ * Self-contained (no module-level references) because it is embedded
+ * verbatim into the client live-refresh script via `.toString()`.
+ * @param {string|null|undefined} iso
+ * @param {number} nowMs
+ * @returns {string|null}
+ */
+function formatSummaryAge(iso, nowMs) {
+    if (typeof iso !== 'string' || iso.length === 0) return null;
+    var t = Date.parse(iso);
+    if (!Number.isFinite(t)) return null;
+    var secs = Math.max(0, Math.floor((nowMs - t) / 1000));
+    if (secs < 60) return secs + 's';
+    var mins = Math.floor(secs / 60);
+    if (mins < 60) return mins + 'm';
+    var hours = Math.floor(mins / 60);
+    if (hours < 24) return hours + 'h';
+    return Math.floor(hours / 24) + 'd';
+}
+
+/**
+ * The Sprint Stack row's progress markup, driven by the summary view
+ * buildSprintViews() pulls from the child (`view.progress`, see
+ * classifyChildSummary()):
+ *   - state 'ok'          -> the shared bar + "as of AGE"
+ *   - state 'unreachable' -> the LAST GOOD bar + "as of AGE" + an
+ *                            "unreachable" marker (only built when a last
+ *                            good summary exists)
+ *   - state 'no-summary'  -> "no summary yet"
+ *   - anything else (state 'unavailable', null, a legacy shape) -> "status
+ *     unavailable"
+ * Never renders digits/digits for a non-ok state without its last-good
+ * marker, and never a 0/N placeholder. Self-contained apart from
+ * renderProgressBarHtml/formatSummaryAge/escapeHtml, which the client script
+ * embeds alongside it.
+ * @param {{ state: string, closed?: number, required?: number, fraction?: number, computedAt?: string|null, rejected?: boolean }|null|undefined} progress
+ * @param {number} [nowMs] - pinned "now" for the age label; defaults to Date.now()
  * @returns {string}
  */
-export function renderSprintSection(view) {
+function renderSprintProgressHtml(progress, nowMs) {
+    var placeholder = function (text, cls) {
+        return '<div class="sprint-progress-status ' + cls + '" style="padding: 8px 0; font-size: 12px; color: #71717a; font-style: italic;">' + text + '</div>';
+    };
+    var state = progress && typeof progress === 'object' ? progress.state : null;
+    var hasNumbers = !!progress && typeof progress.closed === 'number' && Number.isFinite(progress.closed) &&
+        typeof progress.required === 'number' && Number.isFinite(progress.required);
+    if (state === 'no-summary') {
+        return placeholder('no summary yet', 'sprint-progress-no-summary');
+    }
+    if ((state !== 'ok' && state !== 'unreachable') || !hasNumbers) {
+        return placeholder('status unavailable', 'sprint-progress-unavailable');
+    }
+    var now = typeof nowMs === 'number' && Number.isFinite(nowMs) ? nowMs : Date.now();
+    var age = formatSummaryAge(progress.computedAt, now);
+    var ageHtml = '<span class="sprint-progress-age" style="color: #a1a1aa; font-size: 12px; white-space: nowrap;">as of ' +
+        (age === null ? 'unknown' : age) + '</span>';
+    var markerHtml = state === 'unreachable'
+        ? '<span class="sprint-progress-unreachable" style="color: #f59e0b; font-size: 12px; white-space: nowrap;">unreachable</span>'
+        : '';
+    return (
+        '<div class="sprint-progress-row" style="display: flex; align-items: center; gap: 8px;">' +
+        '<div style="flex: 1;">' +
+        renderProgressBarHtml({ closed: progress.closed, required: progress.required, fraction: progress.fraction }) +
+        '</div>' +
+        ageHtml +
+        markerHtml +
+        '</div>'
+    );
+}
+
+/**
+ * Renders one running sprint's section.
+ * @param {SprintView} view
+ * @param {number} [nowMs] - pinned "now" for the progress "as of" label; defaults to Date.now()
+ * @returns {string}
+ */
+export function renderSprintSection(view, nowMs) {
     const sprintId = escapeHtml(view.sprintId);
     const branch = view.branch ? escapeHtml(view.branch) : 'unknown';
+    const base = view.base ? escapeHtml(view.base) : '';
     const goal = view.goal ? escapeHtml(view.goal) : 'unknown';
     const beadCount = Number.isInteger(view.beadCount) ? String(view.beadCount) : 'unknown';
+    const progressHtml = renderSprintProgressHtml(view.progress, nowMs);
     const scopeRoots = (view.issueRoots ?? []).map((id) => escapeHtml(id)).join(', ') || 'none';
     const members = (view.members ?? []);
     const membersHtml = members.length > 0
@@ -110,6 +270,33 @@ export function renderSprintSection(view) {
     // viewer above is gone/unresponsive for that status; the raw log is the
     // one remaining way to see what the child actually printed).
     const logHref = '/sprints/' + encodeURIComponent(view.sprintId) + '/log';
+
+    // (apra-fleet-p2to.3.1) Pause/Resume is only meaningful for a sprint the
+    // watchdog currently sees as a LIVE pid (running-healthy/running-
+    // unresponsive: Pause may still be attempted against an unresponsive
+    // child -- the request itself is what the live proxy forwards, its
+    // success is not gated on the watchdog's last HTTP probe) or already
+    // PAUSED (Resume). A crashed/finished/launch-failed row has no live
+    // child to pause/resume, so neither button renders for it -- unlike
+    // Stop/Restart, which remain meaningful (releasing/relaunching a stale
+    // reservation) regardless of live-pid state.
+    const livePidStatuses = new Set([WATCHDOG_STATUS.RUNNING_HEALTHY, WATCHDOG_STATUS.RUNNING_UNRESPONSIVE]);
+    let pauseResumeButton = '';
+    if (view.status === WATCHDOG_STATUS.PAUSED) {
+        // apra-fleet-p2to.3.1: proxies to the child viewer's OWN POST /resume
+        // (apra-fleet-p2to.2.1) via the live-view reverse proxy (proxy.mjs's
+        // handleResume, /sprints/:id/live/resume) -- never the kill+force-
+        // release route Stop/Restart use.
+        pauseResumeButton = '<button type="button" class="btn btn-secondary btn-resume-sprint" data-sprint-id="' + sprintId + '" ' +
+            'style="font-size: 12px;">Resume</button>';
+    } else if (livePidStatuses.has(view.status)) {
+        // apra-fleet-p2to.3.1: proxies to the child viewer's OWN POST /pause
+        // (apra-fleet-p2to.2.1) via the SAME live-view reverse proxy
+        // (proxy.mjs's handlePause, /sprints/:id/live/pause) -- a cooperative
+        // request the engine may defer, never an immediate kill.
+        pauseResumeButton = '<button type="button" class="btn btn-secondary btn-pause-sprint" data-sprint-id="' + sprintId + '" ' +
+            'style="font-size: 12px;">Pause</button>';
+    }
 
     return (
         '<section data-sprint-id="' + sprintId + '" style="border: 1px solid rgba(255,255,255,0.1); ' +
@@ -127,6 +314,7 @@ export function renderSprintSection(view) {
         // form's formatLaunchError() inline-feedback convention.
         '<button type="button" class="btn btn-secondary btn-stop-sprint" data-sprint-id="' + sprintId + '" ' +
         'style="font-size: 12px;">Stop</button>' +
+        pauseResumeButton +
         // apra-fleet-3i3.3: releases the SAME reservation (via the SAME
         // force-release route Stop uses) then re-launches the SAME sprint via
         // POST /api/sprints, without a separate manual Stop first -- see
@@ -136,10 +324,27 @@ export function renderSprintSection(view) {
         '<button type="button" class="btn btn-secondary btn-restart-sprint" data-sprint-id="' + sprintId + '" ' +
         'style="font-size: 12px;">Restart</button>' +
         '</div>' +
+        progressHtml +
         '<div style="margin-top: 8px; font-size: 13px; color: #d4d4d8;">' +
-        '<div><span style="color:#a1a1aa;">Branch:</span> ' + branch + '</div>' +
+        '<div><span style="color:#a1a1aa;">Branch:</span> ' + branch + (base ? ' -> ' + base : '') + '</div>' +
         '<div><span style="color:#a1a1aa;">Goal:</span> ' + goal + '</div>' +
-        '<div><span style="color:#a1a1aa;">Claimed scope:</span> ' + beadCount + ' bead(s) (roots: ' + scopeRoots + ')</div>' +
+        // apra-fleet-vk0a.3: explicitly labeled 'total in scope' -- distinct
+        // from the progress bar's OWN, differently-scoped 'Required: M/N'
+        // widget a few lines above (the child's own published summary,
+        // goal-filtered). This raw count legitimately GROWS
+        // over a sprint's life (planners/reviewers add tasks under an
+        // already-claimed root); labeling it distinguishes that from a
+        // glitch and from the filtered 'Required' count staying flat.
+        '<div><span style="color:#a1a1aa;">Claimed scope:</span> ' + beadCount + ' bead(s) total in scope, unfiltered (roots: ' + scopeRoots + ')</div>' +
+        // (apra-fleet-p2to.3.1) base-drift indicator -- see baseDriftIndicator()'s
+        // doc comment for the "unknown" vs "0 drift" distinction.
+        '<div>' + baseDriftIndicator(view.baseDrift ?? null, view.base ?? null) + '</div>' +
+        // The beads prefix the supervisor resolved when it launched this
+        // sprint (ledger entry `beads`, see beads-identity.mjs); omitted for
+        // a reservation predating that field.
+        (view.beadsPrefix
+            ? '<div><span style="color:#a1a1aa;">Beads prefix:</span> ' + escapeHtml(view.beadsPrefix) + '</div>'
+            : '') +
         '</div>' +
         '<div style="margin-top: 8px;">' +
         '<span style="color:#a1a1aa; font-size: 12px;">Members:</span><br/>' +
@@ -147,6 +352,7 @@ export function renderSprintSection(view) {
         '</div>' +
         '<div class="stop-result" data-sprint-id="' + sprintId + '" style="margin-top: 6px; font-size: 12px;"></div>' +
         '<div class="restart-result" data-sprint-id="' + sprintId + '" style="margin-top: 6px; font-size: 12px;"></div>' +
+        '<div class="pause-result" data-sprint-id="' + sprintId + '" style="margin-top: 6px; font-size: 12px;"></div>' +
         '</section>'
     );
 }
@@ -164,7 +370,9 @@ export function renderSprintStackHtml(views) {
     if (list.length === 0) {
         return '<p style="color:#71717a; font-style: italic;">No sprints are currently running.</p>';
     }
-    return list.map(renderSprintSection).join('\n');
+    // Arrow wrapper: a bare .map(renderSprintSection) would pass the array
+    // index as renderSprintSection's optional `nowMs`.
+    return list.map((view) => renderSprintSection(view)).join('\n');
 }
 
 // apra-fleet supervisor-viewer-parity: the SAME CSS custom-property names and
@@ -213,12 +421,35 @@ const DASHBOARD_CSS = `
     table tr:hover { background: rgba(255,255,255,0.03); }
 `;
 
+// (apra-fleet-siqi.2.1) How old a tab's last fetch must be, in ms, before
+// activating that tab triggers a fresh one -- rather than just showing
+// whatever markup the last full-page load (or last poll/filter fetch)
+// already produced. Deliberately shorter than SPRINT_STACK_LIVE_SCRIPT's own
+// HEARTBEAT_INTERVAL_MS (7000, above) so a tab switch shortly after that
+// heartbeat's own poll does not double-fetch, but idling on one tab for even
+// a few seconds before switching still gets a genuinely fresh fetch on
+// activation rather than stale data.
+const TAB_ACTIVATION_STALE_MS = 3000;
+
 const DASHBOARD_TAB_SCRIPT = `
+    var TAB_ACTIVATION_STALE_MS = ${TAB_ACTIVATION_STALE_MS};
     function switchTab(id) {
         document.querySelectorAll('.tab-btn').forEach(function (b) { b.classList.remove('active'); });
         document.querySelectorAll('.tab-content').forEach(function (c) { c.classList.remove('active'); });
         event.currentTarget.classList.add('active');
         document.getElementById('tab-' + id).classList.add('active');
+        // apra-fleet-siqi.2.1: activating a tab triggers a fresh fetch of
+        // THAT tab's own data through the SAME fetch/poll plumbing each tab
+        // already uses elsewhere (SPRINT_STACK_LIVE_SCRIPT's schedulePoll()/
+        // poll() for Sprints, backlogPanelClientScript()'s applyFilters() for
+        // Backlog) -- never a separate one-off fetch call -- but only when
+        // the last such fetch is stale (see TAB_ACTIVATION_STALE_MS above);
+        // each tab tracks and refreshes independently of the other.
+        if (id === 'sprints' && window.__fleetSeSprintStack && typeof window.__fleetSeSprintStack.refreshIfStale === 'function') {
+            window.__fleetSeSprintStack.refreshIfStale(TAB_ACTIVATION_STALE_MS);
+        } else if (id === 'backlog' && window.__fleetSeBacklog && typeof window.__fleetSeBacklog.refreshIfStale === 'function') {
+            window.__fleetSeBacklog.refreshIfStale(TAB_ACTIVATION_STALE_MS);
+        }
     }
 `;
 
@@ -248,10 +479,14 @@ export function formatStopError(status, errJson) {
  * The Sprint Stack's per-row Stop button behavior, as a source string ready
  * to inline into a `<script>` tag (same `.toString()`-embedding pattern as
  * launch-form.mjs's clientScriptSource(), so the exact code under test is the
- * exact code shipped to the browser). Event-delegated on `document` (no
- * client-side re-render of the Sprint Stack ever replaces these buttons, so a
- * single delegated listener wired once at page load is sufficient): a click
- * on any `.btn-stop-sprint` button confirms with the operator, then POSTs
+ * exact code shipped to the browser). Event-delegated on `document` -- as of
+ * apra-fleet-siqi.1.2, SPRINT_STACK_LIVE_SCRIPT below DOES periodically
+ * rebuild each `<section data-sprint-id>` row (a fresh /state poll may
+ * replace this exact button element), but delegation on `document` still
+ * catches every click regardless of which concrete button element it landed
+ * on, so a single listener wired once at page load remains sufficient -- no
+ * re-wiring needed after a live rebuild: a click on any `.btn-stop-sprint`
+ * button confirms with the operator, then POSTs
  * POST /api/reservations/:sprintId/force-release (extended by apra-fleet-3i3.1
  * to also kill the child), surfacing success/failure INLINE in that row's
  * `.stop-result` element (never a silent no-op, and every promise chain ends
@@ -440,6 +675,289 @@ const SPRINT_RESTART_SCRIPT = `
 `;
 
 /**
+ * (apra-fleet-p2to.3.1) The Sprint Stack's per-row Pause/Resume button
+ * behavior, as a source string ready to inline into a `<script>` tag (same
+ * `.toString()`-embedding pattern as SPRINT_STOP_SCRIPT/SPRINT_RESTART_SCRIPT
+ * above). Event-delegated on `document`, same discipline as those two: a
+ * click on `.btn-pause-sprint` POSTs `/sprints/:id/live/pause`, a click on
+ * `.btn-resume-sprint` POSTs `/sprints/:id/live/resume` -- BOTH via the
+ * live-view reverse proxy (proxy.mjs), which forwards to the child viewer's
+ * OWN `/pause`/`/resume` (apra-fleet-p2to.2.1), never the kill+force-release
+ * route Stop/Restart use. Unlike Stop, a click here does not remove or
+ * relabel the row: the requested transition is COOPERATIVE and may be
+ * deferred by the engine (apra-fleet-p2to.1's requestPause()), so the button
+ * is only disabled (to prevent a double-submit) and an inline status message
+ * is shown -- the row's own Pause/Resume button + status badge only reflect
+ * the ACTUAL new state once the watchdog's own `/state`-based pause probe
+ * (watchdog.mjs) has observed it. Pre-apra-fleet-siqi.1.2 that meant "on the
+ * next full page load"; as of siqi.1.2, SPRINT_STACK_LIVE_SCRIPT's own
+ * periodic /state poll rebuilds this row too, so the correct button/badge
+ * typically appears within a poll cycle with no manual reload needed -- this
+ * script itself still does not attempt to predict or race that outcome, it
+ * only reports the request as submitted. Every promise chain ends in a
+ * `.catch()`, matching the other two scripts' discipline.
+ */
+const SPRINT_PAUSE_SCRIPT = `
+    ${formatStopError.toString()}
+    function requestPauseResume(btn, action) {
+        var sprintId = btn.getAttribute('data-sprint-id');
+        if (!sprintId) return;
+        var resultEl = document.querySelector('.pause-result[data-sprint-id="' + sprintId + '"]');
+        btn.disabled = true;
+        if (resultEl) { resultEl.style.color = '#a1a1aa'; resultEl.textContent = (action === 'pause' ? 'Pause' : 'Resume') + ' requested...'; }
+        fetch('/sprints/' + encodeURIComponent(sprintId) + '/live/' + action, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
+            .then(function (res) {
+                return res.json().catch(function () { return {}; }).then(function (json) {
+                    return { status: res.status, json: json };
+                });
+            }).then(function (r) {
+                if (r.status === 200) {
+                    if (resultEl) {
+                        resultEl.style.color = '#22c55e';
+                        resultEl.textContent = (action === 'pause' ? 'Pause' : 'Resume') + ' requested -- reload to see the updated status.';
+                    }
+                    // Deliberately left disabled: the cooperative transition may
+                    // still be in flight (a deferred pause) or has already
+                    // happened (a resume) -- either way, this row's button/badge
+                    // are only accurate again after a reload, and re-enabling
+                    // it here would let an operator fire the SAME request twice
+                    // before that reload happens.
+                } else {
+                    btn.disabled = false;
+                    if (resultEl) { resultEl.style.color = '#ef4444'; resultEl.textContent = formatStopError(r.status, r.json); }
+                }
+            }).catch(function (err) {
+                btn.disabled = false;
+                if (resultEl) { resultEl.style.color = '#ef4444'; resultEl.textContent = (action === 'pause' ? 'Pause' : 'Resume') + ' request failed: ' + err.message; }
+            });
+    }
+    document.addEventListener('click', function (ev) {
+        var pauseBtn = ev.target.closest('.btn-pause-sprint');
+        if (pauseBtn) { requestPauseResume(pauseBtn, 'pause'); return; }
+        var resumeBtn = ev.target.closest('.btn-resume-sprint');
+        if (resumeBtn) { requestPauseResume(resumeBtn, 'resume'); return; }
+    });
+`;
+
+/**
+ * (apra-fleet-siqi.1.2) The Sprint Stack's live-refresh client loop, as a
+ * source string ready to inline into a `<script>` tag (same
+ * `.toString()`-embedding pattern as the three button scripts above). Mirrors
+ * apra-fleet-workflow's per-sprint viewer client loop
+ * (packages/apra-fleet-workflow/src/viewer/index.mjs, ~lines 478-504) in
+ * shape exactly: a debounced `schedulePoll()` guard (`POLL_COALESCE_MS`), an
+ * `EventSource('/events')` whose `onmessage` calls `schedulePoll()` (this
+ * dashboard's own GET /events -- apra-fleet-siqi.1.1 -- emits a generic
+ * `{ type: 'update' }` signal on every message, so the payload itself is
+ * never inspected here, unlike the per-run viewer's namespaced
+ * `workflow:state:*` dispatch), and a `setInterval` heartbeat that ALSO calls
+ * `schedulePoll()` so a dropped/unavailable EventSource still polls (the
+ * SAME `apra-fleet-36l.1` fallback discipline) -- ONE polling mechanism
+ * (`schedulePoll()` -> `poll()`), never two independent pollers.
+ *
+ * `poll()` fetches GET /state (apra-fleet-siqi.1.1's `buildStatePayload()`
+ * shape: `{ generatedAt, runningCount, sprints }`) and re-renders the Sprint
+ * Stack rows FROM that payload -- never a one-shot server render, and never
+ * `location.reload()`. Row rendering itself reuses `renderSprintSection()`
+ * (and its own escapeHtml/statusBadge/renderSprintProgressHtml/memberChip/
+ * baseDriftIndicator/renderProgressBarHtml dependencies, all embedded
+ * verbatim via `.toString()` below, plus WATCHDOG_STATUS/STATUS_BADGE_COLORS
+ * as inline JSON) -- the EXACT SAME markup-building function GET / uses for
+ * the initial server render, so a live-refreshed row can never visually
+ * drift from a freshly-loaded one. Reconciliation against the current DOM is
+ * by `data-sprint-id`: an existing `<section>` is replaced in place (its
+ * Stop/Restart/Pause buttons come back correctly wired since those three
+ * scripts delegate their click handling on `document`, not on the button
+ * elements themselves -- see SPRINT_STOP_SCRIPT's doc comment), a newly
+ * appeared sprintId is appended, and a row whose sprintId is no longer in
+ * the payload (finished/force-released/restarted-away since the last poll)
+ * is removed -- falling back to the SAME empty-state message
+ * `renderSprintStackHtml()` renders server-side when the list goes to zero.
+ */
+const SPRINT_STACK_LIVE_SCRIPT = `
+    ${escapeHtml.toString()}
+    ${memberChip.toString()}
+    ${baseDriftIndicator.toString()}
+    var WATCHDOG_STATUS = ${JSON.stringify(WATCHDOG_STATUS)};
+    var STATUS_BADGE_COLORS = ${JSON.stringify(STATUS_BADGE_COLORS)};
+    ${statusBadge.toString()}
+    ${renderProgressBarHtml.toString()}
+    ${formatSummaryAge.toString()}
+    ${renderSprintProgressHtml.toString()}
+    ${renderSprintSection.toString()}
+    ${renderBeadsFreshnessHtml.toString()}
+
+    // Re-renders the "Beads as of" line from GET /state's beadsFreshness.
+    function renderBeadsFreshnessFromState(f) {
+        var el = document.getElementById('beads-freshness');
+        if (!el || !f) return;
+        el.outerHTML = renderBeadsFreshnessHtml(f);
+    }
+
+    // Re-renders #sprint-stack's rows from a GET /state 'sprints' array,
+    // in place, by data-sprint-id -- see this const's doc comment above.
+    function renderSprintStackFromState(sprints) {
+        var container = document.getElementById('sprint-stack');
+        if (!container) return;
+        var list = Array.isArray(sprints) ? sprints : [];
+        var existingSections = {};
+        Array.prototype.forEach.call(container.querySelectorAll('section[data-sprint-id]'), function (s) {
+            existingSections[s.getAttribute('data-sprint-id')] = s;
+        });
+        if (list.length === 0) {
+            container.innerHTML = '<p style="color:#71717a; font-style: italic;">No sprints are currently running.</p>';
+            return;
+        }
+        var seenIds = {};
+        list.forEach(function (view) {
+            seenIds[view.sprintId] = true;
+            var existing = existingSections[view.sprintId];
+            var html = renderSprintSection(view);
+            if (existing) {
+                existing.outerHTML = html;
+            } else {
+                // First real row ever renders here (not the empty-state
+                // placeholder text) -- clear that placeholder, if present,
+                // before appending.
+                var placeholder = container.querySelector('p');
+                if (placeholder && container.querySelectorAll('section[data-sprint-id]').length === 0) {
+                    container.innerHTML = '';
+                }
+                container.insertAdjacentHTML('beforeend', html);
+            }
+        });
+        Object.keys(existingSections).forEach(function (id) {
+            if (!seenIds[id]) existingSections[id].remove();
+        });
+    }
+
+    // apra-fleet-workflow's viewer client loop (index.mjs ~478-504), same
+    // shape: debounced schedulePoll() -> poll(), driven by BOTH an
+    // EventSource('/events') message and a setInterval heartbeat fallback.
+    var POLL_COALESCE_MS = 400;
+    var pollTimer = null;
+    function schedulePoll() {
+        if (pollTimer) return;
+        pollTimer = setTimeout(function () { pollTimer = null; poll(); }, POLL_COALESCE_MS);
+    }
+
+    // apra-fleet-siqi.2.1: when this poll was last (attempted to be) run --
+    // set up front, not just on success, so a Sprints-tab activation right
+    // after a poll was already scheduled/kicked off never piles on a second,
+    // redundant one; see window.__fleetSeSprintStack.refreshIfStale() below.
+    var lastPollAt = 0;
+    async function poll() {
+        lastPollAt = Date.now();
+        try {
+            var res = await fetch('/state?_t=' + Date.now(), { cache: 'no-store' });
+            var data = await res.json();
+            renderSprintStackFromState(data.sprints);
+            renderBeadsFreshnessFromState(data.beadsFreshness);
+        } catch (e) {
+            console.error('Poll Error:', e);
+        }
+    }
+
+    // apra-fleet-siqi.2.1: the Sprints-tab-activation refresh hook
+    // (DASHBOARD_TAB_SCRIPT's switchTab()) reaches this SAME
+    // schedulePoll()/poll() plumbing through here -- never a separate
+    // one-off fetch -- and only when the last poll is stale. Guarded on
+    // 'typeof window' (rather than a bare reference) so this script stays
+    // runnable in a sandboxed Function-eval harness that never supplies a
+    // 'window' global (e.g. supervisor-dashboard-live-refresh.test.mjs's
+    // runLiveRefreshScript(), which only passes document/fetch/EventSource)
+    // -- a real browser <script> tag always has 'window' defined, so this
+    // guard is a no-op true branch there.
+    if (typeof window !== 'undefined') {
+        window.__fleetSeSprintStack = {
+            refreshIfStale: function (maxAgeMs) {
+                if (Date.now() - lastPollAt >= maxAgeMs) schedulePoll();
+            },
+        };
+    }
+
+    if (typeof EventSource !== 'undefined') {
+        var source = new EventSource('/events');
+        // Every /events message is the same generic 'go poll /state' signal
+        // (apra-fleet-siqi.1.1) -- never inspected, just a trigger.
+        source.onmessage = function () { schedulePoll(); };
+    }
+
+    // apra-fleet-36l.1-style heartbeat fallback: independent of EventSource
+    // state (unavailable, never connected, or silently dropped without an
+    // onerror the browser surfaces), this keeps calling the SAME
+    // schedulePoll()/poll() path on a fixed cadence so the dashboard can
+    // never sit silently stale.
+    var HEARTBEAT_INTERVAL_MS = 7000;
+    setInterval(function () { schedulePoll(); }, HEARTBEAT_INTERVAL_MS);
+
+    poll();
+`;
+
+/**
+ * The single "which .beads is this supervisor running against" line shown
+ * above the Sprint Stack: "Beads: <dir> | prefix <p> | <syncRemote>", every
+ * field HTML-escaped, styled like the Supervisor-log link line in the header.
+ * When the identity is UNKNOWN (no .beads found / probe failed) and
+ * `warning` carries the reason, renders an amber "Beads: NOT RESOLVED --
+ * <warning>" line instead (the warning text already says what to do).
+ * Renders nothing when neither was supplied (tests, inert skeleton).
+ * @param {{ dir?: string, prefix?: string, syncRemote?: string }|null|undefined} beads
+ * @param {string|null|undefined} [warning]
+ * @returns {string}
+ */
+export function renderBeadsHeaderHtml(beads, warning) {
+    if (!beads || typeof beads !== 'object') {
+        if (typeof warning !== 'string' || !warning.trim()) return '';
+        return '<div class="beads-identity beads-identity-warning" style="font-size: 12px; color: #f59e0b; padding: 4px 16px;">' +
+            '<strong>Beads: NOT RESOLVED</strong> -- ' + escapeHtml(warning) + '</div>\n';
+    }
+    const dir = escapeHtml(beads.dir || '(unknown)');
+    const prefix = escapeHtml(beads.prefix || '?');
+    const remote = escapeHtml(beads.syncRemote || '(sync.remote unset)');
+    return '<div class="beads-identity" style="font-size: 12px; color: #a1a1aa; padding: 4px 16px;">' +
+        'Beads: <span style="color:#d4d4d8;">' + dir + '</span> | prefix <span style="color:#d4d4d8;">' + prefix + '</span>' +
+        ' | <span style="color:#d4d4d8;">' + remote + '</span></div>\n';
+}
+
+/**
+ * Normalize the cached beads view's snapshot into the wire/render freshness
+ * shape. ASCII only. `lastSkip` (a busy/lock round, rows kept) is carried
+ * separately from `lastError` (a real failure).
+ * @param {object|null} snap - beads-view snapshot()
+ * @returns {{ asOf: string|null, lastError: {message:string, at:string}|null, lastSkip: {reason:string, at:string}|null }|null}
+ */
+export function toBeadsFreshness(snap) {
+    if (!snap || typeof snap !== 'object') return null;
+    const iso = (t) => (typeof t === 'number' && Number.isFinite(t) ? new Date(t).toISOString() : null);
+    return {
+        asOf: iso(snap.asOf),
+        lastError: snap.lastError ? { message: String(snap.lastError.message ?? ''), at: iso(snap.lastError.at) } : null,
+        lastSkip: snap.lastSkip ? { reason: String(snap.lastSkip.reason ?? ''), at: iso(snap.lastSkip.at) } : null,
+    };
+}
+
+/**
+ * Renders the "Beads as of <time>" line plus a visible failure notice when the
+ * view's last refresh failed. A busy-skip renders as a muted note, NOT as an
+ * error. Returns '' when no freshness is supplied.
+ * @param {ReturnType<typeof toBeadsFreshness>} f
+ * @returns {string}
+ */
+export function renderBeadsFreshnessHtml(f) {
+    if (!f) return '';
+    const asOf = f.asOf ? 'Beads as of ' + escapeHtml(f.asOf) : 'Beads as of (not yet synced)';
+    let html = '<div id="beads-freshness" class="beads-freshness" style="font-size: 12px; color: #a1a1aa; padding: 4px 16px;">' + asOf;
+    if (f.lastSkip && !f.lastError) {
+        html += ' <span class="beads-refresh-busy" style="color:#a1a1aa;">(refresh deferred: ' + escapeHtml(f.lastSkip.reason) + '; will retry)</span>';
+    }
+    if (f.lastError) {
+        html += '<div class="beads-refresh-error" style="color: #ef4444;"><strong>Beads refresh failed:</strong> ' + escapeHtml(f.lastError.message) + '</div>';
+    }
+    return html + '</div>\n';
+}
+
+/**
  * Renders the full index page (`GET /` document): a header, then a Sprints
  * tab (Sprint Stack alone) and a separate Backlog tab (eft.6.2's cross-sprint
  * free-set view, followed by the Launch Sprint form -- launching starts from
@@ -453,9 +971,14 @@ const SPRINT_RESTART_SCRIPT = `
  * @param {SprintView[]} [views]
  * @param {string} [backlogHtml] - pre-rendered Backlog tab content (eft.6.2 / renderBacklogPanelHtml())
  * @param {string} [launchFormHtml] - pre-rendered Launch Sprint form HTML (eft.6.3)
+ * @param {{ beads?: { dir?: string, prefix?: string, syncRemote?: string, repoRemote?: string }|null, beadsWarning?: string|null }} [opts]
+ *   `beads`: the supervisor's resolved .beads identity (beads-identity.mjs's
+ *   toBeadsSummary()), rendered as one header line above the Sprint Stack;
+ *   `beadsWarning`: when `beads` is null, why it is unknown (rendered as an
+ *   amber warning line in its place).
  * @returns {string}
  */
-export function renderIndexPageHtml(views, backlogHtml, launchFormHtml) {
+export function renderIndexPageHtml(views, backlogHtml, launchFormHtml, opts = {}) {
     const backlogSection = typeof backlogHtml === 'string'
         ? backlogHtml
         : '<p style="color:var(--text-muted); font-style: italic;">No unclaimed work in the backlog.</p>';
@@ -476,6 +999,8 @@ export function renderIndexPageHtml(views, backlogHtml, launchFormHtml) {
         '<div class="header-actions"><div class="stats-banner"><span><strong>' + runningCount + '</strong> running</span></div>' +
         '<a href="/supervisor/log" target="_blank" rel="noopener" style="font-size: 12px;">Supervisor log</a></div>' +
         '</div>\n' +
+        renderBeadsHeaderHtml(opts && opts.beads, opts && opts.beadsWarning) +
+        renderBeadsFreshnessHtml(opts && opts.beadsFreshness) +
         '<div class="main-content"><div class="content-area">' +
         '<div class="tab-bar" id="tab-bar">' +
         '<button class="tab-btn active" onclick="switchTab(\'sprints\')">Sprints</button>' +
@@ -503,6 +1028,13 @@ export function renderIndexPageHtml(views, backlogHtml, launchFormHtml) {
         '<script>' + DASHBOARD_TAB_SCRIPT + '</script>\n' +
         '<script>' + SPRINT_STOP_SCRIPT + '</script>\n' +
         '<script>' + SPRINT_RESTART_SCRIPT + '</script>\n' +
+        '<script>' + SPRINT_PAUSE_SCRIPT + '</script>\n' +
+        // (apra-fleet-siqi.1.2) Live-refresh loop -- registered LAST so the
+        // Stop/Restart/Pause scripts' own `document`-level delegated click
+        // listeners (which SPRINT_STACK_LIVE_SCRIPT's poll-driven rebuilds
+        // rely on) are already wired before this script's first poll() can
+        // possibly replace any row.
+        '<script>' + SPRINT_STACK_LIVE_SCRIPT + '</script>\n' +
         '</body>\n' +
         '</html>\n'
     );
@@ -513,11 +1045,192 @@ export function renderIndexPageHtml(views, backlogHtml, launchFormHtml) {
  * @property {string} sprintId
  * @property {string|null} branch
  * @property {string|null} goal
- * @property {string} status - one of WATCHDOG_STATUS's four values
+ * @property {string} status - one of WATCHDOG_STATUS's six values
  * @property {string[]} issueRoots
  * @property {number|null} beadCount
+ * @property {SummaryView|null} progress - the child's pulled summary, classified (see classifyChildSummary())
  * @property {Array<{ name: string, role: string|null }>} members
+ * @property {string|null} base - (apra-fleet-p2to.3.1) the sprint's launch `--base` branch, as recorded on the ledger entry
+ * @property {number|null} baseDrift - (apra-fleet-p2to.3.1) commits on `base` not yet reachable from `branch`; `null` when unknown (see computeBaseDrift())
+ * @property {string|null} beadsPrefix - the beads prefix recorded on the ledger entry at launch (`beads.prefix`, beads-identity.mjs); null when absent
  */
+
+/**
+ * (apra-fleet-siqi.1.1) Lean JSON payload for GET /state -- the SAME
+ * sprint-stack view data `renderSprintStackHtml()`/`renderSprintSection()`
+ * render into HTML above (ids, statuses, claimed-scope/progress counts,
+ * members), but as plain JSON for the dashboard's poll('/state') client path
+ * -- never the full HTML shell `GET /` serves. Mirrors
+ * apra-fleet-workflow/src/viewer/lean-state.mjs's buildListStatePayload() in
+ * spirit (a lean, wire-shaped transform of the same view model a full page
+ * render already computes) without pulling in that module's string-dedup
+ * machinery, which targets a much larger per-activity payload than this
+ * small, per-sprint list ever grows to.
+ * @param {SprintView[]} [views]
+ * @returns {{ generatedAt: string, runningCount: number, sprints: Array<object> }}
+ */
+export function buildStatePayload(views, opts = {}) {
+    const list = Array.isArray(views) ? views : [];
+    return {
+        generatedAt: new Date().toISOString(),
+        runningCount: list.length,
+        beadsFreshness: (opts && opts.beadsFreshness) ?? null,
+        sprints: list.map((v) => ({
+            sprintId: v.sprintId,
+            branch: v.branch ?? null,
+            goal: v.goal ?? null,
+            status: v.status,
+            issueRoots: v.issueRoots ?? [],
+            beadCount: v.beadCount ?? null,
+            progress: v.progress ?? null,
+            members: v.members ?? [],
+            base: v.base ?? null,
+            baseDrift: v.baseDrift ?? null,
+            beadsPrefix: v.beadsPrefix ?? null,
+        })),
+    };
+}
+
+// (apra-fleet-siqi.1.1) Default interval, in ms, at which GET /events emits a
+// generic "state may have changed, go poll /state" signal to every connected
+// SSE client -- see createDashboard()'s changeEmitter below. The supervisor
+// has no single internal event stream the way one workflow run does
+// (apra-fleet-workflow's viewer broadcasts on its own workflow.on(...)
+// handlers); its RUNNING-sprint view model instead changes via many disjoint
+// HTTP routes (POST /api/sprints, force-release, a watchdog reclassification
+// on the NEXT renderIndexPage()/buildSprintViews() call, etc.). Rather than
+// threading a notify() call into every one of those call sites (out of scope
+// for this task -- see the bead's file list), GET /events emits this same
+// generic signal on a fixed cadence, mirroring the per-sprint viewer's own
+// client-side heartbeat fallback (apra-fleet-36l.1) -- just server-side,
+// since the supervisor has no per-mutation push events to relay yet. The
+// client (apra-fleet-siqi.1.2) treats every signal identically: refetch
+// /state and re-render, so a period-driven signal here is indistinguishable
+// from a real per-mutation push from the client's point of view.
+const DEFAULT_EVENTS_INTERVAL_MS = 5000;
+
+// Per-row budget for pulling a child's GET /state?summary=1. Rows are pulled
+// concurrently, so a hung child delays the whole page by at most this much.
+const DEFAULT_SUMMARY_TIMEOUT_MS = 2000;
+// A summary is a few hundred bytes; an old child serving its FULL /state on
+// ?summary=1 can be far larger. Past this cap the body is not worth reading --
+// it cannot be a summary.
+const MAX_SUMMARY_BYTES = 1024 * 1024;
+
+/**
+ * @typedef {object} SummaryView
+ * @property {'ok'|'unreachable'|'no-summary'|'unavailable'} state
+ * @property {number} [closed]
+ * @property {number} [required]
+ * @property {number} [fraction]
+ * @property {string|null} [computedAt] - extensions.beads.computed_at (when the child FETCHED the beads)
+ * @property {boolean} [rejected] - unreachable because the port answered for a different runId
+ */
+
+/**
+ * Default `fetchSummary` seam: HTTP GET http://127.0.0.1:PORT/state?summary=1.
+ * One overall timer (started before the request) covers connect, headers AND
+ * body, so a child that accepts the connection and then stalls still times
+ * out. `agent: false` -- no pooled keep-alive socket outlives the call.
+ *
+ * Resolves `{ status, json }` for ANY HTTP response (`json` is `undefined`
+ * when the body is not valid JSON or exceeds MAX_SUMMARY_BYTES); rejects on
+ * connection error or timeout (the caller classifies that as unreachable).
+ * @param {number} port
+ * @param {{ timeoutMs?: number, host?: string }} [opts]
+ * @returns {Promise<{ status: number, json: any }>}
+ */
+export function fetchChildSummary(port, opts = {}) {
+    const timeoutMs = Number.isFinite(opts.timeoutMs) && opts.timeoutMs > 0 ? opts.timeoutMs : DEFAULT_SUMMARY_TIMEOUT_MS;
+    const host = opts.host ?? '127.0.0.1';
+    return new Promise((resolve, reject) => {
+        let settled = false;
+        let req = null;
+        let res = null;
+        const finish = (fn, value) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            fn(value);
+        };
+        const timer = setTimeout(() => {
+            const err = new Error(`child summary request timed out after ${timeoutMs}ms`);
+            err.code = 'ETIMEDOUT';
+            finish(reject, err);
+            try { if (res) res.destroy(); } catch { /* ignore */ }
+            try { if (req) req.destroy(); } catch { /* ignore */ }
+        }, timeoutMs);
+        try {
+            req = http.get({ host, port, path: '/state?summary=1', agent: false, headers: { accept: 'application/json' } }, (response) => {
+                res = response;
+                const chunks = [];
+                let size = 0;
+                let oversize = false;
+                response.on('data', (chunk) => {
+                    if (oversize) return;
+                    size += chunk.length;
+                    if (size > MAX_SUMMARY_BYTES) {
+                        oversize = true;
+                        chunks.length = 0;
+                        finish(resolve, { status: response.statusCode, json: undefined });
+                        response.destroy();
+                        return;
+                    }
+                    chunks.push(chunk);
+                });
+                response.on('end', () => {
+                    let json;
+                    try {
+                        json = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+                    } catch {
+                        json = undefined;
+                    }
+                    finish(resolve, { status: response.statusCode, json });
+                });
+                response.on('error', (err) => finish(reject, err));
+            });
+            req.on('error', (err) => finish(reject, err));
+        } catch (err) {
+            finish(reject, err);
+        }
+    });
+}
+
+/**
+ * Classify one pulled child summary response against the pinned wire shape
+ * (GET /state?summary=1 -> { summaryVersion, runId, ..., extensions: { beads:
+ * { closed, required, fraction, computed_at } } }). Order matters:
+ *   1. non-200 / non-JSON / no summaryVersion (an old child) -> unavailable
+ *   2. runId !== sprintId (the port now belongs to another run) -> rejected,
+ *      checked BEFORE beads presence so another run's empty summary never
+ *      reads as "no summary yet" for this sprint
+ *   3. no extensions.beads -> no-summary
+ *   4. non-finite closed/required -> unavailable (never 0/N)
+ *   5. otherwise ok
+ * @param {{ status: number, json: any }} response
+ * @param {string} sprintId
+ * @returns {{ kind: 'ok', summary: SummaryView }|{ kind: 'rejected', runId: any }|{ kind: 'no-summary' }|{ kind: 'unavailable' }}
+ */
+export function classifyChildSummary(response, sprintId) {
+    const json = response ? response.json : undefined;
+    if (!response || response.status !== 200 || !json || typeof json !== 'object' || Array.isArray(json)) {
+        return { kind: 'unavailable' };
+    }
+    if (json.summaryVersion === undefined || json.summaryVersion === null) return { kind: 'unavailable' };
+    if (json.runId !== sprintId) return { kind: 'rejected', runId: json.runId };
+    const ext = json.extensions && typeof json.extensions === 'object' ? json.extensions : null;
+    const beads = ext && ext.beads && typeof ext.beads === 'object' ? ext.beads : null;
+    if (!beads) return { kind: 'no-summary' };
+    const { closed, required } = beads;
+    if (typeof closed !== 'number' || !Number.isFinite(closed) || typeof required !== 'number' || !Number.isFinite(required)) {
+        return { kind: 'unavailable' };
+    }
+    const fraction = typeof beads.fraction === 'number' && Number.isFinite(beads.fraction)
+        ? beads.fraction
+        : (required > 0 ? closed / required : 0);
+    const computedAt = typeof beads.computed_at === 'string' ? beads.computed_at : null;
+    return { kind: 'ok', summary: { state: 'ok', closed, required, fraction, computedAt } };
+}
 
 /**
  * Create the dashboard seam (see src/supervisor/server.mjs's seam docs).
@@ -530,11 +1243,20 @@ export function renderIndexPageHtml(views, backlogHtml, launchFormHtml) {
  *     get?: (sprintId: string) => { branch?: string|null, goal?: string|null }|undefined,
  *   },
  *   watchdog: { classifySprint: (entry: object) => Promise<{ status: string }> },
- *   listChildren?: (parentId: string) => Promise<string[]>,
- *   expandScope?: (roots: string[]) => Promise<Set<string>>,
+ *   expandScope?: (roots: string[]) => Promise<Set<string>>, // test seam only -- production leaves this unset and expands in-memory (apra-fleet-c4s.1)
+ *   resolvePort?: (sprintId: string) => number|undefined, // live child viewer port; production injects child-port.mjs's ledger+spawner resolver
+ *   spawner?: { getLiveEntry: (pid: number) => { port?: number }|undefined }, // used to build the default resolvePort when none is injected
+ *   fetchSummary?: (port: number, opts: { timeoutMs: number, sprintId: string }) => Promise<{ status: number, json: any }>, // test seam; defaults to fetchChildSummary()
+ *   summaryTimeoutMs?: number, // per-row summary pull budget; defaults to DEFAULT_SUMMARY_TIMEOUT_MS
+
+ *   listAllBeads?: () => Promise<Array<{ id: string, status: string }>>,
+ *   beadsView?: { snapshot: () => object }, // cached beads view; supplies the freshness shown on the page and in GET /state
  *   getSprintMeta?: (sprintId: string) => Promise<{ branch?: string, goal?: string, roles?: Record<string,string> }>|{ branch?: string, goal?: string, roles?: Record<string,string> },
+ *   driftCheck?: (branch: string|null, base: string|null) => Promise<number|null>|number|null,
  *   backlog?: { renderHtml: () => Promise<string>|string },
  *   logger?: { log?: Function, error?: Function },
+ *   eventsIntervalMs?: number, // (apra-fleet-siqi.1.1) GET /events signal cadence; defaults to DEFAULT_EVENTS_INTERVAL_MS
+ *   beadsIdentity?: { get: () => object|null, getWarning?: () => string|null }, // beads-identity.mjs handle; drives the "Beads: ..." header line (or its warning form)
  * }} [deps]
  * @returns {{
  *   name: string,
@@ -542,6 +1264,7 @@ export function renderIndexPageHtml(views, backlogHtml, launchFormHtml) {
  *   stop(): Promise<void>,
  *   buildSprintViews(): Promise<SprintView[]>,
  *   renderIndexPage(): Promise<string>,
+ *   onChange(listener: () => void): () => void,
  * }}
  */
 export function createDashboard(deps = {}) {
@@ -555,8 +1278,26 @@ export function createDashboard(deps = {}) {
     }
     const logger = deps.logger ?? console;
     const logError = (...a) => (logger.error ?? logger.log)?.(...a);
-    const listChildren = deps.listChildren ?? bdListChildren;
-    const expand = deps.expandScope ?? ((roots) => expandScope(roots, listChildren));
+    // Optional beads-identity handle (beads-identity.mjs's
+    // createBeadsIdentityState(); bin/serve.mjs wires the real one) -- read
+    // on every renderIndexPage() for the header line. Absent -> no line.
+    const beadsIdentity = deps.beadsIdentity && typeof deps.beadsIdentity.get === 'function' ? deps.beadsIdentity : null;
+    // apra-fleet-c4s.1: `deps.expandScope`, when injected, is called verbatim
+    // (the pre-existing test seam -- see the module doc comment above). When
+    // absent (production default, bin/serve.mjs), buildSprintViews() below
+    // expands EVERY sprint's scope in-memory off the single listAllBeads()
+    // fetch it already makes for progress bars, via buildChildIndex() +
+    // expandScopeInMemory() -- never a subprocess walker.
+    const explicitExpand = deps.expandScope ?? null;
+    // apra-fleet-x8r.2: one bulk `bd list --all --json` fetch per
+    // renderIndexPage() call (reused across every sprint row below), not one
+    // per row -- same "one query fewer" discipline bdListScoped('')
+    // documents in runner.js. Reuses scope-overlap.mjs's already-tested
+    // bdListAllBeadsWithClosed() (normalizeBead()-compatible raw rows, `--all`
+    // included) rather than a second bulk-fetch implementation -- see the
+    // apra-fleet-72o0 note on the import above for why this must NOT be
+    // backlog.mjs's bdListAllBeads().
+    const listAllBeads = deps.listAllBeads ?? bdListAllBeadsWithClosed;
     // apra-fleet-3i3.2: best-effort per-sprint metadata (branch/goal/member
     // roles). Defaults to reading branch/goal straight off the ledger entry
     // (which now persists them -- see ledger.mjs) when the caller injects
@@ -570,10 +1311,106 @@ export function createDashboard(deps = {}) {
         const entry = ledger.get(sprintId);
         return entry ? { branch: entry.branch ?? null, goal: entry.goal ?? null } : {};
     });
+    // (apra-fleet-p2to.3.1) Base-drift check, injectable so a test can drive a
+    // deterministic commit count without a real git checkout. Defaults to
+    // computeBaseDrift() above, which never throws (resolves to `null` on any
+    // failure -- unresolvable ref, no local git repo, etc).
+    const driftCheck = deps.driftCheck ?? computeBaseDrift;
     // Backlog-last tree (eft.6.2). Injected so the dashboard renders it as the
     // final page section without owning its full-tracker/claim computation. When
     // absent, renderIndexPageHtml() falls back to an explicit empty state.
     const backlog = deps.backlog ?? null;
+    // Optional cached beads view (beads-view.mjs): only its snapshot() is read
+    // here, for the "Beads as of" line / failure notice. Rows reach this seam
+    // through the injected `listAllBeads` (the snapshot reader), never bd.
+    const beadsView = deps.beadsView && typeof deps.beadsView.snapshot === 'function' ? deps.beadsView : null;
+    function beadsFreshness() {
+        if (!beadsView) return null;
+        try {
+            return toBeadsFreshness(beadsView.snapshot());
+        } catch (err) {
+            logError('[dashboard] beads view snapshot failed:', err);
+            return null;
+        }
+    }
+
+    // Per-row progress comes from the child's own published summary (GET
+    // /state?summary=1), pulled on every buildSprintViews(). resolvePort
+    // defaults to the shared ledger+spawner resolver (child-port.mjs);
+    // without a spawner it resolves nothing and every row reads as
+    // unreachable/status unavailable rather than a supervisor recompute.
+    const resolvePort = typeof deps.resolvePort === 'function'
+        ? deps.resolvePort
+        : createChildPortResolver({ ledger, spawner: deps.spawner ?? null });
+    const summaryTimeoutMs = Number.isFinite(deps.summaryTimeoutMs) && deps.summaryTimeoutMs > 0
+        ? deps.summaryTimeoutMs
+        : DEFAULT_SUMMARY_TIMEOUT_MS;
+    const fetchSummary = typeof deps.fetchSummary === 'function'
+        ? deps.fetchSummary
+        : (port) => fetchChildSummary(port, { timeoutMs: summaryTimeoutMs });
+    // Last good (state 'ok') summary per sprintId -- in memory only; entries
+    // for sprints no longer in the ledger list are evicted each build.
+    const lastGoodSummary = new Map();
+
+    /**
+     * Pull + classify one sprint's summary. Never throws.
+     * @param {string} sprintId
+     * @returns {Promise<SummaryView>}
+     */
+    async function pullSprintSummary(sprintId) {
+        let port;
+        try {
+            port = resolvePort(sprintId);
+        } catch (err) {
+            logError(`[dashboard] resolvePort failed for sprint '${sprintId}':`, err);
+            port = undefined;
+        }
+        const unreachable = (rejected) => {
+            const last = lastGoodSummary.get(sprintId);
+            if (!last) return { state: 'unavailable' };
+            return { ...last, state: 'unreachable', ...(rejected ? { rejected: true } : {}) };
+        };
+        if (!Number.isInteger(port) || port <= 0) return unreachable(false);
+        let response;
+        try {
+            response = await fetchSummary(port, { timeoutMs: summaryTimeoutMs, sprintId });
+        } catch {
+            return unreachable(false);
+        }
+        const verdict = classifyChildSummary(response, sprintId);
+        switch (verdict.kind) {
+            case 'ok':
+                lastGoodSummary.set(sprintId, verdict.summary);
+                return verdict.summary;
+            case 'rejected':
+                logError(`[dashboard] summary from port ${port} carries runId '${String(verdict.runId)}', not sprint '${sprintId}' -- port reused by another run; ignoring it`);
+                return unreachable(true);
+            case 'no-summary':
+                return { state: 'no-summary' };
+            default:
+                return { state: 'unavailable' };
+        }
+    }
+
+    // (apra-fleet-siqi.1.1) GET /events plumbing -- see DEFAULT_EVENTS_INTERVAL_MS
+    // above for why this is a periodic signal rather than a per-mutation push.
+    // Lifecycle-owned by THIS seam's own start()/stop() (below), the same
+    // pattern every other supervisor seam already follows (server.mjs calls
+    // seam.start()/stop() for every entry in `seams`, dashboard included) --
+    // registerDashboardRoutes() never touches the timer directly, only
+    // subscribes/unsubscribes SSE clients via `onChange()`.
+    const changeEmitter = new EventEmitter();
+    // An SSE stream may stay open indefinitely (one per connected dashboard
+    // tab); the default 10-listener cap is not a "too many listeners" leak
+    // here, it's the expected steady state.
+    changeEmitter.setMaxListeners(0);
+    const eventsIntervalMs = Number.isInteger(deps.eventsIntervalMs) && deps.eventsIntervalMs > 0
+        ? deps.eventsIntervalMs
+        : DEFAULT_EVENTS_INTERVAL_MS;
+    // Injectable timer fns so a unit test can prove stop() clears the interval.
+    const setIntervalFn = deps.setInterval ?? setInterval;
+    const clearIntervalFn = deps.clearInterval ?? clearInterval;
+    let eventsTimer = null;
 
     /**
      * Builds every RUNNING sprint's view model. A sprint classified `finished`
@@ -586,16 +1423,43 @@ export function createDashboard(deps = {}) {
      */
     async function buildSprintViews() {
         const entries = ledger.list();
+        // Last-good cache eviction: a sprint no longer in the ledger list
+        // never comes back under the same id, so its cached summary is dead.
+        const liveIds = new Set(entries.map((e) => e.sprintId));
+        for (const id of lastGoodSummary.keys()) {
+            if (!liveIds.has(id)) lastGoodSummary.delete(id);
+        }
+        // Every row's child summary is pulled CONCURRENTLY and started FIRST
+        // (before the bulk beads fetch and any per-row await), so the page
+        // waits at most one summary timeout, never a serial sum of them.
+        // pullSprintSummary() never rejects.
+        const summaryPulls = new Map(entries.map((e) => [e.sprintId, pullSprintSummary(e.sprintId)]));
+        // apra-fleet-x8r.2: fetched ONCE for the whole page render (not once
+        // per sprint row) -- feeds only the claimed-scope bead count now; a
+        // failure here is isolated to "unknown" counts this round, never a
+        // thrown page render.
+        let allBeads = null;
+        try {
+            const rawBeads = await listAllBeads();
+            // The default fetcher (bdListAllBeadsWithClosed) returns RAW,
+            // unnormalized `bd list` rows -- normalizeBead() derives
+            // `parentId` (buildChildIndex() below needs it). A test-injected
+            // `deps.listAllBeads` may already return normalized rows;
+            // normalizeBead() is idempotent on its own fields, so mapping
+            // unconditionally is safe either way.
+            allBeads = (Array.isArray(rawBeads) ? rawBeads : []).map(normalizeBead).filter((b) => b.id.length > 0);
+        } catch (err) {
+            logError('[dashboard] bulk beads fetch failed (claimed-scope counts will show unknown this round):', err);
+        }
+        // apra-fleet-c4s.1: built ONCE off the same bulk fetch above (not one
+        // subprocess walk per sprint row) -- `null` when either a test injects
+        // its own `explicitExpand` (childIndex would be unused) or the bulk
+        // fetch itself failed this round (each row's own try/catch below then
+        // falls back to an empty Map, i.e. "scope is just the roots
+        // themselves" rather than a crash).
+        const childIndex = (!explicitExpand && Array.isArray(allBeads)) ? buildChildIndex(allBeads) : null;
         const built = await Promise.all(entries.map(async (entry) => {
             const classification = await watchdog.classifySprint(entry);
-
-            let beadCount = null;
-            try {
-                const scope = await expand(entry.issueRoots ?? []);
-                beadCount = scope.size;
-            } catch (err) {
-                logError(`[dashboard] scope expansion failed for sprint '${entry.sprintId}':`, err);
-            }
 
             let meta = {};
             try {
@@ -604,15 +1468,50 @@ export function createDashboard(deps = {}) {
                 logError(`[dashboard] getSprintMeta failed for sprint '${entry.sprintId}':`, err);
             }
             const roles = meta.roles && typeof meta.roles === 'object' ? meta.roles : {};
+            const branch = meta.branch ?? null;
+            // (apra-fleet-p2to.3.1) `base` lives directly on the ledger entry
+            // (ledger.mjs's Reservation.base), the same axis as issueRoots/
+            // members below -- unlike branch/goal, no getSprintMeta
+            // indirection exists for it (nothing has ever needed to override
+            // it independently of the ledger).
+            const base = entry.base ?? null;
+
+            let baseDrift = null;
+            try {
+                baseDrift = (await driftCheck(branch, base)) ?? null;
+            } catch (err) {
+                logError(`[dashboard] base-drift check failed for sprint '${entry.sprintId}':`, err);
+            }
+
+            let beadCount = null;
+            try {
+                const roots = entry.issueRoots ?? [];
+                // apra-fleet-c4s.1: in-memory expansion off `childIndex`
+                // (built once above) is the production path -- zero `bd`
+                // subprocess spawns. `explicitExpand`, when a caller injects
+                // one, is used verbatim instead (test seam).
+                const scope = explicitExpand
+                    ? await explicitExpand(roots)
+                    : expandScopeInMemory(roots, childIndex ?? new Map());
+                beadCount = scope.size;
+            } catch (err) {
+                logError(`[dashboard] scope expansion failed for sprint '${entry.sprintId}':`, err);
+            }
+
+            const progress = await summaryPulls.get(entry.sprintId);
 
             return {
                 sprintId: entry.sprintId,
-                branch: meta.branch ?? null,
+                branch,
                 goal: meta.goal ?? null,
                 status: classification.status,
                 issueRoots: entry.issueRoots ?? [],
                 beadCount,
+                progress,
                 members: (entry.members ?? []).map((name) => ({ name, role: roles[name] ?? null })),
+                base,
+                baseDrift,
+                beadsPrefix: entry.beads && entry.beads.prefix ? entry.beads.prefix : null,
             };
         }));
         return built.filter((v) => v.status !== WATCHDOG_STATUS.FINISHED);
@@ -620,9 +1519,35 @@ export function createDashboard(deps = {}) {
 
     return {
         name: 'dashboard',
-        async start() {},
-        async stop() {},
+        async start() {
+            // Idempotent -- a second start() (e.g. a supervisor restart-in-
+            // place test) must not leak a second interval.
+            if (eventsTimer) return;
+            eventsTimer = setIntervalFn(() => changeEmitter.emit('change'), eventsIntervalMs);
+        },
+        async stop() {
+            if (eventsTimer) {
+                clearIntervalFn(eventsTimer);
+                eventsTimer = null;
+            }
+        },
         buildSprintViews,
+        beadsFreshness,
+        /**
+         * (apra-fleet-siqi.1.1) Subscribe to the periodic "state may have
+         * changed, go poll /state" signal GET /events (registerDashboardRoutes
+         * below) relays to connected clients. Returns an unsubscribe function.
+         * Exposed here (rather than reaching into this closure's private
+         * `changeEmitter` from outside) so registerDashboardRoutes() only ever
+         * talks to the dashboard seam's own public surface, the same
+         * discipline `buildSprintViews`/`renderIndexPage` already follow.
+         * @param {() => void} listener
+         * @returns {() => void} unsubscribe
+         */
+        onChange(listener) {
+            changeEmitter.on('change', listener);
+            return () => changeEmitter.off('change', listener);
+        },
         async renderIndexPage() {
             // Render the sprint stack and the Backlog tab content concurrently
             // with the page shell; a Backlog render failure is isolated so it
@@ -651,7 +1576,17 @@ export function createDashboard(deps = {}) {
                     logError('[dashboard] backlog render failed:', err);
                 }
             }
-            return renderIndexPageHtml(await buildSprintViews(), backlogHtml);
+            let beads = null;
+            let beadsWarning = null;
+            if (beadsIdentity) {
+                try {
+                    beads = toBeadsSummary(beadsIdentity.get());
+                    if (!beads && typeof beadsIdentity.getWarning === 'function') beadsWarning = beadsIdentity.getWarning() || null;
+                } catch (err) {
+                    logError('[dashboard] beads identity read failed:', err);
+                }
+            }
+            return renderIndexPageHtml(await buildSprintViews(), backlogHtml, undefined, { beads, beadsWarning, beadsFreshness: beadsFreshness() });
         },
     };
 }
@@ -671,5 +1606,57 @@ export function registerDashboardRoutes(supervisor, dashboard) {
             'content-length': body.length,
         });
         res.end(body);
+    });
+
+    // (apra-fleet-siqi.1.1) GET /state -- the lean JSON poll endpoint: the
+    // SAME sprint-stack view model GET / renders into HTML (acceptance
+    // criterion: ids, statuses, claimed-scope/progress counts), but as
+    // application/json and WITHOUT the page shell -- never the GET / HTML.
+    // Built via buildStatePayload() above off the SAME buildSprintViews()
+    // GET / already calls: there is exactly one "how do I compute the
+    // running sprint list" implementation; this route and GET / only format
+    // it differently, mirroring apra-fleet-workflow's own GET /state
+    // (src/viewer/index.mjs) being a lean transform of the same `state` its
+    // GET / embeds into HTML_TEMPLATE.
+    supervisor.route('GET', '/state', async (req, res) => {
+        const views = await dashboard.buildSprintViews();
+        const body = Buffer.from(JSON.stringify(buildStatePayload(views, { beadsFreshness: typeof dashboard.beadsFreshness === 'function' ? dashboard.beadsFreshness() : null })), 'utf-8');
+        res.writeHead(200, {
+            'content-type': 'application/json; charset=utf-8',
+            'content-length': body.length,
+            'cache-control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+        });
+        res.end(body);
+    });
+
+    // (apra-fleet-siqi.1.1) GET /events -- Server-Sent-Events change-signal
+    // stream, the SAME shape as apra-fleet-workflow's own GET /events
+    // (src/viewer/index.mjs): text/event-stream, one connection held open per
+    // client, each message a bare `data: <json>\n\n` line. Unlike that
+    // per-run viewer (which broadcasts on its own workflow.on(...) engine
+    // events), the supervisor has no single internal event stream to relay,
+    // so every message here is the SAME generic `{ type: 'update' }` signal
+    // -- see DEFAULT_EVENTS_INTERVAL_MS above for why a periodic cadence
+    // stands in for per-mutation push. Client (apra-fleet-siqi.1.2) reacts to
+    // ANY message identically: schedule a poll('/state'). This handler never
+    // calls res.end() itself -- the connection only ever closes via the
+    // client disconnecting (req 'close', which unsubscribes from further
+    // signals) or the supervisor process exiting.
+    supervisor.route('GET', '/events', async (req, res) => {
+        res.writeHead(200, {
+            'content-type': 'text/event-stream',
+            'connection': 'keep-alive',
+            'cache-control': 'no-cache',
+        });
+        const send = () => {
+            res.write(`data: ${JSON.stringify({ type: 'update' })}\n\n`);
+        };
+        // Immediate signal on connect: a freshly-opened stream has no
+        // guarantee any prior /state fetch is still current, so the client
+        // should poll once right away rather than wait a full
+        // eventsIntervalMs for the first periodic signal.
+        send();
+        const unsubscribe = dashboard.onChange(send);
+        req.on('close', unsubscribe);
     });
 }

@@ -5,6 +5,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 import { addAgent } from '../src/services/registry.js';
+import { invalidatePreflightCache } from '../src/services/preflight-check.js';
+
+// tests/setup.ts globally mocks preflight-check.js with vi.fn() implementations
+const mockInvalidatePreflightCache = vi.mocked(invalidatePreflightCache);
 
 // ---------------------------------------------------------------------------
 // Hoisted mocks
@@ -16,10 +20,67 @@ const { mockGetInstanceState, mockStartInstance, mockWaitForRunning, mockGetPubl
   mockStartInstance: vi.fn().mockResolvedValue(undefined),
   mockWaitForRunning: vi.fn().mockResolvedValue(undefined),
   mockGetPublicIp: vi.fn().mockResolvedValue('1.2.3.4'),
-  mockProvisionAuth: vi.fn().mockResolvedValue('✅ auth provisioned'),
-  mockProvisionVcsAuth: vi.fn().mockResolvedValue('✅ vcs auth provisioned'),
+  mockProvisionAuth: vi.fn(),
+  mockProvisionVcsAuth: vi.fn(),
   mockCreateConnection: vi.fn(),
 }));
+
+// ---------------------------------------------------------------------------
+// Provisioning result doubles
+//
+// provisionAuth/provisionVcsAuth return `{ text, structuredContent }`, NOT a
+// bare string: reProvisionAuth branches on `structuredContent.ok`. A double
+// that still resolves to a plain string makes the ok-read dereference
+// undefined, and reProvisionAuth's best-effort catch swallows the resulting
+// TypeError -- the suite stays green while the real code path throws on every
+// call. Keep these shapes in sync with ProvisionAuthResult
+// (src/tools/provision-auth.ts) and ProvisionVcsAuthResult
+// (src/tools/provision-vcs-auth.ts).
+// ---------------------------------------------------------------------------
+
+function authOk() {
+  return {
+    text: '[OK] Auth provisioned',
+    structuredContent: {
+      ok: true, reason: 'ok', provider: 'claude', credentialLabel: 'oauth',
+      expiresAt: null, verified: true, memberId: 'm1', memberName: 'Test Member',
+    },
+  };
+}
+
+function authFail() {
+  return {
+    text: '[FAIL] Auth deploy failed\nmore detail',
+    structuredContent: {
+      ok: false, reason: 'oauth_credential_write_failed', provider: 'claude',
+      credentialLabel: null, expiresAt: null, verified: false,
+      memberId: 'm1', memberName: 'Test Member',
+    },
+  };
+}
+
+function vcsOk() {
+  return {
+    text: '[OK] VCS auth provisioned',
+    structuredContent: {
+      ok: true, reason: 'ok', provider: 'github', credentialLabel: 'github',
+      scopeUrl: 'https://github.com', expiresAt: null, verified: true,
+      verificationSkipped: false, metadata: { token: 'ghs_****' },
+      expiryWarning: null, memberId: 'm1', memberName: 'Test Member',
+    },
+  };
+}
+
+function vcsFail() {
+  return {
+    text: '[FAIL] VCS auth deploy failed\nmore detail',
+    structuredContent: {
+      ok: false, reason: 'deploy_failed', provider: 'github', credentialLabel: 'github',
+      scopeUrl: null, expiresAt: null, verified: false, verificationSkipped: false,
+      metadata: null, expiryWarning: null, memberId: 'm1', memberName: 'Test Member',
+    },
+  };
+}
 
 vi.mock('../src/services/cloud/aws.js', () => ({
   awsProvider: {
@@ -93,8 +154,8 @@ describe('ensureCloudReady - F5 re-provisioning after start', () => {
     mockStartInstance.mockResolvedValue(undefined);
     mockWaitForRunning.mockResolvedValue(undefined);
     mockGetPublicIp.mockResolvedValue('1.2.3.4');
-    mockProvisionAuth.mockResolvedValue('✅ auth provisioned');
-    mockProvisionVcsAuth.mockResolvedValue('✅ vcs auth provisioned');
+    mockProvisionAuth.mockResolvedValue(authOk());
+    mockProvisionVcsAuth.mockResolvedValue(vcsOk());
     mockSshReady();
   });
 
@@ -114,6 +175,17 @@ describe('ensureCloudReady - F5 re-provisioning after start', () => {
     expect(mockProvisionAuth).toHaveBeenCalledWith(
       expect.objectContaining({ member_id: member.id }),
     );
+  });
+
+  it('re-provisions with member_id only (no api_key, no force_oauth_copy) so a stored member credential is re-deployed, not replaced', async () => {
+    mockGetInstanceState.mockResolvedValue('stopped');
+    const member = makeStoppedCloudAgent();
+    addAgent(member);
+
+    const { ensureCloudReady } = await import('../src/services/cloud/lifecycle.js');
+    await ensureCloudReady(member);
+
+    expect(mockProvisionAuth).toHaveBeenCalledWith({ member_id: member.id });
   });
 
   it('does NOT call provisionVcsAuth when member has no git repos', async () => {
@@ -185,5 +257,215 @@ describe('ensureCloudReady - F5 re-provisioning after start', () => {
     // No re-provisioning for already-running instances
     expect(mockProvisionAuth).not.toHaveBeenCalled();
     expect(mockProvisionVcsAuth).not.toHaveBeenCalled();
+  });
+
+  // ---- invalidatePreflightCache on host/IP identity changes ----
+  it('invalidates the preflight cache after starting a stopped instance (new IP)', async () => {
+    mockGetInstanceState.mockResolvedValue('stopped');
+    mockGetPublicIp.mockResolvedValue('1.2.3.4');
+    const member = makeStoppedCloudAgent({ host: '10.0.0.1' });
+    addAgent(member);
+
+    const { ensureCloudReady } = await import('../src/services/cloud/lifecycle.js');
+    await ensureCloudReady(member);
+
+    expect(mockInvalidatePreflightCache).toHaveBeenCalledWith(member.id);
+  });
+
+  it('invalidates the preflight cache when a running instance IP changes', async () => {
+    mockGetInstanceState.mockResolvedValue('running');
+    mockGetPublicIp.mockResolvedValue('5.6.7.8'); // different from member.host
+    const member = makeStoppedCloudAgent({ host: '1.2.3.4' });
+    addAgent(member);
+
+    const { ensureCloudReady } = await import('../src/services/cloud/lifecycle.js');
+    await ensureCloudReady(member);
+
+    expect(mockInvalidatePreflightCache).toHaveBeenCalledWith(member.id);
+  });
+
+  it('does not invalidate the preflight cache when a running instance IP is unchanged', async () => {
+    mockGetInstanceState.mockResolvedValue('running');
+    mockGetPublicIp.mockResolvedValue('1.2.3.4'); // same as member.host
+    const member = makeStoppedCloudAgent({ host: '1.2.3.4' });
+    addAgent(member);
+
+    const { ensureCloudReady } = await import('../src/services/cloud/lifecycle.js');
+    await ensureCloudReady(member);
+
+    expect(mockInvalidatePreflightCache).not.toHaveBeenCalled();
+  });
+
+  // ---- structured ok/failed discriminator drives the warning log ----
+  // These are the tests that catch a stale string-shaped double: with the old
+  // `'auth provisioned'` mocks, reading `.ok` throws inside the best-effort
+  // catch, so the ok:true case emits a 'provision_llm_auth failed ... Cannot
+  // read properties of undefined' line and the ok:false case emits the wrong
+  // line -- both assertions below fail.
+
+  function captureStderr(): { lines: () => string[]; restore: () => void } {
+    const written: string[] = [];
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation(((chunk: unknown) => {
+      written.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write);
+    return { lines: () => written, restore: () => spy.mockRestore() };
+  }
+
+  it('logs NO provisioning warning when both tools report structured ok:true', async () => {
+    mockGetInstanceState.mockResolvedValue('stopped');
+    const member = makeStoppedCloudAgent({ gitAccess: 'push', gitRepos: ['Apra-Labs/apra-fleet'] });
+    addAgent(member);
+
+    const stderr = captureStderr();
+    try {
+      const { ensureCloudReady } = await import('../src/services/cloud/lifecycle.js');
+      await ensureCloudReady(member);
+    } finally {
+      stderr.restore();
+    }
+
+    expect(mockProvisionAuth).toHaveBeenCalledOnce();
+    expect(mockProvisionVcsAuth).toHaveBeenCalledOnce();
+    const provisionLines = stderr.lines().filter(l => l.includes('provision_'));
+    expect(provisionLines).toEqual([]);
+  });
+
+  it('logs a warning carrying the summary line when provisionAuth reports ok:false', async () => {
+    mockGetInstanceState.mockResolvedValue('stopped');
+    mockProvisionAuth.mockResolvedValue(authFail());
+    const member = makeStoppedCloudAgent();
+    addAgent(member);
+
+    const stderr = captureStderr();
+    try {
+      const { ensureCloudReady } = await import('../src/services/cloud/lifecycle.js');
+      await ensureCloudReady(member);
+    } finally {
+      stderr.restore();
+    }
+
+    const warnings = stderr.lines().filter(l => l.includes('provision_llm_auth'));
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('provision_llm_auth warning for ' + member.friendlyName);
+    expect(warnings[0]).toContain('[FAIL] Auth deploy failed');
+    // Only the first prose line is logged, never the trailing detail.
+    expect(warnings[0]).not.toContain('more detail');
+  });
+
+  it('logs a warning when provisionVcsAuth reports ok:false', async () => {
+    mockGetInstanceState.mockResolvedValue('stopped');
+    mockProvisionVcsAuth.mockResolvedValue(vcsFail());
+    const member = makeStoppedCloudAgent({ gitAccess: 'push', gitRepos: ['Apra-Labs/apra-fleet'] });
+    addAgent(member);
+
+    const stderr = captureStderr();
+    try {
+      const { ensureCloudReady } = await import('../src/services/cloud/lifecycle.js');
+      await ensureCloudReady(member);
+    } finally {
+      stderr.restore();
+    }
+
+    const warnings = stderr.lines().filter(l => l.includes('provision_vcs_auth'));
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('provision_vcs_auth warning for ' + member.friendlyName);
+    expect(warnings[0]).toContain('[FAIL] VCS auth deploy failed');
+  });
+
+  it('does not throw or warn when a result carries no structuredContent (legacy shape)', async () => {
+    mockGetInstanceState.mockResolvedValue('stopped');
+    mockProvisionAuth.mockResolvedValue({ text: '[OK] Auth provisioned' });
+    const member = makeStoppedCloudAgent();
+    addAgent(member);
+
+    const stderr = captureStderr();
+    try {
+      const { ensureCloudReady } = await import('../src/services/cloud/lifecycle.js');
+      await expect(ensureCloudReady(member)).resolves.toBeDefined();
+    } finally {
+      stderr.restore();
+    }
+
+    expect(stderr.lines().filter(l => l.includes('provision_llm_auth'))).toEqual([]);
+  });
+
+  it('falls back to the [FAIL] prose marker when a result carries no structuredContent', async () => {
+    mockGetInstanceState.mockResolvedValue('stopped');
+    mockProvisionAuth.mockResolvedValue({ text: '[FAIL] Auth deploy failed' });
+    const member = makeStoppedCloudAgent();
+    addAgent(member);
+
+    const stderr = captureStderr();
+    try {
+      const { ensureCloudReady } = await import('../src/services/cloud/lifecycle.js');
+      await ensureCloudReady(member);
+    } finally {
+      stderr.restore();
+    }
+
+    const warnings = stderr.lines().filter(l => l.includes('provision_llm_auth'));
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('provision_llm_auth warning for ' + member.friendlyName);
+  });
+});
+
+// GitHub #584 review: execute_prompt can give up on a slow cloud start (its
+// max_total_s budget) while the start keeps running; a retry must join that
+// in-flight bring-up instead of racing a second startInstance against it.
+describe('ensureCloudReady - per-member in-flight dedupe', () => {
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    mockGetPublicIp.mockResolvedValue('1.2.3.4');
+    mockProvisionAuth.mockResolvedValue(authOk());
+    mockProvisionVcsAuth.mockResolvedValue(vcsOk());
+    mockSshReady();
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+  });
+
+  it('a concurrent call joins the in-flight start; a later call starts afresh', async () => {
+    mockGetInstanceState.mockResolvedValue('stopped');
+    let releaseRunning!: () => void;
+    mockStartInstance.mockResolvedValue(undefined);
+    mockWaitForRunning.mockImplementationOnce(() => new Promise<void>((r) => { releaseRunning = r; }));
+    const member = makeStoppedCloudAgent();
+    addAgent(member);
+
+    const { ensureCloudReady } = await import('../src/services/cloud/lifecycle.js');
+    const first = ensureCloudReady(member);
+    const retry = ensureCloudReady(member);
+    expect(retry).toBe(first);
+    await vi.waitFor(() => expect(mockWaitForRunning).toHaveBeenCalledTimes(1));
+    releaseRunning();
+    const [a, b] = await Promise.all([first, retry]);
+    expect(a).toBe(b);
+    expect(mockStartInstance).toHaveBeenCalledTimes(1);
+
+    // Settled -> cleared: the next call is a new bring-up.
+    mockWaitForRunning.mockResolvedValue(undefined);
+    const next = ensureCloudReady(member);
+    expect(next).not.toBe(first);
+    await next;
+    expect(mockStartInstance).toHaveBeenCalledTimes(2);
+  });
+
+  it('a rejected bring-up is cleared too, and different members do not share', async () => {
+    mockGetInstanceState.mockResolvedValueOnce('terminated');
+    const m1 = makeStoppedCloudAgent();
+    addAgent(m1);
+    const { ensureCloudReady } = await import('../src/services/cloud/lifecycle.js');
+    await expect(ensureCloudReady(m1)).rejects.toThrow(/terminated/);
+
+    mockGetInstanceState.mockResolvedValue('running');
+    const m2 = makeStoppedCloudAgent();
+    addAgent(m2);
+    const p1 = ensureCloudReady(m1);
+    const p2 = ensureCloudReady(m2);
+    expect(p1).not.toBe(p2);
+    await Promise.all([p1, p2]);
   });
 });

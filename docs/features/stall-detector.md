@@ -1,13 +1,21 @@
 # Stall Detector -- Redesign Design Document
 
-**Date:** 2026-05-05  
-**Status:** Implemented -- shipped in v0.1.9.0 (#241, PR #246)
+**Status:** Implemented
+
+> **Historical design record.** This document captures the redesign that
+> produced the shipped stall detector, including the live experiments that
+> established how session log files behave. It is not a current API
+> reference: the log-path resolution described here now lives behind each
+> provider adapter's `resolveSessionLogDir()` /
+> `resolveSessionLogPath()` (`src/services/stall/log-path-resolver.ts`
+> delegates to them), and timing constants have since been tuned. See
+> `docs/stall-detector-resilience.md` for current behavior.
 
 > **Related:** this detector compares a hub-seeded `lastActivityAt` against
 > member-produced timestamps, which implicitly assumes hub/member clocks
 > agree. `fleet-sprint`'s Sprint Setup phase now runs an advisory
 > `Clock Skew Check` before dispatch to warn when that assumption doesn't
-> hold for a given member -- see `clock-skew-check.md`.
+> hold for a given member -- see [clock-skew-check.md](clock-skew-check.md).
 
 ---
 
@@ -17,18 +25,18 @@ The stall detector must fire when an `execute_prompt` session has produced no LL
 more than N seconds. This requires tracking the live session log file and checking whether the
 last-written timestamp has advanced.
 
-The current implementation (`feat/stall-detector`) is broken for 100% of sessions:
+The pre-redesign implementation was broken for essentially every session:
 
 - `fs.watch()` only works on the local filesystem -- useless for SSH-remote members
-- Path encoding is wrong (`%2F`/`%5C` instead of `-`) so even local watch fails silently
-- Every entry stays `provisional: true` forever -- stall fires on spawn time only
-- `toLocalISOString` appends offset string to UTC time without adjusting the hours
-- When `execute_prompt` is cancelled by MCP client disconnect, the `finally` block does not
-  run -- stall entries and `inFlightAgents` are permanently dirty
+- Path encoding was wrong (`%2F`/`%5C` instead of `-`) so even local watch failed silently
+- Every entry stayed `provisional: true` forever -- stall fired on spawn time only
+- `toLocalISOString` appended an offset string to UTC time without adjusting the hours
+- When `execute_prompt` was cancelled by MCP client disconnect, the `finally` block did not
+  run -- stall entries and `inFlightAgents` were left permanently dirty
 
 ---
 
-## Experiment Findings (2026-05-05)
+## Experiment Findings
 
 ### Log file locations (verified live)
 
@@ -36,7 +44,6 @@ The current implementation (`feat/stall-detector`) is broken for 100% of session
 |----------|----|---------------|-------------|
 | Claude | Windows local | `~/.claude/projects/<encoded>/` | `<sessionId>.jsonl` |
 | Claude | macOS remote | `~/.claude/projects/<encoded>/` | `<sessionId>.jsonl` |
-| Gemini | Windows local | `~/.gemini/tmp/<basename>/chats/` | `session-<ts>-<sid-prefix>.jsonl` |
 
 ### Path encoding (observed)
 
@@ -44,14 +51,12 @@ Claude encodes the work folder by replacing **every** `/`, `\`, and `:` with `-`
 - Windows: `C:\akhil\git\apra-fleet` -> `C--akhil-git-apra-fleet`
 - macOS: `/Users/akhil/git/apra-fleet` -> `-Users-akhil-git-apra-fleet`
 
-Current code uses `%2F`/`%5C` -- completely wrong.
+The pre-redesign code used `%2F`/`%5C`, which never matched.
 
 ### Activity timestamp fields
 
 - **Claude**: The `assistant` entry has a `timestamp` field. The final `last-prompt` entry has
   no timestamp. Poll must read the last line that has a `timestamp` field.
-- **Gemini**: `{"$set":{"lastUpdated":"..."}}` lines are written after every LLM turn.
-  These are the activity lines to read.
 
 ### resume=true behavior (verified live on fleet-dev)
 
@@ -67,23 +72,15 @@ Two calls (`resume=false` then `--resume <sessionId>`):
 **Implication**: For `resume=true`, no grep needed. We already have the session ID -> direct
 filename. Token approach only applies to `resume=false`.
 
-### Gemini resume behavior (verified live on fleet-dev2)
-
-`--resume latest` creates a **new file** per resume call with an updated timestamp component
-but the **same 8-char session ID prefix**: `session-<new-ts>-<same-prefix>.jsonl`.
-The previous session file is not modified. mtime filter after T0 correctly identifies the
-new file.
-
 ### File appearance timing
 
 - Claude: file created within ~30ms of session start (enqueue at T+0ms, first user entry T+26ms)
-- Gemini: file appears at session start (timestamp embedded in filename)
-- Both: mtime filter with T0 = PID-capture time reliably finds the file within the first
+- mtime filter with T0 = PID-capture time reliably finds the file within the first
   10s retry window
 
 ---
 
-## Proposed Design
+## Design
 
 ### 1. Token = inv ID
 
@@ -105,9 +102,6 @@ function sessionLogDir(provider: string, workFolder: string): string {
   }
   if (provider === 'agy') {
     throw new Error("Stall detection log polling not supported");
-  }
-  if (provider === 'gemini') {
-    return join(home, '.gemini', 'tmp', basename(workFolder), 'chats');
   }
   return null;
 }
@@ -140,18 +134,15 @@ Filter by `mtime > T0` instead of grepping content -- this narrows from hundreds
 - **Claude**: same file as prior session. Stored session ID -> `<logDir>/<sessionId>.jsonl`.
   Verify exists; if yes, use immediately. After server restart: session ID still in registry,
   same path. No scan needed.
-- **Gemini**: resume creates a new file with same session ID prefix but new timestamp component
-  (`session-<new-ts>-<sid-prefix>.jsonl`). Use mtime > T0 scan -- same as Case A.
 
-Verified by experiment: Claude resume appends to same file (same sessionId.jsonl, 1 file for
-both turns). Gemini resume creates a new file with the same 8-char session prefix but a new
-timestamp. mtime filter handles both correctly.
+Verified by experiment: Claude resume appends to the same file (same `<sessionId>.jsonl`, one
+file covering both turns), so the mtime filter handles it correctly.
 
 ### 4. Activity polling (both cases)
 
 Every **30 seconds** (soft-coded via `STALL_POLL_INTERVAL_MS` env var -- default 30000):
 - Read the last 500 bytes of the log file (tail)
-- Extract the last `timestamp` (Claude) or `lastUpdated` in a `$set` entry (Gemini)
+- Extract the last `timestamp` field (Claude)
 - If expected fields are missing: log `stall_poll_format_error {path, provider}` and skip cycle
 - If timestamp advanced since last poll: reset `stallReported`, update `lastActivityAt`
 - If not advanced and `now - lastActivityAt > STALL_THRESHOLD_MS`: fire `stall_detected`
@@ -228,7 +219,137 @@ function toLocalISOString(ms: number): string {
 
 ---
 
-## Implementation Ready
+## Adaptive Probe Cadence
 
-All design decisions are finalized. No pending experiments. Ready to hand to fleet-dev for
-implementation on `feat/stall-detector`.
+The stall detector polls each tracked entry on an adaptive cadence tuned to its effective
+threshold, rather than once per tick. This reduces probe volume for long-threshold entries
+while preserving detection latency for short-threshold ones.
+
+### Probe Interval Formula
+
+For each entry, the effective probe interval is:
+
+```
+probeIntervalMs = max(
+  tickIntervalMs,
+  min(300_000, stallThresholdMs / 5)
+)
+```
+
+Where:
+- `tickIntervalMs` = `STALL_POLL_INTERVAL_MS` env override (default: 30,000ms)
+- `stallThresholdMs` = per-entry `thresholdMs` (set by dispatch's timeout_s) or falls back to
+  `STALL_THRESHOLD_MS` env override (default: 150,000ms)
+
+### Floor
+
+The **floor** is the loop's own tick interval (`tickIntervalMs`), not a separate constant.
+There is no `STALL_PROBE_FLOOR_MS` constant and no `STALL_PROBE_FLOOR_MS` environment
+variable -- a prior design considered one, but it was rejected in favor of tying the floor
+directly to the loop's own cadence. The floor value is the same
+`STALL_POLL_INTERVAL_MS` that determines the shared `setInterval()` cadence in `start()`.
+This means a probe is never skipped within a single tick cycle, preserving the invariant that
+probes arrive at least as often as the detector loop itself.
+
+### Ceiling
+
+The **ceiling** is 300,000ms (5 minutes). This prevents absurdly long probe gaps: a
+threshold of 9,000s would otherwise cause a 30-minute probe cadence, making the operator
+busy status equally stale and stall detection equally delayed. The ceiling is hard-coded
+and unoverridden by any environment variable.
+
+### Gating Behavior
+
+- A probe is **issued** (calling `pollLogFile()` or `pollDirectoryActivity()`) only once
+  `now - entry.lastPolledAt >= probeIntervalMs` for that entry.
+- A skipped tick (one where the gate prevents a probe) **performs no stall evaluation**: it
+  does not increment or decrement idle counters, does not read as activity, and does not
+  trigger a stall kill. The entry remains as-is until the next scheduled probe.
+- `entry.lastPolledAt` (wall-clock `Date.now()`) is set only on ticks where a probe is
+  actually issued; undefined until the first successful probe on a freshly added entry.
+
+### Trusted Threshold
+
+The gate uses the **stable, trusted threshold value** (`stallThresholdMs`), never the
+post-clamp effective threshold from a pending tool timeout. This means an extraordinary
+timeout declared in a tool call does not affect the long-term probe schedule; it only
+affects the stall detection threshold on that one tick.
+
+---
+
+## Per-Provider Exec-Level Timer Source
+
+The exec-level rolling (inactivity) timer that guards the low-level dispatch
+channel is deliberately sourced differently per provider, via a required
+`execTimeoutSource()` capability on each provider adapter that returns either
+`'inactivity_timeout'` or `'total_ceiling'`:
+
+- **`'inactivity_timeout'`** -- arm a rolling deadline sized from the
+  dispatch's `timeout_s`. Correct when the exec channel's own stdout/stderr
+  is a real mid-turn liveness signal, or when the provider has no other stall
+  signal at all: a provider whose adapter returns no session-log directory
+  (so the StallDetector has nothing to poll) relies on this exec-level timer
+  as its *only* stall detection path, and decoupling it there would disable
+  stall detection outright for that provider.
+- **`'total_ceiling'`** -- do NOT arm a `timeout_s`-sized rolling deadline;
+  derive the exec timer from `max_total_s` instead, a value that can never
+  bind before the dispatch's own hard ceiling does. Correct for providers
+  whose exec channel is batch/console-only and emits nothing mid-turn, where
+  a `timeout_s`-sized rolling deadline would be a false kill on a long, still
+  -progressing turn. The StallDetector's transcript polling remains the real
+  stall mechanism for these providers, and it still receives `timeout_s` as
+  its `thresholdMs` independent of this exec-timer choice.
+
+This is a required member of the provider adapter interface rather than an
+optional one with a default, specifically so a newly added provider must
+state its own answer at compile time instead of silently inheriting
+whichever branch happens to be the fallback -- the wrong branch silently
+disables a kill path for that provider.
+
+When a provider's exec timer is sourced from `max_total_s` and the caller
+supplied no `max_total_s`, the timer falls back to a large-but-finite
+sentinel rather than an unbounded/infinite timeout. `setTimeout()` with an
+effectively-infinite delay does not wait forever -- Node coerces an
+out-of-range delay and fires the timer almost immediately (on the order of a
+few milliseconds), which would silently convert "no ceiling configured" into
+"kill almost instantly." The sentinel value is chosen to be larger than any
+realistic dispatch ceiling while still fitting a 32-bit timer delay, so the
+exec timer effectively never binds in the absence of an explicit
+`max_total_s`, without triggering that overflow behavior.
+
+---
+
+## Observability: stall_poll_tick Fields
+
+At the end of each poll tick, the detector emits a single `stall_poll_tick` log line
+summarizing the outcomes of that tick's probing. This line is JSON plus an elapsed suffix
+(appended by `LogScope.ok()`), so the entire line is not valid JSON by itself, but the
+payload is:
+
+### Tick-Level Summary Fields
+
+The JSON payload of each `stall_poll_tick` scope contains:
+
+- **`probesIssued`** (number): count of live probes actually issued on this tick
+  (entries whose adaptive cadence gate fired)
+- **`probesSkipped`** (number): count of entries whose probes were gated out by the
+  adaptive cadence check
+- **`entryProbeIntervals`** (array): for each tracked entry, an object with:
+  - `memberName` (string): the entry's assigned member name
+  - `probeIntervalMs` (number): the computed effective probe interval for that entry,
+    reflecting the entry's threshold and the floor/ceiling clamp
+
+The `entryProbeIntervals` list is emitted in the same order as the detector's internal
+`stallCheckList` iteration, regardless of which entries actually probed on this tick, so
+an operator can compare before-and-after snapshots of the list to see which entries
+changed their computed cadence (e.g., after a threshold override).
+
+### Example Log Line
+
+```
+{"timestamp":"2026-09-16T14:23:45.123Z","scope":"stall_poll_tick","level":"info","inv":"xyz123","msg":"{\"activeWatched\":2,\"provisional\":0,\"members\":[\"alice\",\"bob\"]} elapsed=5ms","ok":"{\"probesIssued\":1,\"probesSkipped\":1,\"entryProbeIntervals\":[{\"memberName\":\"alice\",\"probeIntervalMs\":30000},{\"memberName\":\"bob\",\"probeIntervalMs\":300000}]}","elapsed":"5ms"}
+```
+
+The `ok` field contains the actual probe summary. The `msg` field (which closes at the
+scope's entry) is separate JSON that includes tick-level metadata: `activeWatched`,
+`provisional` count, and member list.

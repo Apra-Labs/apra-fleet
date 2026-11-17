@@ -7,6 +7,10 @@ import { DebouncedStateWriter, DEFAULT_DEBOUNCE_MS, writeJsonFileAtomic } from '
 import { getRunningRunStatePath, getTerminalRunStatePath } from './run-state-paths.mjs';
 import { buildListStatePayload, resolveStringRefs } from './lean-state.mjs';
 import { capCommandActivityMeta, getFullOutput } from './command-output-cap.mjs';
+import { buildRunTitle } from './run-title.mjs';
+import { billedTokens } from '../workflow/pricing.mjs';
+import { createRunSummary, refreshSummaryCore, applyExtensionSummary, backfillExtensionSummaries } from './run-summary.mjs';
+import { checkMutatingRequest, checkRequestHost } from './request-guard.mjs';
 
 // apra-fleet-eft.6.5: the SAME template serves both the live view and the
 // process-free History view -- `opts.history` (true) feeds a FROZEN state
@@ -20,7 +24,7 @@ import { capCommandActivityMeta, getFullOutput } from './command-output-cap.mjs'
 const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
     const isHistory = !!opts.history;
     const frozenStateLiteral = isHistory
-        ? JSON.stringify(opts.state ?? null).replace(/</g, '\\u003c')
+        ? JSON.stringify(backfillExtensionSummaries(opts.state ?? null, dashboardExtensions) ?? null).replace(/</g, '\\u003c')
         : 'null';
     return `<!DOCTYPE html>
 <html lang="en">
@@ -51,6 +55,8 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
     body { background: var(--bg); color: var(--text); font-family: sans-serif; height: 100vh; height: 100dvh; overflow: hidden; display: flex; flex-direction: column; }
     .header { flex-shrink: 0; display: flex; justify-content: space-between; align-items: center; padding: 12px 24px; background: var(--bg-glass); border-bottom: 1px solid var(--border); }
     .header h1 { font-size: 16px; font-weight: 600; margin: 0; }
+    .header-title { display: flex; flex-direction: column; gap: 4px; }
+    .run-title { font-size: 12px; color: var(--text-muted); background: var(--bg-glass); padding: 2px 8px; border-radius: 4px; width: fit-content; }
     .header-actions { display: flex; gap: 12px; align-items: center; }
     
     .stats-banner { display: flex; gap: 16px; font-size: 12px; color: var(--text-muted); background: rgba(0,0,0,0.3); padding: 4px 12px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.05); }
@@ -59,9 +65,18 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
     
     .btn { padding: 4px 12px; font-size: 12px; border-radius: 4px; border: none; cursor: pointer; font-weight: 600; transition: opacity 0.2s; }
     .btn:hover { opacity: 0.8; }
+    .btn:disabled { opacity: 0.4; cursor: default; }
+    .btn:disabled:hover { opacity: 0.4; }
     .btn-save { background: var(--accent); color: #fff; }
     .btn-stop { background: var(--danger); color: #fff; }
+    .btn-pause { background: var(--warning); color: #000; }
     .btn-secondary { background: rgba(255,255,255,0.1); color: var(--text); }
+    /* (apra-fleet-p2to.2.1) 'paused since <ts>' badge + reason card,
+       generic to every workflow run -- no per-workflow-type styling. */
+    .pause-banner { background: rgba(245, 158, 11, 0.12); border-color: rgba(245, 158, 11, 0.4); color: var(--warning); }
+    /* Header-level extension banner slots (see the markup below the header). */
+    .extension-banners { flex-shrink: 0; }
+    .extension-banner { max-height: 45vh; overflow-y: auto; }
     
     /* min-height: 0 on every rung of the flex chain: a flex item's default
        min-height is content-sized, which lets a tall Activity list push the
@@ -168,11 +183,32 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
        the only way to shrink total height. Flex here still wins on
        specificity but no longer conflicts with .panel's own flex layout. */
     .tab-content.active { display: flex; min-height: 0; }
+
+    /* apra-fleet-4yr.1: in-page replacements for window.confirm()/alert()
+       on the Stop path -- native OS dialogs clash with the dark-glass UI.
+       Modal reuses .btn-stop's danger color for its Stop action; toast is
+       non-blocking and auto-dismisses. */
+    .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6); align-items: center; justify-content: center; z-index: 1000; }
+    .modal-overlay.open { display: flex; }
+    .modal-box { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 20px; max-width: 360px; width: 90%; box-shadow: 0 8px 24px rgba(0,0,0,0.5); }
+    .modal-box p { color: var(--text); font-size: 13px; margin-bottom: 16px; line-height: 1.4; }
+    .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+    .toast { position: fixed; bottom: 24px; right: 24px; background: var(--bg-glass); border: 1px solid var(--border); color: var(--text); padding: 10px 16px; border-radius: 6px; font-size: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.4); opacity: 0; transform: translateY(8px); transition: opacity 0.2s, transform 0.2s; pointer-events: none; z-index: 1001; }
+    .toast.show { opacity: 1; transform: translateY(0); }
   </style>
 </head>
 <body data-view="${isHistory ? 'history' : 'live'}">
   <div class="header">
-    <h1><span id="workflow-name">Loading...</span></h1>
+    <div class="header-title">
+      <h1><span id="workflow-name">Loading...</span></h1>
+      <!-- apra-fleet-dm5.1: short human "run title" sentence (workflow-
+           specific fields such as members/issue-ids/goal, when the running
+           workflow publishes them), rendered by renderState() below via
+           buildRunTitle(state). Falls back to the plain workflow name
+           (still non-empty, never blank) whenever the relevant fields
+           aren't populated. -->
+      <div id="run-title" class="run-title"></div>
+    </div>
     <div class="header-actions">
       <!-- apra-fleet-eft.37.3: generic, workflow-agnostic display of
            state.result's top-level SCALAR fields -- populated (or hidden,
@@ -181,17 +217,40 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
            (e.g. auto-sprint's verdict badge/PR link) is layered on by a
            dashboard extension's own js, not here. -->
       <div class="stats-banner" id="result-strip" style="display: none;"></div>
+      <!-- (apra-fleet-p2to.2.1) 'paused since <ts>' badge + reason card --
+           shown only while state.pause.status === 'paused' (renderState()
+           below); hidden for the process-free History view exactly like
+           Save/Stop, since a finished run can never be paused. -->
+      ${isHistory ? '' : '<div class="stats-banner pause-banner" id="pause-banner" style="display: none;"></div>'}
       <div class="stats-banner" id="stats-banner"></div>
       <div id="status-indicator" style="font-size: 12px; font-weight: 600; min-width: 70px; text-align: center;"></div>
       ${isHistory ? '' : '<button class="btn btn-save" onclick="saveState()">Save</button>'}
+      ${isHistory ? '' : '<button class="btn btn-pause" id="btn-pause" onclick="pauseWorkflow()">Pause</button>'}
       ${isHistory ? '' : '<button class="btn btn-stop" onclick="stopWorkflow()">Stop</button>'}
     </div>
   </div>
+  <!-- Header-level banner slot per dashboard extension: OUTSIDE every tab
+       panel, so whatever an extension renders here stays visible whichever
+       tab is active (e.g. a run-wide notice that needs the operator's
+       attention). Core never fills or shows these; the extension's own js
+       does (document.getElementById('extension-banner-' + id)). Live view
+       only, like the pause banner: a finished run has nothing to act on. -->
+  ${isHistory ? '' : `<div class="extension-banners" id="extension-banners">${dashboardExtensions.map(ext => `<div id="extension-banner-${ext.id}" class="extension-banner" style="display: none;"></div>`).join('')}</div>`}
+  ${isHistory ? '' : `<div class="modal-overlay" id="stop-modal-overlay">
+    <div class="modal-box">
+      <p>Are you sure you want to forcibly stop the workflow?</p>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="closeStopModal()">Cancel</button>
+        <button class="btn btn-stop" onclick="confirmStopWorkflow()">Stop</button>
+      </div>
+    </div>
+  </div>
+  <div class="toast" id="stop-toast">Stop signal sent.</div>`}
   <div class="main-content">
     <div class="content-area">
       <div class="tab-bar" id="tab-bar">
         <button class="tab-btn active" onclick="switchTab('core')">Activity Tree</button>
-        ${dashboardExtensions.map(ext => `<button class="tab-btn" onclick="switchTab('${ext.id}')">${ext.title}</button>`).join('\\n')}
+        ${dashboardExtensions.map(ext => `<button class="tab-btn" onclick="switchTab('${ext.id}')">${ext.title}</button>`).join('\n')}
       </div>
       <div id="tab-core" class="tab-content active panel">
         <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
@@ -202,13 +261,16 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
       </div>
       ${dashboardExtensions.map(ext => `
         <div id="tab-${ext.id}" class="tab-content panel">
-          <div class="panel-header">${ext.title}</div>
+          <div class="panel-header" id="panel-header-${ext.id}" style="display: flex; justify-content: space-between; align-items: center; gap: 12px;">
+            <span>${ext.title}</span>
+            <div id="panel-header-${ext.id}-extra" style="flex: 1; min-width: 0; max-width: 320px; text-transform: none; letter-spacing: normal;"></div>
+          </div>
           <div id="extension-${ext.id}" style="flex: 1; min-height: 0; padding: 12px; overflow-y: auto;"></div>
         </div>
-      `).join('\\n')}
+      `).join('\n')}
     </div>
   </div>
-  ${dashboardExtensions.map(ext => `<script>\n${ext.js}\n</script>`).join('\\n')}
+  ${dashboardExtensions.map(ext => `<script>\n${ext.js}\n</script>`).join('\n')}
   <script>
     let globalState = null;
     function switchTab(id) {
@@ -218,29 +280,55 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
       document.getElementById('tab-' + id).classList.add('active');
     }
     
+    // apra-fleet-4wr.1: the ONE shared h/m/s duration formatter -- every
+    // duration display in this viewer (live elapsed, closed/frozen phase and
+    // activity durations, the stats-banner Uptime) goes through this, so a
+    // closed row and a live row of the same elapsed value render identically
+    // instead of one showing raw/decimal seconds and the other h/m/s.
+    // ms == null (missing -- not yet known) is the ONLY case that renders
+    // the '-' placeholder; a genuine zero or sub-second duration renders
+    // '0s', never '-'.
     function formatTime(ms) {
-      if (!ms) return '-';
-      return (ms / 1000).toFixed(1) + 's';
-    }
-    
-    function formatUptime(ms) {
-      if (!ms || ms < 0) return '0s';
+      if (ms === null || ms === undefined) return '-';
+      // apra-fleet-x8r.6: a frozen phase carrying an end timestamp but no/
+      // invalid start timestamp (or any other NaN-producing input) must fall
+      // back to the same '-' placeholder as the missing-value case above,
+      // never the literal string 'NaNs'.
+      if (!Number.isFinite(ms)) return '-';
+      if (ms < 0) return '0s';
       let secs = Math.floor(ms / 1000);
       let mins = Math.floor(secs / 60);
       let hrs = Math.floor(mins / 60);
       secs = secs % 60;
       mins = mins % 60;
-      
+
       let out = [];
       if (hrs > 0) out.push(hrs + 'hr');
       if (mins > 0) out.push(mins + 'm');
       out.push(secs + 's');
       return out.join(' ');
     }
+
+    // Live (still-running) elapsed durations, ticked forward on every
+    // render/poll from Date.now() - startTime -- delegates to formatTime()
+    // for the actual h/m/s formatting (the shared formatter above), only
+    // differing in that a falsy/negative/missing ms (nothing meaningful to
+    // show yet) renders '0s' rather than formatTime's own '-' missing-value
+    // case, since a live row always has SOME elapsed value once it starts.
+    function formatUptime(ms) {
+      if (!ms || ms < 0) return '0s';
+      return formatTime(ms);
+    }
     
     // Shared with dashboard extensions -- see src/viewer/html-utils.mjs for
     // why this is embedded via escapeHtml.toString() instead of duplicated.
     ${escapeHtml.toString()}
+
+    // apra-fleet-dm5.1: buildRunTitle() references escapeHtml by bare name
+    // (not an import) -- embedded here, right after escapeHtml itself, so
+    // that identifier resolves in this plain <script> tag exactly as it
+    // does in run-title.mjs's real ES-module scope.
+    ${buildRunTitle.toString()}
 
     // apra-fleet-eft.27.1: GET /state's lean list-state payload dedupes
     // repeated strings into a shared \`_strings\` table (see
@@ -262,12 +350,51 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
       a.click();
     }
     
-    async function stopWorkflow() {
-      if (confirm('Are you sure you want to forcibly stop the workflow?')) {
-        await fetch('/stop', { method: 'POST' });
-        alert('Stop signal sent.');
-      }
+    // apra-fleet-4yr.1: in-page modal replaces window.confirm() for the
+    // Stop confirmation step (the safety check itself stays -- only the
+    // native dialog is replaced), and a non-blocking toast replaces
+    // window.alert() once /stop resolves.
+    function stopWorkflow() {
+      const overlay = document.getElementById('stop-modal-overlay');
+      if (overlay) overlay.classList.add('open');
     }
+
+    function closeStopModal() {
+      const overlay = document.getElementById('stop-modal-overlay');
+      if (overlay) overlay.classList.remove('open');
+    }
+
+    function showStopToast() {
+      const toast = document.getElementById('stop-toast');
+      if (!toast) return;
+      toast.classList.add('show');
+      setTimeout(() => toast.classList.remove('show'), 3000);
+    }
+
+    async function confirmStopWorkflow() {
+      closeStopModal();
+      await fetch('/stop', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      showStopToast();
+    }
+
+    document.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Escape') closeStopModal();
+    });
+
+    // (apra-fleet-p2to.2.1) Pause/Resume -- unlike stopWorkflow() these never
+    // set button state directly: POST /pause and /resume only forward the
+    // request to the engine (which may defer the actual pause), and the
+    // button's label/enabled-state + the 'paused since' badge are entirely
+    // driven by renderState()'s reading of state.pause on the next poll/SSE
+    // tick, below. That keeps the button truthful about what the engine has
+    // ACTUALLY done rather than what the browser merely asked for.
+    async function pauseWorkflow() {
+      await fetch('/pause', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    }
+    async function resumeWorkflow() {
+      await fetch('/resume', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    }
+
 
     let allExpanded = true;
     function toggleAllGlobal() {
@@ -373,6 +500,8 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
     source.onmessage = (e) => {
         const ev = JSON.parse(e.data);
         if (ev.type === 'state') {
+            // Summary first, then state (same order as renderState's hand-off).
+            document.dispatchEvent(new CustomEvent('workflow:summary:' + ev.payload.namespace, { detail: ev.payload.summary ?? null }));
             const extEvent = new CustomEvent('workflow:state:' + ev.payload.namespace, { detail: ev.payload.data });
             document.dispatchEvent(extEvent);
         }
@@ -625,7 +754,7 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
                         // tier was never displayed at all. modelHtml surfaces
                         // act.model (e.g. "premium"/"standard", already
                         // present on every agent activity) explicitly.
-                        let tokensHtml = act.usage ? \`<span style="color:var(--text-muted)">\${act.usage.total_tokens.toLocaleString()} tkns</span>\` : (act.type === 'agent' && !act.isRunning ? \`<span style="color:var(--text-muted)">n/a</span>\` : '');
+                        let tokensHtml = act.usage ? \`<span style="color:var(--text-muted)">\${((act.usage.total_tokens || 0) + (act.usage.cache_read_input_tokens || 0) + (act.usage.cache_creation_input_tokens || 0)).toLocaleString()} tkns</span>\` : (act.type === 'agent' && !act.isRunning ? \`<span style="color:var(--text-muted)">n/a</span>\` : '');
                         const modelHtml = (act.type === 'agent' && act.model) ? \`<span style="color:var(--text-muted)">[\${escapeHtml(act.model)}]</span>\` : '';
                         const memberDisplay = act.member ? escapeHtml(act.member) : (act.type === 'transform' ? 'js' : '');
                         const memberHtml = memberDisplay ? \`<span class="muted">(\${memberDisplay})</span>\` : '';
@@ -680,11 +809,67 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
 
         document.getElementById('workflow-name').textContent = state.workflowName;
 
+        // apra-fleet-dm5.1: buildRunTitle() returns an ALREADY-ESCAPED HTML
+        // fragment (every user-supplied piece -- member names, bead ids,
+        // goal -- individually run through escapeHtml before being embedded
+        // into the sentence), safe to assign directly here.
+        const runTitleEl = document.getElementById('run-title');
+        if (runTitleEl) runTitleEl.innerHTML = buildRunTitle(state);
+
         const ind = document.getElementById('status-indicator');
         if (state.status === 'running') { ind.innerHTML = '<div class="status-live-indicator"><div class="led"></div> LIVE</div>'; }
         else if (state.status === 'success') { ind.innerHTML = '<span style="color:var(--success)">DONE</span>'; }
         else if (state.status === 'cancelled') { ind.innerHTML = '<span style="color:var(--warning)">CANCELLED</span>'; }
         else { ind.innerHTML = '<span style="color:var(--danger)">FAILED</span>'; }
+
+        // (apra-fleet-p2to.2.1) Pause/Resume button state machine: Pause ->
+        // Pausing -> Paused -> Resume, driven entirely by state.pause.status
+        // (itself set only by the engine's own 'pause:requested'/'paused'/
+        // 'resumed' events -- see the workflow.on() wiring in
+        // createDashboardViewer()). Absent for the History view, which never
+        // renders the button at all.
+        const pauseBtn = document.getElementById('btn-pause');
+        if (pauseBtn) {
+            const pause = state.pause || { status: 'none' };
+            if (pause.status === 'paused') {
+                pauseBtn.textContent = 'Resume';
+                pauseBtn.onclick = resumeWorkflow;
+                pauseBtn.disabled = false;
+            } else if (pause.status === 'pausing') {
+                pauseBtn.textContent = 'Pausing...';
+                pauseBtn.onclick = null;
+                pauseBtn.disabled = true;
+            } else {
+                pauseBtn.textContent = 'Pause';
+                pauseBtn.onclick = pauseWorkflow;
+                // Nothing to pause once the run isn't live anymore.
+                pauseBtn.disabled = (state.status !== 'running');
+            }
+        }
+
+        // 'paused since <ts>' badge + reason card -- shown only while the
+        // pause has actually engaged (status === 'paused'), never during the
+        // deferred 'pausing' window, since nothing has happened yet from the
+        // dashboard's point of view.
+        const pauseBanner = document.getElementById('pause-banner');
+        if (pauseBanner) {
+            const pause = state.pause || { status: 'none' };
+            if (pause.status === 'paused') {
+                const sinceStr = pause.since ? new Date(pause.since).toLocaleTimeString([], { hour12: false }) : '-';
+                const reasonHtml = pause.reason ? \`<span>Reason: <strong>\${escapeHtml(pause.reason)}</strong></span>\` : '';
+                const phaseHtml = pause.phase ? \`<span>Phase: <strong>\${escapeHtml(pause.phase)}</strong></span>\` : '';
+                // (apra-fleet-hzeb.3) Only present for a script-initiated pause
+                // that supplied resumeAt (e.g. a provider usage-limit reset
+                // time via ctx.requestPause(reason, { resumeAt })) -- an
+                // operator-initiated /pause never sets it, so this stays absent.
+                const resumeAtHtml = pause.resumeAt ? \`<span>Expected resume: <strong>\${escapeHtml(pause.resumeAt)}</strong></span>\` : '';
+                pauseBanner.innerHTML = \`<span>Paused since <strong>\${sinceStr}</strong></span>\${phaseHtml}\${reasonHtml}\${resumeAtHtml}\`;
+                pauseBanner.style.display = 'flex';
+            } else {
+                pauseBanner.innerHTML = '';
+                pauseBanner.style.display = 'none';
+            }
+        }
 
         const dur = state.status === 'running' ? Date.now() - state.stats.startTime : state.stats.durationMs;
         const unknownCostSuffix = state.stats.unknownCostCount > 0 ? \` <span style="color:var(--warning)">(+\${state.stats.unknownCostCount} unknown)</span>\` : '';
@@ -721,6 +906,17 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
         }
 
         renderTreeIncremental(state.tree);
+
+        // Generic per-namespace summary hand-off (GET /state?summary=1's
+        // extensions map, computed server-side once per publish): dispatched
+        // BEFORE the matching workflow:state:NS event so an extension can
+        // cache it and render from it on that event. detail is null when
+        // the namespace has no summary yet.
+        const summaryExts = (state.summary && state.summary.extensions) || {};
+        const summaryNamespaces = new Set([...Object.keys(state.extensions || {}), ...Object.keys(summaryExts)]);
+        for (const ns of summaryNamespaces) {
+            document.dispatchEvent(new CustomEvent('workflow:summary:' + ns, { detail: summaryExts[ns] || null }));
+        }
 
         if (state.extensions) {
             for (const [ns, data] of Object.entries(state.extensions)) {
@@ -789,6 +985,20 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
 // module). Reads from the LIVE, full-fidelity in-memory `state.tree` (never
 // the leaned /state payload), which is where an uncapped activity's complete
 // output/error text still lives.
+// Upper bound on a POST /extensions/:extId/actions/:actionId request body.
+const ACTION_BODY_MAX_BYTES = 64 * 1024;
+
+// True for GET /state?summary=1 (any extra query params, e.g. a _t
+// cache-buster, allowed); false for plain /state and /state?_t=....
+function isSummaryRequest(url) {
+    try {
+        const u = new URL(url, 'http://localhost');
+        return u.pathname === '/state' && u.searchParams.get('summary') === '1';
+    } catch {
+        return false;
+    }
+}
+
 function findActivityById(state, id) {
     for (const g of state.tree || []) {
         for (const p of g.phases || []) {
@@ -808,8 +1018,31 @@ function findActivityById(state, id) {
 // for).
 export { HTML_TEMPLATE };
 
+/**
+ * Creates a live dashboard viewer HTTP server for a workflow run.
+ * @param {import('../workflow/index.mjs').FleetWorkflow} workflow
+ * @param {Object} opts - Options object
+ * @param {number} [opts.port=8080] - HTTP server port
+ * @param {string} [opts.host='127.0.0.1'] - Interface to bind. Loopback by default; pass '0.0.0.0' (or a
+ *   specific address) to expose the dashboard off-box -- an explicit opt-in.
+ * @param {string[]|string} [opts.allowedHosts] - Extra Host header names this server answers to. Loopback
+ *   names, IP literals and `host` are always accepted; any other name is refused on every request
+ *   (DNS-rebinding defence, request-guard.mjs checkRequestHost()).
+ * @param {string} [opts.runId] - Stable per-run identifier (generated if not provided)
+ * @param {string} [opts.name] - Workflow display name
+ * @param {string} [opts.debouncedStatePath] - Path to write state JSON (uses default if not provided)
+ * @param {*} [opts.launchArgs] - Opaque, free-form per-workflow metadata (NOT argv).
+ *   `launchArgs` is passed through unchanged into state.args and is never inspected
+ *   or interpreted by core -- consumers must feature-detect the fields they need
+ *   rather than assuming a type. Examples: argv array from test callers
+ *   (['--track', 'eft-service'], ['--foo', 'bar']), or a structured object from
+ *   fleet-sprint (e.g., { members, targetIssues, goal }). Defaults to null if omitted.
+ * @param {Array} [opts.dashboardExtensions] - Dashboard widget extensions
+ * @param {Object} [opts.env] - Environment variables (defaults to process.env)
+ */
 export function createDashboardViewer(workflow, opts = {}) {
     const port = (typeof opts.port === 'number') ? opts.port : 8080;
+    const host = (typeof opts.host === 'string' && opts.host) ? opts.host : '127.0.0.1';
     const dashboardExtensions = opts.dashboardExtensions || [];
 
     // apra-fleet-eft.2.3 (renamed under eft.37.1): stable per-run id, NOT an
@@ -852,6 +1085,12 @@ export function createDashboardViewer(workflow, opts = {}) {
         // a mid-run read of the file shows in-progress state, not just
         // the terminal shape.
         runId,
+        // apra-fleet-x8r.10: launchArgs is opaque, free-form, per-workflow
+        // metadata (NOT argv). Core never inspects or interprets it; consumers
+        // must feature-detect the fields they need rather than assuming a type.
+        // Examples: argv array from test callers (['--track', 'eft-service'],
+        // ['--foo', 'bar']), or a structured object from fleet-sprint
+        // ({ members, targetIssues, goal }).
         args: opts.launchArgs ?? null,
         // apra-fleet-eft.37.3: `result` is the workflow script's own return
         // value, stored WHOLESALE and OPAQUELY -- core never inspects or
@@ -876,8 +1115,27 @@ export function createDashboardViewer(workflow, opts = {}) {
             startTime: Date.now(),
             durationMs: 0
         },
+        // (apra-fleet-p2to.2.1) Generic pause lifecycle, driven entirely by
+        // the engine's 'pause:requested'/'paused'/'resumed' events wired up
+        // below -- never mutated directly by any route handler. `status` is
+        // one of 'none' (not paused/requested), 'pausing' (requested, still
+        // draining in-flight work / waiting on the script's pause guard) or
+        // 'paused' (engaged: new agent()/command() dispatches are blocked at
+        // the gate). `reason` is carried from the requestPause() call that
+        // started this cycle (the 'paused' event itself carries no reason,
+        // see FleetWorkflow._maybeEngagePause -- so it is preserved here
+        // rather than re-read from that event); `since` is stamped locally
+        // when 'paused' actually fires (the engine event carries no
+        // timestamp). `phase`/`group` mirror wherever the run was when the
+        // pause was requested, for the dashboard's reason card. Generic to
+        // any workflow -- no fleet-sprint-specific fields.
+        pause: { status: 'none', reason: null, since: null, phase: null, group: null, resumeAt: null },
         tree: [],
-        extensions: {}
+        extensions: {},
+        // Small, fixed-shape progress summary served at GET /state?summary=1
+        // (run-summary.mjs). Core fields are refreshed on every broadcast;
+        // extensions.<ns> is recomputed only when <ns> is published.
+        summary: createRunSummary(runId)
     };
 
     // Note: group/phase tracking is single-run by design (single-tenant usage).
@@ -894,6 +1152,8 @@ export function createDashboardViewer(workflow, opts = {}) {
     let currentPhase = { title: 'Initialization', phaseStartedAt: startedAtIso, phaseEndedAt: null, events: [] };
     currentGroup.phases.push(currentPhase);
     state.tree.push(currentGroup);
+    const refreshSummary = () => refreshSummaryCore(state.summary, state, currentPhase ? currentPhase.title : null);
+    refreshSummary();
 
     const clients = new Set();
     const broadcast = (data) => {
@@ -905,6 +1165,10 @@ export function createDashboardViewer(workflow, opts = {}) {
         // mid-run read of the persisted file reflects in-progress state
         // rather than only the terminal snapshot.
         state.updatedAt = nowIso();
+        // Every lifecycle change (end, pause events, phase, activity
+        // stats) reaches here, so the summary's core fields stay current
+        // without any extension hook being called.
+        refreshSummary();
         debouncedWriter.schedule();
     };
 
@@ -1021,6 +1285,7 @@ export function createDashboardViewer(workflow, opts = {}) {
         }
         state.endedAt = nowIso();
         state.terminalReason = state.terminalReason || 'SIGINT';
+        refreshSummary();
         persistState();
         // apra-fleet-eft.2.1: flush any coalesced-but-not-yet-written
         // debounced state synchronously before the process actually exits,
@@ -1041,6 +1306,7 @@ export function createDashboardViewer(workflow, opts = {}) {
         }
         state.endedAt = nowIso();
         state.terminalReason = state.terminalReason || 'SIGTERM';
+        refreshSummary();
         persistState();
         debouncedWriter.flushSync();
         moveStateToOldRuns();
@@ -1098,7 +1364,9 @@ export function createDashboardViewer(workflow, opts = {}) {
                 }
             }
         }
-        if (meta.usage?.total_tokens) state.stats.totalTokens += meta.usage.total_tokens;
+        // Every billed token, including prompt-cache reads/writes (which
+        // usage.total_tokens -- the context-admission figure -- excludes).
+        if (meta.usage) state.stats.totalTokens += billedTokens(meta.usage);
         // apra-fleet-unw.4: `cost` is only added to the running total when
         // it's a known number. When agent() explicitly reported cost: null
         // (fleet result had no usage, or the model wasn't in the pricing
@@ -1118,7 +1386,56 @@ export function createDashboardViewer(workflow, opts = {}) {
 
     workflow.on('state', (stateData) => {
         state.extensions[stateData.namespace] = stateData.data;
-        broadcast({ type: 'state', payload: stateData });
+        // Once-per-publish: only the extension registered for THIS
+        // namespace (if it opts in with summarize()) is asked to summarize;
+        // a throwing hook is logged and its previous summary kept.
+        applyExtensionSummary(state.summary, dashboardExtensions, stateData.namespace, stateData.data, nowIso());
+        broadcast({ type: 'state', payload: { ...stateData, summary: state.summary.extensions[stateData.namespace] ?? null } });
+    });
+
+    // (apra-fleet-p2to.2.1) Generic pause lifecycle wiring, mirroring how
+    // 'end' below derives dashboard state entirely from engine events --
+    // the /pause and /resume routes (below) only forward the request to
+    // FleetWorkflow.requestPause()/requestResume() (src/workflow/index.mjs);
+    // every actual state.pause transition happens here, driven by the
+    // engine's own 'pause:requested'/'paused'/'resumed' events, so the
+    // dashboard reflects when a deferred pause has ACTUALLY engaged, not
+    // merely when it was requested.
+    workflow.on('pause:requested', (payload) => {
+        state.pause = {
+            status: 'pausing',
+            reason: payload.reason ?? null,
+            since: null,
+            phase: payload.phase ?? null,
+            group: payload.group ?? null,
+            // (apra-fleet-hzeb.3) Set by a script-initiated pause (e.g. a
+            // detected provider usage-limit signal) via ctx.requestPause(reason,
+            // { resumeAt }) -- an operator-initiated pause via the dashboard's
+            // /pause route never sets this, so it stays null there.
+            resumeAt: payload.resumeAt ?? null
+        };
+        broadcast({ type: 'update' });
+    });
+
+    workflow.on('paused', (payload) => {
+        // The 'paused' event itself carries no reason/resumeAt (see
+        // FleetWorkflow._maybeEngagePause) -- preserve whatever
+        // 'pause:requested' set, and only stamp `since` now, at the moment
+        // the pause actually engaged.
+        state.pause = {
+            status: 'paused',
+            reason: state.pause.reason,
+            since: nowIso(),
+            phase: payload.phase ?? state.pause.phase,
+            group: payload.group ?? state.pause.group,
+            resumeAt: state.pause.resumeAt
+        };
+        broadcast({ type: 'update' });
+    });
+
+    workflow.on('resumed', () => {
+        state.pause = { status: 'none', reason: null, since: null, phase: null, group: null, resumeAt: null };
+        broadcast({ type: 'update' });
     });
 
     workflow.on('end', (res) => {
@@ -1154,6 +1471,21 @@ export function createDashboardViewer(workflow, opts = {}) {
     });
 
     const server = http.createServer((req, res) => {
+        // Cross-site request forgery guard (request-guard.mjs): this server
+        // listens on a loopback port any visited web page could POST to, and
+        // its POST routes stop/pause the run or record an operator answer. A
+        // mutating request must be JSON and same-origin (no Origin: the
+        // supervisor's proxy and HTTP clients; or this page's own origin).
+        // The Host header is checked on EVERY request (GET /state included):
+        // a DNS-rebound page controls Origin and Host alike.
+        const hostOpts = { bindHost: host, allowedHosts: opts.allowedHosts };
+        const refused = checkRequestHost(req, hostOpts) || checkMutatingRequest(req, hostOpts);
+        if (refused) {
+            if (typeof req.resume === 'function') req.resume();
+            res.writeHead(refused.status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+            res.end(JSON.stringify({ error: refused.error }));
+            return;
+        }
         if (req.url === '/') {
             res.writeHead(200, { 'Content-Type': 'text/html' });
             res.end(HTML_TEMPLATE(dashboardExtensions));
@@ -1161,6 +1493,12 @@ export function createDashboardViewer(workflow, opts = {}) {
             res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Connection': 'keep-alive', 'Cache-Control': 'no-cache' });
             clients.add(res);
             req.on('close', () => clients.delete(res));
+        } else if (req.url.startsWith('/state') && isSummaryRequest(req.url)) {
+            // GET /state?summary=1: the small precomputed run summary only
+            // (run-summary.mjs) -- no tree, no string table, no raw
+            // extension data. Never calls any summarize() hook.
+            res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate' });
+            res.end(JSON.stringify(state.summary));
         } else if (req.url.startsWith('/state')) {
             // apra-fleet-eft.27.1: GET /state is the RECURRING poll endpoint
             // (every ~250ms-400ms while a run is live) -- it must never
@@ -1175,7 +1513,12 @@ export function createDashboardViewer(workflow, opts = {}) {
             // the configured snapshot dir and running/<runId>.json, and what
             // the process-free History view embeds) is never mutated by this.
             res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate' });
-            res.end(JSON.stringify(buildListStatePayload(state)));
+            // The small top-level `summary` is attached AFTER the
+            // leanify/dedupe pass: it repeats short top-level strings
+            // (runId, updatedAt, ...) and must not turn them into $ref
+            // markers for consumers that read the plain payload unresolved.
+            const { summary, ...rest } = state;
+            res.end(JSON.stringify({ ...buildListStatePayload(rest), summary }));
         } else if (req.method === 'GET' && /^\/extensions\/[^/]+\/detail\/[^/]+$/.test(req.url)) {
             // apra-fleet-eft.37.4 (M3): the GENERIC on-demand-detail route.
             // Any dashboard extension may register a `detailLookup(state, id)`
@@ -1204,6 +1547,50 @@ export function createDashboardViewer(workflow, opts = {}) {
                 text: detail.text || '',
                 updatedAt: detail.updatedAt ?? null
             }));
+        } else if (req.method === 'POST' && /^\/extensions\/[^/]+\/actions\/[^/]+$/.test(req.url)) {
+            // GENERIC extension action route (mirrors the detail route above):
+            // an extension may register `actions: { <actionId>(ctx) }`, where
+            // ctx = { body, state } with `body` the parsed JSON request body
+            // (bounded to ACTION_BODY_MAX_BYTES). The action returns
+            // { status?, body? } (sync or async). Core never names a specific
+            // extension or action; an unknown extension/action is a 404, a
+            // malformed or oversized body a 400, a throwing action a 500.
+            const match = req.url.match(/^\/extensions\/([^/]+)\/actions\/([^/]+)$/);
+            const extId = decodeURIComponent(match[1]);
+            const actionId = decodeURIComponent(match[2]);
+            const ext = dashboardExtensions.find((e) => e.id === extId);
+            const action = ext && ext.actions && Object.prototype.hasOwnProperty.call(ext.actions, actionId) ? ext.actions[actionId] : null;
+            const reply = (status, body) => {
+                res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+                res.end(JSON.stringify(body));
+            };
+            if (typeof action !== 'function') {
+                reply(404, { error: 'action not found', extension: extId, action: actionId });
+                return;
+            }
+            const chunks = [];
+            let size = 0;
+            let tooBig = false;
+            req.on('data', (c) => {
+                size += c.length;
+                if (size > ACTION_BODY_MAX_BYTES) { tooBig = true; return; }
+                chunks.push(c);
+            });
+            req.on('end', async () => {
+                if (tooBig) { reply(400, { error: 'request body too large' }); return; }
+                let body = {};
+                const raw = Buffer.concat(chunks).toString('utf-8');
+                if (raw.trim()) {
+                    try { body = JSON.parse(raw); } catch { reply(400, { error: 'request body is not valid JSON' }); return; }
+                }
+                try {
+                    const out = (await action({ body, state })) || {};
+                    reply(Number.isInteger(out.status) ? out.status : 200, out.body === undefined ? {} : out.body);
+                } catch (err) {
+                    console.error('[Viewer] extension action failed:', err && err.message ? err.message : err);
+                    reply(500, { error: 'action failed' });
+                }
+            });
         } else if (req.method === 'GET' && /^\/beads\/[^/]+\/description$/.test(req.url)) {
             // BOUNDARY-COMPAT (apra-fleet-eft.37.4, one release only, then
             // dies per docs/workflow-core-boundary-refactoring.md M3): the
@@ -1286,6 +1673,44 @@ export function createDashboardViewer(workflow, opts = {}) {
             debouncedWriter.flushSync();
             res.writeHead(200);
             res.end();
+        } else if (req.url === '/pause' && req.method === 'POST') {
+            // (apra-fleet-p2to.2.1) Cooperative pause -- same shape as /stop
+            // above, but forwards to FleetWorkflow.requestPause() instead of
+            // requestStop(). That call only fires 'pause:requested'
+            // immediately; the pause itself is DEFERRED until the run drains
+            // to zero in-flight activities and any script-registered pause
+            // guard permits it (see requestPause()'s doc, src/workflow/
+            // index.mjs) -- the workflow event listeners above are what
+            // actually flip state.pause once 'paused' fires, exactly like
+            // /stop leaves the terminal state.status transition to the
+            // workflow's own 'end' handler rather than setting it here.
+            console.log('[Viewer] Pause requested via dashboard /pause endpoint.');
+            if (typeof workflow.requestPause === 'function') {
+                workflow.requestPause('Pause requested via dashboard /pause endpoint');
+            }
+            debouncedWriter.flushSync();
+            res.writeHead(200);
+            res.end();
+        } else if (req.url === '/resume' && req.method === 'POST') {
+            // (apra-fleet-p2to.2.1) Cooperative resume -- mirrors /pause
+            // above, forwarding to FleetWorkflow.requestResume(). A no-op on
+            // the engine side if the run is neither paused nor pause-
+            // requested; the 'resumed' event listener above clears
+            // state.pause once it fires.
+            console.log('[Viewer] Resume requested via dashboard /resume endpoint.');
+            if (typeof workflow.requestResume === 'function') {
+                // (apra-fleet-p2to.1.3) requestResume() is now async -- it
+                // awaits a pre-resume barrier (member re-reserve/resync) before
+                // it completes. Don't block the HTTP response on that barrier,
+                // but do catch a barrier rejection so it surfaces as a log line
+                // rather than an unhandled promise rejection; the run stays
+                // paused on failure, exactly as the engine leaves it.
+                Promise.resolve(workflow.requestResume('Resume requested via dashboard /resume endpoint'))
+                    .catch((err) => console.error('[Viewer] resume barrier failed (run stays paused):', err && err.message ? err.message : err));
+            }
+            debouncedWriter.flushSync();
+            res.writeHead(200);
+            res.end();
         } else if (req.url === '/save_logs' && req.method === 'POST') {
             // Manual/scriptable trigger for the same server-side save that
             // 'end' and SIGINT/SIGTERM already perform (persistState() above)
@@ -1303,8 +1728,10 @@ export function createDashboardViewer(workflow, opts = {}) {
         }
     });
 
-    server.listen(port, () => {
-        console.log(`[Viewer] Workflow Dashboard live at http://localhost:${server.address().port}`);
+    server.listen(port, host, () => {
+        const bound = server.address();
+        const shown = (bound.address === '0.0.0.0' || bound.address === '::') ? '127.0.0.1' : bound.address;
+        console.log(`[Viewer] Workflow Dashboard live at http://${shown}:${bound.port}`);
     });
 
     workflow.on('end', () => {

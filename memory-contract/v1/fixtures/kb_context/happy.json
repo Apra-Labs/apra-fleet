@@ -1,0 +1,19 @@
+{
+  "tool": "kb_context",
+  "case": "happy",
+  "kind": "happy",
+  "request": {
+    "files": [
+      "src/example.ts",
+      "src/helper.ts"
+    ]
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"fresh\":[],\"stale\":[],\"missing\":[\"src/example.ts\",\"src/helper.ts\"]}"
+      }
+    ]
+  }
+}

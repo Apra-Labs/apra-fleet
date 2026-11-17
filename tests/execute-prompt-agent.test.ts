@@ -15,6 +15,24 @@ import { addAgent } from '../src/services/registry.js';
 import { executePrompt } from '../src/tools/execute-prompt.js';
 import type { SSHExecResult } from '../src/types.js';
 
+// AGY project binding (src/services/agy-project.ts) is covered by
+// tests/agy-project.test.ts and tests/tool-provider.test.ts; here it is
+// stubbed so agy dispatches keep their exec-call sequence.
+vi.mock('../src/services/agy-project.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/services/agy-project.js')>()),
+  ensureAgyProject: vi.fn(async (agent: { agyProjectId?: string }) => {
+    agent.agyProjectId = agent.agyProjectId ?? '1afd6dbb-498f-4918-a9d9-6da64b75a204';
+    return { projectId: agent.agyProjectId };
+  }),
+}));
+
+
+// Project-level agent shadow check is covered by tests/agent-shadow*.test.ts;
+// stubbed here so exec-call indexes stay the CLI dispatch.
+vi.mock('../src/services/agent-shadow.js', () => ({
+  ensureNoProjectAgentShadows: vi.fn(async () => undefined),
+}));
+
 vi.mock('../src/services/statusline.js', () => ({
   writeStatusline: vi.fn(),
   readMemberStatus: vi.fn(() => 'idle'),
@@ -32,6 +50,10 @@ vi.mock('../src/services/strategy.js', () => ({
 }));
 
 const successResponse = JSON.stringify({ result: 'done', session_id: 'sess-agent' });
+
+/** The dispatch's main CLI command (not the version probe that precedes it). */
+const mainCommand = (): string =>
+  mockExecCommand.mock.calls.map(c => c[0] as string).find(c => c.includes('--output-format json'))!;
 
 describe('execute_prompt -- agent parameter', () => {
   let tmpDir: string;
@@ -67,54 +89,10 @@ describe('execute_prompt -- agent parameter', () => {
 
     await executePrompt({ member_id: member.id, prompt: 'do the task', resume: false, timeout_s: 5, agent: 'doer' });
 
-    // For local agents: no writePromptFile exec call, so calls[0] is the main command.
-    const cmd = mockExecCommand.mock.calls[0][0];
+    // For local agents: no writePromptFile exec call; the only other member
+    // command is the CLI version probe for the session MCP config.
+    const cmd = mainCommand();
     expect(cmd).toContain('--agent "doer"');
-  });
-
-  // --- Gemini: prompt has @<name> prepended ---
-
-  it('Gemini: CLI invocation prepends @<name> to the prompt', async () => {
-    const agentDir = path.join(tmpDir, '.gemini', 'agents');
-    fs.mkdirSync(agentDir, { recursive: true });
-    fs.writeFileSync(path.join(agentDir, 'doer.md'), '# doer agent');
-
-    const member = makeTestLocalAgent({
-      friendlyName: 'gemini-agent-test',
-      workFolder: tmpDir,
-      llmProvider: 'gemini',
-      os: 'linux',
-    });
-    addAgent(member);
-    mockExecCommand.mockResolvedValue({ stdout: successResponse, stderr: '', code: 0 });
-
-    await executePrompt({ member_id: member.id, prompt: 'do the task', resume: false, timeout_s: 5, agent: 'doer' });
-
-    const cmd = mockExecCommand.mock.calls[0][0];
-    expect(cmd).toContain('@doer ');
-  });
-
-  // --- Gemini: @name prepend on resume=true ---
-
-  it('Gemini: @name prepend happens on resume=true dispatch', async () => {
-    const agentDir = path.join(tmpDir, '.gemini', 'agents');
-    fs.mkdirSync(agentDir, { recursive: true });
-    fs.writeFileSync(path.join(agentDir, 'doer.md'), '# doer agent');
-
-    const member = makeTestLocalAgent({
-      friendlyName: 'gemini-resume-agent-test',
-      workFolder: tmpDir,
-      llmProvider: 'gemini',
-      os: 'linux',
-      sessionId: 'existing-session-abc123',
-    });
-    addAgent(member);
-    mockExecCommand.mockResolvedValue({ stdout: successResponse, stderr: '', code: 0 });
-
-    await executePrompt({ member_id: member.id, prompt: 'continue the task', resume: true, timeout_s: 5, agent: 'doer' });
-
-    const cmd = mockExecCommand.mock.calls[0][0];
-    expect(cmd).toContain('@doer ');
   });
 
   // --- Unknown agent: error before CLI invoked ---
@@ -151,25 +129,7 @@ describe('execute_prompt -- agent parameter', () => {
     expect(mockExecCommand).not.toHaveBeenCalled();
   });
 
-  it('Gemini: unknown agent name returns clear error, no CLI invoked', async () => {
-    // No agent file in tmpDir -- validation must fail for Gemini provider
-    const member = makeTestLocalAgent({
-      friendlyName: 'gemini-unknown-agent-test',
-      workFolder: tmpDir,
-      llmProvider: 'gemini',
-      os: 'linux',
-    });
-    addAgent(member);
-
-    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5, agent: 'nonexistent' });
-
-    expect(result).toContain('not found');
-    expect(result).toContain('nonexistent');
-    expect(result).toContain('.gemini/agents/nonexistent.md');
-    expect(mockExecCommand).not.toHaveBeenCalled();
-  });
-
-  // --- AGY: @name prepend (same as Gemini) ---
+  // --- AGY: --agent flag ---
 
   it('AGY: CLI invocation passes --agent flag', async () => {
     const agentDir = path.join(tmpDir, '.gemini', 'antigravity-cli', 'agents');
@@ -232,21 +192,21 @@ describe('execute_prompt -- agent parameter', () => {
 
   // --- Substitution-then-prepend ordering ---
 
-  it('Gemini: substitution runs before @name prepend -- both features work together', async () => {
-    const agentDir = path.join(tmpDir, '.gemini', 'agents');
+  it('AGY: substitution runs before --agent flag is appended -- both features work together', async () => {
+    const agentDir = path.join(tmpDir, '.gemini', 'antigravity-cli', 'agents');
     fs.mkdirSync(agentDir, { recursive: true });
     fs.writeFileSync(path.join(agentDir, 'doer.md'), '# doer agent');
 
     const member = makeTestLocalAgent({
-      friendlyName: 'gemini-sub-order',
+      friendlyName: 'agy-sub-order',
       workFolder: tmpDir,
-      llmProvider: 'gemini',
+      llmProvider: 'agy',
       os: 'linux',
     });
     addAgent(member);
     mockExecCommand.mockResolvedValue({ stdout: successResponse, stderr: '', code: 0 });
 
-    // {{branch}} must be substituted first; then @doer is prepended to the CLI instruction.
+    // {{branch}} must be substituted first; then --agent "doer" is appended to the CLI command.
     const result = await executePrompt({
       member_id: member.id,
       prompt: 'Continue Phase 3. Branch: {{branch}}.',
@@ -256,13 +216,13 @@ describe('execute_prompt -- agent parameter', () => {
       substitutions: { branch: 'feat/x' },
     });
 
-    // No substitution error -- substitution ran before @name wrapping
+    // No substitution error -- substitution ran before --agent wrapping
     expect(result).not.toContain('substitution failed');
     expect(result).not.toContain('unresolved');
 
-    // CLI command has @doer prepended to the instruction string
+    // CLI command has --agent "doer" appended
     const cmd = mockExecCommand.mock.calls[0][0];
-    expect(cmd).toContain('@doer ');
+    expect(cmd).toContain('--agent "doer"');
 
     // Prompt file written with substitution applied (local agent writes directly)
     const promptPath = path.join(tmpDir, '.fleet-task.md');
@@ -301,12 +261,84 @@ describe('execute_prompt -- agent parameter', () => {
 
       // Should succeed (agent found at home path)
       expect(result).not.toContain('not found');
-      const cmd = mockExecCommand.mock.calls[0][0];
+      const cmd = mainCommand();
       expect(cmd).toContain('--agent "myagent"');
     } finally {
       if (!hadFile) {
         fs.rmSync(homeAgentFile, { force: true });
       }
     }
+  });
+
+  // --- OpenCode: agent resolution uses .opencode/ for project, .config/opencode/ for home ---
+
+  it('OpenCode: agent found at project .opencode/agents/ is accepted', async () => {
+    const agentDir = path.join(tmpDir, '.opencode', 'agents');
+    fs.mkdirSync(agentDir, { recursive: true });
+    fs.writeFileSync(path.join(agentDir, 'planner.md'), '# planner agent');
+
+    const member = makeTestLocalAgent({
+      friendlyName: 'opencode-proj-agent',
+      workFolder: tmpDir,
+      llmProvider: 'opencode',
+      os: 'linux',
+    });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue({ stdout: successResponse, stderr: '', code: 0 });
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'plan the work', resume: false, timeout_s: 5, agent: 'planner' });
+
+    expect(result).not.toContain('not found');
+  });
+
+  it('OpenCode: agent found at ~/.config/opencode/agents/ is accepted', async () => {
+    const homeAgentDir = path.join(os.homedir(), '.config', 'opencode', 'agents');
+    const homeAgentFile = path.join(homeAgentDir, 'planner.md');
+    const hadFile = fs.existsSync(homeAgentFile);
+
+    if (!hadFile) {
+      fs.mkdirSync(homeAgentDir, { recursive: true });
+      fs.writeFileSync(homeAgentFile, '# planner agent');
+    }
+
+    try {
+      const member = makeTestLocalAgent({
+        friendlyName: 'opencode-home-agent',
+        workFolder: tmpDir,  // No agent file in project dir
+        llmProvider: 'opencode',
+        os: 'linux',
+      });
+      addAgent(member);
+      mockExecCommand.mockResolvedValue({ stdout: successResponse, stderr: '', code: 0 });
+
+      const result = await executePrompt({ member_id: member.id, prompt: 'plan the work', resume: false, timeout_s: 5, agent: 'planner' });
+
+      expect(result).not.toContain('not found');
+    } finally {
+      if (!hadFile) {
+        fs.rmSync(homeAgentFile, { force: true });
+      }
+    }
+  });
+
+  it('OpenCode: unknown agent shows .opencode/ and ~/.config/opencode/ paths in error', async () => {
+    const member = makeTestLocalAgent({
+      friendlyName: 'opencode-unknown-agent',
+      workFolder: tmpDir,
+      llmProvider: 'opencode',
+      os: 'linux',
+    });
+    addAgent(member);
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5, agent: 'nonexistent' });
+
+    expect(result).toContain('not found');
+    expect(result).toContain('nonexistent');
+    // Project path should be .opencode/agents/, home path should be ~/.config/opencode/agents/
+    expect(result).toContain('.opencode/agents/nonexistent.md');
+    expect(result).toContain('.config/opencode/agents/nonexistent.md');
+    // Must NOT show the old wrong path
+    expect(result).not.toMatch(/~\/\.opencode\/agents\//);
+    expect(mockExecCommand).not.toHaveBeenCalled();
   });
 });

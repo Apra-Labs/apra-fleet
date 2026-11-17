@@ -1,0 +1,262 @@
+// =============================================================================
+// PHASE MODULE: Harvest (apra-fleet-3swo.6.9).
+//
+// The ELEVENTH of runSprintCycle's twelve phase() boundaries -- the sprint's
+// knowledge-capture step: it builds the sprint-analysis document's text, the
+// cost-analysis block and the harvester prompt from real, runner-computed
+// values, dispatches the harvester ladder, and reports what came back. Moved
+// verbatim out of runner.js: every prompt string, log line and dispatch option
+// is byte-identical to the inline version, so the golden transcript is
+// unchanged. Move-only, no behaviour change.
+//
+// WHERE THIS PHASE STARTS AND STOPS. It starts at its own phase() call and
+// ends at the last of the three harvest-report log branches. The Regression
+// Test call site immediately above it and the `// 7. Publish` section banner
+// immediately below it both stay in runner.js, as do group('Finalization')/
+// endGroup(), which wrap all four Finalization phases rather than this one.
+//
+// WHY IT SITS WHERE IT SITS. AFTER Regression Test, because that phase's
+// summary is folded into docs/sprint-analysis-<slug>.md through
+// buildAnalysisText() -- harvesting first would publish an analysis document
+// with a hole where the regression section belongs. BEFORE Publish PR, because
+// the harvester is a code-writing role: the docs/README
+// commits it makes must be pushed before Publish PR pushes the branch and
+// raises the PR a human will read. That ordering is structural here, not a
+// comment: ./publish-pr.mjs's call site sits below this one in runner.js and
+// this phase's dispatch keeps its own pushCode/pushBeads bracket.
+//
+// THE HARVESTER'S GIT/BEADS BRACKET IS POLICY, NOT CODE HERE
+// (apra-fleet-3swo.5.7). The harvester ladder -- its dispatch, its
+// pushCode/pushBeads git-sync bracket, its max_turns-exhaustion resume at
+// doubled turns, its one bounded LLM-auth self-heal and its
+// proceed-without-a-report degrade -- is the 'harvester' row of
+// ../role-policies.mjs, executed by ../dispatch-role.mjs. Do not reintroduce a
+// local bracket or retry here: `pushCode: true` (G-pull before, G-push after)
+// and `pushBeads: true` (the issue-defer mutations D-pushed alongside) are set
+// in that row, and this phase would silently double-push if it added its own.
+// What lives in this file is what is genuinely NOT policy: the prompt inputs,
+// the presentation labels, and what the caller does with the report.
+//
+// WHY ITS HELPERS ARE INJECTED RATHER THAN IMPORTED. computeBranchSlug,
+// buildAnalysisText and buildCostAnalysis are defined in ../runner.js (the
+// middle one is module-private there), so importing them would be a circular
+// import back into the file this module was sliced out of -- they are injected
+// exactly as ./final-review.mjs injects sanitizePrText. dispatchCtx, budget and
+// the evidence arrays are runSprintCycle-scoped locals, so there is nothing to
+// import; dispatchRole/TURN_BASES and buildHarvesterPrompt live in real sibling
+// modules and are imported directly.
+//
+// THE COST BLOCK IS ENGINE-RENDERED, NOT HARVESTER-WRITTEN. It is NOT part of
+// analysisText (the harvester writes that text into the target repo's
+// working tree, and spend data does not belong there); it is returned for ./publish-pr.mjs to
+// render in the PR body. The harvester no
+// longer writes a CHANGELOG entry: a shared, prepend-only file conflicted on
+// every concurrent sprint PR merge.
+//
+// GUARD COVERAGE: registered as 'phases/harvest.mjs' in ../guarded-modules.mjs.
+// It took NO member_name-bearing command() call site out of runner.js -- the
+// docs commits are made by the DISPATCHED harvester inside its own
+// repo, and its pushes are the policy row's bracket -- but it took ONE
+// dispatchRole() site (the harvester ladder), which is exactly what
+// dispatch-safety-guard and the phase 3 dispatch census read. It has since
+// gained exactly ONE member_name-bearing command() site of its own: the
+// pre-dispatch git exclude of the uncommitted analysis document on the
+// harvester's member. Both baselines are pinned rather than assumed.
+// =============================================================================
+
+import { dispatchRole, TURN_BASES } from '../dispatch-role.mjs';
+import { buildHarvesterPrompt } from '../prompts.mjs';
+
+/**
+ * The local git-exclude pattern covering every analysisArtifactFile this
+ * phase derives (docs/sprint-analysis-<slug>.md). The document is written to
+ * the harvester's working tree but never committed; listing this pattern in
+ * that clone's own exclude file keeps it out of status, stashes and commits.
+ */
+export const SPRINT_ANALYSIS_EXCLUDE_PATTERN = 'docs/sprint-analysis-*.md';
+
+/**
+ * Runs the Harvest phase: assemble the sprint-analysis inputs, dispatch the
+ * harvester ladder, and log what it reported.
+ *
+ * Everything else this phase produces is written to the repo by the dispatched
+ * harvester itself (docs/, the deferred beads) or already logged here. The one
+ * value a later phase reads is the cost block, which ./publish-pr.mjs renders
+ * in the PR body.
+ *
+ * @param {object} state Explicit phase state; see this file's header.
+ * @returns {Promise<{ costAnalysis: string }>}
+ */
+export async function runHarvestPhase({
+    // Presentation + dispatch seams.
+    phase,
+    log,
+    dispatchCtx,
+    // Sprint identity/config.
+    validated,
+    targetIssues,
+    finalCycleLabel,
+    budget,
+    // Evidence the analysis document renders; read-only here.
+    closedCountHistory,
+    highWaterClosedCount,
+    deployFailures,
+    integFailures,
+    rejectedNewTasks,
+    integTestRunnerSpend,
+    integTestRunnerDispatchCount,
+    // The closing results this phase folds into the analysis document.
+    finalVerdictResult,
+    finalClosedCount,
+    finalOpenAtGoalCount,
+    finalDeferredAtGoalIds,
+    regressionResult,
+    regressionSkippedBy = null,
+    // Sprint state's per-dispatch kb_* and code_* call records (dispatch-accounting.mjs).
+    dispatchToolCalls = null,
+    // The run's set-aside records (../set-aside.mjs collectSetAsideEntries).
+    setAside = [],
+    // The run's wait records (../set-aside.mjs collectWaitEntries).
+    waited = [],
+    // The KB work client: the harvest round's bible commit runs through it.
+    kbWork = null,
+    // Member-bound command runner and the per-member OS/shell command builder
+    // (getSeCommands over resolveMemberTarget), for the pre-dispatch git
+    // exclude of the analysis document.
+    command,
+    memberSeCommands,
+    // Defined BY runner.js; injected to avoid a circular import (see header).
+    computeBranchSlug,
+    buildAnalysisText,
+    buildCostAnalysis,
+}) {
+    phase(`Harvest C${finalCycleLabel}`);
+    // Wire the harvester's required inputs with real, runner-computed values --
+    // see buildAnalysisText()/buildCostAnalysis() in ../runner.js, which
+    // injects both (this file's header explains why). `branchSlug` (see
+    // computeBranchSlug(), also in ../runner.js) avoids embedding raw `/`
+    // characters from a branch name like `feat/fleet-reorg` in the artifact
+    // path, which would otherwise create surprise subdirectories. Deliberately
+    // no wall-clock timestamp in this path: it must stay identical across two
+    // dispatches of the same branch (idempotent re-runs, and the golden-transcript
+    // determinism test), and harvester.md Step 1 already overwrites the file at
+    // this path if it exists.
+    const branchSlug = computeBranchSlug(validated.branch);
+    const analysisArtifactFile = `docs/sprint-analysis-${branchSlug}.md`;
+    const reportText = buildAnalysisText({
+        targetIssues,
+        branch: validated.branch,
+        baseBranch: validated.baseBranch,
+        cyclesRun: finalCycleLabel,
+        closedCountHistory,
+        highWaterClosedCount,
+        deployFailures,
+        integFailures,
+        rejectedNewTasks,
+        finalVerdictResult,
+        finalClosedCount,
+        finalOpenAtGoalCount,
+        finalDeferredAtGoalIds,
+        regressionResult,
+        regressionSkippedBy,
+        dispatchToolCalls,
+        setAside,
+        waited,
+        // Confirmations the final review round's bible commit could not
+        // publish -- persisted here so the warning outlives the live log.
+        kbBibleUnpublished: kbWork && typeof kbWork.unpublishedBible === 'function' ? kbWork.unpublishedBible() : null,
+    });
+    const costAnalysis = buildCostAnalysis(budget, {
+        spend: integTestRunnerSpend,
+        dispatchCount: integTestRunnerDispatchCount,
+    });
+    // The harvester writes analysisText into the target repo's tree, so it carries
+    // the sprint report ONLY: spend data stays out of the repository. The cost
+    // block is returned below for Publish PR, which renders it in the PR body.
+    const analysisText = reportText;
+    const harvesterPrompt = buildHarvesterPrompt({
+        branch: validated.branch,
+        baseBranch: validated.baseBranch,
+        targetIssues,
+        analysisArtifactFile,
+        analysisText,
+    });
+    // apra-fleet-3swo.5.7: the harvester ladder -- its dispatch, its
+    // pushCode/pushBeads git-sync bracket, its max_turns-exhaustion resume at
+    // doubled turns, its one bounded LLM-auth self-heal and its
+    // proceed-without-a-report degrade -- is now the 'harvester' row of
+    // fleet-sprint/role-policies.mjs, executed by dispatchRole. What stays
+    // here is what is genuinely NOT policy: the prompts, the presentation
+    // labels, and what the caller does with the report.
+    //
+    // The harvester is a code-writing role (pushCode: true) alongside the doer
+    // -- G-pull before, G-push after so the docs/README commits it makes are
+    // published before anything downstream (Publish PR, below) reads the
+    // branch. It ALSO mutates beads (issue-defer of low-priority items), so it
+    // D-pushes those mutations alongside its git push. Both flags live in the
+    // policy row now.
+    //
+    // The analysis document is written to the harvester's working tree but
+    // NEVER committed. Before the dispatch, the engine lists its pattern in
+    // that clone's local git exclude file (never committed, idempotent, built
+    // for the member's OS/shell), so the untracked file is never reported
+    // dirty, never auto-stashed by a later sprint's branch ensure, and never
+    // swept into a commit by `git add -A`/`git add docs/`. It runs BEFORE the
+    // dispatch because the harvester's own docs/ commit happens inside it. If
+    // it fails, the harvester is NOT dispatched (its docs/ commit could sweep
+    // the file in) and that is logged loudly; the sprint's verdict is already
+    // decided, so Publish PR still runs, exactly as for a degraded harvest.
+    const harvesterMember = dispatchCtx.getMemberForRole('harvester');
+    const memberCommands = await memberSeCommands(harvesterMember);
+    const excludeResult = await command(memberCommands.ensureGitExcluded(SPRINT_ANALYSIS_EXCLUDE_PATTERN), {
+        member_name: harvesterMember,
+        silent: true,
+        failSoft: true,
+        label: `Exclude ${SPRINT_ANALYSIS_EXCLUDE_PATTERN} from git on member '${harvesterMember}'`,
+    });
+    if (!excludeResult || !excludeResult.ok) {
+        log(
+            `ERROR Harvester: NOT dispatched -- could not add '${SPRINT_ANALYSIS_EXCLUDE_PATTERN}' to the local git ` +
+            `exclude file on member '${harvesterMember}' (${(excludeResult && excludeResult.error) || 'unknown error'}). ` +
+            'Without it the harvester\'s docs/ commit could sweep the uncommitted sprint analysis into the branch. ' +
+            'No sprint analysis, docs or README harvest was produced for this sprint.'
+        );
+    } else {
+        const harvestOutcome = await dispatchRole(dispatchCtx, 'harvester', {
+            prompt: harvesterPrompt,
+            resumePrompt: 'Continue your harvest exactly where you left off in this same session -- do not redo docs sections already written. Finish the remaining updates, commit them, and return your final report now.',
+            roleLabel: 'Harvester',
+            resumeLabel: `Harvest (resume, max_turns=${TURN_BASES.HARVESTER_MAX_TURNS * 2})`,
+        });
+        const harvesterResult = harvestOutcome.value;
+        // No duplicate log() dump -- see dispatchReview() for why. The file
+        // path itself IS worth a line: it is the local record of the Final
+        // Review verdict (and everything else in analysisText) on the
+        // harvester's member -- unlike the verdict object, it survives after
+        // this process exits. It is deliberately not committed.
+        //
+        // A degraded harvest proceeds WITHOUT a validated report (the sprint
+        // verdict is already decided by this point), so everything below is
+        // gated on actually having one. The report's kb_captures were applied by
+        // the policy's 'kb-apply' postResult step, which only runs on success.
+        if (!harvestOutcome.ok) {
+            log(`Harvester: proceeding without a validated harvester report: ${harvestOutcome.error?.message ?? 'no report'}`);
+        } else if (harvesterResult.status !== 'OK') {
+            log(`Harvester reported FAILED: ${harvesterResult.notes}`);
+        } else {
+            log(`Harvester: wrote sprint analysis (including the Final Review verdict) locally to ${analysisArtifactFile} on member '${harvesterMember}' (not committed; git-excluded).`);
+        }
+    }
+
+    // The harvest round's bible commit: confirmations still pending (a
+    // maintainer that was busy or whose push failed in an earlier round) go
+    // to the bible on each repository's kb_maintainer -- G-pull,
+    // kb_bible_commit, G-push. A no-op after a FAIL verdict or with nothing
+    // pending. Runs after the harvester's own G-push, so its commits are on
+    // the branch the bible commit lands on.
+    if (kbWork && typeof kbWork.commitRound === 'function') {
+        await kbWork.commitRound('harvest');
+        if (typeof kbWork.warnPending === 'function') kbWork.warnPending();
+    }
+    return { costAnalysis };
+}

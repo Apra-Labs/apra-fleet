@@ -1,0 +1,87 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "apra-pm/kb-reconciler-output@1",
+  "version": 1,
+  "title": "kb-reconciler output",
+  "description": "Canonical machine-readable output contract for the kb-reconciler role. See agents/kb-reconciler.md for the prose contract this mirrors.",
+  "type": "object",
+  "required": [
+    "pairsReceived",
+    "codeDecided",
+    "tierDecided",
+    "deferred",
+    "resolutions",
+    "deferredPairs",
+    "bibleCommitted"
+  ],
+  "properties": {
+    "pairsReceived": {
+      "type": "number",
+      "description": "Count of contradiction pairs received in the dispatch prompt."
+    },
+    "codeDecided": {
+      "type": "number",
+      "description": "Count of pairs whose winner was determined by reading the merged code."
+    },
+    "tierDecided": {
+      "type": "number",
+      "description": "Count of pairs where the code was silent and the trust-tier tiebreak (CONFIRMED > INFERRED > UNVERIFIED) decided the winner."
+    },
+    "deferred": {
+      "type": "number",
+      "description": "Count of pairs left flagged: active user-directives, or genuinely undecidable (same tier, code silent)."
+    },
+    "resolutions": {
+      "type": "array",
+      "description": "Every pair actually resolved via kb_resolve_contradiction, code-decided or tier-decided alike.",
+      "items": {
+        "type": "object",
+        "required": [
+          "winnerId",
+          "loserId",
+          "evidence"
+        ],
+        "properties": {
+          "winnerId": {
+            "type": "string"
+          },
+          "loserId": {
+            "type": "string"
+          },
+          "evidence": {
+            "type": "string",
+            "description": "For code-decided wins: a real file path + symbol actually read. For tier-decided wins: the trust-tier tiebreak reasoning."
+          }
+        }
+      }
+    },
+    "deferredPairs": {
+      "type": "array",
+      "description": "Pairs left flagged, unresolved, with a reason.",
+      "items": {
+        "type": "object",
+        "required": [
+          "originalId",
+          "challengerId",
+          "reason"
+        ],
+        "properties": {
+          "originalId": {
+            "type": "string"
+          },
+          "challengerId": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string",
+            "description": "\"active-directive\" or an explanation of why the pair stayed undecided."
+          }
+        }
+      }
+    },
+    "bibleCommitted": {
+      "type": "boolean",
+      "description": "The committed value returned by kb_export's result after Step 8."
+    }
+  }
+}

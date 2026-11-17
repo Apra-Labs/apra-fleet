@@ -1,0 +1,21 @@
+{
+  "tool": "kb_list",
+  "case": "observed-directive-quarantine",
+  "kind": "non_error_outcome",
+  "request": {
+    "type": "user-directive",
+    "confidence": [
+      "UNVERIFIED"
+    ]
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"results\":[{\"id\":\"95ede0ae-4ade-47e6-9b73-3957a02c0e04\",\"type\":\"user-directive\",\"confidence\":\"UNVERIFIED\",\"title\":\"Always run the sanitation test before committing fixtures\",\"summary\":\"A standing instruction captured as a pending proposal, never active from this channel.\",\"symbols\":[],\"source_files\":[\"src/example.ts\"]}],\"total\":1}"
+      }
+    ]
+  },
+  "observed_via": "E-DIRECTIVE-QUARANTINE",
+  "note": "kb_list observation of the pending directive proposal captured in kb_capture/happy-user-directive-proposal.json. E-DIRECTIVE-QUARANTINE (governance group, surfaced: response-field) is raised at capture time by kb_capture, kb_harvest and kb_import (taxonomy.json raising_methods) -- this kb_list call did not raise it and carries no ref to it in its own bindings/mcp definition; it only reads back the forced-to-UNVERIFIED effect left behind."
+}

@@ -1,0 +1,17 @@
+{
+  "tool": "kb_setup",
+  "case": "happy",
+  "kind": "happy",
+  "request": {
+    "provider": "sqlite"
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"success\":true,\"steps\":[\"Installed git post-commit hook for KB invalidation\",\"Wrote KB config to <SCRATCH_ROOT>/fleet-data/knowledge/config.json\"],\"warnings\":[]}"
+      }
+    ]
+  },
+  "session": "FULL_A"
+}

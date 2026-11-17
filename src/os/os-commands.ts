@@ -1,8 +1,50 @@
 ﻿import { escapeDoubleQuoted, escapeWindowsArg, escapeGrepPattern, sanitizeSessionId } from '../utils/shell-escape.js';
-import type { ProviderAdapter, PromptOptions } from '../providers/provider.js';
+import type { ProviderAdapter, PromptOptions as BasePromptOptions } from '../providers/provider.js';
+import type { Agent } from '../types.js';
 
 export { escapeDoubleQuoted, escapeWindowsArg, escapeGrepPattern, sanitizeSessionId };
-export type { ProviderAdapter, PromptOptions };
+export type { ProviderAdapter };
+
+/** The line gitLsRemoteNonInteractive() prints after a successful ls-remote. */
+export const GIT_LS_REMOTE_OK_MARKER = 'FLEET_GIT_LS_REMOTE_OK';
+
+/**
+ * apra-fleet-lmtg.2: fork descriptor threaded through buildAgentPromptCommand
+ * so both POSIX and Windows builders can emit a provider's fork invocation
+ * (source-seeded, new-session-id output) instead of the ordinary
+ * resume/fresh-session flags that `sessionId`/`resuming` would otherwise
+ * produce.
+ */
+export interface ForkDescriptor {
+  /** Existing session id to seed context from -- fed to the provider's
+   *  forkFlag() (analogous to the source id a resume flag would reuse). */
+  sourceSessionId: string;
+  /** Newly minted output session id for the forked conversation, tracked by
+   *  the caller (e.g. execute-prompt.ts, for recordKnownSession/bookkeeping).
+   *  Passed to the provider's forkFlag() so it is emitted as an explicit
+   *  --session-id flag alongside --resume/--fork-session -- the CLI honors a
+   *  caller-supplied session id even in fork mode, so we pre-mint it rather
+   *  than scraping the id back out of the CLI's response afterward. */
+  newSessionId: string;
+}
+
+/**
+ * PromptOptions extended with an optional fork descriptor. When `fork` is
+ * present and the provider is fork-capable (`provider.supportsFork?.()`),
+ * buildAgentPromptCommand emits the provider's fork invocation in place of
+ * the resume/session-id flags `sessionId`/`resuming` would otherwise
+ * produce. When `fork` is absent, generated commands are unchanged.
+ */
+export interface PromptOptions extends BasePromptOptions {
+  fork?: ForkDescriptor;
+}
+
+/**
+ * The shell a member's OS commands target. Derived from the Agent schema so
+ * there is exactly one source of truth for the allowed values (src/types.ts);
+ * only meaningful for Windows members today.
+ */
+export type MemberShell = NonNullable<Agent['shell']>;
 
 /**
  * Platform-specific command builders.
@@ -32,16 +74,56 @@ export interface OsCommands {
 
   // --- Auth ---
   credentialFileCheck(destPath: string): string;
+  /** @deprecated carries `content` in the command line -- use credentialFileInstall. */
   credentialFileWrite(content: string, destPath: string): string;
+  /**
+   * Move a credential file already staged on the member (strategy.writeSecretFile,
+   * owner-only) to `destPath`, owner-only. Carries only paths, never content.
+   */
+  credentialFileInstall(stagedPath: string, destPath: string): string;
   credentialFileRemove(destPath: string): string;
+  /** Rename destPath to destPath+suffix when it exists (reversible removal); prints "moved" when it did. */
+  credentialFileMoveAside(destPath: string, suffix: string): string;
   apiKeyCheck(envVarName?: string): string;
-  setEnv(name: string, value: string): string[];
+  /**
+   * Persisting an env var on the member is two-step so the VALUE never sits
+   * in a command line: persistEnvFileContent() renders the file content
+   * (delivered over SFTP/fs, owner-only), then persistEnvFromFile() returns
+   * the command that applies it and deletes the file -- it carries only the
+   * file path.
+   */
+  persistEnvFileContent(name: string, value: string): string;
+  persistEnvFromFile(name: string, filePath: string): string;
   unsetEnv(name: string): string[];
-  envPrefix(name: string, value: string): string;
 
   // --- Git credential helper ---
   gitCredentialHelperWrite(host: string, username: string, token: string, label?: string, scopeUrl?: string): string;
   gitCredentialHelperRemove(host: string, label?: string, scopeUrl?: string): string;
+  /**
+   * Runs the credential helper gitCredentialHelperWrite() deployed, so its
+   * `password=<token>` line reaches stdout (apra-fleet-3swo.7.3). `path` is the
+   * human-readable helper location for error messages.
+   *
+   * This command's output carries the PLAINTEXT token and is therefore only
+   * ever safe to run server-side (strategy.execCommand inside one tool call).
+   * It must never be handed to a caller-visible dispatch -- that stdout
+   * round-trip is exactly what the server-side credential handoff replaces.
+   */
+  gitCredentialHelperRead(label?: string): { command: string; path: string };
+
+  /** Delete ONLY the pre-label, single-file credential helper
+   *  (`.fleet-git-credential`, no label suffix) left behind by installs that
+   *  predate labeled credentials. Touches NO git config: the credential-helper
+   *  config key is host/scope-scoped rather than label-scoped, so unsetting it
+   *  here would clobber whatever credential is CURRENTLY registered for that
+   *  host -- see provision-vcs-auth.ts's legacy-migration call site. */
+  gitCredentialHelperRemoveLegacyFile(): string;
+
+  /** Log the `gh` CLI itself into GitHub with `token` (persists to gh's own config,
+   *  e.g. ~/.config/gh/hosts.yml), independent of the git credential helper above --
+   *  `gh` never reads that file. No-ops (does not throw) when `gh` is not installed;
+   *  callers should treat this as best-effort. */
+  ghAuthLogin(token: string, hostname?: string): string;
 
   // --- SSH key deployment ---
   deploySSHPublicKey(publicKeyLine: string): string[];
@@ -71,6 +153,41 @@ export interface OsCommands {
 
   // --- Git ---
   gitCurrentBranch(folder: string): string;
+
+  /**
+   * Print the `origin` remote's URL for a checkout at `folder`, or NOTHING at
+   * all when there is no git repo / no `origin` (an expected, common case --
+   * e.g. a member registered before anything was cloned into its work folder).
+   * Never fails the command: callers treat empty output as "unknown", not as
+   * an error. Falls back to `git config --get remote.origin.url` for the older
+   * git builds that predate `remote get-url`.
+   */
+  gitRemoteOrigin(folder: string): string;
+
+  /**
+   * `git ls-remote <url> HEAD` that can never block on a prompt: terminal
+   * prompts and Git Credential Manager's interactive UI are both disabled
+   * for this one command (GIT_TERMINAL_PROMPT=0, GCM_INTERACTIVE=never), so
+   * a missing or rejected credential fails fast instead of hanging. On
+   * success the output ends with the line GIT_LS_REMOTE_OK_MARKER; a caller
+   * must treat its absence (or a throw) as a failure. `url` must already be
+   * validated by the caller -- it is quoted, not trusted.
+   */
+  gitLsRemoteNonInteractive(url: string): string;
+
+  /**
+   * Authenticated HTTPS GET of `url` with `Authorization: Bearer <token>`.
+   * Prints ONLY the numeric HTTP status code (e.g. 200, 401) -- never the
+   * response body and never the token. On POSIX the header is fed to curl on
+   * stdin from the shell's builtin printf, so the token is not on curl's
+   * argv; on PowerShell the request runs in-process (no child argv). The
+   * command string itself carries the token, so it IS on the argv of the
+   * outer `bash -c` / powershell process that runs it, for the length of the
+   * request -- the same exposure as gitCredentialHelperWrite. A transport
+   * failure prints a non-numeric line or exits non-zero. Only ever run
+   * server-side via strategy.execCommand.
+   */
+  httpGetStatusWithBearer(url: string, token: string): string;
 
   // --- GPU activity ---
   gpuProcessCheck(): string;  // outputs "busy"|"idle", exits 2 if nvidia-smi not available

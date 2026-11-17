@@ -2,12 +2,15 @@ import { test, describe, after } from 'node:test';
 import assert from 'node:assert';
 import http from 'node:http';
 import net from 'node:net';
+import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { scaledTimeout } from './helpers/scaled-timeout.mjs';
+import { TEST_CONCURRENCY } from './helpers/test-concurrency.mjs';
+import { createBeadsFixture, envWithoutBeadsDir } from './helpers/beads-fixture.mjs';
 
 // =============================================================================
 // apra-fleet-eft.4.8.3 -- verification for eft.4.8: boots the REAL
@@ -33,6 +36,9 @@ const SE_PKG_ROOT = path.join(__dirname, '..');
 const spawnedPids = new Set();
 /** @type {Set<string>} */
 const tmpDirs = new Set();
+// Beads fixtures, removed via their own cleanup() (with retries) after the
+// processes using them are killed.
+const fixtureCleanups = [];
 
 function track(pid) {
     if (Number.isInteger(pid) && pid > 0) spawnedPids.add(pid);
@@ -46,12 +52,25 @@ function forceKill(pid) {
 after(async () => {
     for (const pid of spawnedPids) forceKill(pid);
     spawnedPids.clear();
+    for (const cleanup of fixtureCleanups.splice(0)) {
+        // eslint-disable-next-line no-await-in-loop
+        await cleanup();
+    }
     for (const dir of tmpDirs) {
         // eslint-disable-next-line no-await-in-loop
         await fsp.rm(dir, { recursive: true, force: true }).catch(() => {});
     }
     tmpDirs.clear();
 });
+
+/** Same filesystem location, tolerant of 8.3 names and drive-letter case. */
+function samePath(a, b) {
+    const norm = (p) => {
+        const r = fs.realpathSync.native(path.resolve(p));
+        return process.platform === 'win32' ? r.toLowerCase() : r;
+    };
+    return norm(a) === norm(b);
+}
 
 function sleep(ms) {
     return new Promise((resolve) => { setTimeout(resolve, ms); });
@@ -76,10 +95,24 @@ function getFreePort() {
     });
 }
 
-/** Poll until `pred()` is truthy or the deadline passes; throws on timeout. */
-async function waitFor(pred, { timeoutMs = scaledTimeout(15000), intervalMs = 100, label = 'condition' } = {}) {
+/**
+ * Poll until `pred()` is truthy or the deadline passes; throws on timeout.
+ *
+ * `isAlive`, when provided, is checked on every iteration BEFORE `pred()`:
+ * if it returns false the poll throws immediately instead of burning the
+ * rest of `timeoutMs`. This lets a caller pass a generous, contention-safe
+ * ceiling (needed so the poll survives real scheduling load -- e.g. running
+ * right after a full root `vitest run`, apra-fleet-7dir.18) while still
+ * failing FAST -- well under that ceiling -- when the thing being waited on
+ * (e.g. the spawned `serve` subprocess) has genuinely died, rather than
+ * degrading a real crash into a slow timeout.
+ */
+async function waitFor(pred, { timeoutMs = scaledTimeout(15000), intervalMs = 100, label = 'condition', isAlive } = {}) {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
+        if (isAlive && !isAlive()) {
+            throw new Error(`${label}: process exited before the condition was met`);
+        }
         // eslint-disable-next-line no-await-in-loop
         const val = await pred();
         if (val) return val;
@@ -130,6 +163,14 @@ function httpPostJson(port, urlPath, payload, host = '127.0.0.1') {
 describe('serve.mjs wiring integration (apra-fleet-eft.4.8.3) -- boot the real supervisor process', () => {
     let serve;
     let port;
+    // apra-fleet-7dir.18: flipped by the spawned `serve` subprocess's own
+    // 'exit' event, so the readiness polls below (isAlive) can fail FAST if
+    // the process has genuinely died, independent of however generous their
+    // timeoutMs ceiling is.
+    let serveExited = false;
+    // Hermetic beads tracker named via --beads-dir: the supervisor must never
+    // resolve this repo's own .beads by walking up from its cwd.
+    let beadsFixture;
 
     // The suite shares ONE real `fleet-se serve` subprocess across every
     // assertion below (matching supervisor-lifecycle.test.mjs's (a) case):
@@ -139,14 +180,35 @@ describe('serve.mjs wiring integration (apra-fleet-eft.4.8.3) -- boot the real s
         const dataDir = await mkTmp('eft483-serve-data-');
         const seDataDir = await mkTmp('eft483-serve-se-');
         port = await getFreePort();
+        beadsFixture = await createBeadsFixture();
+        fixtureCleanups.push(beadsFixture.cleanup);
 
-        serve = spawn(process.execPath, [SERVE_BIN, '--port', String(port)], {
+        serve = spawn(process.execPath, [SERVE_BIN, '--port', String(port), '--beads-dir', beadsFixture.dir], {
             cwd: SE_PKG_ROOT,
             stdio: ['ignore', 'ignore', 'ignore'],
-            env: { ...process.env, APRA_FLEET_DATA_DIR: dataDir, FLEET_SE_DATA_DIR: seDataDir },
+            env: envWithoutBeadsDir({ APRA_FLEET_DATA_DIR: dataDir, FLEET_SE_DATA_DIR: seDataDir }),
+            windowsHide: true,
         });
         track(serve.pid);
+        serve.on('exit', () => { serveExited = true; });
 
+        // apra-fleet-ryk / apra-fleet-33c.1: same contention-starvation fix
+        // already applied to the GET / wait below -- this boot-wait must also
+        // pass concurrency explicitly, since plain `npm test` (unlike
+        // scripts/run-tests.mjs) invokes `node --test --test-concurrency=${TEST_CONCURRENCY}`
+        // without exporting APRA_FLEET_TEST_CONCURRENCY, so scaledTimeout()
+        // silently fell back to its unscaled 15s baseMs while genuinely
+        // running 8-wide, starving the real-subprocess boot under contention
+        // (observed CI failure: timed out at ~15116ms).
+        //
+        // apra-fleet-7dir.18: the fixed 3x multiplier (45s) still isn't
+        // enough when this suite runs immediately after a full root
+        // `vitest run` -- the machine is under heavier residual load than a
+        // standalone run of this package exercises. Rather than replace the
+        // poll with a bigger flat literal, widen its multiplier (still a
+        // BOUNDED poll, just a more generous one) and add the isAlive
+        // fast-fail above so a genuine crash is still caught promptly
+        // instead of silently eating the whole widened ceiling.
         await waitFor(async () => {
             try {
                 const res = await httpGet(port, '/api/health');
@@ -154,7 +216,11 @@ describe('serve.mjs wiring integration (apra-fleet-eft.4.8.3) -- boot the real s
             } catch {
                 return false;
             }
-        }, { label: 'supervisor /api/health to answer' });
+        }, {
+            timeoutMs: scaledTimeout(15000, { concurrency: TEST_CONCURRENCY, multiplier: 6 }),
+            label: 'supervisor /api/health to answer',
+            isAlive: () => !serveExited,
+        });
     });
 
     after(async () => {
@@ -180,12 +246,17 @@ describe('serve.mjs wiring integration (apra-fleet-eft.4.8.3) -- boot the real s
         assert.notEqual(body.seams.watchdog, 'watchdog:stub');
         assert.equal(body.seams.dashboard, 'dashboard', `dashboard seam must be the real module, got ${body.seams.dashboard}`);
         assert.notEqual(body.seams.dashboard, 'dashboard:stub');
+
+        // --beads-dir names the fixture tracker; the identity probe resolves it.
+        assert.ok(body.beads, `expected a resolved beads identity, got beadsWarning: ${body.beadsWarning}`);
+        assert.equal(body.beadsWarning, undefined);
+        assert.ok(samePath(body.beads.dir, beadsFixture.beadsDir), `expected beads dir ${beadsFixture.beadsDir}, got ${body.beads.dir}`);
     });
 
     test('GET / returns 200 with the Sprint Stack, Backlog, and Launch Sprint markers', async () => {
         // apra-fleet-04g.3.1: unlike /api/health above, the '/' route renders
         // the full dashboard (renderBeadsHtml over real bd), which on first
-        // hit under CPU contention (e.g. --test-concurrency=8) can exceed the
+        // hit under CPU contention (e.g. --test-concurrency=TEST_CONCURRENCY) can exceed the
         // per-request scaledTimeout(5000) in httpGet. Retry via the same
         // waitFor() pattern used for the /api/health boot-check above until
         // the route answers 200, then run the body-marker assertions once
@@ -194,7 +265,7 @@ describe('serve.mjs wiring integration (apra-fleet-eft.4.8.3) -- boot the real s
         //
         // apra-fleet-33c.1: the package's plain `npm test` script (unlike
         // scripts/run-tests.mjs's test:unit/test:integration/test:record
-        // modes) invokes `node --test --test-concurrency=8 ...` directly
+        // modes) invokes `node --test --test-concurrency=${TEST_CONCURRENCY} ...` directly
         // without exporting APRA_FLEET_TEST_CONCURRENCY, so scaledTimeout()
         // silently fell back to its unscaled 15s baseMs even though the
         // suite really was running 8-wide -- starving this real-subprocess
@@ -203,14 +274,36 @@ describe('serve.mjs wiring integration (apra-fleet-eft.4.8.3) -- boot the real s
         // value both the plain `test` script and run-tests.mjs use) so this
         // boot-check always gets the full contention-aware budget regardless
         // of which script invoked the suite or whether that env var is set.
+        //
+        // apra-fleet-7dir.18: the fixed 3x multiplier (45s) still isn't
+        // enough when this suite runs immediately after a full root
+        // `vitest run` (heavier residual machine load than a standalone run
+        // of this package exercises) -- observed timeout at ~50040ms against
+        // the 45000ms budget. Widen the multiplier (still a BOUNDED poll,
+        // not a flat literal) and pass isAlive so a genuinely crashed
+        // `serve` subprocess still fails fast instead of eating the whole
+        // widened ceiling.
+        //
+        // CI-watcher fix (runs 35249061362/35262798890, PRs #488/#489): a 200
+        // response does not mean the backlog has finished rendering. `GET /`
+        // can return 200 before renderBeadsHtml's async bd read completes, so
+        // the FIRST 200 sometimes ships a page still missing
+        // `id="backlog-table"`, failing the marker assertion below even
+        // though the server is healthy. Poll on the actual rendered marker,
+        // not just the status code, so a slow first render is retried
+        // instead of asserted against.
         const res = await waitFor(async () => {
             try {
                 const attempt = await httpGet(port, '/');
-                return attempt.status === 200 ? attempt : false;
+                return attempt.status === 200 && attempt.body.includes('id="backlog-table"') ? attempt : false;
             } catch {
                 return false;
             }
-        }, { timeoutMs: scaledTimeout(15000, { concurrency: 8 }), label: 'GET / to render the dashboard' });
+        }, {
+            timeoutMs: scaledTimeout(15000, { concurrency: TEST_CONCURRENCY, multiplier: 6 }),
+            label: 'GET / to render the dashboard with the backlog table',
+            isAlive: () => !serveExited,
+        });
         assert.equal(res.status, 200, res.body);
         assert.ok(res.headers['content-type'].includes('text/html'), res.headers['content-type']);
         // supervisor-viewer-parity: section labels are now `.panel-header`

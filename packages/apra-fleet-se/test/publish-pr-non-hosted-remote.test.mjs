@@ -63,8 +63,18 @@ test('mock sprint: non-hosted (file://) origin remote skips PR creation and clos
         );
 
         check(
-            run.logs.some((m) => m.includes('is not a gh-hostable GitHub remote') && m.includes('skipping PR creation entirely')),
+            run.logs.some((m) => m.includes('cannot open a pull request') && m.includes('skipping PR creation entirely')),
             `Expected a logged message noting PR creation was skipped for the non-hosted remote, logs: ${JSON.stringify(run.logs)}`
+        );
+        // apra-fleet-3swo.4.10: the gate itself (VCSModule.capabilities()) was
+        // already provider-agnostic -- only the LOG WORDING used to say "not a
+        // gh-hostable GitHub remote" regardless of which provider's host it
+        // actually failed to match. Pin that the message is provider-neutral
+        // now (no GitHub-specific wording survives for a generic non-hosted
+        // remote like this test's file:// fixture).
+        check(
+            !run.logs.some((m) => m.includes('gh-hostable GitHub remote')),
+            `Expected no GitHub-specific wording in the non-hosted-remote skip log, logs: ${JSON.stringify(run.logs)}`
         );
         check(
             run.logs.some((m) => m.includes(`closed target issue '${run.epicBeadId}' directly`)),

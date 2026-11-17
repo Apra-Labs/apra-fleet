@@ -125,6 +125,16 @@ export class RelayStrategy implements AgentStrategy {
     throw new Error('File deletion over relay is not yet supported (apra-fleet-jfn follow-on).');
   }
 
+  // No relay channel delivers a file to a known absolute path without a
+  // command line, so a stored credential cannot reach a relay member safely.
+  // Fail loudly rather than fall back to an inline (argv-visible) value;
+  // member-secret-env.ts wraps this in a SecretDeliveryError with the remedy.
+  async writeSecretFile(): Promise<string> {
+    throw new Error('the relay transport has no file channel to a known path');
+  }
+
+  async removeSecretFile(): Promise<void> { /* nothing was written */ }
+
   async testConnection(): Promise<{ ok: boolean; latencyMs: number; error?: string }> {
     const start = Date.now();
     try {

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { Agent, SSHExecResult } from '../src/types.js';
+import { decodePowerShellEncodedCommand } from './test-helpers.js';
 
 const {
   mockGetAgent,
@@ -7,6 +8,7 @@ const {
   mockLogLine,
   mockLogWarn,
   mockGetAgentOS,
+  mockGetAgentShell,
   mockReaddirSync,
   mockStatSync,
   mockReadFileSync,
@@ -16,6 +18,11 @@ const {
   mockLogLine: vi.fn(),
   mockLogWarn: vi.fn(),
   mockGetAgentOS: vi.fn<(agent: Agent) => string>(),
+  // apra-fleet-7dir.2.5: find-log-file.ts's remote command builders now also
+  // read the member's registered shell; default to undefined (no registered
+  // shell) so every existing test here keeps its pre-shell-awareness
+  // (PowerShell-for-Windows) behavior.
+  mockGetAgentShell: vi.fn<(agent: Agent) => string | undefined>(),
   mockReaddirSync: vi.fn(),
   mockStatSync: vi.fn(),
   mockReadFileSync: vi.fn(),
@@ -36,6 +43,8 @@ vi.mock('../src/utils/log-helpers.js', () => ({
 
 vi.mock('../src/utils/agent-helpers.js', () => ({
   getAgentOS: mockGetAgentOS,
+  getAgentShell: mockGetAgentShell,
+  isPosixShell: (os: string, shell?: string) => os !== 'windows' || shell === 'gitbash',
 }));
 
 vi.mock('node:fs', () => ({
@@ -346,10 +355,7 @@ describe('findLogFile', () => {
       await vi.runAllTimersAsync();
       await promise;
 
-      expect(mockExecCommand).toHaveBeenCalledWith(
-        expect.stringContaining('Get-Item'),
-        expect.any(Number)
-      );
+      expect(decodePowerShellEncodedCommand(mockExecCommand.mock.calls[0][0])).toContain('Get-Item');
     });
   });
 
@@ -422,8 +428,9 @@ describe('findLogFile', () => {
       await findLogFile('remote-1', T0, 'inv5', 'C:\\logs');
 
       const tiebreakCall = mockExecCommand.mock.calls[1];
-      expect(tiebreakCall[0]).toContain('Select-String');
-      expect(tiebreakCall[0]).toContain('inv5');
+      const tiebreakScript = decodePowerShellEncodedCommand(tiebreakCall[0]);
+      expect(tiebreakScript).toContain('Select-String');
+      expect(tiebreakScript).toContain('inv5');
     });
   });
 });

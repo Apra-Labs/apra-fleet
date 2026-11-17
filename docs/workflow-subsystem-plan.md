@@ -1,8 +1,12 @@
 # Workflow Subsystem Plan: `apra-fleet workflow <name>` from the SEA binary
 
-Status: PROPOSED (architecture plan for the next sprint; input to the planner agent)
+Status: IMPLEMENTED. `apra-fleet workflow <name>` ships, and the install
+layout this plan specifies (`~/.apra-fleet/workflows/`,
+`~/.apra-fleet/node_modules/`, `~/.apra-fleet/schemas/`) is what `install`
+writes today. Retained as the architecture record for that subsystem and as
+the source the CI risk gates (`.github/workflows/spike-sea-import.yml`,
+`scripts/spike-sea-import.mjs`) cite.
 Date: 2026-07-13
-Branch context: feat/fleet-reorg
 
 ## 0. Existing beads overlap (sanity pass, `bd list` run 2026-07-13)
 
@@ -169,7 +173,7 @@ section as uniform self-spawn behavior, which is wrong:**
   plain HTTP client (`packages/apra-fleet-client`'s already-implemented
   `StreamableHttpTransport`, `factory.mjs`/`transport.mjs`) that connects to
   that already-running singleton, the same one every other registered
-  provider (Claude Code, Gemini, Codex, Copilot, etc.) is already talking to.
+  provider (Claude Code, Antigravity, Codex, Copilot, etc.) is already talking to.
   Discovery/liveness works exactly the way `src/services/singleton.ts`
   already does it for the server's own startup-dedup: `~/.apra-fleet/data/
   server.json` holds `{pid, url}` written by the running instance;

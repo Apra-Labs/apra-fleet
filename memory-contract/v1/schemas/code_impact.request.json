@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/schemas/code_impact.request.json#",
+  "$ref": "#/$defs/v1-code_impact-request",
+  "$defs": {
+    "v1-code_impact-request": {
+      "type": "object",
+      "properties": {
+        "target": {
+          "type": "string",
+          "description": "Symbol name to analyze, e.g. \"handleIPChange\""
+        },
+        "direction": {
+          "type": "string",
+          "enum": [
+            "upstream",
+            "downstream"
+          ],
+          "description": "\"upstream\" to find callers, \"downstream\" to find callees"
+        },
+        "file_path": {
+          "type": "string",
+          "description": "File path hint for disambiguation"
+        }
+      },
+      "required": [
+        "target",
+        "direction"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "tool": "code_status",
+  "case": "refusal-intel-disabled",
+  "kind": "refusal",
+  "request": {},
+  "error": {
+    "message": "E-CODE-INTEL-DISABLED: Code intelligence is disabled (provider 'none'), so code_status cannot be answered. Remediation: Pick a provider: update_member code_intel_provider ('gitnexus' or 'codebase-memory') for this member, or set \"provider\" in the code-intelligence config.json (apra-fleet install), then retry.",
+    "thrown": true
+  },
+  "expected_error_code": "E-CODE-INTEL-DISABLED",
+  "session": "CODE_OFF"
+}

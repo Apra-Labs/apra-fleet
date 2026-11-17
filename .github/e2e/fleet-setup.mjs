@@ -187,7 +187,7 @@ async function assertMembersOnline(fleetApi, names) {
 // as-is), so a windows member needs its own PowerShell version -- bash's
 // `||`/`$(...)` command substitution do not parse under Windows PowerShell
 // 5.1 (`The token '||' is not a valid statement separator`).
-const BD_CHECK_BASH = 'which bd || npm install -g @beads/bd@1.1.2';
+const BD_CHECK_BASH = 'which bd || npm install -g @beads/bd@1.3.0';
 const DOLT_CHECK_BASH = [
   'which dolt || ~/bin/dolt version || (',
   'OS=$(uname -s | tr \'[:upper:]\' \'[:lower:]\');',
@@ -200,7 +200,7 @@ const DOLT_CHECK_BASH = [
   ')',
 ].join(' ');
 
-const BD_CHECK_WINDOWS = 'if (Get-Command bd -ErrorAction SilentlyContinue) { bd version } else { npm install -g @beads/bd@1.1.2 }';
+const BD_CHECK_WINDOWS = 'if (Get-Command bd -ErrorAction SilentlyContinue) { bd version } else { npm install -g @beads/bd@1.3.0 }';
 const DOLT_CHECK_WINDOWS = [
   'if (Get-Command dolt -ErrorAction SilentlyContinue) { dolt version }',
   'elseif (Test-Path "$HOME\\bin\\dolt.exe") { & "$HOME\\bin\\dolt.exe" version }',
@@ -346,7 +346,7 @@ async function runSetup(suiteId, runDir) {
 
     process.stdout.write('Setup phase complete: T1, T2, T2-done all PASS.\n');
   } finally {
-    try { transport.stop(); } catch { /* best-effort cleanup */ }
+    try { await transport.close(); } catch { /* best-effort cleanup */ }
   }
 }
 
@@ -560,7 +560,7 @@ async function runCollectLogs(runDir) {
     }
     process.stdout.write('Log collection complete.\n');
   } finally {
-    try { transport.stop(); } catch { /* best-effort cleanup */ }
+    try { await transport.close(); } catch { /* best-effort cleanup */ }
   }
 }
 
@@ -615,7 +615,7 @@ async function runTeardown(suiteId) {
       process.stdout.write('T6: PASS\n');
     }
   } finally {
-    try { transport.stop(); } catch { /* best-effort cleanup */ }
+    try { await transport.close(); } catch { /* best-effort cleanup */ }
   }
 }
 

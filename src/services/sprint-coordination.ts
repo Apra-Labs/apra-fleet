@@ -582,9 +582,14 @@ export function createIdAllocator(deps: AllocatorDeps = {}): IdAllocator {
     reclaimExpired();
 
     const st = parentState(parentId);
-    if (Number.isInteger(opts.floor) && (opts.floor as number) > st.highWater) {
-      st.highWater = opts.floor as number;
-      st.free = st.free.filter((n) => n > (opts.floor as number));
+    if (Number.isInteger(opts.floor)) {
+      const floor = opts.floor as number;
+      // Only lift the high-water; never drop it.
+      if (floor > st.highWater) st.highWater = floor;
+      // Always drop free seqs <= floor, even when the floor does not raise the
+      // high-water: a pooled seq at or below the highest existing child may be
+      // an occupied id and must never be re-minted (GitHub #615).
+      st.free = st.free.filter((n) => n > floor);
     }
 
     // Synchronous seq assignment -- no await before this mutation.

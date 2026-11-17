@@ -1,0 +1,21 @@
+{
+  "tool": "kb_session_prime",
+  "case": "happy",
+  "kind": "happy",
+  "request": {
+    "hint_symbols": [
+      "exampleFn"
+    ],
+    "session_files": [
+      "src/example.ts"
+    ]
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"session_warm\":false,\"stale_files\":[\"src/example.ts\"],\"top_entries\":[],\"fresh_summaries\":[],\"recommended_code_calls\":[{\"tool\":\"code_context\",\"args\":{\"name\":\"exampleFn\"}},{\"tool\":\"code_impact\",\"args\":{\"target\":\"src/example.ts\",\"direction\":\"upstream\"}}],\"token_estimate\":0}"
+      }
+    ]
+  }
+}

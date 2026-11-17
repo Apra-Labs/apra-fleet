@@ -3,24 +3,32 @@
 ## What this package is
 
 `@apralabs/apra-fleet-client` is the MCP client SDK for Apra Fleet. It is a
-small, dependency-free (aside from Node built-ins) Node.js library that
+small Node.js library, with `undici` as its only runtime dependency, that
 knows how to:
 
 1. Open a connection to a running `apra-fleet` MCP server, either as a
    spawned child process (stdio) or over HTTP+SSE.
 2. Speak the JSON-RPC 2.0 request/response protocol MCP uses, including
    request IDs, timeouts, and cancellation.
-3. Expose the fleet server's tool surface (`execute_prompt`,
+3. Expose part of the fleet server's tool surface (`execute_prompt`,
    `execute_command`, `list_members`, `fleet_status`, `member_detail`,
    `get_member_model_pricing`, `send_files`, `receive_files`,
    `register_member`, `update_member`, `remove_member`, `provision_llm_auth`,
-   `compose_permissions`, `setup_ssh_key`, `shutdown_server`) as a typed,
+   `provision_vcs_auth`, `compose_permissions`, `setup_ssh_key`,
+   `send_email`, `credential_store_set`/`_list`/`_delete`/`_update`,
+   `dolt_push_mutex`, `child_id_allocator`, `shutdown_server`) as a typed,
    promise-based JavaScript API instead of raw `tools/call` payloads.
 
+`undici`'s `fetch` is used rather than Node's built-in one so the SSE
+streams the HTTP transport depends on can sit silent for the full duration
+of a long dispatch without being idle-killed; see `api-reference.md`.
+
 It is a **transport and protocol** layer. It does not implement any
-scheduling, retry, workflow, or orchestration logic of its own -- it hands
-callers a clean way to issue one MCP request and get one MCP response (or a
-timeout/abort error). Anything stateful or multi-step (sprints, phases,
+scheduling, request-level retry, workflow, or orchestration logic of its own
+-- it hands callers a clean way to issue one MCP request and get one MCP
+response (or a timeout/abort/transport-closed error). The only retrying it
+does is at the connection level, inside the HTTP transport, where no
+response was produced. Anything stateful or multi-step (sprints, phases,
 budgets, dashboards) lives one layer up, in `@apralabs/apra-fleet-workflow`.
 
 ## The problem it solves
@@ -78,7 +86,7 @@ lists `@apralabs/apra-fleet-client` as a direct dependency.
   can depend on `apra-fleet-client` alone and use `ApraFleet` +
   `McpClient` + a transport directly.
 - It is not intended for end users interacting through a chat UI; those
-  users go through an LLM CLI (Claude Code, Antigravity, Gemini, Codex,
+  users go through an LLM CLI (Claude Code, Antigravity, Codex,
   ...) that talks MCP natively. This package is for programmatic,
   code-level fleet automation.
 
@@ -88,28 +96,26 @@ Declared in `package.json#exports`:
 
 | Import path | File | Contents |
 |---|---|---|
-| `@apralabs/apra-fleet-client` | `src/client/api.mjs` | `ApraFleet` class, `deriveTimeoutMs()` |
+| `@apralabs/apra-fleet-client` | `src/client/api.mjs` | `ApraFleet` class, `deriveTimeoutMs()`, `parseToolJson()` |
 | `@apralabs/apra-fleet-client/client` | `src/client/client.mjs` | `McpClient` class, `DEFAULT_REQUEST_TIMEOUT_MS` |
 | `@apralabs/apra-fleet-client/factory` | `src/client/factory.mjs` | `createWorkflowEngine()` |
 | `@apralabs/apra-fleet-client/transport` | `src/client/transport.mjs` | `StdioTransport`, `StreamableHttpTransport` |
-| `@apralabs/apra-fleet-client/server-resolution` | `src/client/server-resolution.mjs` | `connectFleet()`, `checkRunningInstance()`, `resolveFleetServerConnection()`, `resolveFleetServerCommand()`, `getFleetDataDir()`, `getServerInfoPath()` |
+| `@apralabs/apra-fleet-client/server-resolution` | `src/client/server-resolution.mjs` | `connectFleet()`, `checkRunningInstance()`, `resolveFleetServerConnection()`, `resolveFleetServerCommand()`, `resolveFleetStartCommand()`, `autoStartFleetServer()`, `createFleetHttpTransport()`, `ReconnectingHttpTransport`, `isNeverDeliveredError()`, `lastServerLog()`, `FleetAutoStartError`, `AUTOSTART_MAX_STARTS`, `AUTOSTART_WINDOW_MS`, `AUTOSTART_TIMEOUT_MS`, `getFleetDataDir()`, `getServerInfoPath()` |
 
-`src/client/errors.mjs` (`ClientError`, `TimeoutError`, `AbortError`) is not
-listed in `exports` but its instances are the error/rejection values
-thrown by `McpClient.request()`; catching code typically discriminates on
-`err.code` rather than importing the classes directly.
+`src/client/errors.mjs` (`ClientError`, `TimeoutError`, `AbortError`,
+`TransportClosedError`) is not listed in `exports` but its instances are the
+error/rejection values raised by `McpClient`; catching code typically
+discriminates on `err.code` rather than importing the classes directly.
 
 See `api-reference.md` for full method-by-method documentation and
 `getting-started.md` for usage examples.
 
 ## A note on the `factory` entry point
 
-`src/client/factory.mjs` imports `FleetWorkflow` from
-`'../workflow/index.mjs'` and `WorkflowEngine` from `'../workflow/engine.mjs'`
--- paths that would resolve to `src/workflow/*` *inside this package*.
-This package has no `src/workflow` directory; that code actually lives in
-the separate `@apralabs/apra-fleet-workflow` package
-(`packages/apra-fleet-workflow/src/workflow/`). See "Known issues" in
-`api-reference.md` for details -- this affects only the `./factory` export;
-the `.` , `./client`, and `./transport` exports are self-contained and
-unaffected.
+`src/client/factory.mjs` loads `FleetWorkflow` and `WorkflowEngine` from
+the separate `@apralabs/apra-fleet-workflow` package with a dynamic
+`import()` inside `createWorkflowEngine()`. That package depends on this one,
+so the import is lazy: importing `./factory` does not need it, calling
+`createWorkflowEngine()` does. Its http transport carries the install's
+access secret header (see `api-reference.md`). The `.`, `./client`, and
+`./transport` exports are self-contained.

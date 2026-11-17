@@ -1,0 +1,15 @@
+{
+  "tool": "kb_context",
+  "case": "refusal-path-traversal",
+  "kind": "refusal",
+  "request": {
+    "files": [
+      "../outside-the-repo.txt"
+    ]
+  },
+  "error": {
+    "message": "Path traversal rejected: ../outside-the-repo.txt",
+    "thrown": true
+  },
+  "expected_error_code": "E-PATH-TRAVERSAL"
+}

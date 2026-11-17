@@ -94,8 +94,37 @@ function saveCredentialFile(file: CredentialFile): void {
   if (!fs.existsSync(dataDir)) {
     fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   }
-  fs.writeFileSync(credentialsPath, JSON.stringify(file, null, 2), { mode: 0o600 });
-  enforceOwnerOnly(credentialsPath);
+  // Write a temp file next to credentials.json, then rename it over: a
+  // concurrent reader in another process sees either the old or the new
+  // file, never a truncated one.
+  const tmpPath = `${credentialsPath}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
+  try {
+    fs.writeFileSync(tmpPath, JSON.stringify(file, null, 2), { mode: 0o600 });
+    enforceOwnerOnly(tmpPath);
+    renameWithRetry(tmpPath, credentialsPath);
+  } catch (err) {
+    try { fs.unlinkSync(tmpPath); } catch { /* temp may not exist */ }
+    throw err;
+  }
+}
+
+const RENAME_RETRIES = 10;
+const RENAME_RETRY_DELAY_MS = 20;
+
+// On Windows, renaming over a file another process has open can fail
+// transiently (EPERM / EACCES / EBUSY).
+function renameWithRetry(from: string, to: string): void {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      fs.renameSync(from, to);
+      return;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      const transient = code === 'EPERM' || code === 'EACCES' || code === 'EBUSY';
+      if (!transient || attempt >= RENAME_RETRIES) throw err;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, RENAME_RETRY_DELAY_MS);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -271,6 +300,60 @@ export function credentialResolve(
   }
 
   return null;
+}
+
+export type ServerSecretMeta = Pick<CredentialMeta, 'name' | 'scope' | 'created_at' | 'expiresAt'>;
+
+export type ServerSecretLookup =
+  | { status: 'ok'; value: string; meta: ServerSecretMeta }
+  | { status: 'missing' }
+  | { status: 'expired'; expiresAt: string; meta: ServerSecretMeta };
+
+export type ServerSecretStatus =
+  | { status: 'ok'; meta: ServerSecretMeta }
+  | { status: 'missing' }
+  | { status: 'expired'; expiresAt: string; meta: ServerSecretMeta };
+
+function isExpired(expiresAt: string | undefined): expiresAt is string {
+  return !!expiresAt && Date.now() > new Date(expiresAt).getTime();
+}
+
+/**
+ * Metadata-only server-side lookup (no decryption), for status reporting.
+ * Persistent wins over session. allowedMembers is not checked and nothing is
+ * deleted, so an expired record stays visible as expired.
+ */
+export function lookupServerSecretMeta(name: string): ServerSecretStatus {
+  const persistent = loadCredentialFile().credentials[name];
+  const rec = persistent ?? sessionStore.get(name);
+  if (!rec) return { status: 'missing' };
+  const meta: ServerSecretMeta = {
+    name: rec.name,
+    scope: persistent ? 'persistent' : 'session',
+    created_at: rec.created_at,
+    expiresAt: rec.expiresAt,
+  };
+  if (isExpired(rec.expiresAt)) return { status: 'expired', expiresAt: rec.expiresAt, meta };
+  return { status: 'ok', meta };
+}
+
+/**
+ * Server-side named-secret lookup for fleet-server callers (not a member
+ * command): ignores allowedMembers, never deletes a record, never logs the value.
+ */
+export function lookupServerSecret(name: string): ServerSecretLookup {
+  const found = lookupServerSecretMeta(name);
+  if (found.status !== 'ok') return found;
+  const persistent = loadCredentialFile().credentials[name];
+  let value: string;
+  if (persistent) {
+    value = decryptPassword(persistent.encryptedValue);
+  } else {
+    const session = sessionStore.get(name);
+    if (!session) return { status: 'missing' };
+    value = sessionDecrypt(session.encryptedValue);
+  }
+  return { status: 'ok', value, meta: found.meta };
 }
 
 export interface CredentialUpdatePatch {

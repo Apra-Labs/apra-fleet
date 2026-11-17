@@ -8,9 +8,18 @@ const patterns: Array<{ category: PromptErrorCategory; re: RegExp }> = [
   // actionable signature is not swallowed by a broader pattern. Remediation: seed trust
   // via ensureWorkspaceTrusted(workFolder) (apra-fleet-eft.40.1/40.2).
   { category: 'workspace_not_trusted', re: /this workspace has not been trusted/i },
-  { category: 'auth', re: /not logged in|unauthorized|\b401\b|authentication_error|expired.*token|permission_error|invalid.*api.*key|api_key_missing|antigravity_api_key|unauthenticated/i },
-  { category: 'server', re: /\b500\b|\b502\b|\b503\b|internal server error|api_error|connection refused|endpoint not reachable|no route to host|dial tcp|failed to connect|network unreachable|dns lookup failed/i },
+  // OAuth-expired CLI result (is_error, terminal_reason api_error, "Failed to authenticate:
+  // OAuth session expired and could not be refreshed") also carries api_error; auth is
+  // tested before overloaded/server so it is not misread as a retryable server failure.
+  { category: 'auth', re: /not logged in|unauthorized|\b401\b|authentication_error|expired.*token|permission_error|invalid.*api.*key|api_key_missing|antigravity_api_key|unauthenticated|failed to authenticate|oauth session expired|could not be refreshed/i },
+  // apra-fleet-hzeb.1: overloaded MUST be tested before server. A usage-limit /
+  // rate-limit payload (e.g. a 429) commonly ALSO carries an `api_error` string,
+  // which the server pattern would otherwise claim first and misclassify as a
+  // transient server error. Ordering overloaded ahead keeps a 429+api_error
+  // payload classified as overloaded (retryable-with-backoff / usage-limit family),
+  // not server.
   { category: 'overloaded', re: /\b429\b|\b529\b|overloaded|rate limit|quota exceeded|resource_exhausted|credit limit|usage limit/i },
+  { category: 'server', re: /\b500\b|\b502\b|\b503\b|internal server error|api_error|connection refused|endpoint not reachable|no route to host|dial tcp|failed to connect|network unreachable|dns lookup failed/i },
 ];
 
 export function classifyPromptError(output: string): PromptErrorCategory {
@@ -26,5 +35,5 @@ export function authErrorAdvice(agentName: string): string {
 }
 
 export function workspaceNotTrustedAdvice(agentName: string): string {
-  return `Workspace not trusted on "${agentName}": Claude ignored the composed permissions.allow entries because this work folder has never been trusted (projects[].hasTrustDialogAccepted is unset in the member-side ~/.claude.json). Remediation: seed trust via ensureWorkspaceTrusted(workFolder) -- re-run compose_permissions once apra-fleet-eft.40.2 wires it in, or set projects['<work_folder>'].hasTrustDialogAccepted=true in the member's ~/.claude.json directly.`;
+  return `Workspace not trusted on "${agentName}": Claude ignored the composed permissions.allow entries because this work folder has never been trusted (projects[].hasTrustDialogAccepted is unset in the member-side ~/.claude.json). Remediation: seed trust via ensureWorkspaceTrusted(workFolder) -- re-run compose_permissions once that wiring lands, or set projects['<work_folder>'].hasTrustDialogAccepted=true in the member's ~/.claude.json directly.`;
 }

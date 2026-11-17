@@ -1,8 +1,9 @@
 # How the apra-pm Role Contracts Work
 
 Every AI agent role fleet-sprint dispatches (`planner`, `plan-reviewer`,
-`doer`, `reviewer`, `deployer`, `integ-test-runner`, `harvester`, plus
-`ci-watcher` which is defined but not currently dispatched by this runner)
+`doer`, `reviewer`, `deployer`, `integ-test-runner`,
+`regression-test-runner`, `harvester`, plus `ci-watcher` which is defined but
+not currently dispatched by this runner)
 has a canonical, prose behavioral definition at
 `packages/apra-fleet-se/apra-pm/agents/<role>.md` -- the apra-pm package in this monorepo.
 `fleet-sprint/contracts.mjs` is this package's
@@ -33,6 +34,49 @@ are the authoritative, human-readable source of truth for what each role
 actually does when dispatched -- `docs/overview.md`'s role summaries are
 derived from them.
 
+## Operational memories: the role-scoped key contract
+
+Role prompts read the target repo's beads operational memories (`bd remember`)
+themselves -- the engine does not inject memories into dispatch prompts. Each
+dispatched role runs, near the start of its procedure:
+
+```bash
+bd memories --json +all+
+bd memories --json +<role>+     # e.g. +doer+, +reviewer+; the backlog groomer uses +groomer+
+```
+
+So a target repo's memory keys must follow this contract to reach a role:
+
+| Key form | Reaches |
+| --- | --- |
+| `+all+:<slug>` | every role |
+| `+<role>+:<slug>` | that one role |
+| `+<role1>+<role2>+:<slug>` | each listed role |
+
+Role tokens are `planner`, `plan-reviewer`, `doer`, `reviewer`, `deployer`,
+`integ-test-runner`, `regression-test-runner`, `harvester`, `ci-watcher`,
+`groomer`, plus `orchestrator` for the interactive session that launches and
+supervises sprints. `bd memories` is a case-insensitive substring search over
+keys and values: the `+` on both sides keeps `+reviewer+` from matching
+`+plan-reviewer+`. Unscoped keys
+reach no role. The text output of `bd memories` truncates long values, so roles
+use `--json`, which returns a flat object of key -> full value (plus a
+`schema_version` entry); because the search also matches value text, a role
+applies only the entries whose key carries its token.
+
+`bd prime` prints every memory regardless of scope, so a target repo that wants
+memories role-scoped runs `bd prime --no-memories` in its session hooks, and
+gives the interactive/orchestrator session its `+all+` and `+orchestrator+`
+memories some other way (e.g. a second session-start hook that prints them).
+
+The backlog groomer re-keys older `groomer-heuristic-<slug>` memories to
+`+groomer+:<slug>` itself when run with `dry-run: false` (a dry run only
+reports the keys it would migrate). For other older keys (`role:all:<slug>`,
+`<role>:<slug>`), an apra-fleet source checkout has
+`packages/apra-fleet-se/scripts/rekey-beads-memories.mjs`: run it with the
+target repo as cwd (dry run; add `--apply` to re-key). It is not part of the
+installed package. Keys it cannot map are listed and left alone.
+
 ## `contracts.mjs`: the four things it provides
 
 ### 1. The canonical role enum
@@ -43,13 +87,17 @@ name strings, one per `name:` frontmatter field across
 
 ```js
 ['planner', 'plan-reviewer', 'doer', 'reviewer', 'deployer',
- 'integ-test-runner', 'ci-watcher', 'harvester']
+ 'integ-test-runner', 'regression-test-runner', 'ci-watcher', 'harvester']
 ```
+
+`integ-test-runner` (per-cycle feature closure) and `regression-test-runner`
+(the once-per-sprint full regression pass) are separate roles with separate
+apra-pm definitions and separate output schemas.
 
 `normalizeRole(role)` trims and lowercases any role string for comparison
 (fixing a historical "`Doer`/`doer`" casing-mismatch bug at the source);
 `validateRole(role)` additionally checks membership in `ROLES`.
-`'orchestrator'` is deliberately **not** in this enum -- it is an
+`'backlog'` (and its deprecated alias `'orchestrator'`) is deliberately **not** in this enum -- it is an
 application-level pseudo-role used only as a `roleMap` key (see
 `docs/architecture.md`), never dispatched as a fleet agent, and never
 schema-checked against an apra-pm package file.
@@ -65,6 +113,7 @@ export const reviewerVerdict = ...
 export const doerReport = ...
 export const deployerReport = ...
 export const integReport = ...
+export const regressionReport = ...
 export const ciReport = ...
 export const harvesterReport = ...
 ```
@@ -84,24 +133,31 @@ which:
    against each role's prose contract, and now serve purely as the
    degraded-but-correct fallback.
 
-`planner` has no output schema by design (its "output" is the beads DAG it
-creates, not a structured verdict) and is allow-listed in
-`ROLES_WITHOUT_OUTPUT_SCHEMA` so its absence never triggers a warning.
+`ROLES_WITHOUT_OUTPUT_SCHEMA` is the allow-list of roles that legitimately
+have no output schema file, so their absence never triggers a warning. It is
+currently **empty**: every role in `ROLES`, `planner` included, has an
+`agents/schemas/<role>-output.json`, so a missing one is always a real defect
+worth warning about. (The planner has an output contract because the engine
+reads structured fields from it, not just the beads DAG it creates.)
+
 `streakAssignment` (grouping ready beads into doer streaks) and
 `finalVerdict` (the sprint-level PASS/FAIL gate) are **application-owned**
 schemas with no apra-pm counterpart at all -- they exist only because this
 runner invented those two dispatch shapes itself; there is no
 `packages/apra-fleet-se/apra-pm/agents/streak-assignment.md` or `.../final-verdict.md`.
 
-**Schema directory resolution** (`resolveSchemasDir()` in `contracts.mjs`,
-apra-fleet-bun): layout-aware and bundled-location-first, so this package
+**Schema directory resolution** (`resolveSchemasDir()` in `contracts.mjs`):
+layout-aware and bundled-location-first, so this package
 resolves its role schemas correctly whether it's a full monorepo checkout, a
 standalone install, or bundled into the root `@apralabs/apra-fleet` package.
-In order: an `APRA_FLEET_SE_SCHEMAS_DIR` env override; a bundled
-`dist/agents/schemas` copy (already populated by the root package's
-`prepublishOnly`); the `packages/apra-fleet-se/apra-pm` package in this
-monorepo as a last-resort dev fallback (warns once when used,
-since it won't exist in an installed package). If none of those resolve,
+In order: an `APRA_FLEET_SE_SCHEMAS_DIR` env override (used as-is, no
+freshness lookup); if only one of the bundled `dist/agents/schemas` copy
+(already populated by the root package's `prepublishOnly`) or the
+`packages/apra-fleet-se/apra-pm` package-local copy in this monorepo exists,
+that one; if **both** exist, the **newer** one, where freshness is the
+maximum mtime over the `.json` files each directory contains (recursive,
+not the directory's own mtime) -- a tie resolves to `dist`. If none of those
+resolve,
 `loadVendorSchema()` returns `null` for every role and every schema falls
 back to its hand-written literal -- an expected, silent state, not an error.
 
@@ -174,11 +230,15 @@ success.
 
 ## Testing notes
 
-`contracts.mjs` resolves its schema directory via `resolveSchemasDir()`, in
-order: an `APRA_FLEET_SE_SCHEMAS_DIR` env override, a bundled `dist/agents/schemas`
-copy, then the `packages/apra-fleet-se/apra-pm` package in this monorepo
-as a last-resort dev fallback. This package's tests point the loader
-at `test/fixtures/apra-pm-schemas/` (a snapshot of the real apra-pm
-schema files) via the `APRA_FLEET_SE_SCHEMAS_DIR` env override, so
-schema-loading behavior can be exercised deterministically regardless of
-which of those directories actually exist in the checkout running the test.
+`contracts.mjs` resolves its schema directory via `resolveSchemasDir()`: an
+`APRA_FLEET_SE_SCHEMAS_DIR` env override first; if only one of the bundled
+`dist/agents/schemas` copy or the `packages/apra-fleet-se/apra-pm`
+package-local copy in this monorepo exists, that one; if both exist, the
+newer one by recursive max `.json` mtime (a tie resolves to `dist`). This
+package's tests set the `APRA_FLEET_SE_SCHEMAS_DIR` env override to pin the
+loader at a known directory (`apra-pm/agents/schemas`, the package-local
+copy) before importing `contracts.mjs`, so schema-loading behavior can be
+exercised deterministically regardless of which candidate directories
+actually exist in the checkout running the test. `resolveSchemasDir()` also
+takes an injectable `deps` object (`env`, `exists`, `newestJsonMtimeMs`) so
+every resolution branch can be unit-tested without real directories on disk.

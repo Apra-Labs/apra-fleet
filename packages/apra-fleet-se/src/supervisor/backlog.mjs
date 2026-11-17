@@ -1,5 +1,5 @@
 // =============================================================================
-// Auto-sprint supervisor -- Backlog-last tree with partial-claim annotations
+// fleet-sprint supervisor -- Backlog-last tree with partial-claim annotations
 // (apra-fleet-eft.6.2, Plan Part 2.3)
 // =============================================================================
 //
@@ -42,7 +42,7 @@ import { escapeHtml } from '@apralabs/apra-fleet-workflow/viewer/html-utils';
 import { WATCHDOG_STATUS } from './watchdog.mjs';
 import { renderBeadsHtml } from '../../fleet-sprint/viewer-extensions.mjs';
 import { sendJson } from './server.mjs';
-import { execBdAsync } from '../../../../scripts/lib/exec-bd.mjs';
+import { execBdAsync } from './lib/exec-bd.mjs';
 
 /**
  * Extract a bead's parent id from a raw `bd list --json` row. The parent-child
@@ -68,18 +68,38 @@ export function parentIdOf(raw) {
 /**
  * Normalize a raw `bd list --json` row (or an already-normalized object) into
  * the minimal shape the tree builder/renderer needs.
+ *
+ * `priority` is preserved (not dropped) because downstream consumers filter
+ * on it: apra-fleet-x8r.4's computeSprintProgress() gates a bead's inclusion
+ * in the sprint-required set on `typeof b.priority === 'number'`, and the
+ * supervisor dashboard's default listAllBeads source (bdListAllBeads() below)
+ * is this function applied to every raw row. Dropping `priority` here made
+ * that goalMax filtering silently inert in production while still appearing
+ * to work in tests that hand-built already-normalized-shaped fixtures instead
+ * of routing raw rows through this function (apra-fleet-x8r.7). Preserved as
+ * `null` (never a numeric default like 0) when absent/non-numeric, so
+ * "no priority filtering for this bead" stays unambiguous downstream.
  * @param {object} raw
- * @returns {{ id: string, title: string, issueType: string, status: string, parentId: string|null }}
+ * @returns {{ id: string, title: string, issueType: string, status: string, parentId: string|null, priority: number|null }}
  */
 export function normalizeBead(raw) {
     const b = raw || {};
-    return {
+    const rawPriority = b.priority;
+    const normalized = {
         id: typeof b.id === 'string' ? b.id : '',
         title: typeof b.title === 'string' ? b.title : '',
         issueType: b.issueType ?? b.issue_type ?? 'task',
         status: b.status ?? 'open',
         parentId: parentIdOf(b),
+        priority: typeof rawPriority === 'number' && Number.isFinite(rawPriority) ? rawPriority : null,
     };
+    // A server-computed `placement` ('sprint' | 'backlog', runner.js's
+    // partitionByGoalMembership) is passed through when present: sprint-
+    // progress.mjs's computeSprintProgress() branches on it BEFORE the numeric
+    // priority filter, so dropping it here would silently change a
+    // placement-carrying row's membership. Raw `bd list` rows never carry it.
+    if (typeof b.placement === 'string') normalized.placement = b.placement;
+    return normalized;
 }
 
 /**
@@ -374,8 +394,18 @@ export function renderBacklogTreeHtml(tree) {
  * guessed enum). Pure/synchronous -- narrows the SET before it is ever handed
  * to a renderer, not a client-side hide/show pass over an already-fetched
  * full set (that distinction is the acceptance criterion this mirrors).
+ * After the type/status/priority/model/q narrowing, `filters.sort` (only
+ * `'created_at'` is supported today) orders the resulting rows by each row's
+ * `created_at` timestamp; `filters.dir` picks `'asc'` or `'desc'` (default
+ * `'desc'`). `created_at` is parsed defensively -- rows come straight from
+ * `bd list --json`, where it is an ISO string like `'2026-08-21T04:36:29Z'` --
+ * so a missing/unparseable value NEVER throws and always sorts last,
+ * regardless of direction. The sort is stable relative to incoming order for
+ * equal (or equally-invalid) timestamps. Omitting `filters.sort` leaves row
+ * order exactly as `bd`/the type/status/priority/model/q narrowing produced
+ * it -- no reordering is imposed.
  * @param {Array<object>} rows
- * @param {{ type?: string, status?: string, priority?: string|number, model?: string, q?: string }} [filters]
+ * @param {{ type?: string, status?: string, priority?: string|number, model?: string, q?: string, sort?: string, dir?: string }} [filters]
  * @returns {{ tasks: object[], total: number, filterOptions: { type: string[], status: string[], priority: number[], model: string[] } }}
  */
 export function applyBeadFilters(rows, filters) {
@@ -413,7 +443,50 @@ export function applyBeadFilters(rows, filters) {
         return true;
     });
 
+    const sortField = norm(f.sort);
+    if (sortField === 'created_at') {
+        const dir = norm(f.dir) === 'asc' ? 'asc' : 'desc';
+        return { tasks: sortByCreatedAt(tasks, dir), total: list.length, filterOptions };
+    }
+
     return { tasks, total: list.length, filterOptions };
+}
+
+/**
+ * Parse a `bd list --json` row's `created_at` into epoch millis, or `null`
+ * when the field is missing/unparseable. Never throws.
+ * @param {object} r
+ * @returns {number|null}
+ */
+function parseCreatedAt(r) {
+    const raw = r && r.created_at;
+    if (typeof raw !== 'string' || raw.length === 0) return null;
+    const ms = Date.parse(raw);
+    return Number.isFinite(ms) ? ms : null;
+}
+
+/**
+ * Stable sort of `tasks` by `created_at`, direction `'asc'|'desc'`. Rows with
+ * a missing/unparseable `created_at` always sort last regardless of
+ * direction, and this never throws on malformed input. Stable relative to
+ * incoming order for equal (or equally-invalid) timestamps -- achieved via a
+ * decorate-sort-undecorate over the original index, since `Array#sort` is not
+ * guaranteed stable across every engine this code may run on.
+ * @param {object[]} tasks
+ * @param {'asc'|'desc'} dir
+ * @returns {object[]}
+ */
+function sortByCreatedAt(tasks, dir) {
+    const decorated = tasks.map((r, i) => ({ r, i, ms: parseCreatedAt(r) }));
+    decorated.sort((a, b) => {
+        if (a.ms === null && b.ms === null) return a.i - b.i;
+        if (a.ms === null) return 1;
+        if (b.ms === null) return -1;
+        if (a.ms === b.ms) return a.i - b.i;
+        const cmp = a.ms - b.ms;
+        return dir === 'asc' ? cmp : -cmp;
+    });
+    return decorated.map((d) => d.r);
 }
 
 /**
@@ -428,8 +501,18 @@ export function applyBeadFilters(rows, filters) {
  * table re-render (collapse toggle, a fresh filtered fetch) never resets what
  * the operator had chosen -- this function is called fresh on every
  * `renderTable()` pass client-side, not just once at page load.
+ *
+ * A 7th header cell (apra-fleet-qoxd.2) carries the Created-at sort control:
+ * a single `<select data-sort-field="created_at">` offering a neutral
+ * 'Unsorted' option plus 'Created (newest)' (value `desc`) / 'Created
+ * (oldest)' (value `asc`), pre-selected from `currentFilters.sort`/
+ * `currentFilters.dir` so a client re-render preserves the chosen sort --
+ * same pattern the Type/Status/Pri/Model `<select>`s already follow. It is a
+ * distinct `data-sort-field` attribute (not `data-filter-field`) because this
+ * one control drives TWO `currentFilters` keys (`sort` and `dir`) at once;
+ * wiring lives in `backlogPanelClientScript()`'s `wireHeaderControls()`.
  * @param {{ type: string[], status: string[], priority: number[], model: string[] }} filterOptions
- * @param {{ type?: string, status?: string, priority?: string|number, model?: string, q?: string }} [currentFilters]
+ * @param {{ type?: string, status?: string, priority?: string|number, model?: string, q?: string, sort?: string, dir?: string }} [currentFilters]
  * @returns {string}
  */
 function buildFilterHeaderRowHtml(filterOptions, currentFilters) {
@@ -449,6 +532,17 @@ function buildFilterHeaderRowHtml(filterOptions, currentFilters) {
         return '<select data-filter-field="' + field + '" style="' + CTRL_STYLE + '">' + optionsHtml.join('') + '</select>';
     }
 
+    function sortSelectHtml(currentSort, currentDir) {
+        const isCreatedAtSort = currentSort === 'created_at';
+        const dir = isCreatedAtSort ? (currentDir === 'asc' ? 'asc' : 'desc') : '';
+        const optionsHtml = [
+            '<option value=""' + (dir === '' ? ' selected' : '') + '>Unsorted</option>',
+            '<option value="desc"' + (dir === 'desc' ? ' selected' : '') + '>Created (newest)</option>',
+            '<option value="asc"' + (dir === 'asc' ? ' selected' : '') + '>Created (oldest)</option>',
+        ];
+        return '<select data-sort-field="created_at" style="' + CTRL_STYLE + '">' + optionsHtml.join('') + '</select>';
+    }
+
     const qVal = escapeHtml(f.q || '');
     return '<tr style="border-bottom: 1px solid rgba(255,255,255,0.1);">' +
         '<th style="padding: 8px; width: 110px;">ID</th>' +
@@ -457,6 +551,7 @@ function buildFilterHeaderRowHtml(filterOptions, currentFilters) {
         '<th style="padding: 8px; width: 100px;">' + selectHtml('status', 'Status', opts.status, f.status) + '</th>' +
         '<th style="padding: 8px; width: 50px;">' + selectHtml('priority', 'Pri', opts.priority, f.priority, (p) => 'P' + p) + '</th>' +
         '<th style="padding: 8px; width: 80px;">' + selectHtml('model', 'Model', opts.model, f.model) + '</th>' +
+        '<th style="padding: 8px; width: 130px;">' + sortSelectHtml(f.sort, f.dir) + '</th>' +
         '</tr>';
 }
 
@@ -509,13 +604,29 @@ function backlogPanelClientScript() {
 (function () {
     var container = document.getElementById('backlog-table');
     var indicator = document.getElementById('backlog-active-filters');
+    var totalCountEl = document.getElementById('backlog-total-count');
     var clearBtn = document.getElementById('backlog-filter-clear');
     if (!container) return;
+
+    // apra-fleet-eft.90: keep the persistent total-item count in sync with
+    // whatever lastTasks currently is -- called once up front (server-
+    // rendered value may already match, but this stays the single source of
+    // truth) and again every time lastTasks is reassigned below.
+    function updateTotalCount() {
+        if (totalCountEl) totalCountEl.textContent = lastTasks.length + ' bead(s)';
+    }
 
     var collapsedBeadIds = new Set();
     var lastTasks = window.__backlogTasks || [];
     var filterOptions = window.__backlogFilterOptions || { type: [], status: [], priority: [], model: [] };
     var currentFilters = {};
+    // apra-fleet-siqi.2.1: the server-embedded window.__backlogTasks above
+    // counts as this tab's initial "fetch" (a real bd query, just already
+    // resolved server-side rather than over the network) -- seeded to page-
+    // load time so a Backlog-tab activation immediately after opening the
+    // page does not force a redundant re-fetch; see applyFilters() and
+    // window.__fleetSeBacklog.refreshIfStale() below.
+    var lastBacklogFetchAt = Date.now();
 
     ${escapeHtml.toString()}
     ${renderBeadsHtml.toString()}
@@ -529,6 +640,24 @@ function backlogPanelClientScript() {
             var evt = el.tagName === 'SELECT' ? 'change' : 'change';
             el.addEventListener(evt, function () {
                 currentFilters[field] = el.value;
+                applyFilters();
+            });
+        });
+        // apra-fleet-qoxd.2: the Created-at sort control drives TWO
+        // currentFilters keys (sort/dir) off one <select>'s single value, so
+        // it cannot use the generic data-filter-field wiring above (which
+        // only ever sets one key). An empty value ('Unsorted') clears both
+        // keys back out of currentFilters entirely, matching the neutral
+        // (no sort param sent) state applyBeadFilters() expects.
+        container.querySelectorAll('[data-sort-field]').forEach(function (el) {
+            el.addEventListener('change', function () {
+                if (el.value) {
+                    currentFilters.sort = el.getAttribute('data-sort-field');
+                    currentFilters.dir = el.value;
+                } else {
+                    delete currentFilters.sort;
+                    delete currentFilters.dir;
+                }
                 applyFilters();
             });
         });
@@ -565,6 +694,7 @@ function backlogPanelClientScript() {
     });
 
     function applyFilters() {
+        lastBacklogFetchAt = Date.now();
         var params = new URLSearchParams();
         Object.keys(currentFilters).forEach(function (k) {
             var v = currentFilters[k];
@@ -578,6 +708,7 @@ function backlogPanelClientScript() {
                 if (data && data.filterOptions) filterOptions = data.filterOptions;
                 collapsedBeadIds.clear();
                 renderTable();
+                updateTotalCount();
                 var entries = Object.keys(currentFilters)
                     .filter(function (k) { return currentFilters[k]; })
                     .map(function (k) { return k + ': ' + currentFilters[k]; });
@@ -593,7 +724,19 @@ function backlogPanelClientScript() {
         });
     }
 
+    // apra-fleet-siqi.2.1: the Backlog-tab-activation refresh hook
+    // (dashboard.mjs's DASHBOARD_TAB_SCRIPT switchTab()) reaches this SAME
+    // applyFilters()/GET /api/backlog/tasks plumbing through here -- with
+    // whatever currentFilters are already active -- never a separate
+    // one-off fetch, and only when the last fetch is stale.
+    window.__fleetSeBacklog = {
+        refreshIfStale: function (maxAgeMs) {
+            if (Date.now() - lastBacklogFetchAt >= maxAgeMs) applyFilters();
+        },
+    };
+
     wireHeaderControls();
+    updateTotalCount();
 })();
 `;
 }
@@ -622,10 +765,23 @@ export function renderBacklogPanelHtml(tasks, filterOptions) {
     const tableHtml = injectRowCheckboxes(injectFilterHeader(rawTable, headerRow));
     const tasksJson = JSON.stringify(Array.isArray(tasks) ? tasks : []).replace(/</g, '\\u003c');
     const filterOptionsJson = JSON.stringify(opts).replace(/</g, '\\u003c');
+    // apra-fleet-eft.90: a persistent total-item count, always visible at
+    // the top of the tab -- INDEPENDENT of #backlog-active-filters (which
+    // stays empty with no filter active, per that indicator's own
+    // long-standing contract). Server-rendered from `tasks` (the already-
+    // narrowed set this render actually shows, whether a filter is active or
+    // not) and kept in sync client-side by backlogPanelClientScript()'s
+    // renderTable()/applyFilters() whenever `lastTasks` changes -- so a
+    // filter change updates this number too, not just the '...shown' text
+    // inside #backlog-active-filters.
+    const totalTaskCount = Array.isArray(tasks) ? tasks.length : 0;
     return (
-        '<div style="display:flex; justify-content:flex-end; align-items:center; gap:8px; margin-bottom: 6px;">' +
+        '<div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom: 6px;">' +
+        '<span id="backlog-total-count" style="font-size: 12px; color: #a1a1aa;">' + totalTaskCount + ' bead(s)</span>' +
+        '<div style="display:flex; align-items:center; gap:8px;">' +
         '<span id="backlog-active-filters" style="font-size: 12px; color: var(--accent, #3b82f6);"></span>' +
         '<button type="button" id="backlog-filter-clear" class="btn btn-secondary" style="padding: 3px 10px; font-size: 12px;">Clear filters</button>' +
+        '</div>' +
         '</div>' +
         '<div id="backlog-table">' + tableHtml + '</div>' +
         '<script>window.__backlogTasks = ' + tasksJson + '; window.__backlogFilterOptions = ' + filterOptionsJson + ';</script>' +
@@ -652,6 +808,8 @@ export function registerBacklogRoutes(supervisor, backlog) {
                 priority: url.searchParams.get('priority') || undefined,
                 model: url.searchParams.get('model') || undefined,
                 q: url.searchParams.get('q') || undefined,
+                sort: url.searchParams.get('sort') || undefined,
+                dir: url.searchParams.get('dir') || undefined,
             };
             const result = await backlog.buildBacklogTasks(filters);
             sendJson(res, 200, result);
@@ -803,9 +961,14 @@ export function createBacklog(deps = {}) {
             .filter((b) => b && typeof b.id === 'string' && b.id.length > 0);
         const normalized = rows.map(normalizeBead);
         const partialClaimById = computePartialClaimByBead(normalized, claimedBy);
+        // apra-fleet: stamp `parent` (the parent-child grouping edge,
+        // per parentIdOf's doc comment above) onto every row -- without it,
+        // renderBeadsHtml()'s Backlog branch has no containment info to nest
+        // by and every parent-child-only bead (no `blocks` edge) renders as
+        // a flat root sibling of its own epic, however deep its real nesting.
         const free = rows
             .filter((b) => !claimedBy.has(b.id))
-            .map((b) => ({ ...b, partialClaim: partialClaimById.get(b.id) ?? null }));
+            .map((b) => ({ ...b, parent: parentIdOf(b), partialClaim: partialClaimById.get(b.id) ?? null }));
         return applyBeadFilters(free, filters);
     }
 

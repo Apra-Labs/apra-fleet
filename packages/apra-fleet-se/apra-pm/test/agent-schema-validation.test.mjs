@@ -27,9 +27,12 @@ function freshAjv() {
   return new Ajv({ strict: false });
 }
 
-// Roles that publish a structured output contract (everyone except planner,
-// whose output is the beads DAG itself -- see agents/planner.md Output schema).
+// Roles that publish a structured output contract. planner's PRIMARY output is
+// still the beads DAG itself, but it also returns a structured result (status,
+// notes, featureIds/taskIds, optional kb_captures) -- see agents/planner.md
+// Output schema and agents/schemas/planner-output.json.
 const STRUCTURED_ROLES = [
+  'planner',
   'plan-reviewer',
   'doer',
   'reviewer',
@@ -39,6 +42,7 @@ const STRUCTURED_ROLES = [
   'ci-watcher',
   'harvester',
   'backlog-groomer',
+  'kb-reconciler',
 ];
 
 /**
@@ -103,11 +107,11 @@ for (const role of STRUCTURED_ROLES) {
   });
 }
 
-// ---- planner has no structured output schema, and references nothing cross-repo ----
+// ---- planner's primary output is still the beads DAG, and it also points at plan-reviewer ----
 
-test('agents/planner.md declares it has no structured output contract, points at plan-reviewer', () => {
+test('agents/planner.md names the beads DAG as its primary output, points at plan-reviewer', () => {
   const mdText = readFileSync(join(agentsDir, 'planner.md'), 'utf-8');
-  assert.ok(mdText.includes('no structured output contract'));
+  assert.ok(mdText.includes('PRIMARY output is the beads DAG'));
   assert.ok(mdText.includes('agents/schemas/plan-reviewer-output.json'));
 });
 

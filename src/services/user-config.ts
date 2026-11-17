@@ -38,7 +38,7 @@ export interface UserConfig {
  */
 export const DEFAULT_LOG_PREVIEW_CHARS = 256;
 
-const VALID_PROVIDERS = new Set<string>(['claude', 'gemini', 'codex', 'copilot', 'agy']);
+const VALID_PROVIDERS = new Set<string>(['claude', 'codex', 'copilot', 'agy']);
 const VALID_TIERS = new Set<string>(['cheap', 'standard', 'premium']);
 
 let cached: UserConfig | undefined;

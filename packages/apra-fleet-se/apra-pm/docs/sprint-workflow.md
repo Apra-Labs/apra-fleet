@@ -18,7 +18,9 @@ while (open issues above goal threshold > 0):
   Test     -- deploy build, run integration tests, file bugs for failures
   Check    -- has the goal been met? any progress since last cycle?
 
-Harvest  -- update documentation, CHANGELOG, raise PR
+Finalize -- one regression pass over regression-test-playbook.md (informational:
+            failures carry over as beads, they do not gate this sprint)
+Harvest  -- update documentation, sprint analysis, raise PR
 ```
 
 The workflow never writes code or makes decisions. It dispatches agents,
@@ -36,10 +38,13 @@ One sprint may target several related sprint goals.
 feature is verifiable: integration tests either pass or fail against it.
 
 **Task** -- the smallest unit of work. A task belongs to exactly one feature
-and is sized to complete in a single agent session (roughly 1-3 file changes).
-Tasks carry an assigned model chosen by the planner based on complexity.
+and is sized to complete in a single agent session (roughly 1-4 file changes).
+Tasks carry an assigned model tier chosen by the planner based on complexity.
+A **lane** (streak) groups the tasks that should be dispatched to one doer and
+reviewed together in one review round -- see `agents/planner.md`'s "Lanes are
+review units" section; a task is not split into several just to stay small.
 
-**Sprint goal** -- the exit criterion, expressed as a priority threshold:
+**Goal** -- the exit criterion, expressed as a priority threshold:
 - `P1` -- exits when no P1 issues remain open
 - `P1/P2` -- exits when no P1 or P2 issues remain open (default)
 - `P1/P2/P3` -- tightest bar; exits only when no P1-P3 issues remain
@@ -134,13 +139,22 @@ Commands to fully shut down and clean up.
 If the playbook does not exist, the workflow skips integration testing and
 proceeds to harvest. The team will not receive integration test feedback.
 
-### 4. .claude/settings.json permissions
+### 4. regression-test-playbook.md (optional)
 
-The workflow reads the `## Permissions` sections from both `deploy.md` and
-`integ-test-playbook.md` at startup and merges them into `.claude/settings.json`
+A runbook for the once-per-sprint regression pass, owned by the
+regression-test-runner. Same `## Permissions` format. If it is absent, the workflow
+logs a warning and skips the regression pass. Regression failures never gate the
+current sprint's verdict -- they are filed as carry-over beads for a future sprint.
+
+### 5. .claude/settings.json permissions
+
+The workflow reads the `## Permissions` sections from `deploy.md`,
+`integ-test-playbook.md`, and `regression-test-playbook.md` at startup and merges
+them into `.claude/settings.json`
 before any agent is dispatched. If a `## Permissions` section is missing or
-incomplete, the executing agent (deployer for `deploy.md`, integ-test-runner
-for the playbook) will hit interactive prompts and block.
+incomplete, the executing agent (deployer for `deploy.md`, integ-test-runner for
+`integ-test-playbook.md`, regression-test-runner for `regression-test-playbook.md`)
+will hit interactive prompts and block.
 
 ```bash
 cat .claude/settings.json | jq '.permissions.allow'
@@ -206,6 +220,10 @@ From a Claude Code session in the project repository:
 | `max_cycles` | no | `5` | Hard ceiling on cycles. |
 | `requirementsFile` | no | none | Additional context file for the planner. |
 | `base_branch` | no | `main` | PR target branch. |
+| `skip_dolt_push` | no | `false` | Skip the Harvest `bd dolt push` (used by CI/e2e). |
+
+Invoke the `auto-sprint-args` skill for the full argument contract, including the
+common launch mistakes.
 
 ---
 
@@ -228,7 +246,7 @@ The plan-reviewer then inspects the full DAG:
 - Does `bd ready` return only tasks (not features or sprint goals)?
 - Does every feature have both an impl task and a `[test]` task?
 - Does every task have clear acceptance criteria?
-- Is every task sized to 1-3 file changes?
+- Is every task sized to roughly 1-4 file changes with crisp acceptance criteria?
 - Does every task appear in exactly one feature's subtree?
 - Does every task have a model assignment?
 
@@ -244,10 +262,12 @@ completed work.
 The develop loop works through tasks in dependency order until no ready tasks
 remain. Within each iteration:
 
-1. **Model streaks** -- ready tasks are grouped by assigned model (all haiku
-   tasks together, all sonnet tasks together, etc.). One developer agent is
+1. **Model streaks** -- ready tasks are grouped by assigned tier (all `cheap`
+   tasks together, all `standard` tasks together, etc.). One developer agent is
    dispatched per group. This minimises model-switching cost while preserving
-   dependency order.
+   dependency order. A streak is truncated when its estimated output tokens
+   exceed `calibration.doer_token_ceiling[tier]` or when it would not fit the
+   doer's usable context; the deferred tasks resurface next iteration.
 
 2. **Developer agent** -- works its assigned tasks, runs fast tests after each,
    and stops at a VERIFY checkpoint. A task is only closed by the developer
@@ -258,9 +278,9 @@ remain. Within each iteration:
    feedback to `feedback.md`, reopens the relevant tasks in beads, and the
    develop loop picks them up in the next iteration.
 
-The reviewer model is matched to the work: if any task in the iteration ran on
-opus, the reviewer uses opus; otherwise sonnet. Haiku work is always reviewed
-by at least sonnet.
+The reviewer tier is matched to the work: if any task in the iteration ran on
+`premium`, the reviewer uses `premium`; otherwise `standard`. `cheap` work is
+always reviewed at `standard` or above.
 
 ### Test
 
@@ -302,27 +322,37 @@ what has already been done:
 - Any tasks left in `in_progress` state from a crashed agent are reset to
   `open` so they re-enter the develop queue cleanly.
 
-No state is stored in memory -- everything is reconstructed from beads and git.
+Position is reconstructed from beads and git, plus a branch-keyed checkpoint at
+`sprint-logs/.state/<branch>.state.json` that records the last good cycle and phase
+so a resume skips setup and completed phases. That file's mtime doubles as a
+liveness lock: while it is fresher than the TTL, a second launch on the same branch
+is refused rather than allowed to corrupt the checkout. It is deleted on clean
+completion. If a run truly crashed, wait out the TTL or delete the file.
 
 ---
 
 ## Model assignment
 
 Matching model power to task complexity is a core capability, not an option.
-The planner assigns an exact model to every task when it builds the DAG:
+The planner assigns a model tier to every task when it builds the DAG, stored in
+the task's beads metadata as `{"model": "<tier>"}`:
 
-| Model | When the planner uses it |
+| Tier | When the planner uses it |
 |---|---|
-| haiku | Mechanical work: rename, config tweak, move file, simple wiring |
-| sonnet | Standard work: new function, test suite, API endpoint, refactor |
-| opus | Hard work: architecture, multi-file design, ambiguous requirements |
+| `cheap` | Mechanical work: rename, config tweak, move file, simple wiring |
+| `standard` | Standard work: new function, test suite, API endpoint, refactor |
+| `premium` | Hard work: architecture, multi-file design, ambiguous requirements |
+
+Tier names are provider-agnostic. `TIER_TO_MODEL` in `auto-sprint.js` is the only
+place a tier maps to a concrete model family, so `calibration.json` and beads
+metadata never carry a provider-specific model ID.
 
 The planner tries to group tasks so consecutive tasks in dependency order share
-a model -- this forms a streak that runs in a single agent dispatch rather than
+a tier -- this forms a streak that runs in a single agent dispatch rather than
 switching models between each task.
 
-Reviewers and planners always use the strongest model. Only developer tasks run
-on the planner-assigned model.
+Reviewers and planners always use the strongest tier. Only developer tasks run
+on the planner-assigned tier.
 
 ---
 
@@ -355,13 +385,19 @@ $0.0145 reviewer-c1-i1 -- reviewing tasks BD-5, BD-6
 ```
 
 At the end of each cycle, the full dispatch ledger is written as JSONL to
-`sprint-logs/<branch>-<timestamp>.jsonl` and committed to the branch. The branch name is
+`sprint-logs/<branch>-<timestamp>.jsonl`. It stays local and is NOT committed:
+the ledgers accumulate per run with no bound, and they embed the operator's
+home path (redaction still leaves the username inside the dash-encoded Claude
+project slug), so they are not safe to publish from a public repo. What is
+committed is the distilled `calibration.json`; the `<timestamp>.analysis.md`
+summary is written locally and never committed (git-excluded in the clone).
+Both are described below. The branch name is
 sanitized (path separators and special characters replaced with dashes) and a
 `yyyymmdd_hhmmss` timestamp is appended, so that parallel sprints on the same or different
 branches never write to the same file. Each line records:
 
 ```json
-{"cycle":1,"phase":"Develop","label":"doer-c1-i0","model":"claude-sonnet-4-6","context":"tasks BD-5, BD-6","outTokens":967,"costUsd":0.0145}
+{"cycle":1,"phase":"Develop","label":"doer-c1-i0","model":"standard","context":"tasks BD-5, BD-6","outTokens":967,"costUsd":0.0145}
 ```
 
 At sprint end, a cost summary is printed grouped by role:
@@ -389,6 +425,11 @@ jq -r '"$\(.costUsd)  \(.label)  \(.context)"' sprint-logs/<branch>-<timestamp>.
 cat sprint-logs/*.jsonl | jq -r '"$\(.costUsd)  \(.label)  \(.context)"'
 ```
 
+These read the ledgers in your own checkout only -- `*.jsonl` is gitignored, so
+"all sprints in the repo" means every run on THIS machine, not every run the
+team has done. The cross-machine view is `calibration.json`, which is committed
+and blends each run's actuals into the historical averages.
+
 Costs reflect output tokens only -- input tokens are not exposed by the workflow
 harness. The true cost will be higher, typically 2-4x depending on model and
 context size.
@@ -404,11 +445,15 @@ When the sprint goal is met:
   missing remote logs a warning but does not abort harvest)
 - A reviewed pull request is open against `base_branch`
 - `docs/` is updated with architecture decisions and feature documentation
-- `CHANGELOG.md` has a new entry summarising the sprint
-- `sprint-logs/<branch>.jsonl` is committed to the branch with per-dispatch cost data
-- `sprint-logs/<branch>-<timestamp>.analysis.md` is written with a Sprint Execution
-  Summary: cycles, per-phase token/cost/dispatch table, failures/retries, and
-  remaining risks at close
+- `docs/sprint-analysis-<slug>.md` summarises the sprint (fleet-sprint: written to the
+  working tree, never committed, git-excluded locally; no cost block -- cost is in the PR body)
+- `sprint-logs/<branch>-<timestamp>.jsonl` is written locally with per-dispatch cost
+  data (gitignored -- see the sprint-log note above)
+- `sprint-logs/calibration.json` is committed with the updated historical averages
+- `sprint-logs/<branch>-<timestamp>.analysis.md` is written locally (never committed;
+  `sprint-logs/*.analysis.md` is added to the clone's `.git/info/exclude` before harvest)
+  with a Sprint Execution Summary: cycles, per-phase token/cost/dispatch table,
+  failures/retries, and remaining risks at close
 - A cost summary table is printed in the workflow output
 
 If the sprint exits via `max_cycles` without meeting the goal:

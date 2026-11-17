@@ -1,11 +1,11 @@
-<!-- llm-context: Deep-dive on how the Fleet server runs and how clients connect to it -- transport protocol, the event bus, OS service registration, and which interfaces are actually supported. Migrated out of README.md on 2026-07-24 to keep the README landing page short; content unchanged. -->
+<!-- llm-context: Deep-dive on how the Fleet server runs and how clients connect to it -- transport protocol, the event bus, OS service registration, and which interfaces are actually supported. -->
 <!-- keywords: transport, HTTP, SSE, stdio, server.json, event bus, service mode, systemd, LaunchAgent, Scheduled Task, singleton, supported interfaces, cli.mjs -->
 <!-- see-also: ../README.md (quickstart), install.md (installation), architecture.md (internals) -->
 
 # Transport, Service Mode, and Supported Interfaces
 
 Fleet runs as a singleton service on your machine. When you start it, the server
-listens on port 7523 by default and multiple LLM clients (Claude Code, Gemini,
+listens on port 7523 by default and multiple LLM clients (Claude Code, Antigravity,
 Copilot, Codex) connect concurrently to the same fleet instance.
 
 ## HTTP+SSE Transport (default)
@@ -18,7 +18,8 @@ apra-fleet start                 # Start HTTP server (default)
 apra-fleet start --transport http # Explicitly use HTTP
 ```
 
-When the server starts, it writes a `server.json` file to `~/.apra-fleet/` containing:
+When the server starts, it writes a `server.json` file to its data dir (`~/.apra-fleet/data/`,
+or `$APRA_FLEET_DATA_DIR`) containing:
 ```json
 {
   "pid": 12345,
@@ -29,9 +30,70 @@ When the server starts, it writes a `server.json` file to `~/.apra-fleet/` conta
 }
 ```
 
-If port 7523 is busy, the server falls back to port 0 (OS-assigned random port) and
-records the actual port in `server.json`. You can override the default port with the
-`APRA_FLEET_PORT` environment variable.
+The `url` alone is not enough to connect. Every `/mcp` request must carry this
+install's access secret in the `X-Apra-Fleet-Member-Secret` header (or a valid
+member JWT); without it the server answers HTTP 401. The secret is in
+`~/.apra-fleet/data/member-access.key` (owner-only). `apra-fleet install`
+writes it into each provider's user-scope MCP registration for you; a
+hand-written client config needs it too, for example:
+
+```json
+{ "type": "http", "url": "http://localhost:7523/mcp",
+  "headers": { "X-Apra-Fleet-Member-Secret": "<contents of member-access.key>" } }
+```
+
+Keep such a config out of git (a project-scope `.mcp.json` cannot carry the
+secret safely).
+
+An MCP session is bound to the identity that opened it. The server records the
+caller at `initialize`; a later GET, DELETE or non-initialize POST carrying that
+session id from a different identity is answered HTTP 403, so knowing or
+guessing a session id is not enough to use or tear down someone else's session.
+Session ids appear in logs only in shortened form.
+
+A client ends its session with an HTTP `DELETE` (the client package's
+`transport.close()`). A session whose client went away without one is evicted
+once it has had no open request (no SSE stream, no in-flight tool call) for
+`APRA_FLEET_SESSION_IDLE_MS` (default 30 minutes); its client gets 404 on its
+next request and opens a new session. Each eviction is logged. `GET /health`
+reports `sessions`, `sessionsEvicted` and `sessionIdleMs`, and the log warns
+once when open sessions reach `APRA_FLEET_SESSION_COUNT_WARN` (default 500).
+
+You can override the default port with the `APRA_FLEET_PORT` environment variable.
+If the configured port is already in use, the server refuses to start with an error
+naming the port, the pid recorded in `server.json` (if any) and `APRA_FLEET_PORT`.
+It exits 0 only when launched by a service manager -- `APRA_FLEET_SERVICE=1` (set by
+the systemd unit, launchd plist and Windows task wrapper that `apra-fleet install`
+writes), or systemd's `INVOCATION_ID` / launchd's `XPC_SERVICE_NAME` for older
+installs -- so systemd/launchd do not restart a server that cannot start in a loop.
+Every other launch (terminal, CI, nohup, containers, scripts) exits 1. The same
+applies to refusing because an unresponsive server holds the data dir. It does not fall back to a random port: every configured MCP
+client only knows the configured port, so a re-homed server would be unreachable.
+Free the port. `APRA_FLEET_PORT` is read from each process's own environment and a
+full install does not record it: the OS service it registers does not receive it and
+listens on the default port, so a port set only for the install command is not a
+lasting fix (a member install records its port: `apra-fleet install --member --port
+<port>`). `apra-fleet start` and `apra-fleet install` check the port up front and
+print the same message. (Only an explicit port 0 -- used internally and in tests --
+binds an OS-assigned port.)
+
+**Two OS users on one machine.** Each user's full install wants the same default port,
+so only one of them can serve it at a time. When apra-fleet can tell that another OS
+user's process holds the port, `apra-fleet start` and the standalone installer exit 1
+with `E-PORT-HELD-BY-OTHER-USER`, naming the holder (the user and pid when visible);
+the remedy is for that user to stop (`apra-fleet stop`) or uninstall their server. When
+the holder cannot be identified, you get the generic port-in-use error above instead.
+
+**Singleton probe states.** Before starting, `start`, `run`, `status` and `stop` probe
+`server.json`:
+
+- `running` -- the pid is alive and `GET /health` answers 200.
+- `unresponsive` -- the pid is alive and the recorded port still accepts TCP, but
+  `/health` does not answer (e.g. a blocked event loop). `server.json` is kept;
+  `start`/`run` refuse with the pid/port and an `apra-fleet stop` hint, `status`
+  shows `State: unresponsive`, and `stop` force-stops it.
+- `gone` -- no `server.json`, the pid is dead, or the recorded port refuses TCP. Only
+  this state removes `server.json`.
 
 **Multiple clients, one server.** When a second LLM client starts, it reads
 `server.json`, detects the running server, and connects to it. All clients share the
@@ -81,9 +143,11 @@ Fleet keeps a singleton server running so all your LLM clients share one instanc
 Registering it as an OS service keeps it alive across terminal sessions -- the server
 survives terminal close and restarts automatically on login:
 
-- Windows: a per-user Scheduled Task (Task Scheduler, OnLogon trigger)
-- Linux: a systemd user unit (`systemctl --user`)
-- macOS: a LaunchAgent in `~/Library/LaunchAgents/`
+The service is always user-level on every OS, never a system service:
+
+- Windows: a per-user Scheduled Task named `ApraFleet` (see below)
+- Linux: a systemd user unit (`systemctl --user`, `Restart=on-failure`)
+- macOS: a LaunchAgent in `~/Library/LaunchAgents/` (`KeepAlive` `SuccessfulExit=false`)
 
 Four verbs manage the lifecycle directly:
 
@@ -99,7 +163,140 @@ apra-fleet status   # state, PID, port, uptime, version, and OS service status
 registers and starts the OS service automatically -- no extra step.
 `apra-fleet uninstall` stops and deregisters the service before removing files.
 Service registration failures are non-fatal: a warning is printed and the install
-continues.
+continues. The exception is a port held by another OS user's server: install exits 1
+with `E-PORT-HELD-BY-OTHER-USER` (see above).
+
+### Windows task definition
+
+Install registers the task from a UTF-16 XML (`schtasks /create /tn ApraFleet /xml <file> /f`);
+`/sc onlogon /rl limited` is "Access is denied" for a standard user. The XML has:
+
+- a LogonTrigger scoped to the current `DOMAIN\user` (the only form a standard user may register; over SSH,
+  a network logon, even this can be refused for a standard user with "Access is denied", and install
+  falls back to the HKCU Run entry below)
+- a TimeTrigger repeating every 5 minutes indefinitely, which revives a server that was killed or crashed
+- `MultipleInstancesPolicy` IgnoreNew (the repeat is a no-op while the server runs)
+- `ExecutionTimeLimit` PT0S, `StartWhenAvailable`, no stop on battery, InteractiveToken + LeastPrivilege
+
+Task Scheduler RestartOnFailure is deliberately not used: it never fires for a killed or
+non-zero-exit process. (`APRA_FLEET_TASK_REPEAT_MINUTES`, 1..1440, overrides the interval at
+install time; test-only, not a supported setting.)
+
+The task's action is `wscript.exe //B //Nologo //E:JScript "<bin>\apra-fleet-service.js"`, a
+generated JScript launcher that runs `apra-fleet-service.bat` with window style 0 and waits:
+no console window appears on the user's desktop (running the .bat directly opened one on every
+start/revive, and closing it killed the server), and the server's exit code becomes the task's
+Last Result. JScript was chosen over a .vbs (VBScript is being deprecated) and over
+`conhost --headless` (undocumented). The .bat sets `APRA_FLEET_SERVICE=1`, re-creates the log dir
+if it was deleted (otherwise the `>>` redirect fails before the server starts), and appends the
+server's output to `fleet.log`. The HKCU Run fallback uses the same launcher.
+Non-ASCII profile paths: the launcher is pure ASCII (non-ASCII path characters are `\uXXXX`
+escapes, since WSH reads a .js in the ANSI code page) and the UTF-8 .bat switches cmd to UTF-8
+(`chcp 65001`) before using any path. If Windows Script Host is disabled (probed at install), the
+task runs the .bat directly instead -- the server then has a visible console window, and install
+says so. Install reports "registered and running" only after the server answers /health.
+
+If the XML create fails and an existing `ApraFleet` task already runs our wrapper, it is reused.
+Only when there is no reusable task does install fall back to a per-user
+`HKCU\Software\Microsoft\Windows\CurrentVersion\Run` entry (value `ApraFleet`) that starts the
+wrapper at logon: autostart without automatic restart. Install and status say so; uninstall removes it.
+With this fallback, a server started from an SSH session (by install or `apra-fleet start`) runs
+inside that session and stops when the session ends; it comes back only at the next interactive
+logon.
+
+### Stop, start, status
+
+- `apra-fleet stop` disables the task first (`schtasks /change /disable`) so the repeating trigger
+  cannot undo a deliberate stop. The stop sticks, including across logon, until `apra-fleet start`
+  (or install) re-enables it. `uninstall` deletes the task.
+- `apra-fleet status` shows `installed (enabled)`, or for a disabled task
+  `installed (disabled -- stopped by user -- 'apra-fleet start' re-enables it)` (only when the
+  stopped-by-user marker below exists; otherwise `task disabled outside apra-fleet`).
+- On every OS `apra-fleet stop` writes `<data dir>/stopped-by-user.json` (time, command, user)
+  and the stop sticks across logon and boot until `apra-fleet start` or `apra-fleet install`
+  (the only two things that clear it): any service-manager launch (macOS LaunchAgent RunAtLoad,
+  the enabled systemd user unit at boot, the Windows HKCU Run fallback, a task that could not be
+  disabled) exits 0 without starting while the marker exists, and launchd `SuccessfulExit=false` /
+  systemd `Restart=on-failure` do not restart an exit 0. No client auto-starts the server either
+  (see below), and `apra-fleet status` shows
+  `State: stopped (stopped by <user> at <time> via 'apra-fleet stop' -- run 'apra-fleet start')`.
+  A port-only override (`APRA_FLEET_PORT` without `APRA_FLEET_DATA_DIR`) records the stop only
+  after confirming the server it stops is on its own port.
+- Only `APRA_FLEET_SERVICE=1` (set by our service templates) makes a launch skip on the marker;
+  a hand-run `apra-fleet run` starts even in a shell that inherited `INVOCATION_ID` /
+  `XPC_SERVICE_NAME`, and the marker stays. `apra-fleet status` then shows
+  `State: running (stop marker set -- run 'apra-fleet start' to clear)`: clients still will not
+  auto-start it if it dies. The server removes `APRA_FLEET_SERVICE` / `APRA_FLEET_AUTOSTART` from
+  its environment at startup so nothing it spawns inherits them.
+
+### Start back-off
+
+Service launches (`APRA_FLEET_SERVICE=1`) back off: after 3 consecutive failed or refused starts,
+launches are skipped for 30 minutes (one line to the service log `fleet.log`, exit 0, no new
+`fleet-<pid>.log`). A successful start clears it; an explicit `apra-fleet start`/install clears it
+first. State: `<data dir>/service-start-failures.json`.
+
+### Client auto-start
+
+Workflow/fleet-sprint clients (not Claude Code or other MCP hosts, which connect by URL and rely on
+the service) start the shared HTTP server themselves when it is verifiably gone: they run
+`apra-fleet start`, wait for `/health` (default 45s, `APRA_FLEET_AUTOSTART_TIMEOUT_MS`) and attach
+over HTTP. They only start an apra-fleet of their own version and refuse on a version skew (run
+`apra-fleet install`). After a deliberate `apra-fleet stop` they do not start it: they fail with
+"apra-fleet was stopped by the user at <time> ...; run 'apra-fleet start'" -- also on a mid-run
+reconnect. A fleet-sprint launched then fails fast with that message (supervisor `POST /api/sprints`
+returns 503 with it; a sprint child prints it on stderr). See
+`packages/apra-fleet-client/docs/api-reference.md`.
+
+### Upgrading
+
+- Windows: re-run `apra-fleet install` to get the new task definition (hidden launcher, revive
+  trigger). An existing onlogon task keeps working (logon start only, no revive) until then.
+- Windows, upgrading from 0.4.3 or earlier: those versions registered the task with
+  `schtasks /sc onlogon`, which needs admin, so the old task is elevated-owned and a normal shell
+  can neither replace nor disable it (`/create /xml /f` and `/change /disable` are "Access is
+  denied"). Install detects such a legacy task -- its `schtasks /query /xml` has no repeating
+  TimeTrigger (`<Repetition><Interval>`), or an "any user" LogonTrigger (no `<UserId>`), or (when
+  Windows Script Host works) an action other than `wscript.exe` + our launcher, or the wrapper path
+  split at a space into Command + Arguments (0.4.3 passed it to `/tr` unquoted, so a profile like
+  `C:\Users\John Smith` ran `C:\Users\John` and the server never started; such a task is still
+  recognised as ours instead of failing the install, and install adds the HKCU Run entry so the
+  server still starts at logon, and `apra-fleet start` uses that entry) -- and:
+  - apra-fleet never elevates anything itself. The old task stays in use and install prints what
+    is missing (no automatic revive after a crash, visible console window, `apra-fleet stop`
+    cannot disable the task) and the fix: from an elevated prompt (Run as administrator)
+    `schtasks /delete /tn ApraFleet /f`, then from a normal prompt `apra-fleet install --force`
+    (do not run the install itself elevated; `--force` because the old task's server is normally
+    still running). Because a detached install (`apra-fleet update`) has no console, the guidance
+    is also saved to `<data dir>/service-notice.json` and appended to `fleet.log`; the next
+    `apra-fleet status`, `stop` or `update` prints it once (stderr; an interactive install that
+    already printed it marks it shown). Installing the current task (or uninstall) removes the
+    file. `apra-fleet update` says to run `apra-fleet status` after the background install.
+  - while a legacy task is installed, `apra-fleet status` shows
+    `installed (enabled -- legacy task (upgrade needed: ...))` plus the fix, and `apra-fleet stop`
+    prints it when disabling is denied (the stop still holds: the stopped-by-user marker makes every
+    task launch exit without starting the server). The elevated `schtasks /delete` step is only
+    suggested for an elevated-owned task; an old-form task the user owns just needs
+    `apra-fleet install --force`. A task named ApraFleet that does not run our wrapper or launcher
+    gets no upgrade advice.
+  - when `/create` fails and there is no task to reuse, install prints the schtasks error before
+    falling back to the HKCU Run entry.
+  A task XML without a `<Triggers>` section is never classed legacy. apra-fleet never suggests an
+  elevated install.
+- Scripts and workflows that relied on the client's private stdio self-spawn now start the SHARED
+  HTTP server, which keeps running after they exit. Set `APRA_FLEET_TRANSPORT=stdio` to keep the
+  old private, per-process server.
+- `apra-fleet stop` now persists across logon and boot on every OS and blocks client auto-start
+  until `apra-fleet start` (or `apra-fleet install`).
+- The client only auto-starts an apra-fleet of its own version; after an upgrade that left an
+  older registered binary, it fails with `AUTOSTART_VERSION_SKEW`. If the service already started
+  the mismatched server it stays up (and other clients attach to it): `apra-fleet stop`, then
+  `apra-fleet install` and `apra-fleet start`. `apra-fleet status` warns when the running server's
+  version differs from the installed apra-fleet. That warning compares only x.y.z (builds with the
+  same core, e.g. a dev build, do not warn); the client auto-start check compares the full version.
+- The install summary reports "registered and running" only once the server answers /health
+  (wait 30s by default; `APRA_FLEET_INSTALL_HEALTH_TIMEOUT_MS` overrides it, `0` skips the
+  check).
 
 ## Supported user-facing interfaces
 
@@ -115,3 +312,24 @@ implementation detail** -- it is used only by the supervisor process to
 orchestrate agent workflows and does NOT bypass the reservation ledger. Direct
 manual invocation of `cli.mjs` circumvents the reservation system and is
 unsupported; use the service API and dashboard instead.
+
+## Port persistence across installs
+
+A full install records the port it registered in `full-install.json` (in the data
+dir), or removes that file when no valid `APRA_FLEET_PORT` was set. Port
+resolution for CLI commands falls back to it after the member record, so
+`status` / `stop` find a server installed on a custom port even when the shell
+no longer has `APRA_FLEET_PORT`. Known gap: a detached update-driven full install
+does not carry `APRA_FLEET_PORT`, so it clears the file and re-registers on the
+default port.
+
+## Install-time stop and restart notices
+
+`stop({reason:'install'})` suppresses the sticky-stop text and the duplicate legacy
+guidance, and install does not claim a server was stopped while a live but
+unverified pid remains. The "restart your provider CLI to pick up the new access
+token" note is persisted via `appendServiceNotice` (which never overwrites pending
+legacy guidance) and is marked shown only when stdout is a console, so `status`,
+`start`, `stop` and `update` print it exactly once. When re-running the fleet-se
+install after an old server is recorded as live, `--force` is added once; a 0.4.3
+dashboard child can linger for about 300s and the refusal text explains this.

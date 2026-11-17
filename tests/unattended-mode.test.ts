@@ -158,6 +158,18 @@ describe('update_member: unattended field', () => {
 
 import { executePromptSchema } from '../src/tools/execute-prompt.js';
 
+// AGY project binding (src/services/agy-project.ts) is covered by
+// tests/agy-project.test.ts and tests/tool-provider.test.ts; here it is
+// stubbed so agy dispatches keep their exec-call sequence.
+vi.mock('../src/services/agy-project.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/services/agy-project.js')>()),
+  ensureAgyProject: vi.fn(async (agent: { agyProjectId?: string }) => {
+    agent.agyProjectId = agent.agyProjectId ?? '1afd6dbb-498f-4918-a9d9-6da64b75a204';
+    return { projectId: agent.agyProjectId };
+  }),
+}));
+
+
 describe('execute_prompt: dangerously_skip_permissions removed', () => {
   beforeEach(() => {
     backupAndResetRegistry();
@@ -240,7 +252,7 @@ describe('execute_prompt: dangerously_skip_permissions removed', () => {
     expect(mainCmd).toContain('--dangerously-skip-permissions');
   });
 
-  it('does NOT pass --dangerously-skip-permissions for AGY member when unattended="auto"', async () => {
+  it('passes --mode accept-edits (not a bypass) for AGY member when unattended="auto"', async () => {
     const member = makeTestAgent({ friendlyName: 'agy-auto', llmProvider: 'agy', unattended: 'auto' });
     addAgent(member);
     mockExecCommand.mockResolvedValue({
@@ -257,7 +269,48 @@ describe('execute_prompt: dangerously_skip_permissions removed', () => {
     });
 
     const mainCmd = mockExecCommand.mock.calls[1][0];
+    expect(mainCmd).toContain('--mode accept-edits');
     expect(mainCmd).not.toContain('--dangerously-skip-permissions');
+  });
+
+  it('passes --auto for opencode member when unattended="auto"', async () => {
+    const member = makeTestAgent({ friendlyName: 'opencode-auto', llmProvider: 'opencode', unattended: 'auto' });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue({
+      stdout: JSON.stringify({ result: 'done', session_id: 'sess-oc-auto' }),
+      stderr: '',
+      code: 0,
+    });
+
+    await executePrompt({
+      member_id: member.id,
+      prompt: 'do something',
+      resume: false,
+      timeout_s: 5,
+    });
+
+    const mainCmd = mockExecCommand.mock.calls[1][0];
+    expect(mainCmd).toContain('--auto');
+  });
+
+  it('passes --auto for opencode member when unattended="dangerous" (fallback)', async () => {
+    const member = makeTestAgent({ friendlyName: 'opencode-dangerous', llmProvider: 'opencode', unattended: 'dangerous' });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue({
+      stdout: JSON.stringify({ result: 'done', session_id: 'sess-oc-dangerous' }),
+      stderr: '',
+      code: 0,
+    });
+
+    await executePrompt({
+      member_id: member.id,
+      prompt: 'do something',
+      resume: false,
+      timeout_s: 5,
+    });
+
+    const mainCmd = mockExecCommand.mock.calls[1][0];
+    expect(mainCmd).toContain('--auto');
   });
 });
 

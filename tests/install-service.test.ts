@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import * as readline from 'node:readline/promises';
-import { runInstall, _setSeaOverride, _setManifestOverride } from '../src/cli/install.js';
+import { runInstall, _setSeaOverride, _setManifestOverride, _setServiceHealthWaitOverride } from '../src/cli/install.js';
 import { runUninstall } from '../src/cli/uninstall.js';
 import * as install from '../src/cli/install.js';
 
@@ -93,6 +93,7 @@ describe('install -- service lifecycle (T11)', () => {
   afterEach(() => {
     _setSeaOverride(null);
     _setManifestOverride(null);
+    _setServiceHealthWaitOverride(null);
   });
 
   it('registers and starts service in SEA + HTTP mode', async () => {
@@ -121,13 +122,26 @@ describe('install -- service lifecycle (T11)', () => {
     expect(mockSvcMgr.start).not.toHaveBeenCalled();
   });
 
-  it('shows "Service: registered and running" in done output when registered', async () => {
+  it('shows "Service: registered and running" only once the server answers /health', async () => {
     _setSeaOverride(true);
+    _setServiceHealthWaitOverride(async () => true);
     const logSpy = vi.mocked(console.log);
     await runInstall(['--transport', 'http', '--skill', 'none']);
     const allOutput = logSpy.mock.calls.flat().join('\n');
     expect(allOutput).toContain('Service:');
     expect(allOutput).toContain('registered and running');
+  });
+
+  it('registered but the server never answers /health -> warns and never claims "running"', async () => {
+    _setSeaOverride(true);
+    _setServiceHealthWaitOverride(async () => false);
+    const logSpy = vi.mocked(console.log);
+    const warnSpy = vi.mocked(console.warn);
+    await runInstall(['--transport', 'http', '--skill', 'none']);
+    const allOutput = logSpy.mock.calls.flat().join('\n');
+    expect(allOutput).not.toContain('registered and running');
+    expect(allOutput).toContain('NOT answering /health');
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('not answering /health'));
   });
 
   it('warns (non-fatal) when service registration fails', async () => {
@@ -140,17 +154,19 @@ describe('install -- service lifecycle (T11)', () => {
 
   it('increments totalSteps by 1 in SEA + HTTP mode', async () => {
     // With SEA + HTTP + no skills + no workflows: base=6 steps +1 dolt (apra-fleet-ire.3,
-    // unconditional) = 7, +1 service = 8 total
+    // unconditional) +1 KB/code-intelligence setup = 8, +1 service = 9 total
     _setSeaOverride(true);
     const logSpy = vi.mocked(console.log);
     await runInstall(['--transport', 'http', '--skill', 'none', '--workflows', 'none']);
     const allOutput = logSpy.mock.calls.flat().join('\n');
-    // Service step should show as [8/8]
-    expect(allOutput).toContain('[8/8]');
-    // Beads step should show as [7/8]
-    expect(allOutput).toContain('[7/8]');
-    // Dolt step should show as [6/8]
-    expect(allOutput).toContain('[6/8]');
+    // Service step should show as [9/9]
+    expect(allOutput).toContain('[9/9]');
+    // KB + code intelligence step should show as [8/9]
+    expect(allOutput).toContain('[8/9]');
+    // Beads step should show as [7/9]
+    expect(allOutput).toContain('[7/9]');
+    // Dolt step should show as [6/9]
+    expect(allOutput).toContain('[6/9]');
   });
 });
 

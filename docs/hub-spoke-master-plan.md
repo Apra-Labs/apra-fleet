@@ -1,9 +1,9 @@
 <!-- llm-context: Master plan for the hub-and-spoke cloud migration: 3-tier architecture
      LLM-CLI -> apra-fleet.exe (local) -> fleet.apralabs.com (cloud hub), workspace_id JWT
      scoping, SSH-to-hub-relay migration for execute_command, execute_prompt two-mode design,
-     persistence-layer evaluation (Redis strawman). Written 2026-07-03. Reconciles with
-     docs/sse-http-revival-plan.md (Phase 1 decisions), docs/member-onboarding-journey.md
-     (Journeys A/B/C), and docs/cloud-fleet-architecture.md (earlier 2-tier cloud vision).
+     persistence-layer evaluation (Redis strawman). Reconciles with
+     docs/member-onboarding-journey.md (Journeys A/B/C) and
+     docs/cloud-fleet-architecture.md (earlier 2-tier cloud vision).
      Read this BEFORE cloud-fleet-architecture.md; where they disagree, this document wins. -->
 <!-- keywords: hub-spoke, workspace_id, fleet.apralabs.com, 3-tier, JWT issuance, spoke relay,
      execute_command hub relay, execute_prompt two modes, Redis persistence, provider-agnostic -->
@@ -63,7 +63,7 @@ Apra Fleet is becoming a hub-and-spoke orchestration platform for LLM-CLI agents
    compatibility fallback; SSH stops being a dispatch transport.
 2. **Hub-and-spoke topology.** The fleet server is the hub; members are spokes. A
    member is an LLM-CLI process running in a folder on some machine -- any of the
-   six supported providers (claude, gemini, codex, copilot, agy, opencode).
+   five supported providers (claude, codex, copilot, agy, opencode).
 3. **The hub can run anywhere**, including hosted in the cloud as fleet.apralabs.com.
    Every member connects to it with a JWT issued from the fleet web dashboard.
 4. **The JWT is the hard scope.** A workspace_id claim burned into the JWT places a
@@ -100,7 +100,7 @@ Apra Fleet is becoming a hub-and-spoke orchestration platform for LLM-CLI agents
 ## 2. The 3-tier architecture
 
 ```
-Tier 1: LLM CLI (claude | gemini | codex | copilot | agy | opencode)
+Tier 1: LLM CLI (claude | codex | copilot | agy | opencode)
         |  HTTP+SSE (MCP), localhost only, Bearer JWT
         v
 Tier 2: apra-fleet.exe  (one per machine; singleton service; the SPOKE)
@@ -177,8 +177,7 @@ needs to display. It runs no LLM and executes no commands.
 6. Signing: the hub signs with an asymmetric key (RS256/EdDSA); spokes hold only
    the public key. The current HS256 shared-secret design is incompatible with
    multi-machine issuance (any key holder can mint) and is retired outside
-   dev-mode. The claim SHAPE is already location-agnostic (sse-http-revival-plan.md
-   section 4 Q5 anticipated exactly this), so this is an issuer/algorithm change,
+   dev-mode. The claim SHAPE is already location-agnostic, so this is an issuer/algorithm change,
    not a claim redesign.
 
 ### 2.3 Trust boundaries
@@ -194,7 +193,7 @@ needs to display. It runs no LLM and executes no commands.
 
 ## 3. project_id vs workspace_id: the honest reconciliation
 
-Phase 1 (sse-http-revival-plan.md section 4, Q5 decision) made project_id a
+Phase 1 made project_id a
 first-class JWT claim and scoping key: single machine, multi-project, the local
 orchestrator mints tokens, and send_message / session-registry / event broadcast
 must all enforce project boundaries. The claim exists today
@@ -370,7 +369,7 @@ relayed instruction:
    (the SSH model's "host unreachable" error becomes "spoke offline" -- clearer,
    but the timeout/queueing semantics must be designed, not inherited).
 3. Target apra-fleet.exe executes via the existing LocalStrategy code --
-   `{{secure.NAME}}` resolution, network-egress policy, redaction, long_running
+   `{{secret.NAME}}` resolution, network-egress policy, redaction, long_running
    task wrapper (execute-command.ts:114-265) all run ON THE TARGET, where the
    credential store lives. This is a deliberate improvement: today, secrets are
    resolved on the orchestrator machine and substituted into the command line
@@ -404,8 +403,7 @@ for at least one release.
 **Mode (a) -- one-shot spawn.** The member's local apra-fleet.exe spawns the
 provider CLI headless and parses the result. This EXISTS today for all six
 providers -- it is the entire current execute_prompt
-(`src/tools/execute-prompt.ts:132`, subprocess-only, per
-sse-http-revival-plan.md 2.3.10) built on
+(`src/tools/execute-prompt.ts`, subprocess-only) built on
 `ProviderAdapter.buildPromptCommand()` / `headlessInvocation()`
 (`src/providers/provider.ts:64,115`). What changes under hub-spoke is only WHERE
 it runs: for a remote member, the spawn happens on the target machine's tier 2
@@ -460,7 +458,7 @@ and what de-centering requires:
    wrong mechanism by member-onboarding-journey.md section 2).
 5. docs/cloud-fleet-architecture.md section 7 -- hooks-as-control-plane
    (PreToolUse/PostToolUse/Stop/UserPromptSubmit) is Claude Code's hook system.
-   Gemini/codex/copilot/agy/opencode hook equivalents are unverified; the
+   codex/copilot/agy/opencode hook equivalents are unverified; the
    behavioral-contract enforcement design must degrade gracefully to "no hooks:
    trust + audit at the tool boundary" per provider.
 6. Mission text point 7 says "claude/agy/opencode -p prompt" -- fine as
@@ -504,8 +502,6 @@ the JWT/session/transport layers carry no provider assumptions.
   `src/services/service-manager/*`.
 - register_member's full breadth (local/remote/cloud, six providers, tags,
   model tiers): `src/tools/register-member.ts:25-67`.
-- Phase 1 decisions that are hub-forward-compatible by design:
-  sse-http-revival-plan.md section 4 Q5.
 - Prior cloud thinking to mine: docs/cloud-fleet-architecture.md (vault, auth
   layers, dashboard spec, risks) and the dashboard prototype
   (https://majestic-biscuit-bef096.netlify.app/, Discussion #188) -- NOTE: this
@@ -580,7 +576,7 @@ sonnet = scoped implementation; haiku = mechanical):
 7. execute_command SSH-to-relay migration + deprecation inventory -- sonnet.
 8. execute_prompt two-mode formalization (mode selection in tier 2; per-provider
    capability flags) -- sonnet, after 2xs.7/.8.
-9. Interactive-injection capability survey across gemini/codex/copilot/agy/
+9. Interactive-injection capability survey across codex/copilot/agy/
    opencode -- fable.
 10. Web dashboard MVP (workspace mgmt, member status, token issuance, audit
     view) -- sonnet, after 4.
@@ -620,7 +616,7 @@ It also surfaces concrete product scope this plan had not accounted for:
 1. **"No LLM" members are a first-class member type**, not an edge case: a
    member can be "any LLM -- or no LLM at all" (a plain executor). Today's
    `register-member.ts` `llm_provider` enum
-   (`claude|gemini|codex|copilot|agy|opencode`) has no such option. This
+   (`claude|codex|copilot|agy|opencode`) has no such option. This
    affects `ProviderAdapter` selection (needs a null-object adapter),
    `execute_prompt` (mode (a)/(b) from section 8 don't apply -- a no-LLM
    member only ever executes commands, never prompts), and cost tracking

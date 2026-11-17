@@ -3,6 +3,8 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import type { TestProject } from 'vitest/node';
+// @ts-expect-error -- plain .mjs helper shared with the node --test runners
+import { ensureTestSandbox } from '../scripts/test-sandbox.mjs';
 
 // apra-fleet-2xs.9: tests/setup.ts used to point EVERY test run at the SAME fixed
 // os.tmpdir()/apra-fleet-test-data directory, never cleaned up between runs.
@@ -19,6 +21,10 @@ import type { TestProject } from 'vitest/node';
 // registry.json across files within a single run) while two concurrent `npm test`
 // invocations never collide. The directory is removed in the returned teardown hook.
 export default function globalSetup(project: TestProject) {
+  // Sandbox HOME/USERPROFILE/APRA_FLEET_DATA_DIR in the MAIN process before
+  // any worker forks, so a bare `npx vitest` is as hermetic as `npm test`
+  // (scripts/test-sandbox.mjs). Reused when the runner already made one.
+  const sandbox = ensureTestSandbox(process.env);
   const dataDir = path.join(
     os.tmpdir(),
     `apra-fleet-test-data-${process.pid}-${crypto.randomBytes(4).toString('hex')}`
@@ -27,6 +33,7 @@ export default function globalSetup(project: TestProject) {
   project.provide('APRA_FLEET_TEST_DATA_DIR', dataDir);
 
   return () => {
+    sandbox.cleanup();
     try {
       fs.rmSync(dataDir, { recursive: true, force: true });
     } catch {

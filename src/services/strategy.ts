@@ -1,4 +1,4 @@
-import { spawn, execSync } from 'node:child_process';
+import { spawn, execSync, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -6,21 +6,81 @@ import { StringDecoder } from 'node:string_decoder';
 import { v4 as uuid } from 'uuid';
 import type { Agent, SSHExecResult, TransferResult } from '../types.js';
 import { getOsCommands } from '../os/index.js';
-import { getAgentOS, setStoredPid, clearStoredPid } from '../utils/agent-helpers.js';
+import { getAgentOS, getAgentShell, setStoredPid, clearStoredPid } from '../utils/agent-helpers.js';
 import { escapeDoubleQuoted, escapeWindowsArg } from '../utils/shell-escape.js';
+import { wrapPowerShellEncoded } from '../os/windows.js';
+import { completesOnProcessExit, exitDrainMs } from './exit-drain.js';
 
 
 const MAX_OUTPUT_BYTES = 10 * 1024 * 1024; // 10 MB
 import { execCommand as sshExecCommand, testConnection as sshTestConnection, closeConnection as sshCloseConnection } from './ssh.js';
 import { uploadFiles, downloadFiles } from './file-transfer.js';
+import { writeSecretFileInHome, removeSecretFile as sftpRemoveSecretFile } from './sftp.js';
 import { RelayStrategy } from './relay-strategy.js';
+
+/** Build the wrapped `powershell -EncodedCommand ...` string RemoteStrategy.
+ *  deleteFiles sends on a Windows agent -- extracted as a pure, exported
+ *  function (apra-fleet-ot2z.15.6) so the paired live-PowerShell test
+ *  (apra-fleet-ot2z.15.5) can execute the REAL script this module sends
+ *  instead of hand-copying its shape, which would let the two drift apart
+ *  silently. Same escapeWindowsArg quoting, same Set-Location then
+ *  Remove-Item with -Force -ErrorAction SilentlyContinue, same
+ *  wrapPowerShellEncoded wrapping as the pre-refactor inline version. */
+export function buildWindowsDeleteFilesScript(folder: string, relativePaths: string[]): string {
+  const files = relativePaths.map(p => `"${escapeWindowsArg(p)}"`).join(', ');
+  const psScript = `Set-Location "${escapeWindowsArg(folder)}"; Remove-Item ${files} -Force -ErrorAction SilentlyContinue`;
+  return wrapPowerShellEncoded(psScript);
+}
+
+/** Upper bound for the synchronous local tree-kill. It runs on the server's
+ *  event loop, so an unbounded call (a slow/hung PowerShell profile, a stuck
+ *  taskkill) would freeze every other request (GitHub #562). */
+export const KILL_TREE_TIMEOUT_MS = 10_000;
+
+/**
+ * Synchronously kill a LOCAL process tree, bounded by KILL_TREE_TIMEOUT_MS.
+ *
+ * Synchronous on purpose: callers run it BEFORE child.kill() because taskkill
+ * needs the wrapper's PID alive to recurse from it (an async exec loses that
+ * race and leaves descendants running).
+ *
+ * On a Windows host taskkill.exe is invoked directly via execFileSync -- no
+ * shell at all, so no PowerShell profile load and no cmd.exe/bash parsing of
+ * the kill string (that parsing was the apra-fleet-7dir.4 gitbash bug; the
+ * shell-free call sidesteps it for every Windows shell flavour). Elsewhere the
+ * member's own killPid string runs through the shell cleanExec resolved.
+ * Best-effort: errors, including the timeout, are swallowed.
+ */
+export function killLocalProcessTree(pid: number, posixKillCommand: string, shell?: string): void {
+  try {
+    if (process.platform === 'win32') {
+      execFileSync('taskkill.exe', ['/F', '/T', '/PID', String(pid)], {
+        stdio: 'ignore', windowsHide: true, timeout: KILL_TREE_TIMEOUT_MS,
+      });
+    } else {
+      execSync(posixKillCommand, {
+        stdio: 'ignore', windowsHide: true, timeout: KILL_TREE_TIMEOUT_MS, ...(shell ? { shell } : {}),
+      });
+    }
+  } catch { /* best-effort; process may already be dead, or the kill timed out */ }
+}
 
 export interface AgentStrategy {
   execCommand(command: string, timeoutMs?: number, maxTotalMs?: number, onPidCaptured?: (pid: number) => void, abortSignal?: AbortSignal): Promise<SSHExecResult>;
   transferFiles(localPaths: string[], destinationPath?: string, abortSignal?: AbortSignal): Promise<TransferResult>;
   receiveFiles(remotePaths: string[], localDestination: string, abortSignal?: AbortSignal): Promise<TransferResult>;
-  /** Delete files relative to the agent's workFolder. Best-effort — errors are silently ignored. */
+  /** Delete files relative to the agent's workFolder. Best-effort -- errors are silently ignored. */
   deleteFiles(relativePaths: string[]): Promise<void>;
+  /**
+   * Write a secret-bearing file (owner-only) on the member WITHOUT any
+   * command line carrying its content -- SFTP for remote members, fs for
+   * local ones. `fileName` must not contain any part of the secret. Returns
+   * the absolute path in the form the member's shell accepts. Strategies with
+   * no such channel (relay) throw.
+   */
+  writeSecretFile(fileName: string, content: string): Promise<string>;
+  /** Best-effort removal of a file written by writeSecretFile. */
+  removeSecretFile(filePath: string): Promise<void>;
   testConnection(): Promise<{ ok: boolean; latencyMs: number; error?: string }>;
   close(): void;
 }
@@ -45,16 +105,38 @@ class RemoteStrategy implements AgentStrategy {
     const agentOs = getAgentOS(this.agent);
     const folder = this.agent.workFolder;
     try {
+      // Confirmed shell-agnostic this pass (apra-fleet-7dir.5.2 audit): stays
+      // on agentOs alone, deliberately NOT branching on isPosixShell. The
+      // Windows branch is buildWindowsDeleteFilesScript, which is
+      // wrapPowerShellEncoded-wrapped -- a single base64 `powershell
+      // -EncodedCommand <blob>` string that is shell-agnostic AS A STRING, the
+      // same reasoning execute-command.ts's long_running Windows launch and
+      // monitor-task.ts's status/pid/log commands document -- so a gitbash
+      // member's bash.exe exec shell runs it exactly as correctly as a
+      // powershell5/pwsh7/unset member's default shell does; no re-tokenizing
+      // risk exists here to fix. Deliberately did NOT reroute gitbash to the
+      // POSIX `rm -f` branch below despite it being three lines away: that
+      // branch does `cd "<folder>"` assuming a POSIX-formatted path, and
+      // nothing here guarantees agent.workFolder for a Windows member is
+      // stored in POSIX form (`/c/Users/...`) rather than native Windows form
+      // (`C:\Users\...`) -- switching branches would trade a proven-safe path
+      // for an unverified one. Keep this comment if a future survey asks the
+      // same question again.
       if (agentOs === 'windows') {
-        const files = relativePaths.map(p => `"${escapeWindowsArg(p)}"`).join(', ');
-        const psScript = `Set-Location "${escapeWindowsArg(folder)}"; Remove-Item ${files} -Force -ErrorAction SilentlyContinue`;
-        const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
-        await this.execCommand(`powershell -EncodedCommand ${encoded}`, 10000);
+        await this.execCommand(buildWindowsDeleteFilesScript(folder, relativePaths), 10000);
       } else {
         const files = relativePaths.map(p => `"${escapeDoubleQuoted(p)}"`).join(' ');
         await this.execCommand(`cd "${escapeDoubleQuoted(folder)}" && rm -f ${files}`, 10000);
       }
-    } catch { /* ignore — best-effort cleanup */ }
+    } catch { /* ignore -- best-effort cleanup */ }
+  }
+
+  async writeSecretFile(fileName: string, content: string): Promise<string> {
+    return writeSecretFileInHome(this.agent, fileName, content);
+  }
+
+  async removeSecretFile(filePath: string): Promise<void> {
+    await sftpRemoveSecretFile(this.agent, filePath);
   }
 
   async testConnection(): Promise<{ ok: boolean; latencyMs: number; error?: string }> {
@@ -66,13 +148,28 @@ class RemoteStrategy implements AgentStrategy {
   }
 }
 
+/** Per-user 0700 directory for local members' staged secret files. Throws if
+ *  an existing path is not a private directory owned by this user. */
+export function privateSecretDir(base = os.tmpdir()): string {
+  const uid = typeof process.getuid === 'function' ? process.getuid() : undefined;
+  const dir = path.join(base, `apra-fleet-secrets-${uid ?? os.userInfo().username}`);
+  try { fs.mkdirSync(dir, { mode: 0o700 }); } catch (err: any) { if (err?.code !== 'EEXIST') throw err; }
+  if (uid !== undefined) {
+    const st = fs.lstatSync(dir);
+    if (!st.isDirectory() || st.isSymbolicLink() || st.uid !== uid || (st.mode & 0o077) !== 0) {
+      throw new Error(`Refusing to stage a secret in ${dir}: not a private (0700) directory owned by this user`);
+    }
+  }
+  return dir;
+}
+
 class LocalStrategy implements AgentStrategy {
   constructor(private agent: Agent) {}
 
   async execCommand(command: string, timeoutMs = 30000, maxTotalMs?: number, onPidCaptured?: (pid: number) => void, abortSignal?: AbortSignal): Promise<SSHExecResult> {
     let pidExtracted = false;
     const result = await new Promise<SSHExecResult>((resolve, reject) => {
-      const cmds = getOsCommands(getAgentOS(this.agent));
+      const cmds = getOsCommands(getAgentOS(this.agent), getAgentShell(this.agent));
       const { command: wrapped, env, shell } = cmds.cleanExec(command);
       const child = spawn(wrapped, { shell: shell ?? true, cwd: this.agent.workFolder, env, windowsHide: true });
 
@@ -92,21 +189,21 @@ class LocalStrategy implements AgentStrategy {
         // gets around to running taskkill, child.kill('SIGKILL') has often
         // already terminated the wrapper, and taskkill can't traverse from
         // an already-dead PID, silently leaving descendants running.
-        try {
-          execSync(cmds.killPid(child.pid), { stdio: 'ignore' });
-        } catch { /* best-effort; process may already be dead */ }
+        killLocalProcessTree(child.pid, cmds.killPid(child.pid), shell);
       }
 
       let settled = false;
+      let exitDrainTimer: ReturnType<typeof setTimeout> | undefined;
       function settle(fn: () => void) {
         if (settled) return;
         settled = true;
         clearTimeout(inactivityTimer);
         if (maxTotalTimer) clearTimeout(maxTotalTimer);
+        if (exitDrainTimer) clearTimeout(exitDrainTimer);
         fn();
       }
 
-      // Rolling inactivity timer — resets on each stdout/stderr data event
+      // Rolling inactivity timer -- resets on each stdout/stderr data event
       let inactivityTimer: ReturnType<typeof setTimeout>;
       function resetInactivityTimer() {
         clearTimeout(inactivityTimer);
@@ -119,7 +216,7 @@ class LocalStrategy implements AgentStrategy {
       }
       resetInactivityTimer();
 
-      // Hard ceiling — never reset regardless of activity
+      // Hard ceiling -- never reset regardless of activity
       let maxTotalTimer: ReturnType<typeof setTimeout> | undefined;
       if (maxTotalMs !== undefined) {
         maxTotalTimer = setTimeout(() => {
@@ -139,7 +236,7 @@ class LocalStrategy implements AgentStrategy {
       let stdoutSpillPath: string | null = null;
       let stderrSpillPath: string | null = null;
       // StringDecoder buffers a trailing incomplete multi-byte UTF-8 sequence
-      // across chunks instead of substituting U+FFFD for it — a naive
+      // across chunks instead of substituting U+FFFD for it -- a naive
       // per-chunk `.toString()` corrupts any multi-byte character that
       // happens to straddle a stream chunk boundary (apra-fleet-grq).
       const stdoutDecoder = new StringDecoder('utf8');
@@ -186,7 +283,7 @@ class LocalStrategy implements AgentStrategy {
         }
       });
 
-      child.on('close', (code) => {
+      const finalize = (code: number | null) => {
         clearStoredPid(this.agent.id);
         const stdoutTail = stdoutDecoder.end();
         const stderrTail = stderrDecoder.end();
@@ -201,13 +298,77 @@ class LocalStrategy implements AgentStrategy {
         if (stdoutSpillStream) stdoutSpillStream.end();
         if (stderrSpillStream) stderrSpillStream.end();
         if (stdoutSpillPath) {
-          stdout = `[OUTPUT TRUNCATED — full stdout saved to ${stdoutSpillPath}]\n${stdout}`;
+          stdout = `[OUTPUT TRUNCATED -- full stdout saved to ${stdoutSpillPath}]\n${stdout}`;
         }
         if (stderrSpillPath) {
-          stderr = `[OUTPUT TRUNCATED — full stderr saved to ${stderrSpillPath}]\n${stderr}`;
+          stderr = `[OUTPUT TRUNCATED -- full stderr saved to ${stderrSpillPath}]\n${stderr}`;
         }
         settle(() => resolve({ stdout, stderr, code: code ?? 0 }));
-      });
+      };
+
+      child.on('close', (code) => finalize(code));
+
+      // apra-fleet-qe83.1.2 (READ SIDE of the fix; see src/services/exit-drain.ts
+      // for the full rationale and the spawn-side half). `close` only fires once
+      // EVERY holder of the child's stdio handles is gone -- on Windows a
+      // grandchild that inherited them (sandbox server, orphaned find.exe) keeps
+      // the pipe open long after the dispatched process itself exited, pinning the
+      // dispatch for as long as the grandchild lives. `exit` fires on the process
+      // exit itself, so on Windows we take that as completion, allow a short drain
+      // window for output still buffered in the pipe, then settle. The grandchild
+      // is deliberately NOT killed: the deploy phase's sandbox pair must outlive
+      // the dispatch that started it. POSIX keeps the strictly-more-complete
+      // `close` signal (the nohup path reaches EOF on its own).
+      if (completesOnProcessExit(getAgentOS(this.agent))) {
+        child.on('exit', (code) => {
+          if (settled || exitDrainTimer) return;
+          exitDrainTimer = setTimeout(() => {
+            if (settled) return;
+            // Invariant: settle the result before releasing the read ends.
+            // finalize() must run first so any output already buffered in the
+            // pipe (and captured by the data listeners above) is included in
+            // the resolved result; destroying/unref-ing the handles below is
+            // pure cleanup and must never race ahead of settling the promise.
+            finalize(code);
+            // Release OUR ends of the pipes so the still-open handles held by a
+            // surviving grandchild do not keep this process's event loop and fds
+            // alive. Destroying a read end cannot affect the grandchild.
+            try { child.stdout?.destroy(); } catch { /* best-effort */ }
+            try { child.stderr?.destroy(); } catch { /* best-effort */ }
+            try { child.unref(); } catch { /* best-effort */ }
+          }, exitDrainMs());
+          // apra-fleet-qe83.6 (VERIFIED: this unref-ed timer can NOT be the
+          // last live handle, so unref-ing it cannot strand the promise).
+          // An unref-ed timer does not hold the event loop open, so if it were
+          // ever the only live handle the process would exit before finalize()
+          // ran and this promise would never settle. It never is:
+          //   - drain actually needed (a grandchild still holds the inherited
+          //     stdio): child.stdout/child.stderr are open, flowing read
+          //     handles -- they are exactly why the drain exists -- and each is
+          //     a ref-ed handle. Measured standalone (not under a test runner,
+          //     whose own handles would mask this) with stdout redirected to a
+          //     file so the probe process had NO ref-ed stdio of its own:
+          //     getActiveResourcesInfo() at arm time = [PipeWrap, PipeWrap,
+          //     ProcessWrap]; the promise settled at 2638 ms.
+          //   - drain not needed (nothing inherited the pipes): the pipes have
+          //     already EOF-ed, so 'close' is queued and finalize() runs
+          //     without this timer. Measured the same way: arm-time resources =
+          //     [ProcessWrap] (ref-ed until 'close'), settled at 599 ms, well
+          //     inside the 2000 ms window -- i.e. via 'close', not the timer.
+          // Caller paths enumerated by grepping every execCommand() call site
+          // (src/tools/*, src/providers/claude.ts, src/services/* incl.
+          // stall/*, orphan-recovery, preflight-check, relay-executor): all run
+          // inside the long-lived MCP server, and the one CLI caller
+          // (src/cli/watch.ts) holds a ref-ed setInterval for its watch loop --
+          // so every caller has additional live handles anyway.
+          // Residual risk: this rests on Node keeping child stdio read handles
+          // ref-ed while flowing. If a future caller ever spawns with
+          // stdio 'ignore'/'inherit' (no child.stdout/child.stderr objects) AND
+          // the process exit races 'close', the drain callback could be skipped
+          // -- the fix then is to re-ref for the window, not to widen it.
+          exitDrainTimer.unref();
+        });
+      }
 
       child.on('error', (err) => {
         clearStoredPid(this.agent.id);
@@ -281,6 +442,22 @@ class LocalStrategy implements AgentStrategy {
     for (const rel of relativePaths) {
       try { fs.unlinkSync(path.resolve(this.agent.workFolder, rel)); } catch { /* ignore */ }
     }
+  }
+
+  async writeSecretFile(fileName: string, content: string): Promise<string> {
+    if (!/^[A-Za-z0-9._-]+$/.test(fileName)) throw new Error(`Unsafe secret file name: ${fileName}`);
+    // A private 0700 dir (verified: ours, not a symlink, no group/other bits),
+    // so even a misconfigured shared TMPDIR without the sticky bit cannot let
+    // another user swap the file between create and source. 'wx' =
+    // O_CREAT|O_EXCL on top. Windows: %TEMP% is per-user.
+    const p = path.join(privateSecretDir(), fileName);
+    fs.writeFileSync(p, content, { encoding: 'utf-8', mode: 0o600, flag: 'wx' });
+    // Git Bash on a Windows host wants forward slashes.
+    return process.platform === 'win32' && getAgentShell(this.agent) === 'gitbash' ? p.replace(/\\/g, '/') : p;
+  }
+
+  async removeSecretFile(filePath: string): Promise<void> {
+    try { fs.rmSync(filePath, { force: true }); } catch { /* best-effort */ }
   }
 
   async testConnection(): Promise<{ ok: boolean; latencyMs: number; error?: string }> {

@@ -4,7 +4,7 @@ import os from 'os';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseBdJson, checkMemberTopology, computeBranchSlug, buildHarvesterPrompt } from '../fleet-sprint/runner.js';
-import { checkHarvesterContract, buildMockFleetApi, teardown, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
+import { checkHarvesterContract, buildMockFleetApi, teardown, withScenarioMarkers, NO_SESSION_ID_MARKER } from './helpers/mock-sprint-harness.mjs';
 
 const check = (cond, msg) => assert.ok(cond, msg);
 
@@ -176,26 +176,24 @@ test('checkMemberTopology: an unknown mode is an explicit hard refusal, not a si
 
 // =============================================================================
 // apra-fleet-unw2.22 (N12 follow-up) regression 1: the harvester
-// contract check must genuinely fail when analysisText/costAnalysis/
+// contract check must genuinely fail when analysisText/
 // analysisArtifactFile are blank, not merely check for the STATIC
 // instructional label text buildHarvesterPrompt() always emits. This
 // is a scratch-edit-and-revert proof against the REAL, exported
 // buildHarvesterPrompt() from runner.js (not a hand-rolled
 // reimplementation of its format in the test) -- mirroring how the
-// original finding proved the pre-fix regex was weak by forcing
-// costAnalysis = '' in runner.js and observing the mock still reported
-// OK.
+// original finding proved the pre-fix regex was weak by forcing a
+// blank input in runner.js and observing the mock still reported OK.
 // =============================================================================
-test('checkHarvesterContract: hardened check catches blank analysisText/costAnalysis/analysisArtifactFile', async () => {
+test('checkHarvesterContract: hardened check catches blank analysisText/analysisArtifactFile', async () => {
     await withScenarioMarkers('harvester-contract-check hardening regression', async () => {
-        console.log('Running harvester-contract-check hardening regression (blank analysisText/costAnalysis/analysisArtifactFile)...');
+        console.log('Running harvester-contract-check hardening regression (blank analysisText/analysisArtifactFile)...');
         const realArgs = {
             branch: 'auto-sprint/regression-check',
             baseBranch: 'main',
             targetIssues: ['bd-1'],
             analysisArtifactFile: 'docs/sprint-analysis-auto-sprint-regression-check-deadbeef.md',
             analysisText: '# Sprint Analysis: auto-sprint/regression-check\n\nCycles run: 3.\n\nFinal verdict: PASS.',
-            costAnalysis: 'Budget ceiling: $5.0000. Tracked spend: $1.2500. Remaining budget: $3.7500.',
         };
 
         // "Revert" case first (real, non-trivial content): the hardened check
@@ -204,15 +202,6 @@ test('checkHarvesterContract: hardened check catches blank analysisText/costAnal
         check(
             checkHarvesterContract(realPrompt).length === 0,
             `Hardened harvester contract check must PASS a real, non-blank prompt, got missing: ${JSON.stringify(checkHarvesterContract(realPrompt))}`
-        );
-
-        // Scratch-edit: force costAnalysis blank, as the original finding did
-        // directly in runner.js. Everything else stays real/non-trivial.
-        const blankCostAnalysis = buildHarvesterPrompt({ ...realArgs, costAnalysis: '' });
-        const blankCostAnalysisMissing = checkHarvesterContract(blankCostAnalysis);
-        check(
-            blankCostAnalysisMissing.includes('costAnalysis'),
-            `Hardened harvester contract check must report 'costAnalysis' as missing when runner.js emits a blank costAnalysis, got: ${JSON.stringify(blankCostAnalysisMissing)}`
         );
 
         // Scratch-edit: force analysisText blank.
@@ -257,22 +246,22 @@ test('checkHarvesterContract: hardened check catches blank analysisText/costAnal
 
         // Also confirm the LIVE mock (buildMockFleetApi's 'harvester' branch, as
         // actually wired into a real sprint dispatch) reports FAILED -- not
-        // OK -- for a blank costAnalysis. This is the literal "mock now reports
+        // OK -- for a blank analysisText. This is the literal "mock now reports
         // FAILED" acceptance criterion, driven through buildMockFleetApi rather
         // than the checkHarvesterContract() helper directly.
         const regressionTempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'apra-fleet-harvester-regression-'));
         try {
             const dispatched = [];
             const mockFleetApi = buildMockFleetApi(regressionTempDir, { id: 'bd-1' }, dispatched, []);
-            const harvesterResult = await mockFleetApi.executePrompt({ agent: 'harvester', label: 'Harvest', prompt: blankCostAnalysis });
+            const harvesterResult = await mockFleetApi.executePrompt({ agent: 'harvester', label: 'Harvest', prompt: blankAnalysisText });
             const parsed = JSON.parse(harvesterResult.content[0].text);
             check(
                 parsed.status === 'FAILED',
-                `Expected the live mock's harvester branch to report status FAILED for a blank costAnalysis, got: ${JSON.stringify(parsed)}`
+                `Expected the live mock's harvester branch to report status FAILED for a blank analysisText, got: ${JSON.stringify(parsed)}`
             );
             check(
-                typeof parsed.notes === 'string' && parsed.notes.includes('costAnalysis'),
-                `Expected the live mock's FAILED notes to name costAnalysis as the missing input, got: ${JSON.stringify(parsed)}`
+                typeof parsed.notes === 'string' && parsed.notes.includes('analysisText'),
+                `Expected the live mock's FAILED notes to name analysisText as the missing input, got: ${JSON.stringify(parsed)}`
             );
 
             // "Revert": the same live mock must report OK for the real,
@@ -328,4 +317,64 @@ test('computeBranchSlug: disambiguates branch names that collide under naive sla
         slugA.startsWith(naiveSlugA + '-') && slugB.startsWith(naiveSlugB + '-'),
         `Expected computeBranchSlug() to preserve the human-readable slash-to-hyphen prefix ahead of the disambiguating suffix, got slugA='${slugA}' slugB='${slugB}'`
     );
+});
+
+// =============================================================================
+// apra-fleet-ot2z.22: buildMockFleetApi's executePrompt wrapper (apra-fleet-
+// dnri) reports MOCK_SESSION_ID on every reply by default, filling in
+// whichever key a handler's own structuredContent didn't set -- which means a
+// handler can no longer simulate "no resume capability was reported" simply
+// by omitting sessionId (the natural way before that default existed; see
+// the 16c8cb2d commit message). This regression test proves the no-session-
+// id / DEGRADED-fresh-session case is still expressible: a handler that sets
+// `sessionId: NO_SESSION_ID_MARKER` (an explicit, present key) on its own
+// structuredContent must win over the default, reaching the caller as a
+// genuine `sessionId: null` -- not silently upgraded to MOCK_SESSION_ID.
+// =============================================================================
+test('mock-sprint-harness: a handler can still explicitly report no session id (NO_SESSION_ID_MARKER wins over the default)', async () => {
+    await withScenarioMarkers('no-session-id-case-expressible', async () => {
+        console.log('Running no-session-id-case-expressible regression (buildMockFleetApi executePrompt session-id merge)...');
+        const noSessionIdTempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'apra-fleet-no-session-id-'));
+        try {
+            const dispatched = [];
+            let sawHandlerCall = false;
+            const mockFleetApi = buildMockFleetApi(noSessionIdTempDir, { id: 'bd-1' }, dispatched, [], {
+                reviewerHandler: async () => {
+                    sawHandlerCall = true;
+                    return {
+                        content: [{ text: JSON.stringify({ verdict: 'APPROVED', notes: 'no-op', reopenIds: [], newTasks: [] }) }],
+                        structuredContent: { sessionId: NO_SESSION_ID_MARKER },
+                    };
+                },
+            });
+
+            const noSessionResult = await mockFleetApi.executePrompt({ agent: 'reviewer', label: 'Review', prompt: 'irrelevant dev-loop review prompt', resume: false });
+            check(sawHandlerCall, 'Expected the reviewerHandler override to have actually been invoked');
+            check(
+                noSessionResult.structuredContent && noSessionResult.structuredContent.sessionId === null,
+                `Expected an explicit NO_SESSION_ID_MARKER to be preserved as sessionId: null (not silently upgraded to MOCK_SESSION_ID), got: ${JSON.stringify(noSessionResult.structuredContent)}`
+            );
+
+            // "Revert": the same live mock reports a real (non-null) session
+            // id by default when the handler doesn't set sessionId at all --
+            // proves the two paths are genuinely distinguishable, not just
+            // both null. Uses its own reviewerHandler override (rather than
+            // the built-in defaultReviewerHandler) purely to avoid that
+            // default's own `bd list` call, which needs a bd-replay fixture
+            // unrelated to what this test is verifying.
+            const dispatchedDefault = [];
+            const defaultFleetApi = buildMockFleetApi(noSessionIdTempDir, { id: 'bd-1' }, dispatchedDefault, [], {
+                reviewerHandler: async () => ({
+                    content: [{ text: JSON.stringify({ verdict: 'APPROVED', notes: 'no-op', reopenIds: [], newTasks: [] }) }],
+                }),
+            });
+            const defaultResult = await defaultFleetApi.executePrompt({ agent: 'reviewer', label: 'Review', prompt: 'irrelevant dev-loop review prompt', resume: false });
+            check(
+                typeof defaultResult.structuredContent.sessionId === 'string' && defaultResult.structuredContent.sessionId.length > 0,
+                `Expected the default (no handler override) path to report a real, non-null session id, got: ${JSON.stringify(defaultResult.structuredContent)}`
+            );
+        } finally {
+            await teardown(noSessionIdTempDir);
+        }
+    });
 });

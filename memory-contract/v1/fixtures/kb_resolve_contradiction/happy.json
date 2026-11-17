@@ -1,0 +1,18 @@
+{
+  "tool": "kb_resolve_contradiction",
+  "case": "happy",
+  "kind": "happy",
+  "request": {
+    "winnerId": "e7446900-9cfe-46d4-8d5b-caa4133104fb",
+    "loserId": "5b730253-c162-449f-9d2a-7e92397d2725",
+    "evidence": "Re-read src/helper.ts after the fix landed: the re-entrancy guard is present and concurrent calls no longer collide."
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"winnerId\":\"e7446900-9cfe-46d4-8d5b-caa4133104fb\",\"loserId\":\"5b730253-c162-449f-9d2a-7e92397d2725\"}"
+      }
+    ]
+  }
+}

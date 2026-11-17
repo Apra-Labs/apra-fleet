@@ -1,0 +1,18 @@
+{
+  "tool": "kb_promote",
+  "case": "setup-second-promote-for-retire-refused",
+  "kind": "happy",
+  "request": {
+    "id": "d7152240-ecc5-453c-92e1-0002f3ebf944",
+    "reason": "Second promotion (INFERRED -> CONFIRMED) so a no-grant retire is refused."
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"id\":\"d7152240-ecc5-453c-92e1-0002f3ebf944\",\"previous_confidence\":\"CONFIRMED\",\"new_confidence\":\"CONFIRMED\"}"
+      }
+    ]
+  },
+  "session": "FULL_A"
+}

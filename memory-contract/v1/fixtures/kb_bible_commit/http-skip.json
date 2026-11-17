@@ -1,0 +1,21 @@
+{
+  "tool": "kb_bible_commit",
+  "case": "http-skip",
+  "kind": "happy",
+  "request": {
+    "ids": [
+      "4b0c2b5e-7d3a-4c1e-9a55-0f6d2e8a1c77"
+    ],
+    "baseBranch": "main",
+    "baseCommit": "0123456789abcdef0123456789abcdef01234567"
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"path\":\"<SCRATCH_REPO_HTTP>/.fleet/kb-canonical.json\",\"merged\":[],\"skipped\":[],\"removed\":[],\"entry_count\":0,\"backfilled\":0,\"committed\":false,\"bible_skipped\":true,\"reason\":\"bible commit is not supported over the http KB provider\"}"
+      }
+    ]
+  },
+  "session": "HTTP_A"
+}

@@ -5,28 +5,30 @@ involved.
 
 ## Reporting Bugs
 
-Use the [Bug Report](https://github.com/Apra-Labs/apra-pm/issues/new/choose)
+Use the [Bug Report](https://github.com/Apra-Labs/apra-fleet/issues/new/choose)
 issue template. Include reproduction steps, environment info, and any error output.
 
 ## Requesting Features
 
-Use the [Feature Request](https://github.com/Apra-Labs/apra-pm/issues/new/choose)
+Use the [Feature Request](https://github.com/Apra-Labs/apra-fleet/issues/new/choose)
 issue template. Describe the problem, your proposed solution, and any alternatives.
 
-## What this repo is
+## What this package is
 
-apra-pm is mostly Markdown -- a skill (`skills/pm/`) and eight agent
+apra-pm lives in the apra-fleet monorepo at `packages/apra-fleet-se/apra-pm/` and is
+edited there. It is mostly Markdown -- a skill (`skills/pm/`) and the agent
 definitions (`agents/`) that an AI coding harness loads as instructions -- plus a
-small plain-Node installer, a JavaScript cost arithmetic module, and an
+small plain-Node installer, the auto-sprint workflow script, and an
 end-to-end harness. There is no build step and no compiled source.
 
 | Path | What it contains |
 |------|------------------|
 | `skills/pm/` | the skill: `SKILL.md` and sub-docs the orchestrator reads on demand |
-| `agents/` | eight agent definitions shared by the pm skill and auto-sprint |
-| `.claude/workflows/` | `auto-sprint.js` -- deterministic Claude Code workflow |
-| `lib/` | `sprint-cost.mjs` -- pure-JS cost arithmetic (imported by tests) |
-| `test/` | `sprint-cost.test.mjs` -- 45 unit tests for cost arithmetic |
+| `agents/` | agent definitions shared by the pm skill and auto-sprint |
+| `agents/schemas/` | machine-readable input/output contracts per role |
+| `.claude/workflows/` | `auto-sprint.js` -- deterministic Claude Code workflow, including the `PURE_FUNCTIONS` cost-arithmetic block |
+| `lib/` | `parse-sprint-args.mjs`, `vet-kb-work.mjs` -- standalone helpers |
+| `test/` | `node --test` suites (`npm test`) |
 | `sprint-logs/` | `calibration.json` + durable per-sprint JSONL cost logs |
 | `install.mjs` | installer: copies the skill + agents into a provider config dir |
 | `e2e/` | drives the skill headless against the toy repo and checks checkpoints |
@@ -37,9 +39,12 @@ end-to-end harness. There is no build step and no compiled source.
 **Prerequisites:** Node.js 20+, git, and beads (`bd`).
 
 ```bash
-git clone https://github.com/Apra-Labs/apra-pm.git
-cd apra-pm
-git config core.hooksPath .githooks   # enable the ASCII pre-commit guard
+git clone https://github.com/Apra-Labs/apra-fleet.git
+cd apra-fleet
+# enable this package's ASCII pre-commit guard (core.hooksPath is repo-wide and
+# resolves from the repository root):
+git config core.hooksPath packages/apra-fleet-se/apra-pm/.githooks
+cd packages/apra-fleet-se/apra-pm
 node install.mjs --llm claude         # install the skill + agents locally
 ```
 
@@ -48,12 +53,14 @@ rebuild. Re-run `node install.mjs --force` to refresh your installed copy.
 
 ## Testing
 
-Unit tests cover the sprint cost arithmetic in `lib/sprint-cost.mjs`:
+Unit tests cover the pure functions in `.claude/workflows/auto-sprint.js` (extracted
+from its `PURE_FUNCTIONS` block), the installer, the skill/agent text contracts, and
+the `lib/` helpers:
 
 ```bash
-npm test                              # run 45 unit tests (node built-in test runner)
+npm test                              # run the unit suites (node built-in test runner)
 node --check install.mjs              # syntax-check the installer
-node e2e/run-e2e.mjs --suite s1.2     # run one e2e suite (needs the provider CLI + bd)
+node e2e/run-e2e.mjs --suite s1       # run one e2e suite (needs the provider CLI + bd)
 ```
 
 Agent and skill correctness is exercised end-to-end. See `e2e/` and the README

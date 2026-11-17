@@ -1,0 +1,364 @@
+// Response body schemas for the v1 memory contract's 23 inventoried tools.
+//
+// WHY THIS FILE EXISTS
+// INVENTORY.md section 3 records the decision rule for responses: no tool in
+// the real surface (src/tools/*.ts) declares a response zod schema (see the
+// CONFIRMED KB finding this repeats: x-invariant annotation and response
+// authoring were never anyone else's job, they are this task's, T1.2.2's).
+// So the response side of the contract has no zod source to import from
+// dist/ the way the request side does -- it has to be authored here, from the
+// OBSERVED top-level shapes INVENTORY.md section 2 already verified against
+// the real handlers.
+//
+// DECISION RULE (INVENTORY.md section 3, reproduced for callers of this
+// module): every tool response is modelled as a minimal text-content
+// envelope, `{ content: [ { type: "text", text: string } ] }`, plus one of:
+//   - Body known   -- the 16 kb_* tools, whose handler stringifies an object
+//     with an observable top-level shape. Modelled field-for-field below.
+//   - Body opaque  -- the 7 code_* tools, whose handler proxies an
+//     unconstrained provider payload (Promise<unknown>). Modelled as
+//     z.unknown(), which is a deliberate permissive schema, not a stand-in for
+//     a shape nobody has verified.
+//
+// Field-level types below are the OBSERVED top-level keys from INVENTORY.md
+// 2.1 and the provider method table in section 4.1; nested/complex payloads
+// (KB entries, query hits) are typed z.unknown() rather than guessed, since
+// no zod schema for them exists anywhere in this repo to cite as evidence.
+//
+// ENVELOPE WIDTH (my-beads-db-27m.33): the envelope below was originally
+// pinned to exactly one un-annotated content block, but the real wrapTool
+// (src/services/tool-registry.ts lines 94-115) builds up to THREE content
+// blocks -- an onboarding preamble, the payload, and a nudge suffix -- stamps
+// `annotations: {audience, priority}` on the preamble/suffix blocks, and
+// returns `structuredContent` as a sibling of `content` whenever the handler
+// produced it.
+//
+// CORRECTED CLAIM (the first version of this comment got this wrong): none of
+// that -- extra blocks, annotations, or structuredContent -- is reachable by
+// any of the 23 kb_*/code_* tools this contract inventories. tool-registry.ts
+// :99-101 computes `isJson = isJsonResponse(result)`; every inventoried
+// handler returns `JSON.stringify(...)`, so isJson is always true, which
+// nulls both the preamble (`getOnboardingPreamble` returns null when isJson)
+// and the suffix (`isJson ? null : getOnboardingNudge(...)`).
+// `structuredContent` is only produced for handlers returning
+// `{text, structuredContent}`, which in this tree is `execute_command`/
+// `execute_prompt` only, neither inventoried. So a genuine captured envelope
+// from an inventoried tool never actually failed the old narrow schema on
+// these grounds -- the widening below documents wrapTool's GENERAL contract
+// (the shape ANY wrapTool-registered tool may emit), not a bug the
+// inventoried 23 trip over today. Fixed here on the SCHEMA side only, per
+// this task's acceptance criteria -- no harness/validator was loosened, and
+// the width is not justified against the inventoried tool set. `parsed`
+// (added by responseSchema() below) was untouched by THIS task; it was later
+// made optional-but-typed by my-beads-db-27m.47 (see that function's own
+// doc comment) for an unrelated reason -- the wire never carries it, so
+// requiring it made every recorded fixture fail its own schema.
+
+import { z } from 'zod';
+
+/**
+ * A single MCP text content block. `annotations` is optional and, when
+ * present, carries the `{audience, priority}` shape wrapTool actually stamps
+ * on its preamble/nudge blocks (never on the payload block itself, but the
+ * schema does not need to distinguish which block carries it -- any block MAY
+ * carry it).
+ */
+const toolTextContentItem = z.object({
+  type: z.literal('text'),
+  text: z.string(),
+  annotations: z
+    .object({
+      audience: z.array(z.enum(['user', 'assistant'])).optional(),
+      priority: z.number().optional(),
+    })
+    .optional(),
+});
+
+/**
+ * The shared MCP text-content envelope every one of the 24 handlers uses.
+ * 1..3 content items (onboarding preamble + payload + nudge suffix, in that
+ * order, preamble/suffix optional), plus an optional `structuredContent`
+ * sibling (wrapTool returns it whenever the handler's raw return value was
+ * `{text, structuredContent}` rather than a bare string).
+ */
+export const toolTextEnvelope = z.object({
+  content: z.array(toolTextContentItem).min(1).max(3),
+  structuredContent: z.record(z.string(), z.unknown()).optional(),
+});
+
+// --- kb_* observed response bodies (INVENTORY.md 2.1) -----------------------
+
+const KB_RESPONSE_BODIES = {
+  // `refused` (CONFIRMED supersede targets left live) is present exactly when a
+  // member session without the kb_maintainer grant passed supersedes
+  // (E-RETIRE-NEEDS-KB-MAINTAINER, spec.md section 2.5a).
+  kb_capture: z.object({
+    id: z.string(),
+    audn_decision: z.enum(['add', 'update', 'flagged', 'none']),
+    confidence_clamped: z.boolean(),
+    refused: z.array(z.string()).optional(),
+  }),
+  // files path: {invalidated, files}; ids path: {discarded, not_found, already_discarded}.
+  // Both forms carry `refused` (CONFIRMED ids left untouched) exactly when the
+  // call came from a member session without the kb_maintainer grant
+  // (E-RETIRE-NEEDS-KB-MAINTAINER, spec.md section 2.5a).
+  kb_invalidate: z.union([
+    z.object({
+      invalidated: z.number(),
+      files: z.array(z.string()),
+      refused: z.array(z.string()).optional(),
+    }),
+    z.object({
+      discarded: z.array(z.string()),
+      not_found: z.array(z.string()),
+      already_discarded: z.array(z.string()),
+      refused: z.array(z.string()).optional(),
+    }),
+  ]),
+  // F-10 (my-beads-db-27m.9, caught by the live round-trip harness): `fresh`
+  // and `stale` are NOT string arrays. src/tools/kb-context.ts:32-33 filters
+  // the provider's result objects (`{file, status, reason, entry_id}`) and
+  // ships them whole; only `missing` is mapped down to file names
+  // (kb-context.ts:34). The committed fixture kb_context/happy.json shows the
+  // object form too, so the previous z.array(z.string()) contradicted both the
+  // implementation and the corpus. Element shape stays z.unknown() per this
+  // file's standing rule -- no zod schema for a context result exists anywhere
+  // in this repo to cite, and guessing one is what produced this defect.
+  kb_context: z.object({
+    fresh: z.array(z.unknown()),
+    stale: z.array(z.unknown()),
+    missing: z.array(z.string()),
+  }),
+  kb_session_prime: z.object({
+    session_warm: z.boolean(),
+    stale_files: z.array(z.string()),
+    top_entries: z.array(z.unknown()),
+    fresh_summaries: z.array(z.unknown()),
+    recommended_code_calls: z.array(z.unknown()),
+    token_estimate: z.number(),
+  }),
+  // F-8: kb_query returns one of two mutually exclusive shapes, keyed by
+  // whether the request set flagged_only. related_claims is ABSENT (not
+  // null) unless expand_related was requested, hence .optional() not
+  // .nullable().
+  kb_query: z.union([
+    z.object({
+      l1_results: z.array(z.unknown()),
+      l2_expanded: z.array(z.unknown()),
+      related_claims: z.array(z.unknown()).optional(),
+    }),
+    z.object({
+      flagged_entries: z.array(z.unknown()),
+      total: z.number(),
+      note: z.string(),
+    }),
+  ]),
+  kb_list: z.object({
+    results: z.array(z.unknown()),
+    total: z.number(),
+  }),
+  kb_harvest: z.object({
+    entries_captured: z.number(),
+    entries_updated: z.number(),
+    entries_skipped: z.number(),
+    entries_rejected: z.number(),
+    // Captures that failed for any reason other than a basis rejection (e.g.
+    // a remote KB server that is down): attempted, not stored, logged.
+    entries_failed: z.number(),
+    // Present only when nothing landed (captured + updated + skipped is 0)
+    // and entries_failed > 0: the first such failure's message (bounded), so
+    // a harvest whose every capture failed says why.
+    first_error: z.string().optional(),
+  }),
+  kb_promote: z.object({
+    id: z.string(),
+    previous_confidence: z.string(),
+    new_confidence: z.string(),
+  }),
+  // Same three fields as kb_promote, and deliberately so: kb_demote is the
+  // inverse operation on the same axis, so a consumer reading a confidence
+  // change off either tool parses one shape. previous_confidence is always
+  // CONFIRMED here (every other tier is refused with E-DEMOTE-NOT-CONFIRMED
+  // before any write) and new_confidence always INFERRED, but both stay plain
+  // strings to match kb_promote rather than narrowing to an enum only this
+  // tool would carry.
+  kb_demote: z.object({
+    id: z.string(),
+    previous_confidence: z.string(),
+    new_confidence: z.string(),
+  }),
+  kb_freshness_sweep: z.object({
+    checked: z.number(),
+    staled: z.number(),
+    unstaled: z.number(),
+  }),
+  kb_import: z.object({
+    imported: z.number(),
+    skipped: z.number(),
+    linked: z.number(),
+    flagged: z.number(),
+    rejected: z.number(),
+    // Local rows taken CONFIRMED -> INFERRED by an EXPLICIT demotion tombstone
+    // in the imported bible (the cross-clone half of kb_demote). Counts rows
+    // actually changed, not tombstones read; an entry merely ABSENT from the
+    // bible is never demoted. OPTIONAL so fixtures recorded before tombstones
+    // existed still validate; the handler always emits it.
+    demoted: z.number().optional(),
+    sweep: z.object({
+      checked: z.number(),
+      staled: z.number(),
+      unstaled: z.number(),
+    }),
+    // Present exactly when the bible was read from git, not the file system:
+    // the ref read -- "HEAD" for a member session without the kb_maintainer
+    // grant and no `ref` (spec.md section 2.5a), otherwise the `ref` given.
+    // A no-grant import succeeds only for a committed bible whose blob id the
+    // maintainer side recorded; otherwise it is refused with
+    // E-KB-MAINTAINER-REQUIRED, so no field here reports the trust check.
+    bible_source: z.string().optional(),
+    worktree_ignored: z.boolean().optional(),
+    // Present exactly under an http project KB: the KB server is the source
+    // of truth, the bible is neither read nor imported, every count is 0.
+    bible_skipped: z.literal(true).optional(),
+    reason: z.string().optional(),
+  }),
+  kb_resolve_contradiction: z.object({
+    winnerId: z.string(),
+    loserId: z.string(),
+  }),
+  kb_reconcile_prefilter: z.object({
+    pairs: z.number(),
+    resolved: z.array(z.unknown()),
+    left_for_agent: z.array(z.unknown()),
+    // F-11 (caught by the live round-trip harness): a COUNT of directive
+    // pairs skipped, not a flag -- SqliteProvider.reconcilePrefilter declares
+    // `skipped_directive: number` in its return type and increments it in
+    // the directive-pair branch. kb_reconcile_prefilter/happy.json records
+    // 0, so the previous z.boolean() contradicted the implementation and the
+    // corpus.
+    skipped_directive: z.number(),
+  }),
+  kb_setup: z.object({
+    success: z.boolean(),
+    steps: z.array(z.unknown()),
+    // Always present (possibly empty): cleartext-http remote, a dropped token
+    // for a changed remote, or a malformed existing config that was replaced.
+    warnings: z.array(z.string()),
+  }),
+  kb_export: z.object({
+    exported: z.number(),
+    path: z.string(),
+    scope: z.enum(['project', 'global']),
+    committed: z.boolean(),
+  }),
+  // kb_bible_commit: ids the caller named are either merged (live CONFIRMED in
+  // this KB and passing the shared bible basis predicate) or skipped with a
+  // reason (not_confirmed_or_unknown; no_source_files for a CONFIRMED id that
+  // cites no source file; basis_mismatch for a CONFIRMED id whose cited-file
+  // basis does not match the files at HEAD; or not_demoted_or_unknown for a
+  // demoted_ids id that is not a local demoted entry); removed lists every bible
+  // entry dropped because this KB holds it as superseded or invalidated (always
+  // present, possibly empty); backfilled counts existing bible entries that
+  // gained source_file_hashes from this KB's stored basis (legacy backfill);
+  // committed is true only when a local commit of the bible path was made
+  // (never pushed). Under the http KB provider the call is skipped, not
+  // failed: bible_skipped is the literal true, reason says why, and nothing was
+  // written or committed (every list empty, committed false; entry_count is the
+  // size of the existing parseable bible, else 0).
+  // demoted names the ids admitted from demoted_ids: removed from entries and
+  // tombstoned in the bible's demotions array. OPTIONAL so bibles/fixtures
+  // recorded before tombstones existed still validate; the handler always emits
+  // it. entry_count counts ENTRIES only -- a tombstone is not an entry.
+  kb_bible_commit: z.object({
+    path: z.string(),
+    merged: z.array(z.string()),
+    demoted: z.array(z.string()).optional(),
+    skipped: z.array(z.object({
+      id: z.string(),
+      reason: z.enum(['not_confirmed_or_unknown', 'no_source_files', 'basis_mismatch', 'not_demoted_or_unknown']),
+    })),
+    removed: z.array(z.object({
+      id: z.string(),
+      reason: z.enum(['superseded', 'invalidated']),
+    })),
+    entry_count: z.number(),
+    backfilled: z.number(),
+    committed: z.boolean(),
+    bible_skipped: z.literal(true).optional(),
+    reason: z.string().optional(),
+  }),
+  // F-9: kb_stats spreads ProviderStats (whose supported/reason/coverage are
+  // only present for a provider that cannot compute stats at all) and adds
+  // bible. Nested aggregates have no zod shape anywhere to cite, so they stay
+  // z.unknown() rather than a guessed structure.
+  kb_stats: z.object({
+    supported: z.boolean().optional(),
+    reason: z.string().optional(),
+    totals: z.unknown(),
+    stale: z.unknown(),
+    flagged: z.unknown(),
+    superseded: z.unknown(),
+    retrieval: z.unknown(),
+    promote_ratio: z.number(),
+    coverage: z.unknown().optional(),
+    bible: z.unknown(),
+  }),
+  // The entry's resulting state (sqlite, or the remote HTTP KB server's
+  // answer, returned as is). A remote HTTP KB that cannot be reached is a
+  // thrown E-KB-HTTP-UNREACHABLE (the feedback is queued first), never a
+  // response (spec.md section 2.2).
+  kb_feedback: z.object({
+    id: z.string(),
+    stale: z.boolean(),
+    flagged_for_review: z.boolean(),
+    confidence: z.string(),
+  }),
+};
+
+const CODE_TOOLS = [
+  'code_graph',
+  'code_impact',
+  'code_query',
+  'code_context',
+  'code_map',
+  'code_flow',
+  'code_tests',
+  'code_reindex',
+  'code_status',
+];
+
+/**
+ * The response schema for one inventoried tool: the shared text envelope plus
+ * a `parsed` key holding the documented (or, for code_*, deliberately
+ * unconstrained) parsed body. See the decision rule in this file's header and
+ * in INVENTORY.md section 3.
+ *
+ * `parsed` IS OPTIONAL (my-beads-db-27m.47), never required: no handler
+ * (src/services/tool-registry.ts's wrapTool) ever puts a literal `parsed` key
+ * on the wire -- every response is JSON.stringify()'d into a single text
+ * content block -- so the RECORDED envelope genuinely never carries one. The
+ * shape stays fully typed under `properties.parsed` (INVENTORY.md section 3's
+ * "the generated response schema is the text envelope PLUS the documented
+ * parsed-body object" still holds -- the body is documented, just not
+ * mandated on every instance): a raw recorded envelope ({content} only)
+ * validates as-is, and a decoded one ({...envelope, parsed: JSON.parse(...)},
+ * the shape memory-contract/v1/tests/roundtrip-harness.mjs's decodeEnvelope()
+ * produces) validates too, because `additionalProperties: false` only forbids
+ * an UNDECLARED key, not an absent optional one. Before this change `parsed`
+ * was required, which made every one of the 32 recorded response fixtures
+ * fail its own schema when read as committed (ajv: "must have required
+ * property 'parsed'") -- see tests/memory-contract-fixture-response-schema.
+ * test.ts and memory-contract/v1/tests/DEGRADATION.md D-4.
+ *
+ * @param {string} tool
+ * @returns {import('zod').ZodTypeAny}
+ */
+export function responseSchema(tool) {
+  if (tool in KB_RESPONSE_BODIES) {
+    return toolTextEnvelope.extend({ parsed: KB_RESPONSE_BODIES[tool].optional() });
+  }
+  if (CODE_TOOLS.includes(tool)) {
+    return toolTextEnvelope.extend({ parsed: z.unknown().optional() });
+  }
+  throw new Error(`response-schemas.mjs: no response body registered for tool "${tool}"`);
+}

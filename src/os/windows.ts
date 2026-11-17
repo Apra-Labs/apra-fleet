@@ -1,11 +1,56 @@
 import { defaultWindowsPidWrapper } from './windows-wrapper.js';
 export { defaultWindowsPidWrapper as pidWrapWindows };
-﻿import { execSync } from 'node:child_process';
+﻿import { execFileSync } from 'node:child_process';
 import type { OsCommands, ProviderAdapter, PromptOptions } from './os-commands.js';
-import { escapeWindowsArg, sanitizeSessionId } from './os-commands.js';
-import { escapeBatchMetachars } from '../utils/shell-escape.js';
+import { escapeWindowsArg, sanitizeSessionId, GIT_LS_REMOTE_OK_MARKER } from './os-commands.js';
+import { escapeBatchMetachars, escapePowerShellArgInner } from '../utils/shell-escape.js';
+import { boundChildEnv, describeBoundedEnv } from './child-env-bound.js';
+import { logWarn } from '../utils/log-helpers.js';
+import { withGoMaxProcsDefault, GO_MAXPROCS_DEFAULT_PWSH } from './go-concurrency.js';
+import { windowsExecutable } from './windows-executable.js';
 
-const CLI_PATH = '$env:Path = "$env:USERPROFILE\\.local\\bin;$env:Path"; \'ANTIGRAVITY_SOURCE_METADATA\',\'GEMINI_SOURCE_METADATA\',\'CLAUDE_SOURCE_METADATA\',\'COPILOT_SOURCE_METADATA\',\'CODEX_SOURCE_METADATA\' | ForEach-Object { Remove-Item "env:$_" -ErrorAction SilentlyContinue }; ';
+/**
+ * Wrap a PowerShell script as a base64 `-EncodedCommand` invocation.
+ * Use this for ANY Windows member-bound command instead of sending a raw
+ * PowerShell one-liner over strategy.execCommand -- the raw form only works
+ * if the member's sshd default shell happens to be PowerShell; on a cmd.exe
+ * default it silently produces garbage (apra-fleet-ot2z.10).
+ *
+ * On PS 5.1, `powershell -EncodedCommand <script>`'s raw exit-code behavior
+ * already surfaces most non-terminating cmdlet failures as exit 1 (verified
+ * live: Get-Item on a missing path, Set-Content to an unwritable path both
+ * already exit 1 with no wrapping at all). The wrapper's actual value here is
+ * (a) correctly suppressing exit 1 for a failure the caller genuinely opted
+ * out of via an explicit `-ErrorAction SilentlyContinue` on an individual
+ * cmdlet (apra-fleet-ot2z.12's real, verified case), and (b) preserving the
+ * exit code of a *native* command (e.g. `& "some.bat"`, `icacls ...`) that is
+ * the last statement in the script, which would otherwise be masked by the
+ * unconditional `exit 0` below. Call sites that intentionally tolerate a
+ * failure (e.g. strategy.ts's deleteFiles) pass an explicit `-ErrorAction
+ * SilentlyContinue`/`-ErrorAction Stop` on the individual cmdlet, which
+ * overrides the global preference for that cmdlet and keeps its original
+ * tolerate-missing-path behavior.
+ *
+ * Before the trailing `exit 0`, `$LASTEXITCODE` is checked and propagated if
+ * set and non-zero: without it, a failing native command's exit code would be
+ * discarded, since PowerShell's own exit code otherwise falls back to
+ * whatever `exit 0` (or `$?` of the last statement, which PowerShell sets to
+ * $false whenever *any* error record was written to the error stream during
+ * the session -- even one suppressed by -ErrorAction SilentlyContinue on an
+ * individual cmdlet) says. That quirk would otherwise turn every
+ * intentionally-tolerated failure (e.g. deleteFiles removing an
+ * already-gone file) into a false non-zero exit, which is why the fallback
+ * stays `exit 0` rather than propagating `$?`.
+ */
+export function wrapPowerShellEncoded(psScript: string): string {
+  const guarded = `$ErrorActionPreference = 'Stop'; try { ${psScript}; if ($LASTEXITCODE -ne $null -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; exit 0 } catch { Write-Error $_; exit 1 }`;
+  const encoded = Buffer.from(guarded, 'utf16le').toString('base64');
+  return `powershell -EncodedCommand ${encoded}`;
+}
+
+// The member's own fleet bin dir, APPENDED (see linux.ts FLEET_BIN_PATH_POSIX).
+export const FLEET_BIN_PATH_WINDOWS = '$env:USERPROFILE\\.apra-fleet\\bin';
+const CLI_PATH = '$env:Path = "$env:USERPROFILE\\.local\\bin;$env:Path;' + FLEET_BIN_PATH_WINDOWS + '"; \'ANTIGRAVITY_SOURCE_METADATA\',\'CLAUDE_SOURCE_METADATA\',\'COPILOT_SOURCE_METADATA\',\'CODEX_SOURCE_METADATA\' | ForEach-Object { Remove-Item "env:$_" -ErrorAction SilentlyContinue }; ';
 
 /**
  * Wrap PowerShell setup commands and a CLI invocation with PID capture.
@@ -13,6 +58,9 @@ const CLI_PATH = '$env:Path = "$env:USERPROFILE\\.local\\bin;$env:Path"; \'ANTIG
  * the parent's file handles (including the stdout pipe fleet's Node.js set up).
  * This works in both interactive and headless (GitHub Actions) environments.
  */
+// Normally ~1s; generous headroom for AV-scanned or loaded hosts.
+const CLEAN_ENV_TIMEOUT_MS = 30_000;
+
 const MEMINFO_CMD = [
   'Add-Type -TypeDefinition \'using System;using System.Runtime.InteropServices;public class MI{[DllImport("kernel32.dll")]public static extern bool GlobalMemoryStatusEx(ref MS m);[StructLayout(LayoutKind.Sequential)]public struct MS{public uint dwLength;public uint dwMemoryLoad;public ulong ullTotalPhys;public ulong ullAvailPhys;public ulong ullTotalPageFile;public ulong ullAvailPageFile;public ulong ullTotalVirtual;public ulong ullAvailVirtual;public ulong ullAvailExtendedVirtual;}}\'',
   '$m=New-Object MI+MS',
@@ -45,9 +93,35 @@ export class WindowsCommands implements OsCommands {
       sessionBlock,
       '$a|ConvertTo-Json -Compress',
     ].join('; ');
-    const result = execSync(script, { encoding: 'utf-8', shell: 'powershell.exe', windowsHide: true });
-    this.cachedEnv = JSON.parse(result.trim());
-    return this.cachedEnv!;
+    // -EncodedCommand, not an inline `-c` string: on some hosts PowerShell 5.1
+    // hangs forever (0 CPU) on an inline command of ~2000+ chars, and this
+    // script is ~2300. A blocking execSync with no timeout then freezes the
+    // whole fleet server. -NoProfile keeps profile output out of the JSON.
+    const encoded = Buffer.from(script, 'utf16le').toString('base64');
+    // Absolute path, resolved outside the try so a missing PowerShell surfaces
+    // its own E-WINDOWS-EXECUTABLE-NOT-FOUND error (see windows-executable.ts).
+    const powershell = windowsExecutable('powershell.exe');
+    let result: string;
+    try {
+      result = execFileSync(
+        powershell,
+        ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
+        { encoding: 'utf-8', windowsHide: true, timeout: CLEAN_ENV_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'] },
+      );
+    } catch (err) {
+      const e = err as NodeJS.ErrnoException;
+      const reason = e.code === 'ETIMEDOUT' ? `timed out after ${CLEAN_ENV_TIMEOUT_MS}ms` : e.message;
+      throw new Error(`Failed to read the Windows environment via powershell.exe: ${reason}`);
+    }
+    // Machine Path + ';' + User Path above routinely duplicates entries, and
+    // every spawn copies the whole block into the child (and git copies it
+    // again from bd/dolt). Bound it -- see child-env-bound.ts and
+    // docs/troubleshooting.md ("Not enough memory resources").
+    const { env, report } = boundChildEnv(JSON.parse(result.trim()) as Record<string, string>);
+    if (report.dropped.length || report.overCap) logWarn('clean_env', describeBoundedEnv(report));
+    // GOMAXPROCS default for bd/dolt on Windows (only when unset) -- see go-concurrency.ts.
+    this.cachedEnv = withGoMaxProcsDefault(env);
+    return this.cachedEnv;
   }
 
   // --- Resources ---
@@ -68,6 +142,7 @@ export class WindowsCommands implements OsCommands {
   // --- Process check ---
 
   fleetProcessCheck(folder: string, sessionId?: string, processName?: string): string {
+    if (processName === '') return "echo 'idle'";
     const pname = processName ?? 'claude';
     const escapedFolder = escapeWindowsArg(folder.replace(/\\/g, '\\\\'));
     const sessionFilter = sessionId ? ` -or $_.CommandLine -match '${escapeWindowsArg(sanitizeSessionId(sessionId))}'` : '';
@@ -98,51 +173,71 @@ export class WindowsCommands implements OsCommands {
   }
 
   buildAgentPromptCommand(provider: ProviderAdapter, opts: PromptOptions): string {
-    const { folder, promptFile, sessionId, resuming, unattended, model, maxTurns, inv, agentName } = opts;
+    const { folder, promptFile, sessionId, resuming, unattended, model, maxTurns, inv, agentName, fork } = opts;
     const escapedFolder = escapeWindowsArg(folder);
     let instruction = `Your task is described in ${promptFile} in the current directory. Read that file first, then execute the task.`;
     if (inv) {
       instruction = `[${inv}] ${instruction}`;
     }
-    // Gemini activates a subagent via @<name> prepended to the prompt on EVERY dispatch.
-    if (agentName && provider.name === 'gemini') {
-      instruction = `@${agentName} ${instruction}`;
+    // Some providers activate a subagent via @<name> prepended to the prompt on
+    // EVERY dispatch (provider.agentNameFlag() returns the '@'-prefixed form).
+    // Claude and AGY instead activate a subagent via --agent <name> flag.
+    const nameFlag = agentName ? provider.agentNameFlag(agentName) : '';
+    if (nameFlag.startsWith('@')) {
+      instruction = `${nameFlag}${instruction}`;
     }
 
     // Setup: working directory + PATH so the CLI executable is resolvable
-    const setupCmd = `Set-Location "${escapedFolder}"; ${CLI_PATH}`;
+    // GOMAXPROCS default (only when the member has none) for bd/dolt the agent
+    // runs -- see go-concurrency.ts.
+    const setupCmd = `Set-Location "${escapedFolder}"; ${GO_MAXPROCS_DEFAULT_PWSH}${CLI_PATH}`;
 
     // Executable extracted from provider (e.g. "claude" from "claude <args>")
     const filePath = provider.cliCommand('').trim();
 
     // Build argument list (everything that follows the executable)
     let argList = `${provider.headlessInvocation(instruction)} ${provider.jsonOutputFlag()}`;
-    // Claude and AGY activate a subagent via --agent <name> flag.
-    if (agentName && (provider.name === 'claude' || provider.name === 'agy')) {
-      argList = `--agent "${escapeWindowsArg(agentName)}" ${argList}`;
+    // Providers whose CLI ignores the process cwd need the workspace named
+    // explicitly (AGY: --add-dir). Set-Location alone leaves them with no
+    // workspace at all, which on AGY means every tool call is auto-denied in
+    // headless mode. Providers without the hook are unchanged.
+    const wsFlag = provider.workspaceDirFlag?.(escapedFolder);
+    if (wsFlag) argList = `${wsFlag} ${argList}`;
+    // Providers with a project binding (AGY: --project <id>) get it on every
+    // dispatch; projectFlag throws for a missing id. Others are unchanged.
+    if (provider.projectFlag) argList = `${provider.projectFlag(opts.projectId)} ${argList}`;
+    if (nameFlag && !nameFlag.startsWith('@')) {
+      argList = `${nameFlag} ${argList}`;
     }
     if (provider.supportsMaxTurns()) {
       argList += ` --max-turns ${maxTurns ?? 50}`;
     }
-    if (sessionId && provider.supportsResume()) {
+    // apra-fleet-lmtg.2: fork mode seeds a NEW session from an existing one's
+    // transcript and must not also carry an ordinary resume/session-id flag
+    // (mutually exclusive intents), so it takes priority over the plain
+    // resume branch below. Absent a fork descriptor (or a non-fork-capable
+    // provider), behavior is unchanged.
+    if (fork && provider.supportsFork?.()) {
+      const ff = provider.forkFlag?.(fork.sourceSessionId, fork.newSessionId);
+      if (ff) argList += ` ${ff}`;
+    } else if (sessionId && provider.supportsResume()) {
       const rf = provider.resumeFlag(sessionId, resuming);
       if (rf) argList += ` ${rf}`;
     }
-    if (unattended === 'auto') {
-      const autoFlag = provider.permissionModeAutoFlag();
-      if (autoFlag) argList += ` ${autoFlag}`;
-    } else if (unattended === 'dangerous') {
-      argList += ` ${provider.skipPermissionsFlag()}`;
-    } else {
-      // apra-fleet-eft.65.1: interactive-session parity for the work folder --
-      // grant Edit/Write of a brand-new file in the dispatched agent's own work
-      // folder without the broad --dangerously-skip-permissions bypass. Providers
-      // without such a surgical flag omit the method, leaving behavior unchanged.
-      const editFlag = provider.workspaceEditPermissionFlag?.();
-      if (editFlag) argList += ` ${editFlag}`;
-    }
+    // Delegate unattended-mode flag resolution entirely to the provider --
+    // each provider's own auto/dangerous fallback and warning semantics (e.g.
+    // AGY has no true auto and uses its baseline --mode accept-edits (with a warning); OpenCode has
+    // no true dangerous and falls back to --auto) must not be re-derived here,
+    // or this path silently diverges from the POSIX buildPromptCommand() path.
+    const permFlag = provider.resolvePermissionFlag(unattended, model);
+    if (permFlag) argList += ` ${permFlag}`;
     if (model) {
       argList += ` ${provider.modelFlag(escapeWindowsArg(model))}`;
+    }
+    // Per-session member MCP config, quoted by the provider for PowerShell.
+    // Appended LAST: Claude's --mcp-config is variadic.
+    if (opts.mcpConfigPath && provider.mcpConfigFlag) {
+      argList += ` ${provider.mcpConfigFlag(opts.mcpConfigPath, false)}`;
     }
 
     return provider.wrapWindowsPrompt(setupCmd, filePath, argList, sessionId, model, opts.tier);
@@ -159,9 +254,8 @@ export class WindowsCommands implements OsCommands {
   }
 
   writeTextFile(destPath: string, content: string): string {
-    const psScript = `$d='${content.replace(/'/g, "''")}'; $p="${escapeWindowsArg(destPath)}"; New-Item -Path (Split-Path -Path $p -Parent) -ItemType Directory -Force | Out-Null; Set-Content -Path $p -Value $d -NoNewline`;
-    const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
-    return `powershell -EncodedCommand ${encoded}`;
+    const psScript = `$d='${escapePowerShellArgInner(content)}'; $p="${escapeWindowsArg(destPath)}"; New-Item -Path (Split-Path -Path $p -Parent) -ItemType Directory -Force | Out-Null; Set-Content -Path $p -Value $d -NoNewline`;
+    return wrapPowerShellEncoded(psScript);
   }
 
   readRemoteJson(destPath: string): string {
@@ -171,12 +265,12 @@ export class WindowsCommands implements OsCommands {
 
   deepMergeJson(destPath: string, newObj: Record<string, unknown>): string {
     const escapedPath = escapeWindowsArg(destPath);
-    const newJson = JSON.stringify(newObj).replace(/'/g, "''");
+    const newJson = escapePowerShellArgInner(JSON.stringify(newObj));
 
     const psScript = `
 $p = '${escapedPath}';
 $new = '${newJson}' | ConvertFrom-Json;
-$current = @{};
+$current = $null;
 if (Test-Path $p) {
   try { $current = Get-Content -Path $p -Raw | ConvertFrom-Json -ErrorAction Stop } catch {}
 }
@@ -184,11 +278,20 @@ $merged = @{};
 if ($current) {
   $current.psobject.properties | ForEach-Object { $merged[$_.Name] = $_.Value }
 }
+function ConvertTo-HashtableDeep($obj) {
+    if ($obj -is [System.Management.Automation.PSCustomObject]) {
+        $h = @{};
+        $obj.psobject.properties | ForEach-Object { $h[$_.Name] = $_.Value };
+        return $h;
+    }
+    return $obj;
+}
 function Merge-Objects($target, $source) {
     $source.psobject.properties | ForEach-Object {
         $key = $_.Name;
         $value = $_.Value;
         if ($target.Contains($key) -and $target[$key] -is [System.Management.Automation.PSCustomObject] -and $value -is [System.Management.Automation.PSCustomObject]) {
+            $target[$key] = ConvertTo-HashtableDeep $target[$key];
             Merge-Objects $target[$key] $value;
         } else {
             $target[$key] = $value;
@@ -200,8 +303,7 @@ New-Item -Path (Split-Path -Path $p -Parent) -ItemType Directory -Force | Out-Nu
 $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
     `.trim().replace(/\\r\\n/g, ' ');
 
-    const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
-    return `powershell -EncodedCommand ${encoded}`;
+    return wrapPowerShellEncoded(psScript);
   }
 
   // --- Auth ---
@@ -211,13 +313,24 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
   }
 
   credentialFileWrite(content: string, destPath: string): string {
-    const psScript = `$d='${content.replace(/'/g, "''")}'; $p="${escapeWindowsArg(destPath)}"; New-Item -Path (Split-Path -Path $p -Parent) -ItemType Directory -Force | Out-Null; Set-Content -Path $p -Value $d -NoNewline`;
-    const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
-    return `powershell -EncodedCommand ${encoded}`;
+    const psScript = `$d='${escapePowerShellArgInner(content)}'; $p="${escapeWindowsArg(destPath)}"; New-Item -Path (Split-Path -Path $p -Parent) -ItemType Directory -Force | Out-Null; Set-Content -Path $p -Value $d -NoNewline`;
+    return wrapPowerShellEncoded(psScript);
+  }
+
+  credentialFileInstall(stagedPath: string, destPath: string): string {
+    // Move-Item keeps the staged file's ACL (created under the user profile).
+    const psScript = `$s='${escapePowerShellArgInner(stagedPath)}'; $p="${escapeWindowsArg(destPath)}"; New-Item -Path (Split-Path -Path $p -Parent) -ItemType Directory -Force | Out-Null; Move-Item -LiteralPath $s -Destination $p -Force`;
+    return wrapPowerShellEncoded(psScript);
   }
 
   credentialFileRemove(destPath: string): string {
     return `Remove-Item "${escapeWindowsArg(destPath)}" -Force -ErrorAction SilentlyContinue`;
+  }
+
+  credentialFileMoveAside(destPath: string, suffix: string): string {
+    if (!/^[A-Za-z0-9._-]+$/.test(suffix)) throw new Error('Invalid backup suffix: ' + suffix);
+    const p = escapeWindowsArg(destPath);
+    return `if (Test-Path "${p}") { Move-Item -Path "${p}" -Destination "${p}${suffix}" -Force; echo "moved" }`;
   }
 
   apiKeyCheck(envVarName?: string): string {
@@ -226,10 +339,16 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
     return `if ($env:${varName}) { $env:${varName}.Substring(0,10) } else { echo "" }`;
   }
 
-  setEnv(name: string, value: string): string[] {
+  // base64 so the file is parsed, never executed (no quoting exposure).
+  persistEnvFileContent(name: string, value: string): string {
     if (!/^[A-Z_][A-Z0-9_]*$/i.test(name)) throw new Error('Invalid env var name: ' + name);
-    const escaped = value.replace(/'/g, "''");
-    return [`[Environment]::SetEnvironmentVariable('${name}', '${escaped}', 'User')`];
+    return Buffer.from(value, 'utf-8').toString('base64');
+  }
+
+  persistEnvFromFile(name: string, filePath: string): string {
+    if (!/^[A-Z_][A-Z0-9_]*$/i.test(name)) throw new Error('Invalid env var name: ' + name);
+    const q = `'${escapePowerShellArgInner(filePath)}'`;
+    return `$f = ${q}; try { $v = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(([IO.File]::ReadAllText($f)).Trim())); [Environment]::SetEnvironmentVariable('${name}', $v, 'User') } catch { [Console]::Error.WriteLine('apra-fleet: could not apply the staged env file'); exit 1 } finally { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue }`;
   }
 
   unsetEnv(name: string): string[] {
@@ -237,21 +356,16 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
     return [`[Environment]::SetEnvironmentVariable('${name}', $null, 'User')`];
   }
 
-  envPrefix(name: string, value: string): string {
-    const escaped = value.replace(/'/g, "''");
-    return `$env:${name}='${escaped}';`;
-  }
-
   // --- Git credential helper ---
 
   gitCredentialHelperWrite(host: string, username: string, token: string, label?: string, scopeUrl?: string): string {
-    const escapedHost = escapeWindowsArg(host).replace(/'/g, "''");
-    const escapedUser = escapeWindowsArg(username).replace(/'/g, "''");
+    const escapedHost = escapePowerShellArgInner(escapeWindowsArg(host));
+    const escapedUser = escapePowerShellArgInner(escapeWindowsArg(username));
     const batchToken = escapeBatchMetachars(token);
-    const escapedToken = batchToken.replace(/'/g, "''");
-    const credFileName = label ? `.fleet-git-credential-${escapeWindowsArg(label).replace(/'/g, "''")}` : '.fleet-git-credential';
+    const escapedToken = escapePowerShellArgInner(batchToken);
+    const credFileName = label ? `.fleet-git-credential-${escapePowerShellArgInner(escapeWindowsArg(label))}` : '.fleet-git-credential';
     // scope_url is passed through escapeWindowsArg (single-quote escaped) and embedded in a single-quoted git config arg — safe against injection.
-    const credUrl = scopeUrl ? escapeWindowsArg(scopeUrl).replace(/'/g, "''") : `https://${escapedHost}`;
+    const credUrl = scopeUrl ? escapePowerShellArgInner(escapeWindowsArg(scopeUrl)) : `https://${escapedHost}`;
     return [
       `$script = ('@echo off','echo protocol=https','echo host=${escapedHost}','echo username=${escapedUser}','echo password=${escapedToken}') -join [Environment]::NewLine`,
       `Set-Content -Path "$env:USERPROFILE\\${credFileName}.bat" -Value $script -NoNewline`,
@@ -261,18 +375,49 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
     ].join('; ');
   }
 
+  gitCredentialHelperRemoveLegacyFile(): string {
+    // File only -- deliberately no `git config --unset-all`.
+    return `Remove-Item "$env:USERPROFILE\\.fleet-git-credential.bat" -Force -ErrorAction SilentlyContinue`;
+  }
+
+  gitCredentialHelperRead(label?: string): { command: string; path: string } {
+    // Unlike the POSIX branch, the label here is interpolated into a
+    // PowerShell double-quoted string AND a filename, so anything outside a
+    // safe slug alphabet is refused outright rather than escaped -- the same
+    // rule the fleet-sprint side applies in se-windows.mjs.
+    if (label !== undefined && !/^[A-Za-z0-9._-]+$/.test(label)) {
+      throw new Error(`Refusing to build a Windows credential-read command for unsafe VCS credential label '${label}' (allowed: letters, digits, '.', '_', '-').`);
+    }
+    const credFileName = label ? `.fleet-git-credential-${label}` : '.fleet-git-credential';
+    const credPath = `$env:USERPROFILE\\${credFileName}.bat`;
+    // `&` is PowerShell's call operator: without it a quoted path is echoed as
+    // a string literal rather than executed.
+    return { command: `& "${credPath}"`, path: credPath };
+  }
+
   gitCredentialHelperRemove(host: string, label?: string, scopeUrl?: string): string {
-    const escapedHost = escapeWindowsArg(host).replace(/'/g, "''");
-    const credFileName = label ? `.fleet-git-credential-${escapeWindowsArg(label).replace(/'/g, "''")}` : '.fleet-git-credential';
+    const escapedHost = escapePowerShellArgInner(escapeWindowsArg(host));
+    const credFileName = label ? `.fleet-git-credential-${escapePowerShellArgInner(escapeWindowsArg(label))}` : '.fleet-git-credential';
     // scope_url is passed through escapeWindowsArg (single-quote escaped) and embedded in a single-quoted git config arg — safe against injection.
-    const credUrl = scopeUrl ? escapeWindowsArg(scopeUrl).replace(/'/g, "''") : `https://${escapedHost}`;
+    const credUrl = scopeUrl ? escapePowerShellArgInner(escapeWindowsArg(scopeUrl)) : `https://${escapedHost}`;
     return `Remove-Item "$env:USERPROFILE\\${credFileName}.bat" -Force -ErrorAction SilentlyContinue; git config --global --unset-all 'credential.${credUrl}.helper' 2>$null`;
+  }
+
+  ghAuthLogin(token: string, hostname = 'github.com'): string {
+    const escapedToken = escapePowerShellArgInner(escapeWindowsArg(token));
+    const escapedHostname = escapePowerShellArgInner(escapeWindowsArg(hostname));
+    // gh CLI has its own credential store, entirely separate from the git
+    // credential helper written above -- gh never reads that file.
+    // `gh auth login --with-token` is gh's own non-interactive enrollment
+    // path. Best-effort: if `gh` isn't installed, no-op rather than fail the
+    // whole VCS auth deployment over an optional CLI.
+    return `if (Get-Command gh -ErrorAction SilentlyContinue) { '${escapedToken}' | gh auth login --hostname '${escapedHostname}' --with-token } else { Write-Warning 'gh CLI not installed -- skipped gh auth login' }`;
   }
 
   // --- SSH key deployment ---
 
   deploySSHPublicKey(publicKeyLine: string): string[] {
-    const escaped = publicKeyLine.replace(/'/g, "''");
+    const escaped = escapePowerShellArgInner(publicKeyLine);
     return [
       // Deploy to user's authorized_keys (force UTF-8 no BOM — OpenSSH requires it)
       'New-Item -Path "$env:USERPROFILE\\.ssh" -ItemType Directory -Force | Out-Null',
@@ -288,13 +433,15 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
   // --- Local exec ---
 
   cleanExec(command: string): { command: string; env?: Record<string, string>; shell?: string } {
-    return { command, env: this.getCleanEnv(), shell: 'powershell.exe' };
+    // An ABSOLUTE shell path: LocalStrategy spawns this with cwd = the member
+    // work folder, where a bare 'powershell.exe' would be searched first.
+    return { command, env: this.getCleanEnv(), shell: windowsExecutable('powershell.exe') };
   }
 
   // --- Shell ---
 
   wrapInWorkFolder(folder: string, command: string): string {
-    return `Set-Location "${escapeWindowsArg(folder)}"; ${command}`;
+    return `Set-Location "${escapeWindowsArg(folder)}"; ${GO_MAXPROCS_DEFAULT_PWSH}$env:Path = "$env:Path;${FLEET_BIN_PATH_WINDOWS}"; ${command}`;
   }
 
   wrapPidCapture(command: string): string {
@@ -304,7 +451,35 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
   // --- Git ---
 
   gitCurrentBranch(folder: string): string {
-    return `git -C "${escapeWindowsArg(folder)}" branch --show-current 2>/dev/null || true`;
+    return `try { git -C "${escapeWindowsArg(folder)}" branch --show-current 2>$null } catch {}`;
+  }
+
+  gitRemoteOrigin(folder: string): string {
+    const f = escapeWindowsArg(folder);
+    return `try { $u = git -C "${f}" remote get-url origin 2>$null; if (-not $u) { $u = git -C "${f}" config --get remote.origin.url 2>$null }; if ($u) { Write-Output $u } } catch {}`;
+  }
+
+  gitLsRemoteNonInteractive(url: string): string {
+    const u = escapePowerShellArgInner(url);
+    return [
+      `$env:GIT_TERMINAL_PROMPT = '0'`,
+      `$env:GCM_INTERACTIVE = 'never'`,
+      `git ls-remote '${u}' HEAD`,
+      `if ($LASTEXITCODE -eq 0) { Write-Output '${GIT_LS_REMOTE_OK_MARKER}' } else { exit $LASTEXITCODE }`,
+    ].join('; ');
+  }
+
+  httpGetStatusWithBearer(url: string, token: string): string {
+    const u = escapePowerShellArgInner(url);
+    const t = escapePowerShellArgInner(token);
+    // Invoke-WebRequest runs in-process, so the token is on no child process
+    // argv (it is still on the powershell.exe command line that runs this
+    // script, see os-commands.ts). A non-2xx answer throws; its status is read off the
+    // exception's response. No response at all prints a non-numeric marker.
+    return [
+      `$ProgressPreference = 'SilentlyContinue'`,
+      `try { $r = Invoke-WebRequest -UseBasicParsing -Method Get -Uri '${u}' -Headers @{ Authorization = 'Bearer ${t}' }; Write-Output ([int]$r.StatusCode) } catch { $resp = $_.Exception.Response; if ($resp) { Write-Output ([int]$resp.StatusCode) } else { Write-Output 'FLEET_HTTP_NO_RESPONSE' } }`,
+    ].join('; ');
   }
 
   // --- Process management ---
@@ -337,9 +512,20 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
   // --- Agent provisioning ---
 
   hashFilesRecursive(dir: string): string {
-    const winDir = dir.replace(/\//g, '\\').replace(/'/g, "''");
-    const psScript = `$b = Join-Path $HOME '${winDir}'; if (Test-Path $b) { Get-ChildItem -Path $b -Recurse -File | ForEach-Object { $h = (Get-FileHash -Path $_.FullName -Algorithm SHA256).Hash.ToLower(); $r = $_.FullName.Substring($b.Length + 1).Replace('\\', '/'); "$h  ./$r" } }`;
-    const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
-    return `powershell -EncodedCommand ${encoded}`;
+    const winDir = escapePowerShellArgInner(dir.replace(/\//g, '\\'));
+    // Hash via .NET's SHA256 directly rather than the Get-FileHash cmdlet:
+    // on a host where PSModulePath lists a PowerShell-7 Microsoft.PowerShell.Utility
+    // module ahead of the Windows PowerShell 5.1 one (common on windows-latest
+    // images, and on dev boxes with both editions installed), 5.1's cmdlet
+    // auto-loader resolves the name to the incompatible pwsh module manifest
+    // and never finds Get-FileHash, failing with "term not recognized" even
+    // though $HOME/the target files are fine. Module-qualifying the call
+    // (Microsoft.PowerShell.Utility\Get-FileHash) does not help -- module
+    // *name* resolution still prefers the PSModulePath-earlier pwsh module.
+    // [System.Security.Cryptography.SHA256] is a BCL type available
+    // identically in both editions, so it sidesteps the module lookup
+    // entirely.
+    const psScript = `$b = Join-Path $HOME '${winDir}'; if (Test-Path $b) { Get-ChildItem -Path $b -Recurse -File | ForEach-Object { $sha = [System.Security.Cryptography.SHA256]::Create(); try { $bytes = $sha.ComputeHash([System.IO.File]::ReadAllBytes($_.FullName)) } finally { $sha.Dispose() }; $h = ([System.BitConverter]::ToString($bytes)).Replace('-', '').ToLower(); $r = $_.FullName.Substring($b.Length + 1).Replace('\\', '/'); "$h  ./$r" } }`;
+    return wrapPowerShellEncoded(psScript);
   }
 }

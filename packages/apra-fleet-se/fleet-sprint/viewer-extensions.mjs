@@ -1,4 +1,52 @@
 import { escapeHtml } from '@apralabs/apra-fleet-workflow/viewer/html-utils';
+import { computeSprintProgress } from './sprint-progress.mjs';
+import { DISPATCH_TOOL_CALLS_STATE_NAMESPACE } from './dispatch-accounting.mjs';
+import { MEMBER_INIT_STATE_NAMESPACE } from './member-init-probe.mjs';
+import { DECISIONS_STATE_NAMESPACE, answerPendingDecision } from './decision-wait.mjs';
+
+/**
+ * apra-fleet-x8r.1: pure HTML-string builder for the beads-closed/required
+ * progress-bar widget in the single-sprint viewer's extension area. Takes
+ * the ALREADY-COMPUTED `{ closed, required, fraction }` shape
+ * `computeSprintProgress()` returns -- never re-derives scope or counts
+ * itself -- and renders a horizontal bar that fills left-to-right by
+ * `fraction`, plus the numeric 'M/N' text. Styled with the viewer's existing
+ * `--bg`/`--bg-glass`/`--accent` CSS variables. `required === 0` renders a
+ * flat, empty bar and 'Required: 0/0' text rather than dividing by zero or
+ * throwing.
+ *
+ * apra-fleet-vk0a.1: the 'M/N' text carries an explicit `Required: ` label
+ * (closed/required, goal+decomposedParentIds-filtered per
+ * computeSprintProgress()) -- this widget is reused as-is by BOTH the
+ * fleet-sprint per-sprint viewer's Tasks tab (renderBeadsPanel() below --
+ * apra-fleet-vk0a.2 pins it into the FIXED panel-header row, next to the
+ * 'Tasks' label, rather than the top of the scrollable tree below, so it
+ * never scrolls out of view alongside renderBeadsHtml()'s OWN,
+ * differently-scoped 'All tasks (incl. backlog)' count -- see that widget's
+ * doc comment) AND the supervisor dashboard's Sprint Stack card
+ * (dashboard.mjs's renderSprintProgressHtml(), next to its OWN
+ * differently-scoped 'N total in scope' count -- apra-fleet-vk0a.3).
+ * Labeling it once, here, keeps both pairings unambiguous without a second
+ * implementation.
+ *
+ * @param {{ closed: number, required: number, fraction: number }} progress
+ * @returns {string}
+ */
+export function renderProgressBarHtml(progress) {
+    const p = progress || { closed: 0, required: 0, fraction: 0 };
+    const closed = typeof p.closed === 'number' && Number.isFinite(p.closed) ? p.closed : 0;
+    const required = typeof p.required === 'number' && Number.isFinite(p.required) ? p.required : 0;
+    const fraction = typeof p.fraction === 'number' && Number.isFinite(p.fraction) ? p.fraction : 0;
+    const pct = Math.max(0, Math.min(1, fraction)) * 100;
+    return (
+        '<div class="sprint-progress" style="display: flex; align-items: center; gap: 8px; padding: 8px; font-size: 12px;">' +
+        '<div style="flex: 1; height: 8px; background: var(--bg); border: 1px solid var(--bg-glass); border-radius: 4px; overflow: hidden;">' +
+        '<div style="width: ' + pct + '%; height: 100%; background: var(--accent);"></div>' +
+        '</div>' +
+        '<div style="color: #a1a1aa; white-space: nowrap;">Required: ' + closed + '/' + required + '</div>' +
+        '</div>'
+    );
+}
 
 /**
  * Pure HTML-string builder for the beads task tree (apra-fleet-unw.10,
@@ -59,20 +107,21 @@ import { escapeHtml } from '@apralabs/apra-fleet-workflow/viewer/html-utils';
  * header row and outer `<table>` wrapper always render regardless of which
  * (if either) section has content.
  *
- * apra-fleet-k7s: unlike Sprint (nested by `parent` containment), Backlog
- * has no shared parent/epic to nest under -- what it DOES sometimes have is
- * `blocks`-type dependency edges BETWEEN backlog items themselves (e.g. two
- * unplanned beads under the same stale epic, one blocking the other). When
- * present, those edges now drive nesting the same way `renderNode` nests
- * Sprint rows: the blocker renders as the parent row, the blocked item
- * nests as its child, using the identical indent/prefix/cycle-guard
- * mechanics. A backlog item with no blocks-edge to another IN-SET backlog
- * item (the common case -- most backlog beads are unrelated to each other)
- * remains a flat, top-level row, same as before -- nesting is only ever
- * drawn when a real edge justifies it, never implied. Root rows (including
- * every item with no in-set blocker) are still sorted priority-then-id for
- * scannability; a blocked item's DEPTH in the tree is what shows structure,
- * not its position in that sort.
+ * apra-fleet-k7s: Backlog nests the same way Sprint does -- by `parent`
+ * containment FIRST (an in-set parent-child edge, e.g. an epic's children
+ * that never made it into a sprint run) -- falling back to `blocks`-type
+ * dependency edges BETWEEN backlog items only for a genuinely parent-less
+ * item (e.g. two unplanned beads under the same stale epic, one blocking
+ * the other, with the epic itself out of this dataset). When a blocks-edge
+ * fallback fires, it drives nesting the same way `renderNode` nests Sprint
+ * rows: the blocker renders as the parent row, the blocked item nests as
+ * its child, using the identical indent/prefix/cycle-guard mechanics. A
+ * backlog item with neither an in-set parent nor a blocks-edge to another
+ * IN-SET backlog item remains a flat, top-level row -- nesting is only
+ * ever drawn when a real edge justifies it, never implied. Root rows
+ * (including every item with no in-set parent/blocker) are still sorted
+ * priority-then-id for scannability; a nested item's DEPTH in the tree is
+ * what shows structure, not its position in that sort.
  *
  * Every rendering decision here (status/type badges, tree placement) is
  * defensive by construction: unrecognized/missing status, type, model, or
@@ -445,15 +494,14 @@ export function renderBeadsHtml(sprintTasks, backlogTasks, collapsedIds) {
         return html;
     }
 
-    // apra-fleet-k7s: Backlog is built into a tree from `blocks`-type
-    // dependency edges BETWEEN backlog items (mirrors the doc-comment above
-    // and reuses renderNode's own indent/prefix/cycle-guard mechanics, just
-    // keyed off a separate `backlogMap`/`backlogChildrenOf` built from
-    // blocks-edges instead of Sprint's `map`/`childrenOf` built from
-    // `parent`). A blocker outside the backlog set (e.g. it's actually in
-    // this run's Sprint, or not part of this dataset at all) does not
-    // count -- same "only an in-dataset edge nests" rule Sprint applies to
-    // `parent`.
+    // apra-fleet-k7s: Backlog is built into a tree from `parent` containment
+    // FIRST, `blocks`-type dependency edges BETWEEN backlog items SECOND
+    // (mirrors the doc-comment above and reuses renderNode's own indent/
+    // prefix/cycle-guard mechanics, just keyed off a separate `backlogMap`/
+    // `backlogChildrenOf` rather than Sprint's `map`/`childrenOf`). A parent
+    // or blocker outside the backlog set (e.g. it's actually in this run's
+    // Sprint, or not part of this dataset at all) does not count -- same
+    // "only an in-dataset edge nests" rule Sprint applies to `parent`.
     const backlogMap = {};
     backlogTasks.forEach((t) => { backlogMap[t.id] = { ...t, blockedBy: [] }; });
 
@@ -466,7 +514,20 @@ export function renderBeadsHtml(sprintTasks, backlogTasks, collapsedIds) {
             .filter((d) => d && d.type === 'blocks' && backlogMap[d.depends_on_id])
             .map((d) => d.depends_on_id);
         backlogMap[t.id].blockedBy = blockerIds;
-        if (blockerIds.length > 0) {
+
+        // apra-fleet: containment (`parent`, in-set) nests FIRST, mirroring
+        // Sprint's `map`/`childrenOf` above -- most backlog beads have a real
+        // parent-child edge (an epic's children that never made it into a
+        // sprint run), and nesting those under a `blocks` edge instead left
+        // every parent-child-only bead rendering as a flat root alongside
+        // its own epic. `blocks`-edge nesting is now the FALLBACK, used only
+        // for a genuinely parent-less backlog item that still blocks/is
+        // blocked by another in-set item.
+        const parentId = t.parent;
+        if (parentId !== undefined && parentId !== null && backlogMap[parentId]) {
+            (backlogChildrenOf[parentId] = backlogChildrenOf[parentId] || []).push(t.id);
+            nestedBacklogIds.add(t.id);
+        } else if (blockerIds.length > 0) {
             // A node renders exactly once (cycle-guard below), so with
             // multiple in-set blockers only one can be the tree-parent --
             // the lowest-sorted blocker id wins, for deterministic output.
@@ -535,7 +596,33 @@ export function renderBeadsHtml(sprintTasks, backlogTasks, collapsedIds) {
         return html;
     }
 
-    let html = '<table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 13px;">';
+    // apra-fleet-eft.90: a persistent item count at the top of the panel --
+    // N = every rendered bead across BOTH sections (Sprint + Backlog), M =
+    // how many of those are not closed (open, in_progress, blocked, etc).
+    // Parent and child beads each count as their own item toward both
+    // numbers -- these are flat counts over the input arrays themselves,
+    // never deduped/collapsed by tree hierarchy (a bead present in
+    // `sprintTasks`/`backlogTasks` counts exactly once regardless of how
+    // many descendants it has). An empty panel (both lists empty) renders
+    // 'All tasks (incl. backlog): 0 open / 0 total', never NaN/throwing.
+    //
+    // apra-fleet-vk0a.1: labeled 'All tasks (incl. backlog)' -- explicitly
+    // distinct from the DIFFERENT scope/definition of renderProgressBarHtml()'s
+    // 'Required: M/N' widget (goal+decomposedParentIds-filtered, sprintTasks
+    // only), which apra-fleet-vk0a.2 pins into the Tasks tab's FIXED
+    // panel-header row (renderBeadsPanel() below) rather than rendering it
+    // here at the top of this scrollable panel. Before the vk0a.1 label, the
+    // two counts read as a bug (same-looking 'M/N' pair, different
+    // denominators AND inverted numerator polarity -- this one is
+    // open-count, that one is closed-count) rather than two intentionally
+    // different, both-useful numbers.
+    const countedTasks = sprintTasks.concat(backlogTasks);
+    const totalBeadCount = countedTasks.length;
+    const openBeadCount = countedTasks.filter((t) => t && (t.status || '').toString().toLowerCase() !== 'closed').length;
+    const countHtml = '<div class="beads-count" style="padding: 4px 8px; font-size: 12px; color: #a1a1aa;">' +
+        'All tasks (incl. backlog): ' + openBeadCount + ' open / ' + totalBeadCount + ' total</div>';
+
+    let html = countHtml + '<table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 13px;">';
     html += '<tr style="border-bottom: 1px solid rgba(255,255,255,0.1);">' +
         '<th style="padding: 8px;">ID</th><th style="padding: 8px;">Title</th><th style="padding: 8px;">Type</th>' +
         '<th style="padding: 8px;">Status</th><th style="padding: 8px;">Pri</th><th style="padding: 8px;">Model</th></tr>';
@@ -611,7 +698,7 @@ export function renderBeadsHtml(sprintTasks, backlogTasks, collapsedIds) {
 }
 
 /**
- * apra-fleet-eft.37.3: pure HTML-string builder for the auto-sprint verdict
+ * apra-fleet-eft.37.3: pure HTML-string builder for the fleet-sprint verdict
  * badge + PR link, moved OUT of the generic workflow core (which used to
  * mint `state.verdict`/`state.prUrl` by name -- see
  * docs/workflow-core-boundary-refactoring.md M2) and into this se-owned
@@ -620,11 +707,11 @@ export function renderBeadsHtml(sprintTasks, backlogTasks, collapsedIds) {
  * SCALAR fields as a generic, unstyled key/value strip (src/viewer/
  * index.mjs's `#result-strip`). This function reads the SAME
  * `state.result` object, but knows the two keys that are meaningful for an
- * auto-sprint run specifically -- `verdict` (colored by outcome) and
+ * fleet-sprint run specifically -- `verdict` (colored by outcome) and
  * `prUrl` (link-ified) -- exactly the se-domain knowledge that has no
  * business living in the generic engine.
  *
- * Returns '' when `result` carries neither key (e.g. a non-auto-sprint
+ * Returns '' when `result` carries neither key (e.g. a non-fleet-sprint
  * workflow, or a run that hasn't finished yet), so the caller can hide its
  * container entirely rather than show an empty badge strip.
  *
@@ -634,9 +721,12 @@ export function renderBeadsHtml(sprintTasks, backlogTasks, collapsedIds) {
 export function renderResultExtrasHtml(result) {
     const verdict = result && typeof result === 'object' ? result.verdict : undefined;
     const prUrl = result && typeof result === 'object' ? result.prUrl : undefined;
-    // Nothing se-meaningful to show (non-auto-sprint workflow, or a run that
+    const warnings = result && typeof result === 'object' && Array.isArray(result.warnings)
+        ? result.warnings.filter((w) => typeof w === 'string' && w.length > 0)
+        : [];
+    // Nothing se-meaningful to show (non-fleet-sprint workflow, or a run that
     // hasn't finished yet) -- let the caller hide its container entirely.
-    if (verdict == null && prUrl == null) return '';
+    if (verdict == null && prUrl == null && warnings.length === 0) return '';
 
     // Color signals outcome, same register as the beads status badges above:
     // a clean PASS/MERGED/APPROVED recedes to green, anything that means
@@ -666,7 +756,80 @@ export function renderResultExtrasHtml(result) {
             'style="color: var(--accent); font-size: 11px; text-decoration: none; white-space: nowrap;">PR -&gt;</a>';
     }
 
-    return verdictHtml + prHtml;
+    // A terminal status of success-with-warnings (e.g. PR skipped for a VCS
+    // auth failure) renders each warning as an amber badge, never as plain
+    // success.
+    let warnHtml = '';
+    for (let i = 0; i < warnings.length; i++) {
+        warnHtml += '<span title="' + escapeHtml(warnings[i]) + '" style="color: var(--warning, #f59e0b); ' +
+            'font-weight: 700; font-size: 11px; border: 1px solid var(--warning, #f59e0b); border-radius: 4px; ' +
+            'padding: 2px 6px; white-space: nowrap;">WARNING: ' + escapeHtml(warnings[i]) + '</span>';
+    }
+
+    return verdictHtml + warnHtml + prHtml;
+}
+
+/**
+ * Pure HTML-string builder for the "Beads database" block: which .beads
+ * (dir | prefix | remote) every member's bd resolved to at sprint start, as
+ * published by the runner's beads identity precondition under the
+ * `beadsIdentity` state namespace ({ expected, expectedFrom, members: {
+ * name: { beadsDir, prefix, syncRemote, repoRemote, unresolved?: string[] }
+ * }, warnings?: string[] }). A field named in a member's `unresolved` list
+ * renders as an amber "?" cell (the probe could not report it, so it was
+ * not compared); every published warning renders as one amber row under
+ * the table. Returns '' when nothing has been published yet so the caller
+ * can omit the block. Same embed rules as renderBeadsHtml: concatenation
+ * only, every value through escapeHtml.
+ *
+ * @param {{ expected?: object|null, expectedFrom?: string, members?: Record<string, object>, warnings?: string[] }|null|undefined} identity
+ * @returns {string}
+ */
+export function renderBeadsIdentityHtml(identity) {
+    if (!identity || typeof identity !== 'object') return '';
+    const members = identity.members && typeof identity.members === 'object' ? identity.members : {};
+    const names = Object.keys(members);
+    const warnings = Array.isArray(identity.warnings) ? identity.warnings : [];
+    if (names.length === 0 && !identity.expected && warnings.length === 0) return '';
+
+    function cell(value, unresolved) {
+        if (unresolved) {
+            return '<td data-unresolved="true" title="not reported by this member; not compared" style="padding: 2px 8px; font-size: 11px; font-family: monospace; color: #f59e0b; white-space: nowrap;">?</td>';
+        }
+        return '<td style="padding: 2px 8px; font-size: 11px; font-family: monospace; white-space: nowrap;">' + escapeHtml(String(value || '')) + '</td>';
+    }
+    function row(label, id) {
+        const rec = id && typeof id === 'object' ? id : {};
+        const unresolved = new Set(Array.isArray(rec.unresolved) ? rec.unresolved : []);
+        return '<tr>' +
+            '<td style="padding: 2px 8px; font-size: 11px; color: #a1a1aa; white-space: nowrap;">' + escapeHtml(String(label)) + '</td>' +
+            cell(rec.beadsDir || '(no .beads)', false) +
+            cell(rec.prefix || '?', unresolved.has('prefix')) +
+            cell(rec.syncRemote || '(unset)', unresolved.has('syncRemote')) +
+            '</tr>';
+    }
+
+    let rows = '';
+    if (identity.expected) {
+        const from = identity.expectedFrom === 'backlog' ? 'expected (from backlog)' : 'expected';
+        rows += row(from, identity.expected);
+    }
+    for (const name of names) rows += row(name, members[name]);
+
+    let warningsHtml = '';
+    for (const w of warnings) {
+        warningsHtml += '<div data-beads-identity-warning="true" style="font-size: 11px; color: #f59e0b; padding: 2px 8px;">WARNING: ' + escapeHtml(String(w)) + '</div>';
+    }
+
+    return '<div data-beads-identity="true" style="margin: 4px 0 8px 0;">' +
+        '<div style="font-size: 11px; font-weight: 600; color: #a1a1aa; padding: 2px 8px;">Beads database</div>' +
+        '<table style="border-collapse: collapse;">' +
+        '<tr>' +
+        '<th style="padding: 2px 8px; font-size: 10px; color: #71717a; text-align: left;">member</th>' +
+        '<th style="padding: 2px 8px; font-size: 10px; color: #71717a; text-align: left;">dir</th>' +
+        '<th style="padding: 2px 8px; font-size: 10px; color: #71717a; text-align: left;">prefix</th>' +
+        '<th style="padding: 2px 8px; font-size: 10px; color: #71717a; text-align: left;">remote</th>' +
+        '</tr>' + rows + '</table>' + warningsHtml + '</div>';
 }
 
 // apra-fleet-eft.37.4 (M3, docs/workflow-core-boundary-refactoring.md):
@@ -693,9 +856,56 @@ function findBeadById(state, id) {
     return null;
 }
 
+/**
+ * Neutral placeholder for the live view's progress area when no beads
+ * summary has been published yet -- never a misleading 'Required: 0/N'.
+ * Rendered by renderBeadsPanel() (the caller), so renderProgressBarHtml()
+ * itself stays unchanged for its other consumers.
+ * @returns {string}
+ */
+export function renderProgressPlaceholderHtml() {
+    return (
+        '<div class="sprint-progress sprint-progress-pending" style="display: flex; align-items: center; gap: 8px; padding: 8px; font-size: 12px;">' +
+        '<div style="color: #a1a1aa; white-space: nowrap;">Required: no summary yet</div>' +
+        '</div>'
+    );
+}
+
+/**
+ * Turns a published beads summary entry (GET /state?summary=1's
+ * extensions.beads) into the progress-bar HTML, or the placeholder when the
+ * entry is absent or malformed. Pure; shared by the browser script below.
+ * @param {object|null} summary
+ * @returns {string}
+ */
+export function renderBeadsSummaryProgressHtml(summary) {
+    const ok = summary && typeof summary === 'object'
+        && typeof summary.closed === 'number' && Number.isFinite(summary.closed)
+        && typeof summary.required === 'number' && Number.isFinite(summary.required);
+    if (!ok) return renderProgressPlaceholderHtml();
+    return renderProgressBarHtml({ closed: summary.closed, required: summary.required, fraction: summary.fraction });
+}
+
 export const beadsExtension = {
     id: 'beads',
     title: 'Tasks',
+    // Core's once-per-publish summarize hook (viewer/index.mjs): runs
+    // server-side in the sprint child, only when the 'beads' namespace is
+    // published. Pure, no I/O. computed_at is when the runner FETCHED the
+    // beads (payload.fetchedAt), not render/publish time.
+    summarize(data) {
+        const d = data || {};
+        const progress = computeSprintProgress(d.sprintTasks || [], {
+            goalMax: d.goalMax,
+            decomposedParentIds: d.decomposedParentIds,
+        });
+        return {
+            closed: progress.closed,
+            required: progress.required,
+            fraction: progress.fraction,
+            computed_at: d.fetchedAt ?? null,
+        };
+    },
     // apra-fleet-eft.37.4 (M3): the beads extension's detailLookup hook,
     // called by core's generic GET /extensions/beads/detail/:itemId route
     // (packages/apra-fleet-workflow/src/viewer/index.mjs) against the LIVE,
@@ -715,8 +925,12 @@ export const beadsExtension = {
         ${escapeHtml.toString()}
         ${renderBeadsHtml.toString()}
         ${renderResultExtrasHtml.toString()}
+        ${renderBeadsIdentityHtml.toString()}
+        ${renderProgressBarHtml.toString()}
+        ${renderProgressPlaceholderHtml.toString()}
+        ${renderBeadsSummaryProgressHtml.toString()}
 
-        // apra-fleet-eft.37.3: mounts the auto-sprint verdict badge + PR
+        // apra-fleet-eft.37.3: mounts the fleet-sprint verdict badge + PR
         // link into the header, next to core's generic (unstyled)
         // #result-strip -- see viewer/index.mjs's 'workflow:result'
         // CustomEvent, dispatched on every renderState() with
@@ -837,12 +1051,54 @@ export const beadsExtension = {
         // without waiting on (or synthesizing) a new server payload.
         const collapsedBeadIds = new Set();
         let lastBeadsData = { sprintTasks: [], backlogTasks: [] };
+        // The runner's beads identity precondition publishes under its own
+        // 'beadsIdentity' namespace (workflow:state:beadsIdentity); cached
+        // here and rendered at the top of the Tasks panel on every rebuild.
+        let lastBeadsIdentity = null;
+        // Latest published beads summary (null until the first one).
+        // workflow:summary:beads is dispatched just before
+        // workflow:state:beads on every render, so the state handler below
+        // always renders the current summary.
+        let lastBeadsSummary = null;
+
+        document.addEventListener('workflow:summary:beads', (e) => {
+            lastBeadsSummary = e.detail || null;
+        });
 
         function renderBeadsPanel() {
             const container = document.getElementById('extension-beads');
             if (!container) return;
-            container.innerHTML = renderBeadsHtml(lastBeadsData.sprintTasks || [], lastBeadsData.backlogTasks || [], collapsedBeadIds);
+            // The progress bar renders the beads summary the child computed
+            // server-side once per publish (summarize() above, delivered by
+            // core's workflow:summary:beads event) -- the SAME object the
+            // supervisor reads from GET /state?summary=1 -- never a browser
+            // recompute of sprintTasks. No summary yet -> placeholder.
+            const progressHtml = renderBeadsSummaryProgressHtml(lastBeadsSummary);
+            // apra-fleet-vk0a.2: pinned into the FIXED panel-header row (a
+            // sibling of the 'Tasks' label, core's generic per-extension
+            // header hook -- \`id="panel-header-\${ext.id}-extra"\`, see
+            // viewer/index.mjs) instead of re-rendered at the top of the
+            // SCROLLABLE #extension-beads container on every poll -- so it
+            // stays visible regardless of scroll position in a long task
+            // list. Falls back to the pre-vk0a.2 inline placement when the
+            // hook is absent (an older/mismatched core template), rather
+            // than silently dropping the widget.
+            const headerExtra = document.getElementById('panel-header-beads-extra');
+            const identityHtml = renderBeadsIdentityHtml(lastBeadsIdentity);
+            if (headerExtra) {
+                headerExtra.innerHTML = progressHtml;
+                container.innerHTML = identityHtml
+                    + renderBeadsHtml(lastBeadsData.sprintTasks || [], lastBeadsData.backlogTasks || [], collapsedBeadIds);
+            } else {
+                container.innerHTML = progressHtml + identityHtml
+                    + renderBeadsHtml(lastBeadsData.sprintTasks || [], lastBeadsData.backlogTasks || [], collapsedBeadIds);
+            }
         }
+
+        document.addEventListener('workflow:state:beadsIdentity', (e) => {
+            lastBeadsIdentity = e.detail || null;
+            renderBeadsPanel();
+        });
 
         // Single document-level click-delegation listener (same rationale
         // as the capture-phase 'toggle' listener above) catches every
@@ -869,7 +1125,7 @@ export const beadsExtension = {
             renderBeadsPanel();
         });
 
-        // apra-fleet-eft.37.3: mounts the auto-sprint verdict badge + PR
+        // apra-fleet-eft.37.3: mounts the fleet-sprint verdict badge + PR
         // link into the header, next to core's generic (unstyled)
         // #result-strip -- see viewer/index.mjs's 'workflow:result'
         // CustomEvent, dispatched on every renderState() with
@@ -880,3 +1136,374 @@ export const beadsExtension = {
         });
     `
 };
+
+/**
+ * Pure HTML-string builder for the Knowledge and Code Intel tab: per-member and
+ * per-dispatch kb_* / code_* tool call counts, from the records
+ * dispatch-accounting.mjs publishes (`{ dispatches: [{ index, member, role,
+ * label, kb, code, reason }] }` -- session_stats snapshots taken before and
+ * after each dispatch). It never re-derives a count from anything else.
+ *
+ * A count is either a non-negative integer or unknown: anything that is not
+ * an integer (the 'unknown' marker, a missing or malformed value) renders as
+ * the word "unknown", never as 0. A member total is unknown when any of its
+ * dispatches is unknown for that kind.
+ *
+ * Same embed rule as renderBeadsHtml above: string concatenation only (this
+ * source is embedded verbatim into the browser script via .toString()), every
+ * interpolated value through escapeHtml, every helper nested inside so the one
+ * embed captures everything, and a try/catch backstop so a malformed record
+ * can never take the dashboard down.
+ *
+ * @param {{ dispatches?: object[] }|null|undefined} data
+ * @returns {string}
+ */
+export function renderKbCodeIntelHtml(data, init) {
+    try {
+        function isCount(n) {
+            return typeof n === 'number' && Number.isInteger(n) && n >= 0;
+        }
+        function countCell(n, title) {
+            if (isCount(n)) {
+                return '<td style="padding: 2px 8px; font-size: 11px; text-align: right;">' + escapeHtml(String(n)) + '</td>';
+            }
+            const tip = title ? ' title="' + escapeHtml(String(title)) + '"' : '';
+            return '<td data-kb-panel-unknown="true" style="padding: 2px 8px; font-size: 11px; text-align: right; color: #f59e0b;"' + tip + '>unknown</td>';
+        }
+        function textCell(v) {
+            return '<td style="padding: 2px 8px; font-size: 11px;">' + escapeHtml(String(v)) + '</td>';
+        }
+        function th(label) {
+            return '<th style="padding: 2px 8px; font-size: 10px; color: #71717a; text-align: left;">' + escapeHtml(label) + '</th>';
+        }
+        // Why a member's totals are unknown: the first unknown dispatch's reason,
+        // else the member-init record when that member's tools were unavailable.
+        function memberUnknownReason(name, firstReason) {
+            if (firstReason) return String(firstReason);
+            const ms = (init && typeof init === 'object' && Array.isArray(init.members)) ? init.members : [];
+            for (const m of ms) {
+                if (m && m.member === name && m.verified !== true) return 'member tools unavailable: ' + String(m.reason || 'unverified');
+            }
+            return 'at least one dispatch count is unknown';
+        }
+        const records = (data && typeof data === 'object' && Array.isArray(data.dispatches))
+            ? data.dispatches.filter(function (r) { return r && typeof r === 'object'; })
+            : [];
+
+        // Lower-quality-of-service section (b4g.65): the sprint banner and one
+        // line per NON-verified member with its reason and one-line fix.
+        // Verified members get no line; with all verified nothing renders.
+        function lowerQualityHtml() {
+            const members = (init && typeof init === 'object' && Array.isArray(init.members))
+                ? init.members.filter(function (m) { return m && typeof m === 'object' && m.verified !== true; })
+                : [];
+            if (members.length === 0) return '';
+            let out = '';
+            if (init && typeof init.banner === 'string' && init.banner) {
+                out += '<div data-kb-lower-quality-banner="true" style="font-size: 11px; font-weight: 600; color: #f59e0b; padding: 4px 8px;">' + escapeHtml(init.banner) + '</div>';
+            }
+            for (const m of members) {
+                out += '<div data-kb-lower-quality-member="' + escapeHtml(String(m.member || '(unknown member)')) + '" style="font-size: 11px; color: #f59e0b; padding: 2px 8px;">'
+                    + escapeHtml(String(m.member || '(unknown member)')) + ': ' + escapeHtml(String(m.reason || 'unverified'))
+                    + ' -- fix: ' + escapeHtml(String(m.fix || '(none recorded)')) + '</div>';
+            }
+            return out;
+        }
+
+        let html = '<div data-kb-code-intel="true" style="padding: 8px;">' + lowerQualityHtml();
+        html += '<div style="font-size: 11px; color: #a1a1aa; padding: 2px 8px;">kb_* and code_* tool calls counted by each member\'s own fleet server, read before and after every dispatch. "unknown" means the count could not be read -- it is not zero.</div>';
+        if (records.length === 0) {
+            html += '<div data-kb-panel-empty="true" style="font-size: 11px; color: #71717a; padding: 8px;">(no dispatches recorded yet)</div>';
+            return html + '</div>';
+        }
+
+        // Per-member totals, in first-dispatch order.
+        const order = [];
+        const totals = {};
+        for (const r of records) {
+            const name = String(r.member || '(unknown member)');
+            if (!Object.prototype.hasOwnProperty.call(totals, name)) {
+                totals[name] = { dispatches: 0, kb: 0, code: 0, reason: null };
+                order.push(name);
+            }
+            const t = totals[name];
+            t.dispatches++;
+            if (!t.reason && r.reason && (!isCount(r.kb) || !isCount(r.code))) t.reason = String(r.reason);
+            t.kb = isCount(t.kb) && isCount(r.kb) ? t.kb + r.kb : 'unknown';
+            t.code = isCount(t.code) && isCount(r.code) ? t.code + r.code : 'unknown';
+        }
+        html += '<div style="font-size: 11px; font-weight: 600; color: #a1a1aa; padding: 8px 8px 2px 8px;">Per member</div>';
+        html += '<table data-kb-panel-members="true" style="border-collapse: collapse;"><tr>' + th('member') + th('dispatches') + th('kb_* calls') + th('code_* calls') + '</tr>';
+        for (const name of order) {
+            const t = totals[name];
+            html += '<tr data-member="' + escapeHtml(name) + '">' + textCell(name) + textCell(t.dispatches)
+                + countCell(t.kb, memberUnknownReason(name, t.reason)) + countCell(t.code, memberUnknownReason(name, t.reason)) + '</tr>';
+        }
+        html += '</table>';
+        // Visible reason for every member whose totals are unknown.
+        for (const name of order) {
+            const t = totals[name];
+            if (isCount(t.kb) && isCount(t.code)) continue;
+            html += '<div data-kb-unknown-reason="' + escapeHtml(name) + '" style="font-size: 11px; color: #f59e0b; padding: 2px 8px;">'
+                + escapeHtml(name) + ': kb_* and code_* counts unknown (' + escapeHtml(memberUnknownReason(name, t.reason)) + ')</div>';
+        }
+
+        html += '<div style="font-size: 11px; font-weight: 600; color: #a1a1aa; padding: 8px 8px 2px 8px;">Per dispatch</div>';
+        html += '<table data-kb-panel-dispatches="true" style="border-collapse: collapse;"><tr>' + th('#') + th('member') + th('role') + th('label') + th('kb_* calls') + th('code_* calls') + '</tr>';
+        for (const r of records) {
+            html += '<tr>' + textCell(isCount(r.index) ? r.index : '-') + textCell(r.member || '(unknown member)')
+                + textCell(r.role || '-') + textCell(r.label || '-')
+                + countCell(r.kb, r.reason) + countCell(r.code, r.reason) + '</tr>';
+        }
+        html += '</table>';
+        return html + '</div>';
+    } catch (err) {
+        return '<div data-kb-code-intel="true" data-kb-code-intel-error="true" style="font-size: 11px; color: #71717a; padding: 8px;">(Knowledge and Code Intel panel unavailable)</div>';
+    }
+}
+
+/**
+ * The Knowledge and Code Intel tab: its own dashboardExtensions entry
+ * (registered alongside beadsExtension in bin/cli.mjs), subscribed to
+ * dispatch-accounting.mjs's publishState namespace.
+ */
+export const kbCodeIntelExtension = {
+    id: 'kb-code-intel',
+    title: 'Knowledge & Code Intel',
+    js: `
+        ${escapeHtml.toString()}
+        ${renderKbCodeIntelHtml.toString()}
+
+        let lastDispatchToolCalls = null;
+        let lastMemberInit = null;
+
+        function renderKbCodeIntelPanel() {
+            const container = document.getElementById('extension-kb-code-intel');
+            if (!container) return;
+            container.innerHTML = renderKbCodeIntelHtml(lastDispatchToolCalls, lastMemberInit);
+        }
+
+        document.addEventListener('workflow:state:' + ${JSON.stringify(MEMBER_INIT_STATE_NAMESPACE)}, (e) => {
+            lastMemberInit = e.detail || null;
+            renderKbCodeIntelPanel();
+        });
+
+        // String-concat form (not a quoted interpolation) so the per-line
+        // shell-command guard does not read it as a member-bound command.
+        document.addEventListener('workflow:state:' + ${JSON.stringify(DISPATCH_TOOL_CALLS_STATE_NAMESPACE)}, (e) => {
+            lastDispatchToolCalls = e.detail || null;
+            renderKbCodeIntelPanel();
+        });
+
+        renderKbCodeIntelPanel();
+    `
+};
+
+// =============================================================================
+// PENDING OPERATOR DECISIONS: banner + answer form (decision-wait.mjs publishes
+// the 'decisions' namespace: { state, pending: [...], waitingSince, setAside }).
+// =============================================================================
+
+/** Longest operator answer the answer route accepts. */
+export const DECISION_ANSWER_MAX_CHARS = 4000;
+
+/**
+ * The decisions banner. Pure and self-contained (it is embedded into the
+ * browser page with .toString(), like the other renderers here): every
+ * interpolated value goes through escapeHtml; a malformed record can never
+ * take the page down. Returns '' when nothing is pending. Question, options
+ * and recommendation are never truncated.
+ *
+ * @param {{ state?: string, pending?: object[] }|null|undefined} data
+ * @returns {string}
+ */
+export function renderDecisionsBannerHtml(data) {
+    try {
+        const pending = data && Array.isArray(data.pending) ? data.pending.filter(function (d) { return d && typeof d === 'object'; }) : [];
+        if (pending.length === 0) return '';
+        function channelHtml(name, n) {
+            if (!n || typeof n !== 'object' || !n.status) {
+                return '<span data-notify-channel="' + escapeHtml(name) + '" style="color: #a1a1aa;">' + escapeHtml(name) + ': not attempted</span>';
+            }
+            if (n.status === 'sent') {
+                return '<span data-notify-channel="' + escapeHtml(name) + '" style="color: #4ade80;">' + escapeHtml(name) + ': sent</span>';
+            }
+            return '<span data-notify-channel="' + escapeHtml(name) + '" data-notify-failed="true" style="color: #f87171;">'
+                + escapeHtml(name) + ': notification failed' + (n.reason ? ' (' + escapeHtml(String(n.reason)) + ')' : '') + '</span>';
+        }
+        const paused = data.state === 'paused-awaiting-decision';
+        let html = '<div data-decisions-banner="true" style="border: 1px solid #f59e0b; background: #2a2110; border-radius: 6px; padding: 10px; margin: 6px;">'
+            + '<div style="font-weight: 600; color: #fbbf24; font-size: 13px;">Operator decision needed ('
+            + escapeHtml(String(pending.length)) + ' pending' + (paused ? ', sprint paused awaiting decision' : '') + ')</div>';
+        for (const d of pending) {
+            const id = escapeHtml(String(d.decisionId || ''));
+            const options = Array.isArray(d.options) ? d.options : [];
+            const n = d.notification && typeof d.notification === 'object' ? d.notification : {};
+            html += '<div data-decision-id="' + id + '" style="margin-top: 10px; font-size: 12px; color: #e4e4e7;">'
+                + '<div style="color: #a1a1aa;">Bead ' + escapeHtml(String(d.beadId || '')) + (d.decisionBeadId ? ' (decision bead ' + escapeHtml(String(d.decisionBeadId)) + ')' : '') + '</div>'
+                + '<div data-decision-question="true" style="white-space: pre-wrap; margin: 4px 0;">' + escapeHtml(String(d.question || '')) + '</div>'
+                + '<ul style="margin: 4px 0; padding-left: 18px;">';
+            for (const o of options) {
+                html += '<li data-decision-option="' + escapeHtml(String(o && o.id)) + '" style="white-space: pre-wrap;">(' + escapeHtml(String(o && o.id)) + ') ' + escapeHtml(String(o && o.text)) + '</li>';
+            }
+            html += '</ul><div data-decision-recommendation="true">Recommendation: ' + escapeHtml(String(d.recommendation || '')) + '</div>'
+                + '<div style="margin-top: 4px; font-size: 11px;">Notification: ' + channelHtml('message', n.message) + ' &middot; ' + channelHtml('email', n.email) + '</div>'
+                + '<form data-decision-form="' + id + '" style="margin-top: 6px;">';
+            for (const o of options) {
+                html += '<label style="margin-right: 10px;"><input type="radio" name="option-' + id + '" value="' + escapeHtml(String(o && o.id)) + '"/> ' + escapeHtml(String(o && o.id)) + '</label>';
+            }
+            html += '<div><textarea name="text" maxlength="4000" rows="2" placeholder="Answer or extra instructions" style="width: 90%; margin-top: 4px; background: #18181b; color: #e4e4e7; border: 1px solid #3f3f46;"></textarea></div>'
+                + '<button type="submit" style="margin-top: 4px;">Submit answer</button> <span data-decision-result="true" style="font-size: 11px;"></span>'
+                + '</form></div>';
+        }
+        return html + '</div>';
+    } catch (err) {
+        return '<div data-decisions-banner="true" data-decisions-error="true" style="color: #f87171; padding: 8px;">(pending decisions present but could not be rendered)</div>';
+    }
+}
+
+/**
+ * Validates an answer-route body: { decisionId, answer } with a non-empty
+ * string answer of at most DECISION_ANSWER_MAX_CHARS. Returns { ok, ... }.
+ */
+export function validateDecisionAnswerBody(body) {
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return { ok: false, error: 'body must be a JSON object' };
+    if (typeof body.decisionId !== 'string' || !body.decisionId.trim()) return { ok: false, error: 'decisionId is required' };
+    if (typeof body.answer !== 'string' || !body.answer.trim()) return { ok: false, error: 'answer is required' };
+    if (body.answer.length > DECISION_ANSWER_MAX_CHARS) return { ok: false, error: `answer is longer than ${DECISION_ANSWER_MAX_CHARS} characters` };
+    return { ok: true, decisionId: body.decisionId.trim(), answer: body.answer.trim() };
+}
+
+/**
+ * Builds the decisions dashboard extension. `answer(decisionId, answer)` is
+ * injectable for tests; it defaults to the in-process run that owns the
+ * decision (decision-wait.mjs), which records it exactly like
+ * `bd human respond` and resumes the sprint without a relaunch.
+ */
+export function createDecisionsExtension({ answer = answerPendingDecision } = {}) {
+    return {
+        id: DECISIONS_STATE_NAMESPACE,
+        title: 'Decisions',
+        // Once-per-publish summary, delivered unleaned in both GET /state
+        // (top-level `summary`) and GET /state?summary=1, so a pending
+        // decision's question and options are never truncated.
+        summarize(data) {
+            const d = data || {};
+            return {
+                state: d.state || 'running',
+                pending: Array.isArray(d.pending) ? d.pending : [],
+                waitingSince: d.waitingSince ?? null,
+            };
+        },
+        actions: {
+            async answer({ body, state }) {
+                const checked = validateDecisionAnswerBody(body);
+                if (!checked.ok) return { status: 400, body: { error: checked.error } };
+                const known = state && state.extensions && state.extensions[DECISIONS_STATE_NAMESPACE];
+                const pending = known && Array.isArray(known.pending) ? known.pending : [];
+                if (!pending.some((d) => d && d.decisionId === checked.decisionId)) {
+                    return { status: 404, body: { error: 'no such pending decision', decisionId: checked.decisionId } };
+                }
+                try {
+                    const rec = await answer(checked.decisionId, checked.answer);
+                    return { status: 200, body: { ok: true, decisionId: checked.decisionId, status: (rec && rec.status) || 'recorded', released: (rec && rec.released) || [] } };
+                } catch (err) {
+                    return { status: 409, body: { error: String(err && err.message ? err.message : err).slice(0, 500) } };
+                }
+            },
+        },
+        js: `
+            ${escapeHtml.toString()}
+            ${renderDecisionsBannerHtml.toString()}
+
+            let lastDecisions = null;
+            let formBusy = false;
+            // A render that arrived while an answer was in flight; applied once
+            // the operator has had a moment to read the inline result.
+            let renderDeferred = false;
+            // Last HTML written to each surface: an identical re-publish must
+            // not wipe an answer the operator is still typing.
+            const renderedHtml = { panel: null, banner: null };
+
+            function renderDecisionsPanel() {
+                const container = document.getElementById('extension-decisions');
+                if (!container) return;
+                const html = renderDecisionsBannerHtml(lastDecisions) || '<div style="font-size: 11px; color: #71717a; padding: 8px;">(no decisions pending)</div>';
+                if (html === renderedHtml.panel) return;
+                renderedHtml.panel = html;
+                container.innerHTML = html;
+            }
+
+            // The header-level banner (the viewer's per-extension slot outside
+            // every tab panel): visible on every tab while a decision is
+            // pending, hidden when none is.
+            function renderDecisionsHeaderBanner() {
+                const slot = document.getElementById('extension-banner-decisions');
+                if (!slot) return;
+                const html = renderDecisionsBannerHtml(lastDecisions);
+                if (html === renderedHtml.banner) return;
+                renderedHtml.banner = html;
+                slot.innerHTML = html;
+                slot.style.display = html ? 'block' : 'none';
+            }
+
+            function renderDecisions() {
+                if (formBusy) { renderDeferred = true; return; }
+                renderDecisionsPanel();
+                renderDecisionsHeaderBanner();
+            }
+
+            // GET /state leans long strings under state.extensions, so the
+            // untruncated per-publish summary (summarize() above, dispatched
+            // just before the state event) is preferred; the raw state is the
+            // fallback when no summary has been published yet.
+            let lastSummary = null;
+            document.addEventListener('workflow:summary:decisions', (e) => {
+                lastSummary = e.detail || null;
+            });
+            document.addEventListener('workflow:state:decisions', (e) => {
+                lastDecisions = lastSummary || e.detail || null;
+                renderDecisions();
+            });
+
+            document.addEventListener('submit', async (ev) => {
+                const form = ev.target && ev.target.closest ? ev.target.closest('form[data-decision-form]') : null;
+                if (!form) return;
+                ev.preventDefault();
+                const decisionId = form.getAttribute('data-decision-form');
+                const picked = form.querySelector('input[type=radio]:checked');
+                const text = (form.querySelector('textarea') || {}).value || '';
+                const answer = [picked ? picked.value : '', text.trim()].filter(Boolean).join(': ');
+                const result = form.querySelector('[data-decision-result]');
+                if (!answer) { if (result) result.textContent = 'Choose an option or type an answer.'; return; }
+                formBusy = true;
+                let recorded = false;
+                try {
+                    // Same-origin JSON POST: the answer routes refuse any other
+                    // content type and any cross-site origin.
+                    const res = await fetch('/extensions/decisions/actions/answer', {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ decisionId: decisionId, answer: answer })
+                    });
+                    const out = await res.json().catch(() => ({}));
+                    recorded = res.ok;
+                    if (result) result.textContent = res.ok ? 'Answer recorded; the sprint resumes.' : ('Failed: ' + (out.error || res.status));
+                } catch (err) {
+                    if (result) result.textContent = 'Failed: ' + err.message;
+                } finally {
+                    const release = () => {
+                        formBusy = false;
+                        if (renderDeferred) { renderDeferred = false; renderDecisions(); }
+                    };
+                    // Keep a recorded result readable briefly before a state
+                    // update that drops the answered decision hides it.
+                    if (recorded) setTimeout(release, 2500); else release();
+                }
+            });
+
+            renderDecisions();
+        `
+    };
+}
+
+export const decisionsExtension = createDecisionsExtension();

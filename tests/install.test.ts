@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { runInstall, _setSeaOverride, _setManifestOverride } from '../src/cli/install.js';
+import { BEADS_PACKAGE } from '../src/cli/beads-pin.js';
 
 vi.mock('node:os', () => ({
   default: {
@@ -69,11 +70,11 @@ describe('install config persistence (T5)', () => {
   });
 
   it('writes custom config with --llm and --skill flags', async () => {
-    await runInstall(['--llm', 'gemini', '--skill', 'none']);
+    await runInstall(['--llm', 'copilot', '--skill', 'none']);
 
     const writeCall = vi.mocked(fs.writeFileSync).mock.calls.find(c => c[0] === configPath);
     const data = JSON.parse(writeCall![1] as string);
-    expect(data.providers.gemini.skill).toBe('none');
+    expect(data.providers.copilot.skill).toBe('none');
   });
 
   it('handles --llm=value and --no-skill shorthand', async () => {
@@ -226,8 +227,8 @@ describe('auto-sprint-args skill install (GAP B)', () => {
   });
 
   it('does not install the skill for non-claude providers', async () => {
-    setup('gemini');
-    await runInstall(['--llm', 'gemini']);
+    setup('copilot');
+    await runInstall(['--llm', 'copilot']);
 
     const writtenPaths = vi.mocked(fs.writeFileSync).mock.calls.map(c => c[0].toString());
     expect(writtenPaths.some(p => p.includes('auto-sprint-args'))).toBe(false);
@@ -417,6 +418,9 @@ describe('install step 8 — Beads task tracker', () => {
 
     const logs = logSpy.mock.calls.map(c => c.join(' ')).join('\n');
     expect(logs).toContain('Installing Beads task tracker...');
+    expect(vi.mocked(execFileSync).mock.calls.some(
+      c => c[0] === 'npm' && Array.isArray(c[1]) && c[1].includes(BEADS_PACKAGE)
+    )).toBe(true);
 
     logSpy.mockRestore();
   });
@@ -432,9 +436,9 @@ describe('install step 8 — Beads task tracker', () => {
     const logs = logSpy.mock.calls.map(c => c.join(' ')).join('\n');
     expect(logs).toContain('Installing Beads task tracker...');
 
-    // npm install -g @beads/bd@1.1.2 should NOT have been called
+    // npm install -g <pinned bd> should NOT have been called
     const npmCall = vi.mocked(execFileSync).mock.calls.find(
-      c => c[0] === 'npm' && Array.isArray(c[1]) && c[1].includes('@beads/bd@1.1.2')
+      c => c[0] === 'npm' && Array.isArray(c[1]) && c[1].includes(BEADS_PACKAGE)
     );
     expect(npmCall).toBeUndefined();
 
@@ -456,5 +460,93 @@ describe('install step 8 — Beads task tracker', () => {
 
     logSpy.mockRestore();
     warnSpy.mockRestore();
+  });
+});
+
+// T3.4 (F9b, D8): installer copies the repo's committed
+// .fleet/kb-canonical-global.json (when present) into the shared global KB
+// data dir so every project on the machine can see it.
+describe('install step 9 -- global bible copy (T3.4, F9b, D8)', () => {
+  // FLEET_DIR (src/paths.ts) resolves from APRA_FLEET_DATA_DIR (set by
+  // tests/setup.ts to a real tmp dir), NOT the mocked os.homedir() -- the env
+  // var takes precedence in paths.ts's own resolution order.
+  const globalBibleDestDir = path.join(process.env.APRA_FLEET_DATA_DIR!, 'knowledge', 'global');
+  const globalBibleDestPath = path.join(globalBibleDestDir, 'kb-canonical-global.json');
+  const globalBibleSrcPath = path.join(process.cwd(), '.fleet', 'kb-canonical-global.json');
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(os.homedir).mockReturnValue(mockHome);
+    makeFsMock();
+    _setSeaOverride(false);
+    _setManifestOverride({ version: '0.1.0', hooks: {}, scripts: {}, skills: {}, fleetSkills: {} });
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    _setSeaOverride(null);
+    _setManifestOverride(null);
+  });
+
+  it('file present -> copied to the shared global KB data dir (content equality via copyFileSync args)', async () => {
+    vi.mocked(fs.existsSync).mockImplementation((p: any) => {
+      const ps = p.toString();
+      if (ps.includes('version.json')) return true;
+      if (ps.includes('hooks-config.json')) return true;
+      if (ps === globalBibleSrcPath) return true;
+      return false;
+    });
+
+    await runInstall([]);
+
+    const copyCall = vi.mocked(fs.copyFileSync).mock.calls.find(c => c[0] === globalBibleSrcPath);
+    expect(copyCall).toBeDefined();
+    expect(copyCall![1]).toBe(globalBibleDestPath);
+  });
+
+  it('absent -> install path unaffected (no copy attempted, install still succeeds)', async () => {
+    // Default makeFsMock() already returns false for kb-canonical-global.json.
+    await expect(runInstall([])).resolves.toBeUndefined();
+
+    const copyCall = vi.mocked(fs.copyFileSync).mock.calls.find(c => c[0] === globalBibleSrcPath);
+    expect(copyCall).toBeUndefined();
+  });
+
+  it('target dir is auto-created when the source bible is present', async () => {
+    vi.mocked(fs.existsSync).mockImplementation((p: any) => {
+      const ps = p.toString();
+      if (ps.includes('version.json')) return true;
+      if (ps.includes('hooks-config.json')) return true;
+      if (ps === globalBibleSrcPath) return true;
+      return false;
+    });
+
+    await runInstall([]);
+
+    const mkdirCall = vi.mocked(fs.mkdirSync).mock.calls.find(c => c[0] === globalBibleDestDir);
+    expect(mkdirCall).toBeDefined();
+    expect(mkdirCall![1]).toEqual({ recursive: true });
+  });
+
+  it('copy failure does not throw out of the install step (non-fatal, warns)', async () => {
+    vi.mocked(fs.existsSync).mockImplementation((p: any) => {
+      const ps = p.toString();
+      if (ps.includes('version.json')) return true;
+      if (ps.includes('hooks-config.json')) return true;
+      if (ps === globalBibleSrcPath) return true;
+      return false;
+    });
+    vi.mocked(fs.copyFileSync).mockImplementation((src: any) => {
+      if (src === globalBibleSrcPath) throw new Error('EACCES: permission denied');
+    });
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await expect(runInstall([])).resolves.toBeUndefined();
+
+    const warns = warnSpy.mock.calls.map(c => c.join(' ')).join('\n');
+    expect(warns).toContain('Global knowledge bible copy skipped');
   });
 });

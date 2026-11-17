@@ -1,6 +1,11 @@
 # Auto-Sprint Parallel Doers -- Design
 
-Status: design. Branch: `ruggedize/auto-sprint-preflight-checkpoint`.
+Status: implemented, opt-in. `calibration.parallelism.max_doers` defaults to `1`, so
+sprints take the proven serial path (doers commit directly on the sprint branch, no
+worktree machinery) unless an operator raises it. The parallel path is still
+experimental: on Windows runners it has hit worktree fragility (a worktree
+"already exists" leak on re-create, and worktree-branch merges landing zero commits).
+Until that is hardened and validated on every runner OS, the default stays `1`.
 
 Goal: cut sprint wall-clock by running independent ready tasks **concurrently** instead of
 one doer working them in sequence. This is the dominant time sink (the doers writing real
@@ -38,11 +43,12 @@ touches the sprint branch or the main checkout.
 
 ## Beads state is centralized in the workflow (critical for correctness)
 
-Today each doer runs `bd update --claim` / `bd close` itself. Under parallelism that breaks:
-each worktree has its own `.beads/` working copy, so concurrent bd writes diverge and are
-invisible to each other and to the main checkout.
+On the serial path each doer runs `bd update --claim` / `bd close` itself. Under
+parallelism that breaks: each worktree has its own `.beads/` working copy, so concurrent
+bd writes diverge and are invisible to each other and to the main checkout.
 
-Fix: **the workflow owns all beads state transitions; parallel doers do NO bd commands.**
+So on the parallel path **the workflow owns all beads state transitions; parallel doers
+run NO bd commands.**
 - Before fan-out, the workflow (in the main checkout) `bd update --claim`s each task it is
   about to dispatch.
 - The parallel doer's contract shrinks to: "implement task X (acceptance criteria inlined),
@@ -62,7 +68,7 @@ Per develop iteration:
 1. `getReadyStreaks(rootIds)` as today.
 2. Compute the batch: take ready tasks (respecting the existing token-ceiling AND
    context-fit split per task), cap the batch to `width = min(readyCount, maxParallelDoers)`.
-   `maxParallelDoers` comes from calibration (`parallelism.max_doers`, default 4), and is
+   `maxParallelDoers` comes from calibration (`parallelism.max_doers`, default 1), and is
    further capped by the harness concurrency cap. Leftover ready tasks resurface next iter.
 3. Workflow claims all batch tasks centrally (`bd update --claim`).
 4. `parallel(batch.map(task => doInWorktree(task)))` -- each thunk:
@@ -84,32 +90,32 @@ Per develop iteration:
 
 ## Safe degradation (must hold for every project)
 
-- `width === 1` (one ready task, or `parallelism.max_doers = 1`): skip worktree machinery
-  entirely, run the doer in the main checkout exactly as today. Zero new risk for serial work.
+- `width === 1` (one ready task, or `parallelism.max_doers = 1`, the default): skip worktree
+  machinery entirely and run the doer in the main checkout. Zero new risk for serial work.
 - worktree creation fails (old git, FS constraints): log, fall back to serial for that task.
 - The existing per-streak token-ceiling and context-fit splitting are applied per task BEFORE
   batching, so a single oversized task is still handled correctly.
 
-## Calibration additions
+## Calibration keys
 
 ```
 parallelism: {
-  _doc: 'Doer concurrency. max_doers>1 fans out independent bd-ready tasks into isolated git
-         worktrees worked in parallel, merged back sequentially with conflict fallback. Set to
-         1 to force the serial path. Capped by the harness concurrency limit regardless.',
-  max_doers: 4,
+  max_doers: 1,                       // >1 opts into the experimental parallel path
   worktree_root: '.auto-sprint/wt',
 }
 ```
 
-## Measurement first (per-phase wall-clock)
+`max_doers > 1` fans out independent bd-ready tasks into isolated git worktrees worked in
+parallel, merged back sequentially with a conflict fallback. `1` forces the serial path.
+Width is capped by the harness concurrency limit regardless.
 
-We cannot currently prove where time goes (the `Date.now()` ban means the workflow can't
-self-time; ledger entries carry no `ts`). Before and after parallelization we capture
-per-phase wall-clock via a cheap `date +%s` at each phase boundary (a `stamp()` helper,
-~6-10 cheap shell calls over a whole sprint) and report per-phase seconds in the sprint
-summary. This turns "it's slow" into "develop was N of M minutes" and lets us prove the
-parallel win with numbers.
+## Measurement (per-phase wall-clock)
+
+The `Date.now()` ban means the workflow cannot self-time, and dispatch-ledger entries
+carry no `ts`, so per-phase wall-clock is not yet reported. Capturing it needs a cheap
+`date +%s` at each phase boundary (a `stamp()` helper, roughly 6-10 extra shell calls over
+a whole sprint) feeding per-phase seconds into the sprint summary -- the measurement that
+would let the parallel win be proven with numbers rather than asserted.
 
 ## Explicitly out of scope (kept simple on purpose)
 

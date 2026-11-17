@@ -1,10 +1,33 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import os from 'node:os';
 import { makeTestAgent, makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 import { addAgent, getAllAgents } from '../src/services/registry.js';
-import { updateMember } from '../src/tools/update-member.js';
+import { updateMember, updateMemberSchema } from '../src/tools/update-member.js';
 import { credentialSet, credentialDelete } from '../src/services/credential-store.js';
 import { ClaudeProvider } from '../src/providers/claude.js';
+import { invalidatePreflightCache } from '../src/services/preflight-check.js';
 import type { SSHExecResult } from '../src/types.js';
+import { ensureAgyProject } from '../src/services/agy-project.js';
+
+// AGY project binding (src/services/agy-project.ts) is covered by
+// tests/agy-project.test.ts and tests/tool-provider.test.ts; here it is
+// stubbed so agy dispatches keep their exec-call sequence.
+vi.mock('../src/services/agy-project.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/services/agy-project.js')>()),
+  ensureAgyProject: vi.fn(async (agent: { agyProjectId?: string }) => {
+    agent.agyProjectId = agent.agyProjectId ?? '1afd6dbb-498f-4918-a9d9-6da64b75a204';
+    return { projectId: agent.agyProjectId };
+  }),
+}));
+
+
+// GitHub #499: seedWorkspaceTrust now also forwards a 5th `transport` argument (the
+// out-of-band file channel for a large ~/.claude.json) for every non-relay member.
+const TRUST_TRANSPORT = expect.objectContaining({ writeHomeFile: expect.any(Function) });
+const TRUST_SECRET = expect.objectContaining({ write: expect.any(Function), remove: expect.any(Function) });
+
+// tests/setup.ts globally mocks preflight-check.js with vi.fn() implementations
+const mockInvalidatePreflightCache = vi.mocked(invalidatePreflightCache);
 
 const mockExecCommand = vi.fn<(cmd: string, timeout?: number) => Promise<SSHExecResult>>();
 const mockTestConnection = vi.fn();
@@ -33,6 +56,7 @@ describe('updateMember', () => {
     mockUploadContentToHome.mockReset();
     mockTestConnection.mockResolvedValue({ ok: false, error: 'not reachable in this test' });
     mockUploadContentToHome.mockResolvedValue({ success: [], failed: [] });
+    mockInvalidatePreflightCache.mockClear();
   });
 
   afterEach(() => {
@@ -72,7 +96,7 @@ describe('updateMember', () => {
 
     // Changing agent2's host to 10.0.0.1 would collide with agent1
     const result = await updateMember({ member_id: agent2.id, host: '10.0.0.1' });
-    expect(result).toContain('Another member already uses folder "/srv/app" on host 10.0.0.1:22');
+    expect(result).toContain('already uses folder "/srv/app" on host 10.0.0.1:22');
   });
 
   it('rejects port change that creates a duplicate host+port+folder', async () => {
@@ -83,7 +107,7 @@ describe('updateMember', () => {
 
     // Changing agent2's port to 2222 would collide with agent1
     const result = await updateMember({ member_id: agent2.id, port: 2222 });
-    expect(result).toContain('Another member already uses folder "/srv/app" on host 10.0.0.1:2222');
+    expect(result).toContain('already uses folder "/srv/app" on host 10.0.0.1:2222');
   });
 
   it('allows host change when no collision exists', async () => {
@@ -97,6 +121,75 @@ describe('updateMember', () => {
     expect(result).toContain('Member "test-agent" updated.');
   });
 
+  // ---- invalidatePreflightCache on identity-changing fields ----
+  it('invalidates the preflight cache when host changes', async () => {
+    const agent = makeTestAgent({ id: 'member-cache-1', host: '10.0.0.1', port: 22, workFolder: '/srv/app' });
+    addAgent(agent);
+
+    await updateMember({ member_id: agent.id, host: '10.0.0.9' });
+    expect(mockInvalidatePreflightCache).toHaveBeenCalledWith(agent.id);
+  });
+
+  it('invalidates the preflight cache when auth_type changes', async () => {
+    const agent = makeTestAgent({ id: 'member-cache-2', authType: 'password' });
+    addAgent(agent);
+
+    await updateMember({ member_id: agent.id, auth_type: 'key', key_path: '/tmp/does-not-matter' });
+    expect(mockInvalidatePreflightCache).toHaveBeenCalledWith(agent.id);
+  });
+
+  it('invalidates the preflight cache when llm_provider changes', async () => {
+    const agent = makeTestAgent({ id: 'member-cache-3' });
+    addAgent(agent);
+
+    await updateMember({ member_id: agent.id, llm_provider: 'agy' });
+    expect(mockInvalidatePreflightCache).toHaveBeenCalledWith(agent.id);
+  });
+
+  it('switching to agy creates the member\'s agy project and records its id', async () => {
+    const agent = makeTestAgent({ id: 'member-agy-switch', llmProvider: 'claude' });
+    addAgent(agent);
+
+    const result = await updateMember({ member_id: agent.id, llm_provider: 'agy' });
+
+    expect(vi.mocked(ensureAgyProject)).toHaveBeenCalledWith(expect.objectContaining({ id: agent.id, llmProvider: 'agy' }), { persist: false });
+    const stored = getAllAgents().find(a => a.id === agent.id)!;
+    expect(stored.llmProvider).toBe('agy');
+    expect(stored.agyProjectId).toBe('1afd6dbb-498f-4918-a9d9-6da64b75a204');
+    expect(result).toContain('AGY project: 1afd6dbb-498f-4918-a9d9-6da64b75a204');
+  });
+
+  it('switching to agy is refused, and nothing is updated, when no agy project can be created', async () => {
+    const agent = makeTestAgent({ id: 'member-agy-switch-fail', llmProvider: 'claude', friendlyName: 'before' });
+    addAgent(agent);
+    vi.mocked(ensureAgyProject).mockRejectedValueOnce(new Error('agy --new-project must create exactly one project file in ~/.gemini/config/projects, found 0.'));
+
+    const result = await updateMember({ member_id: agent.id, llm_provider: 'agy', friendly_name: 'after' });
+
+    expect(result).toContain('ERROR: could not create the agy project');
+    expect(result).toContain('Member was NOT updated.');
+    const stored = getAllAgents().find(a => a.id === agent.id)!;
+    expect(stored.llmProvider).toBe('claude');
+    expect(stored.friendlyName).toBe('before');
+    expect(stored.agyProjectId).toBeUndefined();
+  });
+
+  it('other provider switches never touch agy project provisioning', async () => {
+    const agent = makeTestAgent({ id: 'member-codex-switch', llmProvider: 'claude' });
+    addAgent(agent);
+    vi.mocked(ensureAgyProject).mockClear();
+    await updateMember({ member_id: agent.id, llm_provider: 'codex' });
+    expect(vi.mocked(ensureAgyProject)).not.toHaveBeenCalled();
+  });
+
+  it('does not invalidate the preflight cache for a non-identity field change', async () => {
+    const agent = makeTestAgent({ id: 'member-cache-4' });
+    addAgent(agent);
+
+    await updateMember({ member_id: agent.id, friendly_name: 'renamed-agent' });
+    expect(mockInvalidatePreflightCache).not.toHaveBeenCalled();
+  });
+
   it('does not trigger uniqueness check on local member when only host-like fields change', async () => {
     const local = makeTestLocalAgent({ workFolder: '/home/user/project' });
     addAgent(local);
@@ -106,7 +199,7 @@ describe('updateMember', () => {
     expect(result).toContain('Member "new-name" updated.');
   });
 
-  it('resolves {{secure.NAME}} token in password field', async () => {
+  it('resolves {{secret.NAME}} token in password field', async () => {
     const member = makeTestAgent({ authType: 'password' });
     addAgent(member);
 
@@ -115,7 +208,7 @@ describe('updateMember', () => {
     try {
       const result = await updateMember({
         member_id: member.id,
-        password: `{{secure.${credName}}}`,
+        password: `{{secret.${credName}}}`,
       });
       expect(result).toContain('Member "test-agent" updated.');
     } finally {
@@ -123,16 +216,36 @@ describe('updateMember', () => {
     }
   });
 
-  it('returns error when {{secure.NAME}} token references missing credential', async () => {
+  it('returns error when {{secret.NAME}} token references missing credential', async () => {
     const member = makeTestAgent({ authType: 'password' });
     addAgent(member);
 
     const result = await updateMember({
       member_id: member.id,
-      password: '{{secure.nonexistent_cred}}',
+      password: '{{secret.nonexistent_cred}}',
     });
     expect(result).toContain('❌ Credential "nonexistent_cred" not found.');
     expect(result).toContain('Member was NOT updated.');
+  });
+
+  it('resolves a legacy {{secure.NAME}} token in password field and appends a deprecation warning', async () => {
+    const member = makeTestAgent({ authType: 'password' });
+    addAgent(member);
+
+    const credName = `test-legacy-cred-${Date.now()}`;
+    credentialSet(credName, 'mysecretpass');
+    try {
+      const result = await updateMember({
+        member_id: member.id,
+        password: `{{secure.${credName}}}`,
+      });
+      expect(result).toContain('Member "test-agent" updated.');
+      expect(result).toContain('[deprecated]');
+      expect(result).toContain(`secure.${credName}`);
+      expect(result).toContain(`secret.${credName}`);
+    } finally {
+      credentialDelete(credName);
+    }
   });
 
   it('stores a valid category', async () => {
@@ -160,6 +273,33 @@ describe('updateMember', () => {
     expect(result).toContain('updated');
     const updated = getAllAgents().find(a => a.id === member.id);
     expect(updated?.category).toBeUndefined();
+  });
+
+  it('stores a valid shell value', async () => {
+    const member = makeTestLocalAgent();
+    addAgent(member);
+    const result = await updateMember({ member_id: member.id, shell: 'pwsh7' });
+    expect(result).toContain('updated');
+    const updated = getAllAgents().find(a => a.id === member.id);
+    expect(updated?.shell).toBe('pwsh7');
+  });
+
+  it('rejects an invalid shell value with a schema validation error', async () => {
+    const { updateMemberSchema } = await import('../src/tools/update-member.js');
+    const parsed = updateMemberSchema.safeParse({ member_id: 'x', shell: 'cmd' });
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      expect(JSON.stringify(parsed.error.issues)).toContain('shell');
+    }
+  });
+
+  it('leaves shell unset for a member updated without a shell value', async () => {
+    const member = makeTestLocalAgent();
+    addAgent(member);
+    const result = await updateMember({ member_id: member.id, category: 'doers' });
+    expect(result).toContain('updated');
+    const updated = getAllAgents().find(a => a.id === member.id);
+    expect(updated?.shell).toBeUndefined();
   });
 
   it('adds tags to a member', async () => {
@@ -218,6 +358,7 @@ describe('updateMember -- agent re-provisioning (remote members)', () => {
     mockUploadContentToHome.mockReset();
     mockTestConnection.mockResolvedValue({ ok: false, error: 'not reachable in this test' });
     mockUploadContentToHome.mockResolvedValue({ success: [], failed: [] });
+    mockInvalidatePreflightCache.mockClear();
   });
 
   afterEach(() => {
@@ -262,12 +403,12 @@ describe('updateMember -- agent re-provisioning (remote members)', () => {
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
     mockUploadContentToHome.mockResolvedValue({ success: ['planner.md'], failed: [] });
 
-    const result = await updateMember({ member_id: member.id, llm_provider: 'gemini' });
+    const result = await updateMember({ member_id: member.id, llm_provider: 'agy' });
 
-    expect(result).toContain('Provider: gemini');
+    expect(result).toContain('Provider: agy');
     expect(mockUploadContentToHome).toHaveBeenCalledTimes(1);
     const [, , calledDir] = mockUploadContentToHome.mock.calls[0];
-    expect(calledDir).toBe('.gemini/agents');
+    expect(calledDir).toBe('.gemini/antigravity-cli/agents');
   });
 
   it('skips provisioning with a warning when unreachable, but still applies the update', async () => {
@@ -352,7 +493,9 @@ describe('updateMember -- invokes ensureWorkspaceTrusted (apra-fleet-eft.40.2)',
 
     expect(result).toContain('Member "test-agent" updated.');
     expect(spy).toHaveBeenCalledTimes(1);
-    expect(spy).toHaveBeenCalledWith('/home/testuser/project', expect.any(Function), member.os);
+    // apra-fleet-7dir.2.8 widened the hook with a 4th `shell` argument; this
+    // member records no shell, so seedWorkspaceTrust forwards undefined.
+    expect(spy).toHaveBeenCalledWith('/home/testuser/project', expect.any(Function), member.os, member.shell, TRUST_TRANSPORT, null, TRUST_SECRET);
     spy.mockRestore();
   });
 
@@ -382,8 +525,78 @@ describe('updateMember -- invokes ensureWorkspaceTrusted (apra-fleet-eft.40.2)',
 
     expect(result).toContain('updated');
     expect(spy).toHaveBeenCalledTimes(1);
-    expect(spy).toHaveBeenCalledWith(member.workFolder, expect.any(Function), member.os);
+    // apra-fleet-7dir.2.8 widened the hook with a 4th `shell` argument.
+    expect(spy).toHaveBeenCalledWith(member.workFolder, expect.any(Function), member.os, member.shell, TRUST_TRANSPORT, os.homedir(), TRUST_SECRET);
     expect(mockTestConnection).not.toHaveBeenCalled();
     spy.mockRestore();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// vcs_provider: explicit operator override (never auto-detected -- see
+// register-member-vcs-provider.test.ts for the auto-detect path this is NOT).
+// ---------------------------------------------------------------------------
+
+describe('updateMember -- vcs_provider (explicit override)', () => {
+  beforeEach(() => {
+    backupAndResetRegistry();
+    mockExecCommand.mockReset();
+    mockTestConnection.mockReset();
+    mockUploadContentToHome.mockReset();
+    mockTestConnection.mockResolvedValue({ ok: false, error: 'not reachable in this test' });
+  });
+
+  afterEach(() => {
+    restoreRegistry();
+  });
+
+  it('sets a valid vcs_provider directly, with no remote probe', async () => {
+    const member = makeTestAgent({ vcsProvider: undefined });
+    addAgent(member);
+
+    const result = await updateMember({ member_id: member.id, vcs_provider: 'github' });
+
+    expect(result).toContain('Member "test-agent" updated.');
+    expect(result).toContain('VCS Provider: github');
+    expect(getAllAgents().find(a => a.id === member.id)?.vcsProvider).toBe('github');
+    expect(mockExecCommand).not.toHaveBeenCalled();
+  });
+
+  it('overrides an existing vcs_provider (correcting a wrong auto-detect)', async () => {
+    const member = makeTestAgent({ vcsProvider: 'github' });
+    addAgent(member);
+
+    const result = await updateMember({ member_id: member.id, vcs_provider: 'azure-devops' });
+
+    expect(result).toContain('VCS Provider: azure-devops');
+    expect(getAllAgents().find(a => a.id === member.id)?.vcsProvider).toBe('azure-devops');
+  });
+
+  it('setting vcs_provider to "none" clears it', async () => {
+    const member = makeTestAgent({ vcsProvider: 'github' });
+    addAgent(member);
+
+    const result = await updateMember({ member_id: member.id, vcs_provider: 'none' });
+
+    expect(result).toContain('VCS Provider: none');
+    expect(getAllAgents().find(a => a.id === member.id)?.vcsProvider).toBeUndefined();
+  });
+
+  it('leaves vcs_provider untouched when not passed', async () => {
+    const member = makeTestAgent({ vcsProvider: 'bitbucket' });
+    addAgent(member);
+
+    await updateMember({ member_id: member.id, category: 'doers' });
+
+    expect(getAllAgents().find(a => a.id === member.id)?.vcsProvider).toBe('bitbucket');
+  });
+
+  it('rejects an invalid vcs_provider enum value at the schema level', () => {
+    // updateMember() itself trusts its typed input (the MCP framework
+    // validates via updateMemberSchema before dispatch -- same contract as
+    // register_member's CLI wrapper) -- so the enum rejection is asserted
+    // directly against the schema here.
+    const result = updateMemberSchema.safeParse({ member_id: 'x', vcs_provider: 'gitlab' });
+    expect(result.success).toBe(false);
   });
 });

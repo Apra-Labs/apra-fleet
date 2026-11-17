@@ -1,7 +1,6 @@
 import type { LlmProvider } from '../types.js';
 import type { ProviderAdapter } from './provider.js';
 import { ClaudeProvider } from './claude.js';
-import { GeminiProvider } from './gemini.js';
 import { CodexProvider } from './codex.js';
 import { CopilotProvider } from './copilot.js';
 import { AgyProvider } from './agy.js';
@@ -10,7 +9,6 @@ import { NoneProvider } from './none.js';
 
 const providers: Record<LlmProvider, ProviderAdapter> = {
   claude: new ClaudeProvider(),
-  gemini: new GeminiProvider(),
   codex: new CodexProvider(),
   copilot: new CopilotProvider(),
   agy: new AgyProvider(),
@@ -31,7 +29,6 @@ export function getProvider(llmProvider?: LlmProvider | null): ProviderAdapter {
 
 export type { ProviderAdapter, PromptOptions, ParsedResponse } from './provider.js';
 export { ClaudeProvider } from './claude.js';
-export { GeminiProvider } from './gemini.js';
 export { CodexProvider } from './codex.js';
 export { CopilotProvider } from './copilot.js';
 export { AgyProvider } from './agy.js';

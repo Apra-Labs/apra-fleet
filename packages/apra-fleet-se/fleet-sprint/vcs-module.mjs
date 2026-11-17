@@ -37,11 +37,14 @@ import {
     getVcsProvider,
     resolveVcsProviderChain,
     resolveVcsProviderForHost,
+    resolveVcsAuthProviderForHost,
+    isAuthBackend,
 } from './vcs-providers/index.mjs';
 
 /**
  * Provider-dispatched command build step. `action` is one of
- * 'create-pull-request' | 'comment'; `params.provider` selects the REST
+ * 'create-pull-request' | 'comment' | 'find-pull-request' |
+ * 'update-pull-request'; `params.provider` selects the REST
  * dispatch. Pure and deterministic -- no network I/O, no filesystem access,
  * no randomness (beyond whatever caller-supplied fields it is handed).
  *
@@ -70,9 +73,71 @@ function buildVcsCommand(action, params) {
     return builder(params);
 }
 
-/** Build a "raise a PR" command for the given provider. */
+/**
+ * Deterministic hard cap on a PR description's length (apra-fleet PR-body
+ * length fix): Azure DevOps rejects/fails to raise a pull request whose
+ * description is too long, and the LLM role that drafts a PR description is
+ * only ever prompted to respect a limit -- it can and does ignore that
+ * guidance. This constant is the single source of truth for the cap, shared
+ * by every provider's create-pull-request path (buildCreatePrCommand below)
+ * rather than a magic number duplicated per provider.
+ * @type {number}
+ */
+export const PR_DESCRIPTION_MAX_LENGTH = 3500;
+
+/**
+ * Build a "raise a PR" command for the given provider.
+ *
+ * Enforces PR_DESCRIPTION_MAX_LENGTH on `params.body` DETERMINISTICALLY,
+ * regardless of provider (GitHub, Azure DevOps, ...) and regardless of
+ * whether the LLM that drafted the description obeyed the prompt guidance to
+ * stay under the limit. A body over the limit is truncated to exactly its
+ * first PR_DESCRIPTION_MAX_LENGTH characters before it reaches the provider's
+ * own command builder, so a PR can always be raised.
+ *
+ * This module stays pure (no I/O, no logging of its own -- see the header
+ * doc): a truncation is reported back to the caller as the returned
+ * `descriptionTruncated` field ({ originalLength, maxLength }, or `null` when
+ * no truncation occurred) so the caller (runner.js's raiseVcsPrForMember) can
+ * log/emit the warning through its own logging convention.
+ */
 export function buildCreatePrCommand(params) {
-    return buildVcsCommand('create-pull-request', params);
+    return buildCappedBodyCommand('create-pull-request', params);
+}
+
+/** Shared PR_DESCRIPTION_MAX_LENGTH enforcement for every action that sends a
+ *  PR description (create-pull-request, update-pull-request). */
+function buildCappedBodyCommand(action, params) {
+    const { body } = params || {};
+    let effectiveBody = body;
+    let descriptionTruncated = null;
+    if (typeof body === 'string' && body.length > PR_DESCRIPTION_MAX_LENGTH) {
+        descriptionTruncated = { originalLength: body.length, maxLength: PR_DESCRIPTION_MAX_LENGTH };
+        effectiveBody = body.slice(0, PR_DESCRIPTION_MAX_LENGTH);
+    }
+    const built = buildVcsCommand(action, { ...params, body: effectiveBody });
+    return descriptionTruncated ? { ...built, descriptionTruncated } : { ...built, descriptionTruncated: null };
+}
+
+/**
+ * Build a "find the open PR for head -> base" command for the given provider.
+ * The returned object carries `mapResponse(body)` -> [{ id, title, body, url }]
+ * so a caller reads the provider's list dialect without knowing it. A
+ * provider with no such builder fails with the same typed "ERROR: ... does
+ * not yet implement action" as every other missing action.
+ */
+export function buildFindPrCommand(params) {
+    return buildVcsCommand('find-pull-request', params);
+}
+
+/**
+ * Build an "update an existing PR's title/description" command for the given
+ * provider (`params.pull_request_id` from buildFindPrCommand's mapping). Same
+ * deterministic PR_DESCRIPTION_MAX_LENGTH cap and `descriptionTruncated`
+ * report as buildCreatePrCommand.
+ */
+export function buildUpdatePrCommand(params) {
+    return buildCappedBodyCommand('update-pull-request', params);
 }
 
 // ---------------------------------------------------------------------------
@@ -117,6 +182,21 @@ export function buildCreatePrCommand(params) {
  * @param {{ fleetApi: { memberDetail: (opts: { member_name: string, format?: string }) => Promise<any> } }} opts
  * @returns {Promise<{ provider: string, authMode: string|null }>}
  */
+/**
+ * The `code` resolveProvider() stamps on the ONE failure that means "this
+ * member simply has no usable registered VCS provider" -- as opposed to a
+ * member_detail RPC failure, an unresolvable member name, or a malformed
+ * response, all of which resolveProvider() also throws for.
+ *
+ * A caller that wants to self-heal ONLY that case (runner.js's dispatch-time
+ * VCS-provider fallback) must be able to tell them apart: applying a
+ * git-remote-derived guess after a network blip would paper over a real
+ * failure with a possibly-wrong provider. Matching on the message text would
+ * make that wording load-bearing, so the signal is a stable property instead.
+ * @type {string}
+ */
+export const VCS_NO_REGISTERED_PROVIDER = 'VCS_NO_REGISTERED_PROVIDER';
+
 export async function resolveProvider(member, { fleetApi } = {}) {
     if (!fleetApi || typeof fleetApi.memberDetail !== 'function') {
         throw new Error(`ERROR: VCSModule: resolveProvider requires an injected fleetApi.memberDetail() -- cannot resolve a VCS provider for member '${member}' without one.`);
@@ -149,7 +229,12 @@ export async function resolveProvider(member, { fleetApi } = {}) {
 
     const provider = parsed && typeof parsed.vcsProvider === 'string' ? parsed.vcsProvider : null;
     if (!provider || !known.includes(provider)) {
-        throw new Error(`ERROR: VCSModule: resolveProvider: member '${member}' has no registered VCS provider (vcsProvider: ${provider ? `"${provider}"` : '(absent)'}) -- known providers: ${known.join(', ')}. Provision one via provision_vcs_auth with an explicit 'provider' before relying on resolveProvider.`);
+        // shell-guard-allow: nested backtick template (${provider ? `"${provider}"` : ...}) is JS interpolation resolved before this Error is thrown, never dispatched as a command string -- shell-command-guard's segment tracker mis-classifies the nested backtick as surviving expansion.
+        const err = new Error(`ERROR: VCSModule: resolveProvider: member '${member}' has no registered VCS provider (vcsProvider: ${provider ? `"${provider}"` : '(absent)'}) -- known providers: ${known.join(', ')}. Provision one via provision_vcs_auth with an explicit 'provider' before relying on resolveProvider.`);
+        // See VCS_NO_REGISTERED_PROVIDER above: this is the only failure a
+        // caller may self-heal from, so it is the only one that carries a code.
+        err.code = VCS_NO_REGISTERED_PROVIDER;
+        throw err;
     }
 
     const impl = getVcsProvider(provider);
@@ -181,6 +266,7 @@ export function buildCommentCommand(params) {
 //   TRANSIENT              | true      | network / server / lock blip             | retry, bounded
 //   NO_REMOTE              | false     | no remote configured; nothing to sync    | none; benign no-op
 //   UNSUPPORTED_OPERATION  | false     | action not implemented for this provider | fix the call/config
+//   MISSING_TOOL           | false     | the binary is not installed / not on PATH| install it / fix PATH
 //   UNKNOWN                | false     | unrecognized -- must surface, not guess  | operator triage
 //
 // `retryable` is true ONLY for TRANSIENT, and means "safe to re-run the same
@@ -197,6 +283,102 @@ export function buildCommentCommand(params) {
 // the least dangerous to under-match. A provider may override the order with
 // its own `precedence` array (dolt's classifier, for example, promotes
 // no-remote to first) without any change here.
+//
+// PERMISSION SCOPE (a REFINEMENT of AUTH_DENIED, not a new kind). A provider
+// may declare `permissionScope.rules` for the texts that mean "the identity
+// was understood and the PRINCIPAL lacks the granted permission" (see
+// ./vcs-providers/index.mjs's descriptor contract and ./vcs-providers/
+// github.mjs's workflow-file refusal). Those rules are checked BEFORE the
+// precedence loop and their match is the verdict outright -- because such a
+// refusal typically arrives wrapped in the host's generic rejection tail,
+// which a higher-precedence kind (DIVERGED) already claims. The match also
+// travels on the result as `permissionScope: true`, which is what lets the
+// self-heal gate (git-topology.mjs's runGitStep) tell "re-minting cannot
+// possibly help" apart from every other AUTH_DENIED, WITHOUT re-reading
+// stderr at the call site.
+
+// MISSING TOOL (GitHub #616). Provider-agnostic shell/spawn wording for "a
+// binary could not be found on this member". It is decided BEFORE the
+// permission-scope and provider rules, but ONLY when the binary the wording
+// names is the binary the failing step itself ran (`opts.tool`, see
+// commandBinary). A member's shell profile routinely prints unrelated "not
+// found" noise (`.bashrc: line 12: pyenv: command not found`, PowerShell
+// "conda : The term 'conda' is not recognized ...", a git hook's `npx: command
+// not found`, a server-side `git-receive-pack: command not found`) ahead of
+// the real failure; that noise must never outrank the real classification
+// (a diverged pull, an auth refusal, a lock). Unnamed signals (exit code 127,
+// the generic "is not recognized" tails) count only when the step's binary is
+// known and the text names no other binary. Without step context the named
+// binary must be one of the sync tools (DEFAULT_MISSING_TOOL_TARGETS).
+// Windows (PowerShell, cmd.exe) and POSIX (bash, zsh, dash/sh) wordings are
+// covered, plus exit code 127 and Node's spawn ENOENT.
+const MISSING_TOOL_NAMED_RULES = Object.freeze([
+    // PowerShell: "bd : The term 'bd' is not recognized as the name of a cmdlet, function, ..."
+    /The term '([^']+)' is not recognized as the name of a cmdlet/i,
+    // cmd.exe: "'bd' is not recognized as an internal or external command,"
+    /'([^']+)' is not recognized as an internal or external command/i,
+    // zsh: "zsh: command not found: bd" (checked before the bash form so the
+    // "zsh:" prefix is never read as the tool)
+    /command not found: ([^\s'"]+)/i,
+    // bash: "bash: bd: command not found", "bash: line 1: bd: command not found"
+    /([^\s:'"]+): command not found/i,
+    // dash/sh: "sh: 1: bd: not found"
+    /(?:^|\n|\s)(?:\/bin\/)?(?:sh|dash|bash): (?:line )?\d+: ([^\s:'"]+): not found/i,
+    // Node child_process: "spawn bd ENOENT"
+    /spawn ([^\s'"]+) ENOENT/,
+]);
+const MISSING_TOOL_UNNAMED_RULES = Object.freeze([
+    /is not recognized as (?:the )?name of a cmdlet/i,
+    /is not recognized as an internal or external command/i,
+    // The shell's own "not found" exit status, as the fleet transport reports it.
+    /\bexit (?:code|status) 127\b/i,
+]);
+
+/** The sync binaries a context-free classification may report as missing. */
+const DEFAULT_MISSING_TOOL_TARGETS = Object.freeze(['bd', 'dolt', 'git']);
+
+/** Bare, lower-case binary name: no directory, no Windows executable suffix. */
+function normalizeToolName(name) {
+    const base = String(name || '').trim().replace(/^["']|["']$/g, '').split(/[\\/]/).pop() || '';
+    return base.replace(/\.(exe|cmd|bat|ps1)$/i, '').toLowerCase();
+}
+
+/**
+ * Detects a missing-binary failure OF THE STEP'S OWN BINARY. Returns
+ * `{ tool }` or null (not a missing-tool failure for this step -- the
+ * normal classification rules decide).
+ * @param {string} raw
+ * @param {{ exitCode?: number|null, tool?: string|null }} [ctx]
+ * @returns {{ tool: string }|null}
+ */
+function detectMissingTool(raw, ctx = {}) {
+    const stepTool = ctx.tool ? normalizeToolName(ctx.tool) : '';
+    const targets = stepTool ? [stepTool] : DEFAULT_MISSING_TOOL_TARGETS;
+    const named = [];
+    for (const rule of MISSING_TOOL_NAMED_RULES) {
+        // A fresh global copy per call keeps the module-level rules stateless.
+        for (const m of raw.matchAll(new RegExp(rule.source, `${rule.flags}g`))) {
+            if (m[1]) named.push(normalizeToolName(m[1]));
+        }
+    }
+    const hit = named.find((n) => targets.includes(n));
+    if (hit) return { tool: hit };
+    const unnamed = ctx.exitCode === 127 || MISSING_TOOL_UNNAMED_RULES.some((re) => re.test(raw));
+    if (stepTool && unnamed && named.length === 0) return { tool: stepTool };
+    return null;
+}
+
+/**
+ * The binary a command string invokes (its first whitespace-separated token,
+ * quotes stripped) -- the fallback name for a MISSING_TOOL failure whose
+ * wording names no binary (e.g. a bare exit code 127).
+ * @param {string} cmd
+ * @returns {string}
+ */
+export function commandBinary(cmd) {
+    const first = String(cmd || '').trim().split(/\s+/)[0] || '';
+    return first.replace(/^["']|["']$/g, '') || '(unknown command)';
+}
 
 const KIND_PRECEDENCE = Object.freeze([
     VCS_FAILURE_KINDS.DIVERGED,
@@ -224,33 +406,90 @@ const KIND_PRECEDENCE = Object.freeze([
  * self-healed, so a mis-fallback degrades to "surface it", not to a guess.
  *
  * @param {string} rawStderr - the raw stderr/stdout of the failed command
- * @param {{ provider?: string }} [opts] - provider selects the rule chain;
+ * @param {{ provider?: string, exitCode?: number|null, tool?: string|null }} [opts] - provider selects the rule chain; tool is the binary the failing step ran (see detectMissingTool -- MISSING_TOOL is only reported for that binary);
  *   defaults to DEFAULT_VCS_PROVIDER ('github'), which reproduces runner.js's
  *   full auth pattern set exactly.
- * @returns {{ kind: string, providerCode: string|null, retryable: boolean, raw: string }}
- *   `kind` is the ONLY field control flow may branch on. `providerCode` is the
+ * @returns {{ kind: string, providerCode: string|null, retryable: boolean, permissionScope: boolean, operatorReferral: string|null, missingTool: string|null, raw: string }}
+ *   `missingTool` is the binary name a MISSING_TOOL failure names (null when the wording names none, and for every other kind).
+ *   `kind` is the ONLY field control flow may branch on, with ONE declared
+ *   exception: `permissionScope` (see below), which is a REFINEMENT of
+ *   AUTH_DENIED, not a parallel vocabulary. `providerCode` is the
  *   provider-specific token (e.g. an HTTP status, or an Azure DevOps
- *   'TF401019') carried as a DIAGNOSTIC detail. `raw` is the input, normalized
- *   to a string, so a caller can log the evidence behind the verdict.
+ *   'TF401019') carried as a DIAGNOSTIC detail. `permissionScope` is true when
+ *   a provider's `permissionScope.rules` matched: the identity was understood
+ *   and the PRINCIPAL lacks the granted permission, so re-minting the same
+ *   credential cannot help and the caller must NOT self-heal or retry.
+ *   `operatorReferral` is the provider's own operator-facing remedy text for
+ *   that case (null otherwise), so a shared caller can surface WHICH resource
+ *   and WHICH missing permission without carrying a vendor wording itself.
+ *   `raw` is the input, normalized to a string, so a caller can log the
+ *   evidence behind the verdict.
  */
 export function classifyFailure(rawStderr, opts = {}) {
     const raw = String(rawStderr == null ? '' : rawStderr);
     const providerName = (opts && opts.provider) || DEFAULT_VCS_PROVIDER;
     const chain = resolveVcsProviderChain(providerName);
 
+    // MISSING TOOL first, ahead of permission-scope and provider rules (see
+    // MISSING_TOOL_RULES above).
+    const missing = detectMissingTool(raw, { exitCode: opts && opts.exitCode, tool: opts && opts.tool });
+    if (missing) {
+        return {
+            kind: VCS_FAILURE_KINDS.MISSING_TOOL, providerCode: null, retryable: false,
+            permissionScope: false, operatorReferral: null, missingTool: missing.tool, raw,
+        };
+    }
+
+    // PERMISSION-SCOPE RULES ARE CHECKED FIRST, ahead of KIND_PRECEDENCE.
+    //
+    // A host's permission refusal almost always arrives wrapped in that host's
+    // GENERIC rejection tail -- for git, "error: failed to push some refs to
+    // ...", which is emitted for EVERY rejected push and which GenericGitVCS
+    // matches as DIVERGED, the highest-precedence kind. Running the normal
+    // precedence loop first would therefore read a permission refusal as a
+    // divergence and send the caller into a doomed pull --rebase. The
+    // alternative -- reordering the provider's whole `precedence` array to put
+    // AUTH_DENIED first -- would silently re-read every OTHER ambiguous text
+    // for that provider too (a publickey refusal that also mentions a
+    // non-fast-forward, a GitLab "Access denied" that also carries git's
+    // generic "Authentication failed" tail), which is exactly the kind of
+    // collateral verdict change this taxonomy exists to prevent. So the
+    // override is per-RULE and opt-in per provider, not per provider-wide
+    // ordering. Most-derived provider first, same as the precedence loop.
+    let permissionScope = false;
+    let operatorReferral = null;
+    for (const provider of chain) {
+        const scope = provider.permissionScope;
+        if (!scope || !Array.isArray(scope.rules)) continue;
+        if (!scope.rules.some((re) => re.test(raw))) continue;
+        permissionScope = true;
+        if (typeof scope.describe === 'function') {
+            const described = scope.describe(raw);
+            operatorReferral = typeof described === 'string' && described.trim() ? described : null;
+        }
+        break;
+    }
+
     const precedence = chain.find((p) => Array.isArray(p.precedence))?.precedence || KIND_PRECEDENCE;
 
-    let kind = VCS_FAILURE_KINDS.UNKNOWN;
-    outer:
-    for (const candidate of precedence) {
-        // Most-derived provider first within each kind, so a provider can
-        // sharpen a base verdict without editing the base.
-        for (const provider of chain) {
-            const patterns = (provider.rules && provider.rules[candidate]) || [];
-            for (const re of patterns) {
-                if (re.test(raw)) {
-                    kind = candidate;
-                    break outer;
+    // A permission-scope match IS the verdict: identity understood, principal
+    // refused (errors.mjs's AUTH_DENIED, word for word). The precedence loop
+    // is skipped entirely in that case -- running it could only re-read the
+    // host's generic rejection tail as something else.
+    let kind = VCS_FAILURE_KINDS.AUTH_DENIED;
+    if (!permissionScope) {
+        kind = VCS_FAILURE_KINDS.UNKNOWN;
+        outer:
+        for (const candidate of precedence) {
+            // Most-derived provider first within each kind, so a provider can
+            // sharpen a base verdict without editing the base.
+            for (const provider of chain) {
+                const patterns = (provider.rules && provider.rules[candidate]) || [];
+                for (const re of patterns) {
+                    if (re.test(raw)) {
+                        kind = candidate;
+                        break outer;
+                    }
                 }
             }
         }
@@ -264,7 +503,7 @@ export function classifyFailure(rawStderr, opts = {}) {
         }
     }
 
-    return { kind, providerCode, retryable: VCS_RETRYABLE_KINDS.has(kind), raw };
+    return { kind, providerCode, retryable: VCS_RETRYABLE_KINDS.has(kind), permissionScope, operatorReferral, missingTool: null, raw };
 }
 
 /**
@@ -278,7 +517,7 @@ export function classifyFailure(rawStderr, opts = {}) {
  * preserving parity, not inventing behavior.
  *
  * @param {string} kind - a VCS_FAILURE_KINDS member
- * @returns {'diverged'|'auth'|'transient'|'unknown'}
+ * @returns {'diverged'|'auth'|'transient'|'missing-tool'|'unknown'}
  */
 export function toGitVerdict(kind) {
     switch (kind) {
@@ -286,6 +525,7 @@ export function toGitVerdict(kind) {
         case VCS_FAILURE_KINDS.AUTH_EXPIRED:
         case VCS_FAILURE_KINDS.AUTH_DENIED: return 'auth';
         case VCS_FAILURE_KINDS.TRANSIENT: return 'transient';
+        case VCS_FAILURE_KINDS.MISSING_TOOL: return 'missing-tool';
         default: return 'unknown';
     }
 }
@@ -304,7 +544,7 @@ export function toGitVerdict(kind) {
  * dolt auth literal, including the publickey-refusal one; see dolt.mjs).
  *
  * @param {string} kind - a VCS_FAILURE_KINDS member
- * @returns {'no-remote'|'empty-remote'|'remote-unreachable'|'auth'|'diverged'|'transient'|'unknown'}
+ * @returns {'no-remote'|'empty-remote'|'remote-unreachable'|'auth'|'diverged'|'transient'|'missing-tool'|'unknown'}
  */
 export function toDoltVerdict(kind) {
     switch (kind) {
@@ -315,6 +555,7 @@ export function toDoltVerdict(kind) {
         case VCS_FAILURE_KINDS.AUTH_EXPIRED:
         case VCS_FAILURE_KINDS.AUTH_DENIED: return 'auth';
         case VCS_FAILURE_KINDS.TRANSIENT: return 'transient';
+        case VCS_FAILURE_KINDS.MISSING_TOOL: return 'missing-tool';
         default: return 'unknown';
     }
 }
@@ -404,8 +645,61 @@ export function capabilities(remoteUrl) {
     return { hasRemote: true, canOpenPullRequest: !!providerCaps.canOpenPullRequest, host: parsed.host };
 }
 
+/**
+ * Resolve a git remote URL into the repository coordinates its OWN provider
+ * defines, by dispatching to that provider's optional parseRepoRef() hook
+ * (apra-fleet-5co8.1.2). This is the shared half of the remote-URL axis: the
+ * host is parsed here, the provider is chosen by the registry, and every
+ * provider-specific rule -- which URL shapes are legal, what the coordinates
+ * are called, what shape to tell the operator to use -- lives in the provider
+ * file, so no caller (runner.js in particular) needs a provider conditional.
+ *
+ * Three outcomes, deliberately distinct so a caller can tell "not my business"
+ * apart from "your remote is wrong":
+ *   - null            no provider claims this host, or the claiming provider
+ *                     has no parseRepoRef hook. The caller keeps its own
+ *                     generic owner/repo parse -- behavior unchanged for
+ *                     GitHub and every other provider.
+ *   - { canonical, ref, provider }
+ *                     the provider recognized the remote; `canonical` is its
+ *                     display/identity key (e.g. org/project/repo for Azure
+ *                     DevOps) and `ref` the full coordinate object.
+ *   - { error }       the provider CLAIMS this host but does not recognize the
+ *                     URL -- a malformed remote, not an unknown one. A typed
+ *                     'ERROR: ' string naming the shape the provider expects
+ *                     (its optional `repoRefHint`), for the caller to surface
+ *                     as a preflight failure rather than proceeding with
+ *                     half-parsed coordinates.
+ *
+ * @param {unknown} remoteUrl
+ * @returns {{ canonical: string, ref: object, provider: string }|{ error: string }|null}
+ */
+export function parseProviderRepoRef(remoteUrl) {
+    const url = String(remoteUrl ?? '').trim();
+    const parsed = parseRemote(url);
+    if (!parsed || !parsed.host) return null;
+
+    const provider = resolveVcsProviderForHost(parsed.host);
+    if (!provider || typeof provider.parseRepoRef !== 'function') return null;
+
+    const ref = provider.parseRepoRef(url);
+    if (ref && typeof ref.canonical === 'string' && ref.canonical) {
+        return { canonical: ref.canonical, ref, provider: provider.name };
+    }
+
+    const hint = (typeof provider.repoRefHint === 'string' && provider.repoRefHint.trim())
+        ? provider.repoRefHint.trim()
+        : '(this provider documents no expected remote shape)';
+    return {
+        error: `ERROR: git remote '${url}' is claimed by VCS provider '${provider.name}' but is not a repository URL it recognizes; expected the shape ${hint}`,
+    };
+}
+
 export const VCSModule = {
     buildCreatePrCommand,
+    buildFindPrCommand,
+    buildUpdatePrCommand,
+    parseProviderRepoRef,
     buildCommentCommand,
     classifyFailure,
     toGitVerdict,
@@ -418,7 +712,12 @@ export const VCSModule = {
     listVcsProviders,
     listVcsAuthProviders,
     getVcsProvider,
+    resolveVcsProviderForHost,
+    resolveVcsAuthProviderForHost,
+    isAuthBackend,
+    VCS_NO_REGISTERED_PROVIDER,
     DEFAULT_VCS_PROVIDER,
+    PR_DESCRIPTION_MAX_LENGTH,
 };
 
 export {
@@ -430,6 +729,19 @@ export {
     listVcsProviders,
     listVcsAuthProviders,
     getVcsProvider,
+    // apra-fleet-5oo: re-exported so runner.js can ask "which registered
+    // provider claims this remote host?" without reaching past this module
+    // into ./vcs-providers/index.mjs directly -- same seam every other
+    // provider-registry helper above is reached through.
+    resolveVcsProviderForHost,
+    // apra-fleet-5oo review fix: the credential-provisioning sibling of the
+    // above (anchored host matching, auth backends only), plus the predicate
+    // that defines "auth backend" -- reached through this same seam rather
+    // than runner.js reaching past it into ./vcs-providers/index.mjs.
+    resolveVcsAuthProviderForHost,
+    isAuthBackend,
+    // VCS_NO_REGISTERED_PROVIDER is already exported at its `export const`
+    // declaration above -- listing it again here is a duplicate-export error.
 };
 
 export default VCSModule;

@@ -10,6 +10,11 @@ on:
         type: choice
         options: [s1, s1.1, s1.2, s1.3, s2, s3, s4, s5, s6, s8.1, s8.2, s8.3, s9, s9.1, s9.2, s9.3]
 
+# GITHUB_TOKEN is only used by actions/checkout; toy-repo writes use the
+# E2E_* PAT secrets, not GITHUB_TOKEN.
+permissions:
+  contents: read
+
 jobs:
   e2e:
     name: 'Fleet E2E - ${{ inputs.suite }}'

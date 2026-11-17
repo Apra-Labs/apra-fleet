@@ -1,5 +1,5 @@
 // =============================================================================
-// Auto-sprint supervisor -- operator HTTP endpoints (apra-fleet-eft.4.4)
+// fleet-sprint supervisor -- operator HTTP endpoints (apra-fleet-eft.4.4)
 // members / backlog / sprints CRUD / stop proxy
 // =============================================================================
 //
@@ -14,6 +14,7 @@
 //   GET  /api/sprints/:id      LIVE child state proxied from the child's /state
 //                              when running, else the historical record
 //   POST /api/sprints/:id/stop proxy the child's own cooperative /stop endpoint
+//   POST /api/sprints/:id/decisions/:decisionId  answer a pending operator decision (proxied to the child)
 //
 // SINGLE SOURCE OF TRUTH FOR VALIDATION (acceptance criterion): request
 // validation REUSES the exported runner.js helpers validateIssueId /
@@ -37,20 +38,45 @@
 // =============================================================================
 
 import http from 'node:http';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { readJsonBody, sendJson } from './server.mjs';
-import { validateIssueId, validateBranchName } from '../../fleet-sprint/runner.js';
+import { validateDecisionNotify } from '../../fleet-sprint/decision-notify.mjs';
+import { validateIssueId, validateBranchName, validateBranchPair } from '../../fleet-sprint/runner.js';
 import { resolveRoleMap } from '../../bin/cli.mjs';
-import { isDeterministicTerminalReason } from './history.mjs';
+import { resolveBacklogRoleAlias, ROLE_BACKLOG } from '../../fleet-sprint/backlog-role.mjs';
+import { normalizeRole } from '../../fleet-sprint/contracts.mjs';
+import { isDeterministicTerminalReason, HISTORY_EVENTS } from './history.mjs';
 import { defaultHasTerminalState } from './watchdog.mjs';
+import { toBeadsSummary } from './beads-identity.mjs';
+import { fleetMembersUnavailableReason, fleetMembersStoppedByUserReason } from './fleet-members.mjs';
 
 /** This module's own on-disk path -- the default build-version stamp's source (see defaultBuildVersion() below). */
 const API_MODULE_PATH = fileURLToPath(import.meta.url);
 
 /** A controller error carrying an HTTP status and (optionally) the bad field. */
+/** Hard cap on a generated sprint id's length (it is also the --run-id, ledger key and log file stem). */
+export const MAX_SPRINT_ID_LENGTH = 48;
+const SPRINT_ID_ROOT_LENGTH = 20;
+
+/**
+ * Bounded, launch-unique sprint id: `<first-root>-<count>-<hash>-<uuid8>`.
+ * The full issue list is NOT encoded in the id (it lives in the sprint
+ * record's issueRoots and the child argv), so the id -- and the log file name
+ * derived from it -- stays the same length for 1 or 100 roots. Uniqueness
+ * per launch comes from the uuid fragment.
+ * @param {string} issue - comma-joined issue roots
+ * @returns {string}
+ */
+export function defaultGenerateSprintId(issue) {
+    const roots = String(issue ?? '').split(',').map((r) => r.trim()).filter(Boolean);
+    const first = (roots[0] ?? 'sprint').replace(/[^A-Za-z0-9._-]/g, '_').slice(0, SPRINT_ID_ROOT_LENGTH);
+    const hash = createHash('sha256').update(roots.join(',')).digest('hex').slice(0, 6);
+    return `${first}-${roots.length}-${hash}-${randomUUID().slice(0, 8)}`;
+}
+
 export class ApiError extends Error {
     /**
      * @param {number} status
@@ -100,12 +126,21 @@ function normalizeMembers(value) {
     return out;
 }
 
-/** The full member set a reservation covers: the union of --members and every roleMap value. */
-function memberUnion(members, roleMap) {
+/**
+ * The full member set a reservation covers: the union of --members and every
+ * roleMap value. `exclude` (unreservable member names -- see
+ * unreservableMemberNamesFromList() below) is subtracted from the union: a shared
+ * backlog member is never part of a sprint's exclusive reservation, so it
+ * never reaches `beforeLaunch` or `ledger.claim`.
+ */
+function memberUnion(members, roleMap, exclude) {
     const seen = new Set();
     const out = [];
     const add = (m) => {
-        if (typeof m === 'string' && m.length > 0 && !seen.has(m)) { seen.add(m); out.push(m); }
+        if (typeof m === 'string' && m.length > 0 && !seen.has(m) && !(exclude && exclude.has(m))) {
+            seen.add(m);
+            out.push(m);
+        }
     };
     for (const m of members) add(m);
     if (roleMap && typeof roleMap === 'object') {
@@ -115,6 +150,25 @@ function memberUnion(members, roleMap) {
     }
     return out;
 }
+
+/**
+ * Pure extractor: the set of member names flagged `unreservable: true` in an
+ * ALREADY-FETCHED `listMembers()`-shaped result (raw array or `{members}`).
+ * No I/O, so callers that already hold a fetched list (e.g. `launch()` below,
+ * which needs exactly one listMembers() read shared with the overlap guard)
+ * never trigger a second fetch just to compute this.
+ * @param {object|object[]} raw
+ * @returns {Set<string>}
+ */
+function unreservableMemberNamesFromList(raw) {
+    const list = Array.isArray(raw) ? raw : (raw && Array.isArray(raw.members) ? raw.members : []);
+    const out = new Set();
+    for (const m of list) {
+        if (m && typeof m === 'object' && m.name && m.unreservable) out.add(m.name);
+    }
+    return out;
+}
+
 
 /**
  * Human-readable rejection message naming every conflicting sprint and the
@@ -133,8 +187,10 @@ export function formatMemberConflict(conflicts) {
  * apra-fleet-eft.5.2 (extended by eft.26.2, Hole 2): the DEFAULT member-axis
  * overlap guard used as `beforeLaunch` when the caller does not inject its
  * own. All-or-nothing: ANY member in the incoming union (members + every
- * roleMap value, INCLUDING the orchestrator role -- memberUnion() already
- * folds that in) that is also held by any OTHER active reservation rejects
+ * roleMap value, INCLUDING the backlog role UNLESS that member is
+ * flagged `unreservable` -- memberUnion() already folds roleMap values in and
+ * subtracts unreservable names) that is also held by any OTHER active
+ * reservation rejects
  * the ENTIRE launch with a 409, naming the conflicting sprint id(s) and the
  * specific overlapping member names. This throws BEFORE ledger.claim() is
  * ever called, so a rejected launch leaves the ledger byte-identical -- no
@@ -155,12 +211,19 @@ export function formatMemberConflict(conflicts) {
  * `listMembers` is optional (backward compatible: omitting it checks only the
  * local ledger, exactly as before eft.26.2).
  *
+ * apra-fleet: the caller MAY pass `ctx.membersList` -- an already-fetched
+ * `listMembers()` result -- to skip this guard's own fetch entirely. `launch()`
+ * already needs one `listMembers()` read to compute the unreservable-exclude
+ * set for `memberUnion()`; without this, that same read was repeated here,
+ * opening a second short-lived MCP transport for what is logically one
+ * request-scoped read.
+ *
  * @param {{ list: () => Array<{ sprintId: string, members?: string[] }> }} ledger
  * @param {() => Promise<object|object[]>|object|object[]} [listMembers]
- * @returns {(ctx: { members: string[], issueRoots: string[] }) => Promise<void>}
+ * @returns {(ctx: { members: string[], issueRoots: string[], membersList?: object|object[] }) => Promise<void>}
  */
 export function defaultMemberOverlapGuard(ledger, listMembers) {
-    return async ({ members: requestMembers }) => {
+    return async ({ members: requestMembers, membersList }) => {
         const requestSet = new Set(requestMembers ?? []);
         // sprintId -> Set<member>, merged across both sources so a member
         // conflicting via both the local ledger AND the server record is
@@ -182,12 +245,13 @@ export function defaultMemberOverlapGuard(ledger, listMembers) {
         // a server-side reservation made by other means (not this ledger) is
         // still caught. Best-effort: a failure to reach listMembers must not
         // block the local-ledger check above from still protecting the launch.
-        if (typeof listMembers === 'function') {
+        if (membersList !== undefined || typeof listMembers === 'function') {
             try {
-                const raw = await listMembers();
+                const raw = membersList !== undefined ? membersList : await listMembers();
                 const list = Array.isArray(raw) ? raw : (raw && Array.isArray(raw.members) ? raw.members : []);
                 for (const m of list) {
                     if (!m || typeof m !== 'object') continue;
+                    if (m.unreservable) continue;
                     if (m.name && m.reservedBy && requestSet.has(m.name)) {
                         addConflict(m.reservedBy, m.name);
                     }
@@ -233,14 +297,65 @@ export function proxyChildStop(port, opts = {}) {
     const host = opts.host ?? '127.0.0.1';
     const timeoutMs = Number.isInteger(opts.timeoutMs) ? opts.timeoutMs : 2000;
     return new Promise((resolve, reject) => {
-        const req = http.request({ host, port, path: '/stop', method: 'POST', timeout: timeoutMs }, (res) => {
+        // The child viewer's POST routes require a JSON content type
+        // (request-guard.mjs), so send an empty JSON object.
+        const data = Buffer.from('{}', 'utf-8');
+        const req = http.request({
+            host, port, path: '/stop', method: 'POST', timeout: timeoutMs,
+            headers: { 'content-type': 'application/json', 'content-length': data.length },
+        }, (res) => {
             res.resume();
             res.on('end', () => resolve({ statusCode: res.statusCode }));
         });
         req.on('timeout', () => { req.destroy(new Error('child /stop timed out')); });
         req.on('error', reject);
-        req.end();
+        req.end(data);
     });
+}
+
+/**
+ * Default child HTTP proxy: POST a JSON body to the child viewer's generic
+ * extension action route (`/extensions/:extId/actions/:actionId`) and return
+ * { statusCode, body } (body parsed when JSON).
+ */
+export function proxyChildAction(port, extId, actionId, payload, opts = {}) {
+    const host = opts.host ?? '127.0.0.1';
+    const timeoutMs = Number.isInteger(opts.timeoutMs) ? opts.timeoutMs : 30000;
+    const data = Buffer.from(JSON.stringify(payload ?? {}), 'utf-8');
+    return new Promise((resolve, reject) => {
+        const req = http.request({
+            host, port, method: 'POST', timeout: timeoutMs,
+            path: `/extensions/${encodeURIComponent(extId)}/actions/${encodeURIComponent(actionId)}`,
+            headers: { 'content-type': 'application/json', 'content-length': data.length },
+        }, (res) => {
+            const chunks = [];
+            res.on('data', (c) => chunks.push(c));
+            res.on('end', () => {
+                const text = Buffer.concat(chunks).toString('utf-8');
+                let body = null;
+                try { body = text ? JSON.parse(text) : null; } catch { body = { error: text.slice(0, 200) }; }
+                resolve({ statusCode: res.statusCode, body });
+            });
+        });
+        req.on('timeout', () => { req.destroy(new Error('child action timed out')); });
+        req.on('error', reject);
+        req.end(data);
+    });
+}
+
+/** Longest operator answer the decision-answer route accepts. */
+export const DECISION_ANSWER_MAX_CHARS = 4000;
+
+/**
+ * Pulls the pending-decision view out of a child /state payload: the decisions
+ * extension's summary (never leaned, so the question and options are whole).
+ * @param {object|null|undefined} state
+ * @returns {{ pendingDecisions: object[], decisionState: string|null }}
+ */
+export function decisionsFromChildState(state) {
+    const d = state && state.summary && state.summary.extensions && state.summary.extensions.decisions;
+    const pendingDecisions = d && Array.isArray(d.pending) ? d.pending : [];
+    return { pendingDecisions, decisionState: d && typeof d.state === 'string' ? d.state : null };
 }
 
 /**
@@ -316,6 +431,16 @@ export function defaultBuildVersion() {
  *     Called once at controller creation to stamp what this process is
  *     running, and again on every launch() to read what's on disk now --
  *     see launch()'s buildVersionWarning below.
+ *   beadsIdentity?: { get: () => object|null },
+ *     src/supervisor/beads-identity.mjs's createBeadsIdentityState() handle.
+ *     When present, launch() records toBeadsSummary(get()) as the ledger
+ *     entry's `beads` field; absent (tests, older wiring) -> null.
+ *   backlogMember?: { get: () => { member: { name: string }|null, status: 'ready'|'degraded', reason: string|null } },
+ *     src/supervisor/backlog-member.mjs's ensureBacklogMember() handle. When
+ *     present, launch() HARD-PINS roleMap.backlog to that member (see
+ *     launch()): degraded -> 503 with the reason; member list unreadable ->
+ *     503; absent backlog role -> injected; a different member -> 400.
+ *     Absent (tests, older wiring) -> today's unpinned behaviour.
  * }} deps
  */
 export function createSprintController(deps = {}) {
@@ -331,13 +456,24 @@ export function createSprintController(deps = {}) {
     const getBacklog = deps.getBacklog ?? (() => ({ tasks: [] }));
     const proxyState = deps.proxyState ?? proxyChildState;
     const proxyStop = deps.proxyStop ?? proxyChildStop;
+    const proxyAction = deps.proxyAction ?? proxyChildAction;
     const roleMapResolver = deps.resolveRoleMap ?? resolveRoleMap;
+    const beadsIdentity = deps.beadsIdentity ?? null;
+    const backlogMemberHandle = deps.backlogMember && typeof deps.backlogMember.get === 'function' ? deps.backlogMember : null;
+    const beadsSummaryForLaunch = () => {
+        if (!beadsIdentity || typeof beadsIdentity.get !== 'function') return null;
+        try {
+            return toBeadsSummary(beadsIdentity.get());
+        } catch {
+            return null;
+        }
+    };
     // eft.5.2: the default beforeLaunch is the all-or-nothing member-axis
     // overlap guard (409 on conflict), not a no-op. Callers may still inject
     // their own beforeLaunch (e.g. to compose it with the eft.5.3 issue-scope
     // guard) -- this default is what runs when nothing is injected.
     const beforeLaunch = deps.beforeLaunch ?? defaultMemberOverlapGuard(ledger, listMembers);
-    const generateSprintId = deps.generateSprintId ?? ((issue) => `${issue}-${randomUUID()}`);
+    const generateSprintId = deps.generateSprintId ?? defaultGenerateSprintId;
     const resolvePort = deps.resolvePort
         ?? ((pid) => (pid != null && spawner.getLiveEntry ? spawner.getLiveEntry(pid)?.port : undefined));
     // apra-fleet-2l4.1: same collaborator watchdog.mjs's classifySprint() uses
@@ -386,14 +522,55 @@ export function createSprintController(deps = {}) {
         catch (err) { throw new ApiError(400, err.message, 'branch'); }
         try { validateBranchName(base, 'base'); }
         catch (err) { throw new ApiError(400, err.message, 'base'); }
+        try { validateBranchPair(branch, base); }
+        catch (err) { throw new ApiError(400, err.message, 'branch'); }
         if (members.length === 0) {
             throw new ApiError(400, 'members must be a non-empty list of member names', 'members');
+        }
+        // phases (optional): per-launch phase settings. Only `regression` is
+        // supported: "run" (default) or "skip". Anything else is rejected here,
+        // before any spawn, so a typo can never silently run or skip a phase.
+        let skipRegression = false;
+        if (body.phases !== undefined) {
+            const phases = body.phases;
+            if (phases === null || typeof phases !== 'object' || Array.isArray(phases)) {
+                throw new ApiError(400, 'phases must be an object, e.g. {"regression":"skip"}', 'phases');
+            }
+            const unknownPhaseKeys = Object.keys(phases).filter((k) => k !== 'regression');
+            if (unknownPhaseKeys.length > 0) {
+                throw new ApiError(400, `phases has unknown key(s): ${unknownPhaseKeys.join(', ')}; only "regression" is supported`, 'phases');
+            }
+            if (phases.regression !== undefined && phases.regression !== 'run' && phases.regression !== 'skip') {
+                throw new ApiError(400, `phases.regression must be "run" or "skip", got ${JSON.stringify(phases.regression)}`, 'phases');
+            }
+            skipRegression = phases.regression === 'skip';
         }
         // `issue` stays a single comma-joined string (the exact shape
         // buildSprintArgv/cli.mjs's --issue flag expects, and byte-identical
         // to the input for the single-id case); `issueIds` is the split array
         // callers use for issueRoots / per-root history lookups.
-        return { issue: issueIds.join(','), issueIds, branch, base, members };
+        // decisionNotify (optional): same JSON shape as the CLI's
+        // --decision-notify; validated here so a bad value is a 400 before any
+        // spawn. Forwarded to the child as a JSON string; credentials never
+        // travel in the body (validateDecisionNotify rejects unknown keys).
+        let decisionNotify;
+        if (body.decisionNotify !== undefined && body.decisionNotify !== null && body.decisionNotify !== '') {
+            try { validateDecisionNotify(body.decisionNotify); }
+            catch (err) { throw new ApiError(400, err.message, 'decisionNotify'); }
+            decisionNotify = typeof body.decisionNotify === 'string' ? body.decisionNotify : JSON.stringify(body.decisionNotify);
+        }
+        // kbDemotionLoop (optional): the reviewer KB demotion loop switch, "on"
+        // (the engine default) or "off" -- the same values as the CLI's
+        // --kb-demotion-loop. Anything else is a 400 before any spawn; omitted
+        // means the child is launched without the flag (engine default).
+        let kbDemotionLoop;
+        if (body.kbDemotionLoop !== undefined) {
+            if (body.kbDemotionLoop !== 'on' && body.kbDemotionLoop !== 'off') {
+                throw new ApiError(400, `kbDemotionLoop must be "on" or "off", got ${JSON.stringify(body.kbDemotionLoop)}`, 'kbDemotionLoop');
+            }
+            kbDemotionLoop = body.kbDemotionLoop;
+        }
+        return { issue: issueIds.join(','), issueIds, branch, base, members, skipRegression, kbDemotionLoop, decisionNotify };
     }
 
     // -- GET /api/members : list_members + live-reservation overlay -----------
@@ -434,12 +611,90 @@ export function createSprintController(deps = {}) {
 
     // -- POST /api/sprints : validated, goal-forwarding launch ----------------
     async function launch(body = {}) {
-        const { issue, issueIds, branch, base, members } = validateLaunchRequest(body);
+        const { issue, issueIds, branch, base, members, skipRegression, kbDemotionLoop, decisionNotify } = validateLaunchRequest(body);
+        // An '@file' roleMap is a CLI-only convenience: over HTTP it would make
+        // the supervisor read an arbitrary server-side path named by the request
+        // body, and the alias warning could not be computed from it. Reject it.
+        if (typeof body.roleMap === 'string' && body.roleMap.trim().startsWith('@')) {
+            throw new ApiError(400, "[Arg Contract] roleMap '@file' references are not accepted over HTTP; send the role map as a JSON object or JSON string", 'roleMap');
+        }
         const rawRoleMap = body.roleMap === undefined
             ? undefined
             : (typeof body.roleMap === 'string' ? body.roleMap : JSON.stringify(body.roleMap));
-        const roleMap = await roleMapResolver(rawRoleMap);
-        const union = memberUnion(members, roleMap);
+        // Backlog-role alias: a conflicting deprecated-alias/backlog
+        // pair is a 400 on field 'roleMap' (before any child spawns); the
+        // deprecation warning for the alias is surfaced in the response. The
+        // operator's ORIGINAL (key-normalized, alias intact) map is what the
+        // child CLI receives, so its run log carries the warning too.
+        let aliasWarnings = [];
+        let forwardRoleMap;
+        if (rawRoleMap !== undefined) {
+            let parsedRaw;
+            try { parsedRaw = JSON.parse(rawRoleMap); } catch { parsedRaw = undefined; }
+            if (parsedRaw && typeof parsedRaw === 'object' && !Array.isArray(parsedRaw)) {
+                const normalizedRaw = {};
+                for (const [k, v] of Object.entries(parsedRaw)) normalizedRaw[normalizeRole(k)] = v;
+                try {
+                    aliasWarnings = resolveBacklogRoleAlias(normalizedRaw).warnings;
+                } catch (err) {
+                    throw new ApiError(400, `[Arg Contract] Invalid roleMap: ${err.message}`, 'roleMap');
+                }
+                forwardRoleMap = normalizedRaw;
+            }
+        }
+        let roleMap;
+        try {
+            roleMap = await roleMapResolver(rawRoleMap);
+        } catch (err) {
+            throw new ApiError(400, err.message, 'roleMap');
+        }
+        // apra-fleet: ONE listMembers() read, shared with beforeLaunch below
+        // (via ctx.membersList) -- both need to know which members are
+        // currently flagged unreservable, and issuing two separate fetches
+        // per launch opened two separate short-lived MCP transports for what
+        // is logically one request-scoped read. A fetch failure here degrades
+        // to "no member known unreservable" (best-effort, not the sole
+        // enforcement point -- member-reservation.ts's server-side no-op
+        // still protects a flagged member even if this can't see it) and
+        // leaves membersListRaw undefined so beforeLaunch falls back to its
+        // own (equally best-effort) fetch attempt.
+        // Backlog hard pin, part 1: a supervisor whose backlog member is
+        // not ready cannot launch at all (before any member read or spawn).
+        let pinnedBacklogName = null;
+        if (backlogMemberHandle) {
+            const st = backlogMemberHandle.get() ?? {};
+            if (st.status !== 'ready' || !st.member || !st.member.name) {
+                throw new ApiError(503, `this supervisor's backlog member is not ready: ${st.reason ?? 'unknown reason'}`);
+            }
+            pinnedBacklogName = st.member.name;
+        }
+        let membersListRaw;
+        let membersListError = null;
+        try {
+            membersListRaw = await listMembers();
+        } catch (err) {
+            membersListError = err && err.message ? err.message : String(err);
+            console.error(`[unreservable] listMembers() failed while computing the unreservable-member exclude set (treating as none this launch): ${membersListError}`);
+            membersListRaw = undefined;
+        }
+        // The fleet server was stopped on purpose ('apra-fleet stop'): refuse
+        // the launch with that actionable message instead of spawning a
+        // sprint that could only fail at connect.
+        const stoppedByUser = fleetMembersStoppedByUserReason(membersListRaw);
+        if (stoppedByUser) throw new ApiError(503, stoppedByUser);
+        // Backlog hard pin, part 2: the pin is only enforceable against a
+        // member list that was actually read. listFleetMembers() never
+        // throws, so its unavailable marker (not the catch above) is the
+        // production signal; either one refuses the launch -- never a
+        // silent skip of the check.
+        if (pinnedBacklogName) {
+            const unavailable = membersListError ?? fleetMembersUnavailableReason(membersListRaw);
+            if (unavailable) {
+                throw new ApiError(503, `cannot verify backlog member '${pinnedBacklogName}': fleet member list unavailable (${unavailable})`);
+            }
+        }
+        const unreservable = membersListRaw !== undefined ? unreservableMemberNamesFromList(membersListRaw) : new Set();
+        const union = memberUnion(members, roleMap, unreservable);
         // apra-fleet-ymf.1: issueRoots is the SPLIT array of individual ids
         // (never the raw comma-joined string) -- the same shape the CLI path
         // already feeds runner.js's targetIssues, and what the ledger schema,
@@ -483,8 +738,32 @@ export function createSprintController(deps = {}) {
             );
         }
 
+        // Backlog hard pin, part 3: checked AFTER resolveBacklogRoleAlias, so
+        // the resolved `roleMap.backlog` already carries a deprecated
+        // `orchestrator` alias. Absent -> injected into the map the child
+        // actually receives (forwardRoleMap when set, else the resolved map);
+        // naming any other member -> 400. The pinned member is unreservable,
+        // so it stays out of `union` exactly as before.
+        let childRoleMap = forwardRoleMap ?? roleMap;
+        if (pinnedBacklogName) {
+            const raw = roleMap && typeof roleMap === 'object' ? roleMap[ROLE_BACKLOG] : undefined;
+            const requested = (Array.isArray(raw) ? raw : (raw === undefined || raw === null ? [] : [raw]))
+                .filter((m) => typeof m === 'string' && m.trim().length > 0)
+                .map((m) => m.trim());
+            if (requested.length === 0) {
+                childRoleMap = { ...(childRoleMap && typeof childRoleMap === 'object' ? childRoleMap : {}), [ROLE_BACKLOG]: [pinnedBacklogName] };
+            } else if (requested.some((m) => m !== pinnedBacklogName)) {
+                throw new ApiError(
+                    400,
+                    `[Arg Contract] roleMap.backlog must be this supervisor's backlog member '${pinnedBacklogName}' (or omitted, ` +
+                    `which assigns it automatically); got [${requested.join(', ')}].`,
+                    'roleMap',
+                );
+            }
+        }
+
         // eft.5.2 seam: reject overlapping launches (409) BEFORE spawning a child.
-        await beforeLaunch({ members: union, issueRoots });
+        await beforeLaunch({ members: union, issueRoots, membersList: membersListRaw });
 
         // apra-fleet-k7b.1: generate the sprintId BEFORE spawning (not after,
         // as before) so it can be forwarded into the child's own argv as
@@ -505,11 +784,26 @@ export function createSprintController(deps = {}) {
             maxCycles: body.maxCycles,
             allowMissingMembers: body.allowMissingMembers,
             requirementsFile: body.requirementsFile,
-            roleMap,
+            roleMap: childRoleMap,
             budget: body.budget,
             runId: sprintId,
+            skipRegression,
+            kbDemotionLoop,
+            decisionNotify,
         };
-        const spawned = await spawner.spawnSprint(spawnOpts);
+        let spawned;
+        try {
+            spawned = await spawner.spawnSprint(spawnOpts);
+        } catch (err) {
+            if (err instanceof ApiError) throw err;
+            // Name the failing step and the underlying cause (code + message,
+            // e.g. an ENOENT on the log path) instead of letting the generic
+            // 'internal supervisor error' 500 hide it.
+            const code = err && err.code ? `${err.code}: ` : '';
+            const detail = err && err.message ? err.message : String(err);
+            console.error(`[supervisor] launch of '${sprintId}' failed at step 'spawn sprint child':`, err && err.stack ? err.stack : err);
+            throw new ApiError(500, `sprint launch failed at step 'spawn sprint child': ${code}${detail}`);
+        }
         // apra-fleet-gey.2: best-effort stale-process detection -- compare
         // the build this supervisor process STAMPED at startup against
         // what's on disk RIGHT NOW. A mismatch means code changed after this
@@ -544,6 +838,10 @@ export function createSprintController(deps = {}) {
             branch,
             base,
             goal: body.goal ?? null,
+            // Which .beads this supervisor resolved at launch time (see
+            // beads-identity.mjs) -- the same identity the child received as
+            // --expect-beads, recorded so the dashboard can show it per row.
+            beads: beadsSummaryForLaunch(),
         });
 
         return {
@@ -555,6 +853,7 @@ export function createSprintController(deps = {}) {
             members: union,
             goal: body.goal ?? null,
             buildVersionWarning,
+            warnings: aliasWarnings,
         };
     }
 
@@ -586,18 +885,43 @@ export function createSprintController(deps = {}) {
             // and surfacing a raw ECONNREFUSED-derived 500.
             const terminalState = hasTerminalState(id, reservation.branch ?? null);
             if (terminalState) {
-                return { sprintId: id, live: false, terminal: true, state: terminalState };
+                // Lift the run's own terminal status + warnings (e.g.
+                // success-with-warnings when the PR was skipped for an auth
+                // failure) so consumers need not dig through state.result.
+                const res = terminalState && typeof terminalState === 'object' ? terminalState.result : null;
+                const resultStatus = res && typeof res === 'object' && typeof res.status === 'string' ? res.status : null;
+                const warnings = res && typeof res === 'object' && Array.isArray(res.warnings) ? res.warnings : [];
+                return {
+                    sprintId: id, live: false, terminal: true, state: terminalState,
+                    ...(resultStatus ? { resultStatus } : {}),
+                    ...(warnings.length > 0 ? { warnings } : {}),
+                };
             }
             const port = resolvePort(reservation.childPid ?? null);
             if (port != null) {
                 const state = await proxyState(port);
-                return { sprintId: id, live: true, state };
+                // pendingDecisions (full, untruncated) and the run state while
+                // paused for a decision, lifted from the child's decisions summary.
+                const { pendingDecisions, decisionState } = decisionsFromChildState(state);
+                return {
+                    sprintId: id, live: true, state, pendingDecisions,
+                    ...(decisionState ? { decisionState } : {}),
+                    ...(decisionState === 'paused-awaiting-decision' ? { runState: decisionState } : {}),
+                };
             }
         }
         // Not live (finished/gone, or port unknown): return the historical record.
         const latest = history.latestFor(id);
         if (latest) {
-            return { sprintId: id, live: false, history: history.forSprint(id), latest };
+            // Lift the FINISHED event's resultStatus + warnings (e.g. PR skipped
+            // for auth failure) so they stay visible after the reservation release.
+            const fin = history.forSprint(id).filter((e) => e.event === HISTORY_EVENTS.FINISHED).pop();
+            const warnings = fin && Array.isArray(fin.warnings) ? fin.warnings : [];
+            return {
+                sprintId: id, live: false, history: history.forSprint(id), latest,
+                ...(fin && fin.resultStatus ? { resultStatus: fin.resultStatus } : {}),
+                ...(warnings.length > 0 ? { warnings } : {}),
+            };
         }
         throw new ApiError(404, `no sprint '${id}' is live or in history`);
     }
@@ -628,8 +952,31 @@ export function createSprintController(deps = {}) {
         return { sprintId: id, status: 'stopping', child: result ?? null };
     }
 
+    // -- POST /api/sprints/:id/decisions/:decisionId : answer a decision -------
+    async function answerDecision(id, decisionId, body) {
+        if (!body || typeof body !== 'object' || Array.isArray(body)) {
+            throw new ApiError(400, 'request body must be a JSON object', 'body');
+        }
+        if (typeof body.answer !== 'string' || !body.answer.trim()) {
+            throw new ApiError(400, 'answer is required (a non-empty string)', 'answer');
+        }
+        if (body.answer.length > DECISION_ANSWER_MAX_CHARS) {
+            throw new ApiError(400, `answer is longer than ${DECISION_ANSWER_MAX_CHARS} characters`, 'answer');
+        }
+        const reservation = ledger.get(id);
+        if (!reservation) throw new ApiError(404, `no live sprint '${id}'`);
+        const port = resolvePort(reservation.childPid ?? null);
+        if (port == null) throw new ApiError(409, `sprint '${id}' has no reachable child (port unknown)`);
+        const out = await proxyAction(port, 'decisions', 'answer', { decisionId, answer: body.answer });
+        if (out.statusCode === 404) throw new ApiError(404, `no pending decision '${decisionId}' in sprint '${id}'`);
+        if (out.statusCode === 400) throw new ApiError(400, (out.body && out.body.error) || 'bad decision answer', 'answer');
+        if (out.statusCode !== 200) throw new ApiError(409, (out.body && out.body.error) || `decision answer failed (${out.statusCode})`);
+        return { sprintId: id, decisionId, status: (out.body && out.body.status) || 'recorded', released: (out.body && out.body.released) || [] };
+    }
+
     return {
         name: 'sprint-controller',
+        answerDecision,
         members,
         backlog,
         launch,
@@ -682,6 +1029,21 @@ export function registerSprintRoutes(supervisor, controller) {
     supervisor.route('GET', '/api/sprints/:id', async (req, res, ctx) => {
         try {
             sendJson(res, 200, await controller.getSprint(ctx.params.id));
+        } catch (err) {
+            if (!onApiError(res, err)) throw err;
+        }
+    });
+
+    supervisor.route('POST', '/api/sprints/:id/decisions/:decisionId', async (req, res, ctx) => {
+        let body;
+        try {
+            body = (await readJsonBody(req)) ?? {};
+        } catch (err) {
+            sendJson(res, 400, { error: String(err && err.message ? err.message : err), field: 'body' });
+            return;
+        }
+        try {
+            sendJson(res, 200, await controller.answerDecision(ctx.params.id, ctx.params.decisionId, body));
         } catch (err) {
             if (!onApiError(res, err)) throw err;
         }

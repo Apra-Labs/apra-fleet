@@ -22,14 +22,23 @@ dashboard.
 | `src/workflow/vetting.mjs` | `VettingEngine` -- an advisory (non-blocking by default) heuristic scan of a script's source for review purposes. |
 | `src/viewer/index.mjs` | `createDashboardViewer()` -- an HTTP server + Server-Sent-Events dashboard that visualizes a running `FleetWorkflow` in real time. |
 | `src/viewer/html-utils.mjs` | `escapeHtml()` -- the single shared HTML-escaping implementation used by both the core viewer and any dashboard extension. |
-| `src/viewer/debounced-writer.mjs` | Coalesced, atomic, flush-on-exit continuous state persistence -- see "Continuous state persistence" below. |
-| `src/viewer/sprint-state-paths.mjs` | Path resolution for a sprint's continuous state file, keyed by a stable sprint id (`running/<id>.json` while live, moved to `old_sprints/<id>.json` on completion). |
+| `src/viewer/debounced-writer.mjs` | Coalesced, atomic, flush-on-exit continuous state persistence. |
+| `src/viewer/run-state-paths.mjs` | Path resolution for a run's continuous state file, keyed by run id, under the service data directory (`running/<runId>.json` while live, moved to `old_runs/<runId>.json` on completion). Domain-neutral: it knows about workflow runs, not about any particular workflow. |
+| `src/viewer/sprint-state-paths.mjs` | The same path resolution keyed by a stable sprint id (`running/<id>.json` while live, moved to `old_sprints/<id>.json` on completion). |
+| `src/viewer/lean-state.mjs` | Pure transform that strips extension-owned items in the outgoing `GET /state` payload down to short summaries -- see "Lean polling for large state" below. It never touches the live `state` object or the persisted full-fidelity snapshots. |
+| `src/viewer/command-output-cap.mjs` | Bounds how much of a `command()` activity's captured stdout is ever STORED in live run state (and therefore in the persisted snapshots), as opposed to `lean-state.mjs`'s narrower job of trimming each outgoing poll payload. |
+| `src/viewer/run-title.mjs` | Builds the short, human-readable run-title sentence for the dashboard header from `state.args`, for callers that opt into publishing it. |
 
-The package's `exports` map (see `package.json`) exposes four import paths:
+The package's `exports` map (see `package.json`) exposes eight import
+paths: the root entry, `./engine`, `./viewer`, and five viewer sub-modules
+(`./viewer/html-utils`, `./viewer/run-state-paths`,
+`./viewer/sprint-state-paths`, `./viewer/debounced-writer`,
+`./viewer/lean-state`). The ones a workflow author normally touches:
 
 ```javascript
 import { FleetWorkflow, WorkflowError, MemberNotFoundError, AgentOutputError,
-         CommandError, FleetTransportError, BudgetExceededError, CancelledError }
+         AgentDispatchError, CommandError, FleetTransportError,
+         BudgetExceededError, CancelledError }
   from '@apralabs/apra-fleet-workflow';
 import { WorkflowEngine } from '@apralabs/apra-fleet-workflow/engine';
 import { createDashboardViewer } from '@apralabs/apra-fleet-workflow/viewer';
@@ -59,7 +68,9 @@ await engine.executeFile('./my-workflow.js', { targetIssue: 'X-1' });
   routing, `opts.resume` for session continuity, and `opts.signal`/`opts.timeoutMs` for
   cancellation/timeout pass-through to the client.
 - `command(cmd, opts)`: dispatches a shell command to a fleet member via
-  `fleetApi.executeCommand()`. Supports `opts.failSoft` (section 4.2) and the same
+  `fleetApi.executeCommand()`. Supports `opts.failSoft` (section 4.2),
+  `opts.pauseExempt` (a read-only probe that runs while the run is paused, is not
+  counted in flight and takes no journal sequence; see workflow-guide.md) and the same
   routing/cancellation options as `agent()`.
 - `sequential(items, processor, opts)`: applies a single `processor(item, index, items)`
   function to each item in order. It accepts exactly one processor function; passing more
@@ -84,16 +95,20 @@ await engine.executeFile('./my-workflow.js', { targetIssue: 'X-1' });
 - `publishState(namespace, data)`: emits a `state` event carrying an arbitrary payload under
   a namespace; the dashboard forwards this to any registered viewer extension as a
   `workflow:state:<namespace>` browser `CustomEvent` (see section 6).
+- `setPauseGuard(fn)`: lets the script declare where a clean pause boundary is (section 4.7).
+  `requestPause`/`requestResume`/`requestStop` are deliberately NOT on the context -- they are
+  instance-level, driven by the viewer or an orchestrator.
+- `workflow(nameOrRef, args)`: reserved for running another script inline; nested workflows
+  are not implemented and this throws.
 
 ## 3. Execution model: per-run isolation
 
-Before a workflow ran, `FleetWorkflow` kept "current run" state (`args`, `currentPhase`,
-`currentGroup`, `budget`) as plain mutable instance fields. That breaks as soon as two
-`executeFile()` calls run concurrently on the same `FleetWorkflow` instance, or a single
-run's `parallel()` branches each call `phase()` with a different value -- both would stomp
-on shared state.
+"Current run" state (`args`, `currentPhase`, `currentGroup`, `budget`) cannot live in plain
+mutable instance fields on `FleetWorkflow`: two `executeFile()` calls running concurrently on
+the same instance, or a single run's `parallel()` branches each calling `phase()` with a
+different value, would stomp on that shared state.
 
-`FleetWorkflow` instead keeps this state in a small per-run store threaded automatically
+`FleetWorkflow` therefore keeps this state in a small per-run store threaded automatically
 through the async call graph via Node's `AsyncLocalStorage` (`runStorage` in
 `index.mjs`):
 
@@ -197,15 +212,23 @@ and `.details`, and preserves the original failure on `.cause` where applicable)
   structured error; see `docs/structured-errors-proposal.md` for the server-side fix this is
   a stopgap for.
 - `AgentOutputError` (`code: AGENT_OUTPUT_INVALID`) -- empty content from the fleet, or
-  (when a schema was requested) exhaustion of the repair loop above.
+  (when a schema was requested) exhaustion of the repair loop above. This means the LLM
+  answered and the answer was unusable.
+- `AgentDispatchError` (`code: AGENT_DISPATCH_FAILED`) -- `execute_prompt`'s dispatch itself
+  failed BEFORE any real LLM content was produced: a busy or reserved member, a transport
+  exception, a non-zero CLI exit. Classified from `structuredContent.isError`/`reason` on
+  `execute_prompt`'s response (`src/tools/execute-prompt.ts`), and deliberately never fed
+  into the schema-repair loop -- re-asking the same broken prompt with "here's why your JSON
+  was invalid" framing cannot fix a busy member, and would burn repair attempts while
+  reporting a dispatch rejection as a schema problem.
 - `CommandError` (`code: COMMAND_FAILED`) -- an `isError: true` result from `command()`.
 - `FleetTransportError` (`code: TRANSPORT_ERROR`) -- the underlying `fleetApi` call itself
   rejected (network/MCP transport failure); the original error is on `.cause`.
 - `BudgetExceededError` (`code: BUDGET_EXCEEDED`) -- see section 4.5.
 - `CancelledError` (`code: CANCELLED`) -- see section 4.6.
 
-All six classes are exported from the package's top-level entry point, so callers can
-`instanceof`-match them.
+All seven classes, plus the `WorkflowError` base, are exported from the package's top-level
+entry point, so callers can `instanceof`-match them.
 
 ### 4.5 Budget accounting
 
@@ -254,6 +277,79 @@ This is client-side/local cancellation only: a remote fleet member that already 
 job may keep running to completion even after the workflow run itself unwinds as cancelled.
 True server-side cancellation would require changes to the external apra-fleet MCP server
 and is out of scope for this package.
+
+### 4.7 Cooperative pause/resume
+
+`FleetWorkflow` also exposes a cooperative **pause/resume** primitive,
+independent of and complementary to cancellation (4.6): `requestPause(reason)`,
+`requestResume(reason)`, `setPauseGuard(fn)`, and `setPreResumeHook(fn)`. This
+is a generic engine gate -- it carries no domain-specific semantics of its own
+-- not a journaled `interrupt()`; a paused run is parked in memory, not
+checkpointed to disk (see section 5 for the separate, journal-based
+resumability story).
+
+**The gate and when it engages.** Every `agent()`/`command()` call awaits an
+internal pause gate before it becomes "in flight." `requestPause()` fires a
+`pause:requested` event immediately, but the pause itself is **deferred**: it
+only actually engages (fires `paused`, and starts blocking new dispatches at
+the gate) once two conditions hold simultaneously:
+
+1. **Zero in-flight activities.** The engine tracks an in-flight counter,
+   incremented when a call clears the gate and decremented (in a `finally`)
+   when it settles. `paused` is emitted from exactly one place in the engine,
+   guaranteeing it can never fire while work is still running.
+2. **The pause guard, if any, returns truthy.** `setPauseGuard(fn)` lets the
+   *workflow script* declare where a "clean" pause boundary actually is --
+   e.g. never mid-transaction, never between a pull and its matching push --
+   rather than accepting any zero-in-flight gap the engine happens to see. A
+   `null` guard (the default) treats every zero-in-flight point as
+   acceptable. A throwing guard fails **closed**: the pause keeps deferring
+   rather than landing at a point the script couldn't vouch for.
+
+`requestResume()` (`async`, returns a `Promise<void>`) releases every call
+parked at the gate and fires `resumed` -- but only after it has drained the
+pre-resume hook described below, if one is registered. `requestStop()` (4.6)
+supersedes a pause outright: it rejects every parked call with a
+`CancelledError` instead of leaving it blocked forever, so a paused run tears
+down the same way a cancelled one does rather than hanging.
+
+**Why deferred rather than immediate.** An immediate pause (block the very
+next call, whatever state it interrupts) would let a workflow's own
+multi-step sync sequence (e.g. pull, dispatch, push) get parked halfway
+through, leaving on-disk/remote state inconsistent for whoever inspects it
+during the pause or for the resume itself. Requiring both quiescence and an
+optional caller-supplied guard means a pause can never land somewhere the
+calling script didn't consider safe to stop.
+
+**Instance-scoped, like `requestStop()`.** All pause state lives on the
+`FleetWorkflow` instance, not per-run, so a single `requestPause()` quiesces
+every run sharing that instance -- consistent with how `requestStop()`
+already behaves.
+
+**What resuming does NOT guarantee for you, unless you register a barrier.**
+The engine's baseline contract is "no new `agent()`/`command()` dispatch
+starts until resumed." Any domain-specific state that needs to be released
+while paused and reacquired on resume (e.g. external locks, reservations) is
+the calling script's responsibility, coordinated via `setPauseGuard()` plus
+the script's own `pause:requested`/`paused`/`resumed` listeners -- the engine
+does not know what those resources are.
+
+A plain `resumed` listener is **not** a barrier: listeners fire after pause
+state has already cleared and gate waiters have already been released, so a
+listener that tries to reacquire something races the next `agent()`/
+`command()` call rather than strictly preceding it. A caller that needs its
+reacquire/resync work to complete strictly *before* the first post-resume
+dispatch registers it with `setPreResumeHook(fn)` instead: `requestResume()`
+`await`s this hook FIRST, while the run is still paused -- before it clears
+pause state, releases any gate waiter, or emits `resumed` -- so the hook's
+work cannot be raced by a fresh dispatch. If the hook rejects,
+`requestResume()` rejects too and pause state is left untouched (the run
+stays parked) rather than the rejection being swallowed. `setPreResumeHook`
+accepts a single hook (or `null` to clear it); it throws a `TypeError` for
+any non-function, non-null argument. It carries no domain-specific semantics
+of its own -- it is a generic barrier point, not a fleet-sprint-specific
+affordance -- so a caller that has nothing to do before resuming simply
+never registers one and `requestResume()` proceeds immediately, as before.
 
 ## 5. Resumable runs: the execution journal and replay keys
 
@@ -383,6 +479,18 @@ dashboard and subscribes to the given `FleetWorkflow` instance's events:
   status `cancelled`, which is what actually transitions the dashboard's status indicator
   and closes the server (after a grace period) -- there is no `process.exit()` anywhere in
   this path.
+
+`POST /pause` and `POST /resume` follow the same "route only forwards, never
+mutates state directly" pattern as `/stop`: they call
+`workflow.requestPause()`/`requestResume()` (4.7) and nothing else. The
+viewer's own `state.pause` object (`{ status, reason, since, phase, group }`)
+is driven **exclusively** by the engine's `pause:requested`/`paused`/`resumed`
+events, never by the click itself -- so the Pause/Resume button and a "paused
+since" badge always reflect what the engine actually did (including the
+deferred-pause window, surfaced as an intermediate `pausing` status) rather
+than what the browser merely asked for. This route/state separation is
+deliberate: it is the same reason `/stop` doesn't flip the status indicator
+itself and instead waits for the engine's own `end` event.
 
 The dashboard's activity tree renders `group` > `phase` > `activity`/`log` events, tracking
 running/success/error status per activity, token/cost totals, and an "(+N unknown)" suffix

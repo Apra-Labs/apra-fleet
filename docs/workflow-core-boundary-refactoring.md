@@ -1,9 +1,10 @@
 # Refactoring: restore the core-vs-se boundary in the workflow package
 
-Status: DESIGN APPROVED FOR EXECUTION (user-directed 2026-07-20). To be
-executed as part of the current build effort, not parked as debt. Tracked
-by a bug bead under the eft epic; this document is the single design
-source the planner should decompose from.
+Status: IMPLEMENTED. The boundary this document specifies is in force and
+test-asserted -- `packages/apra-fleet-workflow/test/boundary-no-domain-leakage.test.mjs`
+and `packages/apra-fleet-se/test/eft-37-boundary-e2e.test.mjs` cite its
+acceptance criteria and milestones directly. Retained as the design record
+for that boundary.
 
 ## Why (the product argument)
 

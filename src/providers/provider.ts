@@ -4,6 +4,7 @@ import type { LlmProvider } from '../types.js';
 import type { SSHExecResult } from '../types.js';
 import type { PromptErrorCategory } from '../utils/prompt-errors.js';
 import { sanitizeSessionId } from '../os/os-commands.js';
+import type { MemberShell } from '../os/os-commands.js';
 
 export type { LlmProvider };
 
@@ -18,7 +19,7 @@ export type TargetOS = 'linux' | 'macos' | 'windows';
  * Providers previously built member-side log paths with the default `path`
  * module, so a Windows hub produced backslash-joined paths for a Linux member
  * (and vice versa) -- a path that can never exist on the member, which silently
- * disables stall detection (Claude/Gemini) or manufactures a false-positive
+ * disables stall detection (Claude) or manufactures a false-positive
  * stall kill (AGY/OpenCode).
  *
  * `targetOs === undefined` deliberately keeps the legacy host-convention
@@ -53,13 +54,80 @@ export type SessionIdStrategy =
   | { type: 'caller-minted' }
   | { type: 'provider-minted' };
 
-export function encodeClaudeProjectDir(workFolder: string): string {
-  return workFolder.replace(/[^a-zA-Z0-9]/g, '-');
+/**
+ * apra-fleet-25yl.2.1: what the EXEC-LEVEL ROLLING (inactivity) timeout handed
+ * to `strategy.execCommand()` is derived from, for this provider.
+ *
+ *  - 'inactivity_timeout' -- derive it from the caller's `timeout_s`. Choose
+ *    this when the exec channel (stdout/stderr on the dispatch pipe) is a
+ *    REAL mid-turn liveness signal for the provider, OR when preserving the
+ *    provider's current behaviour is the point. Codex is the load-bearing
+ *    case: its adapter returns null from resolveSessionLogDir(), so the
+ *    StallDetector has no transcript to poll and this timer is its ONLY stall
+ *    signal -- decoupling it there disables stall detection outright.
+ *  - 'total_ceiling' -- do NOT arm a `timeout_s`-sized rolling deadline;
+ *    derive it from `max_total_s` instead (a value that can never bind before
+ *    the caller's own hard ceiling does). Choose this when the provider is
+ *    batch/CONOUT$-only, so the exec channel emits nothing mid-turn and a
+ *    `timeout_s`-sized rolling deadline is a false kill. The StallDetector's
+ *    transcript polling is the real stall mechanism for these providers, and
+ *    it still gets `timeout_s` as its thresholdMs.
+ *
+ * This is deliberately a REQUIRED member of {@link ProviderAdapter} rather
+ * than an optional one with a default: a newly added provider must state its
+ * own answer (a compile error if it does not) instead of silently inheriting
+ * whichever branch happens to be the fallback, because the wrong branch
+ * silently disables a kill path.
+ */
+export type ExecTimeoutSource = 'inactivity_timeout' | 'total_ceiling';
+
+/** Claude Code caps an encoded project-dir name at this many characters. */
+export const CLAUDE_PROJECT_DIR_MAX_LEN = 200;
+
+/**
+ * The 32-bit string hash Claude Code appends to an over-long project-dir name
+ * (ported verbatim from the claude CLI bundle: h = ((h << 5) - h + charCode) | 0
+ * over UTF-16 code units).
+ */
+export function claudeProjectDirHash(s: string): number {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+  return h;
+}
+
+/**
+ * Normalize a work folder to the cwd string Claude Code itself sees: no
+ * trailing separator (process.cwd() never has one, except at a root), and on
+ * Windows backslash separators (only the over-200 hash suffix depends on the
+ * separator; the visible encoding maps both to '-').
+ */
+export function claudeCwdForm(workFolder: string, windows: boolean): string {
+  let p = windows ? workFolder.replace(/\//g, '\\') : workFolder;
+  const stripped = p.replace(/[\\/]+$/, '');
+  // Keep a root as the CLI sees it: '/' on POSIX, 'C:\' on Windows.
+  if (stripped === '') p = windows ? p : '/';
+  else if (/^[A-Za-z]:$/.test(stripped)) p = `${stripped}\\`;
+  else p = stripped;
+  return p;
+}
+
+/**
+ * The ~/.claude/projects/<name> directory name Claude Code uses for a cwd:
+ * every non-alphanumeric char becomes '-', and a name longer than 200 chars is
+ * cut to 200 and suffixed with '-' + base36(|hash(cwd)|) -- the same rule as
+ * the claude CLI. `windows` selects the member's cwd form (defaults to this
+ * host's platform).
+ */
+export function encodeClaudeProjectDir(workFolder: string, windows: boolean = process.platform === 'win32'): string {
+  const cwd = claudeCwdForm(workFolder, windows);
+  const encoded = cwd.replace(/[^a-zA-Z0-9]/g, '-');
+  if (encoded.length <= CLAUDE_PROJECT_DIR_MAX_LEN) return encoded;
+  return `${encoded.slice(0, CLAUDE_PROJECT_DIR_MAX_LEN)}-${Math.abs(claudeProjectDirHash(cwd)).toString(36)}`;
 }
 
 /**
  * Build a `--resume <id>` flag with session ID sanitization and quoting.
- * Shared by providers that pass session IDs on the command line (Claude, Gemini).
+ * Shared by providers that pass session IDs on the command line (Claude).
  * @param sessionId - The raw session ID (will be sanitized)
  * @param fallback  - Value to return when sessionId is absent (default: '')
  */
@@ -78,6 +146,33 @@ export function buildSessionIdFlag(sessionId: string): string {
   return `--session-id "${sanitizeSessionId(sessionId)}"`;
 }
 
+/**
+ * Build a fork-mode resume flag: seed context from `sourceSessionId`'s transcript
+ * but yield a NEW, distinct session id rather than continuing the source id in
+ * place (contrast with {@link buildResumeFlag}, which resumes the source id
+ * unchanged). Shared by providers whose CLI supports resuming into a forked
+ * session id (Claude's `--fork-session`, used together with `--resume`).
+ *
+ * The forked session id is pre-minted by the caller and passed explicitly via
+ * `--session-id` alongside `--resume ... --fork-session`, rather than letting
+ * the CLI mint its own id and scraping it out of the response afterward -- the
+ * CLI honors a caller-supplied `--session-id` even in fork mode.
+ * @param sourceSessionId - The session ID to seed/fork from (will be sanitized)
+ * @param newSessionId - The caller-minted id the forked session should be created under (will be sanitized)
+ * @param fallback - Value to return when sourceSessionId is absent (default: '')
+ */
+export function buildForkFlag(
+  sourceSessionId: string | undefined,
+  newSessionId: string | undefined,
+  fallback = ''
+): string {
+  if (sourceSessionId) {
+    const sessionIdPart = newSessionId ? `--session-id "${sanitizeSessionId(newSessionId)}" ` : '';
+    return `${sessionIdPart}--resume "${sanitizeSessionId(sourceSessionId)}" --fork-session`;
+  }
+  return fallback;
+}
+
 export interface PromptOptions {
   folder: string;
   promptFile: string;
@@ -89,6 +184,94 @@ export interface PromptOptions {
   maxTurns?: number;
   inv?: string;
   agentName?: string;
+  /** Provider project the run is bound to (AGY: `--project <id>`, from
+   *  Agent.agyProjectId). Ignored by providers without {@link ProviderAdapter.projectFlag}. */
+  projectId?: string;
+  /** Absolute member-side path of a per-session MCP config file (Claude:
+   *  `--mcp-config <file>`), already written by the caller. Ignored by
+   *  providers without {@link ProviderAdapter.mcpConfigFlag}. */
+  mcpConfigPath?: string;
+}
+
+/**
+ * apra-fleet-hzeb.1: a provider-agnostic "this dispatch hit a usage/quota limit
+ * and cannot make progress until `resumeAt`" signal. Distinct from a transient
+ * overload (529/overloaded), which is retryable after a short backoff -- a usage
+ * limit needs a real wall-clock wait until the quota window resets.
+ *
+ * `resumeAt` is ALWAYS a concrete ISO-8601 UTC timestamp, never null: when the
+ * provider CLI exposes a real reset time we parse it (`resumeAtSource: 'parsed'`);
+ * otherwise we fall back to a guessed window (`resumeAtSource: 'guessed'`), so a
+ * consumer can always schedule a resume without special-casing "unknown".
+ */
+export interface UsageLimitSignal {
+  type: 'usage_limit';
+  /** ISO-8601 UTC instant at which work may resume. Never null. */
+  resumeAt: string;
+  /** Whether `resumeAt` was parsed from the provider's own reset time, or guessed. */
+  resumeAtSource: 'parsed' | 'guessed';
+  /** The raw message/output that identified this as a usage limit (for logging). */
+  message: string;
+}
+
+/**
+ * apra-fleet-hzeb.1: THE provider-adapter default resume window for a guessed
+ * usage-limit signal (1 hour). This is the single source of truth for the guess --
+ * fleet-sprint and other consumers must read the signal's `resumeAt`, never
+ * hardcode their own 1h fallback.
+ */
+export const DEFAULT_USAGE_LIMIT_RESUME_MS = 60 * 60 * 1000;
+
+/**
+ * apra-fleet-hzeb.1: build a guessed usage-limit signal whose `resumeAt` is
+ * `now + DEFAULT_USAGE_LIMIT_RESUME_MS`. `now` is injectable for deterministic
+ * tests.
+ */
+export function guessedUsageLimitSignal(message: string, now: number = Date.now()): UsageLimitSignal {
+  return {
+    type: 'usage_limit',
+    resumeAt: new Date(now + DEFAULT_USAGE_LIMIT_RESUME_MS).toISOString(),
+    resumeAtSource: 'guessed',
+    message,
+  };
+}
+
+/**
+ * apra-fleet-hzeb.1: generic quota/usage-limit detector shared by the
+ * non-Claude adapters. Matches the durable "you are out of quota" signatures
+ * (a bare 429, "rate limit", "quota exceeded", "usage limit", "credit limit",
+ * "resource_exhausted") and returns a GUESSED signal. Transient overload
+ * (529 / "overloaded") deliberately does NOT match here -- that stays a
+ * retryable overload, not a usage limit.
+ */
+const USAGE_LIMIT_QUOTA_RE = /\b429\b|rate limit|quota (?:exceeded|reached)|usage limit|credit limit|resource(?:_|\s+(?:has\s+been\s+)?)exhausted/i;
+
+export function defaultUsageLimitSignal(output: string, now: number = Date.now()): UsageLimitSignal | null {
+  if (!output || !USAGE_LIMIT_QUOTA_RE.test(output)) return null;
+  return guessedUsageLimitSignal(output, now);
+}
+
+/**
+ * Token counts one dispatch reported. input_tokens/output_tokens are required;
+ * the cache fields are provider-optional -- an adapter whose CLI reports
+ * prompt-cache traffic (Claude: cache_read_input_tokens /
+ * cache_creation_input_tokens on the result event's usage) fills them, every
+ * other adapter leaves them absent and consumers treat absent as 0. They are
+ * billed input tokens that are NOT included in input_tokens, so a cost figure
+ * that ignores them undercounts a cache-heavy dispatch several-fold.
+ */
+export interface TokenUsage {
+  input_tokens: number;
+  output_tokens: number;
+  /** Prompt tokens served from the provider's prompt cache. */
+  cache_read_input_tokens?: number;
+  /** Prompt tokens written into the provider's prompt cache. */
+  cache_creation_input_tokens?: number;
+  /** USD this dispatch cost, as the provider CLI itself reported it (Claude:
+   *  the delta of the result's cumulative total_cost_usd, see
+   *  services/session-cost.ts). Absent when the provider reports no cost;
+   *  cost consumers then price the token counts from the rate table. */
+  cost_usd?: number;
 }
 
 export interface ParsedResponse {
@@ -96,11 +279,204 @@ export interface ParsedResponse {
   sessionId?: string;
   isError: boolean;
   raw: string;
-  usage?: { input_tokens: number; output_tokens: number };
+  usage?: TokenUsage;
+  /** The CLI's CUMULATIVE session cost in USD (Claude: total_cost_usd), when
+   *  reported. Not per dispatch: execute_prompt turns it into the dispatch's
+   *  usage.cost_usd. */
+  sessionCostUsd?: number;
   /** e.g. 'error_max_turns' -- the CLI result event's own subtype, when present. */
   subtype?: string;
   /** e.g. 'max_turns' -- the CLI result event's own terminal_reason, when present. */
   terminalReason?: string;
+  /** apra-fleet-hzeb.1: the Claude result event's api_error_status (e.g. 429), when
+   *  present -- previously dropped by the parser. Used by detectUsageLimit. */
+  apiErrorStatus?: number;
+  /** apra-fleet-hzeb.1: set by execute_prompt (from detectUsageLimit) when this
+   *  dispatch was terminated by a provider usage/quota limit. */
+  usageLimit?: UsageLimitSignal;
+  /** Set by a provider parser when the CLI refused one or more tool calls for
+   *  lack of a permission grant (AGY headless mode auto-denies them). */
+  permissionDenial?: PermissionDenial;
+}
+
+/** A tool call the member CLI refused because no grant allowed it. */
+export interface PermissionDenialItem {
+  /** Provider permission action, e.g. 'command', 'read_file', 'mcp'. */
+  action: string;
+  /** The concrete target, when the CLI named it, e.g. 'git status --short --branch'. */
+  target?: string;
+  /** compose_permissions grants that would allow this one call, primary
+   *  first (empty when no grant maps to it). */
+  suggestedGrants?: string[];
+}
+
+/** Structured permission denial surfaced by execute_prompt as
+ *  `reason: 'permission_denied'`. */
+export interface PermissionDenial {
+  /** Unique denied actions, in first-seen order. */
+  actions: string[];
+  denials: PermissionDenialItem[];
+  /** compose_permissions `grant` values that would allow the denied calls
+   *  (empty when there is no canonical mapping for an action, and always
+   *  empty when healable is false). The primary suggestion comes first; a
+   *  narrower alternative may follow it. */
+  suggestedGrants: string[];
+  /** One-line remediation for a human or an orchestrator. */
+  hint: string;
+  /** Which of the CLI's signals reported the denial. */
+  signals: Array<'result_json' | 'stderr' | 'transcript'>;
+  /** The permission mode the session ran in, when the provider knows it
+   *  (Claude: 'auto' | 'acceptEdits' | 'bypassPermissions'). */
+  permissionMode?: string;
+  /** false when no grant may ever be added for these denials: in Claude auto
+   *  mode a refusal comes from the safety classifier or a deny rule, not from
+   *  a missing allow rule; in any mode, a refusal of a fleet tool outside the
+   *  member allowlist is the member tool policy (cause 'policy_deny'). Absent
+   *  = a grant may heal it. */
+  healable?: boolean;
+  /** 'policy_deny': at least one refused call was a fleet tool outside the
+   *  member allowlist, denied by the deny rules compose writes on purpose.
+   *  Always comes with healable: false. */
+  cause?: 'policy_deny';
+}
+
+const SHELL_SEQUENCE_RE = /[;`]|&&/;
+const SHELL_CHAIN_RE = /[|;`]|&&|\$\(/;
+const PLAIN_COMMAND_WORD_RE = /^[a-zA-Z0-9_\-./+]+$/;
+
+/**
+ * Splits a command line into its pipeline stages (on pipe `|`), respecting
+ * single and double quotes, and ignoring logical OR `||`.
+ */
+export function splitPipelineStages(line: string): string[] {
+  const stages: string[] = [];
+  let current = '';
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+  let escape = false;
+
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+    if (escape) {
+      current += char;
+      escape = false;
+      continue;
+    }
+    if (char === '\\' && !inSingleQuote) {
+      escape = true;
+      current += char;
+      continue;
+    }
+    if (char === "'" && !inDoubleQuote) {
+      inSingleQuote = !inSingleQuote;
+      current += char;
+      continue;
+    }
+    if (char === '"' && !inSingleQuote) {
+      inDoubleQuote = !inDoubleQuote;
+      current += char;
+      continue;
+    }
+    if (!inSingleQuote && !inDoubleQuote) {
+      if (char === '|' && line[i + 1] !== '|' && line[i - 1] !== '|') {
+        if (current.trim()) stages.push(current.trim());
+        current = '';
+        continue;
+      }
+    }
+    current += char;
+  }
+  if (current.trim()) {
+    stages.push(current.trim());
+  }
+  return stages;
+}
+
+/** Extracts the base executable command from a single command or pipeline stage. */
+export function extractCommandFromStage(stage: string): string | undefined {
+  const trimmed = stage.trim().replace(/^['"]+|['"]+$/g, '');
+  if (!trimmed) return undefined;
+  const tokens = trimmed.split(/\s+/);
+  for (const token of tokens) {
+    const cleanToken = token.replace(/^['"]+|['"]+$/g, '');
+    if (/^[a-zA-Z_][a-zA-Z0-9_]*=/.test(cleanToken)) {
+      continue;
+    }
+    if (PLAIN_COMMAND_WORD_RE.test(cleanToken)) {
+      return cleanToken;
+    }
+    break;
+  }
+  return undefined;
+}
+
+export function suggestedGrantsForDenial(item: PermissionDenialItem): string[] {
+  const t = item.target?.trim();
+  if (item.action === 'command' || item.action === 'unsandboxed' || item.action === 'Bash') {
+    if (!t || SHELL_SEQUENCE_RE.test(t)) return [];
+    const stages = splitPipelineStages(t);
+    const out: string[] = [];
+    for (const stage of stages) {
+      const cmd = extractCommandFromStage(stage);
+      if (cmd && PLAIN_COMMAND_WORD_RE.test(cmd)) {
+        const grant = `Bash(${cmd}:*)`;
+        if (!out.includes(grant)) out.push(grant);
+      }
+    }
+    if (out.length === 0) return [];
+    if (!t.includes('|') && !SHELL_CHAIN_RE.test(t) && t !== stages[0]?.split(/\s+/)[0]) {
+      out.push(`Bash(${t})`);
+    }
+    return out;
+  }
+  const one = suggestedGrantForDenial(item);
+  return one ? [one] : [];
+}
+
+export function suggestedGrantForDenial(item: PermissionDenialItem): string | undefined {
+  const t = item.target?.trim();
+  switch (item.action) {
+    case 'command':
+    case 'unsandboxed':
+    case 'Bash':
+      return t && !SHELL_CHAIN_RE.test(t) ? `Bash(${t})` : undefined;
+    case 'read_file':
+    case 'Read':
+      return t ? `Read(${t})` : 'Read';
+    case 'write_file':
+    case 'Write':
+      return t ? `Write(${t})` : 'Write';
+    case 'mcp': {
+      const m = t ? /^([^/\s]+)\/([^/\s]+)$/.exec(t) : null;
+      return m ? `mcp__${m[1]}__${m[2]}` : undefined;
+    }
+    case 'read_url':
+    case 'WebSearch':
+      return 'WebSearch';
+    default:
+      if (item.action.startsWith('mcp__')) return item.action;
+      return undefined;
+  }
+}
+
+/** Context parseResponse may use; providers that do not need it ignore it. */
+export interface ParseResponseContext {
+  /** The member's OS (e.g. agy's permission-denial hint differs on Windows). */
+  agentOs?: 'linux' | 'macos' | 'windows';
+  /** The member's unattended setting and the model the dispatch ran with, so
+   *  a provider can tell which permission mode the session ran in. */
+  unattended?: false | 'auto' | 'dangerous';
+  model?: string;
+}
+
+/** Extra inputs to composePermissionConfig; providers that do not need them
+ *  ignore them. */
+export interface ComposePermissionOptions {
+  /** The member's home directory, resolved in JavaScript (getMemberHomeDir). */
+  memberHomeDir?: string | null;
+  /** Receives lines for grants that could not be expressed and were dropped;
+   *  compose_permissions shows them in its result. */
+  warnings?: string[];
 }
 
 // apra-fleet-iuc.1 / apra-fleet-ekm: single source of truth for classifying a
@@ -113,28 +489,66 @@ export function isMaxTurnsResponse(parsed: ParsedResponse | undefined | null): b
   return parsed.terminalReason === 'max_turns' || parsed.subtype === 'error_max_turns';
 }
 
-export interface RegisterMcpEndpointOptions {
-  /** e.g. http://<host>:<port>/mcp?member=<member-uuid> */
-  url: string;
-  /** JWT bearer token for the member's fleet MCP session. */
-  token: string;
-  workFolder: string;
-  scope: 'project' | 'user';
+/** Context for {@link ProviderAdapter.syncMemberMcpEntry}. */
+export interface MemberMcpSyncContext {
+  agent: import('../types.js').Agent;
+  execCommand: WorkspaceTrustExecFn;
+  /** The member's home directory, resolved in JavaScript (getMemberHomeDir); null when unresolvable. */
+  memberHomeDir: string | null;
+  agentOs: 'linux' | 'macos' | 'windows';
+  shell?: MemberShell;
+  /** Out-of-band file channel for large home-anchored files (see WorkspaceTrustTransport). */
+  transport?: WorkspaceTrustTransport;
+  /** Owner-only secret-file channel, tried when the file channel is unavailable
+   *  (see MemberSecretFileChannel). With neither, the write fails loudly. */
+  secretChannel?: MemberSecretFileChannel;
+  /** The per-folder apra-fleet entry URL (.../mcp?member=<uuid>) to write, or null to REMOVE
+   *  the entry this provider wrote for the member's folder (provider switch cleanup). */
+  url: string | null;
+  /** HTTP headers the entry carries with `url` -- the member install's access
+   *  secret (member-access-secret.ts), without which its server refuses the
+   *  `?member=` session. A config carrying it is written only through a file
+   *  channel, never a command string. Absent when no secret is known. */
+  headers?: Record<string, string>;
+  /** With url null: remove the folder's apra-fleet entry only when it points at
+   *  THIS member (?member=<uuid>), leaving any other apra-fleet entry alone. */
+  removeOnlyOwnEntry?: boolean;
 }
 
-export interface RegisterMcpEndpointResult {
-  /** e.g. 'cli-verb' (Claude's `claude mcp add`) or 'config-file-merge' (AGY/OpenCode). */
-  mechanism: string;
-  /** Human-readable detail for logging/audit -- what file or command was used. */
+export interface MemberMcpSyncResult {
+  /** Work-folder-relative files this provider owns for the member MCP entry -- the
+   *  caller keeps them out of `git status` via the clone's .git/info/exclude. */
+  workFolderFiles: string[];
+  /** Human-readable summary for logs/tool output. */
   detail: string;
 }
 
-/** Delivery channel for {@link ProviderAdapter.ensureWorkspaceTrusted} -- the SAME
- *  channel compose_permissions' deliverConfigFile already uses (AgentStrategy.execCommand:
- *  SSH for remote members, local shell exec for local members). Kept as a narrow function
- *  type (rather than importing AgentStrategy) so providers.ts has no dependency on
- *  services/strategy.ts. */
-export type WorkspaceTrustExecFn = (command: string, timeoutMs?: number) => Promise<SSHExecResult>;
+export type WorkspaceTrustExecFn =(command: string, timeoutMs?: number) => Promise<SSHExecResult>;
+
+/** Optional file-delivery channel for {@link ProviderAdapter.ensureWorkspaceTrusted}
+ *  (GitHub #499). Writes `content` to `relPath`, resolved relative to the MEMBER's home
+ *  directory, without going through a shell command line: node:fs for a local member,
+ *  SFTP for an SSH member. A merged ~/.claude.json can be far larger than any command
+ *  line a Windows process may carry (CreateProcess caps it at 32767 chars; cmd.exe at
+ *  8191), so the adapter prefers this channel when present and only falls back to
+ *  exec-based delivery (chunked on Windows) when it is absent or fails. Must throw on
+ *  failure so the adapter can fall back. */
+export type WorkspaceTrustWriteHomeFileFn = (relPath: string, content: string) => Promise<void>;
+export type WorkspaceTrustReadHomeFileFn = (relPath: string) => Promise<{ found: boolean; content?: string } | undefined>;
+
+/** Owner-only secret-file channel (writeMemberSecretFile): stages `content` in a
+ *  fresh owner-only file on the member WITHOUT a command line and returns its
+ *  absolute member-side path. Used when the home-anchored file channel is
+ *  unavailable; `remove` is best-effort cleanup of a staged file. */
+export interface MemberSecretFileChannel {
+  write(content: string): Promise<string>;
+  remove(filePath: string): Promise<void>;
+}
+
+export interface WorkspaceTrustTransport {
+  writeHomeFile?: WorkspaceTrustWriteHomeFileFn;
+  readHomeFile?: WorkspaceTrustReadHomeFileFn;
+}
 
 export interface EnsureWorkspaceTrustedResult {
   /** true only when this call just wrote hasTrustDialogAccepted=true because it was
@@ -159,11 +573,28 @@ export interface ProviderAdapter {
   // CLI command building
   cliCommand(args: string): string;
   versionCommand(): string;
-  installCommand(os: 'linux' | 'macos' | 'windows'): string;
+  /** `shell` is the member's registered shell (only meaningful for
+   *  `os === 'windows'`). A gitbash Windows member gets a bash-invokable
+   *  install string; every other combination -- including a Windows member
+   *  with no shell recorded, or pwsh7/powershell5 -- resolves exactly as it
+   *  did before the shell parameter existed (apra-fleet-7dir.2.7). */
+  installCommand(os: 'linux' | 'macos' | 'windows', shell?: MemberShell): string;
   updateCommand(): string;
 
   // Prompt building
   buildPromptCommand(opts: PromptOptions): string;
+  /** The per-session MCP config flag for a resolved absolute member-side path,
+   *  quoted by the provider for the member's shell (`posix` false = PowerShell).
+   *  Callers append it after every positional argument: Claude's --mcp-config
+   *  is variadic and would swallow a following positional prompt. Optional:
+   *  providers without one never get a session config. */
+  mcpConfigFlag?(absPath: string, posix: boolean): string;
+  /** Minimum CLI version whose per-session MCP config accepts an always-load
+   *  option that keeps the server's tools out of tool-search deferral (Claude:
+   *  the `alwaysLoad` server key). The dispatcher probes the member's CLI
+   *  version and writes the option only at or above this, logging a WARN
+   *  otherwise. Optional: providers without one never get the option. */
+  mcpAlwaysLoadMinVersion?(): string;
 
   // Permission bypass flag
   skipPermissionsFlag(): string;
@@ -177,9 +608,29 @@ export interface ProviderAdapter {
    *  permissions the way skipPermissionsFlag() does. Optional: providers that have
    *  no such surgical flag omit it (undefined), leaving current behavior unchanged. */
   workspaceEditPermissionFlag?(): string | null;
+  /** Resolves the full permission-mode flag string to append for a given
+   *  unattended setting, encapsulating this provider's own auto/dangerous
+   *  fallback and warning semantics (e.g. AGY has no true auto mode and
+   *  falls back to its dangerous flag with a warning; OpenCode has no true
+   *  dangerous mode and falls back to --auto). Returns '' when no flag
+   *  applies. This is the single source of truth for unattended-mode flag
+   *  resolution: both buildPromptCommand() (POSIX, via os/linux.ts) and
+   *  os/windows.ts call this instead of re-deriving the branching
+   *  themselves, so the two dispatch paths cannot diverge. `model` is the
+   *  model the dispatch runs (Claude falls back from auto to acceptEdits on a
+   *  model without auto-mode support). */
+  resolvePermissionFlag(unattended: false | 'auto' | 'dangerous' | undefined, model?: string): string;
 
   // Response parsing
-  parseResponse(result: SSHExecResult): ParsedResponse;
+  parseResponse(result: SSHExecResult, ctx?: ParseResponseContext): ParsedResponse;
+
+  /** apra-fleet-hzeb.1: detect whether this dispatch was terminated by a provider
+   *  usage/quota limit (as opposed to a transient overload). Returns a
+   *  {@link UsageLimitSignal} with a concrete `resumeAt`, or null when this was not
+   *  a usage limit. REQUIRED on every adapter: none.ts returns null; the non-Claude
+   *  adapters delegate to {@link defaultUsageLimitSignal} on their raw output; Claude
+   *  keys off its api_error_status / terminal_reason plus its own limit message. */
+  detectUsageLimit(result: SSHExecResult, parsed: ParsedResponse): UsageLimitSignal | null;
 
   // Session management
   supportsResume(): boolean;
@@ -187,6 +638,47 @@ export interface ProviderAdapter {
   resumeFlag(sessionId?: string, resuming?: boolean): string;
   /** Defines whether this provider accepts caller-minted UUIDs or generates session IDs natively. */
   sessionIdStrategy(): SessionIdStrategy;
+  /** apra-fleet-25yl.2.1: what the exec-level rolling (inactivity) timeout is
+   *  derived from for this provider -- see {@link ExecTimeoutSource}. REQUIRED
+   *  on every adapter, deliberately with no default, so a new provider must
+   *  state its answer rather than inherit one. */
+  execTimeoutSource(): ExecTimeoutSource;
+  /** apra-fleet-lmtg.1: true when this provider supports fork-mode dispatch --
+   *  branching a NEW, distinct session id from an existing session's context,
+   *  as opposed to resume (which continues the source id in place). Optional:
+   *  providers that do not implement it are NOT fork-capable. Callers MUST
+   *  check `provider.supportsFork?.() ?? false` before ever calling
+   *  {@link forkFlag} -- never assume support. */
+  supportsFork?(): boolean;
+  /** Builds the CLI flag(s) for a fork-mode dispatch: seeds context from
+   *  `sourceSessionId`'s transcript but yields a NEW session id distinct from
+   *  the source (the source session itself is left untouched). `newSessionId`
+   *  is the caller-minted id the forked session should be created under --
+   *  passed explicitly (e.g. as `--session-id`) rather than left for the CLI
+   *  to mint and scrape back out of the response afterward. Only called
+   *  when `supportsFork()` returns true. For providers whose CLI cannot
+   *  express "new id, seeded from an existing transcript" (i.e. mints a new
+   *  session id NOT derived from source context, same as a fresh dispatch),
+   *  omit both this and {@link supportsFork} rather than faking support. */
+  forkFlag?(sourceSessionId: string, newSessionId: string): string;
+  /** Builds the CLI flag that makes a folder the dispatched session's WORKSPACE,
+   *  for providers whose CLI does not adopt the process working directory as
+   *  its workspace (AGY: `--add-dir <folder>`). Optional -- omit it for any
+   *  provider where `cd <folder>` already establishes the workspace (claude,
+   *  codex, copilot, opencode), and callers MUST treat a missing
+   *  implementation as "nothing to add" rather than assuming a default flag.
+   *  @param escapedFolder  the work folder ALREADY escaped for the caller's own
+   *    target shell (same contract as {@link modelFlag}) -- a POSIX caller
+   *    passes escapeDoubleQuoted(folder), a Windows caller escapeWindowsArg(folder).
+   *    Escaping cannot be done here: this method does not know the member's shell,
+   *    and escapeDoubleQuoted would mangle the backslashes in a Windows path. */
+  workspaceDirFlag?(escapedFolder: string): string | null;
+  /** Builds the CLI flag that binds the run to the member's provider project
+   *  (AGY: `--project <id>`), whose permission grants are the member's own.
+   *  Optional -- omit it for providers with no project binding. An
+   *  implementation must throw for a missing id rather than return '', so a
+   *  dispatch can never silently run under a shared default project. */
+  projectFlag?(projectId?: string): string;
   /** Resolves the session transcript log path for a given session ID, AS IT EXISTS
    *  ON THE MEMBER'S MACHINE.
    *  @param homeDir  The MEMBER's home directory. `undefined` falls back to this
@@ -207,17 +699,48 @@ export interface ProviderAdapter {
   modelForTier(tier: 'cheap' | 'standard' | 'premium'): string;
   modelFlag(model: string): string;
 
+  // Agent directory resolution
+  /** Returns the project-relative and home-relative paths for an agent file.
+   *  project: relative to workFolder (e.g. '.claude/agents/doer.md')
+   *  home: relative to ~ (e.g. '.claude/agents/doer.md' or '.config/opencode/agents/doer.md') */
+  agentDirectories(agentName: string): { project: string; home: string };
+
+  // Agent file transformation
+  /** Transforms agent file content for this provider (e.g. frontmatter conversion).
+   *  Default: passthrough (return content unchanged). */
+  transformAgent(content: string, relPath: string): string;
+
+  // Agent name CLI flag
+  /** Returns the CLI flag/prefix for activating a named agent.
+   *  Claude/AGY: '--agent "name"'. Others: ''. */
+  agentNameFlag(agentName: string): string;
+
   // Error classification
   classifyError(output: string): PromptErrorCategory;
 
+  /** Optional hook called during compose_permissions before config delivery; returns
+   *  warnings to surface in the tool result (e.g. AGY's global-skills check). */
+  preparePermissionsDelivery?(
+    agent: import('../types.js').Agent,
+    execCommand: WorkspaceTrustExecFn,
+    memberHomeDir?: string | null,
+    agentOs?: 'linux' | 'macos' | 'windows',
+    shell?: MemberShell,
+  ): Promise<string[] | void>;
+
   // Permission configuration
-  /** Returns the config file path(s) for this provider's permission config (relative to repo root).
+  /** Returns the config file path(s) for this provider's permission config (relative to repo root or home-anchored).
    *  Parallel to the array returned by composePermissionConfig(). */
-  permissionConfigPaths(): string[];
+  permissionConfigPaths(agent?: import('../types.js').Agent): string[];
   /** Returns provider-native permission config for the given role.
    *  Each element corresponds to the path at the same index in permissionConfigPaths().
    *  JSON providers return Record<string, unknown>; TOML providers return a string. */
-  composePermissionConfig(role: 'doer' | 'reviewer', allow?: string[]): Array<Record<string, unknown> | string>;
+  composePermissionConfig(
+    role: 'doer' | 'reviewer',
+    allow?: string[],
+    agent?: import('../types.js').Agent,
+    opts?: ComposePermissionOptions,
+  ): Array<Record<string, unknown> | string>;
 
   // Auth capabilities
   supportsOAuthCopy(): boolean;
@@ -229,6 +752,30 @@ export interface ProviderAdapter {
   /** Returns the correct environment variable name for the given API key/token. */
   authEnvVarForToken(token: string): string;
 
+  /**
+   * Every env var name this provider's CLI reads a credential from. They are
+   * mutually exclusive: provisioning one clears the others (shell profiles and
+   * the member's stored encryptedEnvVars) so the CLI cannot pick a stale
+   * credential of the other kind. Optional -- providers with a single auth env
+   * var need not implement it.
+   */
+  authEnvVarNames?(): string[];
+
+  /**
+   * A warning when the token's shape is not one this provider recognises
+   * (the env var chosen for it is then a guess), or null when recognised.
+   * Must be pure -- preflight probes authEnvVarForToken with fake tokens.
+   * Never echoes the token itself.
+   */
+  authTokenKindWarning?(token: string): string | null;
+
+  /**
+   * Remote credential files an env-var token supersedes. When an env token is
+   * provisioned these are moved aside (renamed, never deleted) so a stale
+   * copied login cannot shadow or confuse the provisioned credential.
+   */
+  credentialFilesSupersededByEnvToken?(token: string): string[];
+
 
   // Windows / PowerShell prompt building helpers
   /** On Windows, wrap the command for execution (e.g. via .NET ProcessStartInfo or direct shell). */
@@ -237,15 +784,15 @@ export interface ProviderAdapter {
   /** JSON output flag for the CLI (e.g. --output-format json, --json, --format json) */
   jsonOutputFlag(): string;
   /** Args for headless invocation with a safe literal prompt string.
-   *  Returns e.g. `-p "LITERAL"` for Claude/Gemini/Copilot or `exec "LITERAL"` for Codex. */
+   *  Returns e.g. `-p "LITERAL"` for Claude/AGY/Copilot or `exec "LITERAL"` for Codex. */
   headlessInvocation(promptLiteral: string): string;
 
-  /** Register (or update) this member's apra-fleet MCP endpoint using the provider's own
-   *  native mechanism (CLI verb, e.g. Claude's `claude mcp add`; or config-file merge, e.g.
-   *  AGY/OpenCode). Optional until every provider's mechanism has been investigated and
-   *  implemented -- see docs/member-onboarding-journey.md section 3/3a.
-   *  Returns what was done, for logging/audit. */
-  registerMcpEndpoint?(opts: RegisterMcpEndpointOptions): Promise<RegisterMcpEndpointResult>;
+  /** Writes (ctx.url set) or removes (ctx.url null) the member's PER-FOLDER `apra-fleet`
+   *  MCP entry in this provider's native per-project config, and prunes the legacy
+   *  `apra-fleet-member` url+bearer entry wherever this provider keeps MCP servers.
+   *  Never writes a tracked project `.mcp.json`; never touches deepwiki or any other
+   *  server. Omitted by providers with nothing to write or prune. */
+  syncMemberMcpEntry?(ctx: MemberMcpSyncContext): Promise<MemberMcpSyncResult>;
 
   /** Optional provider-NATIVE usage/quota read for execute_prompt budget
    *  awareness (apra-fleet-eft.80.2). When implemented, this is the PRIMARY
@@ -266,8 +813,17 @@ export interface ProviderAdapter {
    *  `execCommand` is the delivery channel (same one compose_permissions' deliverConfigFile
    *  uses), so this works uniformly for local and remote (SSH) members. Non-Claude
    *  providers no-op -- see each implementation's rationale comment (apra-fleet-eft.40
-   *  provider trust matrix). Callers should log distinctly on `seeded: true` vs `false`. */
-  ensureWorkspaceTrusted(workFolder: string, execCommand: WorkspaceTrustExecFn, agentOs?: 'linux' | 'macos' | 'windows'): Promise<EnsureWorkspaceTrustedResult>;
+   *  provider trust matrix). Callers should log distinctly on `seeded: true` vs `false`.
+   *  `shell` is the member's REGISTERED shell and is only meaningful when `agentOs` is
+   *  'windows': a member registered as Git-for-Windows bash needs POSIX command strings,
+   *  because the PowerShell ones are handed straight to bash.exe and fail (apra-fleet-7dir.2.8).
+   *  `transport.writeHomeFile`, when present, delivers the merged file without a shell
+   *  command line (node:fs / SFTP) so a large ~/.claude.json cannot overflow the Windows
+   *  CreateProcess limit (GitHub #499); without it the adapter chunks the write on Windows.
+   *  `memberHomeDir` is the member home resolved in JavaScript (getMemberHomeDir); every
+   *  member-side path is built from it, never from a shell home variable, and an adapter
+   *  that needs it refuses (seeded: false, E-MEMBER-HOME-UNRESOLVED) when it is absent. */
+  ensureWorkspaceTrusted(workFolder: string, execCommand: WorkspaceTrustExecFn, agentOs?: 'linux' | 'macos' | 'windows', shell?: MemberShell, transport?: WorkspaceTrustTransport, memberHomeDir?: string | null, secretChannel?: MemberSecretFileChannel): Promise<EnsureWorkspaceTrustedResult>;
 }
 
 

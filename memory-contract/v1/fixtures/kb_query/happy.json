@@ -1,0 +1,16 @@
+{
+  "tool": "kb_query",
+  "case": "happy",
+  "kind": "happy",
+  "request": {
+    "query": "exampleFn"
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"l1_results\":[],\"l2_expanded\":[]}"
+      }
+    ]
+  }
+}

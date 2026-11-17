@@ -8,7 +8,7 @@
  * wrong user (hub `alice` vs member `bella`), and the resulting path can never
  * exist on the member:
  *
- *   - Claude / Gemini: the stall poller reads a path that is never created, so
+ *   - Claude: the stall poller reads a path that is never created, so
  *     `lastTimestamp` is always null, which the detector treats as "log not
  *     written yet -- do not count a stall cycle". Stall detection silently goes
  *     inert for that member.
@@ -27,9 +27,10 @@ import os from 'node:os';
 import type { Agent } from '../types.js';
 import type { TargetOS } from '../providers/provider.js';
 import { getStrategy } from './strategy.js';
-import { getAgentOS } from '../utils/agent-helpers.js';
+import { getAgentOS, getAgentShell, isPosixShell } from '../utils/agent-helpers.js';
 import { logWarn } from '../utils/log-helpers.js';
 import { getProvider } from '../providers/index.js';
+import { wrapPowerShellEncoded } from '../os/windows.js';
 
 /** memberId -> resolved home directory. Successful probes only. */
 const homeDirCache = new Map<string, string>();
@@ -43,30 +44,37 @@ const PROBE_TIMEOUT_MS = 10_000;
  *  - Windows: `%USERPROFILE%` is the canonical Windows home and is what the
  *    codebase already uses member-side for exactly this purpose -- see
  *    ClaudeProvider.ensureWorkspaceTrusted (`$env:USERPROFILE\.claude.json`) and
- *    AgyProvider's SCRIPTS_WIN. It is read through `powershell -NoProfile -c`,
- *    the same shell prefix stall-poller.ts already uses for member-side
- *    filesystem reads (a Windows member's default exec shell is not PowerShell).
- *    `-NoProfile` keeps a chatty user profile from polluting stdout.
+ *    AgyProvider's SCRIPTS_WIN. Delivered via `wrapPowerShellEncoded` (same as
+ *    every other Windows-targeting PowerShell invocation in this codebase) --
+ *    a raw inline `powershell -c "..."` string is NOT safe here: if the
+ *    member's default exec shell is itself PowerShell, that outer shell
+ *    expands `$env:USERPROFILE` inside the double quotes before the inner
+ *    `powershell -c` ever sees it, leaving an unquoted path literal that is a
+ *    syntax error (same defect class as apra-fleet-ot2z). Base64-encoding
+ *    sidesteps re-tokenization by whatever shell sits in between.
  *  - POSIX: `printf '%s'` rather than `echo` -- no trailing newline, no shell
  *    builtin escape-interpretation differences between sh/bash/dash.
  */
-function probeCommandFor(targetOs: TargetOS): string {
-  return targetOs === 'windows'
-    ? 'powershell -NoProfile -c "[Console]::Out.Write($env:USERPROFILE)"'
-    : 'printf \'%s\' "$HOME"';
+function probeCommandFor(targetOs: TargetOS, shell: ReturnType<typeof getAgentShell>): string {
+  return isPosixShell(targetOs, shell)
+    ? 'printf \'%s\' "$HOME"'
+    : wrapPowerShellEncoded('[Console]::Out.Write($env:USERPROFILE)');
 }
 
 /** Absolute POSIX path, Windows drive path, or UNC share. Anything else is
- *  shell noise (banner text, an error message), not a home directory. */
-function looksAbsolute(candidate: string, targetOs: TargetOS): boolean {
-  if (targetOs === 'windows') return /^([A-Za-z]:[\\/]|\\\\)/.test(candidate);
+ *  shell noise (banner text, an error message), not a home directory. A
+ *  gitbash member's $HOME is itself a POSIX-style path (e.g. /c/Users/name),
+ *  so it is checked the same way as a non-Windows member. */
+function looksAbsolute(candidate: string, targetOs: TargetOS, shell: ReturnType<typeof getAgentShell>): boolean {
+  if (targetOs === 'windows' && !isPosixShell(targetOs, shell)) return /^([A-Za-z]:[\\/]|\\\\)/.test(candidate);
   return candidate.startsWith('/');
 }
 
 async function probeHomeDir(agent: Agent): Promise<string | null> {
   const targetOs = getAgentOS(agent) as TargetOS;
+  const shell = getAgentShell(agent);
   try {
-    const result = await getStrategy(agent).execCommand(probeCommandFor(targetOs), PROBE_TIMEOUT_MS);
+    const result = await getStrategy(agent).execCommand(probeCommandFor(targetOs, shell), PROBE_TIMEOUT_MS);
     if (result.code !== 0) {
       logWarn('member_home_probe', `home dir probe failed for ${agent.friendlyName}: code=${result.code} stderr=${result.stderr.trim()}`);
       return null;
@@ -78,7 +86,7 @@ async function probeHomeDir(agent: Agent): Promise<string | null> {
       .map(l => l.trim())
       .filter(Boolean)
       .pop();
-    if (!candidate || !looksAbsolute(candidate, targetOs)) {
+    if (!candidate || !looksAbsolute(candidate, targetOs, shell)) {
       logWarn('member_home_probe', `home dir probe for ${agent.friendlyName} returned a non-path value; ignoring`);
       return null;
     }
@@ -208,7 +216,7 @@ const HOME_CAPABILITY_SENTINEL = '/__fleet_capability_probe__';
  * Before this, `getMemberPathContext` (the only probing resolver) had exactly
  * ONE caller: `pollDirectoryActivity`, which runs solely for provisional
  * dispatches with a null logFilePath -- i.e. AGY/OpenCode fresh turns. Claude
- * and Gemini sessions are caller-minted, so their stall entries always carry a
+ * sessions are caller-minted, so their stall entries always carry a
  * logFilePath and never reach it. Their cache therefore stayed empty forever,
  * and the synchronous dispatch-path resolver (`getCachedMemberPathContext`,
  * used by execute_prompt to name the transcript file) permanently fell back to
