@@ -19,6 +19,13 @@ knows how to:
    `dolt_push_mutex`, `child_id_allocator`, `shutdown_server`) as a typed,
    promise-based JavaScript API instead of raw `tools/call` payloads.
 
+It also offers a second, memberless way to obtain a `FleetApi` (the
+`./endpoint` export): `makeEndpointApi(config)` talks directly to an
+OpenAI-compatible or Anthropic-native HTTP endpoint and supports
+`executePrompt` and `getMemberModelPricing`, but refuses `executeCommand`
+since there is no shell or work folder to run commands on. See
+`docs/features/endpoint-transport.md` in the repo root.
+
 `undici`'s `fetch` is used rather than Node's built-in one so the SSE
 streams the HTTP transport depends on can sit silent for the full duration
 of a long dispatch without being idle-killed; see `api-reference.md`.
@@ -100,7 +107,9 @@ Declared in `package.json#exports`:
 | `@apralabs/apra-fleet-client/client` | `src/client/client.mjs` | `McpClient` class, `DEFAULT_REQUEST_TIMEOUT_MS` |
 | `@apralabs/apra-fleet-client/factory` | `src/client/factory.mjs` | `createWorkflowEngine()` |
 | `@apralabs/apra-fleet-client/transport` | `src/client/transport.mjs` | `StdioTransport`, `StreamableHttpTransport` |
+| `@apralabs/apra-fleet-client/errors` | `src/errors/workflow-errors.mjs` | `WorkflowError`, `MemberNotFoundError`, `AgentOutputError`, `AgentDispatchError`, `CommandError`, `FleetTransportError`, `BudgetExceededError`, `CancelledError` |
 | `@apralabs/apra-fleet-client/server-resolution` | `src/client/server-resolution.mjs` | `connectFleet()`, `checkRunningInstance()`, `resolveFleetServerConnection()`, `resolveFleetServerCommand()`, `resolveFleetStartCommand()`, `autoStartFleetServer()`, `createFleetHttpTransport()`, `ReconnectingHttpTransport`, `isNeverDeliveredError()`, `lastServerLog()`, `FleetAutoStartError`, `AUTOSTART_MAX_STARTS`, `AUTOSTART_WINDOW_MS`, `AUTOSTART_TIMEOUT_MS`, `getFleetDataDir()`, `getServerInfoPath()` |
+| `@apralabs/apra-fleet-client/endpoint` | `src/endpoint/factory.mjs` | `makeEndpointApi()` |
 
 `src/client/errors.mjs` (`ClientError`, `TimeoutError`, `AbortError`,
 `TransportClosedError`) is not listed in `exports` but its instances are the

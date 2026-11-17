@@ -1144,6 +1144,17 @@ export class FleetWorkflow extends EventEmitter {
             };
             lastActivityMeta = activityMeta;
             this.emit('activity:start', activityMeta);
+            // apra-fleet-5se.14: tracks whether activity:end was already
+            // emitted for THIS attempt's activityMeta, so the catch below can
+            // tell an error that was already reported at one of the internal
+            // throw sites (below, in this try block) from a fresh one raised
+            // directly by fleetApi.executePrompt() itself -- e.g. a
+            // FleetTransportError/CommandError/CancelledError thrown by a
+            // FleetApi that classifies onto this same taxonomy (the endpoint
+            // transport). Without this, `instanceof WorkflowError` in the
+            // catch assumed every typed error had already been reported,
+            // leaving that dispatch's activity:start with no matching end.
+            let activityEndEmitted = false;
 
             // apra-fleet-dnri -- RESUME DISPOSITION for a schema-repair
             // re-ask, corrected after a live reproduction:
@@ -1334,6 +1345,7 @@ export class FleetWorkflow extends EventEmitter {
                     // result forwards its permissionDenied block the same way, and
                     // dispatched:false (nothing was sent to the member) is kept so a
                     // caller can tell a setup-time failure from one where the agent ran.
+                    activityEndEmitted = true;
                     throw new AgentDispatchError(`[Workflow Error] Agent dispatch failed (${structured.reason || 'unknown'}): ${text}`, { details: { text, reason: structured.reason, member: opts.member_name || opts.member_id, ...(structured.usageLimit ? { usageLimit: structured.usageLimit } : {}), ...(structured.permissionDenied ? { permissionDenied: structured.permissionDenied } : {}), ...(structured.sessionId ? { sessionId: structured.sessionId } : {}), ...(structured.dispatched === false ? { dispatched: false } : {}) } });
                 }
 
@@ -1356,6 +1368,7 @@ export class FleetWorkflow extends EventEmitter {
                     const transportMsg = `transport failure dispatching to member '${memberLabel}': ${text}`;
                     console.error(`[Agent API Error]`, transportMsg);
                     this.emit('activity:end', { ...activityMeta, error: transportMsg, duration, usage: result.usage, cost, success: false });
+                    activityEndEmitted = true;
                     throw new AgentDispatchError(`[Workflow Error] Agent dispatch failed (transport_failure): ${transportMsg}`, { details: { text, reason: 'transport_failure', signal: toolFailure.source, member: memberLabel } });
                 }
 
@@ -1416,6 +1429,7 @@ export class FleetWorkflow extends EventEmitter {
                     if (text.startsWith('Member "') && text.includes('" not found.')) {
                         console.error(`[Agent API Error]`, text);
                         this.emit('activity:end', { ...activityMeta, error: text, duration, success: false });
+                        activityEndEmitted = true;
                         throw new MemberNotFoundError(`[Workflow Error] ${text}`, { details: { text, member: opts.member_name || opts.member_id } });
                     }
 
@@ -1454,6 +1468,7 @@ export class FleetWorkflow extends EventEmitter {
                         const emptyMsg = `execute_prompt returned an empty response (display wrapper only, no LLM output) from member '${opts.member_name || opts.member_id}'.`;
                         console.error(`[Agent API Error]`, emptyMsg);
                         this.emit('activity:end', { ...activityMeta, error: emptyMsg, output: text, duration, usage: result.usage, cost, success: false });
+                        activityEndEmitted = true;
                         throw new AgentDispatchError(`[Workflow Error] Agent dispatch failed (empty_response): ${emptyMsg}`, { details: { text, reason: 'empty_response', member: opts.member_name || opts.member_id } });
                     }
 
@@ -1530,17 +1545,34 @@ export class FleetWorkflow extends EventEmitter {
                         cause: lastParseError
                     });
                     this.emit('activity:end', { ...activityMeta, error: err.message, output: text, duration, usage: result.usage, cost, success: false });
+                    activityEndEmitted = true;
                     throw err;
                 }
 
                 this.emit('activity:end', { ...activityMeta, duration, success: false });
+                activityEndEmitted = true;
                 throw new AgentOutputError(`[Workflow Error] agent() received an empty content response from the fleet API.`, { details: { result } });
             } catch (error) {
                 console.error(`[Agent API Error]`, error.message || error);
                 if (error instanceof WorkflowError) {
-                    // activity:end for typed errors was already emitted at
-                    // the throw site above (with the richer, attempt-scoped
-                    // metadata); don't double-emit here.
+                    // activity:end for a typed error thrown at one of the
+                    // internal sites above (with the richer, attempt-scoped
+                    // metadata) was already emitted; don't double-emit here.
+                    // But a typed error raised directly by fleetApi itself
+                    // (apra-fleet-5se.14 -- e.g. the endpoint transport's
+                    // FleetTransportError/CommandError/CancelledError) never
+                    // passed through one of those sites, so this activity's
+                    // start would otherwise have no matching end.
+                    if (!activityEndEmitted) {
+                        const duration = Date.now() - activityMeta.startTime;
+                        this.emit('activity:end', {
+                            ...activityMeta,
+                            error: error.message || error,
+                            duration,
+                            success: false,
+                            ...(error instanceof CancelledError ? { cancelled: true } : {})
+                        });
+                    }
                     throw error;
                 }
                 const duration = Date.now() - activityMeta.startTime;
@@ -1730,6 +1762,12 @@ export class FleetWorkflow extends EventEmitter {
             ...(replayKey !== null ? { sequence, replayKey } : {})
         };
         this.emit('activity:start', activityMeta);
+        // apra-fleet-5se.14: see the matching comment in _agentDispatch()
+        // above -- tracks whether activity:end was already emitted for this
+        // call's activityMeta, so the catch below can tell an error already
+        // reported at one of the internal throw sites from a fresh one
+        // raised directly by fleetApi.executeCommand() itself.
+        let activityEndEmitted = false;
 
         const payload = {
             command: finalCmd,
@@ -1764,6 +1802,7 @@ export class FleetWorkflow extends EventEmitter {
             if (outText.startsWith('Member "') && outText.includes('" not found.')) {
                 console.error(`[Command API Error]`, outText);
                 this.emit('activity:end', { ...activityMeta, error: outText, duration, success: false });
+                activityEndEmitted = true;
                 throw new MemberNotFoundError(`[Workflow Error] ${outText}`, { details: { text: outText, member: opts.member_name || opts.member_id } });
             }
 
@@ -1779,6 +1818,7 @@ export class FleetWorkflow extends EventEmitter {
             if (failure) {
                 const err = new CommandError(`[Command Failed] ${failure.message}`, { details: { text: outText, command: finalCmd, reason: failure.reason } });
                 this.emit('activity:end', { ...activityMeta, error: err.message, duration, success: false });
+                activityEndEmitted = true;
                 throw err;
             }
 
@@ -1796,17 +1836,33 @@ export class FleetWorkflow extends EventEmitter {
             if (exitCode !== null && exitCode !== 0) {
                 const err = new CommandError(`[Command Failed] Exit code ${exitCode}: ${outText}`, { details: { text: outText, command: finalCmd, exitCode } });
                 this.emit('activity:end', { ...activityMeta, error: err.message, duration, success: false });
+                activityEndEmitted = true;
                 throw err;
             }
 
             this.emit('activity:end', { ...activityMeta, duration, success: true, output: outText });
+            activityEndEmitted = true;
             return failSoft ? { ok: true, output: cleanOutput, error: null } : cleanOutput;
         } catch (error) {
             console.error(`[Command API Error]`, error.message || error);
             if (error instanceof WorkflowError) {
-                // activity:end for typed errors was already emitted at the
-                // throw site above (see the matching comment in agent()'s
-                // catch); don't double-emit here.
+                // activity:end for a typed error thrown at one of the
+                // internal sites above was already emitted (see the matching
+                // comment in agent()'s catch); don't double-emit here. But a
+                // typed error raised directly by fleetApi.executeCommand()
+                // itself (apra-fleet-5se.14) never passed through one of
+                // those sites, so this activity's start would otherwise have
+                // no matching end.
+                if (!activityEndEmitted) {
+                    const duration = Date.now() - activityMeta.startTime;
+                    this.emit('activity:end', {
+                        ...activityMeta,
+                        error: error.message || error,
+                        duration,
+                        success: false,
+                        ...(error instanceof CancelledError ? { cancelled: true } : {})
+                    });
+                }
                 return softFail(error);
             }
             const duration = Date.now() - activityMeta.startTime;
