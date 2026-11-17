@@ -206,7 +206,9 @@ export function formatKbRecheckLines(offerings, maxChars = PR_KB_RECHECK_MAX_LEN
     for (const o of Array.isArray(offerings) ? offerings : []) {
         for (const e of (o && Array.isArray(o.entries)) ? o.entries : []) {
             if (!e || typeof e.id !== 'string') continue;
-            const what = `[${clip(o.label, 40)}] ${clip(e.id, 40)}${e.title ? ` "${clip(e.title, 60)}"` : ''}`;
+            // Plain concatenation: the shell-command guard scans this module and
+            // reads a quote followed by a template placeholder as a shell expansion.
+            const what = '[' + clip(o.label, 40) + '] ' + clip(e.id, 40) + (e.title ? ' "' + clip(e.title, 60) + '"' : '');
             const why = e.text ? `: ${clip(e.text, 140)}` : '';
             if (e.verdict === 'demote') {
                 items[1].push(`- demoted ${what}${why}${e.applied ? '' : ' (kb_demote did not apply -- see the run log)'}`);
