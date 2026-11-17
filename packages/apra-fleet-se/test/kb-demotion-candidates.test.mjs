@@ -785,6 +785,45 @@ describe('kbDemotionBlock', () => {
         }
         assert.match(text, /kb_demotions/, 'the block never names the output field the engine reads');
     });
+
+    // The candidates are offered BECAUSE the diff touched their cited files,
+    // so a prompt excusing "basis drift" excused every offer and reviewers
+    // kept CONFIRMED claims the sprint itself made false.
+    test('states the rule: demote iff false at HEAD, including a claim this sprint made false', () => {
+        const text = kbDemotionBlock(CONFIRMED_ENTRIES).join('\n');
+        assert.match(text, /if and only if its claim is false at HEAD/);
+        assert.match(text, /already false or THIS sprint made it false/);
+        assert.match(text, /contradicts IS a demote case/);
+        assert.match(text, /Basis drift is not a demote case ONLY when the claim still holds/);
+        assert.doesNotMatch(text, /NOT the route for a drifted or removed basis/);
+    });
+
+    test('requires one verdict per offered entry: kb_demotions or kb_holds', () => {
+        const text = kbDemotionBlock(CONFIRMED_ENTRIES).join('\n');
+        assert.match(text, /give each exactly one verdict/);
+        assert.match(text, /`kb_holds` as \{id, note\}/);
+        assert.match(text, /Every id below must appear in exactly one of `kb_demotions` and `kb_holds`/);
+    });
+});
+
+describe('the reviewer contract carries the same demotion rule', () => {
+    test('no schema or role prompt still excludes a drifted basis wholesale, and each offers kb_holds', async () => {
+        const fs = await import('node:fs');
+        const path = await import('node:path');
+        const { fileURLToPath } = await import('node:url');
+        const { finalVerdict } = await import('../fleet-sprint/contracts.mjs');
+        const pkg = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+        const schema = fs.readFileSync(path.join(pkg, 'apra-pm', 'agents', 'schemas', 'reviewer-output.json'), 'utf8');
+        const md = fs.readFileSync(path.join(pkg, 'apra-pm', 'agents', 'reviewer.md'), 'utf8');
+        for (const [name, src] of [['reviewer-output.json', schema], ['reviewer.md', md], ['finalVerdict', JSON.stringify(finalVerdict)]]) {
+            assert.doesNotMatch(src, /Not for a drifted or removed basis/, `${name} still excludes basis drift`);
+            assert.doesNotMatch(src, /drifted or removed basis \(the cited code changed or vanished\)/, `${name} still excludes basis drift`);
+            assert.match(src, /kb_holds/, `${name} has no per-entry hold verdict`);
+        }
+        assert.match(md, /if and only if its claim is false at the sprint branch\s+HEAD/);
+        assert.ok(JSON.parse(schema).properties.kb_holds, 'reviewer-output.json must declare kb_holds');
+        assert.ok(!finalVerdict.required.includes('kb_holds'), 'kb_holds is optional');
+    });
 });
 
 describe('buildReviewerPrompt: demotion candidates', () => {

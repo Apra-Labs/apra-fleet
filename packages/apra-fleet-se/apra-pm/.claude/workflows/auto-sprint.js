@@ -1605,7 +1605,7 @@ const REVIEW_SCHEMA = {
     },
     "kb_demotions": {
       "type": "array",
-      "description": "CONFIRMED entries a re-check during this review shows do not hold -- whether you are now less certain of the claim or have shown it wrong -- demoted back to INFERRED. Not for a drifted or removed basis. Reviewer-only, with the same evidence bar as kb_promotions and kb_discards. An id may appear in only one of kb_promotions, kb_discards and kb_demotions -- the engine refuses it in all lists it appears in. The engine makes the demotion calls.",
+      "description": "Offered demotion candidates whose claim is FALSE at the sprint branch HEAD -- already false, or made false by a change in this sprint -- demoted back to INFERRED. Basis drift is not a demote case only when the claim still holds and the cited code merely moved or was reworded. Reviewer-only, with the same evidence bar as kb_promotions and kb_discards. An id may appear in only one of kb_promotions, kb_discards and kb_demotions -- the engine refuses it in all lists it appears in. The engine makes the demotion calls.",
       "items": {
         "type": "object",
         "required": [
@@ -1621,7 +1621,7 @@ const REVIEW_SCHEMA = {
           },
           "reason": {
             "type": "string",
-            "description": "What you re-checked this review that the claim does not hold up against.",
+            "description": "What at the sprint branch HEAD contradicts the claim -- what you re-checked.",
             "minLength": 20
           },
           "evidence_files": {
@@ -1632,6 +1632,27 @@ const REVIEW_SCHEMA = {
               "type": "string",
               "minLength": 1
             }
+          }
+        }
+      }
+    },
+    "kb_holds": {
+      "type": "array",
+      "description": "Offered demotion candidates you re-checked against the sprint branch HEAD and found still true. Every id in the 'KNOWLEDGE BANK -- demotion candidates' block belongs in exactly one of kb_demotions and kb_holds; the engine reports an entry with no verdict in the sprint PR. Changes nothing in the KB.",
+      "items": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The entry id, copied verbatim from the 'KNOWLEDGE BANK -- demotion candidates' block in your dispatch prompt. Never invent one.",
+            "minLength": 1
+          },
+          "note": {
+            "type": "string",
+            "description": "What you re-checked at HEAD that shows the claim still holds."
           }
         }
       }

@@ -2618,7 +2618,7 @@ async function runSprintCycle(context) {
         // Best-effort exactly like promotionCandidates: a cold or unreachable
         // KB, or a round diff that could not be computed, must not fail the
         // review.
-        const kbDemoteCandidates = await kbWork.demotionCandidates(reviewerPool[0], { scope: 'round' });
+        const kbDemoteCandidates = await kbWork.demotionCandidates(reviewerPool[0], { scope: 'round', label: `review C${cycle}` });
         if (kbDemoteCandidates.length > 0) {
             log(`[kb-work] offering ${kbDemoteCandidates.length} CONFIRMED entr(ies) to the reviewer for demotion.`);
         }
@@ -4555,6 +4555,7 @@ async function runSprintCycle(context) {
         finalVerdictResult, costAnalysis,
         setAside: collectSetAsideEntries(sprintState),
         waited: collectWaitEntries(sprintState),
+        kbRecheck: typeof kbWork.kbRecheckReport === 'function' ? kbWork.kbRecheckReport() : [],
     });
 
     // Final summary line: a skipped PR must not read as a clean success.

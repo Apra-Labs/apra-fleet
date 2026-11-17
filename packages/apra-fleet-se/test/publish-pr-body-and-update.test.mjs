@@ -350,7 +350,7 @@ const remoteCommand = async (cmd) => (cmd === 'git remote get-url origin'
     ? { ok: true, output: 'https://github.com/acme/widgets.git', error: null }
     : { ok: true, output: '', error: null });
 
-async function publish({ gh, verdict, notes, runId, member, costAnalysis }) {
+async function publish({ gh, verdict, notes, runId, member, costAnalysis, kbRecheck }) {
     const logs = [];
     const result = await runPublishPrPhase({
         phase: () => {},
@@ -365,6 +365,7 @@ async function publish({ gh, verdict, notes, runId, member, costAnalysis }) {
         getMemberForRole: () => member,
         finalVerdictResult: { verdict, notes },
         costAnalysis,
+        kbRecheck,
     });
     return { result, logs };
 }
@@ -388,6 +389,18 @@ describe('Publish PR: a relaunch rewrites the existing PR for the new verdict', 
         const gh = fakeGitHub();
         await publish({ gh, verdict: 'PASS', notes: 'ok', runId: 'run-c', member: 'pub-cost', costAnalysis: 'Tracked spend (priced dispatches only): $2.5000.' });
         assert.ok(gh.pr.body.includes('### Cost\n\n```\nTracked spend (priced dispatches only): $2.5000.\n```'), gh.pr.body);
+    });
+
+    test('the KB demotion re-check record reaches the created PR body', async () => {
+        const gh = fakeGitHub();
+        const kbRecheck = [{ label: 'final review', repo: 'r', entries: [
+            { id: 'kb-1', title: 'Claim one', verdict: 'holds', text: 'still true at HEAD', applied: false },
+            { id: 'kb-2', title: 'Claim two', verdict: null, text: '', applied: false },
+        ] }];
+        await publish({ gh, verdict: 'PASS', notes: 'ok', runId: 'run-k', member: 'pub-kb', kbRecheck });
+        assert.ok(gh.pr.body.includes('### KB entries re-checked'), gh.pr.body);
+        assert.ok(gh.pr.body.includes('- kept [final review] kb-1 "Claim one": still true at HEAD'), gh.pr.body);
+        assert.ok(gh.pr.body.includes('- **NO VERDICT** [final review] kb-2 "Claim two"'), gh.pr.body);
     });
 
     test('PASS -> FAIL: the stale PASS title is replaced too', async () => {

@@ -190,9 +190,9 @@ export function vetKbWork(role, result) {
         }
     }
 
-    // kb_demotions: the reviewer's DEMOTE judgement -- a CONFIRMED entry a
-    // re-check shows does not hold (less certain, or shown wrong), sent back to
-    // INFERRED. Same role gate and reason bar as kb_promotions
+    // kb_demotions: the reviewer's DEMOTE judgement -- a CONFIRMED entry whose
+    // claim is false at the sprint branch HEAD (already false, or made false
+    // by this sprint), sent back to INFERRED. Same role gate and reason bar as kb_promotions
     // and kb_discards, plus at least one evidence file: kb_demote refuses a
     // demotion without one, so it is refused here before any call.
     const rawDemotions = (result && Array.isArray(result.kb_demotions)) ? result.kb_demotions : [];
@@ -260,6 +260,22 @@ export function vetKbWork(role, result) {
 
 /** Max promotion candidates offered to one reviewer, so the prompt stays bounded. */
 export const KB_MAX_PROMOTION_CANDIDATES = 40;
+
+/**
+ * The reviewer's `kb_holds` -- offered demotion candidates it re-checked and
+ * found still true at HEAD -- as [{id, note}]. Malformed items are skipped.
+ * Read outside vetKbWork: a hold changes nothing in the KB; it only feeds the
+ * sprint PR's re-check section.
+ */
+export function readKbHolds(result) {
+    const raw = (result && Array.isArray(result.kb_holds)) ? result.kb_holds : [];
+    const out = [];
+    for (const h of raw) {
+        if (!h || typeof h.id !== 'string' || h.id.length === 0) continue;
+        out.push({ id: h.id, note: typeof h.note === 'string' ? h.note.trim() : '' });
+    }
+    return out;
+}
 
 /** Max demotion candidates offered to one reviewer, so the prompt stays bounded. */
 export const KB_MAX_DEMOTION_CANDIDATES = 20;
@@ -612,6 +628,20 @@ export function createKbWorkClient(opts = {}) {
     const offeredCandidates = new Map();
     /** repo -> Set of candidate ids the latest demotionCandidates() call offered. */
     const offeredDemotions = new Map();
+    /**
+     * The sprint PR's "KB entries re-checked" record (kbRecheckReport): one
+     * offering per demotionCandidates() call that offered anything, each
+     * entry carrying the reviewer's verdict -- null until one arrives,
+     * 'holds' (kb_holds) or 'demote' (kb_demotions; `applied` once kb_demote
+     * succeeded). Kept per offering so a review that left an entry without a
+     * verdict stays visible even when a later review judged it.
+     */
+    const recheckOfferings = [];
+    /** repo -> the offering the latest demotionCandidates() call opened. */
+    const openOffering = new Map();
+    /** demote payload -> its offering entry, marked applied when kb_demote succeeds. */
+    const demoteRecheck = new WeakMap();
+    let roundOfferings = 0;
     /** repo -> tail of the serialized flush chain for that repository. */
     const flushChains = new Map();
     /** member name -> open dispatch count (nested brackets count once each). */
@@ -908,6 +938,8 @@ export function createKbWorkClient(opts = {}) {
             if (op.kind === 'demote') {
                 if (!demotedPending.has(repo)) demotedPending.set(repo, new Set());
                 demotedPending.get(repo).add(op.payload.id);
+                const recheck = demoteRecheck.get(op.payload);
+                if (recheck) recheck.applied = true;
             }
         }
         if (counts.captured || counts.promoted || counts.discarded || counts.demoted) {
@@ -1260,7 +1292,7 @@ export function createKbWorkClient(opts = {}) {
      * bracket. Never throws.
      * @returns {Promise<object[]>}
      */
-    async function readDemotionCandidates(target, changedFilesFor, scopeLabel) {
+    async function readDemotionCandidates(target, changedFilesFor, scopeLabel, scope, label) {
         // Same branch guard flushRepo/commitRepo apply before every G-pull
         // on the maintainer: a fast-forward merge does not care what
         // branch HEAD is currently on, only that HEAD is an ancestor of
@@ -1300,10 +1332,48 @@ export function createKbWorkClient(opts = {}) {
                 .filter((e) => isDemotableCandidate(e) && touchesChangedFiles(e))
                 .slice(0, KB_MAX_DEMOTION_CANDIDATES);
             offeredDemotions.set(target.repo, new Set(offered.map((e) => e.id)));
+            if (offered.length > 0) {
+                const offering = {
+                    // The caller's label (the runner passes `review C<n>`, the
+                    // run log's own round name); a numbered fallback otherwise.
+                    label: (typeof label === 'string' && label.trim()) ? label.trim()
+                        : (scope === 'sprint' ? 'final review' : `review round ${++roundOfferings}`),
+                    repo: target.repo,
+                    entries: offered.map((e) => ({
+                        id: e.id, title: typeof e.title === 'string' ? e.title : '', verdict: null, text: '', applied: false,
+                    })),
+                };
+                recheckOfferings.push(offering);
+                openOffering.set(target.repo, offering);
+            }
             return offered;
         } catch (err) {
             log(`[kb-work] could not read demotion candidates from maintainer '${target.member}' (non-fatal): ${err.message}`);
             return [];
+        }
+    }
+
+    /**
+     * Records a reviewer's verdicts on the entries its review was offered
+     * for demotion (the open offering of its review maintainer's repo).
+     * kb_demotions wins over kb_holds for the same id.
+     */
+    function recordRecheckVerdicts(member, demotions, holds) {
+        const producer = memberNameOf(member);
+        const review = active && producer ? reviewMaintainerFor(producer) : null;
+        const offering = review ? openOffering.get(review.repo) : null;
+        if (!offering) return;
+        const byId = new Map(offering.entries.map((x) => [x.id, x]));
+        for (const h of holds) {
+            const x = byId.get(h.id);
+            if (x && x.verdict !== 'demote') { x.verdict = 'holds'; x.text = h.note; }
+        }
+        for (const d of demotions) {
+            const x = byId.get(d.id);
+            if (!x) continue;
+            x.verdict = 'demote';
+            x.text = d.reason;
+            demoteRecheck.set(d, x);
         }
     }
 
@@ -1619,10 +1689,10 @@ export function createKbWorkClient(opts = {}) {
          * -- per-round or final.
          *
          * @param {object} member
-         * @param {{ scope?: 'round'|'sprint' }} [opts]
+         * @param {{ scope?: 'round'|'sprint', label?: string }} [opts] label names the review in the PR's re-check section
          * @returns {Promise<object[]>}
          */
-        async demotionCandidates(member, { scope = 'round' } = {}) {
+        async demotionCandidates(member, { scope = 'round', label } = {}) {
             // Explicit, and explicitly validated: an unknown scope is a wiring
             // bug, and silently falling back to the round diff at FINAL review
             // would offer the reviewer a set scoped to a round that does not
@@ -1630,6 +1700,7 @@ export function createKbWorkClient(opts = {}) {
             if (!demotionLoopOn) {
                 log("[kb-work] reviewer demotion loop is disabled by the kb_demotion_loop setting ('off'): offering no demotion candidates.");
                 offeredDemotions.clear();
+                openOffering.clear();
                 return [];
             }
             if (scope !== 'round' && scope !== 'sprint') {
@@ -1645,6 +1716,7 @@ export function createKbWorkClient(opts = {}) {
             // round -- and so the FINAL review's call cannot inherit the last
             // per-round call's offers either.
             offeredDemotions.set(target.repo, new Set());
+            openOffering.delete(target.repo);
             // Writes still queued for this repository (a capture or a
             // promotion/discard from this very round) get their chance to
             // land before the read, same as promotionCandidates.
@@ -1663,7 +1735,7 @@ export function createKbWorkClient(opts = {}) {
             let release;
             inFlight.set(target.member, new Promise((r) => { release = r; }));
             try {
-                return await readDemotionCandidates(target, changedFilesFor, scopeLabel);
+                return await readDemotionCandidates(target, changedFilesFor, scopeLabel, scope, label);
             } finally {
                 inFlight.delete(target.member);
                 release();
@@ -1744,6 +1816,14 @@ export function createKbWorkClient(opts = {}) {
             return nothing;
         },
         /**
+         * The demotion re-check record for the sprint PR body: every
+         * offering (label, repo, entries with id/title/verdict/text/applied),
+         * as plain data. verdict null = the reviewer gave no verdict.
+         */
+        kbRecheckReport() {
+            return recheckOfferings.map((o) => ({ label: o.label, repo: o.repo, entries: o.entries.map((e) => ({ ...e })) }));
+        },
+        /**
          * Vet a role's KB work and route it to the producing member's
          * repository maintainer: queued per repository, then applied in the
          * maintainer's MEMBER session after a G-pull (see the client header).
@@ -1770,6 +1850,7 @@ export function createKbWorkClient(opts = {}) {
             for (const p of promotions) log(`[kb-work] promote ${p.id} (${role}): ${p.reason}`);
             for (const d of discards) log(`[kb-work] discard ${d.id} (${role}): ${d.reason}`);
             for (const d of demotions) log(`[kb-work] demote ${d.id} (${role}): ${d.reason}`);
+            if (KB_PROMOTER_ROLES.has(role)) recordRecheckVerdicts(member, demotions, readKbHolds(result));
 
             let extraRefused = 0;
             const done = (counts) => ({ ...counts, refused: refused.length + extraRefused });
@@ -2241,10 +2322,14 @@ export function kbKnowledgeBlock(entries, { captureChannel = true, source = 'pri
  *
  * Demotion is CONFIRMED -> INFERRED only, and only for an id actually
  * offered here (the engine refuses any other id, same as promotion/discard).
- * ONE judgement: a re-check during this review shows the claim does not hold
- * -- the reviewer is less certain of it, or has shown it wrong. A drifted or
- * removed basis is NOT a demote case -- the freshness sweep and the bible
- * basis predicate already handle that without reviewer judgment.
+ * THE RULE: an offered entry is demoted if and only if its claim is false at
+ * the sprint branch HEAD -- already false, or made false by this sprint. The
+ * candidates are offered BECAUSE the diff touched their cited files, so "the
+ * cited code changed" can never by itself excuse keeping one; basis drift is
+ * no demote case only when the claim still holds and the code merely moved or
+ * was reworded. Every offered entry gets an explicit verdict: kb_demotions
+ * (false at HEAD) or kb_holds (re-checked, still true); the engine lists the
+ * verdicts -- and any entry left without one -- in the sprint PR body.
  *
  * @param {object[]|undefined} kbCandidates
  * @returns {string[]}
@@ -2252,24 +2337,27 @@ export function kbKnowledgeBlock(entries, { captureChannel = true, source = 'pri
 export function kbDemotionBlock(kbCandidates) {
     if (!Array.isArray(kbCandidates) || kbCandidates.length === 0) return [];
     return [
-        'KNOWLEDGE BANK -- demotion candidates. These entries are currently CONFIRMED. You are '
-        + 'the only role that can demote one back to INFERRED. Do NOT call any '
-        + 'kb_* tool yourself: return your decisions in your structured output and the '
-        + 'orchestrator executes them -- `kb_demotions` as [{id, reason, evidence_files}] for '
-        + 'entries to demote back to INFERRED.\n'
-        + 'Demote when a re-check during THIS review shows the claim does not hold -- whether '
-        + 'you are now less certain of it or have shown it wrong, it is the same judgement and '
-        + 'the same route. `evidence_files` names the files you re-checked: at least one, each a '
-        + 'real file in the repo; a demotion without one is refused. This is NOT the route for a '
-        + 'drifted or removed basis (the cited code changed or vanished) -- freshness staling and '
-        + 'the bible basis predicate already handle that case without you. Discarding an '
+        'KNOWLEDGE BANK -- demotion candidates. These entries are currently CONFIRMED and cite '
+        + 'files this sprint changed. You are the only role that can demote one back to INFERRED. '
+        + 'Do NOT call any kb_* tool yourself: return your decisions in your structured output '
+        + 'and the orchestrator executes them.\n'
+        + 'Re-check EVERY entry below against the sprint branch HEAD and give each exactly one '
+        + 'verdict. Demote an entry if and only if its claim is false at HEAD -- whether it was '
+        + 'already false or THIS sprint made it false (a claim the sprint\'s own change '
+        + 'contradicts IS a demote case). Basis drift is not a demote case ONLY when the claim '
+        + 'still holds and the cited code merely moved or was reworded.\n'
+        + '- False at HEAD: list it in `kb_demotions` as {id, reason, evidence_files}. The '
+        + '`reason` states what at HEAD contradicts the claim (at least 20 characters, e.g. '
+        + '"parse() now throws on empty input; the entry says it returns null"); '
+        + '`evidence_files` names the files you re-checked -- at least one, each a real file in '
+        + 'the repo; a demotion without one is refused.\n'
+        + '- Still true at HEAD: list it in `kb_holds` as {id, note}, the note saying what you '
+        + 're-checked.\n'
+        + 'Every id below must appear in exactly one of `kb_demotions` and `kb_holds`; an entry '
+        + 'with no verdict is reported in the sprint PR as not re-checked. Discarding an '
         + 'unconfirmed (INFERRED) capture you showed to be wrong is `kb_discards` (Step 5), never '
-        + 'a demotion -- demotion only ever applies to an already-CONFIRMED entry.\n'
-        + 'The `reason` must state what you checked this review that contradicts the claim '
-        + '(at least 20 characters, e.g. "re-ran the reopen test cited by this entry and it now '
-        + 'fails"). Demoting nothing is a valid outcome; return [] in that case. Never list the '
-        + 'same id in more than one of `kb_promotions`, `kb_discards` and `kb_demotions`; the '
-        + 'orchestrator refuses it in every list it appears in.\n'
+        + 'a demotion. Never list the same id in more than one of `kb_promotions`, `kb_discards` '
+        + 'and `kb_demotions`; the orchestrator refuses it in every list it appears in.\n'
         + wrapUntrustedBlock('kb_query --tag member:<maintainer> --confidence CONFIRMED', JSON.stringify(
             kbCandidates.map((e) => ({
                 id: e.id,

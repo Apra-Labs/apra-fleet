@@ -51,16 +51,15 @@ an audit note on the entry), and it never touches `promoted_at` or `source` --
 the record of when and how the entry originally earned CONFIRMED survives its
 own reversal.
 
-**The one case kb_demote is for:** the cited basis is unchanged, but a
-deliberate re-check shows the claim does not hold as broadly as the CONFIRMED
-grade implies -- the entry is still broadly right, just less certain than it
-claims. A basis that has DRIFTED or been REMOVED entirely is a *different*
-case, already handled by other mechanisms, and is NOT what kb_demote is for:
-the freshness sweep stales an entry whose cited files no longer match their
-recorded hash, and the project-bible basis predicate (kb_export/
-kb_bible_commit) excludes an entry whose basis no longer resolves. Reach for
-kb_demote only when re-reading the SAME basis changed your mind, not when the
-basis itself moved out from under the entry.
+**When an entry is demoted:** if and only if its claim is false at the
+sprint branch HEAD -- whether it was already false or the sprint itself made
+it false. The fleet-sprint reviewer is offered the CONFIRMED entries whose
+cited files the sprint changed and gives every one an explicit verdict:
+`kb_demotions` (false at HEAD, with reason and evidence files) or `kb_holds`
+(re-checked, still true). The sprint PR body lists both, plus a loud line for
+any offered entry left without a verdict. Basis drift is not a demote case
+only when the claim still holds and the cited code merely moved or was
+reworded -- the freshness sweep stales such an entry by hash.
 
 **Who can demote what.** A member session is served `kb_demote` only with the
 engine's kb_maintainer grant, exactly like `kb_promote` (memory-contract spec

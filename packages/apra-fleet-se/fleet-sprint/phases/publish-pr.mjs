@@ -108,6 +108,9 @@ export async function runPublishPrPhase({
     // The run's wait records (../set-aside.mjs collectWaitEntries), rendered
     // as one "Waited this run" line; omitted when empty.
     waited = [],
+    // The KB demotion re-check record (kb.mjs kbRecheckReport()), rendered
+    // as the "KB entries re-checked" section; omitted when nothing was offered.
+    kbRecheck = [],
 }) {
     phase(`Publish PR C${finalCycleLabel}`);
     // The branch push is the LAST step of a sprint that has already done all of
@@ -270,6 +273,7 @@ export async function runPublishPrPhase({
             ],
             setAside,
             waited,
+            kbRecheck,
             costAnalysis,
             previousBody,
         });

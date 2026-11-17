@@ -36,6 +36,10 @@ export const RUN_HISTORY_MAX_ENTRIES = 8;
  *  (PR_DESCRIPTION_MAX_LENGTH) is even considered. */
 export const PR_NOTES_MAX_LENGTH = 2000;
 
+/** Upper bound on the "KB entries re-checked" section, so it can never push
+ *  the body past PR_DESCRIPTION_MAX_LENGTH (it squeezes the notes instead). */
+export const PR_KB_RECHECK_MAX_LENGTH = 900;
+
 const VERDICTS = new Set(['PASS', 'FAIL', 'ABORTED']);
 const RUN_ID_UNSAFE_RE = /[^A-Za-z0-9._:/-]/g;
 const RUN_ID_MAX = 64;
@@ -186,6 +190,52 @@ function inline(text) {
 }
 
 /**
+ * The "KB entries re-checked" lines: one per entry a review was offered for
+ * demotion (kb.mjs kbRecheckReport() data), led by a loud warning when any
+ * offered entry got no verdict. Reviewer text is untrusted and goes through
+ * inline(). Bounded: each title/text is clipped and the section stops at
+ * `maxChars` with an overflow line; no-verdict entries render first so a cut
+ * never hides one. [] when nothing was offered.
+ * @param {Array<{label: string, entries: Array<{id: string, title?: string, verdict: string|null, text?: string, applied?: boolean}>}>} offerings
+ * @param {number} [maxChars]
+ * @returns {string[]}
+ */
+export function formatKbRecheckLines(offerings, maxChars = PR_KB_RECHECK_MAX_LENGTH) {
+    const clip = (t, n) => { const s = inline(t); return s.length > n ? `${s.slice(0, n - 3)}...` : s; };
+    const items = [[], [], []]; // no verdict, demoted, kept
+    for (const o of Array.isArray(offerings) ? offerings : []) {
+        for (const e of (o && Array.isArray(o.entries)) ? o.entries : []) {
+            if (!e || typeof e.id !== 'string') continue;
+            const what = `[${clip(o.label, 40)}] ${clip(e.id, 40)}${e.title ? ` "${clip(e.title, 60)}"` : ''}`;
+            const why = e.text ? `: ${clip(e.text, 140)}` : '';
+            if (e.verdict === 'demote') {
+                items[1].push(`- demoted ${what}${why}${e.applied ? '' : ' (kb_demote did not apply -- see the run log)'}`);
+            } else if (e.verdict === 'holds') {
+                items[2].push(`- kept ${what}${why}`);
+            } else {
+                items[0].push(`- **NO VERDICT** ${what}: offered for re-check, but the reviewer returned neither a demotion nor a hold`);
+            }
+        }
+    }
+    const missing = items[0].length;
+    const all = items.flat();
+    if (all.length === 0) return [];
+    const lines = missing > 0
+        ? [`**WARNING: ${missing} offered KB entr${missing === 1 ? 'y' : 'ies'} got no re-check verdict -- each may still be CONFIRMED while false at HEAD.**`, '']
+        : [];
+    let used = lines.join('\n').length;
+    let shown = 0;
+    for (const line of all) {
+        if (used + line.length + 1 > maxChars) break;
+        lines.push(line);
+        used += line.length + 1;
+        shown += 1;
+    }
+    if (shown < all.length) lines.push(`- ... ${all.length - shown} more entr${all.length - shown === 1 ? 'y' : 'ies'} not shown -- see the run log`);
+    return lines;
+}
+
+/**
  * Builds the sprint PR body as markdown.
  *
  * @param {object} opts
@@ -204,6 +254,9 @@ function inline(text) {
  * @param {object[]} [opts.waited] the run's wait records (./set-aside.mjs
  *   collectWaitEntries), rendered as one "Waited this run" line after the
  *   set-aside section; omitted when empty
+ * @param {object[]} [opts.kbRecheck] the demotion re-check record (kb.mjs
+ *   kbRecheckReport()), rendered as a "KB entries re-checked" section; omitted
+ *   when nothing was offered
  * @param {string} [opts.costAnalysis] engine-computed cost block, rendered in a fenced Cost section
  * @param {string} [opts.previousBody] the existing PR's body, for history carry-forward
  * @param {number} [opts.maxLength]
@@ -211,7 +264,7 @@ function inline(text) {
  */
 export function buildSprintPrBody({
     verdict, goal, branch, baseBranch, runId, now = new Date(),
-    notes, notesHeading = 'Reviewer notes', details = [], setAside = [], waited = [], costAnalysis = '', previousBody = '',
+    notes, notesHeading = 'Reviewer notes', details = [], setAside = [], waited = [], kbRecheck = [], costAnalysis = '', previousBody = '',
     maxLength = PR_DESCRIPTION_MAX_LENGTH,
 }) {
     const v = VERDICTS.has(verdict) ? verdict : 'FAIL';
@@ -238,6 +291,7 @@ export function buildSprintPrBody({
     const detailLines = (details || []).filter(Boolean).map((d) => `- ${inline(d)}`);
     const setAsideLines = formatSetAsideItems(setAside).map((d) => `- ${inline(d)}`);
     const waitedLine = formatWaitedLine(waited);
+    const recheckLines = formatKbRecheckLines(kbRecheck);
     // The cost block replaces the per-sprint CHANGELOG entry the harvester used
     // to write (a shared prepend-only file that conflicted on every merge).
     const cost = sanitizePrMarkdown(costAnalysis);
@@ -251,6 +305,9 @@ export function buildSprintPrBody({
         detailLines.length ? '### Details\n' : null,
         detailLines.length ? detailLines.join('\n') : null,
         detailLines.length ? '' : null,
+        recheckLines.length ? '### KB entries re-checked\n' : null,
+        recheckLines.length ? recheckLines.join('\n') : null,
+        recheckLines.length ? '' : null,
         cost ? `### Cost\n\n${costFence}\n${cost}\n${costFence}\n` : null,
         '---',
         '',
