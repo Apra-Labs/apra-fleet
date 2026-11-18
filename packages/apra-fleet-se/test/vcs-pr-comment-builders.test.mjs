@@ -155,7 +155,7 @@ describe('bitbucket PR comment builders (PR comments API)', () => {
 
     test('list-comments: GET .../comments with pagelen/fields; skips deleted and inline comments', () => {
         const built = buildListCommentsCommand(p);
-        const fields = encodeURIComponent('values.id,values.content.raw,values.deleted,values.inline');
+        const fields = encodeURIComponent('next,values.id,values.content.raw,values.deleted,values.inline');
         assert.equal(built.command, ['curl -sS -X GET', AUTH, "-H 'Accept: application/json'", `-w '${W}'`, '-D -',
             `'${BB_BASE}/comments?pagelen=100&fields=${fields}'`].join(' '));
         assertCommandHygiene(built);

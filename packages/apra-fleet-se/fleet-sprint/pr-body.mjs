@@ -63,8 +63,12 @@ export function overflowPointer(count) {
 }
 
 /** The description's closing pointer line when the overflow could not be
- *  posted as PR comments. */
-export function overflowFailedPointer(chars) {
+ *  posted as PR comments; with `posted` of `total` comments already on the
+ *  PR (a partial failure) it says how many were posted. */
+export function overflowFailedPointer(chars, posted = 0, total = 0) {
+    if (posted > 0 && total > posted) {
+        return `Reviewer notes continued: ${chars} characters did not fit this description; ${posted} of ${total} overflow comment(s) were posted and ${total - posted} could not be -- the rest of the notes are in the sprint run log.`;
+    }
     return `Reviewer notes continued: ${chars} characters did not fit this description and could not be posted as PR comments -- the full notes are in the sprint run log.`;
 }
 
@@ -591,7 +595,8 @@ export function normalizeMergeAssessment(raw) {
  * @param {number} [opts.commentMaxLength] the same provider's PR comment
  *   limit (commentMaxLength); the overflow is split into comments within it
  * @returns {{ body: string, overflow: string, notes: string, comments: string[],
- *   notPosted: number, failedBody: string|null, previousHadOverflow: boolean }}
+ *   notPosted: number, failedBody: string|null, failedBodyFor: (posted: number) => string|null,
+ *   previousHadOverflow: boolean }}
  *   `body` is the description (<= maxLength); `notes` the full sanitized
  *   notes; `overflow` the part of `notes` the description could not carry
  *   ('' when it all fits) -- the section in `body` holds exactly
@@ -725,7 +730,7 @@ export function buildSprintPrBody({
     if (overflow) {
         // Re-fit with the longest pointer line reserved, so whichever pointer
         // the description ends up with still fits maxLength.
-        pointer = overflowFailedPointer(cleanNotes.length);
+        pointer = overflowFailedPointer(cleanNotes.length, 9999, 99999);
         ({ texts } = fit());
         overflow = overflowOf(texts);
         ({ comments, notPosted } = buildOverflowComments(overflow, { commentMaxLength: commentMaxLength || PR_DESCRIPTION_MAX_LENGTH }));
@@ -740,6 +745,14 @@ export function buildSprintPrBody({
         comments,
         notPosted,
         failedBody,
+        // The failed-post description when `posted` of the comments did make it
+        // onto the PR (a partial failure); the plain failedBody when none did.
+        failedBodyFor: (posted) => {
+            if (!failedBody || !(posted > 0) || posted >= comments.length) return failedBody;
+            const kept = pointer;
+            pointer = overflowFailedPointer(overflow.length, posted, comments.length);
+            try { return render(texts); } finally { pointer = kept; }
+        },
         previousHadOverflow: bodyHasOverflowPointer(previousBody),
     };
 }

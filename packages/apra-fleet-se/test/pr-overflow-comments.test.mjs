@@ -164,3 +164,91 @@ describe('publishPrOverflowComments (scripted provider)', () => {
         assert.ok(logs.some((l) => l.includes('WARNING: could not list the comments of PR')));
     });
 });
+
+// ---------------------------------------------------------------------------
+// Paginated comment listing: the lister follows the provider's pages, stops on
+// the last one, and is bounded.
+// ---------------------------------------------------------------------------
+
+import { buildListCommentsCommand } from '../fleet-sprint/vcs-module.mjs';
+import { MAX_COMMENT_LIST_PAGES } from '../fleet-sprint/pr-overflow-comments.mjs';
+
+const BB_COORDS = { provider: 'bitbucket', repoRef: { workspace: 'acme', repo: 'widgets' }, token: 't', os: 'linux' };
+const GH_COORDS = { provider: 'github', repo: 'acme/widgets', token: 't', os: 'linux' };
+const human = (n, from = 0) => Array.from({ length: n }, (_, i) => ({ id: from + i + 1, body: `human ${from + i + 1}` }));
+
+describe('list-comments pagination', () => {
+    test('github: page 1 has no page param, a full page points at page 2, a short page ends the walk', () => {
+        const p1 = buildListCommentsCommand({ ...GH_COORDS, pull_request_id: 42 });
+        assert.ok(p1.command.includes('per_page=100') && !p1.command.includes('page=2'));
+        assert.deepEqual(p1.nextPage(human(100)), { page: 2 });
+        assert.equal(p1.nextPage(human(99)), null);
+        const p2 = buildListCommentsCommand({ ...GH_COORDS, pull_request_id: 42, page: 2 });
+        assert.ok(p2.command.includes('per_page=100&page=2'), p2.command);
+        assert.deepEqual(p2.nextPage(human(100)), { page: 3 });
+        assert.equal(p2.nextPage(human(50)), null);
+    });
+
+    test('bitbucket: follows the response next URL, only when it stays under the PR comments endpoint', () => {
+        const first = buildListCommentsCommand({ ...BB_COORDS, pull_request_id: 9 });
+        const base = 'https://api.bitbucket.org/2.0/repositories/acme/widgets/pullrequests/9/comments';
+        const nextUrl = `${base}?pagelen=100&page=2`;
+        assert.deepEqual(first.nextPage({ values: [], next: nextUrl }), { page_url: nextUrl });
+        assert.equal(first.nextPage({ values: [] }), null);
+        assert.equal(first.nextPage({ values: [], next: 'https://evil.example/x' }), null);
+        const second = buildListCommentsCommand({ ...BB_COORDS, pull_request_id: 9, page_url: nextUrl });
+        assert.ok(second.command.includes(nextUrl), second.command);
+        const ignored = buildListCommentsCommand({ ...BB_COORDS, pull_request_id: 9, page_url: 'https://evil.example/x' });
+        assert.ok(!ignored.command.includes('evil.example'));
+    });
+
+    /** A store whose list answers `pages` full pages of non-engine comments. */
+    function pagedRun(provider, pages, calls) {
+        return async (buildFn, what) => {
+            const built = buildFn();
+            calls.push({ what, command: built.command });
+            if (what !== 'list-comments') throw new Error(`unexpected ${what}`);
+            const page = calls.length;
+            if (provider === 'github') return { ok: true, built, body: page < pages ? human(100, (page - 1) * 100) : human(3) };
+            const base = 'https://api.bitbucket.org/2.0/repositories/acme/widgets/pullrequests/9/comments';
+            return {
+                ok: true, built,
+                body: { values: human(2).map((c) => ({ ...c, content: { raw: c.body } })), ...(page < pages ? { next: `${base}?pagelen=100&page=${page + 1}` } : {}) },
+            };
+        };
+    }
+    const publishPaged = (provider, pages, calls, logs = []) => publishPrOverflowComments({
+        comments: [], prId: provider === 'github' ? 42 : 9, existing: true,
+        run: pagedRun(provider, pages, calls),
+        coords: () => (provider === 'github' ? GH_COORDS : BB_COORDS),
+        payloadPath: () => '/work/x.json', log: (m) => logs.push(m), logPrefix: '[T]',
+    });
+
+    for (const provider of ['github', 'bitbucket']) {
+        test(`${provider}: walks every page and stops on the last one`, async () => {
+            const calls = [];
+            const res = await publishPaged(provider, 3, calls);
+            assert.equal(res.ok, true);
+            assert.equal(calls.length, 3);
+        });
+
+        test(`${provider}: a misbehaving API that always has a next page stops at the page cap`, async () => {
+            const calls = [];
+            const logs = [];
+            const res = await publishPaged(provider, Number.MAX_SAFE_INTEGER, calls, logs);
+            assert.equal(res.ok, true);
+            assert.equal(calls.length, MAX_COMMENT_LIST_PAGES);
+            assert.ok(logs.some((l) => /more than \d+ pages of comments/.test(l)), logs.join('\n'));
+        });
+    }
+});
+
+describe('partial failure pointer', () => {
+    test('names how many comments were posted; a total failure keeps the could-not-be-posted wording', () => {
+        const partial = overflowFailedPointer(900, 1, 3);
+        assert.match(partial, /^Reviewer notes continued: 900 characters did not fit this description; 1 of 3 overflow comment\(s\) were posted and 2 could not be /);
+        assert.ok(bodyHasOverflowPointer(partial));
+        assert.equal(overflowFailedPointer(900, 0, 3), overflowFailedPointer(900));
+        assert.match(overflowFailedPointer(900), /could not be posted as PR comments/);
+    });
+});
