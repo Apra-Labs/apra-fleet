@@ -46,10 +46,29 @@ export interface BibleTombstone {
   id: string;
   at: string;
   reason: string;
+  /**
+   * OPTIONAL free-text justification (a withdrawal carries the reviewer's
+   * judgement here). Carried verbatim across every re-commit.
+   */
+  note?: string;
+  /**
+   * OPTIONAL repo-relative files the judgement was checked against. Carried
+   * verbatim across every re-commit.
+   */
+  evidence_files?: string[];
 }
 
 /** The tombstone reason a kb_demote produces; the only one that demotes on import. */
 export const TOMBSTONE_DEMOTED = 'demoted';
+
+/**
+ * The tombstone reason a branch-carried withdrawal produces: a reviewer judged a
+ * bible entry no longer holds. It travels with the branch and takes effect for
+ * other clones only once the branch merges (applied on a base-ref import, never
+ * from a work tree). Like every reason it keeps the entry out of a bible view;
+ * a reader that does not know it treats it as a view exclusion only.
+ */
+export const TOMBSTONE_WITHDRAWN = 'withdrawn';
 
 /**
  * A parsed bible: its entries AND its tombstones. The two readers that return
@@ -70,6 +89,10 @@ export interface BibleDocument {
  * failing the whole bible -- exactly how a malformed ENTRY is treated by
  * importBibleEntries below. kb-export.ts's reader calls this too.
  *
+ * The optional `note` and `evidence_files` are kept (and so survive every
+ * writer that re-serializes the tombstones it read), as is any reason string,
+ * known or not.
+ *
  * Each `at` is clamped to `now` (clampBibleTimeToNow): a future-dated tombstone
  * would otherwise become a future demoted_at on import, and every later
  * re-promotion would count as withdrawn against it.
@@ -85,7 +108,15 @@ export function extractBibleDemotions(parsed: unknown, now: Date = new Date()): 
     if (typeof r.id !== 'string' || r.id.length === 0) continue;
     if (typeof r.at !== 'string' || r.at.length === 0) continue;
     if (typeof r.reason !== 'string' || r.reason.length === 0) continue;
-    byId.set(r.id, { id: r.id, at: clampBibleTimeToNow(r.at, now), reason: r.reason });
+    const tombstone: BibleTombstone = { id: r.id, at: clampBibleTimeToNow(r.at, now), reason: r.reason };
+    // The optional fields are carried only when well formed; a malformed one is
+    // dropped on its own, never the whole tombstone (it still removes the id).
+    if (typeof r.note === 'string' && r.note.length > 0) tombstone.note = r.note;
+    if (Array.isArray(r.evidence_files) && r.evidence_files.length > 0
+      && r.evidence_files.every(f => typeof f === 'string' && f.length > 0)) {
+      tombstone.evidence_files = [...(r.evidence_files as string[])];
+    }
+    byId.set(r.id, tombstone);
   }
   return Array.from(byId.values()).sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 }
