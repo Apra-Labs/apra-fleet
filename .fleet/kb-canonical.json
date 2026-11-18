@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "5bfc7309d9fab9ead8aada7745fd165ecd32c07b",
     "branch": "main",
-    "entry_count": 143
+    "entry_count": 144
   },
   "entries": [
     {
@@ -2634,6 +2634,23 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:08:07.865Z"
+    },
+    {
+      "id": "f1e8458e-ed03-4638-a074-284148d52d41",
+      "type": "learning",
+      "title": "Stale local dist/agents/schemas fails the se staleness guard, not the branch",
+      "summary": "The repo-root dist/ folder is ignored by git and refreshed only by npm run dist-pm. On a machine with an old dist/, contracts-schema-dist-staleness-guard.test.mjs fails with DRIFTED schemas even when the branch changes no schema; a clean clone skips the test.",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-se/test/contracts-schema-dist-staleness-guard.test.mjs",
+        ".gitignore"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T08:09:19.552Z",
+      "source_file_hashes": {
+        ".gitignore": "9658f0d8acffb101b7e84218574da6d8ed35f87e",
+        "packages/apra-fleet-se/test/contracts-schema-dist-staleness-guard.test.mjs": "1db1ddf04d24ac369fb510e69d39af9406640bbe"
+      }
     },
     {
       "id": "f2c0c490-c149-488d-939c-beb60734c8bc",
