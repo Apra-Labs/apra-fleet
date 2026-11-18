@@ -67,7 +67,7 @@ import { isPermissionScopePostDispatchSyncFailure } from '../dispatch-failure.mj
 import { policyFor } from '../role-policies.mjs';
 import { CLAIMED_ELSEWHERE_REASON } from '../orphan-reclaim.mjs';
 import { openBlocksDependents } from '../beads-scope.mjs';
-import { classifyBlockedReport } from '../set-aside.mjs';
+import { classifyBlockedReport, VERIFY_NO_CHANGE_KIND, VERIFY_NO_CHANGE_REASON } from '../set-aside.mjs';
 import { NEEDS_DECISION, validateDecisionRequest, recordPendingDecision } from '../decisions.mjs';
 
 /**
@@ -344,6 +344,43 @@ export async function runDevelopPhase({
         // clone: D-push so the operator and every member see them.
         await gitSync.syncBeadsAfter(backlogMember, { pushBeads: true });
         return true;
+    };
+
+    // Records a doer streak that returned VERIFY (nothing left to code) while
+    // the engine's own read-back shows it closed NONE of its beads. Before,
+    // such a streak counted as an ordinary left-open failure and its bead came
+    // back every round (and every cycle) to a doer that had already said there
+    // was nothing to do -- burning the cycle and ending in a stall. Now, after
+    // that ONE round, the streak's first still-open bead (in dispatch order:
+    // the bead the doer works first, which a lane's later beads wait behind)
+    // is set aside for the run (kind VERIFY_NO_CHANGE_KIND) and so carried over
+    // instead of re-dispatched. A streak that closed any of its beads made a
+    // change and keeps the existing left-open retry for the rest, and so does
+    // one whose report claims a close of its own beads. Returns the
+    // set-aside id, or null when nothing was set aside.
+    const recordDoerVerifyNoChange = ({ report, streakIds, unclosedIds, doerMember }) => {
+        if (unclosedIds.length === 0 || unclosedIds.length !== streakIds.length) return null;
+        // The doer's own report must agree that it closed nothing. A report
+        // that CLAIMS closes the read-back disproves is a different failure (a
+        // false claim, or a close that never reached the shared DB) and keeps
+        // the ordinary left-open retry.
+        const claimed = Array.isArray(report.closedIds) ? report.closedIds.map(String) : [];
+        if (claimed.some((x) => streakIds.includes(x))) return null;
+        const id = streakIds.find((x) => unclosedIds.includes(x));
+        if (!id || doctorBlockedIds.has(id)) return null;
+        const doerNotes = typeof report.notes === 'string' ? report.notes.replace(/\s+/g, ' ').trim() : '';
+        doctorBlockedIds.set(id, {
+            kind: VERIFY_NO_CHANGE_KIND, blockedBy: id,
+            reason: `doer on member '${doerMember}' returned VERIFY on streak [${streakIds.join(', ')}] but closed none of its beads ` +
+                '(no change); not re-dispatched to a doer this run' + (doerNotes ? `: ${doerNotes}` : ''),
+            cycle, round: devRounds,
+        });
+        log(
+            `Doer VERIFY-no-change set-aside C${cycle} R${devRounds}: setting aside for the rest of this run bead '${id}' -- ` +
+            `streak [${streakIds.join(', ')}] reported VERIFY but closed none of its beads, so re-dispatching it would only repeat ` +
+            `the same answer. Entry: ${JSON.stringify({ [id]: doctorBlockedIds.get(id) })}`
+        );
+        return id;
     };
 
     // --- Streak grouping ------------------------------------------
@@ -990,6 +1027,25 @@ export async function runDevelopPhase({
         if (leftOpenReason === 'needs-decision' && unclosedIds.length > 0) {
             await recordDoerNeedsDecision({ report, unclosedIds, streakIds: actualBeadIds, doerMember });
         }
+        // VERIFY with no change: only when the whole dispatch closed nothing
+        // (in batch mode one dispatch carries several sub-streaks; a dispatch
+        // that closed any bead may simply not have reached a later one), then
+        // per sub-streak -- see recordDoerVerifyNoChange.
+        const noChangeSetAside = new Set();
+        if (leftOpenReason === 'left-open' && report && report.status === 'VERIFY'
+            && unclosedIds.length > 0 && closedIds.length === 0) {
+            const groups = batchStreaks
+                ? batchStreaks.map((sub) => sub.map((b) => b.id).filter((id) => actualBeadIds.includes(id)))
+                : [actualBeadIds];
+            for (const ids of groups) {
+                if (ids.length === 0) continue;
+                const id = recordDoerVerifyNoChange({
+                    report, streakIds: ids, unclosedIds: ids.filter((x) => unclosedIds.includes(x)), doerMember,
+                });
+                if (id) noChangeSetAside.add(id);
+            }
+        }
+        const failureReasonFor = (ids) => (ids.some((id) => noChangeSetAside.has(id)) ? VERIFY_NO_CHANGE_REASON : leftOpenReason);
 
         if (batchStreaks) {
             // Mode (i): PER-STREAK outcome attribution for the batch
@@ -1004,14 +1060,14 @@ export async function runDevelopPhase({
                     beadIds: subIds, doerMember, wasRetried, report,
                     unclosedIds: subUnclosed, closedIds: subClosed,
                     outcome: subUnclosed.length > 0 ? 'failed' : (wasRetried ? 'retried' : 'success'),
-                    ...(subUnclosed.length > 0 ? { failureReason: leftOpenReason } : {}),
+                    ...(subUnclosed.length > 0 ? { failureReason: failureReasonFor(subUnclosed) } : {}),
                 });
             }
         } else {
             streakOutcomes.push({
                 beadIds: actualBeadIds, doerMember, wasRetried, report, unclosedIds, closedIds,
                 outcome: unclosedIds.length > 0 ? 'failed' : (wasRetried ? 'retried' : 'success'),
-                ...(unclosedIds.length > 0 ? { failureReason: leftOpenReason } : {}),
+                ...(unclosedIds.length > 0 ? { failureReason: failureReasonFor(unclosedIds) } : {}),
             });
         }
         await updateDashboard();

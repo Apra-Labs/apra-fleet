@@ -79,7 +79,9 @@ test('mock sprint: round-resume -- reviewer/planner warm within-cycle resume, re
                 }
                 return {
                     content: [{
-                        text: JSON.stringify({ status: 'VERIFY', closedIds, notes: 'Closed A; blocked B to force a second cycle.' }),
+                        // Claims B closed too (the read-back disproves it), so B keeps the
+                        // ordinary left-open retry instead of the VERIFY-no-change set-aside.
+                        text: JSON.stringify({ status: 'VERIFY', closedIds: ids, notes: 'Closed A; blocked B to force a second cycle.' }),
                     }],
                 };
             },

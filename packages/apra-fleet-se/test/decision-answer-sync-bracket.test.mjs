@@ -120,7 +120,10 @@ test('mock sprint: an answer recorded while another bead runs is written and pus
                     // inside its sync bracket) instead of parking in the
                     // paused-wait path that only runs when nothing can.
                     if (recorded && !writeBracket.some((w) => w.c.includes('bd human respond'))) {
-                        return { content: [{ text: JSON.stringify({ status: 'VERIFY', closedIds: [], notes: 'Not finished yet.' }) }] };
+                        // Claims the close the read-back disproves: the bead keeps the
+                        // ordinary left-open retry (a VERIFY report claiming no close of
+                        // a bead it left open is set aside after one round instead).
+                        return { content: [{ text: JSON.stringify({ status: 'VERIFY', closedIds: ids, notes: 'Not finished yet.' }) }] };
                     }
                 }
                 for (const x of ids) await rc(`bd close ${x}`, td);

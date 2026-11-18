@@ -10,6 +10,14 @@ forever or burning cycles on it.
    transitively depends on them via open `blocks` edges. Set-aside beads are not
    handed to doers again this run. Other beads in the same streak return to the
    ready pool.
+1a. **A VERIFY reply with no change sets the bead aside.** When a doer streak
+   returns VERIFY, its report claims no close of its own beads, and the
+   engine's read-back shows it closed none of them, re-dispatching it would
+   only repeat the same answer. After that one round the streak's first
+   still-open bead is set aside (kind `verify-no-change`) and carried over
+   like a BLOCKED bead; its later lane-mates are held by lane order. A
+   streak that closed any of its beads, or whose report claims a close the
+   read-back disproves, keeps the ordinary left-open retry.
 2. **A deploy Permissions failure sets the deploy aside.** Only a deployer
    result whose `failedStep` is `permissions` does this. Later cycles skip the
    deployer, but the last deploy failure is still reported so the deploy
@@ -36,7 +44,7 @@ forever or burning cycles on it.
    A bead held (by lane order or an open `blocks` prerequisite, transitively)
    behind a bead that cannot close this run counts as stuck for this check.
    "Cannot close this run" means set aside (doer BLOCKED, a dependent of one,
-   or awaiting a decision), publish blocked by a permission-scope push
+   a doer VERIFY with no change, or awaiting a decision), publish blocked by a permission-scope push
    failure, or deferred (status `deferred`, e.g. a plan-cap deferral). A
    publish-blocked bead is itself counted as set aside. The stuck bead's
    reason names that prerequisite and why, e.g.

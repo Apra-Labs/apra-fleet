@@ -171,7 +171,10 @@ test('(c) a deploy set aside at the Permissions pre-step in C1 is not dispatched
                 // run once, i.e. until cycle 2.
                 const closable = ids.filter((x) => deployCalls > 0 || (list.find((b) => b.id === x) || {}).title !== LATE);
                 for (const x of closable) await rc(`bd close ${x}`, td);
-                return report({ status: 'VERIFY', closedIds: closable, notes: 'Done what I could.' });
+                // Claims the late bead closed too: the read-back disproves it, so it
+                // keeps the ordinary left-open retry (a VERIFY report claiming no
+                // close of a bead it left open is set aside after one round).
+                return report({ status: 'VERIFY', closedIds: ids, notes: 'Done what I could.' });
             },
             reviewerHandler: approve,
             deployHandler: async () => {
