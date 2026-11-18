@@ -36,7 +36,9 @@ To keep it running after the launching terminal closes, register it with the
 OS using the "Auto-start on login/boot" section below -- that is the path that
 survives the launcher, and on Windows in particular the only one this skill
 documents as doing so. On macOS / Linux a shell-level background launch
-(`nohup ... &`) also outlives the terminal; check `GET /api/health` afterwards.
+(`nohup ... &`) also outlives the terminal: a SIGHUP is logged and ignored when the
+supervisor has no terminal on stdin/stdout (a detached launch), and only an
+attached terminal's hangup stops it. Check `GET /api/health` afterwards.
 
 (From a source checkout of apra-fleet the same file is
 `packages/apra-fleet-se/bin/serve.mjs`.)

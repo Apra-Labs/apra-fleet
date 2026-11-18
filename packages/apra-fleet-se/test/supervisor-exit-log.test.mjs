@@ -40,6 +40,7 @@ function harness(extra = {}) {
         logPath, proc,
         exit: (c) => exits.push(c),
         onSignal: (s) => signals.push(s),
+        stopOnSighup: () => true,
         ...extra,
     });
     const lines = () => (fs.existsSync(logPath) ? fs.readFileSync(logPath, 'utf8').split('\n').filter(Boolean) : []);
@@ -86,6 +87,31 @@ describe('installExitLogging (in-process, stubbed exit)', () => {
         console.error = () => {};
         try { h.proc.emit('unhandledRejection', 'plain reason'); } finally { console.error = origErr; }
         assert.match(h.lines()[0], /plain reason/);
+        h.log.uninstall();
+    });
+
+    test('SIGHUP on a detached launch is logged and does not stop the supervisor', () => {
+        const h = harness({ stopOnSighup: () => false });
+        const logged = [];
+        const orig = console.log;
+        console.log = (m) => logged.push(m);
+        try { h.proc.emit('SIGHUP'); } finally { console.log = orig; }
+        assert.deepEqual(h.signals, []);
+        assert.deepEqual(h.exits, []);
+        assert.equal(h.lines().length, 0);
+        assert.match(logged.join('\n'), /received SIGHUP; ignored/);
+        h.proc.emit('SIGTERM');
+        assert.deepEqual(h.signals, ['SIGTERM'], 'a later real stop still works and keeps its own cause');
+        h.log.uninstall();
+    });
+
+    test('a signal before the supervisor exists finalizes with one line and exits', () => {
+        const h = harness({ canStop: () => false });
+        h.proc.emit('SIGTERM');
+        assert.deepEqual(h.exits, [143]);
+        h.proc.emit('exit', 143);
+        assert.equal(h.lines().length, 1, h.lines().join('\n'));
+        assert.match(h.lines()[0], /cause=signal:SIGTERM exit_code=143/);
         h.log.uninstall();
     });
 
@@ -155,7 +181,7 @@ describe('real signals against a spawned supervisor (POSIX only)', posixOnly, ()
             req.on('timeout', () => { req.destroy(); resolve(false); });
         });
     }
-    for (const sig of ['SIGTERM', 'SIGHUP']) {
+    for (const sig of ['SIGTERM']) {
         test(`${sig} leaves one final line with cause and exit code in supervisor.log`, async () => {
             const dataDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'exitlog-data-'));
             const seDataDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'exitlog-se-'));
@@ -185,6 +211,43 @@ describe('real signals against a spawned supervisor (POSIX only)', posixOnly, ()
             const finals = fs.readFileSync(logFile, 'utf8').split('\n').filter((l) => l.includes('final:'));
             assert.equal(finals.length, 1, finals.join('\n'));
             assert.match(finals[0], new RegExp(`cause=signal:${sig} exit_code=0`));
+        });
+    }
+
+    for (const sig of ['SIGHUP']) {
+        test(`${sig} on a detached launch keeps the supervisor alive and logs it`, async () => {
+            const dataDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'exitlog-data-'));
+            const seDataDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'exitlog-se-'));
+            tmpDirs.push(dataDir, seDataDir);
+            const fixture = await createBeadsFixture();
+            cleanups.push(fixture.cleanup);
+            const port = await freePort();
+            const child = spawn(process.execPath, [SERVE_BIN, '--port', String(port), '--beads-dir', fixture.dir], {
+                cwd: path.join(__dirname, '..'), stdio: ['ignore', 'pipe', 'pipe'],
+                env: envWithoutBeadsDir({ APRA_FLEET_DATA_DIR: dataDir, FLEET_SE_DATA_DIR: seDataDir }),
+            });
+            let out = '';
+            child.stdout.on('data', (c) => { out += c; });
+            child.stderr.on('data', (c) => { out += c; });
+            const exited = new Promise((resolve) => child.once('exit', (code) => resolve(code)));
+            try {
+                const deadline = Date.now() + scaledTimeout(15000, { concurrency: TEST_CONCURRENCY, multiplier: 6 });
+                while (!(await health(port))) {
+                    if (Date.now() > deadline) throw new Error(`supervisor did not come up; output:\n${out}`);
+                    await new Promise((r) => setTimeout(r, 100));
+                }
+                child.kill(sig);
+                await new Promise((r) => setTimeout(r, 500));
+                assert.equal(await health(port), true, 'still serving after SIGHUP');
+                child.kill('SIGTERM');
+                const code = await Promise.race([exited, new Promise((r) => setTimeout(() => r('timeout'), scaledTimeout(15000, { concurrency: TEST_CONCURRENCY, multiplier: 4 })))]);
+                assert.equal(code, 0);
+            } finally { try { child.kill('SIGKILL'); } catch { /* gone */ } }
+            const logFile = path.join(seDataDir, 'logs', 'supervisor.log');
+            const finals = fs.readFileSync(logFile, 'utf8').split('\n').filter((l) => l.includes('final:'));
+            assert.equal(finals.length, 1, finals.join('\n'));
+            assert.match(finals[0], /cause=signal:SIGTERM exit_code=0/);
+            assert.match(fs.readFileSync(logFile, 'utf8'), /received SIGHUP; ignored/);
         });
     }
 });

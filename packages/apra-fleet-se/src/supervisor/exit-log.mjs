@@ -39,6 +39,8 @@ function describeError(err) {
  *   exit?: (code: number) => void,
  *   onSignal?: (signal: string) => void,
  *   causeProvider?: () => string | null | undefined,
+ *   canStop?: () => boolean,
+ *   stopOnSighup?: () => boolean,
  * }} opts
  * @returns {{ finalize: (code: number, cause?: string) => boolean, setCause: (cause: string) => void,
  *            exitFn: (code: number) => void, uninstall: () => void, readonly finalized: boolean }}
@@ -52,6 +54,10 @@ export function installExitLogging(opts) {
     const exit = opts.exit ?? ((code) => proc.exit(code));
     const onSignal = opts.onSignal ?? (() => {});
     const causeProvider = opts.causeProvider ?? (() => null);
+    const canStop = opts.canStop ?? (() => true);
+    // Stop on SIGHUP only when attached to a terminal (the terminal closing is
+    // the hangup). A detached launch (nohup, no TTY on stdio) keeps running.
+    const stopOnSighup = opts.stopOnSighup ?? (() => Boolean(proc.stdout?.isTTY || proc.stdin?.isTTY));
 
     let cause = null;
     let detail = null;
@@ -73,7 +79,23 @@ export function installExitLogging(opts) {
 
     for (const sig of EXIT_SIGNALS) {
         on(sig, () => {
+            // A listener overrides the SIG_IGN that `nohup` sets, so a SIGHUP on a
+            // detached launch (no controlling terminal on stdio) is logged and
+            // survived rather than turned into a stop.
+            if (sig === 'SIGHUP' && !stopOnSighup()) {
+                try { console.log('[supervisor] received SIGHUP; ignored (detached launch, not stopping)'); } catch { /* ignore */ }
+                return;
+            }
             cause ??= `signal:${sig}`;
+            if (!canStop()) {
+                // Still starting up (no supervisor to stop): our listener has
+                // suppressed Node's default terminate, so finalize and exit now.
+                onSignal(sig);
+                const code = sig === 'SIGINT' ? 130 : sig === 'SIGTERM' ? 143 : 1;
+                finalize(code);
+                exit(code);
+                return;
+            }
             onSignal(sig);
         });
     }

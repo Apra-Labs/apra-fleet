@@ -248,15 +248,20 @@ export async function serveMain(argv = process.argv.slice(2), deps = {}) {
     let supervisor = null;
     const onSignal = (sig) => {
         console.log(`[supervisor] received ${sig}`);
-        if (supervisor) supervisor.stop(`signal:${sig}`).catch((err) => console.error(err));
+        if (supervisor) { supervisor.stop(`signal:${sig}`).catch((err) => console.error(err)); return; }
+        // In-process (non-main) caller still starting up: our listener stops
+        // Node's default terminate, so exit right away. (The main entry point
+        // is handled inside installExitLogging via canStop.)
+        if (!ownsProcessHandlers) process.exit(sig === 'SIGINT' ? 130 : 143);
     };
+    const ownsProcessHandlers = Boolean(deps.installExitLog ?? isMainModule());
     // Only the real entry point owns process-level handlers; an in-process
     // caller (a test driving serveMain) keeps the plain SIGINT/SIGTERM wiring
     // so it does not gain fatal-error handlers or leak exit listeners.
-    const exitLog = (deps.installExitLog ?? isMainModule())
-        ? installExitLogging({ logPath: selfLog.logPath, causeProvider: () => (supervisor ? supervisor.exitCause : null), onSignal })
+    const exitLog = ownsProcessHandlers
+        ? installExitLogging({ logPath: selfLog.logPath, canStop: () => supervisor !== null, causeProvider: () => (supervisor ? supervisor.exitCause : null), onSignal })
         : { exitFn: (code) => process.exit(code) };
-    if (!(deps.installExitLog ?? isMainModule())) {
+    if (!ownsProcessHandlers) {
         process.once('SIGINT', () => onSignal('SIGINT'));
         process.once('SIGTERM', () => onSignal('SIGTERM'));
     }
