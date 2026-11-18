@@ -4,6 +4,8 @@ import {
   getSelfReadKb, getMemberSplitRead, mergeSplitById, memberOwnerTag, type KbAnchor, type MemberSplitRead,
 } from '../services/knowledge/kb-self.js';
 import { HttpKbProvider, KbHttpUnsupportedError } from '../services/knowledge/http-provider.js';
+import { SqliteProvider } from '../services/knowledge/sqlite-provider.js';
+import { entryCites, hasCitedFilter, normalizeCitedFilter, type CitedFilter } from '../services/knowledge/cited-filter.js';
 import type { MemoryProvider } from '../services/knowledge/types.js';
 
 const L2_CONTENT_CAP = 3200;
@@ -47,12 +49,20 @@ function slimRow(e: SlimSource): SlimSource {
 }
 
 export const kbQuerySchema = z.object({
-  query: z.string().min(1).optional().describe('Free-text search string. Required unless flagged_only is true or tag is provided.'),
+  query: z.string().min(1).optional().describe('Free-text search string. Required unless flagged_only is true, or tag, files or symbols is provided.'),
   type: z.enum(['context-cache', 'learning', 'knowledge', 'runbook']).optional()
     .describe('Filter by content type'),
   tag: z.string().optional().describe('Filter to entries whose tags array contains this value (exact match, ANDed alongside other filters -- not an FTS term). May be used alone (no query) to list all entries carrying the tag.'),
   limit: z.number().optional().describe('Max L1 results. Default 20 with the full row shape and the content of the top 5 hits in l2_expanded. A MEMBER session that omits it (without own_scope) gets at most 6 summary rows (id, type, title, summary, confidence, source_files, symbols) and an empty l2_expanded; pass a limit to get the full row shape and the content.'),
   include_stale: z.boolean().optional().describe('Include stale and superseded entries (default false)'),
+  // Cited filter (cited-filter.ts). Opt-in and default-off: a call naming
+  // neither field gets exactly the previous result. A HARD filter, not a
+  // ranking signal: entries citing none of the given files/symbols are never
+  // returned, however strongly they match the query text.
+  files: z.array(z.string().min(1)).min(1).optional()
+    .describe('Look up by file: return only entries whose source_files cite one of these repo-relative paths, or a file under one of them when the path is a directory (e.g. "src/services" matches "src/services/a.ts"). Backslashes and a leading "./" are normalised; an absolute path inside the repository is made repo-relative. A hard filter: an entry citing none of them is never returned, however well it matches query. Ranking inside the kept set is unchanged (keyword ranking with query, newest first without). May be used without query. With symbols too, an entry matching either is kept. Ignored when flagged_only is true.'),
+  symbols: z.array(z.string().min(1)).min(1).optional()
+    .describe('Return only entries whose symbols array names one of these symbols (exact, case-sensitive match). A hard filter like files; with files too, an entry matching either is kept. May be used without query. Ignored when flagged_only is true.'),
   flagged_only: z.boolean().optional()
     .describe('Return all contradiction-flagged entries. When true, query is optional and full content is returned.'),
   // KB audit 2026-08-11: the first consumer of the KB's own graph. Opt-in and
@@ -110,18 +120,30 @@ type Entry = Awaited<ReturnType<MemoryProvider['query']>>['results'][number];
 // One provider's L1 page with the trust filter re-applied (see passesTrustFilter).
 async function trustedL1(provider: MemoryProvider, queryOpts: L1Opts, input: KbQueryInput, ownerTag?: string): Promise<Entry[]> {
   const first = await provider.query(queryOpts);
-  const filtering = Boolean(input.confidence?.length || input.exclude_disputed || ownerTag);
+  // The cited filter is re-applied to what any store but SQLite returned
+  // (SQLite filters in SQL, with its repo root for absolute stored paths).
+  const cited = hasCitedFilter(queryOpts.cited) && !(provider instanceof SqliteProvider)
+    ? normalizeCitedFilter(queryOpts.cited)
+    : undefined;
+  const filtering = Boolean(input.confidence?.length || input.exclude_disputed || ownerTag || cited);
   if (!filtering) return first.results;
-  let kept = first.results.filter(e => passesTrustFilter(e, input, ownerTag));
+  const keep = (e: Entry) => passesTrustFilter(e, input, ownerTag) && (!cited || entryCites(e, cited));
+  let kept = first.results.filter(keep);
   // A provider that ignored the filter may have spent its whole limit on
   // entries just dropped here. A full page that filtered short is the only
   // signal of that (the sqlite provider filters in SQL, so it never trips
   // this); re-ask once with a wider window and trim back to the limit.
   if (kept.length < queryOpts.limit && first.results.length >= queryOpts.limit) {
     const wider = await provider.query({ ...queryOpts, limit: queryOpts.limit * 4 });
-    kept = wider.results.filter(e => passesTrustFilter(e, input, ownerTag));
+    kept = wider.results.filter(keep);
   }
   return kept.slice(0, queryOpts.limit);
+}
+
+// The cited filter of a request (files / symbols), or undefined when it names none.
+function citedOf(input: KbQueryInput): CitedFilter | undefined {
+  const cited: CitedFilter = { files: input.files, symbols: input.symbols };
+  return hasCitedFilter(cited) ? cited : undefined;
 }
 
 function capL2Content<T extends { content: string }>(e: T): T {
@@ -157,6 +179,7 @@ async function splitQuery(split: MemberSplitRead, raw: KbQueryInput, shape: Read
     include_stale: input.include_stale ?? false,
     include_superseded: input.include_stale ?? false,
     exclude_disputed: input.exclude_disputed,
+    cited: citedOf(input),
   };
   const bibleInput: KbQueryInput = { ...input, confidence: split.bible.tiers };
   const ownInput: KbQueryInput = { ...input, confidence: split.own.tiers };
@@ -225,8 +248,8 @@ export async function kbQuery(input: KbQueryInput, anchor?: KbAnchor): Promise<s
   // Tag-only calls are valid (HIGH-1 fix): the provider's plain (non-FTS)
   // branch supports a queryless listing, so `kb_query({ tag })` lists all
   // entries carrying the tag -- the KB Agent curator's Step 2 depends on it.
-  if (!input.query && !input.flagged_only && !input.tag) {
-    throw new Error('Provide query (free-text search), tag (exact-match tag listing), or flagged_only: true (list contradictions)');
+  if (!input.query && !input.flagged_only && !input.tag && !hasCitedFilter(citedOf(input))) {
+    throw new Error('Provide query (free-text search), files or symbols (entries citing them), tag (exact-match tag listing), or flagged_only: true (list contradictions)');
   }
 
   // A MEMBER request naming CONFIRMED plus another tier is split: CONFIRMED
@@ -334,6 +357,7 @@ export async function kbQuery(input: KbQueryInput, anchor?: KbAnchor): Promise<s
     confidence: input.confidence,
     exclude_disputed: input.exclude_disputed,
     owner_tag: ownerTag,
+    cited: citedOf(input),
   };
 
   // The trust filter runs PER PROVIDER, before the title de-dup below: filtering

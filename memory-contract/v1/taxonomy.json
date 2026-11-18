@@ -41,7 +41,7 @@
         {
           "$anchor": "E-QUERY-NO-SELECTOR",
           "code": "E-QUERY-NO-SELECTOR",
-          "meaning": "No query selector was supplied: none of query, tag or flagged_only is present, so there is nothing to search on.",
+          "meaning": "No query selector was supplied: none of query, files, symbols, tag or flagged_only is present, so there is nothing to search on.",
           "raising_methods": [
             { "method_id": "P-3", "member": "query", "tool": "kb_query", "position": "pre-provider" }
           ],

@@ -38,7 +38,7 @@
   "x-error-catalog": [
     {
       "type": "https://github.com/Apra-Labs/apra-fleet/blob/main/memory-contract/v1/taxonomy.json#E-QUERY-NO-SELECTOR",
-      "title": "No query selector was supplied: none of query, tag or flagged_only is present, so there is nothing to search on.",
+      "title": "No query selector was supplied: none of query, files, symbols, tag or flagged_only is present, so there is nothing to search on.",
       "status": 400
     },
     {

@@ -111,6 +111,7 @@ describe('kb-server promote and tag filter', () => {
       contract: 'v1',
       routes: ['capture', 'query', 'promote', 'context', 'prime', 'invalidate', 'feedback', 'list', 'demote'],
       branch_aware: false,
+      query_filters: ['files', 'symbols'],
     });
     const unauthenticated = await request('GET', '/api/kb/capabilities', { token: null });
     expect(unauthenticated.status).toBe(401);
@@ -119,7 +120,9 @@ describe('kb-server promote and tag filter', () => {
   it('HttpKbProvider reads the capabilities of this server: every contract route, demote included', async () => {
     const provider = new HttpKbProvider(`http://127.0.0.1:${TEST_PORT}`, testToken, { projectSlug: SERVER_PROJECT });
     try {
-      expect(await provider.capabilities()).toEqual({ ...KB_SERVER_CAPABILITIES, routes: [...KB_SERVER_CAPABILITIES.routes] });
+      expect(await provider.capabilities()).toEqual({
+        ...KB_SERVER_CAPABILITIES, routes: [...KB_SERVER_CAPABILITIES.routes], query_filters: [...KB_SERVER_CAPABILITIES.query_filters],
+      });
       expect(await provider.servesRoute('demote')).toBe(true);
       expect(await provider.servesRoute('list')).toBe(true);
     } finally {

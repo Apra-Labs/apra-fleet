@@ -11,6 +11,7 @@ import { encryptPassword, decryptPassword } from '../utils/crypto.js';
 import { validateAuthor } from '../tools/kb-feedback.js';
 import { KbCaptureRejected } from '../services/knowledge/types.js';
 import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
+import { CitedFilterError } from '../services/knowledge/cited-filter.js';
 import type { KBEntry, KBEntryInput, Confidence } from '../services/knowledge/types.js';
 
 // my-beads-db-0cd.15 (reopened): startKbServer is an exported library function
@@ -39,6 +40,8 @@ export const KB_SERVER_CAPABILITIES = Object.freeze({
   contract: 'v1',
   routes: Object.freeze(['capture', 'query', 'promote', 'context', 'prime', 'invalidate', 'feedback', 'list', 'demote']),
   branch_aware: false,
+  // The optional kb_query filters GET /api/kb/query honours (the cited filter).
+  query_filters: Object.freeze(['files', 'symbols']),
 });
 
 /** A demote refusal's taxonomy code at the start of SqliteProvider.demote's message (answered 422). */
@@ -304,15 +307,32 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
         const fts_terms = stringArrayParam(url, 'fts_terms');
         // ids: JSON array of entry ids, an exact-id lookup (kb_query's L2 fetch).
         const ids = stringArrayParam(url, 'ids');
-        if (fts_terms === null || ids === null) {
-          const name = fts_terms === null ? 'fts_terms' : 'ids';
-          return jsonResponse(res, 400, { error: `${name} must be a JSON array of strings`, code: 'BAD_REQUEST' });
+        // files / symbols: JSON arrays, the kb_query cited filter (a hard
+        // filter: only entries citing one of the files, or a file under one
+        // of them, or naming one of the symbols). Listed in query_filters.
+        const files = stringArrayParam(url, 'files');
+        const symbols = stringArrayParam(url, 'symbols');
+        const badParam = [['fts_terms', fts_terms], ['ids', ids], ['files', files], ['symbols', symbols]]
+          .find(([, v]) => v === null);
+        if (badParam) {
+          return jsonResponse(res, 400, { error: `${badParam[0]} must be a JSON array of strings`, code: 'BAD_REQUEST' });
         }
+        const cited = files?.length || symbols?.length
+          ? { files: files ?? undefined, symbols: symbols ?? undefined }
+          : undefined;
 
-        const result = await provider.query({
-          query, type, tag, limit, l1_only, confidence, exclude_disputed, include_stale, include_superseded,
-          flagged_only, fts_terms, ids,
-        });
+        let result;
+        try {
+          result = await provider.query({
+            query, type, tag, limit, l1_only, confidence, exclude_disputed, include_stale, include_superseded,
+            flagged_only, fts_terms: fts_terms ?? undefined, ids: ids ?? undefined, cited,
+          });
+        } catch (err) {
+          if (err instanceof CitedFilterError) {
+            return jsonResponse(res, 400, { error: err.message, code: 'BAD_REQUEST' });
+          }
+          throw err;
+        }
         return jsonResponse(res, 200, result as unknown as Record<string, unknown>);
       }
 

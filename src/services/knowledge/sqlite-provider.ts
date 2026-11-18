@@ -23,6 +23,7 @@ import {
 import { computeFileHashBatch } from './file-hash.js';
 import { ensureKeywordIndex, keywordMatchExpression, keywordSearch } from './kb-keyword-index.js';
 import { validateFilePaths } from './path-validation.js';
+import { citedFilterSql, hasCitedFilter, normalizeCitedFilter } from './cited-filter.js';
 import { clampBibleTimeToNow, standingAgainstTombstone } from './bible-import.js';
 import { KbCaptureRejected, type DiscardResult, type RetireOptions } from './types.js';
 import type {
@@ -1339,6 +1340,15 @@ export class SqliteProvider implements MemoryProvider {
       // with `query` and other filters without touching the FTS/OR-join logic.
       conditions.push('EXISTS (SELECT 1 FROM json_each(e.tags) WHERE value = ?)');
       params.push(opts.tag);
+    }
+    if (hasCitedFilter(opts.cited)) {
+      // kb_query cited filter: a hard filter ANDed like tag, so the keyword
+      // ranking (or the newest-first listing) runs inside the kept set only.
+      const cited = citedFilterSql(normalizeCitedFilter(opts.cited, this.repoPath), this.repoPath);
+      if (cited) {
+        conditions.push(cited.condition);
+        params.push(...cited.params);
+      }
     }
     if (opts.flagged_only) {
       conditions.push('(e.flagged_for_review = 1 OR e.contradiction_of IS NOT NULL)');

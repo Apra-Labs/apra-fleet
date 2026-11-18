@@ -22,6 +22,7 @@ import type {
 
 import { DEFAULT_REQUEST_TIMEOUT_MS } from './kb-config.js';
 import { isAbsoluteOrTraversing } from './path-validation.js';
+import { CITED_FILTER_FIELDS, hasCitedFilter, normalizeCitedFilter, type CitedFilterField } from './cited-filter.js';
 import { lookupServerSecret } from '../credential-store.js';
 import { recordKbHttpSuccess, recordKbHttpRejected } from './kb-http-auth-state.js';
 import {
@@ -356,6 +357,12 @@ export interface KbServerCapabilities {
   routes: KbRoute[];
   /** True when the server keeps entries per branch (X-Repository-Branch decides what is true). */
   branch_aware: boolean;
+  /**
+   * Optional kb_query request filters the server honours on GET /api/kb/query
+   * (files, symbols: the cited filter). Present only when the server lists
+   * any; a server that does not list a filter is never sent it.
+   */
+  query_filters?: CitedFilterField[];
 }
 
 /**
@@ -649,7 +656,14 @@ export class HttpKbProvider implements MemoryProvider {
     }
     // Unknown route names are ignored: a newer server may list routes this client does not call.
     const routes = caps.routes.filter((r): r is KbRoute => KNOWN_ROUTES.includes(r));
-    return { contract: caps.contract, routes, branch_aware: caps.branch_aware };
+    const read: KbServerCapabilities = { contract: caps.contract, routes, branch_aware: caps.branch_aware };
+    // query_filters is additive: absent, or not an array of strings, means the
+    // server honours no optional kb_query filter. Unknown names are ignored.
+    const filters = (caps as { query_filters?: unknown }).query_filters;
+    if (Array.isArray(filters)) {
+      read.query_filters = CITED_FILTER_FIELDS.filter(f => filters.includes(f));
+    }
+    return read;
   }
 
   /**
@@ -816,6 +830,36 @@ export class HttpKbProvider implements MemoryProvider {
     // from an owner-tagged read.
     const tag = opts.tag ?? opts.owner_tag;
     if (tag) params.tag = tag;
+    // The cited filter (files / symbols) is sent only to a server whose
+    // capabilities list it in query_filters: a server that does not would
+    // ignore the unknown parameter and answer unfiltered, so the filter is
+    // refused here instead (spec 2.9.1), before anything is sent.
+    if (hasCitedFilter(opts.cited)) {
+      const cited = normalizeCitedFilter(opts.cited);
+      const needed: CitedFilterField[] = [
+        ...(cited.files.length ? ['files' as const] : []),
+        ...(cited.symbols.length ? ['symbols' as const] : []),
+      ];
+      let listed: CitedFilterField[];
+      try {
+        listed = (await this.capabilities()).query_filters ?? [];
+      } catch (err) {
+        if (err instanceof KbHttpUnreachableError) {
+          throw new KbHttpUnreachableError(this.displayUrl, 'GET /api/kb/query', err.causeText);
+        }
+        throw err;
+      }
+      const missing = needed.filter(f => !listed.includes(f));
+      if (missing.length) {
+        throw new KbHttpUnsupportedError(
+          `the kb_query ${missing.join(' and ')} filter (the KB server at ${this.displayUrl} does not list it in query_filters of GET /api/kb/capabilities)`,
+          'nothing was read',
+          'drop the files/symbols filter, use a KB server that lists it in query_filters, or a local SQLite KB (kb_setup provider sqlite).',
+        );
+      }
+      if (cited.files.length) params.files = JSON.stringify(cited.files);
+      if (cited.symbols.length) params.symbols = JSON.stringify(cited.symbols);
+    }
 
     const result = await this.readRequest<KBResult>('query', 'GET', '/api/kb/query', undefined, params);
     return opts.owner_tag ? this.keepOwned(result, opts.owner_tag, opts.tag) : result;
