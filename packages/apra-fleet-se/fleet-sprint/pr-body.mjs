@@ -464,10 +464,14 @@ export const KB_NO_VERDICT_MAX_IDS = 40;
  * The "KB changes on merge" section for buildSprintPrBody's `sections` hook,
  * from kbWork.kbChangesReport(). Registered right after the merge assessment.
  * Lines: the withdrawals header and one line per id (clipped title and note;
- * ids only when no title), a never-cut "No verdict (N): ..." line, a counts
- * line. Under budget pressure the per-id lines drop (ending "+K more (run log)")
- * but the no-verdict and counts lines stay. Returns null when there is nothing
- * to report.
+ * ids only when no title); a "Demotion not recorded (N)" line for demotions
+ * kb_bible_commit did not admit; the never-cut "**No verdict (N):** ..."
+ * line; a counts line. Under budget pressure the section degrades step by
+ * step, keeping every id as long as the ids alone fit: the per-id lines
+ * become one ids-only line, the counts line drops the refused detail, and
+ * only then do the id lists end early with "+K more (run log)" -- the
+ * withdrawn ids first, the no-verdict ids last. Returns null when there is
+ * nothing to report.
  * @param {object|null} report
  * @returns {{ id: string, priority: number, heading: string, text: string, placement: string, fit: Function, hardClip: Function }|null}
  */
@@ -476,45 +480,68 @@ export function buildKbChangesSection(report) {
     const clip = (t, n) => { const x = inline(t); return x.length > n ? `${x.slice(0, n - 3)}...` : x; };
     const id8 = (id) => String(id).slice(0, 8);
     const withdrawn = report.withdrawn || [];
+    const notRecorded = report.notRecorded || [];
     const noVerdict = report.noVerdict || [];
     const refused = report.refused || [];
     const notPushed = new Set(report.notPushed || []);
-    if (withdrawn.length === 0 && noVerdict.length === 0 && !(report.kept || report.restored) && refused.length === 0) return null;
+    if (withdrawn.length === 0 && notRecorded.length === 0 && noVerdict.length === 0
+        && !(report.kept || report.restored) && refused.length === 0) return null;
     const lineOf = (w) => {
         const t = w.title ? ` "${clip(w.title, 50)}"` : '';
         const n = w.note ? ` -- ${clip(w.note, 100)}` : '';
         return `- ${id8(w.id)}${t}${n}${notPushed.has(w.id) ? ' (not in a pushed bible commit)' : ''}`;
     };
-    const idsLine = (() => {
-        if (noVerdict.length === 0) return '';
-        const shown = noVerdict.slice(0, KB_NO_VERDICT_MAX_IDS).map(id8).join(', ');
-        const more = noVerdict.length - KB_NO_VERDICT_MAX_IDS;
-        return `No verdict (${noVerdict.length}): ${shown}${more > 0 ? `, +${more} more (run log)` : ''}`;
-    })();
+    // The first k of `ids` (rendered by `show`), then "+K more (run log)" for the rest.
+    const idList = (ids, k, show = id8) => {
+        const shown = ids.slice(0, k).map(show);
+        if (k < ids.length) shown.push(`+${ids.length - k} more (run log)`);
+        return shown.join(', ');
+    };
+    const withdrawnId = (w) => `${id8(w.id)}${notPushed.has(w.id) ? ' (not in a pushed bible commit)' : ''}`;
+    const noVerdictCap = Math.min(noVerdict.length, KB_NO_VERDICT_MAX_IDS);
     const refusedPart = refused.length > 0
         ? `; refused: ${refused.length} (${clip(refused.map((r) => `${id8(r.id)} ${r.reason}`).join('; '), 120)}; run log)`
         : '';
-    const counts = `Re-checked and kept: ${report.kept || 0}; restored: ${report.restored || 0}${refusedPart || '; refused: 0 (run log)'}`;
-    const build = (maxLines) => {
+    const countsFull = `Re-checked and kept: ${report.kept || 0}; restored: ${report.restored || 0}${refusedPart || '; refused: 0 (run log)'}`;
+    const countsShort = `Re-checked and kept: ${report.kept || 0}; restored: ${report.restored || 0}; refused: ${refused.length} (run log)`;
+    // detail: per-id lines shown; wIds / rIds / nvIds: ids shown on the
+    // withdrawn (after the detail lines), not-recorded and no-verdict lines.
+    const build = ({ detail, wIds, rIds, nvIds, fullCounts }) => {
         const parts = [];
         if (withdrawn.length > 0) {
             parts.push(`Merging withdraws ${withdrawn.length} CONFIRMED KB claim(s) (tombstones in .fleet/kb-canonical.json):`);
-            const shown = withdrawn.slice(0, maxLines);
-            for (const w of shown) parts.push(lineOf(w));
-            if (shown.length < withdrawn.length) parts.push(`- +${withdrawn.length - shown.length} more (run log)`);
+            for (const w of withdrawn.slice(0, detail)) parts.push(lineOf(w));
+            const rest = withdrawn.slice(detail);
+            if (rest.length > 0) parts.push(`- ${idList(rest, wIds, withdrawnId)}`);
         }
-        if (idsLine) parts.push(idsLine);
-        parts.push(counts);
+        if (notRecorded.length > 0) {
+            parts.push(`**Demotion not recorded (${notRecorded.length}):** ${idList(notRecorded.map((w) => w.id), rIds)} -- the maintainer's kb_bible_commit did not admit it; still CONFIRMED after merge (run log).`);
+        }
+        if (noVerdict.length > 0) {
+            parts.push(`**No verdict (${noVerdict.length}):** ${idList(noVerdict, nvIds)} -- still CONFIRMED, not re-checked at HEAD.`);
+        }
+        parts.push(fullCounts ? countsFull : countsShort);
         return parts.join('\n');
     };
+    // Every form, richest first; the last is the floor.
+    function* forms() {
+        const W = withdrawn.length;
+        const all = { wIds: W, rIds: notRecorded.length, nvIds: noVerdictCap };
+        for (let n = W; n >= 0; n--) yield build({ ...all, detail: n, fullCounts: true });
+        yield build({ ...all, detail: 0, fullCounts: false });
+        for (let k = W - 1; k >= 0; k--) yield build({ ...all, detail: 0, wIds: k, fullCounts: false });
+        for (let k = notRecorded.length - 1; k >= 0; k--) yield build({ ...all, detail: 0, wIds: 0, rIds: k, fullCounts: false });
+        for (let k = noVerdictCap - 1; k >= 0; k--) yield build({ detail: 0, wIds: 0, rIds: 0, nvIds: k, fullCounts: false });
+    }
     const fitTo = (_text, max) => {
-        for (let n = withdrawn.length; n >= 0; n--) {
-            const t = build(n);
+        let last = '';
+        for (const t of forms()) {
             if (t.length <= max) return t;
+            last = t;
         }
-        return build(0);
+        return last;
     };
-    const full = build(withdrawn.length);
+    const full = forms().next().value;
     return {
         id: 'kb-changes',
         priority: 98,
