@@ -114,7 +114,10 @@ test('(a)+(b) every refused call maps to no grant: no compose_permissions/rerun 
             signals: ['result_json'],
         };
         const { scenario, id, doerCalls } = await refusedAfterClose('pdrg-unmappable', block, 'Task: refused after closing');
-        assert.equal(doerCalls, 1, 'no grant was added, so the doer is not re-dispatched by the heal');
+        // No grant was added, so the heal never re-dispatches; the doer's one
+        // same-session resume after an unmappable refusal is the only second
+        // call, and it is refused again.
+        assert.equal(doerCalls, 2, 'exactly one resume after the unmappable refusal, no heal re-dispatch');
 
         // (a) the failure text.
         const line = failureLine(scenario, id);

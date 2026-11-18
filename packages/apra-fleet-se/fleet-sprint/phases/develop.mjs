@@ -675,7 +675,23 @@ export async function runDevelopPhase({
             },
             // Built INSIDE the bracket, after the claim: the streak this
             // dispatch actually owns is only known once the claim has run.
-            prepare: async ({ dispatch, resumeAttempt, freshSession }) => {
+            prepare: async ({ dispatch, resumeAttempt, freshSession, refusalNotice }) => {
+                // The engine's one same-session resume after a refusal no
+                // permission grant can allow: its notice names the refused
+                // call(s); the streak scope is restated below it.
+                if (refusalNotice && !freshSession) {
+                    log(
+                        `Doer streak ${streakScope()} on member '${doerMember}' was refused tool calls no permission grant can allow -- ` +
+                        'resuming the same session once with a notice naming them.'
+                    );
+                    return {
+                        prompt:
+                            `${refusalNotice}\n\n` +
+                            `Your scope, restated so a resumed dispatch never loses it: assigned bead id(s) ${actualBeadIds.join(', ')} on sprint branch ${validated.branch}. ` +
+                            'Pick up from your last action on those bead(s) and proceed to the VERIFY checkpoint.',
+                        label: `Streak ${streakScope()} (resume after refused calls)`,
+                    };
+                }
                 // freshSession: the engine has no explicit session id to resume
                 // (or the id was not found), so this secondary dispatch is a
                 // FRESH session and gets the FULL streak prompt below, with the
