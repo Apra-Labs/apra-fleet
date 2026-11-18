@@ -132,6 +132,27 @@ describe('registerClaudeHttpMcp', () => {
     expect(() => registerClaudeHttpMcp(URL_, { [HEADER]: SECRET })).toThrow(/not valid JSON/);
     expect(read(f)).toBe('{ not json');
   });
+
+  // An empty read may be Claude Code mid-rewrite: seeding {} from it and
+  // writing back only mcpServers would drop every other key in the file.
+  it.each([
+    ['empty', ''],
+    ['whitespace only', '  \n'],
+    ['JSON null', 'null'],
+    ['JSON array', '[]'],
+  ])('refuses an existing %s claude config the same way, leaving it byte-identical', (_name, content) => {
+    const f = path.join(tmpHome, '.claude.json');
+    fs.writeFileSync(f, content);
+    expect(() => registerClaudeHttpMcp(URL_, { [HEADER]: SECRET })).toThrow(/not valid JSON[\s\S]*left untouched[\s\S]*re-run 'apra-fleet install'/);
+    expect(read(f)).toBe(content);
+    expect(fs.readdirSync(tmpHome)).toEqual(['.claude.json']);
+  });
+
+  it('still creates the file when it does not exist', () => {
+    registerClaudeHttpMcp(URL_, { [HEADER]: SECRET });
+    const cfg = JSON.parse(read(path.join(tmpHome, '.claude.json')));
+    expect(cfg.mcpServers['apra-fleet'].headers[HEADER]).toBe(SECRET);
+  });
 });
 
 describe('owner-only mode of credential-carrying config writes', () => {
