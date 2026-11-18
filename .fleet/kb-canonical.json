@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "5bfc7309d9fab9ead8aada7745fd165ecd32c07b",
     "branch": "main",
-    "entry_count": 145
+    "entry_count": 146
   },
   "entries": [
     {
@@ -1781,6 +1781,30 @@
         "packages/apra-fleet-se/bin/cli.mjs": "4518b0b43e5a46ca599db84eb4a7ef6911140027",
         "packages/apra-fleet-se/fleet-sprint/decision-wait.mjs": "3e92e65adff97cc499eccb1de83a6efc4483c7ab",
         "packages/apra-fleet-se/test/cli-decision-pause-keeps-reservations.test.mjs": "0f160dc4078b021b9af3a0e5995b092ce93b8029"
+      }
+    },
+    {
+      "id": "a015d62e-ae1c-4296-9827-b7ed4b2b6a3d",
+      "type": "knowledge",
+      "title": "kb_import base-ref gate trusts the bible's own provenance.branch",
+      "summary": "kb_import applies withdrawn tombstones when the ref read equals refs/remotes/origin/<provenance.branch> taken from the same bible it read. The branch name comes from the file itself, not from a configured base branch.",
+      "symbols": [
+        "isMergedBaseBible",
+        "baseRefOfBible",
+        "kbImportOverHttp",
+        "parseBibleDocument"
+      ],
+      "source_files": [
+        "src/tools/kb-import.ts",
+        "src/services/knowledge/bible-import.ts",
+        "src/tools/kb-bible-commit.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T05:17:18.226Z",
+      "source_file_hashes": {
+        "src/services/knowledge/bible-import.ts": "6f24b4b7e550d48abc2d678446b1c7f58b20c098",
+        "src/tools/kb-bible-commit.ts": "7872726aad48d470906086d3a9dd133221ce7fa2",
+        "src/tools/kb-import.ts": "fd961ce376053647808abc433933c35363412cb2"
       }
     },
     {
