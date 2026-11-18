@@ -213,6 +213,45 @@ it the next cycle could only repeat the same verdict until a stall. The
 skipped ids are logged, named in the verdict notes as carried over, and
 returned as `belowGoalCarryOver`. Anything in-goal keeps blocking the exit.
 
+## Lane order and containers
+
+Lane order (a lane-keyed ordering among sibling beads) holds a bead behind
+its lower-order lane-mates. The rule is keyed on the parent edge, not on
+`issue_type`: a lane-mate that is itself a container (a bead with children)
+never holds a bead back, because a container closes only when its children
+do, so waiting on it would deadlock. Lane metadata belongs on leaf tasks
+only; when a container carries lane metadata the engine ignores it and logs
+that once per run. One shared rule (`lowerOrderLaneMates` and
+`containerIdsOf` in `fleet-sprint/beads-scope.mjs`) serves hold-back,
+unmet-prerequisite and goal partitioning, so the blocked-report
+classification agrees with what the dispatcher does.
+
+## Red build gates Integration Test
+
+While the most recent review reported a failing build, Integration Test is
+not dispatched (a red-build skip is recorded as an integration failure), and
+a degraded review round does not change that state. A sprint whose
+Integration Test was skipped for a red build never publishes PASS: the
+verdict is forced FAIL until Integration Test has run again against a green
+build.
+
+## Deploy probe fails closed
+
+The probe for `deploy.md` fails closed: when the probe itself fails (as
+opposed to reporting the file absent), the deploy-failure gate is not
+cleared and the sprint cannot pass on the strength of a deploy that was
+never examined. The other callers of the existence probe still receive a
+plain boolean. The last deploy failure stays reported for that cycle even
+when the deploy was then set aside.
+
+## Permission denials
+
+A refusal advice (grant a permission, rerun) is given only when a refused
+call maps to something a grant can allow; a refusal no grant can allow gets
+no `compose_permissions` advice, and a mixed refusal keeps the grant
+remedy. A doer streak that fails on a permission denial is recorded as
+failed, but the beads it did close are still reviewed.
+
 ## Known gaps
 
 - Dependents are computed once, when the BLOCKED report arrives. A bead
