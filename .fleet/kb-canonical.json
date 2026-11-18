@@ -1,9 +1,9 @@
 {
   "version": 3,
   "provenance": {
-    "commit": "9a7760f37f70876b9b3fdd5360714698ea4dd270",
+    "commit": "5bfc7309d9fab9ead8aada7745fd165ecd32c07b",
     "branch": "main",
-    "entry_count": 142
+    "entry_count": 143
   },
   "entries": [
     {
@@ -2502,6 +2502,37 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-01T22:08:20.219Z"
+    },
+    {
+      "id": "e8eef38a-b7e3-45e4-b6e5-87941d2a40e8",
+      "type": "knowledge",
+      "title": "Lane order ignores containers: lowerOrderLaneMates is the single lane-mate rule",
+      "summary": "beads-scope.mjs lowerOrderLaneMates computes a bead's open lower-order lane-mates (same metadata.streak, lower finite streakOrder) and never counts a container (any bead that is the .parent of another bead in the list, per containerIdsOf). unmetPrerequisites, partitionReadyByGoal and worklists.mjs holdBackByLaneOrder all call it; classifyBlockedReport inherits it via unmetPrerequisites.",
+      "symbols": [
+        "lowerOrderLaneMates",
+        "containerIdsOf",
+        "newIgnoredContainerLaneLogs",
+        "holdBackByLaneOrder",
+        "unmetPrerequisites",
+        "partitionReadyByGoal",
+        "classifyBlockedReport"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/beads-scope.mjs",
+        "packages/apra-fleet-se/fleet-sprint/worklists.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/test/lane-container-order.test.mjs",
+        "packages/apra-fleet-se/test/mock-sprint-lane-container-order.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T01:51:53.974Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/beads-scope.mjs": "5fd45f687a968ad465a8dba274374366c68e29b4",
+        "packages/apra-fleet-se/fleet-sprint/runner.js": "229607bc589a05ac46b16843327c6531d951a673",
+        "packages/apra-fleet-se/fleet-sprint/worklists.mjs": "f50f0681ddd91e7f923bc9232bf7c1d61dc5c0f7",
+        "packages/apra-fleet-se/test/lane-container-order.test.mjs": "acf22556f673f4558c282c03d2f5a60a1bd3229f",
+        "packages/apra-fleet-se/test/mock-sprint-lane-container-order.test.mjs": "27658c8702644944bbebf2f1c530b455b84f9a95"
+      }
     },
     {
       "id": "e9f7d4a8-575a-4f4f-9342-9bf47b017b6f",
