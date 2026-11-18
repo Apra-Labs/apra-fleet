@@ -50,6 +50,31 @@ export function normalizeCitedPath(p: string, repoRoot?: string): string {
   return f.replace(/\/+$/, '');
 }
 
+/**
+ * The stored form of a source_files list, as capture() writes it: each path
+ * normalised by normalizeCitedPath without a repo root (an absolute path stays
+ * absolute), de-duplicated in order. A value naming no path ('.', './') is
+ * dropped. Stored paths then compare equal to a normalised filter path.
+ */
+export function normalizeStoredSourceFiles(files: string[]): string[] {
+  const out: string[] = [];
+  for (const raw of files) {
+    const f = normalizeCitedPath(raw);
+    if (f !== '' && !out.includes(f)) out.push(f);
+  }
+  return out;
+}
+
+/** A per-file hash basis re-keyed by the stored path form (first value wins on a collision). */
+export function normalizeStoredBasis(basis: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(basis)) {
+    const f = normalizeCitedPath(key);
+    if (f !== '' && !Object.prototype.hasOwnProperty.call(out, f)) out[f] = value;
+  }
+  return out;
+}
+
 /** True when the filter names at least one file or symbol. */
 export function hasCitedFilter(filter: CitedFilter | undefined): filter is CitedFilter {
   return Boolean(filter?.files?.length || filter?.symbols?.length);
@@ -77,8 +102,9 @@ export function normalizeCitedFilter(filter: CitedFilter, repoRoot?: string): { 
   return { files, symbols };
 }
 
-// A stored source_files value, normalised in SQL the way normalizeCitedPath
-// treats a caller's path (backslashes to '/', one leading './' dropped).
+// A stored source_files value as compared in SQL. capture() stores paths
+// already normalised (normalizeStoredSourceFiles); this covers rows written
+// before that only partly: backslashes to '/' and one leading './' dropped.
 const STORED_PATH_SQL = "(CASE WHEN substr(replace(sf.value, char(92), '/'), 1, 2) = './' "
   + "THEN substr(replace(sf.value, char(92), '/'), 3) ELSE replace(sf.value, char(92), '/') END)";
 

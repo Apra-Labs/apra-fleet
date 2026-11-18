@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { KB_REMOVED_SCOPE_KEYS_SHAPE } from '../services/knowledge/kb-removed-scope-keys.js';
 import {
-  getSelfReadKb, getMemberSplitRead, mergeSplitById, memberOwnerTag, type KbAnchor, type MemberSplitRead,
+  getSelfReadKb, getMemberSplitRead, mergeSplitById, memberOwnerTag, resolveKbAnchor, type KbAnchor, type MemberSplitRead,
 } from '../services/knowledge/kb-self.js';
 import { HttpKbProvider, KbHttpUnsupportedError } from '../services/knowledge/http-provider.js';
 import { SqliteProvider } from '../services/knowledge/sqlite-provider.js';
@@ -250,6 +250,13 @@ export async function kbQuery(input: KbQueryInput, anchor?: KbAnchor): Promise<s
   // entries carrying the tag -- the KB Agent curator's Step 2 depends on it.
   if (!input.query && !input.flagged_only && !input.tag && !hasCitedFilter(citedOf(input))) {
     throw new Error('Provide query (free-text search), files or symbols (entries citing them), tag (exact-match tag listing), or flagged_only: true (list contradictions)');
+  }
+
+  // files is made repo-relative here, once, against the session's repo root,
+  // so every store answers the same paths: the SQLite stores, and an http KB
+  // server, which has no repo root to resolve an absolute path against.
+  if (input.files?.length && !input.flagged_only) {
+    input = { ...input, files: normalizeCitedFilter({ files: input.files }, resolveKbAnchor(anchor).folder).files };
   }
 
   // A MEMBER request naming CONFIRMED plus another tier is split: CONFIRMED

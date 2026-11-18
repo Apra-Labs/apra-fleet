@@ -23,7 +23,9 @@ import {
 import { computeFileHashBatch } from './file-hash.js';
 import { ensureKeywordIndex, keywordMatchExpression, keywordSearch } from './kb-keyword-index.js';
 import { validateFilePaths } from './path-validation.js';
-import { citedFilterSql, hasCitedFilter, normalizeCitedFilter } from './cited-filter.js';
+import {
+  citedFilterSql, hasCitedFilter, normalizeCitedFilter, normalizeCitedPath, normalizeStoredBasis, normalizeStoredSourceFiles,
+} from './cited-filter.js';
 import { clampBibleTimeToNow, standingAgainstTombstone } from './bible-import.js';
 import { KbCaptureRejected, type DiscardResult, type RetireOptions } from './types.js';
 import type {
@@ -140,6 +142,14 @@ function trustFilterSql(filter: EntryTrustFilter | undefined): { conditions: str
     params.push(filter.owner_tag);
   }
   return { conditions, params };
+}
+
+// A caller's path in both forms a stored source_files value may take: as
+// given (a row stored before capture normalised paths) and in the stored form
+// capture() writes (normalizeStoredSourceFiles), so an exact-path lookup finds
+// either.
+function storedPathForms(file: string): [string, string] {
+  return [file, normalizeCitedPath(file)];
 }
 
 export class SqliteProvider implements MemoryProvider {
@@ -1174,6 +1184,17 @@ export class SqliteProvider implements MemoryProvider {
     // pending proposal by the directive gate above and can only be activated
     // CLI-side, so it never reaches the bible on its own. A directive that DOES
     // cite files is still held to those files existing.
+    // Stored source_files use one path form (forward slashes, no leading './',
+    // no repeated or trailing '/'), the form kb_query's files filter compares
+    // against. Here, so every capture route (kb_capture, kb_import, the HTTP
+    // capture route) stores it; a carried import basis is re-keyed to match.
+    if (input.source_files !== undefined) {
+      input = { ...input, source_files: normalizeStoredSourceFiles(input.source_files) };
+    }
+    if (opts?.carriedBasis) {
+      opts = { ...opts, carriedBasis: normalizeStoredBasis(opts.carriedBasis) };
+    }
+
     this.assertCheckableBasis(input);
 
     // T1.2 (F3, R3, KB 9462ab04): general confidence clamp -- the ENFORCEMENT
@@ -1441,10 +1462,10 @@ export class SqliteProvider implements MemoryProvider {
         WHERE type = 'context-cache'
           AND superseded_at IS NULL
           ${confClause}
-          AND EXISTS (SELECT 1 FROM json_each(source_files) WHERE value = ?)
+          AND EXISTS (SELECT 1 FROM json_each(source_files) WHERE value IN (?, ?))
         ORDER BY created_at DESC
         LIMIT 1
-      `).all(...confParams, file) as Record<string, unknown>[];
+      `).all(...confParams, ...storedPathForms(file)) as Record<string, unknown>[];
 
       if (rows.length > 0) {
         fileEntries.set(file, this.rowToEntry(rows[0]));
@@ -1561,9 +1582,9 @@ export class SqliteProvider implements MemoryProvider {
           AND superseded_at IS NULL
           ${ownerClause}
           AND EXISTS (
-            SELECT 1 FROM json_each(source_files) WHERE value = ?
+            SELECT 1 FROM json_each(source_files) WHERE value IN (?, ?)
           )
-      `).all(...ownerParams, file) as { id: string; confidence: string }[];
+      `).all(...ownerParams, ...storedPathForms(file)) as { id: string; confidence: string }[];
       const rows = opts?.keepConfirmed ? candidates.filter(r => r.confidence !== 'CONFIRMED') : candidates;
       if (opts?.keepConfirmed) for (const r of candidates) if (r.confidence === 'CONFIRMED') refused.add(r.id);
 

@@ -1595,10 +1595,16 @@ return only entries whose `source_files` cite one of `files` or whose
 and MUST NOT return any other entry, however strongly it matches `query`. A
 `files` value matches a stored path equal to it or, as a directory, any
 stored path under it (`src/services` matches `src/services/a.ts`, not
-`src/services-old/a.ts`). Both sides are compared normalised: backslashes
-become `/`, a leading `./` and trailing `/` are dropped, and an absolute path
-inside the repository is made repo-relative. A `files` value that names no
-path inside the repository (`.`, `./`) is refused. `symbols` match exactly
+`src/services-old/a.ts`). A `files` value is normalised before matching:
+backslashes become `/`, repeated `/` collapse, a leading `./` and a trailing
+`/` are dropped, and an absolute path inside the repository is made
+repo-relative (by fleet, before the request reaches any store). Stored
+`source_files` are compared in the same form: fleet's reference
+implementation normalises them the same way when an entry is captured or
+imported (an absolute path stays absolute); a row it stored before that
+normalisation existed is compared with only backslashes converted and one
+leading `./` dropped. A `files` value that names no path inside the
+repository (`.`, `./`) is refused. `symbols` match exactly
 (case-sensitive). Ranking inside the kept set is unchanged: the keyword
 ranking with `query`, newest first without it; either field may be used
 without `query`. The filters apply to `l1_results`, `l2_expanded` and the

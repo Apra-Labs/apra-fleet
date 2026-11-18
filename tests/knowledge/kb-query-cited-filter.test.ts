@@ -137,6 +137,51 @@ describe('SqliteProvider.query cited filter', () => {
   });
 });
 
+// Stored source_files are normalised on capture, so a path captured in an odd
+// but valid form (repeated '/', more than one leading './') is found by the
+// files filter like any other; the carried basis of an import is re-keyed to
+// the same form.
+describe('SqliteProvider.capture stores source_files normalised', () => {
+  let repo: string;
+  let provider: SqliteProvider;
+
+  beforeEach(async () => {
+    repo = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-cited-store-'));
+    fs.mkdirSync(path.join(repo, 'src', 'svc'), { recursive: true });
+    for (const f of ['a.ts', 'b.ts', 'c.ts']) fs.writeFileSync(path.join(repo, 'src', 'svc', f), `export const ${f[0]} = 1;
+`);
+    provider = new SqliteProvider(':memory:', repo);
+    await provider.init();
+  });
+  afterEach(() => {
+    provider.close();
+    fs.rmSync(repo, { recursive: true, force: true });
+  });
+
+  it('kb_query {files: ["src/svc"]} finds entries captured as src//svc/a.ts and ././src/svc/b.ts', async () => {
+    const capture = async (title: string, file: string, symbol: string) => (await provider.capture(makeInput({
+      title, summary: `${title} summary`, source_files: [file], symbols: [symbol],
+    }))).id;
+    const a = await capture('Service a doubles the input', 'src//svc/a.ts', 'svcA');
+    const b = await capture('Service b halves the input', '././src/svc/b.ts', 'svcB');
+    const c = await capture('Service c negates the input', 'src/svc/c.ts', 'svcC');
+
+    const r = await provider.query({ cited: { files: ['src/svc'] }, limit: 20 });
+    expect(idsOf(r.results).sort()).toEqual([a, b, c].sort());
+    const stored = Object.fromEntries(r.results.map(e => [e.id, e.source_files]));
+    expect(stored[a]).toEqual(['src/svc/a.ts']);
+    expect(stored[b]).toEqual(['src/svc/b.ts']);
+  });
+
+  it('an import re-keys its carried basis to the stored path form', async () => {
+    const { id } = await provider.capture(makeInput({
+      title: 'Service a imported with a carried basis', source_files: ['./src/svc/a.ts'], symbols: ['svcAImported'],
+    }), { importMode: true, carriedBasis: { './src/svc/a.ts': 'abc123' } });
+    const basis = provider.getSourceFileBases([id]).get(id);
+    expect(basis).toEqual({ 'src/svc/a.ts': 'abc123' });
+  });
+});
+
 describe('kb_query tool cited filter', () => {
   let provider: SqliteProvider;
   let ids: Record<string, string>;
@@ -262,6 +307,24 @@ describe('HttpKbProvider cited filter against the sample kb-server', () => {
       const s = await p.query({ query: 'sprocket', cited: { symbols: ['legacyRun'] } });
       expect(idsOf(s.results)).toEqual([ids.legacy]);
     } finally {
+      p.dispose();
+    }
+  });
+
+  // The http server has no repo root, so kb_query makes an absolute files
+  // path repo-relative itself, against the session's repo, before sending it.
+  it('kb_query makes an absolute files path inside the repository repo-relative before sending it', async () => {
+    const root = path.join(tmp, 'repo');
+    const p = new HttpKbProvider(serverUrl, TOKEN, { projectSlug: project });
+    const global = new SqliteProvider(':memory:');
+    await global.init();
+    vi.spyOn(kbProvidersModule, 'getKbProviders').mockResolvedValue({ project: p, global, projectSlug: project } as any);
+    try {
+      const parsed = JSON.parse(await kbQuery({ query: 'sprocket', files: [path.join(root, 'src', 'widgets')] }, { folder: root }));
+      expect(idsOf(parsed.l1_results).sort()).toEqual([ids.gear, ids.cog].sort());
+    } finally {
+      vi.restoreAllMocks();
+      global.close();
       p.dispose();
     }
   });
