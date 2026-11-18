@@ -544,9 +544,15 @@ takes effect for other clones only once that branch merges:
   `withdrawn_tombstone` and its tombstone is kept, unless `restore_ids` undoes
   that (branch-added) tombstone in the same call. `demoted` tombstones keep the
   re-promotion rule above: re-admitting the id through `ids` clears them.
-- `kb_import` applies `reason: "withdrawn"` tombstones ONLY when the bible was
-  read with `ref` equal to `refs/remotes/origin/<provenance.branch>` of that
-  same bible (the merged base bible as fetched). Then each id is judged like a
+- `kb_import` applies `reason: "withdrawn"` tombstones ONLY when the bible is
+  the merged base bible as fetched: read with `ref` equal to
+  `refs/remotes/origin/<base>`, where `<base>` is the request's `base_branch`
+  (without it, the branch `refs/remotes/origin/HEAD` points at), and its
+  `provenance.branch` equals that same `<base>`. `provenance.branch` alone is
+  never trusted: `kb_bible_commit` writes it from its own caller's
+  `baseBranch`, so a branch bible may name its own feature branch. When no
+  `base_branch` is given and `refs/remotes/origin/HEAD` is not set the
+  tombstones are deferred and `withdrawals.warning` says why. Then each id is judged like a
   `demoted` tombstone (same rule, same never-create), with an audit note
   naming "withdrawn in the project bible", the tombstone's note and evidence.
   From any other source (no `ref`, `HEAD`, the work tree, another ref) nothing
@@ -702,8 +708,8 @@ every project KB call and fleet keeps no second copy:
 - Its TOMBSTONES are used: they carry withdrawals across the merge.
   `kb_bible_commit` with `withdrawals` or `restore_ids` writes only the
   tombstones (a tombstone-only bible, `entries: []`, is created when absent;
-  existing entries stay byte-identical) and may commit. `kb_import` read at
-  `refs/remotes/origin/<provenance.branch>` of that bible, from a session that
+  existing entries stay byte-identical) and may commit. `kb_import` of that bible as
+  the merged base bible (same `ref`/`base_branch` rule), from a session that
   is not a MEMBER without the kb_maintainer grant, replays the `withdrawn`
   tombstones in ONE `POST /api/kb/withdraw` (section 2.9.1) and reports each
   outcome in `withdrawals` (a `not_confirmed` answer as `already`) and the ref

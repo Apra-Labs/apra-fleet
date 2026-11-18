@@ -1149,9 +1149,9 @@ await recordNonErrorOutcome('kb_capture', 'non-error-confidence-clamped', {
 // A CONFIRMED entry is merged into repo A's bible (setup). kb_bible_commit
 // withdrawals then removes it and records a "withdrawn" tombstone (the local
 // row is not changed). kb_import of that bible from the work tree lowers
-// nothing and reports the id deferred; read at refs/remotes/origin/main (the
-// bible's provenance.branch, pointed at HEAD here as a merge and fetch would)
-// it lowers the row and reports it withdrawn. Last, restore_ids with the
+// nothing and reports the id deferred; read at refs/remotes/origin/main with
+// base_branch main (the bible's provenance.branch, the ref pointed at HEAD
+// here as a merge and fetch would) it lowers the row and reports it withdrawn. Last, restore_ids with the
 // pre-withdrawal commit (a ref) as baseCommit removes the branch-added tombstone and
 // re-adds the base entry.
 {
@@ -1201,6 +1201,7 @@ await recordNonErrorOutcome('kb_capture', 'non-error-confidence-clamped', {
     execFileSync('git', ['update-ref', 'refs/remotes/origin/main', 'HEAD'], { cwd: repoA });
     const applied = await withSession('FULL_A', () => recordHappy('kb_import', 'withdrawal-base-ref', {
       ref: 'refs/remotes/origin/main',
+      base_branch: 'main',
       skip_sweep: true,
     }));
     if (JSON.stringify(parseEnvelopeText(applied)?.withdrawals?.withdrawn) !== JSON.stringify([idWithdraw])) {
@@ -1304,6 +1305,7 @@ await withSession('HTTP_A', () => recordHappy('kb_query', 'http-own-scope', {
     execFileSync('git', ['update-ref', 'refs/remotes/origin/main', 'HEAD'], { cwd: repoHttp });
     const replay = await withSession('HTTP_A', () => recordHappy('kb_import', 'http-withdrawal-replay', {
       ref: 'refs/remotes/origin/main',
+      base_branch: 'main',
     }));
     if (JSON.stringify(parseEnvelopeText(replay)?.withdrawals?.withdrawn) !== JSON.stringify([idHttpWithdraw])) {
       failures++;

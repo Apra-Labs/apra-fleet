@@ -847,6 +847,9 @@
  *   E-BIBLE-NOT-FOUND, and a kb_maintainer or FULL session records that
  *   verified blob as trusted. The engine's sprint-start priming seeds trust
  *   this way from the base branch, never from the maintainer's work tree.
+ *   kb_import also takes an optional `base_branch` (a plain branch name): the
+ *   base branch the bible is expected to belong to, which gates its withdrawn
+ *   tombstones (see KbImportWithdrawals).
  */
 
 /**
@@ -875,8 +878,10 @@
 
 /**
  * What a bible's "withdrawn" tombstones did on kb_import (KbImportResult.withdrawals).
- * They take effect only when the bible was read with `ref` equal to
- * refs/remotes/origin/<provenance.branch> of that same bible (the merged base bible).
+ * They take effect only for the merged base bible: read with `ref` equal to
+ * refs/remotes/origin/<base> where <base> is the kb_import `base_branch` (without it,
+ * the branch refs/remotes/origin/HEAD names) AND the bible's provenance.branch is that
+ * same <base> (provenance.branch alone is never trusted).
  * @typedef {Object} KbImportWithdrawals
  * @property {number} sent - Tombstones applied locally (SQLite) or sent in one
  *   POST /api/kb/withdraw (http); 0 when deferred or unsupported.
@@ -887,6 +892,7 @@
  * @property {string[]} unsupported - Not applied: the KB server does not serve the withdraw route.
  * @property {string[]} deferred - Not applied: the bible was not read from the merged base bible.
  * @property {string} [warning] - With unsupported: the E-KB-HTTP-UNSUPPORTED message naming the route.
+ *   With deferred: why, when the base branch could not be established.
  */
 
 /**

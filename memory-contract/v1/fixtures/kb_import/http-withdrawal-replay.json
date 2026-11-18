@@ -3,7 +3,8 @@
   "case": "http-withdrawal-replay",
   "kind": "happy",
   "request": {
-    "ref": "refs/remotes/origin/main"
+    "ref": "refs/remotes/origin/main",
+    "base_branch": "main"
   },
   "response": {
     "content": [

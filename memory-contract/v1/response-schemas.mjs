@@ -223,9 +223,11 @@ const KB_RESPONSE_BODIES = {
     reason: z.string().optional(),
     // What the bible's "withdrawn" tombstones did. They are applied (SQLite)
     // or replayed in one POST /api/kb/withdraw (http) ONLY when the bible was
-    // read at refs/remotes/origin/<provenance.branch> of that same bible;
-    // from any other source their ids are listed in deferred and nothing is
-    // lowered. sent counts tombstones applied or sent; already is a row that
+    // read at refs/remotes/origin/<base> and its provenance.branch is <base>,
+    // where <base> is the request's base_branch (else the branch
+    // refs/remotes/origin/HEAD names); from any other source their ids are
+    // listed in deferred and nothing is lowered (warning says why when the
+    // base branch could not be established). sent counts tombstones applied or sent; already is a row that
     // was already below CONFIRMED; unsupported lists ids a KB server without
     // the withdraw route could not apply, with warning (E-KB-HTTP-UNSUPPORTED
     // naming the route). OPTIONAL so fixtures recorded before withdrawals

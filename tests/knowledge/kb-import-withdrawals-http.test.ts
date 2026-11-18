@@ -80,6 +80,8 @@ beforeAll(async () => {
   git(['commit', '-q', '-m', 'bible']);
   git(['update-ref', 'refs/remotes/origin/main', 'HEAD']);
   git(['update-ref', 'refs/remotes/origin/feat/x', 'HEAD']);
+  // As git clone records it: the remote's default branch is main.
+  git(['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main']);
   // A base ref whose tree holds no bible: the normal state of an http repo
   // until its first withdrawal merges.
   const emptyTree = execFileSync('git', ['mktree'], { cwd: repo, encoding: 'utf-8', input: '' }).trim();

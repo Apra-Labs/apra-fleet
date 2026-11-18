@@ -85,6 +85,21 @@ export function isSafeBibleRef(ref: string): boolean {
 }
 
 /**
+ * The branch `refs/remotes/<remote>/HEAD` points at (the remote's default
+ * branch as this clone last recorded it: set by git clone or
+ * `git remote set-head <remote> --auto`). null when that symbolic ref is
+ * missing, points outside refs/remotes/<remote>/, or git cannot answer.
+ */
+export async function remoteDefaultBranch(folder: string, remote: string): Promise<string | null> {
+  if (!isSafeBibleRef('refs/remotes/' + remote + '/HEAD')) return null;
+  const target = (await git(['symbolic-ref', '--quiet', 'refs/remotes/' + remote + '/HEAD'], folder))?.trim() ?? '';
+  const prefix = 'refs/remotes/' + remote + '/';
+  if (!target.startsWith(prefix)) return null;
+  const branch = target.slice(prefix.length);
+  return branch === '' || branch === 'HEAD' ? null : branch;
+}
+
+/**
  * The bible at `rel` (default the own bible, a path relative to `folder`) as
  * committed at `ref` (default HEAD): its blob id and its bytes, read as ONE
  * object (the id is resolved first and the bytes are read by that id, then

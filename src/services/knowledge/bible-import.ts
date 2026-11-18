@@ -82,20 +82,38 @@ export interface BibleDocument {
   /**
    * provenance.branch of a v2/v3 envelope (the base branch the bible was
    * committed for), when it is a non-empty string. Absent for a legacy bare
-   * array or an envelope without it. kb_import compares the ref it read
-   * against refs/remotes/origin/<this> to decide whether the bible is the
-   * merged base bible (baseRefOfBible).
+   * array or an envelope without it. kb_import requires it to equal the base
+   * branch it established independently of the bible (the caller's
+   * base_branch, or the remote's default branch) before it applies the
+   * bible's "withdrawn" tombstones; on its own it is never trusted, because
+   * kb_bible_commit writes it from a caller-supplied value.
    */
   provenanceBranch?: string;
 }
 
+/** The remote-tracking ref of `branch` on `remote` (refs/remotes/<remote>/<branch>). */
+export function remoteTrackingRef(remote: string, branch: string): string {
+  return 'refs/remotes/' + remote + '/' + branch;
+}
+
 /**
- * The one ref a bible's "withdrawn" tombstones take effect from: the remote-
- * tracking ref of the base branch the same bible names in provenance.branch,
- * i.e. the bible as merged and fetched. Null when the bible names no branch.
+ * Split a remote-tracking ref into the remote it belongs to and the branch it
+ * tracks, given the remote names this clone knows. Remote and branch names may
+ * both contain '/', so the LONGEST known remote that prefixes the ref wins.
+ * Null when `ref` is not refs/remotes/<known remote>/<branch>, or names the
+ * remote's HEAD pointer rather than a branch.
  */
-export function baseRefOfBible(doc: BibleDocument): string | null {
-  return doc.provenanceBranch ? 'refs/remotes/origin/' + doc.provenanceBranch : null;
+export function parseRemoteTrackingRef(ref: string, remotes: readonly string[]): { remote: string; branch: string } | null {
+  let best: { remote: string; branch: string } | null = null;
+  for (const remote of remotes) {
+    if (remote === '') continue;
+    const prefix = 'refs/remotes/' + remote + '/';
+    if (!ref.startsWith(prefix)) continue;
+    const branch = ref.slice(prefix.length);
+    if (branch === '' || branch === 'HEAD') continue;
+    if (best === null || remote.length > best.remote.length) best = { remote, branch };
+  }
+  return best;
 }
 
 /** The "withdrawn" tombstones of a parsed bible (other reasons are not withdrawals). */

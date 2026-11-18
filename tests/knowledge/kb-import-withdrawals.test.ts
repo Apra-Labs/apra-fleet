@@ -9,10 +9,12 @@ import { getMemberBibleView, resetMemberBibleViews } from '../../src/services/kn
 import * as kbProvidersModule from '../../src/services/knowledge/kb-providers.js';
 import type { KBEntry, KBEntryInput } from '../../src/services/knowledge/types.js';
 
-// kb_import applies a bible's "withdrawn" tombstones ONLY when the bible was
-// read at refs/remotes/origin/<provenance.branch> of that same bible (the
-// merged base bible). From the work tree, HEAD or a feature ref the tombstones
-// are view exclusions only and the ids are reported in withdrawals.deferred.
+// kb_import applies a bible's "withdrawn" tombstones ONLY when the bible is the
+// merged base bible: read at refs/remotes/origin/<base>, where <base> is the
+// caller's base_branch (else the branch refs/remotes/origin/HEAD names, as a
+// clone records it), and its provenance.branch is that same <base>. From the
+// work tree, HEAD or a feature ref the tombstones are view exclusions only and
+// the ids are reported in withdrawals.deferred.
 //
 // Real SqliteProvider over a real temp git checkout, the real kb_import
 // handler; the only spy is getKbProviders, pointing the handler at this test's
@@ -66,14 +68,14 @@ async function confirmed(title: string, promotedAt: string): Promise<string> {
  * kept entry and (as a hand-edited bible would) the withdrawn entry too, so the
  * member view's exclusion of the tombstoned id is observable.
  */
-function commitBible(withdrawnIds: string[]): void {
+function commitBible(withdrawnIds: string[], provenanceBranch = 'main'): void {
   const entry = (id: string, title: string) => ({
     id, type: 'knowledge', title, summary: 'Summary of ' + title, symbols: [], source_files: ['src/y.ts'],
     confidence: 'CONFIRMED', updated_at: '2020-01-01T00:00:00.000Z',
   });
   const bible = {
     version: 3,
-    provenance: { commit: 'b'.repeat(40), branch: 'main', entry_count: 1 + withdrawnIds.length },
+    provenance: { commit: 'b'.repeat(40), branch: provenanceBranch, entry_count: 1 + withdrawnIds.length },
     entries: [entry('kept-1', 'Kept fact'), ...withdrawnIds.map(id => entry(id, 'Withdrawn fact ' + id))],
     demotions: withdrawnIds.map(id => ({ id, at: WITHDRAWN_AT, reason: 'withdrawn', note: NOTE, evidence_files: ['src/y.ts'] })),
   };
@@ -83,8 +85,11 @@ function commitBible(withdrawnIds: string[]): void {
   git(['commit', '--quiet', '-m', 'bible']);
 }
 
-async function importAt(ref?: string): Promise<any> {
-  return JSON.parse(await kbImport(ref === undefined ? { skip_sweep: true } : { ref, skip_sweep: true }, { folder: repo }));
+async function importAt(ref?: string, baseBranch?: string): Promise<any> {
+  const input: Record<string, unknown> = { skip_sweep: true };
+  if (ref !== undefined) input.ref = ref;
+  if (baseBranch !== undefined) input.base_branch = baseBranch;
+  return JSON.parse(await kbImport(input as any, { folder: repo }));
 }
 
 beforeEach(async () => {
@@ -98,6 +103,8 @@ beforeEach(async () => {
   git(['config', 'commit.gpgsign', 'false']);
   git(['add', '-A']);
   git(['commit', '--quiet', '-m', 'seed']);
+  // As git clone records it: the remote's default branch is main.
+  git(['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main']);
   provider = new SqliteProvider(path.join(root, 'kb.sqlite'), repo);
   await provider.init();
   vi.spyOn(kbProvidersModule, 'getKbProviders').mockImplementation(
@@ -149,6 +156,58 @@ describe('kb_import applies withdrawn tombstones only from the merged base bible
 
     const view = await getMemberBibleView({ folder: repo });
     expect((await view.list({})).map((e: KBEntry) => e.id)).toEqual(['kept-1']);
+  });
+
+  it('a branch bible whose provenance.branch names its own feature branch, read at refs/remotes/origin/<feature>, is deferred', async () => {
+    // kb_bible_commit writes provenance.branch from its caller's baseBranch,
+    // so a branch bible committed with baseBranch = its own feature branch
+    // and pushed names its own remote-tracking ref as "the base".
+    const y = await confirmed('Ypsilon', '2020-02-01T00:00:00.000Z');
+    git(['checkout', '--quiet', '-b', 'feat/x']);
+    commitBible([y], 'feat/x');
+    git(['update-ref', 'refs/remotes/origin/feat/x', 'HEAD']);
+
+    for (const baseBranch of [undefined, 'main']) {
+      const report = await importAt('refs/remotes/origin/feat/x', baseBranch);
+      expect(report.bible_source).toBe('refs/remotes/origin/feat/x');
+      expect(report.withdrawals, String(baseBranch)).toEqual({
+        sent: 0, withdrawn: [], repromoted: [], already: [], not_found: [], unsupported: [], deferred: [y],
+      });
+      expect(confidenceOf(y), String(baseBranch)).toBe('CONFIRMED');
+    }
+  });
+
+  it('the real base ref with an explicit base_branch applies the tombstones; a base_branch the bible does not name defers them', async () => {
+    const y = await confirmed('Ypsilon', '2020-02-01T00:00:00.000Z');
+    commitBible([y]);
+    git(['update-ref', 'refs/remotes/origin/main', 'HEAD']);
+    // The explicit base_branch is used even when the remote HEAD is unknown.
+    git(['symbolic-ref', '--delete', 'refs/remotes/origin/HEAD']);
+
+    const mismatch = await importAt('refs/remotes/origin/main', 'release');
+    expect(mismatch.withdrawals.deferred).toEqual([y]);
+    expect(confidenceOf(y)).toBe('CONFIRMED');
+
+    const report = await importAt('refs/remotes/origin/main', 'main');
+    expect(report.withdrawals).toEqual({
+      sent: 1, withdrawn: [y], repromoted: [], already: [], not_found: [], unsupported: [], deferred: [],
+    });
+    expect(confidenceOf(y)).toBe('INFERRED');
+  });
+
+  it('without base_branch and without refs/remotes/origin/HEAD the base is unknown: deferred, with a warning saying why', async () => {
+    const y = await confirmed('Ypsilon', '2020-02-01T00:00:00.000Z');
+    commitBible([y]);
+    git(['update-ref', 'refs/remotes/origin/main', 'HEAD']);
+    git(['symbolic-ref', '--delete', 'refs/remotes/origin/HEAD']);
+
+    const report = await importAt('refs/remotes/origin/main');
+    expect(report.withdrawals.deferred).toEqual([y]);
+    expect(report.withdrawals.sent).toBe(0);
+    expect(report.withdrawals.warning).toMatch(/base branch is unknown/);
+    expect(report.withdrawals.warning).toContain('refs/remotes/origin/HEAD');
+    expect(report.withdrawals.warning).toContain('base_branch');
+    expect(confidenceOf(y)).toBe('CONFIRMED');
   });
 
   it('a row re-promoted after the tombstone stays CONFIRMED and is reported repromoted; an unknown id is not_found', async () => {
