@@ -18,12 +18,14 @@
 // layout). Its content is just the acquiring process's pid as plain text.
 // A conflicting acquire attempt:
 //   - if the recorded pid is alive AND its command line is a fleet-sprint
-//     engine for this branch: refuses with the distinct, named
+//     engine (the fleet-sprint bin/cli.mjs entry, runner.js, or `workflow
+//     fleet-sprint`) for this branch: refuses with the distinct, named
 //     SprintLockHeldError (never falls through to a generic error a caller
 //     could accidentally swallow/retry). A live pid whose command line is
 //     something else is a RECYCLED pid: the lock is reclaimed with a log
-//     line. An unreadable command line fails closed (refuses, naming the
-//     lock path). The first line of the lock file is always a bare pid
+//     line. An unreadable command line, or an engine command line that
+//     names no --branch, fails closed (refuses, naming the lock path). The
+//     first line of the lock file is always a bare pid
 //     (src/cli/fleet-se-guard.ts parses it with parseInt).
 //   - if the recorded pid is dead (crashed process that never released
 //     cleanly), or the pidfile is unreadable/corrupt: reclaims the stale
@@ -35,6 +37,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { SprintLockHeldError } from './errors.mjs';
+import { normalizeBranchForCompare } from './sprint-args.mjs';
 
 export { SprintLockHeldError };
 
@@ -103,20 +106,40 @@ export function readProcessCommandLine(pid) {
     }
 }
 
+// Markers of a real fleet-sprint engine process: the fleet-sprint CLI entry
+// (installed workflows/fleet-sprint/bin/cli.mjs or the dev
+// packages/apra-fleet-se/bin/cli.mjs), the runner script, or
+// `apra-fleet workflow fleet-sprint`. Deliberately NOT the fleet server, the
+// supervisor (bin/serve.mjs), or any other cli.mjs.
+const ENGINE_MARKER_RE = /(?:fleet-sprint|apra-fleet-se)[\\/]+bin[\\/]+cli\.mjs\b|fleet-sprint[\\/]+runner\.js\b|\bworkflow\s+["']?fleet-sprint\b/i;
+// --branch X, --branch=X, -b X, -bX. Case-sensitive: -B is --base.
+const BRANCH_FLAG_RE = /(?:^|\s)(?:--branch(?:=|\s+)|-b\s*)("[^"]*"|'[^']*'|[^\s"']\S*)/g;
+
+// Compare branches the way the lock file is keyed: case-insensitive, ref
+// prefix stripped, filename-unsafe characters folded like sprintLockKey(), so
+// two spellings that share one lock file compare equal (fail closed).
+function branchLockForm(branch) {
+    return normalizeBranchForCompare(branch).replace(/[^a-zA-Z0-9._+-]/g, '_');
+}
+
 /**
- * True when `cmd` is a fleet-sprint engine command line (the supervisor's
- * `node .../cli.mjs`, runner.js, or `apra-fleet workflow fleet-sprint`) that
- * is not demonstrably for a DIFFERENT branch. A command line that names no
- * `--branch` (e.g. the branch comes from an args file) cannot be told apart
- * from this branch's engine, so it counts as the same sprint (fail closed).
+ * Classifies a live pid's command line against this sprint's branch:
+ *   'not-engine'     -- not a fleet-sprint engine (a recycled pid)
+ *   'same-branch'    -- an engine for this branch (or one sharing its lock)
+ *   'other-branch'   -- an engine for a different branch (a recycled pid)
+ *   'unknown-branch' -- an engine whose command line names no branch (e.g.
+ *                       an args file): identity cannot be verified
  * @param {string} cmd
  * @param {string} branch
+ * @returns {'not-engine' | 'same-branch' | 'other-branch' | 'unknown-branch'}
  */
-export function isEngineForBranch(cmd, branch) {
-    if (!/apra-fleet|fleet-sprint|fleet-se|runner\.js|cli\.mjs|serve\.mjs/i.test(cmd)) return false;
-    const m = /--branch(?:=|\s+)("[^"]*"|'[^']*'|\S+)/.exec(cmd);
-    if (!m) return true;
-    return m[1].replace(/^["']|["']$/g, '') === branch;
+export function classifyEngineCommandLine(cmd, branch) {
+    if (typeof cmd !== 'string' || !ENGINE_MARKER_RE.test(cmd)) return 'not-engine';
+    let last = null;
+    for (const m of cmd.matchAll(BRANCH_FLAG_RE)) last = m[1];
+    if (last === null) return 'unknown-branch';
+    const named = last.replace(/^["']|["']$/g, '');
+    return branchLockForm(named) === branchLockForm(branch) ? 'same-branch' : 'other-branch';
 }
 
 /**
@@ -171,7 +194,17 @@ export function acquireSprintLock({ branch, members, lockDir = defaultLockDir(),
                         { branch, members, existingPid },
                     );
                 }
-                if (isEngineForBranch(cmd, branch)) {
+                const identity = classifyEngineCommandLine(cmd, branch);
+                if (identity === 'unknown-branch') {
+                    throw new SprintLockHeldError(
+                        `[Sprint Lock] Sprint branch "${branch}" (members: ${(members || []).join(', ')}) lock ${lockPath} ` +
+                        `names live pid ${existingPid}, a fleet-sprint engine whose identity could not be verified (its ` +
+                        `command line names no --branch). Refusing to reclaim it -- if pid ${existingPid} is not this ` +
+                        `sprint's engine, remove ${lockPath} and relaunch.`,
+                        { branch, members, existingPid },
+                    );
+                }
+                if (identity === 'same-branch') {
                     throw new SprintLockHeldError(
                         `[Sprint Lock] Sprint branch "${branch}" (members: ${(members || []).join(', ')}) is already ` +
                         `running under pid ${existingPid}. Refusing to start a second concurrent engine against the ` +

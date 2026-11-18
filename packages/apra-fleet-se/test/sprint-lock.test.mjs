@@ -5,7 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
-import { acquireSprintLock, sprintLockKey, SprintLockHeldError } from '../fleet-sprint/sprint-lock.mjs';
+import { acquireSprintLock, sprintLockKey, SprintLockHeldError, readProcessCommandLine } from '../fleet-sprint/sprint-lock.mjs';
 
 // apra-fleet-eft.75.2: unit coverage for the machine-local pidfile mutex
 // itself (acquire/release/stale-reclaim/live-refuse), isolated from the
@@ -197,7 +197,7 @@ describe('acquireSprintLock identity check on a live pid (recycled pid)', () => 
         const lockDir = mk();
         fs.writeFileSync(lockFile(lockDir, 'auto-sprint/mine'), String(process.pid));
         const lock = acquireSprintLock({ branch: 'auto-sprint/mine', members: ['local'], lockDir,
-            readCommandLine: () => 'node cli.mjs --branch auto-sprint/other', log: () => {} });
+            readCommandLine: () => 'node /x/fleet-sprint/bin/cli.mjs --branch auto-sprint/other', log: () => {} });
         lock.release();
     });
 
@@ -223,9 +223,103 @@ describe('acquireSprintLock identity check on a live pid (recycled pid)', () => 
         fs.writeFileSync(lp, `${process.pid}\n`);
         assert.throws(
             () => acquireSprintLock({ branch: 'auto-sprint/legacy', members: ['local'], lockDir,
-                readCommandLine: () => 'node cli.mjs --branch auto-sprint/legacy' }),
+                readCommandLine: () => 'node /x/fleet-sprint/bin/cli.mjs --branch auto-sprint/legacy' }),
             (err) => err instanceof SprintLockHeldError && err.existingPid === process.pid,
         );
+    });
+});
+
+describe('acquireSprintLock engine identity: only a real fleet-sprint engine holds the lock', () => {
+    const dirs = [];
+    const mk = () => { const d = freshLockDir(); dirs.push(d); return d; };
+    after(() => { for (const d of dirs) fs.rmSync(d, { recursive: true, force: true }); });
+    const BR = 'feat/relaunch';
+    const lockFile = (lockDir, branch = BR) => path.join(lockDir, `${sprintLockKey(branch, ['local'])}.lock`);
+    const attempt = (cmd, branch = BR) => {
+        const lockDir = mk();
+        const lp = lockFile(lockDir, branch);
+        fs.writeFileSync(lp, String(process.pid));
+        const logs = [];
+        try {
+            const lock = acquireSprintLock({ branch, members: ['local'], lockDir, readCommandLine: () => cmd, log: (l) => logs.push(l) });
+            lock.release();
+            return { reclaimed: true, logs, lp };
+        } catch (err) {
+            return { reclaimed: false, err, logs, lp };
+        }
+    };
+
+    // A recycled pid now owned by one of these is NOT the crashed engine.
+    const NOT_ENGINE = [
+        ['fleet server (windows)', 'C:\\Users\\me\\.apra-fleet\\bin\\apra-fleet.exe serve'],
+        ['fleet server (posix)', '/home/me/.apra-fleet/bin/apra-fleet serve'],
+        ['supervisor serve.mjs (windows)', '"C:\\Program Files\\nodejs\\node.exe" C:\\Users\\me\\.apra-fleet\\workflows\\fleet-sprint\\bin\\serve.mjs --port 8787'],
+        ['supervisor serve.mjs (posix)', 'node /home/me/.apra-fleet/workflows/fleet-sprint/bin/serve.mjs'],
+        ['supervisor serve.mjs (dev checkout)', 'node /home/me/git/apra-fleet/packages/apra-fleet-se/bin/serve.mjs'],
+        ['VS Code on an apra-fleet folder', '"C:\\Users\\me\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe" C:\\git\\apra-fleet'],
+        ['git in an apra-fleet checkout', 'git -C /home/me/git/apra-fleet-se fetch origin'],
+        ['an unrelated cli.mjs (windows)', 'node C:\\work\\app\\node_modules\\vite\\bin\\cli.mjs build'],
+        ['an unrelated cli.mjs (posix)', 'node /work/app/node_modules/.bin/vite/cli.mjs --branch feat/relaunch'],
+    ];
+    for (const [label, cmd] of NOT_ENGINE) {
+        test(`${label}: a recycled pid, the lock is reclaimed`, () => {
+            const out = attempt(cmd);
+            assert.equal(out.reclaimed, true, out.err && out.err.message);
+            assert.equal(out.logs.length, 1);
+            assert.match(out.logs[0], /not a fleet-sprint engine/);
+        });
+    }
+
+    const ENGINE_SAME = [
+        ['installed cli.mjs, --branch X', 'node C:\\Users\\me\\.apra-fleet\\workflows\\fleet-sprint\\bin\\cli.mjs --issue a-1 --branch feat/relaunch --members local'],
+        ['dev cli.mjs, --branch=X', 'node /home/me/git/apra-fleet/packages/apra-fleet-se/bin/cli.mjs --branch=feat/relaunch'],
+        ['cli.mjs, -b X', 'node /x/fleet-sprint/bin/cli.mjs -b feat/relaunch -B main'],
+        ['cli.mjs, -bX', 'node /x/fleet-sprint/bin/cli.mjs -bfeat/relaunch'],
+        ['cli.mjs, quoted --branch', 'node /x/fleet-sprint/bin/cli.mjs --branch "feat/relaunch"'],
+        ['apra-fleet workflow fleet-sprint', 'C:\\Users\\me\\.apra-fleet\\bin\\apra-fleet.exe workflow fleet-sprint --branch feat/relaunch'],
+        ['runner.js', 'node /x/fleet-sprint/runner.js --branch feat/relaunch'],
+        ['branch differing only in case', 'node /x/fleet-sprint/bin/cli.mjs --branch Feat/Relaunch'],
+        ['branch with an origin/ prefix', 'node /x/fleet-sprint/bin/cli.mjs --branch origin/feat/relaunch'],
+    ];
+    for (const [label, cmd] of ENGINE_SAME) {
+        test(`real engine for this branch (${label}): refused as already running`, () => {
+            const out = attempt(cmd);
+            assert.equal(out.reclaimed, false);
+            assert.ok(out.err instanceof SprintLockHeldError);
+            assert.match(out.err.message, /already running under pid/);
+            assert.ok(fs.existsSync(out.lp), 'the lock must be left in place');
+        });
+    }
+
+    test('real engine for another branch: a recycled pid, reclaimed', () => {
+        const out = attempt('node /x/fleet-sprint/bin/cli.mjs --branch feat/other -B feat/relaunch');
+        assert.equal(out.reclaimed, true, out.err && out.err.message);
+    });
+
+    test('-B (the base flag) is not read as the branch', () => {
+        const out = attempt('node /x/fleet-sprint/bin/cli.mjs -B feat/relaunch --branch feat/other');
+        assert.equal(out.reclaimed, true, out.err && out.err.message);
+    });
+
+    for (const [label, cmd] of [
+        ['cli.mjs', 'node C:\\Users\\me\\.apra-fleet\\workflows\\fleet-sprint\\bin\\cli.mjs --args-file C:\\tmp\\a.json'],
+        ['workflow fleet-sprint', 'apra-fleet workflow fleet-sprint --issue a-1'],
+    ]) {
+        test(`real engine without --branch (${label}): identity could not be verified, naming the lock path`, () => {
+            const out = attempt(cmd);
+            assert.equal(out.reclaimed, false);
+            assert.ok(out.err instanceof SprintLockHeldError);
+            assert.match(out.err.message, /identity could not be verified/);
+            assert.ok(out.err.message.includes(out.lp), out.err.message);
+            assert.doesNotMatch(out.err.message, /already running/);
+            assert.ok(fs.existsSync(out.lp));
+        });
+    }
+});
+
+describe('readProcessCommandLine (real per-OS reader)', () => {
+    test('reads this process command line', { timeout: 60_000 }, () => {
+        assert.match(readProcessCommandLine(process.pid) || '', /node/i);
     });
 });
 

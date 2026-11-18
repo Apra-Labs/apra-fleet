@@ -616,7 +616,11 @@ line is written synchronously and the supervisor stops.
 **Sprint lock.** Each (branch, members) pair has a machine-local pidfile lock
 (directory overridable with `APRA_FLEET_SPRINT_LOCK_DIR`; test sandboxes set
 it). The first line is always a bare pid. On a conflict the engine inspects
-the live pid's command line: a fleet-sprint engine for the same branch raises
-`SprintLockHeldError`; any other process means the pid was recycled and the
-lock is reclaimed with a log line; an unreadable command line fails closed
-and the error names the lock path so the operator can decide.
+the live pid's command line. Only a real engine counts: the fleet-sprint
+`bin/cli.mjs` entry, `runner.js`, or `apra-fleet workflow fleet-sprint` (not
+the fleet server, the supervisor, or any other `cli.mjs`). An engine whose
+`--branch`/`-b` matches (case-insensitive, as the lock file is keyed) raises
+`SprintLockHeldError`; any other process, or an engine for another branch,
+means the pid was recycled and the lock is reclaimed with a log line. An
+unreadable command line, or an engine command line with no `--branch`, fails
+closed and the error names the lock path so the operator can decide.
