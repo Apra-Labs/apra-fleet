@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "22bbb3cfdfd5d77962b5fb6d85da8c1e833f79c1",
     "branch": "main",
-    "entry_count": 157
+    "entry_count": 156
   },
   "entries": [
     {
@@ -1867,31 +1867,6 @@
         "packages/apra-fleet-se/bin/cli.mjs": "4518b0b43e5a46ca599db84eb4a7ef6911140027",
         "packages/apra-fleet-se/fleet-sprint/decision-wait.mjs": "3e92e65adff97cc499eccb1de83a6efc4483c7ab",
         "packages/apra-fleet-se/test/cli-decision-pause-keeps-reservations.test.mjs": "0f160dc4078b021b9af3a0e5995b092ce93b8029"
-      }
-    },
-    {
-      "id": "9df8ff77-0273-498b-a199-995c7bf666bb",
-      "type": "learning",
-      "title": "kb_bible_commit tests need a resolvable baseCommit to get demoted tombstones",
-      "summary": "Since the base-bible gate, kb_bible_commit writes a demoted tombstone only for an id the bible at baseCommit carries. A fake baseCommit such as 'a'.repeat(40) fails closed: no new demoted tombstone, and demoted_ids are skipped with not_in_base_bible.",
-      "symbols": [
-        "kbBibleCommit",
-        "baseBibleLoader",
-        "planRestores"
-      ],
-      "source_files": [
-        "src/tools/kb-bible-commit.ts",
-        "tests/knowledge/kb-bible-tombstones-base.test.ts",
-        "tests/knowledge/kb-bible-tombstones.test.ts",
-        "memory-contract/v1/tests/roundtrip-harness.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-11-18T13:24:44.295Z",
-      "source_file_hashes": {
-        "memory-contract/v1/tests/roundtrip-harness.mjs": "692998240eb79ce020cc2fc29a32c386bff59789",
-        "src/tools/kb-bible-commit.ts": "8cf8955f40b0721deffbe0999bc337f77d1c376d",
-        "tests/knowledge/kb-bible-tombstones-base.test.ts": "7f558db87d4513335839a2b0b808810a7c139d77",
-        "tests/knowledge/kb-bible-tombstones.test.ts": "5ede727e9eb9c9d3f79b90ee8f0b46af9f8797ed"
       }
     },
     {

@@ -179,6 +179,9 @@ Known limits of the current design:
   tombstones. Use the `kb_import` tool or the sprint engine's prime import.
 - A withdrawal never touches the local row, so the local KB keeps the entry
   CONFIRMED until the merged bible is imported.
+- An id the base bible carries, demoted locally because of another branch's
+  claim, still gets a demoted tombstone; this leak remains until the sprint
+  engine stops demoting before merge.
 
 ## Forward-only enforcement (no migration)
 

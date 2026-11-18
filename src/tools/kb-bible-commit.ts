@@ -348,9 +348,10 @@ export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor
   };
   // BASE-BIBLE GATE. A demoted tombstone is meaningful only for an id the
   // bible at baseCommit carries -- as an entry, or already as a tombstone. A
-  // tombstone for any other id (an entry demoted on another branch, or one
-  // that exists only in an unmerged branch bible) would land on the base as
-  // noise. An entry THIS branch added (in the file, absent from the base) that
+  // tombstone for any other id (one the base bible never had) would land on
+  // the base as noise. This does NOT stop a tombstone for an id the base
+  // bible carries that was demoted locally because of another branch's
+  // claim. An entry THIS branch added (in the file, absent from the base) that
   // is locally demoted is still dropped from entries, but with no tombstone.
   // When the base bible cannot be read (baseCommit does not resolve, or its
   // bible is unreadable) this fails closed: no new demoted tombstone and no
