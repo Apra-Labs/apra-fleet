@@ -106,23 +106,37 @@ export class RequestBodyError extends Error {
  */
 export function readJsonBody(req, opts = {}) {
     const maxBytes = opts.maxBytes ?? 1_000_000;
+    // Past the cap the rest of the body is discarded up to this many more
+    // bytes and the 413 is answered at 'end', so a client that sends a
+    // moderately oversized body reads the 413 before the connection closes
+    // (closing on unread data sends a reset that can overtake the answer).
+    // Past the budget the 413 is answered at once and the connection closed.
+    const drainBytes = opts.drainBytes ?? maxBytes;
     return new Promise((resolve, reject) => {
         let size = 0;
         let tooLarge = false;
+        let settled = false;
         const chunks = [];
+        const tooLargeError = () => new RequestBodyError(`request body exceeds ${maxBytes} byte limit`, 413);
         req.on('data', (chunk) => {
-            if (tooLarge) return; // keep draining (discarding) so the 413 can be delivered
             size += chunk.length;
+            if (tooLarge) {
+                if (!settled && size > maxBytes + drainBytes) { settled = true; reject(tooLargeError()); }
+                return;
+            }
             if (size > maxBytes) {
                 tooLarge = true;
                 chunks.length = 0;
-                reject(new RequestBodyError(`request body exceeds ${maxBytes} byte limit`, 413));
+                if (size > maxBytes + drainBytes) { settled = true; reject(tooLargeError()); }
                 return;
             }
             chunks.push(chunk);
         });
         req.on('end', () => {
-            if (tooLarge) return;
+            if (tooLarge) {
+                if (!settled) { settled = true; reject(tooLargeError()); }
+                return;
+            }
             const raw = Buffer.concat(chunks).toString('utf-8').trim();
             if (raw.length === 0) {
                 resolve(undefined);

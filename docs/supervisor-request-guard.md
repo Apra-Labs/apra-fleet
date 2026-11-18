@@ -61,10 +61,11 @@ JSON body, including the operator-decisions route, goes through this one
 path, so a new route inherits the mapping by using the shared reader instead
 of parsing the stream itself.
 
-On an oversized body the server discards the rest of the body as it arrives,
-answers 413 with `Connection: close` as soon as the cap is crossed, and closes
-the connection once the answer is sent, so a client that keeps writing cannot
-hold the connection. A client should stop sending when the response arrives;
-a write still in flight may fail with EPIPE or ECONNRESET, which a test client
-must tolerate while still asserting on the 413. A peer that never stops
-writing may lose the 413 to the reset.
+On an oversized body the server discards the rest of the body, up to a drain
+budget of another cap's worth of bytes, and answers 413 with
+`Connection: close` when the body ends; it then closes the connection. A body
+that runs past the budget is answered at once and the connection closed, so a
+client that never stops writing cannot hold it (such a peer may lose the 413
+to the reset). A client should stop sending when the response arrives; a
+write still in flight may fail with EPIPE or ECONNRESET, which a test client
+must tolerate while still asserting on the 413.

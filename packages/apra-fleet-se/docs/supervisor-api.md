@@ -472,8 +472,9 @@ answer `503`, and a background retry flips it to `ready`.
   reconcile).
 - **413** -- a JSON request body above the size cap (1,000,000 bytes by
   default): `{ error: "request body exceeds <n> byte limit", field: "body" }`.
-  Sent with `Connection: close`; the connection is closed after the answer,
-  so stop writing the body once the response arrives.
+  Sent with `Connection: close` once the body ends (or at once if it runs
+  more than another cap's worth past the cap); the connection is closed after
+  the answer, so stop writing the body once the response arrives.
 - **403** -- a mutating request refused as cross-site (foreign `Origin` or
   `Sec-Fetch-Site`) without a valid token, or carrying an invalid token (see
   "Mutating requests" above), or any request whose `Host` header names a host

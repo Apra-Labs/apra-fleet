@@ -166,6 +166,26 @@ describe('RequestBodyError mapping in the catch-all', () => {
         });
     });
 
+    test('readJsonBody holds the 413 until end within the drain budget, and answers at once past it', async () => {
+        const { PassThrough } = await import('node:stream');
+        const state = (p) => Promise.race([p.then(() => 'resolved', (e) => e), new Promise((r) => setImmediate(() => r('pending')))]);
+
+        const within = new PassThrough();
+        const p1 = readJsonBody(within, { maxBytes: 10, drainBytes: 10 });
+        within.write(Buffer.alloc(15));
+        assert.equal(await state(p1), 'pending', 'still draining inside the budget');
+        within.end(Buffer.alloc(4));
+        const e1 = await state(p1);
+        assert.ok(e1 instanceof RequestBodyError && e1.status === 413);
+
+        const past = new PassThrough();
+        const p2 = readJsonBody(past, { maxBytes: 10, drainBytes: 10 });
+        past.write(Buffer.alloc(25));
+        const e2 = await state(p2);
+        assert.ok(e2 instanceof RequestBodyError && e2.status === 413, 'answered before end once past the budget');
+        past.destroy();
+    });
+
     test('RequestBodyError carries its status and field', () => {
         const e = new RequestBodyError('x', 413);
         assert.equal(e.status, 413);
