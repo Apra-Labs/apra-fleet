@@ -76,7 +76,7 @@ async function status(): Promise<{ compact: string; json: { kbHealth?: { credent
 }
 
 async function driveCapture(): Promise<void> {
-  const provider = new HttpKbProvider(kbUrl, { secretName: NAME }, new SqliteProvider(':memory:'));
+  const provider = new HttpKbProvider(kbUrl, { secretName: NAME });
   try {
     await provider.capture({
       type: 'learning', title: 'Status gear', summary: 'Status gear capture for call times', content: 'x',

@@ -169,7 +169,7 @@ describe('SqliteProvider.stats (T2.1, F5, D4)', () => {
 
 describe('HttpKbProvider.stats (T2.1, D4: never throw)', () => {
   it('returns a documented not-supported result without making a network call', async () => {
-    const httpProvider = new HttpKbProvider('http://127.0.0.1:1', 'unused-token', provider);
+    const httpProvider = new HttpKbProvider('http://127.0.0.1:1', 'unused-token');
     const stats = await httpProvider.stats();
     expect(stats.supported).toBe(false);
     expect(typeof stats.reason).toBe('string');
@@ -287,7 +287,7 @@ describe('kb_stats tool: bible drift (T2.1, D5)', () => {
     await provider.promote(a.id, 'test fixture: verified against the seeded tree');
     await provider.promote(a.id, 'test fixture: verified against the seeded tree');
 
-    const httpProvider = new HttpKbProvider('http://127.0.0.1:1', 'unused-token', provider);
+    const httpProvider = new HttpKbProvider('http://127.0.0.1:1', 'unused-token');
     vi.spyOn(kbProvidersModule, 'getKbProviders').mockResolvedValue({
       project: httpProvider,
       global: provider,

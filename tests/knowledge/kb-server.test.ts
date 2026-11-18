@@ -1,12 +1,15 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import http from 'node:http';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { startKbServer, KbServerHttpProviderRefusedError } from '../../src/commands/kb-server.js';
+import { startKbServer, KbServerHttpProviderRefusedError, KB_SERVER_CAPABILITIES } from '../../src/commands/kb-server.js';
 import { FLEET_DIR } from '../../src/paths.js';
 import { encryptPassword } from '../../src/utils/crypto.js';
-import { resetKbProviders } from '../../src/services/knowledge/kb-providers.js';
+import { resetKbProviders, getProjectSlug } from '../../src/services/knowledge/kb-providers.js';
+import { HttpKbProvider, KbHttpProjectMismatchError, KbHttpUnsupportedError, redactUrlUserinfo } from '../../src/services/knowledge/http-provider.js';
+import { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js';
 
 const TEST_PORT = 17878;
 const TOKEN_DIR = path.join(FLEET_DIR, 'knowledge');
@@ -14,22 +17,28 @@ const TOKEN_PATH = path.join(TOKEN_DIR, 'kb-server.token');
 
 let server: http.Server;
 let testToken: string;
+// The project the server serves: startKbServer builds its providers for
+// process.cwd(), the same folder getProjectSlug() defaults to.
+const SERVER_PROJECT = getProjectSlug();
 
 function request(
   method: string,
   urlPath: string,
-  opts?: { body?: any; token?: string | null }
+  opts?: { body?: any; raw?: string; token?: string | null; project?: string | null; port?: number }
 ): Promise<{ status: number; body: any; headers: http.IncomingHttpHeaders }> {
   return new Promise((resolve, reject) => {
-    const data = opts?.body ? JSON.stringify(opts.body) : undefined;
+    const data = opts?.raw ?? (opts?.body ? JSON.stringify(opts.body) : undefined);
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (opts?.token !== null) {
       headers['Authorization'] = `Bearer ${opts?.token ?? testToken}`;
     }
+    if (opts?.project !== null) {
+      headers['X-KB-Project'] = opts?.project ?? SERVER_PROJECT;
+    }
     if (data) headers['Content-Length'] = Buffer.byteLength(data).toString();
 
     const req = http.request(
-      { hostname: '127.0.0.1', port: TEST_PORT, path: urlPath, method, headers },
+      { hostname: '127.0.0.1', port: opts?.port ?? TEST_PORT, path: urlPath, method, headers },
       (res) => {
         let body = '';
         res.on('data', (chunk: Buffer) => { body += chunk.toString(); });
@@ -60,6 +69,362 @@ beforeAll(async () => {
 afterAll(async () => {
   await new Promise<void>((resolve) => server.close(() => resolve()));
   try { fs.unlinkSync(TOKEN_PATH); } catch { /* ignore */ }
+});
+
+// Declared before the main suite on purpose: its rate-limit test exhausts
+// the per-IP bucket (module-level, 60s window), and these requests would
+// then get 429.
+// POST /api/kb/promote and the query tag filter: the routes HttpKbProvider
+// uses for promote and for the member own-scope lookup, served by fleet's own
+// reference server so the http provider has a fleet-defined counterpart.
+describe('kb-server promote and tag filter', () => {
+  const PROMOTE_REASON = 'Checked against src/commands/kb-server.ts: the route exists and is served.';
+
+  async function captureTagged(tags: string[]): Promise<string> {
+    const marker = crypto.randomUUID();
+    const res = await request('POST', '/api/kb/capture', {
+      body: {
+        type: 'knowledge',
+        title: `kb-server promote route check ${marker}`,
+        summary: `Entry ${marker} captured to exercise the promote route.`,
+        content: `Unique content ${marker} for the kb-server promote route test.`,
+        source_files: ['src/commands/kb-server.ts'],
+        symbols: [], tags, content_hash: '', content_hash_type: 'sha256',
+        flagged_for_review: false, author: 'test', source: 'doer', confidence: 'INFERRED',
+      },
+    });
+    expect(res.status).toBe(201);
+    return res.body.id as string;
+  }
+
+  it('promotes an INFERRED entry to CONFIRMED and answers {id, previous_confidence, new_confidence}', async () => {
+    const id = await captureTagged([]);
+    const res = await request('POST', '/api/kb/promote', { body: { id, reason: PROMOTE_REASON } });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ id, previous_confidence: 'INFERRED', new_confidence: 'CONFIRMED' });
+  });
+
+  it('GET /api/kb/capabilities answers {contract, routes, branch_aware} behind the same auth as every route', async () => {
+    const res = await request('GET', '/api/kb/capabilities');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      contract: 'v1',
+      routes: ['capture', 'query', 'promote', 'context', 'prime', 'invalidate', 'feedback', 'list', 'demote'],
+      branch_aware: false,
+    });
+    const unauthenticated = await request('GET', '/api/kb/capabilities', { token: null });
+    expect(unauthenticated.status).toBe(401);
+  });
+
+  it('HttpKbProvider reads the capabilities of this server: every contract route, demote included', async () => {
+    const provider = new HttpKbProvider(`http://127.0.0.1:${TEST_PORT}`, testToken, { projectSlug: SERVER_PROJECT });
+    try {
+      expect(await provider.capabilities()).toEqual({ ...KB_SERVER_CAPABILITIES, routes: [...KB_SERVER_CAPABILITIES.routes] });
+      expect(await provider.servesRoute('demote')).toBe(true);
+      expect(await provider.servesRoute('list')).toBe(true);
+    } finally {
+      provider.dispose();
+    }
+  });
+
+  it('serves the optional list and feedback routes it advertises', async () => {
+    const list = await request('GET', '/api/kb/list');
+    expect(list.status).toBe(200);
+    expect(Array.isArray(list.body.results)).toBe(true);
+    const feedback = await request('POST', '/api/kb/feedback', { body: { id: 'no-such-entry', reason: 'wrong in practice', role: 'doer' } });
+    expect(feedback.status).toBe(404);
+    expect(feedback.body.code).toBe('ENTRY_NOT_FOUND');
+  });
+
+  it('answers 404 ENTRY_NOT_FOUND for an unknown id', async () => {
+    const res = await request('POST', '/api/kb/promote', { body: { id: 'no-such-entry', reason: PROMOTE_REASON } });
+    expect(res.status).toBe(404);
+    expect(res.body).toMatchObject({ code: 'ENTRY_NOT_FOUND', error: 'Entry not found: no-such-entry' });
+  });
+
+  it('answers 422 PROMOTE_REFUSED when the promote ladder refuses (trivial reason) and leaves the entry INFERRED', async () => {
+    const tag = `owner:${crypto.randomUUID()}`;
+    const id = await captureTagged([tag]);
+    const res = await request('POST', '/api/kb/promote', { body: { id, reason: 'ok' } });
+    expect(res.status).toBe(422);
+    expect(res.body.code).toBe('PROMOTE_REFUSED');
+    expect(res.body.error).toMatch(/requires a reason/);
+    const after = await request('GET', `/api/kb/query?tag=${encodeURIComponent(tag)}&confidence=INFERRED,CONFIRMED`);
+    expect(after.body.results.map((e: { id: string; confidence: string }) => [e.id, e.confidence])).toEqual([[id, 'INFERRED']]);
+  });
+
+  it('answers 500 INTERNAL_ERROR, not 422 PROMOTE_REFUSED, when promote fails for a reason that is not a refusal', async () => {
+    // Its own server on a scratch --db, whose entries table is then dropped
+    // through a second handle: the promote's read fails inside the database.
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-server-promote-500-'));
+    const dbFile = path.join(scratch, 'kb.sqlite');
+    const own = await startKbServer(0, false, dbFile);
+    const ownPort = (own.address() as { port: number }).port;
+    const store = new SqliteProvider(dbFile);
+    try {
+      await store.init();
+      (store as any).getDb().exec('DROP TABLE entries');
+      const res = await request('POST', '/api/kb/promote', { body: { id: 'any-id', reason: PROMOTE_REASON }, port: ownPort });
+      expect(res.status).toBe(500);
+      expect(res.body).toEqual({ error: 'Internal server error', code: 'INTERNAL_ERROR' });
+    } finally {
+      store.close();
+      await new Promise<void>(resolve => own.close(() => resolve()));
+      fs.rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+
+  it('answers 400 BAD_REQUEST for a promote body that is not JSON', async () => {
+    const res = await request('POST', '/api/kb/promote', { raw: '{"id": "x", reason' });
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({ code: 'BAD_REQUEST', error: 'Request body is not valid JSON' });
+  });
+
+  it('GET /api/kb/list reads an owner\'s entries without bumping use_count; GET /api/kb/query does bump it', async () => {
+    const tag = `member:${crypto.randomUUID()}`;
+    const id = await captureTagged([tag]);
+    const store = new SqliteProvider(path.join(FLEET_DIR, 'knowledge', SERVER_PROJECT, 'kb.sqlite'));
+    await store.init();
+    const useCount = () => ((store as any).getDb().prepare('SELECT use_count FROM entries WHERE id = ?').get(id) as { use_count: number }).use_count;
+    try {
+      const before = useCount();
+      const listed = await request('GET', `/api/kb/list?tag=${encodeURIComponent(tag)}&confidence=INFERRED&include_stale=true`);
+      expect(listed.status).toBe(200);
+      expect(listed.body.results.map((e: { id: string; tags: string[] }) => [e.id, e.tags])).toEqual([[id, [tag]]]);
+      expect(useCount()).toBe(before);
+
+      await request('GET', `/api/kb/query?tag=${encodeURIComponent(tag)}&confidence=INFERRED`);
+      expect(useCount()).toBe(before + 1);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('answers 400 BAD_REQUEST without an id', async () => {
+    const res = await request('POST', '/api/kb/promote', { body: { reason: PROMOTE_REASON } });
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('BAD_REQUEST');
+  });
+
+  it('GET /api/kb/query?tag= returns only entries carrying that tag, with their tags', async () => {
+    const tag = `owner:${crypto.randomUUID()}`;
+    const tagged = await captureTagged([tag]);
+    await captureTagged([`owner:${crypto.randomUUID()}`]);
+    const res = await request('GET', `/api/kb/query?tag=${encodeURIComponent(tag)}&confidence=INFERRED`);
+    expect(res.status).toBe(200);
+    expect(res.body.results.map((e: { id: string }) => e.id)).toEqual([tagged]);
+    expect(res.body.results[0].tags).toContain(tag);
+  });
+
+  it('GET /api/kb/query?fts_terms= applies the terms as an OR-joined FTS match; a malformed value is 400', async () => {
+    const term = `zorblax${crypto.randomBytes(6).toString('hex')}`;
+    // captureTagged has no hook for the term: capture the matching entry directly.
+    const matching = await request('POST', '/api/kb/capture', {
+      body: {
+        type: 'knowledge', title: `Neighbour ${term} note`, summary: `Entry about ${term} wiring.`,
+        content: `Details of ${term} for the fts_terms wire test.`, source_files: ['src/commands/kb-server.ts'],
+        symbols: [], tags: [], content_hash: '', content_hash_type: 'sha256',
+        flagged_for_review: false, author: 'test', source: 'doer', confidence: 'INFERRED',
+      },
+    });
+    expect(matching.status).toBe(201);
+    // Newer, unrelated entries: a recency listing would return these, not the match.
+    const newer = [await captureTagged([]), await captureTagged([]), await captureTagged([])];
+    expect(newer).not.toContain(matching.body.id);
+
+    const terms = encodeURIComponent(JSON.stringify([term, 'no-such-neighbour.ts']));
+    const res = await request('GET', `/api/kb/query?fts_terms=${terms}&l1_only=true&limit=3&confidence=INFERRED`);
+    expect(res.status).toBe(200);
+    expect(res.body.results.map((e: { id: string }) => e.id)).toEqual([matching.body.id]);
+
+    const bad = await request('GET', `/api/kb/query?fts_terms=${encodeURIComponent('not json')}`);
+    expect(bad.status).toBe(400);
+    expect(bad.body.code).toBe('BAD_REQUEST');
+  });
+
+  it('HttpKbProvider forwards fts_terms: the neighbour query returns the FTS-matched ids, the same as a SQLite KB seeded alike', async () => {
+    const term = `quuxneighbour${crypto.randomBytes(6).toString('hex')}`;
+    const localDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-server-fts-terms-'));
+    const provider = new HttpKbProvider(
+      `http://127.0.0.1:${TEST_PORT}`, testToken,
+      { projectSlug: SERVER_PROJECT },
+    );
+    const local = new SqliteProvider(path.join(localDir, 'local.sqlite'));
+    const entry = (title: string, summary: string) => ({
+      type: 'knowledge', title, summary, content: `${summary} Extra body text for the capture floor.`,
+      source_files: ['src/commands/kb-server.ts'], symbols: [], tags: [], content_hash: '',
+      content_hash_type: 'sha256', flagged_for_review: false, author: 'test', source: 'doer', confidence: 'INFERRED',
+    }) as any;
+    try {
+      await local.init();
+      // Oldest first: the match is the OLDEST entry, so recency order excludes it at limit 2.
+      const seeds = [
+        entry(`Match ${term} entry`, `The ${term} module wires the sprocket.`),
+        entry(`Unrelated alpha ${term.slice(0, 8)}x`, 'Completely different topic one about gearboxes.'),
+        entry(`Unrelated beta ${term.slice(0, 8)}y`, 'Completely different topic two about flywheels.'),
+        entry(`Unrelated gamma ${term.slice(0, 8)}z`, 'Completely different topic three about camshafts.'),
+      ];
+      const remoteIds: string[] = [];
+      for (const seed of seeds) {
+        remoteIds.push((await provider.capture(seed)).id);
+        await local.capture(seed);
+      }
+      const opts = { fts_terms: [term, 'absent-neighbour.ts'], l1_only: true, limit: 2, confidence: ['INFERRED' as const] };
+      const overHttp = await provider.query(opts);
+      const overSqlite = await local.query(opts);
+      expect(overHttp.results.map(r => r.id)).toEqual([remoteIds[0]]);
+      expect(overHttp.results.map(r => r.title)).toEqual(overSqlite.results.map(r => r.title));
+    } finally {
+      provider.dispose();
+      // Release the SQLite handle first: Windows refuses to unlink an open file (EBUSY).
+      local.close();
+      fs.rmSync(localDir, { recursive: true, force: true });
+    }
+  });
+
+  it('HttpKbProvider against this server: promote is sent by id and the server decides (unknown id is not found, a known id promotes)', async () => {
+    const owner = `member:${crypto.randomUUID()}`;
+    const id = await captureTagged([owner]);
+    const provider = new HttpKbProvider(
+      `http://127.0.0.1:${TEST_PORT}`, testToken,
+      { projectSlug: SERVER_PROJECT },
+    );
+    try {
+      const unknown = `unknown-${crypto.randomUUID()}`;
+      await expect(provider.promote(unknown, PROMOTE_REASON, { ownerTag: owner }))
+        .rejects.toThrow(new RegExp(`^Entry not found: ${unknown} \\(the KB server answered HTTP 404: `));
+      const stillInferred = await request('GET', `/api/kb/query?tag=${encodeURIComponent(owner)}&confidence=INFERRED`);
+      expect(stillInferred.body.results.map((e: { id: string }) => e.id)).toEqual([id]);
+
+      // No fleet-side owner-tag gate: this server has no per-member scope, so
+      // a known id promotes whatever ownerTag the caller carries.
+      await expect(provider.promote(id, PROMOTE_REASON, { ownerTag: `member:${crypto.randomUUID()}` }))
+        .resolves.toEqual({ id, confidence_before: 'INFERRED', confidence_after: 'CONFIRMED' });
+    } finally {
+      provider.dispose();
+    }
+  });
+
+  it('a promote from another project is refused by the server and the entry stays INFERRED', async () => {
+    const owner = `member:${crypto.randomUUID()}`;
+    const id = await captureTagged([owner]);
+    // Promote by id from a client for another project, with the right owner tag:
+    // fleet sends it without a tag check, and the server's project scope refuses it.
+    const otherProject = new HttpKbProvider(`http://127.0.0.1:${TEST_PORT}`, testToken, { projectSlug: 'some-other-project-slug' });
+    try {
+      const err = await otherProject.promote(id, PROMOTE_REASON, { ownerTag: owner }).then(() => null, (e: unknown) => e);
+      expect(err).toBeInstanceOf(KbHttpProjectMismatchError);
+      expect((err as { code?: string }).code).toBe('E-KB-HTTP-PROJECT-MISMATCH');
+    } finally {
+      otherProject.dispose();
+    }
+    const after = await request('GET', `/api/kb/query?tag=${encodeURIComponent(owner)}&confidence=INFERRED,CONFIRMED`);
+    expect(after.body.results.map((e: { id: string; confidence: string }) => [e.id, e.confidence])).toEqual([[id, 'INFERRED']]);
+  });
+});
+
+// One server serves one project. Declared before the main suite for the same
+// rate-limit reason as the block above.
+describe('kb-server refuses a client for another project on every route', () => {
+  const OTHER = 'some-other-repo-slug';
+  const ROUTES: Array<[string, string, unknown]> = [
+    ['POST', '/api/kb/capture', { type: 'knowledge', title: 't', summary: 's', content: 'c', source_files: [], symbols: [], tags: [] }],
+    ['GET', '/api/kb/query?query=x', undefined],
+    ['GET', '/api/kb/list?tag=x', undefined],
+    ['POST', '/api/kb/promote', { id: 'x', reason: 'a reason long enough to pass the floor' }],
+    ['POST', '/api/kb/invalidate', { files: ['src/a.ts'] }],
+    ['GET', '/api/kb/context?files=src/a.ts', undefined],
+    ['POST', '/api/kb/prime', {}],
+    ['GET', '/api/kb/capabilities', undefined],
+  ];
+
+  it.each(ROUTES)('%s %s: 409 naming both projects, for another project and for none', async (method, urlPath, body) => {
+    for (const project of [OTHER, null]) {
+      const res = await request(method, urlPath, { body, project });
+      expect(res.status).toBe(409);
+      expect(res.body).toMatchObject({
+        code: 'PROJECT_MISMATCH',
+        server_project: SERVER_PROJECT,
+        client_project: project ?? '(none)',
+      });
+    }
+  });
+
+  it('an HttpKbProvider for another project gets E-KB-HTTP-PROJECT-MISMATCH from every call, never a local store', async () => {
+    const provider = new HttpKbProvider(`http://127.0.0.1:${TEST_PORT}`, testToken, { projectSlug: OTHER });
+    try {
+      await provider.init();
+      const calls: Array<[string, () => Promise<unknown>]> = [
+        ['capture', () => provider.capture({
+          type: 'knowledge', title: 'Other project capture', summary: 'Must never land on this server.', content: 'c',
+          source_files: [], symbols: [], tags: [], content_hash: '', content_hash_type: 'sha256',
+          flagged_for_review: false, author: 'test', source: 'doer', confidence: 'INFERRED',
+        } as any)],
+        ['query', () => provider.query({ query: 'x' })],
+        ['context', () => provider.context(['src/a.ts'])],
+        ['invalidate', () => provider.invalidate(['src/a.ts'])],
+        ['prime', () => provider.prime({ session_files: [] } as any)],
+        ['promote', () => provider.promote('x', 'a reason long enough to pass the floor')],
+        ['promote (member)', () => provider.promote('x', 'a reason long enough to pass the floor', { ownerTag: 'member:x' })],
+      ];
+      for (const [name, call] of calls) {
+        const err = await call().then(() => null, (e: unknown) => e);
+        expect(err, name).toBeInstanceOf(KbHttpProjectMismatchError);
+        expect((err as Error).message, name).toMatch(
+          new RegExp(`^E-KB-HTTP-PROJECT-MISMATCH: .*serves project "${SERVER_PROJECT}", not "${OTHER}"`));
+      }
+    } finally {
+      provider.dispose();
+    }
+  });
+});
+
+describe('HttpKbProvider list against a server without GET /api/kb/list', () => {
+  it('surfaces the 404 as E-KB-HTTP-UNSUPPORTED for kb_list; promote never reads the list route', async () => {
+    const seen: string[] = [];
+    const server = http.createServer((req, res) => {
+      // A server without GET /api/kb/capabilities: the route set from before
+      // that route existed. (The capabilities read is tested on its own.)
+      if ((req.url ?? '').startsWith('/api/kb/capabilities')) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Not found', code: 'NOT_FOUND' }));
+        return;
+      }
+      seen.push(`${req.method} ${(req.url ?? '').split('?')[0]}`);
+      req.resume();
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'not found', code: 'NOT_FOUND' }));
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const port = (server.address() as { port: number }).port;
+    const provider = new HttpKbProvider(`http://127.0.0.1:${port}`, testToken, { projectSlug: SERVER_PROJECT });
+    try {
+      for (const call of [
+        () => provider.list({ confidence: ['CONFIRMED'] } as any),
+        () => provider.list({ owner_tag: 'member:x' } as any),
+      ]) {
+        const err = await call().then(() => null, (e: unknown) => e as Error);
+        expect(err).toBeInstanceOf(KbHttpUnsupportedError);
+        expect((err as Error).message).toMatch(/^E-KB-HTTP-UNSUPPORTED: .*\/api\/kb\/list/);
+      }
+      // A member promote goes straight to POST /api/kb/promote; this server's
+      // 404 there carries no ENTRY_NOT_FOUND code, so it is the route missing.
+      await expect(provider.promote('x', 'a reason long enough to pass the floor', { ownerTag: 'member:x' }))
+        .rejects.toThrow(/^E-KB-HTTP-UNSUPPORTED: the promote route .*HTTP 404: not found \[NOT_FOUND\], without body code ENTRY_NOT_FOUND/);
+      expect(seen).toEqual(['GET /api/kb/list', 'GET /api/kb/list', 'POST /api/kb/promote']);
+    } finally {
+      provider.dispose();
+      server.closeAllConnections();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+});
+
+describe('redactUrlUserinfo', () => {
+  it('drops user and password from a KB server url and leaves a plain url unchanged', () => {
+    expect(redactUrlUserinfo('https://alice:s3cret@kb.example.test:7878/base')).toBe('https://kb.example.test:7878/base');
+    expect(redactUrlUserinfo('http://127.0.0.1:7878')).toBe('http://127.0.0.1:7878');
+  });
 });
 
 describe('kb-server', () => {

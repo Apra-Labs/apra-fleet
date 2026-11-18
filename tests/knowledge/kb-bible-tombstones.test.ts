@@ -377,4 +377,26 @@ describe('bible demotion tombstones', () => {
     // Nothing was committed over the refusals.
     expect(git(clone, ['rev-parse', 'HEAD']).trim()).toBe(head);
   });
+
+  it('scenario 9: a demotion whose sprint ended before its bible commit is DEFERRED, not dropped: the next bible commit on this KB tombstones it without naming it', async () => {
+    // Sprint 1: the entry reaches the bible, then kb_demote runs on this
+    // maintainer's KB. The sprint fails before its round bible commit, so the
+    // engine's in-memory demoted_ids queue is gone with it.
+    const demotedId = await confirmedCiting('Alpha', 'src/alpha.ts');
+    await kbBibleCommit({ ids: [demotedId], ...BASE }, { folder: clone });
+    await kbDemote({ id: demotedId, reason: DEMOTE_REASON, evidence_files: DEMOTE_EVIDENCE }, { folder: clone });
+    expect(bibleIds()).toEqual([demotedId]);
+
+    // Sprint 2 on the same machine: its first bible commit carries only its own
+    // confirmation and no demoted_ids at all.
+    const unrelated = await confirmedCiting('Gamma', 'src/gamma.ts');
+    const r = JSON.parse(await kbBibleCommit({ ids: [unrelated], ...BASE }, { folder: clone }));
+
+    expect(r.merged).toEqual([unrelated]);
+    expect(r.demoted).toEqual([demotedId]);
+    expect(r.committed).toBe(true);
+    const onDisk = readBibleFile();
+    expect(onDisk.entries.map(e => e.id)).toEqual([unrelated]);
+    expect(onDisk.demotions).toEqual([{ id: demotedId, at: rowDemotedAt(demotedId), reason: 'demoted' }]);
+  });
 });

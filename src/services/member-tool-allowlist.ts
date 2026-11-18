@@ -30,7 +30,9 @@
 //     member, which connects through the plain per-folder ?member= entry --
 //     does not see them.
 //   - kb_demote lowers CONFIRMED to INFERRED. It is served on the same terms
-//     as kb_promote (kb_maintainer session only).
+//     as kb_promote (kb_maintainer session only): the engine applies every
+//     reviewer demotion through the maintainer session, and no role agent
+//     needs to call it directly.
 //   - kb_usage records usage telemetry (pushed / cited events behind the
 //     cited-based hit rate). The engine reports it; an agent session must not
 //     inflate it, so it is served on the same terms (kb_maintainer only).

@@ -111,6 +111,9 @@ export function resolveDoltAsset(platform, arch) {
     } else if (platform === 'linux' && arch === 'x64') {
         assetName = 'dolt-linux-amd64.tar.gz';
         archiveType = 'tar.gz';
+    } else if (platform === 'linux' && arch === 'arm64') {
+        assetName = 'dolt-linux-arm64.tar.gz';
+        archiveType = 'tar.gz';
     } else if (platform === 'darwin' && arch === 'x64') {
         assetName = 'dolt-darwin-amd64.tar.gz';
         archiveType = 'tar.gz';
@@ -1073,7 +1076,9 @@ export async function detectMemberPlatform({ command, member }) {
             { member, doltOutput: text },
         );
     }
-    return { platform: match[1], arch: match[2] === 'arm64' ? 'arm64' : 'x64' };
+    // The member's real arch, never coerced to x64: an unpublished arch must
+    // hit resolveDoltAsset's named error, not download the x64 build.
+    return { platform: match[1], arch: match[2] };
 }
 
 /**

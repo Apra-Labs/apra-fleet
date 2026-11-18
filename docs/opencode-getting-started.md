@@ -207,6 +207,11 @@ curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra
 curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-linux-x64 -o apra-fleet-installer && chmod +x apra-fleet-installer && ./apra-fleet-installer --llm opencode
 ```
 
+**Linux (ARM64 / aarch64)**
+```bash
+curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-linux-arm64 -o apra-fleet-installer && chmod +x apra-fleet-installer && ./apra-fleet-installer --llm opencode
+```
+
 **Windows (x64)** -- run in PowerShell:
 ```powershell
 curl.exe -fL -o apra-fleet-installer.exe https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-win-x64.exe; .\apra-fleet-installer.exe --llm opencode

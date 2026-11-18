@@ -4,12 +4,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { gitExecutable } from '../os/git-executable.js';
-import { getKbProviders } from '../services/knowledge/kb-providers.js';
+import { getKbProviders, kbConfigSelectsHttp } from '../services/knowledge/kb-providers.js';
 import { resolveKbAnchor, type KbAnchor } from '../services/knowledge/kb-self.js';
 import { filterProjectBibleCandidates, hasCarriedBasis, selectLegacyBibleBackfill } from '../services/knowledge/bible-basis-filter.js';
 import { logWarn } from '../utils/log-helpers.js';
 import { KB_AUDIT_NOTE_START } from '../services/knowledge/types.js';
-import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
+import { isSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 import { TOMBSTONE_DEMOTED, standingAgainstTombstone, type BibleTombstone } from '../services/knowledge/bible-import.js';
 import { bibleBytesBlobId } from '../services/knowledge/bible-blob-id.js';
 import { KbMaintainerGrantError, memberLacksKbMaintainer } from '../services/knowledge/kb-maintainer-grant.js';
@@ -160,6 +160,10 @@ export interface KbBibleCommitResult {
    * is then false and this says what is missing. Absent otherwise.
    */
   not_committed_reason?: string;
+  /** True when the call was skipped because the project KB is not SQLite-backed (http). */
+  bible_skipped?: true;
+  /** Why the call was skipped; present only with bible_skipped. */
+  reason?: string;
 }
 
 type KbBibleEnrichItem = NonNullable<KbBibleCommitInput['enrich']>[number];
@@ -315,6 +319,9 @@ function richFieldsFromBibleHistory(repoPath: string, outPath: string, ids: stri
   return found;
 }
 
+/** Reason reported when kb_bible_commit is skipped under the http KB provider. */
+export const KB_BIBLE_COMMIT_HTTP_SKIP_REASON = 'bible commit is not supported over the http KB provider';
+
 export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor): Promise<string> {
   const enrichItems = input.enrich ?? [];
   // A rewrite of reviewed knowledge is a maintainer act, and the bible this call
@@ -366,7 +373,9 @@ async function commitToBible(
   // file, and a call that does change it says so in its commit message. A failed
   // retry throws, like any failed commit -- never a silent committed: false over
   // a dirty tree.
-  const pendingAtStart = existingDoc !== null && isGitRepo(repoPath) && bibleContentChanged(repoPath, outPath);
+  // Never under an http KB provider: there the call commits nothing at all.
+  const pendingAtStart = !kbConfigSelectsHttp()
+    && existingDoc !== null && isGitRepo(repoPath) && bibleContentChanged(repoPath, outPath);
   const commitPending = (entryCount: number): boolean => {
     if (!pendingAtStart || !bibleContentChanged(repoPath, outPath)) return false;
     try {
@@ -389,7 +398,21 @@ async function commitToBible(
   }
 
   const providers = await getKbProviders(repoPath, remoteUrl);
-  const project = requireSqliteProject(providers.project, 'kb_bible_commit');
+  const project = providers.project;
+  if (!isSqliteProject(project)) {
+    // The bible is built from the local SQLite store; over http there is
+    // nothing to merge. Skip before any KB read, write, or git commit. The
+    // bible file was only read leniently above (readBibleEntries never
+    // throws): entry_count reports its size when parseable, and an unparseable
+    // file is logged, never thrown over -- the skip is provider-wide.
+    if (existingAtStart === null && fs.existsSync(outPath)) {
+      logWarn('kb_bible_commit', 'bible file is not readable, reporting entry_count 0 under the http KB provider: ' + outPath);
+    }
+    return done({
+      merged: [], demoted: [], skipped: [], removed: [], entry_count: existingAtStart?.length ?? 0, backfilled: 0, committed: false,
+      bible_skipped: true, reason: KB_BIBLE_COMMIT_HTTP_SKIP_REASON,
+    });
+  }
   const confirmedEntries = await project.list({ confidence: ['CONFIRMED'] });
   const requestedSet = new Set(requested);
   // ONE admission rule with kb_export (scope=project): a CONFIRMED id is

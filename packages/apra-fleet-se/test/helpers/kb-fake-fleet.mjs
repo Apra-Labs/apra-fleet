@@ -17,12 +17,13 @@ export const isWriteTool = (tool) => tool === 'kb_capture' || tool === 'kb_promo
  * A fake fleet: per-member KBs (keyed by member uuid), per-member checkouts,
  * the files published to the remote branch, and one ordered event list.
  */
-export function createFakeFleet() {
+export function createFakeFleet({ failOwnScopeQuery = false } = {}) {
     const kbs = new Map();          // member uuid -> entries[]
     const checkouts = new Map();    // member name -> Set<file>
     const published = new Set();    // files on the remote branch
     const events = [];              // ordered: dispatch / gpull / kb events
     const orchestratorKbCalls = []; // kb_* through the orchestrator's FULL session
+    const bible = { entries: new Set(), tombstones: new Set() }; // the bible as kb_bible_commit leaves it
     let seq = 0;
 
     const kbOf = (id) => { if (!kbs.has(id)) kbs.set(id, []); return kbs.get(id); };
@@ -40,6 +41,10 @@ export function createFakeFleet() {
             case 'kb_session_prime': return { top_entries: [] };
             case 'kb_export': return { exported: kb.filter((e) => e.confidence === 'CONFIRMED').length };
             case 'kb_query': {
+                // The demotion-candidate read is the own-scoped one; failing
+                // only that read leaves the promotion read working, so a
+                // scenario can isolate the demotion degradation.
+                if (failOwnScopeQuery && args.own_scope === true) fail('kb unreachable: the demotion-candidate read failed');
                 if (typeof args.tag !== 'string') return { l1_results: [], related_claims: [] };
                 const tiers = Array.isArray(args.confidence) ? args.confidence : ['CONFIRMED'];
                 const hits = kb.filter((e) => e.tags.includes(args.tag) && tiers.includes(e.confidence) && !e.superseded_at);
@@ -78,12 +83,37 @@ export function createFakeFleet() {
                 }
                 return out;
             }
+            case 'kb_demote': {
+                // kb_demote's own refusals: only an owned CONFIRMED entry, with evidence.
+                const e = kb.find((x) => x.id === args.id && own(x));
+                if (!e) fail(`Entry not found: ${args.id}`);
+                if (e.confidence !== 'CONFIRMED') fail(`E-DEMOTE-NOT-CONFIRMED: ${args.id} is ${e.confidence}`);
+                if (!Array.isArray(args.evidence_files) || args.evidence_files.length === 0) fail('evidence_files is required');
+                e.confidence = 'INFERRED';
+                e.demoted_at = new Date().toISOString();
+                return { id: e.id, confidence_before: 'CONFIRMED', confidence_after: 'INFERRED' };
+            }
+            case 'kb_bible_commit': {
+                // Admission mirrors the real tool: an id merges only while
+                // CONFIRMED; a demoted id is tombstoned only once the row
+                // really is demoted (demoted_at set, no longer CONFIRMED).
+                const merged = (args.ids || []).filter((i) => kb.some((x) => x.id === i && x.confidence === 'CONFIRMED'));
+                const demoted = (args.demoted_ids || []).filter((i) => kb.some((x) => x.id === i && x.demoted_at && x.confidence !== 'CONFIRMED'));
+                const skipped = [
+                    ...(args.ids || []).filter((i) => !merged.includes(i)).map((i) => ({ id: i, reason: 'not_confirmed_or_unknown' })),
+                    ...(args.demoted_ids || []).filter((i) => !demoted.includes(i)).map((i) => ({ id: i, reason: 'not_demoted_or_unknown' })),
+                ];
+                for (const i of merged) bible.entries.add(i);
+                for (const i of demoted) { bible.entries.delete(i); bible.tombstones.add(i); }
+                const committed = merged.length + demoted.length > 0;
+                return { path: '.fleet/kb-canonical.json', merged, demoted, skipped, entry_count: bible.entries.size, committed };
+            }
             default: return {};
         }
     }
 
     return {
-        kbs, checkouts, published, events, orchestratorKbCalls, kbOf, checkoutOf, memberTool,
+        kbs, checkouts, published, events, orchestratorKbCalls, kbOf, checkoutOf, memberTool, bible,
         seedEntry(memberName, entry) {
             kbOf(memberUuid(memberName)).push({ tags: [ownTag(memberUuid(memberName))], confidence: 'INFERRED', superseded_at: null, ...entry });
         },

@@ -1,0 +1,15 @@
+{
+  "tool": "kb_promote",
+  "case": "refusal-http-project-mismatch",
+  "kind": "refusal",
+  "request": {
+    "id": "9d4e7a10-3b2c-4f5e-8a61-2c7d0e9b4f13",
+    "reason": "Attempting to promote an entry through a server for another project."
+  },
+  "error": {
+    "message": "E-KB-HTTP-PROJECT-MISMATCH: the KB server at http://other-project.kb.example.test serves project \"exampletest-memory-contract-other-project\", not \"exampletest-memory-contract-fixtures-http\"; nothing was read or written. Remediation: point this repo at the KB server for its own project (kb_setup provider http), or use a local SQLite KB (kb_setup provider sqlite).",
+    "thrown": true
+  },
+  "expected_error_code": "E-KB-HTTP-PROJECT-MISMATCH",
+  "session": "HTTP_MISMATCH"
+}

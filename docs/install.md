@@ -45,6 +45,11 @@ curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra
 curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-linux-x64 -o apra-fleet-installer && chmod +x apra-fleet-installer && ./apra-fleet-installer
 ```
 
+**Linux (ARM64 / aarch64)**
+```bash
+curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-linux-arm64 -o apra-fleet-installer && chmod +x apra-fleet-installer && ./apra-fleet-installer
+```
+
 **Windows (x64)** -- download `apra-fleet-installer-win-x64.exe` and double-click it, or run in PowerShell:
 ```powershell
 curl.exe -fL -o apra-fleet-installer.exe https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-win-x64.exe; .\apra-fleet-installer.exe
@@ -69,6 +74,7 @@ Download the installer for your platform from
 [GitHub Releases](https://github.com/Apra-Labs/apra-fleet/releases):
 
 - `apra-fleet-installer-linux-x64` -- Linux (x86_64)
+- `apra-fleet-installer-linux-arm64` -- Linux (ARM64 / aarch64)
 - `apra-fleet-installer-darwin-arm64` -- macOS (Apple Silicon)
 - `apra-fleet-installer-darwin-x64` -- macOS (Intel, x64)
 - `apra-fleet-installer-win-x64.exe` -- Windows
@@ -81,6 +87,9 @@ chmod +x apra-fleet-installer-darwin-arm64 && ./apra-fleet-installer-darwin-arm6
 
 # Linux (x64)
 chmod +x apra-fleet-installer-linux-x64 && ./apra-fleet-installer-linux-x64
+
+# Linux (ARM64 / aarch64)
+chmod +x apra-fleet-installer-linux-arm64 && ./apra-fleet-installer-linux-arm64
 ```
 
 ```powershell

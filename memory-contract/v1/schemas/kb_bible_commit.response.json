@@ -139,6 +139,13 @@
             },
             "not_committed_reason": {
               "type": "string"
+            },
+            "bible_skipped": {
+              "type": "boolean",
+              "const": true
+            },
+            "reason": {
+              "type": "string"
             }
           },
           "required": [

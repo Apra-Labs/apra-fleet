@@ -559,7 +559,18 @@ export function createSprintController(deps = {}) {
             catch (err) { throw new ApiError(400, err.message, 'decisionNotify'); }
             decisionNotify = typeof body.decisionNotify === 'string' ? body.decisionNotify : JSON.stringify(body.decisionNotify);
         }
-        return { issue: issueIds.join(','), issueIds, branch, base, members, skipRegression, decisionNotify };
+        // kbDemotionLoop (optional): the reviewer KB demotion loop switch, "on"
+        // (the engine default) or "off" -- the same values as the CLI's
+        // --kb-demotion-loop. Anything else is a 400 before any spawn; omitted
+        // means the child is launched without the flag (engine default).
+        let kbDemotionLoop;
+        if (body.kbDemotionLoop !== undefined) {
+            if (body.kbDemotionLoop !== 'on' && body.kbDemotionLoop !== 'off') {
+                throw new ApiError(400, `kbDemotionLoop must be "on" or "off", got ${JSON.stringify(body.kbDemotionLoop)}`, 'kbDemotionLoop');
+            }
+            kbDemotionLoop = body.kbDemotionLoop;
+        }
+        return { issue: issueIds.join(','), issueIds, branch, base, members, skipRegression, kbDemotionLoop, decisionNotify };
     }
 
     // -- GET /api/members : list_members + live-reservation overlay -----------
@@ -600,7 +611,7 @@ export function createSprintController(deps = {}) {
 
     // -- POST /api/sprints : validated, goal-forwarding launch ----------------
     async function launch(body = {}) {
-        const { issue, issueIds, branch, base, members, skipRegression, decisionNotify } = validateLaunchRequest(body);
+        const { issue, issueIds, branch, base, members, skipRegression, kbDemotionLoop, decisionNotify } = validateLaunchRequest(body);
         // An '@file' roleMap is a CLI-only convenience: over HTTP it would make
         // the supervisor read an arbitrary server-side path named by the request
         // body, and the alias warning could not be computed from it. Reject it.
@@ -777,6 +788,7 @@ export function createSprintController(deps = {}) {
             budget: body.budget,
             runId: sprintId,
             skipRegression,
+            kbDemotionLoop,
             decisionNotify,
         };
         let spawned;

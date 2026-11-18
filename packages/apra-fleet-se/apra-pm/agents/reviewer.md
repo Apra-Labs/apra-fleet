@@ -193,13 +193,18 @@ foreground command, treat it as if you backgrounded it yourself; do not chain sh
 sleeps to route around the sleep-block. Do not return a verdict while the suite is
 still running -- a backgrounded run with no reported outcome is not a completed step.
 
-## Step 5 -- Promote or discard knowledge you verified
+## Step 5 -- Promote, discard, reject, or demote knowledge you verified
 
-This step covers judgements on existing INFERRED candidates: promote one to CONFIRMED,
-discard one you showed to be wrong, or reject one that is true but not worth keeping. Fresh findings go in `kb_captures` (Step 0,
-item 4) -- the fields are independent and can all be returned. You are the only role
-permitted to mint CONFIRMED. **You do not call any `kb_*` tool for this** -- the
-orchestrator hands you the candidates and executes your decisions.
+This step covers judgements on existing candidates: promote an INFERRED one to
+CONFIRMED, discard an INFERRED one you showed to be wrong, reject an INFERRED one that
+is true but not worth keeping, or demote a CONFIRMED one back to INFERRED. Fresh
+findings go in `kb_captures` (Step 0, item 4) -- the fields are independent and can all
+be returned. You are the only role permitted to mint CONFIRMED or to demote it. **You do
+not call any `kb_*` tool for any of promotion, discard, reject or demotion** -- for all
+four, you RETURN your judgement in the named field of your structured output
+(`kb_promotions`, `kb_discards`, `kb_rejects`, `kb_demotions`), and the orchestrator
+reads that output and executes your judgement on your behalf; you never touch the KB
+directly.
 
 1. Read the **KNOWLEDGE BANK -- promotion candidates** block in your dispatch prompt. It
    lists every INFERRED entry for the repo under review as `{id, title, summary,
@@ -226,9 +231,27 @@ orchestrator hands you the candidates and executes your decisions.
    several claims. Return it in the `kb_rejects` field as `[{id, reason}]` (minimum 20
    characters, saying which rubric rule it fails). The orchestrator retires it with
    your reason. Use `kb_discards` only for WRONG entries.
-7. An id appears in at most one of `kb_promotions`, `kb_discards` and `kb_rejects` --
-   the orchestrator refuses duplicates. `kb_discards: []` and `kb_rejects: []` are valid,
-   common answers.
+7. **Demote** a CONFIRMED entry when re-checking it during THIS review shows the claim
+   does not hold -- whether you are now less certain of it or have shown it wrong, it is
+   one judgement and one route. Read the **KNOWLEDGE BANK -- demotion candidates** block
+   in your dispatch prompt (if absent, there is nothing to demote: return
+   `kb_demotions: []`). A drifted or removed basis (the cited code changed or vanished)
+   is NOT a demote case -- the freshness sweep and the bible basis predicate already
+   handle that without you. Discarding an unconfirmed (INFERRED) capture you showed wrong
+   is `kb_discards` above, never a demotion, since demotion only ever applies to an
+   already-CONFIRMED entry. Return demotions in the `kb_demotions` field as
+   `[{id, reason, evidence_files}]`: the same reason bar (minimum 20 characters, stating
+   what you re-checked this review that the claim does not hold up against), and
+   `evidence_files` naming the files you re-checked -- at least one, each a real file in
+   the repo. A demotion without one is refused. Demoting nothing is a valid, common answer: `kb_demotions: []`.
+   A team can turn the demotion loop off (a sprint launch setting); then no
+   demotion candidates block appears and any `kb_demotions` you return are dropped.
+   Re-promotion limit: a demoted entry returns to INFERRED, but the promotion window is
+   entries whose `created_at` falls inside the current sprint, so an entry created in an
+   earlier sprint that gets demoted is never re-offered for promotion by the engine.
+8. An id appears in at most one of `kb_promotions`, `kb_discards`, `kb_rejects` and
+   `kb_demotions` -- the orchestrator refuses it in every list it appears in.
+   `kb_discards: []` and `kb_rejects: []` are valid, common answers.
 
 Hard limits:
 
@@ -242,13 +265,13 @@ Hard limits:
 - **User-directives are off limits.** Activation is human-only; the orchestrator filters
   them from your candidate list. If one appears anyway, leave it alone.
 - **Never invent an id.** Only ids from the candidate block in THIS dispatch are
-  promotable or discardable. The orchestrator refuses any other id, so an id from
-  anywhere else -- including one you remember from an earlier round -- is dropped
+  promotable, discardable or demotable. The orchestrator refuses any other id, so an id
+  from anywhere else -- including one you remember from an earlier round -- is dropped
   and logged, never applied.
 
-Promotion and discard are KB decisions, not beads mutations -- they do not conflict with
-the "never mutate beads" rule below. Report what you promoted or discarded in `notes` as
-well.
+Promotion, discard and demotion are KB decisions, not beads mutations -- they do not
+conflict with the "never mutate beads" rule below. Report what you promoted, discarded
+or demoted in `notes` as well.
 
 ## Step 6 -- Verdict
 
@@ -339,6 +362,9 @@ placeholder):
   "kb_rejects": [
     { "id": "kb-0063", "reason": "true but restates the diff: it only says what refreshToken() does (rubric: NOT KB)" }
   ],
+  "kb_demotions": [
+    { "id": "kb-0033", "reason": "re-ran the reopen test this entry cites and it now fails", "evidence_files": ["test/reopen.test.mjs"] }
+  ],
   "kb_captures": [
     {
       "type": "knowledge",
@@ -353,8 +379,9 @@ placeholder):
 }
 ```
 
-`kb_promotions`, `kb_discards`, `kb_rejects` and `kb_captures` are all optional -- omit
-them, or send `[]`, when you have nothing to promote, discard, reject or capture this round. `toolUse` is
+`kb_promotions`, `kb_discards`, `kb_rejects`, `kb_demotions` and `kb_captures` are all
+optional -- omit them, or send `[]`, when you have nothing to promote, discard, reject,
+demote or capture this round. `toolUse` is
 optional in the schema but expected: see Step 0.
 
 **Precedence**: If your dispatch prompt includes a JSON schema instruction, that schema is

@@ -163,6 +163,13 @@ const KB_RESPONSE_BODIES = {
     entries_updated: z.number(),
     entries_skipped: z.number(),
     entries_rejected: z.number(),
+    // Captures that failed for any reason other than a basis rejection (e.g.
+    // a remote KB server that is down): attempted, not stored, logged.
+    entries_failed: z.number(),
+    // Present only when nothing landed (captured + updated + skipped is 0)
+    // and entries_failed > 0: the first such failure's message (bounded), so
+    // a harvest whose every capture failed says why.
+    first_error: z.string().optional(),
   }),
   kb_promote: z.object({
     id: z.string(),
@@ -221,6 +228,10 @@ const KB_RESPONSE_BODIES = {
     // E-KB-MAINTAINER-REQUIRED, so no field here reports the trust check.
     bible_source: z.string().optional(),
     worktree_ignored: z.boolean().optional(),
+    // Present exactly under an http project KB: the KB server is the source
+    // of truth, the bible is neither read nor imported, every count is 0.
+    bible_skipped: z.literal(true).optional(),
+    reason: z.string().optional(),
   }),
   kb_resolve_contradiction: z.object({
     winnerId: z.string(),
@@ -261,7 +272,10 @@ const KB_RESPONSE_BODIES = {
   // present, possibly empty); backfilled counts existing bible entries that
   // gained source_file_hashes from this KB's stored basis (legacy backfill);
   // committed is true only when a local commit of the bible path was made
-  // (never pushed).
+  // (never pushed). Under the http KB provider the call is skipped, not
+  // failed: bible_skipped is the literal true, reason says why, and nothing was
+  // written or committed (every list empty, committed false; entry_count is the
+  // size of the existing parseable bible, else 0).
   // demoted names the ids admitted from demoted_ids: removed from entries and
   // tombstoned in the bible's demotions array. OPTIONAL so bibles/fixtures
   // recorded before tombstones existed still validate; the handler always emits
@@ -288,6 +302,8 @@ const KB_RESPONSE_BODIES = {
     // does not hold its merge (another writer replaced it): committed is then
     // false and this names what is missing. Additive; absent otherwise.
     not_committed_reason: z.string().optional(),
+    bible_skipped: z.literal(true).optional(),
+    reason: z.string().optional(),
   }),
   // F-9: kb_stats spreads ProviderStats (whose supported/reason/coverage are
   // only present for a provider that cannot compute stats at all) and adds
@@ -315,22 +331,16 @@ const KB_RESPONSE_BODIES = {
       cited_rate: z.number().nullable(),
     }).optional(),
   }),
-  // Applied form: the entry's resulting state (sqlite, or the remote HTTP KB
-  // server's answer, returned as is). Queued form: a remote HTTP KB was
-  // unreachable, so the feedback waits in the offline queue -- no state is
-  // reported and no confidence is invented (spec.md section 2.2).
-  kb_feedback: z.union([
-    z.object({
-      id: z.string(),
-      stale: z.boolean(),
-      flagged_for_review: z.boolean(),
-      confidence: z.string(),
-    }),
-    z.object({
-      id: z.string(),
-      queued: z.literal(true),
-    }),
-  ]),
+  // The entry's resulting state (sqlite, or the remote HTTP KB server's
+  // answer, returned as is). A remote HTTP KB that cannot be reached is a
+  // thrown E-KB-HTTP-UNREACHABLE (the feedback is queued first), never a
+  // response (spec.md section 2.2).
+  kb_feedback: z.object({
+    id: z.string(),
+    stale: z.boolean(),
+    flagged_for_review: z.boolean(),
+    confidence: z.string(),
+  }),
   // kb_usage: how many returned (pushed) and cited events were recorded
   // (per-list de-duplicated). supported false + reason only over a remote
   // HTTP provider, which records nothing.
