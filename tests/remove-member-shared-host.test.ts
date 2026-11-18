@@ -7,9 +7,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { makeTestAgent, makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 import { addAgent } from '../src/services/registry.js';
 import { getOsCommands } from '../src/os/index.js';
-import { unsetEnvSedExpr } from '../src/os/os-commands.js';
+import { unsetEnvSedExpr, FLEET_ENV_MARKER } from '../src/os/os-commands.js';
 import { getProvider } from '../src/providers/index.js';
 import type { Agent, SSHExecResult } from '../src/types.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { findRealBash } from './helpers/real-bash.js';
 
 const mockExecCommand = vi.fn<(cmd: string, timeout?: number) => Promise<SSHExecResult>>();
 const mockTestConnection = vi.fn();
@@ -221,5 +226,78 @@ describe('removeMember - removes only LLM credentials the fleet recorded deliver
 
     expect(sent().map(decode).some(c => c.includes('SetEnvironmentVariable'))).toBe(false);
     expect(result).toContain('No record that apra-fleet delivered LLM credentials');
+  });
+
+  // Single member with a record, on every command set: only the recorded
+  // file and var are targeted (POSIX: marked-only profile lines).
+  const RECORD = { files: ['~/.claude/.credentials.json'], envVars: ['CLAUDE_CODE_OAUTH_TOKEN'] };
+  const SETS: Array<[string, Partial<Agent>]> = [
+    ['linux', { os: 'linux' }],
+    ['macos', { os: 'macos' }],
+    ['windows-gitbash', { os: 'windows', shell: 'gitbash', workFolder: 'C:\\work' }],
+    ['windows-powershell', { os: 'windows', workFolder: 'C:\\work' }],
+  ];
+  for (const [label, fields] of SETS) {
+    it(`${label}: removes only the recorded file and var`, async () => {
+      const member = makeTestAgent({ friendlyName: `rec-${label}`, ...fields, llmAuthDelivered: RECORD });
+      addAgent(member);
+      const cmds = getOsCommands(member.os!, member.shell);
+
+      await removeMember({ member_id: member.id });
+
+      const all = sent().map(decode);
+      const expected = [cmds.credentialFileRemove(RECORD.files[0]), ...cmds.unsetEnv('CLAUDE_CODE_OAUTH_TOKEN')];
+      for (const c of expected) expect(sent()).toContain(c);
+      // Never a var the fleet did not record, never the remove-all form.
+      expect(all.some(c => c.includes('ANTHROPIC_API_KEY'))).toBe(false);
+      expect(all.some(c => c.includes(unsetEnvSedExpr('CLAUDE_CODE_OAUTH_TOKEN', { all: true })))).toBe(false);
+      if (label !== 'windows-powershell') {
+        expect(all.filter(c => c.includes('sed -i')).every(c => c.includes(FLEET_ENV_MARKER))).toBe(true);
+      }
+    });
+  }
+});
+
+// Round trip on real profile files in a temp HOME: a provision-style
+// (marked) line plus a hand-written unmarked export of the same NAME; after
+// the unset commands remove_member actually sent are run, only the unmarked
+// hand-written line remains.
+describe('removeMember - POSIX profile round trip in a sandboxed HOME', () => {
+  const bash = findRealBash();
+  if (!bash.path) console.warn(`remove-member round trip skipped -- ${bash.reason}`);
+
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+  });
+  afterEach(() => restoreRegistry());
+
+  it.skipIf(!bash.path)('only the hand-written export survives', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-rm-roundtrip-'));
+    try {
+      const linux = getOsCommands('linux');
+      const fleetLine = linux.persistEnvFileContent('CLAUDE_CODE_OAUTH_TOKEN', 'sk-ant-oat01-FLEETFAKE');
+      const handLine = 'export CLAUDE_CODE_OAUTH_TOKEN="sk-ant-oat01-OWNERFAKE"\n';
+      for (const f of ['.bashrc', '.profile']) fs.writeFileSync(path.join(home, f), `# owner\n${handLine}${fleetLine}`);
+      const member = makeTestAgent({ friendlyName: 'roundtrip', os: 'linux', llmAuthDelivered: { files: [], envVars: ['CLAUDE_CODE_OAUTH_TOKEN'] } });
+      addAgent(member);
+
+      await removeMember({ member_id: member.id });
+
+      const unsetCmds = sent().filter(c => c.startsWith('sed -i'));
+      expect(unsetCmds.length).toBeGreaterThan(0);
+      const h = home.split(path.sep).join('/');
+      for (const cmd of unsetCmds) {
+        const r = spawnSync(bash.path!, ['--noprofile', '--norc', '-c', cmd], { env: { ...process.env, HOME: h, USERPROFILE: home } });
+        expect(r.error).toBeUndefined();
+      }
+      for (const f of ['.bashrc', '.profile']) {
+        expect(fs.readFileSync(path.join(home, f), 'utf-8'), f).toBe(`# owner\n${handLine}`);
+      }
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
   });
 });
