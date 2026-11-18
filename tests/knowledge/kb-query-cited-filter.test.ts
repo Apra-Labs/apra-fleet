@@ -173,6 +173,15 @@ describe('SqliteProvider.capture stores source_files normalised', () => {
     expect(stored[b]).toEqual(['src/svc/b.ts']);
   });
 
+  it('context() and invalidate() find a normalised stored path by the form the caller captured it with', async () => {
+    const { id } = await provider.capture(makeInput({
+      type: 'context-cache', title: 'Service a context', source_files: ['src\\svc\\a.ts'], symbols: ['svcACtx'],
+    }));
+    const ctx = await provider.context(['src\\svc\\a.ts']);
+    expect(ctx[0].entry_id).toBe(id);
+    expect((await provider.invalidate(['./src/svc/a.ts'])).invalidated).toBe(1);
+  });
+
   it('an import re-keys its carried basis to the stored path form', async () => {
     const { id } = await provider.capture(makeInput({
       title: 'Service a imported with a carried basis', source_files: ['./src/svc/a.ts'], symbols: ['svcAImported'],
