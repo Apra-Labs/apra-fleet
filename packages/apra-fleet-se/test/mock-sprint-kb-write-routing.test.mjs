@@ -556,6 +556,64 @@ describe('mock sprint: KB writes route through the kb_maintainer', () => {
         });
     });
 
+    // Mock sprint m3: the final reviewer is offered a demotion candidate and
+    // returns a verdict with NEITHER kb_demotions nor kb_holds. The offered id
+    // is recorded as no-verdict; the sprint ends normally -- no stall, no
+    // second final-review dispatch, no demotion.
+    test('m3: a final reviewer that omits the offered ids from kb_demotions and kb_holds is recorded as no-verdict, without a stall', { timeout: scaledTimeout(240000) }, async () => {
+        await withScenarioMarkers('kb demotion no verdict', async () => {
+            const OFFERED_ID = 'kb-confirmed-left-unjudged';
+            const fleet = createFakeFleet();
+            fleet.seedEntry('maint', {
+                id: OFFERED_ID, type: 'knowledge', title: 'A CONFIRMED claim the final reviewer never judges',
+                summary: 'keyed by tenant id only', source_files: [CITED], confidence: 'CONFIRMED',
+                created_at: '2000-01-01T00:00:00.000Z',
+            });
+            let finalDispatches = 0;
+            let finalPrompt = null;
+            const doerHandler = async ({ opts, tempDir, runCmd }) => {
+                const ids = (opts.prompt.match(/Assigned bead ids \(comma-separated\):\s*(.+)/)?.[1] || '').split(',').map((s) => s.trim()).filter(Boolean);
+                for (const id of ids) await runCmd(`bd close ${id}`, tempDir);
+                fleet.published.add(CITED);
+                return { content: [{ text: JSON.stringify({ status: 'VERIFY', closedIds: ids, notes: 'done' }) }] };
+            };
+            const reviewerHandler = async () => ({ content: [{ text: JSON.stringify({ verdict: 'APPROVED', notes: 'Approved.', reopenIds: [], newTasks: [] }) }] });
+            const finalReviewHandler = async ({ opts }) => {
+                finalDispatches += 1;
+                finalPrompt = opts.prompt;
+                return { content: [{ text: JSON.stringify({ verdict: 'PASS', notes: 'All goal beads closed.' }) }] };
+            };
+            const observe = buildOnCommand(fleet);
+            const onCommand = (ev) => {
+                observe(ev);
+                if (ev.member_name !== 'maint') return undefined;
+                if (/^git diff --name-only \S+\.\.\.\S+\s*$/.test(ev.command)) return mockCmdResult(0, `${CITED}\n`, '');
+                return undefined;
+            };
+
+            const r = await runDevelopLoopScenario('kbnoverdict', {
+                members: ['maint', 'dev'],
+                roleMap: { doer: ['dev'], reviewer: ['dev'] },
+                beadsIdentity: { maint: { repoRemote: REPO_URL }, dev: { repoRemote: REPO_URL } },
+                taskSpecs: [{ title: 'Task: kb demotion no verdict' }],
+                doerHandler, reviewerHandler, finalReviewHandler,
+                maxCycles: 1,
+                callToolFactory: (executeCommand) => buildCallTool(fleet, executeCommand),
+                onCommand,
+            });
+
+            assert.equal(r.error, null, `sprint error: ${r.error && r.error.message}`);
+            assert.ok(finalPrompt && finalPrompt.includes(`"id": "${OFFERED_ID}"`), 'sanity: the candidate was offered to the final reviewer');
+            assert.equal(finalDispatches, 1, 'an unjudged offered id must never cause a second final-review dispatch');
+            assert.ok(r.logs.some((l) => l.includes('with no verdict') && l.includes(OFFERED_ID)),
+                `the omitted id must be recorded as no-verdict in the run log:\n${r.logs.filter((l) => l.includes('[kb-work]')).join('\n')}`);
+            const kbTools = fleet.events.filter((e) => e.type === 'kb').map((e) => e.tool);
+            assert.ok(!kbTools.includes('kb_demote'), 'no demotion for an id with no verdict');
+            const row = fleet.kbOf(memberUuid('maint')).find((e) => e.id === OFFERED_ID);
+            assert.equal(row.confidence, 'CONFIRMED', 'an id with no verdict is left as it is');
+        });
+    });
+
     test('a capture from a member whose work folder is not a repository is dropped with a WARN',{ timeout: scaledTimeout(240000) }, async () => {
         await withScenarioMarkers('kb write routing non-repository member', async () => {
             const fleet = createFakeFleet();

@@ -842,17 +842,17 @@ export const finalVerdict = {
         },
         // The Final Review's DEMOTE judgement, mirroring reviewer-output.json's
         // kb_demotions: same {id, reason, evidence_files} shape as kb_discards,
-        // executed by the same kbWork.apply path. Optional: demoting nothing is
-        // the common answer. CONFIRMED to INFERRED only, and only for ids
-        // actually offered to this review round -- the basis-unchanged case,
-        // not drifted-or-removed basis (freshness staling already handles
-        // that). The reason minLength is the engine's evidence bar (kb.mjs
-        // KB_MIN_PROMOTE_REASON, enforced in vetKbWork); kept as a literal so
-        // this schema module stays dependency-free, pinned equal by
-        // test/kb-review-judgements.test.mjs.
+        // executed by the same kbWork.apply path. Only ids actually offered to
+        // the final review (the only review offered demotion candidates), and
+        // only when the claim is false at the sprint branch HEAD -- including
+        // when this sprint made it false. Every offered id belongs in exactly
+        // one of kb_demotions and kb_holds. The reason minLength is the
+        // engine's evidence bar (kb.mjs KB_MIN_PROMOTE_REASON, enforced in
+        // vetKbWork); kept as a literal so this schema module stays
+        // dependency-free, pinned equal by test/kb-review-judgements.test.mjs.
         kb_demotions: {
             type: 'array',
-            description: 'CONFIRMED entries a re-check during this review shows do not hold -- whether you are now less certain of the claim or have shown it wrong -- demoted back to INFERRED. Not for a drifted or removed basis. Same evidence bar as kb_promotions and kb_discards. An id may appear in only one of kb_promotions, kb_discards and kb_demotions -- the engine refuses it in every list it appears in. The engine makes the demotion calls.',
+            description: 'Offered CONFIRMED entries whose claim is false at the sprint branch HEAD, including when this sprint made it false. A demotion is recorded on this branch and takes effect only if the branch merges. Every offered id must appear in exactly one of kb_demotions and kb_holds. Same evidence bar as kb_promotions and kb_discards. An id may appear in only one of kb_promotions, kb_discards and kb_demotions -- the engine refuses it in every list it appears in. The engine records the demotions.',
             items: {
                 type: 'object',
                 properties: {
@@ -874,6 +874,20 @@ export const finalVerdict = {
                     },
                 },
                 required: ['id', 'reason', 'evidence_files'],
+            },
+        },
+        // The other half of the final review's demotion verdict: offered ids
+        // whose claim still holds at the sprint branch HEAD. Every offered id
+        // belongs in exactly one of kb_demotions and kb_holds; an id the
+        // reviewer leaves out of both is recorded as no-verdict (never a
+        // stall or a re-dispatch). Optional, like every KB field.
+        kb_holds: {
+            type: 'array',
+            description: 'Ids of offered demotion candidates whose claim still holds at the sprint branch HEAD. Every offered id must appear in exactly one of kb_demotions and kb_holds; an id in both, or in neither, gets no verdict and is left as it is.',
+            items: {
+                type: 'string',
+                description: "The entry id, copied verbatim from the 'KNOWLEDGE BANK -- demotion candidates' block in your dispatch prompt. Never invent one.",
+                minLength: 1,
             },
         },
         // The Final Review's risk/value merge assessment, published near the

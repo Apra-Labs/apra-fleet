@@ -65,13 +65,16 @@ demote and why, exactly like `kb_promotions`/`kb_discards`.
    prompt-sized offer limit. The offered id set is recorded per repository and
    reset at the start of every call, so a failed read never leaves a stale
    offer.
-2. **Judge.** The reviewer returns `kb_demotions: [{id, reason,
-   evidence_files?}]`, structurally identical to `kb_promotions`/`kb_discards`.
-   An id is accepted only if it was in THIS dispatch's own offered set --
-   checked against the demotion offer specifically, never against the
-   promotion offer, since being offered for one is not being offered for the
-   other. An id named in more than one of `kb_promotions`, `kb_discards` and
-   `kb_demotions` is refused in every list it appears in.
+2. **Judge (final verdict).** An offered entry is demoted if and only if its
+   claim is false at the sprint branch HEAD -- including when the sprint
+   itself made it false. Every offered id belongs in exactly one of
+   `kb_demotions: [{id, reason, evidence_files}]` and `kb_holds: [id]`; an id
+   in both, or in neither, is recorded as no-verdict and left as it is (the
+   engine never stalls or re-dispatches for it). An id is accepted only if it
+   was in the final review's own demotion offer, never the promotion offer.
+   An id named in more than one of `kb_promotions`, `kb_discards` and
+   `kb_demotions` is refused in every list it appears in. `kb_demotions` from
+   a round review (which is offered nothing) are logged and dropped.
 3. **Apply and publish atomically.** Accepted demotions are applied via
    `kb_demote` on the maintainer (a member-scoped `memberCall`, never a
    direct DB write), and the resulting ids are passed as `kb_bible_commit`'s
