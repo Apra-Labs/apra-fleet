@@ -1,9 +1,9 @@
 {
   "version": 3,
   "provenance": {
-    "commit": "f9cb1ca7c3f0f03debb783f6ef40a261554b7b0b",
+    "commit": "5a171212f2e1eee116e7f58e2ea29648ffb8ff1f",
     "branch": "main",
-    "entry_count": 163
+    "entry_count": 166
   },
   "entries": [
     {
@@ -1182,6 +1182,34 @@
       }
     },
     {
+      "id": "56e5cbcb-3f29-4b6e-90a0-3842d8304e5e",
+      "type": "knowledge",
+      "title": "Parent-link guard restores only edges whose child became parentless",
+      "summary": "createBeadsScope keeps a per-run ledger of in-scope parent-child edges and restores, on each fresh full-DB snapshot, an edge whose child now has no parent and that the run did not remove. A child that moved to another parent is not restored, and a failed restore throws ParentLinkRestoreError.",
+      "symbols": [
+        "createParentLinkLedger",
+        "parseRunEdgeChange",
+        "ParentLinkRestoreError",
+        "createBeadsScope",
+        "decomposedParentIds",
+        "readyLeafBeads"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/parent-link-guard.mjs",
+        "packages/apra-fleet-se/fleet-sprint/beads-scope.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/test/parent-link-guard.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T23:19:13.109Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/beads-scope.mjs": "7796bde17217e8f5ac0b751a822b6fe5ba2d4d57",
+        "packages/apra-fleet-se/fleet-sprint/parent-link-guard.mjs": "4d3399ddea7f97c988342864a46f0d95be58dc66",
+        "packages/apra-fleet-se/fleet-sprint/runner.js": "76babaae82e6177a9a5a404ad7fcd6d6d692ca47",
+        "packages/apra-fleet-se/test/parent-link-guard.test.mjs": "cfaabdf2fbfca34dddc441f4a91f594c803ddc4a"
+      }
+    },
+    {
       "id": "57f15e8f-cee5-480a-9a64-f494f2ae0a1b",
       "type": "knowledge",
       "title": "PR comment builders return {id, body, ref} and take ref back as comment_ref",
@@ -1495,6 +1523,32 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:41.271Z"
+    },
+    {
+      "id": "75c4aab8-77f1-4f45-89aa-fe89a173ec6b",
+      "type": "knowledge",
+      "title": "finalVerdict merge_assessment is schema-lenient and normalized in final-review",
+      "summary": "contracts.mjs finalVerdict.merge_assessment has no type or required list, so any shape validates. phases/final-review.mjs runs normalizeMergeAssessment (pr-body.mjs) right after dispatch and stores the dropped field names on merge_assessment_incomplete, which publish-pr renders as an incomplete note.",
+      "symbols": [
+        "normalizeMergeAssessment",
+        "renderMergeAssessment",
+        "runFinalReviewPhase",
+        "finalVerdict"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/contracts.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/final-review.mjs",
+        "packages/apra-fleet-se/fleet-sprint/pr-body.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/publish-pr.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T23:19:14.352Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/contracts.mjs": "f8b532c7b98385d000d378be82413e71d8fc661b",
+        "packages/apra-fleet-se/fleet-sprint/phases/final-review.mjs": "9b26ca172f18c32d6517adadb51a511243b59bac",
+        "packages/apra-fleet-se/fleet-sprint/phases/publish-pr.mjs": "97cc74ad0ee28790b709bc097f835f4151e22625",
+        "packages/apra-fleet-se/fleet-sprint/pr-body.mjs": "7887f712324246e372980a0013adca07e41aacad"
+      }
     },
     {
       "id": "76754ef3-5ff3-4fb4-a7cf-d74504f5013b",
@@ -3259,6 +3313,33 @@
         "src/services/tool-registry.ts": "05e3d5e04b949b3bfefef7693c230e59da947f02",
         "src/tools/kb-setup.ts": "eaa0fe1fc385cafbf2c3f9b14c9e5b7159dc86fe",
         "tests/kb-tool-profile-e2e.test.ts": "949f75c916529d89cd7b80d5433042449935d31a"
+      }
+    },
+    {
+      "id": "f462f414-06c2-4536-b1f1-0e7befe878ab",
+      "type": "knowledge",
+      "title": "Prefixed Windows bd sync commands must be classified on the logical command",
+      "summary": "On Windows members bdSyncCommandFor prefixes bd sync commands with a GOMAXPROCS assignment. Any classifier keyed on /^bd/ must strip that prefix first via logicalBdCommand, or a D-pull will not invalidate the beads snapshot.",
+      "symbols": [
+        "logicalBdCommand",
+        "isBeadsMutatingCommand",
+        "checkFullDbFetchLog",
+        "runDoltStep",
+        "wrapCommand"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/bd-sync-command.mjs",
+        "packages/apra-fleet-se/fleet-sprint/beads-scope.mjs",
+        "packages/apra-fleet-se/fleet-sprint/full-db-fetch-guard.mjs",
+        "packages/apra-fleet-se/fleet-sprint/dolt-sync.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T23:19:13.671Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/bd-sync-command.mjs": "8a160be9655f41ebc29a2cf2a79836e813c88fcb",
+        "packages/apra-fleet-se/fleet-sprint/beads-scope.mjs": "7796bde17217e8f5ac0b751a822b6fe5ba2d4d57",
+        "packages/apra-fleet-se/fleet-sprint/dolt-sync.mjs": "3e38bd38f343152693250d65d57d26660f7311d5",
+        "packages/apra-fleet-se/fleet-sprint/full-db-fetch-guard.mjs": "c456986c6694b9d2df4894c72a769e22bf021e29"
       }
     },
     {
