@@ -3405,7 +3405,14 @@ async function runSprintCycle(context) {
     async function throwIfSetAsideStall({ where, cycle, openAtGoal = null, closedIds = null, runbooks = null, queueLateAnswers = false }) {
         const doctorBlockedIds = sprintState.doctorBlockedIds instanceof Map ? sprintState.doctorBlockedIds : new Map();
         const deploySetAside = sprintState.deploySetAside || null;
-        if (doctorBlockedIds.size === 0 && !deploySetAside) return false;
+        const permissionBlockedIds = sprintState.permissionScopeBlockedBeads instanceof Map ? sprintState.permissionScopeBlockedBeads : new Map();
+        // A bead deferred during the run (a plan-cap deferral, or one seen
+        // deferred at goal priority) is never dispatched, yet lane order and
+        // 'blocks' edges still hold its successors behind it -- so it can hold
+        // the run on its own, and the check must not be skipped then.
+        if (doctorBlockedIds.size === 0 && !deploySetAside && permissionBlockedIds.size === 0
+            && deferredEverIds.size === 0 && planCapDeferredEverIds.size === 0) return false;
+        let scopeAll = null;
         let open = openAtGoal;
         if (!open) {
             const [raw, parentIds] = await Promise.all([
@@ -3445,20 +3452,22 @@ async function runSprintCycle(context) {
         }
         // Set-aside v2: an open bead that is not set aside but can only run
         // after a prerequisite that cannot close in this run (set aside,
+        // publish blocked by a permission-scope push failure, deferred,
         // itself stuck, or -- for a bead waiting after a BLOCKED report --
-        // outside the scope) is stuck too. Computed only when some open bead
-        // is otherwise uncovered, from the same in-memory scope read.
+        // outside the scope) is stuck too, with a reason naming that
+        // prerequisite and why. Computed only when some open bead is
+        // otherwise uncovered, from the same in-memory scope read.
         let stuckIds = new Map();
-        if (doctorBlockedIds.size > 0 && open.some((b) => !doctorBlockedIds.has(b.id))) {
-            const scopeAll = await bdListScoped('');
+        if (open.some((b) => !doctorBlockedIds.has(b.id) && !permissionBlockedIds.has(b.id))) {
+            if (!scopeAll) scopeAll = await bdListScoped('');
             const allBeads = await fetchAllBeadsShared();
             stuckIds = stuckBehindSetAside({
-                scopeBeads: scopeAll, allBeads, doctorBlockedIds,
+                scopeBeads: scopeAll, allBeads, doctorBlockedIds, permissionBlockedIds,
                 waitingIds: sprintState.waitingIds instanceof Map ? sprintState.waitingIds : new Map(),
             });
         }
         const stall = evaluateSetAsideStall({
-            openIds: open.map((b) => b.id), integBoundIds, verifyBlockedIds, doctorBlockedIds, deploySetAside, stuckIds,
+            openIds: open.map((b) => b.id), integBoundIds, verifyBlockedIds, doctorBlockedIds, deploySetAside, stuckIds, permissionBlockedIds,
         });
         if (!stall) return false;
         if (decisionWait && decisionWait.hasPending()) {
@@ -3511,6 +3520,10 @@ async function runSprintCycle(context) {
     // text this set feeds -- it must not be possible for an id to fall out of
     // it because a later cycle happened to read a different status.
     const deferredEverIds = new Set();
+    // Every bead the Plan phase deferred per plan-cap exhaustion this run, at
+    // any priority: such a bead can hold an in-goal lane-mate behind it, so
+    // throwIfSetAsideStall must look for beads stuck behind it.
+    const planCapDeferredEverIds = new Set();
 
     // apra-fleet-66u.2: separate two different facts the stall-abort message
     // used to conflate -- "closed count did not increase across N cycles"
@@ -3672,6 +3685,7 @@ async function runSprintCycle(context) {
         });
         pendingRejectedNewTasks = planOutcome.pendingRejectedNewTasks;
         const { planCapDeferredIds, lastVerdict, planningRounds } = planOutcome;
+        for (const id of planCapDeferredIds) planCapDeferredEverIds.add(id);
 
         // =======================
         // 2. Execution Prep
@@ -3811,13 +3825,16 @@ async function runSprintCycle(context) {
             if (currentReadyAll.length === 0) break;
 
             // Start-of-round set-aside check: when every still-ready bead is set
-            // aside for this run (doer-BLOCKED or a dependent of one), stall now
+            // aside for this run (doer-BLOCKED or a dependent of one, or publish
+            // blocked by a permission-scope push failure), stall now
             // if nothing else open can progress; otherwise skip the remaining
             // rounds (nothing here is dispatchable) and go on to Cycle
             // Evaluation. Mixed rounds are passed through unchanged --
             // ./phases/develop.mjs excludes the set-aside beads itself.
-            const roundSetAside = sprintState.doctorBlockedIds instanceof Map ? sprintState.doctorBlockedIds : null;
-            if (roundSetAside && currentReadyAll.every((b) => roundSetAside.has(b.id))) {
+            const roundSetAside = sprintState.doctorBlockedIds instanceof Map ? sprintState.doctorBlockedIds : new Map();
+            const roundPublishBlocked = sprintState.permissionScopeBlockedBeads instanceof Map ? sprintState.permissionScopeBlockedBeads : new Map();
+            if ((roundSetAside.size > 0 || roundPublishBlocked.size > 0)
+                && currentReadyAll.every((b) => roundSetAside.has(b.id) || roundPublishBlocked.has(b.id))) {
                 // true: an operator answered a pending decision while the run
                 // was paused -- re-read the ready set (the released bead is
                 // in it again) and dispatch this round.

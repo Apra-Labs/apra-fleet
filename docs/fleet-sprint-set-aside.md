@@ -33,6 +33,16 @@ forever or burning cycles on it.
      stall error names every set-aside bead and `deploy` (blocker ids and
      reasons).
 
+   A bead held (by lane order or an open `blocks` prerequisite, transitively)
+   behind a bead that cannot close this run counts as stuck for this check.
+   "Cannot close this run" means set aside (doer BLOCKED, a dependent of one,
+   or awaiting a decision), publish blocked by a permission-scope push
+   failure, or deferred (status `deferred`, e.g. a plan-cap deferral). A
+   publish-blocked bead is itself counted as set aside. The stuck bead's
+   reason names that prerequisite and why, e.g.
+   `held on X (deferred), which cannot close in this run`. A bead whose
+   prerequisites can all still close is not stuck and keeps the run going.
+
    A parent whose children are all
    closed is not set aside: while Integration Test can still run (deploy.md
    and the playbook present, deploy not set aside), it keeps the run going

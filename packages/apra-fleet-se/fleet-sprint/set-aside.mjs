@@ -108,7 +108,8 @@ export function formatSetAsideItems(entries) {
 
 /**
  * The immediate-stall decision. Returns null unless EVERY open in-scope bead
- * at goal priority is set aside: in doctorBlockedIds, stuck behind a
+ * at goal priority is set aside: in doctorBlockedIds, publish blocked by a
+ * permission-scope push failure (permissionBlockedIds), stuck behind a
  * prerequisite that cannot close in this run (stuckIds), or -- while the deploy
  * is set aside -- bound to Integration Test (verify-routed, or blocked only by
  * verify-routed beads). With nothing open at all this returns null (that is
@@ -122,16 +123,20 @@ export function formatSetAsideItems(entries) {
  * @param {object|null} [opts.deploySetAside]
  * @param {Map<string, string>} [opts.stuckIds] open beads that are not set aside but wait on a
  *   prerequisite that cannot close in this run (stuckBehindSetAside), id -> reason
+ * @param {Map<string, string>} [opts.permissionBlockedIds] open beads whose publish was blocked by a
+ *   permission-scope push failure this run (sprintState.permissionScopeBlockedBeads), id -> error;
+ *   never re-dispatched this run, so they count as set aside here
  * @returns {null | { blockerIds: string[], blockerReasons: Record<string, string>, entries: ReturnType<typeof collectSetAsideEntries> }}
  */
-export function evaluateSetAsideStall({ openIds, integBoundIds = [], verifyBlockedIds = [], doctorBlockedIds = new Map(), deploySetAside = null, stuckIds = new Map() }) {
+export function evaluateSetAsideStall({ openIds, integBoundIds = [], verifyBlockedIds = [], doctorBlockedIds = new Map(), deploySetAside = null, stuckIds = new Map(), permissionBlockedIds = new Map() }) {
     const integBound = new Set(integBoundIds);
     const verifyBlocked = new Set(verifyBlockedIds);
     const candidates = [...new Set([...(openIds || []), ...integBound])];
     if (candidates.length === 0) return null;
     const blocked = doctorBlockedIds instanceof Map ? doctorBlockedIds : new Map();
     const stuck = stuckIds instanceof Map ? stuckIds : new Map();
-    const covered = (id) => blocked.has(id) || stuck.has(id)
+    const perm = permissionBlockedIds instanceof Map ? permissionBlockedIds : new Map();
+    const covered = (id) => blocked.has(id) || stuck.has(id) || perm.has(id)
         || (!!deploySetAside && (integBound.has(id) || verifyBlocked.has(id)));
     if (!candidates.every(covered)) return null;
 
@@ -140,6 +145,7 @@ export function evaluateSetAsideStall({ openIds, integBoundIds = [], verifyBlock
     for (const e of entries) blockerReasons[e.id] = `${e.reason} (first seen ${formatFirstSeen(e)})`;
     for (const id of candidates) {
         if (blockerReasons[id]) continue;
+        if (perm.has(id)) { blockerReasons[id] = `publish blocked by a permission-scope push failure (${perm.get(id)})`; continue; }
         if (stuck.has(id) && !integBound.has(id)) { blockerReasons[id] = stuck.get(id); continue; }
         blockerReasons[id] = integBound.has(id)
             ? `can only close through Integration Test, which cannot run while the deploy is set aside`
@@ -251,29 +257,64 @@ export function applyCarryOverVerdictGate(verdictResult, carryOver) {
 }
 
 /**
+ * Why each in-scope bead "cannot close in this run" at the root of the stuck
+ * accounting, id -> short reason naming why: set aside (doer BLOCKED, a
+ * dependent of one, or awaiting an operator decision), publish blocked by a
+ * permission-scope push failure, or deferred (status 'deferred', e.g. a
+ * plan-cap deferral -- the dispatcher never offers a deferred bead, yet lane
+ * order and 'blocks' edges still count it as an open prerequisite).
+ *
+ * Pure: no I/O.
+ * @param {{ scopeBeads?: Array<object>, doctorBlockedIds?: Map<string, object>, permissionBlockedIds?: Map<string, string> }} opts
+ * @returns {Map<string, string>}
+ */
+export function cannotCloseThisRun({ scopeBeads = [], doctorBlockedIds = new Map(), permissionBlockedIds = new Map() }) {
+    const out = new Map();
+    const blocked = doctorBlockedIds instanceof Map ? doctorBlockedIds : new Map();
+    for (const [id, e] of blocked) {
+        const kind = e && e.kind;
+        out.set(String(id), kind === 'needs-decision' ? 'set aside, awaiting an operator decision'
+            : kind === 'dependent' ? `set aside, a dependent of ${(e && e.blockedBy) || 'a BLOCKED bead'}`
+                : 'set aside, reported BLOCKED');
+    }
+    const perm = permissionBlockedIds instanceof Map ? permissionBlockedIds : new Map();
+    for (const id of perm.keys()) {
+        if (!out.has(String(id))) out.set(String(id), 'publish blocked by a permission-scope push failure');
+    }
+    for (const b of Array.isArray(scopeBeads) ? scopeBeads : []) {
+        if (b && b.status === 'deferred' && !out.has(String(b.id))) out.set(String(b.id), 'deferred');
+    }
+    return out;
+}
+
+/**
  * Open beads that are not set aside but cannot run in this sprint because a
  * prerequisite of theirs cannot close: an unmet in-scope prerequisite (an
- * open 'blocks' dependency or an open lower-order lane-mate) that is set
- * aside or itself stuck, transitively; or, for a bead that is WAITING after a
- * BLOCKED report, an open prerequisite outside the sprint scope. A bead
- * whose prerequisites can all still close is not stuck: it keeps the run
- * going.
+ * open 'blocks' dependency or an open lower-order lane-mate) that cannot
+ * close in this run (cannotCloseThisRun: set aside, publish blocked by a
+ * permission-scope push failure, or deferred) or is itself stuck,
+ * transitively; or, for a bead that is WAITING after a BLOCKED report, an
+ * open prerequisite outside the sprint scope. The reason names each such
+ * prerequisite and why it cannot close. A bead whose prerequisites can all
+ * still close is not stuck: it keeps the run going.
  *
  * @param {object} opts
  * @param {Array<object>} opts.scopeBeads every in-scope bead, any status
  * @param {Array<object>} [opts.allBeads] every bead, any status
  * @param {Map<string, object>} [opts.doctorBlockedIds]
  * @param {Map<string, object>} [opts.waitingIds]
+ * @param {Map<string, string>} [opts.permissionBlockedIds] sprintState.permissionScopeBlockedBeads
  * @returns {Map<string, string>} stuck id -> reason
  */
-export function stuckBehindSetAside({ scopeBeads, allBeads = [], doctorBlockedIds = new Map(), waitingIds = new Map() }) {
-    const blocked = doctorBlockedIds instanceof Map ? doctorBlockedIds : new Map();
+export function stuckBehindSetAside({ scopeBeads, allBeads = [], doctorBlockedIds = new Map(), waitingIds = new Map(), permissionBlockedIds = new Map() }) {
     const waiting = waitingIds instanceof Map ? waitingIds : new Map();
+    const roots = cannotCloseThisRun({ scopeBeads, doctorBlockedIds, permissionBlockedIds });
     const out = new Map();
-    if (blocked.size === 0 && waiting.size === 0) return out;
+    if (roots.size === 0 && waiting.size === 0) return out;
     const open = (Array.isArray(scopeBeads) ? scopeBeads : [])
-        .filter((b) => b && b.status !== 'closed' && !blocked.has(String(b.id)));
+        .filter((b) => b && b.status !== 'closed' && !roots.has(String(b.id)));
     const pre = new Map(open.map((b) => [String(b.id), unmetPrerequisites(b, { scopeBeads, allBeads })]));
+    const why = (x) => (roots.has(x) ? roots.get(x) : 'itself held behind a bead that cannot close in this run');
     let changed = true;
     while (changed) {
         changed = false;
@@ -281,9 +322,9 @@ export function stuckBehindSetAside({ scopeBeads, allBeads = [], doctorBlockedId
             const id = String(b.id);
             if (out.has(id)) continue;
             const p = pre.get(id);
-            const stuckOn = p.inScope.filter((x) => blocked.has(x) || out.has(x));
+            const stuckOn = p.inScope.filter((x) => roots.has(x) || out.has(x));
             if (stuckOn.length > 0) {
-                out.set(id, `${waiting.has(id) ? 'waiting' : 'held'} on ${stuckOn.join(', ')}, which cannot close in this run (set aside, or itself waiting on a set-aside bead)`);
+                out.set(id, `${waiting.has(id) ? 'waiting' : 'held'} on ${stuckOn.map((x) => `${x} (${why(x)})`).join(', ')}, which cannot close in this run`);
                 changed = true;
             } else if (waiting.has(id) && p.outOfScope.length > 0) {
                 out.set(id, `waiting on ${p.outOfScope.join(', ')}, outside this sprint's scope, which cannot close in this run`);
