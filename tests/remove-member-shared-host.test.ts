@@ -7,6 +7,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { makeTestAgent, makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 import { addAgent } from '../src/services/registry.js';
 import { getOsCommands } from '../src/os/index.js';
+import { unsetEnvSedExpr } from '../src/os/os-commands.js';
 import { getProvider } from '../src/providers/index.js';
 import type { Agent, SSHExecResult } from '../src/types.js';
 
@@ -94,6 +95,28 @@ describe('removeMember - host+user sharer leaves credentials in place', () => {
     for (const cmd of credentialCommands(member)) expect(sent()).toContain(cmd);
     expect(mockRevokeGithub).toHaveBeenCalledOnce();
     expect(result).not.toContain('left in place');
+  });
+
+  it('POSIX member: unsets with the marked-only form and notes that unmarked exports may remain', async () => {
+    const member = makeTestAgent({ friendlyName: 'posix-solo', os: 'linux' });
+    addAgent(member);
+
+    const result = await removeMember({ member_id: member.id });
+
+    const markedOnly = `sed -i '${unsetEnvSedExpr('ANTHROPIC_API_KEY')}' ~/.bashrc 2>/dev/null || true`;
+    expect(sent()).toContain(markedOnly);
+    expect(sent().some(c => c.includes(unsetEnvSedExpr('ANTHROPIC_API_KEY', { all: true })))).toBe(false);
+    expect(result).toContain('unmarked export line');
+    expect(result).toContain('ANTHROPIC_API_KEY');
+  });
+
+  it('Windows PowerShell member: no unmarked-export note (User env vars carry no marker)', async () => {
+    const member = makeTestAgent({ friendlyName: 'ps-solo', os: 'windows', workFolder: 'C:\\work' });
+    addAgent(member);
+
+    const result = await removeMember({ member_id: member.id });
+
+    expect(result).not.toContain('unmarked export line');
   });
 
   it('treats localhost and 127.0.0.1 as the same host', async () => {

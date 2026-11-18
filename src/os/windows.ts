@@ -1,7 +1,7 @@
 import { defaultWindowsPidWrapper } from './windows-wrapper.js';
 export { defaultWindowsPidWrapper as pidWrapWindows };
 ﻿import { execFileSync } from 'node:child_process';
-import type { OsCommands, ProviderAdapter, PromptOptions } from './os-commands.js';
+import type { OsCommands, ProviderAdapter, PromptOptions, UnsetEnvOptions } from './os-commands.js';
 import { escapeWindowsArg, sanitizeSessionId, GIT_LS_REMOTE_OK_MARKER } from './os-commands.js';
 import { escapeBatchMetachars, escapePowerShellArgInner } from '../utils/shell-escape.js';
 import { boundChildEnv, describeBoundedEnv } from './child-env-bound.js';
@@ -352,7 +352,9 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
     return `$f = ${q}; try { $v = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(([IO.File]::ReadAllText($f)).Trim())); [Environment]::SetEnvironmentVariable('${name}', $v, 'User') } catch { [Console]::Error.WriteLine('apra-fleet: could not apply the staged env file'); exit 1 } finally { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue }`;
   }
 
-  unsetEnv(name: string): string[] {
+  // A User env var carries no marker: `opts.all` changes nothing here, the
+  // caller decides from its own delivery record whether to unset at all.
+  unsetEnv(name: string, _opts?: UnsetEnvOptions): string[] {
     if (!/^[A-Z_][A-Z0-9_]*$/i.test(name)) throw new Error('Invalid env var name: ' + name);
     return [`[Environment]::SetEnvironmentVariable('${name}', $null, 'User')`];
   }

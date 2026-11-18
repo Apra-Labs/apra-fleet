@@ -13,6 +13,12 @@ import { getProvider } from '../src/providers/index.js';
 import { LinuxCommands } from '../src/os/linux.js';
 import { WindowsCommands } from '../src/os/windows.js';
 import type { SSHExecResult } from '../src/types.js';
+import { FLEET_ENV_MARKER, unsetEnvSedExpr } from '../src/os/os-commands.js';
+import { findRealBash } from './helpers/real-bash.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 
 // Fake credentials only -- never a real token.
 const FAKE_OAUTH = 'sk-ant-oat01-FAKE';
@@ -188,7 +194,7 @@ describe('provisionAuth credential kinds', () => {
     expect(cmds).toContain(`sed -i '/export ANTHROPIC_API_KEY=/d' ~/.profile 2>/dev/null || true`);
     // Persisted via a staged profile line and a path-only command, never inline.
     const persist = stagedFiles.find(f => f.path.includes('.apra-fleet-persist-'))!;
-    expect(persist.content).toBe(`export CLAUDE_CODE_OAUTH_TOKEN="${FAKE_OAUTH}"\n`);
+    expect(persist.content).toBe(`export CLAUDE_CODE_OAUTH_TOKEN="${FAKE_OAUTH}" # apra-fleet-managed\n`);
     expect(cmds.some(c => c.includes(`cat '${persist.path}' >> ~/.bashrc`))).toBe(true);
     expect(stagedFiles.some(f => f.content.includes('export ANTHROPIC_API_KEY='))).toBe(false);
     expect(cmds.some(c => c.includes(FAKE_OAUTH))).toBe(false);
@@ -366,5 +372,92 @@ describe('provisionAuth credential kinds', () => {
     const { structuredContent } = await provisionAuth({ member_id: member.id, api_key: FAKE_OAUTH });
     expect(structuredContent.reason).toBe('skipped_local_member');
     expect(mockExecCommand).not.toHaveBeenCalled();
+  });
+});
+
+// Provisioning is an explicit delivery/replacement of the var: its unset
+// calls remove EVERY export line for the name (marked or not), unlike
+// remove_member, which removes only fleet-marked lines.
+describe('provisionAuth profile cleanup removes every export line for the name', () => {
+  const allForm = (name: string, f: string) => `sed -i '${unsetEnvSedExpr(name, { all: true })}' ~/${f} 2>/dev/null || true`;
+  const markedForm = (name: string) => unsetEnvSedExpr(name);
+
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    stagedFiles.length = 0;
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValue(ok());
+  });
+  afterEach(() => restoreRegistry());
+
+  it('force_oauth_copy clears env credentials with the remove-all form', async () => {
+    const member = makeTestAgent({ friendlyName: 'force-all', os: 'linux' });
+    addAgent(member);
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue('{"claudeAiOauth":{"accessToken":"sk-ant-oat01-FAKE"}}');
+
+    await provisionAuth({ member_id: member.id, force_oauth_copy: true });
+
+    const cmds = cmdsSent();
+    for (const name of ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN']) {
+      for (const f of ['.bashrc', '.profile']) expect(cmds).toContain(allForm(name, f));
+      expect(cmds.some(c => c.includes(markedForm(name)))).toBe(false);
+    }
+  });
+
+  it('api_key clears the other kind with the remove-all form; the persist command replaces every line of the delivered name', async () => {
+    const member = makeTestAgent({ friendlyName: 'api-all', os: 'linux' });
+    addAgent(member);
+
+    await provisionAuth({ member_id: member.id, api_key: FAKE_OAUTH });
+
+    const cmds = cmdsSent();
+    const persistIdx = cmds.findIndex(c => c.includes('.apra-fleet-persist-'));
+    for (const f of ['.bashrc', '.profile']) {
+      const idx = cmds.indexOf(allForm('ANTHROPIC_API_KEY', f));
+      expect(idx).toBeGreaterThanOrEqual(0);
+      expect(idx).toBeLessThan(persistIdx);
+      expect(cmds[persistIdx]).toContain(`sed -i '${unsetEnvSedExpr('CLAUDE_CODE_OAUTH_TOKEN', { all: true })}' ~/${f}`);
+    }
+    for (const name of ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN']) {
+      expect(cmds.some(c => c.includes(markedForm(name)))).toBe(false);
+    }
+  });
+
+  // Rotation: a legacy unmarked export of the delivered name must not survive
+  // next to the new marked line. Runs the exact command sequence provisionAuth
+  // sent, in bash, against profiles in a temp HOME.
+  const bash = findRealBash();
+  it.skipIf(!bash.path)('rotation over a legacy unmarked export leaves exactly one marked line', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-rotation-'));
+    try {
+      const legacy = 'export CLAUDE_CODE_OAUTH_TOKEN="sk-ant-oat01-OLDFAKE"';
+      for (const f of ['.bashrc', '.profile']) fs.writeFileSync(path.join(home, f), `# owner\n${legacy}\nexport KEEP=1\n`);
+      const member = makeTestAgent({ friendlyName: 'rotate', os: 'linux' });
+      addAgent(member);
+
+      await provisionAuth({ member_id: member.id, api_key: FAKE_OAUTH });
+
+      const persist = stagedFiles.find(f => f.path.includes('.apra-fleet-persist-'))!;
+      const realStaged = path.join(home, 'staged-persist').split(path.sep).join('/');
+      fs.writeFileSync(realStaged, persist.content);
+      const profileCmds = cmdsSent()
+        .filter(c => c.startsWith('sed -i ') || c.includes(persist.path))
+        .map(c => c.split(persist.path).join(realStaged));
+      expect(profileCmds.some(c => c.includes(realStaged))).toBe(true);
+      const h = home.split(path.sep).join('/');
+      for (const cmd of profileCmds) {
+        spawnSync(bash.path!, ['--noprofile', '--norc', '-c', cmd], { env: { ...process.env, HOME: h, USERPROFILE: home } });
+      }
+
+      for (const f of ['.bashrc', '.profile']) {
+        const lines = fs.readFileSync(path.join(home, f), 'utf-8').split('\n').filter(l => l.includes('export CLAUDE_CODE_OAUTH_TOKEN='));
+        expect(lines, f).toEqual([`export CLAUDE_CODE_OAUTH_TOKEN="${FAKE_OAUTH}" # ${FLEET_ENV_MARKER}`]);
+        expect(fs.readFileSync(path.join(home, f), 'utf-8')).toContain('export KEEP=1');
+      }
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
   });
 });

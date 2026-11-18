@@ -21,15 +21,10 @@ export class MacOSCommands extends LinuxCommands {
     return ['~/.bashrc', '~/.zshrc', '~/.zshenv', '~/.profile'];
   }
 
-  override unsetEnv(name: string): string[] {
-    if (!/^[A-Z_][A-Z0-9_]*$/i.test(name)) throw new Error('Invalid env var name: ' + name);
-    return [
-      `sed -i '' '/export ${name}=/d' ~/.bashrc 2>/dev/null || true`,
-      `sed -i '' '/export ${name}=/d' ~/.zshrc 2>/dev/null || true`,
-      `sed -i '' '/export ${name}=/d' ~/.zshenv 2>/dev/null || true`,
-      `sed -i '' '/export ${name}=/d' ~/.profile 2>/dev/null || true`,
-      `unset ${name}`,
-    ];
+  // BSD sed: -i takes a (here empty) backup-suffix argument. unsetEnv and
+  // persistEnvFromFile (LinuxCommands) use it on every envProfileFiles() entry.
+  protected override sedInPlace(): string {
+    return "sed -i ''";
   }
 
   override parseMemory(stdout: string): string {

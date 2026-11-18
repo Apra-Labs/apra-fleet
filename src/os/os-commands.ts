@@ -9,6 +9,35 @@ export type { ProviderAdapter };
 export const GIT_LS_REMOTE_OK_MARKER = 'FLEET_GIT_LS_REMOTE_OK';
 
 /**
+ * Trailing comment on every shell-profile export line the fleet writes
+ * (POSIX profiles: linux, macOS, Windows Git Bash). It tells a fleet-written
+ * `export NAME=...` line apart from one the machine's owner wrote by hand.
+ */
+export const FLEET_ENV_MARKER = 'apra-fleet-managed';
+
+export interface UnsetEnvOptions {
+  /**
+   * Remove EVERY `export NAME=` profile line, marked or not. Only for an
+   * explicit act of delivering/replacing that variable (provision_llm_auth).
+   * Default (false): remove only the lines the fleet marked as its own.
+   */
+  all?: boolean;
+}
+
+/**
+ * The sed address+command unsetEnv uses on POSIX profiles. POSIX bracket
+ * classes only (no \s, \+, \?) so GNU sed and BSD sed accept the same text.
+ * The marker is not anchored with `$`: a profile an editor turned CRLF would
+ * otherwise never match.
+ */
+export function unsetEnvSedExpr(name: string, opts?: UnsetEnvOptions): string {
+  if (!/^[A-Z_][A-Z0-9_]*$/i.test(name)) throw new Error('Invalid env var name: ' + name);
+  return opts?.all
+    ? `/export ${name}=/d`
+    : `/^[[:space:]]*export ${name}=.*# ${FLEET_ENV_MARKER}/d`;
+}
+
+/**
  * apra-fleet-lmtg.2: fork descriptor threaded through buildAgentPromptCommand
  * so both POSIX and Windows builders can emit a provider's fork invocation
  * (source-seeded, new-session-id output) instead of the ordinary
@@ -94,7 +123,15 @@ export interface OsCommands {
    */
   persistEnvFileContent(name: string, value: string): string;
   persistEnvFromFile(name: string, filePath: string): string;
-  unsetEnv(name: string): string[];
+  /**
+   * Commands that remove a persisted env var. POSIX shells: by default only
+   * the profile lines carrying FLEET_ENV_MARKER (a hand-written export of the
+   * same NAME is left in place); `{ all: true }` removes every
+   * `export NAME=` line. Windows PowerShell persists to a User env var, which
+   * cannot carry a marker -- `all` has no effect there and the caller must
+   * decide (from its own delivery record) whether to unset at all.
+   */
+  unsetEnv(name: string, opts?: UnsetEnvOptions): string[];
 
   // --- Git credential helper ---
   gitCredentialHelperWrite(host: string, username: string, token: string, label?: string, scopeUrl?: string): string;

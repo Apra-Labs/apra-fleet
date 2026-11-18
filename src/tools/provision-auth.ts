@@ -398,7 +398,9 @@ async function provisionOAuthCopy(agent: Agent, provider: ProviderAdapter, clear
   const envKinds = clearEnvCredentials ? (provider.authEnvVarNames?.() ?? []) : [];
   const varsToUnset = [...new Set([...(provider.oauthEnvVarsToUnset() ?? []), ...envKinds])];
   for (const envVar of varsToUnset) {
-    const unsetCmds = cmds.unsetEnv(envVar);
+    // Explicit credential replacement: every export line for the name goes,
+    // fleet-marked or not.
+    const unsetCmds = cmds.unsetEnv(envVar, { all: true });
     for (const cmd of unsetCmds) {
       // Best effort, fire and forget
       await strategy.execCommand(cmd, 15000).catch(() => {});
@@ -479,11 +481,15 @@ async function provisionApiKey(agent: Agent, apiKey: string, provider: ProviderA
   };
 
   // 2. Clear the other credential kind first so the CLI cannot pick it up.
+  // Provisioning is an explicit replacement, so marked and unmarked lines
+  // alike are removed.
   for (const other of otherKinds) {
-    for (const cmd of cmds.unsetEnv(other)) await run(cmd);
+    for (const cmd of cmds.unsetEnv(other, { all: true })) await run(cmd);
   }
 
-  // 3. Persist (path-only command; the staged file is deleted by it).
+  // 3. Persist (path-only command; the staged file is deleted by it). On a
+  // POSIX profile the same command first drops every existing export line
+  // for the name, so the profile ends with exactly one (marked) line.
   try {
     const result = await strategy.execCommand(cmds.persistEnvFromFile(envVarName, persistFile), 15000);
     persisted = result.code === 0;

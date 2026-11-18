@@ -8,7 +8,8 @@ import { getOsCommands } from '../os/index.js';
 import { getMemberHomeDir } from '../services/member-home.js';
 import { authorizedKeyMatch } from '../os/ssh-key-match.js';
 import { getProvider } from '../providers/index.js';
-import { getAgentOS, getAgentShell } from '../utils/agent-helpers.js';
+import { getAgentOS, getAgentShell, isPosixShellMember } from '../utils/agent-helpers.js';
+import { FLEET_ENV_MARKER } from '../os/os-commands.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { removeKnownHost } from '../services/known-hosts.js';
 import { writeStatusline, readMemberStatus } from '../services/statusline.js';
@@ -219,11 +220,18 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
           await strategy.execCommand(cmds.credentialFileRemove(file.remotePath), 10000).catch(() => {});
         }
 
-        // Remove the provider's auth env vars (every credential kind) from shell profiles
-        for (const envVar of hostUserSharer ? [] : authVars) {
+        // Remove the provider's auth env vars (every credential kind) from
+        // shell profiles. Only fleet-marked profile lines are removed: a line
+        // the owner wrote by hand (or one an older release wrote unmarked)
+        // stays, and the result says so.
+        const unsetVars = hostUserSharer ? [] : authVars;
+        for (const envVar of unsetVars) {
           for (const cmd of cmds.unsetEnv(envVar)) {
             await strategy.execCommand(cmd, 10000).catch(() => {});
           }
+        }
+        if (unsetVars.length > 0 && isPosixShellMember(agent)) {
+          notes.push(`Only fleet-marked export lines (# ${FLEET_ENV_MARKER}) for ${unsetVars.join(', ')} were removed from the member's shell profiles; an unmarked export line for these names (written by hand, or by an older apra-fleet release) may remain -- check the profiles and remove it by hand if it is no longer wanted`);
         }
 
         // VCS auth revoke: remove git credential helper if a VCS provider is configured.

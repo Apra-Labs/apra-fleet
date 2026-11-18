@@ -226,8 +226,8 @@ describe('OsCommands via getOsCommands', () => {
 
   describe('env commands', () => {
     it('persists an env var from a staged file; the command carries only the path', () => {
-      // Profile line keeps the historical shape unsetEnv's sed matches.
-      expect(linux.persistEnvFileContent('MY_VAR', 'value')).toBe('export MY_VAR="value"\n');
+      // Profile line carries the fleet marker the default unsetEnv matches.
+      expect(linux.persistEnvFileContent('MY_VAR', 'value')).toBe('export MY_VAR="value" # apra-fleet-managed\n');
       const linuxCmd = linux.persistEnvFromFile('MY_VAR', '/home/u/.apra-fleet-persist-1');
       expect(linuxCmd).toContain(`cat '/home/u/.apra-fleet-persist-1' >> ~/.bashrc`);
       expect(linuxCmd).toContain(`cat '/home/u/.apra-fleet-persist-1' >> ~/.profile`);
