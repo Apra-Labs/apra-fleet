@@ -69,7 +69,7 @@ import { CommandError } from '@apralabs/apra-fleet-workflow';
 import { ApraFleet } from '@apralabs/apra-fleet-client';
 import { capabilities as vcsCapabilities } from '../vcs-module.mjs';
 import { raiseVcsPrForMember } from '../vcs-auth.mjs';
-import { buildSprintPrBody, buildSprintPrTitle } from '../pr-body.mjs';
+import { buildSprintPrBody, buildSprintPrTitle, buildKbChangesSection } from '../pr-body.mjs';
 
 /**
  * Runs the Publish PR phase: push the sprint branch, then either raise a PR on
@@ -108,6 +108,8 @@ export async function runPublishPrPhase({
     // The run's wait records (../set-aside.mjs collectWaitEntries), rendered
     // as one "Waited this run" line; omitted when empty.
     waited = [],
+    // kbWork.kbChangesReport() -- the final review's demotion outcome, or null.
+    kbChanges = null,
 }) {
     phase(`Publish PR C${finalCycleLabel}`);
     // The branch push is the LAST step of a sprint that has already done all of
@@ -265,6 +267,7 @@ export async function runPublishPrPhase({
         // with a pointer to them. The latest build is kept so the full notes
         // can always be written to the run log as well.
         let lastBody = null;
+        const kbChangesSection = buildKbChangesSection(kbChanges);
         const buildBody = (previousBody = '', limits = {}) => (lastBody = buildSprintPrBody({
             verdict: finalVerdictLabel,
             goal: validated.goal,
@@ -283,6 +286,7 @@ export async function runPublishPrPhase({
             setAside,
             waited,
             costAnalysis,
+            sections: kbChangesSection ? [kbChangesSection] : [],
             previousBody,
             ...(limits.descriptionMaxLength ? { maxLength: limits.descriptionMaxLength } : {}),
             ...(limits.commentMaxLength ? { commentMaxLength: limits.commentMaxLength } : {}),

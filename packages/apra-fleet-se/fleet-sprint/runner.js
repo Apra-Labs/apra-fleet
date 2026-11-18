@@ -4814,6 +4814,7 @@ async function runSprintCycle(context) {
         finalVerdictResult, costAnalysis,
         setAside: collectSetAsideEntries(sprintState),
         waited: collectWaitEntries(sprintState),
+        kbChanges: typeof kbWork.kbChangesReport === 'function' ? kbWork.kbChangesReport() : null,
     });
 
     // Final summary line: a skipped PR must not read as a clean success.

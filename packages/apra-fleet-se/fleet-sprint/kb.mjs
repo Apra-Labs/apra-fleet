@@ -671,6 +671,8 @@ export function createKbWorkClient(opts = {}) {
         if (!offeringRecord.has(repo)) offeringRecord.set(repo, { offered: new Set(), verdicts: new Map() });
         return offeringRecord.get(repo);
     };
+    // Extra per-offering detail the PR body reads: titles, demote reasons, ids that restore an earlier withdrawal.
+    const detailFor = (rec) => (rec.detail ||= { titles: new Map(), notes: new Map(), restorable: new Set() });
     /** repo -> tail of the serialized flush chain for that repository. */
     const flushChains = new Map();
     /** member name -> open dispatch count (nested brackets count once each). */
@@ -1460,7 +1462,12 @@ export function createKbWorkClient(opts = {}) {
         offeredDemotions.set(target.repo, new Set(offered.map((e) => e.id)));
         if (offered.length > 0) {
             const rec = recordFor(target.repo);
-            for (const e of offered) rec.offered.add(e.id);
+            const det = detailFor(rec);
+            for (const e of offered) {
+                rec.offered.add(e.id);
+                if (typeof e.title === 'string') det.titles.set(e.id, e.title);
+                if (e.withdrawn_on_branch) det.restorable.add(e.id);
+            }
             log(`[kb-work] demotion candidates offered to the final review for ${target.repo}: ${offered.length} id(s): ${offered.map((e) => e.id).join(', ')}`);
         }
         return offered;
@@ -1551,7 +1558,7 @@ export function createKbWorkClient(opts = {}) {
         // all; it still gets its line), and the same verdict in the record.
         const rec = recordFor(repo);
         const verdictOf = (id, v) => { rec.verdicts.set(id, v); log(`[kb-work] demotion verdict for ${id}: ${v}`); };
-        for (const d of accepted) verdictOf(d.id, 'demote');
+        for (const d of accepted) { verdictOf(d.id, 'demote'); detailFor(rec).notes.set(d.id, d.reason); }
         for (const id of held) verdictOf(id, 'holds');
         for (const id of noVerdict) {
             verdictOf(id, both.has(id) ? 'refused:in both kb_demotions and kb_holds' : 'none');
@@ -1806,6 +1813,35 @@ export function createKbWorkClient(opts = {}) {
             return [...demotionVerdicts].map(([repo, v]) => ({
                 repo, offered: [...v.offered], demoted: [...v.demoted], held: [...v.held], noVerdict: [...v.noVerdict],
             }));
+        },
+        /**
+         * What the final review's demotions mean for the PR body, per
+         * repository, merged: { withdrawn: [{id, title, note}], noVerdict: id[],
+         * kept: n, restored: n, refused: [{id, reason}], notPushed: id[] }, or
+         * null when nothing was ever offered. `notPushed` lists withdrawals
+         * still not in a pushed bible commit.
+         */
+        kbChangesReport() {
+            const out = { withdrawn: [], noVerdict: [], kept: 0, restored: 0, refused: [], notPushed: [] };
+            let any = false;
+            for (const [repo, rec] of offeringRecord) {
+                if (rec.offered.size === 0 && rec.verdicts.size === 0) continue;
+                any = true;
+                const det = detailFor(rec);
+                const pending = withdrawalsPending.get(repo);
+                for (const [id, v] of rec.verdicts) {
+                    if (v === 'demote') {
+                        out.withdrawn.push({ id, title: det.titles.get(id) || '', note: det.notes.get(id) || '' });
+                        if (pending && pending.has(id)) out.notPushed.push(id);
+                    } else if (v === 'holds') {
+                        out.kept += 1;
+                        if (det.restorable.has(id)) out.restored += 1;
+                    } else if (v === 'none') out.noVerdict.push(id);
+                    else if (v.startsWith('refused:')) out.refused.push({ id, reason: v.slice('refused:'.length) });
+                }
+                for (const id of rec.offered) if (!rec.verdicts.has(id)) out.noVerdict.push(id);
+            }
+            return any ? out : null;
         },
         /**
          * The per-offering record: [{ repo, offered, verdicts: { id: verdict } }]

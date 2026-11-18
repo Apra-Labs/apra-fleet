@@ -457,6 +457,75 @@ export function fitSectionsToBudget({ sections, render, maxLength }) {
     return { body, texts, clipped: [...clipped] };
 }
 
+/** Max ids the never-cut no-verdict line names before "+K more (run log)". */
+export const KB_NO_VERDICT_MAX_IDS = 40;
+
+/**
+ * The "KB changes on merge" section for buildSprintPrBody's `sections` hook,
+ * from kbWork.kbChangesReport(). Registered right after the merge assessment.
+ * Lines: the withdrawals header and one line per id (clipped title and note;
+ * ids only when no title), a never-cut "No verdict (N): ..." line, a counts
+ * line. Under budget pressure the per-id lines drop (ending "+K more (run log)")
+ * but the no-verdict and counts lines stay. Returns null when there is nothing
+ * to report.
+ * @param {object|null} report
+ * @returns {{ id: string, priority: number, heading: string, text: string, placement: string, fit: Function, hardClip: Function }|null}
+ */
+export function buildKbChangesSection(report) {
+    if (!report) return null;
+    const clip = (t, n) => { const x = inline(t); return x.length > n ? `${x.slice(0, n - 3)}...` : x; };
+    const id8 = (id) => String(id).slice(0, 8);
+    const withdrawn = report.withdrawn || [];
+    const noVerdict = report.noVerdict || [];
+    const refused = report.refused || [];
+    const notPushed = new Set(report.notPushed || []);
+    if (withdrawn.length === 0 && noVerdict.length === 0 && !(report.kept || report.restored) && refused.length === 0) return null;
+    const lineOf = (w) => {
+        const t = w.title ? ` "${clip(w.title, 50)}"` : '';
+        const n = w.note ? ` -- ${clip(w.note, 100)}` : '';
+        return `- ${id8(w.id)}${t}${n}${notPushed.has(w.id) ? ' (not in a pushed bible commit)' : ''}`;
+    };
+    const idsLine = (() => {
+        if (noVerdict.length === 0) return '';
+        const shown = noVerdict.slice(0, KB_NO_VERDICT_MAX_IDS).map(id8).join(', ');
+        const more = noVerdict.length - KB_NO_VERDICT_MAX_IDS;
+        return `No verdict (${noVerdict.length}): ${shown}${more > 0 ? `, +${more} more (run log)` : ''}`;
+    })();
+    const refusedPart = refused.length > 0
+        ? `; refused: ${refused.length} (${clip(refused.map((r) => `${id8(r.id)} ${r.reason}`).join('; '), 120)}; run log)`
+        : '';
+    const counts = `Re-checked and kept: ${report.kept || 0}; restored: ${report.restored || 0}${refusedPart || '; refused: 0 (run log)'}`;
+    const build = (maxLines) => {
+        const parts = [];
+        if (withdrawn.length > 0) {
+            parts.push(`Merging withdraws ${withdrawn.length} CONFIRMED KB claim(s) (tombstones in .fleet/kb-canonical.json):`);
+            const shown = withdrawn.slice(0, maxLines);
+            for (const w of shown) parts.push(lineOf(w));
+            if (shown.length < withdrawn.length) parts.push(`- +${withdrawn.length - shown.length} more (run log)`);
+        }
+        if (idsLine) parts.push(idsLine);
+        parts.push(counts);
+        return parts.join('\n');
+    };
+    const fitTo = (_text, max) => {
+        for (let n = withdrawn.length; n >= 0; n--) {
+            const t = build(n);
+            if (t.length <= max) return t;
+        }
+        return build(0);
+    };
+    const full = build(withdrawn.length);
+    return {
+        id: 'kb-changes',
+        priority: 98,
+        heading: 'KB changes on merge',
+        text: full,
+        placement: 'after-merge-assessment',
+        fit: fitTo,
+        hardClip: fitTo,
+    };
+}
+
 /** merge_assessment.recommendation values the section renders as a code span.
  *  Kept local so this module stays pure (contracts.mjs reads schema files at
  *  load); pinned equal to contracts.mjs MERGE_RECOMMENDATIONS by test. */
@@ -606,13 +675,18 @@ export function buildSprintPrBody({
         heading: inline(s && s.heading) || 'Notes',
         priority: Number.isFinite(s && s.priority) ? s.priority : SECTION_PRIORITY.extra,
         text: closeOpenFences(sanitizePrMarkdown(s && s.text)),
+        placement: s && s.placement === 'after-merge-assessment' ? 'after-merge-assessment' : 'tail',
+        fit: s && typeof s.fit === 'function' ? s.fit : undefined,
+        hardClip: s && typeof s.hardClip === 'function' ? s.hardClip : undefined,
+        omitted: s && typeof s.omitted === 'string' ? s.omitted : undefined,
     }));
 
     const render = (t) => {
         const head = [...headTop];
         if (t['merge-assessment']) head.push('### Merge assessment', '', t['merge-assessment'], '');
+        for (const e of extras) if (e.placement === 'after-merge-assessment' && t[e.id]) head.push(`### ${e.heading}`, '', t[e.id], '');
         head.push(`### ${notesHeading}`, '');
-        const extraBlocks = extras.filter((e) => t[e.id]).map((e) => `\n\n### ${e.heading}\n\n${t[e.id]}`).join('');
+        const extraBlocks = extras.filter((e) => e.placement !== 'after-merge-assessment' && t[e.id]).map((e) => `\n\n### ${e.heading}\n\n${t[e.id]}`).join('');
         const cost = t.cost;
         // The cost block replaces the per-sprint CHANGELOG entry the harvester
         // used to write (a shared prepend-only file that conflicted on every merge).
@@ -662,7 +736,7 @@ export function buildSprintPrBody({
                 hardClip: (_text, max) => (cleanNotes ? notesWithin(max) : ''),
                 omitted: cleanNotes ? notesOmitted : undefined,
             },
-            ...extras.map((e) => ({ id: e.id, priority: e.priority, text: e.text })),
+            ...extras.map((e) => ({ id: e.id, priority: e.priority, text: e.text, fit: e.fit, hardClip: e.hardClip, omitted: e.omitted })),
             { id: 'set-aside', priority: SECTION_PRIORITY.setAside, text: formatSetAsideItems(setAside).map((d) => `- ${inline(d)}`).join('\n') },
             { id: 'waited', priority: SECTION_PRIORITY.waited, text: waitedLine ? inline(waitedLine) : '' },
             { id: 'details', priority: SECTION_PRIORITY.details, text: (details || []).filter(Boolean).map((d) => `- ${inline(d)}`).join('\n') },

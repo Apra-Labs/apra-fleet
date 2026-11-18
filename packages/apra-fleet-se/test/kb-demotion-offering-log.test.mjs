@@ -76,3 +76,24 @@ describe('demotion offering log', () => {
         assert.ok(logs.some((l) => /WARN: 1 restore\(s\) for .* are not in a pushed bible commit.*: kb-2/.test(l)), logs.join('\n'));
     });
 });
+
+describe('kbChangesReport', () => {
+    test('reports withdrawn (with title/note), kept, restored, no-verdict, refused and not-pushed ids', async () => {
+        const { client } = build([row('kb-1'), row('kb-2'), row('kb-3')]);
+        await client.demotionCandidates('reviewer-1');
+        await client.apply('reviewer', 'reviewer-1', {
+            kb_demotions: [{ id: 'kb-1', reason: REASON, evidence_files: [FILE] }, { id: 'kb-x', reason: REASON, evidence_files: [FILE] }],
+            kb_holds: ['kb-2'],
+        });
+        const r = client.kbChangesReport();
+        assert.deepEqual(r.withdrawn, [{ id: 'kb-1', title: 'kb-1', note: REASON }]);
+        assert.equal(r.kept, 1);
+        assert.deepEqual(r.noVerdict, ['kb-3']);
+        assert.deepEqual(r.refused, [{ id: 'kb-x', reason: 'not in the candidate block' }]);
+        assert.deepEqual(r.notPushed, ['kb-1']);
+    });
+
+    test('null when nothing was offered', () => {
+        assert.equal(build([]).client.kbChangesReport(), null);
+    });
+});
