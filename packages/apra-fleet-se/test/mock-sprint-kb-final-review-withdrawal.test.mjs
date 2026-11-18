@@ -261,7 +261,7 @@ function assertGpullBeforeEveryBatch(events, maintainer) {
 // false one and holds the rest (verdict PASS). Nothing is applied before
 // merge: the demotion is a kb_bible_commit withdrawal, never a kb_demote.
 describe('mock sprint m1: final-review demotion lands as a merge-carried withdrawal', () => {
-    test('one withdrawal in one bible commit, held ids in neither list, no kb_demote, logged offer and verdicts, PR section', { timeout: scaledTimeout(240000) }, async () => {
+    test('one withdrawal in one bible commit, no held id withdrawn or tombstoned, no kb_demote, logged offer and verdicts, PR section', { timeout: scaledTimeout(240000) }, async () => {
         await withScenarioMarkers('kb final review withdrawal m1', async () => {
             const BIBLE_FILE = '.fleet/kb-canonical.json';
             const FALSE_ID = 'aaaa1111-kb-the-claim-this-sprint-made-false';
