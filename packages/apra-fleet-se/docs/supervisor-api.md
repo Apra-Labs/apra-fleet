@@ -106,6 +106,19 @@ short-circuits before anything downstream runs:
    Any failure -> `400` naming the field. Note the split has to happen first:
    `ISSUE_ID_PATTERN` has no comma in its charset, so an un-split `"a,b"`
    would be rejected.
+1b. **Unresolved scope ids** (`composeBeforeLaunch` in `bin/serve.mjs`, after
+   the member-overlap guard). The scope guard's `checkLaunch()` already holds
+   one fresh `bd list --all` snapshot of the backlog clone; every requested
+   `issue` root absent from that snapshot is reported, and the launch is
+   refused with `400`, field `issue`, naming EACH missing id -- plus a
+   `did you mean <id>?` suggestion when a known id differs only by a prefix
+   (the un-prefixed form of a prefixed id exists, or the reverse). No child is
+   spawned and no member is reserved. Ids that resolve exactly (including
+   un-prefixed ids that exist as such) are accepted. No extra `bd` call is
+   made: the check reuses the guard's existing fetch. A direct engine launch
+   (no supervisor) fails at Sprint Setup with `PreSprintValidationError`
+   reason `TARGET_NOT_VISIBLE` for the same condition, even when other
+   targets have ready work.
 1a. **Backlog hard pin** (only when `bin/serve.mjs` wired its backlog-member
    handle -- `src/supervisor/backlog-member.mjs`; a controller built without
    it keeps the unpinned behaviour). Every sprint a supervisor launches uses

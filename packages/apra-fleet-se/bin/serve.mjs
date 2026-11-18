@@ -49,7 +49,7 @@ import { createBacklog, registerBacklogRoutes } from '../src/supervisor/backlog.
 // actually wires the Launch Sprint form onto the page.
 import { createDashboard, registerDashboardRoutes } from '../src/supervisor/dashboard.mjs';
 import { createSprintController, registerSprintRoutes, defaultMemberOverlapGuard, ApiError } from '../src/supervisor/api.mjs';
-import { createScopeGuard, formatScopeConflict } from '../src/supervisor/scope-overlap.mjs';
+import { createScopeGuard, formatScopeConflict, formatMissingRoots } from '../src/supervisor/scope-overlap.mjs';
 import { listFleetMembers, executeFleetCommand, registerFleetMember, updateFleetMember } from '../src/supervisor/fleet-members.mjs';
 import { ensureBacklogMember, BacklogMemberRefusedError } from '../src/supervisor/backlog-member.mjs';
 import { BeadsViewUnavailableError, createBeadsView, createBeadsViewCommand, createLaunchRowsFetcher, createSnapshotRowsReader } from '../src/supervisor/beads-view.mjs';
@@ -178,6 +178,11 @@ export function composeBeforeLaunch({ memberOverlapGuard, scopeGuard }) {
                 throw new ApiError(503, `cannot verify issue-scope overlap: ${err.reason}`, 'issue');
             }
             throw err;
+        }
+        // A root absent from the guard's own backlog snapshot is a loud 400,
+        // never a silent "expands to itself" launch (zero extra bd calls).
+        if (Array.isArray(scopeResult.missingRoots) && scopeResult.missingRoots.length > 0) {
+            throw new ApiError(400, formatMissingRoots(scopeResult.missingRoots, scopeResult.suggestions), 'issue');
         }
         if (!scopeResult.ok) {
             throw new ApiError(409, formatScopeConflict(scopeResult.conflicts), 'issue');

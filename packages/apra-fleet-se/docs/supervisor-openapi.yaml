@@ -451,6 +451,15 @@ paths:
             "orchestrator" key with different values, the "@path" file
             form, or a backlog role (or its alias) naming a member other
             than this supervisor's own backlog member (the error names it).
+            Also 400 (field goal / maxCycles / budget) for an invalid goal
+            (not one of P1, P1/P2, P1/P2/P3), a non-positive-integer
+            maxCycles, or a negative / non-finite budget -- the same
+            validators the sprint arg contract uses, before any spawn.
+            Also 400 (field issue) when a requested issue id is absent from
+            the scope guard's backlog snapshot: the message names each
+            missing id and, when a known id differs only by a prefix, a
+            "did you mean" suggestion. No child is spawned and no member is
+            reserved.
             A body that is not valid JSON is also 400 (field body, parse
             message with position, no stack); an oversized body is 413
             (field body).
