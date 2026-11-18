@@ -941,6 +941,15 @@
 const TIMEOUT_GRACE_MS = 30 * 1000;
 
 /**
+ * Maximum `max_turns` the execute_prompt tool accepts. Mirrors the upper bound
+ * of the `max_turns` field in the server's execute_prompt input schema; a root
+ * test pins the two together. Callers that compute a turn budget (for example
+ * by doubling a base on resume) MUST clamp to this value before dispatch,
+ * otherwise the server rejects the call at schema validation.
+ */
+export const EXECUTE_PROMPT_MAX_TURNS = 500;
+
+/**
  * Derives a client-side McpClient.request() timeout (ms) from a payload's
  * own timeout hints. Intentionally prefers max_total_s (a hard ceiling) over
  * timeout_s (the stall-detector inactivity baseline) when both are present.
