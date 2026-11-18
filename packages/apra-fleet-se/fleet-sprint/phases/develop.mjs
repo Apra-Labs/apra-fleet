@@ -56,7 +56,7 @@
 import { pathsFromText } from '../kb-hints.mjs';
 import { WorkflowError } from '@apralabs/apra-fleet-workflow';
 
-import { dispatchRole, TURN_BASES } from '../dispatch-role.mjs';
+import { dispatchRole, TURN_BASES, clampMaxTurns } from '../dispatch-role.mjs';
 import { buildStreakAssignmentPrompt, buildDoerPrompt } from '../prompts.mjs';
 import {
     selectStreaks, groupStreaksFromLaneMetadata, streakRequiredTier,
@@ -644,7 +644,7 @@ export async function runDevelopPhase({
                 // FRESH session and gets the FULL streak prompt below, with the
                 // worklist's warm-session resume suppressed.
                 if (dispatch.kind === 'max-turns-resume' && !freshSession) {
-                    const resumeTurns = BASE_DOER_MAX_TURNS * (2 ** resumeAttempt);
+                    const resumeTurns = clampMaxTurns(BASE_DOER_MAX_TURNS * (2 ** resumeAttempt));
                     log(
                         `Doer streak ${streakScope()} on member '${doerMember}' exhausted its turn limit ` +
                         `(max_turns) -- resuming the same session with max_turns=${resumeTurns} ` +

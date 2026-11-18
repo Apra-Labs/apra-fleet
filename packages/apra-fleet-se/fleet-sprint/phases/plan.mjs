@@ -46,7 +46,7 @@
 // dispatchRole call sites for the planner and plan-reviewer ladders.
 // =============================================================================
 
-import { dispatchRole, TURN_BASES } from '../dispatch-role.mjs';
+import { dispatchRole, secondaryMaxTurns } from '../dispatch-role.mjs';
 import { buildPlannerPrompt, buildPlanReviewerPrompt } from '../prompts.mjs';
 import { collectParentNotesStalenessNotes } from '../parent-notes-staleness.mjs';
 import { PlanReviewDispatchFailedError, SprintPlanRejectedError } from '../errors.mjs';
@@ -198,7 +198,7 @@ export async function runPlanPhase({
             prompt: plannerPrompt,
             resumePrompt: 'Continue your planning pass exactly where you left off in this same session -- do not restart or re-derive the DAG from scratch. Finish creating/updating the remaining beads and return your final summary now.',
             roleLabel: 'Planner',
-            resumeLabel: `Plan (resume, max_turns=${TURN_BASES.PLANNER_MAX_TURNS * 2})`,
+            resumeLabel: `Plan (resume, max_turns=${secondaryMaxTurns('planner')})`,
             // Within THIS cycle's plan-review loop, resume the planner's own
             // prior-round session by explicit session id so a re-plan keeps
             // warm context. False on the first round of any cycle
@@ -290,7 +290,7 @@ export async function runPlanPhase({
             prompt: buildPlanReviewerPrompt({ targetIssues, goal: validated.goal, priorRoundVerdicts: priorPlanRoundVerdicts, verifyExcluded: verifySetThisCycle, stalenessNotes: parentNotesStalenessNotes }),
             resumePrompt: 'Continue your plan review exactly where you left off in this same session -- do not restart or re-read the DAG from scratch. Finish the remaining criteria and return your final verdict now.',
             roleLabel: 'Plan Reviewer',
-            resumeLabel: `Plan Review (resume, max_turns=${TURN_BASES.PLAN_REVIEWER_MAX_TURNS * 2})`,
+            resumeLabel: `Plan Review (resume, max_turns=${secondaryMaxTurns('plan-reviewer')})`,
         });
         const verdict = planReviewOutcome.value;
         lastVerdict = verdict;

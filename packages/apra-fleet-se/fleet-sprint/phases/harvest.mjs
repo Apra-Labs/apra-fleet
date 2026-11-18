@@ -64,7 +64,7 @@
 // harvester's member. Both baselines are pinned rather than assumed.
 // =============================================================================
 
-import { dispatchRole, TURN_BASES } from '../dispatch-role.mjs';
+import { dispatchRole, secondaryMaxTurns } from '../dispatch-role.mjs';
 import { buildHarvesterPrompt } from '../prompts.mjs';
 
 /**
@@ -226,7 +226,7 @@ export async function runHarvestPhase({
             prompt: harvesterPrompt,
             resumePrompt: 'Continue your harvest exactly where you left off in this same session -- do not redo docs sections already written. Finish the remaining updates, commit them, and return your final report now.',
             roleLabel: 'Harvester',
-            resumeLabel: `Harvest (resume, max_turns=${TURN_BASES.HARVESTER_MAX_TURNS * 2})`,
+            resumeLabel: `Harvest (resume, max_turns=${secondaryMaxTurns('harvester')})`,
         });
         const harvesterResult = harvestOutcome.value;
         // No duplicate log() dump -- see dispatchReview() for why. The file

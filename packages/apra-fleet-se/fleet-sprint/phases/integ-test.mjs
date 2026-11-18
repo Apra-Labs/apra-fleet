@@ -66,7 +66,7 @@
 // keep seeing after the slice.
 // =============================================================================
 
-import { dispatchRole, TURN_BASES } from '../dispatch-role.mjs';
+import { dispatchRole, secondaryMaxTurns } from '../dispatch-role.mjs';
 import { classifyVerifySet } from '../beads-scope.mjs';
 import { markBounceCapDeferral } from '../verify-carry-over.mjs';
 
@@ -279,7 +279,7 @@ export async function runIntegTestPhase({
             'Continue the integration test run exactly where you left off in this same session -- do not restart the playbook or rebuild the sandbox if it is already up. Finish the remaining suites, close passing features / file bugs per your contract, and return your final report now. ' +
             'Your original scope, restated so a resumed dispatch never loses it: ' + featurePrompt,
         roleLabel: 'Integ Test Runner',
-        resumeLabel: `Integ Test (resume, max_turns=${TURN_BASES.INTEG_TEST_MAX_TURNS * 2})`,
+        resumeLabel: `Integ Test (resume, max_turns=${secondaryMaxTurns('integ-test-runner')})`,
     });
     integResult = integOutcome.value;
     integInfraInconclusive = integOutcome.inconclusive;

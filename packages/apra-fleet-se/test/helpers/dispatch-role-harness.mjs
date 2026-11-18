@@ -31,6 +31,7 @@
 // runner.js's own source rather than re-typed here, and the schemas are the
 // real contracts.mjs objects.
 
+import { EXECUTE_PROMPT_MAX_TURNS } from '@apralabs/apra-fleet-client';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -131,7 +132,7 @@ export const BINDINGS = Object.freeze({
     'reviewerPool[0]': 'member:reviewer-pool-head',
     doerMember: 'member:doer-3',
     doerModel: 'premium',
-    maxTurns: 1000,
+    maxTurns: EXECUTE_PROMPT_MAX_TURNS,
 });
 
 /**
@@ -388,13 +389,13 @@ export const ROLE_CALL_OPTS = Object.freeze({
         resumePrompt: 'PLANNER RESUME PROMPT',
         roleLabel: 'Planner',
         resumeArg: 'session-abc',
-        resumeLabel: 'Plan (resume, max_turns=1000)',
+        resumeLabel: `Plan (resume, max_turns=${EXECUTE_PROMPT_MAX_TURNS})`,
     },
     'plan-reviewer': {
         prompt: 'PLAN REVIEW PROMPT',
         resumePrompt: 'PLAN REVIEW RESUME PROMPT',
         roleLabel: 'Plan Reviewer',
-        resumeLabel: 'Plan Review (resume, max_turns=1000)',
+        resumeLabel: `Plan Review (resume, max_turns=${EXECUTE_PROMPT_MAX_TURNS})`,
     },
     'scoped-replan-planner': {
         prompt: 'SCOPED REPLAN PLANNER PROMPT',
@@ -425,7 +426,7 @@ export const ROLE_CALL_OPTS = Object.freeze({
         resumePrompt: 'DOER RESUME PROMPT',
         roleLabel: 'Doer streak [bead-1]',
         label: 'Streak [bead-1]',
-        resumeLabel: 'Streak [bead-1] (resume, max_turns=1000)',
+        resumeLabel: `Streak [bead-1] (resume, max_turns=${EXECUTE_PROMPT_MAX_TURNS})`,
         // The doer's two streak-scoped steps. The engine only NAMES them; the
         // per-dispatch bead list is runner state, exactly as in production.
         claimBeads: async () => {},
@@ -439,7 +440,7 @@ export const ROLE_CALL_OPTS = Object.freeze({
         prompt: 'REVIEWER PROMPT',
         resumePrompt: 'REVIEWER RESUME PROMPT',
         roleLabel: 'Reviewer',
-        resumeLabel: 'Review (resume, max_turns=1000)',
+        resumeLabel: `Review (resume, max_turns=${EXECUTE_PROMPT_MAX_TURNS})`,
         resumeArg: 'reviewer-session-abc',
         onResultRejected: (reason) => new Error(`HARNESS-REJECTED: ${reason}`),
     },
@@ -448,31 +449,31 @@ export const ROLE_CALL_OPTS = Object.freeze({
         resumePrompt: 'FINAL REVIEW RESUME PROMPT',
         roleLabel: 'Final Review',
         label: 'Final Review',
-        resumeLabel: 'Final Review (resume, max_turns=1000)',
+        resumeLabel: `Final Review (resume, max_turns=${EXECUTE_PROMPT_MAX_TURNS})`,
     },
     'integ-test-runner': {
         prompt: 'INTEG PROMPT',
         resumePrompt: 'INTEG RESUME PROMPT',
         roleLabel: 'Integ Test Runner',
-        resumeLabel: 'Integ Test (resume, max_turns=1000)',
+        resumeLabel: `Integ Test (resume, max_turns=${EXECUTE_PROMPT_MAX_TURNS})`,
     },
     'regression-test-runner': {
         prompt: 'REGRESSION PROMPT',
         resumePrompt: 'REGRESSION RESUME PROMPT',
         roleLabel: 'Regression Test Runner',
-        resumeLabel: 'Regression Test (resume, max_turns=1000)',
+        resumeLabel: `Regression Test (resume, max_turns=${EXECUTE_PROMPT_MAX_TURNS})`,
     },
     deployer: {
         prompt: 'DEPLOYER PROMPT',
         resumePrompt: 'DEPLOYER RESUME PROMPT',
         roleLabel: 'Deployer',
-        resumeLabel: 'Deploy (resume, max_turns=1000)',
+        resumeLabel: `Deploy (resume, max_turns=${EXECUTE_PROMPT_MAX_TURNS})`,
     },
     harvester: {
         prompt: 'HARVESTER PROMPT',
         resumePrompt: 'HARVESTER RESUME PROMPT',
         roleLabel: 'Harvester',
-        resumeLabel: 'Harvest (resume, max_turns=1000)',
+        resumeLabel: `Harvest (resume, max_turns=${EXECUTE_PROMPT_MAX_TURNS})`,
     },
     'streak-assignment': {
         prompt: 'STREAK ASSIGNMENT PROMPT',
@@ -602,7 +603,7 @@ export function watchdogLabelOf(segments) {
             if (!m || typeof TURN_BASES[m[1]] !== 'number') {
                 throw new Error(`watchdogLabelOf: ${JSON.stringify(segment.expr)} is not turn-base arithmetic.`);
             }
-            return String(m[2] ? TURN_BASES[m[1]] * Number(m[2]) : TURN_BASES[m[1]]);
+            return String(Math.min(EXECUTE_PROMPT_MAX_TURNS, m[2] ? TURN_BASES[m[1]] * Number(m[2]) : TURN_BASES[m[1]]));
         })
         .join('');
 }

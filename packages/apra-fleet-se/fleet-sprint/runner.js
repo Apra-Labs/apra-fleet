@@ -131,7 +131,7 @@ import { createSyncBrackets, createGitSync } from './git-sync.mjs';
 // because the turn-budget constants moved there with the dispatch that
 // consumes them, and a few runner-side presentation labels still interpolate
 // a resume's doubled budget.
-import { dispatchRole, TURN_BASES } from './dispatch-role.mjs';
+import { dispatchRole, TURN_BASES, secondaryMaxTurns } from './dispatch-role.mjs';
 // The policy TABLE the engine executes. runner.js reads it only to state, in a
 // log line, the bound the row itself sets -- never to re-implement a ladder.
 // USAGE_LIMIT_BUDGET_DEFAULTS is the usage-limit controller's budget row,
@@ -2690,7 +2690,7 @@ async function runSprintCycle(context) {
                 + `on branch ${validated.branch}, diff range ${mergeBaseSha}..${validated.branch} (use exactly this range for git diff and git log). ` +
                 'Finish evaluating the remaining acceptance criteria and return your final verdict now.',
             roleLabel: 'Reviewer',
-            resumeLabel: `Review (resume, max_turns=${TURN_BASES.BASE_REVIEWER_MAX_TURNS * 2})`,
+            resumeLabel: `Review (resume, max_turns=${secondaryMaxTurns('reviewer')})`,
             // The reviewer pool head is a runner-local value; the policy names
             // it by binding and the engine resolves it from here.
             bindings: { 'reviewerPool[0]': reviewerPool[0] },

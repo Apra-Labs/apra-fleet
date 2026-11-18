@@ -1,4 +1,5 @@
 import { test } from 'node:test';
+import { EXECUTE_PROMPT_MAX_TURNS } from '@apralabs/apra-fleet-client';
 import assert from 'node:assert/strict';
 import { runCmd, runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
 
@@ -113,6 +114,6 @@ test('mock sprint: a resumed integ-test-runner dispatch (after max_turns exhaust
         assert.ok(!result.error, `Scenario should not throw on a max_turns-exhausted integ dispatch: ${result.error ? result.error.message : ''}`);
         assert.ok(integCalls >= 2, `Expected the integ dispatch to be resumed after max_turns exhaustion (>=2 calls), got ${integCalls}`);
         assert.strictEqual(capturedMaxTurnsByCall[0], 500, `First integ dispatch should use the documented base ceiling of 500, got ${capturedMaxTurnsByCall[0]}`);
-        assert.strictEqual(capturedMaxTurnsByCall[1], 1000, `Resumed integ dispatch should double the documented base ceiling (500 * 2 = 1000), got ${capturedMaxTurnsByCall[1]}`);
+        assert.strictEqual(capturedMaxTurnsByCall[1], EXECUTE_PROMPT_MAX_TURNS, `Resumed integ dispatch should be clamped to the execute_prompt maximum, got ${capturedMaxTurnsByCall[1]}`);
     });
 });
