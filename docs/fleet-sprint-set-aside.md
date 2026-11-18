@@ -179,6 +179,29 @@ naming the released-but-unworked bead and its decision. An answer recorded
 after the cycle loop has ended stays pending and is reported the same way.
 A wait at the start of a develop round dispatches the bead in the same cycle.
 
+## Verify-routed beads the exit stops waiting for
+
+A verify-routed bead (every child closed) only closes when Integration Test
+closes it, and the cycle loop does not exit while one is open. Two shapes no
+cycle can resolve are carried over instead (`fleet-sprint/verify-carry-over.mjs`):
+
+- **needs-external-evidence.** The engine counts, per bead, consecutive
+  cycles in which the bead was handed to Integration Test, is still open
+  afterwards, and has no gap bug filed under it. At
+  `NEEDS_EXTERNAL_EVIDENCE_CYCLE_LIMIT` (2) the bead is not dispatched to
+  verify again and no longer holds the exit. A cycle in which it closes or
+  gets a gap bug resets its count; an infra dispatch failure (no verdict)
+  neither counts nor resets. The run goes on to Final Review, Regression,
+  Harvest and Publish PR; Final Review forces the verdict to FAIL and names
+  the bead with the integ runner's reason (`verifySetLeftOpen`, else its
+  summary) in the verdict notes and PR body. The bead stays open.
+- **deferred during the run.** A verify-routed bead deferred mid-run (the
+  verify bounce cap, or seen deferred at the next Route step) is dropped from
+  the exit gate and named as a deferred carry-over; the verdict is left to
+  the other gates.
+
+The run result carries both as `verifyCarryOver: [{ id, kind, reason }]`.
+
 ## Known gaps
 
 - Dependents are computed once, when the BLOCKED report arrives. A bead

@@ -77,9 +77,12 @@ import { classifyVerifySet } from '../beads-scope.mjs';
  *   verifySetForIntegTest: string[],
  *   integTestRunnerDispatchCount: number,
  *   integTestRunnerSpend: number,
- * }>} The three REASSIGNED values described in the header. Every other output
- *   of this phase is an in-place mutation of an array/Set/Map the caller still
- *   holds (`integFailures`, `verifyEverIds`, `verifyGapCounts`).
+ *   integVerifyOutcome: { dispatchedIds: string[], gapParentIds: string[], leftOpenReasons: Map<string, string>, summary: string, inconclusive: boolean },
+ * }>} The three REASSIGNED values described in the header, plus this
+ *   dispatch's per-verify-bead outcome for the needs-external-evidence count.
+ *   Every other output of this phase is an in-place mutation of an
+ *   array/Set/Map the caller still holds (`integFailures`, `verifyEverIds`,
+ *   `verifyGapCounts`, `deferredVerifyIds`).
  */
 export async function runIntegTestPhase({
     // Presentation + dispatch seams.
@@ -98,6 +101,14 @@ export async function runIntegTestPhase({
     integFailures,
     verifyEverIds,
     verifyGapCounts,
+    // Verify-routed ids the verify bounce cap deferred this run, id -> reason
+    // (../verify-carry-over.mjs): this phase adds to it in place when it
+    // defers a parent, so Cycle Evaluation drops it from the exit gate and
+    // names it as a deferred carry-over. Optional for older callers.
+    deferredVerifyIds = null,
+    // Verify-routed ids carried over as needs-external-evidence
+    // (../verify-carry-over.mjs): never dispatched to verify again this run.
+    excludedVerifyIds = null,
     // Reassigned, so passed in and returned (see header).
     verifySetForIntegTest,
     integTestRunnerDispatchCount,
@@ -169,6 +180,16 @@ export async function runIntegTestPhase({
     // priority forever. The integ runner has bead-closing authority
     // and pushBeads: true, so it owns verify-set closure.
     ({ verifyIds: verifySetForIntegTest } = classifyVerifySet(await fetchAllBeadsShared(), targetIssues));
+    // A verify-routed bead carried over as needs-external-evidence is not
+    // re-dispatched: two consecutive passes could neither confirm nor refute
+    // it on these members, so another pass only burns a cycle.
+    if (excludedVerifyIds && excludedVerifyIds.size > 0) {
+        const skipped = verifySetForIntegTest.filter((id) => excludedVerifyIds.has(id));
+        if (skipped.length > 0) {
+            verifySetForIntegTest = verifySetForIntegTest.filter((id) => !excludedVerifyIds.has(id));
+            log(`Integ Test C${cycle}: not re-dispatching ${skipped.length} verify-routed bead(s) carried over as needs-external-evidence: ${skipped.join(', ')}`);
+        }
+    }
     // apra-fleet-66u.2: a bead can become verify-eligible AFTER
     // this cycle's Route step already ran (e.g. its last child
     // closes during THIS cycle's own Develop/Review, before
@@ -319,6 +340,10 @@ export async function runIntegTestPhase({
     // This only tracks HOW MANY TIMES a given parent has bounced, so a
     // parent that keeps failing verification is deferred rather than
     // looping forever.
+    // Verify-set parents a gap bug was filed under this cycle -- read by
+    // Cycle Evaluation's needs-external-evidence count (a gap bug is a real
+    // verdict, so it resets that bead's inconclusive count).
+    const gapParentIds = new Set();
     if (Array.isArray(integResult.bugsFiled) && integResult.bugsFiled.length > 0 && verifySetForIntegTest.length > 0) {
         for (const bugId of integResult.bugsFiled) {
             try {
@@ -326,6 +351,7 @@ export async function runIntegTestPhase({
                 const bugBeads = parseBdJson(bugShowRaw, `bd show ${bugId} --json`);
                 const parentId = Array.isArray(bugBeads) ? bugBeads[0]?.parent : bugBeads?.parent;
                 if (!parentId || !verifySetIdSet.has(parentId)) continue;
+                gapParentIds.add(parentId);
                 const gapCount = (verifyGapCounts.get(parentId) ?? 0) + 1;
                 verifyGapCounts.set(parentId, gapCount);
                 if (gapCount > VERIFY_GAP_LIMIT) {
@@ -334,6 +360,9 @@ export async function runIntegTestPhase({
                         `bd update ${parentId} --status=deferred --append-notes "Deferred by the verify-route bounce cap: failed integration-test verification ${gapCount} times this sprint (limit ${VERIFY_GAP_LIMIT}). Latest gap: ${bugId}."`,
                         { member_name: backlogMember, silent: true }
                     );
+                    if (deferredVerifyIds) {
+                        deferredVerifyIds.set(parentId, `deferred by the verify-route bounce cap after failing verification ${gapCount} times (latest gap: ${bugId})`);
+                    }
                 } else {
                     log(`Verify-route bounce: ${parentId} failed verification (gap bug ${bugId} filed), attempt ${gapCount}/${VERIFY_GAP_LIMIT} -- will re-route to plan/develop once ${bugId} closes.`);
                 }
@@ -354,5 +383,27 @@ export async function runIntegTestPhase({
     }
     await updateDashboard();
 
-    return { verifySetForIntegTest, integTestRunnerDispatchCount, integTestRunnerSpend };
+    // What this dispatch said about each verify-set bead it was handed, for
+    // Cycle Evaluation's engine-derived needs-external-evidence count
+    // (../verify-carry-over.mjs). The count itself is the engine's: whether
+    // the bead is still open is read from live state there, and a gap bug
+    // from the bounce-cap lookup above. The runner's own verifySetLeftOpen
+    // reason is carried only as the human-readable reason. An infra dispatch
+    // failure produced no verdict, so it is flagged and neither counts nor
+    // resets.
+    const leftOpenReasons = new Map();
+    if (Array.isArray(integResult.verifySetLeftOpen)) {
+        for (const e of integResult.verifySetLeftOpen) {
+            if (e && typeof e.id === 'string' && typeof e.reason === 'string') leftOpenReasons.set(e.id, e.reason);
+        }
+    }
+    const integVerifyOutcome = {
+        dispatchedIds: [...verifySetForIntegTest],
+        gapParentIds: [...gapParentIds],
+        leftOpenReasons,
+        summary: typeof integResult.summary === 'string' ? integResult.summary : '',
+        inconclusive: Boolean(integInfraInconclusive),
+    };
+
+    return { verifySetForIntegTest, integTestRunnerDispatchCount, integTestRunnerSpend, integVerifyOutcome };
 }

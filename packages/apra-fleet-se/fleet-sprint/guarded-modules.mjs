@@ -450,6 +450,10 @@ export const GUARDED_MODULES = [
     // Run-scoped set-aside stall decision and report section (pure): no
     // command() or agent() site; runner.js owns the reads and the throw.
     'set-aside.mjs',
+    // Verify carry-over (needs-external-evidence count, deferred verify ids,
+    // verdict gate) (pure): no command() or agent() site; runner.js and
+    // phases/integ-test.mjs own the reads, final-review.mjs the verdict gate.
+    'verify-carry-over.mjs',
     'vcs-providers/azure-devops.mjs',
     'vcs-providers/bitbucket.mjs',
     'vcs-providers/dolt.mjs',

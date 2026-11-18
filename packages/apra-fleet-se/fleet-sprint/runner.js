@@ -168,6 +168,7 @@ import { runDevelopPhase } from './phases/develop.mjs';
 import { runReviewPhase } from './phases/review.mjs';
 import { runDeployPhase, latestDeployFailure, formatDeployFailureReason, formatDeploySetAsideNotes, DEPLOY_RETRY_CYCLE_LIMIT } from './phases/deploy.mjs';
 import { collectSetAsideEntries, evaluateSetAsideStall, formatSetAsideStallMessage, stuckBehindSetAside, collectWaitEntries, closedWorkThisRun, buildSetAsideCarryOver, formatCarryOverNotes } from './set-aside.mjs';
+import { NEEDS_EXTERNAL_EVIDENCE_CYCLE_LIMIT, recordInconclusiveVerifyCycle, stillOpenVerifyIdsForExit, syncDeferredVerifyIds, buildVerifyCarryOver, formatVerifyCarryOverNotes } from './verify-carry-over.mjs';
 // apra-fleet-3swo.6.8: the next two phase() boundaries -- the per-cycle Integ
 // Test and the Re-Review that Cycle Evaluation dispatches when the goal-
 // priority count already reads 0 but no review ran this cycle. Integ Test is
@@ -3545,6 +3546,20 @@ async function runSprintCycle(context) {
     const VERIFY_GAP_LIMIT = 2;
     const verifyGapCounts = new Map();
 
+    // Verify-routed beads the exit gate stops waiting for
+    // (./verify-carry-over.mjs). inconclusiveVerifyCounts is the engine's own
+    // per-bead count of consecutive Integration Test cycles that left the bead
+    // open with no gap bug; at NEEDS_EXTERNAL_EVIDENCE_CYCLE_LIMIT the bead
+    // moves into needsEvidenceVerifyIds (id -> { reason, cycles }), is not
+    // dispatched to verify again and no longer holds the exit; Final Review
+    // forces FAIL and names it. deferredVerifyIds (id -> reason) holds
+    // verify-routed beads deferred during the run (the bounce cap, or seen
+    // deferred at Route), which can never be dispatched again: dropped from the
+    // exit gate and named as a deferred carry-over. None of them is closed.
+    const inconclusiveVerifyCounts = new Map();
+    const needsEvidenceVerifyIds = new Map();
+    const deferredVerifyIds = new Map();
+
     // Deploy/Integration failure evidence, threaded into the Final Review's
     // evidence-based prompt below -- never silently swallowed.
     const deployFailures = [];
@@ -3649,8 +3664,13 @@ async function runSprintCycle(context) {
         // every cycle (no persisted list); classification itself counts as
         // sprint progress (see the stall-detector high-water-mark change
         // below), which is the actual fix for tonight's false-stall bug.
-        const { verifyIds: verifySetThisCycle } = classifyVerifySet(await fetchAllBeadsShared(), targetIssues);
+        const routeBeads = await fetchAllBeadsShared();
+        const { verifyIds: verifySetThisCycle } = classifyVerifySet(routeBeads, targetIssues);
         for (const id of verifySetThisCycle) verifyEverIds.add(id);
+        // A verify-routed bead deferred by anyone since the last Route can
+        // never be dispatched again: record it from the same snapshot (no
+        // extra bd call) so the exit gate stops waiting on it.
+        syncDeferredVerifyIds(deferredVerifyIds, { beads: routeBeads, verifyEverIds });
         if (verifySetThisCycle.length > 0) {
             log(`Route C${cycle}: ${verifySetThisCycle.length} bead(s) implementation-complete, routed to verify (excluded from Plan/Develop): ${verifySetThisCycle.join(', ')}`);
         }
@@ -4078,6 +4098,9 @@ async function runSprintCycle(context) {
         // playbook, or Deploy failed) correctly counts as "no verify
         // dispatch attempt", not a crash.
         let verifySetForIntegTest = [];
+        // This cycle's per-verify-bead integ outcome (phases/integ-test.mjs),
+        // null when Integration Test did not run.
+        let integVerifyOutcome = null;
         if (hasPlaybook && deployedThisCycle && lastBuildFailing) {
             // The last review that ran reported the build/tests failing and no
             // later review has reported them passing: Integration Test is not
@@ -4099,7 +4122,7 @@ async function runSprintCycle(context) {
             // read by Cycle Evaluation whether or not it ran. integFailures,
             // verifyEverIds and verifyGapCounts are mutated in place exactly as
             // the closure did; the three genuinely reassigned values come back.
-            ({ verifySetForIntegTest, integTestRunnerDispatchCount, integTestRunnerSpend } = await runIntegTestPhase({
+            ({ verifySetForIntegTest, integTestRunnerDispatchCount, integTestRunnerSpend, integVerifyOutcome } = await runIntegTestPhase({
                 phase, log, command, dispatchCtx,
                 cycle, targetIssues, backlogMember, sprintSelfIdLine,
                 budget,
@@ -4108,6 +4131,8 @@ async function runSprintCycle(context) {
                 getMemberForRole, ensureUnattendedAuto, ensureDeployPermissions,
                 bdListScoped, fetchAllBeadsShared, parseBdJson, updateDashboard,
                 VERIFY_GAP_LIMIT,
+                deferredVerifyIds,
+                excludedVerifyIds: new Set(needsEvidenceVerifyIds.keys()),
             }));
         } else if (hasPlaybook && !deployedThisCycle) {
             log('Skipping Integration Test Phase (deploy did not succeed this cycle, or no deploy.md was present to attempt)');
@@ -4213,7 +4238,35 @@ async function runSprintCycle(context) {
         // apra-fleet-2sn. `verifyEverIds` is monotone (only ever grows), so a
         // bead cannot re-earn credit by oscillating in and out of
         // eligibility -- the high-water-mark oscillation-proofing survives.
-        const progressScore = closedCount + verifyEverIds.size;
+        // Engine-derived needs-external-evidence count (./verify-carry-over.mjs),
+        // on the same live closed list: a verify-routed bead Integration Test
+        // was handed, that is still open after it and has no gap bug filed
+        // under it, was inconclusive this cycle. An infra dispatch failure
+        // produced no verdict, so it neither counts nor resets.
+        if (integVerifyOutcome && !integVerifyOutcome.inconclusive && integVerifyOutcome.dispatchedIds.length > 0) {
+            const tripped = recordInconclusiveVerifyCycle(inconclusiveVerifyCounts, {
+                dispatchedIds: integVerifyOutcome.dispatchedIds,
+                closedIds: closedIdsNow,
+                gapParentIds: integVerifyOutcome.gapParentIds,
+                limit: NEEDS_EXTERNAL_EVIDENCE_CYCLE_LIMIT,
+            });
+            for (const id of tripped) {
+                const reason = integVerifyOutcome.leftOpenReasons.get(id) || integVerifyOutcome.summary || '';
+                needsEvidenceVerifyIds.set(id, { reason, cycles: inconclusiveVerifyCounts.get(id) });
+                log(
+                    `Cycle ${cycle}: ${id} was left open by Integration Test with no gap bug filed on ` +
+                    `${inconclusiveVerifyCounts.get(id)} consecutive cycle(s) (limit ${NEEDS_EXTERNAL_EVIDENCE_CYCLE_LIMIT}) -- ` +
+                    'carried over as needs-external-evidence: not dispatched to verify again and no longer holding the exit; ' +
+                    `the sprint verdict will be FAIL.${reason ? ` Integ runner: ${reason}` : ''}`
+                );
+            }
+        }
+
+        // A needs-external-evidence carry-over is progress in the same sense
+        // a verify routing is (monotone, only ever grows): the bead was
+        // resolved for this run, so the cycle that carries it over is not a
+        // stale cycle.
+        const progressScore = closedCount + verifyEverIds.size + needsEvidenceVerifyIds.size;
         // High-water-mark progress. A cycle only counts as progress when it sets
         // a NEW all-time high for this sprint -- returning to a previously-seen
         // value (even one different from the immediately prior cycle, e.g.
@@ -4394,10 +4447,16 @@ async function runSprintCycle(context) {
         // stale here for the same reason noted at the closedBeadsNow read
         // above -- this check runs after the Re-Review block may have pushed
         // further mutations this cycle.
+        // Carried-over verify ids (needs external evidence, or deferred during
+        // the run) are not waited on: no cycle can close them
+        // (./verify-carry-over.mjs).
         let stillOpenVerifyIds = [];
         if (verifyEverIds.size > 0) {
             const closedIdsForExitCheck = new Set((await bdListScoped('--status=closed --json')).map((b) => b.id));
-            stillOpenVerifyIds = [...verifyEverIds].filter((id) => !closedIdsForExitCheck.has(id));
+            stillOpenVerifyIds = stillOpenVerifyIdsForExit({
+                verifyEverIds, closedIds: closedIdsForExitCheck,
+                needsEvidence: needsEvidenceVerifyIds, deferred: deferredVerifyIds,
+            });
         }
 
         // apra-fleet-rp7a.2: independent escape hatch, alongside (not instead
@@ -4476,6 +4535,8 @@ async function runSprintCycle(context) {
             // SPRINT_STALLED, and a human reading "satisfied" must be able to
             // see, in the same sentence, exactly what was skipped to get there.
             const deferredExitIds = [...deferredEverIds];
+            const verifyCarryOverAtExit = buildVerifyCarryOver({ needsEvidence: needsEvidenceVerifyIds, deferred: deferredVerifyIds, closedIds: closedIdsNow });
+            if (verifyCarryOverAtExit) log(`Cycle ${cycle}: ${formatVerifyCarryOverNotes(verifyCarryOverAtExit)}`);
             log(
                 `Goal priority ${validated.goal} (<=${goalMax}) satisfied: 0 open bead(s) in scope and last reviewer verdict was APPROVED. Exiting cycle loop.` +
                 (deferredExitIds.length > 0
@@ -4536,7 +4597,7 @@ async function runSprintCycle(context) {
     // a reader; the test pin plus the A/B mock sprint in
     // mock-sprint-regression-failure-never-gates.test.mjs are what actually
     // hold the line.
-    const { finalVerdictResult, finalClosedCount, finalOpenAtGoalCount, finalDeferredAtGoalIds } = await runFinalReviewPhase({
+    const { finalVerdictResult, finalClosedCount, finalOpenAtGoalCount, finalDeferredAtGoalIds, verifyCarryOver } = await runFinalReviewPhase({
         phase, log, command, dispatchCtx,
         args, validated, targetIssues, backlogMember, finalCycleLabel, sprintState,
         gitSync,
@@ -4546,6 +4607,8 @@ async function runSprintCycle(context) {
         reclaimCappedIds: orphanClaims.cappedIds(),
         verifyBlockDiagnosis,
         carryOverExit,
+        needsEvidenceVerifyIds,
+        deferredVerifyIds,
         redBuildIntegSkip,
         workedOnIds: workedOnBeadIds,
         kbPriming, kbWork, kbInjection, kbSprintContext, getMemberForRole,
@@ -4693,6 +4756,10 @@ async function runSprintCycle(context) {
         // this run closed work: the named exit reason and every carried-over
         // item ({ id, reason }) Finalization reported.
         ...(carryOverExit ? { exitReason: carryOverExit.reason, carryOver: carryOverExit.entries } : {}),
+        // Present only when verify-routed beads were carried over
+        // (./verify-carry-over.mjs): { id, kind: 'needs-external-evidence' |
+        // 'deferred', reason } for each.
+        ...(verifyCarryOver ? { verifyCarryOver: verifyCarryOver.entries } : {}),
         // Present only when the branch was pushed but no PR was opened
         // ({ reason, message }); surfaces in the supervisor's persisted
         // terminal state as state.result.prSkipped. Never changes the verdict.

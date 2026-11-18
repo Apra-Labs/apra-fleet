@@ -93,6 +93,7 @@ import { partitionDeferredBeads } from '../beads-scope.mjs';
 import { applyDeployFailureVerdictGate, formatDeployFailureReason } from './deploy.mjs';
 import { applyVerifyBlockVerdictGate } from '../verify-block.mjs';
 import { applyCarryOverVerdictGate } from '../set-aside.mjs';
+import { buildVerifyCarryOver, applyVerifyCarryOverVerdictGate } from '../verify-carry-over.mjs';
 import { applyRedBuildIntegSkipVerdictGate, formatRedBuildIntegSkipVerdictReason } from '../red-build-integ-gate.mjs';
 
 /**
@@ -150,6 +151,13 @@ export async function runFinalReviewPhase({
     // a set-aside stall with work closed this run, or null. Its entries are
     // named in the verdict notes; any at/above-goal entry forces FAIL.
     carryOverExit = null,
+    // Verify-routed beads the cycle loop stopped waiting for
+    // (../verify-carry-over.mjs): needs-external-evidence (id -> { reason,
+    // cycles }) and deferred during the run (id -> reason). Any still-open
+    // needs-external-evidence bead forces FAIL; both kinds are named in the
+    // verdict notes.
+    needsEvidenceVerifyIds = null,
+    deferredVerifyIds = null,
     // The latest cycle whose Integration Test was skipped because the last
     // review reported a red build ({cycle}), or null once a later green
     // review let Integration Test run. Non-null forces a FAIL verdict
@@ -222,6 +230,13 @@ export async function runFinalReviewPhase({
         const finalClosedIds = new Set(finalClosedBeads.map((b) => b.id));
         finalUnclosedVerifyIds = [...verifyEverIds].filter((id) => !finalClosedIds.has(id));
     }
+    const verifyCarryOver = (needsEvidenceVerifyIds || deferredVerifyIds)
+        ? buildVerifyCarryOver({
+            needsEvidence: needsEvidenceVerifyIds || new Map(),
+            deferred: deferredVerifyIds || new Map(),
+            closedIds: new Set(finalClosedBeads.map((b) => b.id)),
+        })
+        : null;
 
     let finalVerdictResult;
     // The Final Review covers an entire epic's worth of work, categorically
@@ -352,6 +367,13 @@ export async function runFinalReviewPhase({
         log(carryOverExit.atGoalIds.length > 0
             ? `Final Review: sprint verdict forced to FAIL (Final Review returned ${llmVerdict ?? '(none)'}) -- ${carryOverExit.atGoalIds.length} at/above-goal bead(s) carried over: ${carryOverExit.atGoalIds.join(', ')}`
             : `Final Review: carry-over named in the verdict notes: ${carryOverExit.entries.map((e) => e.id).join(', ')}`);
+    }
+    if (verifyCarryOver) {
+        const llmVerdict = finalVerdictResult && finalVerdictResult.verdict;
+        finalVerdictResult = applyVerifyCarryOverVerdictGate(finalVerdictResult, verifyCarryOver);
+        log(verifyCarryOver.needsEvidenceIds.length > 0
+            ? `Final Review: sprint verdict forced to FAIL (Final Review returned ${llmVerdict ?? '(none)'}) -- ${verifyCarryOver.needsEvidenceIds.length} verify-routed bead(s) carried over as needs-external-evidence: ${verifyCarryOver.needsEvidenceIds.join(', ')}`
+            : `Final Review: deferred verify carry-over named in the verdict notes: ${verifyCarryOver.deferredIds.join(', ')}`);
     }
     if (redBuildIntegSkip) {
         const llmVerdict = finalVerdictResult && finalVerdictResult.verdict;
@@ -544,5 +566,7 @@ export async function runFinalReviewPhase({
         // apra-fleet-rp7a.1: carried out so the sprint analysis document names
         // what was skipped, not just how many beads remained open.
         finalDeferredAtGoalIds,
+        // The verify carry-over applied above, or null.
+        verifyCarryOver,
     };
 }
