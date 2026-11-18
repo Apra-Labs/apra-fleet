@@ -659,6 +659,18 @@ export function createKbWorkClient(opts = {}) {
     const demotionOfferOpen = new Set();
     /** repo -> the final review's demotion verdicts: { offered, demoted, held, noVerdict } (id lists). */
     const demotionVerdicts = new Map();
+    /**
+     * The per-offering record: repo -> { offered: Set<id>, verdicts: Map<id, verdict> }
+     * where verdict is demote | holds | none | refused:<why>. It is never
+     * cleared by a later offer, and it is the caller's own Map when
+     * opts.offeringRecord is given (the engine keeps one in its run context),
+     * so a client rebuilt after a resume keeps what an earlier one offered.
+     */
+    const offeringRecord = opts.offeringRecord instanceof Map ? opts.offeringRecord : new Map();
+    const recordFor = (repo) => {
+        if (!offeringRecord.has(repo)) offeringRecord.set(repo, { offered: new Set(), verdicts: new Map() });
+        return offeringRecord.get(repo);
+    };
     /** repo -> tail of the serialized flush chain for that repository. */
     const flushChains = new Map();
     /** member name -> open dispatch count (nested brackets count once each). */
@@ -1446,6 +1458,11 @@ export function createKbWorkClient(opts = {}) {
             ...results.filter((e) => isDemotableCandidate(e) && touchesChangedFiles(e)),
         ].slice(0, KB_MAX_DEMOTION_CANDIDATES);
         offeredDemotions.set(target.repo, new Set(offered.map((e) => e.id)));
+        if (offered.length > 0) {
+            const rec = recordFor(target.repo);
+            for (const e of offered) rec.offered.add(e.id);
+            log(`[kb-work] demotion candidates offered to the final review for ${target.repo}: ${offered.length} id(s): ${offered.map((e) => e.id).join(', ')}`);
+        }
         return offered;
     }
 
@@ -1530,6 +1547,17 @@ export function createKbWorkClient(opts = {}) {
         }
         const judged = new Set([...accepted.map((d) => d.id), ...held]);
         const noVerdict = [...offered].filter((id) => !judged.has(id));
+        // One verdict line per offered id (a refused id may not be offered at
+        // all; it still gets its line), and the same verdict in the record.
+        const rec = recordFor(repo);
+        const verdictOf = (id, v) => { rec.verdicts.set(id, v); log(`[kb-work] demotion verdict for ${id}: ${v}`); };
+        for (const d of accepted) verdictOf(d.id, 'demote');
+        for (const id of held) verdictOf(id, 'holds');
+        for (const id of noVerdict) {
+            verdictOf(id, both.has(id) ? 'refused:in both kb_demotions and kb_holds' : 'none');
+        }
+        for (const d of demotions) if (!offered.has(d.id) && !both.has(d.id)) verdictOf(d.id, 'refused:not in the candidate block');
+        for (const id of holds) if (!offered.has(id) && !both.has(id)) verdictOf(id, 'refused:not in the candidate block');
         demotionVerdicts.set(repo, {
             offered: [...offered],
             demoted: accepted.map((d) => d.id),
@@ -1778,6 +1806,14 @@ export function createKbWorkClient(opts = {}) {
             return [...demotionVerdicts].map(([repo, v]) => ({
                 repo, offered: [...v.offered], demoted: [...v.demoted], held: [...v.held], noVerdict: [...v.noVerdict],
             }));
+        },
+        /**
+         * The per-offering record: [{ repo, offered, verdicts: { id: verdict } }]
+         * (verdict: demote | holds | none | refused:<why>). Survives a resume
+         * when the caller passes the same opts.offeringRecord Map.
+         */
+        offeringRecord() {
+            return [...offeringRecord].map(([repo, r]) => ({ repo, offered: [...r.offered], verdicts: Object.fromEntries(r.verdicts) }));
         },
         /**
          * The maintainer member record a reviewer's KB reads and judgements

@@ -1802,6 +1802,9 @@ async function runSprintCycle(context) {
         sprintStartMs: () => sprintState.startedAtMs,
         // Reviewer demotion loop switch ('on' default, 'off'): sprint arg kb_demotion_loop.
         demotionLoop: validated.kbDemotionLoop,
+        // The per-offering record lives in the run context, so a client
+        // rebuilt on a resume keeps what was offered and judged.
+        offeringRecord: (context.kbOfferingRecord ??= new Map()),
         log,
     });
     // Stored on the sprint context (like kbMaintainers) so the terminal-abort
