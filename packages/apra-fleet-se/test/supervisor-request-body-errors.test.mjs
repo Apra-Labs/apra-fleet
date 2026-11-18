@@ -33,7 +33,8 @@ function post(sup, path, body) {
         };
         const req = http.request({
             host: '127.0.0.1', port: sup.port, path, method: 'POST', agent: false,
-            headers: { 'content-type': 'application/json', 'content-length': buf.length },
+            // keep-alive: so a `connection: close` answer is the server's own choice.
+            headers: { 'content-type': 'application/json', 'content-length': buf.length, connection: 'keep-alive' },
         }, (res) => {
             response = { status: res.statusCode, headers: res.headers, text: '' };
             res.on('data', (c) => { response.text += c; });
@@ -135,16 +136,18 @@ describe('RequestBodyError mapping in the catch-all', () => {
                     let status = null;
                     const req = http.request({
                         host: '127.0.0.1', port: sup.port, path: '/api/sprints', method: 'POST', agent: false,
-                        headers: { 'content-type': 'application/json', 'transfer-encoding': 'chunked' },
+                        headers: { 'content-type': 'application/json', 'transfer-encoding': 'chunked', connection: 'keep-alive' },
                     }, (res) => { status = res.statusCode; res.resume(); res.on('error', () => {}); });
                     req.on('socket', (s) => s.on('error', () => {}));
                     req.on('error', () => { /* expected: the server closed the connection */ });
                     req.on('close', () => resolve({ status, closed: true }));
                     // Keep writing regardless of the response, as a hostile client would.
-                    timer = setInterval(() => { if (!req.destroyed) req.write(chunk); }, 1);
-                    setTimeout(() => resolve({ status, closed: false }), 10_000).unref();
+                    timer = setInterval(() => { if (!req.destroyed && !req.writableNeedDrain) req.write(chunk); }, 1);
+                    // Well under the server's 5 s keep-alive idle timeout, so
+                    // only an explicit close after the 413 passes.
+                    setTimeout(() => resolve({ status, closed: false }), 3_000).unref();
                 });
-                assert.equal(outcome.closed, true, 'the server must close the connection, not drain forever');
+                assert.equal(outcome.closed, true, 'the server must close the connection right after the 413');
                 // A peer that keeps writing may lose the 413 to the reset
                 // (Windows discards unread data on RST); if it saw a status,
                 // it must be the 413.

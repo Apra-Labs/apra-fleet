@@ -108,10 +108,11 @@ export function readProcessCommandLine(pid) {
 
 // Markers of a real fleet-sprint engine process: the fleet-sprint CLI entry
 // (installed workflows/fleet-sprint/bin/cli.mjs or the dev
-// packages/apra-fleet-se/bin/cli.mjs), the runner script, or
-// `apra-fleet workflow fleet-sprint`. Deliberately NOT the fleet server, the
-// supervisor (bin/serve.mjs), or any other cli.mjs.
-const ENGINE_MARKER_RE = /(?:fleet-sprint|apra-fleet-se)[\\/]+bin[\\/]+cli\.mjs\b|fleet-sprint[\\/]+runner\.js\b|\bworkflow\s+["']?fleet-sprint\b/i;
+// packages/apra-fleet-se/bin/cli.mjs, or a relative bin/cli.mjs launched from
+// the package folder), the runner script, or `apra-fleet workflow
+// fleet-sprint`. Deliberately NOT the fleet server, the supervisor
+// (bin/serve.mjs), or any other absolute .../cli.mjs.
+const ENGINE_MARKER_RE = /(?:fleet-sprint|apra-fleet-se)[\\/]+bin[\\/]+cli\.mjs\b|(?:^|[\s"'])(?:\.[\\/]+)?bin[\\/]+cli\.mjs\b|fleet-sprint[\\/]+runner\.js\b|\bworkflow\s+["']?fleet-sprint\b/i;
 // --branch X, --branch=X, -b X, -bX. Case-sensitive: -B is --base.
 const BRANCH_FLAG_RE = /(?:^|\s)(?:--branch(?:=|\s+)|-b\s*)("[^"]*"|'[^']*'|[^\s"']\S*)/g;
 

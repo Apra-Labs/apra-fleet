@@ -278,6 +278,8 @@ describe('acquireSprintLock engine identity: only a real fleet-sprint engine hol
         ['cli.mjs, quoted --branch', 'node /x/fleet-sprint/bin/cli.mjs --branch "feat/relaunch"'],
         ['apra-fleet workflow fleet-sprint', 'C:\\Users\\me\\.apra-fleet\\bin\\apra-fleet.exe workflow fleet-sprint --branch feat/relaunch'],
         ['runner.js', 'node /x/fleet-sprint/runner.js --branch feat/relaunch'],
+        ['relative bin/cli.mjs from the package folder', 'node bin/cli.mjs --branch feat/relaunch'],
+        ['npm global bin shim target', 'node /usr/lib/node_modules/@apralabs/apra-fleet-se/bin/cli.mjs --branch feat/relaunch'],
         ['branch differing only in case', 'node /x/fleet-sprint/bin/cli.mjs --branch Feat/Relaunch'],
         ['branch with an origin/ prefix', 'node /x/fleet-sprint/bin/cli.mjs --branch origin/feat/relaunch'],
     ];
