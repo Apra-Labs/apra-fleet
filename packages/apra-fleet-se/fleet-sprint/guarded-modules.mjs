@@ -335,6 +335,11 @@ export const GUARDED_MODULES = [
     // no agent(), no push -- registered so a future dispatch landing here is
     // caught rather than silently unguarded.
     'pr-body.mjs',
+    // The PR-body overflow comment upsert (Publish PR and the [ABORTED] PR
+    // path, via raiseVcsPrForMember). No command(), no agent(): every REST
+    // call goes through the caller-supplied `run` callback -- registered so a
+    // future dispatch landing here is caught rather than silently unguarded.
+    'pr-overflow-comments.mjs',
     'newtask-text.mjs',
     // apra-fleet-fsxg: the parent-NOTES staleness signal. Its pure core is text
     // formatting, but collectParentNotesStalenessNotes carries TWO member_name-

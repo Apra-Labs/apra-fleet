@@ -260,7 +260,10 @@ export async function runPublishPrPhase({
         // resolves the provider and passes its text limits in), so the
         // description is never sized to one global cap. The reviewer notes the
         // description cannot carry come back as `overflow`, never truncated
-        // away; the latest build is kept so that overflow can be published.
+        // away: raiseVcsPrForMember posts it as engine-marked PR comments
+        // (sized to the provider's comment limit) and the description ends
+        // with a pointer to them. The latest build is kept so the full notes
+        // can always be written to the run log as well.
         let lastBody = null;
         const buildBody = (previousBody = '', limits = {}) => (lastBody = buildSprintPrBody({
             verdict: finalVerdictLabel,
@@ -282,6 +285,7 @@ export async function runPublishPrPhase({
             costAnalysis,
             previousBody,
             ...(limits.descriptionMaxLength ? { maxLength: limits.descriptionMaxLength } : {}),
+            ...(limits.commentMaxLength ? { commentMaxLength: limits.commentMaxLength } : {}),
         }));
 
         // Idempotent PR creation via VCSModule (apra-fleet-tfx.8: the reverted
@@ -340,7 +344,7 @@ export async function runPublishPrPhase({
                 updateExisting: ({ body: oldBody }, limits) => ({ title: prTitle, body: buildBody(oldBody, limits) }),
             });
             if (lastBody && lastBody.overflow) {
-                log(`[Publish PR] reviewer notes are ${lastBody.notes.length} characters; ${lastBody.overflow.length} did not fit the PR description. Full reviewer notes:\n${lastBody.notes}`);
+                log(`[Publish PR] reviewer notes are ${lastBody.notes.length} characters; ${lastBody.overflow.length} did not fit the PR description and continue in ${lastBody.comments.length} PR comment(s)${lastBody.notPosted ? ` (${lastBody.notPosted} characters past the comment ceiling are not posted)` : ''}. Full reviewer notes:\n${lastBody.notes}`);
             }
             if (!prResult.ok) {
                 if (prResult.credentialAbsent) {

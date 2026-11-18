@@ -37,6 +37,97 @@ export const RUN_HISTORY_MAX_ENTRIES = 8;
  *  `overflow` (buildSprintPrBody), never dropped. */
 export const NOTES_CONTINUED_MARKER = '*[... reviewer notes continue past the description limit -- see the end of this description ...]*';
 
+/** Opening token of the hidden marker every engine-posted overflow comment
+ *  starts with. Versioned like RUN_HISTORY_MARKER. */
+export const OVERFLOW_COMMENT_MARKER = 'fleet-sprint:pr-overflow v1';
+
+/** Most overflow comments one publish posts. Past it the last comment states
+ *  how many characters were not posted; the full notes are in the run log. */
+export const OVERFLOW_MAX_COMMENTS = 20;
+
+/** Body an earlier run's surplus overflow comment is emptied to when it
+ *  cannot be deleted; a later run reuses it before posting a new one. */
+export const OVERFLOW_SUPERSEDED_COMMENT = `<!-- ${OVERFLOW_COMMENT_MARKER} superseded -->\n*(superseded by a later sprint run)*`;
+
+const OVERFLOW_CHUNK_RE = /^<!-- fleet-sprint:pr-overflow v1 (\d+)\/(\d+) -->\r?\n\*\*Reviewer notes, continued \(\d+ of \d+\)\*\*\r?\n([\s\S]*)$/;
+const OVERFLOW_SUPERSEDED_RE = /^<!-- fleet-sprint:pr-overflow v1 superseded -->/;
+
+/** The engine-written header of overflow comment `index` of `total`. */
+function overflowCommentHeader(index, total) {
+    return `<!-- ${OVERFLOW_COMMENT_MARKER} ${index}/${total} -->\n**Reviewer notes, continued (${index} of ${total})**\n`;
+}
+
+/** The description's closing pointer line when the overflow is posted. */
+export function overflowPointer(count) {
+    return `Reviewer notes continued in ${count} comment(s) below.`;
+}
+
+/** The description's closing pointer line when the overflow could not be
+ *  posted as PR comments. */
+export function overflowFailedPointer(chars) {
+    return `Reviewer notes continued: ${chars} characters did not fit this description and could not be posted as PR comments -- the full notes are in the sprint run log.`;
+}
+
+const OVERFLOW_POINTER_RE = /^Reviewer notes continued(?: in \d+ comment\(s\) below\.|: \d+ characters did not fit)/m;
+
+/** Whether `body` (a PR description) carries an overflow pointer line, i.e.
+ *  the run that wrote it posted (or tried to post) overflow comments. */
+export function bodyHasOverflowPointer(body) {
+    return OVERFLOW_POINTER_RE.test(String(body ?? ''));
+}
+
+/**
+ * Reads an engine overflow comment back: { index, total, text } for a chunk
+ * (`text` is the chunk's notes text, including the ceiling notice on a last
+ * comment cut by OVERFLOW_MAX_COMMENTS), { superseded: true } for an emptied
+ * stub, null for any other comment.
+ * @param {unknown} body
+ */
+export function parseOverflowComment(body) {
+    const s = String(body ?? '');
+    if (OVERFLOW_SUPERSEDED_RE.test(s)) return { superseded: true };
+    const m = OVERFLOW_CHUNK_RE.exec(s);
+    if (!m) return null;
+    return { index: Number(m[1]), total: Number(m[2]), text: m[3].replace(/\r\n?/g, '\n') };
+}
+
+/**
+ * Splits description overflow into ordered PR comment bodies, each at most
+ * `commentMaxLength` characters: an engine header (hidden marker with the
+ * chunk index, plus a visible "continued (i of N)" line) and the next piece
+ * of the overflow, cut at a line break when one is close. The pieces
+ * concatenate back to `overflow` exactly. At most `maxComments` comments: the
+ * last one then ends with a notice naming how many characters were not
+ * posted. Returns { comments, notPosted }; no comments when `overflow` is
+ * empty or the limit cannot carry a useful piece.
+ * @param {string} overflow
+ * @param {{ commentMaxLength: number, maxComments?: number }} opts
+ * @returns {{ comments: string[], notPosted: number }}
+ */
+export function buildOverflowComments(overflow, { commentMaxLength, maxComments = OVERFLOW_MAX_COMMENTS } = {}) {
+    const text = String(overflow ?? '');
+    if (!text) return { comments: [], notPosted: 0 };
+    const room = Math.floor(commentMaxLength) - overflowCommentHeader(99, 99).length;
+    if (!Number.isFinite(room) || room < SECTION_MIN_LENGTH || !(maxComments >= 1)) return { comments: [], notPosted: text.length };
+    const notice = (n) => `\n\n*[... ${n} characters of reviewer notes not posted: the ${maxComments}-comment limit was reached -- the full notes are in the sprint run log ...]*`;
+    const pieces = [];
+    let rest = text;
+    let notPosted = 0;
+    while (rest) {
+        if (pieces.length === maxComments - 1 && rest.length > room) {
+            const lastRoom = room - notice(text.length).length;
+            const cut = lastRoom > 0 ? notesCutIndex(rest, lastRoom) : 0;
+            notPosted = rest.length - cut;
+            pieces.push(rest.slice(0, cut) + notice(notPosted));
+            break;
+        }
+        const cut = Math.max(1, notesCutIndex(rest, room));
+        pieces.push(rest.slice(0, cut));
+        rest = rest.slice(cut);
+    }
+    return { comments: pieces.map((p, i) => overflowCommentHeader(i + 1, pieces.length) + p), notPosted };
+}
+
 const VERDICTS = new Set(['PASS', 'FAIL', 'ABORTED']);
 const RUN_ID_UNSAFE_RE = /[^A-Za-z0-9._:/-]/g;
 const RUN_ID_MAX = 64;
@@ -450,18 +541,27 @@ export function renderMergeAssessment(assessment) {
  *   PR is raised on (its descriptor's descriptionMaxLength, see
  *   vcs-module.mjs getProviderTextLimits); PR_DESCRIPTION_MAX_LENGTH when
  *   omitted
- * @returns {{ body: string, overflow: string, notes: string }} `body` is the
- *   description (<= maxLength); `notes` the full sanitized notes; `overflow`
- *   the part of `notes` the description could not carry ('' when it all
- *   fits) -- the section in `body` holds exactly notes.slice(0, notes.length
- *   - overflow.length), so nothing is ever silently dropped: the caller
- *   publishes the overflow elsewhere.
+ * @param {number} [opts.commentMaxLength] the same provider's PR comment
+ *   limit (commentMaxLength); the overflow is split into comments within it
+ * @returns {{ body: string, overflow: string, notes: string, comments: string[],
+ *   notPosted: number, failedBody: string|null, previousHadOverflow: boolean }}
+ *   `body` is the description (<= maxLength); `notes` the full sanitized
+ *   notes; `overflow` the part of `notes` the description could not carry
+ *   ('' when it all fits) -- the section in `body` holds exactly
+ *   notes.slice(0, notes.length - overflow.length), so nothing is ever
+ *   silently dropped. `comments` is the overflow as ordered PR comment bodies
+ *   (buildOverflowComments; `notPosted` characters past its ceiling), and
+ *   `body` then ends with "Reviewer notes continued in N comment(s) below.";
+ *   `failedBody` is the same description pointing at the run log instead,
+ *   for when the comments cannot be posted (null with no overflow).
+ *   `previousHadOverflow` says whether `previousBody` pointed at overflow
+ *   comments (so a relaunch knows to clean them up).
  */
 export function buildSprintPrBody({
     verdict, goal, branch, baseBranch, runId, now = new Date(),
     notes, notesHeading = 'Reviewer notes', mergeAssessment, sections = [],
     details = [], setAside = [], waited = [], costAnalysis = '', previousBody = '',
-    maxLength = PR_DESCRIPTION_MAX_LENGTH,
+    maxLength = PR_DESCRIPTION_MAX_LENGTH, commentMaxLength = PR_DESCRIPTION_MAX_LENGTH,
 }) {
     const v = VERDICTS.has(verdict) ? verdict : 'FAIL';
     const run = normalizeRunId(runId);
@@ -482,12 +582,17 @@ export function buildSprintPrBody({
         '',
     ].filter((l) => l !== null);
 
-    const footer = [
+    // The overflow pointer line, when set, is the description's last visible
+    // line, just above the hidden run-history block.
+    let pointer = '';
+    const footer = () => [
         '---',
         '',
         HUMAN_REVIEW_LINE,
         previous.length ? '\n### Previous runs\n' : null,
         previous.length ? previous.map((e) => `- ${codeSpan(e.run)} (${e.date}): ${e.verdict}`).join('\n') : null,
+        pointer ? '' : null,
+        pointer || null,
         '',
         `<!-- ${RUN_HISTORY_MARKER}`,
         JSON.stringify(history),
@@ -522,7 +627,7 @@ export function buildSprintPrBody({
             t.details || null,
             t.details ? '' : null,
             cost ? `### Cost\n\n${costFence}\n${cost}\n${costFence}\n` : null,
-            ...footer,
+            ...footer(),
         ].filter((l) => l !== null).join('\n');
         // Blank lines around the notes keep them their own block: notes ending
         // in a paragraph directly above '---' would otherwise turn into a heading.
@@ -540,7 +645,7 @@ export function buildSprintPrBody({
         return r.text;
     };
     const notesOmitted = '*[... reviewer notes continue past the description limit -- see the end of this description ...]*';
-    const { texts } = fitSectionsToBudget({
+    const fit = () => fitSectionsToBudget({
         maxLength,
         render,
         sections: [
@@ -564,7 +669,30 @@ export function buildSprintPrBody({
             { id: 'cost', priority: SECTION_PRIORITY.cost, text: sanitizePrMarkdown(costAnalysis) },
         ],
     });
-    const used = cleanNotes ? (notesUsed.get(texts.notes) ?? 0) : 0;
-    const overflow = cleanNotes.slice(used);
-    return { body: render(texts), overflow, notes: cleanNotes };
+    const overflowOf = (t) => cleanNotes.slice(cleanNotes ? (notesUsed.get(t.notes) ?? 0) : 0);
+    let { texts } = fit();
+    let overflow = overflowOf(texts);
+    let comments = [];
+    let notPosted = 0;
+    let failedBody = null;
+    if (overflow) {
+        // Re-fit with the longest pointer line reserved, so whichever pointer
+        // the description ends up with still fits maxLength.
+        pointer = overflowFailedPointer(cleanNotes.length);
+        ({ texts } = fit());
+        overflow = overflowOf(texts);
+        ({ comments, notPosted } = buildOverflowComments(overflow, { commentMaxLength: commentMaxLength || PR_DESCRIPTION_MAX_LENGTH }));
+        pointer = overflowFailedPointer(overflow.length);
+        failedBody = render(texts);
+        if (comments.length) pointer = overflowPointer(comments.length);
+    }
+    return {
+        body: render(texts),
+        overflow,
+        notes: cleanNotes,
+        comments,
+        notPosted,
+        failedBody,
+        previousHadOverflow: bodyHasOverflowPointer(previousBody),
+    };
 }
