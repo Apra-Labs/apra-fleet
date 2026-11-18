@@ -723,7 +723,11 @@ on it); any other id is skipped with reason `not_demoted_or_unknown` and nothing
 changes for it. An admitted id is removed from `entries` and upserted into the
 bible's optional top-level `demotions` array as `{id, at, reason}`, so another
 clone applies the demotion explicitly instead of inferring it from an absence.
-Tombstones already in the file survive a later commit carrying unrelated ids, and
+A demoted tombstone is written only for an id the bible at `baseCommit` carries
+(as an entry or a tombstone): a locally demoted entry the branch added is removed
+from `entries` with no tombstone, and any other `demoted_ids` id is skipped with
+reason `not_in_base_bible`. When `baseCommit` does not resolve or its bible is
+unreadable, no new demoted tombstone is written. Tombstones already in the file survive a later commit carrying unrelated ids, and
 re-committing a demoted-tombstoned id through `ids` (a re-promotion) restores its
 entry and clears its tombstone. A `withdrawn` tombstone in the current file
 (branch-added or merged from the base) is never cleared by `ids`: such an id is

@@ -296,7 +296,9 @@ const KB_RESPONSE_BODIES = {
   // handler. A withdrawal that does not qualify is skipped with reason
   // not_withdrawable. An ids merge of an id the current file carries a
   // withdrawn tombstone for (and this call does not restore) is skipped with
-  // reason withdrawn_tombstone. Under the http provider bible_skipped stays true for the
+  // reason withdrawn_tombstone. A demoted_ids id the bible at baseCommit does
+  // not carry (or an unreadable/unresolvable base) is skipped with reason
+  // not_in_base_bible. Under the http provider bible_skipped stays true for the
   // entry merge, but withdrawals/restores still write the tombstones, so
   // committed may be true there.
   kb_bible_commit: z.object({
@@ -308,7 +310,7 @@ const KB_RESPONSE_BODIES = {
     skipped: z.array(z.object({
       id: z.string(),
       reason: z.enum(['not_confirmed_or_unknown', 'no_source_files', 'basis_mismatch', 'not_demoted_or_unknown', 'not_withdrawable',
-        'withdrawn_tombstone']),
+        'withdrawn_tombstone', 'not_in_base_bible']),
     })),
     removed: z.array(z.object({
       id: z.string(),

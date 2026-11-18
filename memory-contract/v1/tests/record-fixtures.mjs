@@ -547,6 +547,9 @@ if (idFoo) {
 // scenarios.
 {
   fs.writeFileSync(path.join(repoA, 'src', 'demote-basis.ts'), 'export const demoteBasis = 1;\n');
+  // Committed so the entry's basis matches HEAD and it can enter the bible.
+  execFileSync('git', ['add', '--', 'src/demote-basis.ts'], { cwd: repoA });
+  execFileSync('git', ['commit', '--quiet', '-m', 'demote basis', '--', 'src/demote-basis.ts'], { cwd: repoA });
   const captureForDemote = await recordHappy('kb_capture', 'setup-for-demote', {
     type: 'knowledge',
     title: 'Entry walked up to CONFIRMED so it can be demoted',
@@ -564,6 +567,15 @@ if (idFoo) {
       id: idDemote,
       reason: 'Second promotion (INFERRED -> CONFIRMED) so kb_demote has a CONFIRMED entry to lower.',
     });
+    // The entry enters the bible before it is demoted: a demoted tombstone is
+    // written only for an id the bible at baseCommit carries. The ref pins
+    // that commit as the base for the tombstone call below.
+    await recordHappy('kb_bible_commit', 'setup-merge-for-demote', {
+      ids: [idDemote],
+      baseBranch: 'main',
+      baseCommit: '0123456789abcdef0123456789abcdef01234567',
+    });
+    execFileSync('git', ['update-ref', 'refs/fixtures/pre-demote', 'HEAD'], { cwd: repoA });
     await recordHappy('kb_demote', 'happy', {
       id: idDemote,
       reason: 'Re-read src/demote-basis.ts and the claim holds in fewer cases than the promotion note asserts.',
@@ -590,7 +602,7 @@ if (idFoo) {
         ids: [],
         demoted_ids: [idDemote, idFoo],
         baseBranch: 'main',
-        baseCommit: '0123456789abcdef0123456789abcdef01234567',
+        baseCommit: 'refs/fixtures/pre-demote',
       });
     }
   }

@@ -288,7 +288,7 @@ describe('kb_bible_commit restore_ids (sqlite)', () => {
     const other = await confirmedCiting('Beta', 'src/beta.ts');
     await kbBibleCommit({ ids: [id, other], ...base() }, { folder: clone });
     await kbDemote({ id, reason: DEMOTE_REASON, evidence_files: EVIDENCE }, { folder: clone });
-    await kbBibleCommit({ ids: [], demoted_ids: [id], ...base() }, { folder: clone });
+    await kbBibleCommit({ ids: [], demoted_ids: [id], ...base(head()) }, { folder: clone });
     // The tombstone is part of the base now.
     const baseSha = head();
     const bytes = fs.readFileSync(biblePath());

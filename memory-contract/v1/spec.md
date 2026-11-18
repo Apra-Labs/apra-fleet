@@ -482,6 +482,17 @@ value.
   `{id, at: <local demoted_at>, reason: "demoted"}`. Tombstones already in the
   file are preserved when a later commit carries unrelated ids, and an id
   re-admitted through `ids` (a re-promotion) has its tombstone CLEARED.
+- BASE-BIBLE GATE. A `demoted` tombstone (either source above) is written only
+  for an id the bible at `baseCommit` carries, as an entry or as a tombstone:
+  a tombstone for any other id is never meaningful for that base. A locally
+  demoted entry that only this branch's file carries (absent from the base) is
+  removed from `entries` with no tombstone and listed in `demoted`; any other
+  `demoted_ids` id is skipped with reason `not_in_base_bible`. When
+  `baseCommit` does not resolve, or its bible cannot be read, the writer fails
+  closed: no new `demoted` tombstone and no such removal (`demoted_ids` ids are
+  skipped with `not_in_base_bible`), a warning is logged, and tombstones
+  already in the file are kept unchanged. Withdrawals are not gated by this
+  rule.
 - `kb_export` (scope=project) honours tombstones: it does not re-add a tombstoned
   id unless the local row is RE-PROMOTED under the rule above, in which case it
   re-adds the entry and clears the tombstone in the same write.
