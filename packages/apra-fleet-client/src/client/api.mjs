@@ -767,6 +767,19 @@
  *   demotions array; any other id is skipped with reason not_demoted_or_unknown. Existing
  *   tombstones are preserved, and re-committing a tombstoned id through ids (a
  *   re-promotion) restores its entry and clears its tombstone.
+ * @property {{id: string, note: string, evidence_files: string[]}[]} [withdrawals] - Bible
+ *   entries withdrawn this round. note must be at least 20 characters after whitespace is
+ *   collapsed (stored collapsed); evidence_files needs at least one repo-relative path (no
+ *   absolute path, no ".." segment). An id the bible holds as an entry, or one the KB holds
+ *   CONFIRMED, not superseded and not a user-directive, is removed from entries and
+ *   recorded as a tombstone {id, at, reason: "withdrawn", note, evidence_files}; the local
+ *   entry is NOT changed. Any other id (or one merged or demoted by the same call) is
+ *   skipped with reason not_withdrawable. Admitted ids are reported in the result's
+ *   withdrawn list.
+ * @property {string[]} [restore_ids] - Ids whose tombstone this branch added and should be
+ *   undone: removed only when the bible at baseCommit carries no tombstone for the id, and
+ *   the base bible's entry for it (if any) is re-added byte-identical; anything else is a
+ *   no-op. Restored ids are reported in the result's restored list.
  */
 
 /**
@@ -1349,11 +1362,14 @@ export class ApraFleet {
      * entries and tombstoned as {id, at, reason}; entry_count counts entries only.
      * The removed scope keys (repo_path, repo, repo_remote_url) are refused
      * with E-SCOPE-KEY-REMOVED before anything is sent.
-     * Under an http KB provider the call is skipped, never an error: the result
-     * is {path, merged: [], skipped: [], removed: [], entry_count: <entries in the
-     * existing parseable bible, else 0>, backfilled: 0, committed: false,
-     * bible_skipped: true, reason}; the KB is not read and nothing is written or
-     * committed.
+     * Under an http KB provider the entry merge is skipped, never an error: the
+     * result is {path, merged: [], skipped: [], removed: [], entry_count: <entries
+     * in the existing parseable bible, else 0>, backfilled: 0, committed,
+     * bible_skipped: true, reason, withdrawn, restored}; the KB is not read. With
+     * no withdrawals and no restore_ids nothing is written or committed; with
+     * them, only the tombstones are written to .fleet/kb-canonical.json (a
+     * tombstone-only bible is created when absent, existing entries stay
+     * byte-identical) and committed may be true.
      * @param {KbBibleCommitOptions} options
      */
     async kbBibleCommit(options) {

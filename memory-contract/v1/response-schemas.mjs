@@ -262,20 +262,31 @@ const KB_RESPONSE_BODIES = {
   // gained source_file_hashes from this KB's stored basis (legacy backfill);
   // committed is true only when a local commit of the bible path was made
   // (never pushed). Under the http KB provider the call is skipped, not
-  // failed: bible_skipped is the literal true, reason says why, and nothing was
-  // written or committed (every list empty, committed false; entry_count is the
-  // size of the existing parseable bible, else 0).
+  // failed: bible_skipped is the literal true, reason says why, and with no
+  // withdrawals or restore_ids nothing was written or committed (every list
+  // empty, committed false; entry_count is the size of the existing parseable
+  // bible, else 0).
   // demoted names the ids admitted from demoted_ids: removed from entries and
   // tombstoned in the bible's demotions array. OPTIONAL so bibles/fixtures
   // recorded before tombstones existed still validate; the handler always emits
   // it. entry_count counts ENTRIES only -- a tombstone is not an entry.
+  // withdrawn names the ids admitted from withdrawals (removed from entries,
+  // tombstoned with reason "withdrawn"; the local row is not changed) and
+  // restored the restore_ids whose branch-added tombstone was removed; both
+  // OPTIONAL for fixtures recorded before they existed, always emitted by the
+  // handler. A withdrawal that does not qualify is skipped with reason
+  // not_withdrawable. Under the http provider bible_skipped stays true for the
+  // entry merge, but withdrawals/restores still write the tombstones, so
+  // committed may be true there.
   kb_bible_commit: z.object({
     path: z.string(),
     merged: z.array(z.string()),
     demoted: z.array(z.string()).optional(),
+    withdrawn: z.array(z.string()).optional(),
+    restored: z.array(z.string()).optional(),
     skipped: z.array(z.object({
       id: z.string(),
-      reason: z.enum(['not_confirmed_or_unknown', 'no_source_files', 'basis_mismatch', 'not_demoted_or_unknown']),
+      reason: z.enum(['not_confirmed_or_unknown', 'no_source_files', 'basis_mismatch', 'not_demoted_or_unknown', 'not_withdrawable']),
     })),
     removed: z.array(z.object({
       id: z.string(),
