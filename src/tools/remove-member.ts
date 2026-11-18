@@ -83,6 +83,21 @@ function memberSharingAuthorizedKey(agent: Agent): Agent | undefined {
   });
 }
 
+// Another registered member that runs as the same user on the same host
+// (keyed on authorizedKeysOwner only, so loopback/local hosts compare equal).
+// The LLM login files, shell-profile auth exports and git credential helper
+// live in that user's home and are shared by every such member: removing them
+// would break that member, so the caller must leave them in place.
+function memberSharingHostUser(agent: Agent): Agent | undefined {
+  const mine = authorizedKeysOwner(agent);
+  if (!mine.user) return undefined;
+  return getAllAgents().find(a => {
+    if (a.id === agent.id) return false;
+    const theirs = authorizedKeysOwner(a);
+    return theirs.host === mine.host && theirs.user === mine.user;
+  });
+}
+
 export async function removeMember(input: RemoveMemberInput): Promise<string> {
   const agentOrError = resolveMember(input.member_id, input.member_name);
   if (typeof agentOrError === 'string') return agentOrError;
@@ -184,15 +199,28 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
         };
         const provider = getProvider(agent.llmProvider);
 
-        // Remove credentials files for any provider that uses them
+        // Credentials live in the member user's home and are shared by every
+        // member running as that user on that host: leave them all in place
+        // when another registered member still uses them.
+        const hostUserSharer = memberSharingHostUser(agent);
         const credentialFiles = provider.oauthCredentialFiles() ?? [];
-        for (const file of credentialFiles) {
+        const authVars = [...new Set([provider.authEnvVar, ...(provider.authEnvVarNames?.() ?? [])].filter(Boolean))];
+        if (hostUserSharer) {
+          const owner = authorizedKeysOwner(agent);
+          const left: string[] = [];
+          if (credentialFiles.length > 0) left.push(`LLM login files (${credentialFiles.map(f => f.remotePath).join(', ')})`);
+          if (authVars.length > 0) left.push(`auth env vars in shell profiles / user environment (${authVars.join(', ')})`);
+          if (agent.vcsProvider) left.push(`the ${agent.vcsProvider} git credential helper${agent.vcsCredentialLabel ? ` (label ${agent.vcsCredentialLabel})` : ''}`);
+          notes.push(`Credentials were left in place on ${owner.host} for user ${owner.user} because member "${hostUserSharer.friendlyName}" (${hostUserSharer.id}) runs as the same user on the same host and still uses them: ${left.length > 0 ? left.join('; ') : 'nothing credential-related was configured'}`);
+        }
+
+        // Remove credentials files for any provider that uses them
+        for (const file of hostUserSharer ? [] : credentialFiles) {
           await strategy.execCommand(cmds.credentialFileRemove(file.remotePath), 10000).catch(() => {});
         }
 
         // Remove the provider's auth env vars (every credential kind) from shell profiles
-        const authVars = new Set([provider.authEnvVar, ...(provider.authEnvVarNames?.() ?? [])].filter(Boolean));
-        for (const envVar of authVars) {
+        for (const envVar of hostUserSharer ? [] : authVars) {
           for (const cmd of cmds.unsetEnv(envVar)) {
             await strategy.execCommand(cmd, 10000).catch(() => {});
           }
@@ -204,7 +232,7 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
         // default-host credential-helper file/config-key pair instead of the
         // one actually deployed, leaving the real token file orphaned,
         // unrevoked, on a machine that is being decommissioned.
-        if (agent.vcsProvider) {
+        if (agent.vcsProvider && !hostUserSharer) {
           const vcsService = vcsProviders[agent.vcsProvider];
           if (vcsService) {
             await vcsService.revoke(agent, cmds, exec, agent.vcsCredentialLabel, agent.vcsCredentialScopeUrl).catch(() => {});
