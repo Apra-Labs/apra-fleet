@@ -23,6 +23,7 @@ import fs from 'node:fs';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { createSupervisor, DEFAULT_SERVICE_PORT, DEFAULT_SERVICE_HOST, SUPERVISOR_ALLOWED_HOSTS_ENV, readJsonBody, sendJson } from '../src/supervisor/server.mjs';
 import { createLedger, defaultDataDir as defaultSupervisorDataDir } from '../src/supervisor/ledger.mjs';
+import { detachSupervisor } from '../src/supervisor/detach.mjs';
 import { createHeartbeat, resolveHeartbeatIntervalMs } from '../src/supervisor/heartbeat.mjs';
 import { createHistory, HISTORY_EVENTS } from '../src/supervisor/history.mjs';
 import { createSpawner } from '../src/supervisor/spawner.mjs';
@@ -87,6 +88,14 @@ Options:
                             logs a WARNING and reports beads as unknown until
                             GET /api/health?refresh=1 finds one. A path that
                             does not exist is an error.
+      --detach              Respawn the supervisor as a detached background process
+                            (survives this terminal closing), wait until its
+                            /api/health answers with the child's pid, print the
+                            pid/port and exit 0. On timeout, a port already taken
+                            by another process, or an early child exit it kills
+                            the child it started, prints the reason and the log
+                            path (<dataDir>/logs/supervisor-launch.log) and exits
+                            non-zero. All other options are passed through.
   -h, --help                Show this help message.
 
 Environment:
@@ -202,6 +211,7 @@ export function parseServeArgs(argv) {
                 host: { type: 'string' },
                 'allowed-host': { type: 'string', multiple: true },
                 'beads-dir': { type: 'string' },
+                detach: { type: 'boolean' },
                 help: { type: 'boolean', short: 'h' },
             },
             strict: true,
@@ -249,6 +259,21 @@ export async function serveMain(argv = process.argv.slice(2), deps = {}) {
     // unaffected). This is the supervisor's own equivalent of spawner.mjs's
     // per-sprint-child raw log; a dashboard link to GET /supervisor/log is
     // registered further down, once `supervisor` exists.
+    // --detach: this process is only the launcher; the real supervisor is the
+    // detached child (same entry point, flag removed).
+    if (values.detach) {
+        const detachPort = values.port !== undefined ? Number(values.port) : DEFAULT_SERVICE_PORT;
+        if (!Number.isInteger(detachPort) || detachPort < 1 || detachPort > 65535) {
+            console.error(`Error: --port must be a valid TCP port number, got "${values.port}".`);
+            return { exitCode: 1 };
+        }
+        const { exitCode } = await detachSupervisor({
+            argv, scriptPath: fileURLToPath(import.meta.url), dataDir: defaultSupervisorDataDir(),
+            port: detachPort, host: values.host,
+        });
+        return { exitCode };
+    }
+
     const selfLog = installSelfLogTee();
     process.once('exit', () => selfLog.stop());
     // Final synchronous exit line (cause + exit code) on every observable exit
