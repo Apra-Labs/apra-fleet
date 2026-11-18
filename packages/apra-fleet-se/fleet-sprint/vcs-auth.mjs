@@ -10,7 +10,7 @@
 // (provisionOutcome below), keeping the prose regexes only as a fallback for
 // a result with no structuredContent at all.
 import { ApraFleet } from '@apralabs/apra-fleet-client';
-import { buildCreatePrCommand, buildFindPrCommand, buildUpdatePrCommand, resolveProvider, capabilities as vcsCapabilities, parseProviderRepoRef, getVcsProvider, resolveVcsAuthProviderForHost, isAuthBackend, VCS_NO_REGISTERED_PROVIDER, DEFAULT_VCS_PROVIDER } from './vcs-module.mjs';
+import { buildCreatePrCommand, buildFindPrCommand, buildUpdatePrCommand, getProviderTextLimits, resolveProvider, capabilities as vcsCapabilities, parseProviderRepoRef, getVcsProvider, resolveVcsAuthProviderForHost, isAuthBackend, VCS_NO_REGISTERED_PROVIDER, DEFAULT_VCS_PROVIDER } from './vcs-module.mjs';
 import { getSeCommands } from './se-os-commands.mjs';
 import { resolveMemberTarget } from './member-target.mjs';
 import { resultText } from './mcp-result.mjs';
@@ -770,7 +770,12 @@ function isPrAuthFailure(status, errorText) {
 // the caller to log as a WARNING, leaving the PR as it was. Without
 // `updateExisting` the returned shape is exactly the historical one.
 /**
- * @param {{ fleetApi: object, command: Function, member: string, base: string, head: string, title: string, body?: string, log?: Function, logPrefix: string, updateExisting?: Function }} opts
+ * `body` may also be a function of the provider's text limits
+ * ({ descriptionMaxLength, commentMaxLength }, see vcs-module.mjs
+ * getProviderTextLimits), called once the provider is resolved, and
+ * `updateExisting(old, limits)` receives the same limits as its second
+ * argument; either may answer a string or a { body } object.
+ * @param {{ fleetApi: object, command: Function, member: string, base: string, head: string, title: string, body?: string|Function, log?: Function, logPrefix: string, updateExisting?: Function }} opts
  * @returns {Promise<{ ok: boolean, alreadyExists: boolean, prUrl: string|null, error: string|null, authFailure: boolean, updated?: boolean, updateError?: string|null }>}
  */
 export async function raiseVcsPrForMember({ fleetApi, command, member, base, head, title, body, log = () => {}, logPrefix, remoteUrlOverride, updateExisting }) {
@@ -856,6 +861,14 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
     // resolveProvider() throw here -- use the provider the skip named instead.
     const { provider } = skippedProvider ? { provider: skippedProvider } : await resolveProvider(member, { fleetApi });
     const credentialLabel = vcsCredentialLabelForProvider(provider);
+    // The provider's own text limits (its descriptor's descriptionMaxLength /
+    // commentMaxLength). A caller that passes `body` (or answers
+    // `updateExisting`) as a function of these gets a description built to
+    // THIS provider's limit rather than one global cap; a function answer may
+    // be a string or a pr-body.mjs buildSprintPrBody result ({ body, ... }).
+    const textLimits = getProviderTextLimits(provider);
+    const bodyText = (v) => (v && typeof v === 'object' && typeof v.body === 'string' ? v.body : v);
+    if (typeof body === 'function') body = bodyText(body(textLimits));
     // The provider's operator-facing remedy, appended to every degraded
     // (authFailure) outcome below when the credential is out-of-band only.
     const skippedRemedy = () => {
@@ -1011,7 +1024,8 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
                 }
                 pr = found.prs[0];
             }
-            const next = updateExisting({ title: pr.title, body: pr.body }) || {};
+            const next = updateExisting({ title: pr.title, body: pr.body }, textLimits) || {};
+            if (next.body !== undefined) next.body = bodyText(next.body);
             let warned = false;
             const upd = await runUpdatePathCall(() => {
                 const b = buildUpdatePrCommand({

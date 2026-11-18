@@ -32,9 +32,10 @@ export const RUN_HISTORY_MARKER = 'fleet-sprint:run-history v1';
 /** Total runs (current + previous) kept in the history block. */
 export const RUN_HISTORY_MAX_ENTRIES = 8;
 
-/** Upper bound on the reviewer-notes section before the whole-body budget
- *  (PR_DESCRIPTION_MAX_LENGTH) is even considered. */
-export const PR_NOTES_MAX_LENGTH = 2000;
+/** Marker appended to the reviewer-notes section when only a prefix of the
+ *  notes fits the description: the rest is returned to the caller as
+ *  `overflow` (buildSprintPrBody), never dropped. */
+export const NOTES_CONTINUED_MARKER = '*[... reviewer notes continue past the description limit -- see the end of this description ...]*';
 
 const VERDICTS = new Set(['PASS', 'FAIL', 'ABORTED']);
 const RUN_ID_UNSAFE_RE = /[^A-Za-z0-9._:/-]/g;
@@ -109,16 +110,66 @@ export function closeOpenFences(text) {
     return open ? `${text}\n${open}` : text;
 }
 
-/** Caps already-sanitized notes at `max` characters, cutting at a line
- *  boundary when one is reasonably close, with a visible marker. */
-export function capNotes(text, max) {
-    const total = text.length;
-    if (total <= max) return closeOpenFences(text);
-    let cut = text.slice(0, Math.max(0, max));
-    const nl = cut.lastIndexOf('\n');
-    if (nl > max * 0.5) cut = cut.slice(0, nl);
-    cut = closeOpenFences(cut.replace(/\s+$/, ''));
-    return `${cut}\n\n*[... reviewer notes truncated: ${cut.length} of ${total} characters shown ...]*`;
+/**
+ * Where to cut `text` so its first part is at most `max` characters: the
+ * index of a line break (the second part then starts with that '\n'), one
+ * outside an open code fence when possible and reasonably close to `max`;
+ * a hard cut at `max` when no line break qualifies. The two parts always
+ * concatenate back to `text` exactly.
+ * @param {string} text
+ * @param {number} max
+ * @returns {number} the length of the first part (0..text.length)
+ */
+export function notesCutIndex(text, max) {
+    const src = String(text ?? '');
+    if (src.length <= max) return src.length;
+    const limit = Math.max(0, Math.floor(max));
+    if (limit === 0) return 0;
+    let best = -1;
+    let bestOutside = -1;
+    let open = null;
+    let pos = 0;
+    for (const line of src.split('\n')) {
+        const end = pos + line.length;
+        if (end > limit) break;
+        const m = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+        if (m) {
+            if (!open) open = m[1];
+            else if (m[1][0] === open[0] && m[1].length >= open.length && /^ {0,3}(`{3,}|~{3,})\s*$/.test(line)) open = null;
+        }
+        if (end < src.length) {
+            best = end;
+            if (!open) bestOutside = end;
+        }
+        pos = end + 1;
+    }
+    if (bestOutside > limit * 0.5) return bestOutside;
+    if (best > limit * 0.5) return best;
+    return limit;
+}
+
+/**
+ * The longest prefix of sanitized notes that fits `max` characters as a
+ * description section: the prefix (code fences closed) plus
+ * NOTES_CONTINUED_MARKER, or the whole notes when they fit. Returns
+ * { text, used } -- `used` is how many characters of `notes` the section
+ * carries (the rest is overflow); { text: '', used: 0 } when no useful prefix
+ * fits.
+ * @param {string} notes
+ * @param {number} max
+ */
+export function fitNotesPrefix(notes, max) {
+    const full = closeOpenFences(notes);
+    if (full.length <= max) return { text: full, used: notes.length };
+    const suffix = `\n\n${NOTES_CONTINUED_MARKER}`;
+    let room = max - suffix.length;
+    while (room >= SECTION_MIN_LENGTH) {
+        const used = notesCutIndex(notes, room);
+        const text = `${closeOpenFences(notes.slice(0, used))}${suffix}`;
+        if (text.length <= max && used > 0) return { text, used };
+        room -= Math.max(1, text.length - max);
+    }
+    return { text: '', used: 0 };
 }
 
 /** Normalizes a run id to the history-safe charset. */
@@ -315,18 +366,6 @@ export function fitSectionsToBudget({ sections, render, maxLength }) {
     return { body, texts, clipped: [...clipped] };
 }
 
-/** Caps sanitized reviewer notes at `max` characters INCLUDING capNotes'
- *  truncation marker; '' when nothing useful fits. */
-function capNotesWithin(text, max) {
-    let m = max - 100;
-    while (m > 0) {
-        const r = capNotes(text, m);
-        if (r.length <= max) return r;
-        m -= r.length - max;
-    }
-    return '';
-}
-
 /** merge_assessment.recommendation values the section renders as a code span.
  *  Kept local so this module stays pure (contracts.mjs reads schema files at
  *  load); pinned equal to contracts.mjs MERGE_RECOMMENDATIONS by test. */
@@ -373,11 +412,14 @@ export function renderMergeAssessment(assessment) {
 /**
  * Builds the sprint PR body as markdown.
  *
- * Every variable section (merge assessment, reviewer notes, set-aside,
- * waited, details, cost, and any caller-registered `sections`) draws on one
- * budget -- `maxLength` -- through fitSectionsToBudget; the verdict header,
- * human-review line and run-history marker block are the fixed frame and are
- * never clipped.
+ * The description starts with the sprint verdict, then the merge
+ * assessment, then the remaining sections. Every variable section (merge
+ * assessment, reviewer notes, set-aside, waited, details, cost, and any
+ * caller-registered `sections`) draws on one budget -- `maxLength` -- through
+ * fitSectionsToBudget, by priority; the verdict header, human-review line and
+ * run-history marker block are the fixed frame and are never clipped. The
+ * reviewer notes are never truncated away: the part that does not fit is
+ * returned as `overflow`.
  *
  * @param {object} opts
  * @param {'PASS'|'FAIL'|'ABORTED'} opts.verdict
@@ -404,8 +446,16 @@ export function renderMergeAssessment(assessment) {
  *   set-aside section; omitted when empty
  * @param {string} [opts.costAnalysis] engine-computed cost block, rendered in a fenced Cost section
  * @param {string} [opts.previousBody] the existing PR's body, for history carry-forward
- * @param {number} [opts.maxLength]
- * @returns {string}
+ * @param {number} [opts.maxLength] the description limit of the provider the
+ *   PR is raised on (its descriptor's descriptionMaxLength, see
+ *   vcs-module.mjs getProviderTextLimits); PR_DESCRIPTION_MAX_LENGTH when
+ *   omitted
+ * @returns {{ body: string, overflow: string, notes: string }} `body` is the
+ *   description (<= maxLength); `notes` the full sanitized notes; `overflow`
+ *   the part of `notes` the description could not carry ('' when it all
+ *   fits) -- the section in `body` holds exactly notes.slice(0, notes.length
+ *   - overflow.length), so nothing is ever silently dropped: the caller
+ *   publishes the overflow elsewhere.
  */
 export function buildSprintPrBody({
     verdict, goal, branch, baseBranch, runId, now = new Date(),
@@ -481,7 +531,16 @@ export function buildSprintPrBody({
 
     const cleanNotes = sanitizePrMarkdown(notes);
     const waitedLine = formatWaitedLine(waited);
-    const { body } = fitSectionsToBudget({
+    // How many characters of cleanNotes each candidate notes text carries,
+    // so the overflow can be read back after the budget pass.
+    const notesUsed = new Map();
+    const notesWithin = (max) => {
+        const r = fitNotesPrefix(cleanNotes, max);
+        if (r.text) notesUsed.set(r.text, r.used);
+        return r.text;
+    };
+    const notesOmitted = '*[... reviewer notes continue past the description limit -- see the end of this description ...]*';
+    const { texts } = fitSectionsToBudget({
         maxLength,
         render,
         sections: [
@@ -491,15 +550,12 @@ export function buildSprintPrBody({
                 priority: SECTION_PRIORITY.notes,
                 // Always present: no notes renders a placeholder, never an empty section.
                 text: cleanNotes || '*No notes were provided.*',
-                // `available` is maxLength minus the body with the notes empty,
-                // i.e. minus head, tail and the two joining newlines; the notes
-                // budget keeps its long-standing shape: at most
-                // PR_NOTES_MAX_LENGTH, 120 characters of slack, a 200 floor.
-                fit: (text, available) => (cleanNotes
-                    ? capNotes(cleanNotes, Math.max(200, Math.min(PR_NOTES_MAX_LENGTH, available + 2 - 120)))
-                    : text),
-                hardClip: (_text, max) => (cleanNotes ? capNotesWithin(cleanNotes, max) : ''),
-                omitted: '*[... reviewer notes omitted to fit the description limit ...]*',
+                // `available` is maxLength minus the body with the notes empty.
+                // The notes take every character the budget leaves them; what
+                // does not fit is NOT truncated away but returned as overflow.
+                fit: (text, available) => (cleanNotes ? (notesWithin(available) || notesOmitted) : text),
+                hardClip: (_text, max) => (cleanNotes ? notesWithin(max) : ''),
+                omitted: cleanNotes ? notesOmitted : undefined,
             },
             ...extras.map((e) => ({ id: e.id, priority: e.priority, text: e.text })),
             { id: 'set-aside', priority: SECTION_PRIORITY.setAside, text: formatSetAsideItems(setAside).map((d) => `- ${inline(d)}`).join('\n') },
@@ -508,5 +564,7 @@ export function buildSprintPrBody({
             { id: 'cost', priority: SECTION_PRIORITY.cost, text: sanitizePrMarkdown(costAnalysis) },
         ],
     });
-    return body;
+    const used = cleanNotes ? (notesUsed.get(texts.notes) ?? 0) : 0;
+    const overflow = cleanNotes.slice(used);
+    return { body: render(texts), overflow, notes: cleanNotes };
 }

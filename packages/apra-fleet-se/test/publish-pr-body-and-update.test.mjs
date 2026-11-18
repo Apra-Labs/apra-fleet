@@ -2,11 +2,12 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-    buildSprintPrBody, buildSprintPrTitle, parseRunHistory, sanitizePrMarkdown,
-    RUN_HISTORY_MAX_ENTRIES, RUN_HISTORY_MARKER, fitSectionsToBudget,
+    buildSprintPrBody as buildSprintPrBodyParts, buildSprintPrTitle, parseRunHistory, sanitizePrMarkdown,
+    RUN_HISTORY_MAX_ENTRIES, RUN_HISTORY_MARKER, fitSectionsToBudget, NOTES_CONTINUED_MARKER,
 } from '../fleet-sprint/pr-body.mjs';
 import {
     buildCreatePrCommand as rawBuildCreatePrCommand, buildFindPrCommand, buildUpdatePrCommand as rawBuildUpdatePrCommand, PR_DESCRIPTION_MAX_LENGTH,
+    getProviderTextLimits, capDescriptionPreservingHiddenTail,
 } from '../fleet-sprint/vcs-module.mjs';
 import { raiseVcsPrForMember } from '../fleet-sprint/vcs-auth.mjs';
 import { runPublishPrPhase } from '../fleet-sprint/phases/publish-pr.mjs';
@@ -18,6 +19,8 @@ import { withPayloadPath, stagedJson, createStagedFileRecorder, TEST_MEMBER_FOLD
 // wrappers supply the fixture payload_path for each call's os.
 const buildCreatePrCommand = withPayloadPath(rawBuildCreatePrCommand);
 const buildUpdatePrCommand = withPayloadPath(rawBuildUpdatePrCommand);
+// buildSprintPrBody returns { body, overflow, notes }; most checks read the description.
+const buildSprintPrBody = (opts) => buildSprintPrBodyParts(opts).body;
 
 // =============================================================================
 // Sprint PR body format + existing-PR rewrite on relaunch.
@@ -136,16 +139,53 @@ describe('sprint PR body (markdown)', () => {
         assert.ok(/^[\x0a\x20-\x7e]*$/.test(out));
     });
 
-    test('very long notes are capped with a visible marker and the whole body (with history) fits the provider limit', () => {
+    test('very long notes are split, not truncated: the description fits the limit, the rest comes back as overflow, history intact', () => {
         const longNotes = Array.from({ length: 400 }, (_, i) => `- finding ${i}: ${'x'.repeat(30)}`).join('\n');
         let previous = '';
+        let parts = null;
         for (let i = 0; i < RUN_HISTORY_MAX_ENTRIES + 3; i++) {
-            previous = sampleBody({ runId: `run-${i}`, notes: longNotes, previousBody: previous });
+            parts = buildSprintPrBodyParts({
+                verdict: 'PASS', goal: 'Ship the widget store', branch: 'feat/widgets', baseBranch: 'main',
+                runId: `run-${i}`, now: NOW, notes: longNotes, previousBody: previous,
+                details: ['Regression pass: skipped by launch option -- not run this sprint.'],
+            });
+            previous = parts.body;
         }
         assert.ok(previous.length <= PR_DESCRIPTION_MAX_LENGTH, `body length ${previous.length} exceeds ${PR_DESCRIPTION_MAX_LENGTH}`);
-        assert.match(previous, /\*\[\.\.\. reviewer notes truncated: \d+ of \d+ characters shown \.\.\.\]\*/);
+        assert.ok(previous.includes(NOTES_CONTINUED_MARKER), 'a split is marked in the notes section');
+        assert.doesNotMatch(previous, /reviewer notes truncated/, 'no truncation marker: nothing is dropped');
+        assert.equal(parts.notes, longNotes);
+        assert.ok(parts.overflow.length > 0, 'the part that does not fit is returned');
+        const inBody = parts.notes.slice(0, parts.notes.length - parts.overflow.length);
+        assert.ok(previous.includes(`### Reviewer notes\n\n${inBody}\n\n${NOTES_CONTINUED_MARKER}`), 'the description carries exactly the notes prefix');
+        assert.equal(inBody + parts.overflow, longNotes, 'description notes + overflow concatenate to the full notes');
         assert.equal(parseRunHistory(previous).length, RUN_HISTORY_MAX_ENTRIES, 'history is capped');
         assert.ok(previous.endsWith('-->'), 'the history block is never cut off by the provider-level cap');
+    });
+
+    test('maxLength is the provider limit: the same notes fit whole in a large description with no overflow', () => {
+        const longNotes = Array.from({ length: 400 }, (_, i) => `- finding ${i}: ${'x'.repeat(30)}`).join('\n');
+        const parts = buildSprintPrBodyParts({ verdict: 'PASS', branch: 'feat/widgets', runId: 'r', now: NOW, notes: longNotes, maxLength: 60000 });
+        assert.equal(parts.overflow, '');
+        assert.ok(parts.body.includes(longNotes));
+        assert.ok(!parts.body.includes(NOTES_CONTINUED_MARKER));
+        assert.ok(parts.body.length <= 60000);
+    });
+
+    test('order: the description starts with the verdict, then the merge assessment, then the notes', () => {
+        const parts = buildSprintPrBodyParts({
+            verdict: 'FAIL', branch: 'feat/widgets', runId: 'r', now: NOW, notes: 'n '.repeat(4000),
+            mergeAssessment: { recommendation: 'do_not_merge', reason: 'r', value: 'v', risk: 'k', default_path_changes: 'd', proof: 'p' },
+            maxLength: 3500,
+        });
+        const b = parts.body;
+        assert.ok(b.startsWith('## Sprint verdict: FAIL'), b.slice(0, 80));
+        const iv = b.indexOf('## Sprint verdict');
+        const ia = b.indexOf('### Merge assessment');
+        const in_ = b.indexOf('### Reviewer notes');
+        assert.ok(iv < ia && ia < in_, `verdict ${iv} < assessment ${ia} < notes ${in_}`);
+        assert.ok(b.length <= 3500);
+        assert.ok(parts.overflow.length > 0);
     });
 
     test('the engine cost block renders as a fenced Cost section after Details, before the human-review line', () => {
@@ -300,6 +340,30 @@ describe('find/update-pull-request builders', () => {
         assert.match(upd.command, /^curl -sS -X PATCH /);
         assert.ok(upd.command.endsWith(' https://dev.azure.com/acme/proj%20one/_apis/git/repositories/widgets/pullrequests/9?api-version=7.1'));
         assert.deepEqual(upd.descriptionTruncated, { originalLength: PR_DESCRIPTION_MAX_LENGTH + 5, maxLength: PR_DESCRIPTION_MAX_LENGTH });
+    });
+
+    test('the backstop cap never cuts the run-history marker block, even with a long tail before it (every provider)', () => {
+        const block = `<!-- ${RUN_HISTORY_MARKER}\n${JSON.stringify([{ run: 'run-9', date: '2026-10-01T09:30Z', verdict: 'PASS' }])}\n-->`;
+        const coordsFor = {
+            github: { repo: 'acme/widgets' },
+            'azure-devops': { repoRef: { org: 'acme', project: 'proj one', repo: 'widgets' } },
+            bitbucket: { repoRef: { workspace: 'acme', repo: 'widgets' } },
+        };
+        for (const provider of Object.keys(coordsFor)) {
+            const max = getProviderTextLimits(provider).descriptionMaxLength;
+            const longBody = `## Sprint verdict: PASS\n\n${'tail line of set-aside/details/cost\n'.repeat(Math.ceil(max / 30) + 50)}\n${block}`;
+            assert.ok(longBody.length > max);
+            const upd = buildUpdatePrCommand({ provider, ...coordsFor[provider], pull_request_id: 9, title: 't', body: longBody, token: 'tok', os: 'linux' });
+            const sent = stagedJson(upd);
+            const desc = provider === 'azure-devops' ? sent.description : (provider === 'bitbucket' ? sent.description : sent.body);
+            assert.equal(desc.length, max, `${provider}: cut to its own limit`);
+            assert.ok(desc.endsWith(`\n${block}`), `${provider}: the marker block is intact`);
+            assert.deepEqual(parseRunHistory(desc).map((e) => e.run), ['run-9']);
+            assert.deepEqual(upd.descriptionTruncated, { originalLength: longBody.length, maxLength: max });
+        }
+        assert.equal(capDescriptionPreservingHiddenTail('abc', 10), 'abc');
+        assert.equal(capDescriptionPreservingHiddenTail('x'.repeat(20), 10), 'x'.repeat(10));
+        assert.throws(() => capDescriptionPreservingHiddenTail(`x\n${block}`, 20), /trailing hidden block .* refusing to cut it/);
     });
 
     test('a non-numeric PR id is a typed ERROR, and a provider without the builders fails closed', () => {

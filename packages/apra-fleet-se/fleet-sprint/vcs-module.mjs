@@ -75,13 +75,12 @@ function buildVcsCommand(action, params) {
 }
 
 /**
- * Deterministic hard cap on a PR description's length (apra-fleet PR-body
- * length fix): Azure DevOps rejects/fails to raise a pull request whose
- * description is too long, and the LLM role that drafts a PR description is
- * only ever prompted to respect a limit -- it can and does ignore that
- * guidance. This constant is the single source of truth for the cap, shared
- * by every provider's create-pull-request path (buildCreatePrCommand below)
- * rather than a magic number duplicated per provider.
+ * Fallback PR description cap for a provider whose descriptor declares no
+ * `descriptionMaxLength` (see getProviderTextLimits below). Every hosted
+ * provider declares its own limit, so this is a backstop, not the cap a
+ * sprint PR is built to: the body builder (pr-body.mjs buildSprintPrBody)
+ * sizes the description to the provider's own limit and returns what does
+ * not fit as overflow.
  * @type {number}
  */
 export const PR_DESCRIPTION_MAX_LENGTH = 3500;
@@ -89,32 +88,61 @@ export const PR_DESCRIPTION_MAX_LENGTH = 3500;
 /**
  * Build a "raise a PR" command for the given provider.
  *
- * Enforces PR_DESCRIPTION_MAX_LENGTH on `params.body` DETERMINISTICALLY,
- * regardless of provider (GitHub, Azure DevOps, ...) and regardless of
- * whether the LLM that drafted the description obeyed the prompt guidance to
- * stay under the limit. A body over the limit is truncated to exactly its
- * first PR_DESCRIPTION_MAX_LENGTH characters before it reaches the provider's
- * own command builder, so a PR can always be raised.
+ * Enforces the PROVIDER's description limit (its descriptor's
+ * descriptionMaxLength; PR_DESCRIPTION_MAX_LENGTH when it declares none) on
+ * `params.body` DETERMINISTICALLY, as a backstop for a body that was not
+ * built to that limit, so a PR can always be raised. The backstop never cuts
+ * an engine-written hidden block at the end of the body (the sprint body's
+ * run-history marker block): the text before it is shortened instead (see
+ * capDescriptionPreservingHiddenTail).
  *
  * This module stays pure (no I/O, no logging of its own -- see the header
  * doc): a truncation is reported back to the caller as the returned
  * `descriptionTruncated` field ({ originalLength, maxLength }, or `null` when
- * no truncation occurred) so the caller (runner.js's raiseVcsPrForMember) can
+ * no truncation occurred) so the caller (vcs-auth.mjs raiseVcsPrForMember) can
  * log/emit the warning through its own logging convention.
  */
 export function buildCreatePrCommand(params) {
     return buildCappedBodyCommand('create-pull-request', params);
 }
 
-/** Shared PR_DESCRIPTION_MAX_LENGTH enforcement for every action that sends a
- *  PR description (create-pull-request, update-pull-request). */
+/**
+ * Shortens `body` to at most `max` characters WITHOUT cutting the hidden
+ * HTML comment block it ends with (the sprint PR body's run-history marker
+ * block, which the next run parses back): the text before that block is
+ * shortened instead. A body that does not end with such a block is cut to
+ * its first `max` characters. Throws an ERROR when the trailing block alone
+ * does not fit -- an assertion, never a cut through the block. Pure.
+ * @param {string} body
+ * @param {number} max
+ * @returns {string}
+ */
+export function capDescriptionPreservingHiddenTail(body, max) {
+    const text = String(body ?? '');
+    if (text.length <= max) return text;
+    const trimmed = text.replace(/\s+$/, '');
+    const open = trimmed.endsWith('-->') ? trimmed.lastIndexOf('<!--') : -1;
+    if (open < 0) return text.slice(0, max);
+    const lineStart = text.lastIndexOf('\n', open);
+    const tailStart = lineStart >= 0 ? lineStart : open;
+    const tail = text.slice(tailStart);
+    if (tail.length > max) {
+        throw new Error(`ERROR: VCSModule: the PR description's trailing hidden block is ${tail.length} characters, over the ${max}-character description limit on its own -- refusing to cut it.`);
+    }
+    return text.slice(0, max - tail.length) + tail;
+}
+
+/** Shared description-limit enforcement for every action that sends a PR
+ *  description (create-pull-request, update-pull-request). */
 function buildCappedBodyCommand(action, params) {
-    const { body } = params || {};
+    const { body, provider } = params || {};
     let effectiveBody = body;
     let descriptionTruncated = null;
-    if (typeof body === 'string' && body.length > PR_DESCRIPTION_MAX_LENGTH) {
-        descriptionTruncated = { originalLength: body.length, maxLength: PR_DESCRIPTION_MAX_LENGTH };
-        effectiveBody = body.slice(0, PR_DESCRIPTION_MAX_LENGTH);
+    const declared = getVcsProvider(provider) ? getProviderTextLimits(provider).descriptionMaxLength : null;
+    const maxLength = declared ?? PR_DESCRIPTION_MAX_LENGTH;
+    if (typeof body === 'string' && body.length > maxLength) {
+        descriptionTruncated = { originalLength: body.length, maxLength };
+        effectiveBody = capDescriptionPreservingHiddenTail(body, maxLength);
     }
     const built = buildVcsCommand(action, { ...params, body: effectiveBody });
     return descriptionTruncated ? { ...built, descriptionTruncated } : { ...built, descriptionTruncated: null };
@@ -134,8 +162,8 @@ export function buildFindPrCommand(params) {
 /**
  * Build an "update an existing PR's title/description" command for the given
  * provider (`params.pull_request_id` from buildFindPrCommand's mapping). Same
- * deterministic PR_DESCRIPTION_MAX_LENGTH cap and `descriptionTruncated`
- * report as buildCreatePrCommand.
+ * deterministic per-provider description cap (never cutting the trailing
+ * hidden block) and `descriptionTruncated` report as buildCreatePrCommand.
  */
 export function buildUpdatePrCommand(params) {
     return buildCappedBodyCommand('update-pull-request', params);

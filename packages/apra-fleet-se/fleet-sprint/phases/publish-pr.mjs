@@ -256,7 +256,13 @@ export async function runPublishPrPhase({
         const prTitle = buildSprintPrTitle({ verdict: finalVerdictLabel, branch: validated.branch });
         const runId = validated.runId || (args && args.run_id) || '';
         const now = new Date();
-        const buildBody = (previousBody = '') => buildSprintPrBody({
+        // Built against the PROVIDER's description limit (raiseVcsPrForMember
+        // resolves the provider and passes its text limits in), so the
+        // description is never sized to one global cap. The reviewer notes the
+        // description cannot carry come back as `overflow`, never truncated
+        // away; the latest build is kept so that overflow can be published.
+        let lastBody = null;
+        const buildBody = (previousBody = '', limits = {}) => (lastBody = buildSprintPrBody({
             verdict: finalVerdictLabel,
             goal: validated.goal,
             branch: validated.branch,
@@ -275,8 +281,8 @@ export async function runPublishPrPhase({
             waited,
             costAnalysis,
             previousBody,
-        });
-        const prBody = buildBody();
+            ...(limits.descriptionMaxLength ? { maxLength: limits.descriptionMaxLength } : {}),
+        }));
 
         // Idempotent PR creation via VCSModule (apra-fleet-tfx.8: the reverted
         // gh-based path is gone). A push+pr credential is minted just-in-time immediately
@@ -317,7 +323,7 @@ export async function runPublishPrPhase({
                 base: validated.baseBranch,
                 head: validated.branch,
                 title: prTitle,
-                body: prBody,
+                body: (limits) => buildBody('', limits),
                 log,
                 logPrefix: '[Publish PR]',
                 // Already resolved above via publishGitMember (a real
@@ -331,8 +337,11 @@ export async function runPublishPrPhase({
                 // A relaunch on a branch that already has a PR rewrites that
                 // PR's title and body for THIS run's verdict, carrying the
                 // earlier runs forward from the old body's history block.
-                updateExisting: ({ body: oldBody }) => ({ title: prTitle, body: buildBody(oldBody) }),
+                updateExisting: ({ body: oldBody }, limits) => ({ title: prTitle, body: buildBody(oldBody, limits) }),
             });
+            if (lastBody && lastBody.overflow) {
+                log(`[Publish PR] reviewer notes are ${lastBody.notes.length} characters; ${lastBody.overflow.length} did not fit the PR description. Full reviewer notes:\n${lastBody.notes}`);
+            }
             if (!prResult.ok) {
                 if (prResult.credentialAbsent) {
                     // No PR credential is deployed at all for a provider whose

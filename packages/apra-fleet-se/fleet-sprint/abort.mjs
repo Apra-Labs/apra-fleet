@@ -571,7 +571,7 @@ export async function finalizeAbort({ error, branch, baseBranch, member, command
     // (pr-body.mjs), so an abort after an earlier PASS/FAIL run also rewrites
     // the existing PR and carries that run forward in its history.
     const abortNow = new Date();
-    const buildAbortBody = (previousBody = '') => buildSprintPrBody({
+    const buildAbortBody = (previousBody = '', limits = {}) => buildSprintPrBody({
         verdict: 'ABORTED',
         branch,
         baseBranch,
@@ -590,8 +590,8 @@ export async function finalizeAbort({ error, branch, baseBranch, member, command
         setAside: error && Array.isArray(error.setAside) ? error.setAside : [],
         waited: error && Array.isArray(error.waited) ? error.waited : [],
         previousBody,
+        ...(limits.descriptionMaxLength ? { maxLength: limits.descriptionMaxLength } : {}),
     });
-    const prBody = buildAbortBody();
 
     // The reverted gh-based PR creation is gone (apra-fleet-tfx.8): raise the [ABORTED] PR via
     // VCSModule's orchestrator-built curl command, dispatched to `member`
@@ -620,7 +620,7 @@ export async function finalizeAbort({ error, branch, baseBranch, member, command
         base: baseBranch,
         head: branch,
         title: prTitle,
-        body: prBody,
+        body: (limits) => buildAbortBody('', limits),
         log,
         logPrefix: '[Publish Abort PR]',
         // Already resolved just above (the origin-remote PR-capability gate)
@@ -628,7 +628,7 @@ export async function finalizeAbort({ error, branch, baseBranch, member, command
         // by shelling out to `member`, which may be backlogMember and
         // have no git checkout of its own to read a remote from.
         remoteUrlOverride: originUrl,
-        updateExisting: ({ body: oldBody }) => ({ title: prTitle, body: buildAbortBody(oldBody) }),
+        updateExisting: ({ body: oldBody }, limits) => ({ title: prTitle, body: buildAbortBody(oldBody, limits) }),
     });
 
     if (!prResult.ok) {

@@ -13,7 +13,6 @@
 // the resulting runner.js <-> prompts.mjs cycle is safe because every use is
 // inside a function body, never at module-evaluation time.
 import { wrapUntrustedBlock, MERGE_RECOMMENDATIONS } from './contracts.mjs';
-import { PR_DESCRIPTION_MAX_LENGTH } from './vcs-module.mjs';
 import { formatStalenessBlock } from './parent-notes-staleness.mjs';
 import { buildRejectedNewTaskResurfaceLines, kbKnowledgeBlock, kbPromotionBlock, kbDemotionBlock } from './runner.js';
 
@@ -578,11 +577,11 @@ export function buildFinalVerdictPrompt({ targetIssues, branch, baseBranch, merg
         // command string, and spelling them as escaped backticks inside a
         // template literal is exactly the construct shell-command-guard.mjs
         // flags. Plain concatenation keeps the emitted text byte-identical.
-        'Keep `notes` concise: it is embedded verbatim into the pull request description this ' +
-        'sprint raises, which has a hard cap of ' + PR_DESCRIPTION_MAX_LENGTH + ' characters -- a pull ' +
-        'request whose description exceeds that many characters can be rejected outright by the ' +
-        'hosting provider. A too-long `notes` value is truncated before the pull request is raised, ' +
-        'so anything past the limit is silently lost; stay well within it so your findings actually reach the reviewer.'
+        'Keep `notes` focused and put the most important findings first: they are embedded into the ' +
+        'pull request this sprint raises, after the sprint verdict and the merge assessment. Each ' +
+        'hosting provider limits how long a pull request description may be; notes that do not fit ' +
+        'continue in pull request comments posted below the description, so nothing is dropped, but ' +
+        'a reviewer reads the description first.'
     );
     lines.push(
         'Return any actionable findings as `newTasks` (title, description, priority each) so they ' +

@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
-import { VCSModule, buildCreatePrCommand as rawBuildCreatePrCommand, buildCommentCommand as rawBuildCommentCommand, resolveProvider, PR_DESCRIPTION_MAX_LENGTH } from '../fleet-sprint/vcs-module.mjs';
+import { VCSModule, buildCreatePrCommand as rawBuildCreatePrCommand, buildCommentCommand as rawBuildCommentCommand, resolveProvider, PR_DESCRIPTION_MAX_LENGTH, getProviderTextLimits } from '../fleet-sprint/vcs-module.mjs';
 import { withPayloadPath, stagedJson, posixDataBinaryArg, POSIX_PAYLOAD_PATH, WINDOWS_PAYLOAD_PATH } from './helpers/vcs-payload-test.mjs';
 
 // Request bodies travel as a staged member-side file (curl --data-binary
@@ -229,8 +229,15 @@ describe('VCSModule.buildCreatePrCommand', () => {
             assert.strictEqual(result.descriptionTruncated, null);
         });
 
-        test('GitHub: a description over the cap is truncated to exactly PR_DESCRIPTION_MAX_LENGTH chars and reported', () => {
-            const longBody = 'C'.repeat(PR_DESCRIPTION_MAX_LENGTH + 250);
+        test('GitHub: the cap is GitHub\'s own descriptionMaxLength, not the global fallback; over it the body is truncated and reported', () => {
+            const ghMax = getProviderTextLimits('github').descriptionMaxLength;
+            assert.ok(ghMax > PR_DESCRIPTION_MAX_LENGTH, 'GitHub declares a larger limit than the fallback');
+            const fits = buildCreatePrCommand({
+                provider: 'github', repo: 'Apra-Labs/apra-fleet', base: 'main', head: 'feature-x',
+                title: 'long body', body: 'C'.repeat(PR_DESCRIPTION_MAX_LENGTH + 250), token: 'ghs_tok',
+            });
+            assert.strictEqual(fits.descriptionTruncated, null, 'a body over the old global cap but within GitHub\'s limit is untouched');
+            const longBody = 'C'.repeat(ghMax + 250);
             const result = buildCreatePrCommand({
                 provider: 'github',
                 repo: 'Apra-Labs/apra-fleet',
@@ -242,11 +249,11 @@ describe('VCSModule.buildCreatePrCommand', () => {
             });
             assert.deepStrictEqual(result.descriptionTruncated, {
                 originalLength: longBody.length,
-                maxLength: PR_DESCRIPTION_MAX_LENGTH,
+                maxLength: ghMax,
             });
             const payload = stagedJson(result);
-            assert.strictEqual(payload.body.length, PR_DESCRIPTION_MAX_LENGTH);
-            assert.strictEqual(payload.body, longBody.slice(0, PR_DESCRIPTION_MAX_LENGTH));
+            assert.strictEqual(payload.body.length, ghMax);
+            assert.strictEqual(payload.body, longBody.slice(0, ghMax));
         });
 
         test('Azure DevOps: a description over the cap is truncated to exactly PR_DESCRIPTION_MAX_LENGTH chars and reported', () => {
