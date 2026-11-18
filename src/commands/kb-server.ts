@@ -37,7 +37,7 @@ export const KB_PROJECT_HEADER = 'x-kb-project';
 /** What GET /api/kb/capabilities answers: every contract route (the server always serves a local SQLite KB). */
 export const KB_SERVER_CAPABILITIES = Object.freeze({
   contract: 'v1',
-  routes: Object.freeze(['capture', 'query', 'promote', 'context', 'prime', 'invalidate', 'feedback', 'list', 'demote']),
+  routes: Object.freeze(['capture', 'query', 'promote', 'context', 'prime', 'invalidate', 'feedback', 'list', 'demote', 'withdraw']),
   branch_aware: false,
 });
 
@@ -414,6 +414,49 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
           // Not a refusal (e.g. a database failure): the generic 500 below.
           throw err;
         }
+      }
+
+      // POST /api/kb/withdraw  {withdrawals: [{id, at, reason, note?, evidence_files?}]}
+      //   -> {results: [{id, outcome}]}, outcome withdrawn | repromoted | not_confirmed | not_found
+      // Applies merged-bible tombstones (spec 2.9.1) through
+      // SqliteProvider.applyBibleWithdrawal: the one re-promotion rule against
+      // `at` (clamped to now), never raising confidence, never creating a row.
+      // Idempotent: a repeat answers not_confirmed, which counts as done.
+      // Evidence is optional; when present each path is checked like demote's
+      // (absolute or '..' -> 422 E-DEMOTE-EVIDENCE-UNRESOLVED for the whole
+      // request, before anything is applied) but not resolved, since a
+      // withdrawal is often recorded because a cited file went away.
+      if (pathname === '/api/kb/withdraw' && method === 'POST') {
+        const { withdrawals } = JSON.parse(await readBody(req)) as { withdrawals?: unknown };
+        const wellFormed = Array.isArray(withdrawals) && withdrawals.every((w): boolean => {
+          if (!w || typeof w !== 'object') return false;
+          const r = w as Record<string, unknown>;
+          return typeof r.id === 'string' && r.id.length > 0
+            && typeof r.at === 'string' && !Number.isNaN(Date.parse(r.at))
+            && typeof r.reason === 'string' && r.reason.length > 0
+            && (r.note === undefined || typeof r.note === 'string')
+            && (r.evidence_files === undefined
+              || (Array.isArray(r.evidence_files) && r.evidence_files.every(f => typeof f === 'string')));
+        });
+        if (!wellFormed) {
+          return jsonResponse(res, 400, {
+            error: 'withdrawals must be an array of {id, at (an ISO time), reason, note?, evidence_files?}',
+            code: 'BAD_REQUEST',
+          });
+        }
+        const items = withdrawals as Array<{ id: string; at: string; reason: string; note?: string; evidence_files?: string[] }>;
+        const outside = items.flatMap(w => (w.evidence_files ?? []).filter(isAbsoluteOrTraversing));
+        if (outside.length > 0) {
+          return jsonResponse(res, 422, {
+            error: `E-DEMOTE-EVIDENCE-UNRESOLVED: withdrawal evidence is absolute or contains a '..' segment: ${outside.join(', ')}`,
+            code: 'E-DEMOTE-EVIDENCE-UNRESOLVED',
+          });
+        }
+        const results = items.map(w => ({
+          id: w.id,
+          outcome: provider.applyBibleWithdrawal(w.id, w.at, w.reason, w.note, w.evidence_files),
+        }));
+        return jsonResponse(res, 200, { results });
       }
 
       // POST /api/kb/invalidate

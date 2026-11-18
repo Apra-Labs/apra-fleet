@@ -667,6 +667,7 @@ another project or none):
 | `feedback` | `POST /api/kb/feedback` | no |
 | `list` | `GET /api/kb/list` | no |
 | `demote` | `POST /api/kb/demote` | no |
+| `withdraw` | `POST /api/kb/withdraw` | no |
 
 `GET /api/kb/capabilities` (same auth and project check) answers
 `{contract, routes, branch_aware}`: `contract` is the contract version
@@ -683,7 +684,8 @@ entries per branch (section 2.9.2). Fleet's client:
   `E-KB-HTTP-UNSUPPORTED` naming the route and nothing is sent;
 - assumes a server that has no capabilities route (it answers 404 or 501, or a
   body with none of the three fields) serves the route set from before this
-  route existed: every route above except `demote`, `branch_aware` false;
+  route existed: every route above except `demote` and `withdraw`,
+  `branch_aware` false;
 - refuses a capabilities body that carries some of the fields but not all,
   well typed, with `E-KB-HTTP-UNSUPPORTED`;
 - treats any other failed capabilities read as the server's state, never as
@@ -699,7 +701,7 @@ entries per branch (section 2.9.2). Fleet's client:
   with no backend), so the identical request is safe to repeat. Fleet's own
   `kb serve` answers 429 above its per-IP request rate;
 - turns any other 5xx answering a write itself (capture, invalidate with
-  files, feedback, promote, demote) into `E-KB-HTTP-SERVER-ERROR` naming the
+  files, feedback, promote, demote, withdraw) into `E-KB-HTTP-SERVER-ERROR` naming the
   request and the status, never a raw HTTP error. The request reached the
   server, so whether the write took effect is unknown: it is not retried;
 - turns any other 5xx answering a read (query, context, prime, list) into
@@ -723,9 +725,10 @@ entry it does not hold, or one outside the caller's scope, with 404 and body
 that tells an unknown entry from a missing route.
 
 Fleet's `kb-server` always serves a local SQLite KB: it serves, and its
-capabilities list, every route above, `demote` included, and it reports
-`branch_aware: false`. It is the reference implementation of these routes;
-the http fixtures under `fixtures/` are recorded against it.
+capabilities list, every route above, `demote` and `withdraw` included, and it
+reports `branch_aware: false`. It is the reference implementation of these
+routes; the http fixtures under `fixtures/` and the route fixtures under
+`route-fixtures/` are recorded against it.
 
 `demote` is `POST /api/kb/demote` `{id, reason, evidence_files}`, answered
 `{id, previous_confidence, new_confidence}`; like `promote` it is sent by id
@@ -751,6 +754,40 @@ sending anything. The server's refusals:
   `E-DEMOTE-NOT-CONFIRMED`, `E-DEMOTE-SUPERSEDED`, `E-DEMOTE-REFUSED-DIRECTIVE`,
   `E-DEMOTE-REASON-REQUIRED` or `E-DEMOTE-EVIDENCE-UNRESOLVED` (an evidence
   path that is absolute, has a `..` segment, or does not resolve to a file).
+
+`withdraw` is `POST /api/kb/withdraw`
+`{withdrawals: [{id, at, reason, note?, evidence_files?}]}`, answered 200
+`{results: [{id, outcome}]}` with one result per withdrawal, in request order.
+It applies tombstones from a merged project bible (section 2.6) on the server,
+which holds the only copy of the KB under http. `at` is when trust was
+withdrawn (an ISO time); `reason` is the tombstone reason (`withdrawn` or
+`demoted`); `note` and `evidence_files` are optional and only recorded in the
+entry's audit note. For each id the server:
+
+- never creates an entry and never raises confidence;
+- applies the one re-promotion rule against `at` clamped to now: the entry is
+  lowered from CONFIRMED to INFERRED only when its trust (its promotion time,
+  else the time a bible it was imported from carried) is not after `at`;
+- answers `outcome`:
+  - `withdrawn`: the entry was CONFIRMED and is now INFERRED;
+  - `repromoted`: the entry's trust postdates `at`, so it stays CONFIRMED;
+  - `not_confirmed`: the entry is already below CONFIRMED (or is a
+    user-directive, which a tombstone never lowers). A repeat of the same
+    withdrawal answers this, and it counts as done: the route is idempotent;
+  - `not_found`: no such entry, a superseded one, or one outside the caller's
+    scope.
+
+Evidence is not required. A path that is present is checked like `demote`'s
+(absolute or with a `..` segment: 422 `E-DEMOTE-EVIDENCE-UNRESOLVED` for the
+whole request, nothing applied; fleet refuses it the same way before sending
+anything) but is not resolved against the checkout: a withdrawal is often
+recorded because a cited file went away. A malformed body (no array, an item
+without an `id`, a parseable `at` or a `reason`, a non-string `note` or a
+non-string evidence path) is 400 `BAD_REQUEST`. Fleet sends `withdraw` only
+when the capabilities list it; otherwise, or on a 404/501 from the route, the
+call fails with `E-KB-HTTP-UNSUPPORTED` naming the route and nothing is
+changed. The route fixtures under `route-fixtures/withdraw/` are recorded
+against fleet's `kb-server` and replayed by the conformance tests.
 
 #### 2.9.2 Project and repository headers
 

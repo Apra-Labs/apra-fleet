@@ -107,6 +107,12 @@ function buildDemotionNote(normalizedReason: string, evidence: string[], author:
  */
 export const BIBLE_DEMOTION_REASON = 'demoted in the project bible';
 
+/** The reason recorded when a withdrawal tombstone lowers a row (KB server withdraw route). */
+export const BIBLE_WITHDRAWAL_REASON = 'withdrawn in the project bible';
+
+/** What applying one tombstone did to the local row (KB server withdraw route). */
+export type BibleWithdrawalOutcome = 'withdrawn' | 'repromoted' | 'not_confirmed' | 'not_found';
+
 class NotImplementedError extends Error {
   constructor(method: string) {
     super(`SqliteProvider.${method}() not yet implemented`);
@@ -2106,20 +2112,52 @@ export class SqliteProvider implements MemoryProvider {
    * able to deactivate a directive a human set here.
    */
   applyBibleDemotion(id: string, tombstoneAt: string): boolean {
+    return this.applyTombstoneToRow(id, tombstoneAt, BIBLE_DEMOTION_REASON, []) === 'withdrawn';
+  }
+
+  /**
+   * Apply one tombstone that arrived over the KB server's withdraw route
+   * (POST /api/kb/withdraw): the same rules as applyBibleDemotion -- never
+   * create, the one re-promotion rule against `at` clamped to now, never raise
+   * confidence, superseded rows and user-directives untouched -- reported as an
+   * outcome instead of a boolean:
+   *  - 'withdrawn': the row was CONFIRMED and is now INFERRED;
+   *  - 'repromoted': the row's trust postdates `at` (or a time is
+   *    unparseable), so it stays CONFIRMED;
+   *  - 'not_confirmed': the row is already below CONFIRMED -- nothing to do,
+   *    which counts as done (the route is idempotent) -- or it is a
+   *    user-directive, which a tombstone never lowers;
+   *  - 'not_found': no such row, or a superseded one (out of every read path).
+   * The audit note names the tombstone reason, the optional note and the
+   * optional evidence files. Evidence is not resolved against the checkout: a
+   * withdrawal is often recorded because a cited file went away.
+   */
+  applyBibleWithdrawal(
+    id: string, at: string, reason: string, note?: string, evidenceFiles?: string[],
+  ): BibleWithdrawalOutcome {
+    const base = reason === 'demoted' ? BIBLE_DEMOTION_REASON : BIBLE_WITHDRAWAL_REASON;
+    const cleanNote = note === undefined ? '' : normalizeDemoteReason(note).replace(/\s+/g, ' ');
+    return this.applyTombstoneToRow(id, at, cleanNote ? base + ': ' + cleanNote : base, evidenceFiles ?? []);
+  }
+
+  /** The shared body of applyBibleDemotion and applyBibleWithdrawal. */
+  private applyTombstoneToRow(
+    id: string, tombstoneAt: string, noteReason: string, evidence: string[],
+  ): BibleWithdrawalOutcome {
     const db = this.getDb();
     const row = db.prepare('SELECT * FROM entries WHERE id = ?').get(id) as Record<string, unknown> | undefined;
     // NEVER CREATE.
-    if (!row) return false;
+    if (!row) return 'not_found';
     const entry = this.rowToEntry(row);
 
-    if (entry.confidence !== 'CONFIRMED') return false;
-    if (entry.superseded_at) return false;
-    if (entry.type === 'user-directive') return false;
+    if (entry.superseded_at) return 'not_found';
+    if (entry.confidence !== 'CONFIRMED') return 'not_confirmed';
+    if (entry.type === 'user-directive') return 'not_confirmed';
 
     const demotedAt = clampBibleTimeToNow(tombstoneAt);
-    if (standingAgainstTombstone(this.bibleTrustTimeOf(row), demotedAt) !== 'withdrawn') return false;
+    if (standingAgainstTombstone(this.bibleTrustTimeOf(row), demotedAt) !== 'withdrawn') return 'repromoted';
 
-    const demotionNote = buildDemotionNote(BIBLE_DEMOTION_REASON, [], entry.author);
+    const demotionNote = buildDemotionNote(noteReason, evidence, entry.author);
     const newContent = truncateContent(entry.content + demotionNote);
 
     // Same SET as demote(): promoted_at and source stay untouched, so the
@@ -2133,7 +2171,7 @@ export class SqliteProvider implements MemoryProvider {
       newContent,
       id,
     );
-    return true;
+    return 'withdrawn';
   }
 
   // T3.1 (F8, D7): kb_feedback downvote path -- marks an entry stale=1 +
