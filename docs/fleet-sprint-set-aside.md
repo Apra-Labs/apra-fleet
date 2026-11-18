@@ -202,7 +202,8 @@ cycle can resolve are carried over instead (`fleet-sprint/verify-carry-over.mjs`
   deferred by anyone else (seen deferred at the next Route step), it is
   carried over as `deferred` and the verdict is left to the other gates.
 
-The run result carries both as `verifyCarryOver: [{ id, kind, reason }]`.
+The run result carries them as `verifyCarryOver: [{ id, kind, reason }]`
+(kind `needs-external-evidence`, `deferred-bounce-cap` or `deferred`).
 
 ## A CHANGES_NEEDED that names only below-goal reopens
 
