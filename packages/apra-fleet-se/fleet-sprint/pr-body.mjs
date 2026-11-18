@@ -185,8 +185,199 @@ function inline(text) {
     return sanitizePrMarkdown(text).replace(/\s*\n\s*/g, ' ');
 }
 
+// ---------------------------------------------------------------------------
+// Shared section budget
+// ---------------------------------------------------------------------------
+//
+// Every engine-written PR-body section draws on ONE length budget: the
+// maxLength the caller passes in (PR_DESCRIPTION_MAX_LENGTH by default). A
+// section is { id, priority, text } plus optional fit/hardClip/omitted hooks;
+// higher priority keeps its text longer. The fixed frame -- verdict header,
+// human-review line and the hidden run-history marker block -- is never a
+// section, so no clipping can ever cut the marker.
+
+/** Characters below which a clipped section is dropped instead of kept as a
+ *  stub (a heading plus a truncation marker carries no information). */
+export const SECTION_MIN_LENGTH = 40;
+
+/** Upper bound on the Merge assessment section before the whole-body budget
+ *  is even considered, and on each of its fields. */
+export const MERGE_ASSESSMENT_MAX_LENGTH = 1500;
+export const MERGE_ASSESSMENT_FIELD_MAX_LENGTH = 400;
+
+/** Default priorities. Engine-authored tail sections outrank the reviewer
+ *  notes (as they always have: the notes budget is what is left after them);
+ *  a caller-registered section defaults below the notes. */
+export const SECTION_PRIORITY = Object.freeze({
+    mergeAssessment: 100,
+    setAside: 95,
+    waited: 95,
+    details: 95,
+    cost: 90,
+    notes: 80,
+    extra: 50,
+});
+
+/**
+ * Clips `text` to at most `max` characters, at a line boundary when one is
+ * reasonably close, keeps code fences balanced and appends a visible marker.
+ * The result (marker included) never exceeds `max`; '' when even the marker
+ * does not fit.
+ * @param {string} text
+ * @param {number} max
+ * @returns {string}
+ */
+export function clipSectionText(text, max) {
+    const src = String(text ?? '');
+    if (src.length <= max) return src;
+    const marker = `\n\n*[... truncated to fit the description limit: ${src.length} characters in full ...]*`;
+    const room = max - marker.length;
+    if (room <= 0) return '';
+    let cut = src.slice(0, room);
+    const nl = cut.lastIndexOf('\n');
+    if (nl > room * 0.5) cut = cut.slice(0, nl);
+    cut = cut.replace(/\s+$/, '');
+    let fenced = closeOpenFences(cut);
+    while (fenced.length > room && cut.length > 0) {
+        cut = cut.slice(0, Math.max(0, cut.length - (fenced.length - room))).replace(/\s+$/, '');
+        fenced = closeOpenFences(cut);
+    }
+    return fenced.length > room ? '' : fenced + marker;
+}
+
+/**
+ * Fits an ordered list of sections into one length budget.
+ *
+ * Pass 1 hands out the budget by descending priority (ties keep list order):
+ * each section gets what is left after the higher-priority ones, with every
+ * lower-priority section still empty, through its own `fit(text, available)`
+ * hook when it has one (available = maxLength minus the body rendered with
+ * this section empty) or a hard clip otherwise. Pass 2 is the guarantee: while
+ * the rendered body is still over maxLength, the lowest-priority non-empty
+ * section is hard-clipped by the overflow, or replaced by its `omitted` text /
+ * dropped once it is too small to carry anything. Only `render`'s fixed frame
+ * can then exceed maxLength (a maxLength smaller than the frame itself).
+ *
+ * @param {object} opts
+ * @param {Array<{ id: string, priority: number, text: string,
+ *   fit?: (text: string, available: number) => string,
+ *   hardClip?: (text: string, max: number) => string,
+ *   omitted?: string }>} opts.sections ordered sections; ids must be unique
+ * @param {(texts: Record<string, string>) => string} opts.render builds the
+ *   whole body from each section's current text ('' = section absent)
+ * @param {number} opts.maxLength the budget, passed in by the caller
+ * @returns {{ body: string, texts: Record<string, string>, clipped: string[] }}
+ */
+export function fitSectionsToBudget({ sections, render, maxLength }) {
+    const list = (sections || []).map((s, index) => ({ ...s, index, text: String(s.text ?? '') }));
+    const ids = new Set();
+    for (const s of list) {
+        if (ids.has(s.id)) throw new Error(`fitSectionsToBudget: duplicate section id '${s.id}'`);
+        ids.add(s.id);
+    }
+    const texts = Object.fromEntries(list.map((s) => [s.id, '']));
+    const clipped = new Set();
+    const hardClip = (s, max) => (s.hardClip ? s.hardClip(s.text, max) : clipSectionText(s.text, max));
+    const byPriorityDesc = [...list].sort((a, b) => (b.priority - a.priority) || (a.index - b.index));
+    for (const s of byPriorityDesc) {
+        if (!s.text) continue;
+        texts[s.id] = '';
+        const base = render(texts).length;
+        const available = maxLength - base;
+        let out;
+        if (s.fit) {
+            out = s.fit(s.text, available);
+        } else {
+            texts[s.id] = s.text;
+            const overhead = render(texts).length - base - s.text.length;
+            out = s.text.length + overhead <= available ? s.text : hardClip(s, available - overhead);
+        }
+        if (out !== s.text) clipped.add(s.id);
+        texts[s.id] = out;
+    }
+    let body = render(texts);
+    const exhausted = new Set();
+    const byPriorityAsc = [...list].sort((a, b) => (a.priority - b.priority) || (b.index - a.index));
+    while (body.length > maxLength) {
+        const victim = byPriorityAsc.find((s) => texts[s.id] && !exhausted.has(s.id));
+        if (!victim) break;
+        const current = texts[victim.id];
+        const target = current.length - (body.length - maxLength);
+        let next = target >= SECTION_MIN_LENGTH ? hardClip(victim, target) : '';
+        if (!next || next.length >= current.length) {
+            next = victim.omitted && victim.omitted.length < current.length ? victim.omitted : '';
+            exhausted.add(victim.id);
+        }
+        texts[victim.id] = next;
+        clipped.add(victim.id);
+        body = render(texts);
+    }
+    return { body, texts, clipped: [...clipped] };
+}
+
+/** Caps sanitized reviewer notes at `max` characters INCLUDING capNotes'
+ *  truncation marker; '' when nothing useful fits. */
+function capNotesWithin(text, max) {
+    let m = max - 100;
+    while (m > 0) {
+        const r = capNotes(text, m);
+        if (r.length <= max) return r;
+        m -= r.length - max;
+    }
+    return '';
+}
+
+/** merge_assessment.recommendation values the section renders as a code span.
+ *  Kept local so this module stays pure (contracts.mjs reads schema files at
+ *  load); pinned equal to contracts.mjs MERGE_RECOMMENDATIONS by test. */
+export const PR_MERGE_RECOMMENDATIONS = Object.freeze(['merge', 'merge_after_proof', 'do_not_merge']);
+
+/** merge_assessment field -> PR label, in render order (recommendation and
+ *  reason share the first line). */
+export const MERGE_ASSESSMENT_LABELS = Object.freeze({
+    value: 'Value',
+    risk: 'Risk',
+    default_path_changes: 'Default-path changes',
+    blast_radius: 'Blast radius',
+    upgrade_impact: 'Upgrade impact',
+    proof: 'Proof',
+});
+
+function clipInline(text, max) {
+    const s = inline(text);
+    return s.length <= max ? s : `${s.slice(0, Math.max(0, max - 24)).replace(/\s+$/, '')} [... truncated ...]`;
+}
+
+/**
+ * Renders a final verdict's merge_assessment as the body of the Merge
+ * assessment section (no heading), sanitized and capped at
+ * MERGE_ASSESSMENT_MAX_LENGTH. '' when `assessment` is not an object.
+ * @param {unknown} assessment
+ * @returns {string}
+ */
+export function renderMergeAssessment(assessment) {
+    if (!assessment || typeof assessment !== 'object' || Array.isArray(assessment)) return '';
+    const rec = PR_MERGE_RECOMMENDATIONS.includes(assessment.recommendation) ? assessment.recommendation : null;
+    const field = (k) => {
+        const v = assessment[k];
+        const s = typeof v === 'string' ? clipInline(v, MERGE_ASSESSMENT_FIELD_MAX_LENGTH) : '';
+        return s || '(not given)';
+    };
+    const lines = [
+        `- **Recommendation:** ${rec ? codeSpan(rec) : '(not given)'} -- ${field('reason')}`,
+        ...Object.entries(MERGE_ASSESSMENT_LABELS).map(([k, label]) => `- **${label}:** ${field(k)}`),
+    ];
+    return clipSectionText(lines.join('\n'), MERGE_ASSESSMENT_MAX_LENGTH);
+}
+
 /**
  * Builds the sprint PR body as markdown.
+ *
+ * Every variable section (merge assessment, reviewer notes, set-aside,
+ * waited, details, cost, and any caller-registered `sections`) draws on one
+ * budget -- `maxLength` -- through fitSectionsToBudget; the verdict header,
+ * human-review line and run-history marker block are the fixed frame and are
+ * never clipped.
  *
  * @param {object} opts
  * @param {'PASS'|'FAIL'|'ABORTED'} opts.verdict
@@ -197,6 +388,13 @@ function inline(text) {
  * @param {Date} [opts.now]
  * @param {string} [opts.notes] untrusted free text (reviewer notes / abort detail)
  * @param {string} [opts.notesHeading]
+ * @param {object} [opts.mergeAssessment] the final verdict's merge_assessment
+ *   (untrusted); rendered as a Merge assessment section above the notes,
+ *   omitted when absent
+ * @param {Array<{ id: string, priority?: number, heading: string, text: string }>} [opts.sections]
+ *   extra caller-registered sections (untrusted text, sanitized here),
+ *   rendered in order after the notes; priority defaults to
+ *   SECTION_PRIORITY.extra
  * @param {string[]} [opts.details] engine-authored detail lines, rendered as list items
  * @param {object[]} [opts.setAside] the run's set-aside records (./set-aside.mjs
  *   collectSetAsideEntries), rendered as a "Set aside this run" section; the
@@ -211,7 +409,8 @@ function inline(text) {
  */
 export function buildSprintPrBody({
     verdict, goal, branch, baseBranch, runId, now = new Date(),
-    notes, notesHeading = 'Reviewer notes', details = [], setAside = [], waited = [], costAnalysis = '', previousBody = '',
+    notes, notesHeading = 'Reviewer notes', mergeAssessment, sections = [],
+    details = [], setAside = [], waited = [], costAnalysis = '', previousBody = '',
     maxLength = PR_DESCRIPTION_MAX_LENGTH,
 }) {
     const v = VERDICTS.has(verdict) ? verdict : 'FAIL';
@@ -224,34 +423,16 @@ export function buildSprintPrBody({
     }
     const previous = history.slice(1);
 
-    const head = [
+    const headTop = [
         `## Sprint verdict: ${v}`,
         '',
         goal ? `- **Goal:** ${inline(goal)}` : null,
         `- **Branch:** ${codeSpan(inline(branch))}${baseBranch ? ` -> ${codeSpan(inline(baseBranch))}` : ''}`,
         `- **Run:** ${codeSpan(run)} (${stamp})`,
         '',
-        `### ${notesHeading}`,
-        '',
-    ].filter((l) => l !== null).join('\n');
+    ].filter((l) => l !== null);
 
-    const detailLines = (details || []).filter(Boolean).map((d) => `- ${inline(d)}`);
-    const setAsideLines = formatSetAsideItems(setAside).map((d) => `- ${inline(d)}`);
-    const waitedLine = formatWaitedLine(waited);
-    // The cost block replaces the per-sprint CHANGELOG entry the harvester used
-    // to write (a shared prepend-only file that conflicted on every merge).
-    const cost = sanitizePrMarkdown(costAnalysis);
-    const costFence = '`'.repeat(Math.max(3, ...(cost.match(/`+/g) || []).map((r) => r.length + 1)));
-    const tail = [
-        '',
-        setAsideLines.length ? '### Set aside this run\n' : null,
-        setAsideLines.length ? setAsideLines.join('\n') : null,
-        setAsideLines.length ? '' : null,
-        waitedLine ? `${inline(waitedLine)}\n` : null,
-        detailLines.length ? '### Details\n' : null,
-        detailLines.length ? detailLines.join('\n') : null,
-        detailLines.length ? '' : null,
-        cost ? `### Cost\n\n${costFence}\n${cost}\n${costFence}\n` : null,
+    const footer = [
         '---',
         '',
         HUMAN_REVIEW_LINE,
@@ -261,12 +442,71 @@ export function buildSprintPrBody({
         `<!-- ${RUN_HISTORY_MARKER}`,
         JSON.stringify(history),
         '-->',
-    ].filter((l) => l !== null).join('\n');
+    ].filter((l) => l !== null);
+
+    // Internal section ids are prefixed so a caller-registered id can never
+    // collide with (and silently replace) a built-in section.
+    const extras = (sections || []).map((s, i) => ({
+        id: `extra:${String(s && s.id != null ? s.id : i)}`,
+        heading: inline(s && s.heading) || 'Notes',
+        priority: Number.isFinite(s && s.priority) ? s.priority : SECTION_PRIORITY.extra,
+        text: closeOpenFences(sanitizePrMarkdown(s && s.text)),
+    }));
+
+    const render = (t) => {
+        const head = [...headTop];
+        if (t['merge-assessment']) head.push('### Merge assessment', '', t['merge-assessment'], '');
+        head.push(`### ${notesHeading}`, '');
+        const extraBlocks = extras.filter((e) => t[e.id]).map((e) => `\n\n### ${e.heading}\n\n${t[e.id]}`).join('');
+        const cost = t.cost;
+        // The cost block replaces the per-sprint CHANGELOG entry the harvester
+        // used to write (a shared prepend-only file that conflicted on every merge).
+        const costFence = cost ? '`'.repeat(Math.max(3, ...(cost.match(/`+/g) || []).map((r) => r.length + 1))) : '';
+        const tail = [
+            '',
+            t['set-aside'] ? '### Set aside this run\n' : null,
+            t['set-aside'] || null,
+            t['set-aside'] ? '' : null,
+            t.waited ? `${t.waited}\n` : null,
+            t.details ? '### Details\n' : null,
+            t.details || null,
+            t.details ? '' : null,
+            cost ? `### Cost\n\n${costFence}\n${cost}\n${costFence}\n` : null,
+            ...footer,
+        ].filter((l) => l !== null).join('\n');
+        // Blank lines around the notes keep them their own block: notes ending
+        // in a paragraph directly above '---' would otherwise turn into a heading.
+        return `${head.join('\n')}\n${t.notes}${extraBlocks}\n${tail}`;
+    };
 
     const cleanNotes = sanitizePrMarkdown(notes);
-    const budget = Math.min(PR_NOTES_MAX_LENGTH, maxLength - head.length - tail.length - 120);
-    const notesBlock = cleanNotes ? capNotes(cleanNotes, Math.max(200, budget)) : '*No notes were provided.*';
-    // Blank lines around the notes keep them their own block: notes ending in
-    // a paragraph directly above '---' would otherwise turn into a heading.
-    return `${head}\n${notesBlock}\n${tail}`;
+    const waitedLine = formatWaitedLine(waited);
+    const { body } = fitSectionsToBudget({
+        maxLength,
+        render,
+        sections: [
+            { id: 'merge-assessment', priority: SECTION_PRIORITY.mergeAssessment, text: renderMergeAssessment(mergeAssessment) },
+            {
+                id: 'notes',
+                priority: SECTION_PRIORITY.notes,
+                // Always present: no notes renders a placeholder, never an empty section.
+                text: cleanNotes || '*No notes were provided.*',
+                // `available` is maxLength minus the body with the notes empty,
+                // i.e. minus head, tail and the two joining newlines; the notes
+                // budget keeps its long-standing shape: at most
+                // PR_NOTES_MAX_LENGTH, 120 characters of slack, a 200 floor.
+                fit: (text, available) => (cleanNotes
+                    ? capNotes(cleanNotes, Math.max(200, Math.min(PR_NOTES_MAX_LENGTH, available + 2 - 120)))
+                    : text),
+                hardClip: (_text, max) => (cleanNotes ? capNotesWithin(cleanNotes, max) : ''),
+                omitted: '*[... reviewer notes omitted to fit the description limit ...]*',
+            },
+            ...extras.map((e) => ({ id: e.id, priority: e.priority, text: e.text })),
+            { id: 'set-aside', priority: SECTION_PRIORITY.setAside, text: formatSetAsideItems(setAside).map((d) => `- ${inline(d)}`).join('\n') },
+            { id: 'waited', priority: SECTION_PRIORITY.waited, text: waitedLine ? inline(waitedLine) : '' },
+            { id: 'details', priority: SECTION_PRIORITY.details, text: (details || []).filter(Boolean).map((d) => `- ${inline(d)}`).join('\n') },
+            { id: 'cost', priority: SECTION_PRIORITY.cost, text: sanitizePrMarkdown(costAnalysis) },
+        ],
+    });
+    return body;
 }
