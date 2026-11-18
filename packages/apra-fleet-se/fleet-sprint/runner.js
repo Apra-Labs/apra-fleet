@@ -4991,6 +4991,10 @@ export async function main(context) {
                     onAuthFailure: abortOnAuthFailure,
                     callTool: (args && typeof args.callTool === 'function') ? args.callTool : undefined,
                     runId: (args && typeof args.run_id === 'string') ? args.run_id : undefined,
+                    // Withdrawals a final review already committed travel
+                    // with the branch: the [ABORTED] body must list them.
+                    kbChanges: (runContext.kbWork && typeof runContext.kbWork.kbChangesReport === 'function')
+                        ? runContext.kbWork.kbChangesReport() : null,
                 });
             } catch (finalizeErr) {
                 log(

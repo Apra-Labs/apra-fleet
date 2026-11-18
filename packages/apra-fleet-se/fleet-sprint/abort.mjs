@@ -32,7 +32,7 @@ import {
 import { ApraFleet } from '@apralabs/apra-fleet-client';
 import { resolveProvider, capabilities as vcsCapabilities } from './vcs-module.mjs';
 import { raiseVcsPrForMember, PR_SKIPPED_NO_MCP_CLIENT } from './vcs-auth.mjs';
-import { buildSprintPrBody } from './pr-body.mjs';
+import { buildSprintPrBody, buildKbChangesSection } from './pr-body.mjs';
 import {
     findDoltDivergedCause, runGitStep, sanitizePrText, stageCommandBodyMemberSide, SAFE_TEXT_RE,
 } from './runner.js';
@@ -446,10 +446,15 @@ export function isTypedAbortError(err) {
  *   log?: (msg: string) => void,
  *   onAuthFailure?: (info: { member: string, label: string, cmd?: string, error: string, source: 'git'|'dolt', failureKind: string }) => Promise<void>,
  *   callTool?: (name: string, args: object) => Promise<any>,
+ *   kbChanges?: object|null,
  * }} opts
+ * `kbChanges` is kbWork.kbChangesReport(): a final review can commit
+ * withdrawals to the branch's bible before the sprint aborts (e.g. a failed
+ * harvest or PR creation), and merging the [ABORTED] PR carries them, so its
+ * body lists them exactly as the PASS/FAIL body does.
  * @returns {Promise<{ prUrl: string|null, reason: string, pushed: boolean, commitCount: number }>}
  */
-export async function finalizeAbort({ error, branch, baseBranch, member, command, log = () => {}, onAuthFailure, callTool, runId }) {
+export async function finalizeAbort({ error, branch, baseBranch, member, command, log = () => {}, onAuthFailure, callTool, runId, kbChanges = null }) {
     // Built up-front (not just at the PR-creation step further down) so the
     // SAME ApraFleet client can also resolve `member`'s VCS provider
     // (apra-fleet-417.7) for the runGitStep calls below -- avoids
@@ -575,6 +580,7 @@ export async function finalizeAbort({ error, branch, baseBranch, member, command
     // the provider's description limit are posted as engine-marked PR
     // comments by raiseVcsPrForMember; the full text is logged below.
     let lastAbortBody = null;
+    const kbChangesSection = buildKbChangesSection(kbChanges);
     const buildAbortBody = (previousBody = '', limits = {}) => (lastAbortBody = buildSprintPrBody({
         verdict: 'ABORTED',
         branch,
@@ -593,6 +599,7 @@ export async function finalizeAbort({ error, branch, baseBranch, member, command
         // records; rendered as the "Set aside this run" section.
         setAside: error && Array.isArray(error.setAside) ? error.setAside : [],
         waited: error && Array.isArray(error.waited) ? error.waited : [],
+        sections: kbChangesSection ? [kbChangesSection] : [],
         previousBody,
         ...(limits.descriptionMaxLength ? { maxLength: limits.descriptionMaxLength } : {}),
         ...(limits.commentMaxLength ? { commentMaxLength: limits.commentMaxLength } : {}),

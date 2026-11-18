@@ -1060,6 +1060,10 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
         deployHandler = null,
         integHandler = null,
         finalReviewHandler = null,
+        // Optional ({ opts, tempDir, runCmd, epicBead }) => result override for
+        // the 'harvester' dispatch (it may also throw, e.g. a typed abort
+        // AFTER the final review). Omitted: the default contract-checked mock.
+        harvesterHandler = null,
         // apra-fleet-417.4: optional (opts, tempDir, runCmd, epicBead) =>
         // result override for the 'regression-test-runner' dispatch, mirroring
         // deployHandler/integHandler above. Only reachable when the scenario
@@ -1962,6 +1966,9 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
             // dispatch actually received. Prior to apra-fleet-unw2.10 the
             // runner told the harvester these were UNAVAILABLE; this check
             // fails loudly if that regression ever comes back.
+            if (opts.agent === 'harvester' && harvesterHandler) {
+                return harvesterHandler({ opts, tempDir, runCmd, epicBead });
+            }
             if (opts.agent === 'harvester') {
                 const missing = checkHarvesterContract(opts.prompt);
                 if (missing.length > 0) {
@@ -2206,7 +2213,7 @@ export async function runDevelopLoopScenario(tag, {
     // of the default 'approve-immediately' mode below.
     planReviewerHandler,
     // apra-fleet-unw.17 additions:
-    deployHandler, integHandler, finalReviewHandler, commandFailurePattern,
+    deployHandler, integHandler, finalReviewHandler, harvesterHandler, commandFailurePattern,
     // apra-fleet-417.4: optional (opts, tempDir, runCmd, epicBead) => result
     // override for the 'regression-test-runner' dispatch -- see
     // buildMockFleetApi's option comment above. Paired with
@@ -2387,6 +2394,7 @@ export async function runDevelopLoopScenario(tag, {
             deployHandler,
             integHandler,
             finalReviewHandler,
+            harvesterHandler,
             regressionHandler,
             commandFailurePattern,
             commandLogDetailed,

@@ -3,6 +3,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { runDevelopLoopScenario, withScenarioMarkers, defaultMockCallTool, mockCmdResult, withStagedBodies } from './helpers/mock-sprint-harness.mjs';
 import { scaledTimeout } from './helpers/scaled-timeout.mjs';
+import { UsageLimitWaitExhaustedError } from '../fleet-sprint/errors.mjs';
 
 // =============================================================================
 // kb_maintainer write routing, end to end with fakes.
@@ -363,6 +364,75 @@ describe('mock sprint m1: final-review demotion lands as a merge-carried withdra
             assert.match(rec.body, /Re-checked and kept: 2; restored: 0; refused: 0 \(run log\)/);
             assert.ok(rec.body.trimEnd().endsWith('-->'), 'the body still ends with the run-history marker');
             assert.deepEqual(fleet.orchestratorKbCalls, [], 'no kb_* call may go through the orchestrator session');
+        });
+    });
+
+    // The final review commits and pushes its withdrawals before harvest and
+    // publish, so a sprint can still abort after them (here: the harvest
+    // dispatch exhausts its usage-limit waits). The branch then carries the
+    // tombstone, and merging the [ABORTED] PR would carry it too: its body
+    // must list it.
+    test('an abort after the final review pushed a withdrawal: the [ABORTED] PR body lists the withdrawn id', { timeout: scaledTimeout(240000) }, async () => {
+        await withScenarioMarkers('kb final review withdrawal abort', async () => {
+            const BIBLE_FILE = '.fleet/kb-canonical.json';
+            const FALSE_ID = 'dddd4444-kb-withdrawn-before-the-abort';
+            const fleet = createFakeFleet();
+            fleet.seedEntry('maint', {
+                id: FALSE_ID, type: 'knowledge', title: 'Cache keys by tenant id only', summary: 'Cache keys by tenant id only',
+                source_files: [CITED], confidence: 'CONFIRMED', created_at: '2000-01-01T00:00:00.000Z',
+            });
+            const doerHandler = async ({ opts, tempDir, runCmd }) => {
+                const ids = (opts.prompt.match(/Assigned bead ids \(comma-separated\):\s*(.+)/)?.[1] || '').split(',').map((s) => s.trim()).filter(Boolean);
+                for (const id of ids) await runCmd(`bd close ${id}`, tempDir);
+                fleet.published.add(CITED);
+                return { content: [{ text: JSON.stringify({ status: 'VERIFY', closedIds: ids, notes: 'done' }) }] };
+            };
+            const reviewerHandler = async () => ({ content: [{ text: JSON.stringify({ verdict: 'APPROVED', notes: 'Approved.', reopenIds: [], newTasks: [] }) }] });
+            const finalReviewHandler = async ({ opts }) => {
+                const offered = opts.prompt.includes(`"id": "${FALSE_ID}"`);
+                return { content: [{ text: JSON.stringify({
+                    verdict: 'PASS', notes: 'All goal beads closed.',
+                    ...(offered ? { kb_demotions: [{ id: FALSE_ID, reason: `${CITED}:42 keys by tenant AND id`, evidence_files: [CITED] }] } : {}),
+                }) }] };
+            };
+            const observe = buildOnCommand(fleet);
+            const onCommand = (ev) => {
+                observe(ev);
+                if (/^git rev-list --count /.test(ev.command)) return mockCmdResult(0, '1\n', '');
+                if (ev.member_name !== 'maint') return undefined;
+                if (/^git rev-parse HEAD\s*$/.test(ev.command)) return mockCmdResult(0, 'b'.repeat(40), '');
+                if (/^git diff --name-only \S+\.\.\.\S+\s*$/.test(ev.command)) return mockCmdResult(0, `${CITED}\n`, '');
+                if (/^git merge-base HEAD origin\//.test(ev.command)) return mockCmdResult(0, 'a'.repeat(40), '');
+                if (/^git log -m --name-only --pretty=format: /.test(ev.command)) return mockCmdResult(0, `${BIBLE_FILE}\n`, '');
+                return undefined;
+            };
+            // The harvest dispatch runs out of usage-limit waits: a typed
+            // sprint abort AFTER the final review pushed its withdrawal.
+            const harvesterHandler = async () => {
+                throw new UsageLimitWaitExhaustedError('usage limit still hit after the last wait (harvest)', { member: 'dev', roleLabel: 'Harvest' });
+            };
+
+            const r = await runDevelopLoopScenario('kbabort', {
+                members: ['maint', 'dev'],
+                roleMap: { doer: ['dev'], reviewer: ['dev'] },
+                beadsIdentity: { maint: { repoRemote: REPO_URL }, dev: { repoRemote: REPO_URL } },
+                taskSpecs: [{ title: 'Task: kb final review withdrawal then abort' }],
+                doerHandler, reviewerHandler, finalReviewHandler, harvesterHandler,
+                maxCycles: 1,
+                callToolFactory: (executeCommand) => buildCallTool(fleet, executeCommand),
+                onCommand,
+            });
+            assert.ok(r.error && /usage limit still hit/.test(r.error.message), `expected the harvest abort, got: ${r.error && r.error.message}`);
+            assert.ok(fleet.bible.tombstones.has(FALSE_ID), 'sanity: the final review pushed the withdrawal before the abort');
+
+            const creates2 = withStagedBodies(r.commandLog).filter((c) => c.startsWith('curl -sS -X POST') && c.includes('/pulls'));
+            const bodies = creates2.map((c) => JSON.parse(c.split('\n').find((l) => l.startsWith('{') && l.includes('"body"'))));
+            const aborted = bodies.find((p) => /\[ABORTED\]/.test(p.title || ''));
+            assert.ok(aborted, `no [ABORTED] PR create was dispatched; titles: ${JSON.stringify(bodies.map((p) => p.title))}; abort log:\n${r.logs.filter((l) => /finalizeAbort|ABORTED|Abort|Terminal History/i.test(l)).join('\n')}`);
+            assert.match(aborted.body, /### KB changes on merge/);
+            assert.match(aborted.body, /Merging withdraws 1 CONFIRMED KB claim/);
+            assert.ok(aborted.body.includes(FALSE_ID.slice(0, 8)), 'the withdrawn id (id8) is named in the [ABORTED] body');
+            assert.ok(aborted.body.trimEnd().endsWith('-->'), 'the body still ends with the run-history marker');
         });
     });
 });
