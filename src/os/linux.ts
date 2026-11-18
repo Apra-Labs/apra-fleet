@@ -345,6 +345,30 @@ export class LinuxCommands implements OsCommands {
     ];
   }
 
+  /**
+   * POSIX filter for one authorized_keys file held in shell variable `$_fleet_ak`:
+   * grep -vF (literal match, portable to BSD grep -- no `sed -i`) into a temp
+   * file in the same directory. grep exits 1 when every line was removed,
+   * which is still success; 2 is a real error and leaves the file untouched.
+   * `install` is how the filtered copy replaces the original.
+   */
+  protected filterAuthorizedKeysPosix(keyMatch: string, install: string): string {
+    const key = escapeShellArg(keyMatch);
+    return `if [ -f "$_fleet_ak" ]; then `
+      + `_fleet_tmp="$_fleet_ak.fleet-tmp.$$"; `
+      + `grep -vF -- ${key} "$_fleet_ak" > "$_fleet_tmp"; _fleet_rc=$?; `
+      + `if [ "$_fleet_rc" -gt 1 ]; then rm -f "$_fleet_tmp"; exit "$_fleet_rc"; fi; `
+      + `${install} || { rm -f "$_fleet_tmp"; exit 1; }; `
+      + `fi`;
+  }
+
+  removeSSHPublicKey(keyMatch: string, memberHome: string): string {
+    const home = memberHome.replace(/\/+$/, '');
+    const akFile = escapeShellArg(`${home}/.ssh/authorized_keys`);
+    return `_fleet_ak=${akFile}; `
+      + this.filterAuthorizedKeysPosix(keyMatch, 'chmod 600 "$_fleet_tmp" && mv -f "$_fleet_tmp" "$_fleet_ak"');
+  }
+
   // --- Local exec ---
 
   // apra-fleet-byp: name bash explicitly. Without a shell here, LocalStrategy

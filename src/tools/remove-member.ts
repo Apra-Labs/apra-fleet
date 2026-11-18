@@ -5,8 +5,7 @@ import os from 'node:os';
 import { removeAgent as removeFromRegistry, getAllAgents, getKeysDir } from '../services/registry.js';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
-import { wrapPowerShellEncoded } from '../os/windows.js';
-import { escapeShellArgInner, escapeSedBasicRegex, escapePowerShellArgInner } from '../utils/shell-escape.js';
+import { getMemberHomeDir } from '../services/member-home.js';
 import { getProvider } from '../providers/index.js';
 import { getAgentOS, getAgentShell } from '../utils/agent-helpers.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
@@ -228,21 +227,23 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
             // Use the key type + base64 portion to match (ignore trailing comment)
             const parts = pubKey.split(/\s+/);
             const keyMatch = parts.slice(0, 2).join(' ');
-            const isWindows = getAgentOS(agent) === 'windows';
-            const removeKeyCmd = isWindows
-              ? wrapPowerShellEncoded(`$akFile = "$env:USERPROFILE\\.ssh\\authorized_keys"; if (Test-Path $akFile) { $escaped = [regex]::Escape('${escapePowerShellArgInner(keyMatch)}'); (Get-Content $akFile) | Where-Object { $_ -notmatch $escaped } | Set-Content $akFile }`)
-              // Escape for a /-delimited sed BRE, then for the single-quoted shell
-              // argument (key_path is caller-supplied, so the .pub content is not
-              // trusted). A well-formed key still matches the same line (types
-              // with a `.`, e.g. sk-/cert keys, now carry `\.` in the pattern).
-              : `sed -i '/${escapeShellArgInner(escapeSedBasicRegex(keyMatch))}/d' ~/.ssh/authorized_keys`;
-            try {
-              const removeKeyResult = await strategy.execCommand(removeKeyCmd, 10000);
-              if (removeKeyResult.code !== 0) {
+            // The member's home is resolved here, never left to ~ or a home
+            // env var in the member's shell. Unknown home -> no command at all.
+            const memberHome = await getMemberHomeDir(agent);
+            if (!memberHome) {
+              warnings.push('Could not resolve the member\'s home directory -- the fleet public key was NOT removed from authorized_keys on the member');
+            } else {
+              // keyMatch is untrusted (key_path is caller-supplied); each OS
+              // builder escapes it and matches it literally.
+              const removeKeyCmd = cmds.removeSSHPublicKey(keyMatch, memberHome);
+              try {
+                const removeKeyResult = await strategy.execCommand(removeKeyCmd, 10000);
+                if (removeKeyResult.code !== 0) {
+                  warnings.push('Could not clear fleet public key from authorized_keys on the member');
+                }
+              } catch {
                 warnings.push('Could not clear fleet public key from authorized_keys on the member');
               }
-            } catch {
-              warnings.push('Could not clear fleet public key from authorized_keys on the member');
             }
           } catch { /* pub key file not found — skip */ }
         }

@@ -430,6 +430,26 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
     ];
   }
 
+  removeSSHPublicKey(keyMatch: string, memberHome: string): string {
+    const key = escapePowerShellArgInner(keyMatch);
+    const akFile = escapePowerShellArgInner(`${memberHome.replace(/[\\/]+$/, '')}\\.ssh\\authorized_keys`);
+    // String.Contains is a literal match (no regex). The file is rewritten in
+    // place (UTF-8, no BOM, as deploy writes it), so the ACL deploy set stays.
+    // The admin probe and administrators_authorized_keys path mirror
+    // deploySSHPublicKey exactly.
+    return wrapPowerShellEncoded(
+      `$k = '${key}'; `
+      + `$files = @('${akFile}'); `
+      + `$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator); `
+      + `if ($isAdmin) { $files += "$env:ProgramData\\ssh\\administrators_authorized_keys" }; `
+      + `foreach ($f in $files) { if (Test-Path -LiteralPath $f) { `
+      + `$lines = [System.IO.File]::ReadAllLines($f); `
+      + `$keep = [string[]]@($lines | Where-Object { -not $_.Contains($k) }); `
+      + `if ($keep.Count -ne $lines.Count) { [System.IO.File]::WriteAllLines($f, $keep, [System.Text.UTF8Encoding]::new($false)) } `
+      + `} }`,
+    );
+  }
+
   // --- Local exec ---
 
   cleanExec(command: string): { command: string; env?: Record<string, string>; shell?: string } {

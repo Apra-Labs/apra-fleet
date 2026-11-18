@@ -187,6 +187,12 @@ describe('removeMember - decommissioning', () => {
       fs.writeFileSync(`${keyPath}.pub`, 'ssh-ed25519 AAAAC3Nza fleet@test');
       const member = makeTestAgent({ friendlyName: 'order-worker', keyPath, os: 'linux', workFolder: '/home/u/proj' });
       addAgent(member);
+      // The key removal needs the member home (getMemberHomeDir probe).
+      mockExecCommand.mockImplementation(async (cmd: string) => (
+        cmd.includes('"$HOME"')
+          ? { stdout: '/home/u', stderr: '', code: 0 }
+          : { stdout: '', stderr: '', code: 0 }
+      ));
 
       await removeMember({ member_id: member.id });
 
@@ -343,7 +349,13 @@ describe('removeMember - SSH key ownership', () => {
     backupAndResetRegistry();
     vi.clearAllMocks();
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
-    mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+    // The member home probe (getMemberHomeDir) answers with a POSIX home;
+    // every other command succeeds silently.
+    mockExecCommand.mockImplementation(async (cmd: string) => (
+      cmd.includes('"$HOME"')
+        ? { stdout: '/home/testuser', stderr: '', code: 0 }
+        : { stdout: '', stderr: '', code: 0 }
+    ));
     mockReadMemberStatus.mockReturnValue('idle');
   });
 
