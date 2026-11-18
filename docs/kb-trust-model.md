@@ -182,9 +182,12 @@ Write-safety rules in `kb_bible_commit`:
 
 Known limits of the current design:
 
-- The `apra-fleet kb import` CLI takes only `--repo` and `--path`; it has no
-  ref or base-branch option, so a CLI import can never apply withdrawn
-  tombstones. Use the `kb_import` tool or the sprint engine's prime import.
+- To apply withdrawn tombstones from the CLI, run
+  `apra-fleet kb import --ref refs/remotes/origin/main --base-branch main`
+  (after fetching). Both values go to `kb_import`, which validates them with
+  its own schema (an invalid value exits 1). Without `--base-branch` the base
+  is `refs/remotes/<remote>/HEAD`, which a clone not made by `git clone` often
+  lacks; the tombstones are then deferred and the CLI prints the warning.
 - A withdrawal never touches the local row, so the local KB keeps the entry
   CONFIRMED until the merged bible is imported.
 - An id the base bible carries, demoted locally because of another branch's
