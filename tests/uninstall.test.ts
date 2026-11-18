@@ -2,7 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { execSync, execFileSync } from 'node:child_process';
+import { execSync, execFileSync, spawn } from 'node:child_process';
+import { PassThrough } from 'node:stream';
 import * as readline from 'node:readline/promises';
 import { runUninstall } from '../src/cli/uninstall.js';
 import * as config from '../src/cli/config.js';
@@ -862,5 +863,185 @@ describe('uninstall', () => {
     
     await expect(runUninstall(['--yes'])).rejects.toThrow('exit');
     expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('server is currently running'));
+  });
+
+  describe('confirmation precedes every side effect', () => {
+    beforeEach(() => { vi.mocked(install.isApraFleetRunning).mockReturnValue(false); });
+
+    function answer(a: string) {
+      (readline.createInterface as any).mockReturnValue({ question: vi.fn().mockResolvedValue(a), close: vi.fn() });
+    }
+
+    it('N without --force: nothing stopped, unregistered or removed, prints Aborted.', async () => {
+      answer('n');
+      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+      await expect(runUninstall([])).rejects.toThrow('exit');
+
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Aborted.'));
+      expect(mcpSvcMgr.unregister).not.toHaveBeenCalled();
+      expect(mcpSvcMgr.stop).not.toHaveBeenCalled();
+      expect(fs.rmSync).not.toHaveBeenCalled();
+      expect(fs.unlinkSync).not.toHaveBeenCalled();
+    });
+
+    it('N with --force and a running server: stop and unregister are NOT called', async () => {
+      vi.mocked(install.isApraFleetRunning).mockReturnValue(true);
+      answer('n');
+      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+      await expect(runUninstall(['--force'])).rejects.toThrow('exit');
+
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Aborted.'));
+      expect(mcpSvcMgr.stop).not.toHaveBeenCalled();
+      expect(mcpSvcMgr.unregister).not.toHaveBeenCalled();
+      expect(fs.rmSync).not.toHaveBeenCalled();
+    });
+
+    it('--force --yes with a running server still stops, then unregisters', async () => {
+      vi.mocked(install.isApraFleetRunning).mockReturnValue(true);
+      vi.spyOn(console, 'log').mockImplementation(() => {});
+
+      await runUninstall(['--force', '--yes']);
+
+      expect(mcpSvcMgr.stop).toHaveBeenCalledTimes(1);
+      expect(mcpSvcMgr.unregister).toHaveBeenCalledTimes(1);
+      expect(mcpSvcMgr.stop.mock.invocationCallOrder[0]).toBeLessThan(mcpSvcMgr.unregister.mock.invocationCallOrder[0]);
+    });
+
+    it('input closed before an answer: aborts non-zero naming --yes, nothing stopped/unregistered/removed', async () => {
+      vi.mocked(install.isApraFleetRunning).mockReturnValue(true);
+      // REAL readline over a stream that ends without an answer: its question()
+      // never settles on EOF, so a rejecting mock would not prove the fix.
+      const actual = await vi.importActual<typeof import('node:readline/promises')>('node:readline/promises');
+      const input = new PassThrough();
+      (readline.createInterface as any).mockImplementation(() => actual.createInterface({ input, output: new PassThrough() }));
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      vi.spyOn(console, 'log').mockImplementation(() => {});
+
+      const run = runUninstall(['--force']);
+      setImmediate(() => input.end());
+      await expect(run).rejects.toThrow('exit');
+
+      const errors = errSpy.mock.calls.map(c => c.join(' ')).join('\n');
+      expect(errors).toContain('--yes');
+      expect(process.exit).toHaveBeenCalledWith(1);
+      expect(mcpSvcMgr.stop).not.toHaveBeenCalled();
+      expect(mcpSvcMgr.unregister).not.toHaveBeenCalled();
+      expect(fs.rmSync).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      [['--llm', 'claude', '--yes']],
+      [['--skill', 'pm', '--yes']],
+    ])('partial uninstall %j leaves the service registered', async (args) => {
+      vi.spyOn(console, 'log').mockImplementation(() => {});
+
+      await runUninstall(args);
+
+      expect(mcpSvcMgr.unregister).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('Windows locked running exe and removal failures', () => {
+    const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    const origExecPath = Object.getOwnPropertyDescriptor(process, 'execPath')!;
+    const exePath = path.join(config.BIN_DIR, 'apra-fleet.exe');
+    const doltPath = path.join(config.BIN_DIR, 'dolt.exe');
+
+    function setProcess(platform: NodeJS.Platform) {
+      Object.defineProperty(process, 'platform', { value: platform, configurable: true });
+      Object.defineProperty(process, 'execPath', { value: exePath, configurable: true });
+    }
+
+    beforeEach(() => {
+      vi.mocked(install.isApraFleetRunning).mockReturnValue(false);
+      vi.spyOn(fs, 'readdirSync').mockImplementation(((p: any) => (
+        p === config.BIN_DIR ? ['apra-fleet.exe', 'dolt.exe', 'other.dll'] : []
+      )) as any);
+      vi.spyOn(console, 'log').mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+      Object.defineProperty(process, 'platform', origPlatform);
+      Object.defineProperty(process, 'execPath', origExecPath);
+    });
+
+    function failing(failOn: Record<string, string>) {
+      const removed: string[] = [];
+      const remove = vi.fn((p: string) => {
+        if (failOn[p]) throw Object.assign(new Error(`${failOn[p]}: ${p}`), { code: failOn[p] });
+        removed.push(p);
+      });
+      return { remove, removed };
+    }
+
+    it('win32 + EPERM only on process.execPath: removes the rest, spawns a deferred delete, exits 0', async () => {
+      setProcess('win32');
+      const { remove, removed } = failing({ [exePath]: 'EPERM' });
+      const spawnDetached = vi.fn();
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const consoleSpy = vi.spyOn(console, 'log');
+
+      await runUninstall(['--yes'], { remove, spawnDetached, sleep: () => {} });
+
+      for (const p of [doltPath, path.join(config.BIN_DIR, 'other.dll'), config.HOOKS_DIR, config.SCRIPTS_DIR]) {
+        expect(removed).toContain(p);
+      }
+      expect(vi.mocked(fs.unlinkSync)).toHaveBeenCalledWith(path.join(config.FLEET_BASE, 'data', 'install-config.json'));
+      expect(spawnDetached).toHaveBeenCalledTimes(1);
+      const [cmd, args] = spawnDetached.mock.calls[0];
+      expect(cmd).toBe(FAKE_POWERSHELL);
+      expect(path.isAbsolute(cmd)).toBe(true);
+      const script = Buffer.from(args[args.indexOf('-EncodedCommand') + 1], 'base64').toString('utf16le');
+      expect(script).toContain(`Wait-Process -Id ${process.pid}`);
+      expect(script).toContain(config.BIN_DIR);
+      const out = consoleSpy.mock.calls.map(c => c.join(' ')).join('\n');
+      expect(out).toContain(exePath);
+      expect(out).toContain(`Remove-Item -LiteralPath '${config.BIN_DIR}' -Recurse -Force`);
+      expect(errSpy).not.toHaveBeenCalled();
+      expect(process.exit).not.toHaveBeenCalled();
+    });
+
+    it('win32 default spawn is detached and hidden', async () => {
+      setProcess('win32');
+      const { remove } = failing({ [exePath]: 'EBUSY' });
+      const unref = vi.fn();
+      vi.mocked(spawn).mockReturnValue({ unref } as any);
+
+      await runUninstall(['--yes'], { remove, sleep: () => {} });
+
+      expect(spawn).toHaveBeenCalledWith(FAKE_POWERSHELL, expect.arrayContaining(['-EncodedCommand']),
+        expect.objectContaining({ detached: true, windowsHide: true }));
+      expect(unref).toHaveBeenCalled();
+    });
+
+    it('win32 + EPERM on a different BIN_DIR file: retried, reported, exit 1, the rest still removed', async () => {
+      setProcess('win32');
+      const { remove, removed } = failing({ [doltPath]: 'EPERM' });
+      const spawnDetached = vi.fn();
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      await expect(runUninstall(['--yes'], { remove, spawnDetached, sleep: () => {} })).rejects.toThrow('exit');
+
+      expect(remove.mock.calls.filter(c => c[0] === doltPath).length).toBeGreaterThan(1);
+      expect(spawnDetached).not.toHaveBeenCalled();
+      expect(process.exit).toHaveBeenCalledWith(1);
+      expect(errSpy.mock.calls.map(c => c.join(' ')).join('\n')).toContain(doltPath);
+      for (const p of [exePath, config.HOOKS_DIR, config.SCRIPTS_DIR]) expect(removed).toContain(p);
+    });
+
+    it.each(['EPERM', 'EIO'])('non-Windows %s on the exe: exit 1, other targets still removed, no deferred delete', async (code) => {
+      setProcess('linux');
+      const { remove, removed } = failing({ [exePath]: code });
+      const spawnDetached = vi.fn();
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      await expect(runUninstall(['--yes'], { remove, spawnDetached, sleep: () => {} })).rejects.toThrow('exit');
+
+      expect(spawnDetached).not.toHaveBeenCalled();
+      expect(process.exit).toHaveBeenCalledWith(1);
+      for (const p of [doltPath, config.HOOKS_DIR, config.SCRIPTS_DIR]) expect(removed).toContain(p);
+    });
   });
 });
