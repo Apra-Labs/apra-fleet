@@ -1,9 +1,9 @@
 {
   "version": 3,
   "provenance": {
-    "commit": "f9cb1ca7c3f0f03debb783f6ef40a261554b7b0b",
+    "commit": "5a171212f2e1eee116e7f58e2ea29648ffb8ff1f",
     "branch": "main",
-    "entry_count": 163
+    "entry_count": 164
   },
   "entries": [
     {
@@ -2573,6 +2573,33 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:12.550Z"
+    },
+    {
+      "id": "d1bf32e8-5d30-4f5f-9ffe-8c43b59a3971",
+      "type": "knowledge",
+      "title": "Fleet-sprint demotions are merge-carried bible withdrawals, offered at the final review only",
+      "summary": "The sprint engine never calls kb_demote. A final-review kb_demotions entry becomes a kb_bible_commit withdrawal and a kb_holds id becomes restore_ids, sent in the same call as the round's confirmed ids. A FAIL verdict seals confirmations only; an abort seals everything.",
+      "symbols": [
+        "createKbWorkClient",
+        "demotionCandidates",
+        "resolveDemotionVerdicts",
+        "queueWithdrawals",
+        "commitRepo",
+        "createBranchWithdrawnEntries",
+        "kbDemotionBlock"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/final-review.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T21:45:40.304Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "7857ace22af43e1bcc2123cace29ae26087d3e09",
+        "packages/apra-fleet-se/fleet-sprint/phases/final-review.mjs": "e6392013ec53ecf4e97bcafe425b73742e8a3160",
+        "packages/apra-fleet-se/fleet-sprint/runner.js": "4405b93d3b9e3c0e7e9e23611c15b21183d34fb3"
+      }
     },
     {
       "id": "d3016610-0d2a-40db-ba0b-537f49ff1cbf",
