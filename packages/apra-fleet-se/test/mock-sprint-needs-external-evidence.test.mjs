@@ -23,6 +23,12 @@
 //       (no in-goal newTask, buildFailing not true). The run exits to Final
 //       Review on the cycle of that verdict, not after STALL_CYCLE_LIMIT stale
 //       cycles, and the P3 id is logged as skipped.
+//   (d) needs-external-evidence reset with the integ runner on a DIFFERENT
+//       member from the backlog member: a gap bug it files (visible to the
+//       backlog clone only after that clone D-pulls) still resets the
+//       parent's inconclusive count, so the carry-over trips two passes later
+//       than it would without the reset. Fails when the gap accounting runs
+//       inside the Integ Test phase, before Cycle Evaluation's backlog D-pull.
 //
 // Reverting this lane's runner.js / phases/integ-test.mjs changes (the
 // needs-external-evidence count, the excluded/deferred verify ids and the
@@ -37,6 +43,7 @@ import assert from 'node:assert/strict';
 import { runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
 import { StalledSprintError } from '../fleet-sprint/errors.mjs';
 import { NEEDS_EXTERNAL_EVIDENCE_CYCLE_LIMIT } from '../fleet-sprint/verify-carry-over.mjs';
+import { crossMemberGapTopology, INTEG_MEMBER } from './helpers/cross-member-gap-topology.mjs';
 import {
     invalidateSyncRemoteCache, clearLastSyncedTip, clearTipProbeFailures,
 } from '../fleet-sprint/dolt-sync.mjs';
@@ -205,5 +212,63 @@ test('(c) a CHANGES_NEEDED whose only reopen id is a P3 bead below goal exits to
         assert.ok(run.dispatched.some((d) => d.label === 'Final Review'), 'Final Review must be dispatched');
         assert.deepEqual(run.result.belowGoalCarryOver, [p3Id]);
         assert.notEqual(run.finalBeadsById.get(p3Id).status, 'closed', 'the P3 bead is not reopened or worked');
+    });
+});
+
+test('(d) a gap bug filed by an integ runner on another member resets the parent needs-external-evidence count', async () => {
+    resetSyncMemo();
+    await withScenarioMarkers('needs-external-evidence reset cross-member', async () => {
+        const topology = crossMemberGapTopology();
+        let epicVerifyDispatches = 0;
+        let gapId = null;
+        const run = await runDevelopLoopScenario('nee-xreset', {
+            members: topology.members,
+            roleMap: topology.roleMap,
+            onCommand: topology.onCommand,
+            onWorkflow: topology.onWorkflow,
+            taskSpecs: [{ title: 'Task: closes normally', priority: 'P1' }],
+            maxCycles: 8,
+            withRunbooks: true,
+            withRegressionPlaybook: true,
+            doerHandler: closingDoer,
+            reviewerHandler: approve,
+            finalReviewHandler: rubberStampPass,
+            regressionHandler: passingRegression,
+            integHandler: async ({ opts, epicBead, runCmd: rc, tempDir: td }) => {
+                assert.equal(opts.member_name, INTEG_MEMBER, 'the integ runner must run on its own member');
+                if (!verifyIdsOf(opts.prompt).includes(epicBead.id)) {
+                    return report({ featuresClosed: 0, issuesCreated: 0, passed: true, bugsFiled: [], summary: 'Nothing to verify.' });
+                }
+                epicVerifyDispatches++;
+                // Pass 2 files a real gap; every other pass leaves the bead
+                // open with no gap bug (inconclusive).
+                if (epicVerifyDispatches === 2) {
+                    const out = await rc(`bd create -t task "Gap: verification fails" -d "Gap found by integration test pass 2." -p P1 --parent ${epicBead.id} --silent`, td);
+                    gapId = String(out.stdout || '').trim();
+                    topology.fileGap(gapId);
+                    return report({
+                        featuresClosed: 0, issuesCreated: 1, passed: false, bugsFiled: [gapId],
+                        verifySetClosed: [], verifySetLeftOpen: [{ id: epicBead.id, reason: `gap bug ${gapId} filed` }],
+                        summary: `Verification of ${epicBead.id} failed; filed ${gapId}.`,
+                    });
+                }
+                return report({
+                    featuresClosed: 0, issuesCreated: 0, passed: true, bugsFiled: [],
+                    verifySetClosed: [], verifySetLeftOpen: [{ id: epicBead.id, reason: EXTERNAL_REASON }],
+                    summary: `Could not verify ${epicBead.id} on these members.`,
+                });
+            },
+        });
+        const epic = run.epicBeadId;
+
+        assert.ok(!run.error, `the run finishes: ${errText(run)}`);
+        assert.ok(gapId, 'the gap was filed');
+        assert.ok(!run.logs.some((l) => /gap-bug lookup MISSED/.test(l)), 'the gap lookup resolves after the backlog D-pull');
+        // Inconclusive, gap (reset), inconclusive, inconclusive: carried over
+        // on the fourth pass. Without the reset the gap pass would count as a
+        // second inconclusive cycle and trip the limit on pass 2.
+        assert.equal(epicVerifyDispatches, 2 + NEEDS_EXTERNAL_EVIDENCE_CYCLE_LIMIT, `integ handed the bead ${epicVerifyDispatches} times`);
+        assert.ok(run.logs.some((l) => l.includes(epic) && /carried over as needs-external-evidence/.test(l)), 'the carry-over is logged');
+        assert.deepEqual(run.result.verifyCarryOver.map((e) => [e.id, e.kind]), [[epic, 'needs-external-evidence']]);
     });
 });
