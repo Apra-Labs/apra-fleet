@@ -218,6 +218,61 @@ export function buildSetAsideCarryOver(stall, { where, cycle, closedIds }) {
     };
 }
 
+/** The cycle-loop exit reason for a plan the plan-reviewer never approved, after work closed this run. */
+export const PLAN_REJECTED_CARRY_OVER_EXIT = 'plan-rejected-carry-over';
+
+/** Longest plan-reviewer finding text kept per carried-over bead. */
+const PLAN_FINDING_MAX_CHARS = 600;
+
+/**
+ * One line of plan-reviewer finding text: whitespace collapsed, capped.
+ * @param {unknown} text
+ * @returns {string}
+ */
+function oneLineFinding(text) {
+    const flat = typeof text === 'string' ? text.replace(/\s+/g, ' ').trim() : '';
+    if (flat.length <= PLAN_FINDING_MAX_CHARS) return flat;
+    return `${flat.slice(0, PLAN_FINDING_MAX_CHARS - 3)}...`;
+}
+
+/**
+ * The carry-over handed to Finalization when the Plan phase ends without an
+ * approved plan (whole plan contested, or the contested beads deferred and
+ * nothing left ready) after this run already closed work. Each carried-over
+ * bead's reason is the plan-reviewer finding: the structured finding naming
+ * that bead when the verdict has one, else the verdict notes.
+ *
+ * Pure: no I/O. The caller decides which beads are at/above goal priority.
+ *
+ * @param {{ where: string, cycle: number, planningRounds?: number, closedIds: string[], contestedIds: string[],
+ *   verdictNotes?: string|null, findings?: Array<{ id?: string, detail?: string }>|null, atGoalIds?: string[] }} opts
+ * @returns {{ reason: string, where: string, cycle: number, planningRounds: number|null, closedIds: string[], entries: { id: string, reason: string }[], atGoalIds: string[] }}
+ */
+export function buildPlanRejectedCarryOver({ where, cycle, planningRounds = null, closedIds = [], contestedIds = [], verdictNotes = null, findings = null, atGoalIds = [] }) {
+    const notes = oneLineFinding(verdictNotes);
+    const byId = new Map();
+    for (const f of Array.isArray(findings) ? findings : []) {
+        if (!f || typeof f.id !== 'string' || !f.id) continue;
+        const detail = oneLineFinding(f.detail);
+        if (detail) byId.set(f.id, byId.has(f.id) ? `${byId.get(f.id)} / ${detail}` : detail);
+    }
+    const ids = [...new Set((contestedIds || []).map(String))];
+    const entries = ids.map((id) => {
+        const finding = byId.get(id) || notes || 'no finding text returned';
+        return { id, reason: `plan-reviewer finding: ${finding}` };
+    });
+    const goal = new Set((atGoalIds || []).map(String));
+    return {
+        reason: PLAN_REJECTED_CARRY_OVER_EXIT,
+        where,
+        cycle,
+        planningRounds: Number.isFinite(planningRounds) ? planningRounds : null,
+        closedIds: [...(closedIds || [])],
+        entries,
+        atGoalIds: ids.filter((id) => goal.has(id)),
+    };
+}
+
 /**
  * The one-paragraph carry-over text: logged at the exit and put in the
  * verdict notes (and so in the PR body).
@@ -227,6 +282,11 @@ export function buildSetAsideCarryOver(stall, { where, cycle, closedIds }) {
  */
 export function formatCarryOverNotes(carryOver) {
     const items = carryOver.entries.map((e) => `${e.id} -- ${e.reason}`).join('; ');
+    if (carryOver.reason === PLAN_REJECTED_CARRY_OVER_EXIT) {
+        return `Carried over (${carryOver.where}): the plan-reviewer did not approve the plan after ` +
+            `${carryOver.planningRounds ?? '?'} round(s), so the sprint went on to Final Review with the work it closed ` +
+            `(${carryOver.closedIds.join(', ')}) instead of aborting. Not finished this run: ${items}.`;
+    }
     return `Carried over (${carryOver.where}): nothing is ready and every open in-scope bead is set aside for this run, ` +
         `so the sprint went on to Final Review with the work it closed (${carryOver.closedIds.join(', ')}) ` +
         `instead of aborting. Not finished this run: ${items}.`;

@@ -13,6 +13,8 @@ import {
     withScenarioMarkers,
     defaultMockCallTool,
     legacyCommandExecuteCommandAdapter,
+    MOCK_MEMBER_WORK_FOLDER,
+    withStagedBody,
 } from './helpers/mock-sprint-harness.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -130,7 +132,7 @@ function mockAbortCallTool(command) {
         // member's provider via VCSModule.resolveProvider() (a
         // 'member_detail' call) BEFORE every provision_vcs_auth call.
         if (name === 'member_detail') {
-            return { content: [{ text: JSON.stringify({ vcsProvider: 'github' }) }] };
+            return { content: [{ text: JSON.stringify({ vcsProvider: 'github', folder: MOCK_MEMBER_WORK_FOLDER }) }] };
         }
         if (name === 'provision_vcs_auth') {
             const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
@@ -178,7 +180,9 @@ test('finalizeAbort: >=1 commit beyond base -> branch pushed and [ABORTED] PR cr
         `Expected a 'git push -u origin ${branch}' command to be dispatched, command log: ${JSON.stringify(log)}`
     );
 
-    const prCmd = log.find((c) => c.startsWith('curl -sS -X POST') && c.includes('/pulls'));
+    const prCmdRaw = log.find((c) => c.startsWith('curl -sS -X POST') && c.includes('/pulls'));
+    // The JSON body is staged in a file (curl --data-binary @<path>); read it with the command.
+    const prCmd = prCmdRaw && withStagedBody(prCmdRaw);
     check(!!prCmd, `Expected a VCSModule 'curl ... /pulls' create-pull-request command to be dispatched, command log: ${JSON.stringify(log)}`);
     check(
         prCmd.includes(`"title":"fleet-sprint [ABORTED]: ${branch}"`),
@@ -638,7 +642,7 @@ function mockAbortCallToolCounting(command) {
     const base = defaultMockCallTool({ executeCommand: legacyCommandExecuteCommandAdapter(command) });
     const callTool = async (name, toolArgs) => {
         if (name === 'member_detail') {
-            return { content: [{ text: JSON.stringify({ vcsProvider: 'github' }) }] };
+            return { content: [{ text: JSON.stringify({ vcsProvider: 'github', folder: MOCK_MEMBER_WORK_FOLDER }) }] };
         }
         if (name === 'provision_vcs_auth') {
             provisionVcsAuthCalls += 1;
@@ -768,7 +772,7 @@ function mockAbortCallToolFirstMemberDetailFails(command) {
             if (memberDetailCalls === 1) {
                 throw new Error('mock member registry lookup failure: member_detail unreachable');
             }
-            return { content: [{ text: JSON.stringify({ vcsProvider: 'github' }) }] };
+            return { content: [{ text: JSON.stringify({ vcsProvider: 'github', folder: MOCK_MEMBER_WORK_FOLDER }) }] };
         }
         if (name === 'provision_vcs_auth') {
             const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();

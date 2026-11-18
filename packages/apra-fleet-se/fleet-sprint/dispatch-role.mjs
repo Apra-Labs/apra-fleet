@@ -1,3 +1,4 @@
+import { EXECUTE_PROMPT_MAX_TURNS } from '@apralabs/apra-fleet-client';
 import { policyFor, PRE_DISPATCH_STEPS_IN_BRACKET } from './role-policies.mjs';
 import {
     isNonRetryableDispatchError,
@@ -213,8 +214,30 @@ export function resolveBudget(ctx, name) {
  */
 export function resolveMaxTurns(maxTurns, bindings = {}) {
     if (!maxTurns) return undefined;
-    if (maxTurns.kind === 'runtime') return bindings[maxTurns.binding];
-    return turnBaseValue(maxTurns.base) * maxTurns.multiplier;
+    if (maxTurns.kind === 'runtime') return clampMaxTurns(bindings[maxTurns.binding]);
+    return clampMaxTurns(turnBaseValue(maxTurns.base) * maxTurns.multiplier);
+}
+
+/**
+ * The ONE clamp every engine dispatch's max_turns goes through (runDispatch
+ * and every resume/redispatch label read it via resolveMaxTurns): a computed
+ * budget above what the execute_prompt tool accepts would be rejected at
+ * schema validation, so it is capped at the client's exported maximum.
+ * Non-numbers (undefined = transport default) pass through unchanged.
+ */
+export function clampMaxTurns(turns) {
+    if (typeof turns !== 'number' || !Number.isFinite(turns)) return turns;
+    return Math.min(turns, EXECUTE_PROMPT_MAX_TURNS);
+}
+
+/**
+ * The max_turns a role's max-turns resume secondary actually sends (first
+ * resume attempt), for resume labels: derived from the policy table through
+ * the same clamp the dispatch uses, never recomputed by the caller.
+ */
+export function secondaryMaxTurns(roleName, bindings = {}) {
+    const secondary = policyFor(roleName).secondary;
+    return secondary ? resolveMaxTurns(secondary.maxTurns, bindings) : undefined;
 }
 
 function turnBaseValue(name) {
@@ -292,7 +315,7 @@ function evalLabelExpr(expr, bindings) {
     if (Object.prototype.hasOwnProperty.call(bindings, expr)) return bindings[expr];
     const m = /^([A-Za-z_$][\w$]*)(?:\s*\*\s*(\d+))?$/.exec(String(expr).trim());
     if (m && Object.prototype.hasOwnProperty.call(TURN_BASES, m[1])) {
-        return m[2] ? TURN_BASES[m[1]] * Number(m[2]) : TURN_BASES[m[1]];
+        return clampMaxTurns(m[2] ? TURN_BASES[m[1]] * Number(m[2]) : TURN_BASES[m[1]]);
     }
     throw new Error(
         `dispatch-role: watchdog label expression ${JSON.stringify(expr)} is neither a supplied binding nor ` +

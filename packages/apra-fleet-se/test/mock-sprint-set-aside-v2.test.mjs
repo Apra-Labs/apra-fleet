@@ -19,7 +19,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
+import { runDevelopLoopScenario, withScenarioMarkers, withStagedBodies } from './helpers/mock-sprint-harness.mjs';
 import {
     invalidateSyncRemoteCache, clearLastSyncedTip, clearTipProbeFailures,
 } from '../fleet-sprint/dolt-sync.mjs';
@@ -237,7 +237,7 @@ test('(d) a waiting [test] task reported BLOCKED again after its impl closed is 
         assert.ok(run.result.notes.includes(tst), run.result.notes);
         // The published PR body: the test task under "Set aside this run",
         // and the earlier wait on its own line.
-        const prCmd = run.commandLog.find((cmd) => cmd.includes('Set aside this run'));
+        const prCmd = withStagedBodies(run.commandLog).find((cmd) => cmd.includes('Set aside this run'));
         assert.ok(prCmd, 'the published PR body must carry the "Set aside this run" section');
         assert.ok(prCmd.includes(`- ${tst}: `), prCmd);
         assert.ok(prCmd.includes(`Waited this run: ${tst} on ${impl}`), prCmd);

@@ -76,7 +76,7 @@
 // turns red instead of landing on an unguarded site.
 // =============================================================================
 
-import { dispatchRole, TURN_BASES } from '../dispatch-role.mjs';
+import { dispatchRole, secondaryMaxTurns } from '../dispatch-role.mjs';
 import { buildFinalVerdictPrompt } from '../prompts.mjs';
 import { resolveFinalReviewMergeBase } from '../git-topology.mjs';
 import { applyGuardedReopens, parseIdWithReasonEntry } from '../beads-transitions.mjs';
@@ -347,7 +347,7 @@ export async function runFinalReviewPhase({
             'Weigh the remaining evidence and return your final PASS/FAIL verdict now (with newTasks findings if FAIL).',
         roleLabel: 'Final Review',
         label: 'Final Review',
-        resumeLabel: `Final Review (resume, max_turns=${TURN_BASES.FINAL_REVIEW_MAX_TURNS * 2})`,
+        resumeLabel: `Final Review (resume, max_turns=${secondaryMaxTurns('final-review')})`,
     });
     finalVerdictResult = finalReviewOutcome.value;
     // apra-fleet-b4g.102.1: a sprint whose last cycle's deploy failed never
@@ -430,7 +430,6 @@ export async function runFinalReviewPhase({
     } else if (typeof kbWork.flushAll === 'function') {
         await kbWork.flushAll();
     }
-    if (typeof kbWork.warnPending === 'function') kbWork.warnPending();
 
     // Persist the Final Review's actionable findings to BEADS -- the only
     // artifact the next sprint's planner reads (notes reach only the PR body

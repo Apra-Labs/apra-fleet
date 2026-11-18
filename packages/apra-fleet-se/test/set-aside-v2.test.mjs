@@ -17,7 +17,10 @@ import {
     classifyBlockedReport, stuckBehindSetAside, evaluateSetAsideStall,
     collectWaitEntries, formatWaitedLine, collectSetAsideEntries,
 } from '../fleet-sprint/set-aside.mjs';
-import { buildSprintPrBody } from '../fleet-sprint/pr-body.mjs';
+import { buildSprintPrBody as buildSprintPrBodyParts } from '../fleet-sprint/pr-body.mjs';
+
+// buildSprintPrBody returns { body, overflow, notes }; these checks read the description.
+const buildSprintPrBody = (opts) => buildSprintPrBodyParts(opts).body;
 import { buildAnalysisText } from '../fleet-sprint/sprint-report.mjs';
 
 const GOAL = 'P1/P2';

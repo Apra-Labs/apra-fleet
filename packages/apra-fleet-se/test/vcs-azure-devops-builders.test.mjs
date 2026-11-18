@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildCreatePrCommand, buildCommentCommand, capabilities } from '../fleet-sprint/vcs-module.mjs';
+import { buildCreatePrCommand as rawBuildCreatePrCommand, buildCommentCommand as rawBuildCommentCommand, capabilities } from '../fleet-sprint/vcs-module.mjs';
+import { withPayloadPath, stagedJson, posixDataBinaryArg, WINDOWS_PAYLOAD_PATH } from './helpers/vcs-payload-test.mjs';
 import * as shellHelpers from '../fleet-sprint/vcs-providers/shell-helpers.mjs';
 
 // =============================================================================
@@ -69,33 +70,31 @@ const PR_PARAMS = Object.freeze({
     token: TOKEN,
 });
 
+// Request bodies travel as a staged member-side file (curl --data-binary
+// @<path>); the wrappers supply the fixture payload_path for each call's os.
+const buildCreatePrCommand = withPayloadPath(rawBuildCreatePrCommand);
+const buildCommentCommand = withPayloadPath(rawBuildCommentCommand);
+const WINDOWS_DATA_BINARY = `--data-binary '@${WINDOWS_PAYLOAD_PATH}'`;
+
 const POSIX_CREATE_PR = "curl -sS -X POST"
     + " -u ':PAT-TOKEN-abc123'"
     + " -H 'Content-Type: application/json'"
     + " -H 'Accept: application/json'"
-    + " -d '{\"sourceRefName\":\"refs/heads/auto-sprint/feat-x\",\"targetRefName\":\"refs/heads/main\",\"title\":\"Sprint'\\''s PR\",\"description\":\"Body line\"}'"
+    + ` ${posixDataBinaryArg()}`
     + " -w '\n%{http_code}'"
     + ` ${API_BASE}/pullrequests?api-version=7.1`;
+const CREATE_PR_BODY = { sourceRefName: 'refs/heads/auto-sprint/feat-x', targetRefName: 'refs/heads/main', title: "Sprint's PR", description: 'Body line' };
 
-// The PowerShell dialect carries THREE rewrites: the apostrophe is doubled
-// ('') for PowerShell's own single-quoted-string parser; every JSON double
-// quote is backslash-escaped (\") for the C-runtime argv parser of the
-// native curl.exe child -- Windows PowerShell 5.1's legacy native-argument
-// binder passes the string value through to the child's command line
-// UNESCAPED, so a bare `"` is eaten there as a quote toggle and the JSON
-// body arrives at curl.exe with every quote stripped (HTTP 400); and every
-// literal space inside the JSON becomes its equivalent JSON backslash-u0020
-// escape, because
-// that same binder counts `\"` toward its quote parity and so would leave a
-// whitespace-bearing value unwrapped for the CRT to split. Pinned as a
-// literal here; test/vcs-powershell-argv-roundtrip.test.mjs proves the form
-// against the documented binder + CRT rules and (on Windows) against a real
-// powershell.exe.
+// The JSON body is staged in a file on every OS, so the PowerShell dialect
+// only differs in the curl binary and the (Windows) staged path; the
+// apostrophe-bearing title never reaches the command line.
+// test/vcs-powershell-argv-roundtrip.test.mjs proves the @<path> word against
+// the documented binder + CRT rules and (on Windows) a real powershell.exe.
 const WINDOWS_CREATE_PR = "curl.exe -sS -X POST"
     + " -u ':PAT-TOKEN-abc123'"
     + " -H 'Content-Type: application/json'"
     + " -H 'Accept: application/json'"
-    + " -d '{\\\"sourceRefName\\\":\\\"refs/heads/auto-sprint/feat-x\\\",\\\"targetRefName\\\":\\\"refs/heads/main\\\",\\\"title\\\":\\\"Sprint''s\\u0020PR\\\",\\\"description\\\":\\\"Body\\u0020line\\\"}'"
+    + ` ${WINDOWS_DATA_BINARY}`
     + " -w '\n%{http_code}'"
     + ` ${API_BASE}/pullrequests?api-version=7.1`;
 
@@ -104,36 +103,29 @@ test('azure-devops create-pull-request: exact POSIX curl command (endpoint, api-
     assert.equal(built.provider, 'azure-devops');
     assert.equal(built.action, 'create-pull-request');
     assert.equal(built.command, POSIX_CREATE_PR);
+    assert.deepEqual(stagedJson(built), CREATE_PR_BODY);
 });
 
-test('azure-devops create-pull-request: exact Windows curl.exe command (PowerShell doubles the apostrophe, JSON double quotes are CRT-escaped as \\")', () => {
+test('azure-devops create-pull-request: exact Windows curl.exe command (the body is staged, never inline)', () => {
     const built = buildCreatePrCommand({ ...PR_PARAMS, os: 'windows' });
     assert.equal(built.command, WINDOWS_CREATE_PR);
+    assert.deepEqual(stagedJson(built), CREATE_PR_BODY);
 });
 
 test('azure-devops create-pull-request: an omitted body emits NO description key at all', () => {
     const { body, ...noBody } = PR_PARAMS;
     assert.equal(body, 'Body line');
     const built = buildCreatePrCommand({ ...noBody, os: 'linux' });
-    assert.equal(
-        built.command,
-        "curl -sS -X POST"
-        + " -u ':PAT-TOKEN-abc123'"
-        + " -H 'Content-Type: application/json'"
-        + " -H 'Accept: application/json'"
-        + " -d '{\"sourceRefName\":\"refs/heads/auto-sprint/feat-x\",\"targetRefName\":\"refs/heads/main\",\"title\":\"Sprint'\\''s PR\"}'"
-        + " -w '\n%{http_code}'"
-        + ` ${API_BASE}/pullrequests?api-version=7.1`,
-    );
+    assert.equal(built.command, POSIX_CREATE_PR);
+    const { description, ...withoutDescription } = CREATE_PR_BODY;
+    assert.equal(description, 'Body line');
+    assert.deepEqual(stagedJson(built), withoutDescription);
 });
 
 test('azure-devops create-pull-request: a branch already given as a full ref is not double-prefixed', () => {
     const built = buildCreatePrCommand({ ...PR_PARAMS, head: 'refs/heads/auto-sprint/feat-x', os: 'linux' });
-    assert.ok(
-        built.command.includes('"sourceRefName":"refs/heads/auto-sprint/feat-x"'),
-        `expected a single refs/heads/ prefix, got: ${built.command}`,
-    );
-    assert.ok(!built.command.includes('refs/heads/refs/heads/'), 'a full ref must never be re-prefixed');
+    assert.equal(stagedJson(built).sourceRefName, 'refs/heads/auto-sprint/feat-x', `expected a single refs/heads/ prefix, got: ${built.payload.content}`);
+    assert.ok(!built.payload.content.includes('refs/heads/refs/heads/'), 'a full ref must never be re-prefixed');
 });
 
 test('azure-devops create-pull-request: each coordinate is percent-encoded per URL segment (project names may contain spaces)', () => {
@@ -177,15 +169,16 @@ const POSIX_COMMENT = "curl -sS -X POST"
     + " -u ':PAT-TOKEN-abc123'"
     + " -H 'Content-Type: application/json'"
     + " -H 'Accept: application/json'"
-    + " -d '{\"comments\":[{\"parentCommentId\":0,\"content\":\"Aborted: agent'\\''s run failed\",\"commentType\":\"text\"}],\"status\":\"active\"}'"
+    + ` ${posixDataBinaryArg()}`
     + " -w '\n%{http_code}'"
     + ` ${API_BASE}/pullrequests/42/threads?api-version=7.1`;
+const COMMENT_BODY = { comments: [{ parentCommentId: 0, content: "Aborted: agent's run failed", commentType: 'text' }], status: 'active' };
 
 const WINDOWS_COMMENT = "curl.exe -sS -X POST"
     + " -u ':PAT-TOKEN-abc123'"
     + " -H 'Content-Type: application/json'"
     + " -H 'Accept: application/json'"
-    + " -d '{\\\"comments\\\":[{\\\"parentCommentId\\\":0,\\\"content\\\":\\\"Aborted:\\u0020agent''s\\u0020run\\u0020failed\\\",\\\"commentType\\\":\\\"text\\\"}],\\\"status\\\":\\\"active\\\"}'"
+    + ` ${WINDOWS_DATA_BINARY}`
     + " -w '\n%{http_code}'"
     + ` ${API_BASE}/pullrequests/42/threads?api-version=7.1`;
 
@@ -194,11 +187,13 @@ test('azure-devops comment: exact POSIX curl command (a single active thread car
     assert.equal(built.provider, 'azure-devops');
     assert.equal(built.action, 'comment');
     assert.equal(built.command, POSIX_COMMENT);
+    assert.deepEqual(stagedJson(built), COMMENT_BODY);
 });
 
 test('azure-devops comment: exact Windows curl.exe command', () => {
     const built = buildCommentCommand({ ...COMMENT_PARAMS, os: 'windows' });
     assert.equal(built.command, WINDOWS_COMMENT);
+    assert.deepEqual(stagedJson(built), COMMENT_BODY);
 });
 
 test('azure-devops builders: both commands keep the -w trailing-status-line convention this provider\'s own classifier depends on', () => {

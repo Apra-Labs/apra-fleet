@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "f9cb1ca7c3f0f03debb783f6ef40a261554b7b0b",
     "branch": "main",
-    "entry_count": 156
+    "entry_count": 163
   },
   "entries": [
     {
@@ -27,6 +27,29 @@
         "packages/apra-fleet-se/src/supervisor/fleet-members.mjs": "186eaa038d775ac2912e80b9b2214da2ae00bf3a",
         "src/services/onboarding.ts": "20513f4211fed7b80c6d86d321a1fcf3afb01382",
         "src/services/tool-registry.ts": "9b38a4b703924d141c74ccc300f92f8a7bb3315e"
+      }
+    },
+    {
+      "id": "050f0390-9472-49e2-92f4-1de76345f618",
+      "type": "knowledge",
+      "title": "KB work client warnPending is once-per-client; only main() finally and the fatal guard call it",
+      "summary": "kb.mjs warnPending sets a warnedPending latch on its first call, even when nothing is pending, so a second call prints nothing. Its only callers are runner.js main() finally and fatal-diagnostics.mjs via kbWorkOf; the final-review and harvest calls were removed.",
+      "symbols": [
+        "warnPending",
+        "createKbWorkClient",
+        "installFatalDiagnosticsGuard"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/fleet-sprint/fatal-diagnostics.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T16:42:13.781Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/fatal-diagnostics.mjs": "22de2445e0a64427b585d8bccafc3d4e8275e24b",
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "d34eb19cf8772e37109a45ab3a3546eef7477017",
+        "packages/apra-fleet-se/fleet-sprint/runner.js": "b046204308612a6300f176700ed70407b59bcc2b"
       }
     },
     {
@@ -223,6 +246,30 @@
         "src/os/windows.ts": "cdade4c6fc907e43671da60a685254b8295a0673",
         "tests/go-concurrency-default.test.ts": "7ac1b504ac84589832822b0f3340e8a351db531e",
         "tests/windows-gomaxprocs-builders.test.ts": "e19b5155dc8e670671d574da1192b5983cd333ae"
+      }
+    },
+    {
+      "id": "184f9633-8cd2-477b-8b2c-3643c3bcd288",
+      "type": "learning",
+      "title": "Changing buildFinalVerdictPrompt or the finalVerdict schema requires regenerating the happy-path golden",
+      "summary": "test/fixtures/golden-transcript/mock-sprint-happy-path.jsonl embeds the Final Review prompt with its appended finalVerdict schema, so any change to either fails golden-transcript.test.mjs until regenerated with npm run update-golden in packages/apra-fleet-se.",
+      "symbols": [
+        "buildFinalVerdictPrompt",
+        "finalVerdict"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/golden-transcript.test.mjs",
+        "packages/apra-fleet-se/test/fixtures/golden-transcript/mock-sprint-happy-path.jsonl",
+        "packages/apra-fleet-se/fleet-sprint/prompts.mjs",
+        "packages/apra-fleet-se/fleet-sprint/contracts.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T15:03:39.632Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/contracts.mjs": "7a5e61b9e2bcff4b5be81d376073ded10203c96d",
+        "packages/apra-fleet-se/fleet-sprint/prompts.mjs": "c1f8de63018db1a43b5e7b7f441805c1d05f36ce",
+        "packages/apra-fleet-se/test/fixtures/golden-transcript/mock-sprint-happy-path.jsonl": "55c80bc91e74134da034eab96436688925474689",
+        "packages/apra-fleet-se/test/golden-transcript.test.mjs": "7cf16db4a73f2525f40dfb07036e4de174cf9833"
       }
     },
     {
@@ -1014,6 +1061,36 @@
       "updated_at": "2026-09-25T22:26:41.207Z"
     },
     {
+      "id": "50236365-a1e0-44ca-8859-8fa64898670c",
+      "type": "knowledge",
+      "title": "PR-body overflow: notes never truncated, posted as engine-marked PR comments with relaunch upsert",
+      "summary": "buildSprintPrBody returns { body, overflow, notes, comments, failedBody, previousHadOverflow }. raiseVcsPrForMember, given a body built from the provider's limits, posts the comments after create/update through pr-overflow-comments.mjs, upserting marked comments on a relaunch.",
+      "symbols": [
+        "buildSprintPrBody",
+        "buildOverflowComments",
+        "parseOverflowComment",
+        "publishPrOverflowComments",
+        "raiseVcsPrForMember",
+        "capDescriptionPreservingHiddenTail"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/pr-body.mjs",
+        "packages/apra-fleet-se/fleet-sprint/pr-overflow-comments.mjs",
+        "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs",
+        "packages/apra-fleet-se/fleet-sprint/vcs-module.mjs",
+        "packages/apra-fleet-se/test/pr-overflow-zero-loss.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T17:32:29.249Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/pr-body.mjs": "be1e756c4be1a083d5568e80842dda845b672776",
+        "packages/apra-fleet-se/fleet-sprint/pr-overflow-comments.mjs": "c44647398d8e8869b9ed1b7218257db458876c7e",
+        "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs": "0574dc1c3abb887714776190494972e20b4345de",
+        "packages/apra-fleet-se/fleet-sprint/vcs-module.mjs": "1d991edf997d9d94ed966b276b2ae1dc77776fa6",
+        "packages/apra-fleet-se/test/pr-overflow-zero-loss.test.mjs": "c47d3867ede4eaee315caad379f75cef75ba9935"
+      }
+    },
+    {
       "id": "50e0fad1-a4ed-4aaf-82cc-486b8cfc5a05",
       "type": "knowledge",
       "title": "The inline vcs_token escaper omits the CRT-argv layer that fleet-sprint's PowerShell shQuote applies",
@@ -1105,6 +1182,34 @@
       }
     },
     {
+      "id": "57f15e8f-cee5-480a-9a64-f494f2ae0a1b",
+      "type": "knowledge",
+      "title": "PR comment builders return {id, body, ref} and take ref back as comment_ref",
+      "summary": "list-comments mapResponse yields [{id, body, ref}]; update-comment/delete-comment take that ref as comment_ref. ADO refs are {threadId, commentId} (root comment of each live non-system thread); GitHub and Bitbucket refs are {id}. Descriptor limits are read with getProviderTextLimits.",
+      "symbols": [
+        "buildListCommentsCommand",
+        "buildUpdateCommentCommand",
+        "buildDeleteCommentCommand",
+        "getProviderTextLimits"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/vcs-module.mjs",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/github.mjs",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/azure-devops.mjs",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/bitbucket.mjs",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/index.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T16:42:12.584Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/vcs-module.mjs": "0219266d33622f15f7289a8a83e8b211840000f1",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/azure-devops.mjs": "4ff8fe70a60ffa054e4a44200b74c08b9bcabeea",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/bitbucket.mjs": "4fad11fe55cb87e908aa0dc7dffd5f67853f38f0",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/github.mjs": "f8ec21d53da88e26596b1a1fb764fdd8c28ba94f",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/index.mjs": "db48759db7e9e1c4a2f91bc03199bd073a207b63"
+      }
+    },
+    {
       "id": "5b0c0a37-6e58-4854-b1f4-b672ca0a6080",
       "type": "knowledge",
       "title": "A crossing sync-bracket close can never be the last open bracket, so the pause-guard poke is unreachable there",
@@ -1181,6 +1286,29 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:31.482Z"
+    },
+    {
+      "id": "652e6895-b39a-4bbd-8163-b80f1922168e",
+      "type": "knowledge",
+      "title": "PR list-comments builders fetch a single page only (GitHub and Bitbucket)",
+      "summary": "GitHub list-comments requests per_page=100 and Bitbucket pagelen=100 with no next-page follow, so a PR with more than 100 comments returns only the first page; ADO threads list is unpaged.",
+      "symbols": [
+        "buildGitHubListCommentsCommand",
+        "buildBitbucketListCommentsCommand",
+        "buildAzureDevOpsListCommentsCommand"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/github.mjs",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/bitbucket.mjs",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/azure-devops.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T17:32:29.888Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/azure-devops.mjs": "4ff8fe70a60ffa054e4a44200b74c08b9bcabeea",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/bitbucket.mjs": "4fad11fe55cb87e908aa0dc7dffd5f67853f38f0",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/github.mjs": "f8ec21d53da88e26596b1a1fb764fdd8c28ba94f"
+      }
     },
     {
       "id": "65688ff3-63b2-4d8d-8772-9767a7008a59",
@@ -1867,6 +1995,34 @@
       }
     },
     {
+      "id": "9bbecb78-9c2b-4e44-8410-f25064e32255",
+      "type": "knowledge",
+      "title": "Sprint PR body sections share one budget via fitSectionsToBudget; the run-history frame is never clipped",
+      "summary": "buildSprintPrBody routes every variable section (merge assessment, notes, set-aside, waited, details, cost, caller extras) through fitSectionsToBudget with the caller's maxLength; header, human-review line and run-history marker block are a fixed frame. Engine tail sections outrank notes (priority 95/90 vs 80), extras default 50.",
+      "symbols": [
+        "fitSectionsToBudget",
+        "buildSprintPrBody",
+        "renderMergeAssessment",
+        "SECTION_PRIORITY",
+        "PR_MERGE_RECOMMENDATIONS",
+        "MERGE_RECOMMENDATIONS"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/pr-body.mjs",
+        "packages/apra-fleet-se/fleet-sprint/contracts.mjs",
+        "packages/apra-fleet-se/test/publish-pr-body-and-update.test.mjs",
+        "packages/apra-fleet-se/test/final-verdict-merge-assessment.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T15:03:39.001Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/contracts.mjs": "7a5e61b9e2bcff4b5be81d376073ded10203c96d",
+        "packages/apra-fleet-se/fleet-sprint/pr-body.mjs": "e51225582051aacb7c4bf959866b038611f71edf",
+        "packages/apra-fleet-se/test/final-verdict-merge-assessment.test.mjs": "377b7efabe7e34a2b0591e2d0754541282fbdde4",
+        "packages/apra-fleet-se/test/publish-pr-body-and-update.test.mjs": "0821699a8289015a0b6bc0918e9eab5ca45a6ad9"
+      }
+    },
+    {
       "id": "9db85b59-1883-43cf-8357-717914e3c8b9",
       "type": "knowledge",
       "title": "The needs_decision pause keeps member reservations; only a pause that released re-reserves on resume",
@@ -2186,6 +2342,32 @@
       "source_file_hashes": {
         "src/services/http-transport.ts": "5f5473f8a1f70d3fbe4173a2124ba726cf940f0e",
         "tests/http-transport.test.ts": "cd60757b7c0699170eb0bb5074a787d6e9738128"
+      }
+    },
+    {
+      "id": "bacb77ec-5713-4cbd-ad86-7435286f8e8a",
+      "type": "knowledge",
+      "title": "raiseVcsPrForMember accepts body as a function of provider text limits",
+      "summary": "Callers pass body (and updateExisting's second arg) as a function of getProviderTextLimits(provider); a buildSprintPrBody object answer also triggers overflow-comment posting, a plain string does not.",
+      "symbols": [
+        "raiseVcsPrForMember",
+        "publishPrOverflowComments",
+        "getProviderTextLimits",
+        "buildSprintPrBody"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/publish-pr.mjs",
+        "packages/apra-fleet-se/fleet-sprint/abort.mjs",
+        "packages/apra-fleet-se/fleet-sprint/pr-overflow-comments.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T17:56:50.439Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/abort.mjs": "cda4184abb710fb3d859c4284356173da54dd50b",
+        "packages/apra-fleet-se/fleet-sprint/phases/publish-pr.mjs": "ef0eb4ceb3a0aa0c78098d842a8e76e2bf9f35ec",
+        "packages/apra-fleet-se/fleet-sprint/pr-overflow-comments.mjs": "c44647398d8e8869b9ed1b7218257db458876c7e",
+        "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs": "0574dc1c3abb887714776190494972e20b4345de"
       }
     },
     {

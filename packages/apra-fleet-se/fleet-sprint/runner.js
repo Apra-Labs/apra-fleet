@@ -100,7 +100,7 @@ import {
     createWorkflowsPermissionPreflightCallback,
     createLlmAuthSelfHealCallback,
 } from './vcs-auth.mjs';
-import { validateIssueId, validateBranchName, validateBranchPair, validateArgs } from './sprint-args.mjs';
+import { validateIssueId, validateBranchName, validateBranchPair, validateArgs, validateGoal, validateMaxCycles, validateBudget } from './sprint-args.mjs';
 import { verifyBeadsIdentity, createBeadsIdentityProber, BEADS_READING_ROLES } from './beads-identity-check.mjs';
 import { ROLE_BACKLOG, selectBacklogMember, formatBacklogSelection } from './backlog-role.mjs';
 import { createKbMaintainerSelector, createMemberDetailResolver, ROLE_KB_MAINTAINER } from './kb-maintainer.mjs';
@@ -131,7 +131,7 @@ import { createSyncBrackets, createGitSync } from './git-sync.mjs';
 // because the turn-budget constants moved there with the dispatch that
 // consumes them, and a few runner-side presentation labels still interpolate
 // a resume's doubled budget.
-import { dispatchRole, TURN_BASES } from './dispatch-role.mjs';
+import { dispatchRole, TURN_BASES, secondaryMaxTurns } from './dispatch-role.mjs';
 // The policy TABLE the engine executes. runner.js reads it only to state, in a
 // log line, the bound the row itself sets -- never to re-implement a ladder.
 // USAGE_LIMIT_BUDGET_DEFAULTS is the usage-limit controller's budget row,
@@ -167,7 +167,7 @@ import { runDevelopPhase } from './phases/develop.mjs';
 // stayed here.
 import { runReviewPhase } from './phases/review.mjs';
 import { runDeployPhase, latestDeployFailure, formatDeployFailureReason, formatDeploySetAsideNotes, DEPLOY_RETRY_CYCLE_LIMIT } from './phases/deploy.mjs';
-import { collectSetAsideEntries, evaluateSetAsideStall, formatSetAsideStallMessage, stuckBehindSetAside, collectWaitEntries, closedWorkThisRun, buildSetAsideCarryOver, formatCarryOverNotes } from './set-aside.mjs';
+import { collectSetAsideEntries, evaluateSetAsideStall, formatSetAsideStallMessage, stuckBehindSetAside, collectWaitEntries, closedWorkThisRun, buildSetAsideCarryOver, buildPlanRejectedCarryOver, formatCarryOverNotes } from './set-aside.mjs';
 import { NEEDS_EXTERNAL_EVIDENCE_CYCLE_LIMIT, recordInconclusiveVerifyCycle, stillOpenVerifyIdsForExit, syncDeferredVerifyIds, buildVerifyCarryOver, formatVerifyCarryOverNotes } from './verify-carry-over.mjs';
 // apra-fleet-3swo.6.8: the next two phase() boundaries -- the per-cycle Integ
 // Test and the Re-Review that Cycle Evaluation dispatches when the goal-
@@ -179,7 +179,7 @@ import { NEEDS_EXTERNAL_EVIDENCE_CYCLE_LIMIT, recordInconclusiveVerifyCycle, sti
 // `if (openAtGoal.length === 0 && !reviewedThisCycle)` branch and hands back
 // the same three the per-round Review does. See each module's header for where
 // its boundary is drawn and why the surrounding `if`/exit-gate stayed here.
-import { runIntegTestPhase } from './phases/integ-test.mjs';
+import { runIntegTestPhase, applyVerifyGapAccounting } from './phases/integ-test.mjs';
 import { runReReviewPhase } from './phases/re-review.mjs';
 // apra-fleet-3swo.6.6: the next two phase() boundaries -- the sprint's closing
 // Final Review and the once-per-sprint Regression Test. Final Review runs from
@@ -376,7 +376,7 @@ export {
 // Re-exported so importers of the CLI arg-contract validators from runner.js
 // keep working (notably bin/cli.mjs); sprint-args.mjs is the single source of
 // truth for their implementation (apra-fleet-3swo.3.3).
-export { validateIssueId, validateBranchName, validateBranchPair, validateArgs };
+export { validateIssueId, validateBranchName, validateBranchPair, validateArgs, validateGoal, validateMaxCycles, validateBudget };
 // Re-exported so importers of the five previously-exported prompt builders
 // from runner.js keep working; prompts.mjs is the single source of truth for
 // their implementation (apra-fleet-3swo.3.4). buildPlanReviewerPrompt and
@@ -2690,7 +2690,7 @@ async function runSprintCycle(context) {
                 + `on branch ${validated.branch}, diff range ${mergeBaseSha}..${validated.branch} (use exactly this range for git diff and git log). ` +
                 'Finish evaluating the remaining acceptance criteria and return your final verdict now.',
             roleLabel: 'Reviewer',
-            resumeLabel: `Review (resume, max_turns=${TURN_BASES.BASE_REVIEWER_MAX_TURNS * 2})`,
+            resumeLabel: `Review (resume, max_turns=${secondaryMaxTurns('reviewer')})`,
             // The reviewer pool head is a runner-local value; the policy names
             // it by binding and the engine resolves it from here.
             bindings: { 'reviewerPool[0]': reviewerPool[0] },
@@ -2974,6 +2974,30 @@ async function runSprintCycle(context) {
 
     await updateDashboard();
 
+    // Target visibility, checked UNCONDITIONALLY before any dispatch or bead
+    // mutation: a target id that is not visible to the backlog member's bd
+    // clone at all is a different problem from beads being closed/done, and one
+    // valid id plus one bad id must not run a full sprint on the valid one.
+    // Reuses the shared project-wide snapshot (cached; no extra bd call).
+    {
+        const knownTargetIds = new Set((await fetchAllBeadsShared()).map((b) => b.id));
+        const invisibleTargets = targetIssues.filter((id) => !knownTargetIds.has(id));
+        if (invisibleTargets.length > 0) {
+            throw new PreSprintValidationError(
+                `Pre-sprint validation failed: ${invisibleTargets.length} of ${targetIssues.length} target issue id(s) ` +
+                `are not visible to the backlog member ('${backlogMember}')'s bd clone at all: ` +
+                `${invisibleTargets.join(', ')}. This is NOT the same as those beads being closed/done -- it usually ` +
+                `means they were created/updated on a different clone that was never synced to the shared Dolt remote ` +
+                `(dolt-push it there first), the id is misspelled or carries the wrong prefix, or this member's clone has not picked them up yet. Scope: '${sprintFilter}'.`,
+                {
+                    reason: PRE_SPRINT_REFUSAL_REASONS.TARGET_NOT_VISIBLE,
+                    scope: sprintFilter,
+                    invisibleTargets,
+                }
+            );
+        }
+    }
+
     // readyLeafBeads(), not raw bdListScoped('--ready --json'): bd's own
     // `--ready` reports a decomposed childful target (e.g. this sprint's own
     // --issue target once it has children) as ready too, which would make
@@ -3046,36 +3070,6 @@ async function runSprintCycle(context) {
 
         if (initialBeads.length === 0) {
             if (notDoneBeads.length === 0) {
-                // Distinguish "every target issue is genuinely done" from "one
-                // or more target ids are not visible to this orchestrator
-                // member's own bd clone AT ALL" -- the latter reads
-                // identically as "Nothing to do" without this check (an empty
-                // `notDoneBeads` either way), but is a completely different
-                // problem: those beads are not closed, they are invisible
-                // here, most commonly because they were created/mutated on a
-                // different clone that was never `bd dolt push`ed to the
-                // shared remote before this sprint launched, or because a
-                // members-persistent-across-sprints orchestrator (see
-                // DoltSync.syncBefore's fatal:true D-pull above) still hasn't
-                // synced them for some other reason. Reusing the already-
-                // fetched project-wide snapshot -- no extra bd call.
-                const allBeadsForVisibilityCheck = await fetchAllBeadsShared();
-                const knownIds = new Set(allBeadsForVisibilityCheck.map((b) => b.id));
-                const invisibleTargets = targetIssues.filter((id) => !knownIds.has(id));
-                if (invisibleTargets.length > 0) {
-                    throw new PreSprintValidationError(
-                        `Pre-sprint validation failed: ${invisibleTargets.length} of ${targetIssues.length} target issue id(s) ` +
-                        `are not visible to the backlog member ('${backlogMember}')'s bd clone at all: ` +
-                        `${invisibleTargets.join(', ')}. This is NOT the same as those beads being closed/done -- it usually ` +
-                        `means they were created/updated on a different clone that was never synced to the shared Dolt remote ` +
-                        `(dolt-push it there first) or this member's clone has not picked them up yet. Scope: '${sprintFilter}'.`,
-                        {
-                            reason: PRE_SPRINT_REFUSAL_REASONS.TARGET_NOT_VISIBLE,
-                            scope: sprintFilter,
-                            invisibleTargets,
-                        }
-                    );
-                }
                 throw new PreSprintValidationError(
                     `Pre-sprint validation failed: No open/in-progress/blocked/deferred beads found for scope '${sprintFilter}'. Nothing to do.`,
                     { reason: PRE_SPRINT_REFUSAL_REASONS.NOTHING_TO_DO, scope: sprintFilter }
@@ -3513,6 +3507,44 @@ async function runSprintCycle(context) {
         });
     }
 
+    // A SprintPlanRejectedError (from the Plan phase, or from the empty-ready
+    // check after a plan-cap deferral) would abort a sprint that already
+    // closed work, throwing that work's Final Review, Regression, Harvest and
+    // Publish away. When at least one bead this run dispatched or routed to
+    // verify is closed, return a carry-over (./set-aside.mjs
+    // buildPlanRejectedCarryOver) naming each contested bead with the
+    // plan-reviewer finding instead; the caller exits the cycle loop to
+    // Finalization and Final Review forces FAIL while an at/above-goal bead is
+    // carried over. With nothing closed this run, returns null and the caller
+    // rethrows. The contested beads are the error's details.contestedIds; when
+    // the verdict named none (e.g. a plan with no task in it), every open
+    // at/above-goal in-scope leaf bead is carried over instead.
+    async function planRejectedCarryOver(err, { where, cycle }) {
+        if (workedOnBeadIds.size === 0 && verifyEverIds.size === 0) return null;
+        const closedNow = new Set((await bdListScoped('--status=closed --json')).map((b) => b.id));
+        const closedThisRun = closedWorkThisRun({ workedOnIds: workedOnBeadIds, verifyEverIds, closedIds: closedNow });
+        if (closedThisRun.length === 0) return null;
+        const details = (err && err.details) || {};
+        const [rawAtGoal, parentIds] = await Promise.all([
+            bdListScoped(`--status=${NOT_DONE_STATUSES} --priority-max=${goalMax} --json`),
+            decomposedParentIds(),
+        ]);
+        const atGoalIds = rawAtGoal.map((b) => String(b.id));
+        let contestedIds = Array.isArray(details.contestedIds) ? details.contestedIds.filter((id) => typeof id === 'string' && id) : [];
+        if (contestedIds.length === 0) {
+            contestedIds = partitionDeferredBeads(rawAtGoal.filter((b) => !parentIds.has(b.id))).active.map((b) => String(b.id)).sort();
+        }
+        return buildPlanRejectedCarryOver({
+            where, cycle,
+            planningRounds: details.planningRounds,
+            closedIds: closedThisRun,
+            contestedIds,
+            verdictNotes: details.notes ?? err.notes ?? null,
+            findings: details.findings || null,
+            atGoalIds,
+        });
+    }
+
     // apra-fleet-rp7a.1: every bead id ever seen DEFERRED at/above goal
     // priority during Cycle Evaluation, monotone for the same reason
     // verifyEverIds is. These beads are excluded from the completion/stall
@@ -3577,8 +3609,10 @@ async function runSprintCycle(context) {
     let verifyBlockDiagnosis = null;
     // Set (to ./set-aside.mjs buildSetAsideCarryOver's result) when Cycle
     // Evaluation exits the cycle loop on a set-aside stall after this run
-    // closed work; Final Review then forces FAIL while an at/above-goal bead
-    // is carried over and names every carried-over item in the verdict notes.
+    // closed work, or to buildPlanRejectedCarryOver's result when the Plan
+    // phase ends unapproved after this run closed work; Final Review then
+    // forces FAIL while an at/above-goal bead is carried over and names every
+    // carried-over item in the verdict notes.
     let carryOverExit = null;
 
     // apra-fleet-nwh.1: integ-test-runner's own tracked spend, broken out of
@@ -3700,19 +3734,36 @@ async function runSprintCycle(context) {
         // below still reads (planCapDeferredIds / lastVerdict / planningRounds)
         // plus the pendingRejectedNewTasks list it reassigns -- the one mutable
         // local that used to be shared through the closure.
-        const planOutcome = await runPlanPhase({
-            phase, log, command, dispatchCtx,
-            cycle, validated, targetIssues, requirementsContent,
-            backlogMember, getMemberForRole,
-            sprintState, gitSync, args,
-            verifySetThisCycle, roundSessions, pendingRejectedNewTasks,
-            resolveSettleShell,
-            parseBdJson,
-            extractContestedBeadIds,
-            reconcilePendingRejectedNewTasks,
-            stageCommandBodyMemberSide,
-            updateDashboard,
-        });
+        //
+        // A plan the plan-reviewer never approved throws
+        // SprintPlanRejectedError; after this run closed work that becomes a
+        // carry-over exit to Finalization instead (planRejectedCarryOver).
+        // PlanReviewDispatchFailedError is a different class and always
+        // propagates.
+        let planOutcome;
+        try {
+            planOutcome = await runPlanPhase({
+                phase, log, command, dispatchCtx,
+                cycle, validated, targetIssues, requirementsContent,
+                backlogMember, getMemberForRole,
+                sprintState, gitSync, args,
+                verifySetThisCycle, roundSessions, pendingRejectedNewTasks,
+                resolveSettleShell,
+                parseBdJson,
+                extractContestedBeadIds,
+                reconcilePendingRejectedNewTasks,
+                stageCommandBodyMemberSide,
+                updateDashboard,
+            });
+        } catch (err) {
+            if (!(err instanceof SprintPlanRejectedError)) throw err;
+            const planCarryOver = await planRejectedCarryOver(err, { where: `Plan C${cycle}`, cycle });
+            if (!planCarryOver) throw err;
+            carryOverExit = planCarryOver;
+            log(`Cycle ${cycle}: ${formatCarryOverNotes(carryOverExit)} Exiting cycle loop to Finalization${carryOverExit.atGoalIds.length > 0 ? '; the sprint verdict will be FAIL' : ''}.`);
+            endGroup();
+            break;
+        }
         pendingRejectedNewTasks = planOutcome.pendingRejectedNewTasks;
         const { planCapDeferredIds, lastVerdict, planningRounds } = planOutcome;
         for (const id of planCapDeferredIds) planCapDeferredEverIds.add(id);
@@ -3778,8 +3829,10 @@ async function runSprintCycle(context) {
         // decides completion), but immediately after a deferral it means the
         // approved remainder was empty all along, which is the same failure as
         // a whole-plan-contested exhaustion.
+        // After this run closed work it is a carry-over exit naming the
+        // deferred beads instead (planRejectedCarryOver).
         if (planCapDeferredIds.length > 0 && readyBeads.length === 0) {
-            throw new SprintPlanRejectedError(
+            const rejected = new SprintPlanRejectedError(
                 `Plan phase for cycle ${cycle}: after deferring contested bead(s) ` +
                 `[${planCapDeferredIds.join(', ')}] per plan-cap exhaustion, the resulting ready set is empty. ` +
                 'Refusing to proceed to Develop with nothing dispatchable.',
@@ -3787,8 +3840,18 @@ async function runSprintCycle(context) {
                     notes: lastVerdict ? lastVerdict.notes : null,
                     cycle,
                     planningRounds,
+                    details: {
+                        contestedIds: planCapDeferredIds,
+                        findings: lastVerdict && Array.isArray(lastVerdict.findings) ? lastVerdict.findings : null,
+                    },
                 }
             );
+            const deferralCarryOver = await planRejectedCarryOver(rejected, { where: `Plan C${cycle} (after plan-cap deferral)`, cycle });
+            if (!deferralCarryOver) throw rejected;
+            carryOverExit = deferralCarryOver;
+            log(`Cycle ${cycle}: ${formatCarryOverNotes(carryOverExit)} Exiting cycle loop to Finalization${carryOverExit.atGoalIds.length > 0 ? '; the sprint verdict will be FAIL' : ''}.`);
+            endGroup();
+            break;
         }
 
         // An empty `--ready` list is NOT, by itself, evidence the sprint
@@ -4130,19 +4193,19 @@ async function runSprintCycle(context) {
             // `let verifySetForIntegTest = []` and both "Skipping Integration
             // Test Phase" else branches below all stay here: the probes decide
             // whether this phase runs at all, and the verify set they feed is
-            // read by Cycle Evaluation whether or not it ran. integFailures,
-            // verifyEverIds and verifyGapCounts are mutated in place exactly as
-            // the closure did; the three genuinely reassigned values come back.
+            // read by Cycle Evaluation whether or not it ran. integFailures and
+            // verifyEverIds are mutated in place exactly as the closure did;
+            // the three genuinely reassigned values come back. The verify
+            // bounce cap on the gap bugs it filed runs at Cycle Evaluation,
+            // after the backlog D-pull (applyVerifyGapAccounting below).
             ({ verifySetForIntegTest, integTestRunnerDispatchCount, integTestRunnerSpend, integVerifyOutcome } = await runIntegTestPhase({
-                phase, log, command, dispatchCtx,
-                cycle, targetIssues, backlogMember, sprintSelfIdLine,
+                phase, log, dispatchCtx,
+                cycle, targetIssues, sprintSelfIdLine,
                 budget,
-                integFailures, verifyEverIds, verifyGapCounts,
+                integFailures, verifyEverIds,
                 verifySetForIntegTest, integTestRunnerDispatchCount, integTestRunnerSpend,
                 getMemberForRole, ensureUnattendedAuto, ensureDeployPermissions,
-                bdListScoped, fetchAllBeadsShared, parseBdJson, updateDashboard,
-                VERIFY_GAP_LIMIT,
-                deferredVerifyIds,
+                bdListScoped, fetchAllBeadsShared, updateDashboard,
                 excludedVerifyIds: new Set(needsEvidenceVerifyIds.keys()),
             }));
         } else if (hasPlaybook && !deployedThisCycle) {
@@ -4170,6 +4233,24 @@ async function runSprintCycle(context) {
         // (apra-fleet-7dir.24).
         const cycleEvalSettleShell = await resolveSettleShell({ args, member: backlogMember, log, sprintState });
         await gitSync.syncBeadsBefore(backlogMember, { fatal: true, settle: buildSettleCallback(backlogMember, { command, log, shell: cycleEvalSettleShell }) });
+        // Verify-fail bounce cap on this cycle's gap bugs, run HERE -- after
+        // the backlog D-pull just above and before any exit-gate math -- not
+        // inside the Integ Test phase: the integ runner files and D-pushes its
+        // gap bugs from its own member, so the backlog clone can resolve their
+        // parents only once it has pulled. Reuses this pull (no extra D-pull).
+        // It feeds verifyGapCounts, deferredVerifyIds (the exit gate) and
+        // integVerifyOutcome.gapParentIds (the needs-external-evidence reset);
+        // a lookup that still misses is a WARN plus an integFailures entry.
+        if (integVerifyOutcome) {
+            const { gapParentIds } = await applyVerifyGapAccounting({
+                log, command, cycle, backlogMember,
+                bugsFiled: integVerifyOutcome.bugsFiled,
+                verifySetIds: integVerifyOutcome.dispatchedIds,
+                verifyGapCounts, integFailures, deferredVerifyIds,
+                parseBdJson, VERIFY_GAP_LIMIT,
+            });
+            integVerifyOutcome.gapParentIds = gapParentIds;
+        }
         // A decomposed parent (any bead that is itself someone's --parent,
         // including a childful --issue target) is excluded here the same way
         // readyLeafBeads() excludes it from dispatch: its own "done" status
@@ -4863,6 +4944,7 @@ export async function main(context) {
         log,
         publishState,
         phaseOf: () => lastPhaseTitle,
+        kbWorkOf: () => runContext.kbWork,
     });
 
     try {
@@ -4959,6 +5041,15 @@ export async function main(context) {
         throw err;
     } finally {
         uninstallFatalGuard();
+        // Held KB writes/confirmations/demotions must never vanish silently:
+        // report them on every exit that reaches here (PASS, FAIL, typed
+        // abort, cancel, stall or carry-over return, untyped error). The
+        // client's warnPending is idempotent, so this prints at most once.
+        try {
+            if (runContext.kbWork && typeof runContext.kbWork.warnPending === 'function') runContext.kbWork.warnPending();
+        } catch (warnErr) {
+            log(`[kb-work] failed to report held KB writes (non-fatal): ${warnErr && warnErr.message ? warnErr.message : String(warnErr)}`);
+        }
         // Always release the sprint lock, on every exit path (success, typed
         // abort, or an untyped re-thrown error) -- a lock never released here
         // would falsely block every future launch of this exact sprint

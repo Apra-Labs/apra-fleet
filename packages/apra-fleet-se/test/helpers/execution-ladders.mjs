@@ -45,6 +45,8 @@
 // census: the site those two pins used to name is gone, and the site their
 // replacements run through was already counted.
 
+import { EXECUTE_PROMPT_MAX_TURNS } from '@apralabs/apra-fleet-client';
+
 /**
  * The resolved VALUES of the runner-local bindings the execution rows name.
  * Kept here (rather than imported from the harness) so this file stays pure
@@ -55,7 +57,7 @@ export const BINDING_VALUES = Object.freeze({
     'reviewerPool[0]': 'member:reviewer-pool-head',
     doerMember: 'member:doer-3',
     doerModel: 'premium',
-    maxTurns: 1000,
+    maxTurns: EXECUTE_PROMPT_MAX_TURNS,
 });
 
 /**
@@ -115,7 +117,7 @@ export const EXECUTION_ENGINE_DISPATCHES = [
         // per resume attempt (BASE * 2^n). This pin is the FIRST resume, whose
         // budget is the base doubled; the escalation itself is pinned in the
         // retry/degrade block of execution-role-dispatch-pins.test.mjs.
-        maxTurns: 1000,
+        maxTurns: EXECUTE_PROMPT_MAX_TURNS,
         timeoutS: 'DISPATCH_INACTIVITY_TIMEOUT_S',
         maxTotalS: 'DISPATCH_TIMEOUT_S',
         bracketed: true,
@@ -159,7 +161,7 @@ export const EXECUTION_ENGINE_DISPATCHES = [
         memberBinding: 'reviewerPool[0]',
         agentType: 'reviewer',
         modelTier: 'premium',
-        maxTurns: 1000,
+        maxTurns: EXECUTE_PROMPT_MAX_TURNS,
         timeoutS: 'DISPATCH_INACTIVITY_TIMEOUT_S',
         maxTotalS: 'DISPATCH_TIMEOUT_S',
         bracketed: true,
@@ -198,7 +200,7 @@ export const EXECUTION_ENGINE_DISPATCHES = [
         memberRole: 'reviewer',
         agentType: 'reviewer',
         modelTier: 'premium',
-        maxTurns: 1000,
+        maxTurns: EXECUTE_PROMPT_MAX_TURNS,
         timeoutS: 'DISPATCH_INACTIVITY_TIMEOUT_S',
         maxTotalS: 'DISPATCH_TIMEOUT_S',
         bracketed: true,
@@ -241,14 +243,14 @@ export const EXECUTION_ENGINE_DISPATCHES = [
         memberRole: 'integ-test-runner',
         agentType: 'integ-test-runner',
         modelTier: 'standard',
-        maxTurns: 1000,
+        maxTurns: EXECUTE_PROMPT_MAX_TURNS,
         timeoutS: 'DISPATCH_INACTIVITY_TIMEOUT_S',
         maxTotalS: 'INTEG_MAX_TOTAL_S',
         bracketed: true,
         pushCode: false,
         pushBeads: true,
         watchdog: true,
-        watchdogLabel: 'Integration Test (resume, max_turns=1000)',
+        watchdogLabel: `Integration Test (resume, max_turns=${EXECUTE_PROMPT_MAX_TURNS})`,
         schema: 'integReport',
         resume: true,
     },
@@ -283,14 +285,14 @@ export const EXECUTION_ENGINE_DISPATCHES = [
         memberRole: 'regression-test-runner',
         agentType: 'regression-test-runner',
         modelTier: 'standard',
-        maxTurns: 1000,
+        maxTurns: EXECUTE_PROMPT_MAX_TURNS,
         timeoutS: 'DISPATCH_INACTIVITY_TIMEOUT_S',
         maxTotalS: 'REGRESSION_TEST_MAX_TOTAL_S',
         bracketed: true,
         pushCode: false,
         pushBeads: true,
         watchdog: true,
-        watchdogLabel: 'Regression Test (resume, max_turns=1000)',
+        watchdogLabel: `Regression Test (resume, max_turns=${EXECUTE_PROMPT_MAX_TURNS})`,
         schema: 'regressionReport',
         resume: true,
     },
@@ -327,14 +329,14 @@ export const EXECUTION_ENGINE_DISPATCHES = [
         memberRole: 'deployer',
         agentType: 'deployer',
         modelTier: 'standard',
-        maxTurns: 1000,
+        maxTurns: EXECUTE_PROMPT_MAX_TURNS,
         timeoutS: 'DISPATCH_INACTIVITY_TIMEOUT_S',
         maxTotalS: 'DISPATCH_TIMEOUT_S',
         bracketed: true,
         pushCode: false,
         pushBeads: false,
         watchdog: true,
-        watchdogLabel: 'Deploy (resume, max_turns=1000)',
+        watchdogLabel: `Deploy (resume, max_turns=${EXECUTE_PROMPT_MAX_TURNS})`,
         schema: 'deployerReport',
         resume: true,
     },
@@ -370,7 +372,7 @@ export const EXECUTION_ENGINE_DISPATCHES = [
         memberRole: 'harvester',
         agentType: 'harvester',
         modelTier: 'standard',
-        maxTurns: 1000,
+        maxTurns: EXECUTE_PROMPT_MAX_TURNS,
         timeoutS: 'DISPATCH_INACTIVITY_TIMEOUT_S',
         maxTotalS: 'DISPATCH_TIMEOUT_S',
         bracketed: true,

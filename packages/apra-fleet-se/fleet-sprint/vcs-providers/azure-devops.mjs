@@ -68,7 +68,7 @@
  */
 
 import { VCS_FAILURE_KINDS as K } from '../errors.mjs';
-import { shQuote, shQuoteJson, curlBinary, assertToken } from './shell-helpers.mjs';
+import { shQuote, curlBinary, assertToken, jsonBodyFromFile } from './shell-helpers.mjs';
 
 /** Credential no longer good -- re-minting a PAT (skills/fleet/auth-azdevops.md
  *  "401 Unauthorized -> Create new PAT and re-deploy") is the remedy, so
@@ -534,7 +534,7 @@ function toFullRef(branch) {
  * -- see https://learn.microsoft.com/rest/api/azure/devops/git/pull-requests/create
  */
 function buildAzureDevOpsCreatePrCommand(params) {
-    const { base, head, title, body, token, os, shell } = params || {};
+    const { base, head, title, body, token, os, shell, payload_path: payloadPath } = params || {};
     const coords = assertRepoCoords(params, 'create-pull-request');
     const safeToken = assertToken(token);
     if (!base) throw new Error('ERROR: VCSModule: "base" branch is required to build a create-pull-request command.');
@@ -548,6 +548,7 @@ function buildAzureDevOpsCreatePrCommand(params) {
     };
     if (body !== undefined) payload.description = body;
     const payloadJson = JSON.stringify(payload);
+    const bodyArg = jsonBodyFromFile(payloadJson, payloadPath, os, shell, 'create-pull-request');
     const url = `${repoApiBase(coords)}/pullrequests?api-version=${API_VERSION}`;
 
     const buildCurl = (authToken) => [
@@ -555,7 +556,7 @@ function buildAzureDevOpsCreatePrCommand(params) {
         `-u ${shQuote(`:${authToken}`, os, shell)}`,
         `-H ${shQuote('Content-Type: application/json', os, shell)}`,
         `-H ${shQuote('Accept: application/json', os, shell)}`,
-        `-d ${shQuoteJson(payloadJson, os, shell)}`,
+        bodyArg.arg,
         `-w ${shQuote('\n%{http_code}', os, shell)}`,
         url,
     ].join(' ');
@@ -565,6 +566,9 @@ function buildAzureDevOpsCreatePrCommand(params) {
         action: 'create-pull-request',
         command: buildCurl(safeToken),
         logSafeCommand: buildCurl(REDACTED),
+        // The request body, for the caller to stage at payload.path before
+        // dispatch (see shell-helpers.mjs jsonBodyFromFile).
+        payload: bodyArg.payload,
         // Interpretation contract, same field NAMES github.mjs uses so a
         // consumer reads it generically:
         //   - 2xx                   -> success; body has .pullRequestId
@@ -590,7 +594,7 @@ function buildAzureDevOpsCreatePrCommand(params) {
  * See https://learn.microsoft.com/rest/api/azure/devops/git/pull-request-threads/create
  */
 function buildAzureDevOpsCommentCommand(params) {
-    const { pull_request_id: pullRequestId, body, token, os, shell } = params || {};
+    const { pull_request_id: pullRequestId, body, token, os, shell, payload_path: payloadPath } = params || {};
     const coords = assertRepoCoords(params, 'comment');
     const safeToken = assertToken(token);
     if (!pullRequestId) throw new Error('ERROR: VCSModule: "pull_request_id" is required to build an azure-devops comment command.');
@@ -600,6 +604,7 @@ function buildAzureDevOpsCommentCommand(params) {
         comments: [{ parentCommentId: 0, content: body, commentType: 'text' }],
         status: 'active',
     });
+    const bodyArg = jsonBodyFromFile(payloadJson, payloadPath, os, shell, 'comment');
     const url = `${repoApiBase(coords)}/pullrequests/${encodeURIComponent(String(pullRequestId))}/threads?api-version=${API_VERSION}`;
 
     const buildCurl = (authToken) => [
@@ -607,7 +612,7 @@ function buildAzureDevOpsCommentCommand(params) {
         `-u ${shQuote(`:${authToken}`, os, shell)}`,
         `-H ${shQuote('Content-Type: application/json', os, shell)}`,
         `-H ${shQuote('Accept: application/json', os, shell)}`,
-        `-d ${shQuoteJson(payloadJson, os, shell)}`,
+        bodyArg.arg,
         `-w ${shQuote('\n%{http_code}', os, shell)}`,
         url,
     ].join(' ');
@@ -617,9 +622,135 @@ function buildAzureDevOpsCommentCommand(params) {
         action: 'comment',
         command: buildCurl(safeToken),
         logSafeCommand: buildCurl(REDACTED),
+        // The request body, for the caller to stage at payload.path before
+        // dispatch (see shell-helpers.mjs jsonBodyFromFile).
+        payload: bodyArg.payload,
         interpret: {
             successStatusRange: [200, 299],
         },
+    };
+}
+
+// ---------------------------------------------------------------------------
+// PR comment list / update / delete (the overflow-comment upsert path)
+// ---------------------------------------------------------------------------
+//
+// An Azure DevOps PR comment lives in a THREAD (see the comment builder
+// above, which posts one active thread carrying exactly one comment). A
+// listed comment therefore maps to { id, body, ref: { threadId, commentId } }
+// -- the thread's FIRST (root) comment, which is the one the engine posts;
+// deleted threads/comments and system comments (vote/status events) are
+// skipped. See
+// https://learn.microsoft.com/rest/api/azure/devops/git/pull-request-threads/list
+// and .../pull-request-thread-comments/update | delete.
+
+/** The numeric PR id every comment action's URL carries. */
+function assertPullRequestId(params, action) {
+    const id = String((params && params.pull_request_id) ?? '').trim();
+    if (!/^\d+$/.test(id)) throw new Error(`ERROR: VCSModule: a numeric "pull_request_id" is required to build an azure-devops ${action} command.`);
+    return id;
+}
+
+/** The { threadId, commentId } a list mapping returned, both numeric. */
+function assertThreadCommentRef(ref, action) {
+    const threadId = String((ref && ref.threadId) ?? '').trim();
+    const commentId = String((ref && ref.commentId) ?? '').trim();
+    if (!/^\d+$/.test(threadId) || !/^\d+$/.test(commentId)) {
+        throw new Error(`ERROR: VCSModule: a "comment_ref" with numeric threadId and commentId (from list-comments) is required to build an azure-devops ${action} command.`);
+    }
+    return { threadId, commentId };
+}
+
+/** GET .../pullrequests/{id}/threads?api-version=7.1 */
+function buildAzureDevOpsListCommentsCommand(params) {
+    const { token, os, shell } = params || {};
+    const coords = assertRepoCoords(params, 'list-comments');
+    const safeToken = assertToken(token);
+    const prId = assertPullRequestId(params, 'list-comments');
+    const url = `${repoApiBase(coords)}/pullrequests/${prId}/threads?api-version=${API_VERSION}`;
+    const buildCurl = (authToken) => [
+        `${curlBinary(os)} -sS -X GET`,
+        `-u ${shQuote(`:${authToken}`, os, shell)}`,
+        `-H ${shQuote('Accept: application/json', os, shell)}`,
+        `-w ${shQuote('\n%{http_code}', os, shell)}`,
+        shQuote(url, os, shell),
+    ].join(' ');
+    return {
+        provider: 'azure-devops',
+        action: 'list-comments',
+        command: buildCurl(safeToken),
+        logSafeCommand: buildCurl(REDACTED),
+        interpret: { successStatusRange: [200, 299] },
+        /** 2xx body ({ value: [thread] }) -> [{ id, body, ref: { threadId, commentId } }]. */
+        mapResponse: (respBody) => {
+            const threads = respBody && Array.isArray(respBody.value) ? respBody.value : [];
+            const out = [];
+            for (const thread of threads) {
+                if (!thread || thread.isDeleted === true || !Number.isInteger(thread.id)) continue;
+                const comments = Array.isArray(thread.comments) ? thread.comments : [];
+                const root = comments.find((c) => c && (c.parentCommentId === 0 || c.parentCommentId == null));
+                if (!root || root.isDeleted === true || root.commentType === 'system' || !Number.isInteger(root.id)) continue;
+                out.push({
+                    id: `${thread.id}/${root.id}`,
+                    body: typeof root.content === 'string' ? root.content : '',
+                    ref: { threadId: thread.id, commentId: root.id },
+                });
+            }
+            return out;
+        },
+    };
+}
+
+/** PATCH .../pullrequests/{id}/threads/{threadId}/comments/{commentId}?api-version=7.1 with { content }. */
+function buildAzureDevOpsUpdateCommentCommand(params) {
+    const { token, os, shell, body, comment_ref: ref, payload_path: payloadPath } = params || {};
+    const coords = assertRepoCoords(params, 'update-comment');
+    const safeToken = assertToken(token);
+    const prId = assertPullRequestId(params, 'update-comment');
+    const { threadId, commentId } = assertThreadCommentRef(ref, 'update-comment');
+    if (typeof body !== 'string') throw new Error('ERROR: VCSModule: "body" (a string; empty is allowed) is required to build an update-comment command.');
+    const bodyArg = jsonBodyFromFile(JSON.stringify({ content: body }), payloadPath, os, shell, 'update-comment');
+    const url = `${repoApiBase(coords)}/pullrequests/${prId}/threads/${threadId}/comments/${commentId}?api-version=${API_VERSION}`;
+    const buildCurl = (authToken) => [
+        `${curlBinary(os)} -sS -X PATCH`,
+        `-u ${shQuote(`:${authToken}`, os, shell)}`,
+        `-H ${shQuote('Content-Type: application/json', os, shell)}`,
+        `-H ${shQuote('Accept: application/json', os, shell)}`,
+        bodyArg.arg,
+        `-w ${shQuote('\n%{http_code}', os, shell)}`,
+        url,
+    ].join(' ');
+    return {
+        provider: 'azure-devops',
+        action: 'update-comment',
+        command: buildCurl(safeToken),
+        logSafeCommand: buildCurl(REDACTED),
+        payload: bodyArg.payload,
+        interpret: { successStatusRange: [200, 299] },
+    };
+}
+
+/** DELETE .../pullrequests/{id}/threads/{threadId}/comments/{commentId}?api-version=7.1 */
+function buildAzureDevOpsDeleteCommentCommand(params) {
+    const { token, os, shell, comment_ref: ref } = params || {};
+    const coords = assertRepoCoords(params, 'delete-comment');
+    const safeToken = assertToken(token);
+    const prId = assertPullRequestId(params, 'delete-comment');
+    const { threadId, commentId } = assertThreadCommentRef(ref, 'delete-comment');
+    const url = `${repoApiBase(coords)}/pullrequests/${prId}/threads/${threadId}/comments/${commentId}?api-version=${API_VERSION}`;
+    const buildCurl = (authToken) => [
+        `${curlBinary(os)} -sS -X DELETE`,
+        `-u ${shQuote(`:${authToken}`, os, shell)}`,
+        `-H ${shQuote('Accept: application/json', os, shell)}`,
+        `-w ${shQuote('\n%{http_code}', os, shell)}`,
+        url,
+    ].join(' ');
+    return {
+        provider: 'azure-devops',
+        action: 'delete-comment',
+        command: buildCurl(safeToken),
+        logSafeCommand: buildCurl(REDACTED),
+        interpret: { successStatusRange: [200, 299] },
     };
 }
 
@@ -751,7 +882,7 @@ function buildAzureDevOpsFindPrCommand(params) {
  * -- see https://learn.microsoft.com/rest/api/azure/devops/git/pull-requests/update
  */
 function buildAzureDevOpsUpdatePrCommand(params) {
-    const { pull_request_id: pullRequestId, title, body, token, os, shell } = params || {};
+    const { pull_request_id: pullRequestId, title, body, token, os, shell, payload_path: payloadPath } = params || {};
     const coords = assertRepoCoords(params, 'update-pull-request');
     const safeToken = assertToken(token);
     const id = String(pullRequestId ?? '').trim();
@@ -761,6 +892,7 @@ function buildAzureDevOpsUpdatePrCommand(params) {
     const payload = { title };
     if (body !== undefined) payload.description = body;
     const payloadJson = JSON.stringify(payload);
+    const bodyArg = jsonBodyFromFile(payloadJson, payloadPath, os, shell, 'update-pull-request');
     const url = `${repoApiBase(coords)}/pullrequests/${id}?api-version=${API_VERSION}`;
 
     const buildCurl = (authToken) => [
@@ -768,7 +900,7 @@ function buildAzureDevOpsUpdatePrCommand(params) {
         `-u ${shQuote(`:${authToken}`, os, shell)}`,
         `-H ${shQuote('Content-Type: application/json', os, shell)}`,
         `-H ${shQuote('Accept: application/json', os, shell)}`,
-        `-d ${shQuoteJson(payloadJson, os, shell)}`,
+        bodyArg.arg,
         `-w ${shQuote('\n%{http_code}', os, shell)}`,
         url,
     ].join(' ');
@@ -778,6 +910,9 @@ function buildAzureDevOpsUpdatePrCommand(params) {
         action: 'update-pull-request',
         command: buildCurl(safeToken),
         logSafeCommand: buildCurl(REDACTED),
+        // The request body, for the caller to stage at payload.path before
+        // dispatch (see shell-helpers.mjs jsonBodyFromFile).
+        payload: bodyArg.payload,
         interpret: { successStatusRange: [200, 299] },
         mapResponse: (respBody) => mapAzureDevOpsPull(respBody, coords),
     };
@@ -856,7 +991,16 @@ export const AzureDevOpsVCS = Object.freeze({
         comment: buildAzureDevOpsCommentCommand,
         'find-pull-request': buildAzureDevOpsFindPrCommand,
         'update-pull-request': buildAzureDevOpsUpdatePrCommand,
+        'list-comments': buildAzureDevOpsListCommentsCommand,
+        'update-comment': buildAzureDevOpsUpdateCommentCommand,
+        'delete-comment': buildAzureDevOpsDeleteCommentCommand,
     }),
+    // Text limits: Azure DevOps rejected long PR descriptions (its documented
+    // description limit is 4000); 3500 keeps a margin, and comments use the
+    // same figure until a recorded real-provider probe justifies more --
+    // overflow costs extra comments, never text.
+    descriptionMaxLength: 3500,
+    commentMaxLength: 3500,
 });
 
 export default AzureDevOpsVCS;

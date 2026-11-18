@@ -31,7 +31,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
+import { runDevelopLoopScenario, withScenarioMarkers, withStagedBodies } from './helpers/mock-sprint-harness.mjs';
 import {
     invalidateSyncRemoteCache, clearLastSyncedTip, clearTipProbeFailures,
 } from '../fleet-sprint/dolt-sync.mjs';
@@ -73,7 +73,7 @@ const setLanes = async (rc, td, tasks, titles) => {
         await rc(`bd update ${id} --set-metadata streak=lane-${i} --set-metadata streakOrder=1`, td);
     }
 };
-const publishedPrBody = (run) => run.commandLog.find((c) => c.includes('## Sprint verdict:'));
+const publishedPrBody = (run) => withStagedBodies(run.commandLog).find((c) => c.includes('## Sprint verdict:'));
 
 test('(a) three P1 closed plus one BLOCKED P2: Final Review, Regression, Harvest and Publish PR run; FAIL with the P2 bead carried over', async () => {
     resetSyncMemo();

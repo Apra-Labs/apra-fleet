@@ -133,6 +133,36 @@ export async function expandScope(roots, listChildren) {
 }
 
 /**
+ * A known id that differs from `id` only by a prefix: the un-prefixed form of
+ * a prefixed `id` exists, or a known prefixed id ends with `-<id>`. Returns
+ * the single unambiguous match, else null.
+ * @param {string} id
+ * @param {string[]} knownIds
+ * @returns {string|null}
+ */
+export function nearMatchId(id, knownIds) {
+    const matches = new Set();
+    for (const k of knownIds) {
+        if (k.endsWith(`-${id}`) || id.endsWith(`-${k}`)) matches.add(k);
+    }
+    return matches.size === 1 ? [...matches][0] : null;
+}
+
+/**
+ * The 400 message for launch roots absent from the backlog snapshot, naming
+ * every missing id and, where one exists, a near-match suggestion.
+ * @param {string[]} missingRoots
+ * @param {Array<{ id: string, suggestion: string }>} [suggestions]
+ * @returns {string}
+ */
+export function formatMissingRoots(missingRoots, suggestions = []) {
+    const hints = new Map(suggestions.map((s) => [s.id, s.suggestion]));
+    const parts = missingRoots.map((id) => (hints.has(id) ? `${id} (did you mean ${hints.get(id)}?)` : id));
+    return `issue id(s) not found in the backlog: ${parts.join(', ')}. ` +
+        'No sprint was launched and no member was reserved; check the id spelling (including any prefix) and that the bead has been synced to the backlog.';
+}
+
+/**
  * Default `listAllBeads` for the bulk path (apra-fleet-72o0): every bead,
  * OPEN AND CLOSED, in one call -- `bd list --all --limit 0 --json`.
  * Deliberately its own small fetcher (not a reuse of backlog.mjs's
@@ -276,10 +306,23 @@ export function createScopeGuard(deps = {}) {
         // shared index; each expansion issues its own per-node calls, same
         // as before apra-fleet-72o0.
         let childIndex = null;
+        // Roots absent from the SAME snapshot (zero extra bd calls), each with
+        // an optional near-match suggestion. Only computed on the bulk path:
+        // the explicit-listChildren seam has no snapshot to judge against.
+        const missingRoots = [];
+        const suggestions = [];
         if (!explicitListChildren) {
             const rawBeads = await listAllBeads();
             const beads = (Array.isArray(rawBeads) ? rawBeads : []).map(normalizeBead).filter((b) => b.id.length > 0);
             childIndex = buildChildIndex(beads);
+            const knownIds = beads.map((b) => b.id);
+            const knownSet = new Set(knownIds);
+            for (const root of roots) {
+                if (knownSet.has(root)) continue;
+                missingRoots.push(root);
+                const near = nearMatchId(root, knownIds);
+                if (near) suggestions.push({ id: root, suggestion: near });
+            }
         }
 
         const expand = (rs) => (explicitListChildren
@@ -315,6 +358,8 @@ export function createScopeGuard(deps = {}) {
             ok: conflicts.length === 0,
             requestScope: [...requestScope].sort(),
             conflicts,
+            missingRoots,
+            suggestions,
         };
     }
 

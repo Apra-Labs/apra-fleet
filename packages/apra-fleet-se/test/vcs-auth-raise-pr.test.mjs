@@ -2,6 +2,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { raiseVcsPrForMember } from '../fleet-sprint/vcs-auth.mjs';
+import { createStagedFileRecorder } from './helpers/vcs-payload-test.mjs';
 
 // apra-fleet-j918.8.10: raiseVcsPrForMember (fleet-sprint/vcs-auth.mjs:603)
 // had NO direct test anywhere in the suite -- only comments referencing it
@@ -14,7 +15,7 @@ import { raiseVcsPrForMember } from '../fleet-sprint/vcs-auth.mjs';
 // Response shapes mirror the real collaborators exactly:
 //   - fleetApi.memberDetail() -> VCSModule.resolveProvider() /
 //     resolveMemberTarget() (member-target.mjs) both read
-//     { content: [{ text: JSON.stringify({ vcsProvider, os, shell }) }] }.
+//     { content: [{ text: JSON.stringify({ folder: '/work/repo', vcsProvider, os, shell }) }] }.
 //   - fleetApi.provisionVcsAuth() -> provisionOutcome() reads
 //     structuredContent.ok (apra-fleet-3swo.13).
 //   - fleetApi.vcsCredentialExec() -> structuredContent shape is
@@ -24,7 +25,7 @@ import { raiseVcsPrForMember } from '../fleet-sprint/vcs-auth.mjs';
 //     (parseVcsCurlOutput in vcs-auth.mjs).
 
 function memberDetailResult() {
-    return { content: [{ text: JSON.stringify({ vcsProvider: 'github', os: 'linux', shell: '' }) }] };
+    return { content: [{ text: JSON.stringify({ folder: '/work/repo', vcsProvider: 'github', os: 'linux', shell: '' }) }] };
 }
 
 function credExecResult({ status, body, ok = true, reason = 'ok' }) {
@@ -63,6 +64,8 @@ function makeFleetApi({ vcsCredentialExecImpl, provisionOk = true }) {
                 structuredContent: { ok: provisionOk, expiresAt: null },
             };
         },
+        // Request bodies are staged member-side before the call.
+        sendFiles: createStagedFileRecorder().record,
         async vcsCredentialExec(args) {
             vcsCredentialExecCalls.push(args);
             return vcsCredentialExecImpl(args, vcsCredentialExecCalls.length);

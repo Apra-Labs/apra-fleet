@@ -45,6 +45,7 @@
 // inventory mapping each pre-migration assertion to its post-migration
 // replacement is in planning-role-dispatch-pins.test.mjs's header.
 
+import { EXECUTE_PROMPT_MAX_TURNS } from '@apralabs/apra-fleet-client';
 import { EXECUTION_ENGINE_DISPATCHES } from './execution-ladders.mjs';
 
 /**
@@ -94,14 +95,14 @@ export const PLANNING_ENGINE_DISPATCHES = [
         memberRole: 'planner',
         agentType: 'planner',
         modelTier: 'premium',
-        maxTurns: 1000,
+        maxTurns: EXECUTE_PROMPT_MAX_TURNS,
         timeoutS: 'DISPATCH_INACTIVITY_TIMEOUT_S',
         maxTotalS: 'DISPATCH_TIMEOUT_S',
         bracketed: true,
         pushCode: false,
         pushBeads: true,
         watchdog: true,
-        watchdogLabel: 'Plan (resume, max_turns=1000)',
+        watchdogLabel: `Plan (resume, max_turns=${EXECUTE_PROMPT_MAX_TURNS})`,
         schema: null,
         resume: true,
     },
@@ -133,7 +134,7 @@ export const PLANNING_ENGINE_DISPATCHES = [
         memberRole: 'plan-reviewer',
         agentType: 'plan-reviewer',
         modelTier: 'premium',
-        maxTurns: 1000,
+        maxTurns: EXECUTE_PROMPT_MAX_TURNS,
         timeoutS: 'DISPATCH_INACTIVITY_TIMEOUT_S',
         maxTotalS: 'DISPATCH_TIMEOUT_S',
         bracketed: true,

@@ -1,4 +1,5 @@
 import { test } from 'node:test';
+import { EXECUTE_PROMPT_MAX_TURNS } from '@apralabs/apra-fleet-client';
 import assert from 'node:assert/strict';
 import { AgentDispatchError } from '@apralabs/apra-fleet-workflow';
 import { dispatchRole } from '../fleet-sprint/dispatch-role.mjs';
@@ -92,7 +93,7 @@ test('case 4: a second exhaustion with a new id D2 moves the next resume to D2',
     assert.equal(rec.dispatches[2].options.resume, DOER_SESSION_2, 'the resume target follows the newest failed session');
     assert.deepEqual(
         rec.dispatches.slice(1).map((d) => d.options.max_turns),
-        [1000, 2000],
-        'the escalating turn budget is unchanged',
+        [EXECUTE_PROMPT_MAX_TURNS, EXECUTE_PROMPT_MAX_TURNS],
+        'the escalating turn budget is clamped to the execute_prompt maximum',
     );
 });

@@ -126,7 +126,7 @@ const provisionedNoExpiry = (text = 'Provisioned VCS credential (PAT mode, no ex
 // resolver call is intercepted and answered here, NOT counted alongside the
 // provision_vcs_auth calls each test tracks, so every existing call-count
 // assertion below stays meaningful.
-const MEMBER_DETAIL_GITHUB = { content: [{ text: JSON.stringify({ vcsProvider: 'github' }) }] };
+const MEMBER_DETAIL_GITHUB = { content: [{ text: JSON.stringify({ folder: '/work/repo', vcsProvider: 'github' }) }] };
 
 describe('createVcsAuthPreflightCallback', () => {
     test('(case 1: mint-when-missing) mints a fresh VCS credential exactly once when no prior credential is cached for the member', async () => {
@@ -261,7 +261,7 @@ describe('createVcsAuthPreflightCallback', () => {
     test('a member registered with a non-GitHub provider (bitbucket) resolves to that provider with NO github literal anywhere in the preflight call', async () => {
         const calls = [];
         const callTool = async (name, args) => {
-            if (name === 'member_detail') return { content: [{ text: JSON.stringify({ vcsProvider: 'bitbucket' }) }] };
+            if (name === 'member_detail') return { content: [{ text: JSON.stringify({ folder: '/work/repo', vcsProvider: 'bitbucket' }) }] };
             calls.push({ name, args });
             // The labelled-credential REST probe answers 200 (only git
             // ls-remote fails below), so the REMOTE member still reaches its
@@ -340,7 +340,7 @@ describe('createVcsAuthPreflightCallback', () => {
     test('a member with NO registered VCS provider AND a remote no provider claims degrades silently (typed error logged, never thrown) and never calls provision_vcs_auth -- no silent GitHub default', async () => {
         const calls = [];
         const callTool = async (name, args) => {
-            if (name === 'member_detail') return { content: [{ text: JSON.stringify({ vcsProvider: undefined }) }] };
+            if (name === 'member_detail') return { content: [{ text: JSON.stringify({ folder: '/work/repo', vcsProvider: undefined }) }] };
             calls.push({ name, args });
             return provisionedWithExpiry(farFutureExpiry());
         };
@@ -833,7 +833,7 @@ describe('createWorkflowsPermissionPreflightCallback', () => {
             'git diff --name-only': [{ ok: true, output: '.github/workflows/deploy.yml', error: null }],
         });
         const memberDetailRegisteredIssues = async (name) => (name === 'member_detail'
-            ? { content: [{ text: JSON.stringify({ vcsProvider: 'github', gitAccess: 'issues' }) }] }
+            ? { content: [{ text: JSON.stringify({ folder: '/work/repo', vcsProvider: 'github', gitAccess: 'issues' }) }] }
             : null);
         const logs = [];
         // NO gitAccess opt supplied here: the caller-supplied fallback
@@ -868,7 +868,7 @@ describe('createWorkflowsPermissionPreflightCallback', () => {
             'git diff --name-only': [{ ok: true, output: '.github/workflows/ci.yml', error: null }],
         });
         const memberDetailRegisteredAdmin = async (name) => (name === 'member_detail'
-            ? { content: [{ text: JSON.stringify({ vcsProvider: 'github', gitAccess: 'admin' }) }] }
+            ? { content: [{ text: JSON.stringify({ folder: '/work/repo', vcsProvider: 'github', gitAccess: 'admin' }) }] }
             : null);
         const logs = [];
         // gitAccess: 'read' fallback would warn if IT were what got checked --
@@ -944,7 +944,7 @@ describe('createWorkflowsPermissionPreflightCallback', () => {
     test('(case 3d: no-op, non-GitHub provider) a member registered to a non-GitHub provider is silently skipped before any level is read, and no git command is issued', async () => {
         const { command, calls } = makeCommandMock({});
         const memberDetailBitbucket = async (name) => (name === 'member_detail'
-            ? { content: [{ text: JSON.stringify({ vcsProvider: 'bitbucket' }) }] }
+            ? { content: [{ text: JSON.stringify({ folder: '/work/repo', vcsProvider: 'bitbucket' }) }] }
             : null);
         const logs = [];
         const warn = createWorkflowsPermissionPreflightCallback({
@@ -1013,7 +1013,7 @@ describe('createWorkflowsPermissionPreflightCallback', () => {
         try {
             const { command, calls } = makeCommandMock({});
             const memberDetailGithubPat = async (name) => (name === 'member_detail'
-                ? { content: [{ text: JSON.stringify({ vcsProvider: 'github', gitAccess: 'read' }) }] }
+                ? { content: [{ text: JSON.stringify({ folder: '/work/repo', vcsProvider: 'github', gitAccess: 'read' }) }] }
                 : null);
             const logs = [];
             const warn = createWorkflowsPermissionPreflightCallback({

@@ -96,9 +96,29 @@ short-circuits before anything downstream runs:
    resolve (bad JSON, bad shape), and a string `'@file'` reference (a
    CLI-only form; never read from a request body) are all `400`, field
    `roleMap`.
+   Optional `goal`, `maxCycles` and `budget` are validated with the SAME
+   functions the sprint arg contract uses (`validateGoal`, `validateMaxCycles`,
+   `validateBudget` in `fleet-sprint/sprint-args.mjs`): `goal` is a priority
+   band filter (`P1`, `P1/P2` or `P1/P2/P3`), NOT free text; `maxCycles` a
+   positive integer; `budget` a non-negative finite number (USD). Invalid ->
+   `400`, field `goal` / `maxCycles` / `budget`, before any spawn or member
+   reservation. Omitted values launch as before.
    Any failure -> `400` naming the field. Note the split has to happen first:
    `ISSUE_ID_PATTERN` has no comma in its charset, so an un-split `"a,b"`
    would be rejected.
+1b. **Unresolved scope ids** (`composeBeforeLaunch` in `bin/serve.mjs`, after
+   the member-overlap guard). The scope guard's `checkLaunch()` already holds
+   one fresh `bd list --all` snapshot of the backlog clone; every requested
+   `issue` root absent from that snapshot is reported, and the launch is
+   refused with `400`, field `issue`, naming EACH missing id -- plus a
+   `did you mean <id>?` suggestion when a known id differs only by a prefix
+   (the un-prefixed form of a prefixed id exists, or the reverse). No child is
+   spawned and no member is reserved. Ids that resolve exactly (including
+   un-prefixed ids that exist as such) are accepted. No extra `bd` call is
+   made: the check reuses the guard's existing fetch. A direct engine launch
+   (no supervisor) fails at Sprint Setup with `PreSprintValidationError`
+   reason `TARGET_NOT_VISIBLE` for the same condition, even when other
+   targets have ready work.
 1a. **Backlog hard pin** (only when `bin/serve.mjs` wired its backlog-member
    handle -- `src/supervisor/backlog-member.mjs`; a controller built without
    it keeps the unpinned behaviour). Every sprint a supervisor launches uses

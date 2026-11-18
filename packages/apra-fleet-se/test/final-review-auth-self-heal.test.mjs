@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { runDevelopLoopScenario, withScenarioMarkers, defaultMockCallTool } from './helpers/mock-sprint-harness.mjs';
+import { runDevelopLoopScenario, withScenarioMarkers, defaultMockCallTool, MOCK_MEMBER_WORK_FOLDER } from './helpers/mock-sprint-harness.mjs';
 
 const check = (cond, msg) => assert.ok(cond, msg);
 
@@ -41,7 +41,7 @@ const healingCallToolFactory = (executeCommand) => {
         // body -- unlike the other tool names here, which none of runner.js's
         // VCS/coordination call sites JSON.parse().
         if (name === 'member_detail') {
-            return { content: [{ text: JSON.stringify({ vcsProvider: 'github' }) }] };
+            return { content: [{ text: JSON.stringify({ vcsProvider: 'github', folder: MOCK_MEMBER_WORK_FOLDER }) }] };
         }
         return base(name, args);
     };
