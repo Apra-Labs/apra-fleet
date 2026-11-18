@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "5bfc7309d9fab9ead8aada7745fd165ecd32c07b",
     "branch": "main",
-    "entry_count": 142
+    "entry_count": 145
   },
   "entries": [
     {
@@ -1157,6 +1157,28 @@
       "updated_at": "2026-09-29T06:13:16.498Z"
     },
     {
+      "id": "6791ac87-d45f-44ac-9978-cf1cb3d678e0",
+      "type": "knowledge",
+      "title": "Re-merging a withdrawn id through kb_bible_commit ids clears its withdrawn tombstone",
+      "summary": "kb_bible_commit deletes the tombstone of every id it merges through ids, with no re-promotion check against the tombstone time. A withdrawn-but-unmerged id that a caller re-sends in ids on a later call silently comes back into entries.",
+      "symbols": [
+        "kbBibleCommit",
+        "standingAgainstTombstone"
+      ],
+      "source_files": [
+        "src/tools/kb-bible-commit.ts",
+        "src/tools/kb-export.ts",
+        "tests/knowledge/kb-bible-withdrawals.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T05:03:39.005Z",
+      "source_file_hashes": {
+        "src/tools/kb-bible-commit.ts": "7872726aad48d470906086d3a9dd133221ce7fa2",
+        "src/tools/kb-export.ts": "14517bdd0ad3c54a35c002e0272dea47585585cd",
+        "tests/knowledge/kb-bible-withdrawals.test.ts": "253749c60af1f447ee9eed72d457f142326da7d1"
+      }
+    },
+    {
       "id": "6b538682-67b1-4cf2-ab81-ae27d8d2bf8e",
       "type": "knowledge",
       "title": "kill-port netstat parsing depends on the colon-anchored port suffix",
@@ -1471,6 +1493,32 @@
       "updated_at": "2026-09-29T06:13:13.124Z"
     },
     {
+      "id": "844be2a5-d839-4263-b504-61174f8330a8",
+      "type": "knowledge",
+      "title": "kb_import applies withdrawn tombstones only from refs/remotes/origin/<provenance.branch>",
+      "summary": "kb_import lowers rows (SQLite) or replays one POST /api/kb/withdraw (http) for 'withdrawn' tombstones only when the bible was read with ref equal to refs/remotes/origin/<provenance.branch> of that same bible; any other source lists the ids in withdrawals.deferred.",
+      "symbols": [
+        "kbImport",
+        "kbImportOverHttp",
+        "isMergedBaseBible",
+        "baseRefOfBible",
+        "applyBibleWithdrawals",
+        "BibleWithdrawalReport"
+      ],
+      "source_files": [
+        "src/tools/kb-import.ts",
+        "src/services/knowledge/bible-import.ts",
+        "tests/knowledge/kb-import-withdrawals.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T05:03:35.394Z",
+      "source_file_hashes": {
+        "src/services/knowledge/bible-import.ts": "6f24b4b7e550d48abc2d678446b1c7f58b20c098",
+        "src/tools/kb-import.ts": "fd961ce376053647808abc433933c35363412cb2",
+        "tests/knowledge/kb-import-withdrawals.test.ts": "b0141c15bbb374a1787675d6672e0d80aee420ad"
+      }
+    },
+    {
       "id": "8672df56-841f-4c14-8e15-f3c6926063f2",
       "type": "knowledge",
       "title": "explicit-id-create guard now uses a call-expression-agnostic command-literal rule, unioned with the command() site rule",
@@ -1528,6 +1576,32 @@
       "updated_at": "2026-11-06T06:24:10.073Z",
       "source_file_hashes": {
         "scripts/run-all-tests.mjs": "bfa7ff7a8eba998363f061237c9934491ce0e637"
+      }
+    },
+    {
+      "id": "8cc5f506-f861-4fed-b49f-8967a1f7abd9",
+      "type": "learning",
+      "title": "Round-trip harness: setup op 'ref' and dotted derive paths for nested request ids",
+      "summary": "memory-contract/v1/tests/roundtrip-harness.mjs SCENARIO derive accepts dotted fields such as 'withdrawals.0.id', and setup ops include {op:'ref', repo, name}, which the test provider runs as git update-ref <name> HEAD. New fixtures must also bump the count pins in two contract tests.",
+      "symbols": [
+        "SCENARIO",
+        "runRoundTrip",
+        "coverageFailures",
+        "applySetup"
+      ],
+      "source_files": [
+        "memory-contract/v1/tests/roundtrip-harness.mjs",
+        "memory-contract/v1/tests/record-fixtures.mjs",
+        "tests/memory-contract-roundtrip.test.ts",
+        "tests/memory-contract-fixture-response-schema.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T05:03:42.626Z",
+      "source_file_hashes": {
+        "memory-contract/v1/tests/record-fixtures.mjs": "c4c86769798777077d122a6647dbbdcb66af59d5",
+        "memory-contract/v1/tests/roundtrip-harness.mjs": "61747ee590c3fbd2887f463abcaeedd4cb35aa53",
+        "tests/memory-contract-fixture-response-schema.test.ts": "c37f1bc61d88fd65ce4e7c59119bc0982a5f9999",
+        "tests/memory-contract-roundtrip.test.ts": "38220f6659726814e031fd84e416010cb7fa429a"
       }
     },
     {
