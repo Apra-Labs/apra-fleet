@@ -4944,6 +4944,7 @@ export async function main(context) {
         log,
         publishState,
         phaseOf: () => lastPhaseTitle,
+        kbWorkOf: () => runContext.kbWork,
     });
 
     try {
@@ -5040,6 +5041,15 @@ export async function main(context) {
         throw err;
     } finally {
         uninstallFatalGuard();
+        // Held KB writes/confirmations/demotions must never vanish silently:
+        // report them on every exit that reaches here (PASS, FAIL, typed
+        // abort, cancel, stall or carry-over return, untyped error). The
+        // client's warnPending is idempotent, so this prints at most once.
+        try {
+            if (runContext.kbWork && typeof runContext.kbWork.warnPending === 'function') runContext.kbWork.warnPending();
+        } catch (warnErr) {
+            log(`[kb-work] failed to report held KB writes (non-fatal): ${warnErr && warnErr.message ? warnErr.message : String(warnErr)}`);
+        }
         // Always release the sprint lock, on every exit path (success, typed
         // abort, or an untyped re-thrown error) -- a lock never released here
         // would falsely block every future launch of this exact sprint

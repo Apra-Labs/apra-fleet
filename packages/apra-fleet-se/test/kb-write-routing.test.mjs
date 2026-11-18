@@ -281,7 +281,7 @@ describe('KB write routing: unreachable maintainer', () => {
         assert.ok(h.logs.some((l) => l.startsWith("[kb-work] WARN: maintainer 'maint-a' unreachable during kb_capture for \"second\"") && l.endsWith('2 KB write(s) for github.com/org/repo-a stay queued')), JSON.stringify(h.logs));
 
         h.client.warnPending();
-        assert.ok(h.logs.includes('[kb-work] WARN: 2 KB write(s) for github.com/org/repo-a are still queued (maintainer busy or unreachable, or KB server unreachable or its token refused) -- not applied'));
+        assert.ok(h.logs.some((l) => l.startsWith('[kb-work] WARN: 2 KB write(s) for github.com/org/repo-a are still queued (maintainer busy or unreachable, or KB server unreachable or its token refused) -- not applied: kb_capture "second", kb_capture "third"')), JSON.stringify(h.logs));
 
         down = false;
         const before = h.calls().length;

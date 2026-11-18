@@ -430,7 +430,6 @@ export async function runFinalReviewPhase({
     } else if (typeof kbWork.flushAll === 'function') {
         await kbWork.flushAll();
     }
-    if (typeof kbWork.warnPending === 'function') kbWork.warnPending();
 
     // Persist the Final Review's actionable findings to BEADS -- the only
     // artifact the next sprint's planner reads (notes reach only the PR body

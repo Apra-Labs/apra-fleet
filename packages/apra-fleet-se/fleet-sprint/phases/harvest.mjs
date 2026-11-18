@@ -256,7 +256,6 @@ export async function runHarvestPhase({
     // the branch the bible commit lands on.
     if (kbWork && typeof kbWork.commitRound === 'function') {
         await kbWork.commitRound('harvest');
-        if (typeof kbWork.warnPending === 'function') kbWork.warnPending();
     }
     return { costAnalysis };
 }
