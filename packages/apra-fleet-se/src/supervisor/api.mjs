@@ -1035,13 +1035,7 @@ export function registerSprintRoutes(supervisor, controller) {
     });
 
     supervisor.route('POST', '/api/sprints/:id/decisions/:decisionId', async (req, res, ctx) => {
-        let body;
-        try {
-            body = (await readJsonBody(req)) ?? {};
-        } catch (err) {
-            sendJson(res, 400, { error: String(err && err.message ? err.message : err), field: 'body' });
-            return;
-        }
+        const body = (await readJsonBody(req)) ?? {};
         try {
             sendJson(res, 200, await controller.answerDecision(ctx.params.id, ctx.params.decisionId, body));
         } catch (err) {

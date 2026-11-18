@@ -83,6 +83,21 @@ export function makeSeamStub(name) {
 }
 
 /**
+ * A request body the supervisor refuses: unparseable JSON (400) or over the
+ * size cap (413). Thrown by readJsonBody; the request catch-all maps it to a
+ * `{ error, field: 'body' }` answer with this status and no stack text.
+ */
+export class RequestBodyError extends Error {
+    /** @param {string} message @param {400|413} status */
+    constructor(message, status) {
+        super(message);
+        this.name = 'RequestBodyError';
+        this.status = status;
+        this.field = 'body';
+    }
+}
+
+/**
  * Reads and JSON-parses a request body with a hard size cap so a hostile or
  * buggy client cannot exhaust memory. Returns `undefined` for an empty body.
  * @param {import('http').IncomingMessage} req
@@ -93,17 +108,21 @@ export function readJsonBody(req, opts = {}) {
     const maxBytes = opts.maxBytes ?? 1_000_000;
     return new Promise((resolve, reject) => {
         let size = 0;
+        let tooLarge = false;
         const chunks = [];
         req.on('data', (chunk) => {
+            if (tooLarge) return; // keep draining (discarding) so the 413 can be delivered
             size += chunk.length;
             if (size > maxBytes) {
-                reject(new Error(`request body exceeds ${maxBytes} byte limit`));
-                req.destroy();
+                tooLarge = true;
+                chunks.length = 0;
+                reject(new RequestBodyError(`request body exceeds ${maxBytes} byte limit`, 413));
                 return;
             }
             chunks.push(chunk);
         });
         req.on('end', () => {
+            if (tooLarge) return;
             const raw = Buffer.concat(chunks).toString('utf-8').trim();
             if (raw.length === 0) {
                 resolve(undefined);
@@ -112,7 +131,7 @@ export function readJsonBody(req, opts = {}) {
             try {
                 resolve(JSON.parse(raw));
             } catch (err) {
-                reject(new Error(`invalid JSON request body: ${err.message}`));
+                reject(new RequestBodyError(`invalid JSON request body: ${err.message}`, 400));
             }
         });
         req.on('error', reject);
@@ -355,6 +374,12 @@ export function createSupervisor(deps = {}) {
             }
             await matched.handler(req, res, { url, params: matched.params });
         } catch (err) {
+            if (err instanceof RequestBodyError) {
+                // Client error, not a supervisor fault: no stack, no 500.
+                if (!res.headersSent) sendJson(res, err.status, { error: err.message, field: 'body' });
+                else { try { res.end(); } catch { /* already gone */ } }
+                return;
+            }
             // Isolate the failure: log it, answer 500 if we still can, and
             // keep the process alive.
             logError(`[supervisor] request ${method} ${path} failed:`, err && err.stack ? err.stack : err);
