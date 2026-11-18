@@ -2555,7 +2555,11 @@ export function createKbPrimingClient(opts = {}) {
                             // closed: import only when its kb_import advertises
                             // `ref`. A local member runs in this server.
                             if (await supportsImportRef(target)) {
-                                imported = parseResult(await memberCall(target, 'kb_import', { skip_sweep: true, ref }, KB_MAINTAINER_CALL));
+                                // base_branch names the base the bible must
+                                // belong to: its own provenance.branch is never
+                                // trusted alone to gate withdrawn tombstones
+                                // (an older server ignores the key).
+                                imported = parseResult(await memberCall(target, 'kb_import', { skip_sweep: true, ref, base_branch: baseBranch }, KB_MAINTAINER_CALL));
                                 if (imported && imported.bible_skipped !== true && imported.bible_source !== ref) {
                                     log(`[kb-prime] WARN kb_import on '${target.name || member}' did not report reading ${ref} (bible_source ${JSON.stringify(imported.bible_source)}) -- upgrade apra-fleet on that member`);
                                 }

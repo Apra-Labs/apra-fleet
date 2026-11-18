@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "c1a438e81c81f0966e60d04ae98a7eb00d3c7d06",
     "branch": "feat/kb-0.4.5",
-    "entry_count": 196
+    "entry_count": 201
   },
   "entries": [
     {
@@ -1494,6 +1494,32 @@
       "updated_at": "2026-09-25T22:26:30.391Z"
     },
     {
+      "id": "52cf9b39-5851-41e1-b0eb-198f900bd769",
+      "type": "knowledge",
+      "title": "Claude config writers treat only a missing .claude.json as {}; both re-read before the move",
+      "summary": "ensureWorkspaceTrusted and ClaudeProvider.syncMemberMcpEntry refuse an existing empty or unparseable .claude.json with E-MEMBER-CONFIG-NOT-JSON and no write. An empty read is followed by memberFilePresent, a probe that prints a marker when the file exists. Both re-read right before staging+move and apply only the fleet's own keys to the fresh content.",
+      "symbols": [
+        "readMemberJson",
+        "memberFilePresent",
+        "memberFilePresenceCommand",
+        "MEMBER_FILE_PRESENT_MARKER",
+        "ensureWorkspaceTrusted",
+        "syncMemberMcpEntry"
+      ],
+      "source_files": [
+        "src/services/member-config-io.ts",
+        "src/providers/claude.ts",
+        "tests/claude-config-empty-torn.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T02:39:16.563Z",
+      "source_file_hashes": {
+        "src/providers/claude.ts": "358484af7d5de8d0964866395edd7448e1e67c37",
+        "src/services/member-config-io.ts": "da6b0acd828db2b88ad86ed570897b2a0ee31ed6",
+        "tests/claude-config-empty-torn.test.ts": "8589f42960e603299c5ff2d3abb80cce38540e9b"
+      }
+    },
+    {
       "id": "5461f16e-7fbf-4e46-9005-1922220c1854",
       "type": "knowledge",
       "title": "agent-transform.ts and apra-pm install.mjs mirror each other asymmetrically",
@@ -2222,6 +2248,32 @@
       }
     },
     {
+      "id": "83649bac-ac24-4a92-9bff-c8af8737d32d",
+      "type": "knowledge",
+      "title": "kb_import withdrawn-tombstone gate: base from base_branch or remote HEAD, any configured remote",
+      "summary": "mergedBaseBibleGate in src/tools/kb-import.ts applies a bible's withdrawn tombstones only when it was read at refs/remotes/<remote>/<base> and provenance.branch equals <base>. <base> comes from the caller's base_branch, else refs/remotes/<remote>/HEAD; provenance.branch alone is never trusted.",
+      "symbols": [
+        "mergedBaseBibleGate",
+        "parseRemoteTrackingRef",
+        "remoteDefaultBranch",
+        "configuredGitRemotes"
+      ],
+      "source_files": [
+        "src/tools/kb-import.ts",
+        "src/services/knowledge/bible-import.ts",
+        "src/services/knowledge/bible-blob-id.ts",
+        "tests/knowledge/kb-import-withdrawals.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T13:24:40.643Z",
+      "source_file_hashes": {
+        "src/services/knowledge/bible-blob-id.ts": "00cef1cad3d5bad130cc70a170ca5cc35840ef47",
+        "src/services/knowledge/bible-import.ts": "a717226586d21e5c2496b21c0ea3e212bde4ca10",
+        "src/tools/kb-import.ts": "e7017cd1b2fb8ed1a45369b6b7f9748860f4a69c",
+        "tests/knowledge/kb-import-withdrawals.test.ts": "c8262eff5fe442a20e470cea1b3c2e0e4d3aebcc"
+      }
+    },
+    {
       "id": "84258482-2b78-4c46-a077-7698d06fc4b4",
       "type": "knowledge",
       "title": "After a handled terminating signal, run-all-tests.mjs deferred hard-kill timer must own the exit",
@@ -2646,6 +2698,32 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:16.248Z"
+    },
+    {
+      "id": "a098caf8-263f-4b72-b5a7-55fc3d290a07",
+      "type": "knowledge",
+      "title": "Set-aside stall throws StalledSprintError before the 2-cycle stall and deploy-retry exit",
+      "summary": "runner.js throwIfSetAsideStall runs at the start of a Develop round (all ready beads set aside) and at Cycle Evaluation before STALL_CYCLE_LIMIT and the deploy-blocked retry; set-aside.mjs evaluateSetAsideStall decides it purely.",
+      "symbols": [
+        "throwIfSetAsideStall",
+        "evaluateSetAsideStall",
+        "collectSetAsideEntries",
+        "StalledSprintError"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/fleet-sprint/set-aside.mjs",
+        "packages/apra-fleet-se/fleet-sprint/abort.mjs",
+        "packages/apra-fleet-se/test/mock-sprint-blocked-stall-cycle1.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-22T05:40:50.485Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/abort.mjs": "46fd9dc81c6edbfa975e667e5b3569f60df616a7",
+        "packages/apra-fleet-se/fleet-sprint/runner.js": "7d6e9fb4da7578f3b9c0ccefc2b94c9322a4c13a",
+        "packages/apra-fleet-se/fleet-sprint/set-aside.mjs": "9973ffdded67807fead8b497b2acd817253cb23b",
+        "packages/apra-fleet-se/test/mock-sprint-blocked-stall-cycle1.test.mjs": "773f66cbc9726bc770c4f399da3699cbe5b2e0b5"
+      }
     },
     {
       "id": "a1a279ec-5537-4820-a23a-c9a7737f2507",
@@ -3601,6 +3679,31 @@
       "updated_at": "2026-09-29T06:13:11.365Z"
     },
     {
+      "id": "e3e977ba-8ff5-4b21-a405-a0d01f2281a4",
+      "type": "knowledge",
+      "title": "kb_import without base_branch needs refs/remotes/<remote>/HEAD to apply withdrawals",
+      "summary": "When kb_import gets no base_branch, mergedBaseBibleGate takes the base from the symbolic ref refs/remotes/<remote>/HEAD. Clones not made by git clone usually lack it, so withdrawn tombstones are deferred with a warning. The CLI kbImportCmd has no base_branch flag.",
+      "symbols": [
+        "mergedBaseBibleGate",
+        "remoteDefaultBranch",
+        "configuredGitRemotes"
+      ],
+      "source_files": [
+        "src/tools/kb-import.ts",
+        "src/services/knowledge/bible-blob-id.ts",
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs",
+        "tests/knowledge/kb-import-withdrawals.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T13:40:25.160Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "7ef65890eca8a9f89caf5a0e9c76e3f5c1c49fd4",
+        "src/services/knowledge/bible-blob-id.ts": "00cef1cad3d5bad130cc70a170ca5cc35840ef47",
+        "src/tools/kb-import.ts": "e7017cd1b2fb8ed1a45369b6b7f9748860f4a69c",
+        "tests/knowledge/kb-import-withdrawals.test.ts": "c8262eff5fe442a20e470cea1b3c2e0e4d3aebcc"
+      }
+    },
+    {
       "id": "e6525404-e387-4360-8df3-fe08d050a28a",
       "type": "knowledge",
       "title": "Develop dispatch excludes below-goal ready beads unless they block in-goal work or were worked on",
@@ -3856,6 +3959,23 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:08:07.865Z"
+    },
+    {
+      "id": "f1e8458e-ed03-4638-a074-284148d52d41",
+      "type": "learning",
+      "title": "Stale local dist/agents/schemas fails the se staleness guard, not the branch",
+      "summary": "The repo-root dist/ folder is ignored by git and refreshed only by npm run dist-pm. On a machine with an old dist/, contracts-schema-dist-staleness-guard.test.mjs fails with DRIFTED schemas even when the branch changes no schema; a clean clone skips the test.",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-se/test/contracts-schema-dist-staleness-guard.test.mjs",
+        ".gitignore"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T08:09:19.552Z",
+      "source_file_hashes": {
+        ".gitignore": "9658f0d8acffb101b7e84218574da6d8ed35f87e",
+        "packages/apra-fleet-se/test/contracts-schema-dist-staleness-guard.test.mjs": "1db1ddf04d24ac369fb510e69d39af9406640bbe"
+      }
     },
     {
       "id": "f2a4c5c1-39c7-43ea-af04-0042ad56a43e",

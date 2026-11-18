@@ -25,7 +25,9 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const CHILD = path.join(REPO_ROOT, 'tests', 'fixtures', 'kb-bible-commit-child.mjs');
 const DIST_MARKER = path.join(REPO_ROOT, 'dist', 'tools', 'kb-bible-commit.js');
 const BIBLE_REL = '.fleet/kb-canonical.json';
-const BASE = { baseBranch: 'main', baseCommit: 'a'.repeat(40) };
+// baseCommit is HEAD: kb_bible_commit tombstones a demoted id only when the
+// bible at baseCommit carries it; here the committed bible at HEAD is the base.
+const BASE = { baseBranch: 'main', baseCommit: 'HEAD' };
 const RICH_CONTENT = 'The module loader evaluates alpha lazily, so a direct import of beta from a test '
   + 'file reaches the getter before alpha has initialised; import alpha first in the test setup.';
 const RICH_CUES = ['why does beta throw at load', 'beta ReferenceError in tests'];

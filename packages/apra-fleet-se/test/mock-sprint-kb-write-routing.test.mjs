@@ -121,6 +121,7 @@ describe('mock sprint: KB writes route through the kb_maintainer', () => {
             assert.equal(imports[0].grant, true, 'the priming import carries the kb_maintainer grant');
             assert.match(String(imports[0].args && imports[0].args.ref), /^refs\/remotes\/origin\/[A-Za-z0-9_]/);
             assert.equal(imports[0].args.path, undefined);
+            assert.equal(imports[0].args.ref, 'refs/remotes/origin/' + imports[0].args.base_branch, 'the priming import names the base branch it reads explicitly');
 
             const MAINT = memberUuid('maint');
             const DEV = memberUuid('dev');

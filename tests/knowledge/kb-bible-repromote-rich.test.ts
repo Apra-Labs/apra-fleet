@@ -18,7 +18,9 @@ import { commitWorkTree } from '../helpers/commit-work-tree.js';
 // getKbProviders is pointed at this test's provider. Every assertion reads the
 // bible back from disk. All files live under one sandbox removed in afterEach.
 
-const BASE = { baseBranch: 'main', baseCommit: 'a'.repeat(40) };
+// baseCommit is HEAD: kb_bible_commit tombstones a demoted id only when the
+// bible at baseCommit carries it; here the committed bible at HEAD is the base.
+const BASE = { baseBranch: 'main', baseCommit: 'HEAD' };
 const SUMMARY = 'alpha must be read before beta, or beta throws a ReferenceError at load.';
 const RICH_CONTENT = 'The module loader evaluates alpha lazily, so a direct import of beta from a test '
   + 'file reaches the getter before alpha has initialised; import alpha first in the test setup.';

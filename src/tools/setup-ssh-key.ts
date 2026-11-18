@@ -23,7 +23,7 @@ export type SetupSSHKeyInput = z.infer<typeof setupSSHKeySchema>;
  * Uses JWK export to extract modulus (n) and exponent (e), then builds
  * the ssh-rsa wire format per RFC 4253.
  */
-function rsaPublicKeyToOpenSSH(publicKeyPem: string, comment: string): string {
+export function rsaPublicKeyToOpenSSH(publicKeyPem: string, comment: string): string {
   const keyObj = crypto.createPublicKey(publicKeyPem);
   const jwk = keyObj.export({ format: 'jwk' }) as { n?: string; e?: string };
 

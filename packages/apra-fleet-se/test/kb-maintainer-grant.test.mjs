@@ -126,7 +126,7 @@ describe('kb_maintainer grant on engine KB writes', () => {
             const imp = calls.filter((x) => x.tool === 'kb_import');
             if (c.expectImport) {
                 assert.equal(imp.length, 1, JSON.stringify(calls));
-                assert.deepEqual(imp[0].args, { skip_sweep: true, ref: 'refs/remotes/origin/main' });
+                assert.deepEqual(imp[0].args, { skip_sweep: true, ref: 'refs/remotes/origin/main', base_branch: 'main' });
                 assert.deepEqual(imp[0].opts, { kbMaintainer: true });
             } else {
                 assert.equal(imp.length, 0, JSON.stringify(calls));
@@ -157,7 +157,7 @@ describe('kb_maintainer grant on engine KB writes', () => {
         assert.equal(imp.length, 1, JSON.stringify(calls));
         assert.equal(imp[0].member, 'maint');
         assert.deepEqual(imp[0].opts, { kbMaintainer: true });
-        assert.deepEqual(imp[0].args, { skip_sweep: true, ref: 'refs/remotes/origin/main' });
+        assert.deepEqual(imp[0].args, { skip_sweep: true, ref: 'refs/remotes/origin/main', base_branch: 'main' });
         for (const c of calls.filter((c) => c.tool === 'kb_session_prime')) {
             assert.equal(c.opts, undefined, 'the prime read is not made with the maintainer grant');
         }

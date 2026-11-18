@@ -573,7 +573,7 @@ error naming the key (the member is not updated) -- they are no longer silently 
 
 #### `removeMember(options: RemoveMemberOptions)`
 
-Calls `remove_member` -- removes a member from the fleet. Before the member is deleted (and before the fleet's own SSH key is removed from the member), it removes what `compose_permissions` wrote for the member (per-folder `apra-fleet` MCP entry, permission keys, `.git/info/exclude` lines); anything it could not remove, or could not reach, is reported as a warning in the result. The registration on the member's own apra-fleet install is removed only when that install carries the member-install marker; an unmarked install, or a failed marker probe, is skipped and the warning says so and why. A local member's per-session MCP config file (`session-mcp/<uuid>.json` in the server data dir) is deleted too.
+Calls `remove_member` -- removes a member from the fleet. Before the member is deleted (and before the fleet's own SSH key is removed from the member), it removes what `compose_permissions` wrote for the member (per-folder `apra-fleet` MCP entry, permission keys, `.git/info/exclude` lines); anything it could not remove, or could not reach, is reported as a warning in the result. The registration on the member's own apra-fleet install is removed only when that install carries the member-install marker; an unmarked install, or a failed marker probe, is skipped and the warning says so and why. A local member's per-session MCP config file (`session-mcp/<uuid>.json` in the server data dir) is deleted too. For a remote member registered with a fleet-generated SSH key, the key's line is removed from the member user's `authorized_keys` (and, on a Windows administrator account, from `ProgramData\ssh\administrators_authorized_keys`) unless another registered member on the same host and username still uses that key -- then it stays authorized and the result names that member. A fleet `.pub` file that is not a complete ssh-rsa (2048+ bits), ssh-ed25519, ecdsa or sk- public key (empty, truncated, type only, a certificate) is never used for revocation: `authorized_keys` is left untouched and the result warns. A user-supplied `key_path` is never removed from `authorized_keys`, and the local key pair is deleted only when no other member uses it.
 
 | Field | Type | Notes |
 |---|---|---|
@@ -782,9 +782,17 @@ on it); any other id is skipped with reason `not_demoted_or_unknown` and nothing
 changes for it. An admitted id is removed from `entries` and upserted into the
 bible's optional top-level `demotions` array as `{id, at, reason}`, so another
 clone applies the demotion explicitly instead of inferring it from an absence.
-Tombstones already in the file survive a later commit carrying unrelated ids, and
-re-committing a tombstoned id through `ids` (a re-promotion) restores its entry
-and clears its tombstone. `provenance.entry_count` counts entries only.
+A demoted tombstone is written only for an id the bible at `baseCommit` carries
+(as an entry or a tombstone): a locally demoted entry the branch added is removed
+from `entries` with no tombstone, and any other `demoted_ids` id is skipped with
+reason `not_in_base_bible`. When `baseCommit` does not resolve or its bible is
+unreadable, no new demoted tombstone is written. Tombstones already in the file survive a later commit carrying unrelated ids, and
+re-committing a demoted-tombstoned id through `ids` (a re-promotion) restores its
+entry and clears its tombstone. A `withdrawn` tombstone in the current file
+(branch-added or merged from the base) is never cleared by `ids`: such an id is
+skipped with reason `withdrawn_tombstone` and the tombstone kept, unless
+`restore_ids` undoes that (branch-added) tombstone in the same call.
+`provenance.entry_count` counts entries only.
 
 Every entry removed because this KB holds it as superseded or invalidated (each
 listed in `removed`) is tombstoned the same way, as `{id, at, reason}` with

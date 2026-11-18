@@ -4,6 +4,7 @@
   "kind": "happy",
   "request": {
     "ref": "refs/remotes/origin/main",
+    "base_branch": "main",
     "skip_sweep": true
   },
   "response": {

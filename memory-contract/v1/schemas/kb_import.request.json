@@ -18,6 +18,11 @@
           "pattern": "^[A-Za-z0-9_][A-Za-z0-9._/-]*$",
           "description": "Read the bible as COMMITTED at this git ref (a ref name such as HEAD or refs/remotes/origin/main; no rev expressions) instead of the file on disk; with path, reads that repository-relative file at the ref. The bytes are verified in-process against the git blob id before import. A ref that does not hold the bible fails with E-BIBLE-NOT-FOUND and nothing is imported. In the kb_maintainer or a FULL session the verified blob is what gets recorded as trusted, so a seeding import does not depend on the work tree; in a member session without the grant the trust check still applies. Omitted: the file on disk (or, in a member session without the grant, HEAD)."
         },
+        "base_branch": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_][A-Za-z0-9._/-]*$",
+          "description": "The base branch the merged bible is expected to belong to (a plain branch name such as main, not a ref). A bible's \"withdrawn\" tombstones are applied only when it is read with `ref` = refs/remotes/<remote>/<base branch> AND its provenance.branch equals that base branch. The bible's own provenance.branch is never trusted alone. Omitted: the base branch is the remote's default branch, as recorded by refs/remotes/<remote>/HEAD (set by git clone or git remote set-head <remote> --auto); when that is missing the tombstones are deferred and withdrawals.warning says why."
+        },
         "scope": {
           "type": "string",
           "const": "project",

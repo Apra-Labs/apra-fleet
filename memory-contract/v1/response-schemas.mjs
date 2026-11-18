@@ -234,9 +234,12 @@ const KB_RESPONSE_BODIES = {
     reason: z.string().optional(),
     // What the bible's "withdrawn" tombstones did. They are applied (SQLite)
     // or replayed in one POST /api/kb/withdraw (http) ONLY when the bible was
-    // read at refs/remotes/origin/<provenance.branch> of that same bible;
-    // from any other source their ids are listed in deferred and nothing is
-    // lowered. sent counts tombstones applied or sent; already is a row that
+    // read at refs/remotes/<remote>/<base> (any configured remote) and its
+    // provenance.branch is <base>, where <base> is the request's base_branch
+    // (else the branch refs/remotes/<remote>/HEAD names); from any other
+    // source their ids are listed in deferred and nothing is lowered (warning
+    // says why when the ref belongs to no configured remote -- naming the
+    // expected ref -- or the base branch could not be established). sent counts tombstones applied or sent; already is a row that
     // was already below CONFIRMED; unsupported lists ids a KB server without
     // the withdraw route could not apply, with warning (E-KB-HTTP-UNSUPPORTED
     // naming the route). OPTIONAL so fixtures recorded before withdrawals
@@ -305,7 +308,11 @@ const KB_RESPONSE_BODIES = {
   // restored the restore_ids whose branch-added tombstone was removed; both
   // OPTIONAL for fixtures recorded before they existed, always emitted by the
   // handler. A withdrawal that does not qualify is skipped with reason
-  // not_withdrawable. Under the http provider bible_skipped stays true for the
+  // not_withdrawable. An ids merge of an id the current file carries a
+  // withdrawn tombstone for (and this call does not restore) is skipped with
+  // reason withdrawn_tombstone. A demoted_ids id the bible at baseCommit does
+  // not carry (or an unreadable/unresolvable base) is skipped with reason
+  // not_in_base_bible. Under the http provider bible_skipped stays true for the
   // entry merge, but withdrawals/restores still write the tombstones, so
   // committed may be true there.
   // enriched names the ids this call's enrich applied, and is present only when
@@ -318,7 +325,8 @@ const KB_RESPONSE_BODIES = {
     restored: z.array(z.string()).optional(),
     skipped: z.array(z.object({
       id: z.string(),
-      reason: z.enum(['not_confirmed_or_unknown', 'no_source_files', 'basis_mismatch', 'not_demoted_or_unknown', 'not_withdrawable', 'enrich_invalid', 'not_in_bible']),
+      reason: z.enum(['not_confirmed_or_unknown', 'no_source_files', 'basis_mismatch', 'not_demoted_or_unknown', 'not_withdrawable',
+        'withdrawn_tombstone', 'not_in_base_bible', 'enrich_invalid', 'not_in_bible']),
     })),
     removed: z.array(z.object({
       id: z.string(),

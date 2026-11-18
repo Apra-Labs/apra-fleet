@@ -6,14 +6,16 @@ import { getKbProviders } from '../services/knowledge/kb-providers.js';
 import { resolveKbAnchor, type KbAnchor } from '../services/knowledge/kb-self.js';
 import {
   parseBibleDocument, importBibleEntries, type BibleDocument, type BibleWithdrawalReport,
-  applyBibleWithdrawals, baseRefOfBible, emptyWithdrawalReport, recordWithdrawalOutcome, withdrawnTombstones,
+  applyBibleWithdrawals, emptyWithdrawalReport, parseRemoteTrackingRef, recordWithdrawalOutcome, remoteTrackingRef,
+  withdrawnTombstones,
 } from '../services/knowledge/bible-import.js';
 import { HttpKbProvider, KbHttpUnsupportedError } from '../services/knowledge/http-provider.js';
 import { logWarn } from '../utils/log-helpers.js';
 import { requireSqliteProject, isSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 import { KbMaintainerGrantError, memberLacksKbMaintainer } from '../services/knowledge/kb-maintainer-grant.js';
 import {
-  OWN_BIBLE_REL, BibleBlobIntegrityError, bibleBytesBlobId, isSafeBibleRef, readCommittedBibleBlob,
+  OWN_BIBLE_REL, BibleBlobIntegrityError, bibleBytesBlobId, isSafeBibleRef, readCommittedBibleBlob, remoteDefaultBranch,
+  configuredGitRemotes,
 } from '../services/knowledge/bible-blob-id.js';
 
 // T2.1 (F4, D3 HARDENED): kb_import -- the trusted-channel write path that lets a
@@ -100,6 +102,15 @@ export const kbImportSchema = z.object({
     .describe('Explicit path to a bible JSON file (e.g. <worktree>/.fleet/kb-canonical.json). This is a file path, not a scope selector: the KB written is always the calling session\'s own (a member session -> its work folder; otherwise the server folder). When omitted, resolves to <own folder>/.fleet/kb-canonical.json. TRUST NOTE: importing the repo-resolved .fleet/kb-canonical.json as committed is the git-reviewed trusted channel; an explicit --path bible is caller-asserted trust (equivalent in power to kb_promote). In a MEMBER session without the kb_maintainer grant an explicit path other than the session\'s own .fleet/kb-canonical.json is refused with E-KB-MAINTAINER-REQUIRED and nothing is imported, and the own bible is read as committed at HEAD (never the work-tree file); with no committed copy, or when that committed bible was never written or imported by the maintainer side (kb_bible_commit, or kb_import from the kb_maintainer or a FULL session), nothing is imported (E-KB-MAINTAINER-REQUIRED). Directives are quarantined to pending proposals either way.'),
   ref: z.string().regex(/^[A-Za-z0-9_][A-Za-z0-9._/-]*$/).optional()
     .describe('Read the bible as COMMITTED at this git ref (a ref name such as HEAD or refs/remotes/origin/main; no rev expressions) instead of the file on disk; with path, reads that repository-relative file at the ref. The bytes are verified in-process against the git blob id before import. A ref that does not hold the bible fails with E-BIBLE-NOT-FOUND and nothing is imported. In the kb_maintainer or a FULL session the verified blob is what gets recorded as trusted, so a seeding import does not depend on the work tree; in a member session without the grant the trust check still applies. Omitted: the file on disk (or, in a member session without the grant, HEAD).'),
+  // The base branch the caller expects the merged bible to belong to. A
+  // bible's provenance.branch is written by kb_bible_commit from ITS caller's
+  // baseBranch, so a branch bible committed with its own feature branch as
+  // baseBranch and pushed would otherwise name its own remote-tracking ref as
+  // "the base" and apply its withdrawn tombstones before any merge.
+  base_branch: z.string().regex(/^[A-Za-z0-9_][A-Za-z0-9._/-]*$/)
+    .refine(b => !b.includes('..') && !b.endsWith('/') && !b.endsWith('.lock'), { message: 'base_branch must be a plain branch name' })
+    .optional()
+    .describe('The base branch the merged bible is expected to belong to (a plain branch name such as main, not a ref). A bible\'s "withdrawn" tombstones are applied only when it is read with `ref` = refs/remotes/<remote>/<base branch> AND its provenance.branch equals that base branch. The bible\'s own provenance.branch is never trusted alone. Omitted: the base branch is the remote\'s default branch, as recorded by refs/remotes/<remote>/HEAD (set by git clone or git remote set-head <remote> --auto); when that is missing the tombstones are deferred and withdrawals.warning says why.'),
   scope: z.literal('project').optional()
     .describe('Only project scope is supported (imports into the project KB). Global bibles are a separate concern.'),
   // KB audit 2026-08-12, found by a LIVE sprint rather than by review. The
@@ -190,8 +201,8 @@ export interface KbImportReport {
   /**
    * What the bible's "withdrawn" tombstones did (BibleWithdrawalReport). They
    * are applied (SQLite) or replayed to the KB server (http) only when the
-   * bible was read at refs/remotes/origin/<provenance.branch> of that same
-   * bible; otherwise their ids are listed in deferred.
+   * bible is the merged base bible (mergedBaseBibleGate); otherwise their
+   * ids are listed in deferred.
    */
   withdrawals: BibleWithdrawalReport;
 }
@@ -219,17 +230,57 @@ async function readBibleAtRef(
   }
 }
 
-/** True when the bible was read at the ref its own provenance names as the merged base. */
-function isMergedBaseBible(doc: BibleDocument, refRead: string | undefined): boolean {
-  const baseRef = baseRefOfBible(doc);
-  return refRead !== undefined && baseRef !== null && refRead === baseRef;
+/**
+ * Whether a bible's "withdrawn" tombstones may be applied: it must be the
+ * MERGED base bible. The base branch is established without trusting the bible
+ * (kb_bible_commit writes provenance.branch from its own caller's baseBranch,
+ * so a branch bible can name its own feature branch): the caller's
+ * `base_branch`, else the default branch the remote's HEAD names. The bible
+ * qualifies only when it was read at refs/remotes/<remote>/<that branch>, for
+ * any remote configured in this clone (or origin), and its provenance.branch
+ * is that same branch. `warning` explains a deferral the caller can fix: the
+ * ref belongs to no configured remote (it names the refs expected), or the
+ * base branch could not be established.
+ */
+async function mergedBaseBibleGate(
+  repoAnchor: string, doc: BibleDocument, refRead: string | undefined, baseBranch: string | undefined,
+): Promise<{ apply: boolean; warning?: string }> {
+  if (refRead === undefined || !doc.provenanceBranch) return { apply: false };
+  // The base remote is any remote this clone has configured (a base remote
+  // need not be named origin); origin is always accepted, as before.
+  const configured = await configuredGitRemotes(repoAnchor);
+  const remotes = configured.includes('origin') ? configured : ['origin', ...configured];
+  const parsed = parseRemoteTrackingRef(refRead, remotes);
+  if (parsed === null) {
+    if (!refRead.startsWith('refs/remotes/')) return { apply: false };
+    // A remote-tracking ref of a remote this clone does not know: without
+    // this note the ids would stay deferred forever with nothing naming why.
+    const base = baseBranch ?? doc.provenanceBranch;
+    const expected = remotes.map(r => remoteTrackingRef(r, base)).join(' or ');
+    return {
+      apply: false,
+      warning: `withdrawn tombstones deferred: ${refRead} is not a remote-tracking ref of a configured remote (configured: ${remotes.join(', ')}); expected ${expected}`,
+    };
+  }
+  let expected = baseBranch;
+  if (expected === undefined) {
+    const fromHead = await remoteDefaultBranch(repoAnchor, parsed.remote);
+    if (fromHead === null) {
+      return {
+        apply: false,
+        warning: `withdrawn tombstones deferred: the base branch is unknown -- no base_branch was given and ${remoteTrackingRef(parsed.remote, 'HEAD')} is not set (run git remote set-head ${parsed.remote} --auto, or pass base_branch); the bible's own provenance.branch is never trusted alone`,
+      };
+    }
+    expected = fromHead;
+  }
+  return { apply: parsed.branch === expected && doc.provenanceBranch === expected };
 }
 
 /**
  * kb_import under an http project KB. Bible ENTRIES are never imported (the KB
  * server is the source of truth), but the merged base bible's "withdrawn"
  * tombstones are replayed to the server: one POST /api/kb/withdraw when the
- * bible was read at refs/remotes/origin/<provenance.branch> of that same bible,
+ * bible is the merged base bible (mergedBaseBibleGate),
  * from a session that is not a member without the kb_maintainer grant (over
  * http there is no hub-side record of trusted bibles to check a member's ref
  * against). From any other source the ids are reported deferred. A server whose
@@ -269,8 +320,10 @@ async function kbImportOverHttp(
   const tombstones = withdrawnTombstones(doc);
   if (tombstones.length === 0) return report;
   const ids = tombstones.map(t => t.id);
-  if (!isMergedBaseBible(doc, input.ref) || memberLacksKbMaintainer(anchor)) {
+  const gate = await mergedBaseBibleGate(repoAnchor, doc, input.ref, input.base_branch);
+  if (!gate.apply || memberLacksKbMaintainer(anchor)) {
     withdrawals.deferred = ids;
+    if (gate.warning !== undefined) withdrawals.warning = gate.warning;
     return report;
   }
   const unsupported = (why: string): KbImportReport => {
@@ -405,17 +458,23 @@ export async function kbImport(input: KbImportInput, anchor?: KbAnchor): Promise
   );
 
   // "withdrawn" tombstones lower a row ONLY when this bible is the merged base
-  // bible: read as committed at refs/remotes/origin/<provenance.branch> of this
-  // same bible. From the work tree, HEAD or any other ref the branch carrying
-  // them has not merged, so they stay view exclusions (the member bible view
+  // bible: read as committed at refs/remotes/<remote>/<base> where <base> is the
+  // caller's base_branch (or the remote's default branch) and equals this
+  // bible's provenance.branch (mergedBaseBibleGate). From the work tree,
+  // HEAD or any other ref the branch carrying them has not merged, so they
+  // stay view exclusions (the member bible view
   // already hides the entry) and are reported deferred. A member session
   // without the grant reaches here only for a bible the maintainer side
   // recorded as trusted (checked above).
   const withdrawnList = withdrawnTombstones(bibleDoc);
   let withdrawals = emptyWithdrawalReport();
   if (withdrawnList.length > 0) {
-    if (isMergedBaseBible(bibleDoc, committedSource?.ref)) withdrawals = applyBibleWithdrawals(provider, withdrawnList);
-    else withdrawals.deferred = withdrawnList.map(t => t.id);
+    const gate = await mergedBaseBibleGate(repoAnchor, bibleDoc, committedSource?.ref, input.base_branch);
+    if (gate.apply) withdrawals = applyBibleWithdrawals(provider, withdrawnList);
+    else {
+      withdrawals.deferred = withdrawnList.map(t => t.id);
+      if (gate.warning !== undefined) withdrawals.warning = gate.warning;
+    }
   }
 
   // A FULL or kb_maintainer session is trusted to import at bible confidence,
