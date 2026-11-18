@@ -185,18 +185,35 @@ Write-safety rules in `kb_bible_commit`:
   lifts it, and a restore followed by a merge in the same call works because
   restores are planned before the merge. Demoted tombstones keep the
   re-promotion rule instead.
+- A demoted tombstone in the file blocks an `ids` merge unless the id's local
+  trust time is strictly after the tombstone `at` (a real re-promotion, which
+  clears it). Otherwise (trust time at or before `at`, or null) the id is
+  skipped with `demoted_tombstone` and the tombstone is kept. An id found in
+  both entries and demotions loses its entry on every call (`removed`, reason
+  `tombstoned`), so a file never holds an id as both.
+- A withdrawn tombstone also outranks a demotion. A `demoted_ids` id with a
+  withdrawn tombstone in the file is skipped with `withdrawn_tombstone`, the
+  every-call demotion rule passes over it, and a demoted tombstone never
+  overwrites a withdrawn one. Otherwise the demoted tombstone would replace the
+  withdrawal, and a later `ids` re-promotion (which clears demoted tombstones)
+  would erase it.
 - `demoted_ids` writes a tombstone only for an id the BASE bible carries (as an
   entry or a tombstone), because a tombstone for an id the base never had would
   be a no-op everywhere else. A demoted entry that exists only in the branch's
   bible, with no tombstone, is simply dropped; anything else is rejected with
-  `not_in_base_bible`. An unresolvable or unreadable base fails closed. A
-  call that only drops entries still commits.
+  `not_in_base_bible`. An unresolvable or unreadable base fails closed, and
+  the result carries `base_bible_error` naming the failure (absent when the
+  base was read fine or never needed). A call that only drops entries still
+  commits.
 
 Known limits of the current design:
 
-- The `apra-fleet kb import` CLI takes only `--repo` and `--path`; it has no
-  ref or base-branch option, so a CLI import can never apply withdrawn
-  tombstones. Use the `kb_import` tool or the sprint engine's prime import.
+- To apply withdrawn tombstones from the CLI, run
+  `apra-fleet kb import --ref refs/remotes/origin/main --base-branch main`
+  (after fetching). Both values go to `kb_import`, which validates them with
+  its own schema (an invalid value exits 1). Without `--base-branch` the base
+  is `refs/remotes/<remote>/HEAD`, which a clone not made by `git clone` often
+  lacks; the tombstones are then deferred and the CLI prints the warning.
 - A withdrawal never touches the local row, so the local KB keeps the entry
   CONFIRMED until the merged bible is imported.
 - An id the base bible carries, demoted locally because of another branch's

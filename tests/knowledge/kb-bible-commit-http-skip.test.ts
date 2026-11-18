@@ -285,4 +285,34 @@ describe('kb_bible_commit withdrawals and restores under the http KB provider', 
     expect(JSON.stringify(bible.entries)).toBe(JSON.stringify(entries));
     expect(bible.demotions.map((d: { id: string }) => d.id)).toEqual(['kb-elsewhere']);
   });
+
+  it('never writes an id as both an entry and a tombstone', async () => {
+    await kbSetup({ provider: 'http', remote: `http://127.0.0.1:${port}`, token }, { folder: clone });
+    // kb-two already sits in both lists (merged history); kb-one is withdrawn now.
+    const entries = [{ id: 'kb-one', title: 'one' }, { id: 'kb-three', title: 'three' }, { id: 'kb-two', title: 'two' }];
+    const oldTombstone = { id: 'kb-two', at: '2026-01-01T00:00:00.000Z', reason: 'demoted' };
+    fs.mkdirSync(path.join(clone, '.fleet'), { recursive: true });
+    fs.writeFileSync(path.join(clone, BIBLE_REL), JSON.stringify({
+      version: 3, provenance: { commit: null, branch: null, entry_count: 3 }, entries, demotions: [oldTombstone],
+    }, null, 2) + '\n');
+    git(clone, ['add', '-A']);
+    git(clone, ['commit', '--quiet', '-m', 'seed bible']);
+    const head = git(clone, ['rev-parse', 'HEAD']).trim();
+
+    const result = JSON.parse(await kbBibleCommit({
+      ids: [], baseBranch: 'main', baseCommit: head,
+      withdrawals: [{ id: 'kb-one', note: NOTE, evidence_files: ['src/a.ts'] }],
+    }, { folder: clone, remoteUrl }));
+
+    const bible = readBible();
+    expect(bible.entries.map((e: { id: string }) => e.id)).toEqual(['kb-three']);
+    expect(result.committed).toBe(true);
+    expect(result.withdrawn).toEqual(['kb-one']);
+    expect(result.removed).toEqual([{ id: 'kb-two', reason: 'tombstoned' }]);
+    expect(result.entry_count).toBe(1);
+    expect(bible.provenance.entry_count).toBe(1);
+    expect(bible.demotions.map((d: { id: string }) => d.id)).toEqual(['kb-one', 'kb-two']);
+    expect(bible.demotions[1]).toEqual(oldTombstone);
+    expect(git(clone, ['log', '-1', '--format=%B']).trim()).toContain('- kb-two (tombstoned)');
+  });
 });

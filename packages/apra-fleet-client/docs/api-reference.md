@@ -786,13 +786,23 @@ A demoted tombstone is written only for an id the bible at `baseCommit` carries
 (as an entry or a tombstone): a locally demoted entry the branch added is removed
 from `entries` with no tombstone, and any other `demoted_ids` id is skipped with
 reason `not_in_base_bible`. When `baseCommit` does not resolve or its bible is
-unreadable, no new demoted tombstone is written. Tombstones already in the file survive a later commit carrying unrelated ids, and
+unreadable, no new demoted tombstone is written and the result carries
+`base_bible_error` naming the failure. Tombstones already in the file survive a later commit carrying unrelated ids, and
 re-committing a demoted-tombstoned id through `ids` (a re-promotion) restores its
 entry and clears its tombstone. A `withdrawn` tombstone in the current file
 (branch-added or merged from the base) is never cleared by `ids`: such an id is
 skipped with reason `withdrawn_tombstone` and the tombstone kept, unless
-`restore_ids` undoes that (branch-added) tombstone in the same call.
-`provenance.entry_count` counts entries only.
+`restore_ids` undoes that (branch-added) tombstone in the same call. A
+`withdrawn` tombstone also outranks a demotion: a `demoted_ids` id with a
+withdrawn tombstone in the file is skipped with reason `withdrawn_tombstone`,
+the every-call demotion rule passes over it, and a demoted tombstone never
+replaces a withdrawn one, so a later `ids` re-promotion cannot clear the
+withdrawal. A `demoted` tombstone in the file blocks an `ids` merge unless the
+id's local trust time is strictly after the tombstone `at` (a real re-promotion,
+which clears it); otherwise the id is skipped with reason `demoted_tombstone` and
+the tombstone kept. An id found in both entries and demotions loses its entry on
+every call (the tombstone wins) and is listed in `removed` with reason
+`tombstoned`. `provenance.entry_count` counts entries only.
 
 Every entry removed because this KB holds it as superseded or invalidated (each
 listed in `removed`) is tombstoned the same way, as `{id, at, reason}` with
@@ -815,15 +825,21 @@ entry for it is re-added byte-identical. Admitted ids are listed in `withdrawn`
 and `restored`.
 
 Result JSON: `{path, merged, demoted, withdrawn, restored, skipped, removed,
-entry_count, backfilled, enriched?, committed, not_committed_reason?}`.
+entry_count, backfilled, enriched?, committed, not_committed_reason?,
+base_bible_error?}`. `base_bible_error` is
+present only when a rule needed the bible at `baseCommit` (a demotion gate or a
+restore) and it could not be read (`baseCommit` does not resolve, or its bible
+does not parse); the call still fails closed.
 Under the http KB provider the entry merge is skipped, never an error: the
-result is `{path, merged: [], demoted: [], skipped: [], removed: [],
+result is `{path, merged: [], demoted: [], skipped: [], removed,
 entry_count, backfilled: 0, committed, bible_skipped: true, reason, withdrawn,
-restored}`, where `entry_count` counts the entries of the existing bible file
-(0 when it is absent or unreadable); the KB is not read. With no `withdrawals`
+restored}`, where `entry_count` counts the entries of the bible file as left by
+the call (0 when it is absent or unreadable); the KB is not read. With no `withdrawals`
 and no `restore_ids` nothing is written or committed; with them only the
 tombstones are written (a tombstone-only bible, `entries: []`, is created when
-absent) and `committed` may be true.
+absent; an id the file ends up tombstoning loses its entry, and one already
+tombstoned is listed in `removed` with reason `tombstoned`) and `committed` may
+be true.
 
 #### `kbQuery(options: KbQueryOptions)`
 
