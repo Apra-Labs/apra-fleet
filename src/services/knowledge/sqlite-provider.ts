@@ -19,9 +19,9 @@ import {
   filesOverlap,
   makeFtsQuery,
   makeAudnDecision,
-  orJoinFtsTerms,
 } from './audn.js';
 import { computeFileHashBatch } from './file-hash.js';
+import { ensureKeywordIndex, keywordMatchExpression, keywordSearch } from './kb-keyword-index.js';
 import { validateFilePaths } from './path-validation.js';
 import { clampBibleTimeToNow, standingAgainstTombstone } from './bible-import.js';
 import { KbCaptureRejected, type DiscardResult, type RetireOptions } from './types.js';
@@ -331,6 +331,11 @@ export class SqliteProvider implements MemoryProvider {
         recorded_at TEXT NOT NULL
       );
     `);
+
+    // Keyword index (kb-keyword-index.ts): created on open and rebuilt from
+    // entries when its version is missing (a KB from before it existed) or
+    // older. Runs last, after every column migration above.
+    ensureKeywordIndex(this.db);
   }
 
   /**
@@ -1360,22 +1365,17 @@ export class SqliteProvider implements MemoryProvider {
     let rows: Record<string, unknown>[];
 
     if (opts.query || opts.fts_terms?.length) {
-      // ONE sanitization point. Free text is tokenized then OR-joined; internal
-      // callers pass discrete terms via fts_terms. Raw MATCH threw on '.', '-',
-      // '(', ')', '/' and implicit-AND'd multi-term queries to zero rows.
-      const ftsQuery = opts.fts_terms?.length
-        ? orJoinFtsTerms(opts.fts_terms)
-        : orJoinFtsTerms(opts.query!.match(/[A-Za-z0-9_]+/g) ?? []);
+      // ONE sanitization point. Free text and discrete terms go through the
+      // same normalizer the keyword index was built with (identifier split,
+      // stemming); free text is bounded to MAX_QUERY_KEYWORD_TERMS distinct
+      // terms and OR-joined, internal callers pass discrete terms via
+      // fts_terms (tokens of one term ANDed). Every token is quoted, so '.',
+      // '-', '(', ')' and '/' in caller text can never break MATCH.
+      const ftsQuery = keywordMatchExpression(
+        opts.fts_terms?.length ? { terms: opts.fts_terms } : { query: opts.query! }
+      );
       if (!ftsQuery) return { results: [], total: 0, l1_only: !!opts.l1_only };
-      const ftsWhere = conditions.length > 0 ? 'AND ' + conditions.join(' AND ') : '';
-      rows = db.prepare(`
-        SELECT e.* FROM entries e
-        JOIN entries_fts ON entries_fts.rowid = e.rowid
-        WHERE entries_fts MATCH ?
-        ${ftsWhere}
-        ORDER BY rank
-        LIMIT ?
-      `).all(ftsQuery, ...params, limit) as Record<string, unknown>[];
+      rows = keywordSearch(db, ftsQuery, conditions, params, limit);
     } else {
       rows = db.prepare(`
         SELECT e.* FROM entries e
