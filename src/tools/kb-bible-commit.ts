@@ -130,7 +130,7 @@ export const kbBibleCommitSchema = z.object({
   ids: z.array(z.string().min(1))
     .describe('Ids of the entries confirmed this round. Each must be a live (non-stale, non-superseded) CONFIRMED entry in this repository\'s KB whose recorded file basis still matches the cited files at the repo\'s HEAD commit (the same rule kb_export applies; uncommitted edits are ignored); any other id is skipped and reported in skipped (reason not_confirmed_or_unknown, no_source_files for a CONFIRMED entry citing no source file, or basis_mismatch). An id the current bible file carries a withdrawn tombstone for is skipped with reason withdrawn_tombstone and its tombstone kept, unless restore_ids undoes that tombstone in the same call. Independently of the ids, every bible entry this KB holds as superseded or invalidated is removed and reported in removed; an empty list with no such entry makes no commit.'),
   demoted_ids: z.array(z.string().min(1)).optional()
-    .describe('Ids demoted this round (kb_demote). Each must name a local entry that HAS a demoted_at and is now below CONFIRMED; any other id is skipped and reported in skipped with reason not_demoted_or_unknown. An id the current bible file carries a withdrawn tombstone for is skipped with reason withdrawn_tombstone and that tombstone is kept unchanged: a demoted tombstone never replaces a withdrawn one (only restore_ids lifts a withdrawal). An admitted id is REMOVED from entries and recorded as an explicit tombstone {id, at, reason: "demoted"} in the bible demotions array, so other clones can apply the demotion instead of inferring it from an absence. Independently, every call does the same for each bible entry this KB holds as demoted, unless that bible entry was promoted after the local demotion (another clone re-promoted it). A demoted tombstone is written only for an id the bible at baseCommit carries (as an entry or a tombstone): an entry this branch added (absent from the base) is removed from entries with no tombstone, and any other demoted_ids id is skipped with reason not_in_base_bible. When baseCommit does not resolve or its bible is unreadable, no new demoted tombstone is written (logged) and such demoted_ids ids are skipped with not_in_base_bible. Re-admitting the same id through ids (a re-promotion) clears its tombstone.'),
+    .describe('Ids demoted this round (kb_demote). Each must name a local entry that HAS a demoted_at and is now below CONFIRMED; any other id is skipped and reported in skipped with reason not_demoted_or_unknown. An id the current bible file carries a withdrawn tombstone for is skipped with reason withdrawn_tombstone and that tombstone is kept unchanged: a demoted tombstone never replaces a withdrawn one (only restore_ids lifts a withdrawal). An admitted id is REMOVED from entries and recorded as an explicit tombstone {id, at, reason: "demoted"} in the bible demotions array, so other clones can apply the demotion instead of inferring it from an absence. Independently, every call does the same for each bible entry this KB holds as demoted, unless that bible entry was promoted after the local demotion (another clone re-promoted it). A demoted tombstone is written only for an id the bible at baseCommit carries (as an entry or a tombstone): an entry this branch added (absent from the base) is removed from entries with no tombstone, and any other demoted_ids id is skipped with reason not_in_base_bible. When baseCommit does not resolve or its bible is unreadable, no new demoted tombstone is written, such demoted_ids ids are skipped with not_in_base_bible, and the result carries base_bible_error with the reason. Re-admitting the same id through ids (a re-promotion) clears its tombstone.'),
   withdrawals: z.array(withdrawalSchema).optional()
     .describe('Bible entries withdrawn this round: [{id, note, evidence_files}]. An id is admitted when the bible already holds an entry for it, or this KB holds it CONFIRMED, not superseded and not a user-directive; any other id is skipped with reason not_withdrawable. An admitted id is removed from entries and recorded as a tombstone {id, at: now, reason: "withdrawn", note, evidence_files}; the local entry is NOT changed (the withdrawal takes effect for clones only once the branch merges). An id also merged through ids, or admitted through demoted_ids, in the same call is skipped (not_withdrawable). Under an http KB provider every well-formed withdrawal is admitted and only the tombstone is written.'),
   restore_ids: z.array(z.string().min(1)).optional()
@@ -210,6 +210,13 @@ export interface KbBibleCommitResult {
   bible_skipped?: true;
   /** Why the call was skipped; present only with bible_skipped. */
   reason?: string;
+  /**
+   * Why the bible at baseCommit could not be read (baseCommit does not resolve,
+   * or its bible does not parse), when a rule needed it (a demotion gate or a
+   * restore). Absent when the base was read fine or never needed. The call
+   * still fails closed: no new demoted tombstone, no drop, no restore.
+   */
+  base_bible_error?: string;
 }
 
 /** Reason reported when kb_bible_commit is skipped under the http KB provider. */
@@ -466,10 +473,16 @@ export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor
   const restored = restorePlan.restored.filter(id => !withdrawnSet.has(id));
   const restoredSet = new Set(restored);
 
+  // Every rule that reads the base bible (demotion gate, restore plan) has run
+  // by now: report a failed read in the result, not only in the log.
+  const baseBibleError = await loadBase.error();
+  const baseErrorField = baseBibleError !== undefined ? { base_bible_error: baseBibleError } : {};
+
   if (merged.length === 0 && removed.length === 0 && demoted.length === 0 && backfilled === 0
     && withdrawn.length === 0 && restored.length === 0) {
     return done({
       merged, demoted, skipped, removed, entry_count: existing?.length ?? 0, backfilled, committed: false, withdrawn, restored,
+      ...baseErrorField,
     });
   }
 
@@ -517,6 +530,7 @@ export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor
     && asciiSafeStringify(existing) === asciiSafeStringify(entries)) {
     return done({
       merged, demoted, skipped, removed, entry_count: entries.length, backfilled, committed: false, withdrawn, restored,
+      ...baseErrorField,
     });
   }
 
@@ -565,7 +579,9 @@ export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor
     project.recordTrustedBibleBlob(await bibleBytesBlobId(repoPath, written), 'kb_bible_commit');
   }
 
-  return done({ merged, demoted, skipped, removed, entry_count: entries.length, backfilled, committed, withdrawn, restored });
+  return done({
+    merged, demoted, skipped, removed, entry_count: entries.length, backfilled, committed, withdrawn, restored, ...baseErrorField,
+  });
 }
 
 /** The bible at baseCommit, reduced to what the restore and demotion rules need. */
@@ -577,13 +593,20 @@ interface BaseBible {
 
 type BaseBibleRead = { ok: true; base: BaseBible } | { ok: false; reason: string };
 
+/** The memoized base-bible reader, plus the failure of a read that ran (if any). */
+type BaseBibleLoader = (() => Promise<BaseBibleRead>) & {
+  /** The reason of a failed read, or undefined when it succeeded or never ran. */
+  error: () => Promise<string | undefined>;
+};
+
 /**
  * A memoized reader of the bible at `baseCommit`: read at most once per call,
  * and only when a rule needs it. A commit with no bible reads as an empty one;
  * a baseCommit that does not resolve, or a bible there that cannot be parsed,
- * is { ok: false, reason } -- each caller fails closed on it.
+ * is { ok: false, reason } -- each caller fails closed on it, and error()
+ * reports it so the tool result can carry base_bible_error.
  */
-function baseBibleLoader(repoPath: string, baseCommit: string): () => Promise<BaseBibleRead> {
+function baseBibleLoader(repoPath: string, baseCommit: string): BaseBibleLoader {
   let pending: Promise<BaseBibleRead> | null = null;
   const read = async (): Promise<BaseBibleRead> => {
     if (!(await commitResolves(repoPath, baseCommit))) {
@@ -609,7 +632,13 @@ function baseBibleLoader(repoPath: string, baseCommit: string): () => Promise<Ba
       base: { entryIds: new Set(byId.keys()), tombstoneIds: new Set(doc.demotions.map(d => d.id)), byId },
     };
   };
-  return () => (pending ??= read());
+  const load = (() => (pending ??= read())) as BaseBibleLoader;
+  load.error = async () => {
+    if (pending === null) return undefined;
+    const r = await pending;
+    return r.ok ? undefined : r.reason;
+  };
+  return load;
 }
 
 /**
@@ -665,13 +694,16 @@ async function commitTombstonesOnly(
   const existingEntries = existingDoc?.entries ?? [];
   const withdrawn = withdrawals.map(w => w.id);
   const withdrawnSet = new Set(withdrawn);
+  const loadBase = baseBibleLoader(repoPath, input.baseCommit);
   const plan = await planRestores(
-    restoreIds.filter(id => !withdrawnSet.has(id)), existingDoc?.demotions ?? [], baseBibleLoader(repoPath, input.baseCommit),
+    restoreIds.filter(id => !withdrawnSet.has(id)), existingDoc?.demotions ?? [], loadBase,
   );
   const restored = plan.restored;
+  const baseBibleError = await loadBase.error();
   const result = (entryCount: number, committed: boolean): Omit<KbBibleCommitResult, 'path'> => ({
     merged: [], demoted: [], skipped: [], removed: [], entry_count: entryCount, backfilled: 0, committed,
     bible_skipped: true, reason: KB_BIBLE_COMMIT_HTTP_SKIP_REASON, withdrawn, restored,
+    ...(baseBibleError !== undefined ? { base_bible_error: baseBibleError } : {}),
   });
 
   const tombstones = new Map<string, BibleTombstone>();
