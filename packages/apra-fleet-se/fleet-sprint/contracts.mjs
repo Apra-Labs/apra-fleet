@@ -737,6 +737,15 @@ const FALLBACK_harvesterReport = {
 // Application-owned per the layering proposal (section 4.4): there is
 // nothing to load from packages/apra-fleet-se/apra-pm for this one, and there never will
 // be.
+/** The merge_assessment fields, in the order the prompt asks for and the PR
+ *  body renders them. */
+export const MERGE_ASSESSMENT_FIELDS = Object.freeze([
+    'value', 'risk', 'default_path_changes', 'blast_radius', 'upgrade_impact', 'proof', 'recommendation', 'reason',
+]);
+
+/** Allowed merge_assessment.recommendation values. */
+export const MERGE_RECOMMENDATIONS = Object.freeze(['merge', 'merge_after_proof', 'do_not_merge']);
+
 export const finalVerdict = {
     $id: 'finalVerdict',
     type: 'object',
@@ -888,6 +897,27 @@ export const finalVerdict = {
                 },
                 required: ['id', 'reason', 'evidence_files'],
             },
+        },
+        // The Final Review's risk/value merge assessment, published near the
+        // top of the sprint PR body (pr-body.mjs) so a human merger sees the
+        // reviewer's merge recommendation before the free-text notes.
+        // Optional: a verdict without it stays valid and the PR body is
+        // unchanged. Every string is LLM-authored and is sanitized and
+        // length-capped by pr-body.mjs before it reaches the PR.
+        merge_assessment: {
+            type: 'object',
+            description: 'Risk/value merge assessment of the whole sprint diff, shown near the top of the pull request description. Optional.',
+            properties: {
+                value: { type: 'string', description: 'What merging delivers: the user-visible or operational value of this change.' },
+                risk: { type: 'string', description: 'What could go wrong if this is merged, and how likely and severe that is.' },
+                default_path_changes: { type: 'string', description: 'Behaviour that changes for users who change nothing (default configuration, default code paths); say "none" if none.' },
+                blast_radius: { type: 'string', description: 'Which components, users or workflows are affected if a change here is wrong.' },
+                upgrade_impact: { type: 'string', description: 'What an existing installation must do or will notice on upgrade (migrations, config, compatibility); say "none" if none.' },
+                proof: { type: 'string', description: 'The evidence that the change works: tests run, checks performed, and what is still unproven.' },
+                recommendation: { type: 'string', enum: [...MERGE_RECOMMENDATIONS], description: 'merge, merge_after_proof (merge once the named proof exists) or do_not_merge.' },
+                reason: { type: 'string', description: 'Why that recommendation; for merge_after_proof, name the proof still needed.' },
+            },
+            required: [...MERGE_ASSESSMENT_FIELDS],
         },
     },
     required: ['verdict', 'notes'],

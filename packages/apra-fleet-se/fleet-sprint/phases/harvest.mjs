@@ -64,7 +64,7 @@
 // harvester's member. Both baselines are pinned rather than assumed.
 // =============================================================================
 
-import { dispatchRole, TURN_BASES } from '../dispatch-role.mjs';
+import { dispatchRole, secondaryMaxTurns } from '../dispatch-role.mjs';
 import { buildHarvesterPrompt } from '../prompts.mjs';
 
 /**
@@ -82,7 +82,9 @@ export const TERMINAL_KB_STEP_TIMEOUT_MS = 10 * 60 * 1000;
  * The harvester's KB step: apply whatever KB writes are still queued
  * (captures, promotions, feedback, usage reports -- kbWork.commitRound flushes
  * every queue first) and run the harvest round's bible commit on each
- * repository's kb_maintainer, then warn about anything still pending.
+ * repository's kb_maintainer. Anything still pending is reported once by the
+ * engine entry point (runner.js main() finally) via kbWork.warnPending, after
+ * this step, so this step does not warn itself.
  *
  * Runs after a normal harvest AND when a sprint stalls or aborts (runner.js
  * main()), so the KB work a failed sprint gathered is not lost. Best-effort:
@@ -101,7 +103,6 @@ export async function runHarvestKbStep(kbWork, { label = 'harvest', log = () => 
         const step = (async () => {
             const out = await kbWork.commitRound(label);
             log(`[kb-work] KB step '${label}' ran: ${(out && out.committed) || 0} confirmation(s) committed, ${(out && out.pending) || 0} pending`);
-            if (typeof kbWork.warnPending === 'function') kbWork.warnPending();
         })();
         if (timeoutMs > 0) {
             await Promise.race([
@@ -274,7 +275,7 @@ export async function runHarvestPhase({
             prompt: harvesterPrompt,
             resumePrompt: 'Continue your harvest exactly where you left off in this same session -- do not redo docs sections already written. Finish the remaining updates, commit them, and return your final report now.',
             roleLabel: 'Harvester',
-            resumeLabel: `Harvest (resume, max_turns=${TURN_BASES.HARVESTER_MAX_TURNS * 2})`,
+            resumeLabel: `Harvest (resume, max_turns=${secondaryMaxTurns('harvester')})`,
         });
         const harvesterResult = harvestOutcome.value;
         // No duplicate log() dump -- see dispatchReview() for why. The file

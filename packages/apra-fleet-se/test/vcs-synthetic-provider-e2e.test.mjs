@@ -238,6 +238,7 @@ describe('synthetic VCS provider -- end-to-end with zero edits outside vcs-provi
                     head: 'feature-x',
                     title: 'no change here',
                     token: 'ghs_tok',
+                    payload_path: '/work/repo/.apra-call/vcs-body-test.json',
                 });
                 assert.equal(result.provider, 'github');
                 assert.ok(result.command.startsWith('curl -sS -X POST'));

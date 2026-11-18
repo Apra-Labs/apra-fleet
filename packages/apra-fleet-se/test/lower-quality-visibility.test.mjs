@@ -2,7 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { lowerQuality, logLowerQualityWarn } from '../fleet-sprint/lower-quality.mjs';
 import { renderKbCodeIntelHtml, kbCodeIntelExtension } from '../fleet-sprint/viewer-extensions.mjs';
-import { buildSprintPrBody } from '../fleet-sprint/pr-body.mjs';
+import { buildSprintPrBody as buildSprintPrBodyParts } from '../fleet-sprint/pr-body.mjs';
+
+// buildSprintPrBody returns { body, overflow, notes }; these checks read the description.
+const buildSprintPrBody = (opts) => buildSprintPrBodyParts(opts).body;
 import { runPublishPrPhase } from '../fleet-sprint/phases/publish-pr.mjs';
 import { createMemberInitProbe, MEMBER_INIT_STATE_NAMESPACE } from '../fleet-sprint/member-init-probe.mjs';
 

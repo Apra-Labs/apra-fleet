@@ -59,7 +59,11 @@ function buildGatedFleetApi({ onFirstCommand } = {}) {
                 return mockCmdResult(0, JSON.stringify({ database_path: '/spy/.beads/dolt', path: '/spy/.beads', prefix: 'bd', schema_version: 1 }));
             }
             if (/^bd list --all --limit 0 --json$/.test(opts.command)) {
-                return mockCmdResult(0, ONE_BEAD_JSON);
+                // Target must be visible (TARGET_NOT_VISIBLE is unconditional).
+                return mockCmdResult(0, JSON.stringify([
+                    ...JSON.parse(ONE_BEAD_JSON),
+                    { id: 'bd-1', status: 'open', title: 'Target' },
+                ]));
             }
             if (/^bd list .*--ready/.test(opts.command)) {
                 // apra-fleet-eft.6.7 (mirrored from runner-arg-contract.test.mjs's

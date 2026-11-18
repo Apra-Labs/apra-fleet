@@ -1092,6 +1092,7 @@ export function createKbWorkClient(opts = {}) {
         }
     }
 
+    let warnedPending = false;
     const zeroCounts = () => ({ captured: 0, promoted: 0, discarded: 0, rejected: 0, demoted: 0 });
 
     // kb_invalidate {ids} answers {discarded, not_found, already_discarded, and
@@ -1765,16 +1766,27 @@ export function createKbWorkClient(opts = {}) {
             for (const q of queues.values()) n += q.length;
             return n;
         },
-        /** Log a WARN for every repository that still has queued writes, confirmations or demotions. */
+        /**
+         * Log a WARN for every repository that still has queued writes,
+         * confirmations or demotions, listing each held write (tool plus
+         * title or id) and each pending confirmation/demotion id. Idempotent:
+         * the list prints at most once per client (one per sprint), so the
+         * engine entry point's finally and the fatal handler can both call it.
+         */
         warnPending() {
+            if (warnedPending) return;
+            warnedPending = true;
             for (const [repo, q] of queues) {
-                if (q.length > 0) log(`[kb-work] WARN: ${q.length} KB write(s) for ${repo} are still queued (maintainer busy or unreachable, or KB server unreachable or its token refused) -- not applied`);
+                if (q.length > 0) {
+                    const held = q.map((op) => `${OPS[op.kind].tool} ${OPS[op.kind].subject(op.payload)}`).join(', ');
+                    log(`[kb-work] WARN: ${q.length} KB write(s) for ${repo} are still queued (maintainer busy or unreachable, or KB server unreachable or its token refused) -- not applied: ${held}`);
+                }
             }
             for (const [repo, ids] of confirmations) {
-                if (ids.size > 0) log(`[kb-work] WARN: ${ids.size} confirmation(s) for ${repo} are not in a pushed bible commit${sealedReason ? ` (bible commits sealed: ${sealedReason})` : ''}`);
+                if (ids.size > 0) log(`[kb-work] WARN: ${ids.size} confirmation(s) for ${repo} are not in a pushed bible commit${sealedReason ? ` (bible commits sealed: ${sealedReason})` : ''}: ${[...ids].join(', ')}`);
             }
             for (const [repo, ids] of demotedPending) {
-                if (ids.size > 0) log(`[kb-work] WARN: ${ids.size} demotion(s) for ${repo} are not in a pushed bible commit${sealedReason ? ` (bible commits sealed: ${sealedReason})` : ''}`);
+                if (ids.size > 0) log(`[kb-work] WARN: ${ids.size} demotion(s) for ${repo} are not in a pushed bible commit${sealedReason ? ` (bible commits sealed: ${sealedReason})` : ''}: ${[...ids].join(', ')}`);
             }
             for (const repo of retirements) {
                 if (!confirmations.has(repo) && !demotedPending.has(repo)) log(`[kb-work] WARN: the pending bible removal(s) for ${repo} are not in a pushed bible commit${sealedReason ? ` (bible commits sealed: ${sealedReason})` : ''}`);

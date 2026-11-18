@@ -165,3 +165,53 @@ with separate data dirs never share allocator state. When the variable is set,
 the allocator seeds only its high-water marks from the legacy single-file
 location, once, so ids never regress across an upgrade, and warns once if a
 legacy supervisor may still be live and writing to the old file.
+
+## Dispatch max_turns is clamped to the execute_prompt schema
+
+Every role dispatch and every resume passes its resolved `max_turns` through a
+clamp to the client's exported `EXECUTE_PROMPT_MAX_TURNS`, which is pinned by
+test to the `execute_prompt` tool schema maximum. A configured or derived value
+above the cap is reduced rather than sent, so the tool never rejects a dispatch
+on schema validation. Resume labels in logs and notes are derived from the
+value actually sent (the secondary max-turns setting per role), never from the
+unclamped configuration.
+
+## Plan rejection after closed work, and scope validation
+
+- A plan the plan-reviewer rejects normally aborts the run. If this run already
+  closed work, the rejection instead becomes a carry-over: the run proceeds to
+  Finalization with a FAIL verdict whose notes name each contested bead and its
+  finding. With nothing closed it still throws. A plan-review dispatch failure
+  (as opposed to a rejection) always propagates.
+- Scope roots are validated twice. The supervisor refuses a launch root absent
+  from its backlog snapshot with a 400 on field `issue` and a near-match
+  suggestion, without extra `bd` calls. The engine's TARGET_NOT_VISIBLE check
+  at Sprint Setup runs unconditionally against the `bd list --all` snapshot.
+- Verify gap-bug accounting runs after the Cycle Evaluation backlog pull, so it
+  sees fresh state. A lookup miss is a WARN plus an integration-failure entry,
+  never silent.
+- Held knowledge-base writes are listed once (one WARN line per write, latched)
+  from the main `finally` and the fatal handler, so every exit path reports them.
+
+## PR description sizing and overflow comments
+
+The final verdict may carry an optional `merge_assessment`; it renders first in
+the PR body. Body assembly uses one shared section-budget fitter that trims
+sections to the provider text limit but never cuts the run-history block (the
+marker other tooling parses). Per-provider limits: GitHub 60000 characters,
+Azure DevOps and Bitbucket 3500 (the Bitbucket figure is conservative and has
+not been probed against the real service).
+
+Reviewer notes that do not fit are posted as engine-marked overflow PR
+comments, upserted on relaunch (update changed, skip unchanged, delete or stub
+the no-longer-needed). Invariants and limits:
+
+- Request bodies for every VCS call are sent from a staged member-side file via
+  `curl --data-binary @path`, never inline, and the file is always deleted
+  (this also keeps large bodies off the command line on Windows members).
+- A failed comment post is a WARNING; the PR description is then rewritten to
+  point at the run log, so nothing is silently lost.
+- Comment listing for GitHub and Bitbucket fetches a single page of 100, so on
+  a very busy PR a relaunch can miss earlier marked comments and post
+  duplicates. At most 20 overflow comments are posted; beyond that the text
+  stays in the run log only.

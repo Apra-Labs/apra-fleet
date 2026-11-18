@@ -44,7 +44,7 @@ import { fileURLToPath } from 'node:url';
 
 import { readJsonBody, sendJson } from './server.mjs';
 import { validateDecisionNotify } from '../../fleet-sprint/decision-notify.mjs';
-import { validateIssueId, validateBranchName, validateBranchPair } from '../../fleet-sprint/runner.js';
+import { validateIssueId, validateBranchName, validateBranchPair, validateGoal, validateMaxCycles, validateBudget } from '../../fleet-sprint/runner.js';
 import { resolveRoleMap } from '../../bin/cli.mjs';
 import { resolveBacklogRoleAlias, ROLE_BACKLOG, ROLE_BACKLOG_ALIAS } from '../../fleet-sprint/backlog-role.mjs';
 import { normalizeRole } from '../../fleet-sprint/contracts.mjs';
@@ -526,6 +526,21 @@ export function createSprintController(deps = {}) {
         catch (err) { throw new ApiError(400, err.message, 'branch'); }
         if (members.length === 0) {
             throw new ApiError(400, 'members must be a non-empty list of member names', 'members');
+        }
+        // goal / maxCycles / budget (optional): the SAME validators validateArgs
+        // uses (sprint-args.mjs), so an invalid value is a 400 here instead of
+        // a spawned child that reserves members and then dies at the arg contract.
+        if (body.goal !== undefined) {
+            try { validateGoal(body.goal); }
+            catch (err) { throw new ApiError(400, err.message, 'goal'); }
+        }
+        if (body.maxCycles !== undefined) {
+            try { validateMaxCycles(body.maxCycles); }
+            catch (err) { throw new ApiError(400, err.message, 'maxCycles'); }
+        }
+        if (body.budget !== undefined) {
+            try { validateBudget(body.budget); }
+            catch (err) { throw new ApiError(400, err.message, 'budget'); }
         }
         // phases (optional): per-launch phase settings. Only `regression` is
         // supported: "run" (default) or "skip". Anything else is rejected here,

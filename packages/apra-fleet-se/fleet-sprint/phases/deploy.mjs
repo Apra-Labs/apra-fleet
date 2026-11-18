@@ -41,7 +41,7 @@
 // dispatch census must keep seeing after the slice.
 // =============================================================================
 
-import { dispatchRole, TURN_BASES } from '../dispatch-role.mjs';
+import { dispatchRole, secondaryMaxTurns } from '../dispatch-role.mjs';
 
 // =============================================================================
 // DEPLOY-FAILURE VERDICT GATE (apra-fleet-b4g.102.1).
@@ -240,7 +240,7 @@ export async function runDeployPhase({
         prompt: deployerPrompt,
         resumePrompt: 'Continue the deploy exactly where you left off in this same session -- do not restart deploy.md from the top if steps already completed. Finish the remaining steps and the smoke test, and return your final report now.',
         roleLabel: 'Deployer',
-        resumeLabel: `Deploy (resume, max_turns=${TURN_BASES.DEPLOYER_MAX_TURNS * 2})`,
+        resumeLabel: `Deploy (resume, max_turns=${secondaryMaxTurns('deployer')})`,
     });
     deployResult = deployOutcome.value;
     // No duplicate log() dump -- see dispatchReview() for why.

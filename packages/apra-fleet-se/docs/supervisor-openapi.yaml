@@ -351,10 +351,14 @@ paths:
                 goal:
                   type: string
                   nullable: true
-                  description: forwarded verbatim into the child's --goal argv when present; echoed back in the response as null if omitted
+                  description: >
+                    Priority band filter, one of P1, P1/P2 or P1/P2/P3 (not free
+                    text). Anything else -> 400 (field goal) before any spawn.
+                    Forwarded into the child's --goal argv when present; echoed
+                    back in the response as null if omitted.
                 maxCycles:
                   type: integer
-                  description: forwarded into the child's --max-cycles argv
+                  description: positive integer (else 400, field maxCycles); forwarded into the child's --max-cycles argv
                 allowMissingMembers:
                   type: boolean
                   description: forwarded into the child's --allow-missing-members flag
@@ -380,7 +384,7 @@ paths:
                     items: { type: string }
                 budget:
                   type: number
-                  description: USD ceiling forwarded into the child's --budget argv
+                  description: non-negative finite USD ceiling (else 400, field budget); forwarded into the child's --budget argv
                 phases:
                   type: object
                   additionalProperties: false
@@ -447,6 +451,15 @@ paths:
             "orchestrator" key with different values, the "@path" file
             form, or a backlog role (or its alias) naming a member other
             than this supervisor's own backlog member (the error names it).
+            Also 400 (field goal / maxCycles / budget) for an invalid goal
+            (not one of P1, P1/P2, P1/P2/P3), a non-positive-integer
+            maxCycles, or a negative / non-finite budget -- the same
+            validators the sprint arg contract uses, before any spawn.
+            Also 400 (field issue) when a requested issue id is absent from
+            the scope guard's backlog snapshot: the message names each
+            missing id and, when a known id differs only by a prefix, a
+            "did you mean" suggestion. No child is spawned and no member is
+            reserved.
             A body that is not valid JSON is also 400 (field body, parse
             message with position, no stack); an oversized body is 413
             (field body).

@@ -34,7 +34,7 @@ import {
     pushesCode,
 } from '../fleet-sprint/role-policies.mjs';
 import { KB_SELF_INJECTING_ROLES, resolveDispatchInactivityTimeoutS } from '../fleet-sprint/runner.js';
-import { dispatchRole, resolveBudget } from '../fleet-sprint/dispatch-role.mjs';
+import { dispatchRole, resolveBudget, clampMaxTurns } from '../fleet-sprint/dispatch-role.mjs';
 import { PLANNING_LADDERS, ENGINE_DISPATCHES } from './helpers/planning-ladders.mjs';
 import {
     createRecordingCtx,
@@ -987,8 +987,8 @@ describe('role policy table: retry ladders match runner.js', () => {
         assert.strictEqual(p.retry.turnEscalation, 'double');
         assert.deepStrictEqual(
             resumes.map((d) => d.options.max_turns),
-            [TURN_BASES.BASE_DOER_MAX_TURNS * 2, TURN_BASES.BASE_DOER_MAX_TURNS * 4],
-            'Each further turn exhaustion doubles again, from the base the row names.'
+            [clampMaxTurns(TURN_BASES.BASE_DOER_MAX_TURNS * 2), clampMaxTurns(TURN_BASES.BASE_DOER_MAX_TURNS * 4)],
+            'Each further turn exhaustion doubles again, from the base the row names, clamped to the execute_prompt maximum.'
         );
         assert.strictEqual(
             ROLE_POLICIES['doer-resume'].maxTurns.kind,
@@ -1705,7 +1705,7 @@ describe('role policy table: migrated roles re-derived by running the engine', (
                     o.max_turns ?? null,
                     p.maxTurns === null
                         ? null
-                        : (p.maxTurns.kind === 'runtime' ? BINDINGS[p.maxTurns.binding] : p.maxTurns.value),
+                        : (p.maxTurns.kind === 'runtime' ? clampMaxTurns(BINDINGS[p.maxTurns.binding]) : clampMaxTurns(p.maxTurns.value)),
                     `${row.name}: turn budget.`
                 );
                 if (p.maxTurns && p.maxTurns.kind === 'constant') {
@@ -1851,14 +1851,14 @@ describe('role policy table: migrated roles re-derived by running the engine', (
                 );
                 assert.strictEqual(
                     exhausted.rec.dispatches[1].options.max_turns,
-                    exhausted.rec.dispatches[0].options.max_turns * 2,
+                    clampMaxTurns(exhausted.rec.dispatches[0].options.max_turns * 2),
                     `${role}: retry.turnEscalation='double' must be the escalation the resume really performs.`
                 );
                 for (let i = 2; i < exhausted.rec.dispatches.length; i++) {
                     assert.strictEqual(
                         exhausted.rec.dispatches[i].options.max_turns,
-                        exhausted.rec.dispatches[i - 1].options.max_turns * 2,
-                        `${role}: every further resume must double again, not repeat the same budget.`
+                        clampMaxTurns(exhausted.rec.dispatches[i - 1].options.max_turns * 2),
+                        `${role}: every further resume must double again (clamped to the execute_prompt maximum).`
                     );
                 }
                 assert.strictEqual(p.retry.turnEscalation, 'double');

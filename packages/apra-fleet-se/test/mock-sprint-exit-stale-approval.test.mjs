@@ -3,7 +3,7 @@ import { fileURLToPath } from 'url';
 import fs from 'fs/promises';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { runCmd, runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
+import { runCmd, runDevelopLoopScenario, withScenarioMarkers, withStagedBodies } from './helpers/mock-sprint-harness.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -237,7 +237,7 @@ test('mock sprint: an explicit final FAIL verdict propagates to status:failed an
         // apra-fleet-tfx.8.4: the reverted gh-based path is gone -- the PR is
         // now raised via VCSModule's `curl ... /pulls` create-pull-request
         // command, with title/body carried as JSON fields in the -d payload.
-        const explicitFailPrCmd = explicitFail.commandLog.find((c) => c.startsWith('curl -sS -X POST') && c.includes('/pulls'));
+        const explicitFailPrCmd = withStagedBodies(explicitFail.commandLog).find((c) => c.startsWith('curl -sS -X POST') && c.includes('/pulls'));
         check(
             !!explicitFailPrCmd,
             `A FAIL verdict must still publish the PR (plan.md's already-made decision) -- expected a VCSModule create-pull-request command, commandLog: ${JSON.stringify(explicitFail.commandLog)}`

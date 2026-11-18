@@ -226,6 +226,14 @@ below).
 
 ## `src/client/api.mjs`
 
+### `export const EXECUTE_PROMPT_MAX_TURNS`
+
+The maximum `max_turns` value the `execute_prompt` tool accepts (`500`). It
+mirrors the upper bound of the tool's `max_turns` schema field; a root test
+asserts the two stay equal. Callers that compute a turn budget (for example
+by doubling a base on resume) must clamp to this value before dispatch,
+otherwise the server rejects the call at schema validation.
+
 ### `export function deriveTimeoutMs(payload = {})`
 
 Derives a client-side `McpClient.request()` timeout, in milliseconds, from

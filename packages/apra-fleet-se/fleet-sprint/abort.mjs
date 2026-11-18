@@ -33,6 +33,7 @@ import { ApraFleet } from '@apralabs/apra-fleet-client';
 import { resolveProvider, capabilities as vcsCapabilities } from './vcs-module.mjs';
 import { raiseVcsPrForMember, PR_SKIPPED_NO_MCP_CLIENT } from './vcs-auth.mjs';
 import { buildSprintPrBody } from './pr-body.mjs';
+import { knowledgeBankPrSections } from './sprint-report.mjs';
 import {
     findDoltDivergedCause, runGitStep, sanitizePrText, stageCommandBodyMemberSide, SAFE_TEXT_RE,
 } from './runner.js';
@@ -573,7 +574,11 @@ export async function finalizeAbort({ error, branch, baseBranch, member, command
     // (pr-body.mjs), so an abort after an earlier PASS/FAIL run also rewrites
     // the existing PR and carries that run forward in its history.
     const abortNow = new Date();
-    const buildAbortBody = (previousBody = '') => buildSprintPrBody({
+    // Same overflow behaviour as Publish PR: abort details that do not fit
+    // the provider's description limit are posted as engine-marked PR
+    // comments by raiseVcsPrForMember; the full text is logged below.
+    let lastAbortBody = null;
+    const buildAbortBody = (previousBody = '', limits = {}) => (lastAbortBody = buildSprintPrBody({
         verdict: 'ABORTED',
         branch,
         baseBranch,
@@ -591,10 +596,13 @@ export async function finalizeAbort({ error, branch, baseBranch, member, command
         // records; rendered as the "Set aside this run" section.
         setAside: error && Array.isArray(error.setAside) ? error.setAside : [],
         waited: error && Array.isArray(error.waited) ? error.waited : [],
-        knowledgeBank,
+        // No harvest runs on this path, so the Knowledge bank section rides
+        // here as a caller-registered section.
+        sections: knowledgeBankPrSections(knowledgeBank),
         previousBody,
-    });
-    const prBody = buildAbortBody();
+        ...(limits.descriptionMaxLength ? { maxLength: limits.descriptionMaxLength } : {}),
+        ...(limits.commentMaxLength ? { commentMaxLength: limits.commentMaxLength } : {}),
+    }));
 
     // The reverted gh-based PR creation is gone (apra-fleet-tfx.8): raise the [ABORTED] PR via
     // VCSModule's orchestrator-built curl command, dispatched to `member`
@@ -623,7 +631,7 @@ export async function finalizeAbort({ error, branch, baseBranch, member, command
         base: baseBranch,
         head: branch,
         title: prTitle,
-        body: prBody,
+        body: (limits) => buildAbortBody('', limits),
         log,
         logPrefix: '[Publish Abort PR]',
         // Already resolved just above (the origin-remote PR-capability gate)
@@ -631,8 +639,11 @@ export async function finalizeAbort({ error, branch, baseBranch, member, command
         // by shelling out to `member`, which may be backlogMember and
         // have no git checkout of its own to read a remote from.
         remoteUrlOverride: originUrl,
-        updateExisting: ({ body: oldBody }) => ({ title: prTitle, body: buildAbortBody(oldBody) }),
+        updateExisting: ({ body: oldBody }, limits) => ({ title: prTitle, body: buildAbortBody(oldBody, limits) }),
     });
+    if (lastAbortBody && lastAbortBody.overflow) {
+        log(`finalizeAbort: [Publish Abort PR] abort details are ${lastAbortBody.notes.length} characters; ${lastAbortBody.overflow.length} did not fit the PR description and continue in ${lastAbortBody.comments.length} PR comment(s)${lastAbortBody.notPosted ? ` (${lastAbortBody.notPosted} characters past the comment ceiling are not posted)` : ''}. Full abort details:\n${lastAbortBody.notes}`);
+    }
 
     if (!prResult.ok) {
         if (prResult.credentialAbsent) {

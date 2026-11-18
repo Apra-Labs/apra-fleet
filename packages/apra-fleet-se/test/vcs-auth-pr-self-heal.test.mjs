@@ -58,7 +58,7 @@ test('Publish-PR path: a 401 on the first PR-create call triggers exactly one se
         const callToolFactory = (executeCommand) => {
             const base = defaultMockCallTool({ executeCommand });
             return async (name, args) => {
-                if (name === 'member_detail') return { content: [{ text: JSON.stringify({ vcsProvider: 'github' }) }] };
+                if (name === 'member_detail') return { content: [{ text: JSON.stringify({ folder: '/work/repo', vcsProvider: 'github' }) }] };
                 if (name === 'provision_vcs_auth') {
                     provisionCalls.push(args);
                     const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
@@ -129,7 +129,7 @@ test('Publish-PR path: a persistent non-auth 500 never triggers a self-heal re-p
         const callToolFactory = (executeCommand) => {
             const base = defaultMockCallTool({ executeCommand });
             return async (name, args) => {
-                if (name === 'member_detail') return { content: [{ text: JSON.stringify({ vcsProvider: 'github' }) }] };
+                if (name === 'member_detail') return { content: [{ text: JSON.stringify({ folder: '/work/repo', vcsProvider: 'github' }) }] };
                 if (name === 'provision_vcs_auth') {
                     provisionCalls.push(args);
                     return { content: [{ text: `[OK] Mock ${args.provider} credentials deployed on "${args.member_name}"\n` }] };
@@ -206,7 +206,7 @@ function makeFinalizeAbortMocks({ curlResponses, commitCount = 2 }) {
     // mirrors mock-sprint-abort-pr.test.mjs's mockAbortCallTool().
     const base = defaultMockCallTool({ executeCommand: legacyCommandExecuteCommandAdapter(command) });
     const callTool = async (name, args) => {
-        if (name === 'member_detail') return { content: [{ text: JSON.stringify({ vcsProvider: 'github' }) }] };
+        if (name === 'member_detail') return { content: [{ text: JSON.stringify({ folder: '/work/repo', vcsProvider: 'github' }) }] };
         if (name === 'provision_vcs_auth') {
             provisionCalls.push(args);
             const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
@@ -365,7 +365,7 @@ test('createVcsAuthPreflightCallback logs the "[Sync] preflight:" line and never
         return { ok: true, output: '', error: null };
     };
     const callTool = async (name, args) => {
-        if (name === 'member_detail') return { content: [{ text: JSON.stringify({ vcsProvider: 'github' }) }] };
+        if (name === 'member_detail') return { content: [{ text: JSON.stringify({ folder: '/work/repo', vcsProvider: 'github' }) }] };
         if (name === 'provision_vcs_auth') {
             const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
             return { content: [{ text: `[OK] Mock github credentials deployed\n  expiresAt: ${expiresAt}\n` }] };

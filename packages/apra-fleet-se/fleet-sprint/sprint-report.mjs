@@ -321,6 +321,23 @@ export function formatKnowledgeBankSection(records) {
 }
 
 /**
+ * The "Knowledge bank this sprint" section (formatKnowledgeBankSection lines)
+ * as a caller-registered PR body section for buildSprintPrBody({ sections }),
+ * for a run with no harvest to carry it (the [ABORTED] PR). The section's own
+ * '## ' heading is dropped: buildSprintPrBody renders the heading at its own
+ * '### ' level and sanitizes the text (it holds ids the role reports wrote).
+ * [] when there is nothing to render.
+ *
+ * @param {string[]|null|undefined} lines
+ * @returns {Array<{ id: string, heading: string, text: string }>}
+ */
+export function knowledgeBankPrSections(lines) {
+    const kept = (Array.isArray(lines) ? lines : []).filter((l) => typeof l === 'string' && !l.startsWith('## '));
+    const text = kept.join('\n').trim();
+    return text ? [{ id: 'knowledge-bank', heading: 'Knowledge bank this sprint', text }] : [];
+}
+
+/**
  * The "Set aside this run" analysis section (bead, reason, first seen), each
  * line followed by a blank separator; empty when nothing was set aside.
  * @param {object[]} setAside

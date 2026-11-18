@@ -5,7 +5,7 @@ import { scaledTimeout } from './helpers/scaled-timeout.mjs';
 import { TEST_CONCURRENCY } from './helpers/test-concurrency.mjs';
 import { SprintPlanRejectedError } from '../fleet-sprint/errors.mjs';
 import { runHarvestKbStep } from '../fleet-sprint/phases/harvest.mjs';
-import { formatKnowledgeBankSection } from '../fleet-sprint/sprint-report.mjs';
+import { formatKnowledgeBankSection, knowledgeBankPrSections } from '../fleet-sprint/sprint-report.mjs';
 import { buildSprintPrBody } from '../fleet-sprint/pr-body.mjs';
 
 // =============================================================================
@@ -41,13 +41,13 @@ describe('the [ABORTED] PR body carries the Knowledge bank section', () => {
         index: 1, member: 'm1', role: 'doer', pushed: { ids: ['kb-a'], bytes: 90 }, kb_used: ['kb-a', '<!-- x'], kb_wrong: [], captures: [], rejects: [], promoted: [],
     }]);
     test('the section is rendered at the body heading level and sanitized', () => {
-        const body = buildSprintPrBody({ verdict: 'ABORTED', branch: 'b', baseBranch: 'main', runId: 'r', notes: 'n', knowledgeBank: section });
+        const { body } = buildSprintPrBody({ verdict: 'ABORTED', branch: 'b', baseBranch: 'main', runId: 'r', notes: 'n', sections: knowledgeBankPrSections(section) });
         assert.match(body, /^### Knowledge bank this sprint$/m);
         assert.doesNotMatch(body, /^## Knowledge bank/m);
         assert.match(body, /- doer: 1 dispatch\(es\), pushed 1 entr\(ies\) \(90 bytes\), cited 2, wrong 0\./);
     });
     test('no section given: no heading, as before', () => {
-        const body = buildSprintPrBody({ verdict: 'ABORTED', branch: 'b', baseBranch: 'main', runId: 'r', notes: 'n' });
+        const { body } = buildSprintPrBody({ verdict: 'ABORTED', branch: 'b', baseBranch: 'main', runId: 'r', notes: 'n', sections: knowledgeBankPrSections([]) });
         assert.doesNotMatch(body, /Knowledge bank/);
     });
 });
@@ -115,14 +115,14 @@ describe('runHarvestKbStep is best-effort', () => {
         assert.deepEqual(await runHarvestKbStep(null), { ran: false, error: null });
     });
 
-    test('a normal run: commitRound and warnPending are called, the outcome is logged', async () => {
+    test('a normal run: commitRound is called (warnPending is left to the main() finally), the outcome is logged', async () => {
         const calls = [];
         const logs = [];
         await runHarvestKbStep({
             commitRound: async (label) => { calls.push(['commitRound', label]); return { committed: 2, pending: 1 }; },
             warnPending: () => calls.push(['warnPending']),
         }, { log: (m) => logs.push(m) });
-        assert.deepEqual(calls, [['commitRound', 'harvest'], ['warnPending']]);
+        assert.deepEqual(calls, [['commitRound', 'harvest']]);
         assert.ok(logs.includes("[kb-work] KB step 'harvest' ran: 2 confirmation(s) committed, 1 pending"), logs.join('\n'));
     });
 });

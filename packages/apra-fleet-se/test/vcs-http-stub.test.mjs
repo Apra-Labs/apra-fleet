@@ -38,9 +38,12 @@
 //
 // ASCII only.
 
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { exec as execCb } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { promisify } from 'node:util';
 
 import { raiseVcsPrForMember } from '../fleet-sprint/vcs-auth.mjs';
@@ -126,10 +129,11 @@ async function canRunRealCurl(t) {
  *  POSIX member. */
 const escapeShellArgInner = (s) => String(s).replace(/'/g, "'\\''");
 
-async function runLocalShell(command) {
+async function runLocalShell(command, cwd = undefined) {
     try {
         const { stdout, stderr } = await execAsync(command, {
             env: HERMETIC_ENV,
+            cwd,
             maxBuffer: 8 * 1024 * 1024,
             timeout: 30000,
         });
@@ -158,11 +162,22 @@ async function runLocalShell(command) {
  * provider host for the stub's, and which throws rather than letting anything
  * leave localhost.
  */
-function makeStubFleetApi({ stub, provider, calls }) {
+function makeStubFleetApi({ stub, provider, calls, memberDir }) {
     return {
         memberDetail: async () => ({
-            content: [{ text: JSON.stringify({ os: 'linux', shell: 'bash', vcsProvider: provider }) }],
+            content: [{ text: JSON.stringify({ folder: memberDir, os: 'linux', shell: 'bash', vcsProvider: provider }) }],
         }),
+        // send_files: really copy the staged request body into the member's
+        // work folder, so the real curl below reads it with --data-binary @path.
+        sendFiles: async ({ local_paths: localPaths, dest_subdir: destSubdir }) => {
+            const dest = path.join(memberDir, destSubdir || '');
+            fs.mkdirSync(dest, { recursive: true });
+            for (const p of localPaths) {
+                calls.staged.push({ name: path.basename(p), content: fs.readFileSync(p, 'utf8') });
+                fs.copyFileSync(p, path.join(dest, path.basename(p)));
+            }
+            return { content: [{ text: `[OK] sent ${localPaths.length} file(s)` }] };
+        },
         provisionVcsAuth: async (args) => {
             calls.provision.push(args);
             return {
@@ -213,11 +228,23 @@ async function stubFor(t, handler) {
 /** Drive the production PR path end to end against `stub`. */
 async function raisePr({ stub, provider, remoteUrl, member, calls, title = 'Sprint PR', body = 'stub body' }) {
     const logs = [];
+    // A real member work folder: send_files copies the request body into it
+    // and the engine's own delete command runs in it, so the test can prove
+    // nothing is left behind.
+    const memberDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vcs-http-stub-member-'));
+    MEMBER_DIRS.push(memberDir);
+    calls.memberDir = memberDir;
     const result = await raiseVcsPrForMember({
-        fleetApi: makeStubFleetApi({ stub, provider, calls }),
-        // `command` is only reachable via the git-remote read, which
-        // remoteUrlOverride short-circuits; a call would be a bug, so it throws.
-        command: async (cmd) => { throw new Error(`unexpected command() dispatch in this test: ${cmd}`); },
+        fleetApi: makeStubFleetApi({ stub, provider, calls, memberDir }),
+        // The git-remote read is short-circuited by remoteUrlOverride; the only
+        // member commands left are the request-body staging bookkeeping
+        // (git-exclude of the staging dir, delete of the staged body), which
+        // run for real in the member folder.
+        command: async (cmd) => {
+            calls.commands.push(cmd);
+            const r = await runLocalShell(cmd, memberDir);
+            return { ok: r.code === 0, output: r.stdout, error: r.code === 0 ? null : r.stderr };
+        },
         member,
         base: 'main',
         head: 'auto-sprint/stub',
@@ -230,7 +257,21 @@ async function raisePr({ stub, provider, remoteUrl, member, calls, title = 'Spri
     return { result, logs };
 }
 
-const freshCalls = () => ({ provision: [], exec: [] });
+// Every temp member folder raisePr() creates, removed when the file finishes.
+const MEMBER_DIRS = [];
+after(() => {
+    for (const d of MEMBER_DIRS) fs.rmSync(d, { recursive: true, force: true });
+});
+
+const freshCalls = () => ({ provision: [], exec: [], staged: [], commands: [], memberDir: null });
+
+/** The staging directory the engine used must be empty after the call. */
+function assertNoStagedBodyLeft(calls) {
+    const dir = path.join(calls.memberDir, '.apra-call');
+    const left = fs.existsSync(dir) ? fs.readdirSync(dir) : [];
+    assert.deepEqual(left, [], `the staged request body must be deleted after the call, found: ${left.join(', ')}`);
+    fs.rmSync(calls.memberDir, { recursive: true, force: true });
+}
 
 // =============================================================================
 // (1) GitHub success -- including the trailer extraction the mocks assume.
@@ -293,6 +334,12 @@ test('github: a real curl against the stub parses a 201 body whose own lines con
         base: 'main',
         body: 'stub body',
     });
+    // The body travelled as a staged member-side file, never on the command
+    // line, and the staged file is gone after the call.
+    assert.equal(calls.staged.length, 1);
+    assert.equal(req.rawBody, calls.staged[0].content, 'curl sent the staged file byte-for-byte');
+    assert.ok(calls.exec.every((e) => !e.command.includes('stub body') && /--data-binary '@\/.+\.json'/.test(e.command)), JSON.stringify(calls.exec));
+    assertNoStagedBodyLeft(calls);
 });
 
 test('github: the -w trailer wins even when the response body is unparseable and its LAST line is itself a status-looking number', async (t) => {
@@ -457,6 +504,8 @@ test('azure-devops: a real 201 maps through the provider response hook to pullRe
         title: 'Sprint PR',
         description: 'stub body',
     });
+    assert.equal(req.rawBody, calls.staged[0].content, 'curl sent the staged file byte-for-byte');
+    assertNoStagedBodyLeft(calls);
 });
 
 test('azure-devops: a real 409 TF401179 is read as idempotent success with the existing PR URL', async (t) => {

@@ -6,11 +6,16 @@
 // scopes the run (this cycle's open features plus the verify-set beads whose
 // children have ALL closed), dispatches the integ-test-runner ladder, records
 // the verdict -- PASSED, FAILED or INCONCLUSIVE, the last being an infra
-// dispatch failure that produced no verdict at all -- and applies the
-// verify-fail bounce cap to any gap bug filed under a verify-set parent. Moved
-// verbatim out of runner.js: every prompt, log line, dispatch option, branch
-// and bd command is byte-identical to the inline version, so the golden
-// transcript is unchanged. Move-only, no behaviour change.
+// dispatch failure that produced no verdict at all -- and returns the gap
+// bugs it filed. Moved verbatim out of runner.js: every prompt, log line,
+// dispatch option, branch and bd command is byte-identical to the inline
+// version, so the golden transcript is unchanged.
+//
+// The verify-fail bounce cap on those gap bugs lives in this file too
+// (applyVerifyGapAccounting, exported below) but is NOT called from the
+// phase: runner.js calls it after Cycle Evaluation's backlog D-pull, because
+// the integ runner's new bug beads reach the backlog clone only through that
+// pull when the integ runner is a different member (see its doc comment).
 //
 // WHERE THIS PHASE STARTS AND STOPS. It is the body of runSprintCycle's
 // `if (hasPlaybook && deployedThisCycle)` branch, and nothing else. The two
@@ -31,10 +36,9 @@
 // as one explicit state argument now. What this phase writes is mostly
 // MUTATED IN PLACE on objects the caller still holds -- `integFailures` (an
 // array it pushes a FAILED/INCONCLUSIVE record onto), `verifyEverIds` (the
-// monotone Set feeding the stall-abort's still-open-verify report) and
-// `verifyGapCounts` (the Map the bounce cap counts in) -- which is exactly
-// equivalent to the closure it replaces, because runner.js never reassigns
-// those bindings either.
+// monotone Set feeding the stall-abort's still-open-verify report) --
+// which is exactly equivalent to the closure it replaces, because runner.js
+// never reassigns those bindings either.
 //
 // Three values are genuinely REASSIGNED rather than mutated, so they cannot
 // travel that way and are returned instead: `verifySetForIntegTest` (reset to
@@ -47,9 +51,10 @@
 //
 // WHY SOME HELPERS ARE INJECTED RATHER THAN IMPORTED. bdListScoped,
 // fetchAllBeadsShared, updateDashboard, getMemberForRole, ensureUnattendedAuto,
-// ensureDeployPermissions, budget and VERIFY_GAP_LIMIT are all
-// runSprintCycle-scoped (several of them context-overridable seams), so there
-// is nothing to import. parseBdJson is exported BY runner.js; importing it here
+// ensureDeployPermissions, budget and (for applyVerifyGapAccounting)
+// VERIFY_GAP_LIMIT are all runSprintCycle-scoped (several of them
+// context-overridable seams), so there is nothing to import. parseBdJson
+// (applyVerifyGapAccounting) is exported BY runner.js; importing it here
 // would make phases/integ-test.mjs <-> runner.js a circular pair for the sake
 // of one helper, so it comes through the state argument instead -- the same
 // rule ./plan.mjs's, ./develop.mjs's and ./review.mjs's headers state. The one
@@ -63,10 +68,11 @@
 // and its `bd update <parentId> --status=deferred --append-notes` deferral --
 // plus the ONE dispatchRole call site for the integ-test-runner ladder, which
 // is exactly what dispatch-safety-guard and the phase 3 dispatch census must
-// keep seeing after the slice.
+// keep seeing after the slice. Both command() call sites now live in
+// applyVerifyGapAccounting, still in this file.
 // =============================================================================
 
-import { dispatchRole, TURN_BASES } from '../dispatch-role.mjs';
+import { dispatchRole, secondaryMaxTurns } from '../dispatch-role.mjs';
 import { classifyVerifySet } from '../beads-scope.mjs';
 import { markBounceCapDeferral } from '../verify-carry-over.mjs';
 
@@ -78,35 +84,28 @@ import { markBounceCapDeferral } from '../verify-carry-over.mjs';
  *   verifySetForIntegTest: string[],
  *   integTestRunnerDispatchCount: number,
  *   integTestRunnerSpend: number,
- *   integVerifyOutcome: { dispatchedIds: string[], gapParentIds: string[], leftOpenReasons: Map<string, string>, summary: string, inconclusive: boolean },
+ *   integVerifyOutcome: { dispatchedIds: string[], gapParentIds: string[], bugsFiled: string[], leftOpenReasons: Map<string, string>, summary: string, inconclusive: boolean },
  * }>} The three REASSIGNED values described in the header, plus this
- *   dispatch's per-verify-bead outcome for the needs-external-evidence count.
+ *   dispatch's per-verify-bead outcome for the needs-external-evidence count
+ *   (its gapParentIds stay empty until the caller runs
+ *   applyVerifyGapAccounting() on its bugsFiled after the backlog D-pull).
  *   Every other output of this phase is an in-place mutation of an
- *   array/Set/Map the caller still holds (`integFailures`, `verifyEverIds`,
- *   `verifyGapCounts`, `deferredVerifyIds`).
+ *   array/Set the caller still holds (`integFailures`, `verifyEverIds`).
  */
 export async function runIntegTestPhase({
     // Presentation + dispatch seams.
     phase,
     log,
-    command,
     dispatchCtx,
     // Sprint identity/config.
     cycle,
     targetIssues,
-    backlogMember,
     sprintSelfIdLine,
     // The per-sprint budget meter -- read for this phase's own spend delta.
     budget,
     // Mutated in place; never reassigned by this phase (see header).
     integFailures,
     verifyEverIds,
-    verifyGapCounts,
-    // Verify-routed ids the verify bounce cap deferred this run, id -> reason
-    // (../verify-carry-over.mjs): this phase adds to it in place when it
-    // defers a parent, so Cycle Evaluation drops it from the exit gate and
-    // names it as a deferred carry-over. Optional for older callers.
-    deferredVerifyIds = null,
     // Verify-routed ids carried over as needs-external-evidence
     // (../verify-carry-over.mjs): never dispatched to verify again this run.
     excludedVerifyIds = null,
@@ -121,9 +120,7 @@ export async function runIntegTestPhase({
     ensureDeployPermissions,
     bdListScoped,
     fetchAllBeadsShared,
-    parseBdJson,
     updateDashboard,
-    VERIFY_GAP_LIMIT,
 }) {
     phase(`Integ Test C${cycle}`);
     await ensureUnattendedAuto(getMemberForRole('integ-test-runner'));
@@ -279,7 +276,7 @@ export async function runIntegTestPhase({
             'Continue the integration test run exactly where you left off in this same session -- do not restart the playbook or rebuild the sandbox if it is already up. Finish the remaining suites, close passing features / file bugs per your contract, and return your final report now. ' +
             'Your original scope, restated so a resumed dispatch never loses it: ' + featurePrompt,
         roleLabel: 'Integ Test Runner',
-        resumeLabel: `Integ Test (resume, max_turns=${TURN_BASES.INTEG_TEST_MAX_TURNS * 2})`,
+        resumeLabel: `Integ Test (resume, max_turns=${secondaryMaxTurns('integ-test-runner')})`,
     });
     integResult = integOutcome.value;
     integInfraInconclusive = integOutcome.inconclusive;
@@ -334,44 +331,11 @@ export async function runIntegTestPhase({
         log(`Integration tests C${cycle}: ${integResult.observedFailures.length} out-of-scope failure(s) observed and tracked -- ` +
             integResult.observedFailures.map((f) => `${f.test} (${f.cause}) -> ${f.beadId}`).join(' | '));
     }
-    // apra-fleet-jfo D6: verify-fail bounce cap. A gap bug filed under a
-    // verify-set parent makes that parent structurally ineligible again
-    // at next classification (its child count now includes an open bug)
-    // -- no sticky "bounced" flag is needed for the round-trip itself.
-    // This only tracks HOW MANY TIMES a given parent has bounced, so a
-    // parent that keeps failing verification is deferred rather than
-    // looping forever.
-    // Verify-set parents a gap bug was filed under this cycle -- read by
-    // Cycle Evaluation's needs-external-evidence count (a gap bug is a real
-    // verdict, so it resets that bead's inconclusive count).
-    const gapParentIds = new Set();
-    if (Array.isArray(integResult.bugsFiled) && integResult.bugsFiled.length > 0 && verifySetForIntegTest.length > 0) {
-        for (const bugId of integResult.bugsFiled) {
-            try {
-                const bugShowRaw = await command(`bd show ${bugId} --json`, { member_name: backlogMember, silent: true });
-                const bugBeads = parseBdJson(bugShowRaw, `bd show ${bugId} --json`);
-                const parentId = Array.isArray(bugBeads) ? bugBeads[0]?.parent : bugBeads?.parent;
-                if (!parentId || !verifySetIdSet.has(parentId)) continue;
-                gapParentIds.add(parentId);
-                const gapCount = (verifyGapCounts.get(parentId) ?? 0) + 1;
-                verifyGapCounts.set(parentId, gapCount);
-                if (gapCount > VERIFY_GAP_LIMIT) {
-                    log(`Verify-route bounce cap: ${parentId} has failed verification ${gapCount} time(s) this sprint (limit ${VERIFY_GAP_LIMIT}) -- deferring rather than bouncing again.`);
-                    await command(
-                        `bd update ${parentId} --status=deferred --append-notes "Deferred by the verify-route bounce cap: failed integration-test verification ${gapCount} times this sprint (limit ${VERIFY_GAP_LIMIT}). Latest gap: ${bugId}."`,
-                        { member_name: backlogMember, silent: true }
-                    );
-                    if (deferredVerifyIds) {
-                        markBounceCapDeferral(deferredVerifyIds, parentId, `deferred by the verify-route bounce cap after failing verification ${gapCount} times (latest gap: ${bugId})`);
-                    }
-                } else {
-                    log(`Verify-route bounce: ${parentId} failed verification (gap bug ${bugId} filed), attempt ${gapCount}/${VERIFY_GAP_LIMIT} -- will re-route to plan/develop once ${bugId} closes.`);
-                }
-            } catch (bugLookupErr) {
-                log(`Verify-route bounce-cap lookup for ${bugId} failed (non-fatal, cap tracking skipped for this bug): ${bugLookupErr.message}`);
-            }
-        }
-    }
+    // The verify-fail bounce cap (which verify-set parent each filed gap bug
+    // belongs to) is NOT applied here: the integ runner D-pushed its new bug
+    // beads from its own member, and the backlog clone only D-pulls them at
+    // Cycle Evaluation. runner.js calls applyVerifyGapAccounting() (below)
+    // right after that pull, with the bugsFiled this phase returns.
     // apra-fleet-nwh.1: fold this cycle's Integ Test spend (dispatch
     // plus any resume/retry inside the try/catch above) into the
     // running total buildCostAnalysis() reports at Harvest time. A
@@ -400,11 +364,111 @@ export async function runIntegTestPhase({
     }
     const integVerifyOutcome = {
         dispatchedIds: [...verifySetForIntegTest],
-        gapParentIds: [...gapParentIds],
+        // Filled in by runner.js from applyVerifyGapAccounting() after Cycle
+        // Evaluation's backlog D-pull; empty until then.
+        gapParentIds: [],
+        bugsFiled: Array.isArray(integResult.bugsFiled) ? integResult.bugsFiled.filter((id) => typeof id === 'string' && id) : [],
         leftOpenReasons,
         summary: typeof integResult.summary === 'string' ? integResult.summary : '',
         inconclusive: Boolean(integInfraInconclusive),
     };
 
     return { verifySetForIntegTest, integTestRunnerDispatchCount, integTestRunnerSpend, integVerifyOutcome };
+}
+
+/**
+ * The verify-fail bounce cap, applied to the gap bugs one Integ Test dispatch
+ * filed (apra-fleet-jfo D6). A gap bug filed under a verify-set parent makes
+ * that parent structurally ineligible again at next classification (its child
+ * count now includes an open bug) -- no sticky "bounced" flag is needed for
+ * the round-trip itself. This only tracks HOW MANY TIMES a given parent has
+ * bounced, so a parent that keeps failing verification is deferred rather
+ * than looping forever.
+ *
+ * WHEN IT RUNS. The integ-test-runner files its gap bugs on its OWN member
+ * and D-pushes them; the backlog clone sees them only after it D-pulls, which
+ * happens at Cycle Evaluation. runner.js therefore calls this right after
+ * Cycle Evaluation's fatal backlog D-pull and before the exit-gate math --
+ * never from inside runIntegTestPhase, where the lookup would read a clone
+ * that has not yet pulled the integ member's push whenever the integ runner
+ * is a different member. No extra D-pull is issued here.
+ *
+ * A LOOKUP MISS IS LOUD. A `bd show <bug>` that still fails after that pull
+ * means the bounce cap and the needs-external-evidence reset cannot see this
+ * gap: it is logged as a WARN naming the bug and pushed onto integFailures
+ * (Final Review and the sprint report read it), never skipped silently.
+ *
+ * @param {object} state
+ * @returns {Promise<{ gapParentIds: string[], lookupMisses: string[] }>}
+ *   gapParentIds: verify-set parents a gap bug was filed under (read by the
+ *   needs-external-evidence count -- a gap bug is a real verdict, so it resets
+ *   that bead's inconclusive count). lookupMisses: the bug ids whose lookup
+ *   failed.
+ */
+export async function applyVerifyGapAccounting({
+    log,
+    command,
+    cycle,
+    backlogMember,
+    // The gap bugs the integ dispatch reported (integVerifyOutcome.bugsFiled).
+    bugsFiled,
+    // The verify-set ids that dispatch was handed (integVerifyOutcome.dispatchedIds).
+    verifySetIds,
+    // Mutated in place.
+    verifyGapCounts,
+    integFailures,
+    // Verify-routed ids the bounce cap deferred this run, id -> reason
+    // (../verify-carry-over.mjs): added to in place when a parent is
+    // deferred, so the exit gate drops it and names it as a deferred
+    // carry-over. Optional.
+    deferredVerifyIds = null,
+    parseBdJson,
+    VERIFY_GAP_LIMIT,
+}) {
+    const gapParentIds = new Set();
+    const lookupMisses = [];
+    const verifySetIdSet = new Set(verifySetIds || []);
+    if (!Array.isArray(bugsFiled) || bugsFiled.length === 0 || verifySetIdSet.size === 0) {
+        return { gapParentIds: [], lookupMisses };
+    }
+    for (const bugId of bugsFiled) {
+        let parentId;
+        try {
+            const bugShowRaw = await command(`bd show ${bugId} --json`, { member_name: backlogMember, silent: true });
+            const bugBeads = parseBdJson(bugShowRaw, `bd show ${bugId} --json`);
+            parentId = Array.isArray(bugBeads) ? bugBeads[0]?.parent : bugBeads?.parent;
+        } catch (bugLookupErr) {
+            const detail = bugLookupErr && bugLookupErr.message ? bugLookupErr.message : String(bugLookupErr);
+            const note = `Verify-route gap-bug lookup MISSED for ${bugId} after the backlog D-pull: verify bounce-cap tracking and the needs-external-evidence reset were skipped for this bug, so its parent's gap count is not recorded. ${detail}`;
+            log(`WARN: ${note}`);
+            integFailures.push({ cycle, notes: note, bugsFiled: [bugId], gapLookupMiss: true });
+            lookupMisses.push(bugId);
+            continue;
+        }
+        if (!parentId || !verifySetIdSet.has(parentId)) continue;
+        gapParentIds.add(parentId);
+        const gapCount = (verifyGapCounts.get(parentId) ?? 0) + 1;
+        verifyGapCounts.set(parentId, gapCount);
+        if (gapCount > VERIFY_GAP_LIMIT) {
+            log(`Verify-route bounce cap: ${parentId} has failed verification ${gapCount} time(s) this sprint (limit ${VERIFY_GAP_LIMIT}) -- deferring rather than bouncing again.`);
+            try {
+                await command(
+                    `bd update ${parentId} --status=deferred --append-notes "Deferred by the verify-route bounce cap: failed integration-test verification ${gapCount} times this sprint (limit ${VERIFY_GAP_LIMIT}). Latest gap: ${bugId}."`,
+                    { member_name: backlogMember, silent: true }
+                );
+            } catch (deferErr) {
+                const detail = deferErr && deferErr.message ? deferErr.message : String(deferErr);
+                const note = `Verify-route bounce cap could not defer ${parentId} (latest gap ${bugId}): the deferral write failed, so it is not carried over as deferred. ${detail}`;
+                log(`WARN: ${note}`);
+                integFailures.push({ cycle, notes: note, bugsFiled: [bugId] });
+                continue;
+            }
+            if (deferredVerifyIds) {
+                markBounceCapDeferral(deferredVerifyIds, parentId, `deferred by the verify-route bounce cap after failing verification ${gapCount} times (latest gap: ${bugId})`);
+            }
+        } else {
+            log(`Verify-route bounce: ${parentId} failed verification (gap bug ${bugId} filed), attempt ${gapCount}/${VERIFY_GAP_LIMIT} -- will re-route to plan/develop once ${bugId} closes.`);
+        }
+    }
+    return { gapParentIds: [...gapParentIds], lookupMisses };
 }

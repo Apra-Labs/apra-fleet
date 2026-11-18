@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { isNetworkShapedCommand, redactNetworkCommandForLog, defaultMockCallTool, buildMockFleetApi } from './helpers/mock-sprint-harness.mjs';
+import { isNetworkShapedCommand, redactNetworkCommandForLog, defaultMockCallTool, buildMockFleetApi, MOCK_MEMBER_WORK_FOLDER } from './helpers/mock-sprint-harness.mjs';
 
 // =============================================================================
 // apra-fleet-5co8.32 -- guards the fix that relaxed
@@ -458,7 +458,7 @@ test('backward compatibility: defaultMockCallTool() invoked with no argument sti
     const callTool = defaultMockCallTool();
 
     const memberDetail = await callTool('member_detail', {});
-    assert.deepEqual(JSON.parse(memberDetail.content[0].text), { vcsProvider: 'github' });
+    assert.deepEqual(JSON.parse(memberDetail.content[0].text), { vcsProvider: 'github', folder: MOCK_MEMBER_WORK_FOLDER });
 
     const provisioned = await callTool('provision_vcs_auth', { provider: 'github', member_name: 'local' });
     assert.match(provisioned.content[0].text, /^\[OK\] Mock github credentials deployed on "local"/);
