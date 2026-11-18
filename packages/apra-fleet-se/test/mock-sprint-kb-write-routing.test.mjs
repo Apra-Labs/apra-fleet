@@ -116,17 +116,26 @@ function createFakeFleet({ failOwnScopeQuery = false } = {}) {
             case 'kb_bible_commit': {
                 // Admission mirrors the real tool: an id merges only while
                 // CONFIRMED; a demoted id is tombstoned only once the row
-                // really is demoted (demoted_at set, no longer CONFIRMED).
+                // really is demoted (demoted_at set, no longer CONFIRMED). A
+                // withdrawal is admitted for an entry the bible holds or a
+                // CONFIRMED row, tombstones it and leaves the LOCAL row
+                // unchanged; a restore lifts a withdrawn tombstone.
                 const merged = (args.ids || []).filter((i) => kb.some((x) => x.id === i && x.confidence === 'CONFIRMED'));
                 const demoted = (args.demoted_ids || []).filter((i) => kb.some((x) => x.id === i && x.demoted_at && x.confidence !== 'CONFIRMED'));
+                const withdrawn = (args.withdrawals || []).map((w) => w.id)
+                    .filter((i) => bible.entries.has(i) || kb.some((x) => x.id === i && x.confidence === 'CONFIRMED'));
+                const restored = (args.restore_ids || []).filter((i) => bible.tombstones.has(i));
                 const skipped = [
                     ...(args.ids || []).filter((i) => !merged.includes(i)).map((i) => ({ id: i, reason: 'not_confirmed_or_unknown' })),
                     ...(args.demoted_ids || []).filter((i) => !demoted.includes(i)).map((i) => ({ id: i, reason: 'not_demoted_or_unknown' })),
+                    ...(args.withdrawals || []).filter((w) => !withdrawn.includes(w.id)).map((w) => ({ id: w.id, reason: 'not_withdrawable' })),
                 ];
                 for (const i of merged) bible.entries.add(i);
                 for (const i of demoted) { bible.entries.delete(i); bible.tombstones.add(i); }
-                const committed = merged.length + demoted.length > 0;
-                return { path: '.fleet/kb-canonical.json', merged, demoted, skipped, entry_count: bible.entries.size, committed };
+                for (const i of withdrawn) { bible.entries.delete(i); bible.tombstones.add(i); }
+                for (const i of restored) { bible.tombstones.delete(i); bible.entries.add(i); }
+                const committed = merged.length + demoted.length + withdrawn.length + restored.length > 0;
+                return { path: '.fleet/kb-canonical.json', merged, demoted, withdrawn, restored, skipped, entry_count: bible.entries.size, committed };
             }
             default: return {};
         }
@@ -462,12 +471,13 @@ describe('mock sprint: KB writes route through the kb_maintainer', () => {
         });
     });
 
-    // The demotion happy path through the REAL runner: the FINAL reviewer
-    // returns kb_demotions for a CONFIRMED entry it was offered (a round
-    // reviewer is offered none), and the final review's bible commit carries
-    // the demotion. Asserted from the ordered call transcript (fleet.events)
-    // and the fake maintainer's resulting state.
-    test('final reviewer kb_demotions -> kb_demote on the maintainer -> kb_bible_commit {demoted_ids} with that id', { timeout: scaledTimeout(240000) }, async () => {
+    // Mock sprint m1-style happy path through the REAL runner: the FINAL
+    // reviewer returns kb_demotions for a CONFIRMED entry it was offered (a
+    // round reviewer is offered none), and the final review's bible commit
+    // carries it as a merge-carried withdrawal. No kb_demote anywhere in the
+    // sprint. Asserted from the ordered call transcript (fleet.events) and the
+    // fake maintainer's resulting state.
+    test('final reviewer kb_demotions -> kb_bible_commit {withdrawals} with that id, and no kb_demote anywhere in the sprint', { timeout: scaledTimeout(240000) }, async () => {
         await withScenarioMarkers('kb demotion happy path', async () => {
             const DEMOTED_ID = 'kb-confirmed-to-demote';
             const BIBLE_FILE = '.fleet/kb-canonical.json';
@@ -533,25 +543,25 @@ describe('mock sprint: KB writes route through the kb_maintainer', () => {
             assert.ok(finalPrompt && finalPrompt.includes(`"id": "${DEMOTED_ID}"`), 'the CONFIRMED entry touching the sprint\'s changed file was never offered to the final reviewer');
 
             const kbEvents = fleet.events.filter((e) => e.type === 'kb');
-            const demoteIdx = kbEvents.findIndex((e) => e.tool === 'kb_demote');
-            assert.ok(demoteIdx >= 0, `no kb_demote was issued; kb calls: ${JSON.stringify(kbEvents.map((e) => e.tool))}`);
-            const demote = kbEvents[demoteIdx];
-            assert.equal(demote.member, 'maint', 'kb_demote runs in the maintainer session');
-            assert.equal(demote.grant, true, 'kb_demote carries the kb_maintainer grant');
-            assert.equal(demote.args.id, DEMOTED_ID);
-            assert.deepEqual(demote.args.evidence_files, [CITED]);
-
-            const commitIdx = kbEvents.findIndex((e, i) => i > demoteIdx && e.tool === 'kb_bible_commit');
-            assert.ok(commitIdx > demoteIdx, `no kb_bible_commit followed the kb_demote; kb calls: ${JSON.stringify(kbEvents.map((e) => e.tool))}`);
-            const commit = kbEvents[commitIdx];
+            assert.equal(kbEvents.filter((e) => e.tool === 'kb_demote').length, 0,
+                `no kb_demote may be issued anywhere in a sprint; kb calls: ${JSON.stringify(kbEvents.map((e) => e.tool))}`);
+            const commit = kbEvents.find((e) => e.tool === 'kb_bible_commit' && Array.isArray(e.args.withdrawals) && e.args.withdrawals.length > 0);
+            assert.ok(commit, `no kb_bible_commit carried the withdrawal; kb calls: ${JSON.stringify(kbEvents.map((e) => e.tool))}`);
             assert.equal(commit.member, 'maint', 'the bible commit runs on the maintainer');
-            assert.ok(Array.isArray(commit.args.demoted_ids) && commit.args.demoted_ids.includes(DEMOTED_ID),
-                `kb_bible_commit did not carry the demotion: ${JSON.stringify(commit.args)}`);
+            assert.equal(commit.grant, true, 'the bible commit carries the kb_maintainer grant');
+            assert.deepEqual(commit.args.withdrawals, [{
+                id: DEMOTED_ID,
+                note: `${CITED}:42 keys by tenant AND id; the claim does not hold`,
+                evidence_files: [CITED],
+            }]);
+            assert.equal(commit.args.demoted_ids, undefined, 'demoted_ids is never sent');
 
-            // The maintainer's state after the round: the entry is INFERRED and tombstoned in the bible.
+            // The LOCAL row is unchanged (the withdrawal takes effect only
+            // once the branch merges); the branch's bible carries the tombstone.
             const row = fleet.kbOf(memberUuid('maint')).find((e) => e.id === DEMOTED_ID);
-            assert.equal(row.confidence, 'INFERRED');
-            assert.ok(fleet.bible.tombstones.has(DEMOTED_ID), 'the bible carries no tombstone for the demoted id');
+            assert.equal(row.confidence, 'CONFIRMED', 'a withdrawal never changes the local row');
+            assert.ok(fleet.bible.tombstones.has(DEMOTED_ID), 'the bible carries no tombstone for the withdrawn id');
+            assert.ok(r.logs.some((l) => /1 withdrawal\(s\) committed and pushed/.test(l)), r.logs.filter((l) => l.includes('[kb-work]')).join('\n'));
             assert.deepEqual(fleet.orchestratorKbCalls, [], 'no kb_* call may go through the orchestrator session');
         });
     });
@@ -611,6 +621,82 @@ describe('mock sprint: KB writes route through the kb_maintainer', () => {
             assert.ok(!kbTools.includes('kb_demote'), 'no demotion for an id with no verdict');
             const row = fleet.kbOf(memberUuid('maint')).find((e) => e.id === OFFERED_ID);
             assert.equal(row.confidence, 'CONFIRMED', 'an id with no verdict is left as it is');
+        });
+    });
+
+    // Mock sprint m2: a RELAUNCH. An earlier final review on this sprint
+    // branch withdrew an entry (the branch's committed bible carries a
+    // withdrawn tombstone the base branch's bible does not), so the checkout
+    // bible view no longer offers it. The relaunched sprint's final review is
+    // offered it anyway (marked withdrawn_on_this_branch), holds it, and the
+    // bible commit carries it as restore_ids -- lifting the tombstone.
+    test('m2: on a relaunch, a final-review hold restores an entry an earlier final review on the branch withdrew', { timeout: scaledTimeout(240000) }, async () => {
+        await withScenarioMarkers('kb withdrawal restored on relaunch', async () => {
+            const RESTORED_ID = 'kb-withdrawn-earlier-on-branch';
+            const BIBLE_FILE = '.fleet/kb-canonical.json';
+            const fleet = createFakeFleet();
+            // The earlier launch's withdrawal is already on the branch's bible.
+            fleet.bible.tombstones.add(RESTORED_ID);
+            const baseEntry = {
+                id: RESTORED_ID, type: 'knowledge', confidence: 'CONFIRMED',
+                title: 'A claim an earlier final review withdrew', summary: 'keyed by tenant id only',
+                source_files: [CITED],
+            };
+            const branchBible = { version: 3, entries: [], demotions: [{ id: RESTORED_ID, at: '2026-11-17T00:00:00.000Z', reason: 'withdrawn', note: 'the earlier final review judged it false', evidence_files: [CITED] }] };
+            const baseBible = { version: 3, entries: [baseEntry] };
+            let finalPrompt = null;
+            const doerHandler = async ({ opts, tempDir, runCmd }) => {
+                const ids = (opts.prompt.match(/Assigned bead ids \(comma-separated\):\s*(.+)/)?.[1] || '').split(',').map((s) => s.trim()).filter(Boolean);
+                for (const id of ids) await runCmd(`bd close ${id}`, tempDir);
+                fleet.published.add(CITED);
+                return { content: [{ text: JSON.stringify({ status: 'VERIFY', closedIds: ids, notes: 'done' }) }] };
+            };
+            const reviewerHandler = async () => ({ content: [{ text: JSON.stringify({ verdict: 'APPROVED', notes: 'Approved.', reopenIds: [], newTasks: [] }) }] });
+            const finalReviewHandler = async ({ opts }) => {
+                finalPrompt = opts.prompt;
+                const offered = opts.prompt.includes(`"id": "${RESTORED_ID}"`);
+                return { content: [{ text: JSON.stringify({
+                    verdict: 'PASS', notes: 'All goal beads closed.',
+                    ...(offered ? { kb_demotions: [], kb_holds: [RESTORED_ID] } : {}),
+                }) }] };
+            };
+            const observe = buildOnCommand(fleet);
+            const onCommand = (ev) => {
+                observe(ev);
+                if (ev.member_name !== 'maint') return undefined;
+                if (ev.command === `git show HEAD:${BIBLE_FILE}`) return mockCmdResult(0, JSON.stringify(branchBible), '');
+                if (ev.command === `git show origin/main:${BIBLE_FILE}`) return mockCmdResult(0, JSON.stringify(baseBible), '');
+                if (/^git rev-parse HEAD\s*$/.test(ev.command)) return mockCmdResult(0, 'b'.repeat(40), '');
+                if (/^git diff --name-only \S+\.\.\.\S+\s*$/.test(ev.command)) return mockCmdResult(0, `${CITED}\n`, '');
+                if (/^git merge-base HEAD origin\//.test(ev.command)) return mockCmdResult(0, 'a'.repeat(40), '');
+                if (/^git log -m --name-only --pretty=format: /.test(ev.command)) return mockCmdResult(0, `${BIBLE_FILE}\n`, '');
+                if (/^git rev-list --count /.test(ev.command)) return mockCmdResult(0, '1\n', '');
+                return undefined;
+            };
+
+            const r = await runDevelopLoopScenario('kbrestore', {
+                members: ['maint', 'dev'],
+                roleMap: { doer: ['dev'], reviewer: ['dev'] },
+                beadsIdentity: { maint: { repoRemote: REPO_URL }, dev: { repoRemote: REPO_URL } },
+                taskSpecs: [{ title: 'Task: kb withdrawal restored on relaunch' }],
+                doerHandler, reviewerHandler, finalReviewHandler,
+                maxCycles: 1,
+                callToolFactory: (executeCommand) => buildCallTool(fleet, executeCommand),
+                onCommand,
+            });
+
+            assert.equal(r.error, null, `sprint error: ${r.error && r.error.message}`);
+            assert.ok(finalPrompt && finalPrompt.includes(`"id": "${RESTORED_ID}"`),
+                'the entry an earlier final review withdrew on this branch must be offered again');
+            assert.match(finalPrompt, /"withdrawn_on_this_branch": true/);
+            const kbEvents = fleet.events.filter((e) => e.type === 'kb');
+            assert.equal(kbEvents.filter((e) => e.tool === 'kb_demote').length, 0, 'no kb_demote anywhere in the sprint');
+            const commit = kbEvents.find((e) => e.tool === 'kb_bible_commit' && Array.isArray(e.args.restore_ids));
+            assert.ok(commit, `no kb_bible_commit carried restore_ids; kb calls: ${JSON.stringify(kbEvents.map((e) => [e.tool, e.args]))}`);
+            assert.deepEqual(commit.args.restore_ids, [RESTORED_ID]);
+            assert.ok(!fleet.bible.tombstones.has(RESTORED_ID), 'the hold must lift the earlier withdrawal');
+            assert.ok(fleet.bible.entries.has(RESTORED_ID), 'the restored entry is back in the bible');
+            assert.ok(r.logs.some((l) => /1 restore\(s\) committed and pushed/.test(l)), r.logs.filter((l) => l.includes('[kb-work]')).join('\n'));
         });
     });
 

@@ -244,7 +244,7 @@ MCP tools that ship with the KB:
 
 `kb_query` accepts `files` (repo-relative paths; a directory matches the files under it) and `symbols` as a hard filter: only entries citing one of those files or naming one of those symbols come back, with or without a `query`. Against an http KB server it needs the server to list the field in `query_filters`, otherwise it fails with `E-KB-HTTP-UNSUPPORTED`. A MEMBER `kb_query` without `limit` returns at most 6 slim summary rows (pass `limit` for full rows). See [docs/knowledge-layer.md](docs/knowledge-layer.md) and [docs/kb-recall-measurements.md](docs/kb-recall-measurements.md).
 
-`kb_query` accepts `own_scope: true` so a MEMBER session can read its own CONFIRMED rows from the per-repo database instead of the bible view. The fleet-sprint reviewer uses this to offer demotion candidates; the loop is on by default and `--kb-demotion-loop off` disables it. See [docs/kb-member-view-and-maintainer.md](docs/kb-member-view-and-maintainer.md).
+`kb_query` accepts `own_scope: true` so a MEMBER session can read its own CONFIRMED rows from the per-repo database instead of the bible view. The fleet-sprint final review uses it, with the checkout bible view, to offer demotion candidates; a demotion is recorded as a `kb_bible_commit` withdrawal on the sprint branch and takes effect only if that branch merges. The loop is on by default and `--kb-demotion-loop off` disables it. See [docs/kb-member-view-and-maintainer.md](docs/kb-member-view-and-maintainer.md).
 
 `code_*` tools resolve the calling session's own folder, refuse with typed
 `E-CODE-INDEX-NOT-READY` / `E-CODE-INTEL-DISABLED` errors when the index is not

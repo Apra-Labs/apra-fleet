@@ -5,7 +5,7 @@ import {
     KB_DEMOTION_READ_LIMIT, buildDemotionCandidateQuery, buildBibleDemotionCandidateQuery, isDemotableCandidate,
     KB_WITHDRAWAL_SCHEMA_PROPERTIES,
 } from '../fleet-sprint/kb.mjs';
-import { createSprintChangedFiles, buildReviewerPrompt, buildFinalVerdictPrompt } from '../fleet-sprint/runner.js';
+import { createSprintChangedFiles, createBranchWithdrawnEntries, buildReviewerPrompt, buildFinalVerdictPrompt } from '../fleet-sprint/runner.js';
 import { fakeMaintainerSelector } from './helpers/kb-maintainer-fakes.mjs';
 
 // Covers kbWork.demotionCandidates() -- the CONFIRMED entries the FINAL
@@ -783,5 +783,113 @@ describe('demotion candidates reach the FINAL verdict prompt only', () => {
         });
         for (const e of CONFIRMED_ENTRIES) assert.ok(prompt.includes(e.id), `demotion candidate ${e.id} missing from the final verdict prompt`);
         assert.match(prompt, /kb_demotions/);
+    });
+});
+
+// =============================================================================
+// A RELAUNCH can restore an earlier withdrawal: entries an earlier final
+// review on this branch withdrew are read from the committed bibles
+// (createBranchWithdrawnEntries) and offered FIRST, regardless of the changed
+// files, marked withdrawn_on_branch -- the checkout bible view no longer
+// holds them, so the widened read alone could never offer one.
+// =============================================================================
+describe('createBranchWithdrawnEntries (this branch\'s earlier withdrawals)', () => {
+    const BIBLE = '.fleet/kb-canonical.json';
+    const tomb = (id, extra = {}) => ({ id, at: '2026-11-17T00:00:00.000Z', reason: 'withdrawn', note: `note ${id}`, evidence_files: ['src/x.js'], ...extra });
+    const fakeCommand = (byCmd) => {
+        const calls = [];
+        const command = async (cmd, opts) => {
+            calls.push({ cmd, opts });
+            const v = byCmd[cmd];
+            return v === undefined ? { ok: false, output: 'fatal: path does not exist' } : { ok: true, output: JSON.stringify(v) };
+        };
+        return { calls, command };
+    };
+
+    test('returns a branch-added withdrawn tombstone as a CONFIRMED candidate built from the base bible entry', async () => {
+        const { calls, command } = fakeCommand({
+            [`git show HEAD:${BIBLE}`]: { entries: [], demotions: [tomb('kb-mine'), tomb('kb-merged'), { id: 'kb-dem', reason: 'demoted', at: 'x' }] },
+            [`git show origin/main:${BIBLE}`]: {
+                entries: [{ id: 'kb-mine', type: 'learning', title: 'base title', summary: 'base summary', source_files: ['src/a.js'] }],
+                demotions: [tomb('kb-merged')],
+            },
+        });
+        const read = createBranchWithdrawnEntries({ command, baseBranch: 'main', log: () => {} });
+
+        const rows = await read('maint-1');
+
+        assert.deepEqual(rows, [{
+            id: 'kb-mine', type: 'learning', confidence: 'CONFIRMED', title: 'base title', summary: 'base summary', source_files: ['src/a.js'],
+        }], 'a tombstone merged from the base, or a demoted one, is not this branch\'s to restore');
+        for (const c of calls) {
+            assert.equal(c.opts.member_name, 'maint-1');
+            assert.equal(c.opts.failSoft, true);
+        }
+    });
+
+    test('a tombstone whose entry the base bible lacks is built from the tombstone itself', async () => {
+        const { command } = fakeCommand({ [`git show HEAD:${BIBLE}`]: { entries: [], demotions: [tomb('kb-new')] } });
+        const rows = await createBranchWithdrawnEntries({ command, baseBranch: 'main' })('m');
+        assert.deepEqual(rows, [{ id: 'kb-new', type: 'knowledge', confidence: 'CONFIRMED', title: 'withdrawn entry kb-new', summary: 'note kb-new', source_files: ['src/x.js'] }]);
+    });
+
+    test('no bible on the branch, an unparseable one, or no withdrawn tombstone: nothing, and the base is never read', async () => {
+        for (const head of [undefined, 'not json', { entries: [] }]) {
+            const calls = [];
+            const command = async (cmd) => {
+                calls.push(cmd);
+                if (head === undefined) return { ok: false, output: '' };
+                return { ok: true, output: typeof head === 'string' ? head : JSON.stringify(head) };
+            };
+            assert.deepEqual(await createBranchWithdrawnEntries({ command, baseBranch: 'main' })('m'), []);
+            assert.equal(calls.length, 1, 'the base bible is read only when the branch carries a withdrawal');
+        }
+    });
+});
+
+describe('demotionCandidates: this branch\'s earlier withdrawals are offered first', () => {
+    const withdrawnRow = { id: 'kb-earlier', type: 'knowledge', confidence: 'CONFIRMED', title: 'withdrawn before', summary: 's', source_files: ['elsewhere.js'] };
+
+    test('offered first, marked withdrawn_on_branch, even though it cites no changed file', async () => {
+        const { memberCall } = makeCallTool(CONFIRMED_ENTRIES);
+        const client = createKbWorkClient({
+            memberCall, maintainers: withMaintainer(), listTools: newSchemaListTools,
+            sprintChangedFiles: async () => ['server/transit.js'],
+            branchWithdrawals: async () => [withdrawnRow],
+            log: () => {},
+        });
+
+        const offered = await client.demotionCandidates(REVIEWER);
+
+        assert.deepEqual(offered.map((e) => e.id), ['kb-earlier', 'kb-aaa']);
+        assert.equal(offered[0].withdrawn_on_branch, true);
+        const block = kbDemotionBlock(offered).join('\n');
+        assert.match(block, /"withdrawn_on_this_branch": true/);
+        assert.match(block, /holding it restores it/);
+    });
+
+    test('a failing branch read degrades to the plain offer', async () => {
+        const { memberCall } = makeCallTool(CONFIRMED_ENTRIES);
+        const logs = [];
+        const client = createKbWorkClient({
+            memberCall, maintainers: withMaintainer(), listTools: newSchemaListTools,
+            sprintChangedFiles: async () => ['server/transit.js'],
+            branchWithdrawals: async () => { throw new Error('git unreachable'); },
+            log: (l) => logs.push(l),
+        });
+        assert.deepEqual((await client.demotionCandidates(REVIEWER)).map((e) => e.id), ['kb-aaa']);
+        assert.ok(logs.some((l) => /earlier withdrawals/.test(l)), logs.join('\n'));
+    });
+
+    test('an earlier withdrawal is offered even when the sprint changed no file the KB cites', async () => {
+        const { calls, memberCall } = makeCallTool(CONFIRMED_ENTRIES);
+        const client = createKbWorkClient({
+            memberCall, maintainers: withMaintainer(), listTools: newSchemaListTools,
+            sprintChangedFiles: async () => [],
+            branchWithdrawals: async () => [withdrawnRow],
+            log: () => {},
+        });
+        assert.deepEqual((await client.demotionCandidates(REVIEWER)).map((e) => e.id), ['kb-earlier']);
+        assert.equal(calls.filter((c) => c.name === 'kb_query').length, 0, 'no changed files: no KB read');
     });
 });

@@ -215,3 +215,80 @@ describe('Final Review: demotion candidates reach the final-verdict prompt', () 
         assert.ok(!none.logs.some((l) => /for demotion/.test(l)), 'an empty offer must not be announced');
     });
 });
+
+// =============================================================================
+// FINAL REVIEW VERDICT -> BIBLE COMMIT, with the REAL kb work client. A FAIL
+// verdict seals CONFIRMATIONS only: the final review's withdrawals (and
+// restores) still reach kb_bible_commit, because they are merge-gated -- a
+// FAIL branch that never merges carries them nowhere. A PASS commits both.
+// =============================================================================
+describe('Final Review: the verdict decides what the bible commit carries', () => {
+    const REASON = 'the handler at server/transit.js:40 now keys by tenant too';
+    async function runWithRealClient(verdict) {
+        const { createKbWorkClient } = await import('../fleet-sprint/kb.mjs');
+        const { selfMaintainer } = await import('./helpers/kb-maintainer-fakes.mjs');
+        const MAINT = { id: 'id-maint', name: 'maint', type: 'local' };
+        const bibleCalls = [];
+        let promotionRows = [];
+        const kbWork = createKbWorkClient({
+            memberCall: async (member, tool, args) => {
+                if (tool === 'kb_query') {
+                    if (Array.isArray(args.files)) return { l1_results: DEMOTE_CANDIDATES };
+                    if (args.own_scope) return { l1_results: [] };
+                    return { l1_results: promotionRows };
+                }
+                if (tool === 'kb_promote') return { id: args.id, previous_confidence: 'INFERRED', new_confidence: 'CONFIRMED' };
+                if (tool === 'kb_bible_commit') {
+                    bibleCalls.push(args);
+                    return { content: [{ text: JSON.stringify({
+                        merged: args.ids, demoted: [], skipped: [], committed: true,
+                        withdrawn: (args.withdrawals || []).map((w) => w.id), restored: args.restore_ids || [],
+                    }) }] };
+                }
+                return {};
+            },
+            maintainers: selfMaintainer(MAINT, ['maint', REVIEWER]),
+            gPull: async () => {},
+            gPush: async () => {},
+            bibleBase: async () => ({ baseBranch: 'main', baseCommit: 'a'.repeat(40) }),
+            bibleUnpushed: async () => ({ unpushed: false }),
+            sprintChangedFiles: async () => ['server/transit.js', 'server/rules.js'],
+            log: () => {},
+        });
+        // An earlier round confirmed e1: it waits in the bible queue.
+        promotionRows = [{ id: 'e1', type: 'knowledge' }];
+        await kbWork.promotionCandidates(REVIEWER);
+        await kbWork.apply('reviewer', REVIEWER, { kb_promotions: [{ id: 'e1', reason: REASON }] });
+        promotionRows = [];
+
+        const { state } = harness();
+        state.kbWork = kbWork;
+        state.dispatchCtx.agent = async () => ({
+            verdict, notes: verdict === 'FAIL' ? 'Goal not met.' : 'All good.',
+            kb_demotions: [{ id: 'kb-demote-1', reason: REASON, evidence_files: ['server/transit.js'] }],
+            kb_holds: ['kb-demote-2'],
+        });
+        state.dispatchCtx.steps['kb-apply'] = async ({ value }) => kbWork.apply('reviewer', REVIEWER, value);
+        await runFinalReviewPhase(state);
+        return { bibleCalls, kbWork };
+    }
+
+    test('FAIL: the withdrawal and the restore are committed, the pending confirmation is not', async () => {
+        const { bibleCalls, kbWork } = await runWithRealClient('FAIL');
+
+        assert.equal(bibleCalls.length, 1, 'a FAIL verdict must still commit the merge-gated withdrawals');
+        assert.deepEqual(bibleCalls[0].ids, [], 'a FAIL sprint commits no confirmation');
+        assert.deepEqual(bibleCalls[0].withdrawals.map((w) => w.id), ['kb-demote-1']);
+        assert.deepEqual(bibleCalls[0].restore_ids, ['kb-demote-2']);
+        assert.deepEqual(kbWork.pendingConfirmations(), ['e1']);
+    });
+
+    test('PASS: one bible commit carries the confirmation, the withdrawal and the restore', async () => {
+        const { bibleCalls } = await runWithRealClient('PASS');
+
+        assert.equal(bibleCalls.length, 1);
+        assert.deepEqual(bibleCalls[0].ids, ['e1']);
+        assert.deepEqual(bibleCalls[0].withdrawals.map((w) => w.id), ['kb-demote-1']);
+        assert.deepEqual(bibleCalls[0].restore_ids, ['kb-demote-2']);
+    });
+});

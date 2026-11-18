@@ -610,6 +610,72 @@ function createSprintChangedFiles({ command, pullGitBefore, baseBranch, branch, 
 }
 export { createSprintChangedFiles };
 
+// Factory for kbWork.demotionCandidates()'s branchWithdrawals callback: the
+// entries an EARLIER final review on this sprint branch withdrew, so a
+// relaunched sprint's final review can hold (restore) one. A withdrawal is a
+// tombstone {id, reason: "withdrawn", note, evidence_files} in the committed
+// bible's `demotions` array; the entry itself has left `entries`, so the
+// checkout bible view no longer offers it. "This branch added it" means the
+// sprint branch's bible (HEAD) carries the tombstone and the base branch's
+// does not -- a tombstone merged from the base is history, not this branch's
+// to restore. The candidate row is the base bible's entry when it has one,
+// else one built from the tombstone.
+//
+// Both reads are plain `git show <ref>:<bible>` on the maintainer (whose
+// checkout the candidate read has just fetched and fast-forwarded). No bible
+// on the branch, an unreadable one, or no withdrawn tombstone: nothing.
+// A base without a bible (or an unreadable one) counts as no tombstones.
+//
+// @param {{
+//   command: (cmd: string, opts: { member_name: string, silent?: boolean, failSoft?: boolean }) => Promise<{ ok: boolean, output?: string }>,
+//   baseBranch: string,
+//   bibleFile?: string,
+//   log?: Function,
+// }} opts
+// @returns {(memberName: string) => Promise<object[]>}
+function createBranchWithdrawnEntries({ command, baseBranch, bibleFile = '.fleet/kb-canonical.json', log = () => {} }) {
+    const parseDoc = (res) => {
+        if (!res || !res.ok) return null;
+        try {
+            const doc = JSON.parse(String(res.output || ''));
+            return (doc && typeof doc === 'object' && !Array.isArray(doc)) ? doc : null;
+        } catch {
+            return null;
+        }
+    };
+    const withdrawnOf = (doc) => (doc && Array.isArray(doc.demotions) ? doc.demotions : [])
+        .filter((t) => t && typeof t.id === 'string' && t.id && t.reason === 'withdrawn');
+    return async function branchWithdrawnEntries(memberName) {
+        const headCmd = `git show HEAD:${bibleFile}`;
+        const head = parseDoc(await command(headCmd, { member_name: memberName, silent: true, failSoft: true }));
+        const tombstones = withdrawnOf(head);
+        if (tombstones.length === 0) return [];
+        const baseCmd = `git show origin/${baseBranch}:${bibleFile}`;
+        const baseRes = await command(baseCmd, { member_name: memberName, silent: true, failSoft: true });
+        const base = parseDoc(baseRes);
+        if (!base) log(`[kb-work] no readable bible from '${baseCmd}' on '${memberName}' -- every withdrawn tombstone on the sprint branch counts as this branch's own`);
+        const baseTombstones = new Set(withdrawnOf(base).map((t) => t.id));
+        const baseEntries = new Map((base && Array.isArray(base.entries) ? base.entries : [])
+            .filter((e) => e && typeof e.id === 'string').map((e) => [e.id, e]));
+        const out = [];
+        for (const t of tombstones) {
+            if (baseTombstones.has(t.id)) continue;
+            const e = baseEntries.get(t.id);
+            out.push({
+                id: t.id,
+                type: (e && typeof e.type === 'string') ? e.type : 'knowledge',
+                confidence: 'CONFIRMED',
+                title: (e && typeof e.title === 'string') ? e.title : `withdrawn entry ${t.id}`,
+                summary: (e && typeof e.summary === 'string') ? e.summary : (typeof t.note === 'string' ? t.note : ''),
+                source_files: (e && Array.isArray(e.source_files)) ? e.source_files
+                    : (Array.isArray(t.evidence_files) ? t.evidence_files : []),
+            });
+        }
+        return out;
+    };
+}
+export { createBranchWithdrawnEntries };
+
 // Factory for kbWork.promotionCandidates()'s D6 in-sprint ping-pong guard:
 // the CURRENT sha256 of a bounded set of files, read on a member's own
 // checkout. kb.mjs has no shell/fs access of its own (every kb_* call there
@@ -1693,6 +1759,13 @@ async function runSprintCycle(context) {
         branch: validated.branch,
         log,
     });
+    // Entries an earlier final review on this branch withdrew (a relaunch's
+    // final review can hold -- restore -- one). See createBranchWithdrawnEntries.
+    const branchWithdrawals = context.branchWithdrawals ?? createBranchWithdrawnEntries({
+        command,
+        baseBranch: validated.baseBranch,
+        log,
+    });
     const currentFileHashes = context.currentFileHashes ?? createCurrentFileHashes({ command, log });
     const kbWork = context.kbWork ?? createKbWorkClient({
         memberCall: kbMemberCall,
@@ -1703,6 +1776,7 @@ async function runSprintCycle(context) {
         // (kb_bible_commit's input schema), as the bible import does for
         // kb_import's `ref`.
         listTools: kbListTools,
+        branchWithdrawals,
         // D6 in-sprint ping-pong guard (promotionCandidates): re-hash a
         // candidate's cited files on demand to tell "basis unchanged since
         // the demotion" from "basis moved on" -- see createCurrentFileHashes.
