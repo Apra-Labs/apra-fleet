@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "22bbb3cfdfd5d77962b5fb6d85da8c1e833f79c1",
     "branch": "main",
-    "entry_count": 149
+    "entry_count": 151
   },
   "entries": [
     {
@@ -27,6 +27,29 @@
         "packages/apra-fleet-se/src/supervisor/fleet-members.mjs": "186eaa038d775ac2912e80b9b2214da2ae00bf3a",
         "src/services/onboarding.ts": "20513f4211fed7b80c6d86d321a1fcf3afb01382",
         "src/services/tool-registry.ts": "9b38a4b703924d141c74ccc300f92f8a7bb3315e"
+      }
+    },
+    {
+      "id": "050f0390-9472-49e2-92f4-1de76345f618",
+      "type": "knowledge",
+      "title": "KB work client warnPending is once-per-client; only main() finally and the fatal guard call it",
+      "summary": "kb.mjs warnPending sets a warnedPending latch on its first call, even when nothing is pending, so a second call prints nothing. Its only callers are runner.js main() finally and fatal-diagnostics.mjs via kbWorkOf; the final-review and harvest calls were removed.",
+      "symbols": [
+        "warnPending",
+        "createKbWorkClient",
+        "installFatalDiagnosticsGuard"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/fleet-sprint/fatal-diagnostics.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T16:42:13.781Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/fatal-diagnostics.mjs": "22de2445e0a64427b585d8bccafc3d4e8275e24b",
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "d34eb19cf8772e37109a45ab3a3546eef7477017",
+        "packages/apra-fleet-se/fleet-sprint/runner.js": "b046204308612a6300f176700ed70407b59bcc2b"
       }
     },
     {
@@ -1046,6 +1069,34 @@
         "packages/apra-fleet-se/test/supervisor-csrf-guard.test.mjs": "3e0e41677274ac685d61218451e4ff40d2ce09a5",
         "packages/apra-fleet-workflow/src/viewer/index.mjs": "40a249163390fa53bb1bc336418433a5792f83ea",
         "packages/apra-fleet-workflow/src/viewer/request-guard.mjs": "7ec63f0bc021035080ea03d03f64f7ba0ec3bf75"
+      }
+    },
+    {
+      "id": "57f15e8f-cee5-480a-9a64-f494f2ae0a1b",
+      "type": "knowledge",
+      "title": "PR comment builders return {id, body, ref} and take ref back as comment_ref",
+      "summary": "list-comments mapResponse yields [{id, body, ref}]; update-comment/delete-comment take that ref as comment_ref. ADO refs are {threadId, commentId} (root comment of each live non-system thread); GitHub and Bitbucket refs are {id}. Descriptor limits are read with getProviderTextLimits.",
+      "symbols": [
+        "buildListCommentsCommand",
+        "buildUpdateCommentCommand",
+        "buildDeleteCommentCommand",
+        "getProviderTextLimits"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/vcs-module.mjs",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/github.mjs",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/azure-devops.mjs",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/bitbucket.mjs",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/index.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T16:42:12.584Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/vcs-module.mjs": "0219266d33622f15f7289a8a83e8b211840000f1",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/azure-devops.mjs": "4ff8fe70a60ffa054e4a44200b74c08b9bcabeea",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/bitbucket.mjs": "4fad11fe55cb87e908aa0dc7dffd5f67853f38f0",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/github.mjs": "f8ec21d53da88e26596b1a1fb764fdd8c28ba94f",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/index.mjs": "db48759db7e9e1c4a2f91bc03199bd073a207b63"
       }
     },
     {
