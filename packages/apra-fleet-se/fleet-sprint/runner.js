@@ -2974,6 +2974,30 @@ async function runSprintCycle(context) {
 
     await updateDashboard();
 
+    // Target visibility, checked UNCONDITIONALLY before any dispatch or bead
+    // mutation: a target id that is not visible to the backlog member's bd
+    // clone at all is a different problem from beads being closed/done, and one
+    // valid id plus one bad id must not run a full sprint on the valid one.
+    // Reuses the shared project-wide snapshot (cached; no extra bd call).
+    {
+        const knownTargetIds = new Set((await fetchAllBeadsShared()).map((b) => b.id));
+        const invisibleTargets = targetIssues.filter((id) => !knownTargetIds.has(id));
+        if (invisibleTargets.length > 0) {
+            throw new PreSprintValidationError(
+                `Pre-sprint validation failed: ${invisibleTargets.length} of ${targetIssues.length} target issue id(s) ` +
+                `are not visible to the backlog member ('${backlogMember}')'s bd clone at all: ` +
+                `${invisibleTargets.join(', ')}. This is NOT the same as those beads being closed/done -- it usually ` +
+                `means they were created/updated on a different clone that was never synced to the shared Dolt remote ` +
+                `(dolt-push it there first), the id is misspelled or carries the wrong prefix, or this member's clone has not picked them up yet. Scope: '${sprintFilter}'.`,
+                {
+                    reason: PRE_SPRINT_REFUSAL_REASONS.TARGET_NOT_VISIBLE,
+                    scope: sprintFilter,
+                    invisibleTargets,
+                }
+            );
+        }
+    }
+
     // readyLeafBeads(), not raw bdListScoped('--ready --json'): bd's own
     // `--ready` reports a decomposed childful target (e.g. this sprint's own
     // --issue target once it has children) as ready too, which would make
@@ -3046,36 +3070,6 @@ async function runSprintCycle(context) {
 
         if (initialBeads.length === 0) {
             if (notDoneBeads.length === 0) {
-                // Distinguish "every target issue is genuinely done" from "one
-                // or more target ids are not visible to this orchestrator
-                // member's own bd clone AT ALL" -- the latter reads
-                // identically as "Nothing to do" without this check (an empty
-                // `notDoneBeads` either way), but is a completely different
-                // problem: those beads are not closed, they are invisible
-                // here, most commonly because they were created/mutated on a
-                // different clone that was never `bd dolt push`ed to the
-                // shared remote before this sprint launched, or because a
-                // members-persistent-across-sprints orchestrator (see
-                // DoltSync.syncBefore's fatal:true D-pull above) still hasn't
-                // synced them for some other reason. Reusing the already-
-                // fetched project-wide snapshot -- no extra bd call.
-                const allBeadsForVisibilityCheck = await fetchAllBeadsShared();
-                const knownIds = new Set(allBeadsForVisibilityCheck.map((b) => b.id));
-                const invisibleTargets = targetIssues.filter((id) => !knownIds.has(id));
-                if (invisibleTargets.length > 0) {
-                    throw new PreSprintValidationError(
-                        `Pre-sprint validation failed: ${invisibleTargets.length} of ${targetIssues.length} target issue id(s) ` +
-                        `are not visible to the backlog member ('${backlogMember}')'s bd clone at all: ` +
-                        `${invisibleTargets.join(', ')}. This is NOT the same as those beads being closed/done -- it usually ` +
-                        `means they were created/updated on a different clone that was never synced to the shared Dolt remote ` +
-                        `(dolt-push it there first) or this member's clone has not picked them up yet. Scope: '${sprintFilter}'.`,
-                        {
-                            reason: PRE_SPRINT_REFUSAL_REASONS.TARGET_NOT_VISIBLE,
-                            scope: sprintFilter,
-                            invisibleTargets,
-                        }
-                    );
-                }
                 throw new PreSprintValidationError(
                     `Pre-sprint validation failed: No open/in-progress/blocked/deferred beads found for scope '${sprintFilter}'. Nothing to do.`,
                     { reason: PRE_SPRINT_REFUSAL_REASONS.NOTHING_TO_DO, scope: sprintFilter }
