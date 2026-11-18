@@ -216,6 +216,18 @@ response then also carries `refused`; the same holds for `kb_capture` with
 `E-MEMBER-VIEW-READ-ONLY`. A FULL session reads and writes the per-repo DB
 unchanged.
 
+A MEMBER `kb_query` that omits `limit` returns at most 6 rows in
+`l1_results`, counted after the project and global results are merged. Each
+row is a summary row with exactly `id`, `type`, `title`, `summary`,
+`confidence`, `source_files` and `symbols` (no `content`), `l2_expanded` is
+empty, and any `related_claims` rows have the same summary shape. Any
+explicit `limit` keeps its meaning: up to that many rows per side, the full
+row shape, and the content of the top 5 hits in `l2_expanded`. The
+confidence default (CONFIRMED, undisputed) and an explicit `confidence` list
+behave as for any other caller. FULL sessions keep the default limit of 20
+and the full shape. The `flagged_only` branch and an `own_scope` read (which
+needs the full row to find what the caller may demote) are not affected.
+
 A row imported from the bible (`kb_import`) carries NO `member:<uuid>` tag at
 all -- bible entries are not stamped with any one member's identity. The
 consequence for `kb_demote` follows directly from the own-scope rule above,
@@ -726,7 +738,15 @@ another project or none):
 `GET /api/kb/capabilities` (same auth and project check) answers
 `{contract, routes, branch_aware}`: `contract` is the contract version
 (`"v1"`), `routes` the route names it serves, `branch_aware` whether it keeps
-entries per branch (section 2.9.2). Fleet's client:
+entries per branch (section 2.9.2). It may also carry the optional
+`query_filters`, an array naming the optional `kb_query` request filters
+`GET /api/kb/query` honours: `files` and `symbols` (the cited filter,
+section 4.6), sent as JSON-array query parameters. The field is additive: a
+server without it, or not listing a filter, honours none (unknown names are
+ignored), and fleet never sends it a filter it does not list -- such a
+`kb_query` fails with `E-KB-HTTP-UNSUPPORTED` naming the filter, because a
+server that ignored an unknown parameter would answer unfiltered. Fleet's
+client:
 
 - reads it once per connection, and again after a connection error or a
   failed read of it (a 5xx or 429 answer to another request does not trigger
@@ -779,10 +799,11 @@ entry it does not hold, or one outside the caller's scope, with 404 and body
 that tells an unknown entry from a missing route.
 
 Fleet's `kb-server` always serves a local SQLite KB: it serves, and its
-capabilities list, every route above, `demote` and `withdraw` included, and it
-reports `branch_aware: false`. It is the reference implementation of these
-routes; the http fixtures under `fixtures/` and the route fixtures under
-`route-fixtures/` are recorded against it.
+capabilities list, every route above, `demote` and `withdraw` included, it
+reports `branch_aware: false`, and it lists `query_filters: ["files", "symbols"]`.
+It is the reference implementation of these routes; the http fixtures under
+`fixtures/` and the route fixtures under `route-fixtures/` are recorded against
+it.
 
 `demote` is `POST /api/kb/demote` `{id, reason, evidence_files}`, answered
 `{id, previous_confidence, new_confidence}`; like `promote` it is sent by id
@@ -1490,9 +1511,9 @@ proceeds.
 **THE RULE.** `kb_query` MUST return exactly one of two mutually exclusive
 response shapes, selected by the request: when `flagged_only: true`, the
 response MUST be `{flagged_entries, total, note}`; otherwise it MUST be
-`{l1_results, l2_expanded, related_claims?}`. At least one of `query`, `tag`,
-or `flagged_only` MUST be supplied; a provider MUST refuse a request carrying
-none of the three. A consumer MUST treat this section's response shapes, and
+`{l1_results, l2_expanded, related_claims?}`. At least one of `query`,
+`files`, `symbols`, `tag` or `flagged_only` MUST be supplied; a provider MUST
+refuse a request carrying none of them. A consumer MUST treat this section's response shapes, and
 every other `kb_*` response shape, as a DIFFERENT KIND of claim than the
 request shapes documented elsewhere in this spec: they are OBSERVED, not
 derived from an enforced schema, because no tool in this surface declares
@@ -1565,6 +1586,36 @@ store that cannot filter MUST filter the merged result itself before
 responding (`src/tools/kb-query.ts` `passesTrustFilter` does this on top of
 the sqlite provider's SQL filter). Test hook: the `kb_query`
 `happy-confirmed-only` fixture and `tests/knowledge/kb-query-trust-filter.test.ts`.
+
+**CITED FILTER.** The default branch also accepts `files` and `symbols`, each
+a non-empty array of non-empty strings, the way to look up knowledge by file.
+They form a HARD filter, never a ranking signal: an implementation MUST
+return only entries whose `source_files` cite one of `files` or whose
+`symbols` name one of `symbols` (with both, either match keeps the entry),
+and MUST NOT return any other entry, however strongly it matches `query`. A
+`files` value matches a stored path equal to it or, as a directory, any
+stored path under it (`src/services` matches `src/services/a.ts`, not
+`src/services-old/a.ts`). A `files` value is normalised before matching:
+backslashes become `/`, repeated `/` collapse, a leading `./` and a trailing
+`/` are dropped, and an absolute path inside the repository is made
+repo-relative (by fleet, before the request reaches any store). A stored
+`source_files` value is compared after converting backslashes to `/` and
+dropping one leading `./`; other non-canonical stored forms (repeated `/`,
+more than one leading `./`) are not guaranteed to match. A `files` value
+that names no path inside the repository (`.`, `./`) is refused. `symbols`
+match exactly (case-sensitive). Ranking inside the kept set is unchanged: the keyword
+ranking with `query`, newest first without it; either field may be used
+without `query`. The filters apply to `l1_results`, `l2_expanded` and the
+member split read alike; the `flagged_only` branch ignores them. A request
+naming neither field gets exactly the result it got before they existed.
+Under the http provider the filter is sent as `files` / `symbols` (JSON
+arrays) on `GET /api/kb/query` only when the server lists the field in
+`query_filters` of `GET /api/kb/capabilities` (section 2.9.1); otherwise the
+call fails with `E-KB-HTTP-UNSUPPORTED` naming the filter and nothing is
+sent. Fleet re-applies the filter to every answer not produced by its own
+SQLite store, so a server that ignored it still cannot widen the result.
+Test hook: `tests/knowledge/kb-query-cited-filter.test.ts` and the `kb_query`
+`happy-files-filter` and `http-files-filter` fixtures.
 
 **THE TEST HOOK.** The selector guard and both response shapes are checked
 by the round-trip harness at the request/happy-path level

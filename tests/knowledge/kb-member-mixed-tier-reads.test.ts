@@ -140,7 +140,8 @@ afterAll(() => {
 
 describe('kb_query in a MEMBER session with a mixed tier list', () => {
   it('returns the bible CONFIRMED entry and the caller\'s own capture, never another member\'s', async () => {
-    const out = JSON.parse(await as(memberA, () => kbQuery({ query: WORD, confidence: [...MIXED] })));
+    // An explicit limit keeps the full row shape and the L2 fetch this test checks.
+    const out = JSON.parse(await as(memberA, () => kbQuery({ query: WORD, confidence: [...MIXED], limit: 20 })));
     const got = ids(out.l1_results);
     expect(got).toEqual(expect.arrayContaining(['bible-e1', e2]));
     expect(got).not.toContain(e3);
@@ -169,7 +170,7 @@ describe('kb_query in a MEMBER session with a mixed tier list', () => {
   });
 
   it('an id in both the bible and the per-repo DB appears once, as the bible copy', async () => {
-    const out = JSON.parse(await as(memberA, () => kbQuery({ query: WORD, confidence: [...MIXED] })));
+    const out = JSON.parse(await as(memberA, () => kbQuery({ query: WORD, confidence: [...MIXED], limit: 20 })));
     const rows = (out.l1_results as Array<{ id: string; title: string; confidence: string }>).filter(e => e.id === dup);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ title: 'Sprocketmix duplicate bible copy', confidence: 'CONFIRMED' });
@@ -412,7 +413,7 @@ describe('MEMBER mixed-tier reads keep the caller\'s own CONFIRMED-in-DB capture
   });
 
   it('kb_query returns the caller\'s own CONFIRMED-in-DB capture, not another member\'s', async () => {
-    const out = JSON.parse(await as(memberA, () => kbQuery({ query: WORD2, confidence: [...MIXED] })));
+    const out = JSON.parse(await as(memberA, () => kbQuery({ query: WORD2, confidence: [...MIXED], limit: 20 })));
     const rows = out.l1_results as Array<{ id: string; confidence: string }>;
     expect(rows.find(e => e.id === aConf)).toMatchObject({ confidence: 'CONFIRMED' });
     expect(ids(rows)).not.toContain(bConf);

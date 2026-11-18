@@ -1,0 +1,19 @@
+{
+  "entries": [
+    {
+      "id": "4f54d973-5627-49c3-903a-466695892a45",
+      "type": "runbook",
+      "title": "gh 'Resource not accessible by integration' means re-mint provision_vcs_auth with git_access push+pr",
+      "summary": "When gh or git reports 'Resource not accessible by integration', the GitHub App token lacks the needed access. Re-mint with provision_vcs_auth using git_access push+pr (push alone cannot create PRs or dispatch workflows) and repos as full owner/repo names.",
+      "content": "error_signature: \"Resource not accessible by integration\" (gh / GitHub API 403). Cause: the GitHub App installation token minted by provision_vcs_auth was granted too little access (e.g. git_access push or read). push cannot create PRs or dispatch workflows. Fix: re-run provision_vcs_auth (github-app) with git_access: \"push+pr\" and repos passed as full owner/repo names (e.g. Apra-Labs/apra-fleet). Members provisioned only by sprint preflight have no stored access level and may fail with deploy_failed until re-minted. Evidence: GIT_ACCESS_DESCRIPTION and git_access enum (read, push, push+pr, admin, issues, full) in src/tools/provision-vcs-auth.ts.",
+      "symbols": [
+        "provisionVcsAuth"
+      ],
+      "source_files": [
+        "src/tools/provision-vcs-auth.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-09T16:39:19.026Z"
+    }
+  ]
+}

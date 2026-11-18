@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "5bfc7309d9fab9ead8aada7745fd165ecd32c07b",
     "branch": "main",
-    "entry_count": 147
+    "entry_count": 151
   },
   "entries": [
     {
@@ -713,6 +713,30 @@
       "updated_at": "2026-10-06T12:53:45.788Z"
     },
     {
+      "id": "42d10c19-9014-48ec-9b3c-96128a7379bb",
+      "type": "learning",
+      "title": "Adding a memory-contract fixture requires bumping count pins in two tests",
+      "summary": "tests/memory-contract-fixture-response-schema.test.ts pins the number of response fixtures (two places) and tests/memory-contract-roundtrip.test.ts pins the SCENARIO step count; every new fixture also needs a SCENARIO entry in roundtrip-harness.mjs in the same position as in record-fixtures.mjs.",
+      "symbols": [
+        "SCENARIO",
+        "recordHappy"
+      ],
+      "source_files": [
+        "memory-contract/v1/tests/record-fixtures.mjs",
+        "memory-contract/v1/tests/roundtrip-harness.mjs",
+        "tests/memory-contract-fixture-response-schema.test.ts",
+        "tests/memory-contract-roundtrip.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T09:36:35.889Z",
+      "source_file_hashes": {
+        "memory-contract/v1/tests/record-fixtures.mjs": "0f0ea814c48342fa5c03a5829ff4230f7b0da10f",
+        "memory-contract/v1/tests/roundtrip-harness.mjs": "97aa24ec3cb3930bee30fd38a701ecbef656f1ba",
+        "tests/memory-contract-fixture-response-schema.test.ts": "48fd82fb5b2e3b1d9128886714992095524f4560",
+        "tests/memory-contract-roundtrip.test.ts": "0bcd324c608907705d92b3d0850e909cde0eb8bc"
+      }
+    },
+    {
       "id": "43bc4917-e7c1-4be0-9a0a-c6fc407a155c",
       "type": "knowledge",
       "title": "Playbook Permissions sections are contract-tested against fleet profiles",
@@ -769,6 +793,36 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-06T09:57:31.784Z"
+    },
+    {
+      "id": "459915a7-6ad2-455e-b2a9-49fed209c415",
+      "type": "knowledge",
+      "title": "kb_query files/symbols cited filter is a hard SQL filter gated by query_filters over http",
+      "summary": "kb_query files/symbols are a hard filter (cited-filter.ts) applied in SqliteProvider.query next to the tag filter. HttpKbProvider forwards them only when GET /api/kb/capabilities lists them in the optional query_filters field and otherwise throws E-KB-HTTP-UNSUPPORTED before sending. kb_query re-applies the filter (entryCites) only to answers from non-SQLite providers.",
+      "symbols": [
+        "normalizeCitedFilter",
+        "citedFilterSql",
+        "entryCites",
+        "trustedL1",
+        "KB_SERVER_CAPABILITIES",
+        "readCapabilities"
+      ],
+      "source_files": [
+        "src/services/knowledge/cited-filter.ts",
+        "src/services/knowledge/sqlite-provider.ts",
+        "src/services/knowledge/http-provider.ts",
+        "src/commands/kb-server.ts",
+        "src/tools/kb-query.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T08:59:16.820Z",
+      "source_file_hashes": {
+        "src/commands/kb-server.ts": "cbbda4ebbc1e10083a189b4bd402515323883295",
+        "src/services/knowledge/cited-filter.ts": "e8f1e7c635aef6f793397e339f71ad0d500359bc",
+        "src/services/knowledge/http-provider.ts": "b3ea4cd148db228c2bc20e674aaf38b38b2ecc9a",
+        "src/services/knowledge/sqlite-provider.ts": "8aabc88c6ee2c507df100e5c1c57c237e28fe4d5",
+        "src/tools/kb-query.ts": "83911bc5bf9133916d3753f3706d9fee83d19868"
+      }
     },
     {
       "id": "45fa7bb5-1af4-474d-a958-0c1d7f6ec75c",
@@ -1155,6 +1209,34 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:16.498Z"
+    },
+    {
+      "id": "6a23848a-42af-47cf-aacb-678b0936dd74",
+      "type": "knowledge",
+      "title": "Member kb_query without limit returns 6 slim rows and no L2; own_scope exempt",
+      "summary": "readShape in src/tools/kb-query.ts: a MEMBER session (memberOwnerTag defined) that omits limit and does not set own_scope gets the merged L1 capped at MEMBER_DEFAULT_LIMIT, slim rows (MEMBER_SLIM_ROW_KEYS) and an empty l2_expanded. An explicit limit restores the per-side limit, full rows and the top-5 L2.",
+      "symbols": [
+        "readShape",
+        "slimRow",
+        "MEMBER_DEFAULT_LIMIT",
+        "MEMBER_SLIM_ROW_KEYS",
+        "kbQuery",
+        "splitQuery"
+      ],
+      "source_files": [
+        "src/tools/kb-query.ts",
+        "src/services/tool-registry.ts",
+        "memory-contract/v1/generate-contract.mjs",
+        "tests/knowledge/kb-member-query-defaults.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T07:39:52.918Z",
+      "source_file_hashes": {
+        "memory-contract/v1/generate-contract.mjs": "5920dff97dc9afc1b5b2788b967ad1ba68c68ff8",
+        "src/services/tool-registry.ts": "6d7da3becaa06aae076d9a6e5263b1a543a87d0a",
+        "src/tools/kb-query.ts": "479495a8ec0ae8124c94e354a3fc426ac7a82f04",
+        "tests/knowledge/kb-member-query-defaults.test.ts": "bf5d04bc43860f8a3bf7df1ec2f757e932eda45f"
+      }
     },
     {
       "id": "6b538682-67b1-4cf2-ab81-ae27d8d2bf8e",
@@ -2369,6 +2451,33 @@
         "src/services/vcs/types.ts": "64f8ad879942ce3fd098e910990d1fa3259298c5",
         "src/tools/provision-vcs-auth.ts": "39ca9fa23f8bf74428773eb3ee59deabd2ad20cf",
         "tests/provision-vcs-auth.test.ts": "aa71779179a2b17f9ba69174729562f3e2ee0e4b"
+      }
+    },
+    {
+      "id": "db97afd9-fbc4-4072-9dcd-7cc58f213b9b",
+      "type": "knowledge",
+      "title": "Keyword index entries_kw is kept current by a rowid queue drained on every read",
+      "summary": "SqliteProvider keyword reads use entries_kw (normalized FTS5). Triggers on entries queue changed rowids in kb_index_pending and every keyword read applies the queue first; kb_index_meta.kw_version triggers a rebuild on open when missing or old.",
+      "symbols": [
+        "ensureKeywordIndex",
+        "drainKeywordIndex",
+        "keywordSearch",
+        "KB_KEYWORD_INDEX_VERSION",
+        "KW_WEIGHTS"
+      ],
+      "source_files": [
+        "src/services/knowledge/kb-keyword-index.ts",
+        "src/services/knowledge/sqlite-provider.ts",
+        "src/services/knowledge/kb-normalize.ts",
+        "tests/knowledge/kb-keyword-index-upgrade.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T07:39:53.697Z",
+      "source_file_hashes": {
+        "src/services/knowledge/kb-keyword-index.ts": "0f8a6fc0d3e2cba6de887c9baf4491ad0b461f89",
+        "src/services/knowledge/kb-normalize.ts": "139b65c2d2dfe80424cc504a2bc5a6985bdddf7c",
+        "src/services/knowledge/sqlite-provider.ts": "973ba8ec462a7d0c0004c0eae8aa298d711d6612",
+        "tests/knowledge/kb-keyword-index-upgrade.test.ts": "5d97a31b2e45e8ac4ff4d87a7599cbf09c2faf7e"
       }
     },
     {

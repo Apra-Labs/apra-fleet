@@ -27,6 +27,7 @@ describe('kb_* wrappers refuse the removed scope keys', () => {
     for (const [method, tool, base] of [
         ['kbExport', 'kb_export', {}],
         ['kbBibleCommit', 'kb_bible_commit', { ids: ['a'], baseBranch: 'main', baseCommit: 'abc' }],
+        ['kbQuery', 'kb_query', { query: 'q', files: ['src/a.ts'] }],
     ]) {
         for (const key of KB_REMOVED_SCOPE_KEYS) {
             test(`${method} with ${key} throws E-SCOPE-KEY-REMOVED and sends nothing`, async () => {
