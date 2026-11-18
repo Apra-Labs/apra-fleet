@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
     buildSprintPrBody, buildSprintPrTitle, parseRunHistory, sanitizePrMarkdown,
-    RUN_HISTORY_MAX_ENTRIES,
+    RUN_HISTORY_MAX_ENTRIES, RUN_HISTORY_MARKER, fitSectionsToBudget,
 } from '../fleet-sprint/pr-body.mjs';
 import {
     buildCreatePrCommand, buildFindPrCommand, buildUpdatePrCommand, PR_DESCRIPTION_MAX_LENGTH,
@@ -306,6 +306,171 @@ describe('find/update-pull-request builders', () => {
     });
 });
 
+
+// -----------------------------------------------------------------------------
+// Merge assessment section + the shared PR-body section budget.
+// -----------------------------------------------------------------------------
+const ASSESSMENT = Object.freeze({
+    value: 'Operators see the merge recommendation first.',
+    risk: 'Low: additive optional field.',
+    default_path_changes: 'none',
+    blast_radius: 'Final Review output and the sprint PR body.',
+    upgrade_impact: 'none',
+    proof: 'Unit tests for schema, prompt and PR body.',
+    recommendation: 'merge_after_proof',
+    reason: 'No live PR raised on every hosting provider yet.',
+});
+
+/** The exact run-history marker block a body built at NOW for `run` ends with. */
+function markerBlock(run, verdict = 'PASS') {
+    return `<!-- ${RUN_HISTORY_MARKER}\n${JSON.stringify([{ run, date: '2026-10-01T09:30Z', verdict }])}\n-->`;
+}
+
+describe('sprint PR body: Merge assessment section', () => {
+    test('present -> a Merge assessment section near the top, above the notes, with every field and the recommendation', () => {
+        const body = sampleBody({ mergeAssessment: ASSESSMENT });
+        const expectedSection = [
+            '### Merge assessment',
+            '',
+            '- **Recommendation:** `merge_after_proof` -- No live PR raised on every hosting provider yet.',
+            '- **Value:** Operators see the merge recommendation first.',
+            '- **Risk:** Low: additive optional field.',
+            '- **Default-path changes:** none',
+            '- **Blast radius:** Final Review output and the sprint PR body.',
+            '- **Upgrade impact:** none',
+            '- **Proof:** Unit tests for schema, prompt and PR body.',
+            '',
+            '### Reviewer notes',
+        ].join('\n');
+        assert.ok(body.includes('- **Run:** `run-2` (2026-10-01T09:30Z)\n\n' + expectedSection), body);
+        assert.ok(body.indexOf('### Merge assessment') < body.indexOf('### Reviewer notes'));
+        // Everything outside the new section is exactly the no-assessment body.
+        assert.equal(body.replace(expectedSection, '### Reviewer notes'), EXPECTED_BODY);
+    });
+
+    test('absent (undefined, null or not an object) -> no section and the body is byte-identical to the pre-assessment output', () => {
+        for (const mergeAssessment of [undefined, null, 'merge', 42, []]) {
+            const body = sampleBody({ mergeAssessment });
+            assert.equal(body, EXPECTED_BODY, `mergeAssessment=${JSON.stringify(mergeAssessment)}`);
+            assert.ok(!body.includes('Merge assessment'));
+        }
+    });
+
+    test('assessment text is sanitized: no raw HTML, no credential placeholder, no heading, one line per field', () => {
+        const body = sampleBody({ mergeAssessment: { ...ASSESSMENT, risk: '<b>x</b> {{vcs_token}}\n# boom\nsecond line', recommendation: 'yolo' } });
+        const section = body.slice(body.indexOf('### Merge assessment'), body.indexOf('### Reviewer notes'));
+        assert.ok(!section.includes('<b>') && !/\{\{/.test(section), section);
+        assert.ok(!/^#/m.test(section.replace('### Merge assessment', '')), section);
+        assert.ok(section.includes('- **Risk:** &lt;b>x&lt;/b> { {vcs_token} } \\# boom second line'), section);
+        assert.ok(section.includes('- **Recommendation:** (not given) --'), 'an unknown recommendation is never rendered as if valid');
+    });
+
+    test('an oversized assessment is clipped within the budget; body <= PR_DESCRIPTION_MAX_LENGTH and the run-history marker block is intact', () => {
+        const huge = Object.fromEntries(Object.keys(ASSESSMENT).map((k) => [k, `${k} `.repeat(3000)]));
+        huge.recommendation = 'do_not_merge';
+        const longNotes = Array.from({ length: 400 }, (_, i) => `- finding ${i}: ${'x'.repeat(30)}`).join('\n');
+        const body = sampleBody({ mergeAssessment: huge, notes: longNotes, costAnalysis: 'c'.repeat(2000) });
+        assert.ok(body.length <= PR_DESCRIPTION_MAX_LENGTH, `body length ${body.length} exceeds ${PR_DESCRIPTION_MAX_LENGTH}`);
+        assert.ok(body.endsWith('\n' + markerBlock('run-2')), `the marker block must close the body verbatim:\n${body.slice(-300)}`);
+        const section = body.slice(body.indexOf('### Merge assessment'), body.indexOf('### Reviewer notes'));
+        assert.ok(section.includes('- **Recommendation:** `do_not_merge`'), 'the recommendation line survives clipping');
+        assert.ok(section.includes('[... truncated ...]'), 'an oversized field is visibly clipped');
+        assert.ok(section.length < 3000, `section length ${section.length}`);
+        assert.ok(body.includes('Do NOT auto-merge'), 'the human-review line always survives');
+    });
+
+    test('two extra registered sections plus an oversized assessment: body <= 3500 and ends with the run-history marker', () => {
+        const huge = Object.fromEntries(Object.keys(ASSESSMENT).map((k) => [k, 'y'.repeat(5000)]));
+        huge.recommendation = 'merge';
+        const body = sampleBody({
+            maxLength: 3500,
+            notes: 'z'.repeat(6000),
+            mergeAssessment: huge,
+            sections: [
+                { id: 'kb-report', priority: 60, heading: 'Knowledge bank report', text: Array.from({ length: 200 }, (_, i) => `- entry ${i}`).join('\n') },
+                { id: 'kb-demotions', priority: 40, heading: 'Knowledge bank demotions', text: 'd'.repeat(4000) },
+            ],
+        });
+        assert.ok(body.length <= 3500, `body length ${body.length} exceeds 3500`);
+        assert.ok(body.endsWith('\n' + markerBlock('run-2')), body.slice(-300));
+        assert.ok(body.includes('### Merge assessment') && body.includes('### Reviewer notes'));
+    });
+
+    test('extra sections render after the notes when they fit, and the lower priority one is clipped first', () => {
+        const fit = sampleBody({ sections: [{ id: 'a', priority: 60, heading: 'Extra A', text: 'alpha' }] });
+        assert.ok(fit.includes('Follow-ups') && fit.indexOf('### Extra A\n\nalpha') > fit.indexOf('### Reviewer notes'));
+        assert.ok(fit.indexOf('### Extra A') < fit.indexOf('### Details'));
+        // Room for the high priority section (text + heading) but not both.
+        const limit = EXPECTED_BODY.length + 450;
+        const tight = sampleBody({
+            maxLength: limit,
+            sections: [
+                { id: 'hi', priority: 70, heading: 'High', text: 'h'.repeat(400) },
+                { id: 'lo', priority: 20, heading: 'Low', text: 'l'.repeat(400) },
+            ],
+        });
+        assert.ok(tight.length <= limit, `length ${tight.length}`);
+        assert.ok(tight.includes('h'.repeat(400)), 'the higher priority section keeps its full text');
+        assert.ok(!tight.includes('l'.repeat(400)), 'the lower priority section is the one clipped');
+    });
+});
+
+describe('fitSectionsToBudget', () => {
+    const render = (t) => ['HEAD', t.a && `A:${t.a}`, t.b && `B:${t.b}`, 'MARKER'].filter(Boolean).join('\n');
+
+    test('everything fits -> texts unchanged', () => {
+        const out = fitSectionsToBudget({ maxLength: 100, render, sections: [{ id: 'a', priority: 2, text: 'aa' }, { id: 'b', priority: 1, text: 'bb' }] });
+        assert.equal(out.body, 'HEAD\nA:aa\nB:bb\nMARKER');
+        assert.deepEqual(out.clipped, []);
+    });
+
+    test('over budget -> the higher priority section keeps its text, total <= maxLength, the frame is untouched', () => {
+        const out = fitSectionsToBudget({ maxLength: 200, render, sections: [{ id: 'a', priority: 1, text: 'a'.repeat(300) }, { id: 'b', priority: 9, text: 'b'.repeat(100) }] });
+        assert.ok(out.body.length <= 200, `length ${out.body.length}`);
+        assert.equal(out.texts.b, 'b'.repeat(100));
+        assert.ok(out.body.startsWith('HEAD\n') && out.body.endsWith('\nMARKER'));
+        assert.deepEqual(out.clipped, ['a']);
+    });
+
+    test('a section too small to carry anything is dropped, never left as a stub', () => {
+        const out = fitSectionsToBudget({ maxLength: 120, render, sections: [{ id: 'a', priority: 1, text: 'a'.repeat(300) }, { id: 'b', priority: 9, text: 'b'.repeat(100) }] });
+        assert.ok(out.body.length <= 120);
+        assert.equal(out.texts.a, '');
+        assert.ok(!out.body.includes('A:'));
+    });
+
+    test('duplicate section ids are refused', () => {
+        assert.throws(() => fitSectionsToBudget({ maxLength: 10, render, sections: [{ id: 'a', priority: 1, text: '' }, { id: 'a', priority: 2, text: '' }] }), /duplicate section id/);
+    });
+});
+
+describe('Publish PR: the final verdict merge assessment reaches the PR body', () => {
+    test('a final verdict carrying merge_assessment renders the section with every field and the recommendation', async () => {
+        const gh = fakeGitHub();
+        await publish({ gh, verdict: 'PASS', notes: 'All good.', runId: 'run-ma', member: 'pub-ma', mergeAssessment: ASSESSMENT });
+        const body = gh.pr.body;
+        assert.ok(body.includes('### Merge assessment'), body);
+        assert.ok(body.includes('- **Recommendation:** `merge_after_proof` -- No live PR raised on every hosting provider yet.'), body);
+        for (const line of ['**Value:**', '**Risk:**', '**Default-path changes:**', '**Blast radius:**', '**Upgrade impact:**', '**Proof:**']) {
+            assert.ok(body.includes(line), `missing ${line}`);
+        }
+        assert.ok(body.indexOf('### Merge assessment') < body.indexOf('### Reviewer notes'));
+    });
+
+    test('a final verdict without merge_assessment raises a body with no section, byte-identical to buildSprintPrBody without it', async () => {
+        const gh = fakeGitHub();
+        await publish({ gh, verdict: 'PASS', notes: 'All good.', runId: 'run-nma', member: 'pub-nma' });
+        assert.ok(!gh.pr.body.includes('Merge assessment'));
+        const stamp = /\(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z\)/.exec(gh.pr.body)[0].slice(1, -1);
+        const expected = buildSprintPrBody({
+            verdict: 'PASS', goal: 'Ship X', branch: 'feat/x', baseBranch: 'main', runId: 'run-nma',
+            now: new Date(`${stamp.slice(0, -1)}:00Z`), notes: 'All good.', details: [null, null],
+            setAside: [], waited: [], costAnalysis: undefined,
+        });
+        assert.equal(gh.pr.body, expected);
+    });
+});
+
 // -----------------------------------------------------------------------------
 // Existing-PR path: a fake GitHub behind vcs_credential_exec.
 // -----------------------------------------------------------------------------
@@ -350,7 +515,7 @@ const remoteCommand = async (cmd) => (cmd === 'git remote get-url origin'
     ? { ok: true, output: 'https://github.com/acme/widgets.git', error: null }
     : { ok: true, output: '', error: null });
 
-async function publish({ gh, verdict, notes, runId, member, costAnalysis }) {
+async function publish({ gh, verdict, notes, runId, member, costAnalysis, mergeAssessment }) {
     const logs = [];
     const result = await runPublishPrPhase({
         phase: () => {},
@@ -363,7 +528,7 @@ async function publish({ gh, verdict, notes, runId, member, costAnalysis }) {
         finalCycleLabel: '1',
         gitSync: { pushGitAfter: async () => {}, syncBeadsAfter: async () => {} },
         getMemberForRole: () => member,
-        finalVerdictResult: { verdict, notes },
+        finalVerdictResult: mergeAssessment ? { verdict, notes, merge_assessment: mergeAssessment } : { verdict, notes },
         costAnalysis,
     });
     return { result, logs };
