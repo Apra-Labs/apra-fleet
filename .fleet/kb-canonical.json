@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "c1a438e81c81f0966e60d04ae98a7eb00d3c7d06",
     "branch": "feat/kb-0.4.5",
-    "entry_count": 187
+    "entry_count": 189
   },
   "entries": [
     {
@@ -2262,6 +2262,32 @@
       }
     },
     {
+      "id": "8cc5f506-f861-4fed-b49f-8967a1f7abd9",
+      "type": "learning",
+      "title": "Round-trip harness: setup op 'ref' and dotted derive paths for nested request ids",
+      "summary": "memory-contract/v1/tests/roundtrip-harness.mjs SCENARIO derive accepts dotted fields such as 'withdrawals.0.id', and setup ops include {op:'ref', repo, name}, which the test provider runs as git update-ref <name> HEAD. New fixtures must also bump the count pins in two contract tests.",
+      "symbols": [
+        "SCENARIO",
+        "runRoundTrip",
+        "coverageFailures",
+        "applySetup"
+      ],
+      "source_files": [
+        "memory-contract/v1/tests/roundtrip-harness.mjs",
+        "memory-contract/v1/tests/record-fixtures.mjs",
+        "tests/memory-contract-roundtrip.test.ts",
+        "tests/memory-contract-fixture-response-schema.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T05:03:42.626Z",
+      "source_file_hashes": {
+        "memory-contract/v1/tests/record-fixtures.mjs": "c4c86769798777077d122a6647dbbdcb66af59d5",
+        "memory-contract/v1/tests/roundtrip-harness.mjs": "61747ee590c3fbd2887f463abcaeedd4cb35aa53",
+        "tests/memory-contract-fixture-response-schema.test.ts": "c37f1bc61d88fd65ce4e7c59119bc0982a5f9999",
+        "tests/memory-contract-roundtrip.test.ts": "38220f6659726814e031fd84e416010cb7fa429a"
+      }
+    },
+    {
       "id": "8e76e27c-13eb-40bd-bd9f-65473ee3833b",
       "type": "learning",
       "title": "KB capture paths must not write the fleet log in tests: hermetic guards snapshot FLEET_DIR/logs",
@@ -2698,6 +2724,36 @@
         "packages/apra-fleet-se/fleet-sprint/viewer-extensions.mjs": "23495a3465b50733210cde0f90e170cb1134762e",
         "packages/apra-fleet-se/src/supervisor/api.mjs": "00b5ffb6c77cf66f3d2775aa5e86d02ed79069c2",
         "packages/apra-fleet-workflow/src/viewer/index.mjs": "040715fdd4a6ad18504dbb68dba67fa9a2c3053a"
+      }
+    },
+    {
+      "id": "a8828f19-3d6c-4d94-9e85-725075bc50da",
+      "type": "knowledge",
+      "title": "KB server withdraw route applies merged-bible tombstones with the one re-promotion rule",
+      "summary": "POST /api/kb/withdraw on fleet's kb-server calls SqliteProvider.applyBibleWithdrawal, which shares applyTombstoneToRow with applyBibleDemotion. Each id answers withdrawn, repromoted, not_confirmed or not_found; the route is idempotent and never creates a row or raises confidence. Its conformance fixtures live in memory-contract/v1/route-fixtures, not fixtures/.",
+      "symbols": [
+        "applyBibleWithdrawal",
+        "applyTombstoneToRow",
+        "applyBibleDemotion",
+        "KB_OPTIONAL_ROUTES",
+        "KB_SERVER_CAPABILITIES",
+        "runWithdrawRouteScenarios"
+      ],
+      "source_files": [
+        "src/commands/kb-server.ts",
+        "src/services/knowledge/sqlite-provider.ts",
+        "src/services/knowledge/http-provider.ts",
+        "memory-contract/v1/tests/withdraw-route-scenarios.mjs",
+        "tests/memory-contract-withdraw-route.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T04:14:39.403Z",
+      "source_file_hashes": {
+        "memory-contract/v1/tests/withdraw-route-scenarios.mjs": "6ac2a9b2ce5b5f097d49d838e0833b0f934f8548",
+        "src/commands/kb-server.ts": "38fbd3feea80796587334934db9726cd0f8009bb",
+        "src/services/knowledge/http-provider.ts": "9b9cbfc7b5a05ca8fc376d106de1d9c7a44efb7a",
+        "src/services/knowledge/sqlite-provider.ts": "ec996556838c015977c46f2ace139f20ac7201d3",
+        "tests/memory-contract-withdraw-route.test.ts": "6547adee8c5099d763289fb85b198fdc6d550829"
       }
     },
     {

@@ -10,8 +10,11 @@ import { filterProjectBibleCandidates, hasCarriedBasis, selectLegacyBibleBackfil
 import { logWarn } from '../utils/log-helpers.js';
 import { KB_AUDIT_NOTE_START } from '../services/knowledge/types.js';
 import { isSqliteProject } from '../services/knowledge/require-sqlite-project.js';
-import { TOMBSTONE_DEMOTED, standingAgainstTombstone, type BibleTombstone } from '../services/knowledge/bible-import.js';
-import { bibleBytesBlobId } from '../services/knowledge/bible-blob-id.js';
+import {
+  TOMBSTONE_DEMOTED, TOMBSTONE_WITHDRAWN, parseBibleDocument, standingAgainstTombstone, type BibleTombstone,
+} from '../services/knowledge/bible-import.js';
+import { bibleBytesBlobId, commitResolves, readCommittedBibleBlob } from '../services/knowledge/bible-blob-id.js';
+import { isRepoRelativePath } from '../services/knowledge/bible-basis-filter.js';
 import { KbMaintainerGrantError, memberLacksKbMaintainer } from '../services/knowledge/kb-maintainer-grant.js';
 import { withBibleFileLock } from '../services/knowledge/bible-file-lock.js';
 import {
@@ -86,12 +89,56 @@ import {
 // Trust anchor: when called from a FULL or kb_maintainer session, the blob id
 // of every bible this writes is recorded in the per-repo KB DB, which is what
 // lets a member session without the grant import that bible (kb-import.ts).
+//
+// Withdrawals: a reviewer's judgement that a bible entry no longer holds,
+// carried by the branch as a tombstone {id, at, reason: "withdrawn", note,
+// evidence_files}. The entry leaves `entries`, but the LOCAL row is never
+// changed -- other clones (and this one) apply it only once the branch merges
+// and the merged base bible is imported. Because the local row keeps no
+// demoted_at, the every-call demotion rule below can never turn an unmerged
+// withdrawal into a "demoted" tombstone on a later, unrelated commit (on this
+// branch or on another one that still carries the entry).
+//
+// Restores: restore_ids undoes a tombstone THIS BRANCH added -- one the bible at
+// baseCommit does not carry -- and re-adds the base bible's entry for that id
+// byte-identical when the base has one. A tombstone the base already carries
+// (merged history) is never removed here; anything else is a no-op.
+//
+// Under the http KB provider the entry merge is skipped (bible_skipped), but
+// withdrawals and restores still write the tombstone half of
+// .fleet/kb-canonical.json, creating a tombstone-only v3 bible when absent and
+// keeping any existing entries byte-identical.
+
+/** Minimum withdrawal note length, measured after whitespace is collapsed. */
+export const MIN_WITHDRAWAL_NOTE_LENGTH = 20;
+
+/** Every whitespace run becomes one space, then trim: the stored note. */
+export function collapseWithdrawalNote(note: string): string {
+  return (note ?? '').replace(/\s+/g, ' ').trim();
+}
+
+const withdrawalSchema = z.object({
+  id: z.string().min(1).describe('Id of the bible entry being withdrawn.'),
+  note: z.string()
+    .refine(n => collapseWithdrawalNote(n).length >= MIN_WITHDRAWAL_NOTE_LENGTH, {
+      message: 'note must be at least ' + MIN_WITHDRAWAL_NOTE_LENGTH + ' characters after whitespace is collapsed',
+    })
+    .describe('Why the entry no longer holds -- at least 20 characters after whitespace is collapsed. Stored collapsed in the tombstone.'),
+  evidence_files: z.array(z.string().min(1).refine(isRepoRelativePath, {
+    message: 'evidence_files must be repo-relative paths (no absolute path, no ".." segment)',
+  })).min(1)
+    .describe('At least one repo-relative file the judgement was checked against; an absolute path or a ".." segment is refused.'),
+});
 
 export const kbBibleCommitSchema = z.object({
   ids: z.array(z.string().min(1))
     .describe('Ids of the entries confirmed this round. Each must be a live (non-stale, non-superseded) CONFIRMED entry in this repository\'s KB whose recorded file basis still matches the cited files at the repo\'s HEAD commit (the same rule kb_export applies; uncommitted edits are ignored); any other id is skipped and reported in skipped (reason not_confirmed_or_unknown, no_source_files for a CONFIRMED entry citing no source file, or basis_mismatch). Independently of the ids, every bible entry this KB holds as superseded or invalidated is removed and reported in removed; an empty list with no such entry makes no commit.'),
   demoted_ids: z.array(z.string().min(1)).optional()
     .describe('Ids demoted this round (kb_demote). Each must name a local entry that HAS a demoted_at and is now below CONFIRMED; any other id is skipped and reported in skipped with reason not_demoted_or_unknown. An admitted id is REMOVED from entries and recorded as an explicit tombstone {id, at, reason: "demoted"} in the bible demotions array, so other clones can apply the demotion instead of inferring it from an absence. Independently, every call does the same for each bible entry this KB holds as demoted, unless that bible entry was promoted after the local demotion (another clone re-promoted it). Re-admitting the same id through ids (a re-promotion) clears its tombstone.'),
+  withdrawals: z.array(withdrawalSchema).optional()
+    .describe('Bible entries withdrawn this round: [{id, note, evidence_files}]. An id is admitted when the bible already holds an entry for it, or this KB holds it CONFIRMED, not superseded and not a user-directive; any other id is skipped with reason not_withdrawable. An admitted id is removed from entries and recorded as a tombstone {id, at: now, reason: "withdrawn", note, evidence_files}; the local entry is NOT changed (the withdrawal takes effect for clones only once the branch merges). An id also merged through ids, or admitted through demoted_ids, in the same call is skipped (not_withdrawable). Under an http KB provider every well-formed withdrawal is admitted and only the tombstone is written.'),
+  restore_ids: z.array(z.string().min(1)).optional()
+    .describe('Ids whose tombstone this branch added and should be undone. A tombstone is removed only when the bible at baseCommit carries none for that id; the base bible\'s entry for the id, when it has one, is re-added byte-identical. Any other id is a no-op. Restored ids are reported in restored.'),
   enrich: z.array(z.object({
     id: z.string().min(1).describe('A CONFIRMED entry already in the bible, or merged by this same call through ids.'),
     content: z.string().optional().describe('The entry\'s new lesson body, 40 to 2000 characters. Must not repeat its summary.'),
@@ -119,12 +166,15 @@ export type KbBibleCommitInput = z.infer<typeof kbBibleCommitSchema>;
  *    match those files at HEAD (can clear once the files or the basis agree);
  *  - not_demoted_or_unknown: named in demoted_ids, but the local entry is
  *    unknown, was never demoted, or is CONFIRMED again;
+ *  - not_withdrawable: named in withdrawals, but neither in the bible's
+ *    entries nor a live CONFIRMED non-directive entry in this KB (or merged or
+ *    demoted by the same call).
  *  - enrich_invalid: an enrich item names no field, names an id already applied
  *    by this call, or breaks a capture rule (see enrichRefusal);
  *  - not_in_bible: an enrich id that is not in the bible after this call's merge.
  */
 export type KbBibleCommitSkipReason =
-  'not_confirmed_or_unknown' | 'no_source_files' | 'basis_mismatch' | 'not_demoted_or_unknown'
+  'not_confirmed_or_unknown' | 'no_source_files' | 'basis_mismatch' | 'not_demoted_or_unknown' | 'not_withdrawable'
   | 'enrich_invalid' | 'not_in_bible';
 
 export interface KbBibleCommitSkip {
@@ -145,6 +195,10 @@ export interface KbBibleCommitResult {
   merged: string[];
   /** Ids admitted from demoted_ids: removed from entries, tombstoned. */
   demoted: string[];
+  /** Ids admitted from withdrawals: removed from entries, tombstoned "withdrawn". */
+  withdrawn: string[];
+  /** Ids from restore_ids whose branch-added tombstone was removed. */
+  restored: string[];
   skipped: KbBibleCommitSkip[];
   removed: KbBibleCommitRemoval[];
   /** ENTRIES only -- a tombstone is not an entry. */
@@ -358,8 +412,24 @@ async function commitToBible(
   const enriched: string[] = [];
   // enriched is present only when the call sent enrich, so a call without it
   // answers exactly as before and a consumer pinned to an older schema still validates.
-  const done = (r: Omit<KbBibleCommitResult, 'path' | 'enriched' | 'not_committed_reason'> & { not_committed_reason?: string }): string =>
-    JSON.stringify({ path: outPath, ...r, ...(input.enrich !== undefined ? { enriched } : {}) });
+  const done = (
+    r: Omit<KbBibleCommitResult, 'path' | 'enriched' | 'not_committed_reason' | 'withdrawn' | 'restored'>
+      & { not_committed_reason?: string; withdrawn?: string[]; restored?: string[] },
+  ): string => JSON.stringify({
+    path: outPath, ...r, withdrawn: r.withdrawn ?? [], restored: r.restored ?? [],
+    ...(input.enrich !== undefined ? { enriched } : {}),
+  });
+  // Withdrawals deduped by id (last wins), note stored collapsed.
+  const withdrawalById = new Map<string, { id: string; note: string; evidence_files: string[] }>();
+  for (const w of input.withdrawals ?? []) {
+    withdrawalById.set(w.id, { id: w.id, note: collapseWithdrawalNote(w.note), evidence_files: [...w.evidence_files] });
+  }
+  const requestedWithdrawals = Array.from(withdrawalById.values());
+  const requestedRestores = Array.from(new Set(input.restore_ids ?? []));
+  const hasTombstoneWork = requestedWithdrawals.length > 0 || requestedRestores.length > 0;
+  const nowIso = new Date().toISOString();
+  const withdrawalTombstone = (w: { id: string; note: string; evidence_files: string[] }): BibleTombstone =>
+    ({ id: w.id, at: nowIso, reason: TOMBSTONE_WITHDRAWN, note: w.note, evidence_files: w.evidence_files });
 
   // No ids, no demotions and no bible entry that could be removed or enriched:
   // nothing to do, and the KB is not opened.
@@ -387,7 +457,7 @@ async function commitToBible(
     return true;
   };
 
-  if (requested.length === 0 && requestedDemotions.length === 0
+  if (requested.length === 0 && requestedDemotions.length === 0 && !hasTombstoneWork
     && (existingAtStart === null || existingAtStart.length === 0)) {
     const entryCount = existingAtStart?.length ?? 0;
     return done({
@@ -405,6 +475,11 @@ async function commitToBible(
     // bible file was only read leniently above (readBibleEntries never
     // throws): entry_count reports its size when parseable, and an unparseable
     // file is logged, never thrown over -- the skip is provider-wide.
+    if (hasTombstoneWork) {
+      return done(await commitTombstonesOnly(
+        repoPath, outPath, existingDoc, requestedWithdrawals.map(withdrawalTombstone), requestedRestores, input,
+      ));
+    }
     if (existingAtStart === null && fs.existsSync(outPath)) {
       logWarn('kb_bible_commit', 'bible file is not readable, reporting entry_count 0 under the http KB provider: ' + outPath);
     }
@@ -465,7 +540,9 @@ async function commitToBible(
   // re-promotion.
   const bibleEntries = existingDoc?.entries ?? [];
   const bibleIds = bibleEntries.map(e => e.id);
-  const demotionState = project.getDemotionState([...requestedDemotions, ...bibleIds]);
+  const demotionState = project.getDemotionState([
+    ...requestedDemotions, ...bibleIds, ...requestedWithdrawals.map(w => w.id),
+  ]);
   const tombstoneFor = (id: string): BibleTombstone | null => {
     const state = demotionState.get(id);
     if (!state || !state.demoted_at || state.confidence === 'CONFIRMED' || qualifyingIds.has(id)) return null;
@@ -477,9 +554,27 @@ async function commitToBible(
     if (tombstone) admittedDemotions.push(tombstone);
     else skipped.push({ id, reason: 'not_demoted_or_unknown' });
   }
+  // WITHDRAWAL ADMISSION. An id the bible holds as an entry, or one this KB
+  // holds CONFIRMED, not superseded and not a directive. The local row is only
+  // READ: a withdrawal never changes it (see the header). An id merged or
+  // admitted as a demotion by this same call keeps that outcome.
+  const bibleIdSet = new Set(bibleIds);
+  const namedDemotedSet = new Set(admittedDemotions.map(d => d.id));
+  const admittedWithdrawals: BibleTombstone[] = [];
+  for (const w of requestedWithdrawals) {
+    const state = demotionState.get(w.id);
+    const localWithdrawable = !!state && state.confidence === 'CONFIRMED' && !state.superseded
+      && state.type !== 'user-directive';
+    if (!qualifyingIds.has(w.id) && !namedDemotedSet.has(w.id) && (bibleIdSet.has(w.id) || localWithdrawable)) {
+      admittedWithdrawals.push(withdrawalTombstone(w));
+    } else skipped.push({ id: w.id, reason: 'not_withdrawable' });
+  }
+  const withdrawn = admittedWithdrawals.map(d => d.id);
+  const withdrawnSet = new Set(withdrawn);
+
   const requestedDemotionSet = new Set(requestedDemotions);
   for (const entry of bibleEntries) {
-    if (requestedDemotionSet.has(entry.id)) continue;
+    if (requestedDemotionSet.has(entry.id) || withdrawnSet.has(entry.id)) continue;
     const tombstone = tombstoneFor(entry.id);
     if (tombstone && !repromotedAfter(entry, tombstone)) admittedDemotions.push(tombstone);
   }
@@ -506,7 +601,6 @@ async function commitToBible(
   // the row's superseded_at; a row retired by kb_invalidate {files} records no
   // time, so it is stamped now.
   const retiredAt = project.getRetirementTimes(removed.map(r => r.id));
-  const nowIso = new Date().toISOString();
   const removalTombstones: BibleTombstone[] = removed.map(r => ({ id: r.id, at: retiredAt.get(r.id) ?? nowIso, reason: r.reason }));
 
   // Legacy backfill: existing entries with no carried basis, not merged (a
@@ -526,6 +620,12 @@ async function commitToBible(
   }
   const backfilled = backfill.size;
 
+  // RESTORES: only a tombstone already in the file, not one added by this call.
+  const restorePlan = await planRestores(
+    repoPath, input.baseCommit, requestedRestores.filter(id => !withdrawnSet.has(id)), existingDoc?.demotions ?? [],
+  );
+  const restored = restorePlan.restored;
+
   // Duplicate-id guard: an existing file holding one id twice would otherwise
   // be silently collapsed by the id map below (dropping an entry). Refuse
   // before anything is written.
@@ -536,6 +636,7 @@ async function commitToBible(
     byId.set(e.id, basis ? withSourceFileHashes(e, basis) : e);
   }
   for (const r of removed) byId.delete(r.id);
+  // An admitted demotion or withdrawal REMOVES the entry.
   // A merged id the bible no longer holds but carries a tombstone for was
   // demoted and is now re-promoted: its prior rich fields come from the bible's
   // git history (see richFieldsFromBibleHistory).
@@ -543,8 +644,10 @@ async function commitToBible(
   const fromHistory = richFieldsFromBibleHistory(repoPath, outPath,
     merged.filter(id => !byId.has(id) && priorTombstoned.has(id)));
   for (const id of merged) byId.set(id, keepBibleRichFields(confirmed.get(id)!, byId.get(id) ?? fromHistory.get(id)));
-  // An admitted demotion REMOVES the entry.
   for (const id of demoted) byId.delete(id);
+  for (const id of withdrawn) byId.delete(id);
+  // A restore re-adds the base entry byte-identical (a merged id keeps its fresh entry).
+  for (const [id, entry] of restorePlan.baseEntries) if (!mergedSet.has(id)) byId.set(id, entry);
 
   // ENRICH, after the merge so it can name an id merged by this same call. The
   // bible entry carries the fields; the row follows so this KB's reads agree.
@@ -571,9 +674,10 @@ async function commitToBible(
     }
   }
 
-  if (merged.length === 0 && removed.length === 0 && admittedDemotions.length === 0 && backfilled === 0 && enriched.length === 0) {
+  if (merged.length === 0 && removed.length === 0 && admittedDemotions.length === 0 && backfilled === 0 && enriched.length === 0
+    && withdrawn.length === 0 && restored.length === 0) {
     const entryCount = existing?.length ?? 0;
-    return done({ merged, demoted, skipped, removed, entry_count: entryCount, backfilled, committed: commitPending(entryCount) });
+    return done({ merged, demoted, skipped, removed, entry_count: entryCount, backfilled, committed: commitPending(entryCount), withdrawn, restored });
   }
 
   const entries = Array.from(byId.values()).sort(compareById);
@@ -587,8 +691,10 @@ async function commitToBible(
   const tombstones = new Map<string, BibleTombstone>();
   for (const d of existingDoc?.demotions ?? []) tombstones.set(d.id, d);
   for (const d of admittedDemotions) tombstones.set(d.id, d);
+  for (const d of admittedWithdrawals) tombstones.set(d.id, d);
   for (const d of removalTombstones) tombstones.set(d.id, d);
   for (const id of merged) tombstones.delete(id);
+  for (const id of restored) tombstones.delete(id);
   const demotions = Array.from(tombstones.values()).sort(compareById);
 
   // Unchanged content is a no-op: no rewrite, no commit (provenance alone never
@@ -597,7 +703,9 @@ async function commitToBible(
     === asciiSafeStringify(demotions);
   if (existing !== null && demotionsUnchanged
     && asciiSafeStringify(existing) === asciiSafeStringify(entries)) {
-    return done({ merged, demoted, skipped, removed, entry_count: entries.length, backfilled, committed: commitPending(entries.length) });
+    return done({
+      merged, demoted, skipped, removed, entry_count: entries.length, backfilled, committed: commitPending(entries.length), withdrawn, restored,
+    });
   }
 
   const bible: CanonicalBible = {
@@ -635,7 +743,9 @@ async function commitToBible(
 
   let committed = false;
   if (isGitRepo(repoPath) && bibleContentChanged(repoPath, outPath)) {
-    const message = bibleCommitMessage(merged.length, removed, entries.length, backfilled, demoted.length, enriched.length)
+    const message = bibleCommitMessage(
+      merged.length, removed, entries.length, backfilled, demoted.length, enriched.length, withdrawn.length, restored.length,
+    )
       + (pendingAtStart ? '\n\n' + PENDING_RECOVERY_NOTE : '');
     try {
       commitBiblePath(repoPath, outPath, message);
@@ -652,14 +762,134 @@ async function commitToBible(
   // the file between write and commit makes this call report committed: false
   // with the reason, never committed: true for a lost write.
   if (committed) {
-    const missing = unlandedChanges(repoPath, outPath, merged, [...removed.map(r => r.id), ...demoted]);
+    const missing = unlandedChanges(repoPath, outPath, merged, [...removed.map(r => r.id), ...demoted, ...withdrawn]);
     if (missing !== null) {
       logWarn('kb_bible_commit', missing);
-      return done({ merged, demoted, skipped, removed, entry_count: entries.length, backfilled, committed: false, not_committed_reason: missing });
+      return done({ merged, demoted, skipped, removed, entry_count: entries.length, backfilled, committed: false, not_committed_reason: missing, withdrawn, restored });
     }
   }
 
-  return done({ merged, demoted, skipped, removed, entry_count: entries.length, backfilled, committed });
+  return done({ merged, demoted, skipped, removed, entry_count: entries.length, backfilled, committed, withdrawn, restored });
+}
+
+/**
+ * Which of `ids` may be restored: those with a tombstone in the current file
+ * that the bible at `baseCommit` does NOT carry (the branch added it), plus the
+ * base bible's entry for each restored id when it has one. When baseCommit does
+ * not resolve, or its bible cannot be read, nothing is restored (logged): a
+ * branch-added tombstone cannot be told from merged history without it.
+ */
+async function planRestores(
+  repoPath: string, baseCommit: string, ids: string[], current: BibleTombstone[],
+): Promise<{ restored: string[]; baseEntries: Map<string, CanonicalEntry> }> {
+  const restored: string[] = [];
+  const baseEntries = new Map<string, CanonicalEntry>();
+  if (ids.length === 0) return { restored, baseEntries };
+  if (!(await commitResolves(repoPath, baseCommit))) {
+    logWarn('kb_bible_commit', 'restore_ids ignored: baseCommit ' + baseCommit + ' does not resolve to a commit');
+    return { restored, baseEntries };
+  }
+  let baseDoc: { entries: unknown[]; demotions: BibleTombstone[] };
+  try {
+    const blob = await readCommittedBibleBlob(repoPath, baseCommit);
+    baseDoc = blob === null
+      ? { entries: [], demotions: [] }
+      : parseBibleDocument(blob.text, baseCommit + ':.fleet/kb-canonical.json', 'kb_bible_commit');
+  } catch (err) {
+    logWarn('kb_bible_commit', 'restore_ids ignored: the bible at baseCommit is not readable: '
+      + (err instanceof Error ? err.message : String(err)));
+    return { restored, baseEntries };
+  }
+  const currentIds = new Set(current.map(d => d.id));
+  const baseTombstoned = new Set(baseDoc.demotions.map(d => d.id));
+  const baseById = new Map<string, CanonicalEntry>();
+  for (const e of baseDoc.entries) {
+    if (e && typeof e === 'object' && typeof (e as { id?: unknown }).id === 'string') {
+      baseById.set((e as CanonicalEntry).id, e as CanonicalEntry);
+    }
+  }
+  for (const id of ids) {
+    if (!currentIds.has(id) || baseTombstoned.has(id)) {
+      logWarn('kb_bible_commit', 'restore of ' + id + ' is a no-op: no branch-added tombstone for it');
+      continue;
+    }
+    restored.push(id);
+    const entry = baseById.get(id);
+    if (entry) baseEntries.set(id, entry);
+  }
+  return { restored, baseEntries };
+}
+
+/**
+ * The http-provider half: no entry merge (bible_skipped stays true), but the
+ * withdrawals' tombstones and the restores are written to the bible file,
+ * creating a tombstone-only v3 bible when it is absent. Existing entries are
+ * kept byte-identical (a restore may re-add the base entry). Every well-formed
+ * withdrawal is admitted: there is no local KB to check it against. Never
+ * records a trusted blob (that lives in the SQLite KB).
+ */
+async function commitTombstonesOnly(
+  repoPath: string,
+  outPath: string,
+  existingDoc: { entries: CanonicalEntry[]; demotions: BibleTombstone[] } | null,
+  withdrawals: BibleTombstone[],
+  restoreIds: string[],
+  input: KbBibleCommitInput,
+): Promise<Omit<KbBibleCommitResult, 'path'>> {
+  if (existingDoc === null && fs.existsSync(outPath)) {
+    throw new Error('kb_bible_commit: existing bible is not a readable bible file, refusing to overwrite it: ' + outPath);
+  }
+  const existingEntries = existingDoc?.entries ?? [];
+  const withdrawn = withdrawals.map(w => w.id);
+  const withdrawnSet = new Set(withdrawn);
+  const plan = await planRestores(
+    repoPath, input.baseCommit, restoreIds.filter(id => !withdrawnSet.has(id)), existingDoc?.demotions ?? [],
+  );
+  const restored = plan.restored;
+  const result = (entryCount: number, committed: boolean): Omit<KbBibleCommitResult, 'path'> => ({
+    merged: [], demoted: [], skipped: [], removed: [], entry_count: entryCount, backfilled: 0, committed,
+    bible_skipped: true, reason: KB_BIBLE_COMMIT_HTTP_SKIP_REASON, withdrawn, restored,
+  });
+
+  const tombstones = new Map<string, BibleTombstone>();
+  for (const d of existingDoc?.demotions ?? []) tombstones.set(d.id, d);
+  for (const d of withdrawals) tombstones.set(d.id, d);
+  for (const id of restored) tombstones.delete(id);
+  const demotions = Array.from(tombstones.values()).sort(compareById);
+
+  const entries = [...existingEntries];
+  const present = new Set(entries.map(e => e.id));
+  for (const [id, entry] of plan.baseEntries) {
+    if (!present.has(id)) { entries.push(entry); present.add(id); }
+  }
+  if (plan.baseEntries.size > 0) entries.sort(compareById);
+  assertNoDuplicateBibleIds(entries, 'kb_bible_commit');
+
+  const demotionsUnchanged = asciiSafeStringify(existingDoc?.demotions ?? []) === asciiSafeStringify(demotions);
+  const entriesUnchanged = asciiSafeStringify(existingEntries) === asciiSafeStringify(entries);
+  if (demotionsUnchanged && entriesUnchanged) return result(existingEntries.length, false);
+
+  const bible: CanonicalBible = {
+    version: BIBLE_FORMAT_VERSION,
+    provenance: { commit: input.baseCommit, branch: input.baseBranch, entry_count: entries.length },
+    entries,
+    ...(demotions.length > 0 ? { demotions } : {}),
+  };
+  fs.mkdirSync(path.dirname(outPath), { recursive: true });
+  fs.writeFileSync(outPath, Buffer.from(asciiSafeStringify(bible) + '\n', 'utf-8'));
+
+  let committed = false;
+  if (isGitRepo(repoPath) && bibleContentChanged(repoPath, outPath)) {
+    const message = bibleCommitMessage(0, [], entries.length, 0, 0, 0, withdrawn.length, restored.length);
+    try {
+      commitBiblePath(repoPath, outPath, message);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      throw new Error('kb_bible_commit: bible written but the local commit failed: ' + reason);
+    }
+    committed = true;
+  }
+  return result(entries.length, committed);
 }
 
 /**
@@ -726,6 +956,7 @@ export function pendingBibleCommitMessage(total: number): string {
  */
 export function bibleCommitMessage(
   mergedCount: number, removed: KbBibleCommitRemoval[], total: number, backfilled = 0, demotedCount = 0, enrichedCount = 0,
+  withdrawnCount = 0, restoredCount = 0,
 ): string {
   const enrichOnly = enrichedCount > 0 && mergedCount === 0 && removed.length === 0 && backfilled === 0;
   let head: string;
@@ -742,7 +973,9 @@ export function bibleCommitMessage(
       + removed.length + ' superseded/invalidated';
   }
   const demotedClause = demotedCount > 0 ? ', ' + demotedCount + ' demoted' : '';
-  const subject = head + demotedClause + ' -- ' + total + ' total';
+  const withdrawnClause = withdrawnCount > 0 ? ', ' + withdrawnCount + ' withdrawn' : '';
+  const restoredClause = restoredCount > 0 ? ', ' + restoredCount + ' restored' : '';
+  const subject = head + demotedClause + withdrawnClause + restoredClause + ' -- ' + total + ' total';
   const body: string[] = [];
   if (removed.length > 0) body.push('Removed:\n' + removed.map(r => '- ' + r.id + ' (' + r.reason + ')').join('\n'));
   // A backfill-only subject already names the count.

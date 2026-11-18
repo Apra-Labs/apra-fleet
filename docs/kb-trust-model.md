@@ -143,6 +143,42 @@ never overwritten and confidence never moves.
 `kb_bible_commit` `enrich`) is undone by the next commit from an old host. Run
 this version on every host that writes the bible before backfilling.
 
+## Sprint withdrawals: take effect only on merge
+
+A withdrawal is a reviewer's judgement, made on a sprint branch, that a bible
+entry no longer holds. Unlike `kb_demote` it changes no local row:
+
+- `kb_bible_commit` `withdrawals: [{id, note, evidence_files}]` removes the
+  entry from the branch's bible and records a tombstone
+  `{id, at, reason: "withdrawn", note, evidence_files}`. `restore_ids` undoes
+  a tombstone this branch added (the base bible's entry comes back
+  byte-identical).
+- `kb_import` lowers the row (CONFIRMED -> INFERRED, same re-promotion rule as
+  above) only when it reads the bible at `refs/remotes/origin/<base>`, where
+  `<base>` is the bible's own `provenance.branch` -- that is, once the branch
+  has merged and been fetched. From the work tree, `HEAD` or a feature ref the
+  ids are only reported in `withdrawals.deferred`; the member bible view
+  already hides the entry.
+- Over HTTP the bible keeps no entries, only tombstones, and that same
+  base-ref `kb_import` replays them to the KB server in one
+  `POST /api/kb/withdraw`. A server without that route gets nothing and the
+  ids are reported `unsupported` with a warning.
+
+`kb_demote` keeps its meaning: an immediate local demotion. A 0.4.5 clone
+does not know `withdrawn` and treats it like any unknown reason: the entry is
+hidden from its bible view and no row is lowered. (Spec: memory-contract
+`spec.md` 2.6 and 2.9.)
+
+Known limits of the current design:
+
+- The base-ref gate trusts the branch name written inside the bible itself
+  (`provenance.branch`), not a separately configured base branch.
+- The remote name `origin` is hard-coded in the gate's ref.
+- A withdrawn id that is later re-sent in `kb_bible_commit` `ids` is merged
+  back and its tombstone is cleared, with no check against the tombstone time.
+- A withdrawal never touches the local row, so the local KB keeps the entry
+  CONFIRMED until the merged bible is imported.
+
 ## Forward-only enforcement (no migration)
 
 The gate is forward-looking. The KB may contain historical entries that were written

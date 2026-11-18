@@ -72,6 +72,18 @@
                 "type": "string"
               }
             },
+            "withdrawn": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "restored": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
             "skipped": {
               "type": "array",
               "items": {
@@ -87,6 +99,7 @@
                       "no_source_files",
                       "basis_mismatch",
                       "not_demoted_or_unknown",
+                      "not_withdrawable",
                       "enrich_invalid",
                       "not_in_bible"
                     ]

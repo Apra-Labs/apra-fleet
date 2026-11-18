@@ -1,0 +1,30 @@
+{
+  "route": "withdraw",
+  "case": "repromoted",
+  "kind": "happy",
+  "request": {
+    "method": "POST",
+    "path": "/api/kb/withdraw",
+    "body": {
+      "withdrawals": [
+        {
+          "id": "{{ENTRY_RULE}}",
+          "at": "2000-01-01T00:00:00.000Z",
+          "reason": "withdrawn",
+          "note": "the cited guard was removed when the reader was rewritten"
+        }
+      ]
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "results": [
+        {
+          "id": "{{ENTRY_RULE}}",
+          "outcome": "repromoted"
+        }
+      ]
+    }
+  }
+}
