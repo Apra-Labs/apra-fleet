@@ -22,6 +22,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { registerAllTools } from '../src/services/tool-registry.js';
+import { parseLandingMove } from './helpers/landing-move.js';
 
 
 const mockExecCommand = vi.fn<(cmd: string, timeout?: number) => Promise<SSHExecResult>>();
@@ -192,7 +193,7 @@ describe('register_member fleet_install', () => {
     mockExecCommand.mockImplementation(async (cmd: string) => {
       // Member-side writes of ~/.claude.json (staged as a .tmp heredoc, then
       // moved): keep each one that carries the per-folder apra-fleet entry.
-      const m = cmd.match(/^(?:mv|Move-Item -Force) "([^"]*)" "([^"]*\.claude\.json)"$/);
+      const lm = parseLandingMove(cmd); const m = lm && /\.claude\.json$/.test(lm.to) ? [cmd, lm.from, lm.to] : null;
       const staged = m ? stagedFiles.get(path.basename(m[1].replace(/\\/g, '/'))) : undefined;
       if (m && staged && staged.includes('"apra-fleet"')) { w.log.push(`compose-write ${m[2]}`); written.push(staged); }
       return configExec(cmd);
@@ -231,7 +232,7 @@ describe('register_member fleet_install', () => {
         markerAtCompose.push(w.marker);
         return w.marker ? { stdout: '', stderr: '', code: 0 } : { stdout: '', stderr: '', code: 1 };
       }
-      const m = cmd.match(/^(?:mv|Move-Item -Force) "([^"]*)" "([^"]*\.claude\.json)"$/);
+      const lm = parseLandingMove(cmd); const m = lm && /\.claude\.json$/.test(lm.to) ? [cmd, lm.from, lm.to] : null;
       const staged = m ? stagedFiles.get(path.basename(m[1].replace(/\\/g, '/'))) : undefined;
       if (m && staged && staged.includes('"apra-fleet"')) written.push(staged);
       return configExec(cmd);
@@ -610,7 +611,7 @@ describe('fleet_install writes the per-folder MCP entry before checking it', () 
     const configExec = makeConfigAwareExec();
     const written: string[] = [];
     mockExecCommand.mockImplementation(async (cmd: string) => {
-      const m = cmd.match(/^(?:mv|Move-Item -Force) "([^"]*)" "([^"]*\.claude\.json)"$/);
+      const lm = parseLandingMove(cmd); const m = lm && /\.claude\.json$/.test(lm.to) ? [cmd, lm.from, lm.to] : null;
       const staged = m ? stagedFiles.get(path.basename(m[1].replace(/\\/g, '/'))) : undefined;
       if (m && staged && staged.includes('"apra-fleet"')) { w.log.push(`entry-write ${m[2]}`); written.push(staged); }
       return configExec(cmd);

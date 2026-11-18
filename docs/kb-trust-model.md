@@ -134,11 +134,19 @@ entry no longer holds. Unlike `kb_demote` it changes no local row:
   a tombstone this branch added (the base bible's entry comes back
   byte-identical).
 - `kb_import` lowers the row (CONFIRMED -> INFERRED, same re-promotion rule as
-  above) only when it reads the bible at `refs/remotes/origin/<base>`, where
-  `<base>` is the bible's own `provenance.branch` -- that is, once the branch
-  has merged and been fetched. From the work tree, `HEAD` or a feature ref the
-  ids are only reported in `withdrawals.deferred`; the member bible view
-  already hides the entry.
+  above) only when it reads the bible at the remote-tracking ref of the REAL
+  base branch, and the bible's `provenance.branch` equals that base. The base
+  comes from the caller's `base_branch` input, or else from the remote's
+  default (`refs/remotes/<remote>/HEAD`); the bible's own `provenance.branch`
+  is never trusted to name it, so a feature-branch bible that names itself as
+  its base is not applied. The remote may be any remote in the repo's git
+  config (longest name prefix wins), not only `origin`. From the work tree,
+  `HEAD`, a feature ref, a ref of an unknown remote, a `base_branch` that does
+  not match the bible, or a repo with no remote `HEAD` and no `base_branch`,
+  the ids are only reported in `withdrawals.deferred` (with a warning naming
+  the expected refs where that helps); the member bible view already hides the
+  entry. The sprint engine's prime-time import passes `base_branch`; a server
+  that predates the key strips it and keeps the old behaviour.
 - Over HTTP the bible keeps no entries, only tombstones, and that same
   base-ref `kb_import` replays them to the KB server in one
   `POST /api/kb/withdraw`. A server without that route gets nothing and the
@@ -149,15 +157,31 @@ does not know `withdrawn` and treats it like any unknown reason: the entry is
 hidden from its bible view and no row is lowered. (Spec: memory-contract
 `spec.md` 2.6 and 2.9.)
 
+Write-safety rules in `kb_bible_commit`:
+
+- A withdrawn tombstone already in the file is never cleared by `ids`. An id
+  carrying one (added on this branch, or merged in from base while the host row
+  is still CONFIRMED) is skipped with `withdrawn_tombstone`; only `restore_ids`
+  lifts it, and a restore followed by a merge in the same call works because
+  restores are planned before the merge. Demoted tombstones keep the
+  re-promotion rule instead.
+- `demoted_ids` writes a tombstone only for an id the BASE bible carries (as an
+  entry or a tombstone), because a tombstone for an id the base never had would
+  be a no-op everywhere else. A demoted entry that exists only in the branch's
+  bible, with no tombstone, is simply dropped; anything else is rejected with
+  `not_in_base_bible`. An unresolvable or unreadable base fails closed. A
+  call that only drops entries still commits.
+
 Known limits of the current design:
 
-- The base-ref gate trusts the branch name written inside the bible itself
-  (`provenance.branch`), not a separately configured base branch.
-- The remote name `origin` is hard-coded in the gate's ref.
-- A withdrawn id that is later re-sent in `kb_bible_commit` `ids` is merged
-  back and its tombstone is cleared, with no check against the tombstone time.
+- The `apra-fleet kb import` CLI takes only `--repo` and `--path`; it has no
+  ref or base-branch option, so a CLI import can never apply withdrawn
+  tombstones. Use the `kb_import` tool or the sprint engine's prime import.
 - A withdrawal never touches the local row, so the local KB keeps the entry
   CONFIRMED until the merged bible is imported.
+- An id the base bible carries, demoted locally because of another branch's
+  claim, still gets a demoted tombstone; this leak remains until the sprint
+  engine stops demoting before merge.
 
 ## Forward-only enforcement (no migration)
 

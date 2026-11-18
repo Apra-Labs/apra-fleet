@@ -44,6 +44,7 @@ const memberCallCountsSrc = readFileSync(path.join(repoRoot, 'src', 'services', 
 const kbExportSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'kb-export.ts'), 'utf8');
 const typesSrc = readFileSync(path.join(repoRoot, 'src', 'types.ts'), 'utf8');
 const kbBibleCommitSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'kb-bible-commit.ts'), 'utf8');
+const kbQuerySrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'kb-query.ts'), 'utf8');
 const kbImportSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'kb-import.ts'), 'utf8');
 const bibleImportSrc = readFileSync(path.join(repoRoot, 'src', 'services', 'knowledge', 'bible-import.ts'), 'utf8');
 
@@ -188,6 +189,11 @@ function kbBibleCommitSchemaFields() {
     return extractTopLevelKeys(block, 2);
 }
 
+function kbQuerySchemaFields() {
+    const block = extractBlock(kbQuerySrc, 'export const kbQuerySchema = z.object({', '\n});');
+    return extractTopLevelKeys(block, 2);
+}
+
 describe('apra-fleet-client typedef vs server zod schema parity', () => {
     test('RegisterMemberOptions matches registerMemberSchema field-for-field', () => {
         const schemaFields = registerMemberSchemaFields();
@@ -234,6 +240,17 @@ describe('apra-fleet-client typedef vs server zod schema parity', () => {
         assert.ok(schemaFields.has('withdrawals'), 'sanity: kbBibleCommitSchema should declare withdrawals');
         assert.ok(schemaFields.has('restore_ids'), 'sanity: kbBibleCommitSchema should declare restore_ids');
         assertFieldParity('KbBibleCommitOptions vs kbBibleCommitSchema', schemaFields, typedefFields);
+    });
+
+    test('KbQueryOptions matches kbQuerySchema field-for-field (files/symbols filter included)', () => {
+        const schemaFields = kbQuerySchemaFields();
+        const typedefFields = extractTypedefProperties(apiMjsSrc, 'KbQueryOptions');
+        assert.ok(schemaFields.size >= 12, `expected at least 12 kbQuerySchema fields, parsed ${schemaFields.size}`);
+        for (const f of ['files', 'symbols', 'limit', 'own_scope']) {
+            assert.ok(schemaFields.has(f), `sanity: kbQuerySchema should declare ${f}`);
+            assert.ok(typedefFields.has(f), `KbQueryOptions should declare ${f}`);
+        }
+        assertFieldParity('KbQueryOptions vs kbQuerySchema', schemaFields, typedefFields);
     });
 
     test('KbBibleCommitResult matches the KbBibleCommitResult interface kb_bible_commit returns', () => {

@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "22bbb3cfdfd5d77962b5fb6d85da8c1e833f79c1",
     "branch": "main",
-    "entry_count": 154
+    "entry_count": 163
   },
   "entries": [
     {
@@ -760,6 +760,30 @@
       "updated_at": "2026-10-06T12:53:45.788Z"
     },
     {
+      "id": "42d10c19-9014-48ec-9b3c-96128a7379bb",
+      "type": "learning",
+      "title": "Adding a memory-contract fixture requires bumping count pins in two tests",
+      "summary": "tests/memory-contract-fixture-response-schema.test.ts pins the number of response fixtures (two places) and tests/memory-contract-roundtrip.test.ts pins the SCENARIO step count; every new fixture also needs a SCENARIO entry in roundtrip-harness.mjs in the same position as in record-fixtures.mjs.",
+      "symbols": [
+        "SCENARIO",
+        "recordHappy"
+      ],
+      "source_files": [
+        "memory-contract/v1/tests/record-fixtures.mjs",
+        "memory-contract/v1/tests/roundtrip-harness.mjs",
+        "tests/memory-contract-fixture-response-schema.test.ts",
+        "tests/memory-contract-roundtrip.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T09:36:35.889Z",
+      "source_file_hashes": {
+        "memory-contract/v1/tests/record-fixtures.mjs": "0f0ea814c48342fa5c03a5829ff4230f7b0da10f",
+        "memory-contract/v1/tests/roundtrip-harness.mjs": "97aa24ec3cb3930bee30fd38a701ecbef656f1ba",
+        "tests/memory-contract-fixture-response-schema.test.ts": "48fd82fb5b2e3b1d9128886714992095524f4560",
+        "tests/memory-contract-roundtrip.test.ts": "0bcd324c608907705d92b3d0850e909cde0eb8bc"
+      }
+    },
+    {
       "id": "43bc4917-e7c1-4be0-9a0a-c6fc407a155c",
       "type": "knowledge",
       "title": "Playbook Permissions sections are contract-tested against fleet profiles",
@@ -816,6 +840,36 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-06T09:57:31.784Z"
+    },
+    {
+      "id": "459915a7-6ad2-455e-b2a9-49fed209c415",
+      "type": "knowledge",
+      "title": "kb_query files/symbols cited filter is a hard SQL filter gated by query_filters over http",
+      "summary": "kb_query files/symbols are a hard filter (cited-filter.ts) applied in SqliteProvider.query next to the tag filter. HttpKbProvider forwards them only when GET /api/kb/capabilities lists them in the optional query_filters field and otherwise throws E-KB-HTTP-UNSUPPORTED before sending. kb_query re-applies the filter (entryCites) only to answers from non-SQLite providers.",
+      "symbols": [
+        "normalizeCitedFilter",
+        "citedFilterSql",
+        "entryCites",
+        "trustedL1",
+        "KB_SERVER_CAPABILITIES",
+        "readCapabilities"
+      ],
+      "source_files": [
+        "src/services/knowledge/cited-filter.ts",
+        "src/services/knowledge/sqlite-provider.ts",
+        "src/services/knowledge/http-provider.ts",
+        "src/commands/kb-server.ts",
+        "src/tools/kb-query.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T08:59:16.820Z",
+      "source_file_hashes": {
+        "src/commands/kb-server.ts": "cbbda4ebbc1e10083a189b4bd402515323883295",
+        "src/services/knowledge/cited-filter.ts": "e8f1e7c635aef6f793397e339f71ad0d500359bc",
+        "src/services/knowledge/http-provider.ts": "b3ea4cd148db228c2bc20e674aaf38b38b2ecc9a",
+        "src/services/knowledge/sqlite-provider.ts": "8aabc88c6ee2c507df100e5c1c57c237e28fe4d5",
+        "src/tools/kb-query.ts": "83911bc5bf9133916d3753f3706d9fee83d19868"
+      }
     },
     {
       "id": "45fa7bb5-1af4-474d-a958-0c1d7f6ec75c",
@@ -1051,6 +1105,32 @@
       "updated_at": "2026-09-25T22:26:30.391Z"
     },
     {
+      "id": "52cf9b39-5851-41e1-b0eb-198f900bd769",
+      "type": "knowledge",
+      "title": "Claude config writers treat only a missing .claude.json as {}; both re-read before the move",
+      "summary": "ensureWorkspaceTrusted and ClaudeProvider.syncMemberMcpEntry refuse an existing empty or unparseable .claude.json with E-MEMBER-CONFIG-NOT-JSON and no write. An empty read is followed by memberFilePresent, a probe that prints a marker when the file exists. Both re-read right before staging+move and apply only the fleet's own keys to the fresh content.",
+      "symbols": [
+        "readMemberJson",
+        "memberFilePresent",
+        "memberFilePresenceCommand",
+        "MEMBER_FILE_PRESENT_MARKER",
+        "ensureWorkspaceTrusted",
+        "syncMemberMcpEntry"
+      ],
+      "source_files": [
+        "src/services/member-config-io.ts",
+        "src/providers/claude.ts",
+        "tests/claude-config-empty-torn.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T02:39:16.563Z",
+      "source_file_hashes": {
+        "src/providers/claude.ts": "358484af7d5de8d0964866395edd7448e1e67c37",
+        "src/services/member-config-io.ts": "da6b0acd828db2b88ad86ed570897b2a0ee31ed6",
+        "tests/claude-config-empty-torn.test.ts": "8589f42960e603299c5ff2d3abb80cce38540e9b"
+      }
+    },
+    {
       "id": "5461f16e-7fbf-4e46-9005-1922220c1854",
       "type": "knowledge",
       "title": "agent-transform.ts and apra-pm install.mjs mirror each other asymmetrically",
@@ -1283,6 +1363,34 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:16.498Z"
+    },
+    {
+      "id": "6a23848a-42af-47cf-aacb-678b0936dd74",
+      "type": "knowledge",
+      "title": "Member kb_query without limit returns 6 slim rows and no L2; own_scope exempt",
+      "summary": "readShape in src/tools/kb-query.ts: a MEMBER session (memberOwnerTag defined) that omits limit and does not set own_scope gets the merged L1 capped at MEMBER_DEFAULT_LIMIT, slim rows (MEMBER_SLIM_ROW_KEYS) and an empty l2_expanded. An explicit limit restores the per-side limit, full rows and the top-5 L2.",
+      "symbols": [
+        "readShape",
+        "slimRow",
+        "MEMBER_DEFAULT_LIMIT",
+        "MEMBER_SLIM_ROW_KEYS",
+        "kbQuery",
+        "splitQuery"
+      ],
+      "source_files": [
+        "src/tools/kb-query.ts",
+        "src/services/tool-registry.ts",
+        "memory-contract/v1/generate-contract.mjs",
+        "tests/knowledge/kb-member-query-defaults.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T07:39:52.918Z",
+      "source_file_hashes": {
+        "memory-contract/v1/generate-contract.mjs": "5920dff97dc9afc1b5b2788b967ad1ba68c68ff8",
+        "src/services/tool-registry.ts": "6d7da3becaa06aae076d9a6e5263b1a543a87d0a",
+        "src/tools/kb-query.ts": "479495a8ec0ae8124c94e354a3fc426ac7a82f04",
+        "tests/knowledge/kb-member-query-defaults.test.ts": "bf5d04bc43860f8a3bf7df1ec2f757e932eda45f"
+      }
     },
     {
       "id": "6b538682-67b1-4cf2-ab81-ae27d8d2bf8e",
@@ -1580,6 +1688,32 @@
         "src/services/knowledge/kb-http-auth-state.ts": "caa54601c749b6cb0dba9bf0744cc67a414bc2a3",
         "src/tools/check-status.ts": "628e81e903e65081d280760877203d0f112dfb63",
         "tests/fleet-status-kb-credential.test.ts": "ec21f04276fc4abfa383fa32c7e9f30c848042d5"
+      }
+    },
+    {
+      "id": "83649bac-ac24-4a92-9bff-c8af8737d32d",
+      "type": "knowledge",
+      "title": "kb_import withdrawn-tombstone gate: base from base_branch or remote HEAD, any configured remote",
+      "summary": "mergedBaseBibleGate in src/tools/kb-import.ts applies a bible's withdrawn tombstones only when it was read at refs/remotes/<remote>/<base> and provenance.branch equals <base>. <base> comes from the caller's base_branch, else refs/remotes/<remote>/HEAD; provenance.branch alone is never trusted.",
+      "symbols": [
+        "mergedBaseBibleGate",
+        "parseRemoteTrackingRef",
+        "remoteDefaultBranch",
+        "configuredGitRemotes"
+      ],
+      "source_files": [
+        "src/tools/kb-import.ts",
+        "src/services/knowledge/bible-import.ts",
+        "src/services/knowledge/bible-blob-id.ts",
+        "tests/knowledge/kb-import-withdrawals.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T13:24:40.643Z",
+      "source_file_hashes": {
+        "src/services/knowledge/bible-blob-id.ts": "00cef1cad3d5bad130cc70a170ca5cc35840ef47",
+        "src/services/knowledge/bible-import.ts": "a717226586d21e5c2496b21c0ea3e212bde4ca10",
+        "src/tools/kb-import.ts": "e7017cd1b2fb8ed1a45369b6b7f9748860f4a69c",
+        "tests/knowledge/kb-import-withdrawals.test.ts": "c8262eff5fe442a20e470cea1b3c2e0e4d3aebcc"
       }
     },
     {
@@ -1912,6 +2046,32 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:16.248Z"
+    },
+    {
+      "id": "a098caf8-263f-4b72-b5a7-55fc3d290a07",
+      "type": "knowledge",
+      "title": "Set-aside stall throws StalledSprintError before the 2-cycle stall and deploy-retry exit",
+      "summary": "runner.js throwIfSetAsideStall runs at the start of a Develop round (all ready beads set aside) and at Cycle Evaluation before STALL_CYCLE_LIMIT and the deploy-blocked retry; set-aside.mjs evaluateSetAsideStall decides it purely.",
+      "symbols": [
+        "throwIfSetAsideStall",
+        "evaluateSetAsideStall",
+        "collectSetAsideEntries",
+        "StalledSprintError"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/fleet-sprint/set-aside.mjs",
+        "packages/apra-fleet-se/fleet-sprint/abort.mjs",
+        "packages/apra-fleet-se/test/mock-sprint-blocked-stall-cycle1.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-10-22T05:40:50.485Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/abort.mjs": "46fd9dc81c6edbfa975e667e5b3569f60df616a7",
+        "packages/apra-fleet-se/fleet-sprint/runner.js": "7d6e9fb4da7578f3b9c0ccefc2b94c9322a4c13a",
+        "packages/apra-fleet-se/fleet-sprint/set-aside.mjs": "9973ffdded67807fead8b497b2acd817253cb23b",
+        "packages/apra-fleet-se/test/mock-sprint-blocked-stall-cycle1.test.mjs": "773f66cbc9726bc770c4f399da3699cbe5b2e0b5"
+      }
     },
     {
       "id": "a1a279ec-5537-4820-a23a-c9a7737f2507",
@@ -2554,6 +2714,33 @@
       }
     },
     {
+      "id": "db97afd9-fbc4-4072-9dcd-7cc58f213b9b",
+      "type": "knowledge",
+      "title": "Keyword index entries_kw is kept current by a rowid queue drained on every read",
+      "summary": "SqliteProvider keyword reads use entries_kw (normalized FTS5). Triggers on entries queue changed rowids in kb_index_pending and every keyword read applies the queue first; kb_index_meta.kw_version triggers a rebuild on open when missing or old.",
+      "symbols": [
+        "ensureKeywordIndex",
+        "drainKeywordIndex",
+        "keywordSearch",
+        "KB_KEYWORD_INDEX_VERSION",
+        "KW_WEIGHTS"
+      ],
+      "source_files": [
+        "src/services/knowledge/kb-keyword-index.ts",
+        "src/services/knowledge/sqlite-provider.ts",
+        "src/services/knowledge/kb-normalize.ts",
+        "tests/knowledge/kb-keyword-index-upgrade.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T07:39:53.697Z",
+      "source_file_hashes": {
+        "src/services/knowledge/kb-keyword-index.ts": "0f8a6fc0d3e2cba6de887c9baf4491ad0b461f89",
+        "src/services/knowledge/kb-normalize.ts": "139b65c2d2dfe80424cc504a2bc5a6985bdddf7c",
+        "src/services/knowledge/sqlite-provider.ts": "973ba8ec462a7d0c0004c0eae8aa298d711d6612",
+        "tests/knowledge/kb-keyword-index-upgrade.test.ts": "5d97a31b2e45e8ac4ff4d87a7599cbf09c2faf7e"
+      }
+    },
+    {
       "id": "dba1a9f2-99c3-491a-ab63-b476cfff1306",
       "type": "knowledge",
       "title": "Stuck accounting roots: set aside, publish blocked, or deferred (cannotCloseThisRun)",
@@ -2713,6 +2900,31 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:11.365Z"
+    },
+    {
+      "id": "e3e977ba-8ff5-4b21-a405-a0d01f2281a4",
+      "type": "knowledge",
+      "title": "kb_import without base_branch needs refs/remotes/<remote>/HEAD to apply withdrawals",
+      "summary": "When kb_import gets no base_branch, mergedBaseBibleGate takes the base from the symbolic ref refs/remotes/<remote>/HEAD. Clones not made by git clone usually lack it, so withdrawn tombstones are deferred with a warning. The CLI kbImportCmd has no base_branch flag.",
+      "symbols": [
+        "mergedBaseBibleGate",
+        "remoteDefaultBranch",
+        "configuredGitRemotes"
+      ],
+      "source_files": [
+        "src/tools/kb-import.ts",
+        "src/services/knowledge/bible-blob-id.ts",
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs",
+        "tests/knowledge/kb-import-withdrawals.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T13:40:25.160Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "7ef65890eca8a9f89caf5a0e9c76e3f5c1c49fd4",
+        "src/services/knowledge/bible-blob-id.ts": "00cef1cad3d5bad130cc70a170ca5cc35840ef47",
+        "src/tools/kb-import.ts": "e7017cd1b2fb8ed1a45369b6b7f9748860f4a69c",
+        "tests/knowledge/kb-import-withdrawals.test.ts": "c8262eff5fe442a20e470cea1b3c2e0e4d3aebcc"
+      }
     },
     {
       "id": "e6525404-e387-4360-8df3-fe08d050a28a",
@@ -2922,6 +3134,23 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:08:07.865Z"
+    },
+    {
+      "id": "f1e8458e-ed03-4638-a074-284148d52d41",
+      "type": "learning",
+      "title": "Stale local dist/agents/schemas fails the se staleness guard, not the branch",
+      "summary": "The repo-root dist/ folder is ignored by git and refreshed only by npm run dist-pm. On a machine with an old dist/, contracts-schema-dist-staleness-guard.test.mjs fails with DRIFTED schemas even when the branch changes no schema; a clean clone skips the test.",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-se/test/contracts-schema-dist-staleness-guard.test.mjs",
+        ".gitignore"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T08:09:19.552Z",
+      "source_file_hashes": {
+        ".gitignore": "9658f0d8acffb101b7e84218574da6d8ed35f87e",
+        "packages/apra-fleet-se/test/contracts-schema-dist-staleness-guard.test.mjs": "1db1ddf04d24ac369fb510e69d39af9406640bbe"
+      }
     },
     {
       "id": "f2c0c490-c149-488d-939c-beb60734c8bc",

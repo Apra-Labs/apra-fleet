@@ -547,6 +547,9 @@ if (idFoo) {
 // scenarios.
 {
   fs.writeFileSync(path.join(repoA, 'src', 'demote-basis.ts'), 'export const demoteBasis = 1;\n');
+  // Committed so the entry's basis matches HEAD and it can enter the bible.
+  execFileSync('git', ['add', '--', 'src/demote-basis.ts'], { cwd: repoA });
+  execFileSync('git', ['commit', '--quiet', '-m', 'demote basis', '--', 'src/demote-basis.ts'], { cwd: repoA });
   const captureForDemote = await recordHappy('kb_capture', 'setup-for-demote', {
     type: 'knowledge',
     title: 'Entry walked up to CONFIRMED so it can be demoted',
@@ -564,6 +567,15 @@ if (idFoo) {
       id: idDemote,
       reason: 'Second promotion (INFERRED -> CONFIRMED) so kb_demote has a CONFIRMED entry to lower.',
     });
+    // The entry enters the bible before it is demoted: a demoted tombstone is
+    // written only for an id the bible at baseCommit carries. The ref pins
+    // that commit as the base for the tombstone call below.
+    await recordHappy('kb_bible_commit', 'setup-merge-for-demote', {
+      ids: [idDemote],
+      baseBranch: 'main',
+      baseCommit: '0123456789abcdef0123456789abcdef01234567',
+    });
+    execFileSync('git', ['update-ref', 'refs/fixtures/pre-demote', 'HEAD'], { cwd: repoA });
     await recordHappy('kb_demote', 'happy', {
       id: idDemote,
       reason: 'Re-read src/demote-basis.ts and the claim holds in fewer cases than the promotion note asserts.',
@@ -590,7 +602,7 @@ if (idFoo) {
         ids: [],
         demoted_ids: [idDemote, idFoo],
         baseBranch: 'main',
-        baseCommit: '0123456789abcdef0123456789abcdef01234567',
+        baseCommit: 'refs/fixtures/pre-demote',
       });
     }
   }
@@ -623,6 +635,20 @@ if (idFoo) {
   if (!ownRow || ownRow.confidence !== 'CONFIRMED' || !(ownRow.tags ?? []).some((t) => t.startsWith('member:'))) {
     failures++;
     console.log(`  [FAIL] kb_query/happy-own-scope did not return the member's own CONFIRMED row ${idFoo} with its member: tag`);
+  }
+
+  // --- kb_query files filter (look up by file) -------------------------------
+  // A hard filter: only entries citing src/example.ts come back. idFoo cites
+  // it; every row must.
+  const filesFilter = await recordHappy('kb_query', 'happy-files-filter', {
+    query: 'exampleFn',
+    files: ['src/example.ts'],
+  });
+  const filesRows = parseEnvelopeText(filesFilter)?.l1_results ?? [];
+  if (!filesRows.some((e) => e?.id === idFoo)
+    || !filesRows.every((e) => (e?.source_files ?? []).includes('src/example.ts'))) {
+    failures++;
+    console.log(`  [FAIL] kb_query/happy-files-filter did not return only entries citing src/example.ts (with ${idFoo})`);
   }
 }
 
@@ -1137,9 +1163,9 @@ await recordNonErrorOutcome('kb_capture', 'non-error-confidence-clamped', {
 // A CONFIRMED entry is merged into repo A's bible (setup). kb_bible_commit
 // withdrawals then removes it and records a "withdrawn" tombstone (the local
 // row is not changed). kb_import of that bible from the work tree lowers
-// nothing and reports the id deferred; read at refs/remotes/origin/main (the
-// bible's provenance.branch, pointed at HEAD here as a merge and fetch would)
-// it lowers the row and reports it withdrawn. Last, restore_ids with the
+// nothing and reports the id deferred; read at refs/remotes/origin/main with
+// base_branch main (the bible's provenance.branch, the ref pointed at HEAD
+// here as a merge and fetch would) it lowers the row and reports it withdrawn. Last, restore_ids with the
 // pre-withdrawal commit (a ref) as baseCommit removes the branch-added tombstone and
 // re-adds the base entry.
 {
@@ -1189,6 +1215,7 @@ await recordNonErrorOutcome('kb_capture', 'non-error-confidence-clamped', {
     execFileSync('git', ['update-ref', 'refs/remotes/origin/main', 'HEAD'], { cwd: repoA });
     const applied = await withSession('FULL_A', () => recordHappy('kb_import', 'withdrawal-base-ref', {
       ref: 'refs/remotes/origin/main',
+      base_branch: 'main',
       skip_sweep: true,
     }));
     if (JSON.stringify(parseEnvelopeText(applied)?.withdrawals?.withdrawn) !== JSON.stringify([idWithdraw])) {
@@ -1247,6 +1274,17 @@ await withSession('HTTP_A', () => recordHappy('kb_query', 'http-own-scope', {
       id: idHttpDemote,
       reason: 'Promotion of the entry used by the http demote fixtures to CONFIRMED (checked against src/widget.ts).',
     }));
+    // The files filter over http: the sample kb-server lists it in
+    // query_filters, so it is forwarded; the now-CONFIRMED entry citing
+    // src/widget.ts is found through its directory.
+    const httpFiles = await withSession('HTTP_A', () => recordHappy('kb_query', 'http-files-filter', {
+      query: 'widget', files: ['src'],
+    }));
+    const httpFilesRows = parseEnvelopeText(httpFiles)?.l1_results ?? [];
+    if (!httpFilesRows.some((e) => e?.id === idHttpDemote)) {
+      failures++;
+      console.log(`  [FAIL] kb_query/http-files-filter did not return ${idHttpDemote} citing src/widget.ts`);
+    }
     const demoteRequest = {
       id: idHttpDemote,
       reason: 'Re-checked src/widget.ts: the export is a constant only in this fixture, so CONFIRMED overstates it.',
@@ -1292,6 +1330,7 @@ await withSession('HTTP_A', () => recordHappy('kb_query', 'http-own-scope', {
     execFileSync('git', ['update-ref', 'refs/remotes/origin/main', 'HEAD'], { cwd: repoHttp });
     const replay = await withSession('HTTP_A', () => recordHappy('kb_import', 'http-withdrawal-replay', {
       ref: 'refs/remotes/origin/main',
+      base_branch: 'main',
     }));
     if (JSON.stringify(parseEnvelopeText(replay)?.withdrawals?.withdrawn) !== JSON.stringify([idHttpWithdraw])) {
       failures++;

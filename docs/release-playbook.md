@@ -10,7 +10,9 @@ real STANDARD account (Windows Sandbox or a standard user on a fleet member), wi
 candidate binary, run `apra-fleet install` (no elevation; status `installed (enabled)`), kill the
 server tree (`taskkill /F /T`) and confirm the task revives it within the trigger interval with no
 console window, `apra-fleet stop` keeps it stopped across two intervals (status shows stopped by
-user), `apra-fleet start` re-enables and starts it, and `apra-fleet uninstall` removes the task.
+user), `apra-fleet start` re-enables and starts it, and `apra-fleet uninstall` removes the task (stop the server first with `apra-fleet stop`, or run
+`apra-fleet uninstall --force`: a plain uninstall right after start refuses with "server is currently
+running").
 Attach the evidence to the release PR.
 
 ## 1. Bump the version -- in both package.json AND version.json

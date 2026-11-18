@@ -128,6 +128,9 @@ describe(
             initScratchRepoWithOriginRemote(repo);
             fs.mkdirSync(path.join(repo, 'src'), { recursive: true });
             fs.writeFileSync(path.join(repo, 'src', 'demote-client-bible-basis.ts'), 'export const basis = 1;\n');
+            // Committed so the entry's basis matches HEAD and it can enter the bible.
+            execFileSync('git', ['add', '-A'], { cwd: repo });
+            execFileSync('git', ['commit', '-q', '-m', 'basis'], { cwd: repo });
 
             const { transport, mcpClient, fleetApi } = await connectRealStdioFleet(repo, path.join(tmp, 'data'));
             t.after(() => transport.stop());
@@ -144,6 +147,12 @@ describe(
 
             await mcpClient.callTool('kb_promote', { id, reason: 'First promotion for the real client kbBibleCommit demoted_ids test.' });
             await mcpClient.callTool('kb_promote', { id, reason: 'Second promotion for the real client kbBibleCommit demoted_ids test.' });
+            // A demoted tombstone is written only for an id the bible at baseCommit
+            // carries: merge it first, then use that commit (HEAD) as the base.
+            const mergeResult = await fleetApi.kbBibleCommit({
+                ids: [id], baseBranch: 'main', baseCommit: '0123456789abcdef0123456789abcdef01234567',
+            });
+            assert.deepStrictEqual(parseToolJson(mergeResult).merged, [id]);
             await fleetApi.kbDemote({
                 id,
                 reason: 'Demoting before the kbBibleCommit demoted_ids forwarding assertion below.',
@@ -154,7 +163,7 @@ describe(
                 ids: [],
                 demoted_ids: [id],
                 baseBranch: 'main',
-                baseCommit: '0123456789abcdef0123456789abcdef01234567',
+                baseCommit: 'HEAD',
             });
             const parsed = parseToolJson(commitResult);
             // The value reaching the tool: id was admitted and tombstoned, not

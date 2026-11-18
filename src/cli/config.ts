@@ -219,6 +219,45 @@ export function writeOwnerOnlyFileAtomic(file: string, content: string): void {
   writeOwnerOnlyFile(target, content);
 }
 
+/**
+ * Strict sibling of writeOwnerOnlyFileAtomic for a file whose loss is
+ * unrecoverable (registry.json): the content goes to an owner-only (0600)
+ * temp file in the same directory and replaces the target by rename, and the
+ * live file is NEVER opened for writing. A transient rename failure (e.g. a
+ * brief Windows lock) is retried a few times; on final failure the temp file
+ * is removed and the error is thrown, leaving the target byte-identical.
+ * Unlike writeOwnerOnlyFileAtomic there is no in-place fallback, including
+ * for an existing file owned by another uid (POSIX): that throws a clear
+ * error instead, since a rename would hand the file to the current user and
+ * an in-place write is exactly what this helper exists to avoid.
+ * A symlinked target keeps its link (temp file placed next to the real file).
+ */
+export function writeOwnerOnlyFileAtomicStrict(file: string, content: string): void {
+  let target = file;
+  try { const real = fs.realpathSync(file); if (typeof real === 'string' && real) target = real; } catch { /* missing: write at `file` */ }
+  let st: fs.Stats | undefined;
+  try { st = fs.statSync(target); } catch { /* new file */ }
+  const getuid = (process as { getuid?: () => number }).getuid;
+  if (st && typeof getuid === 'function' && typeof st.uid === 'number' && st.uid !== getuid()) {
+    throw new Error(`${target} is owned by another user (uid ${st.uid}); refusing to replace or rewrite it in place`);
+  }
+  const tmp = path.join(path.dirname(target), `.${path.basename(target)}.${process.pid}.${Date.now()}.tmp`);
+  try {
+    fs.writeFileSync(tmp, content, { mode: 0o600, flag: 'wx' });
+    fs.chmodSync(tmp, 0o600);
+    const attempts = 5;
+    for (let i = 1; ; i++) {
+      try { fs.renameSync(tmp, target); return; } catch (err: unknown) {
+        if (i >= attempts) throw new Error(`could not replace ${target} after ${attempts} attempts: ${err instanceof Error ? err.message : String(err)}`);
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25 * i);
+      }
+    }
+  } catch (err) {
+    try { fs.unlinkSync(tmp); } catch { /* not created / already moved */ }
+    throw err;
+  }
+}
+
 export function writeConfig(paths: ProviderInstallConfig, config: any, opts: { ownerOnly?: boolean } = {}): void {
   fs.mkdirSync(paths.configDir, { recursive: true });
   let content = '';

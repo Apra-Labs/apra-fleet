@@ -19,10 +19,11 @@ import {
   filesOverlap,
   makeFtsQuery,
   makeAudnDecision,
-  orJoinFtsTerms,
 } from './audn.js';
 import { computeFileHashBatch } from './file-hash.js';
+import { ensureKeywordIndex, keywordMatchExpression, keywordSearch } from './kb-keyword-index.js';
 import { validateFilePaths } from './path-validation.js';
+import { citedFilterSql, hasCitedFilter, normalizeCitedFilter, normalizeCitedPath } from './cited-filter.js';
 import { clampBibleTimeToNow, standingAgainstTombstone } from './bible-import.js';
 import { KbCaptureRejected, type DiscardResult, type RetireOptions } from './types.js';
 import type {
@@ -139,6 +140,15 @@ function trustFilterSql(filter: EntryTrustFilter | undefined): { conditions: str
     params.push(filter.owner_tag);
   }
   return { conditions, params };
+}
+
+// A caller's path as given and in canonical form (normalizeCitedPath: forward
+// slashes, no leading './', no repeated or trailing '/'). capture() stores
+// source_files as given, so an exact-path lookup matches a row stored in the
+// caller's own form or in the canonical form (a backslash caller finds a
+// forward-slash row). Lookup only; nothing is stored in either form here.
+function storedPathForms(file: string): [string, string] {
+  return [file, normalizeCitedPath(file)];
 }
 
 export class SqliteProvider implements MemoryProvider {
@@ -337,6 +347,11 @@ export class SqliteProvider implements MemoryProvider {
         recorded_at TEXT NOT NULL
       );
     `);
+
+    // Keyword index (kb-keyword-index.ts): created on open and rebuilt from
+    // entries when its version is missing (a KB from before it existed) or
+    // older. Runs last, after every column migration above.
+    ensureKeywordIndex(this.db);
   }
 
   /**
@@ -1346,6 +1361,15 @@ export class SqliteProvider implements MemoryProvider {
       conditions.push('EXISTS (SELECT 1 FROM json_each(e.tags) WHERE value = ?)');
       params.push(opts.tag);
     }
+    if (hasCitedFilter(opts.cited)) {
+      // kb_query cited filter: a hard filter ANDed like tag, so the keyword
+      // ranking (or the newest-first listing) runs inside the kept set only.
+      const cited = citedFilterSql(normalizeCitedFilter(opts.cited, this.repoPath), this.repoPath);
+      if (cited) {
+        conditions.push(cited.condition);
+        params.push(...cited.params);
+      }
+    }
     if (opts.flagged_only) {
       conditions.push('(e.flagged_for_review = 1 OR e.contradiction_of IS NOT NULL)');
     } else {
@@ -1371,22 +1395,17 @@ export class SqliteProvider implements MemoryProvider {
     let rows: Record<string, unknown>[];
 
     if (opts.query || opts.fts_terms?.length) {
-      // ONE sanitization point. Free text is tokenized then OR-joined; internal
-      // callers pass discrete terms via fts_terms. Raw MATCH threw on '.', '-',
-      // '(', ')', '/' and implicit-AND'd multi-term queries to zero rows.
-      const ftsQuery = opts.fts_terms?.length
-        ? orJoinFtsTerms(opts.fts_terms)
-        : orJoinFtsTerms(opts.query!.match(/[A-Za-z0-9_]+/g) ?? []);
+      // ONE sanitization point. Free text and discrete terms go through the
+      // same normalizer the keyword index was built with (identifier split,
+      // stemming); free text is bounded to MAX_QUERY_KEYWORD_TERMS distinct
+      // terms and OR-joined, internal callers pass discrete terms via
+      // fts_terms (tokens of one term ANDed). Every token is quoted, so '.',
+      // '-', '(', ')' and '/' in caller text can never break MATCH.
+      const ftsQuery = keywordMatchExpression(
+        opts.fts_terms?.length ? { terms: opts.fts_terms } : { query: opts.query! }
+      );
       if (!ftsQuery) return { results: [], total: 0, l1_only: !!opts.l1_only };
-      const ftsWhere = conditions.length > 0 ? 'AND ' + conditions.join(' AND ') : '';
-      rows = db.prepare(`
-        SELECT e.* FROM entries e
-        JOIN entries_fts ON entries_fts.rowid = e.rowid
-        WHERE entries_fts MATCH ?
-        ${ftsWhere}
-        ORDER BY rank
-        LIMIT ?
-      `).all(ftsQuery, ...params, limit) as Record<string, unknown>[];
+      rows = keywordSearch(db, ftsQuery, conditions, params, limit);
     } else {
       rows = db.prepare(`
         SELECT e.* FROM entries e
@@ -1431,10 +1450,10 @@ export class SqliteProvider implements MemoryProvider {
         WHERE type = 'context-cache'
           AND superseded_at IS NULL
           ${confClause}
-          AND EXISTS (SELECT 1 FROM json_each(source_files) WHERE value = ?)
+          AND EXISTS (SELECT 1 FROM json_each(source_files) WHERE value IN (?, ?))
         ORDER BY created_at DESC
         LIMIT 1
-      `).all(...confParams, file) as Record<string, unknown>[];
+      `).all(...confParams, ...storedPathForms(file)) as Record<string, unknown>[];
 
       if (rows.length > 0) {
         fileEntries.set(file, this.rowToEntry(rows[0]));
@@ -1551,9 +1570,9 @@ export class SqliteProvider implements MemoryProvider {
           AND superseded_at IS NULL
           ${ownerClause}
           AND EXISTS (
-            SELECT 1 FROM json_each(source_files) WHERE value = ?
+            SELECT 1 FROM json_each(source_files) WHERE value IN (?, ?)
           )
-      `).all(...ownerParams, file) as { id: string; confidence: string }[];
+      `).all(...ownerParams, ...storedPathForms(file)) as { id: string; confidence: string }[];
       const rows = opts?.keepConfirmed ? candidates.filter(r => r.confidence !== 'CONFIRMED') : candidates;
       if (opts?.keepConfirmed) for (const r of candidates) if (r.confidence === 'CONFIRMED') refused.add(r.id);
 

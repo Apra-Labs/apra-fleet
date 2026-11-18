@@ -387,6 +387,21 @@ function assertOwnConfirmedRow(parsed, ctx) {
     : `the member's own CONFIRMED entry ${fooId} is missing from the own_scope l1_results`;
 }
 
+/**
+ * kb_query files filter: the captured entry `name` is in l1_results and every
+ * row cites `file` (a path ending in '/' is a directory: a cited path under it).
+ */
+function assertCitesFile(name, file) {
+  return (parsed, ctx) => {
+    const rows = parsed?.l1_results ?? [];
+    const wanted = ctx.ids.get(name)?.live;
+    if (!rows.some((e) => e?.id === wanted)) return `the entry ${wanted} citing ${file} is missing from l1_results`;
+    const cites = (e) => (e?.source_files ?? []).some((f) => (file.endsWith('/') ? f.startsWith(file) : f === file));
+    const stray = rows.find((e) => !cites(e));
+    return stray ? `l1_results carries ${stray.id}, which cites no ${file}` : null;
+  };
+}
+
 // A response id list (dotted path into the parsed body) must be exactly the
 // one id captured as `name`: a schema-valid response that withdrew, deferred
 // or restored nothing would otherwise pass.
@@ -472,18 +487,33 @@ export const SCENARIO = [
     captureId: 'DEMOTED',
     setup: [
       { op: 'write', repo: 'A', rel: 'src/demote-basis.ts', contents: 'export const demoteBasis = 1;\n' },
+      // Committed so the entry's basis matches HEAD and it can enter the bible.
+      { op: 'commit', repo: 'A', rel: 'src/demote-basis.ts' },
     ],
   },
   { tool: 'kb_promote', case: 'setup-first-promote-for-demote', derive: { id: 'DEMOTED' } },
   { tool: 'kb_promote', case: 'setup-second-promote-for-demote', derive: { id: 'DEMOTED' } },
+  // DEMOTED enters the bible before it is demoted: a demoted tombstone is
+  // written only for an id the bible at baseCommit carries.
+  { tool: 'kb_bible_commit', case: 'setup-merge-for-demote', derive: { ids: ['DEMOTED'] }, assertParsed: idListIs('merged', 'DEMOTED') },
   { tool: 'kb_demote', case: 'happy', derive: { id: 'DEMOTED' } },
   { tool: 'kb_demote', case: 'refusal-not-confirmed', derive: { id: 'DEMOTED' } },
   // kb_bible_commit demoted_ids: DEMOTED (now INFERRED, just demoted above) is
   // admitted and tombstoned; FOO (still CONFIRMED, never demoted) is skipped
   // with not_demoted_or_unknown. ids is empty, so this round only tombstones.
-  { tool: 'kb_bible_commit', case: 'tombstone', derive: { demoted_ids: ['DEMOTED', 'FOO'] } },
+  // baseCommit is a ref pinned at the commit that merged DEMOTED, so the base
+  // bible carries it (the base-bible gate on demoted tombstones).
+  {
+    tool: 'kb_bible_commit',
+    case: 'tombstone',
+    derive: { demoted_ids: ['DEMOTED', 'FOO'] },
+    setup: [{ op: 'ref', repo: 'A', name: 'refs/fixtures/pre-demote' }],
+    assertParsed: idListIs('demoted', 'DEMOTED'),
+  },
   { tool: 'kb_query', case: 'happy-confirmed-only', assertParsed: assertConfirmedOnly },
   { tool: 'kb_query', case: 'happy-own-scope', assertParsed: assertOwnConfirmedRow },
+  // kb_query files filter: only entries citing src/example.ts, FOO among them.
+  { tool: 'kb_query', case: 'happy-files-filter', assertParsed: assertCitesFile('FOO', 'src/example.ts') },
   { tool: 'kb_stats', case: 'happy' },
   { tool: 'kb_import', case: 'happy' },
   // Bible v3 round trip: the basis carried in A's exported bible travels to B.
@@ -708,6 +738,10 @@ export const SCENARIO = [
   // E-DEMOTE-NOT-CONFIRMED. After http-own-scope, which must not see it.
   { tool: 'kb_capture', case: 'setup-for-http-demote', captureId: 'HTTP_DEMOTED' },
   { tool: 'kb_promote', case: 'setup-first-promote-for-http-demote', derive: { id: 'HTTP_DEMOTED' } },
+  // The files filter over http, forwarded because the sample kb-server lists
+  // it in query_filters: the CONFIRMED entry citing src/widget.ts is found
+  // through its directory (src).
+  { tool: 'kb_query', case: 'http-files-filter', assertParsed: assertCitesFile('HTTP_DEMOTED', 'src/') },
   { tool: 'kb_demote', case: 'http-happy', derive: { id: 'HTTP_DEMOTED' } },
   { tool: 'kb_demote', case: 'refusal-http-not-confirmed', derive: { id: 'HTTP_DEMOTED' } },
   // Withdrawals over an http project KB: kb_bible_commit writes a

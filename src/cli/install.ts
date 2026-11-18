@@ -911,19 +911,21 @@ export { claudeUserConfigPath } from '../services/claude-local-scope-mcp.js';
  * Register the http apra-fleet server in claude's user scope WITHOUT putting
  * the access secret in argv (`claude mcp add --header` is visible to other
  * local users via ps): the entry is merged into the claude config file
- * directly, which is kept owner-only. An unparseable existing file is never
- * overwritten.
+ * directly, which is kept owner-only. An existing file that is empty,
+ * unparseable or not a JSON object is never overwritten: an empty read can be
+ * Claude Code mid-rewrite, and seeding `{}` from it would drop every other key.
  */
 export function registerClaudeHttpMcp(url: string, headers: Record<string, string>): void {
   const file = claudeUserConfigPath();
   let settings: any = {};
   if (fs.existsSync(file)) {
+    const refuse = (what: string) => new Error(`${file} is ${what}; it was left untouched. Close Claude Code, fix or remove the file, then re-run 'apra-fleet install'`);
     const raw = fs.readFileSync(file, 'utf-8').trim();
-    if (raw) {
-      try { settings = JSON.parse(raw); } catch {
-        throw new Error(`${file} is not valid JSON; fix or remove it, then re-run 'apra-fleet install'`);
-      }
+    if (!raw) throw refuse('empty (not valid JSON)');
+    try { settings = JSON.parse(raw); } catch {
+      throw refuse('not valid JSON');
     }
+    if (typeof settings !== 'object' || settings === null || Array.isArray(settings)) throw refuse('not a JSON object (not valid JSON for a claude config)');
   }
   settings.mcpServers = settings.mcpServers || {};
   settings.mcpServers['apra-fleet'] = { type: 'http', url, headers };

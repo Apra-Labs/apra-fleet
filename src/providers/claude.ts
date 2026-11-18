@@ -16,6 +16,8 @@ import {
   quotePosixPath,
   quotePwshPath,
   readMemberJson,
+  memberFilePresent,
+  MemberConfigNotJsonError,
   resolveClaudeProjectKey,
   normalizeProjectKey,
   LEGACY_MEMBER_MCP_SERVER_NAME,
@@ -671,75 +673,97 @@ export class ClaudeProvider implements ProviderAdapter {
     const target = claudeLocalScopeConfigFile(configDir, ctx.memberHomeDir, isWindows, ctx.shell);
     const exec = checkedExec(ctx.execCommand);
 
-    const config = await readMemberJson(ctx.execCommand, target.file, posix);
+    // Only a MISSING file reads as {}: an existing empty or unparseable file
+    // (Claude Code may be mid-rewrite of it, for a local member it is the
+    // host user's own config) throws E-MEMBER-CONFIG-NOT-JSON and is never
+    // replaced with just the fleet keys.
+    const readConfig = () => readMemberJson(ctx.execCommand, target.file, posix, { missingOnly: true });
+    const firstRead = await readConfig();
     // Claude Code keys local-scope servers by the git repository ROOT of the
     // folder (the exact folder only outside a git repo) -- the same resolver
     // the fleetMcp probe reads back with.
     const key = await resolveClaudeProjectKey(exec, agent.workFolder, isWindows, posix);
-    let changed = false;
+    const folderKey = normalizeProjectKey(agent.workFolder);
 
-    // User-scope legacy entry (top-level mcpServers).
-    const userServers = config.mcpServers;
-    if (isRecord(userServers) && LEGACY_MEMBER_MCP_SERVER_NAME in userServers) {
-      delete userServers[LEGACY_MEMBER_MCP_SERVER_NAME];
-      changed = true;
-    }
+    // The fleet's OWN delta, applied in place onto a parsed config; returns
+    // whether anything changed. It touches only fleet-owned entries: the
+    // legacy apra-fleet-member entries, projects[key].mcpServers.apra-fleet
+    // and this member's own entry under an aliased key. The user-scope
+    // mcpServers.apra-fleet (install's entry) and every unrelated key are
+    // never touched.
+    const applyFleetDelta = (config: Record<string, unknown>): boolean => {
+      let changed = false;
 
-    const projects = isRecord(config.projects) ? config.projects : {};
-    const entry = isRecord(projects[key]) ? projects[key] as Record<string, unknown> : null;
-    if (url !== null || entry) {
-      const project: Record<string, unknown> = entry ?? {};
-      const servers: Record<string, unknown> = isRecord(project.mcpServers) ? project.mcpServers as Record<string, unknown> : {};
-      if (LEGACY_MEMBER_MCP_SERVER_NAME in servers) {
-        delete servers[LEGACY_MEMBER_MCP_SERVER_NAME];
+      // User-scope legacy entry (top-level mcpServers).
+      const userServers = config.mcpServers;
+      if (isRecord(userServers) && LEGACY_MEMBER_MCP_SERVER_NAME in userServers) {
+        delete userServers[LEGACY_MEMBER_MCP_SERVER_NAME];
         changed = true;
       }
-      if (url !== null) {
-        const current = servers[MEMBER_MCP_SERVER_NAME];
-        const wanted: Record<string, unknown> = { type: 'http', url, ...(ctx.headers ? { headers: ctx.headers } : {}) };
-        if (!isRecord(current) || JSON.stringify(current) !== JSON.stringify(wanted)) {
-          servers[MEMBER_MCP_SERVER_NAME] = wanted;
+
+      const projects = isRecord(config.projects) ? config.projects : {};
+      const entry = isRecord(projects[key]) ? projects[key] as Record<string, unknown> : null;
+      if (url !== null || entry) {
+        const project: Record<string, unknown> = entry ?? {};
+        const servers: Record<string, unknown> = isRecord(project.mcpServers) ? project.mcpServers as Record<string, unknown> : {};
+        if (LEGACY_MEMBER_MCP_SERVER_NAME in servers) {
+          delete servers[LEGACY_MEMBER_MCP_SERVER_NAME];
           changed = true;
         }
-      } else if (MEMBER_MCP_SERVER_NAME in servers) {
-        const current = servers[MEMBER_MCP_SERVER_NAME];
-        const own = isRecord(current) && typeof current.url === 'string'
-          && current.url.endsWith(`?member=${encodeURIComponent(agent.id)}`);
-        if (!ctx.removeOnlyOwnEntry || own) {
+        if (url !== null) {
+          const current = servers[MEMBER_MCP_SERVER_NAME];
+          const wanted: Record<string, unknown> = { type: 'http', url, ...(ctx.headers ? { headers: ctx.headers } : {}) };
+          if (!isRecord(current) || JSON.stringify(current) !== JSON.stringify(wanted)) {
+            servers[MEMBER_MCP_SERVER_NAME] = wanted;
+            changed = true;
+          }
+        } else if (MEMBER_MCP_SERVER_NAME in servers) {
+          const current = servers[MEMBER_MCP_SERVER_NAME];
+          const own = isRecord(current) && typeof current.url === 'string'
+            && current.url.endsWith(`?member=${encodeURIComponent(agent.id)}`);
+          if (!ctx.removeOnlyOwnEntry || own) {
+            delete servers[MEMBER_MCP_SERVER_NAME];
+            changed = true;
+          }
+        }
+        project.mcpServers = servers;
+        projects[key] = project;
+        config.projects = projects;
+      }
+
+      // An older compose keyed the entry by the work folder exactly as
+      // registered. The resolved key differs when the folder sits below its
+      // repository root, or when git reports the root symlink-resolved
+      // (macOS /var -> /private/var). Clean up what this member left
+      // under that spelling: the legacy entry and its OWN apra-fleet entry,
+      // never someone else's.
+      const aliased = folderKey !== key && isRecord(projects[folderKey]) ? projects[folderKey] as Record<string, unknown> : null;
+      if (aliased && isRecord(aliased.mcpServers)) {
+        const servers = aliased.mcpServers as Record<string, unknown>;
+        if (LEGACY_MEMBER_MCP_SERVER_NAME in servers) {
+          delete servers[LEGACY_MEMBER_MCP_SERVER_NAME];
+          changed = true;
+        }
+        const stale = servers[MEMBER_MCP_SERVER_NAME];
+        if (isRecord(stale) && typeof stale.url === 'string' && stale.url.endsWith(`?member=${encodeURIComponent(agent.id)}`)) {
           delete servers[MEMBER_MCP_SERVER_NAME];
           changed = true;
         }
+        config.projects = projects;
       }
-      project.mcpServers = servers;
-      projects[key] = project;
-      config.projects = projects;
-    }
+      return changed;
+    };
 
-    // An older compose keyed the entry by the work folder exactly as
-    // registered. The resolved key differs when the folder sits below its
-    // repository root, or when git reports the root symlink-resolved
-    // (macOS /var -> /private/var). Clean up what this member left
-    // under that spelling: the legacy entry and its OWN apra-fleet entry,
-    // never someone else's.
-    const folderKey = normalizeProjectKey(agent.workFolder);
-    const aliased = folderKey !== key && isRecord(projects[folderKey]) ? projects[folderKey] as Record<string, unknown> : null;
-    if (aliased && isRecord(aliased.mcpServers)) {
-      const servers = aliased.mcpServers as Record<string, unknown>;
-      if (LEGACY_MEMBER_MCP_SERVER_NAME in servers) {
-        delete servers[LEGACY_MEMBER_MCP_SERVER_NAME];
-        changed = true;
-      }
-      const stale = servers[MEMBER_MCP_SERVER_NAME];
-      if (isRecord(stale) && typeof stale.url === 'string' && stale.url.endsWith(`?member=${encodeURIComponent(agent.id)}`)) {
-        delete servers[MEMBER_MCP_SERVER_NAME];
-        changed = true;
-      }
-      config.projects = projects;
-    }
+    const upToDate = { workFolderFiles: [], detail: `claude: ${target.file} already up to date for ${key}` };
+    if (!applyFleetDelta(firstRead)) return upToDate;
 
-    if (!changed) {
-      return { workFolderFiles: [], detail: `claude: ${target.file} already up to date for ${key}` };
-    }
+    // Re-read right before the move and apply only the fleet delta onto the
+    // FRESH content: Claude Code (and install) rewrite this file on their
+    // own, and anything they wrote since the first read -- the key probe
+    // above ran in between -- must survive. No member exec runs between this
+    // re-read and the move other than staging the write.
+    const config = await readConfig();
+    if (!applyFleetDelta(config)) return upToDate;
 
     const staging = workspaceTrustStagingNames();
     await deliverWorkspaceTrustFile(JSON.stringify(config, null, 2), {
@@ -899,35 +923,56 @@ export class ClaudeProvider implements ProviderAdapter {
       ? `Get-Content -Raw "${homeFile}" -ErrorAction SilentlyContinue -ErrorVariable fleetHomeReadErr; if ($fleetHomeReadErr -and (Test-Path "${homeFile}")) { [Console]::Out.Write("${HOME_UNREADABLE}") }; Write-Output "${SPLIT}"; Get-Content -Raw "${mcpFile}" -ErrorAction SilentlyContinue`
       : `cat "${homeFile}" 2>/dev/null || { if test -e "${homeFile}"; then printf '%s' "${HOME_UNREADABLE}"; fi; }; echo "${SPLIT}"; cat "${mcpFile}" 2>/dev/null || true`;
     const readResult = await execCommand(readCmd, 10000);
+    // The same path, unescaped, for the presence probe (which quotes it itself)
+    // and for error messages.
+    const rawHomeFile = isWindows
+      ? `${resolvedHome.replace(/\//g, '\\').replace(/\\+$/, '')}\\.claude.json`
+      : `${resolvedHome.replace(/\\/g, '/').replace(/\/+$/, '')}/.claude.json`;
 
-    // Substring split (not line-split): if ~/.claude.json has no trailing newline the
-    // marker glues onto its closing brace, and only a substring split separates cleanly.
-    // No marker at all -> treat the whole payload as ~/.claude.json with no .mcp.json.
-    const rawStdout = readResult.stdout;
-    const splitIdx = rawStdout.indexOf(SPLIT);
-    const homeRaw = (splitIdx === -1 ? rawStdout : rawStdout.slice(0, splitIdx)).trim();
-    const mcpRaw = (splitIdx === -1 ? '' : rawStdout.slice(splitIdx + SPLIT.length)).trim();
-
-    if (homeRaw.includes(HOME_UNREADABLE)) {
+    // Parses one read of ~/.claude.json (+ .mcp.json). null = the home file
+    // exists but could not be read. Only a MISSING home file reads as {}: an
+    // existing empty file (an empty read followed by a positive presence
+    // probe) or one that is not a JSON object throws E-MEMBER-CONFIG-NOT-JSON
+    // -- Claude Code rewrites this file concurrently, so an empty or torn
+    // read must never be replaced with just the trust entry.
+    const parseRead = async (stdout: string): Promise<{ existing: Record<string, unknown>; mcpRaw: string } | null> => {
+      // Substring split (not line-split): if ~/.claude.json has no trailing newline the
+      // marker glues onto its closing brace, and only a substring split separates cleanly.
+      // No marker at all -> treat the whole payload as ~/.claude.json with no .mcp.json.
+      const splitIdx = stdout.indexOf(SPLIT);
+      const homeRaw = (splitIdx === -1 ? stdout : stdout.slice(0, splitIdx)).trim();
+      const mcpRaw = (splitIdx === -1 ? '' : stdout.slice(splitIdx + SPLIT.length)).trim();
+      if (homeRaw.includes(HOME_UNREADABLE)) return null;
+      if (!homeRaw) {
+        if (await memberFilePresent(execCommand, rawHomeFile, usePosix)) {
+          throw new MemberConfigNotJsonError(rawHomeFile, 'exists but is empty (possibly caught mid-write); workspace trust NOT seeded');
+        }
+        // A member that has never run Claude interactively has no ~/.claude.json yet.
+        return { existing: {}, mcpRaw };
+      }
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(homeRaw);
+      } catch {
+        throw new MemberConfigNotJsonError(rawHomeFile, 'exists but is not valid JSON; workspace trust NOT seeded');
+      }
+      if (!isRecord(parsed)) throw new MemberConfigNotJsonError(rawHomeFile, 'is not a JSON object; workspace trust NOT seeded');
+      return { existing: parsed, mcpRaw };
+    };
+    const unreadable = (): EnsureWorkspaceTrustedResult => {
       const detail = `E-MEMBER-CONFIG-UNREADABLE: ${homeFile} exists but could not be read; workspace trust NOT seeded (the file is left untouched)`;
       console.error(`[claude] workspace trust: ${detail}`);
       return { seeded: false, detail, mcpServersSeeded: [] };
-    }
+    };
 
-    let existing: Record<string, unknown> = {};
-    try {
-      const parsed = JSON.parse(homeRaw);
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) existing = parsed;
-    } catch {
-      // File missing, empty, or not JSON -- a member that has never run Claude
-      // interactively has no ~/.claude.json at all yet. Start from an empty object.
-    }
+    const first = await parseRead(readResult.stdout);
+    if (!first) return unreadable();
 
     // A missing / unparseable / server-less .mcp.json is NOT an error: seed nothing
     // extra and fall through to the pre-existing trust-only behaviour.
     let declaredServers: string[] = [];
     try {
-      const mcpParsed = JSON.parse(mcpRaw);
+      const mcpParsed = JSON.parse(first.mcpRaw);
       const servers = mcpParsed?.mcpServers;
       if (servers && typeof servers === 'object' && !Array.isArray(servers)) {
         declaredServers = Object.keys(servers);
@@ -936,46 +981,60 @@ export class ClaudeProvider implements ProviderAdapter {
       // no .mcp.json (or garbage in it) -- trust-only path.
     }
 
-    const rawProjects = existing.projects;
-    const projects: Record<string, unknown> = (rawProjects && typeof rawProjects === 'object' && !Array.isArray(rawProjects))
-      ? rawProjects as Record<string, unknown>
-      : {};
-    const rawEntry = projects[key];
-    const existingEntry: Record<string, unknown> = (rawEntry && typeof rawEntry === 'object' && !Array.isArray(rawEntry))
-      ? rawEntry as Record<string, unknown>
-      : {};
+    // The fleet's OWN delta onto one parsed config: projects[key].hasTrustDialogAccepted
+    // and the enabledMcpjsonServers additions. Every other key -- user-scope mcpServers,
+    // other projects, sibling fields on this entry -- is carried over untouched.
+    const planDelta = (existing: Record<string, unknown>) => {
+      const rawProjects = existing.projects;
+      const projects: Record<string, unknown> = isRecord(rawProjects) ? rawProjects : {};
+      const rawEntry = projects[key];
+      const existingEntry: Record<string, unknown> = isRecord(rawEntry) ? rawEntry : {};
 
-    // apra-fleet-9oo: trust and MCP-server enablement are computed INDEPENDENTLY, because
-    // an already-trusted member (hasTrustDialogAccepted true) can still be missing its
-    // enabledMcpjsonServers entries -- the old unconditional early return here is exactly
-    // why members never got project MCP servers auto-approved. Short-circuit only when
-    // BOTH are already satisfied.
-    const trustNeeded = existingEntry.hasTrustDialogAccepted !== true;
+      // apra-fleet-9oo: trust and MCP-server enablement are computed INDEPENDENTLY, because
+      // an already-trusted member (hasTrustDialogAccepted true) can still be missing its
+      // enabledMcpjsonServers entries -- the old unconditional early return here is exactly
+      // why members never got project MCP servers auto-approved. Short-circuit only when
+      // BOTH are already satisfied.
+      const trustNeeded = existingEntry.hasTrustDialogAccepted !== true;
 
-    const enabled = Array.isArray(existingEntry.enabledMcpjsonServers)
-      ? (existingEntry.enabledMcpjsonServers as unknown[]).filter((n): n is string => typeof n === 'string')
-      : [];
-    const disabled = Array.isArray(existingEntry.disabledMcpjsonServers)
-      ? (existingEntry.disabledMcpjsonServers as unknown[]).filter((n): n is string => typeof n === 'string')
-      : [];
-    // Union-merge, deny wins: keep every existing entry in its existing order, append
-    // only names that are missing (in .mcp.json declaration order, so re-runs are
-    // byte-identical), and NEVER add a name a human explicitly disabled.
-    const serversToAdd = declaredServers.filter(n => !enabled.includes(n) && !disabled.includes(n));
+      const enabled = Array.isArray(existingEntry.enabledMcpjsonServers)
+        ? (existingEntry.enabledMcpjsonServers as unknown[]).filter((n): n is string => typeof n === 'string')
+        : [];
+      const disabled = Array.isArray(existingEntry.disabledMcpjsonServers)
+        ? (existingEntry.disabledMcpjsonServers as unknown[]).filter((n): n is string => typeof n === 'string')
+        : [];
+      // Union-merge, deny wins: keep every existing entry in its existing order, append
+      // only names that are missing (in .mcp.json declaration order, so re-runs are
+      // byte-identical), and NEVER add a name a human explicitly disabled.
+      const serversToAdd = declaredServers.filter(n => !enabled.includes(n) && !disabled.includes(n));
 
-    if (!trustNeeded && serversToAdd.length === 0) {
+      // MERGE: preserve every sibling field already on the project entry (history,
+      // allowedTools, etc.) and every other project's entry in the file -- never replace
+      // the entry, or the file, wholesale. Note enabledMcpjsonServers is only written when
+      // something is actually being added -- an absent array is never "tidied" into [].
+      const mergedEntry: Record<string, unknown> = { ...existingEntry, hasTrustDialogAccepted: true };
+      if (serversToAdd.length > 0) mergedEntry.enabledMcpjsonServers = [...enabled, ...serversToAdd];
+      const merged = { ...existing, projects: { ...projects, [key]: mergedEntry } };
+      return { trustNeeded, serversToAdd, merged };
+    };
+
+    const alreadyPresent = (): EnsureWorkspaceTrustedResult => {
       console.error(`[claude] workspace trust: already present for "${key}"`);
       return { seeded: false, detail: `already trusted: ${key}`, mcpServersSeeded: [] };
-    }
+    };
 
-    // MERGE: preserve every sibling field already on the project entry (history,
-    // allowedTools, etc.) and every other project's entry in the file -- never replace
-    // the entry, or the file, wholesale. Note enabledMcpjsonServers is only written when
-    // something is actually being added -- an absent array is never "tidied" into [].
-    const mergedEntry: Record<string, unknown> = { ...existingEntry, hasTrustDialogAccepted: true };
-    if (serversToAdd.length > 0) mergedEntry.enabledMcpjsonServers = [...enabled, ...serversToAdd];
-    const mergedProjects = { ...projects, [key]: mergedEntry };
-    const merged = { ...existing, projects: mergedProjects };
+    // The already-satisfied case costs exactly one exec: no re-read, no write.
+    const firstPlan = planDelta(first.existing);
+    if (!firstPlan.trustNeeded && firstPlan.serversToAdd.length === 0) return alreadyPresent();
+
+    // Re-read right before the move and apply only the fleet delta onto the FRESH
+    // content: Claude Code rewrites this file on its own, and whatever it wrote since
+    // the first read must survive the fleet write. No member exec runs between this
+    // re-read and the move other than staging the write.
+    const fresh = await parseRead((await execCommand(readCmd, 10000)).stdout);
+    if (!fresh) return unreadable();
+    const { trustNeeded, serversToAdd, merged } = planDelta(fresh.existing);
+    if (!trustNeeded && serversToAdd.length === 0) return alreadyPresent();
     const contentStr = JSON.stringify(merged, null, 2);
 
     // ATOMIC write: stage the full merged content in a temp file, then rename over the
@@ -1027,6 +1086,27 @@ export interface WorkspaceTrustWritePlan {
 }
 
 /**
+ * PowerShell command that lands staged file `from` on `to` without `to` ever
+ * disappearing. `Move-Item -Force` on Windows PowerShell 5.1 deletes an
+ * existing destination and then moves, leaving a window with no file (Claude
+ * Code may read that as a fresh install) and losing it if the move then
+ * fails. An existing destination is swapped with [IO.File]::Replace
+ * (ReplaceFile, which also keeps the destination's ACL); a missing one is
+ * moved. ReplaceFile needs both on one volume, so a source staged on another
+ * volume is first copied next to the destination under a per-call unique
+ * name (concurrent landings never share it). Any failure exits 1 with
+ * the reason on stderr. Both paths arrive already escaped for "...".
+ */
+export function windowsReplaceFileCommand(from: string, to: string): string {
+  return `$s = "${from}"; $d = "${to}"; $t = $null; `
+    + `try { $ErrorActionPreference = 'Stop'; $src = $s; `
+    + `if ([System.IO.Path]::GetPathRoot($s) -ne [System.IO.Path]::GetPathRoot($d)) { $t = $d + '.fleet-land-' + [Guid]::NewGuid().ToString('N') + '.tmp'; [System.IO.File]::Copy($s, $t, $false); $src = $t }; `
+    + `if ([System.IO.File]::Exists($d)) { [System.IO.File]::Replace($src, $d, [NullString]::Value) } else { [System.IO.File]::Move($src, $d) }; `
+    + `if ($t) { [System.IO.File]::Delete($s) } `
+    + `} catch { if ($t -and [System.IO.File]::Exists($t)) { [System.IO.File]::Delete($t) }; [Console]::Error.WriteLine($_.Exception.Message); exit 1 }`;
+}
+
+/**
  * Deliver `contentStr` (a merged ~/.claude.json) to `homeFile` on the member
  * WITHOUT it ever appearing in an exec string -- not raw, not base64, not
  * chunked, not inside -EncodedCommand. Two channels only:
@@ -1052,7 +1132,7 @@ export async function deliverWorkspaceTrustFile(
 ): Promise<WorkspaceTrustWritePlan> {
   const { isWindows, execCommand, transport, homeFile, tmpFile, staging, homeRel, secretChannel } = opts;
   const moveCmd = (from: string) => (isWindows
-    ? `Move-Item -Force "${from}" "${homeFile}"`
+    ? windowsReplaceFileCommand(from, homeFile)
     : `mv "${from}" "${homeFile}"`);
   const failures: string[] = [];
 

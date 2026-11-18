@@ -1,3 +1,5 @@
+import type { CitedFilter } from './cited-filter.js';
+
 // D6 (T3.1): 'user-directive' is the highest-trust entry type -- a standing
 // instruction/correction the user gave during a sprint. It is captured at
 // confidence='CONFIRMED' (the SOLE exemption from the D1 clamp, stamped by the
@@ -192,6 +194,11 @@ export interface QueryOptions {
   exclude_disputed?: boolean;
   // MEMBER own-scope tag filter (see EntryTrustFilter.owner_tag). Internal only.
   owner_tag?: string;
+  // kb_query cited filter (request fields files / symbols, cited-filter.ts): a
+  // HARD filter -- only entries whose source_files cite one of files (exactly
+  // or under a given directory) or whose symbols name one of symbols. Ranking
+  // inside the kept set is unchanged. Absent or empty = no filter.
+  cited?: CitedFilter;
   l1_only?: boolean;
   limit?: number;
   ids?: string[];

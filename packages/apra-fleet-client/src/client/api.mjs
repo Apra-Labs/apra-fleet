@@ -752,7 +752,9 @@
  *   whose cited files at the repo's HEAD commit no longer match its recorded basis (the
  *   same rule kb_export applies; uncommitted edits never change the verdict) is skipped
  *   with reason basis_mismatch, and a CONFIRMED id citing no source file is skipped with
- *   reason no_source_files. Skips are reported in the result's skipped list.
+ *   reason no_source_files. An id the bible file carries a withdrawn tombstone for is
+ *   skipped with reason withdrawn_tombstone (tombstone kept) unless restore_ids undoes that
+ *   branch-added tombstone in the same call. Skips are reported in the result's skipped list.
  *   Independently of ids, bible entries the KB holds as superseded or invalidated are
  *   removed and reported in the result's removed list, and existing bible entries with
  *   no source_file_hashes gain the KB's stored basis for the same id when it passes the
@@ -764,9 +766,14 @@
  * @property {string[]} [demoted_ids] - Ids demoted this round (kb_demote). An id whose
  *   local row carries a demoted_at and is now below CONFIRMED is REMOVED from entries and
  *   recorded as an explicit tombstone {id, at, reason} in the bible's optional top-level
- *   demotions array; any other id is skipped with reason not_demoted_or_unknown. Existing
- *   tombstones are preserved, and re-committing a tombstoned id through ids (a
- *   re-promotion) restores its entry and clears its tombstone.
+ *   demotions array; any other id is skipped with reason not_demoted_or_unknown. The
+ *   tombstone is written only when the bible at baseCommit carries the id (entry or
+ *   tombstone): an entry the branch added is removed with no tombstone, any other id is
+ *   skipped with reason not_in_base_bible (also when baseCommit does not resolve or its
+ *   bible is unreadable -- no new demoted tombstone is written then). Existing
+ *   tombstones are preserved, and re-committing a demoted-tombstoned id through ids (a
+ *   re-promotion) restores its entry and clears its tombstone; a withdrawn tombstone is
+ *   never cleared by ids (see ids).
  * @property {{id: string, note: string, evidence_files: string[]}[]} [withdrawals] - Bible
  *   entries withdrawn this round. note must be at least 20 characters after whitespace is
  *   collapsed (stored collapsed); evidence_files needs at least one repo-relative path (no
@@ -795,6 +802,37 @@
  *   E-DEMOTE-EVIDENCE-UNRESOLVED and nothing is written. Over a local SQLite KB each
  *   must also resolve to a real file (not a directory) inside the calling session's
  *   repo; over a remote (http) KB the KB server validates the rest of the evidence.
+ */
+
+/**
+ * kb_query options. At least one of query, files, symbols, tag or
+ * flagged_only is required (E-QUERY-NO-SELECTOR otherwise).
+ * @typedef {Object} KbQueryOptions
+ * @property {string} [query] - Free-text keyword search.
+ * @property {('context-cache'|'learning'|'knowledge'|'runbook')} [type] - Only entries of this content type.
+ * @property {string} [tag] - Only entries carrying this exact tag; may be used alone to list them.
+ * @property {number} [limit] - Max L1 results. Default 20 full rows plus the content of the
+ *   top 5 in l2_expanded; a member session that omits it gets at most 6 summary rows and an
+ *   empty l2_expanded (unless own_scope is set).
+ * @property {boolean} [include_stale] - Include stale and superseded entries (default false).
+ * @property {string[]} [files] - Look up by file: only entries whose source_files cite one of
+ *   these repo-relative paths, or a file under one of them when the path is a directory
+ *   ("src/services" matches "src/services/a.ts", not "src/services-old/a.ts"). A hard filter,
+ *   not a ranking signal; may be used without query. Over a remote (http) KB it is sent only
+ *   when the server lists "files" in query_filters of GET /api/kb/capabilities, otherwise the
+ *   call fails with E-KB-HTTP-UNSUPPORTED and nothing is read.
+ * @property {string[]} [symbols] - Only entries whose symbols name one of these (exact match).
+ *   A hard filter like files; with both, an entry matching either is kept. Same http rule
+ *   ("symbols" in query_filters).
+ * @property {boolean} [flagged_only] - List the contradiction-flagged entries instead
+ *   (result {flagged_entries, total, note}); files, symbols and the trust filters are ignored.
+ * @property {boolean} [expand_related] - Also return related_claims (refines /
+ *   contradiction_of neighbours of the top hits).
+ * @property {Array<'CONFIRMED'|'INFERRED'|'UNVERIFIED'>} [confidence] - Tier allow-list.
+ *   Default ["CONFIRMED"] with exclude_disputed true.
+ * @property {boolean} [exclude_disputed] - Drop both halves of an unresolved contradiction.
+ * @property {boolean} [own_scope] - Member session only: read the member's own captures
+ *   (every requested tier) from the per-repo KB instead of the checkout bible.
  */
 
 /**
@@ -840,6 +878,9 @@
  *   E-BIBLE-NOT-FOUND, and a kb_maintainer or FULL session records that
  *   verified blob as trusted. The engine's sprint-start priming seeds trust
  *   this way from the base branch, never from the maintainer's work tree.
+ *   kb_import also takes an optional `base_branch` (a plain branch name): the
+ *   base branch the bible is expected to belong to, which gates its withdrawn
+ *   tombstones (see KbImportWithdrawals).
  */
 
 /**
@@ -847,13 +888,16 @@
  * @typedef {Object} KbBibleCommitResult
  * @property {string} path - The bible file written (or that would have been).
  * @property {string[]} merged - Ids merged from `ids`.
- * @property {string[]} demoted - Ids admitted from `demoted_ids` (removed, tombstoned "demoted").
+ * @property {string[]} demoted - Ids removed from entries as demoted; tombstoned "demoted" when
+ *   the bible at baseCommit carries the id (an entry the branch added gets no tombstone).
  * @property {string[]} withdrawn - Ids admitted from `withdrawals`: removed from entries and
  *   tombstoned "withdrawn"; the local entry is not changed.
  * @property {string[]} restored - Ids from `restore_ids` whose branch-added tombstone was removed.
  * @property {{id: string, reason: string}[]} skipped - Ids not merged, demoted or withdrawn, with
- *   reason not_confirmed_or_unknown, no_source_files, basis_mismatch, not_demoted_or_unknown
- *   or not_withdrawable.
+ *   reason not_confirmed_or_unknown, no_source_files, basis_mismatch, not_demoted_or_unknown,
+ *   not_withdrawable, withdrawn_tombstone (an `ids` id the bible file carries a withdrawn
+ *   tombstone for, not restored by the same call: the tombstone is kept) or
+ *   not_in_base_bible (a demoted_ids id the bible at baseCommit does not carry).
  * @property {{id: string, reason: string}[]} removed - Entries removed because the KB holds them
  *   superseded or invalidated.
  * @property {number} entry_count - Entries in the resulting bible (a tombstone is not an entry).
@@ -865,8 +909,11 @@
 
 /**
  * What a bible's "withdrawn" tombstones did on kb_import (KbImportResult.withdrawals).
- * They take effect only when the bible was read with `ref` equal to
- * refs/remotes/origin/<provenance.branch> of that same bible (the merged base bible).
+ * They take effect only for the merged base bible: read with `ref` equal to
+ * refs/remotes/<remote>/<base> (<remote> any remote configured in the clone, such as
+ * origin) where <base> is the kb_import `base_branch` (without it, the branch
+ * refs/remotes/<remote>/HEAD names) AND the bible's provenance.branch is that same
+ * <base> (provenance.branch alone is never trusted).
  * @typedef {Object} KbImportWithdrawals
  * @property {number} sent - Tombstones applied locally (SQLite) or sent in one
  *   POST /api/kb/withdraw (http); 0 when deferred or unsupported.
@@ -877,6 +924,8 @@
  * @property {string[]} unsupported - Not applied: the KB server does not serve the withdraw route.
  * @property {string[]} deferred - Not applied: the bible was not read from the merged base bible.
  * @property {string} [warning] - With unsupported: the E-KB-HTTP-UNSUPPORTED message naming the route.
+ *   With deferred: why, when the ref read belongs to no configured remote (naming the
+ *   expected ref) or the base branch could not be established.
  */
 
 /**
@@ -1438,6 +1487,20 @@ export class ApraFleet {
     async kbBibleCommit(options) {
         assertNoRemovedKbScopeKeys('kb_bible_commit', options);
         return this.mcpClient.callTool('kb_bible_commit', options);
+    }
+
+    /**
+     * Two-level knowledge bank search (kb_query). Result JSON:
+     * {l1_results, l2_expanded, related_claims?}, or {flagged_entries, total, note}
+     * with flagged_only; extract with parseToolJson(). Pass files and/or symbols to
+     * look up by file: only the entries citing them come back.
+     * The removed scope keys (repo_path, repo, repo_remote_url) are refused
+     * with E-SCOPE-KEY-REMOVED before anything is sent.
+     * @param {KbQueryOptions} options
+     */
+    async kbQuery(options) {
+        assertNoRemovedKbScopeKeys('kb_query', options);
+        return this.mcpClient.callTool('kb_query', options);
     }
 
     /**

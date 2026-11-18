@@ -139,7 +139,8 @@ afterAll(async () => {
 
 describe('kb_query unsplit L2 fetch over http keeps only the requested ids', () => {
   it('drops entries a server that ignores ids returns beyond the top five L1 ids', async () => {
-    const out = JSON.parse(await runWithSessionMember(memberId, () => kbQuery({ query: 'sprocket' }))) as {
+    // An explicit limit keeps the L2 fetch a member default read leaves out.
+    const out = JSON.parse(await runWithSessionMember(memberId, () => kbQuery({ query: 'sprocket', limit: 20 }))) as {
       l1_results: Array<{ id: string }>; l2_expanded: Array<{ id: string; content: string }>;
     };
     const top5 = out.l1_results.slice(0, 5).map(e => e.id);

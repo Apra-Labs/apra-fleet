@@ -40,7 +40,11 @@ import { commitWorkTree } from '../helpers/commit-work-tree.js';
 // ASCII only.
 
 const BIBLE_REL = '.fleet/kb-canonical.json';
-const BASE = { baseBranch: 'main', baseCommit: 'a'.repeat(40) };
+// baseCommit is HEAD: kb_bible_commit tombstones a demoted id only when the
+// bible at baseCommit carries it (and writes no new demoted tombstone when
+// baseCommit does not resolve). In these single-branch scenarios the committed
+// bible at HEAD is the base each call builds on.
+const BASE = { baseBranch: 'main', baseCommit: 'HEAD' };
 const DEMOTE_REASON = 'the cited behaviour did not hold on the case checked this round';
 // kb_demote requires evidence (Rulebook P-1, 2026-10-13); README.md is the seed file every clone holds.
 const DEMOTE_EVIDENCE = ['README.md'];

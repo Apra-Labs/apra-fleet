@@ -256,8 +256,13 @@ beforeAll(async () => {
     // A neighbour-query hit among the member's own captures, and one own
     // capture it must NOT return (own-inferred), so an unforwarded fts_terms
     // (a plain listing) differs from the FTS match.
+    // Its content must not mention 'Gearwheel': the seed then holds exactly
+    // 10 Gearwheel hits, the prime limit. Over http the server ranks the
+    // global top 10 before the member keeps its own rows, so an 11th hit
+    // could cut this row and break parity.
     capture('own-neighbour', ownTag, {
       title: 'Sprocket neighbour note', summary: 'Sprocket neighbour note from a member session.',
+      content: 'Sprocket neighbour content.',
       source_files: ['src/sprocket.ts'], symbols: ['Sprocket'],
     }),
     // Another member's flagged capture: on the server, outside the bible, so a
