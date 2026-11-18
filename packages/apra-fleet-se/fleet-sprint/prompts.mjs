@@ -12,7 +12,7 @@
 // stay in runner.js (out of this bead's scope) and are imported back here;
 // the resulting runner.js <-> prompts.mjs cycle is safe because every use is
 // inside a function body, never at module-evaluation time.
-import { wrapUntrustedBlock } from './contracts.mjs';
+import { wrapUntrustedBlock, MERGE_RECOMMENDATIONS } from './contracts.mjs';
 import { PR_DESCRIPTION_MAX_LENGTH } from './vcs-module.mjs';
 import { formatStalenessBlock } from './parent-notes-staleness.mjs';
 import { buildRejectedNewTaskResurfaceLines, kbKnowledgeBlock, kbPromotionBlock, kbDemotionBlock } from './runner.js';
@@ -604,6 +604,24 @@ export function buildFinalVerdictPrompt({ targetIssues, branch, baseBranch, merg
     lines.push(
         'NEVER touch beads yourself (no bd create/update/reopen) -- the orchestrator applies your ' +
         'newTasks and reopenIds.'
+    );
+    lines.push(
+        // Single-quoted on purpose, like the notes paragraph above: the code
+        // spans are agent-prompt prose, never a dispatched command string.
+        'Also return a `merge_assessment` object: a risk/value assessment of merging this sprint\'s net diff, ' +
+        'shown near the top of the pull request description so whoever merges sees it first. Give every field, ' +
+        'each a short plain-text answer grounded in the diff and the evidence above: ' +
+        '`value` (what merging delivers), ' +
+        '`risk` (what could go wrong, how likely and how severe), ' +
+        '`default_path_changes` (behaviour that changes for users who change nothing -- say "none" if none), ' +
+        '`blast_radius` (which components, users or workflows are affected if a change is wrong), ' +
+        '`upgrade_impact` (what an existing installation must do or will notice on upgrade -- say "none" if none), ' +
+        '`proof` (the evidence that it works, and what is still unproven), ' +
+        '`recommendation` (exactly one of ' + MERGE_RECOMMENDATIONS.map((r) => '`' + r + '`').join(', ') + ') and ' +
+        '`reason` (why that recommendation; for `merge_after_proof`, name the proof still needed). ' +
+        'Recommend `merge` only when the proof covers the risk, `merge_after_proof` when the change looks right ' +
+        'but a named check is still missing, and `do_not_merge` when the change is wrong or its risk outweighs its value. ' +
+        'Keep the whole assessment brief: it shares the pull request description length limit with `notes`.'
     );
     // apra-fleet-nx7: the Final Review is the best-positioned promoter in the
     // whole run -- it has read the entire diff, run the full suite and judged the
