@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "f9cb1ca7c3f0f03debb783f6ef40a261554b7b0b",
     "branch": "main",
-    "entry_count": 156
+    "entry_count": 157
   },
   "entries": [
     {
@@ -1459,6 +1459,26 @@
         "scripts/ascii-baseline.mjs": "090f68b2d18af63cd72a0385ca33ed3fa2a719a4",
         "tests/ascii-only-gate-behaviour.test.ts": "b0520b84d8890177e859ffd7425f7485ed570a18",
         "tests/ascii-only-gate.test.ts": "c039aafa21aff35c2f4d50769bb8f72c91be7674"
+      }
+    },
+    {
+      "id": "7aa5d76d-5714-473e-a9d3-235101aa5fcf",
+      "type": "learning",
+      "title": "parseBibleDocument clamps future tombstone at times to now",
+      "summary": "A tombstone whose at is in the future is clamped to the current time when a bible is parsed, so tests cannot rely on a far-future at to stand against a row's trust time.",
+      "symbols": [
+        "clampBibleTimeToNow",
+        "standingAgainstTombstone"
+      ],
+      "source_files": [
+        "src/services/knowledge/bible-import.ts",
+        "tests/knowledge/kb-bible-tombstone-entry-exclusive.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T17:07:12.521Z",
+      "source_file_hashes": {
+        "src/services/knowledge/bible-import.ts": "a717226586d21e5c2496b21c0ea3e212bde4ca10",
+        "tests/knowledge/kb-bible-tombstone-entry-exclusive.test.ts": "d08879c5dfb4bdf961496bffd90f6c0576312da8"
       }
     },
     {
