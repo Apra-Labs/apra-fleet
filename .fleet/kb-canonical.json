@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "22bbb3cfdfd5d77962b5fb6d85da8c1e833f79c1",
     "branch": "main",
-    "entry_count": 151
+    "entry_count": 153
   },
   "entries": [
     {
@@ -1007,6 +1007,36 @@
       "updated_at": "2026-09-25T22:26:41.207Z"
     },
     {
+      "id": "50236365-a1e0-44ca-8859-8fa64898670c",
+      "type": "knowledge",
+      "title": "PR-body overflow: notes never truncated, posted as engine-marked PR comments with relaunch upsert",
+      "summary": "buildSprintPrBody returns { body, overflow, notes, comments, failedBody, previousHadOverflow }. raiseVcsPrForMember, given a body built from the provider's limits, posts the comments after create/update through pr-overflow-comments.mjs, upserting marked comments on a relaunch.",
+      "symbols": [
+        "buildSprintPrBody",
+        "buildOverflowComments",
+        "parseOverflowComment",
+        "publishPrOverflowComments",
+        "raiseVcsPrForMember",
+        "capDescriptionPreservingHiddenTail"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/pr-body.mjs",
+        "packages/apra-fleet-se/fleet-sprint/pr-overflow-comments.mjs",
+        "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs",
+        "packages/apra-fleet-se/fleet-sprint/vcs-module.mjs",
+        "packages/apra-fleet-se/test/pr-overflow-zero-loss.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T17:32:29.249Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/pr-body.mjs": "be1e756c4be1a083d5568e80842dda845b672776",
+        "packages/apra-fleet-se/fleet-sprint/pr-overflow-comments.mjs": "c44647398d8e8869b9ed1b7218257db458876c7e",
+        "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs": "0574dc1c3abb887714776190494972e20b4345de",
+        "packages/apra-fleet-se/fleet-sprint/vcs-module.mjs": "1d991edf997d9d94ed966b276b2ae1dc77776fa6",
+        "packages/apra-fleet-se/test/pr-overflow-zero-loss.test.mjs": "c47d3867ede4eaee315caad379f75cef75ba9935"
+      }
+    },
+    {
       "id": "50e0fad1-a4ed-4aaf-82cc-486b8cfc5a05",
       "type": "knowledge",
       "title": "The inline vcs_token escaper omits the CRT-argv layer that fleet-sprint's PowerShell shQuote applies",
@@ -1176,6 +1206,29 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:31.482Z"
+    },
+    {
+      "id": "652e6895-b39a-4bbd-8163-b80f1922168e",
+      "type": "knowledge",
+      "title": "PR list-comments builders fetch a single page only (GitHub and Bitbucket)",
+      "summary": "GitHub list-comments requests per_page=100 and Bitbucket pagelen=100 with no next-page follow, so a PR with more than 100 comments returns only the first page; ADO threads list is unpaged.",
+      "symbols": [
+        "buildGitHubListCommentsCommand",
+        "buildBitbucketListCommentsCommand",
+        "buildAzureDevOpsListCommentsCommand"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/github.mjs",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/bitbucket.mjs",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/azure-devops.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T17:32:29.888Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/azure-devops.mjs": "4ff8fe70a60ffa054e4a44200b74c08b9bcabeea",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/bitbucket.mjs": "4fad11fe55cb87e908aa0dc7dffd5f67853f38f0",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/github.mjs": "f8ec21d53da88e26596b1a1fb764fdd8c28ba94f"
+      }
     },
     {
       "id": "65688ff3-63b2-4d8d-8772-9767a7008a59",
