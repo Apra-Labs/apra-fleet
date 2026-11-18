@@ -218,7 +218,8 @@ function isMergedBaseBible(doc: BibleDocument, refRead: string | undefined): boo
  * against). From any other source the ids are reported deferred. A server whose
  * capabilities do not list withdraw gets nothing; the ids are reported
  * unsupported with an E-KB-HTTP-UNSUPPORTED warning naming the route.
- * "demoted" tombstones keep their behaviour: nothing is sent for them.
+ * "demoted" tombstones keep their behaviour: nothing is sent for them. A
+ * `ref` that holds no bible answers the all-zero report with bible_source.
  */
 async function kbImportOverHttp(
   input: KbImportInput, anchor: KbAnchor | undefined, repoAnchor: string, biblePath: string, project: unknown,
@@ -232,10 +233,12 @@ async function kbImportOverHttp(
   };
   let doc: BibleDocument | null = null;
   if (input.ref !== undefined) {
-    const { rel, inRepo, committed } = await readBibleAtRef(repoAnchor, input.ref, biblePath);
-    if (committed === null) throw new Error(`kb_import: bible file not found: ${input.ref}:${inRepo ? rel : biblePath}`);
-    doc = parseBibleDocument(committed.text, input.ref + ':' + rel, 'kb_import');
+    const { rel, committed } = await readBibleAtRef(repoAnchor, input.ref, biblePath);
     report.bible_source = input.ref;
+    // An http repo has no bible until its first withdrawal merges: a ref
+    // without one keeps the all-zero bible_skipped answer, nothing to replay.
+    if (committed === null) return report;
+    doc = parseBibleDocument(committed.text, input.ref + ':' + rel, 'kb_import');
   } else {
     // Read only to report what is deferred; a missing or unreadable work-tree
     // bible keeps today's all-zero answer.

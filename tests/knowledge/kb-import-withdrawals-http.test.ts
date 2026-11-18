@@ -6,8 +6,11 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { resetKbProviders } from '../../src/services/knowledge/kb-providers.js';
 import { kbSetup } from '../../src/tools/kb-setup.js';
-import { kbImport } from '../../src/tools/kb-import.js';
+import { kbImport, KB_IMPORT_HTTP_SKIP_REASON } from '../../src/tools/kb-import.js';
 import { FLEET_DIR } from '../../src/paths.js';
+import { addAgent } from '../../src/services/registry.js';
+import { runWithSessionMember } from '../../src/services/tool-scope.js';
+import { makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from '../test-helpers.js';
 
 // kb_import under an http project KB: no entry is imported, but the merged
 // base bible's "withdrawn" tombstones are replayed in ONE POST /api/kb/withdraw
@@ -40,6 +43,7 @@ let answers: Map<string, Answer> = new Map();
 let scratch: string;
 let repo: string;
 let savedConfig: string | null;
+let memberId: string;
 
 const sent = () => seen.filter(r => r.path !== '/api/kb/capabilities').map(r => `${r.method} ${r.path}`);
 const capabilities = (routes: string[]): Answer => ({ status: 200, body: { contract: 'v1', routes, branch_aware: false } });
@@ -54,6 +58,7 @@ async function importAt(ref?: string): Promise<any> {
 
 beforeAll(async () => {
   savedConfig = fs.existsSync(KB_CONFIG_PATH) ? fs.readFileSync(KB_CONFIG_PATH, 'utf-8') : null;
+  backupAndResetRegistry();
   scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-import-withdrawals-http-'));
   repo = path.join(scratch, 'checkout');
   fs.mkdirSync(path.join(repo, '.fleet'), { recursive: true });
@@ -75,6 +80,15 @@ beforeAll(async () => {
   git(['commit', '-q', '-m', 'bible']);
   git(['update-ref', 'refs/remotes/origin/main', 'HEAD']);
   git(['update-ref', 'refs/remotes/origin/feat/x', 'HEAD']);
+  // A base ref whose tree holds no bible: the normal state of an http repo
+  // until its first withdrawal merges.
+  const emptyTree = execFileSync('git', ['mktree'], { cwd: repo, encoding: 'utf-8', input: '' }).trim();
+  const noBible = git(['commit-tree', emptyTree, '-m', 'no bible']).trim();
+  git(['update-ref', 'refs/remotes/origin/nobible', noBible]);
+
+  const agent = makeTestLocalAgent({ friendlyName: `kb-import-withdrawals-http-${RUN}`, workFolder: repo });
+  addAgent(agent);
+  memberId = agent.id;
 
   server = http.createServer((req, res) => {
     let raw = '';
@@ -113,6 +127,7 @@ afterAll(async () => {
   if (savedConfig === null) fs.rmSync(KB_CONFIG_PATH, { force: true });
   else fs.writeFileSync(KB_CONFIG_PATH, savedConfig);
   resetKbProviders();
+  restoreRegistry();
   server.closeAllConnections();
   await new Promise<void>(resolve => server.close(() => resolve()));
   fs.rmSync(scratch, { recursive: true, force: true });
@@ -148,6 +163,32 @@ describe('kb_import replays merged withdrawals to the KB server (http)', () => {
       });
     }
     expect(sent()).toEqual([]);
+  });
+
+  it('a ref that holds no bible: the all-zero bible_skipped report with bible_source, nothing sent', async () => {
+    const report = await importAt('refs/remotes/origin/nobible');
+    expect(report).toEqual({
+      imported: 0, skipped: 0, linked: 0, flagged: 0, rejected: 0, demoted: 0,
+      sweep: { checked: 0, staled: 0, unstaled: 0 },
+      bible_skipped: true, reason: KB_IMPORT_HTTP_SKIP_REASON, bible_source: 'refs/remotes/origin/nobible',
+      withdrawals: { sent: 0, withdrawn: [], repromoted: [], already: [], not_found: [], unsupported: [], deferred: [] },
+    });
+    expect(sent()).toEqual([]);
+  });
+
+  it('a member session without the kb_maintainer grant: base ref read, nothing sent, the id is deferred', async () => {
+    const member = JSON.parse(await runWithSessionMember(memberId, () => kbImport({ ref: 'refs/remotes/origin/main' })));
+    expect(member.bible_source).toBe('refs/remotes/origin/main');
+    expect(member.withdrawals).toEqual({
+      sent: 0, withdrawn: [], repromoted: [], already: [], not_found: [], unsupported: [], deferred: ['kb-1'],
+    });
+    expect(sent()).toEqual([]);
+    // Control: the same member session WITH the grant replays it.
+    const maintainer = JSON.parse(await runWithSessionMember(
+      memberId, () => kbImport({ ref: 'refs/remotes/origin/main' }), { kbMaintainer: true },
+    ));
+    expect(maintainer.withdrawals.sent).toBe(1);
+    expect(sent()).toEqual(['POST /api/kb/withdraw']);
   });
 
   it('a server whose capabilities omit withdraw: nothing sent, unsupported plus a WARN naming the route', async () => {

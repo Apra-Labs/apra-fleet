@@ -679,7 +679,9 @@ the http KB provider no entry is imported (`bible_skipped: true`), but that
 same base-ref read -- from a session that is not a member without the
 kb_maintainer grant -- replays the withdrawn tombstones to the KB server in one
 `POST /api/kb/withdraw` and reports each outcome, with `bible_source` naming
-the ref; a server without the `withdraw` route gets nothing, and the ids are
+the ref; a ref that holds no bible (an http repo has none until its first
+withdrawal merges) answers the same all-zero report with `bible_source`, not
+`E-BIBLE-NOT-FOUND`; a server without the `withdraw` route gets nothing, and the ids are
 listed in `unsupported` with `warning` carrying the `E-KB-HTTP-UNSUPPORTED`
 message naming the route.
 

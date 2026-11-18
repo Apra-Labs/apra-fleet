@@ -688,7 +688,9 @@ every project KB call and fleet keeps no second copy:
   is not a MEMBER without the kb_maintainer grant, replays the `withdrawn`
   tombstones in ONE `POST /api/kb/withdraw` (section 2.9.1) and reports each
   outcome in `withdrawals` (a `not_confirmed` answer as `already`) and the ref
-  in `bible_source`. Any other source, or such a member, sends nothing and
+  in `bible_source`. A `ref` that holds no bible (an http repo has none until
+  its first withdrawal merges) answers the same all-zero `bible_skipped` report
+  with `bible_source`, not `E-BIBLE-NOT-FOUND`. Any other source, or such a member, sends nothing and
   lists the ids in `withdrawals.deferred`. A server whose capabilities do not
   list `withdraw` (or that answers it 404/501) gets nothing: the ids are listed
   in `withdrawals.unsupported` and `withdrawals.warning` carries the
