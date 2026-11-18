@@ -741,7 +741,7 @@ export function createGitSync(deps = {}) {
          * changed". Git strings are built in JS (no shell expansion).
          */
         branchSnapshot: async (memberName) => {
-            const tipRes = await command('git rev-parse HEAD', {
+            const tipRes = await command('git rev-parse --verify HEAD', {
                 member_name: memberName, silent: true, failSoft: true,
                 label: `read the branch tip on '${memberName}'`,
             });
