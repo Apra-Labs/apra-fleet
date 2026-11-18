@@ -91,8 +91,10 @@ describe('ClaudeProvider.ensureWorkspaceTrusted (apra-fleet-eft.40.1)', () => {
     expect(result.seeded).toBe(true);
     const written = JSON.parse(getFileContent()!);
     expect(written.projects['/home/member/work/project-a'].hasTrustDialogAccepted).toBe(true);
-    // Two exec calls: read, then write (atomic tmp-write + mv/rename).
-    expect(exec).toHaveBeenCalledTimes(2);
+    // read, presence probe (the read was empty: missing vs empty file),
+    // re-read right before the move, its presence probe, then the move.
+    expect(exec).toHaveBeenCalledTimes(5);
+    expect(exec.mock.calls[4][0]).toMatch(/^mv /);
   });
 
   it('seeds trust and merges into an existing ~/.claude.json without disturbing other projects', async () => {
@@ -216,14 +218,15 @@ describe('ClaudeProvider.ensureWorkspaceTrusted (apra-fleet-eft.40.1)', () => {
     expect(powershell5.calls.some(c => c.startsWith('Move-Item -Force ') && !c.includes('WriteAllText'))).toBe(true);
   });
 
-  it('tolerates a corrupted/unparseable ~/.claude.json by starting fresh instead of throwing', async () => {
+  it('refuses a corrupted/unparseable ~/.claude.json with E-MEMBER-CONFIG-NOT-JSON and leaves it untouched', async () => {
     const provider = new FileChannelClaude();
-    const { exec, getFileContent } = makeFakeExec('not-json-at-all{{{');
+    const { exec, calls, getFileContent } = makeFakeExec('not-json-at-all{{{');
 
-    const result = await provider.ensureWorkspaceTrusted('/home/member/work/project-a', exec, 'linux', undefined, undefined, TEST_HOME('linux', undefined));
+    await expect(provider.ensureWorkspaceTrusted('/home/member/work/project-a', exec, 'linux', undefined, undefined, TEST_HOME('linux', undefined)))
+      .rejects.toThrow(/E-MEMBER-CONFIG-NOT-JSON/);
 
-    expect(result.seeded).toBe(true);
-    expect(JSON.parse(getFileContent()!).projects['/home/member/work/project-a'].hasTrustDialogAccepted).toBe(true);
+    expect(getFileContent()).toBe('not-json-at-all{{{');
+    expect(calls.some(c => /^(mv|Move-Item) /.test(c))).toBe(false);
   });
 
   it('proves claude trust write stages to a temp file and moves it into place (atomic pattern)', async () => {
@@ -241,9 +244,10 @@ describe('ClaudeProvider.ensureWorkspaceTrusted (apra-fleet-eft.40.1)', () => {
     expect(targetRel).not.toBe('.claude.json');
     expect(targetRel).toMatch(/\.claude\.json\.fleet-trust-.*\.tmp/);
 
-    // Exec moves temp file into place (.claude.json)
-    expect(exec).toHaveBeenCalledTimes(2); // 1 read, 1 move
-    const moveCmd = exec.mock.calls[1][0];
+    // Exec moves temp file into place (.claude.json): read + presence probe,
+    // re-read + presence probe right before the move, then the move.
+    expect(exec).toHaveBeenCalledTimes(5);
+    const moveCmd = exec.mock.calls[4][0];
     expect(moveCmd).toMatch(/mv ".*\.tmp" ".*\.claude\.json"/);
   });
 });

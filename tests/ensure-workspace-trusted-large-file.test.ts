@@ -156,10 +156,10 @@ describe('ensureWorkspaceTrusted with a >80 KB ~/.claude.json (GitHub #499, apra
     expect(member.transport.writes).toHaveLength(1);
     expect(member.transport.writes[0].relPath).toMatch(/^\.claude\.json\.fleet-trust-\d+-[a-z0-9]+\.tmp$/);
     expect(member.transport.writes[0].content).toBe(expected);
-    // read + one tiny move; nothing else
-    expect(member.calls).toHaveLength(2);
-    expect(member.calls[1]).toMatch(/^Move-Item -Force "C:\\Users\\member\\\.claude\.json\.fleet-trust-\d+-[a-z0-9]+\.tmp" "C:\\Users\\member\\\.claude\.json"$/);
-    expect(member.calls[1].length).toBeLessThan(200);
+    // read + re-read right before the move + one tiny move; nothing else
+    expect(member.calls).toHaveLength(3);
+    expect(member.calls[2]).toMatch(/^Move-Item -Force "C:\\Users\\member\\\.claude\.json\.fleet-trust-\d+-[a-z0-9]+\.tmp" "C:\\Users\\member\\\.claude\.json"$/);
+    expect(member.calls[2].length).toBeLessThan(200);
     expect(member.home(false)).toBe(expected);
     expect(member.leftovers()).toEqual([]);
   });
@@ -168,8 +168,8 @@ describe('ensureWorkspaceTrusted with a >80 KB ~/.claude.json (GitHub #499, apra
     const member = makeMemberFs(existingStr, true);
     await new ClaudeProvider().ensureWorkspaceTrusted(KEY, member.exec, 'windows', 'gitbash', member.transport, TEST_HOME('windows', 'gitbash'));
 
-    expect(member.calls).toHaveLength(2);
-    expect(member.calls[1]).toMatch(/^mv "\/home\/member\/\.claude\.json\.fleet-trust-\d+-[a-z0-9]+\.tmp" "\/home\/member\/\.claude\.json"$/);
+    expect(member.calls).toHaveLength(3);
+    expect(member.calls[2]).toMatch(/^mv "\/home\/member\/\.claude\.json\.fleet-trust-\d+-[a-z0-9]+\.tmp" "\/home\/member\/\.claude\.json"$/);
     expect(member.home(true)).toBe(expected);
   });
 
@@ -177,8 +177,8 @@ describe('ensureWorkspaceTrusted with a >80 KB ~/.claude.json (GitHub #499, apra
     const member = makeMemberFs(existingStr, true);
     const linuxKey = '/home/member/work/project-a';
     await new ClaudeProvider().ensureWorkspaceTrusted(linuxKey, member.exec, 'linux', undefined, member.transport, TEST_HOME('linux', undefined));
-    expect(member.calls).toHaveLength(2);
-    expect(member.calls[1]).toMatch(/^mv "/);
+    expect(member.calls).toHaveLength(3);
+    expect(member.calls[2]).toMatch(/^mv "/);
     expect(member.home(true)).toBe(expectedMerged(existing, linuxKey));
   });
 
@@ -187,8 +187,8 @@ describe('ensureWorkspaceTrusted with a >80 KB ~/.claude.json (GitHub #499, apra
       const member = makeMemberFs(existingStr);
       await expect(new ClaudeProvider().ensureWorkspaceTrusted(KEY, member.exec, os, shell, undefined, TEST_HOME(os, shell)))
         .rejects.toThrow(/E-MEMBER-CONFIG-NO-FILE-CHANNEL.*file channel.*not available.*secret-file channel: not available/s);
-      // Only the read ever ran; no command carries content.
-      expect(member.calls).toHaveLength(1);
+      // Only the read and the re-read ever ran; no command carries content.
+      expect(member.calls).toHaveLength(2);
       expect(member.home(os !== 'windows' || shell === 'gitbash')).toBe(existingStr);
     }
   });
@@ -234,8 +234,8 @@ describe('ensureWorkspaceTrusted with a >80 KB ~/.claude.json (GitHub #499, apra
     const relA = a.transport.writes[0].relPath;
     const relB = b.transport.writes[0].relPath;
     expect(relA).not.toBe(relB);
-    expect(a.calls[1]).toContain(relA);
-    expect(b.calls[1]).toContain(relB);
+    expect(a.calls[2]).toContain(relA);
+    expect(b.calls[2]).toContain(relB);
   });
 });
 
