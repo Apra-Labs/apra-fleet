@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "5bfc7309d9fab9ead8aada7745fd165ecd32c07b",
     "branch": "main",
-    "entry_count": 144
+    "entry_count": 145
   },
   "entries": [
     {
@@ -769,6 +769,36 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-06T09:57:31.784Z"
+    },
+    {
+      "id": "459915a7-6ad2-455e-b2a9-49fed209c415",
+      "type": "knowledge",
+      "title": "kb_query files/symbols cited filter is a hard SQL filter gated by query_filters over http",
+      "summary": "kb_query files/symbols are a hard filter (cited-filter.ts) applied in SqliteProvider.query next to the tag filter. HttpKbProvider forwards them only when GET /api/kb/capabilities lists them in the optional query_filters field and otherwise throws E-KB-HTTP-UNSUPPORTED before sending. kb_query re-applies the filter (entryCites) only to answers from non-SQLite providers.",
+      "symbols": [
+        "normalizeCitedFilter",
+        "citedFilterSql",
+        "entryCites",
+        "trustedL1",
+        "KB_SERVER_CAPABILITIES",
+        "readCapabilities"
+      ],
+      "source_files": [
+        "src/services/knowledge/cited-filter.ts",
+        "src/services/knowledge/sqlite-provider.ts",
+        "src/services/knowledge/http-provider.ts",
+        "src/commands/kb-server.ts",
+        "src/tools/kb-query.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T08:59:16.820Z",
+      "source_file_hashes": {
+        "src/commands/kb-server.ts": "cbbda4ebbc1e10083a189b4bd402515323883295",
+        "src/services/knowledge/cited-filter.ts": "e8f1e7c635aef6f793397e339f71ad0d500359bc",
+        "src/services/knowledge/http-provider.ts": "b3ea4cd148db228c2bc20e674aaf38b38b2ecc9a",
+        "src/services/knowledge/sqlite-provider.ts": "8aabc88c6ee2c507df100e5c1c57c237e28fe4d5",
+        "src/tools/kb-query.ts": "83911bc5bf9133916d3753f3706d9fee83d19868"
+      }
     },
     {
       "id": "45fa7bb5-1af4-474d-a958-0c1d7f6ec75c",
