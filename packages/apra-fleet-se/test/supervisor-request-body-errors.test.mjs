@@ -14,15 +14,53 @@ const STACK_RE = /\n\s+at\s|\.mjs:\d+/;
 // An unescaped backslash, as in a pasted Windows path.
 const MALFORMED = '{"branch": "C:\\Users\\me\\repo"}';
 
+// The server may answer (and close) before the body is fully written, so the
+// client writes in chunks, stops once the response arrives, tolerates
+// EPIPE/ECONNRESET after the response, and resolves only after the request
+// has closed -- no socket activity outlives the test.
+const LATE_WRITE_ERRORS = new Set(['EPIPE', 'ECONNRESET', 'ECONNABORTED']);
 function post(sup, path, body) {
     return new Promise((resolve, reject) => {
-        const req = http.request({ host: '127.0.0.1', port: sup.port, path, method: 'POST', headers: { 'content-type': 'application/json' } }, (res) => {
-            let text = '';
-            res.on('data', (c) => { text += c; });
-            res.on('end', () => resolve({ status: res.statusCode, text }));
+        const buf = Buffer.from(body);
+        const CHUNK = 64 * 1024;
+        let response = null;
+        let ended = false;
+        let closed = false;
+        let failed = null;
+        const settle = () => {
+            if (failed) return;
+            if (ended && closed) resolve(response);
+        };
+        const req = http.request({
+            host: '127.0.0.1', port: sup.port, path, method: 'POST', agent: false,
+            headers: { 'content-type': 'application/json', 'content-length': buf.length },
+        }, (res) => {
+            response = { status: res.statusCode, headers: res.headers, text: '' };
+            res.on('data', (c) => { response.text += c; });
+            res.on('end', () => { ended = true; settle(); });
+            res.on('error', () => { /* reset after the body was read */ });
         });
-        req.on('error', reject);
-        req.end(body);
+        req.on('socket', (s) => s.on('error', () => { /* surfaced via req */ }));
+        req.on('error', (err) => {
+            if (response && LATE_WRITE_ERRORS.has(err.code)) return;
+            failed = err;
+            reject(new Error(`request failed before any response: ${err.code || err.message}`));
+        });
+        req.on('close', () => {
+            closed = true;
+            if (response && !ended) ended = true; // closed mid-body: keep what arrived
+            settle();
+        });
+        let off = 0;
+        const pump = () => {
+            while (off < buf.length && !response && !req.destroyed) {
+                const piece = buf.subarray(off, off + CHUNK);
+                off += piece.length;
+                if (!req.write(piece)) { req.once('drain', pump); return; }
+            }
+            if (off >= buf.length || response) req.end();
+        };
+        pump();
     });
 }
 
@@ -74,14 +112,46 @@ describe('RequestBodyError mapping in the catch-all', () => {
         });
     }
 
-    test('a body above the size cap -> 413 field body', async () => {
+    test('a body above the size cap -> 413 field body, Connection: close (repeated)', async () => {
+        const big = JSON.stringify({ pad: 'x'.repeat(1_100_000) });
+        for (let i = 0; i < 20; i++) {
+            await withSupervisor(stubs, async (sup) => {
+                const out = await post(sup, '/api/sprints', big);
+                assert.equal(out.status, 413, `iteration ${i}`);
+                assert.equal(out.headers.connection, 'close', `iteration ${i}`);
+                const j = JSON.parse(out.text);
+                assert.equal(j.field, 'body');
+                assert.match(j.error, /exceeds 1000000 byte limit/);
+            });
+        }
+    });
+
+    test('a client that never stops writing is disconnected after the 413', { timeout: 30_000 }, async () => {
         await withSupervisor(stubs, async (sup) => {
-            const big = JSON.stringify({ pad: 'x'.repeat(1_100_000) });
-            const out = await post(sup, '/api/sprints', big);
-            assert.equal(out.status, 413);
-            const j = JSON.parse(out.text);
-            assert.equal(j.field, 'body');
-            assert.match(j.error, /exceeds 1000000 byte limit/);
+            const chunk = Buffer.alloc(64 * 1024, 0x78);
+            let timer = null;
+            try {
+                const outcome = await new Promise((resolve) => {
+                    let status = null;
+                    const req = http.request({
+                        host: '127.0.0.1', port: sup.port, path: '/api/sprints', method: 'POST', agent: false,
+                        headers: { 'content-type': 'application/json', 'transfer-encoding': 'chunked' },
+                    }, (res) => { status = res.statusCode; res.resume(); res.on('error', () => {}); });
+                    req.on('socket', (s) => s.on('error', () => {}));
+                    req.on('error', () => { /* expected: the server closed the connection */ });
+                    req.on('close', () => resolve({ status, closed: true }));
+                    // Keep writing regardless of the response, as a hostile client would.
+                    timer = setInterval(() => { if (!req.destroyed) req.write(chunk); }, 1);
+                    setTimeout(() => resolve({ status, closed: false }), 10_000).unref();
+                });
+                assert.equal(outcome.closed, true, 'the server must close the connection, not drain forever');
+                // A peer that keeps writing may lose the 413 to the reset
+                // (Windows discards unread data on RST); if it saw a status,
+                // it must be the 413.
+                assert.ok(outcome.status === null || outcome.status === 413, `status ${outcome.status}`);
+            } finally {
+                if (timer) clearInterval(timer);
+            }
         });
     });
 

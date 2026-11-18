@@ -376,8 +376,18 @@ export function createSupervisor(deps = {}) {
         } catch (err) {
             if (err instanceof RequestBodyError) {
                 // Client error, not a supervisor fault: no stack, no 500.
-                if (!res.headersSent) sendJson(res, err.status, { error: err.message, field: 'body' });
-                else { try { res.end(); } catch { /* already gone */ } }
+                // Close the connection once the answer is flushed: after a
+                // 413 the client may still be writing (or never stop), and
+                // the rest of that body must not be drained without bound.
+                const sock = req.socket;
+                // destroySoon: flush any pending write (the answer), then destroy.
+                const closeSocket = () => { if (sock && !sock.destroyed) sock.destroySoon(); };
+                if (res.writableFinished) closeSocket();
+                else res.once('finish', closeSocket);
+                if (!res.headersSent) {
+                    res.setHeader('Connection', 'close');
+                    sendJson(res, err.status, { error: err.message, field: 'body' });
+                } else { try { res.end(); } catch { /* already gone */ } }
                 return;
             }
             // Isolate the failure: log it, answer 500 if we still can, and
