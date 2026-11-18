@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "5bfc7309d9fab9ead8aada7745fd165ecd32c07b",
     "branch": "main",
-    "entry_count": 145
+    "entry_count": 147
   },
   "entries": [
     {
@@ -711,6 +711,30 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-06T12:53:45.788Z"
+    },
+    {
+      "id": "42d10c19-9014-48ec-9b3c-96128a7379bb",
+      "type": "learning",
+      "title": "Adding a memory-contract fixture requires bumping count pins in two tests",
+      "summary": "tests/memory-contract-fixture-response-schema.test.ts pins the number of response fixtures (two places) and tests/memory-contract-roundtrip.test.ts pins the SCENARIO step count; every new fixture also needs a SCENARIO entry in roundtrip-harness.mjs in the same position as in record-fixtures.mjs.",
+      "symbols": [
+        "SCENARIO",
+        "recordHappy"
+      ],
+      "source_files": [
+        "memory-contract/v1/tests/record-fixtures.mjs",
+        "memory-contract/v1/tests/roundtrip-harness.mjs",
+        "tests/memory-contract-fixture-response-schema.test.ts",
+        "tests/memory-contract-roundtrip.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T09:36:35.889Z",
+      "source_file_hashes": {
+        "memory-contract/v1/tests/record-fixtures.mjs": "0f0ea814c48342fa5c03a5829ff4230f7b0da10f",
+        "memory-contract/v1/tests/roundtrip-harness.mjs": "97aa24ec3cb3930bee30fd38a701ecbef656f1ba",
+        "tests/memory-contract-fixture-response-schema.test.ts": "48fd82fb5b2e3b1d9128886714992095524f4560",
+        "tests/memory-contract-roundtrip.test.ts": "0bcd324c608907705d92b3d0850e909cde0eb8bc"
+      }
     },
     {
       "id": "43bc4917-e7c1-4be0-9a0a-c6fc407a155c",
@@ -1721,6 +1745,27 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:32.234Z"
+    },
+    {
+      "id": "9a99a42d-6b87-4243-8155-5ccf4f3001fa",
+      "type": "knowledge",
+      "title": "Cited filter path normalisation differs between SQL and the JS backstop",
+      "summary": "cited-filter.ts STORED_PATH_SQL strips only one leading ./ and converts backslashes on stored source_files. normalizeCitedPath, used by the JS entryCites backstop for non-SQLite providers, also collapses // and drops trailing slashes and Windows-root case. So a stored path in such a form can match over http but not in SQLite.",
+      "symbols": [
+        "citedFilterSql",
+        "entryCites",
+        "normalizeCitedPath"
+      ],
+      "source_files": [
+        "src/services/knowledge/cited-filter.ts",
+        "src/tools/kb-query.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T09:36:35.193Z",
+      "source_file_hashes": {
+        "src/services/knowledge/cited-filter.ts": "e8f1e7c635aef6f793397e339f71ad0d500359bc",
+        "src/tools/kb-query.ts": "83911bc5bf9133916d3753f3706d9fee83d19868"
+      }
     },
     {
       "id": "9af40daa-2521-430a-a529-7db25d27da87",
