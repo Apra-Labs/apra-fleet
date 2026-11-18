@@ -4,7 +4,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getKbProviders } from '../services/knowledge/kb-providers.js';
 import { resolveKbAnchor, type KbAnchor } from '../services/knowledge/kb-self.js';
-import { parseBibleDocument, importBibleEntries, type BibleDocument } from '../services/knowledge/bible-import.js';
+import {
+  parseBibleDocument, importBibleEntries, type BibleDocument, type BibleWithdrawalReport,
+  applyBibleWithdrawals, baseRefOfBible, emptyWithdrawalReport, recordWithdrawalOutcome, withdrawnTombstones,
+} from '../services/knowledge/bible-import.js';
+import { HttpKbProvider, KbHttpUnsupportedError } from '../services/knowledge/http-provider.js';
+import { logWarn } from '../utils/log-helpers.js';
 import { requireSqliteProject, isSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 import { KbMaintainerGrantError, memberLacksKbMaintainer } from '../services/knowledge/kb-maintainer-grant.js';
 import {
@@ -165,9 +170,118 @@ export interface KbImportReport {
    */
   bible_skipped?: true;
   reason?: string;
+  /**
+   * What the bible's "withdrawn" tombstones did (BibleWithdrawalReport). They
+   * are applied (SQLite) or replayed to the KB server (http) only when the
+   * bible was read at refs/remotes/origin/<provenance.branch> of that same
+   * bible; otherwise their ids are listed in deferred.
+   */
+  withdrawals: BibleWithdrawalReport;
 }
 
 export const KB_IMPORT_HTTP_SKIP_REASON = 'bible import is not used over the http KB provider: the KB server is the source of truth';
+
+/**
+ * Read `biblePath` as committed at `ref`, hash-verified (bible-blob-id.ts).
+ * committed is null when the path is outside the repository or the ref holds
+ * no such file. Throws for an unsafe ref name or an integrity failure.
+ */
+async function readBibleAtRef(
+  repoAnchor: string, ref: string, biblePath: string,
+): Promise<{ rel: string; inRepo: boolean; committed: { blobId: string; text: string } | null }> {
+  const rel = path.relative(repoAnchor, path.resolve(biblePath)).split(path.sep).join('/');
+  const inRepo = rel !== '' && !rel.startsWith('../') && rel !== '..' && !path.isAbsolute(rel);
+  if (!isSafeBibleRef(ref)) {
+    throw new Error(`kb_import: ref '${ref}' is not a plain git ref name (no leading '-', no rev expressions); nothing was imported`);
+  }
+  try {
+    return { rel, inRepo, committed: inRepo ? await readCommittedBibleBlob(repoAnchor, ref, rel) : null };
+  } catch (err) {
+    if (err instanceof BibleBlobIntegrityError) throw new Error('kb_import: ' + err.message);
+    throw err;
+  }
+}
+
+/** True when the bible was read at the ref its own provenance names as the merged base. */
+function isMergedBaseBible(doc: BibleDocument, refRead: string | undefined): boolean {
+  const baseRef = baseRefOfBible(doc);
+  return refRead !== undefined && baseRef !== null && refRead === baseRef;
+}
+
+/**
+ * kb_import under an http project KB. Bible ENTRIES are never imported (the KB
+ * server is the source of truth), but the merged base bible's "withdrawn"
+ * tombstones are replayed to the server: one POST /api/kb/withdraw when the
+ * bible was read at refs/remotes/origin/<provenance.branch> of that same bible,
+ * from a session that is not a member without the kb_maintainer grant (over
+ * http there is no hub-side record of trusted bibles to check a member's ref
+ * against). From any other source the ids are reported deferred. A server whose
+ * capabilities do not list withdraw gets nothing; the ids are reported
+ * unsupported with an E-KB-HTTP-UNSUPPORTED warning naming the route.
+ * "demoted" tombstones keep their behaviour: nothing is sent for them.
+ */
+async function kbImportOverHttp(
+  input: KbImportInput, anchor: KbAnchor | undefined, repoAnchor: string, biblePath: string, project: unknown,
+): Promise<KbImportReport> {
+  const withdrawals = emptyWithdrawalReport();
+  const report: KbImportReport = {
+    imported: 0, skipped: 0, linked: 0, flagged: 0, rejected: 0, demoted: 0,
+    sweep: { checked: 0, staled: 0, unstaled: 0 },
+    bible_skipped: true, reason: KB_IMPORT_HTTP_SKIP_REASON,
+    withdrawals,
+  };
+  let doc: BibleDocument | null = null;
+  if (input.ref !== undefined) {
+    const { rel, inRepo, committed } = await readBibleAtRef(repoAnchor, input.ref, biblePath);
+    if (committed === null) throw new Error(`kb_import: bible file not found: ${input.ref}:${inRepo ? rel : biblePath}`);
+    doc = parseBibleDocument(committed.text, input.ref + ':' + rel, 'kb_import');
+    report.bible_source = input.ref;
+  } else {
+    // Read only to report what is deferred; a missing or unreadable work-tree
+    // bible keeps today's all-zero answer.
+    try {
+      doc = parseBibleDocument(fs.readFileSync(biblePath, 'utf-8'), biblePath, 'kb_import');
+    } catch {
+      doc = null;
+    }
+  }
+  if (doc === null) return report;
+  const tombstones = withdrawnTombstones(doc);
+  if (tombstones.length === 0) return report;
+  const ids = tombstones.map(t => t.id);
+  if (!isMergedBaseBible(doc, input.ref) || memberLacksKbMaintainer(anchor)) {
+    withdrawals.deferred = ids;
+    return report;
+  }
+  const unsupported = (why: string): KbImportReport => {
+    withdrawals.unsupported = ids;
+    withdrawals.warning = new KbHttpUnsupportedError(
+      `the withdraw route (${why})`,
+      'the merged bible\'s withdrawn tombstones were not applied',
+      'use a KB server that serves the withdraw route (POST /api/kb/withdraw).',
+    ).message;
+    logWarn('kb_import', withdrawals.warning);
+    return report;
+  };
+  if (!(project instanceof HttpKbProvider)) return unsupported('this KB provider has no withdraw route');
+  if (!(await project.servesRoute('withdraw'))) {
+    return unsupported('the KB server does not list it in GET /api/kb/capabilities');
+  }
+  let results;
+  try {
+    results = await project.withdraw(tombstones.map(t => ({
+      id: t.id, at: t.at, reason: t.reason,
+      ...(t.note !== undefined ? { note: t.note } : {}),
+      ...(t.evidence_files !== undefined ? { evidence_files: t.evidence_files } : {}),
+    })));
+  } catch (err) {
+    if (err instanceof KbHttpUnsupportedError) return unsupported('the KB server answered the route as not served');
+    throw err;
+  }
+  withdrawals.sent = tombstones.length;
+  for (const r of results) recordWithdrawalOutcome(withdrawals, r.id, r.outcome);
+  return report;
+}
 
 export async function kbImport(input: KbImportInput, anchor?: KbAnchor): Promise<string> {
   const resolved = resolveKbAnchor(anchor);
@@ -175,16 +289,12 @@ export async function kbImport(input: KbImportInput, anchor?: KbAnchor): Promise
   const ownBible = path.join(repoAnchor, '.fleet', 'kb-canonical.json');
   const biblePath = input.path ?? ownBible;
 
-  // Over http the KB server is the source of truth: the bible is not read
-  // and nothing is imported (decided before any bible read or grant check).
+  // Over http the KB server is the source of truth: no entry is imported and
+  // no grant check applies (nothing is written locally); only the merged base
+  // bible's withdrawn tombstones are replayed to the server.
   const providers = await getKbProviders(repoAnchor, resolved.remoteUrl);
   if (!isSqliteProject(providers.project)) {
-    const skipped: KbImportReport = {
-      imported: 0, skipped: 0, linked: 0, flagged: 0, rejected: 0, demoted: 0,
-      sweep: { checked: 0, staled: 0, unstaled: 0 },
-      bible_skipped: true, reason: KB_IMPORT_HTTP_SKIP_REASON,
-    };
-    return JSON.stringify(skipped);
+    return JSON.stringify(await kbImportOverHttp(input, anchor, repoAnchor, biblePath, providers.project));
   }
 
   const lacksGrant = memberLacksKbMaintainer(anchor);
@@ -215,18 +325,7 @@ export async function kbImport(input: KbImportInput, anchor?: KbAnchor): Promise
     // namesOwnBible holds for a no-grant session (an explicit other path was
     // refused above); a grant session may name another repository-relative
     // file to read at `ref`.
-    const rel = path.relative(repoAnchor, path.resolve(biblePath)).split(path.sep).join('/');
-    const inRepo = rel !== '' && !rel.startsWith('../') && rel !== '..' && !path.isAbsolute(rel);
-    if (!isSafeBibleRef(ref)) {
-      throw new Error(`kb_import: ref '${ref}' is not a plain git ref name (no leading '-', no rev expressions); nothing was imported`);
-    }
-    let committed: { blobId: string; text: string } | null;
-    try {
-      committed = inRepo ? await readCommittedBibleBlob(repoAnchor, ref, rel) : null;
-    } catch (err) {
-      if (err instanceof BibleBlobIntegrityError) throw new Error('kb_import: ' + err.message);
-      throw err;
-    }
+    const { rel, inRepo, committed } = await readBibleAtRef(repoAnchor, ref, biblePath);
     if (committed === null && input.ref !== undefined) {
       throw new Error(`kb_import: bible file not found: ${ref}:${inRepo ? rel : biblePath}`);
     }
@@ -285,6 +384,20 @@ export async function kbImport(input: KbImportInput, anchor?: KbAnchor): Promise
     { demotions: bibleDoc.demotions },
   );
 
+  // "withdrawn" tombstones lower a row ONLY when this bible is the merged base
+  // bible: read as committed at refs/remotes/origin/<provenance.branch> of this
+  // same bible. From the work tree, HEAD or any other ref the branch carrying
+  // them has not merged, so they stay view exclusions (the member bible view
+  // already hides the entry) and are reported deferred. A member session
+  // without the grant reaches here only for a bible the maintainer side
+  // recorded as trusted (checked above).
+  const withdrawnList = withdrawnTombstones(bibleDoc);
+  let withdrawals = emptyWithdrawalReport();
+  if (withdrawnList.length > 0) {
+    if (isMergedBaseBible(bibleDoc, committedSource?.ref)) withdrawals = applyBibleWithdrawals(provider, withdrawnList);
+    else withdrawals.deferred = withdrawnList.map(t => t.id);
+  }
+
   // A FULL or kb_maintainer session is trusted to import at bible confidence,
   // so the bible it just imported becomes trusted for member sessions too:
   // record the blob id the bytes would have as this repo's committed own
@@ -323,7 +436,7 @@ export async function kbImport(input: KbImportInput, anchor?: KbAnchor): Promise
     : await provider.freshnessSweep(repoAnchor);
 
   const report: KbImportReport = committedSource
-    ? { imported, skipped, linked, flagged, rejected, demoted, sweep, bible_source: committedSource.ref, worktree_ignored: committedSource.worktree_ignored }
-    : { imported, skipped, linked, flagged, rejected, demoted, sweep };
+    ? { imported, skipped, linked, flagged, rejected, demoted, sweep, withdrawals, bible_source: committedSource.ref, worktree_ignored: committedSource.worktree_ignored }
+    : { imported, skipped, linked, flagged, rejected, demoted, sweep, withdrawals };
   return JSON.stringify(report);
 }

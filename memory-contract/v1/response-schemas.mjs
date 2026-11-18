@@ -221,6 +221,25 @@ const KB_RESPONSE_BODIES = {
     // of truth, the bible is neither read nor imported, every count is 0.
     bible_skipped: z.literal(true).optional(),
     reason: z.string().optional(),
+    // What the bible's "withdrawn" tombstones did. They are applied (SQLite)
+    // or replayed in one POST /api/kb/withdraw (http) ONLY when the bible was
+    // read at refs/remotes/origin/<provenance.branch> of that same bible;
+    // from any other source their ids are listed in deferred and nothing is
+    // lowered. sent counts tombstones applied or sent; already is a row that
+    // was already below CONFIRMED; unsupported lists ids a KB server without
+    // the withdraw route could not apply, with warning (E-KB-HTTP-UNSUPPORTED
+    // naming the route). OPTIONAL so fixtures recorded before withdrawals
+    // existed still validate; the handler always emits it.
+    withdrawals: z.object({
+      sent: z.number(),
+      withdrawn: z.array(z.string()),
+      repromoted: z.array(z.string()),
+      already: z.array(z.string()),
+      not_found: z.array(z.string()),
+      unsupported: z.array(z.string()),
+      deferred: z.array(z.string()),
+      warning: z.string().optional(),
+    }).optional(),
   }),
   kb_resolve_contradiction: z.object({
     winnerId: z.string(),

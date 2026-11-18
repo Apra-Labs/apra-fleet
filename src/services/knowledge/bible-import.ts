@@ -79,6 +79,86 @@ export const TOMBSTONE_WITHDRAWN = 'withdrawn';
 export interface BibleDocument {
   entries: unknown[];
   demotions: BibleTombstone[];
+  /**
+   * provenance.branch of a v2/v3 envelope (the base branch the bible was
+   * committed for), when it is a non-empty string. Absent for a legacy bare
+   * array or an envelope without it. kb_import compares the ref it read
+   * against refs/remotes/origin/<this> to decide whether the bible is the
+   * merged base bible (baseRefOfBible).
+   */
+  provenanceBranch?: string;
+}
+
+/**
+ * The one ref a bible's "withdrawn" tombstones take effect from: the remote-
+ * tracking ref of the base branch the same bible names in provenance.branch,
+ * i.e. the bible as merged and fetched. Null when the bible names no branch.
+ */
+export function baseRefOfBible(doc: BibleDocument): string | null {
+  return doc.provenanceBranch ? 'refs/remotes/origin/' + doc.provenanceBranch : null;
+}
+
+/** The "withdrawn" tombstones of a parsed bible (other reasons are not withdrawals). */
+export function withdrawnTombstones(doc: BibleDocument): BibleTombstone[] {
+  return doc.demotions.filter(t => t.reason === TOMBSTONE_WITHDRAWN);
+}
+
+/**
+ * What applying a bible's "withdrawn" tombstones did, as kb_import reports it.
+ *  - sent: how many tombstones were applied locally (SQLite) or sent to the KB
+ *    server in one request (http); 0 when they were deferred or unsupported.
+ *  - withdrawn: rows taken CONFIRMED -> INFERRED.
+ *  - repromoted: rows whose trust postdates the tombstone; left CONFIRMED.
+ *  - already: rows already below CONFIRMED (a repeat import), left as they are.
+ *  - not_found: no such row (never created).
+ *  - unsupported: ids not applied because the KB server does not serve the
+ *    withdraw route (with `warning`).
+ *  - deferred: ids not applied because the bible was not read from the merged
+ *    base bible (they are view exclusions only until the branch merges).
+ */
+export interface BibleWithdrawalReport {
+  sent: number;
+  withdrawn: string[];
+  repromoted: string[];
+  already: string[];
+  not_found: string[];
+  unsupported: string[];
+  deferred: string[];
+  warning?: string;
+}
+
+/** An empty withdrawal report (nothing to apply). */
+export function emptyWithdrawalReport(): BibleWithdrawalReport {
+  return { sent: 0, withdrawn: [], repromoted: [], already: [], not_found: [], unsupported: [], deferred: [] };
+}
+
+/**
+ * File one per-id outcome (the SQLite applyBibleWithdrawal / KB server withdraw
+ * route vocabulary) into a report. not_confirmed is reported as already: the
+ * application is idempotent and a repeat is done, not a failure.
+ */
+export function recordWithdrawalOutcome(
+  report: BibleWithdrawalReport, id: string, outcome: 'withdrawn' | 'repromoted' | 'not_confirmed' | 'not_found',
+): void {
+  if (outcome === 'withdrawn') report.withdrawn.push(id);
+  else if (outcome === 'repromoted') report.repromoted.push(id);
+  else if (outcome === 'not_confirmed') report.already.push(id);
+  else report.not_found.push(id);
+}
+
+/**
+ * Apply a merged base bible's "withdrawn" tombstones to a SQLite KB through
+ * SqliteProvider.applyBibleWithdrawal (never create, the one re-promotion rule,
+ * never raise confidence). The caller decides that the bible IS the merged base
+ * bible; from any other source the ids are reported deferred instead.
+ */
+export function applyBibleWithdrawals(provider: SqliteProvider, tombstones: BibleTombstone[]): BibleWithdrawalReport {
+  const report = emptyWithdrawalReport();
+  for (const t of tombstones) {
+    report.sent++;
+    recordWithdrawalOutcome(report, t.id, provider.applyBibleWithdrawal(t.id, t.at, t.reason, t.note, t.evidence_files));
+  }
+  return report;
 }
 
 /**
@@ -236,7 +316,13 @@ export function parseBibleDocument(raw: string, biblePath: string, label: string
     throw new KbBibleError(`${label}: bible file is not a JSON array of entries: ${biblePath}`, biblePath);
   }
   // A legacy bare array carries no demotions field; extract returns [] for it.
-  return { entries, demotions: extractBibleDemotions(parsed) };
+  const doc: BibleDocument = { entries, demotions: extractBibleDemotions(parsed) };
+  if (!Array.isArray(parsed)) {
+    const provenance = (parsed as { provenance?: unknown }).provenance;
+    const branch = provenance && typeof provenance === 'object' ? (provenance as { branch?: unknown }).branch : undefined;
+    if (typeof branch === 'string' && branch.length > 0) doc.provenanceBranch = branch;
+  }
+  return doc;
 }
 
 const VALID_TYPES: readonly ContentType[] = ['context-cache', 'learning', 'knowledge', 'runbook', 'user-directive'];
