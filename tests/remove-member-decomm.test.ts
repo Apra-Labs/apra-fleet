@@ -5,6 +5,7 @@ import path from 'node:path';
 import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 import { addAgent, getKeysDir } from '../src/services/registry.js';
 import type { SSHExecResult } from '../src/types.js';
+import { SSH_PUBLIC_KEYS, truncatedKeys } from './fixtures/ssh-public-keys.js';
 
 const mockExecCommand = vi.fn<(cmd: string, timeout?: number) => Promise<SSHExecResult>>();
 const mockTestConnection = vi.fn();
@@ -184,7 +185,7 @@ describe('removeMember - decommissioning', () => {
     try {
       const keyPath = path.join(dir, 'id_ed25519');
       fs.writeFileSync(keyPath, 'PRIVATE');
-      fs.writeFileSync(`${keyPath}.pub`, 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIorderkey000000000000000000000000000000 fleet@test');
+      fs.writeFileSync(`${keyPath}.pub`, `${SSH_PUBLIC_KEYS.ed25519} fleet@test`);
       const member = makeTestAgent({ friendlyName: 'order-worker', keyPath, os: 'linux', workFolder: '/home/u/proj' });
       addAgent(member);
       // The key removal needs the member home (getMemberHomeDir probe).
@@ -333,7 +334,7 @@ describe('removeMember - agy project cleanup', () => {
 // from the member's authorized_keys. Only fleet-generated keys (under the
 // fleet keys dir) may be touched.
 describe('removeMember - SSH key ownership', () => {
-  const pubKeyLine = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIkeyownership000000000000000000000000000 user@host';
+  const pubKeyLine = `${SSH_PUBLIC_KEYS.rsa4096} user@host`;
   const dirs: string[] = [];
   const makeKey = (parent: string): string => {
     const dir = fs.mkdtempSync(path.join(parent, 'rm-key-test-'));
@@ -498,7 +499,7 @@ describe('removeMember - SSH key ownership', () => {
   });
 
   // An empty, truncated or type-only .pub would match every authorized_keys
-  // line (or every key of that type): no command touching authorized_keys
+  // line (or every key sharing its prefix): no command touching authorized_keys
   // may be sent, and the result must say the file was left untouched.
   const OS_CASES: Array<[string, Record<string, unknown>]> = [
     ['linux', { os: 'linux' }],
@@ -524,6 +525,23 @@ describe('removeMember - SSH key ownership', () => {
         expect(akCmds()).toHaveLength(0);
         expect(result).toContain('is not a valid SSH public key');
         expect(result).toContain('authorized_keys was left untouched');
+      });
+    }
+    // A truncated .pub (crash or full disk mid-write) is a prefix of every
+    // key sharing its header, so it must never be used to revoke.
+    for (const [keyName, key] of Object.entries(SSH_PUBLIC_KEYS)) {
+      it(`${osName}: truncated ${keyName} fleet .pub (every cut) -> no command touches authorized_keys`, async () => {
+        for (const [cut, truncated] of truncatedKeys(key)) {
+          const keyPath = makeKey(getKeysDir());
+          fs.writeFileSync(`${keyPath}.pub`, `${truncated} fleet@test\n`, 'utf-8');
+          const member = makeTestAgent({ friendlyName: `trunc-${osName}-${keyName}`.replace(/\s/g, '-'), keyPath, ...fields } as any);
+          addAgent(member);
+
+          const result = await removeMember({ member_id: member.id });
+
+          expect(akCmds(), cut).toHaveLength(0);
+          expect(result, cut).toContain('is not a valid SSH public key');
+        }
       });
     }
     it(`${osName}: valid fleet .pub -> exactly one revocation command`, async () => {

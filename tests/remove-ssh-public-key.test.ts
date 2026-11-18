@@ -1,15 +1,19 @@
+import crypto from 'node:crypto';
 import { describe, it, expect } from 'vitest';
 import { LinuxCommands, MacOSCommands, WindowsCommands, WindowsGitBashCommands, getOsCommands } from '../src/os/index.js';
 import { authorizedKeyMatch } from '../src/os/ssh-key-match.js';
+import { rsaPublicKeyToOpenSSH } from '../src/tools/setup-ssh-key.js';
+import { SSH_PUBLIC_KEYS, SSH_INVALID_KEYS, truncatedKeys } from './fixtures/ssh-public-keys.js';
 
 // OsCommands.removeSSHPublicKey: the revocation remove_member sends. The
 // member home is resolved in JS and must appear literally; the command never
 // expands ~ or a home env var, never uses sed -i (BSD sed rejects it), escapes
 // the untrusted key text and matches it as a fixed string. A match that is
-// not a real "<type> <base64>" key (empty, type only, garbage) is refused:
-// it would delete every line, or every key of that type.
+// not a complete "<type> <base64>" key (empty, type only, truncated,
+// garbage) is refused: it would delete every line, or every key sharing its
+// prefix.
 
-const KEY = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIremovekey';
+const KEY = SSH_PUBLIC_KEYS.ed25519;
 // Shell and regex metacharacters: quote, command substitution, glob, regex.
 const HOSTILE_KEY = "ssh-ed25519 AA'$(touch${IFS}/tmp/pwn)`id`.*[a]\\";
 // Each would match unrelated lines: '' every line, a bare type every key of it.
@@ -18,7 +22,8 @@ const DEGENERATE_KEYS: Array<[string, string]> = [
   ['one-word', 'ssh-rsa'],
   ['short-body', 'ssh-rsa AAAA'],
   ['unknown-type', 'not-a-key AAAAC3NzaC1lZDI1NTE5AAAAIremovekey'],
-  ['other-type-body', 'ssh-rsa AAAAC3NzaC1lZDI1NTE5AAAAIremovekey'],
+  ['other-type-body', `ssh-rsa ${KEY.split(' ')[1]}`],
+  ['truncated', KEY.slice(0, KEY.length - 8)],
   ['commented', `${KEY} user@host`],
   ['hostile', HOSTILE_KEY],
 ];
@@ -33,10 +38,31 @@ describe('authorizedKeyMatch', () => {
     ['one word', 'ssh-rsa'],
     ['short body', 'ssh-ed25519 AAAAC3Nza'],
     ['unknown type', 'not-a-key AAAAC3NzaC1lZDI1NTE5AAAAIremovekey'],
-    ['body names another type', 'ssh-rsa AAAAC3NzaC1lZDI1NTE5AAAAIremovekey'],
+    ['body names another type', `ssh-rsa ${KEY.split(' ')[1]}`],
     ['not base64', HOSTILE_KEY],
+    ['non-canonical base64 (unpadded)', SSH_PUBLIC_KEYS.ecdsa256.replace(/=$/, '')],
+    ...Object.entries(SSH_INVALID_KEYS),
   ])('rejects %s', (_name, line) => {
     expect(authorizedKeyMatch(line)).toBeNull();
+  });
+
+  // A truncated key is a prefix of every key sharing its header: an ecdsa key
+  // cut inside its point matches every key on that curve.
+  for (const [name, key] of Object.entries(SSH_PUBLIC_KEYS)) {
+    it(`accepts a complete ${name} key`, () => {
+      expect(authorizedKeyMatch(`${key} fleet@host\r\n`)).toBe(key);
+    });
+    it.each(truncatedKeys(key))(`rejects ${name} truncated: %s`, (_cut, truncated) => {
+      expect(authorizedKeyMatch(truncated)).toBeNull();
+    });
+  }
+
+  it('accepts the RSA-4096 key setup_ssh_key writes, and rejects it truncated', () => {
+    const { publicKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 4096, publicKeyEncoding: { type: 'spki', format: 'pem' } });
+    const line = rsaPublicKeyToOpenSSH(publicKey, 'apra-fleet-x');
+    const key = line.split(' ').slice(0, 2).join(' ');
+    expect(authorizedKeyMatch(line)).toBe(key);
+    for (const [, truncated] of truncatedKeys(key)) expect(authorizedKeyMatch(truncated)).toBeNull();
   });
 });
 

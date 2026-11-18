@@ -1093,13 +1093,14 @@ export interface WorkspaceTrustWritePlan {
  * fails. An existing destination is swapped with [IO.File]::Replace
  * (ReplaceFile, which also keeps the destination's ACL); a missing one is
  * moved. ReplaceFile needs both on one volume, so a source staged on another
- * volume is first copied next to the destination. Any failure exits 1 with
+ * volume is first copied next to the destination under a per-call unique
+ * name (concurrent landings never share it). Any failure exits 1 with
  * the reason on stderr. Both paths arrive already escaped for "...".
  */
 export function windowsReplaceFileCommand(from: string, to: string): string {
   return `$s = "${from}"; $d = "${to}"; $t = $null; `
     + `try { $ErrorActionPreference = 'Stop'; $src = $s; `
-    + `if ([System.IO.Path]::GetPathRoot($s) -ne [System.IO.Path]::GetPathRoot($d)) { $t = $d + '.fleet-land.tmp'; [System.IO.File]::Copy($s, $t, $true); $src = $t }; `
+    + `if ([System.IO.Path]::GetPathRoot($s) -ne [System.IO.Path]::GetPathRoot($d)) { $t = $d + '.fleet-land-' + [Guid]::NewGuid().ToString('N') + '.tmp'; [System.IO.File]::Copy($s, $t, $false); $src = $t }; `
     + `if ([System.IO.File]::Exists($d)) { [System.IO.File]::Replace($src, $d, [NullString]::Value) } else { [System.IO.File]::Move($src, $d) }; `
     + `if ($t) { [System.IO.File]::Delete($s) } `
     + `} catch { if ($t -and [System.IO.File]::Exists($t)) { [System.IO.File]::Delete($t) }; [Console]::Error.WriteLine($_.Exception.Message); exit 1 }`;

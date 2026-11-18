@@ -71,6 +71,7 @@ vi.mock('../src/services/known-hosts.js', () => ({
 
 import { monitorTask } from '../src/tools/monitor-task.js';
 import { removeMember } from '../src/tools/remove-member.js';
+import { SSH_PUBLIC_KEYS } from './fixtures/ssh-public-keys.js';
 
 // ---------------------------------------------------------------------------
 // Local helpers (kept private to this file -- see apra-fleet-ot2z.9)
@@ -208,7 +209,7 @@ describe('monitor_task command safety', () => {
 describe('remove_member authorized_keys cleanup command safety', () => {
   let tmpDir: string;
   let keyPath: string;
-  const pubKeyLine = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAItest0000000000000000000000000000000000 fleet@apra';
+  const pubKeyLine = `${SSH_PUBLIC_KEYS.ed25519} fleet@apra`;
 
   const POSIX_HOME = '/home/x';
   const WIN_HOME = 'C:\\Users\\x';

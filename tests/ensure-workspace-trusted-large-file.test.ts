@@ -358,7 +358,7 @@ describe('windowsReplaceFileCommand (PowerShell landing of ~/.claude.json)', () 
   });
 
   it('copies a source staged on another volume next to the destination first, and cleans up', () => {
-    expect(cmd).toContain("if ([System.IO.Path]::GetPathRoot($s) -ne [System.IO.Path]::GetPathRoot($d)) { $t = $d + '.fleet-land.tmp'; [System.IO.File]::Copy($s, $t, $true); $src = $t }");
+    expect(cmd).toContain("if ([System.IO.Path]::GetPathRoot($s) -ne [System.IO.Path]::GetPathRoot($d)) { $t = $d + '.fleet-land-' + [Guid]::NewGuid().ToString('N') + '.tmp'; [System.IO.File]::Copy($s, $t, $false); $src = $t }");
     expect(cmd).toContain('if ($t) { [System.IO.File]::Delete($s) }');
     expect(cmd).toContain('catch { if ($t -and [System.IO.File]::Exists($t)) { [System.IO.File]::Delete($t) }');
   });
