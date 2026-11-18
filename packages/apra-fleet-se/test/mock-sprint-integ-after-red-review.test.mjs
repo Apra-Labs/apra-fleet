@@ -17,16 +17,20 @@
 //      recorded, the run log says integ was skipped because the last review
 //      reported the build/tests failing, the skip is recorded as an
 //      integFailures entry (visible in the Final Review evidence), and B stays
-//      open.
+//      open. The Final Review LLM rubber-stamps PASS; the sprint verdict is
+//      still FAIL, naming the red-build integ skip, and the PR is not [PASS].
 //   2. Sticky, then cleared: C1 is red through the cap (T is then closed
 //      out-of-band during C1's deploy, so C2 has no ready work and runs no
 //      review). C2 carries the red flag and skips integ. C2's re-review
-//      reports the build green, so C3 dispatches integ, which closes B.
+//      reports the build green, so C3 dispatches integ, which closes B. The
+//      Final Review PASS stands (control: the verdict gate does not fire).
 //
 // REVERT CHECK: with the `lastBuildFailing` integ gate in fleet-sprint/
 // runner.js removed (the `hasPlaybook && deployedThisCycle && lastBuildFailing`
 // branch), scenario 1 dispatches the integ-test-runner in C1 and closes B, so
-// this file fails.
+// this file fails. With only the Final Review verdict gate removed
+// (phases/final-review.mjs, the `if (redBuildIntegSkip)` block), scenario 1's
+// verdict assertion fails (the rubber-stamp PASS stands).
 // =============================================================================
 
 import { test } from 'node:test';
@@ -67,11 +71,17 @@ const redReview = (reopenId) => ({
     }],
 });
 
+const rubberStampPass = async () => ({
+    content: [{ text: JSON.stringify({ verdict: 'PASS', notes: 'Rubber-stamp PASS from the final reviewer.' }) }],
+});
+
+const findPrCreate = (commandLog) => commandLog.find((c) => c.startsWith('curl -sS -X POST') && c.includes('/pulls'));
+
 const greenReview = () => ({
     content: [{ text: JSON.stringify({ verdict: 'APPROVED', notes: 'Build and tests green.', reopenIds: [], newTasks: [] }) }],
 });
 
-test('mock sprint: a review reporting a red build through the round cap -> integ not dispatched, skip logged and recorded, verify-set bead stays open', async () => {
+test('mock sprint: a review reporting a red build through the round cap -> integ not dispatched, skip logged and recorded, verify-set bead stays open, verdict FAIL', async () => {
     await withScenarioMarkers('redbuildintegskip', async () => {
         const ids = {};
         let finalPrompt = null;
@@ -85,7 +95,9 @@ test('mock sprint: a review reporting a red build through the round cap -> integ
             reviewerHandler: async () => redReview(ids.t),
             finalReviewHandler: async ({ opts }) => {
                 finalPrompt = opts.prompt;
-                return { content: [{ text: JSON.stringify({ verdict: 'FAIL', notes: 'Red build.' }) }] };
+                // Deliberately PASS whatever the evidence says: the verdict
+                // must not depend on the LLM reading the skip in its prompt.
+                return rubberStampPass();
             },
         });
         assert.ok(!run.error, `scenario must not throw: ${run.error && run.error.message}`);
@@ -104,6 +116,17 @@ test('mock sprint: a review reporting a red build through the round cap -> integ
         assert.match(finalPrompt, /Integration tests FAILED in 1 cycle\(s\): C1 \(bugsFiled: none\): Skipping Integration Test Phase C1: the last review reported the build\/tests failing/);
 
         assert.equal(run.finalBeadsById.get(ids.b).status, 'open', 'the verify-set bead must stay open: integ never ran against the red branch');
+
+        // Never PASS, and the reason names the red-build integ skip.
+        assert.equal(run.result.verdict, 'FAIL', `verdict must not be PASS after a red-build integ skip: ${JSON.stringify(run.result)}`);
+        assert.equal(run.result.status, 'failed');
+        assert.match(run.result.notes, /Integration Test was skipped in C1 because the last review reported the build\/tests failing/);
+        assert.ok(run.logs.some((l) => /sprint verdict forced to FAIL \(Final Review returned PASS\)/.test(l) && /skipped in C1/.test(l)),
+            `expected the Final Review override log, logs: ${JSON.stringify(run.logs.filter((l) => /Final Review/.test(l)))}`);
+        const pr = findPrCreate(run.commandLog);
+        assert.ok(pr, 'a FAIL sprint still publishes its PR');
+        const title = (pr.match(/"title":"([^"]*)"/) || [])[1] || '';
+        assert.ok(!title.includes('[PASS]'), `PR title must not be [PASS]: ${title}`);
     });
 });
 
@@ -132,9 +155,7 @@ test('mock sprint: the red-build flag carries through a cycle with no review and
                 if (deployCalls === 1) await runCmd(`bd close ${ids.t}`, tempDir);
                 return { content: [{ text: JSON.stringify({ deployed: true, notes: 'Deployed.' }) }] };
             },
-            finalReviewHandler: async () => ({
-                content: [{ text: JSON.stringify({ verdict: 'PASS', notes: 'Final review pass.' }) }],
-            }),
+            finalReviewHandler: rubberStampPass,
         });
         assert.ok(!run.error, `scenario must not throw: ${run.error && run.error.message}`);
 
@@ -148,5 +169,9 @@ test('mock sprint: the red-build flag carries through a cycle with no review and
         assert.equal(integ.length, 1, `integ must dispatch once, in C3 after the green re-review, got ${integ.length}`);
         assert.ok(integ[0].prompt.includes(ids.b), 'the C3 integ dispatch must name B for verification-closure');
         assert.equal(run.finalBeadsById.get(ids.b).status, 'closed', 'integ closes B once the build is reported green');
+
+        // Cleared by the green review and the C3 integ run: the PASS stands.
+        assert.equal(run.result.verdict, 'PASS', `the cleared skip must not force FAIL: ${JSON.stringify(run.result)}`);
+        assert.ok(!run.logs.some((l) => /forced to FAIL/.test(l)), 'no verdict gate may fire once the skip is cleared');
     });
 });
