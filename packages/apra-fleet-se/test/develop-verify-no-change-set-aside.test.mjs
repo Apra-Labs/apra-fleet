@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { runDevelopLoopScenario, withScenarioMarkers, MOCK_BRANCH_TIPS } from './helpers/mock-sprint-harness.mjs';
+import { runDevelopLoopScenario, withScenarioMarkers, MOCK_BRANCH_TIPS, MOCK_TIP_DRIFT } from './helpers/mock-sprint-harness.mjs';
 import {
     cannotCloseThisRun, collectSetAsideEntries, VERIFY_NO_CHANGE_KIND,
 } from '../fleet-sprint/set-aside.mjs';
@@ -137,4 +137,32 @@ test('mock sprint: a VERIFY that committed work but closed nothing is NOT set as
         assert.ok(doerDispatches(scenario).length >= 2, 'the open bead must be re-dispatched');
         assert.equal(scenario.finalBeadsById.get(id).status, 'closed');
     });
+});
+
+test('mock sprint: a no-change VERIFY is still set aside when another lane pushes (the member tip moves in the sync brackets)', async () => {
+    resetSyncMemo();
+    MOCK_TIP_DRIFT.on = true;
+    MOCK_TIP_DRIFT.counters.clear();
+    try {
+        await withScenarioMarkers('doer verify no change tip drift', async () => {
+            let calls = 0;
+            const scenario = await runDevelopLoopScenario('dvnc-drift', {
+                members: ['local'],
+                taskSpecs: [{ title: 'Task: nv drift' }],
+                maxCycles: 2,
+                doerHandler: async () => {
+                    calls++;
+                    return report({ status: 'VERIFY', closedIds: [], notes: 'nothing to code' });
+                },
+                reviewerHandler: approve,
+            });
+            const id = scenario.tasks.find((t) => t.title === 'Task: nv drift').id;
+            assert.ok(scenario.logs.some((m) => m.includes('Doer VERIFY-no-change set-aside') && m.includes(`'${id}'`)),
+                `must be set aside: ${JSON.stringify(scenario.logs.filter((l) => /VERIFY|sync/i.test(l)))}`);
+            assert.equal(calls, 1, 'dispatched to a doer exactly once');
+        });
+    } finally {
+        MOCK_TIP_DRIFT.on = false;
+        MOCK_TIP_DRIFT.counters.clear();
+    }
 });

@@ -37,6 +37,10 @@ export const NO_SESSION_ID_MARKER = null;
 /** The commit SHA the mock answers `git merge-base origin/<base> <branch>` with (the review diff base). */
 /** member name -> the commit `git rev-parse --verify HEAD` answers (default all zeros); a doer handler sets it to simulate a commit. */
 export const MOCK_BRANCH_TIPS = new Map();
+// When `.on` is true, every remote-moving git command (fetch/merge/reset/
+// rebase/pull/push) run on a member advances that member's branch tip, the way
+// another lane's push merged in by the pre-/post-dispatch sync does.
+export const MOCK_TIP_DRIFT = { on: false, counters: new Map() };
 export const MOCK_REVIEW_MERGE_BASE_SHA = 'c0ffee0000000000000000000000000000c0ffee';
 
 // apra-fleet-1cb.1 AUDIT NOTE: grepped runner.js for every read of
@@ -1567,8 +1571,15 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                     const sha = '0'.repeat(40);
                     return mockCmdResult(0, `${sha}\n${sha}\n`, '');
                 }
+                if (MOCK_TIP_DRIFT.on && /^git (?:-c \S+ )*(?:fetch|merge|reset|rebase|pull|push)\b/.test(opts.command)) {
+                    const key = opts.member_name || '(none)';
+                    MOCK_TIP_DRIFT.counters.set(key, (MOCK_TIP_DRIFT.counters.get(key) || 0) + 1);
+                }
                 if (/^git rev-parse --verify HEAD\s*$/.test(opts.command)) {
-                    return mockCmdResult(0, MOCK_BRANCH_TIPS.get(opts.member_name || '(none)') || '0'.repeat(40), '');
+                    const key = opts.member_name || '(none)';
+                    const drift = MOCK_TIP_DRIFT.on ? (MOCK_TIP_DRIFT.counters.get(key) || 0) : 0;
+                    const base = MOCK_BRANCH_TIPS.get(key) || '0'.repeat(40);
+                    return mockCmdResult(0, drift ? `${String(drift).padStart(8, 'd')}${base.slice(8)}` : base, '');
                 }
                 if (/^git status --porcelain\s*$/.test(opts.command)) {
                     return mockCmdResult(0, '', '');

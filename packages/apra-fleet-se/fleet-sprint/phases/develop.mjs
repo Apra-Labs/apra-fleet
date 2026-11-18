@@ -613,13 +613,24 @@ export async function runDevelopPhase({
         // Branch snapshot before the dispatch, so a VERIFY that closed nothing
         // can be told apart from one that committed work (see
         // recordDoerVerifyNoChange). Never throws; null = unknown.
-        const snapshotBefore = await readBranchSnapshot(doerMember);
+        // Taken INSIDE the dispatch's git-sync bracket (onDispatchWindow below),
+        // after the pre-dispatch pull and before the post-dispatch push, so a
+        // tip moved by another lane's push is never read as the doer's work.
+        let snapshotBefore = null;
+        let snapshotAfter = null;
         const doerOutcome = await dispatchRole(dispatchCtx, 'doer', {
             roleLabel: `Doer streak ${streakScope()}`,
             // Never used: `prepare` builds both prompts, because both
             // depend on the streak the claim actually secured.
             prompt: null,
             resumePrompt: null,
+            onDispatchWindow: async (phase) => {
+                if (phase === 'before') {
+                    if (!snapshotBefore) snapshotBefore = await readBranchSnapshot(doerMember);
+                } else {
+                    snapshotAfter = await readBranchSnapshot(doerMember);
+                }
+            },
             onSessionId: (id, meta) => {
                 if (!worklistCtx) return;
                 worklistCtx.sessionId = id;
@@ -1063,7 +1074,7 @@ export async function runDevelopPhase({
         const noChangeSetAside = new Set();
         if (leftOpenReason === 'left-open' && report && report.status === 'VERIFY'
             && unclosedIds.length > 0 && closedIds.length === 0
-            && branchUnchanged(snapshotBefore, await readBranchSnapshot(doerMember))) {
+            && branchUnchanged(snapshotBefore, snapshotAfter)) {
             const groups = batchStreaks
                 ? batchStreaks.map((sub) => sub.map((b) => b.id).filter((id) => actualBeadIds.includes(id)))
                 : [actualBeadIds];

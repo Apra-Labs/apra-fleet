@@ -548,6 +548,8 @@ async function runDegradeSteps(ctx, policy, err, errorClass) {
  *   label/resumeLabel/repairLabel -- presentation labels (NOT policy: see
  *                       role-policies.mjs's "deliberately out of scope" note)
  *   attemptOptions   -- ({ attempt, skipPreDispatchSync }) => extra withGitSync options
+ *   onDispatchWindow -- async ('before'|'after') => void, fired inside the
+ *                       git-sync bracket right before/after the agent call
  *   afterAttempt     -- async (value) => void, run INSIDE the attempt's try so
  *                       a failure in it is classified by the same ladder
  *   onResultRejected -- (reason) => Error, the error a `retryOnInvalidResult`
@@ -652,21 +654,30 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
             for (const key of Object.keys(options)) {
                 if (options[key] === undefined) delete options[key];
             }
+            // Window hook: 'before' fires AFTER the bracket's pre-dispatch
+            // sync and 'after' BEFORE its post-dispatch sync, so a caller
+            // comparing the member's checkout across the window never sees a
+            // tip moved by another lane's push being merged in or out.
+            if (opts.onDispatchWindow) await opts.onDispatchWindow('before');
             const inFlight = agent(prepared.prompt ?? defaultPrompt, {
                 ...options,
                 member_name: member,
             });
-            if (!dispatch.watchdog.armed) return inFlight;
             // Raced against a client-side watchdog so a frozen-but-alive
             // member session can never leave this await silently hanging past
-            // its budget -- needed in ADDITION to, not instead of, the
-            // server-side timeout_s/max_total_s above.
-            return ctx.withDispatchWatchdog(inFlight, {
-                timeoutS: resolveBudget(ctx, dispatch.watchdog.timeoutS),
-                member,
-                label: resolveWatchdogLabel(dispatch.watchdog.label, localBindings),
-                log: ctx.log,
-            });
+            // its budget -- needed in ADDITION to the server-side timeouts.
+            const settled = !dispatch.watchdog.armed
+                ? inFlight
+                : ctx.withDispatchWatchdog(inFlight, {
+                    timeoutS: resolveBudget(ctx, dispatch.watchdog.timeoutS),
+                    member,
+                    label: resolveWatchdogLabel(dispatch.watchdog.label, localBindings),
+                    log: ctx.log,
+                });
+            if (!opts.onDispatchWindow) return settled;
+            const windowResult = await settled;
+            await opts.onDispatchWindow('after');
+            return windowResult;
         };
         // `dispatch.bracket`, not `policy.bracket`: a secondary dispatch
         // inherits its main dispatch's bracket by spread today, but reading it
