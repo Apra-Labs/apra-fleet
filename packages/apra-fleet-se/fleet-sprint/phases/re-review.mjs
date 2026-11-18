@@ -70,7 +70,7 @@
 // red instead of landing on an unguarded site.
 // =============================================================================
 
-import { applyGuardedReopens, ensureRedBranchFixTask, isInGoalPriority } from '../beads-transitions.mjs';
+import { applyGuardedReopens, ensureRedBranchFixTask, isInGoalPriority, belowGoalOnlyReopenIds } from '../beads-transitions.mjs';
 import {
     validateNewTask, appendRejectedFindingToParentNotes, persistNewTaskBestEffort,
 } from '../abort.mjs';
@@ -119,6 +119,12 @@ export async function runReReviewPhase({
     // so a round that dispatches no review leaves it unchanged; see
     // nextLastBuildFailing in ../beads-transitions.mjs.
     lastBuildFailing = false,
+    // The skipped reopenIds when the verdict is CHANGES_NEEDED but every
+    // reopenId was skipped as below goal and nothing in-goal was left behind
+    // (../beads-transitions.mjs belowGoalOnlyReopenIds), else null. Cycle
+    // Evaluation treats such a verdict as APPROVED for the exit decision.
+    // Passed in and returned like lastReviewVerdict.
+    belowGoalOnlySkippedIds = null,
     // runSprintCycle-scoped locals and runner.js-exported helpers, injected
     // rather than imported (see header).
     dispatchReview,
@@ -164,6 +170,7 @@ export async function runReReviewPhase({
     lastReviewVerdict = reReviewVerdict.verdict;
     lastBuildFailing = nextLastBuildFailing(lastBuildFailing, reReviewVerdict);
     reviewedThisCycle = true;
+    belowGoalOnlySkippedIds = null;
 
     // Same orchestrator-applies-the-transition contract as the
     // regular Develop/Review dispatch above: a re-review that
@@ -178,6 +185,7 @@ export async function runReReviewPhase({
     // DEFERRED bead named here is skipped with the identical
     // "deferred scope, not reopened" outcome instead of being pulled
     // back into a sprint that no longer targets it.
+    const skippedBelowGoalIds = [];
     const reopenedIds = new Set(await applyGuardedReopens({
         // reopenIds, plus a NEEDS-DECISION bead (../decisions.mjs).
         entries: reviewerReopenEntries(reReviewVerdict, reReviewScopeIds),
@@ -191,6 +199,7 @@ export async function runReReviewPhase({
         }),
         // Track per-bead reopen counts for reopen-thrash detection.
         onReopened: ({ id }) => recordReopen(id),
+        onSkippedBelowGoal: ({ id }) => skippedBelowGoalIds.push(id),
     }));
     // A NEEDS-DECISION verdict: same handling as the per-round Review phase
     // (../decisions.mjs); a closed bead was reopened just above through the
@@ -282,9 +291,24 @@ export async function runReReviewPhase({
         }),
     });
 
+
+    // A CHANGES_NEEDED whose only reopenIds were skipped as below goal, with
+    // no in-goal newTask, no red-branch fix task and no pending decision, does
+    // not block the sprint exit (see belowGoalOnlyReopenIds).
+    belowGoalOnlySkippedIds = belowGoalOnlyReopenIds({
+        verdict: reReviewVerdict,
+        skippedBelowGoalIds,
+        reopenedCount: reopenedIds.size,
+        inGoalNewTaskCount,
+        pendingDecisionCount: sprintState && sprintState.pendingDecisions instanceof Map ? sprintState.pendingDecisions.size : 0,
+    });
+    if (belowGoalOnlySkippedIds) {
+        log(`Re-Review C${cycle}: CHANGES_NEEDED named only reopenIds below this sprint's goal ${validated.goal}, all skipped (${belowGoalOnlySkippedIds.join(', ')}), with no in-goal newTask, no failing build and no pending decision -- treated as APPROVED for the exit decision; the skipped bead(s) are carried over.`);
+    }
+
     // D-push the orchestrator's applied re-review reopens/newTask
     // creates, same as the Develop/Review transition site above.
     await gitSync.syncBeadsAfter(backlogMember, { pushBeads: true });
 
-    return { lastReviewVerdict, reviewedThisCycle, pendingRejectedNewTasks, lastBuildFailing };
+    return { lastReviewVerdict, reviewedThisCycle, pendingRejectedNewTasks, lastBuildFailing, belowGoalOnlySkippedIds };
 }

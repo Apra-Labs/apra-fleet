@@ -96,6 +96,36 @@ export function needsRedBranchFixTask({ verdict, reopenedCount, inGoalNewTaskCou
 }
 
 /**
+ * A CHANGES_NEEDED verdict whose every reopenId the goal-scope guard skipped
+ * as below goal, that left nothing in-goal behind, is effectively APPROVED
+ * for the sprint's exit decision: nothing it asked for is in this sprint's
+ * goal, so repeating the cycle can only produce the same verdict until a
+ * stall. Returns the skipped ids (to log and list as carry-over) when that
+ * holds, else null -- in which case the verdict keeps blocking exit as
+ * before. It does not hold when:
+ *   - the verdict is not CHANGES_NEEDED, or names no reopenIds;
+ *   - any reopen survived the guard (reopenedCount > 0) or any reopenId was
+ *     skipped for a reason other than below goal;
+ *   - an in-goal newTask was created (inGoalNewTaskCount > 0);
+ *   - the verdict reports the build/tests failing (buildFailing: true -- the
+ *     red-branch fix task path owns that);
+ *   - a NEEDS-DECISION is pending (pendingDecisionCount > 0).
+ *
+ * @param {{ verdict: object|null, skippedBelowGoalIds: Iterable<string>, reopenedCount: number, inGoalNewTaskCount: number, pendingDecisionCount?: number }} o
+ * @returns {string[]|null}
+ */
+export function belowGoalOnlyReopenIds({ verdict, skippedBelowGoalIds, reopenedCount, inGoalNewTaskCount, pendingDecisionCount = 0 }) {
+    if (!verdict || verdict.verdict !== 'CHANGES_NEEDED') return null;
+    if (verdict.buildFailing === true) return null;
+    if (reopenedCount > 0 || inGoalNewTaskCount > 0 || pendingDecisionCount > 0) return null;
+    const ids = [...new Set((verdict.reopenIds || []).filter((id) => typeof id === 'string'))];
+    if (ids.length === 0) return null;
+    const skipped = new Set(skippedBelowGoalIds || []);
+    if (!ids.every((id) => skipped.has(id))) return null;
+    return ids;
+}
+
+/**
  * Is a newTask priority string ('P2') inside the sprint's goal band?
  *
  * @param {string} priority
@@ -346,6 +376,10 @@ export async function applyGuardedReopens(o) {
         entries, bdListScoped, goalMax, goal, logPrefix, log, command, member,
         parseEntry = parseBareIdEntry, buildReopenCommand, onReopened, onEntryError,
         workedOnIds = null,
+        // Optional: called with each entry the goal-scope guard skipped as
+        // below-goal deferred scope (the only skip reason that says "nothing
+        // in this sprint's goal is wrong"). Read by belowGoalOnlyReopenIds.
+        onSkippedBelowGoal = null,
     } = o;
 
     const list = Array.isArray(entries) ? entries : [];
@@ -367,6 +401,7 @@ export async function applyGuardedReopens(o) {
         const { deferred, priority, belowGoal } = isDeferredScopeReopen(allowlist, parsed.id, goalMax, workedOnIds);
         if (deferred) {
             log(`${logPrefix}: SKIPPED '${parsed.id}' (priority P${priority} is below this sprint's goal ${goal} -- deferred scope, not reopened).`);
+            if (onSkippedBelowGoal) onSkippedBelowGoal(parsed);
             continue;
         }
         if (belowGoal) {

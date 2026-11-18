@@ -202,6 +202,17 @@ cycle can resolve are carried over instead (`fleet-sprint/verify-carry-over.mjs`
 
 The run result carries both as `verifyCarryOver: [{ id, kind, reason }]`.
 
+## A CHANGES_NEEDED that names only below-goal reopens
+
+A reviewer CHANGES_NEEDED (per-round Review or Cycle Evaluation's Re-Review)
+whose every reopenId the goal-scope guard skipped as below goal, with no
+in-goal newTask created, no failing build (`buildFailing` not true) and no
+pending NEEDS-DECISION, counts as APPROVED for the exit decision
+(`belowGoalOnlyReopenIds` in `fleet-sprint/beads-transitions.mjs`). Without
+it the next cycle could only repeat the same verdict until a stall. The
+skipped ids are logged, named in the verdict notes as carried over, and
+returned as `belowGoalCarryOver`. Anything in-goal keeps blocking the exit.
+
 ## Known gaps
 
 - Dependents are computed once, when the BLOCKED report arrives. A bead

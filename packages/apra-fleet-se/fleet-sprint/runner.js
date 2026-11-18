@@ -3624,6 +3624,15 @@ async function runSprintCycle(context) {
     // a re-review before trusting the latter.
     let lastReviewVerdict = null;
     let reviewedThisCycle = false;
+    // Set (to the skipped ids) when this cycle's last review returned
+    // CHANGES_NEEDED whose every reopenId the goal-scope guard skipped as
+    // below goal, with nothing in-goal left behind
+    // (./beads-transitions.mjs belowGoalOnlyReopenIds): that verdict counts
+    // as APPROVED for the exit decision. Reset per cycle with the verdict.
+    let reviewBelowGoalOnlyIds = null;
+    // Run-scoped: below-goal reopen ids such a verdict skipped at the exit,
+    // named as carry-over in the verdict notes and the run result.
+    const belowGoalCarryOverIds = new Set();
 
     // RUN-scoped and sticky -- deliberately NOT reset per cycle (see
     // ./red-build-integ-gate.mjs): true while the last review that genuinely
@@ -3647,6 +3656,7 @@ async function runSprintCycle(context) {
         // for the cycle that actually produced it.
         lastReviewVerdict = null;
         reviewedThisCycle = false;
+        reviewBelowGoalOnlyIds = null;
 
         // After the first cycle, re-ensure (non-destructively) that every
         // member is still on the sprint branch before this cycle's doers run.
@@ -3994,13 +4004,14 @@ async function runSprintCycle(context) {
             // back through this destructuring assignment; on the round where
             // every streak failed (empty review scope) they come back
             // unchanged, which is why no `if` is needed here.
-            ({ lastReviewVerdict, reviewedThisCycle, pendingRejectedNewTasks, lastBuildFailing } = await runReviewPhase({
+            ({ lastReviewVerdict, reviewedThisCycle, pendingRejectedNewTasks, lastBuildFailing, belowGoalOnlySkippedIds: reviewBelowGoalOnlyIds } = await runReviewPhase({
                 phase, log, command,
                 cycle, validated, targetIssues, backlogMember,
                 gitSync, sprintState,
                 replanIds, replannedThisCycle, perBeadFeedback, rejectedNewTasks,
                 devRounds, streakOutcomes, readyTitleById,
                 lastReviewVerdict, reviewedThisCycle, pendingRejectedNewTasks, lastBuildFailing,
+                belowGoalOnlySkippedIds: reviewBelowGoalOnlyIds,
                 dispatchReview, bdListScoped, goalMax, recordReopen,
                 workedOnIds: workedOnBeadIds,
                 childIdAllocator, sprintMutexId,
@@ -4419,12 +4430,13 @@ async function runSprintCycle(context) {
             // Cycle Evaluation, not to this phase. rejectedNewTasks is pushed
             // to in place exactly as the closure did; the three genuinely
             // reassigned values come back.
-            ({ lastReviewVerdict, reviewedThisCycle, pendingRejectedNewTasks, lastBuildFailing } = await runReReviewPhase({
+            ({ lastReviewVerdict, reviewedThisCycle, pendingRejectedNewTasks, lastBuildFailing, belowGoalOnlySkippedIds: reviewBelowGoalOnlyIds } = await runReReviewPhase({
                 phase, log, command,
                 cycle, validated, targetIssues, backlogMember,
                 gitSync, sprintState,
                 rejectedNewTasks,
                 lastReviewVerdict, reviewedThisCycle, pendingRejectedNewTasks, lastBuildFailing,
+                belowGoalOnlySkippedIds: reviewBelowGoalOnlyIds,
                 dispatchReview, bdListScoped, goalMax, recordReopen,
                 workedOnIds: workedOnBeadIds,
                 childIdAllocator, sprintMutexId,
@@ -4495,7 +4507,15 @@ async function runSprintCycle(context) {
         // phases, where Final Review forces a FAIL that names the failure. A
         // sprint with no deploy.md never sets lastDeployFailure.
         const rootsAllClosed = targetIssues.length > 0 && targetIssues.every((id) => closedIdsNow.has(id));
-        const goalSatisfied = openAtGoal.length === 0 && lastReviewVerdict === 'APPROVED' && stillOpenVerifyIds.length === 0;
+        // A CHANGES_NEEDED whose only reopenIds were skipped as below goal
+        // (nothing in-goal left behind) is APPROVED for this decision: the
+        // next cycle could only repeat it until a stall.
+        const reviewApprovedForExit = lastReviewVerdict === 'APPROVED' ||
+            (lastReviewVerdict === 'CHANGES_NEEDED' && Array.isArray(reviewBelowGoalOnlyIds) && reviewBelowGoalOnlyIds.length > 0);
+        const goalSatisfied = openAtGoal.length === 0 && reviewApprovedForExit && stillOpenVerifyIds.length === 0;
+        if (goalSatisfied && lastReviewVerdict !== 'APPROVED') {
+            for (const id of reviewBelowGoalOnlyIds) belowGoalCarryOverIds.add(id);
+        }
         if ((rootsAllClosed || goalSatisfied) && lastDeployFailure) {
             const which = rootsAllClosed ? 'every configured sprint root/target bead is closed' : `goal priority ${validated.goal} (<=${goalMax}) is otherwise satisfied`;
             // A deploy set aside for the run is never re-dispatched, so a
@@ -4538,7 +4558,9 @@ async function runSprintCycle(context) {
             const verifyCarryOverAtExit = buildVerifyCarryOver({ needsEvidence: needsEvidenceVerifyIds, deferred: deferredVerifyIds, closedIds: closedIdsNow });
             if (verifyCarryOverAtExit) log(`Cycle ${cycle}: ${formatVerifyCarryOverNotes(verifyCarryOverAtExit)}`);
             log(
-                `Goal priority ${validated.goal} (<=${goalMax}) satisfied: 0 open bead(s) in scope and last reviewer verdict was APPROVED. Exiting cycle loop.` +
+                (lastReviewVerdict === 'APPROVED'
+                    ? `Goal priority ${validated.goal} (<=${goalMax}) satisfied: 0 open bead(s) in scope and last reviewer verdict was APPROVED. Exiting cycle loop.`
+                    : `Goal priority ${validated.goal} (<=${goalMax}) satisfied: 0 open bead(s) in scope and the last reviewer verdict was CHANGES_NEEDED naming only below-goal reopenIds, all skipped -- treated as APPROVED. Exiting cycle loop. Carried over (below goal ${validated.goal}, not reopened): ${reviewBelowGoalOnlyIds.join(', ')}.`) +
                 (deferredExitIds.length > 0
                     ? ` ${deferredExitIds.length} bead(s) were treated as out of scope because they are DEFERRED (never dispatchable, so no cycle could advance them): ${deferredExitIds.join(', ')}. Reopen them and re-run the sprint if that was not intended.`
                     : '')
@@ -4609,6 +4631,7 @@ async function runSprintCycle(context) {
         carryOverExit,
         needsEvidenceVerifyIds,
         deferredVerifyIds,
+        belowGoalCarryOverIds,
         redBuildIntegSkip,
         workedOnIds: workedOnBeadIds,
         kbPriming, kbWork, kbInjection, kbSprintContext, getMemberForRole,
@@ -4760,6 +4783,9 @@ async function runSprintCycle(context) {
         // (./verify-carry-over.mjs): { id, kind: 'needs-external-evidence' |
         // 'deferred', reason } for each.
         ...(verifyCarryOver ? { verifyCarryOver: verifyCarryOver.entries } : {}),
+        // Present only when the run exited on a CHANGES_NEEDED whose only
+        // reopenIds were skipped as below goal: those ids, not reopened.
+        ...(belowGoalCarryOverIds.size > 0 ? { belowGoalCarryOver: [...belowGoalCarryOverIds].sort() } : {}),
         // Present only when the branch was pushed but no PR was opened
         // ({ reason, message }); surfaces in the supervisor's persisted
         // terminal state as state.result.prSkipped. Never changes the verdict.

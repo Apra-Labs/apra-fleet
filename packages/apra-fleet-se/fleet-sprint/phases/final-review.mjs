@@ -158,6 +158,10 @@ export async function runFinalReviewPhase({
     // verdict notes.
     needsEvidenceVerifyIds = null,
     deferredVerifyIds = null,
+    // Below-goal reopenIds a CHANGES_NEEDED verdict named that the cycle loop
+    // exited past (treated as APPROVED: every one was skipped as below goal).
+    // Named in the verdict notes; never changes the verdict.
+    belowGoalCarryOverIds = null,
     // The latest cycle whose Integration Test was skipped because the last
     // review reported a red build ({cycle}), or null once a later green
     // review let Integration Test run. Non-null forces a FAIL verdict
@@ -379,6 +383,12 @@ export async function runFinalReviewPhase({
         const llmVerdict = finalVerdictResult && finalVerdictResult.verdict;
         finalVerdictResult = applyRedBuildIntegSkipVerdictGate(finalVerdictResult, redBuildIntegSkip);
         log(`Final Review: sprint verdict forced to FAIL (Final Review returned ${llmVerdict ?? '(none)'}) -- ${formatRedBuildIntegSkipVerdictReason(redBuildIntegSkip)}`);
+    }
+    if (finalVerdictResult && belowGoalCarryOverIds && belowGoalCarryOverIds.size > 0) {
+        const belowGoalNote = `Carried over (below goal ${validated.goal}, not reopened): a reviewer CHANGES_NEEDED named only these below-goal bead(s), all skipped by the goal-scope guard, so the sprint did not wait on them: ${[...belowGoalCarryOverIds].sort().join(', ')}.`;
+        const prior = typeof finalVerdictResult.notes === 'string' ? finalVerdictResult.notes : '';
+        finalVerdictResult = { ...finalVerdictResult, notes: prior ? `${prior}\n\n${belowGoalNote}` : belowGoalNote };
+        log(`Final Review: ${belowGoalNote}`);
     }
     if (finalVerdictResult && Array.isArray(reclaimCappedIds) && reclaimCappedIds.length > 0) {
         const cappedNote = `${reclaimCappedIds.length} bead(s) were left 'in_progress' by failed doer streaks of this sprint more often than the re-dispatch cap allows and were NOT re-laned again -- needs human investigation: ${reclaimCappedIds.join(', ')}.`;
