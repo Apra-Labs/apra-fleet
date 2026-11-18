@@ -44,7 +44,8 @@ import {
 /**
  * Provider-dispatched command build step. `action` is one of
  * 'create-pull-request' | 'comment' | 'find-pull-request' |
- * 'update-pull-request'; `params.provider` selects the REST
+ * 'update-pull-request' | 'list-comments' | 'update-comment' |
+ * 'delete-comment'; `params.provider` selects the REST
  * dispatch. Pure and deterministic -- no network I/O, no filesystem access,
  * no randomness (beyond whatever caller-supplied fields it is handed).
  *
@@ -244,6 +245,48 @@ export async function resolveProvider(member, { fleetApi } = {}) {
 /** Build a "comment on abort" command for the given provider. */
 export function buildCommentCommand(params) {
     return buildVcsCommand('comment', params);
+}
+
+/**
+ * PR comment list / update / delete (the overflow-comment upsert path).
+ * `params.pull_request_id` names the PR. The list command's
+ * `mapResponse(body)` yields [{ id, body, ref }] in the provider's own order;
+ * update/delete take one of those `ref`s back as `params.comment_ref`.
+ * update-comment (like comment) sends its body from a staged file and needs
+ * `params.payload_path`; a provider without the action fails with the typed
+ * "ERROR: ... does not yet implement action" like every other action.
+ */
+export function buildListCommentsCommand(params) {
+    return buildVcsCommand('list-comments', params);
+}
+
+/** See buildListCommentsCommand. An empty `body` is allowed (emptying a comment). */
+export function buildUpdateCommentCommand(params) {
+    return buildVcsCommand('update-comment', params);
+}
+
+/** See buildListCommentsCommand. */
+export function buildDeleteCommentCommand(params) {
+    return buildVcsCommand('delete-comment', params);
+}
+
+/**
+ * The text limits `provider` declares on its descriptor:
+ * { descriptionMaxLength, commentMaxLength } (each a positive integer, or
+ * null when the provider declares none -- a classification-only provider).
+ * Throws the typed ERROR for an unknown provider, like buildVcsCommand().
+ * @param {string} provider
+ * @returns {{ descriptionMaxLength: number|null, commentMaxLength: number|null }}
+ */
+export function getProviderTextLimits(provider) {
+    const impl = getVcsProvider(provider);
+    if (!impl) {
+        throw new Error(`ERROR: VCSModule: unsupported VCS provider "${provider}" -- known providers: ${listVcsAuthProviders().join(', ')}.`);
+    }
+    return {
+        descriptionMaxLength: Number.isInteger(impl.descriptionMaxLength) ? impl.descriptionMaxLength : null,
+        commentMaxLength: Number.isInteger(impl.commentMaxLength) ? impl.commentMaxLength : null,
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -701,6 +744,10 @@ export const VCSModule = {
     buildUpdatePrCommand,
     parseProviderRepoRef,
     buildCommentCommand,
+    buildListCommentsCommand,
+    buildUpdateCommentCommand,
+    buildDeleteCommentCommand,
+    getProviderTextLimits,
     classifyFailure,
     toGitVerdict,
     toDoltVerdict,

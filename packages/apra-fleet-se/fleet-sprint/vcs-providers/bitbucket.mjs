@@ -742,6 +742,126 @@ function buildBitbucketUpdatePrCommand(params) {
     };
 }
 
+// ---------------------------------------------------------------------------
+// PR comments: create / list / update / delete (abort annotation and the
+// overflow-comment upsert path)
+// ---------------------------------------------------------------------------
+//
+// https://developer.atlassian.com/cloud/bitbucket/rest/api-group-pullrequests/#api-repositories-workspace-repo-slug-pullrequests-pull-request-id-comments-post
+// A comment's text is { content: { raw } }. A listed comment maps to the
+// provider-neutral { id, body, ref: { id } }; deleted and inline (code-line)
+// comments are skipped. Same Bearer auth, -D - header capture and -w status
+// line as the PR builders above.
+
+/** The numeric PR id every comment action's URL carries. */
+function assertPullRequestId(params, action) {
+    const id = String((params && params.pull_request_id) ?? '').trim();
+    if (!/^\d+$/.test(id)) throw new Error(`ERROR: VCSModule: a numeric "pull_request_id" is required to build a bitbucket ${action} command.`);
+    return id;
+}
+
+/** The numeric comment id from a `comment_ref` ({ id }) a list mapping returned. */
+function assertCommentId(ref, action) {
+    const id = String((ref && ref.id) ?? '').trim();
+    if (!/^\d+$/.test(id)) throw new Error(`ERROR: VCSModule: a "comment_ref" with a numeric id (from list-comments) is required to build a bitbucket ${action} command.`);
+    return id;
+}
+
+/** One Bitbucket comment curl: METHOD url, optional staged JSON body. */
+function bitbucketCommentCurl(method, url, authToken, os, shell, bodyArg) {
+    return [
+        `${curlBinary(os)} -sS -X ${method}`,
+        `-H ${shQuote(`Authorization: Bearer ${authToken}`, os, shell)}`,
+        ...(bodyArg ? [`-H ${shQuote('Content-Type: application/json', os, shell)}`] : []),
+        `-H ${shQuote('Accept: application/json', os, shell)}`,
+        ...(bodyArg ? [bodyArg.arg] : []),
+        `-w ${shQuote('\n%{http_code}', os, shell)}`,
+        DUMP_RESPONSE_HEADERS,
+        shQuote(url, os, shell),
+    ].join(' ');
+}
+
+/** POST .../pullrequests/{id}/comments with { content: { raw } }. */
+function buildBitbucketCommentCommand(params) {
+    const { token, os, shell, body, payload_path: payloadPath } = params || {};
+    const coords = assertRepoCoords(params, 'comment');
+    const safeToken = assertToken(token);
+    const prId = assertPullRequestId(params, 'comment');
+    if (!body) throw new Error('ERROR: VCSModule: "body" is required to build a comment command.');
+    const bodyArg = jsonBodyFromFile(JSON.stringify({ content: { raw: body } }), payloadPath, os, shell, 'comment');
+    const url = `${repoApiBase(coords)}/pullrequests/${prId}/comments`;
+    return {
+        provider: 'bitbucket',
+        action: 'comment',
+        command: bitbucketCommentCurl('POST', url, safeToken, os, shell, bodyArg),
+        logSafeCommand: bitbucketCommentCurl('POST', url, REDACTED, os, shell, bodyArg),
+        payload: bodyArg.payload,
+        interpret: { successStatusRange: [200, 299] },
+    };
+}
+
+/** GET .../pullrequests/{id}/comments?pagelen=100&fields=... */
+function buildBitbucketListCommentsCommand(params) {
+    const { token, os, shell } = params || {};
+    const coords = assertRepoCoords(params, 'list-comments');
+    const safeToken = assertToken(token);
+    const prId = assertPullRequestId(params, 'list-comments');
+    const fields = ['values.id', 'values.content.raw', 'values.deleted', 'values.inline'].join(',');
+    const url = `${repoApiBase(coords)}/pullrequests/${prId}/comments?pagelen=100&fields=${encodeURIComponent(fields)}`;
+    return {
+        provider: 'bitbucket',
+        action: 'list-comments',
+        command: bitbucketCommentCurl('GET', url, safeToken, os, shell, null),
+        logSafeCommand: bitbucketCommentCurl('GET', url, REDACTED, os, shell, null),
+        interpret: { successStatusRange: [200, 299] },
+        /** 2xx body ({ values: [...] }) -> [{ id, body, ref: { id } }]. */
+        mapResponse: (respBody) => (respBody && Array.isArray(respBody.values) ? respBody.values : [])
+            .filter((c) => c && Number.isInteger(c.id) && c.deleted !== true && !c.inline)
+            .map((c) => ({
+                id: String(c.id),
+                body: c.content && typeof c.content.raw === 'string' ? c.content.raw : '',
+                ref: { id: c.id },
+            })),
+    };
+}
+
+/** PUT .../pullrequests/{id}/comments/{comment_id} with { content: { raw } }. */
+function buildBitbucketUpdateCommentCommand(params) {
+    const { token, os, shell, body, comment_ref: ref, payload_path: payloadPath } = params || {};
+    const coords = assertRepoCoords(params, 'update-comment');
+    const safeToken = assertToken(token);
+    const prId = assertPullRequestId(params, 'update-comment');
+    const commentId = assertCommentId(ref, 'update-comment');
+    if (typeof body !== 'string') throw new Error('ERROR: VCSModule: "body" (a string; empty is allowed) is required to build an update-comment command.');
+    const bodyArg = jsonBodyFromFile(JSON.stringify({ content: { raw: body } }), payloadPath, os, shell, 'update-comment');
+    const url = `${repoApiBase(coords)}/pullrequests/${prId}/comments/${commentId}`;
+    return {
+        provider: 'bitbucket',
+        action: 'update-comment',
+        command: bitbucketCommentCurl('PUT', url, safeToken, os, shell, bodyArg),
+        logSafeCommand: bitbucketCommentCurl('PUT', url, REDACTED, os, shell, bodyArg),
+        payload: bodyArg.payload,
+        interpret: { successStatusRange: [200, 299] },
+    };
+}
+
+/** DELETE .../pullrequests/{id}/comments/{comment_id} (204 on success). */
+function buildBitbucketDeleteCommentCommand(params) {
+    const { token, os, shell, comment_ref: ref } = params || {};
+    const coords = assertRepoCoords(params, 'delete-comment');
+    const safeToken = assertToken(token);
+    const prId = assertPullRequestId(params, 'delete-comment');
+    const commentId = assertCommentId(ref, 'delete-comment');
+    const url = `${repoApiBase(coords)}/pullrequests/${prId}/comments/${commentId}`;
+    return {
+        provider: 'bitbucket',
+        action: 'delete-comment',
+        command: bitbucketCommentCurl('DELETE', url, safeToken, os, shell, null),
+        logSafeCommand: bitbucketCommentCurl('DELETE', url, REDACTED, os, shell, null),
+        interpret: { successStatusRange: [200, 299] },
+    };
+}
+
 /**
  * Build the preflight's REST credential probe: GET
  * .../repositories/{workspace}/{repo}/pullrequests?pagelen=1 -- the
@@ -876,7 +996,16 @@ export const BitbucketVCS = Object.freeze({
         'create-pull-request': buildBitbucketCreatePrCommand,
         'find-pull-request': buildBitbucketFindPrCommand,
         'update-pull-request': buildBitbucketUpdatePrCommand,
+        comment: buildBitbucketCommentCommand,
+        'list-comments': buildBitbucketListCommentsCommand,
+        'update-comment': buildBitbucketUpdateCommentCommand,
+        'delete-comment': buildBitbucketDeleteCommentCommand,
     }),
+    // Text limits: Bitbucket Cloud documents no PR description or comment
+    // limit (Server: under 32768); 3500 until a recorded real-provider probe
+    // justifies more -- overflow costs extra comments, never text.
+    descriptionMaxLength: 3500,
+    commentMaxLength: 3500,
     pullRequestResponse,
 });
 
