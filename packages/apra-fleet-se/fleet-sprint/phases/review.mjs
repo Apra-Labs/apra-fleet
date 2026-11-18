@@ -70,6 +70,7 @@ import {
     validateNewTask, appendRejectedFindingToParentNotes, persistNewTaskBestEffort,
 } from '../abort.mjs';
 import { applyReviewerDecision, reviewerReopenEntries } from '../decisions.mjs';
+import { nextLastBuildFailing } from '../red-build-integ-gate.mjs';
 
 /**
  * The bead ids a round's Review covers: the union of every streak outcome's
@@ -103,7 +104,10 @@ export function reviewScopeBeadIds(streakOutcomes) {
  *   lastReviewVerdict: string|undefined,
  *   reviewedThisCycle: boolean,
  *   pendingRejectedNewTasks: object[],
- * }>} The three REASSIGNED values described in the header. Every other output
+ *   lastBuildFailing: boolean,
+ * }>} The three REASSIGNED values described in the header, plus the
+ *   run-scoped `lastBuildFailing` (set from a review that ran, else returned
+ *   as passed in). Every other output
  *   of this phase is an in-place mutation of a Set/Map/array the caller still
  *   holds. On the empty-scope round (every streak failed) all three come back
  *   exactly as they were passed in.
@@ -139,6 +143,11 @@ export async function runReviewPhase({
     lastReviewVerdict,
     reviewedThisCycle,
     pendingRejectedNewTasks,
+    // RUN-scoped (never reset per cycle): whether the last review that
+    // genuinely ran reported the build/tests failing. Passed in and returned
+    // so a round that dispatches no review leaves it unchanged; see
+    // nextLastBuildFailing in ../beads-transitions.mjs.
+    lastBuildFailing = false,
     // runSprintCycle-scoped locals and runner.js-exported helpers, injected
     // rather than imported (see header).
     dispatchReview,
@@ -204,6 +213,9 @@ export async function runReviewPhase({
     // completion requires this to be exactly 'APPROVED', not just
     // an empty ready-bead list.
     lastReviewVerdict = verdict.verdict;
+    // Sticky red-build flag (../red-build-integ-gate.mjs): gates the
+    // Integration Test dispatch until a later review reports the build green.
+    lastBuildFailing = nextLastBuildFailing(lastBuildFailing, verdict);
     // A review genuinely ran THIS cycle -- the Cycle Evaluation section
     // below only trusts `lastReviewVerdict` when this is true (see the
     // `reviewedThisCycle` reset at the top of the cycle loop and the
@@ -376,5 +388,5 @@ export async function runReviewPhase({
     await gitSync.syncBeadsAfter(backlogMember, { pushBeads: true });
     } // end assignedBeadIds.length > 0 (Review dispatch + orchestrator-applied transitions)
 
-    return { lastReviewVerdict, reviewedThisCycle, pendingRejectedNewTasks };
+    return { lastReviewVerdict, reviewedThisCycle, pendingRejectedNewTasks, lastBuildFailing };
 }

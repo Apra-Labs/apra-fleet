@@ -331,6 +331,7 @@ import {
 import {
     integCanRun, integBlockCause, findVerifyBlockedBeads, partitionByGoal, buildVerifyBlockDiagnosis,
 } from './verify-block.mjs';
+import { formatRedBuildIntegSkipReason, redBuildIntegSkipEntry } from './red-build-integ-gate.mjs';
 // The dispatch-outcome classification surface: isTerminalSprintFailure,
 // isNoMutationDispatchFailure and withDispatchWatchdog. Extracted out of
 // runner.js (apra-fleet-3swo.6.15); imported only to be re-exported below,
@@ -3565,6 +3566,12 @@ async function runSprintCycle(context) {
     let lastReviewVerdict = null;
     let reviewedThisCycle = false;
 
+    // RUN-scoped and sticky -- deliberately NOT reset per cycle (see
+    // ./red-build-integ-gate.mjs): true while the last review that genuinely
+    // ran reported the build/tests failing. Gates the Integration Test
+    // dispatch below; a cycle that runs no review carries it unchanged.
+    let lastBuildFailing = false;
+
     while (cycle <= effectiveMaxCycles) {
         group(`Sprint Cycle ${cycle}`);
 
@@ -3900,13 +3907,13 @@ async function runSprintCycle(context) {
             // back through this destructuring assignment; on the round where
             // every streak failed (empty review scope) they come back
             // unchanged, which is why no `if` is needed here.
-            ({ lastReviewVerdict, reviewedThisCycle, pendingRejectedNewTasks } = await runReviewPhase({
+            ({ lastReviewVerdict, reviewedThisCycle, pendingRejectedNewTasks, lastBuildFailing } = await runReviewPhase({
                 phase, log, command,
                 cycle, validated, targetIssues, backlogMember,
                 gitSync, sprintState,
                 replanIds, replannedThisCycle, perBeadFeedback, rejectedNewTasks,
                 devRounds, streakOutcomes, readyTitleById,
-                lastReviewVerdict, reviewedThisCycle, pendingRejectedNewTasks,
+                lastReviewVerdict, reviewedThisCycle, pendingRejectedNewTasks, lastBuildFailing,
                 dispatchReview, bdListScoped, goalMax, recordReopen,
                 workedOnIds: workedOnBeadIds,
                 childIdAllocator, sprintMutexId,
@@ -3993,7 +4000,15 @@ async function runSprintCycle(context) {
         // playbook, or Deploy failed) correctly counts as "no verify
         // dispatch attempt", not a crash.
         let verifySetForIntegTest = [];
-        if (hasPlaybook && deployedThisCycle) {
+        if (hasPlaybook && deployedThisCycle && lastBuildFailing) {
+            // The last review that ran reported the build/tests failing and no
+            // later review has reported them passing: Integration Test is not
+            // dispatched against a red branch (it would run a subset of tests
+            // and could close verify-set beads the red suite covers). Recorded
+            // in integFailures so Final Review and the sprint report see it.
+            log(formatRedBuildIntegSkipReason(cycle));
+            integFailures.push(redBuildIntegSkipEntry(cycle));
+        } else if (hasPlaybook && deployedThisCycle) {
             // The phase body lives in ./phases/integ-test.mjs
             // (apra-fleet-3swo.6.8), which receives its state explicitly
             // instead of closing over runSprintCycle's locals. The two
@@ -4261,12 +4276,12 @@ async function runSprintCycle(context) {
             // Cycle Evaluation, not to this phase. rejectedNewTasks is pushed
             // to in place exactly as the closure did; the three genuinely
             // reassigned values come back.
-            ({ lastReviewVerdict, reviewedThisCycle, pendingRejectedNewTasks } = await runReReviewPhase({
+            ({ lastReviewVerdict, reviewedThisCycle, pendingRejectedNewTasks, lastBuildFailing } = await runReReviewPhase({
                 phase, log, command,
                 cycle, validated, targetIssues, backlogMember,
                 gitSync, sprintState,
                 rejectedNewTasks,
-                lastReviewVerdict, reviewedThisCycle, pendingRejectedNewTasks,
+                lastReviewVerdict, reviewedThisCycle, pendingRejectedNewTasks, lastBuildFailing,
                 dispatchReview, bdListScoped, goalMax, recordReopen,
                 workedOnIds: workedOnBeadIds,
                 childIdAllocator, sprintMutexId,
