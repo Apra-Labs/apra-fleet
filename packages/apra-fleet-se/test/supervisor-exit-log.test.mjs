@@ -105,6 +105,42 @@ describe('installExitLogging (in-process, stubbed exit)', () => {
         h.log.uninstall();
     });
 
+    test('win32 SIGHUP with non-TTY stdio writes one final line immediately and still stops', () => {
+        const proc = new EventEmitter();
+        proc.stdout = { isTTY: false };
+        proc.stdin = { isTTY: false };
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'exit-log-'));
+        tmpDirs.push(dir);
+        const logPath = path.join(dir, 'supervisor.log');
+        const signals = [];
+        const log = installExitLogging({ logPath, proc, platform: 'win32', exit: () => {}, onSignal: (s) => signals.push(s) });
+        proc.emit('SIGHUP');
+        const lines = fs.readFileSync(logPath, 'utf8').split('\n').filter(Boolean);
+        assert.equal(lines.length, 1, lines.join('\n'));
+        assert.match(lines[0], /cause=signal:SIGHUP exit_code=0/);
+        assert.deepEqual(signals, ['SIGHUP']);
+        proc.emit('exit', 0);
+        assert.equal(fs.readFileSync(logPath, 'utf8').split('\n').filter(Boolean).length, 1);
+        log.uninstall();
+    });
+
+    test('posix SIGHUP with non-TTY stdio (default rule) is ignored', () => {
+        const proc = new EventEmitter();
+        proc.stdout = { isTTY: false };
+        proc.stdin = { isTTY: false };
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'exit-log-'));
+        tmpDirs.push(dir);
+        const logPath = path.join(dir, 'supervisor.log');
+        const signals = [];
+        const log = installExitLogging({ logPath, proc, platform: 'linux', exit: () => {}, onSignal: (s) => signals.push(s) });
+        const orig = console.log;
+        console.log = () => {};
+        try { proc.emit('SIGHUP'); } finally { console.log = orig; }
+        assert.deepEqual(signals, []);
+        assert.equal(fs.existsSync(logPath), false);
+        log.uninstall();
+    });
+
     test('a signal before the supervisor exists finalizes with one line and exits', () => {
         const h = harness({ canStop: () => false });
         h.proc.emit('SIGTERM');

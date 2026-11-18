@@ -41,6 +41,7 @@ function describeError(err) {
  *   causeProvider?: () => string | null | undefined,
  *   canStop?: () => boolean,
  *   stopOnSighup?: () => boolean,
+ *   platform?: string,
  * }} opts
  * @returns {{ finalize: (code: number, cause?: string) => boolean, setCause: (cause: string) => void,
  *            exitFn: (code: number) => void, uninstall: () => void, readonly finalized: boolean }}
@@ -55,9 +56,14 @@ export function installExitLogging(opts) {
     const onSignal = opts.onSignal ?? (() => {});
     const causeProvider = opts.causeProvider ?? (() => null);
     const canStop = opts.canStop ?? (() => true);
+    const platform = opts.platform ?? process.platform;
+    const isWin = platform === 'win32';
     // Stop on SIGHUP only when attached to a terminal (the terminal closing is
-    // the hangup). A detached launch (nohup, no TTY on stdio) keeps running.
-    const stopOnSighup = opts.stopOnSighup ?? (() => Boolean(proc.stdout?.isTTY || proc.stdin?.isTTY));
+    // the hangup). A detached POSIX launch (nohup, no TTY on stdio) keeps
+    // running. Windows never ignores it: SIGHUP there means the console window
+    // closed and the OS force-kills the process shortly after, whatever stdio is.
+    const stopOnSighup = opts.stopOnSighup
+        ?? (() => isWin || Boolean(proc.stdout?.isTTY || proc.stdin?.isTTY));
 
     let cause = null;
     let detail = null;
@@ -87,6 +93,12 @@ export function installExitLogging(opts) {
                 return;
             }
             cause ??= `signal:${sig}`;
+            if (sig === 'SIGHUP' && isWin) {
+                // The forced kill can land before the 'exit' event, so write the
+                // final line now, before starting the (slower) logged stop.
+                detail ??= 'note: written before stop completes (console closed, forced kill imminent)';
+                finalize(0);
+            }
             if (!canStop()) {
                 // Still starting up (no supervisor to stop): our listener has
                 // suppressed Node's default terminate, so finalize and exit now.
