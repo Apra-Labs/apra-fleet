@@ -992,7 +992,8 @@ describe('uninstall', () => {
       expect(spawnDetached).toHaveBeenCalledTimes(1);
       const [cmd, args] = spawnDetached.mock.calls[0];
       expect(cmd).toBe(FAKE_POWERSHELL);
-      expect(path.isAbsolute(cmd)).toBe(true);
+      // A Windows path: path.win32 so the check holds on POSIX runners too.
+      expect(path.win32.isAbsolute(cmd)).toBe(true);
       const script = Buffer.from(args[args.indexOf('-EncodedCommand') + 1], 'base64').toString('utf16le');
       expect(script).toContain(`Wait-Process -Id ${process.pid}`);
       expect(script).toContain(config.BIN_DIR);
