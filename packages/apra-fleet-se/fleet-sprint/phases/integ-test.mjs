@@ -68,6 +68,7 @@
 
 import { dispatchRole, TURN_BASES } from '../dispatch-role.mjs';
 import { classifyVerifySet } from '../beads-scope.mjs';
+import { markBounceCapDeferral } from '../verify-carry-over.mjs';
 
 /**
  * Runs the per-cycle Integ Test phase.
@@ -361,7 +362,7 @@ export async function runIntegTestPhase({
                         { member_name: backlogMember, silent: true }
                     );
                     if (deferredVerifyIds) {
-                        deferredVerifyIds.set(parentId, `deferred by the verify-route bounce cap after failing verification ${gapCount} times (latest gap: ${bugId})`);
+                        markBounceCapDeferral(deferredVerifyIds, parentId, `deferred by the verify-route bounce cap after failing verification ${gapCount} times (latest gap: ${bugId})`);
                     }
                 } else {
                     log(`Verify-route bounce: ${parentId} failed verification (gap bug ${bugId} filed), attempt ${gapCount}/${VERIFY_GAP_LIMIT} -- will re-route to plan/develop once ${bugId} closes.`);

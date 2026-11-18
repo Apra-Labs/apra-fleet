@@ -195,10 +195,12 @@ cycle can resolve are carried over instead (`fleet-sprint/verify-carry-over.mjs`
   Harvest and Publish PR; Final Review forces the verdict to FAIL and names
   the bead with the integ runner's reason (`verifySetLeftOpen`, else its
   summary) in the verdict notes and PR body. The bead stays open.
-- **deferred during the run.** A verify-routed bead deferred mid-run (the
-  verify bounce cap, or seen deferred at the next Route step) is dropped from
-  the exit gate and named as a deferred carry-over; the verdict is left to
-  the other gates.
+- **deferred during the run.** A verify-routed bead deferred mid-run is
+  dropped from the exit gate and named in the verdict notes. If the engine's
+  verify bounce cap deferred it (it kept failing verification), it is carried
+  over as `deferred-bounce-cap` and the verdict is forced to FAIL. If it was
+  deferred by anyone else (seen deferred at the next Route step), it is
+  carried over as `deferred` and the verdict is left to the other gates.
 
 The run result carries both as `verifyCarryOver: [{ id, kind, reason }]`.
 

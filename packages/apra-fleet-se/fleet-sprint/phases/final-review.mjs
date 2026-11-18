@@ -375,8 +375,9 @@ export async function runFinalReviewPhase({
     if (verifyCarryOver) {
         const llmVerdict = finalVerdictResult && finalVerdictResult.verdict;
         finalVerdictResult = applyVerifyCarryOverVerdictGate(finalVerdictResult, verifyCarryOver);
-        log(verifyCarryOver.needsEvidenceIds.length > 0
-            ? `Final Review: sprint verdict forced to FAIL (Final Review returned ${llmVerdict ?? '(none)'}) -- ${verifyCarryOver.needsEvidenceIds.length} verify-routed bead(s) carried over as needs-external-evidence: ${verifyCarryOver.needsEvidenceIds.join(', ')}`
+        const forcedIds = [...verifyCarryOver.needsEvidenceIds, ...verifyCarryOver.bounceCapIds];
+        log(forcedIds.length > 0
+            ? `Final Review: sprint verdict forced to FAIL (Final Review returned ${llmVerdict ?? '(none)'}) -- ${forcedIds.length} verify-routed bead(s) carried over as needs-external-evidence or deferred by the verify bounce cap: ${forcedIds.join(', ')}`
             : `Final Review: deferred verify carry-over named in the verdict notes: ${verifyCarryOver.deferredIds.join(', ')}`);
     }
     if (redBuildIntegSkip) {

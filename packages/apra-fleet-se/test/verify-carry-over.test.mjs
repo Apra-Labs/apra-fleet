@@ -1,13 +1,14 @@
 // Unit coverage for fleet-sprint/verify-carry-over.mjs: the engine-derived
 // needs-external-evidence count, the exit gate's still-open verify list
 // (carried-over and deferred ids dropped), and the verdict gate that names
-// the carry-over and forces FAIL for a needs-external-evidence bead.
+// the carry-over and forces FAIL for a needs-external-evidence bead or a bead
+// the verify bounce cap deferred (a plain deferral stays notes-only).
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-    NEEDS_EXTERNAL_EVIDENCE_CYCLE_LIMIT, NEEDS_EXTERNAL_EVIDENCE, DEFERRED_VERIFY,
-    recordInconclusiveVerifyCycle, stillOpenVerifyIdsForExit, syncDeferredVerifyIds,
+    NEEDS_EXTERNAL_EVIDENCE_CYCLE_LIMIT, NEEDS_EXTERNAL_EVIDENCE, DEFERRED_VERIFY, DEFERRED_BOUNCE_CAP,
+    markBounceCapDeferral, recordInconclusiveVerifyCycle, stillOpenVerifyIdsForExit, syncDeferredVerifyIds,
     buildVerifyCarryOver, formatVerifyCarryOverNotes, applyVerifyCarryOverVerdictGate,
 } from '../fleet-sprint/verify-carry-over.mjs';
 
@@ -71,7 +72,8 @@ test('exit gate: a needs-external-evidence verify id is not in the still-open li
 });
 
 test('syncDeferredVerifyIds records deferred verify ids, keeps a specific reason, drops a reopened one', () => {
-    const deferred = new Map([['v-cap', 'deferred by the verify-route bounce cap after failing verification 3 times']]);
+    const deferred = new Map();
+    markBounceCapDeferral(deferred, 'v-cap', 'deferred by the verify-route bounce cap after failing verification 3 times');
     const verifyEverIds = new Set(['v-cap', 'v-new', 'v-reopened']);
     deferred.set('v-reopened', 'deferred during the run');
     syncDeferredVerifyIds(deferred, {
@@ -83,7 +85,8 @@ test('syncDeferredVerifyIds records deferred verify ids, keeps a specific reason
             { id: 'not-verify', status: 'deferred' },
         ],
     });
-    assert.match(deferred.get('v-cap'), /bounce cap/);
+    assert.match(deferred.get('v-cap').reason, /bounce cap/);
+    assert.equal(deferred.get('v-cap').bounceCap, true, 'the bounce-cap mark survives a sync');
     assert.equal(deferred.get('v-new'), 'deferred during the run');
     assert.equal(deferred.has('v-reopened'), false);
     assert.equal(deferred.has('not-verify'), false);
@@ -107,6 +110,19 @@ test('verdict gate: needs-external-evidence forces FAIL and names the bead with 
     assert.match(out.notes, /overrode it to FAIL/);
     assert.match(out.notes, /looks good$/);
     assert.equal(formatVerifyCarryOverNotes(carry).includes('v-ext'), true);
+});
+
+test('verdict gate: a bounce-cap deferral forces FAIL even with no needs-external-evidence bead', () => {
+    const deferred = new Map();
+    markBounceCapDeferral(deferred, 'v-cap', 'deferred by the verify-route bounce cap after failing verification 3 times');
+    const carry = buildVerifyCarryOver({ deferred });
+    assert.deepEqual(carry.entries.map((e) => [e.id, e.kind]), [['v-cap', DEFERRED_BOUNCE_CAP]]);
+    assert.deepEqual(carry.bounceCapIds, ['v-cap']);
+    assert.deepEqual(carry.deferredIds, ['v-cap']);
+    const out = applyVerifyCarryOverVerdictGate({ verdict: 'PASS', notes: 'looks good' }, carry);
+    assert.equal(out.verdict, 'FAIL');
+    assert.match(out.notes, /deferred-bounce-cap[^]*v-cap[^]*failing verification 3 times/);
+    assert.match(out.notes, /overrode it to FAIL/);
 });
 
 test('verdict gate: a deferred-only carry-over is named but does not force FAIL', () => {

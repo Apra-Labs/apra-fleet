@@ -15,7 +15,9 @@
 //   (b) deferred verify bead: Integration Test files a gap bug under the
 //       verify-routed parent on three passes, so the verify bounce cap defers
 //       it. The deferred parent no longer holds the exit and is named as a
-//       deferred carry-over.
+//       deferred-bounce-cap carry-over, and the verdict is forced to FAIL
+//       (Final Review's PASS is overridden): the bead's acceptance was proven
+//       failing on every pass.
 //   (c) below-goal-only re-review: the work closes; the reviewer returns
 //       CHANGES_NEEDED whose only reopen id is a P3 bead below the P1/P2 goal
 //       (no in-goal newTask, buildFailing not true). The run exits to Final
@@ -118,7 +120,7 @@ test('(a) a verify bead left open with no gap bug on consecutive cycles is carri
     });
 });
 
-test('(b) a verify bead deferred by the bounce cap does not hold the exit and is named as a deferred carry-over', async () => {
+test('(b) a verify bead deferred by the bounce cap does not hold the exit, is named as a deferred-bounce-cap carry-over, and forces FAIL', async () => {
     resetSyncMemo();
     await withScenarioMarkers('deferred verify carry-over', async () => {
         let gaps = 0;
@@ -159,8 +161,16 @@ test('(b) a verify bead deferred by the bounce cap does not hold the exit and is
         // Did not hold the exit: the goal-priority exit fired.
         assert.ok(run.logs.some((l) => /^Goal priority .* satisfied/.test(l)), JSON.stringify(run.logs.filter((l) => /evaluation|satisfied/.test(l))));
         assert.ok(run.dispatched.some((d) => d.label === 'Final Review'), 'Final Review must be dispatched');
-        assert.deepEqual(run.result.verifyCarryOver.map((e) => [e.id, e.kind]), [[epic, 'deferred']]);
-        assert.ok(run.result.notes.includes('Carried over as deferred') && run.result.notes.includes(epic), run.result.notes);
+        assert.deepEqual(run.result.verifyCarryOver.map((e) => [e.id, e.kind]), [[epic, 'deferred-bounce-cap']]);
+        assert.ok(run.result.notes.includes('Carried over as deferred-bounce-cap') && run.result.notes.includes(epic), run.result.notes);
+
+        // Three proven verification failures: the verdict is FAIL even though
+        // Final Review rubber-stamped PASS, and the PR body says so.
+        assert.equal(run.result.verdict, 'FAIL', JSON.stringify(run.result));
+        const body = publishedPrBody(run);
+        assert.ok(body, 'Publish PR must run');
+        assert.ok(body.includes('## Sprint verdict: FAIL') && !body.includes('## Sprint verdict: PASS'), body);
+        assert.ok(body.includes('deferred-bounce-cap') && body.includes(epic), 'the PR body names the bounce-cap carry-over');
     });
 });
 

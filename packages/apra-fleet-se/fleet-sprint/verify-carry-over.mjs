@@ -21,16 +21,22 @@
 //      the bead closes or gets a gap bug resets its count. An integ dispatch
 //      that failed for an infrastructure reason produced no verdict at all
 //      and neither counts nor resets.
-//   2. DEFERRED DURING THE RUN. A verify-routed bead deferred mid-run (the
-//      verify bounce cap defers a parent that keeps failing verification)
-//      can never be dispatched again, but the monotone verifyEverIds kept it
-//      in the exit gate. It is dropped from the gate and named as a deferred
-//      carry-over.
+//   2. DEFERRED DURING THE RUN. A verify-routed bead deferred mid-run can
+//      never be dispatched again, but the monotone verifyEverIds kept it in
+//      the exit gate. It is dropped from the gate and named as a deferred
+//      carry-over. Two sub-kinds:
+//        - deferred-bounce-cap: the engine's own verify bounce cap deferred
+//          it after it kept failing verification (phases/integ-test.mjs,
+//          recorded via markBounceCapDeferral).
+//        - deferred: deferred by someone else (a human or LLM scope
+//          decision), picked up by syncDeferredVerifyIds.
 //
-// Both kinds are named in the verdict notes (and so the PR body). A
+// All kinds are named in the verdict notes (and so the PR body). A
 // needs-external-evidence carry-over forces the sprint verdict to FAIL: the
-// bead's acceptance was never verified. A deferred carry-over is named only;
-// the verdict stays with the other gates, like any other deferred bead.
+// bead's acceptance was never verified. A deferred-bounce-cap carry-over also
+// forces FAIL: the bead's acceptance was proven failing on every pass. A
+// plain deferred carry-over is named only; the verdict stays with the other
+// gates, like any other deferred bead.
 //
 // Everything here is pure; runner.js and phases/integ-test.mjs gather the
 // inputs and own the state (Maps mutated in place).
@@ -42,8 +48,27 @@ export const NEEDS_EXTERNAL_EVIDENCE_CYCLE_LIMIT = 2;
 /** Carry-over kind: verification needs evidence the sprint members cannot produce. */
 export const NEEDS_EXTERNAL_EVIDENCE = 'needs-external-evidence';
 
-/** Carry-over kind: verify-routed bead deferred during the run. */
+/** Carry-over kind: verify-routed bead deferred during the run (scope decision; notes only). */
 export const DEFERRED_VERIFY = 'deferred';
+
+/** Carry-over kind: verify-routed bead the engine's verify bounce cap deferred (forces FAIL). */
+export const DEFERRED_BOUNCE_CAP = 'deferred-bounce-cap';
+
+/**
+ * Records a verify-routed bead the engine's verify bounce cap deferred. The
+ * entry is marked so the carry-over forces the verdict to FAIL.
+ *
+ * @param {Map<string, string|{ reason: string, bounceCap: true }>} deferred mutated in place
+ * @param {string} id
+ * @param {string} reason
+ */
+export function markBounceCapDeferral(deferred, id, reason) {
+    deferred.set(id, { reason, bounceCap: true });
+}
+
+const deferredReason = (value) =>
+    (value && typeof value === 'object' ? value.reason : value) || 'deferred during the run';
+const isBounceCap = (value) => !!(value && typeof value === 'object' && value.bounceCap === true);
 
 /**
  * Updates the per-bead consecutive-inconclusive counts after one Integration
@@ -91,7 +116,7 @@ export function stillOpenVerifyIdsForExit({ verifyEverIds, closedIds, needsEvide
  * already recorded) and drops any recorded id now back in a not-done,
  * non-deferred status (reopened by someone).
  *
- * @param {Map<string, string>} deferred mutated in place, id -> reason
+ * @param {Map<string, string|{ reason: string, bounceCap: true }>} deferred mutated in place, id -> reason
  * @param {{ beads: Array<{ id: string, status?: string }>, verifyEverIds: Set<string> }} opts
  */
 export function syncDeferredVerifyIds(deferred, { beads, verifyEverIds }) {
@@ -109,10 +134,12 @@ export function syncDeferredVerifyIds(deferred, { beads, verifyEverIds }) {
  * The verify carry-over handed to Final Review, or null when nothing was
  * carried over.
  *
- * @param {{ needsEvidence?: Map<string, { reason: string, cycles: number }>, deferred?: Map<string, string>, closedIds?: Set<string> }} opts
+ * @param {{ needsEvidence?: Map<string, { reason: string, cycles: number }>, deferred?: Map<string, string|{ reason: string, bounceCap: true }>, closedIds?: Set<string> }} opts
  *   closedIds: a carried-over id that closed after all (the runner did close
  *   it on a later pass) is not carried over.
- * @returns {{ entries: { id: string, kind: string, reason: string }[], needsEvidenceIds: string[], deferredIds: string[] } | null}
+ * @returns {{ entries: { id: string, kind: string, reason: string }[], needsEvidenceIds: string[], deferredIds: string[], bounceCapIds: string[] } | null}
+ *   deferredIds holds every deferred id (both sub-kinds); bounceCapIds the
+ *   subset the engine's verify bounce cap deferred.
  */
 export function buildVerifyCarryOver({ needsEvidence = new Map(), deferred = new Map(), closedIds = new Set() } = {}) {
     const open = (id) => !closedIds.has(id);
@@ -129,9 +156,14 @@ export function buildVerifyCarryOver({ needsEvidence = new Map(), deferred = new
                     (rec.reason ? `; integ runner: ${rec.reason}` : ''),
             };
         }),
-        ...deferredIds.map((id) => ({ id, kind: DEFERRED_VERIFY, reason: deferred.get(id) || 'deferred during the run' })),
+        ...deferredIds.map((id) => ({
+            id,
+            kind: isBounceCap(deferred.get(id)) ? DEFERRED_BOUNCE_CAP : DEFERRED_VERIFY,
+            reason: deferredReason(deferred.get(id)),
+        })),
     ];
-    return { entries, needsEvidenceIds, deferredIds };
+    const bounceCapIds = deferredIds.filter((id) => isBounceCap(deferred.get(id)));
+    return { entries, needsEvidenceIds, deferredIds, bounceCapIds };
 }
 
 /**
@@ -152,6 +184,14 @@ export function formatVerifyCarryOverNotes(carryOver) {
             needs.map((e) => `${e.id} -- ${e.reason}`).join('; ') + '.'
         );
     }
+    const bounceCap = carryOver.entries.filter((e) => e.kind === DEFERRED_BOUNCE_CAP);
+    if (bounceCap.length > 0) {
+        parts.push(
+            `Carried over as ${DEFERRED_BOUNCE_CAP} (verify-routed bead kept failing Integration Test verification and the ` +
+            `engine deferred it; its acceptance is not met and it stays open): ` +
+            bounceCap.map((e) => `${e.id} -- ${e.reason}`).join('; ') + '.'
+        );
+    }
     if (deferred.length > 0) {
         parts.push(
             'Carried over as deferred (verify-routed bead deferred during the run, so it was not waited on): ' +
@@ -163,8 +203,9 @@ export function formatVerifyCarryOverNotes(carryOver) {
 
 /**
  * Puts the verify carry-over at the top of the verdict notes and forces the
- * verdict to FAIL while any needs-external-evidence bead is carried over. A
- * deferred-only carry-over is named but leaves the verdict to the other gates.
+ * verdict to FAIL while any needs-external-evidence or deferred-bounce-cap
+ * bead is carried over. A plain deferred-only carry-over is named but leaves
+ * the verdict to the other gates.
  *
  * @param {object|null} verdictResult
  * @param {ReturnType<typeof buildVerifyCarryOver>} carryOver
@@ -173,7 +214,7 @@ export function formatVerifyCarryOverNotes(carryOver) {
 export function applyVerifyCarryOverVerdictGate(verdictResult, carryOver) {
     if (!carryOver) return verdictResult;
     const prior = verdictResult && typeof verdictResult.notes === 'string' ? verdictResult.notes : '';
-    const force = carryOver.needsEvidenceIds.length > 0;
+    const force = carryOver.needsEvidenceIds.length > 0 || (carryOver.bounceCapIds || []).length > 0;
     const overridden = force && (!verdictResult || verdictResult.verdict === 'PASS');
     return {
         ...(verdictResult || {}),
