@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "22bbb3cfdfd5d77962b5fb6d85da8c1e833f79c1",
     "branch": "main",
-    "entry_count": 149
+    "entry_count": 150
   },
   "entries": [
     {
@@ -2582,6 +2582,31 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:11.365Z"
+    },
+    {
+      "id": "e3e977ba-8ff5-4b21-a405-a0d01f2281a4",
+      "type": "knowledge",
+      "title": "kb_import without base_branch needs refs/remotes/<remote>/HEAD to apply withdrawals",
+      "summary": "When kb_import gets no base_branch, mergedBaseBibleGate takes the base from the symbolic ref refs/remotes/<remote>/HEAD. Clones not made by git clone usually lack it, so withdrawn tombstones are deferred with a warning. The CLI kbImportCmd has no base_branch flag.",
+      "symbols": [
+        "mergedBaseBibleGate",
+        "remoteDefaultBranch",
+        "configuredGitRemotes"
+      ],
+      "source_files": [
+        "src/tools/kb-import.ts",
+        "src/services/knowledge/bible-blob-id.ts",
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs",
+        "tests/knowledge/kb-import-withdrawals.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T13:40:25.160Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "7ef65890eca8a9f89caf5a0e9c76e3f5c1c49fd4",
+        "src/services/knowledge/bible-blob-id.ts": "00cef1cad3d5bad130cc70a170ca5cc35840ef47",
+        "src/tools/kb-import.ts": "e7017cd1b2fb8ed1a45369b6b7f9748860f4a69c",
+        "tests/knowledge/kb-import-withdrawals.test.ts": "c8262eff5fe442a20e470cea1b3c2e0e4d3aebcc"
+      }
     },
     {
       "id": "e6525404-e387-4360-8df3-fe08d050a28a",
