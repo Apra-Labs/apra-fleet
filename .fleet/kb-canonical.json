@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "5a171212f2e1eee116e7f58e2ea29648ffb8ff1f",
     "branch": "main",
-    "entry_count": 166
+    "entry_count": 163
   },
   "entries": [
     {
@@ -428,27 +428,6 @@
       "updated_at": "2026-09-29T06:13:11.489Z"
     },
     {
-      "id": "237505a0-d5ff-4ed1-a78d-ad39873b1a0f",
-      "type": "knowledge",
-      "title": "buildSprintPrBody extras accept placement, fit, hardClip and omitted",
-      "summary": "A caller section passed via buildSprintPrBody's sections option may set placement 'after-merge-assessment' to render between the merge assessment and the notes; any other value renders in the tail. Its fit/hardClip/omitted callbacks are forwarded to fitSectionsToBudget.",
-      "symbols": [
-        "buildSprintPrBody",
-        "fitSectionsToBudget",
-        "buildKbChangesSection"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/fleet-sprint/pr-body.mjs",
-        "packages/apra-fleet-se/test/pr-body-kb-changes.test.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-11-18T22:17:29.260Z",
-      "source_file_hashes": {
-        "packages/apra-fleet-se/fleet-sprint/pr-body.mjs": "240149c9266c68aba260d61938602291ea76f04a",
-        "packages/apra-fleet-se/test/pr-body-kb-changes.test.mjs": "2cfb23d02f4bc20d5856b8d7092934634c5edda9"
-      }
-    },
-    {
       "id": "2405734f-e88a-42b5-83bb-abce9a2215db",
       "type": "knowledge",
       "title": "A deferred stall probe must skip the threshold comparison in the same branch",
@@ -738,23 +717,6 @@
       "source_file_hashes": {
         "packages/apra-fleet-se/fleet-sprint/member-init-probe.mjs": "0d4587ee66b94998aa300aaf476b4faa8620f96a",
         "packages/apra-fleet-se/test/backlog-role-no-orchestrator-identifiers.test.mjs": "02cc51c5452af602a3bd6d620be27558de4fdc5f"
-      }
-    },
-    {
-      "id": "3d975248-8be7-457a-8b20-ec3a434b81c3",
-      "type": "learning",
-      "title": "Editing reviewer-output.json requires regenerating auto-sprint.js",
-      "summary": "apra-pm inlines role schemas into auto-sprint.js. Any change to agents/schemas/reviewer-output.json fails auto-sprint-schemas-drift.test.mjs until scripts/gen-auto-sprint-schemas.mjs is re-run and auto-sprint.js is committed.",
-      "symbols": [],
-      "source_files": [
-        "packages/apra-fleet-se/apra-pm/test/auto-sprint-schemas-drift.test.mjs",
-        "packages/apra-fleet-se/apra-pm/agents/schemas/reviewer-output.json"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-11-18T22:04:36.254Z",
-      "source_file_hashes": {
-        "packages/apra-fleet-se/apra-pm/agents/schemas/reviewer-output.json": "58ba2965f5ac3c1da11308d0779263f73df227c0",
-        "packages/apra-fleet-se/apra-pm/test/auto-sprint-schemas-drift.test.mjs": "eaca88fa5ff10f41b4acd11099776d9e78415b0e"
       }
     },
     {
@@ -2611,33 +2573,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:12.550Z"
-    },
-    {
-      "id": "d1bf32e8-5d30-4f5f-9ffe-8c43b59a3971",
-      "type": "knowledge",
-      "title": "Fleet-sprint demotions are merge-carried bible withdrawals, offered at the final review only",
-      "summary": "The sprint engine never calls kb_demote. A final-review kb_demotions entry becomes a kb_bible_commit withdrawal and a kb_holds id becomes restore_ids, sent in the same call as the round's confirmed ids. A FAIL verdict seals confirmations only; an abort seals everything.",
-      "symbols": [
-        "createKbWorkClient",
-        "demotionCandidates",
-        "resolveDemotionVerdicts",
-        "queueWithdrawals",
-        "commitRepo",
-        "createBranchWithdrawnEntries",
-        "kbDemotionBlock"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/fleet-sprint/kb.mjs",
-        "packages/apra-fleet-se/fleet-sprint/phases/final-review.mjs",
-        "packages/apra-fleet-se/fleet-sprint/runner.js"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-11-18T21:45:40.304Z",
-      "source_file_hashes": {
-        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "7857ace22af43e1bcc2123cace29ae26087d3e09",
-        "packages/apra-fleet-se/fleet-sprint/phases/final-review.mjs": "e6392013ec53ecf4e97bcafe425b73742e8a3160",
-        "packages/apra-fleet-se/fleet-sprint/runner.js": "4405b93d3b9e3c0e7e9e23611c15b21183d34fb3"
-      }
     },
     {
       "id": "d3016610-0d2a-40db-ba0b-537f49ff1cbf",
