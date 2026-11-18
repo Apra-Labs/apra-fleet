@@ -11,6 +11,7 @@ const { parseRunHistory, sanitizePrMarkdown } = prBody;
 const parseOverflowComment = prBody.parseOverflowComment || (() => null);
 const NOTES_CONTINUED_MARKER = prBody.NOTES_CONTINUED_MARKER || '*[... reviewer notes continue';
 const OVERFLOW_MAX_COMMENTS = prBody.OVERFLOW_MAX_COMMENTS || 20;
+const RUN_HISTORY_MARKER = prBody.RUN_HISTORY_MARKER || 'fleet-sprint:run-history v1';
 import { getProviderTextLimits } from '../fleet-sprint/vcs-module.mjs';
 import { runPublishPrPhase } from '../fleet-sprint/phases/publish-pr.mjs';
 import { finalizeAbort } from '../fleet-sprint/runner.js';
@@ -192,6 +193,13 @@ function descriptionNotes(body) {
     return body.slice(start, split);
 }
 
+/** The visible description: everything before the hidden run-history block. */
+function visibleDescription(body) {
+    const at = body.indexOf(`<!-- ${RUN_HISTORY_MARKER}`);
+    assert.ok(at > 0, 'the description carries the run-history marker block');
+    return body.slice(0, at).trimEnd();
+}
+
 const ASSESSMENT = Object.freeze({
     value: 'v', risk: 'r', default_path_changes: 'none', blast_radius: 'b', upgrade_impact: 'none', proof: 'p',
     recommendation: 'merge_after_proof', reason: 'needs a live run',
@@ -226,7 +234,7 @@ describe('zero reviewer-note loss per provider with a 20k-character final review
                 assert.equal(c.parsed.total, comments.length);
             }
             assert.deepEqual(comments.map((c) => c.parsed.index), comments.map((_, i) => i + 1));
-            const visible = body.replace(/<!--[\s\S]*?-->/g, '').trimEnd();
+            const visible = visibleDescription(body);
             assert.ok(visible.endsWith(`Reviewer notes continued in ${comments.length} comment(s) below.`), visible.slice(-200));
             const joined = descriptionNotes(body) + comments.map((c) => c.parsed.text).join('');
             assert.equal(joined.length, full.length, `${provider}: zero characters dropped`);
@@ -273,7 +281,7 @@ describe('a failed comment post never fails the sprint', () => {
         const { result, logs } = await publish(fake, { notes });
         assert.deepEqual(result, { pushed: true }, 'the publish phase completes normally');
         assert.ok(logs.some((l) => /WARNING: could not post reviewer-notes overflow comment 1 of \d+ on PR https:\/\/dev\.azure\.com\/acme\/proj\/_git\/widgets\/pullrequest\/7/.test(l)), logs.join('\n'));
-        const visible = fake.pr.body.replace(/<!--[\s\S]*?-->/g, '').trimEnd();
+        const visible = visibleDescription(fake.pr.body);
         assert.match(visible, /Reviewer notes continued: \d+ characters did not fit this description and could not be posted as PR comments -- the full notes are in the sprint run log\.$/);
         assert.ok(fake.pr.body.length <= getProviderTextLimits('azure-devops').descriptionMaxLength);
         assert.deepEqual(parseRunHistory(fake.pr.body).map((e) => e.run), ['run-1']);
@@ -329,6 +337,52 @@ describe('the abort PR path uses the same overflow behaviour', () => {
         const joined = inBody + comments.map((c) => c.parsed.text).join('');
         assert.ok(joined.includes(message), 'the full abort message is on the PR');
         assert.ok(logs.some((l) => l.includes('[Publish Abort PR]') && l.includes(message)), 'the full abort details are in the run log');
+    });
+});
+
+describe('github: a final review past the 60000-character description limit', () => {
+    test('description = verdict + merge assessment + notes prefix; overflow in ordered engine comments; relaunch upserts', async () => {
+        const fake = fakeProvider('github');
+        fake.comments.set(1, 'a human review comment');
+        const { descriptionMaxLength, commentMaxLength } = getProviderTextLimits('github');
+        const notes = longReview(150000, 'gh');
+        const full = sanitizePrMarkdown(notes);
+        assert.ok(full.length > descriptionMaxLength, 'the review exceeds the GitHub description limit');
+        const { logs } = await publish(fake, { notes, mergeAssessment: ASSESSMENT, runId: 'run-1' });
+        const body = fake.pr.body;
+
+        assert.ok(body.length <= descriptionMaxLength, `description ${body.length} > ${descriptionMaxLength}`);
+        assert.ok(body.startsWith('## Sprint verdict: PASS'), 'the description starts with the verdict');
+        const ma = body.indexOf('### Merge assessment');
+        assert.ok(ma > 0 && ma < body.indexOf('### Reviewer notes'), 'merge assessment right after the verdict, before the notes');
+        assert.deepEqual(parseRunHistory(body).map((e) => e.run), ['run-1'], 'run-history marker block intact');
+
+        const run1 = fake.overflowComments();
+        assert.ok(run1.length >= 2, `overflow spans several comments (got ${run1.length})`);
+        for (const c of run1) {
+            assert.ok(c.body.length <= commentMaxLength, `comment ${c.body.length} > ${commentMaxLength}`);
+            assert.equal(c.parsed.total, run1.length);
+        }
+        assert.deepEqual(run1.map((c) => c.parsed.index), run1.map((_, i) => i + 1), 'chunks in order');
+        assert.ok(visibleDescription(body).endsWith(`Reviewer notes continued in ${run1.length} comment(s) below.`));
+        const joined = descriptionNotes(body) + run1.map((c) => c.parsed.text).join('');
+        assert.equal(joined, full, 'description + comments concatenate to the full sanitized notes');
+        assert.ok(logs.some((l) => l.includes(full)), 'the full notes are in the run log');
+
+        const run1Ids = [...fake.comments.entries()].filter(([, b]) => parseOverflowComment(b)).map(([id]) => id);
+        const notes2 = longReview(150000, 'gh2');
+        const callsBefore = fake.calls.length;
+        await publish(fake, { notes: notes2, mergeAssessment: ASSESSMENT, runId: 'run-2' });
+        const run2Calls = fake.calls.slice(callsBefore);
+        const run2 = fake.overflowComments();
+        const markedIds = [...fake.comments.entries()].filter(([, b]) => parseOverflowComment(b)).map(([id]) => id);
+        assert.equal(markedIds.length, run2.length, 'one engine comment per chunk -- no duplicates');
+        assert.ok(markedIds.every((id) => run1Ids.includes(id)), 'engine comments were updated in place');
+        assert.ok(!run2Calls.some((c) => /^POST .*\/issues\/42\/comments$/.test(c)), `no new comment posted on the relaunch: ${run2Calls.join(', ')}`);
+        assert.ok(run2Calls.some((c) => /^PATCH .*\/issues\/comments\/\d+$/.test(c)), 'the relaunch patches the existing comments');
+        assert.equal(descriptionNotes(fake.pr.body) + run2.map((c) => c.parsed.text).join(''), sanitizePrMarkdown(notes2));
+        assert.deepEqual(parseRunHistory(fake.pr.body).map((e) => e.run), ['run-2', 'run-1']);
+        assert.equal(fake.comments.get(1), 'a human review comment', 'human comments are never touched');
     });
 });
 
