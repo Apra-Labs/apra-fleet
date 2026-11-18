@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "22bbb3cfdfd5d77962b5fb6d85da8c1e833f79c1",
     "branch": "main",
-    "entry_count": 153
+    "entry_count": 154
   },
   "entries": [
     {
@@ -2188,6 +2188,32 @@
       "source_file_hashes": {
         "src/services/http-transport.ts": "5f5473f8a1f70d3fbe4173a2124ba726cf940f0e",
         "tests/http-transport.test.ts": "cd60757b7c0699170eb0bb5074a787d6e9738128"
+      }
+    },
+    {
+      "id": "bacb77ec-5713-4cbd-ad86-7435286f8e8a",
+      "type": "knowledge",
+      "title": "raiseVcsPrForMember accepts body as a function of provider text limits",
+      "summary": "Callers pass body (and updateExisting's second arg) as a function of getProviderTextLimits(provider); a buildSprintPrBody object answer also triggers overflow-comment posting, a plain string does not.",
+      "symbols": [
+        "raiseVcsPrForMember",
+        "publishPrOverflowComments",
+        "getProviderTextLimits",
+        "buildSprintPrBody"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/publish-pr.mjs",
+        "packages/apra-fleet-se/fleet-sprint/abort.mjs",
+        "packages/apra-fleet-se/fleet-sprint/pr-overflow-comments.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T17:56:50.439Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/abort.mjs": "cda4184abb710fb3d859c4284356173da54dd50b",
+        "packages/apra-fleet-se/fleet-sprint/phases/publish-pr.mjs": "ef0eb4ceb3a0aa0c78098d842a8e76e2bf9f35ec",
+        "packages/apra-fleet-se/fleet-sprint/pr-overflow-comments.mjs": "c44647398d8e8869b9ed1b7218257db458876c7e",
+        "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs": "0574dc1c3abb887714776190494972e20b4345de"
       }
     },
     {
