@@ -55,7 +55,8 @@ describe('registry atomic write', () => {
     updateAgent(a.id, { friendlyName: 'renamed' });
     const tmpWrite = write.mock.calls.map(c => String(c[0])).find(p => p.endsWith('.tmp'));
     expect(tmpWrite).toBeDefined();
-    expect(path.dirname(tmpWrite!)).toBe(dir());
+    // The writer realpaths the target (macOS: /var -> /private/var).
+    expect(path.dirname(tmpWrite!)).toBe(fs.realpathSync(dir()));
     expect(write.mock.calls.some(c => String(c[0]) === REGISTRY_PATH)).toBe(false);
     expect(rename.mock.calls.some(c => String(c[0]) === tmpWrite && String(c[1]).endsWith('registry.json'))).toBe(true);
     vi.restoreAllMocks();
