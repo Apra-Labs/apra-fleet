@@ -37,6 +37,7 @@ in the script):
 |------|------|-----------------|
 | `fleet-sprint/**/*.{js,mjs,cjs}` | engine code | string literals only, comments stripped (own-line comments inside template literals too) |
 | `apra-pm/agents/**/*.md` | role prompts | the whole file minus HTML comments |
+| `apra-pm/agents/schemas/*.json` | role output schemas | string values (descriptions), scanned like js string literals |
 
 Everything there ships to every target. Only LLM-facing text is scanned, on
 purpose: `process.env.APRA_FLEET_DATA_DIR` as an identifier is the product
