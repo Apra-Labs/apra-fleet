@@ -343,7 +343,13 @@ describe('removeMember - SSH key ownership', () => {
     fs.writeFileSync(`${keyPath}.pub`, `${pubKeyLine}\n`, 'utf-8');
     return keyPath;
   };
-  const akCmds = () => mockExecCommand.mock.calls.map(c => c[0]).filter(c => c.includes('authorized_keys'));
+  // A Windows (PowerShell) command travels as -EncodedCommand <utf16le base64>;
+  // decode it so the authorized_keys seam sees its script text.
+  const decoded = (cmd: string): string => {
+    const m = /-EncodedCommand ([A-Za-z0-9+/=]+)/.exec(cmd);
+    return m ? Buffer.from(m[1], 'base64').toString('utf16le') : cmd;
+  };
+  const akCmds = () => mockExecCommand.mock.calls.map(c => decoded(c[0])).filter(c => c.includes('authorized_keys'));
 
   beforeEach(() => {
     backupAndResetRegistry();
@@ -351,11 +357,12 @@ describe('removeMember - SSH key ownership', () => {
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
     // The member home probe (getMemberHomeDir) answers with a POSIX home;
     // every other command succeeds silently.
-    mockExecCommand.mockImplementation(async (cmd: string) => (
-      cmd.includes('"$HOME"')
-        ? { stdout: '/home/testuser', stderr: '', code: 0 }
-        : { stdout: '', stderr: '', code: 0 }
-    ));
+    mockExecCommand.mockImplementation(async (cmd: string) => {
+      const text = decoded(cmd);
+      if (text.includes('"$HOME"')) return { stdout: '/home/testuser', stderr: '', code: 0 };
+      if (text.includes('[Console]::Out.Write($env:USERPROFILE)')) return { stdout: 'C:\\Users\\testuser', stderr: '', code: 0 };
+      return { stdout: '', stderr: '', code: 0 };
+    });
     mockReadMemberStatus.mockReturnValue('idle');
   });
 
@@ -396,9 +403,111 @@ describe('removeMember - SSH key ownership', () => {
     addAgent(member);
     addAgent(sibling);
 
-    await removeMember({ member_id: member.id });
+    const result = await removeMember({ member_id: member.id });
 
     expect(fs.existsSync(keyPath)).toBe(true);
     expect(fs.existsSync(`${keyPath}.pub`)).toBe(true);
+    // Same host and username: the key stays authorized for the sibling.
+    expect(akCmds()).toHaveLength(0);
+    expect(result).toContain('stays in authorized_keys');
+    expect(result).toContain('"fleet-key-2"');
+  });
+
+  it('treats host names case-insensitively when deciding the key is shared', async () => {
+    const keyPath = makeKey(getKeysDir());
+    const member = makeTestAgent({ friendlyName: 'case-1', os: 'linux' as any, keyPath, host: 'Build-Box.example' });
+    const sibling = makeTestAgent({ friendlyName: 'case-2', os: 'linux' as any, keyPath, host: 'build-box.EXAMPLE' });
+    addAgent(member);
+    addAgent(sibling);
+
+    await removeMember({ member_id: member.id });
+
+    expect(akCmds()).toHaveLength(0);
+  });
+
+  it('still revokes a shared key from a member on a different host', async () => {
+    const keyPath = makeKey(getKeysDir());
+    const member = makeTestAgent({ friendlyName: 'host-a', os: 'linux' as any, keyPath, host: '10.0.0.1' });
+    const sibling = makeTestAgent({ friendlyName: 'host-b', os: 'linux' as any, keyPath, host: '10.0.0.2' });
+    addAgent(member);
+    addAgent(sibling);
+
+    const result = await removeMember({ member_id: member.id });
+
+    expect(akCmds()).toHaveLength(1);
+    expect(result).not.toContain('stays in authorized_keys');
+    // The local key pair is still in use by host-b, so it is kept.
+    expect(fs.existsSync(keyPath)).toBe(true);
+  });
+
+  it('still revokes a shared key from a member on the same host with a different username', async () => {
+    const keyPath = makeKey(getKeysDir());
+    const member = makeTestAgent({ friendlyName: 'user-a', os: 'linux' as any, keyPath, username: 'alice' });
+    const sibling = makeTestAgent({ friendlyName: 'user-b', os: 'linux' as any, keyPath, username: 'bob' });
+    addAgent(member);
+    addAgent(sibling);
+
+    await removeMember({ member_id: member.id });
+
+    expect(akCmds()).toHaveLength(1);
+  });
+
+  it('revokes an unshared fleet key from a Windows member (PowerShell)', async () => {
+    const keyPath = makeKey(getKeysDir());
+    const member = makeTestAgent({ friendlyName: 'win-solo', os: 'windows' as any, keyPath });
+    addAgent(member);
+
+    await removeMember({ member_id: member.id });
+
+    const cmds = akCmds();
+    expect(cmds).toHaveLength(1);
+    expect(cmds[0]).toContain('C:\\Users\\testuser\\.ssh\\authorized_keys');
+    expect(cmds[0]).toContain('administrators_authorized_keys');
+  });
+
+  it('keeps a fleet key shared by two Windows members on the same host and user', async () => {
+    const keyPath = makeKey(getKeysDir());
+    const member = makeTestAgent({ friendlyName: 'win-1', os: 'windows' as any, keyPath });
+    const sibling = makeTestAgent({ friendlyName: 'win-2', os: 'windows' as any, keyPath });
+    addAgent(member);
+    addAgent(sibling);
+
+    const result = await removeMember({ member_id: member.id });
+
+    expect(akCmds()).toHaveLength(0);
+    expect(result).toContain('"win-2"');
+  });
+
+  it('sends no authorized_keys command and warns when the member home cannot be resolved', async () => {
+    const keyPath = makeKey(getKeysDir());
+    const member = makeTestAgent({ friendlyName: 'no-home', os: 'linux' as any, keyPath });
+    addAgent(member);
+    mockExecCommand.mockImplementation(async (cmd: string) => (
+      cmd.includes('"$HOME"')
+        ? { stdout: '', stderr: 'probe failed', code: 1 }
+        : { stdout: '', stderr: '', code: 0 }
+    ));
+
+    const result = await removeMember({ member_id: member.id });
+
+    expect(akCmds()).toHaveLength(0);
+    expect(result).toContain('home directory');
+    expect(result).toContain('NOT removed from authorized_keys');
+    // Never a ~/ fallback anywhere in what was sent.
+    expect(mockExecCommand.mock.calls.some(c => c[0].includes('~/.ssh/authorized_keys'))).toBe(false);
+  });
+
+  it('sends the revocation built from the resolved home, never ~/ or sed -i', async () => {
+    const keyPath = makeKey(getKeysDir());
+    const member = makeTestAgent({ friendlyName: 'posix-home', os: 'linux' as any, keyPath });
+    addAgent(member);
+
+    await removeMember({ member_id: member.id });
+
+    const cmds = akCmds();
+    expect(cmds).toHaveLength(1);
+    expect(cmds[0]).toContain("'/home/testuser/.ssh/authorized_keys'");
+    expect(cmds[0]).not.toContain('~/');
+    expect(cmds[0]).not.toContain('sed -i');
   });
 });
