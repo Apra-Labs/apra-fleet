@@ -12,7 +12,10 @@ import type { KBEntry, KBEntryInput } from '../../src/services/knowledge/types.j
 // kb_import applies a bible's "withdrawn" tombstones ONLY when the bible is the
 // merged base bible: read at refs/remotes/origin/<base>, where <base> is the
 // caller's base_branch (else the branch refs/remotes/origin/HEAD names, as a
-// clone records it), and its provenance.branch is that same <base>. From the
+// clone records it), and its provenance.branch is that same <base>. A base
+// remote with another name (any remote configured in the clone) works the same
+// way; a remote-tracking ref of an unknown remote is deferred with a warning
+// naming the ref that was expected. From the
 // work tree, HEAD or a feature ref the tombstones are view exclusions only and
 // the ids are reported in withdrawals.deferred.
 //
@@ -208,6 +211,50 @@ describe('kb_import applies withdrawn tombstones only from the merged base bible
     expect(report.withdrawals.warning).toContain('refs/remotes/origin/HEAD');
     expect(report.withdrawals.warning).toContain('base_branch');
     expect(confidenceOf(y)).toBe('CONFIRMED');
+  });
+
+  it('a clone whose base remote is not named origin: refs/remotes/<that remote>/<base> is resolved and the tombstones apply', async () => {
+    const y = await confirmed('Ypsilon', '2020-02-01T00:00:00.000Z');
+    commitBible([y]);
+    git(['remote', 'add', 'upstream', 'https://example.invalid/base.git']);
+    git(['update-ref', 'refs/remotes/upstream/main', 'HEAD']);
+    git(['symbolic-ref', 'refs/remotes/upstream/HEAD', 'refs/remotes/upstream/main']);
+
+    const report = await importAt('refs/remotes/upstream/main');
+    expect(report.bible_source).toBe('refs/remotes/upstream/main');
+    expect(report.withdrawals).toEqual({
+      sent: 1, withdrawn: [y], repromoted: [], already: [], not_found: [], unsupported: [], deferred: [],
+    });
+    expect(confidenceOf(y)).toBe('INFERRED');
+  });
+
+  it('a remote-tracking ref of a remote the clone does not know: deferred, and the warning names the ref it expected', async () => {
+    const y = await confirmed('Ypsilon', '2020-02-01T00:00:00.000Z');
+    commitBible([y]);
+    git(['remote', 'add', 'upstream', 'https://example.invalid/base.git']);
+    // A stale ref left behind by a remote that is no longer configured.
+    git(['update-ref', 'refs/remotes/fork/main', 'HEAD']);
+
+    const report = await importAt('refs/remotes/fork/main', 'main');
+    expect(report.withdrawals.deferred).toEqual([y]);
+    expect(report.withdrawals.sent).toBe(0);
+    expect(report.withdrawals.warning).toContain('refs/remotes/fork/main is not a remote-tracking ref of a configured remote');
+    expect(report.withdrawals.warning).toContain('expected refs/remotes/origin/main or refs/remotes/upstream/main');
+    expect(confidenceOf(y)).toBe('CONFIRMED');
+  });
+
+  it('an origin clone is unchanged: refs/remotes/origin/<base> still applies when another remote is also configured', async () => {
+    const y = await confirmed('Ypsilon', '2020-02-01T00:00:00.000Z');
+    commitBible([y]);
+    git(['remote', 'add', 'origin', 'https://example.invalid/origin.git']);
+    git(['remote', 'add', 'upstream', 'https://example.invalid/base.git']);
+    git(['update-ref', 'refs/remotes/origin/main', 'HEAD']);
+
+    const report = await importAt('refs/remotes/origin/main');
+    expect(report.withdrawals).toEqual({
+      sent: 1, withdrawn: [y], repromoted: [], already: [], not_found: [], unsupported: [], deferred: [],
+    });
+    expect(confidenceOf(y)).toBe('INFERRED');
   });
 
   it('a row re-promoted after the tombstone stays CONFIRMED and is reported repromoted; an unknown id is not_found', async () => {

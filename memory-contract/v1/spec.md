@@ -546,13 +546,17 @@ takes effect for other clones only once that branch merges:
   re-promotion rule above: re-admitting the id through `ids` clears them.
 - `kb_import` applies `reason: "withdrawn"` tombstones ONLY when the bible is
   the merged base bible as fetched: read with `ref` equal to
-  `refs/remotes/origin/<base>`, where `<base>` is the request's `base_branch`
-  (without it, the branch `refs/remotes/origin/HEAD` points at), and its
+  `refs/remotes/<remote>/<base>`, where `<remote>` is any remote configured in
+  the clone (`origin` is always accepted) and `<base>` is the request's
+  `base_branch` (without it, the branch `refs/remotes/<remote>/HEAD` points
+  at), and its
   `provenance.branch` equals that same `<base>`. `provenance.branch` alone is
   never trusted: `kb_bible_commit` writes it from its own caller's
   `baseBranch`, so a branch bible may name its own feature branch. When no
-  `base_branch` is given and `refs/remotes/origin/HEAD` is not set the
-  tombstones are deferred and `withdrawals.warning` says why. Then each id is judged like a
+  `base_branch` is given and `refs/remotes/<remote>/HEAD` is not set, or the
+  ref read is `refs/remotes/<x>/...` for an `<x>` that is not a configured
+  remote, the tombstones are deferred and `withdrawals.warning` says why (the
+  latter naming the refs it expected). Then each id is judged like a
   `demoted` tombstone (same rule, same never-create), with an audit note
   naming "withdrawn in the project bible", the tombstone's note and evidence.
   From any other source (no `ref`, `HEAD`, the work tree, another ref) nothing

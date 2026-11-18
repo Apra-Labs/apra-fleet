@@ -879,9 +879,10 @@
 /**
  * What a bible's "withdrawn" tombstones did on kb_import (KbImportResult.withdrawals).
  * They take effect only for the merged base bible: read with `ref` equal to
- * refs/remotes/origin/<base> where <base> is the kb_import `base_branch` (without it,
- * the branch refs/remotes/origin/HEAD names) AND the bible's provenance.branch is that
- * same <base> (provenance.branch alone is never trusted).
+ * refs/remotes/<remote>/<base> (<remote> any remote configured in the clone, such as
+ * origin) where <base> is the kb_import `base_branch` (without it, the branch
+ * refs/remotes/<remote>/HEAD names) AND the bible's provenance.branch is that same
+ * <base> (provenance.branch alone is never trusted).
  * @typedef {Object} KbImportWithdrawals
  * @property {number} sent - Tombstones applied locally (SQLite) or sent in one
  *   POST /api/kb/withdraw (http); 0 when deferred or unsupported.
@@ -892,7 +893,8 @@
  * @property {string[]} unsupported - Not applied: the KB server does not serve the withdraw route.
  * @property {string[]} deferred - Not applied: the bible was not read from the merged base bible.
  * @property {string} [warning] - With unsupported: the E-KB-HTTP-UNSUPPORTED message naming the route.
- *   With deferred: why, when the base branch could not be established.
+ *   With deferred: why, when the ref read belongs to no configured remote (naming the
+ *   expected ref) or the base branch could not be established.
  */
 
 /**

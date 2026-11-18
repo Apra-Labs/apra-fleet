@@ -15,6 +15,7 @@ import { requireSqliteProject, isSqliteProject } from '../services/knowledge/req
 import { KbMaintainerGrantError, memberLacksKbMaintainer } from '../services/knowledge/kb-maintainer-grant.js';
 import {
   OWN_BIBLE_REL, BibleBlobIntegrityError, bibleBytesBlobId, isSafeBibleRef, readCommittedBibleBlob, remoteDefaultBranch,
+  configuredGitRemotes,
 } from '../services/knowledge/bible-blob-id.js';
 
 // T2.1 (F4, D3 HARDENED): kb_import -- the trusted-channel write path that lets a
@@ -212,25 +213,38 @@ async function readBibleAtRef(
   }
 }
 
-/** The remotes a base ref may live under (the KB identity is the origin remote). */
-const BASE_REMOTES: readonly string[] = ['origin'];
-
 /**
  * Whether a bible's "withdrawn" tombstones may be applied: it must be the
  * MERGED base bible. The base branch is established without trusting the bible
  * (kb_bible_commit writes provenance.branch from its own caller's baseBranch,
  * so a branch bible can name its own feature branch): the caller's
  * `base_branch`, else the default branch the remote's HEAD names. The bible
- * qualifies only when it was read at refs/remotes/<remote>/<that branch> and
- * its provenance.branch is that same branch. `warning` explains a deferral
- * the caller can fix (the base branch could not be established).
+ * qualifies only when it was read at refs/remotes/<remote>/<that branch>, for
+ * any remote configured in this clone (or origin), and its provenance.branch
+ * is that same branch. `warning` explains a deferral the caller can fix: the
+ * ref belongs to no configured remote (it names the refs expected), or the
+ * base branch could not be established.
  */
 async function mergedBaseBibleGate(
   repoAnchor: string, doc: BibleDocument, refRead: string | undefined, baseBranch: string | undefined,
 ): Promise<{ apply: boolean; warning?: string }> {
   if (refRead === undefined || !doc.provenanceBranch) return { apply: false };
-  const parsed = parseRemoteTrackingRef(refRead, BASE_REMOTES);
-  if (parsed === null) return { apply: false };
+  // The base remote is any remote this clone has configured (a base remote
+  // need not be named origin); origin is always accepted, as before.
+  const configured = await configuredGitRemotes(repoAnchor);
+  const remotes = configured.includes('origin') ? configured : ['origin', ...configured];
+  const parsed = parseRemoteTrackingRef(refRead, remotes);
+  if (parsed === null) {
+    if (!refRead.startsWith('refs/remotes/')) return { apply: false };
+    // A remote-tracking ref of a remote this clone does not know: without
+    // this note the ids would stay deferred forever with nothing naming why.
+    const base = baseBranch ?? doc.provenanceBranch;
+    const expected = remotes.map(r => remoteTrackingRef(r, base)).join(' or ');
+    return {
+      apply: false,
+      warning: `withdrawn tombstones deferred: ${refRead} is not a remote-tracking ref of a configured remote (configured: ${remotes.join(', ')}); expected ${expected}`,
+    };
+  }
   let expected = baseBranch;
   if (expected === undefined) {
     const fromHead = await remoteDefaultBranch(repoAnchor, parsed.remote);
@@ -427,7 +441,7 @@ export async function kbImport(input: KbImportInput, anchor?: KbAnchor): Promise
   );
 
   // "withdrawn" tombstones lower a row ONLY when this bible is the merged base
-  // bible: read as committed at refs/remotes/origin/<base> where <base> is the
+  // bible: read as committed at refs/remotes/<remote>/<base> where <base> is the
   // caller's base_branch (or the remote's default branch) and equals this
   // bible's provenance.branch (mergedBaseBibleGate). From the work tree,
   // HEAD or any other ref the branch carrying them has not merged, so they

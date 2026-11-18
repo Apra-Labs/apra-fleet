@@ -84,6 +84,13 @@ export function isSafeBibleRef(ref: string): boolean {
   return /^[A-Za-z0-9_][A-Za-z0-9._/-]*$/.test(ref) && !ref.includes('..') && !ref.endsWith('/') && !ref.endsWith('.lock');
 }
 
+/** The remote names configured in this clone (`git remote`); [] when git cannot answer. */
+export async function configuredGitRemotes(folder: string): Promise<string[]> {
+  const out = await git(['remote'], folder);
+  if (out === null) return [];
+  return out.split(/\r?\n/).map(l => l.trim()).filter(l => l !== '');
+}
+
 /**
  * The branch `refs/remotes/<remote>/HEAD` points at (the remote's default
  * branch as this clone last recorded it: set by git clone or
