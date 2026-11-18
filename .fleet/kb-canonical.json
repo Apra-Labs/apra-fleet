@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "5bfc7309d9fab9ead8aada7745fd165ecd32c07b",
     "branch": "main",
-    "entry_count": 145
+    "entry_count": 146
   },
   "entries": [
     {
@@ -937,6 +937,21 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:30.213Z"
+    },
+    {
+      "id": "4f208397-e881-488e-9a69-db59bf396f96",
+      "type": "learning",
+      "title": "contracts-schema-dist-staleness-guard fails on a stale local dist; fix with npm run dist-pm",
+      "summary": "test/contracts-schema-dist-staleness-guard.test.mjs fails whenever the gitignored repo-root dist/agents/schemas is older than the apra-pm source schemas. Root npm run build does not refresh it; running npm run dist-pm at the repo root does.",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-se/test/contracts-schema-dist-staleness-guard.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T03:01:49.238Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/test/contracts-schema-dist-staleness-guard.test.mjs": "1db1ddf04d24ac369fb510e69d39af9406640bbe"
+      }
     },
     {
       "id": "4f62e71d-0544-49f1-863f-6bbc503604ac",
