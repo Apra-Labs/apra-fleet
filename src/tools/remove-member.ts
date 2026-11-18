@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { removeAgent as removeFromRegistry, getAllAgents, getKeysDir } from '../services/registry.js';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
@@ -49,6 +50,39 @@ function isFleetManagedKey(keyPath: string): boolean {
     : resolved.startsWith(keysDir);
 }
 
+function sameKeyPath(a: string, b: string): boolean {
+  const ra = path.resolve(a);
+  const rb = path.resolve(b);
+  return process.platform === 'win32' ? ra.toLowerCase() === rb.toLowerCase() : ra === rb;
+}
+
+// The host+user an authorized_keys file belongs to. Host names are
+// case-insensitive; a local member (and a loopback host) is this machine, and
+// a local member with no recorded username runs as the current OS user.
+function authorizedKeysOwner(a: Agent): { host: string; user: string } {
+  const LOOPBACK = new Set(['localhost', '127.0.0.1', '::1']);
+  let host = (a.host ?? '').trim().toLowerCase();
+  if (a.agentType === 'local' || host === '' || LOOPBACK.has(host)) host = 'localhost';
+  let user = (a.username ?? '').trim();
+  if (!user && a.agentType === 'local') {
+    try { user = os.userInfo().username; } catch { /* keep empty */ }
+  }
+  return { host, user };
+}
+
+// Another registered member that authenticates with the same key file into the
+// same authorized_keys (same host and same user). Revoking the key would lock
+// that member out, so the caller must leave it authorized.
+function memberSharingAuthorizedKey(agent: Agent): Agent | undefined {
+  if (!agent.keyPath) return undefined;
+  const mine = authorizedKeysOwner(agent);
+  return getAllAgents().find(a => {
+    if (a.id === agent.id || !a.keyPath || !sameKeyPath(a.keyPath, agent.keyPath!)) return false;
+    const theirs = authorizedKeysOwner(a);
+    return theirs.host === mine.host && theirs.user === mine.user;
+  });
+}
+
 export async function removeMember(input: RemoveMemberInput): Promise<string> {
   const agentOrError = resolveMember(input.member_id, input.member_name);
   if (typeof agentOrError === 'string') return agentOrError;
@@ -62,6 +96,7 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
 
   const strategy = getStrategy(agent);
   const warnings: string[] = [];
+  const notes: string[] = [];
 
   // Cancel any pending credential cleanup timer
   cancelCredentialCleanup(agent.id);
@@ -177,8 +212,16 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
         }
 
         // SSH key removal: remove fleet public key from remote authorized_keys
-        // (fleet-generated keys only -- a user-supplied key stays authorized)
-        if (agent.keyPath && isFleetManagedKey(agent.keyPath)) {
+        // (fleet-generated keys only -- a user-supplied key stays authorized).
+        // A key another member still uses on the same host and user stays
+        // authorized too: revoking it would lock that member out.
+        const keySharer = agent.keyPath && isFleetManagedKey(agent.keyPath)
+          ? memberSharingAuthorizedKey(agent)
+          : undefined;
+        if (keySharer) {
+          const owner = authorizedKeysOwner(agent);
+          notes.push(`The fleet SSH key stays in authorized_keys on ${owner.host} for user ${owner.user || '(unknown)'} because member "${keySharer.friendlyName}" (${keySharer.id}) on the same host and user still uses it`);
+        } else if (agent.keyPath && isFleetManagedKey(agent.keyPath)) {
           const pubKeyPath = `${agent.keyPath}.pub`;
           try {
             const pubKey = fs.readFileSync(pubKeyPath, 'utf-8').trim();
@@ -236,6 +279,12 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
   if (removed) {
     logLine('remove_member', `id=${agent.id} name=${agent.friendlyName}`, agent);
     let result = `✅ Member "${agent.friendlyName}" (${agent.id}) has been removed.\n\nTo refresh the member list in your UI, run /mcp and select Reconnect.`;
+    if (notes.length > 0) {
+      result += `\n\nNotes:\n`;
+      for (const n of notes) {
+        result += `  - ${n}\n`;
+      }
+    }
     if (warnings.length > 0) {
       result += `\n\n⚠️ Warnings:\n`;
       for (const w of warnings) {
