@@ -344,9 +344,27 @@ export class KbHttpProjectMismatchError extends Error {
 /** Routes every contract KB server serves. */
 export const KB_REQUIRED_ROUTES = ['capture', 'query', 'promote'] as const;
 /** Routes a contract KB server may leave out; it lists the ones it serves in its capabilities. */
-export const KB_OPTIONAL_ROUTES = ['context', 'prime', 'invalidate', 'feedback', 'list', 'demote'] as const;
+export const KB_OPTIONAL_ROUTES = ['context', 'prime', 'invalidate', 'feedback', 'list', 'demote', 'withdraw'] as const;
 export type KbRoute = typeof KB_REQUIRED_ROUTES[number] | typeof KB_OPTIONAL_ROUTES[number];
 const KNOWN_ROUTES: readonly string[] = [...KB_REQUIRED_ROUTES, ...KB_OPTIONAL_ROUTES];
+
+/** One tombstone sent to POST /api/kb/withdraw. */
+export interface KbWithdrawalRequest {
+  id: string;
+  /** When trust was withdrawn (the tombstone's at); the server clamps it to now. */
+  at: string;
+  /** The tombstone reason, e.g. "withdrawn" or "demoted". */
+  reason: string;
+  note?: string;
+  evidence_files?: string[];
+}
+
+/** What POST /api/kb/withdraw did for one id. */
+export const KB_WITHDRAWAL_OUTCOMES = ['withdrawn', 'repromoted', 'not_confirmed', 'not_found'] as const;
+export interface KbWithdrawalResult {
+  id: string;
+  outcome: typeof KB_WITHDRAWAL_OUTCOMES[number];
+}
 
 /** GET /api/kb/capabilities: what a KB server serves. */
 export interface KbServerCapabilities {
@@ -360,8 +378,8 @@ export interface KbServerCapabilities {
 
 /**
  * Assumed for a server that does not serve GET /api/kb/capabilities (404 or
- * 501): the route set servers had before capabilities existed. demote is not
- * in it.
+ * 501): the route set servers had before capabilities existed. demote and
+ * withdraw are not in it.
  */
 export const KB_DEFAULT_CAPABILITIES: Readonly<KbServerCapabilities> = Object.freeze({
   contract: 'v1',
@@ -1088,6 +1106,45 @@ export class HttpKbProvider implements MemoryProvider {
       confidence_before: before as Confidence,
       confidence_after: after as Confidence,
     };
+  }
+
+  /**
+   * POST /api/kb/withdraw {withdrawals: [{id, at, reason, note?, evidence_files?}]}:
+   * an OPTIONAL route that applies merged-bible tombstones on the server. Only
+   * sent when the server's capabilities list withdraw; otherwise (or on a 404 /
+   * 501 from the route) E-KB-HTTP-UNSUPPORTED naming the route, and nothing is
+   * changed. Answers one {id, outcome} per withdrawal, outcome withdrawn |
+   * repromoted | not_confirmed | not_found (not_confirmed counts as done: the
+   * route is idempotent). Evidence is optional; fleet checks first that each
+   * path present is repo-relative with no '..' segment and sends nothing
+   * otherwise (E-DEMOTE-EVIDENCE-UNRESOLVED). An empty list sends nothing.
+   */
+  async withdraw(withdrawals: KbWithdrawalRequest[]): Promise<KbWithdrawalResult[]> {
+    if (withdrawals.length === 0) return [];
+    const outside = withdrawals.flatMap(w => (w.evidence_files ?? []).filter(isAbsoluteOrTraversing));
+    if (outside.length > 0) {
+      throw new Error(
+        `E-DEMOTE-EVIDENCE-UNRESOLVED: withdrawal evidence is absolute or contains a '..' segment: ${outside.join(', ')}. `
+        + 'Evidence paths are repo-relative; nothing was sent to the KB server.',
+      );
+    }
+    const body = { withdrawals: withdrawals.map(w => ({
+      id: w.id, at: w.at, reason: w.reason,
+      ...(w.note !== undefined ? { note: w.note } : {}),
+      ...(w.evidence_files !== undefined ? { evidence_files: w.evidence_files } : {}),
+    })) };
+    const result = await this.writeRequest<Record<string, unknown>>('withdraw', '/api/kb/withdraw', body);
+    const results = result?.results;
+    const valid = Array.isArray(results) && results.every(r =>
+      r && typeof r === 'object' && typeof (r as { id?: unknown }).id === 'string'
+      && (KB_WITHDRAWAL_OUTCOMES as readonly string[]).includes((r as { outcome?: unknown }).outcome as string));
+    if (!valid) {
+      throw new Error(
+        `kb withdraw: KB server at ${this.displayUrl} returned a withdraw response without `
+        + `results [{id, outcome}]: ${JSON.stringify(result)}`,
+      );
+    }
+    return (results as KbWithdrawalResult[]).map(r => ({ id: r.id, outcome: r.outcome }));
   }
 
   async sync(_opts?: SyncOptions): Promise<SyncResult> {

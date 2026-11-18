@@ -441,7 +441,8 @@ working folder, which is typically a feature branch.
   true` with a `reason`, nothing merged, skipped, removed or committed
   (`committed` false, `entry_count` the number of entries in the existing parseable
   bible, 0 when it is absent or unparseable); it is an answer, not an error, and has
-  no code.
+  no code. With `withdrawals` or `restore_ids` it still writes (and may commit)
+  the tombstones only (section 2.9).
 
 The v3 envelope also carries an OPTIONAL top-level `demotions` array of
 `{id, at, reason}` tombstones, sorted by id: the id left the bible at `at` for
@@ -504,6 +505,43 @@ value.
   Import skips an id that already has a local row, so that clone keeps its
   INFERRED row until it is promoted there again; the every-call exception above
   only stops it from tombstoning the re-promoted entry again.
+
+WITHDRAWALS (merge-carried). A withdrawal is a reviewer's judgement that a
+bible entry no longer holds. It travels with the branch as a tombstone and
+takes effect for other clones only once that branch merges:
+
+- `kb_bible_commit` takes an optional `withdrawals`
+  `[{id, note, evidence_files}]` (`note` at least 20 characters after
+  whitespace is collapsed, stored collapsed; at least one repo-relative
+  evidence path). An id is admitted when the bible holds an entry for it, or
+  the KB holds it CONFIRMED, not superseded and not a `user-directive`; an
+  admitted id is removed from `entries`, recorded as
+  `{id, at: now, reason: "withdrawn", note, evidence_files}` and listed in the
+  response's `withdrawn`. The LOCAL row is not changed. Any other id, or one
+  merged through `ids` or admitted through `demoted_ids` in the same call, is
+  skipped with reason `not_withdrawable`.
+- `kb_bible_commit` takes an optional `restore_ids`: tombstones this branch
+  added and wants undone. A tombstone is removed only when the bible at
+  `baseCommit` (any commit-ish) carries none for the id, and the base bible's
+  entry for it, if any, is re-added byte-identical. Restored ids are listed in
+  `restored`; any other id is a no-op.
+- `kb_import` applies `reason: "withdrawn"` tombstones ONLY when the bible was
+  read with `ref` equal to `refs/remotes/origin/<provenance.branch>` of that
+  same bible (the merged base bible as fetched). Then each id is judged like a
+  `demoted` tombstone (same rule, same never-create), with an audit note
+  naming "withdrawn in the project bible", the tombstone's note and evidence.
+  From any other source (no `ref`, `HEAD`, the work tree, another ref) nothing
+  is lowered: the tombstones stay view exclusions and their ids are listed in
+  `withdrawals.deferred`. The response always carries `withdrawals`
+  `{sent, withdrawn, repromoted, already, not_found, unsupported, deferred}`
+  (`already`: the row was already below CONFIRMED, so a repeat import is a
+  no-op).
+- `kb_demote` keeps its meaning: an immediate local demotion, carried to other
+  clones by a `demoted` tombstone as above.
+
+UPGRADE SAFETY. A reader that does not know `withdrawn` treats it like any
+unknown reason: the entry is left out of the member bible view and the cold
+seed, and no row is lowered.
 
 MIXED VERSIONS. A writer that predates tombstones (0.4.4 and earlier `kb_export`
 / `kb_bible_commit`) rewrites the bible WITHOUT `demotions`, and its
@@ -637,11 +675,27 @@ for every accepted shape live in `bible/examples/`.
 When the KB config selects the http project provider, the KB server answers
 every project KB call and fleet keeps no second copy:
 
-- The bible (`.fleet/kb-canonical.json`) is not used. No read is answered
-  from it, `kb_session_prime` does not cold-seed from it, `kb_import` imports
-  nothing (it answers `bible_skipped: true` with a `reason` before reading the
-  bible, so a sprint start imports nothing), and `kb_bible_commit` answers
-  `bible_skipped: true` (section 2.6).
+- The bible's ENTRIES (`.fleet/kb-canonical.json`) are not used. No read is
+  answered from them, `kb_session_prime` does not cold-seed from them,
+  `kb_import` imports none (it answers `bible_skipped: true` with a `reason`,
+  so a sprint start imports nothing), and `kb_bible_commit` merges none
+  (`bible_skipped: true`, section 2.6).
+- Its TOMBSTONES are used: they carry withdrawals across the merge.
+  `kb_bible_commit` with `withdrawals` or `restore_ids` writes only the
+  tombstones (a tombstone-only bible, `entries: []`, is created when absent;
+  existing entries stay byte-identical) and may commit. `kb_import` read at
+  `refs/remotes/origin/<provenance.branch>` of that bible, from a session that
+  is not a MEMBER without the kb_maintainer grant, replays the `withdrawn`
+  tombstones in ONE `POST /api/kb/withdraw` (section 2.9.1) and reports each
+  outcome in `withdrawals` (a `not_confirmed` answer as `already`) and the ref
+  in `bible_source`. A `ref` that holds no bible (an http repo has none until
+  its first withdrawal merges) answers the same all-zero `bible_skipped` report
+  with `bible_source`, not `E-BIBLE-NOT-FOUND`. Any other source, or such a member, sends nothing and
+  lists the ids in `withdrawals.deferred`. A server whose capabilities do not
+  list `withdraw` (or that answers it 404/501) gets nothing: the ids are listed
+  in `withdrawals.unsupported` and `withdrawals.warning` carries the
+  `E-KB-HTTP-UNSUPPORTED` message naming the route (also logged as a WARN);
+  the call itself succeeds. `demoted` tombstones are not replayed.
 - The per-repo SQLite database is not used either: nothing is read from it
   when the server is down, and delivery telemetry (`touch`) is not written
   to it. `getLinked` and `relatedClaims` have no remote route and answer
@@ -667,6 +721,7 @@ another project or none):
 | `feedback` | `POST /api/kb/feedback` | no |
 | `list` | `GET /api/kb/list` | no |
 | `demote` | `POST /api/kb/demote` | no |
+| `withdraw` | `POST /api/kb/withdraw` | no |
 
 `GET /api/kb/capabilities` (same auth and project check) answers
 `{contract, routes, branch_aware}`: `contract` is the contract version
@@ -683,7 +738,8 @@ entries per branch (section 2.9.2). Fleet's client:
   `E-KB-HTTP-UNSUPPORTED` naming the route and nothing is sent;
 - assumes a server that has no capabilities route (it answers 404 or 501, or a
   body with none of the three fields) serves the route set from before this
-  route existed: every route above except `demote`, `branch_aware` false;
+  route existed: every route above except `demote` and `withdraw`,
+  `branch_aware` false;
 - refuses a capabilities body that carries some of the fields but not all,
   well typed, with `E-KB-HTTP-UNSUPPORTED`;
 - treats any other failed capabilities read as the server's state, never as
@@ -699,7 +755,7 @@ entries per branch (section 2.9.2). Fleet's client:
   with no backend), so the identical request is safe to repeat. Fleet's own
   `kb serve` answers 429 above its per-IP request rate;
 - turns any other 5xx answering a write itself (capture, invalidate with
-  files, feedback, promote, demote) into `E-KB-HTTP-SERVER-ERROR` naming the
+  files, feedback, promote, demote, withdraw) into `E-KB-HTTP-SERVER-ERROR` naming the
   request and the status, never a raw HTTP error. The request reached the
   server, so whether the write took effect is unknown: it is not retried;
 - turns any other 5xx answering a read (query, context, prime, list) into
@@ -723,9 +779,10 @@ entry it does not hold, or one outside the caller's scope, with 404 and body
 that tells an unknown entry from a missing route.
 
 Fleet's `kb-server` always serves a local SQLite KB: it serves, and its
-capabilities list, every route above, `demote` included, and it reports
-`branch_aware: false`. It is the reference implementation of these routes;
-the http fixtures under `fixtures/` are recorded against it.
+capabilities list, every route above, `demote` and `withdraw` included, and it
+reports `branch_aware: false`. It is the reference implementation of these
+routes; the http fixtures under `fixtures/` and the route fixtures under
+`route-fixtures/` are recorded against it.
 
 `demote` is `POST /api/kb/demote` `{id, reason, evidence_files}`, answered
 `{id, previous_confidence, new_confidence}`; like `promote` it is sent by id
@@ -751,6 +808,40 @@ sending anything. The server's refusals:
   `E-DEMOTE-NOT-CONFIRMED`, `E-DEMOTE-SUPERSEDED`, `E-DEMOTE-REFUSED-DIRECTIVE`,
   `E-DEMOTE-REASON-REQUIRED` or `E-DEMOTE-EVIDENCE-UNRESOLVED` (an evidence
   path that is absolute, has a `..` segment, or does not resolve to a file).
+
+`withdraw` is `POST /api/kb/withdraw`
+`{withdrawals: [{id, at, reason, note?, evidence_files?}]}`, answered 200
+`{results: [{id, outcome}]}` with one result per withdrawal, in request order.
+It applies tombstones from a merged project bible (section 2.6) on the server,
+which holds the only copy of the KB under http. `at` is when trust was
+withdrawn (an ISO time); `reason` is the tombstone reason (`withdrawn` or
+`demoted`); `note` and `evidence_files` are optional and only recorded in the
+entry's audit note. For each id the server:
+
+- never creates an entry and never raises confidence;
+- applies the one re-promotion rule against `at` clamped to now: the entry is
+  lowered from CONFIRMED to INFERRED only when its trust (its promotion time,
+  else the time a bible it was imported from carried) is not after `at`;
+- answers `outcome`:
+  - `withdrawn`: the entry was CONFIRMED and is now INFERRED;
+  - `repromoted`: the entry's trust postdates `at`, so it stays CONFIRMED;
+  - `not_confirmed`: the entry is already below CONFIRMED (or is a
+    user-directive, which a tombstone never lowers). A repeat of the same
+    withdrawal answers this, and it counts as done: the route is idempotent;
+  - `not_found`: no such entry, a superseded one, or one outside the caller's
+    scope.
+
+Evidence is not required. A path that is present is checked like `demote`'s
+(absolute or with a `..` segment: 422 `E-DEMOTE-EVIDENCE-UNRESOLVED` for the
+whole request, nothing applied; fleet refuses it the same way before sending
+anything) but is not resolved against the checkout: a withdrawal is often
+recorded because a cited file went away. A malformed body (no array, an item
+without an `id`, a parseable `at` or a `reason`, a non-string `note` or a
+non-string evidence path) is 400 `BAD_REQUEST`. Fleet sends `withdraw` only
+when the capabilities list it; otherwise, or on a 404/501 from the route, the
+call fails with `E-KB-HTTP-UNSUPPORTED` naming the route and nothing is
+changed. The route fixtures under `route-fixtures/withdraw/` are recorded
+against fleet's `kb-server` and replayed by the conformance tests.
 
 #### 2.9.2 Project and repository headers
 

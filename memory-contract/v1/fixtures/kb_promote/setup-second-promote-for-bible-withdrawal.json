@@ -1,0 +1,17 @@
+{
+  "tool": "kb_promote",
+  "case": "setup-second-promote-for-bible-withdrawal",
+  "kind": "happy",
+  "request": {
+    "id": "100ca201-54b4-46b9-9801-2bea030fcb1b",
+    "reason": "Second promotion (INFERRED -> CONFIRMED) so the entry can be merged and then withdrawn."
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"id\":\"100ca201-54b4-46b9-9801-2bea030fcb1b\",\"previous_confidence\":\"CONFIRMED\",\"new_confidence\":\"CONFIRMED\"}"
+      }
+    ]
+  }
+}
