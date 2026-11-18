@@ -12,12 +12,14 @@ forever or burning cycles on it.
    ready pool.
 1a. **A VERIFY reply with no change sets the bead aside.** When a doer streak
    returns VERIFY, its report claims no close of its own beads, and the
-   engine's read-back shows it closed none of them, re-dispatching it would
+   engine's read-back shows it closed none of them, and the dispatch made no
+   change (the member's branch tip is the same before and after, with a clean
+   work tree; an unreadable state counts as changed), re-dispatching it would
    only repeat the same answer. After that one round the streak's first
    still-open bead is set aside (kind `verify-no-change`) and carried over
    like a BLOCKED bead; its later lane-mates are held by lane order. A
-   streak that closed any of its beads, or whose report claims a close the
-   read-back disproves, keeps the ordinary left-open retry.
+   streak that closed any of its beads, that committed or left a diff, or
+   whose report claims a close the read-back disproves, keeps the ordinary left-open retry.
 2. **A deploy Permissions failure sets the deploy aside.** Only a deployer
    result whose `failedStep` is `permissions` does this. Later cycles skip the
    deployer, but the last deploy failure is still reported so the deploy

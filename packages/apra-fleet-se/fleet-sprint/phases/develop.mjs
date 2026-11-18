@@ -356,8 +356,17 @@ export async function runDevelopPhase({
     // is set aside for the run (kind VERIFY_NO_CHANGE_KIND) and so carried over
     // instead of re-dispatched. A streak that closed any of its beads made a
     // change and keeps the existing left-open retry for the rest, and so does
-    // one whose report claims a close of its own beads. Returns the
+    // one whose dispatch committed or left a diff (branch tip or work tree
+    // changed) and one whose report claims a close of its own beads. Returns the
     // set-aside id, or null when nothing was set aside.
+    const readBranchSnapshot = async (member) => {
+        try { return await gitSync.branchSnapshot(member); } catch { return null; }
+    };
+    // True only when both snapshots read and show the same commit and a clean
+    // work tree: a dispatch that committed or left a diff, or whose state
+    // cannot be read, is NOT a no-change VERIFY.
+    const branchUnchanged = (before, after) => Boolean(before && after && !after.dirty && before.tip === after.tip);
+
     const recordDoerVerifyNoChange = ({ report, streakIds, unclosedIds, doerMember }) => {
         if (unclosedIds.length === 0 || unclosedIds.length !== streakIds.length) return null;
         // The doer's own report must agree that it closed nothing. A report
@@ -601,6 +610,10 @@ export async function runDevelopPhase({
         // failed outcome, so it stays here: the row's degrade is
         // 'per-bead-attribution' and fabricates nothing.
         const streakScope = () => `[${actualBeadIds.join(', ')}]`;
+        // Branch snapshot before the dispatch, so a VERIFY that closed nothing
+        // can be told apart from one that committed work (see
+        // recordDoerVerifyNoChange). Never throws; null = unknown.
+        const snapshotBefore = await readBranchSnapshot(doerMember);
         const doerOutcome = await dispatchRole(dispatchCtx, 'doer', {
             roleLabel: `Doer streak ${streakScope()}`,
             // Never used: `prepare` builds both prompts, because both
@@ -1049,7 +1062,8 @@ export async function runDevelopPhase({
         // per sub-streak -- see recordDoerVerifyNoChange.
         const noChangeSetAside = new Set();
         if (leftOpenReason === 'left-open' && report && report.status === 'VERIFY'
-            && unclosedIds.length > 0 && closedIds.length === 0) {
+            && unclosedIds.length > 0 && closedIds.length === 0
+            && branchUnchanged(snapshotBefore, await readBranchSnapshot(doerMember))) {
             const groups = batchStreaks
                 ? batchStreaks.map((sub) => sub.map((b) => b.id).filter((id) => actualBeadIds.includes(id)))
                 : [actualBeadIds];

@@ -35,6 +35,8 @@ export const DELAY_MS = Number(process.env.MOCK_SPRINT_DELAY_MS || 0);
 export const NO_SESSION_ID_MARKER = null;
 
 /** The commit SHA the mock answers `git merge-base origin/<base> <branch>` with (the review diff base). */
+/** member name -> the commit `git rev-parse HEAD` answers (default all zeros); a doer handler sets it to simulate a commit. */
+export const MOCK_BRANCH_TIPS = new Map();
 export const MOCK_REVIEW_MERGE_BASE_SHA = 'c0ffee0000000000000000000000000000c0ffee';
 
 // apra-fleet-1cb.1 AUDIT NOTE: grepped runner.js for every read of
@@ -1564,6 +1566,12 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                 if (/^git rev-parse HEAD \S+\s*$/.test(opts.command)) {
                     const sha = '0'.repeat(40);
                     return mockCmdResult(0, `${sha}\n${sha}\n`, '');
+                }
+                if (/^git rev-parse HEAD\s*$/.test(opts.command)) {
+                    return mockCmdResult(0, MOCK_BRANCH_TIPS.get(opts.member_name || '(none)') || '0'.repeat(40), '');
+                }
+                if (/^git status --porcelain\s*$/.test(opts.command)) {
+                    return mockCmdResult(0, '', '');
                 }
                 if (/^git (?:-c \S+ )*stash create\s*$/.test(opts.command)) {
                     return mockCmdResult(0, '', '');

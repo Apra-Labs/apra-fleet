@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
+import { runDevelopLoopScenario, withScenarioMarkers, MOCK_BRANCH_TIPS } from './helpers/mock-sprint-harness.mjs';
 import {
     cannotCloseThisRun, collectSetAsideEntries, VERIFY_NO_CHANGE_KIND,
 } from '../fleet-sprint/set-aside.mjs';
@@ -108,5 +108,33 @@ test('mock sprint: a VERIFY streak that closed one of its beads sets nothing asi
         assert.ok(doerDispatches(scenario).slice(1).some((d) => assignedIds(d.prompt).includes(second)), 'the open bead must be retried');
         assert.equal(scenario.finalBeadsById.get(second).status, 'closed');
         assert.ok(!scenario.error, `no stall expected: ${scenario.error ? scenario.error.message : ''}`);
+    });
+});
+
+test('mock sprint: a VERIFY that committed work but closed nothing is NOT set aside and keeps the left-open retry', async () => {
+    resetSyncMemo();
+    await withScenarioMarkers('doer verify committed no close', async () => {
+        let calls = 0;
+        const scenario = await runDevelopLoopScenario('dvnc-committed', {
+            members: ['local'],
+            taskSpecs: [{ title: 'Task: nv committed' }],
+            doerHandler: async ({ opts, runCmd: rc, tempDir: td }) => {
+                const ids = assignedIds(opts.prompt);
+                calls++;
+                if (calls === 1) {
+                    // Real work was committed on the branch, but the close never lands.
+                    MOCK_BRANCH_TIPS.set(opts.member_name || '(none)', 'a'.repeat(40));
+                    return report({ status: 'VERIFY', closedIds: [], notes: 'committed, close lost' });
+                }
+                for (const id of ids) await rc(`bd close ${id}`, td);
+                return report({ status: 'VERIFY', closedIds: ids, notes: 'ok' });
+            },
+            reviewerHandler: approve,
+        });
+        MOCK_BRANCH_TIPS.clear();
+        const id = scenario.tasks.find((t) => t.title === 'Task: nv committed').id;
+        assert.ok(!scenario.logs.some((m) => m.includes('Doer VERIFY-no-change set-aside')), 'a VERIFY that committed must set nothing aside');
+        assert.ok(doerDispatches(scenario).length >= 2, 'the open bead must be re-dispatched');
+        assert.equal(scenario.finalBeadsById.get(id).status, 'closed');
     });
 });
