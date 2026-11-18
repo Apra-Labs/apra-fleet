@@ -356,6 +356,10 @@ export async function runPlanPhase({
                     }
                 );
             }
+            // details.contestedIds / details.findings let the runner turn
+            // this rejection into a carry-over when the run already closed
+            // work (runner.js planRejectedCarryOver); with none closed the
+            // error propagates and aborts the sprint as before.
             throw new SprintPlanRejectedError(
                 `Plan phase for cycle ${cycle} was not approved after ${planningRounds} round(s). ` +
                 'Refusing to proceed to Develop with an unapproved plan.',
@@ -363,6 +367,10 @@ export async function runPlanPhase({
                     notes: lastVerdict ? lastVerdict.notes : null,
                     cycle,
                     planningRounds,
+                    details: {
+                        contestedIds,
+                        findings: lastVerdict && Array.isArray(lastVerdict.findings) ? lastVerdict.findings : null,
+                    },
                 }
             );
         }

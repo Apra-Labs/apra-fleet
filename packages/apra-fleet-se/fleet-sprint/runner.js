@@ -167,7 +167,7 @@ import { runDevelopPhase } from './phases/develop.mjs';
 // stayed here.
 import { runReviewPhase } from './phases/review.mjs';
 import { runDeployPhase, latestDeployFailure, formatDeployFailureReason, formatDeploySetAsideNotes, DEPLOY_RETRY_CYCLE_LIMIT } from './phases/deploy.mjs';
-import { collectSetAsideEntries, evaluateSetAsideStall, formatSetAsideStallMessage, stuckBehindSetAside, collectWaitEntries, closedWorkThisRun, buildSetAsideCarryOver, formatCarryOverNotes } from './set-aside.mjs';
+import { collectSetAsideEntries, evaluateSetAsideStall, formatSetAsideStallMessage, stuckBehindSetAside, collectWaitEntries, closedWorkThisRun, buildSetAsideCarryOver, buildPlanRejectedCarryOver, formatCarryOverNotes } from './set-aside.mjs';
 import { NEEDS_EXTERNAL_EVIDENCE_CYCLE_LIMIT, recordInconclusiveVerifyCycle, stillOpenVerifyIdsForExit, syncDeferredVerifyIds, buildVerifyCarryOver, formatVerifyCarryOverNotes } from './verify-carry-over.mjs';
 // apra-fleet-3swo.6.8: the next two phase() boundaries -- the per-cycle Integ
 // Test and the Re-Review that Cycle Evaluation dispatches when the goal-
@@ -3507,6 +3507,44 @@ async function runSprintCycle(context) {
         });
     }
 
+    // A SprintPlanRejectedError (from the Plan phase, or from the empty-ready
+    // check after a plan-cap deferral) would abort a sprint that already
+    // closed work, throwing that work's Final Review, Regression, Harvest and
+    // Publish away. When at least one bead this run dispatched or routed to
+    // verify is closed, return a carry-over (./set-aside.mjs
+    // buildPlanRejectedCarryOver) naming each contested bead with the
+    // plan-reviewer finding instead; the caller exits the cycle loop to
+    // Finalization and Final Review forces FAIL while an at/above-goal bead is
+    // carried over. With nothing closed this run, returns null and the caller
+    // rethrows. The contested beads are the error's details.contestedIds; when
+    // the verdict named none (e.g. a plan with no task in it), every open
+    // at/above-goal in-scope leaf bead is carried over instead.
+    async function planRejectedCarryOver(err, { where, cycle }) {
+        if (workedOnBeadIds.size === 0 && verifyEverIds.size === 0) return null;
+        const closedNow = new Set((await bdListScoped('--status=closed --json')).map((b) => b.id));
+        const closedThisRun = closedWorkThisRun({ workedOnIds: workedOnBeadIds, verifyEverIds, closedIds: closedNow });
+        if (closedThisRun.length === 0) return null;
+        const details = (err && err.details) || {};
+        const [rawAtGoal, parentIds] = await Promise.all([
+            bdListScoped(`--status=${NOT_DONE_STATUSES} --priority-max=${goalMax} --json`),
+            decomposedParentIds(),
+        ]);
+        const atGoalIds = rawAtGoal.map((b) => String(b.id));
+        let contestedIds = Array.isArray(details.contestedIds) ? details.contestedIds.filter((id) => typeof id === 'string' && id) : [];
+        if (contestedIds.length === 0) {
+            contestedIds = partitionDeferredBeads(rawAtGoal.filter((b) => !parentIds.has(b.id))).active.map((b) => String(b.id)).sort();
+        }
+        return buildPlanRejectedCarryOver({
+            where, cycle,
+            planningRounds: details.planningRounds,
+            closedIds: closedThisRun,
+            contestedIds,
+            verdictNotes: details.notes ?? err.notes ?? null,
+            findings: details.findings || null,
+            atGoalIds,
+        });
+    }
+
     // apra-fleet-rp7a.1: every bead id ever seen DEFERRED at/above goal
     // priority during Cycle Evaluation, monotone for the same reason
     // verifyEverIds is. These beads are excluded from the completion/stall
@@ -3571,8 +3609,10 @@ async function runSprintCycle(context) {
     let verifyBlockDiagnosis = null;
     // Set (to ./set-aside.mjs buildSetAsideCarryOver's result) when Cycle
     // Evaluation exits the cycle loop on a set-aside stall after this run
-    // closed work; Final Review then forces FAIL while an at/above-goal bead
-    // is carried over and names every carried-over item in the verdict notes.
+    // closed work, or to buildPlanRejectedCarryOver's result when the Plan
+    // phase ends unapproved after this run closed work; Final Review then
+    // forces FAIL while an at/above-goal bead is carried over and names every
+    // carried-over item in the verdict notes.
     let carryOverExit = null;
 
     // apra-fleet-nwh.1: integ-test-runner's own tracked spend, broken out of
@@ -3694,19 +3734,36 @@ async function runSprintCycle(context) {
         // below still reads (planCapDeferredIds / lastVerdict / planningRounds)
         // plus the pendingRejectedNewTasks list it reassigns -- the one mutable
         // local that used to be shared through the closure.
-        const planOutcome = await runPlanPhase({
-            phase, log, command, dispatchCtx,
-            cycle, validated, targetIssues, requirementsContent,
-            backlogMember, getMemberForRole,
-            sprintState, gitSync, args,
-            verifySetThisCycle, roundSessions, pendingRejectedNewTasks,
-            resolveSettleShell,
-            parseBdJson,
-            extractContestedBeadIds,
-            reconcilePendingRejectedNewTasks,
-            stageCommandBodyMemberSide,
-            updateDashboard,
-        });
+        //
+        // A plan the plan-reviewer never approved throws
+        // SprintPlanRejectedError; after this run closed work that becomes a
+        // carry-over exit to Finalization instead (planRejectedCarryOver).
+        // PlanReviewDispatchFailedError is a different class and always
+        // propagates.
+        let planOutcome;
+        try {
+            planOutcome = await runPlanPhase({
+                phase, log, command, dispatchCtx,
+                cycle, validated, targetIssues, requirementsContent,
+                backlogMember, getMemberForRole,
+                sprintState, gitSync, args,
+                verifySetThisCycle, roundSessions, pendingRejectedNewTasks,
+                resolveSettleShell,
+                parseBdJson,
+                extractContestedBeadIds,
+                reconcilePendingRejectedNewTasks,
+                stageCommandBodyMemberSide,
+                updateDashboard,
+            });
+        } catch (err) {
+            if (!(err instanceof SprintPlanRejectedError)) throw err;
+            const planCarryOver = await planRejectedCarryOver(err, { where: `Plan C${cycle}`, cycle });
+            if (!planCarryOver) throw err;
+            carryOverExit = planCarryOver;
+            log(`Cycle ${cycle}: ${formatCarryOverNotes(carryOverExit)} Exiting cycle loop to Finalization${carryOverExit.atGoalIds.length > 0 ? '; the sprint verdict will be FAIL' : ''}.`);
+            endGroup();
+            break;
+        }
         pendingRejectedNewTasks = planOutcome.pendingRejectedNewTasks;
         const { planCapDeferredIds, lastVerdict, planningRounds } = planOutcome;
         for (const id of planCapDeferredIds) planCapDeferredEverIds.add(id);
@@ -3772,8 +3829,10 @@ async function runSprintCycle(context) {
         // decides completion), but immediately after a deferral it means the
         // approved remainder was empty all along, which is the same failure as
         // a whole-plan-contested exhaustion.
+        // After this run closed work it is a carry-over exit naming the
+        // deferred beads instead (planRejectedCarryOver).
         if (planCapDeferredIds.length > 0 && readyBeads.length === 0) {
-            throw new SprintPlanRejectedError(
+            const rejected = new SprintPlanRejectedError(
                 `Plan phase for cycle ${cycle}: after deferring contested bead(s) ` +
                 `[${planCapDeferredIds.join(', ')}] per plan-cap exhaustion, the resulting ready set is empty. ` +
                 'Refusing to proceed to Develop with nothing dispatchable.',
@@ -3781,8 +3840,18 @@ async function runSprintCycle(context) {
                     notes: lastVerdict ? lastVerdict.notes : null,
                     cycle,
                     planningRounds,
+                    details: {
+                        contestedIds: planCapDeferredIds,
+                        findings: lastVerdict && Array.isArray(lastVerdict.findings) ? lastVerdict.findings : null,
+                    },
                 }
             );
+            const deferralCarryOver = await planRejectedCarryOver(rejected, { where: `Plan C${cycle} (after plan-cap deferral)`, cycle });
+            if (!deferralCarryOver) throw rejected;
+            carryOverExit = deferralCarryOver;
+            log(`Cycle ${cycle}: ${formatCarryOverNotes(carryOverExit)} Exiting cycle loop to Finalization${carryOverExit.atGoalIds.length > 0 ? '; the sprint verdict will be FAIL' : ''}.`);
+            endGroup();
+            break;
         }
 
         // An empty `--ready` list is NOT, by itself, evidence the sprint
