@@ -82,6 +82,13 @@ import {
 // the local row is usually still CONFIRMED, so a merge would silently undo the
 // withdrawal. Only restore_ids lifts a branch-added one.
 //
+// A withdrawn tombstone also outranks a demotion: a demoted_ids id with a
+// withdrawn tombstone in the file is skipped (withdrawn_tombstone), the
+// every-call demotion rule passes over it, and a demoted tombstone never
+// overwrites a withdrawn one in the tombstone merge. Otherwise the demoted
+// tombstone would replace the withdrawal and a later ids re-promotion (which
+// clears demoted tombstones) would erase it -- a route around restore_ids.
+//
 // Base-bible gate: a demoted tombstone (demoted_ids or the every-call rule) is
 // written only for an id the bible at baseCommit carries, as an entry or as a
 // tombstone. A locally demoted entry this branch added is dropped from entries
@@ -123,7 +130,7 @@ export const kbBibleCommitSchema = z.object({
   ids: z.array(z.string().min(1))
     .describe('Ids of the entries confirmed this round. Each must be a live (non-stale, non-superseded) CONFIRMED entry in this repository\'s KB whose recorded file basis still matches the cited files at the repo\'s HEAD commit (the same rule kb_export applies; uncommitted edits are ignored); any other id is skipped and reported in skipped (reason not_confirmed_or_unknown, no_source_files for a CONFIRMED entry citing no source file, or basis_mismatch). An id the current bible file carries a withdrawn tombstone for is skipped with reason withdrawn_tombstone and its tombstone kept, unless restore_ids undoes that tombstone in the same call. Independently of the ids, every bible entry this KB holds as superseded or invalidated is removed and reported in removed; an empty list with no such entry makes no commit.'),
   demoted_ids: z.array(z.string().min(1)).optional()
-    .describe('Ids demoted this round (kb_demote). Each must name a local entry that HAS a demoted_at and is now below CONFIRMED; any other id is skipped and reported in skipped with reason not_demoted_or_unknown. An admitted id is REMOVED from entries and recorded as an explicit tombstone {id, at, reason: "demoted"} in the bible demotions array, so other clones can apply the demotion instead of inferring it from an absence. Independently, every call does the same for each bible entry this KB holds as demoted, unless that bible entry was promoted after the local demotion (another clone re-promoted it). A demoted tombstone is written only for an id the bible at baseCommit carries (as an entry or a tombstone): an entry this branch added (absent from the base) is removed from entries with no tombstone, and any other demoted_ids id is skipped with reason not_in_base_bible. When baseCommit does not resolve or its bible is unreadable, no new demoted tombstone is written (logged) and such demoted_ids ids are skipped with not_in_base_bible. Re-admitting the same id through ids (a re-promotion) clears its tombstone.'),
+    .describe('Ids demoted this round (kb_demote). Each must name a local entry that HAS a demoted_at and is now below CONFIRMED; any other id is skipped and reported in skipped with reason not_demoted_or_unknown. An id the current bible file carries a withdrawn tombstone for is skipped with reason withdrawn_tombstone and that tombstone is kept unchanged: a demoted tombstone never replaces a withdrawn one (only restore_ids lifts a withdrawal). An admitted id is REMOVED from entries and recorded as an explicit tombstone {id, at, reason: "demoted"} in the bible demotions array, so other clones can apply the demotion instead of inferring it from an absence. Independently, every call does the same for each bible entry this KB holds as demoted, unless that bible entry was promoted after the local demotion (another clone re-promoted it). A demoted tombstone is written only for an id the bible at baseCommit carries (as an entry or a tombstone): an entry this branch added (absent from the base) is removed from entries with no tombstone, and any other demoted_ids id is skipped with reason not_in_base_bible. When baseCommit does not resolve or its bible is unreadable, no new demoted tombstone is written (logged) and such demoted_ids ids are skipped with not_in_base_bible. Re-admitting the same id through ids (a re-promotion) clears its tombstone.'),
   withdrawals: z.array(withdrawalSchema).optional()
     .describe('Bible entries withdrawn this round: [{id, note, evidence_files}]. An id is admitted when the bible already holds an entry for it, or this KB holds it CONFIRMED, not superseded and not a user-directive; any other id is skipped with reason not_withdrawable. An admitted id is removed from entries and recorded as a tombstone {id, at: now, reason: "withdrawn", note, evidence_files}; the local entry is NOT changed (the withdrawal takes effect for clones only once the branch merges). An id also merged through ids, or admitted through demoted_ids, in the same call is skipped (not_withdrawable). Under an http KB provider every well-formed withdrawal is admitted and only the tombstone is written.'),
   restore_ids: z.array(z.string().min(1)).optional()
@@ -154,7 +161,9 @@ export type KbBibleCommitInput = z.infer<typeof kbBibleCommitSchema>;
  *  - withdrawn_tombstone: named in ids, but the current bible file carries a
  *    withdrawn tombstone for it (branch-added or merged from the base) that
  *    this call does not restore -- only restore_ids can undo a branch-added
- *    withdrawal, and a merged one is never undone here;
+ *    withdrawal, and a merged one is never undone here; or named in
+ *    demoted_ids while the file carries a withdrawn tombstone for it (a
+ *    demoted tombstone never replaces a withdrawn one);
  *  - not_in_base_bible: named in demoted_ids and locally demoted, but the bible
  *    at baseCommit carries neither an entry nor a tombstone for it (and the
  *    branch file carries no entry for it to drop), or that bible cannot be read
@@ -372,6 +381,14 @@ export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor
   // Locally demoted entries this branch added: dropped from entries, no tombstone.
   const droppedDemotions: string[] = [];
   for (const id of requestedDemotions) {
+    // A withdrawn tombstone in the file is never replaced by a demoted one: a
+    // demoted tombstone is cleared by a later ids re-promotion, which would
+    // route around the rule that only restore_ids lifts a withdrawal.
+    if (withdrawnInFile.has(id)) {
+      logWarn('kb_bible_commit', 'skipping demotion of ' + id + ': withdrawn_tombstone (the bible carries a withdrawn tombstone for it, which a demoted one never replaces)');
+      skipped.push({ id, reason: 'withdrawn_tombstone' });
+      continue;
+    }
     const tombstone = tombstoneFor(id);
     if (!tombstone) {
       skipped.push({ id, reason: 'not_demoted_or_unknown' });
@@ -401,7 +418,9 @@ export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor
 
   const requestedDemotionSet = new Set(requestedDemotions);
   for (const entry of bibleEntries) {
-    if (requestedDemotionSet.has(entry.id) || withdrawnSet.has(entry.id)) continue;
+    // A withdrawn tombstone in the file outranks the local demotion: never turn
+    // it into a demoted one (see WITHDRAWN-TOMBSTONE BLOCK).
+    if (requestedDemotionSet.has(entry.id) || withdrawnSet.has(entry.id) || withdrawnInFile.has(entry.id)) continue;
     const tombstone = tombstoneFor(entry.id);
     if (!tombstone || repromotedAfter(entry, tombstone)) continue;
     const verdict = await gateDemotion(tombstone);
@@ -480,7 +499,11 @@ export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor
   // demotion no longer holds.
   const tombstones = new Map<string, BibleTombstone>();
   for (const d of existingDoc?.demotions ?? []) tombstones.set(d.id, d);
-  for (const d of admittedDemotions) tombstones.set(d.id, d);
+  // Defence in depth: a demoted tombstone never overwrites a withdrawn one.
+  for (const d of admittedDemotions) {
+    if (tombstones.get(d.id)?.reason === TOMBSTONE_WITHDRAWN) continue;
+    tombstones.set(d.id, d);
+  }
   for (const d of admittedWithdrawals) tombstones.set(d.id, d);
   for (const id of merged) tombstones.delete(id);
   for (const id of restored) tombstones.delete(id);
