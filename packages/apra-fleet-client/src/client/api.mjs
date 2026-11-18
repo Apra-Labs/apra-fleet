@@ -805,6 +805,37 @@
  */
 
 /**
+ * kb_query options. At least one of query, files, symbols, tag or
+ * flagged_only is required (E-QUERY-NO-SELECTOR otherwise).
+ * @typedef {Object} KbQueryOptions
+ * @property {string} [query] - Free-text keyword search.
+ * @property {('context-cache'|'learning'|'knowledge'|'runbook')} [type] - Only entries of this content type.
+ * @property {string} [tag] - Only entries carrying this exact tag; may be used alone to list them.
+ * @property {number} [limit] - Max L1 results. Default 20 full rows plus the content of the
+ *   top 5 in l2_expanded; a member session that omits it gets at most 6 summary rows and an
+ *   empty l2_expanded (unless own_scope is set).
+ * @property {boolean} [include_stale] - Include stale and superseded entries (default false).
+ * @property {string[]} [files] - Look up by file: only entries whose source_files cite one of
+ *   these repo-relative paths, or a file under one of them when the path is a directory
+ *   ("src/services" matches "src/services/a.ts", not "src/services-old/a.ts"). A hard filter,
+ *   not a ranking signal; may be used without query. Over a remote (http) KB it is sent only
+ *   when the server lists "files" in query_filters of GET /api/kb/capabilities, otherwise the
+ *   call fails with E-KB-HTTP-UNSUPPORTED and nothing is read.
+ * @property {string[]} [symbols] - Only entries whose symbols name one of these (exact match).
+ *   A hard filter like files; with both, an entry matching either is kept. Same http rule
+ *   ("symbols" in query_filters).
+ * @property {boolean} [flagged_only] - List the contradiction-flagged entries instead
+ *   (result {flagged_entries, total, note}); files, symbols and the trust filters are ignored.
+ * @property {boolean} [expand_related] - Also return related_claims (refines /
+ *   contradiction_of neighbours of the top hits).
+ * @property {Array<'CONFIRMED'|'INFERRED'|'UNVERIFIED'>} [confidence] - Tier allow-list.
+ *   Default ["CONFIRMED"] with exclude_disputed true.
+ * @property {boolean} [exclude_disputed] - Drop both halves of an unresolved contradiction.
+ * @property {boolean} [own_scope] - Member session only: read the member's own captures
+ *   (every requested tier) from the per-repo KB instead of the checkout bible.
+ */
+
+/**
  * One entry of the bible file (.fleet/kb-canonical.json) kb_export and
  * kb_bible_commit write and kb_import reads -- bible format v3, described by
  * memory-contract/v1/bible/kb-canonical.schema.json. The file itself is
@@ -1447,6 +1478,20 @@ export class ApraFleet {
     async kbBibleCommit(options) {
         assertNoRemovedKbScopeKeys('kb_bible_commit', options);
         return this.mcpClient.callTool('kb_bible_commit', options);
+    }
+
+    /**
+     * Two-level knowledge bank search (kb_query). Result JSON:
+     * {l1_results, l2_expanded, related_claims?}, or {flagged_entries, total, note}
+     * with flagged_only; extract with parseToolJson(). Pass files and/or symbols to
+     * look up by file: only the entries citing them come back.
+     * The removed scope keys (repo_path, repo, repo_remote_url) are refused
+     * with E-SCOPE-KEY-REMOVED before anything is sent.
+     * @param {KbQueryOptions} options
+     */
+    async kbQuery(options) {
+        assertNoRemovedKbScopeKeys('kb_query', options);
+        return this.mcpClient.callTool('kb_query', options);
     }
 
     /**

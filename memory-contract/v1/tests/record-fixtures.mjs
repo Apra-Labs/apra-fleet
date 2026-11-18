@@ -636,6 +636,20 @@ if (idFoo) {
     failures++;
     console.log(`  [FAIL] kb_query/happy-own-scope did not return the member's own CONFIRMED row ${idFoo} with its member: tag`);
   }
+
+  // --- kb_query files filter (look up by file) -------------------------------
+  // A hard filter: only entries citing src/example.ts come back. idFoo cites
+  // it; every row must.
+  const filesFilter = await recordHappy('kb_query', 'happy-files-filter', {
+    query: 'exampleFn',
+    files: ['src/example.ts'],
+  });
+  const filesRows = parseEnvelopeText(filesFilter)?.l1_results ?? [];
+  if (!filesRows.some((e) => e?.id === idFoo)
+    || !filesRows.every((e) => (e?.source_files ?? []).includes('src/example.ts'))) {
+    failures++;
+    console.log(`  [FAIL] kb_query/happy-files-filter did not return only entries citing src/example.ts (with ${idFoo})`);
+  }
 }
 
 // --- kb_stats -------------------------------------------------------------
@@ -1260,6 +1274,17 @@ await withSession('HTTP_A', () => recordHappy('kb_query', 'http-own-scope', {
       id: idHttpDemote,
       reason: 'Promotion of the entry used by the http demote fixtures to CONFIRMED (checked against src/widget.ts).',
     }));
+    // The files filter over http: the sample kb-server lists it in
+    // query_filters, so it is forwarded; the now-CONFIRMED entry citing
+    // src/widget.ts is found through its directory.
+    const httpFiles = await withSession('HTTP_A', () => recordHappy('kb_query', 'http-files-filter', {
+      query: 'widget', files: ['src'],
+    }));
+    const httpFilesRows = parseEnvelopeText(httpFiles)?.l1_results ?? [];
+    if (!httpFilesRows.some((e) => e?.id === idHttpDemote)) {
+      failures++;
+      console.log(`  [FAIL] kb_query/http-files-filter did not return ${idHttpDemote} citing src/widget.ts`);
+    }
     const demoteRequest = {
       id: idHttpDemote,
       reason: 'Re-checked src/widget.ts: the export is a constant only in this fixture, so CONFIRMED overstates it.',

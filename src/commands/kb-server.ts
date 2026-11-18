@@ -11,6 +11,7 @@ import { encryptPassword, decryptPassword } from '../utils/crypto.js';
 import { validateAuthor } from '../tools/kb-feedback.js';
 import { KbCaptureRejected } from '../services/knowledge/types.js';
 import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
+import { CitedFilterError } from '../services/knowledge/cited-filter.js';
 import type { KBEntry, KBEntryInput, Confidence } from '../services/knowledge/types.js';
 
 // my-beads-db-0cd.15 (reopened): startKbServer is an exported library function
@@ -39,6 +40,8 @@ export const KB_SERVER_CAPABILITIES = Object.freeze({
   contract: 'v1',
   routes: Object.freeze(['capture', 'query', 'promote', 'context', 'prime', 'invalidate', 'feedback', 'list', 'demote', 'withdraw']),
   branch_aware: false,
+  // The optional kb_query filters GET /api/kb/query honours (the cited filter).
+  query_filters: Object.freeze(['files', 'symbols']),
 });
 
 /** A demote refusal's taxonomy code at the start of SqliteProvider.demote's message (answered 422). */
@@ -304,15 +307,32 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
         const fts_terms = stringArrayParam(url, 'fts_terms');
         // ids: JSON array of entry ids, an exact-id lookup (kb_query's L2 fetch).
         const ids = stringArrayParam(url, 'ids');
-        if (fts_terms === null || ids === null) {
-          const name = fts_terms === null ? 'fts_terms' : 'ids';
-          return jsonResponse(res, 400, { error: `${name} must be a JSON array of strings`, code: 'BAD_REQUEST' });
+        // files / symbols: JSON arrays, the kb_query cited filter (a hard
+        // filter: only entries citing one of the files, or a file under one
+        // of them, or naming one of the symbols). Listed in query_filters.
+        const files = stringArrayParam(url, 'files');
+        const symbols = stringArrayParam(url, 'symbols');
+        const badParam = [['fts_terms', fts_terms], ['ids', ids], ['files', files], ['symbols', symbols]]
+          .find(([, v]) => v === null);
+        if (badParam) {
+          return jsonResponse(res, 400, { error: `${badParam[0]} must be a JSON array of strings`, code: 'BAD_REQUEST' });
         }
+        const cited = files?.length || symbols?.length
+          ? { files: files ?? undefined, symbols: symbols ?? undefined }
+          : undefined;
 
-        const result = await provider.query({
-          query, type, tag, limit, l1_only, confidence, exclude_disputed, include_stale, include_superseded,
-          flagged_only, fts_terms, ids,
-        });
+        let result;
+        try {
+          result = await provider.query({
+            query, type, tag, limit, l1_only, confidence, exclude_disputed, include_stale, include_superseded,
+            flagged_only, fts_terms: fts_terms ?? undefined, ids: ids ?? undefined, cited,
+          });
+        } catch (err) {
+          if (err instanceof CitedFilterError) {
+            return jsonResponse(res, 400, { error: err.message, code: 'BAD_REQUEST' });
+          }
+          throw err;
+        }
         return jsonResponse(res, 200, result as unknown as Record<string, unknown>);
       }
 
@@ -599,27 +619,52 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
   });
 }
 
-export function parseKbServerArgs(argv: string[]): { port: number; generateToken: boolean; dbPath?: string; tokenFile?: string } {
-  let port = 7878;
-  let generateToken = false;
-  let dbPath: string | undefined;
-  let tokenFile: string | undefined;
+export const KB_SERVER_USAGE = `Usage: apra-fleet kb-server [options]
+
+Run the shared knowledge-base HTTP server for the repo in the current directory.
+
+Options:
+  --port <n>            Port to listen on, integer 1-65535 (default 7878)
+  --generate-token      Generate and print a fresh bearer token
+  --db <path>           Serve the KB database at <path>
+  --token-file <path>   Read/write the bearer token at <path>
+  --help, -h            Show this help and exit`;
+
+export interface KbServerArgs {
+  port: number;
+  generateToken: boolean;
+  dbPath?: string;
+  tokenFile?: string;
+  /** True when --help / -h was given: print KB_SERVER_USAGE, exit 0, start nothing. */
+  help: boolean;
+  /** Set for an unknown flag, a value-less flag or an invalid --port: print it plus usage to stderr, exit non-zero, start nothing. */
+  error?: string;
+}
+
+export function parseKbServerArgs(argv: string[]): KbServerArgs {
+  const r: KbServerArgs = { port: 7878, generateToken: false, help: false };
+  // --help wins over any other problem: show usage, start nothing.
+  if (argv.includes('--help') || argv.includes('-h')) { r.help = true; return r; }
+  const value = (i: number): string | undefined => {
+    const v = argv[i + 1];
+    return v === undefined || v.startsWith('-') ? undefined : v;
+  };
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === '--port' && argv[i + 1]) {
-      port = parseInt(argv[i + 1], 10);
+    const a = argv[i];
+    if (a === '--generate-token') { r.generateToken = true; continue; }
+    if (a === '--port' || a === '--db' || a === '--token-file') {
+      const v = value(i);
+      if (v === undefined) { r.error = `${a} requires a value`; return r; }
       i++;
+      if (a === '--port') {
+        if (!/^\d+$/.test(v) || Number(v) < 1 || Number(v) > 65535) { r.error = `--port must be an integer between 1 and 65535 (got '${v}')`; return r; }
+        r.port = Number(v);
+      } else if (a === '--db') r.dbPath = v;
+      else r.tokenFile = v;
+      continue;
     }
-    if (argv[i] === '--generate-token') {
-      generateToken = true;
-    }
-    if (argv[i] === '--db' && argv[i + 1]) {
-      dbPath = argv[i + 1];
-      i++;
-    }
-    if (argv[i] === '--token-file' && argv[i + 1]) {
-      tokenFile = argv[i + 1];
-      i++;
-    }
+    r.error = `unknown argument '${a}'`;
+    return r;
   }
-  return { port, generateToken, dbPath, tokenFile };
+  return r;
 }

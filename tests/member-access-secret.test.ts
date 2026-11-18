@@ -131,7 +131,10 @@ function fakeMember() {
     commands.push(raw);
     const c = plain(raw);
     if (c.includes('rev-parse') || c.includes('ls-files')) return { stdout: '', stderr: 'not a git repository', code: 128 };
-    if (/^test -f |Test-Path .*-PathType Leaf/.test(c)) return { stdout: '', stderr: '', code: 1 };
+    // memberFileExists (exit-code probe): nothing exists in a fresh shell. The
+    // marker-printing presence probe (memberFilePresent) exits 0 and prints
+    // nothing for a missing file, which the default answer below already does.
+    if (/^test -f |Test-Path .*-PathType Leaf\) \{ exit 0 \}/.test(c)) return { stdout: '', stderr: '', code: 1 };
     return ok('');
   };
   const secretChannel = {

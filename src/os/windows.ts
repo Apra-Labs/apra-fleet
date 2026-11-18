@@ -8,6 +8,7 @@ import { boundChildEnv, describeBoundedEnv } from './child-env-bound.js';
 import { logWarn } from '../utils/log-helpers.js';
 import { withGoMaxProcsDefault, GO_MAXPROCS_DEFAULT_PWSH } from './go-concurrency.js';
 import { windowsExecutable } from './windows-executable.js';
+import { assertAuthorizedKeyMatch } from './ssh-key-match.js';
 
 /**
  * Wrap a PowerShell script as a base64 `-EncodedCommand` invocation.
@@ -428,6 +429,27 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
       // Only attempt if user is in Administrators group (non-admins can't write to ProgramData\ssh).
       `$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator); if ($isAdmin) { $adminKeys = "$env:ProgramData\\ssh\\administrators_authorized_keys"; if (!(Test-Path $adminKeys)) { New-Item -Path $adminKeys -ItemType File -Force | Out-Null }; [System.IO.File]::AppendAllText($adminKeys, '${escaped}' + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false)); icacls $adminKeys /inheritance:r /grant:r "SYSTEM:F" /grant:r "Administrators:F" }`,
     ];
+  }
+
+  removeSSHPublicKey(keyMatch: string, memberHome: string): string {
+    assertAuthorizedKeyMatch(keyMatch);
+    const key = escapePowerShellArgInner(keyMatch);
+    const akFile = escapePowerShellArgInner(`${memberHome.replace(/[\\/]+$/, '')}\\.ssh\\authorized_keys`);
+    // String.Contains is a literal match (no regex). The file is rewritten in
+    // place (UTF-8, no BOM, as deploy writes it), so the ACL deploy set stays.
+    // The admin probe and administrators_authorized_keys path mirror
+    // deploySSHPublicKey exactly.
+    return wrapPowerShellEncoded(
+      `$k = '${key}'; `
+      + `$files = @('${akFile}'); `
+      + `$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator); `
+      + `if ($isAdmin) { $files += "$env:ProgramData\\ssh\\administrators_authorized_keys" }; `
+      + `foreach ($f in $files) { if (Test-Path -LiteralPath $f) { `
+      + `$lines = [System.IO.File]::ReadAllLines($f); `
+      + `$keep = [string[]]@($lines | Where-Object { -not $_.Contains($k) }); `
+      + `if ($keep.Count -ne $lines.Count) { [System.IO.File]::WriteAllLines($f, $keep, [System.Text.UTF8Encoding]::new($false)) } `
+      + `} }`,
+    );
   }
 
   // --- Local exec ---

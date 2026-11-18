@@ -2,6 +2,7 @@ import { execSync } from 'node:child_process';
 import type { OsCommands, ProviderAdapter, PromptOptions } from './os-commands.js';
 import { escapeDoubleQuoted, escapeGrepPattern, sanitizeSessionId, GIT_LS_REMOTE_OK_MARKER } from './os-commands.js';
 import { escapeShellArg } from '../utils/shell-escape.js';
+import { assertAuthorizedKeyMatch } from './ssh-key-match.js';
 
 // The member's own fleet bin dir (<home>/.apra-fleet/bin: the member-install
 // apra-fleet, dolt, and bd when the installer could not place it on the system
@@ -343,6 +344,31 @@ export class LinuxCommands implements OsCommands {
       'chmod 600 ~/.ssh/authorized_keys',
       `echo ${escaped} >> ~/.ssh/authorized_keys`,
     ];
+  }
+
+  /**
+   * POSIX filter for one authorized_keys file held in shell variable `$_fleet_ak`:
+   * grep -vF (literal match, portable to BSD grep -- no `sed -i`) into a temp
+   * file in the same directory. grep exits 1 when every line was removed,
+   * which is still success; 2 is a real error and leaves the file untouched.
+   * `install` is how the filtered copy replaces the original.
+   */
+  protected filterAuthorizedKeysPosix(keyMatch: string, install: string): string {
+    const key = escapeShellArg(keyMatch);
+    return `if [ -f "$_fleet_ak" ]; then `
+      + `_fleet_tmp="$_fleet_ak.fleet-tmp.$$"; `
+      + `grep -vF -- ${key} "$_fleet_ak" > "$_fleet_tmp"; _fleet_rc=$?; `
+      + `if [ "$_fleet_rc" -gt 1 ]; then rm -f "$_fleet_tmp"; exit "$_fleet_rc"; fi; `
+      + `${install} || { rm -f "$_fleet_tmp"; exit 1; }; `
+      + `fi`;
+  }
+
+  removeSSHPublicKey(keyMatch: string, memberHome: string): string {
+    assertAuthorizedKeyMatch(keyMatch);
+    const home = memberHome.replace(/\/+$/, '');
+    const akFile = escapeShellArg(`${home}/.ssh/authorized_keys`);
+    return `_fleet_ak=${akFile}; `
+      + this.filterAuthorizedKeysPosix(keyMatch, 'chmod 600 "$_fleet_tmp" && mv -f "$_fleet_tmp" "$_fleet_ak"');
   }
 
   // --- Local exec ---
