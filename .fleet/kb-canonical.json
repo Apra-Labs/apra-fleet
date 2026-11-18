@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "5bfc7309d9fab9ead8aada7745fd165ecd32c07b",
     "branch": "main",
-    "entry_count": 143
+    "entry_count": 145
   },
   "entries": [
     {
@@ -2005,6 +2005,32 @@
       }
     },
     {
+      "id": "bb267f1a-c0c4-459f-ba68-e35ad8744727",
+      "type": "knowledge",
+      "title": "A doer ladder ended by MemberPermissionDeniedError is recorded as a failed streak",
+      "summary": "develop.mjs catches only MemberPermissionDeniedError from the doer ladder and routes it through per-bead attribution (failureReason permission_denied), so beads that streak verifiably closed enter reviewScopeBeadIds. Before this, the throw escaped before any outcome was recorded and parallel continueOnError swallowed it.",
+      "symbols": [
+        "runDevelopPhase",
+        "healPermissionDenial",
+        "reviewScopeBeadIds",
+        "MemberPermissionDeniedError"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/phases/develop.mjs",
+        "packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/review.mjs",
+        "packages/apra-fleet-se/test/mock-sprint-permission-denied-review-gap.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T02:32:44.664Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs": "ff3ad443e131909f30772c7afffb46fb0ed31cad",
+        "packages/apra-fleet-se/fleet-sprint/phases/develop.mjs": "44925dff3bcf127bdd594bfd28c1eb12b749a5b5",
+        "packages/apra-fleet-se/fleet-sprint/phases/review.mjs": "31f45bc59b6e32ddb5a032ad3766c032ea42870f",
+        "packages/apra-fleet-se/test/mock-sprint-permission-denied-review-gap.test.mjs": "19d24cdfe587f8b98f3eb7e59debf836169805fc"
+      }
+    },
+    {
       "id": "bcd7c247-9534-4ba5-bc6a-997c94ca7bbd",
       "type": "knowledge",
       "title": "Windows local-member child env is bounded by boundChildEnv (deduped PATH, 32767-char cap)",
@@ -2313,6 +2339,32 @@
         "src/services/vcs/types.ts": "64f8ad879942ce3fd098e910990d1fa3259298c5",
         "src/tools/provision-vcs-auth.ts": "39ca9fa23f8bf74428773eb3ee59deabd2ad20cf",
         "tests/provision-vcs-auth.test.ts": "aa71779179a2b17f9ba69174729562f3e2ee0e4b"
+      }
+    },
+    {
+      "id": "dba1a9f2-99c3-491a-ab63-b476cfff1306",
+      "type": "knowledge",
+      "title": "Stuck accounting roots: set aside, publish blocked, or deferred (cannotCloseThisRun)",
+      "summary": "set-aside.mjs stuckBehindSetAside counts a bead as stuck when it is held (lane order or blocks, transitively) behind a bead in cannotCloseThisRun: doctorBlockedIds, permissionScopeBlockedBeads, or status 'deferred'. evaluateSetAsideStall counts publish-blocked beads as covered.",
+      "symbols": [
+        "cannotCloseThisRun",
+        "stuckBehindSetAside",
+        "evaluateSetAsideStall",
+        "throwIfSetAsideStall"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/set-aside.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/test/set-aside-v2.test.mjs",
+        "packages/apra-fleet-se/test/mock-sprint-lane-mate-cannot-close.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T02:32:37.461Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/runner.js": "56dc2a0b7f209ddd37687a7b808600361b03d3bc",
+        "packages/apra-fleet-se/fleet-sprint/set-aside.mjs": "dd3e2c372c80217c130d8d14b47c05ed8e90d964",
+        "packages/apra-fleet-se/test/mock-sprint-lane-mate-cannot-close.test.mjs": "85da6fd3bc2b347d0b33bca15b9eabd9c905a18e",
+        "packages/apra-fleet-se/test/set-aside-v2.test.mjs": "7c4166b0864c0a4ca19674ab0b77485c6ed0baff"
       }
     },
     {
