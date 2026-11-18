@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "5a171212f2e1eee116e7f58e2ea29648ffb8ff1f",
     "branch": "main",
-    "entry_count": 164
+    "entry_count": 165
   },
   "entries": [
     {
@@ -717,6 +717,23 @@
       "source_file_hashes": {
         "packages/apra-fleet-se/fleet-sprint/member-init-probe.mjs": "0d4587ee66b94998aa300aaf476b4faa8620f96a",
         "packages/apra-fleet-se/test/backlog-role-no-orchestrator-identifiers.test.mjs": "02cc51c5452af602a3bd6d620be27558de4fdc5f"
+      }
+    },
+    {
+      "id": "3d975248-8be7-457a-8b20-ec3a434b81c3",
+      "type": "learning",
+      "title": "Editing reviewer-output.json requires regenerating auto-sprint.js",
+      "summary": "apra-pm inlines role schemas into auto-sprint.js. Any change to agents/schemas/reviewer-output.json fails auto-sprint-schemas-drift.test.mjs until scripts/gen-auto-sprint-schemas.mjs is re-run and auto-sprint.js is committed.",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-se/apra-pm/test/auto-sprint-schemas-drift.test.mjs",
+        "packages/apra-fleet-se/apra-pm/agents/schemas/reviewer-output.json"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T22:04:36.254Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/apra-pm/agents/schemas/reviewer-output.json": "58ba2965f5ac3c1da11308d0779263f73df227c0",
+        "packages/apra-fleet-se/apra-pm/test/auto-sprint-schemas-drift.test.mjs": "eaca88fa5ff10f41b4acd11099776d9e78415b0e"
       }
     },
     {
