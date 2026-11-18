@@ -293,22 +293,18 @@ describe('remove_member authorized_keys cleanup command safety', () => {
     expect(akCmd).not.toContain('$HOME');
   });
 
-  it('item 4 (linux): a hostile .pub file stays one single-quoted literal (no unquoted $( or IFS expansion)', async () => {
+  it('item 4 (linux): a hostile .pub file is not a public key: no revocation command is sent, a warning is', async () => {
     // key_path is caller-supplied, so the .pub content is untrusted input.
     fs.writeFileSync(`${keyPath}.pub`, "ssh-ed25519 AAAA'$(touch${IFS}/tmp/pwn)'.*\\x fleet@apra\n", 'utf-8');
     const member = makeTestAgent({ friendlyName: 'linux-remove-hostile', os: 'linux' as any, keyPath });
     addAgent(member);
     mockHomeAwareExec(POSIX_HOME);
 
-    await removeMember({ member_id: member.id });
+    const result = await removeMember({ member_id: member.id });
 
-    const cmds = revocationCommands();
-    expect(cmds).toHaveLength(1);
-    // Each ' in the key closes the quote, emits an escaped quote, and reopens
-    // it, so $( and ${IFS} only ever appear inside single quotes.
-    const expectedKey = "'ssh-ed25519 AAAA'\\''$(touch${IFS}/tmp/pwn)'\\''.*\\x'";
-    expect(cmds[0]).toContain(`grep -vF -- ${expectedKey} "$_fleet_ak"`);
-    expect(cmds[0]).not.toContain('sed -i');
+    expect(revocationCommands()).toHaveLength(0);
+    expect(mockExecCommand.mock.calls.map(c => c[0] as string).some(c => c.includes('pwn'))).toBe(false);
+    expect(result).toContain('is not a valid SSH public key');
   });
 
   it('item 5 (windows): revocation exec throwing is surfaced as a revocation warning (home resolved first)', async () => {

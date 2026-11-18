@@ -134,7 +134,10 @@ export interface OsCommands {
    * administrators_authorized_keys -- the same files deploySSHPublicKey writes.
    * `memberHome` is the member's home directory resolved in JS
    * (getMemberHomeDir); the command never expands ~ or a home env var for it.
-   * `keyMatch` is untrusted and must contain no whitespace (type + base64).
+   * `keyMatch` is untrusted: exactly "<type> <base64>" of a real public key
+   * (one space, no comment). Every builder throws on anything else
+   * (assertAuthorizedKeyMatch) -- an empty or type-only match would delete
+   * every line, or every key of that type.
    */
   removeSSHPublicKey(keyMatch: string, memberHome: string): string;
 

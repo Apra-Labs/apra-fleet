@@ -184,7 +184,7 @@ describe('removeMember - decommissioning', () => {
     try {
       const keyPath = path.join(dir, 'id_ed25519');
       fs.writeFileSync(keyPath, 'PRIVATE');
-      fs.writeFileSync(`${keyPath}.pub`, 'ssh-ed25519 AAAAC3Nza fleet@test');
+      fs.writeFileSync(`${keyPath}.pub`, 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIorderkey000000000000000000000000000000 fleet@test');
       const member = makeTestAgent({ friendlyName: 'order-worker', keyPath, os: 'linux', workFolder: '/home/u/proj' });
       addAgent(member);
       // The key removal needs the member home (getMemberHomeDir probe).
@@ -496,6 +496,47 @@ describe('removeMember - SSH key ownership', () => {
     // Never a ~/ fallback anywhere in what was sent.
     expect(mockExecCommand.mock.calls.some(c => c[0].includes('~/.ssh/authorized_keys'))).toBe(false);
   });
+
+  // An empty, truncated or type-only .pub would match every authorized_keys
+  // line (or every key of that type): no command touching authorized_keys
+  // may be sent, and the result must say the file was left untouched.
+  const OS_CASES: Array<[string, Record<string, unknown>]> = [
+    ['linux', { os: 'linux' }],
+    ['macos', { os: 'macos' }],
+    ['windows powershell', { os: 'windows' }],
+    ['windows gitbash', { os: 'windows', shell: 'gitbash' }],
+  ];
+  const BAD_PUBS: Array<[string, string]> = [
+    ['empty', ''],
+    ['one-word', 'ssh-rsa\n'],
+    ['garbage', 'not a key at all\n'],
+  ];
+  for (const [osName, fields] of OS_CASES) {
+    for (const [pubName, pub] of BAD_PUBS) {
+      it(`${osName}: ${pubName} fleet .pub -> no command touches authorized_keys, warning returned`, async () => {
+        const keyPath = makeKey(getKeysDir());
+        fs.writeFileSync(`${keyPath}.pub`, pub, 'utf-8');
+        const member = makeTestAgent({ friendlyName: `bad-pub-${osName}-${pubName}`.replace(/\s/g, '-'), keyPath, ...fields } as any);
+        addAgent(member);
+
+        const result = await removeMember({ member_id: member.id });
+
+        expect(akCmds()).toHaveLength(0);
+        expect(result).toContain('is not a valid SSH public key');
+        expect(result).toContain('authorized_keys was left untouched');
+      });
+    }
+    it(`${osName}: valid fleet .pub -> exactly one revocation command`, async () => {
+      const keyPath = makeKey(getKeysDir());
+      const member = makeTestAgent({ friendlyName: `good-pub-${osName}`.replace(/\s/g, '-'), keyPath, ...fields } as any);
+      addAgent(member);
+
+      const result = await removeMember({ member_id: member.id });
+
+      expect(akCmds()).toHaveLength(1);
+      expect(result).not.toContain('is not a valid SSH public key');
+    });
+  }
 
   it('sends the revocation built from the resolved home, never ~/ or sed -i', async () => {
     const keyPath = makeKey(getKeysDir());

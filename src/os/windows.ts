@@ -8,6 +8,7 @@ import { boundChildEnv, describeBoundedEnv } from './child-env-bound.js';
 import { logWarn } from '../utils/log-helpers.js';
 import { withGoMaxProcsDefault, GO_MAXPROCS_DEFAULT_PWSH } from './go-concurrency.js';
 import { windowsExecutable } from './windows-executable.js';
+import { assertAuthorizedKeyMatch } from './ssh-key-match.js';
 
 /**
  * Wrap a PowerShell script as a base64 `-EncodedCommand` invocation.
@@ -431,6 +432,7 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
   }
 
   removeSSHPublicKey(keyMatch: string, memberHome: string): string {
+    assertAuthorizedKeyMatch(keyMatch);
     const key = escapePowerShellArgInner(keyMatch);
     const akFile = escapePowerShellArgInner(`${memberHome.replace(/[\\/]+$/, '')}\\.ssh\\authorized_keys`);
     // String.Contains is a literal match (no regex). The file is rewritten in

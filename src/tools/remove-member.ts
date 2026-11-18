@@ -6,6 +6,7 @@ import { removeAgent as removeFromRegistry, getAllAgents, getKeysDir } from '../
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getMemberHomeDir } from '../services/member-home.js';
+import { authorizedKeyMatch } from '../os/ssh-key-match.js';
 import { getProvider } from '../providers/index.js';
 import { getAgentOS, getAgentShell } from '../utils/agent-helpers.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
@@ -222,11 +223,15 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
           notes.push(`The fleet SSH key stays in authorized_keys on ${owner.host} for user ${owner.user || '(unknown)'} because member "${keySharer.friendlyName}" (${keySharer.id}) on the same host and user still uses it`);
         } else if (agent.keyPath && isFleetManagedKey(agent.keyPath)) {
           const pubKeyPath = `${agent.keyPath}.pub`;
-          try {
-            const pubKey = fs.readFileSync(pubKeyPath, 'utf-8').trim();
-            // Use the key type + base64 portion to match (ignore trailing comment)
-            const parts = pubKey.split(/\s+/);
-            const keyMatch = parts.slice(0, 2).join(' ');
+          let pubKey: string | undefined;
+          try { pubKey = fs.readFileSync(pubKeyPath, 'utf-8'); } catch { /* pub key file not found -- skip */ }
+          // Match on type + base64 (trailing comment ignored). An empty,
+          // truncated or type-only .pub would match every line (or every key
+          // of that type): such a key is never revoked, nothing is sent.
+          const keyMatch = pubKey === undefined ? null : authorizedKeyMatch(pubKey);
+          if (pubKey !== undefined && !keyMatch) {
+            warnings.push(`The fleet public key file ${pubKeyPath} is not a valid SSH public key -- the fleet key was NOT removed from authorized_keys on the member (authorized_keys was left untouched)`);
+          } else if (keyMatch) {
             // The member's home is resolved here, never left to ~ or a home
             // env var in the member's shell. Unknown home -> no command at all.
             const memberHome = await getMemberHomeDir(agent);
@@ -234,9 +239,9 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
               warnings.push('Could not resolve the member\'s home directory -- the fleet public key was NOT removed from authorized_keys on the member');
             } else {
               // keyMatch is untrusted (key_path is caller-supplied); each OS
-              // builder escapes it and matches it literally.
-              const removeKeyCmd = cmds.removeSSHPublicKey(keyMatch, memberHome);
+              // builder re-validates it, escapes it and matches it literally.
               try {
+                const removeKeyCmd = cmds.removeSSHPublicKey(keyMatch, memberHome);
                 const removeKeyResult = await strategy.execCommand(removeKeyCmd, 10000);
                 if (removeKeyResult.code !== 0) {
                   warnings.push('Could not clear fleet public key from authorized_keys on the member');
@@ -245,7 +250,7 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
                 warnings.push('Could not clear fleet public key from authorized_keys on the member');
               }
             }
-          } catch { /* pub key file not found — skip */ }
+          }
         }
       } else {
         warnings.push('Member was offline — could not clear auth credentials');

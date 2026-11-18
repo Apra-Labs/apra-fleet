@@ -5,6 +5,7 @@ import { wrapPowerShellEncoded } from './windows.js';
 import { escapeDoubleQuoted, escapeShellArg, escapeBatchMetachars, escapePowerShellArgInner, sanitizeSessionId } from '../utils/shell-escape.js';
 import { isWindowsPosixUname } from '../utils/platform.js';
 import { gitBashCandidates } from './git-bash-candidates.js';
+import { assertAuthorizedKeyMatch } from './ssh-key-match.js';
 import { boundChildEnv, describeBoundedEnv } from './child-env-bound.js';
 import { defaultIsFile, envValue, searchWindowsPath } from './windows-executable.js';
 import { logWarn } from '../utils/log-helpers.js';
@@ -277,6 +278,7 @@ export class WindowsGitBashCommands extends LinuxCommands {
   }
 
   override removeSSHPublicKey(keyMatch: string, memberHome: string): string {
+    assertAuthorizedKeyMatch(keyMatch);
     // A local gitbash member's home comes from os.homedir() (C:\Users\x);
     // a probed one is already POSIX (/c/Users/x). Bash accepts C:/Users/x.
     const home = memberHome.replace(/\\/g, '/').replace(/\/+$/, '');

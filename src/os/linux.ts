@@ -2,6 +2,7 @@ import { execSync } from 'node:child_process';
 import type { OsCommands, ProviderAdapter, PromptOptions } from './os-commands.js';
 import { escapeDoubleQuoted, escapeGrepPattern, sanitizeSessionId, GIT_LS_REMOTE_OK_MARKER } from './os-commands.js';
 import { escapeShellArg } from '../utils/shell-escape.js';
+import { assertAuthorizedKeyMatch } from './ssh-key-match.js';
 
 // The member's own fleet bin dir (<home>/.apra-fleet/bin: the member-install
 // apra-fleet, dolt, and bd when the installer could not place it on the system
@@ -363,6 +364,7 @@ export class LinuxCommands implements OsCommands {
   }
 
   removeSSHPublicKey(keyMatch: string, memberHome: string): string {
+    assertAuthorizedKeyMatch(keyMatch);
     const home = memberHome.replace(/\/+$/, '');
     const akFile = escapeShellArg(`${home}/.ssh/authorized_keys`);
     return `_fleet_ak=${akFile}; `
