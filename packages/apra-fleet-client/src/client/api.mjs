@@ -843,6 +843,60 @@
  */
 
 /**
+ * The result of kb_bible_commit (parse the text content with parseToolJson).
+ * @typedef {Object} KbBibleCommitResult
+ * @property {string} path - The bible file written (or that would have been).
+ * @property {string[]} merged - Ids merged from `ids`.
+ * @property {string[]} demoted - Ids admitted from `demoted_ids` (removed, tombstoned "demoted").
+ * @property {string[]} withdrawn - Ids admitted from `withdrawals`: removed from entries and
+ *   tombstoned "withdrawn"; the local entry is not changed.
+ * @property {string[]} restored - Ids from `restore_ids` whose branch-added tombstone was removed.
+ * @property {{id: string, reason: string}[]} skipped - Ids not merged, demoted or withdrawn, with
+ *   reason not_confirmed_or_unknown, no_source_files, basis_mismatch, not_demoted_or_unknown
+ *   or not_withdrawable.
+ * @property {{id: string, reason: string}[]} removed - Entries removed because the KB holds them
+ *   superseded or invalidated.
+ * @property {number} entry_count - Entries in the resulting bible (a tombstone is not an entry).
+ * @property {number} backfilled - Legacy entries that gained source_file_hashes.
+ * @property {boolean} committed - True only when a local commit of the bible path was made.
+ * @property {true} [bible_skipped] - Present under an http KB provider (no entry merge).
+ * @property {string} [reason] - With bible_skipped: why.
+ */
+
+/**
+ * What a bible's "withdrawn" tombstones did on kb_import (KbImportResult.withdrawals).
+ * They take effect only when the bible was read with `ref` equal to
+ * refs/remotes/origin/<provenance.branch> of that same bible (the merged base bible).
+ * @typedef {Object} KbImportWithdrawals
+ * @property {number} sent - Tombstones applied locally (SQLite) or sent in one
+ *   POST /api/kb/withdraw (http); 0 when deferred or unsupported.
+ * @property {string[]} withdrawn - Rows lowered CONFIRMED -> INFERRED.
+ * @property {string[]} repromoted - Rows promoted after the tombstone; left CONFIRMED.
+ * @property {string[]} already - Rows already below CONFIRMED (a repeat import).
+ * @property {string[]} not_found - No such row (none is created).
+ * @property {string[]} unsupported - Not applied: the KB server does not serve the withdraw route.
+ * @property {string[]} deferred - Not applied: the bible was not read from the merged base bible.
+ * @property {string} [warning] - With unsupported: the E-KB-HTTP-UNSUPPORTED message naming the route.
+ */
+
+/**
+ * The result of kb_import (parse the text content with parseToolJson).
+ * @typedef {Object} KbImportResult
+ * @property {number} imported - Entries added.
+ * @property {number} skipped - Entries skipped (malformed, id already present, or duplicate).
+ * @property {number} linked - Entries linked to a same-topic predecessor (both stay live).
+ * @property {number} flagged - Entries flagged as a contradiction.
+ * @property {number} rejected - Entries refused by the capture basis check.
+ * @property {number} demoted - Local rows lowered by a "demoted" tombstone.
+ * @property {{checked: number, staled: number, unstaled: number}} sweep - The post-import freshness sweep.
+ * @property {string} [bible_source] - The git ref the bible was read at, when read from git.
+ * @property {boolean} [worktree_ignored] - With bible_source: the work-tree copy differed.
+ * @property {true} [bible_skipped] - Present under an http KB provider (no entry imported).
+ * @property {string} [reason] - With bible_skipped: why.
+ * @property {KbImportWithdrawals} withdrawals - What the bible's "withdrawn" tombstones did.
+ */
+
+/**
  * @typedef {Object} SetupSshKeyOptions
  * @property {string} [member_id] - UUID of the member
  * @property {string} [member_name] - Friendly name of the member

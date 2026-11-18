@@ -441,7 +441,8 @@ working folder, which is typically a feature branch.
   true` with a `reason`, nothing merged, skipped, removed or committed
   (`committed` false, `entry_count` the number of entries in the existing parseable
   bible, 0 when it is absent or unparseable); it is an answer, not an error, and has
-  no code.
+  no code. With `withdrawals` or `restore_ids` it still writes (and may commit)
+  the tombstones only (section 2.9).
 
 The v3 envelope also carries an OPTIONAL top-level `demotions` array of
 `{id, at, reason}` tombstones, sorted by id: the id left the bible at `at` for
@@ -504,6 +505,43 @@ value.
   Import skips an id that already has a local row, so that clone keeps its
   INFERRED row until it is promoted there again; the every-call exception above
   only stops it from tombstoning the re-promoted entry again.
+
+WITHDRAWALS (merge-carried). A withdrawal is a reviewer's judgement that a
+bible entry no longer holds. It travels with the branch as a tombstone and
+takes effect for other clones only once that branch merges:
+
+- `kb_bible_commit` takes an optional `withdrawals`
+  `[{id, note, evidence_files}]` (`note` at least 20 characters after
+  whitespace is collapsed, stored collapsed; at least one repo-relative
+  evidence path). An id is admitted when the bible holds an entry for it, or
+  the KB holds it CONFIRMED, not superseded and not a `user-directive`; an
+  admitted id is removed from `entries`, recorded as
+  `{id, at: now, reason: "withdrawn", note, evidence_files}` and listed in the
+  response's `withdrawn`. The LOCAL row is not changed. Any other id, or one
+  merged through `ids` or admitted through `demoted_ids` in the same call, is
+  skipped with reason `not_withdrawable`.
+- `kb_bible_commit` takes an optional `restore_ids`: tombstones this branch
+  added and wants undone. A tombstone is removed only when the bible at
+  `baseCommit` (any commit-ish) carries none for the id, and the base bible's
+  entry for it, if any, is re-added byte-identical. Restored ids are listed in
+  `restored`; any other id is a no-op.
+- `kb_import` applies `reason: "withdrawn"` tombstones ONLY when the bible was
+  read with `ref` equal to `refs/remotes/origin/<provenance.branch>` of that
+  same bible (the merged base bible as fetched). Then each id is judged like a
+  `demoted` tombstone (same rule, same never-create), with an audit note
+  naming "withdrawn in the project bible", the tombstone's note and evidence.
+  From any other source (no `ref`, `HEAD`, the work tree, another ref) nothing
+  is lowered: the tombstones stay view exclusions and their ids are listed in
+  `withdrawals.deferred`. The response always carries `withdrawals`
+  `{sent, withdrawn, repromoted, already, not_found, unsupported, deferred}`
+  (`already`: the row was already below CONFIRMED, so a repeat import is a
+  no-op).
+- `kb_demote` keeps its meaning: an immediate local demotion, carried to other
+  clones by a `demoted` tombstone as above.
+
+UPGRADE SAFETY. A reader that does not know `withdrawn` treats it like any
+unknown reason: the entry is left out of the member bible view and the cold
+seed, and no row is lowered.
 
 MIXED VERSIONS. A writer that predates tombstones (0.4.4 and earlier `kb_export`
 / `kb_bible_commit`) rewrites the bible WITHOUT `demotions`, and its
@@ -637,11 +675,25 @@ for every accepted shape live in `bible/examples/`.
 When the KB config selects the http project provider, the KB server answers
 every project KB call and fleet keeps no second copy:
 
-- The bible (`.fleet/kb-canonical.json`) is not used. No read is answered
-  from it, `kb_session_prime` does not cold-seed from it, `kb_import` imports
-  nothing (it answers `bible_skipped: true` with a `reason` before reading the
-  bible, so a sprint start imports nothing), and `kb_bible_commit` answers
-  `bible_skipped: true` (section 2.6).
+- The bible's ENTRIES (`.fleet/kb-canonical.json`) are not used. No read is
+  answered from them, `kb_session_prime` does not cold-seed from them,
+  `kb_import` imports none (it answers `bible_skipped: true` with a `reason`,
+  so a sprint start imports nothing), and `kb_bible_commit` merges none
+  (`bible_skipped: true`, section 2.6).
+- Its TOMBSTONES are used: they carry withdrawals across the merge.
+  `kb_bible_commit` with `withdrawals` or `restore_ids` writes only the
+  tombstones (a tombstone-only bible, `entries: []`, is created when absent;
+  existing entries stay byte-identical) and may commit. `kb_import` read at
+  `refs/remotes/origin/<provenance.branch>` of that bible, from a session that
+  is not a MEMBER without the kb_maintainer grant, replays the `withdrawn`
+  tombstones in ONE `POST /api/kb/withdraw` (section 2.9.1) and reports each
+  outcome in `withdrawals` (a `not_confirmed` answer as `already`) and the ref
+  in `bible_source`. Any other source, or such a member, sends nothing and
+  lists the ids in `withdrawals.deferred`. A server whose capabilities do not
+  list `withdraw` (or that answers it 404/501) gets nothing: the ids are listed
+  in `withdrawals.unsupported` and `withdrawals.warning` carries the
+  `E-KB-HTTP-UNSUPPORTED` message naming the route (also logged as a WARN);
+  the call itself succeeds. `demoted` tombstones are not replayed.
 - The per-repo SQLite database is not used either: nothing is read from it
   when the server is down, and delivery telemetry (`touch`) is not written
   to it. `getLinked` and `relatedClaims` have no remote route and answer
