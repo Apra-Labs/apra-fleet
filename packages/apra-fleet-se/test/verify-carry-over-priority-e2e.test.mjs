@@ -45,9 +45,10 @@ function finalReviewState({ carriedId, carriedPriority }) {
         deployFailures: [], integFailures: [], rejectedNewTasks: [], verifyEverIds: new Set([carriedId]),
         deferredVerifyIds, needsEvidenceVerifyIds: new Map(),
         redBuildIntegSkip: null,
-        // The deferred bead is not in the at-goal not-done read; the priority
-        // lookup is the one that names every open/deferred bead.
-        bdListScoped: async (q) => (String(q).includes('deferred') ? [{ id: carriedId, priority: carriedPriority, status: 'deferred' }] : []),
+        // The at-goal not-done read (--priority-max=goalMax) returns only a bead
+        // whose priority is at/above the goal.
+        bdListScoped: async (q) => (String(q).includes('--priority-max=') && carriedPriority <= 1
+            ? [{ id: carriedId, priority: carriedPriority, status: 'deferred' }] : []),
         decomposedParentIds: async () => new Set(), goalMax: 1,
         NOT_DONE_STATUSES: 'open,in_progress',
         kbPriming: { knowledgeOf: () => undefined }, kbInjection: null, kbSprintContext: {}, kbWork,

@@ -134,23 +134,23 @@ export function syncDeferredVerifyIds(deferred, { beads, verifyEverIds }) {
  * The verify carry-over handed to Final Review, or null when nothing was
  * carried over.
  *
- * @param {{ needsEvidence?: Map<string, { reason: string, cycles: number }>, deferred?: Map<string, string|{ reason: string, bounceCap: true }>, closedIds?: Set<string>, priorities?: Map<string, number>, goalMax?: number }} opts
+ * @param {{ needsEvidence?: Map<string, { reason: string, cycles: number }>, deferred?: Map<string, string|{ reason: string, bounceCap: true }>, closedIds?: Set<string>, atGoalIds?: Set<string> }} opts
  *   closedIds: a carried-over id that closed after all (the runner did close
  *   it on a later pass) is not carried over.
- *   priorities + goalMax: bead priority by id and the sprint goal's numeric
- *   ceiling. A carried-over bead whose priority is known and BELOW the goal
- *   (priority > goalMax) is still named but is not in needsEvidenceIds or
- *   bounceCapIds, so it cannot force FAIL; it is listed in belowGoalIds. A bead
- *   with no known priority is treated as at/above goal (conservative).
+ *   atGoalIds: the ids of the not-done beads (open, in_progress, blocked or
+ *   deferred) at/above the sprint goal priority. When given, a carried-over
+ *   bead NOT in it is below goal: still named, but not in needsEvidenceIds or
+ *   bounceCapIds, so it cannot force FAIL; it is listed in belowGoalIds. When
+ *   omitted every carried-over bead counts as at/above goal.
  * @returns {{ entries: { id: string, kind: string, reason: string, belowGoal?: true }[], needsEvidenceIds: string[], deferredIds: string[], bounceCapIds: string[], belowGoalIds: string[] } | null}
  *   needsEvidenceIds / bounceCapIds hold only the at/above-goal ids that force
  *   FAIL; deferredIds holds every deferred id (both sub-kinds).
  */
 export function buildVerifyCarryOver({
-    needsEvidence = new Map(), deferred = new Map(), closedIds = new Set(), priorities = new Map(), goalMax,
+    needsEvidence = new Map(), deferred = new Map(), closedIds = new Set(), atGoalIds,
 } = {}) {
     const open = (id) => !closedIds.has(id);
-    const belowGoal = (id) => Number.isFinite(goalMax) && Number.isFinite(priorities.get(id)) && priorities.get(id) > goalMax;
+    const belowGoal = (id) => atGoalIds instanceof Set && !atGoalIds.has(id);
     const allNeedsEvidenceIds = [...needsEvidence.keys()].filter(open).sort();
     const deferredIds = [...deferred.keys()].filter((id) => open(id) && !needsEvidence.has(id)).sort();
     if (allNeedsEvidenceIds.length === 0 && deferredIds.length === 0) return null;

@@ -140,7 +140,7 @@ test('verdict gate: a deferred-only carry-over is named but does not force FAIL'
 
 test('priority gate: a P3 bounce-capped bead under a P2 goal is named and does NOT force FAIL', () => {
     const deferred = new Map(); markBounceCapDeferral(deferred, 'v-p3', 'bounced');
-    const co = buildVerifyCarryOver({ deferred, priorities: new Map([['v-p3', 3]]), goalMax: 2 });
+    const co = buildVerifyCarryOver({ deferred, atGoalIds: new Set() });
     assert.deepEqual(co.bounceCapIds, []);
     assert.deepEqual(co.belowGoalIds, ['v-p3']);
     const out = applyVerifyCarryOverVerdictGate({ verdict: 'PASS', notes: 'fine' }, co);
@@ -150,16 +150,17 @@ test('priority gate: a P3 bounce-capped bead under a P2 goal is named and does N
 });
 
 test('priority gate: a P3 needs-evidence bead under a P1 goal is named and does NOT force FAIL', () => {
-    const co = buildVerifyCarryOver({ needsEvidence: new Map([['v-p3', { reason: 'x', cycles: 2 }]]), priorities: new Map([['v-p3', 3]]), goalMax: 1 });
+    const co = buildVerifyCarryOver({ needsEvidence: new Map([['v-p3', { reason: 'x', cycles: 2 }]]), atGoalIds: new Set() });
     assert.deepEqual(co.needsEvidenceIds, []);
     const out = applyVerifyCarryOverVerdictGate({ verdict: 'PASS', notes: 'fine' }, co);
     assert.equal(out.verdict, 'PASS');
     assert.match(out.notes, /v-p3/);
 });
 
-test('priority gate: a P1 bounce-capped bead under a P1 goal forces FAIL; an unknown priority counts as at-goal', () => {
+test('priority gate: a P1 bounce-capped bead under a P1 goal forces FAIL; without atGoalIds everything counts as at-goal', () => {
     const deferred = new Map(); markBounceCapDeferral(deferred, 'v-p1', 'bounced'); markBounceCapDeferral(deferred, 'v-unk', 'bounced');
-    const co = buildVerifyCarryOver({ deferred, priorities: new Map([['v-p1', 1]]), goalMax: 1 });
-    assert.deepEqual(co.bounceCapIds, ['v-p1', 'v-unk']);
+    const co = buildVerifyCarryOver({ deferred, atGoalIds: new Set(['v-p1']) });
+    assert.deepEqual(co.bounceCapIds, ['v-p1']);
+    assert.deepEqual(buildVerifyCarryOver({ deferred }).bounceCapIds, ['v-p1', 'v-unk'], 'no atGoalIds: every carried-over bead counts as at-goal');
     assert.equal(applyVerifyCarryOverVerdictGate({ verdict: 'PASS', notes: 'fine' }, co).verdict, 'FAIL');
 });

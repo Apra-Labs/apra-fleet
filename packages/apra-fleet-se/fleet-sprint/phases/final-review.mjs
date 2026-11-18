@@ -236,25 +236,17 @@ export async function runFinalReviewPhase({
         finalUnclosedVerifyIds = [...verifyEverIds].filter((id) => !finalClosedIds.has(id));
     }
     // Only carried-over verify beads at/above the sprint goal priority force
-    // FAIL, matching how openAtGoal is judged; priorities come from one read of
-    // the not-closed scope, and a bead missing from it counts as at-goal.
-    let verifyCarryOver = (needsEvidenceVerifyIds || deferredVerifyIds)
+    // FAIL, matching how openAtGoal is judged: the at-goal not-done read above
+    // (priority-max=goalMax, every not-done status including deferred) names
+    // them, so a carried-over bead absent from it is below goal.
+    const verifyCarryOver = (needsEvidenceVerifyIds || deferredVerifyIds)
         ? buildVerifyCarryOver({
             needsEvidence: needsEvidenceVerifyIds || new Map(),
             deferred: deferredVerifyIds || new Map(),
             closedIds: new Set(finalClosedBeads.map((b) => b.id)),
+            atGoalIds: new Set(finalOpenAtGoalRaw.map((b) => b.id)),
         })
         : null;
-    if (verifyCarryOver) {
-        const openBeads = await bdListScoped('--status=open,in_progress,blocked,deferred --json');
-        const priorities = new Map((openBeads || []).filter((b) => b && Number.isFinite(b.priority)).map((b) => [b.id, b.priority]));
-        verifyCarryOver = buildVerifyCarryOver({
-            needsEvidence: needsEvidenceVerifyIds || new Map(),
-            deferred: deferredVerifyIds || new Map(),
-            closedIds: new Set(finalClosedBeads.map((b) => b.id)),
-            priorities, goalMax,
-        });
-    }
 
     let finalVerdictResult;
     // The Final Review covers an entire epic's worth of work, categorically
