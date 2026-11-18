@@ -153,6 +153,37 @@ test('mock sprint: a deploy that fails in C1 and succeeds in C2 can still end PA
     });
 });
 
+test('mock sprint: a failed deploy.md probe in the last cycle cannot hide an earlier deploy failure -- verdict FAIL', async () => {
+    await withScenarioMarkers('deployprobefail', async () => {
+        let deployCalls = 0;
+        // Duck-typed commandFailurePattern (only .test() is called): fails the
+        // deploy.md existence probe once the C1 deployer has run, i.e. from
+        // cycle 2 on, while the pre-sprint probes still succeed.
+        const failDeployProbeAfterC1 = { test: (cmd) => deployCalls >= 1 && /node -e .*deploy\.md/.test(cmd) };
+        const run = await runDevelopLoopScenario('deployprobefail', {
+            members: ['local'],
+            taskSpecs: [{ title: 'Task: deploy fails then probe fails' }],
+            maxCycles: 2,
+            withRunbooks: true,
+            doerHandler: closeAssignedDoer,
+            reviewerHandler: approvingReviewer,
+            deployHandler: async () => {
+                deployCalls++;
+                return { content: [{ text: JSON.stringify({ deployed: false, notes: DEPLOY_NOTES }) }] };
+            },
+            commandFailurePattern: failDeployProbeAfterC1,
+            finalReviewHandler: rubberStampPass,
+        });
+        assert.ok(!run.error, `scenario must not throw: ${run.error && run.error.message}`);
+        assert.equal(deployCalls, 1, 'the deployer is not dispatched in the cycle whose probe failed');
+        assert.equal(run.result.verdict, 'FAIL', `verdict must be FAIL, not PASS: ${JSON.stringify(run.result)}`);
+        assert.equal(run.result.status, 'failed');
+        assert.match(run.result.notes, /Deploy FAILED in the last cycle \(C2\)/);
+        assert.match(run.result.notes, /deploy\.md probe failed/);
+        assert.ok(run.logs.some((l) => l.includes("Probe for 'deploy.md' failed")), 'the probe error is logged');
+    });
+});
+
 test('mock sprint: with no deploy.md the sprint is unchanged -- deploy and integ skipped, PASS possible', async () => {
     await withScenarioMarkers('nodeployunchanged', async () => {
         const run = await runDevelopLoopScenario('nodeployunchanged', {

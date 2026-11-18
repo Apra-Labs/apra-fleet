@@ -219,6 +219,64 @@ describe('rule 5: stall accounting', () => {
     test('nothing set aside and nothing waiting -> nothing stuck', () => {
         assert.equal(stuckBehindSetAside({ scopeBeads: [bead('a')] }).size, 0);
     });
+
+    // A lane-mate that cannot close this run for a reason other than a doer
+    // BLOCKED report: deferred (plan-cap) or publish blocked by a
+    // permission-scope push failure.
+    test('a bead held only by a DEFERRED lane-mate is stuck, naming that lane-mate and why', () => {
+        const s = [bead('impl', { status: 'deferred', streak: 'L', order: 1 }), bead('test', { streak: 'L', order: 2 })];
+        const stuck = stuckBehindSetAside({ scopeBeads: s });
+        assert.deepEqual([...stuck.keys()], ['test']);
+        assert.match(stuck.get('test'), /^held on impl \(deferred\), which cannot close in this run/);
+        // The deferred bead itself is not in openIds (the runner drops deferred beads).
+        const stall = evaluateSetAsideStall({ openIds: ['test'], stuckIds: stuck });
+        assert.ok(stall);
+        assert.deepEqual(stall.blockerIds, ['test']);
+        assert.match(stall.blockerReasons.test, /impl \(deferred\)/);
+    });
+
+    test('a bead held only by a PUBLISH-BLOCKED lane-mate is stuck, naming that lane-mate and why', () => {
+        const s = [bead('impl', { streak: 'L', order: 1 }), bead('test', { streak: 'L', order: 2 })];
+        const perm = new Map([['impl', 'git push refused: Resource not accessible by integration']]);
+        const stuck = stuckBehindSetAside({ scopeBeads: s, permissionBlockedIds: perm });
+        assert.deepEqual([...stuck.keys()], ['test']);
+        assert.match(stuck.get('test'), /^held on impl \(publish blocked by a permission-scope push failure\), which cannot close in this run/);
+        const stall = evaluateSetAsideStall({ openIds: ['impl', 'test'], stuckIds: stuck, permissionBlockedIds: perm });
+        assert.ok(stall);
+        assert.deepEqual(stall.blockerIds, ['impl', 'test']);
+        assert.match(stall.blockerReasons.impl, /publish blocked by a permission-scope push failure \(git push refused/);
+        assert.match(stall.blockerReasons.test, /impl \(publish blocked/);
+        // Without the permission-blocked map the publish-blocked bead itself is uncovered.
+        assert.equal(evaluateSetAsideStall({ openIds: ['impl', 'test'], stuckIds: stuck }), null);
+    });
+
+    test('stuck behind a deferred bead spreads over blocks edges and lane order, transitively', () => {
+        const s = [
+            bead('impl', { status: 'deferred', priority: 3, streak: 'L', order: 1 }),
+            bead('test', { streak: 'L', order: 2 }),
+            bead('dep', { deps: ['test'] }),
+        ];
+        const stuck = stuckBehindSetAside({ scopeBeads: s });
+        assert.deepEqual([...stuck.keys()].sort(), ['dep', 'test']);
+        assert.match(stuck.get('dep'), /^held on test \(itself held behind a bead that cannot close in this run\)/);
+    });
+
+    test('a held bead whose earlier lane-mate CAN still close is not stuck, even with a deferred bead elsewhere', () => {
+        const s = [
+            bead('impl', { streak: 'L', order: 1 }), bead('test', { streak: 'L', order: 2 }),
+            bead('other', { status: 'deferred', streak: 'M', order: 1 }),
+        ];
+        const perm = new Map([['unrelated', 'push refused']]);
+        const stuck = stuckBehindSetAside({ scopeBeads: s, permissionBlockedIds: perm });
+        assert.equal(stuck.size, 0);
+        assert.equal(evaluateSetAsideStall({ openIds: ['impl', 'test'], stuckIds: stuck, permissionBlockedIds: perm }), null);
+    });
+
+    test('a set-aside lane-mate is named with why too', () => {
+        const s = [bead('impl', { streak: 'L', order: 1 }), bead('test', { streak: 'L', order: 2 })];
+        const stuck = stuckBehindSetAside({ scopeBeads: s, doctorBlockedIds: setAside('impl') });
+        assert.match(stuck.get('test'), /^held on impl \(set aside, reported BLOCKED\)/);
+    });
 });
 
 describe('rule 6: "Waited this run" report line', () => {

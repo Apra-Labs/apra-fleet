@@ -2,8 +2,15 @@
 // End-to-end mock sprints for "a blocked sprint stops early and reports the
 // blocker": a doer-BLOCKED bead (and its dependents) and a deploy that failed
 // at the deploy.md Permissions pre-step are set aside for the run, and once
-// nothing else can progress the run ends SPRINT_STALLED at once, naming every
-// blocker with its reason.
+// nothing else can progress the run stops early, naming every blocker with its
+// reason.
+//
+// POLICY (set-aside carry-over): when this run already closed work, a
+// set-aside stall no longer aborts SPRINT_STALLED -- the cycle loop exits to
+// Finalization (Final Review, Regression, Harvest, Publish PR) with the
+// set-aside beads as a named carry-over, and the verdict is forced FAIL.
+// Scenarios (a), (c) and (e) close work, so they were deliberately flipped
+// from SPRINT_STALLED to that exit. Zero-close runs still end SPRINT_STALLED.
 //
 // Scenarios:
 //   (a) the reported user case -- one member is missing a toolchain, so the
@@ -29,7 +36,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
-import { buildSprintPrBody } from '../fleet-sprint/pr-body.mjs';
 import {
     invalidateSyncRemoteCache, clearLastSyncedTip, clearTipProbeFailures,
 } from '../fleet-sprint/dolt-sync.mjs';
@@ -52,6 +58,19 @@ const countByAgent = (run) => {
     for (const d of run.dispatched) { const k = d.agent || '(none)'; out[k] = (out[k] || 0) + 1; }
     return out;
 };
+const CARRY_OVER_EXIT = 'set-aside-carry-over';
+// The carry-over exit ran the finish phases: Final Review (no agent name),
+// the harvester and the PR publish (its body carries the set-aside section).
+const assertFinalizedWithCarryOver = (run) => {
+    assert.ok(!run.error, `no abort with work closed this run: ${run.error && run.error.message}`);
+    assert.equal(run.result.exitReason, CARRY_OVER_EXIT, JSON.stringify(run.result));
+    assert.equal(run.result.verdict, 'FAIL', JSON.stringify(run.result));
+    assert.ok(run.dispatched.some((d) => d.label === 'Final Review'), 'Final Review must run');
+    assert.ok(run.dispatched.some((d) => d.agent === 'harvester'), 'Harvest must run');
+    assert.ok(run.commandLog.some((c) => c.includes('Set aside this run')),
+        'the published PR body must carry the "Set aside this run" section');
+};
+const carried = (run) => Object.fromEntries((run.result.carryOver || []).map((e) => [e.id, e.reason]));
 const cycleTwoStarted = (logs) => logs.some((m) => /\bC2 R\d|Cycle 2\b|Deploy Phase C2|Route C2/.test(m));
 
 // Scenario (d)'s dispatch counts per agent and verdict, measured by running
@@ -62,7 +81,7 @@ const PRE_CHANGE_VERDICT = 'PASS';
 
 const TOOLCHAIN_NOTES = 'Missing toolchain: cargo is not installed on this member.';
 
-test('(a) BLOCKED beads and their dependent are dispatched once at most; the independent work closes; SPRINT_STALLED in cycle 1', async () => {
+test('(a) BLOCKED beads and their dependent are dispatched once at most; the independent work closes; carry-over exit in cycle 1', async () => {
     resetSyncMemo();
     await withScenarioMarkers('blocked stall cycle 1 (user case)', async () => {
         const T = {
@@ -108,31 +127,33 @@ test('(a) BLOCKED beads and their dependent are dispatched once at most; the ind
         // The independent chain still closes.
         for (const x of [d1, d2]) assert.equal(run.finalBeadsById.get(x).status, 'closed', `${x} must close`);
 
-        // The run ends SPRINT_STALLED in cycle 1, naming each blocker.
-        assert.ok(run.error, 'the run must end in a stall');
-        assert.equal(run.error.code, 'SPRINT_STALLED', run.error.message);
-        assert.equal(run.error.details.cycle, 1);
+        // POLICY (set-aside carry-over): d1/d2 closed this run, so the run no
+        // longer ends SPRINT_STALLED -- it exits to Finalization in cycle 1
+        // with each blocker carried over and named with its reason.
+        assertFinalizedWithCarryOver(run);
         assert.ok(!cycleTwoStarted(run.logs), 'no second cycle may start');
-        for (const x of [a, b, c]) {
-            assert.ok(run.error.blockerIds.includes(x), `blockerIds must name ${x}: ${JSON.stringify(run.error.blockerIds)}`);
-        }
-        for (const x of [a, b]) assert.ok(run.error.blockerReasons[x].includes(TOOLCHAIN_NOTES), run.error.blockerReasons[x]);
-        assert.ok(run.error.blockerReasons[c].includes(b), `the dependent's reason must name ${b}: ${run.error.blockerReasons[c]}`);
-        assert.ok(run.error.message.includes(TOOLCHAIN_NOTES), run.error.message);
+        const reasons = carried(run);
+        for (const x of [a, b, c]) assert.ok(reasons[x], `the carry-over must name ${x}: ${JSON.stringify(reasons)}`);
+        for (const x of [a, b]) assert.ok(reasons[x].includes(TOOLCHAIN_NOTES), reasons[x]);
+        assert.ok(reasons[c].includes(b), `the dependent's reason must name ${b}: ${reasons[c]}`);
+        assert.ok(run.result.notes.includes(TOOLCHAIN_NOTES), run.result.notes);
 
-        // The [ABORTED] PR body built from this run's stall carries the
-        // "Set aside this run" section: bead, reason, first seen.
-        const body = buildSprintPrBody({ verdict: 'ABORTED', branch: run.branch, notes: run.error.message, setAside: run.error.setAside });
-        const section = body.slice(body.indexOf('### Set aside this run'));
-        assert.ok(body.includes('### Set aside this run'), body);
+        // The PR body this run published carries the "Set aside this run"
+        // section: bead, reason, first seen.
+        const prCmd = run.commandLog.find((cmd) => cmd.includes('Set aside this run'));
+        const section = prCmd.slice(prCmd.indexOf('Set aside this run'));
+        // The body travels JSON-encoded in the curl payload: items are
+        // separated by a literal backslash-n.
+        const items = section.split('\\n');
         for (const x of [a, b, c]) {
-            assert.match(section, new RegExp(`- ${x}: .*\\(first seen C1 R1\\)`), section);
+            const item = items.find((l) => l.startsWith(`- ${x}: `));
+            assert.ok(item && item.endsWith('(first seen C1 R1)'), `${x} item: ${item}`);
         }
         assert.ok(section.includes(TOOLCHAIN_NOTES), section);
     });
 });
 
-test('(c) a deploy set aside at the Permissions pre-step in C1 is not dispatched in C2; the stall carries the deploy reason', async () => {
+test('(c) a deploy set aside at the Permissions pre-step in C1 is not dispatched in C2; the carry-over names the deploy reason', async () => {
     resetSyncMemo();
     await withScenarioMarkers('blocked stall deploy set aside', async () => {
         const PERMISSION_NOTES = 'Missing permission grant(s): Bash(docker compose:*).';
@@ -165,14 +186,17 @@ test('(c) a deploy set aside at the Permissions pre-step in C1 is not dispatched
             `C2 must skip the deployer, logs: ${JSON.stringify(run.logs.filter((l) => /Deploy/.test(l)))}`);
         assert.equal(run.finalBeadsById.get(late).status, 'closed', 'the late bead closes in C2');
 
-        assert.ok(run.error, 'the run must stall once only IntegTest-bound work remains');
-        assert.equal(run.error.code, 'SPRINT_STALLED', run.error.message);
-        assert.equal(run.error.details.cycle, 2);
-        assert.ok(run.error.blockerIds.includes('deploy'), JSON.stringify(run.error.blockerIds));
-        assert.ok(run.error.blockerReasons.deploy.includes(PERMISSION_NOTES), run.error.blockerReasons.deploy);
-        assert.ok(run.error.message.includes(PERMISSION_NOTES), run.error.message);
-        const body = buildSprintPrBody({ verdict: 'ABORTED', branch: run.branch, notes: '', setAside: run.error.setAside });
-        assert.match(body, /- deploy: deployer stopped at the deploy\.md Permissions check.*\(first seen C1\)/);
+        // POLICY (set-aside carry-over): both tasks closed this run, so once
+        // only IntegTest-bound work remains the run exits to Finalization in
+        // C2 (no SPRINT_STALLED), carrying the set-aside deploy over.
+        assertFinalizedWithCarryOver(run);
+        assert.ok(run.logs.some((l) => /^Cycle 2: Carried over \(Cycle 2 evaluation\)/.test(l)),
+            `the carry-over exit must fire at C2 evaluation: ${JSON.stringify(run.logs.filter((l) => /Carried over/.test(l)))}`);
+        const reasons = carried(run);
+        assert.ok(reasons.deploy && reasons.deploy.includes(PERMISSION_NOTES), JSON.stringify(reasons));
+        assert.ok(run.result.notes.includes(PERMISSION_NOTES), run.result.notes);
+        const prCmd = run.commandLog.find((cmd) => cmd.includes('Set aside this run'));
+        assert.match(prCmd, /- deploy: deployer stopped at the deploy\.md Permissions check[^\\]*\(first seen C1\)/);
     });
 });
 
@@ -246,12 +270,13 @@ test('(e) a verify-ready feature in another lane keeps the run going through Dep
             'Integration Test must be asked to verify the feature');
         assert.equal(run.finalBeadsById.get(featureId).status, 'closed', 'the feature closes through Integration Test');
 
-        // Only then: the set-aside stall, naming the blocked bead and neither
-        // the feature nor a deploy.
-        assert.ok(run.error, 'the run must end in a stall once only the set-aside bead remains');
-        assert.equal(run.error.code, 'SPRINT_STALLED', run.error.message);
-        assert.equal(run.error.details.cycle, 1);
-        assert.deepEqual(run.error.blockerIds, [a]);
+        // Only then: the set-aside stall. POLICY (set-aside carry-over): the
+        // feature's tasks closed this run, so the run exits to Finalization
+        // in cycle 1 (no SPRINT_STALLED), carrying over only the blocked bead
+        // -- neither the feature nor a deploy.
+        assertFinalizedWithCarryOver(run);
+        assert.ok(!cycleTwoStarted(run.logs), 'no second cycle may start');
+        assert.deepEqual(run.result.carryOver.map((e) => e.id), [a]);
     });
 });
 

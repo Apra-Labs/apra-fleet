@@ -65,11 +65,12 @@
 // which stays there because the Re-Review and Final Review phases call it too.
 // =============================================================================
 
-import { applyGuardedReopens, foldReplanIds, ensureRedBranchFixTask, isInGoalPriority } from '../beads-transitions.mjs';
+import { applyGuardedReopens, foldReplanIds, ensureRedBranchFixTask, isInGoalPriority, belowGoalOnlyReopenIds } from '../beads-transitions.mjs';
 import {
     validateNewTask, appendRejectedFindingToParentNotes, persistNewTaskBestEffort,
 } from '../abort.mjs';
 import { applyReviewerDecision, reviewerReopenEntries } from '../decisions.mjs';
+import { nextLastBuildFailing } from '../red-build-integ-gate.mjs';
 
 /**
  * The bead ids a round's Review covers: the union of every streak outcome's
@@ -103,7 +104,10 @@ export function reviewScopeBeadIds(streakOutcomes) {
  *   lastReviewVerdict: string|undefined,
  *   reviewedThisCycle: boolean,
  *   pendingRejectedNewTasks: object[],
- * }>} The three REASSIGNED values described in the header. Every other output
+ *   lastBuildFailing: boolean,
+ * }>} The three REASSIGNED values described in the header, plus the
+ *   run-scoped `lastBuildFailing` (set from a review that ran, else returned
+ *   as passed in). Every other output
  *   of this phase is an in-place mutation of a Set/Map/array the caller still
  *   holds. On the empty-scope round (every streak failed) all three come back
  *   exactly as they were passed in.
@@ -139,6 +143,17 @@ export async function runReviewPhase({
     lastReviewVerdict,
     reviewedThisCycle,
     pendingRejectedNewTasks,
+    // RUN-scoped (never reset per cycle): whether the last review that
+    // genuinely ran reported the build/tests failing. Passed in and returned
+    // so a round that dispatches no review leaves it unchanged; see
+    // nextLastBuildFailing in ../beads-transitions.mjs.
+    lastBuildFailing = false,
+    // The skipped reopenIds when the verdict is CHANGES_NEEDED but every
+    // reopenId was skipped as below goal and nothing in-goal was left behind
+    // (../beads-transitions.mjs belowGoalOnlyReopenIds), else null. Cycle
+    // Evaluation treats such a verdict as APPROVED for the exit decision.
+    // Passed in and returned like lastReviewVerdict.
+    belowGoalOnlySkippedIds = null,
     // runSprintCycle-scoped locals and runner.js-exported helpers, injected
     // rather than imported (see header).
     dispatchReview,
@@ -204,11 +219,15 @@ export async function runReviewPhase({
     // completion requires this to be exactly 'APPROVED', not just
     // an empty ready-bead list.
     lastReviewVerdict = verdict.verdict;
+    // Sticky red-build flag (../red-build-integ-gate.mjs): gates the
+    // Integration Test dispatch until a later review reports the build green.
+    lastBuildFailing = nextLastBuildFailing(lastBuildFailing, verdict);
     // A review genuinely ran THIS cycle -- the Cycle Evaluation section
     // below only trusts `lastReviewVerdict` when this is true (see the
     // `reviewedThisCycle` reset at the top of the cycle loop and the
     // re-review dispatch it guards).
     reviewedThisCycle = true;
+    belowGoalOnlySkippedIds = null;
 
     // Orchestrator (this code) -- NOT the LLM -- applies every
     // structured transition: reopenIds via `bd update --status=open`,
@@ -225,6 +244,7 @@ export async function runReviewPhase({
     // so a reviewer naming a replanIds id that was never really
     // reopened (out of scope, or simply absent from reopenIds) can
     // never short-circuit the loop.
+    const skippedBelowGoalIds = [];
     const reopenedIds = new Set(await applyGuardedReopens({
         // reopenIds, plus a NEEDS-DECISION bead (../decisions.mjs).
         entries: reviewerReopenEntries(verdict, assignedBeadIds),
@@ -244,6 +264,7 @@ export async function runReviewPhase({
             // prompt -- never a blanket broadcast.
             perBeadFeedback.set(id, verdict.notes);
         },
+        onSkippedBelowGoal: ({ id }) => skippedBelowGoalIds.push(id),
     }));
     // A NEEDS-DECISION verdict: record the decision for an operator and set
     // the named bead aside -- see ../decisions.mjs. A closed bead was
@@ -370,11 +391,25 @@ export async function runReviewPhase({
         }),
     });
 
+    // A CHANGES_NEEDED whose only reopenIds were skipped as below goal, with
+    // no in-goal newTask, no red-branch fix task and no pending decision, does
+    // not block the sprint exit (see belowGoalOnlyReopenIds).
+    belowGoalOnlySkippedIds = belowGoalOnlyReopenIds({
+        verdict: verdict,
+        skippedBelowGoalIds,
+        reopenedCount: reopenedIds.size,
+        inGoalNewTaskCount,
+        pendingDecisionCount: sprintState && sprintState.pendingDecisions instanceof Map ? sprintState.pendingDecisions.size : 0,
+    });
+    if (belowGoalOnlySkippedIds) {
+        log(`Review C${cycle} R${devRounds}: CHANGES_NEEDED named only reopenIds below this sprint's goal ${validated.goal}, all skipped (${belowGoalOnlySkippedIds.join(', ')}), with no in-goal newTask, no failing build and no pending decision -- treated as APPROVED for the exit decision; the skipped bead(s) are carried over.`);
+    }
+
     // The orchestrator just MUTATED beads (reopens + newTask creates) in
     // its own clone -- D-push so members observe them on their next
     // dispatch's D-pull.
     await gitSync.syncBeadsAfter(backlogMember, { pushBeads: true });
     } // end assignedBeadIds.length > 0 (Review dispatch + orchestrator-applied transitions)
 
-    return { lastReviewVerdict, reviewedThisCycle, pendingRejectedNewTasks };
+    return { lastReviewVerdict, reviewedThisCycle, pendingRejectedNewTasks, lastBuildFailing, belowGoalOnlySkippedIds };
 }

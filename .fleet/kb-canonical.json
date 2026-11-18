@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "5bfc7309d9fab9ead8aada7745fd165ecd32c07b",
     "branch": "main",
-    "entry_count": 148
+    "entry_count": 151
   },
   "entries": [
     {
@@ -1840,32 +1840,6 @@
       "updated_at": "2026-09-29T06:13:16.248Z"
     },
     {
-      "id": "a098caf8-263f-4b72-b5a7-55fc3d290a07",
-      "type": "knowledge",
-      "title": "Set-aside stall throws StalledSprintError before the 2-cycle stall and deploy-retry exit",
-      "summary": "runner.js throwIfSetAsideStall runs at the start of a Develop round (all ready beads set aside) and at Cycle Evaluation before STALL_CYCLE_LIMIT and the deploy-blocked retry; set-aside.mjs evaluateSetAsideStall decides it purely.",
-      "symbols": [
-        "throwIfSetAsideStall",
-        "evaluateSetAsideStall",
-        "collectSetAsideEntries",
-        "StalledSprintError"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/fleet-sprint/runner.js",
-        "packages/apra-fleet-se/fleet-sprint/set-aside.mjs",
-        "packages/apra-fleet-se/fleet-sprint/abort.mjs",
-        "packages/apra-fleet-se/test/mock-sprint-blocked-stall-cycle1.test.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-10-22T05:40:50.485Z",
-      "source_file_hashes": {
-        "packages/apra-fleet-se/fleet-sprint/abort.mjs": "46fd9dc81c6edbfa975e667e5b3569f60df616a7",
-        "packages/apra-fleet-se/fleet-sprint/runner.js": "7d6e9fb4da7578f3b9c0ccefc2b94c9322a4c13a",
-        "packages/apra-fleet-se/fleet-sprint/set-aside.mjs": "9973ffdded67807fead8b497b2acd817253cb23b",
-        "packages/apra-fleet-se/test/mock-sprint-blocked-stall-cycle1.test.mjs": "773f66cbc9726bc770c4f399da3699cbe5b2e0b5"
-      }
-    },
-    {
       "id": "a1a279ec-5537-4820-a23a-c9a7737f2507",
       "type": "knowledge",
       "title": "Review scope is built from engine-verified closedIds, not outcome status",
@@ -2140,6 +2114,32 @@
       "source_file_hashes": {
         "src/services/http-transport.ts": "5f5473f8a1f70d3fbe4173a2124ba726cf940f0e",
         "tests/http-transport.test.ts": "cd60757b7c0699170eb0bb5074a787d6e9738128"
+      }
+    },
+    {
+      "id": "bb267f1a-c0c4-459f-ba68-e35ad8744727",
+      "type": "knowledge",
+      "title": "A doer ladder ended by MemberPermissionDeniedError is recorded as a failed streak",
+      "summary": "develop.mjs catches only MemberPermissionDeniedError from the doer ladder and routes it through per-bead attribution (failureReason permission_denied), so beads that streak verifiably closed enter reviewScopeBeadIds. Before this, the throw escaped before any outcome was recorded and parallel continueOnError swallowed it.",
+      "symbols": [
+        "runDevelopPhase",
+        "healPermissionDenial",
+        "reviewScopeBeadIds",
+        "MemberPermissionDeniedError"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/phases/develop.mjs",
+        "packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/review.mjs",
+        "packages/apra-fleet-se/test/mock-sprint-permission-denied-review-gap.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T02:32:44.664Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs": "ff3ad443e131909f30772c7afffb46fb0ed31cad",
+        "packages/apra-fleet-se/fleet-sprint/phases/develop.mjs": "44925dff3bcf127bdd594bfd28c1eb12b749a5b5",
+        "packages/apra-fleet-se/fleet-sprint/phases/review.mjs": "31f45bc59b6e32ddb5a032ad3766c032ea42870f",
+        "packages/apra-fleet-se/test/mock-sprint-permission-denied-review-gap.test.mjs": "19d24cdfe587f8b98f3eb7e59debf836169805fc"
       }
     },
     {
@@ -2481,6 +2481,32 @@
       }
     },
     {
+      "id": "dba1a9f2-99c3-491a-ab63-b476cfff1306",
+      "type": "knowledge",
+      "title": "Stuck accounting roots: set aside, publish blocked, or deferred (cannotCloseThisRun)",
+      "summary": "set-aside.mjs stuckBehindSetAside counts a bead as stuck when it is held (lane order or blocks, transitively) behind a bead in cannotCloseThisRun: doctorBlockedIds, permissionScopeBlockedBeads, or status 'deferred'. evaluateSetAsideStall counts publish-blocked beads as covered.",
+      "symbols": [
+        "cannotCloseThisRun",
+        "stuckBehindSetAside",
+        "evaluateSetAsideStall",
+        "throwIfSetAsideStall"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/set-aside.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/test/set-aside-v2.test.mjs",
+        "packages/apra-fleet-se/test/mock-sprint-lane-mate-cannot-close.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T02:32:37.461Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/runner.js": "56dc2a0b7f209ddd37687a7b808600361b03d3bc",
+        "packages/apra-fleet-se/fleet-sprint/set-aside.mjs": "dd3e2c372c80217c130d8d14b47c05ed8e90d964",
+        "packages/apra-fleet-se/test/mock-sprint-lane-mate-cannot-close.test.mjs": "85da6fd3bc2b347d0b33bca15b9eabd9c905a18e",
+        "packages/apra-fleet-se/test/set-aside-v2.test.mjs": "7c4166b0864c0a4ca19674ab0b77485c6ed0baff"
+      }
+    },
+    {
       "id": "dd912ec8-958c-49d0-9926-636ee3a17f95",
       "type": "knowledge",
       "title": "The pushCode:true dispatch set is four sites (doer + harvester, each with its resume), not two",
@@ -2669,6 +2695,37 @@
       "updated_at": "2026-10-01T22:08:20.219Z"
     },
     {
+      "id": "e8eef38a-b7e3-45e4-b6e5-87941d2a40e8",
+      "type": "knowledge",
+      "title": "Lane order ignores containers: lowerOrderLaneMates is the single lane-mate rule",
+      "summary": "beads-scope.mjs lowerOrderLaneMates computes a bead's open lower-order lane-mates (same metadata.streak, lower finite streakOrder) and never counts a container (any bead that is the .parent of another bead in the list, per containerIdsOf). unmetPrerequisites, partitionReadyByGoal and worklists.mjs holdBackByLaneOrder all call it; classifyBlockedReport inherits it via unmetPrerequisites.",
+      "symbols": [
+        "lowerOrderLaneMates",
+        "containerIdsOf",
+        "newIgnoredContainerLaneLogs",
+        "holdBackByLaneOrder",
+        "unmetPrerequisites",
+        "partitionReadyByGoal",
+        "classifyBlockedReport"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/beads-scope.mjs",
+        "packages/apra-fleet-se/fleet-sprint/worklists.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/test/lane-container-order.test.mjs",
+        "packages/apra-fleet-se/test/mock-sprint-lane-container-order.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T01:51:53.974Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/beads-scope.mjs": "5fd45f687a968ad465a8dba274374366c68e29b4",
+        "packages/apra-fleet-se/fleet-sprint/runner.js": "229607bc589a05ac46b16843327c6531d951a673",
+        "packages/apra-fleet-se/fleet-sprint/worklists.mjs": "f50f0681ddd91e7f923bc9232bf7c1d61dc5c0f7",
+        "packages/apra-fleet-se/test/lane-container-order.test.mjs": "acf22556f673f4558c282c03d2f5a60a1bd3229f",
+        "packages/apra-fleet-se/test/mock-sprint-lane-container-order.test.mjs": "27658c8702644944bbebf2f1c530b455b84f9a95"
+      }
+    },
+    {
       "id": "e9f7d4a8-575a-4f4f-9342-9bf47b017b6f",
       "type": "knowledge",
       "title": "Doer retry reset salvages local work to a fleet-salvage side ref and fails closed",
@@ -2691,6 +2748,25 @@
         "packages/apra-fleet-se/fleet-sprint/kb.mjs": "7e22b1e41486daf8647bf83ad899c52a6a8c5263",
         "packages/apra-fleet-se/fleet-sprint/member-sync.mjs": "65991cdb22cbbe9e77d581117e0aa3144317891f",
         "packages/apra-fleet-se/test/helpers/mock-sprint-harness.mjs": "27961b4e2d49ff0510e4c8abc9fa4f174238435c"
+      }
+    },
+    {
+      "id": "eb76e49e-0a86-41ea-822d-16bb77d9e3b8",
+      "type": "knowledge",
+      "title": "needs-external-evidence count sees a gap bug only via integ bugsFiled",
+      "summary": "The engine's per-bead inconclusive-verify count resets on a gap bug only when the integ runner lists that bug in bugsFiled and bd show resolves its parent to a verify-set id. An unreported gap bug leaves the cycle counted as inconclusive.",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/phases/integ-test.mjs",
+        "packages/apra-fleet-se/fleet-sprint/verify-carry-over.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T03:14:54.709Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/phases/integ-test.mjs": "744c54a3ddf396db799ec4000a65b03b83aa1303",
+        "packages/apra-fleet-se/fleet-sprint/runner.js": "511883e9e357d5c30ee5ecdee07cc6fad9fcf103",
+        "packages/apra-fleet-se/fleet-sprint/verify-carry-over.mjs": "5091615ee7069b29e6ee7a785f38236f691273d2"
       }
     },
     {
@@ -3028,6 +3104,13 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:39.384Z"
+    }
+  ],
+  "demotions": [
+    {
+      "id": "a098caf8-263f-4b72-b5a7-55fc3d290a07",
+      "at": "2026-11-18T03:14:58.284Z",
+      "reason": "demoted"
     }
   ]
 }

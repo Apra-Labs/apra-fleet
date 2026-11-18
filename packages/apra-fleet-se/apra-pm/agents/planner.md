@@ -247,6 +247,10 @@ bd create ... --metadata '{"model": "<cheap|standard|premium>", "size": "<S|M|L>
   runs first; ties break by insertion order -- do NOT use a `blocks` edge to break an
   intra-lane tie (see the dependency-wiring rules below).
 - `size` -- `S`/`M`/`L`, used for lane sizing below.
+- Lane metadata (`streak`/`streakOrder`) goes on LEAF tasks only -- never on a bead that has
+  children (a feature, epic or decomposed task). A bead with children can only close after
+  its children, so the engine ignores its lane position (and logs that it did); giving it
+  one never orders anything.
 
 **Lanes are review units.** The engine dispatches every task in one lane to ONE doer in
 `streakOrder`, and the reviewer reviews a whole Develop ROUND at once -- every lane

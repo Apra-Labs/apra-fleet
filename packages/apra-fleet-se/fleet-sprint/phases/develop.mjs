@@ -62,7 +62,7 @@ import {
     selectStreaks, groupStreaksFromLaneMetadata, streakRequiredTier,
     resolveWorklistTierPolicy, hasContextHeadroomForResume, assignDoerWorklists,
 } from '../worklists.mjs';
-import { isPostDispatchSyncFailure } from '../errors.mjs';
+import { isPostDispatchSyncFailure, MemberPermissionDeniedError, PERMISSION_DENIED_DISPATCH_REASON } from '../errors.mjs';
 import { isPermissionScopePostDispatchSyncFailure } from '../dispatch-failure.mjs';
 import { policyFor } from '../role-policies.mjs';
 import { CLAIMED_ELSEWHERE_REASON } from '../orphan-reclaim.mjs';
@@ -783,6 +783,17 @@ export async function runDevelopPhase({
                     bindings: { doerMember, doerModel },
                 };
             },
+        }).catch((err) => {
+            // A refused tool call the permission heal could not fix ends the
+            // doer ladder with MemberPermissionDeniedError. The member CLI
+            // ran (a refusal is reported after the turn), so the streak may
+            // already have closed beads: record it as a dispatch failure
+            // through the per-bead attribution below, so the beads it closed
+            // still enter this round's Review instead of the streak vanishing
+            // from the outcomes. Any other ladder throw propagates unchanged.
+            if (!(err instanceof MemberPermissionDeniedError)) throw err;
+            log(`Doer streak ${streakScope()} on member '${doerMember}' failed on refused tool calls: ${err.message}`);
+            return { value: null, error: err, attempts: 1, resumesIssued: 0, stepResults: {} };
         });
         const report = doerOutcome.value;
         const dispatchError = doerOutcome.error;
@@ -845,7 +856,8 @@ export async function runDevelopPhase({
             const failureFacts = {
                 failureReason: claimedElsewhere
                     ? CLAIMED_ELSEWHERE_REASON
-                    : ((dispatchError.details && dispatchError.details.reason) || 'dispatch-error'),
+                    : ((dispatchError.details && dispatchError.details.reason)
+                        || (dispatchError instanceof MemberPermissionDeniedError ? PERMISSION_DENIED_DISPATCH_REASON : 'dispatch-error')),
                 ...(isPostDispatchSyncFailure(dispatchError) ? { postDispatchSyncFailed: true } : {}),
             };
             // NOTE ON REVIEW SCOPE: review.mjs's reviewScopeBeadIds() builds the

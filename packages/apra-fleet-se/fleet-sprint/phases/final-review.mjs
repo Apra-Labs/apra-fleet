@@ -92,6 +92,9 @@ import { buildSettleCallback } from '../dolt-settle.mjs';
 import { partitionDeferredBeads } from '../beads-scope.mjs';
 import { applyDeployFailureVerdictGate, formatDeployFailureReason } from './deploy.mjs';
 import { applyVerifyBlockVerdictGate } from '../verify-block.mjs';
+import { applyCarryOverVerdictGate } from '../set-aside.mjs';
+import { buildVerifyCarryOver, applyVerifyCarryOverVerdictGate } from '../verify-carry-over.mjs';
+import { applyRedBuildIntegSkipVerdictGate, formatRedBuildIntegSkipVerdictReason } from '../red-build-integ-gate.mjs';
 
 /**
  * Runs the Final Review phase: the sprint's closing evidence-based verdict,
@@ -143,6 +146,27 @@ export async function runFinalReviewPhase({
     // GitHub #717: the named verify-block deadlock diagnosis the cycle loop
     // exited on, or null. Non-null forces a FAIL verdict (never PASS).
     verifyBlockDiagnosis = null,
+    // The carry-over ({ reason, where, cycle, closedIds, entries, atGoalIds },
+    // ../set-aside.mjs buildSetAsideCarryOver) the cycle loop exited on after
+    // a set-aside stall with work closed this run, or null. Its entries are
+    // named in the verdict notes; any at/above-goal entry forces FAIL.
+    carryOverExit = null,
+    // Verify-routed beads the cycle loop stopped waiting for
+    // (../verify-carry-over.mjs): needs-external-evidence (id -> { reason,
+    // cycles }) and deferred during the run (id -> reason). Any still-open
+    // needs-external-evidence bead forces FAIL; both kinds are named in the
+    // verdict notes.
+    needsEvidenceVerifyIds = null,
+    deferredVerifyIds = null,
+    // Below-goal reopenIds a CHANGES_NEEDED verdict named that the cycle loop
+    // exited past (treated as APPROVED: every one was skipped as below goal).
+    // Named in the verdict notes; never changes the verdict.
+    belowGoalCarryOverIds = null,
+    // The latest cycle whose Integration Test was skipped because the last
+    // review reported a red build ({cycle}), or null once a later green
+    // review let Integration Test run. Non-null forces a FAIL verdict
+    // (../red-build-integ-gate.mjs).
+    redBuildIntegSkip = null,
     // runSprintCycle-scoped locals and runner-module-private values, injected
     // rather than imported (see header).
     bdListScoped,
@@ -210,6 +234,13 @@ export async function runFinalReviewPhase({
         const finalClosedIds = new Set(finalClosedBeads.map((b) => b.id));
         finalUnclosedVerifyIds = [...verifyEverIds].filter((id) => !finalClosedIds.has(id));
     }
+    const verifyCarryOver = (needsEvidenceVerifyIds || deferredVerifyIds)
+        ? buildVerifyCarryOver({
+            needsEvidence: needsEvidenceVerifyIds || new Map(),
+            deferred: deferredVerifyIds || new Map(),
+            closedIds: new Set(finalClosedBeads.map((b) => b.id)),
+        })
+        : null;
 
     let finalVerdictResult;
     // The Final Review covers an entire epic's worth of work, categorically
@@ -333,6 +364,32 @@ export async function runFinalReviewPhase({
         const llmVerdict = finalVerdictResult && finalVerdictResult.verdict;
         finalVerdictResult = applyVerifyBlockVerdictGate(finalVerdictResult, verifyBlockDiagnosis);
         log(`Final Review: sprint verdict forced to FAIL (Final Review returned ${llmVerdict ?? '(none)'}) -- ${verifyBlockDiagnosis}`);
+    }
+    if (carryOverExit) {
+        const llmVerdict = finalVerdictResult && finalVerdictResult.verdict;
+        finalVerdictResult = applyCarryOverVerdictGate(finalVerdictResult, carryOverExit);
+        log(carryOverExit.atGoalIds.length > 0
+            ? `Final Review: sprint verdict forced to FAIL (Final Review returned ${llmVerdict ?? '(none)'}) -- ${carryOverExit.atGoalIds.length} at/above-goal bead(s) carried over: ${carryOverExit.atGoalIds.join(', ')}`
+            : `Final Review: carry-over named in the verdict notes: ${carryOverExit.entries.map((e) => e.id).join(', ')}`);
+    }
+    if (verifyCarryOver) {
+        const llmVerdict = finalVerdictResult && finalVerdictResult.verdict;
+        finalVerdictResult = applyVerifyCarryOverVerdictGate(finalVerdictResult, verifyCarryOver);
+        const forcedIds = [...verifyCarryOver.needsEvidenceIds, ...verifyCarryOver.bounceCapIds];
+        log(forcedIds.length > 0
+            ? `Final Review: sprint verdict forced to FAIL (Final Review returned ${llmVerdict ?? '(none)'}) -- ${forcedIds.length} verify-routed bead(s) carried over as needs-external-evidence or deferred by the verify bounce cap: ${forcedIds.join(', ')}`
+            : `Final Review: deferred verify carry-over named in the verdict notes: ${verifyCarryOver.deferredIds.join(', ')}`);
+    }
+    if (redBuildIntegSkip) {
+        const llmVerdict = finalVerdictResult && finalVerdictResult.verdict;
+        finalVerdictResult = applyRedBuildIntegSkipVerdictGate(finalVerdictResult, redBuildIntegSkip);
+        log(`Final Review: sprint verdict forced to FAIL (Final Review returned ${llmVerdict ?? '(none)'}) -- ${formatRedBuildIntegSkipVerdictReason(redBuildIntegSkip)}`);
+    }
+    if (finalVerdictResult && belowGoalCarryOverIds && belowGoalCarryOverIds.size > 0) {
+        const belowGoalNote = `Carried over (below goal ${validated.goal}, not reopened): a reviewer CHANGES_NEEDED named only these below-goal bead(s), all skipped by the goal-scope guard, so the sprint did not wait on them: ${[...belowGoalCarryOverIds].sort().join(', ')}.`;
+        const prior = typeof finalVerdictResult.notes === 'string' ? finalVerdictResult.notes : '';
+        finalVerdictResult = { ...finalVerdictResult, notes: prior ? `${prior}\n\n${belowGoalNote}` : belowGoalNote };
+        log(`Final Review: ${belowGoalNote}`);
     }
     if (finalVerdictResult && Array.isArray(reclaimCappedIds) && reclaimCappedIds.length > 0) {
         const cappedNote = `${reclaimCappedIds.length} bead(s) were left 'in_progress' by failed doer streaks of this sprint more often than the re-dispatch cap allows and were NOT re-laned again -- needs human investigation: ${reclaimCappedIds.join(', ')}.`;
@@ -520,5 +577,7 @@ export async function runFinalReviewPhase({
         // apra-fleet-rp7a.1: carried out so the sprint analysis document names
         // what was skipped, not just how many beads remained open.
         finalDeferredAtGoalIds,
+        // The verify carry-over applied above, or null.
+        verifyCarryOver,
     };
 }
