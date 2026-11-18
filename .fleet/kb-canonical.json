@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "f9cb1ca7c3f0f03debb783f6ef40a261554b7b0b",
     "branch": "main",
-    "entry_count": 157
+    "entry_count": 156
   },
   "entries": [
     {
@@ -3226,6 +3226,5 @@
       "at": "2026-11-18T03:14:58.284Z",
       "reason": "demoted"
     }
-  ],
-  "entry_count": 156
+  ]
 }
