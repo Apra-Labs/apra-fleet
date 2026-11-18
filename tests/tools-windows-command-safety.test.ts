@@ -71,6 +71,7 @@ vi.mock('../src/services/known-hosts.js', () => ({
 
 import { monitorTask } from '../src/tools/monitor-task.js';
 import { removeMember } from '../src/tools/remove-member.js';
+import { SSH_PUBLIC_KEYS } from './fixtures/ssh-public-keys.js';
 
 // ---------------------------------------------------------------------------
 // Local helpers (kept private to this file -- see apra-fleet-ot2z.9)
@@ -208,7 +209,34 @@ describe('monitor_task command safety', () => {
 describe('remove_member authorized_keys cleanup command safety', () => {
   let tmpDir: string;
   let keyPath: string;
-  const pubKeyLine = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAItest0000000000000000000000000000000000 fleet@apra';
+  const pubKeyLine = `${SSH_PUBLIC_KEYS.ed25519} fleet@apra`;
+
+  const POSIX_HOME = '/home/x';
+  const WIN_HOME = 'C:\\Users\\x';
+
+  // The member-home probe (getMemberHomeDir) is the only command that reads the
+  // home; answer it with a literal path. Every other command gets empty stdout,
+  // or whatever `onRevoke` returns for the authorized_keys revocation command.
+  function isHomeProbe(cmd: string): boolean {
+    return cmd === `printf '%s' "$HOME"`
+      || decodeIfEncoded(cmd).includes('[Console]::Out.Write($env:USERPROFILE)');
+  }
+  function isRevocation(cmd: string): boolean {
+    return !isHomeProbe(cmd) && decodeIfEncoded(cmd).includes('authorized_keys');
+  }
+  function mockHomeAwareExec(
+    home: string,
+    onRevoke?: (cmd: string) => Promise<SSHExecResult>,
+  ): void {
+    mockExecCommand.mockImplementation(async (cmd: string) => {
+      if (isHomeProbe(cmd)) return { stdout: home, stderr: '', code: 0 };
+      if (onRevoke && isRevocation(cmd)) return onRevoke(cmd);
+      return { stdout: '', stderr: '', code: 0 };
+    });
+  }
+  function revocationCommands(): string[] {
+    return mockExecCommand.mock.calls.map((c) => c[0] as string).filter(isRevocation);
+  }
 
   beforeEach(() => {
     backupAndResetRegistry();
@@ -228,101 +256,94 @@ describe('remove_member authorized_keys cleanup command safety', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('item 4 (windows): cleanup command has no sed, no ~/.ssh/..., targets the concrete Windows path', async () => {
+  it('item 4 (windows): revocation is an encoded PowerShell command on the literal resolved home, no sed, no ~/, no $env:USERPROFILE', async () => {
     const member = makeTestAgent({ friendlyName: 'win-remove', os: 'windows' as any, keyPath });
     addAgent(member);
+    mockHomeAwareExec(WIN_HOME);
 
     await removeMember({ member_id: member.id });
 
-    const cmds = mockExecCommand.mock.calls.map((c) => c[0] as string);
-    const akCmdRaw = cmds.find((c) => decodeIfEncoded(c).includes('authorized_keys'));
-    expect(akCmdRaw).toBeDefined();
-    const decoded = decodeIfEncoded(akCmdRaw!);
+    const cmds = revocationCommands();
+    expect(cmds).toHaveLength(1);
+    expect(cmds[0]).toMatch(/^powershell -EncodedCommand /);
+    const decoded = decodeIfEncoded(cmds[0]);
 
+    expect(decoded).toContain(`${WIN_HOME}\\.ssh\\authorized_keys`);
+    expect(decoded).toContain('.Contains(');
     expect(decoded).not.toContain('sed');
-    expect(decoded).not.toContain('~/.ssh/');
-    expect(decoded).toContain('$env:USERPROFILE\\.ssh\\authorized_keys');
+    expect(decoded).not.toContain('~/');
+    expect(decoded).not.toContain('$env:USERPROFILE');
   });
 
-  it('item 4 (linux): cleanup command is byte-identical to today\'s sed command', async () => {
+  it('item 4 (linux): revocation uses the literal resolved home and grep -vF -- with the single-quoted key, no sed -i, ~ or $HOME', async () => {
     const member = makeTestAgent({ friendlyName: 'linux-remove', os: 'linux' as any, keyPath });
     addAgent(member);
+    mockHomeAwareExec(POSIX_HOME);
 
     await removeMember({ member_id: member.id });
 
-    const cmds = mockExecCommand.mock.calls.map((c) => c[0] as string);
-    const akCmd = cmds.find((c) => c.includes('authorized_keys'));
-    expect(akCmd).toBeDefined();
-
+    const cmds = revocationCommands();
+    expect(cmds).toHaveLength(1);
+    const akCmd = cmds[0];
     const keyMatch = pubKeyLine.split(/\s+/).slice(0, 2).join(' ');
-    const escaped = keyMatch.replace(/\//g, '\\/');
-    expect(akCmd).toBe(`sed -i '/${escaped}/d' ~/.ssh/authorized_keys`);
+
+    expect(akCmd).toContain(`'${POSIX_HOME}/.ssh/authorized_keys'`);
+    expect(akCmd).toContain(`grep -vF -- '${keyMatch}'`);
+    expect(akCmd).not.toContain('sed -i');
+    expect(akCmd).not.toContain('~');
+    expect(akCmd).not.toContain('$HOME');
   });
 
-  it('item 4 (linux): a hostile .pub file cannot break out of the sed quoting or regex', async () => {
+  it('item 4 (linux): a hostile .pub file is not a public key: no revocation command is sent, a warning is', async () => {
     // key_path is caller-supplied, so the .pub content is untrusted input.
     fs.writeFileSync(`${keyPath}.pub`, "ssh-ed25519 AAAA'$(touch${IFS}/tmp/pwn)'.*\\x fleet@apra\n", 'utf-8');
     const member = makeTestAgent({ friendlyName: 'linux-remove-hostile', os: 'linux' as any, keyPath });
     addAgent(member);
+    mockHomeAwareExec(POSIX_HOME);
 
-    await removeMember({ member_id: member.id });
+    const result = await removeMember({ member_id: member.id });
 
-    const cmds = mockExecCommand.mock.calls.map((c) => c[0] as string);
-    const akCmd = cmds.find((c) => c.includes('authorized_keys'));
-    // Each ' closes/escapes/reopens the shell quote; $ / . * \ are escaped for the BRE.
-    expect(akCmd).toBe(
-      "sed -i '/ssh-ed25519 AAAA'\\''\\$(touch\\${IFS}\\/tmp\\/pwn)'\\''\\.\\*\\\\x/d' ~/.ssh/authorized_keys",
-    );
+    expect(revocationCommands()).toHaveLength(0);
+    expect(mockExecCommand.mock.calls.map(c => c[0] as string).some(c => c.includes('pwn'))).toBe(false);
+    expect(result).toContain('is not a valid SSH public key');
   });
 
-  it('item 5 (windows): cleanup command failure is surfaced as a warning, not swallowed', async () => {
+  it('item 5 (windows): revocation exec throwing is surfaced as a revocation warning (home resolved first)', async () => {
     const member = makeTestAgent({ friendlyName: 'win-remove-fail', os: 'windows' as any, keyPath });
     addAgent(member);
-
-    mockExecCommand.mockImplementation(async (cmd: string) => {
-      if (decodeIfEncoded(cmd).includes('authorized_keys')) {
-        throw new Error('ssh exec failed');
-      }
-      return { stdout: '', stderr: '', code: 0 };
-    });
+    mockHomeAwareExec(WIN_HOME, async () => { throw new Error('ssh exec failed'); });
 
     const result = await removeMember({ member_id: member.id });
 
+    expect(revocationCommands()).toHaveLength(1);
     expect(result).toContain('Warnings');
-    expect(result.toLowerCase()).toContain('authorized_keys');
+    expect(result).toContain('Could not clear fleet public key from authorized_keys');
+    expect(result).not.toContain('Could not resolve the member');
   });
 
-  it('item 5b: cleanup command that resolves with a non-zero code (not a throw) is also surfaced as a warning', async () => {
+  it('item 5b: revocation resolving with a non-zero code (not a throw) is also surfaced as a revocation warning', async () => {
     const member = makeTestAgent({ friendlyName: 'win-remove-nonzero', os: 'windows' as any, keyPath });
     addAgent(member);
-
-    mockExecCommand.mockImplementation(async (cmd: string) => {
-      if (decodeIfEncoded(cmd).includes('authorized_keys')) {
-        return { stdout: '', stderr: 'access denied', code: 1 };
-      }
-      return { stdout: '', stderr: '', code: 0 };
-    });
+    mockHomeAwareExec(WIN_HOME, async () => ({ stdout: '', stderr: 'access denied', code: 1 }));
 
     const result = await removeMember({ member_id: member.id });
 
+    expect(revocationCommands()).toHaveLength(1);
     expect(result).toContain('Warnings');
-    expect(result.toLowerCase()).toContain('authorized_keys');
+    expect(result).toContain('Could not clear fleet public key from authorized_keys');
+    expect(result).not.toContain('Could not resolve the member');
   });
 
-  it('item 5 (linux/posix): cleanup command failure is surfaced as a warning, not swallowed', async () => {
+  it('item 5 (linux/posix): revocation exec throwing is surfaced as a revocation warning (home resolved first)', async () => {
     const member = makeTestAgent({ friendlyName: 'linux-remove-fail', os: 'linux' as any, keyPath });
     addAgent(member);
-
-    mockExecCommand.mockImplementation(async (cmd: string) => {
-      if (cmd.includes('authorized_keys')) {
-        throw new Error('ssh exec failed');
-      }
-      return { stdout: '', stderr: '', code: 0 };
-    });
+    mockHomeAwareExec(POSIX_HOME, async () => { throw new Error('ssh exec failed'); });
 
     const result = await removeMember({ member_id: member.id });
 
+    expect(revocationCommands()).toHaveLength(1);
     expect(result).toContain('Warnings');
-    expect(result.toLowerCase()).toContain('authorized_keys');
+    expect(result).toContain('Could not clear fleet public key from authorized_keys');
+    expect(result).not.toContain('Could not resolve the member');
   });
 });

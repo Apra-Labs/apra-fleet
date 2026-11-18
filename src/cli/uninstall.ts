@@ -1,9 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { execSync } from 'node:child_process';
+import { execSync, spawn } from 'node:child_process';
 import * as readlinePromises from 'node:readline/promises';
 import { serverVersion } from '../version.js';
+import { windowsExecutable } from '../os/windows-executable.js';
 import type { LlmProvider } from '../types.js';
 import { isApraFleetRunning } from './install.js';
 import { getServiceManager } from '../services/service-manager/index.js';
@@ -298,7 +299,78 @@ function printKeptSection(
   for (const line of lines) console.log(line);
 }
 
-export async function runUninstall(args: string[]): Promise<void> {
+/**
+ * Test seams for runUninstall: the remover, the deferred-delete spawn and the
+ * retry pause are injectable so the locked-exe path can be driven on any OS.
+ */
+export interface UninstallDeps {
+  /** Remove one path (recursive, forced). Default: fs.rmSync. */
+  remove?: (p: string) => void;
+  /** Launch a command detached and hidden. Default: child_process.spawn + unref. */
+  spawnDetached?: (cmd: string, args: string[]) => void;
+  /** Pause between removal retries. Default: a short synchronous wait. */
+  sleep?: (ms: number) => void;
+}
+
+const REMOVE_ATTEMPTS = 3;
+const REMOVE_RETRY_MS = 150;
+
+function defaultRemove(p: string): void {
+  fs.rmSync(p, { recursive: true, force: true });
+}
+
+function defaultSpawnDetached(cmd: string, args: string[]): void {
+  const child = spawn(cmd, args, { detached: true, stdio: 'ignore', windowsHide: true });
+  child.unref();
+}
+
+function defaultSleep(ms: number): void {
+  try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch { /* best effort */ }
+}
+
+interface RemovalFailure {
+  path: string;
+  error: unknown;
+}
+
+/** Same Windows path (case-insensitive, separators normalised): execPath's case can differ from a readdir join. */
+function sameWin32Path(a: string, b: string): boolean {
+  return path.win32.normalize(a).toLowerCase() === path.win32.normalize(b).toLowerCase();
+}
+
+function errCode(e: unknown): string | undefined {
+  return (e as NodeJS.ErrnoException | undefined)?.code;
+}
+
+/** PowerShell that waits for this PID to exit, then removes dir (retrying briefly). */
+function deferredDeleteScript(pid: number, dir: string): string {
+  const q = dir.replace(/'/g, "''");
+  return [
+    `try { Wait-Process -Id ${pid} -ErrorAction SilentlyContinue } catch {}`,
+    `for ($i = 0; $i -lt 30; $i++) {`,
+    `  try { Remove-Item -LiteralPath '${q}' -Recurse -Force -ErrorAction Stop; break } catch { Start-Sleep -Seconds 1 }`,
+    `}`,
+  ].join('\n');
+}
+
+/**
+ * Wait for the confirmation answer. readline/promises question() never
+ * settles on end-of-input, so it is raced against the interface's close event;
+ * returns null when the input closed before an answer.
+ */
+async function askConfirmation(prompt: string): Promise<string | null> {
+  const rl = readlinePromises.createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const closed = new Promise<null>(resolve => {
+      if (typeof (rl as any).once === 'function') (rl as any).once('close', () => resolve(null));
+    });
+    return await Promise.race([rl.question(prompt), closed]);
+  } finally {
+    rl.close();
+  }
+}
+
+export async function runUninstall(args: string[], deps: UninstallDeps = {}): Promise<void> {
   if (args.includes('--help') || args.includes('-h')) {
     console.log(`apra-fleet uninstall
 
@@ -371,25 +443,14 @@ Options:
   console.log(`\nUninstalling Apra Fleet ${serverVersion}...${dryRun ? ' (DRY RUN)' : ''}\n`);
 
   const svcMgr = await getServiceManager();
+  const isFullUninstall = targetLlm === 'all' && skillMode === 'all';
 
-  if (isApraFleetRunning()) {
-    if (dryRun && force) {
-      console.log('  Note: apra-fleet server is currently running (would be stopped by --force).');
-    } else if (force) {
-      if (!dryRun) {
-        try { await svcMgr.stop(); } catch {}
-        console.log('  Stopped running server.');
-      }
-    } else {
-      console.error('Error: apra-fleet server is currently running.\n\n  Run with --force to stop it automatically:\n    apra-fleet uninstall --force\n');
-      process.exit(1);
-      return;
-    }
-  }
-
-  // Remove service unit (idempotent -- tolerates "not installed")
-  if (!dryRun) {
-    try { await svcMgr.unregister(); } catch {}
+  // (1) Refuse while the server runs, unless --force.
+  const serverRunning = isApraFleetRunning();
+  if (serverRunning && !force) {
+    console.error('Error: apra-fleet server is currently running.\n\n  Run with --force to stop it automatically:\n    apra-fleet uninstall --force\n');
+    process.exit(1);
+    return;
   }
 
   const installConfig = readInstallConfig();
@@ -403,14 +464,35 @@ Options:
     console.log('No recorded installations found. Scanning all known provider paths...');
   }
 
+  // (2) Confirm before any side effect (stop/unregister/removals).
   if (!skipConfirm && !dryRun) {
-    const rl = readlinePromises.createInterface({ input: process.stdin, output: process.stdout });
-    const answer = await rl.question(`Are you sure you want to uninstall Apra Fleet? (y/N): `);
-    rl.close();
+    const answer = await askConfirmation(`Are you sure you want to uninstall Apra Fleet? (y/N): `);
+    if (answer === null) {
+      console.error('Aborted: no confirmation received (input closed). Re-run with --yes to uninstall non-interactively.');
+      process.exit(1);
+      return;
+    }
     if (answer.toLowerCase() !== 'y') {
       console.log('Aborted.');
       process.exit(0);
+      return;
     }
+  }
+
+  // (3) --force server stop.
+  if (serverRunning) {
+    if (dryRun) {
+      console.log('  Note: apra-fleet server is currently running (would be stopped by --force).');
+    } else {
+      try { await svcMgr.stop(); } catch {}
+      console.log('  Stopped running server.');
+    }
+  }
+
+  // (4) Remove the service unit (idempotent -- tolerates "not installed"),
+  // only on a full uninstall: a partial one leaves the service registered.
+  if (!dryRun && isFullUninstall) {
+    try { await svcMgr.unregister(); } catch {}
   }
 
   let anythingRemoved = false;
@@ -498,7 +580,6 @@ Options:
 
   // Workflow subsystem removal (Phase 3 - Task 8): shared ~/.apra-fleet assets,
   // not tied to any specific --llm target.
-  const isFullUninstall = targetLlm === 'all' && skillMode === 'all';
   let supervisorCleanup: SupervisorCleanupResult = { removed: [], kept: [], failed: [] };
   let keptUserWorkflows: string[] = [];
   if (skillMode === 'all' || skillMode === 'workflows') {
@@ -521,25 +602,67 @@ Options:
     keptUserWorkflows = workflowsCleanup.keptUserWorkflows;
   }
 
+  const removalFailures: RemovalFailure[] = [];
+  let deferredDelete: { dir: string; command: string } | null = null;
   if (!dryRun && isFullUninstall) {
+    const remove = deps.remove ?? defaultRemove;
+    const sleep = deps.sleep ?? defaultSleep;
+    const removeWithRetry = (p: string): boolean => {
+      let last: unknown;
+      for (let i = 0; i < REMOVE_ATTEMPTS; i++) {
+        try { remove(p); return true; } catch (e) {
+          last = e;
+          if (i < REMOVE_ATTEMPTS - 1) sleep(REMOVE_RETRY_MS);
+        }
+      }
+      removalFailures.push({ path: p, error: last });
+      return false;
+    };
+
     console.log('\nCleaning up global fleet files...');
     if (fs.existsSync(BIN_DIR)) {
       console.log(`  - Removing binary dir: ${BIN_DIR}`);
-      fs.rmSync(BIN_DIR, { recursive: true, force: true });
+      // Each entry independently, so one locked file (the running exe on
+      // Windows) never skips the rest.
+      let entries: string[] | null = null;
+      try { entries = ((fs.readdirSync(BIN_DIR) || []) as unknown[]).map(e => String(e)); } catch { entries = null; }
+      let binClean = true;
+      for (const name of entries ?? []) {
+        if (!removeWithRetry(path.join(BIN_DIR, name))) binClean = false;
+      }
+      if (entries === null || binClean) removeWithRetry(BIN_DIR);
     }
     if (fs.existsSync(HOOKS_DIR)) {
       console.log(`  - Removing hooks dir: ${HOOKS_DIR}`);
-      fs.rmSync(HOOKS_DIR, { recursive: true, force: true });
+      removeWithRetry(HOOKS_DIR);
     }
     if (fs.existsSync(SCRIPTS_DIR)) {
       console.log(`  - Removing scripts dir: ${SCRIPTS_DIR}`);
-      fs.rmSync(SCRIPTS_DIR, { recursive: true, force: true });
+      removeWithRetry(SCRIPTS_DIR);
     }
     // Note: we don't remove FLEET_BASE/data to preserve logs/registry if user reinstalls.
     // But we should remove the install-config.json if it was a full uninstall.
     const configPath = path.join(FLEET_BASE, 'data', 'install-config.json');
     if (fs.existsSync(configPath)) {
-      fs.unlinkSync(configPath);
+      try { fs.unlinkSync(configPath); } catch (e) { removalFailures.push({ path: configPath, error: e }); }
+    }
+
+    // Windows: the running exe cannot be unlinked. When that is the ONLY
+    // failure, hand BIN_DIR's removal to a detached process that waits for us.
+    const lockedExeOnly = process.platform === 'win32'
+      && removalFailures.length > 0
+      && removalFailures.every(f => sameWin32Path(f.path, process.execPath) && (errCode(f.error) === 'EPERM' || errCode(f.error) === 'EBUSY'));
+    if (lockedExeOnly) {
+      const manual = `Remove-Item -LiteralPath '${BIN_DIR.replace(/'/g, "''")}' -Recurse -Force`;
+      try {
+        const encoded = Buffer.from(deferredDeleteScript(process.pid, BIN_DIR), 'utf16le').toString('base64');
+        (deps.spawnDetached ?? defaultSpawnDetached)(windowsExecutable('powershell.exe'),
+          ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-EncodedCommand', encoded]);
+        deferredDelete = { dir: BIN_DIR, command: manual };
+        removalFailures.length = 0;
+      } catch (e) {
+        removalFailures.push({ path: 'deferred-delete', error: e });
+      }
     }
   }
 
@@ -549,7 +672,7 @@ Options:
 
   // One final status line: "Uninstall complete." only when nothing failed;
   // a failed supervisor removal ends with "Uninstall incomplete" + exit 1.
-  const incomplete = supervisorCleanup.failed.length > 0;
+  const incomplete = supervisorCleanup.failed.length > 0 || removalFailures.length > 0;
   if (anythingRemoved) {
     if (!incomplete) console.log('\nUninstall complete.');
     console.log('\n⚠ Note: Surgical cleanup of settings (MCP, permissions, hooks) was performed.');
@@ -559,10 +682,25 @@ Options:
     console.log('\nNothing to remove — no apra-fleet installation found for the specified scope.');
   }
 
+  if (deferredDelete) {
+    console.log(`\nThe running executable (${process.execPath}) cannot be deleted while it runs.`);
+    console.log(`  A background process will remove ${deferredDelete.dir} once this command exits.`);
+    console.log('  If it is still there later, remove it manually with:');
+    console.log(`    ${deferredDelete.command}`);
+  }
+
   if (incomplete) {
-    console.error('\nUninstall incomplete: the following fleet-supervisor service registration(s) could not be removed:');
-    for (const { reg, error } of supervisorCleanup.failed) {
-      console.error(`  - ${reg.name}: ${error}`);
+    if (supervisorCleanup.failed.length > 0) {
+      console.error('\nUninstall incomplete: the following fleet-supervisor service registration(s) could not be removed:');
+      for (const { reg, error } of supervisorCleanup.failed) {
+        console.error(`  - ${reg.name}: ${error}`);
+      }
+    }
+    if (removalFailures.length > 0) {
+      console.error('\nUninstall incomplete: the following path(s) could not be removed:');
+      for (const f of removalFailures) {
+        console.error(`  - ${f.path}: ${f.error instanceof Error ? f.error.message : String(f.error)}`);
+      }
     }
     process.exit(1);
   }

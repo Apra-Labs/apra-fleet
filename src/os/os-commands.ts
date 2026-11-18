@@ -127,6 +127,19 @@ export interface OsCommands {
 
   // --- SSH key deployment ---
   deploySSHPublicKey(publicKeyLine: string): string[];
+  /**
+   * One command that deletes every authorized_keys line containing `keyMatch`
+   * (matched as a fixed string, never a regex) from `<memberHome>/.ssh/authorized_keys`
+   * and, on Windows administrator accounts, from ProgramData ssh
+   * administrators_authorized_keys -- the same files deploySSHPublicKey writes.
+   * `memberHome` is the member's home directory resolved in JS
+   * (getMemberHomeDir); the command never expands ~ or a home env var for it.
+   * `keyMatch` is untrusted: exactly "<type> <base64>" of a real public key
+   * (one space, no comment). Every builder throws on anything else
+   * (assertAuthorizedKeyMatch) -- an empty or type-only match would delete
+   * every line, or every key of that type.
+   */
+  removeSSHPublicKey(keyMatch: string, memberHome: string): string;
 
   // --- Local exec ---
   cleanExec(command: string): { command: string; env?: Record<string, string>; shell?: string };

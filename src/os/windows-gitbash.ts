@@ -5,6 +5,7 @@ import { wrapPowerShellEncoded } from './windows.js';
 import { escapeDoubleQuoted, escapeShellArg, escapeBatchMetachars, escapePowerShellArgInner, sanitizeSessionId } from '../utils/shell-escape.js';
 import { isWindowsPosixUname } from '../utils/platform.js';
 import { gitBashCandidates } from './git-bash-candidates.js';
+import { assertAuthorizedKeyMatch } from './ssh-key-match.js';
 import { boundChildEnv, describeBoundedEnv } from './child-env-bound.js';
 import { defaultIsFile, envValue, searchWindowsPath } from './windows-executable.js';
 import { logWarn } from '../utils/log-helpers.js';
@@ -274,6 +275,23 @@ export class WindowsGitBashCommands extends LinuxCommands {
         + `icacls "$(cygpath -w "$_fleet_ak")" /inheritance:r /grant:r "SYSTEM:F" /grant:r "Administrators:F" >/dev/null; `
         + `fi`,
     ];
+  }
+
+  override removeSSHPublicKey(keyMatch: string, memberHome: string): string {
+    assertAuthorizedKeyMatch(keyMatch);
+    // A local gitbash member's home comes from os.homedir() (C:\Users\x);
+    // a probed one is already POSIX (/c/Users/x). Bash accepts C:/Users/x.
+    const home = memberHome.replace(/\\/g, '/').replace(/\/+$/, '');
+    // Rewrite in place (not mv): the files carry the explicit ACLs deploy set
+    // with icacls, and a renamed temp file would carry the directory's instead.
+    const install = 'cat "$_fleet_tmp" > "$_fleet_ak" && rm -f "$_fleet_tmp"';
+    return `_fleet_ak=${escapeShellArg(`${home}/.ssh/authorized_keys`)}; `
+      + `${this.filterAuthorizedKeysPosix(keyMatch, install)}; `
+      // Same admin probe and file deploySSHPublicKey uses.
+      + `if net session >/dev/null 2>&1; then `
+      + `_fleet_ak="$(cygpath -u "\${ProgramData:-C:/ProgramData}")/ssh/administrators_authorized_keys"; `
+      + `${this.filterAuthorizedKeysPosix(keyMatch, install)}; `
+      + `fi`;
   }
 
   // --- Local exec ---

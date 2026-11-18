@@ -74,3 +74,49 @@ export function refreshClaudeLocalScopeEntries(configFile: string, fleetUrl: str
   if (rewritten.length) writeOwnerOnlyFileAtomic(configFile, JSON.stringify(json, null, 2) + '\n');
   return rewritten;
 }
+
+/** Outcome of checkClaudeUserScopeRegistration. */
+export type ClaudeRegistrationState =
+  | 'ok' | 'ok-stdio' | 'missing' | 'wrong-url' | 'wrong-secret' | 'unreadable' | 'not-applicable';
+
+export interface ClaudeRegistrationCheckOptions {
+  /** Claude user config file; default claudeUserConfigPath(). */
+  configFile?: string;
+  /** The /mcp URL install registers (install.ts step 5: http://localhost:<DEFAULT_PORT>/mcp). */
+  expectedUrl: string;
+  /** The install's member access secret, or null when its file is absent (secret check skipped). */
+  expectedSecret: string | null;
+  /** False when install-config does not record the claude provider: nothing to check. Default true. */
+  claudeRecorded?: boolean;
+}
+
+/**
+ * Read-only, never-throwing health check of mcpServers.apra-fleet in the claude
+ * user config. Never writes the file and never reads or creates the secret
+ * itself (the caller passes it in).
+ */
+export function checkClaudeUserScopeRegistration(opts: ClaudeRegistrationCheckOptions): ClaudeRegistrationState {
+  try {
+    if (opts.claudeRecorded === false) return 'not-applicable';
+    const file = opts.configFile ?? claudeUserConfigPath();
+    if (!fs.existsSync(file)) return 'missing';
+    const raw = String(fs.readFileSync(file, 'utf-8') ?? '').trim();
+    if (!raw) return 'missing';
+    let json: any;
+    try { json = JSON.parse(raw); } catch { return 'unreadable'; }
+    if (!isRecord(json)) return 'unreadable';
+    const entry = isRecord(json.mcpServers) ? json.mcpServers['apra-fleet'] : undefined;
+    if (!isRecord(entry)) return 'missing';
+    if (typeof entry.command === 'string' && entry.url === undefined) return 'ok-stdio';
+    if (!isThisInstallMcpUrl(entry.url, opts.expectedUrl)) return 'wrong-url';
+    if (opts.expectedSecret) {
+      const want = MEMBER_SECRET_HEADER.toLowerCase();
+      const h = isRecord(entry.headers) ? entry.headers : {};
+      const k = Object.keys(h).find(x => x.toLowerCase() === want);
+      if (k === undefined || h[k] !== opts.expectedSecret) return 'wrong-secret';
+    }
+    return 'ok';
+  } catch {
+    return 'unreadable';
+  }
+}

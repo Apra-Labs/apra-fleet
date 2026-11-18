@@ -202,12 +202,14 @@ Unregisters a fleet member and cleans up its connection.
 1. Looks up the member.
 2. **Best-effort auth cleanup** -- tests connectivity to the member, and if reachable: removes the provider's credential file (e.g. `~/.claude/.credentials.json` for Claude) if the provider supports OAuth copy, and removes the provider's auth env var (e.g. `ANTHROPIC_API_KEY` for Claude, `OPENAI_API_KEY` for Codex) from shell profiles (`~/.bashrc`, `~/.profile`, `~/.zshrc` on Unix; registry key on Windows). If the member is offline, a warning is returned but the removal still proceeds.
 3. **Best-effort agy project cleanup (agy only)** -- deletes the member's agy project file on its machine unless another member shares the same `agyProjectId`; failures are returned as warnings.
-4. Calls `strategy.close()` -- for remote members, this closes the pooled SSH connection. For local members, this is a no-op.
-5. Removes the member from the registry file.
+4. **SSH key revocation (remote members, fleet-generated keys only)** -- if the member was registered with a key the fleet generated (`setup_ssh_key`, stored in the fleet keys dir), that key's line is removed from the member user's `authorized_keys` and, on a Windows administrator account, from `ProgramData\ssh\administrators_authorized_keys`. The key is left authorized when another registered member on the same host and the same username still uses it; the result says which member. A user-supplied `key_path` (a key the fleet did not generate) is never removed from `authorized_keys`. If the fleet `.pub` file is not a complete ssh-rsa (2048+ bits), ssh-ed25519, ecdsa or sk- public key (empty, truncated, type only, a certificate), nothing is sent and `authorized_keys` is left untouched; the result warns.
+5. Calls `strategy.close()` -- for remote members, this closes the pooled SSH connection. For local members, this is a no-op.
+6. Deletes the local key pair of a fleet-generated key only when no other registered member uses it; a user-supplied key file is never deleted.
+7. Removes the member from the registry file.
 
-**Output:** Confirmation message with member name and ID. Includes warnings if the token could not be cleared (e.g. member was offline).
+**Output:** Confirmation message with member name and ID. Includes notes (e.g. a shared key left authorized, and why) and warnings if something could not be cleared (e.g. member was offline).
 
-**Note:** This does NOT delete the working folder on the target machine, nor does it remove any deployed SSH keys from the remote member's `authorized_keys` file. Those remain as-is.
+**Note:** This does NOT delete the working folder on the target machine.
 
 ### `shutdown_server`
 
