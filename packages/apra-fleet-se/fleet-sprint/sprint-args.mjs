@@ -243,6 +243,29 @@ export function validateCiGate(raw) {
  * @param {unknown} id
  * @returns {string}
  */
+export function validateGoal(goal) {
+    if (typeof goal !== 'string' || !GOAL_PATTERN.test(goal)) {
+        throw new Error(`[Arg Contract] Invalid goal "${goal}": must match ${GOAL_PATTERN} (e.g. 'P1', 'P1/P2', 'P1/P2/P3').`);
+    }
+    return goal;
+}
+
+/** Shared max_cycles check (sprint args and the supervisor launch request). */
+export function validateMaxCycles(maxCycles) {
+    if (typeof maxCycles !== 'number' || !Number.isInteger(maxCycles) || maxCycles < 1) {
+        throw new Error(`[Arg Contract] Invalid max_cycles "${maxCycles}": must be a positive integer.`);
+    }
+    return maxCycles;
+}
+
+/** Shared budget check (sprint args and the supervisor launch request). */
+export function validateBudget(budget) {
+    if (typeof budget !== 'number' || !Number.isFinite(budget) || budget < 0) {
+        throw new Error(`[Arg Contract] Invalid budget "${budget}": must be a non-negative finite number (USD ceiling).`);
+    }
+    return budget;
+}
+
 export function validateIssueId(id) {
     if (typeof id !== 'string' || id.length === 0 || !ISSUE_ID_PATTERN.test(id)) {
         throw new Error(`[Arg Contract] Invalid issue id "${id}": must match ${ISSUE_ID_PATTERN} (letters, digits, '.', '_', '-' only).`);
@@ -355,16 +378,10 @@ export function validateArgs(args) {
 
     // --- goal (optional, default 'P1/P2'; the priority band this sprint aims
     // to clear, consumed by the exit-condition logic) ---
-    const goal = args.goal === undefined ? 'P1/P2' : args.goal;
-    if (typeof goal !== 'string' || !GOAL_PATTERN.test(goal)) {
-        throw new Error(`[Arg Contract] Invalid goal "${goal}": must match ${GOAL_PATTERN} (e.g. 'P1', 'P1/P2', 'P1/P2/P3').`);
-    }
+    const goal = args.goal === undefined ? 'P1/P2' : validateGoal(args.goal);
 
     // --- max_cycles (optional, default 5) ---
-    const maxCycles = args.max_cycles === undefined ? 5 : args.max_cycles;
-    if (typeof maxCycles !== 'number' || !Number.isInteger(maxCycles) || maxCycles < 1) {
-        throw new Error(`[Arg Contract] Invalid max_cycles "${maxCycles}": must be a positive integer.`);
-    }
+    const maxCycles = args.max_cycles === undefined ? 5 : validateMaxCycles(args.max_cycles);
 
     // --- requirementsFile (optional) ---
     if (args.requirementsFile !== undefined && (typeof args.requirementsFile !== 'string' || args.requirementsFile.length === 0)) {
@@ -437,9 +454,7 @@ export function validateArgs(args) {
     // main() sets `context.budget.total` to this value BEFORE any dispatch, so
     // `agent()`'s budget-exceeded check can actually fire. Omitted,
     // `context.budget.total` stays `null` (unlimited).
-    if (args.budget !== undefined && (typeof args.budget !== 'number' || !Number.isFinite(args.budget) || args.budget < 0)) {
-        throw new Error(`[Arg Contract] Invalid budget "${args.budget}": must be a non-negative finite number (USD ceiling).`);
-    }
+    if (args.budget !== undefined) validateBudget(args.budget);
 
     // --- run_id (optional) -------------------------------------------------
     // Free-form supervisor-generated identity; only its shape is checked here.

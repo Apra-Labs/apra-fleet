@@ -100,7 +100,7 @@ import {
     createWorkflowsPermissionPreflightCallback,
     createLlmAuthSelfHealCallback,
 } from './vcs-auth.mjs';
-import { validateIssueId, validateBranchName, validateBranchPair, validateArgs } from './sprint-args.mjs';
+import { validateIssueId, validateBranchName, validateBranchPair, validateArgs, validateGoal, validateMaxCycles, validateBudget } from './sprint-args.mjs';
 import { verifyBeadsIdentity, createBeadsIdentityProber, BEADS_READING_ROLES } from './beads-identity-check.mjs';
 import { ROLE_BACKLOG, selectBacklogMember, formatBacklogSelection } from './backlog-role.mjs';
 import { createKbMaintainerSelector, createMemberDetailResolver, ROLE_KB_MAINTAINER } from './kb-maintainer.mjs';
@@ -376,7 +376,7 @@ export {
 // Re-exported so importers of the CLI arg-contract validators from runner.js
 // keep working (notably bin/cli.mjs); sprint-args.mjs is the single source of
 // truth for their implementation (apra-fleet-3swo.3.3).
-export { validateIssueId, validateBranchName, validateBranchPair, validateArgs };
+export { validateIssueId, validateBranchName, validateBranchPair, validateArgs, validateGoal, validateMaxCycles, validateBudget };
 // Re-exported so importers of the five previously-exported prompt builders
 // from runner.js keep working; prompts.mjs is the single source of truth for
 // their implementation (apra-fleet-3swo.3.4). buildPlanReviewerPrompt and
