@@ -767,6 +767,19 @@
  *   demotions array; any other id is skipped with reason not_demoted_or_unknown. Existing
  *   tombstones are preserved, and re-committing a tombstoned id through ids (a
  *   re-promotion) restores its entry and clears its tombstone.
+ * @property {{id: string, note: string, evidence_files: string[]}[]} [withdrawals] - Bible
+ *   entries withdrawn this round. note must be at least 20 characters after whitespace is
+ *   collapsed (stored collapsed); evidence_files needs at least one repo-relative path (no
+ *   absolute path, no ".." segment). An id the bible holds as an entry, or one the KB holds
+ *   CONFIRMED, not superseded and not a user-directive, is removed from entries and
+ *   recorded as a tombstone {id, at, reason: "withdrawn", note, evidence_files}; the local
+ *   entry is NOT changed. Any other id (or one merged or demoted by the same call) is
+ *   skipped with reason not_withdrawable. Admitted ids are reported in the result's
+ *   withdrawn list.
+ * @property {string[]} [restore_ids] - Ids whose tombstone this branch added and should be
+ *   undone: removed only when the bible at baseCommit carries no tombstone for the id, and
+ *   the base bible's entry for it (if any) is re-added byte-identical; anything else is a
+ *   no-op. Restored ids are reported in the result's restored list.
  */
 
 /**
@@ -827,6 +840,60 @@
  *   E-BIBLE-NOT-FOUND, and a kb_maintainer or FULL session records that
  *   verified blob as trusted. The engine's sprint-start priming seeds trust
  *   this way from the base branch, never from the maintainer's work tree.
+ */
+
+/**
+ * The result of kb_bible_commit (parse the text content with parseToolJson).
+ * @typedef {Object} KbBibleCommitResult
+ * @property {string} path - The bible file written (or that would have been).
+ * @property {string[]} merged - Ids merged from `ids`.
+ * @property {string[]} demoted - Ids admitted from `demoted_ids` (removed, tombstoned "demoted").
+ * @property {string[]} withdrawn - Ids admitted from `withdrawals`: removed from entries and
+ *   tombstoned "withdrawn"; the local entry is not changed.
+ * @property {string[]} restored - Ids from `restore_ids` whose branch-added tombstone was removed.
+ * @property {{id: string, reason: string}[]} skipped - Ids not merged, demoted or withdrawn, with
+ *   reason not_confirmed_or_unknown, no_source_files, basis_mismatch, not_demoted_or_unknown
+ *   or not_withdrawable.
+ * @property {{id: string, reason: string}[]} removed - Entries removed because the KB holds them
+ *   superseded or invalidated.
+ * @property {number} entry_count - Entries in the resulting bible (a tombstone is not an entry).
+ * @property {number} backfilled - Legacy entries that gained source_file_hashes.
+ * @property {boolean} committed - True only when a local commit of the bible path was made.
+ * @property {true} [bible_skipped] - Present under an http KB provider (no entry merge).
+ * @property {string} [reason] - With bible_skipped: why.
+ */
+
+/**
+ * What a bible's "withdrawn" tombstones did on kb_import (KbImportResult.withdrawals).
+ * They take effect only when the bible was read with `ref` equal to
+ * refs/remotes/origin/<provenance.branch> of that same bible (the merged base bible).
+ * @typedef {Object} KbImportWithdrawals
+ * @property {number} sent - Tombstones applied locally (SQLite) or sent in one
+ *   POST /api/kb/withdraw (http); 0 when deferred or unsupported.
+ * @property {string[]} withdrawn - Rows lowered CONFIRMED -> INFERRED.
+ * @property {string[]} repromoted - Rows promoted after the tombstone; left CONFIRMED.
+ * @property {string[]} already - Rows already below CONFIRMED (a repeat import).
+ * @property {string[]} not_found - No such row (none is created).
+ * @property {string[]} unsupported - Not applied: the KB server does not serve the withdraw route.
+ * @property {string[]} deferred - Not applied: the bible was not read from the merged base bible.
+ * @property {string} [warning] - With unsupported: the E-KB-HTTP-UNSUPPORTED message naming the route.
+ */
+
+/**
+ * The result of kb_import (parse the text content with parseToolJson).
+ * @typedef {Object} KbImportResult
+ * @property {number} imported - Entries added.
+ * @property {number} skipped - Entries skipped (malformed, id already present, or duplicate).
+ * @property {number} linked - Entries linked to a same-topic predecessor (both stay live).
+ * @property {number} flagged - Entries flagged as a contradiction.
+ * @property {number} rejected - Entries refused by the capture basis check.
+ * @property {number} demoted - Local rows lowered by a "demoted" tombstone.
+ * @property {{checked: number, staled: number, unstaled: number}} sweep - The post-import freshness sweep.
+ * @property {string} [bible_source] - The git ref the bible was read at, when read from git.
+ * @property {boolean} [worktree_ignored] - With bible_source: the work-tree copy differed.
+ * @property {true} [bible_skipped] - Present under an http KB provider (no entry imported).
+ * @property {string} [reason] - With bible_skipped: why.
+ * @property {KbImportWithdrawals} withdrawals - What the bible's "withdrawn" tombstones did.
  */
 
 /**
@@ -1349,11 +1416,14 @@ export class ApraFleet {
      * entries and tombstoned as {id, at, reason}; entry_count counts entries only.
      * The removed scope keys (repo_path, repo, repo_remote_url) are refused
      * with E-SCOPE-KEY-REMOVED before anything is sent.
-     * Under an http KB provider the call is skipped, never an error: the result
-     * is {path, merged: [], skipped: [], removed: [], entry_count: <entries in the
-     * existing parseable bible, else 0>, backfilled: 0, committed: false,
-     * bible_skipped: true, reason}; the KB is not read and nothing is written or
-     * committed.
+     * Under an http KB provider the entry merge is skipped, never an error: the
+     * result is {path, merged: [], skipped: [], removed: [], entry_count: <entries
+     * in the existing parseable bible, else 0>, backfilled: 0, committed,
+     * bible_skipped: true, reason, withdrawn, restored}; the KB is not read. With
+     * no withdrawals and no restore_ids nothing is written or committed; with
+     * them, only the tombstones are written to .fleet/kb-canonical.json (a
+     * tombstone-only bible is created when absent, existing entries stay
+     * byte-identical) and committed may be true.
      * @param {KbBibleCommitOptions} options
      */
     async kbBibleCommit(options) {

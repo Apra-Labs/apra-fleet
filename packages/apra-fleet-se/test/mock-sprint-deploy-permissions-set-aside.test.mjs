@@ -5,8 +5,14 @@
 // records sprintState.deploySetAside (reason + first-seen cycle), and no later
 // cycle dispatches the deployer again. Once the work is closed, the sprint's
 // epic can only close through Integration Test, which cannot run while the
-// deploy is set aside -- so the run stalls at once in C1 (set-aside.mjs),
+// deploy is set aside -- so the run stops at once in C1 (set-aside.mjs),
 // naming the deploy reason, instead of re-running empty cycles.
+//
+// POLICY (set-aside carry-over): the task closed this run, so that stop is no
+// longer a SPRINT_STALLED abort: the run exits to Finalization (Final Review,
+// Harvest, Publish PR) with the deploy and the IntegTest-bound epic carried
+// over, and the verdict is forced FAIL. The assertions below were flipped
+// deliberately from SPRINT_STALLED.
 //
 // The other half of the rule -- a failure WITHOUT the field keeps the normal
 // per-cycle retry -- is pinned by mock-sprint-deploy-failure-verdict.test.mjs
@@ -59,7 +65,7 @@ test('unit: latestDeployFailure reports the set-aside reason for a cycle with no
     assert.equal(latestDeployFailure({ hasDeploy: false, deployedThisCycle: false, cycle: 2, deployFailures: failures, deploySetAside: setAside }), null);
 });
 
-test('mock sprint: a deploy failing at the Permissions pre-step in C1 is never dispatched again; the run stalls in C1', async () => {
+test('mock sprint: a deploy failing at the Permissions pre-step in C1 is never dispatched again; the run finishes in C1 with a carry-over', async () => {
     await withScenarioMarkers('deploypermsetaside', async () => {
         let deployCalls = 0;
         const run = await runDevelopLoopScenario('deploypermsetaside', {
@@ -75,9 +81,13 @@ test('mock sprint: a deploy failing at the Permissions pre-step in C1 is never d
             },
             finalReviewHandler: rubberStampPass,
         });
-        assert.ok(run.error, 'the run must stall once only IntegTest-bound work remains');
-        assert.equal(run.error.code, 'SPRINT_STALLED', run.error.message);
-        assert.equal(run.error.details.cycle, 1, 'the stall must be declared in C1, with no further cycle');
+        // POLICY (set-aside carry-over): not SPRINT_STALLED -- the closed
+        // task goes through Finalization with a forced FAIL.
+        assert.ok(!run.error, `no abort with work closed this run: ${run.error && run.error.message}`);
+        assert.equal(run.result.exitReason, 'set-aside-carry-over', JSON.stringify(run.result));
+        assert.equal(run.result.verdict, 'FAIL', 'the rubber-stamp PASS must be forced to FAIL');
+        assert.ok(run.logs.some((l) => /^Cycle 1: Carried over \(Cycle 1 evaluation\)/.test(l)), 'the carry-over exit must fire in C1');
+        assert.ok(run.dispatched.some((d) => d.agent === 'harvester'), 'Harvest must run');
         assert.equal(deployCalls, 1, 'the deployer must be dispatched only in C1');
         assert.equal(run.dispatched.filter((d) => d.agent === 'deployer').length, 1);
         assert.equal(run.dispatched.filter((d) => d.agent === 'integ-test-runner').length, 0);
@@ -88,12 +98,14 @@ test('mock sprint: a deploy failing at the Permissions pre-step in C1 is never d
         assert.ok(recorded, `expected the set-aside log, logs: ${JSON.stringify(run.logs.filter((l) => /Deploy/.test(l)))}`);
         assert.match(recorded, /\(first seen C1\): deployer stopped at the deploy\.md Permissions check before running any deploy command/);
 
-        // The stall names the deploy reason and the IntegTest-bound epic.
-        assert.ok(run.error.blockerIds.includes('deploy'), JSON.stringify(run.error.blockerIds));
-        assert.ok(run.error.blockerIds.includes(run.epicBeadId), JSON.stringify(run.error.blockerIds));
-        assert.ok(run.error.blockerReasons.deploy.includes(PERMISSION_NOTES), run.error.blockerReasons.deploy);
-        assert.match(run.error.blockerReasons.deploy, /first seen C1/);
-        assert.ok(run.error.message.includes(PERMISSION_NOTES), run.error.message);
-        assert.deepEqual(run.error.setAside.map((e) => e.id), ['deploy']);
+        // The carry-over names the deploy reason and the IntegTest-bound epic.
+        const reasons = Object.fromEntries(run.result.carryOver.map((e) => [e.id, e.reason]));
+        assert.ok(reasons.deploy, JSON.stringify(reasons));
+        assert.ok(reasons[run.epicBeadId], JSON.stringify(reasons));
+        assert.ok(reasons.deploy.includes(PERMISSION_NOTES), reasons.deploy);
+        assert.match(reasons.deploy, /first seen C1/);
+        assert.ok(run.result.notes.includes(PERMISSION_NOTES), run.result.notes);
+        const prCmd = run.commandLog.find((cmd) => cmd.includes('Set aside this run'));
+        assert.ok(prCmd && prCmd.includes('- deploy: '), 'the published PR body must list the set-aside deploy');
     });
 });

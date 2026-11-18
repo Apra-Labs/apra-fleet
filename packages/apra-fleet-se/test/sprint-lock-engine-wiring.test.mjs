@@ -157,7 +157,7 @@ describe('runner.js main(): sprint-lock wiring (apra-fleet-eft.75.2)', () => {
         // must fail fast with the distinct named error, never silently
         // proceed.
         assert.throws(
-            () => acquireSprintLock({ branch, members, lockDir }),
+            () => acquireSprintLock({ branch, members, lockDir, readCommandLine: () => `node fleet-sprint/bin/cli.mjs --branch ${branch}` }),
             (err) => err instanceof SprintLockHeldError && err.code === 'SPRINT_LOCK_HELD',
         );
 

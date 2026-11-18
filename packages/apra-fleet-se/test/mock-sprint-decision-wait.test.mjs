@@ -439,7 +439,7 @@ test('mock sprint: a stop request during the decision pause ends the run cleanly
     });
 });
 
-test('mock sprint: when the decision bead cannot be filed, the stall still throws StalledSprintError naming the decision with its full question (no endless pause)', { timeout: 180_000 }, async () => {
+test('mock sprint: when the decision bead cannot be filed, the run does not pause; it finishes with the decision carried over with its full question (no endless pause)', { timeout: 180_000 }, async () => {
     resetSyncMemo();
     await withScenarioMarkers('decision bead create fails -> stall', async () => {
         const { scenario, seen } = await decisionScenario('dwait-unfiled', async (workflow) => {
@@ -455,10 +455,18 @@ test('mock sprint: when the decision bead cannot be filed, the stall still throw
         const x = scenario.tasks.find((t) => t.title === DECIDE).id;
         assert.equal(seen.pauses.filter((p) => p.source === 'needs_decision').length, 0, 'never paused awaiting the unfiled decision');
         check(!seen.states.some((d) => d.state === PAUSED_AWAITING_DECISION), 'never reached paused-awaiting-decision');
-        check(scenario.error && scenario.error.code === 'SPRINT_STALLED', `throws StalledSprintError: ${scenario.error && (scenario.error.code || scenario.error.message)}`);
-        check(scenario.error.message.includes(x), 'the stall names the work bead');
-        check(scenario.error.message.includes(QUESTION), 'the stall carries the full question');
-        check(scenario.error.message.includes('could NOT be filed'), `the stall says the decision bead could not be filed: ${scenario.error.message}`);
+        // POLICY (set-aside carry-over): the other bead closed this run, so
+        // the set-aside stall no longer throws StalledSprintError -- the run
+        // exits to Finalization with the unfiled decision carried over (its
+        // full question as the reason) and a forced FAIL verdict.
+        check(!scenario.error, `no abort with work closed this run: ${scenario.error && scenario.error.message}`);
+        check(scenario.result.exitReason === 'set-aside-carry-over', `carry-over exit: ${JSON.stringify(scenario.result)}`);
+        check(scenario.result.verdict === 'FAIL', `verdict: ${scenario.result.verdict}`);
+        const carried = (scenario.result.carryOver || []).find((e) => e.id === x);
+        check(carried, `the carry-over names the work bead: ${JSON.stringify(scenario.result.carryOver)}`);
+        check(carried.reason.includes(QUESTION), 'the carry-over carries the full question');
+        check(scenario.result.notes.includes(QUESTION), 'the verdict notes carry the full question');
+        check(scenario.logs.some((l) => l.includes('could NOT be filed')), 'the run log says the decision bead could not be filed');
         assert.equal(doerDispatches(scenario).filter((d) => assignedIds(d).includes(x)).length, 1, 'not re-dispatched');
     });
 });

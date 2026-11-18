@@ -441,12 +441,19 @@ export const GUARDED_MODULES = [
     // Verify-block deadlock diagnosis (pure): no command() or agent() site;
     // runner.js owns the runbook probes, the stop and the mid-run exit.
     'verify-block.mjs',
+    // Red-build integ gate (pure): no command() or agent() site; runner.js
+    // owns the sticky flag and the integ skip, final-review.mjs the verdict gate.
+    'red-build-integ-gate.mjs',
     // Pre-launch stale-claim rule, fresh-read gate and downstream naming
     // (pure): no command() or agent() site; runner.js owns the read and write.
     'beads-reachability.mjs',
     // Run-scoped set-aside stall decision and report section (pure): no
     // command() or agent() site; runner.js owns the reads and the throw.
     'set-aside.mjs',
+    // Verify carry-over (needs-external-evidence count, deferred verify ids,
+    // verdict gate) (pure): no command() or agent() site; runner.js and
+    // phases/integ-test.mjs own the reads, final-review.mjs the verdict gate.
+    'verify-carry-over.mjs',
     'vcs-providers/azure-devops.mjs',
     'vcs-providers/bitbucket.mjs',
     'vcs-providers/dolt.mjs',

@@ -446,7 +446,10 @@ paths:
             roleMap that gives both "backlog" and the deprecated
             "orchestrator" key with different values, the "@path" file
             form, or a backlog role (or its alias) naming a member other
-            than this supervisor's own backlog member (the error names it)
+            than this supervisor's own backlog member (the error names it).
+            A body that is not valid JSON is also 400 (field body, parse
+            message with position, no stack); an oversized body is 413
+            (field body).
           content:
             application/json:
               schema: { $ref: "#/components/schemas/FieldError" }

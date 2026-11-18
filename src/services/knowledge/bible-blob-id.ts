@@ -107,6 +107,16 @@ export async function readCommittedBibleBlob(
 }
 
 /**
+ * True when `ref` (a safe ref name or object id, see isSafeBibleRef) resolves
+ * to a commit in the repository containing `folder`.
+ */
+export async function commitResolves(folder: string, ref: string): Promise<boolean> {
+  if (!isSafeBibleRef(ref)) return false;
+  const out = await git(['rev-parse', '--verify', '--quiet', ref + '^{commit}'], folder);
+  return out !== null && OBJECT_ID.test(out.trim());
+}
+
+/**
  * The blob id git would store for `bytes` committed unfiltered in the
  * repository containing `folder`, computed in-process (`git hash-object
  * --no-filters` semantics; the object format comes from the repository,

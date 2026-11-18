@@ -34,14 +34,21 @@
   "$defs": {
     "demotions": {
       "type": "array",
-      "description": "v3 only. Optional tombstones written by kb_bible_commit: each names an id removed from entries at `at` for `reason`. reason \"demoted\" (a kb_demote) is the only one kb_import applies to a local row, and only when that row is withdrawn under the one re-promotion rule; readers keep reasons they do not know. Omitted entirely when there are none. Never inferred from an absence. See spec.md section 2.6.",
+      "description": "v3 only. Optional tombstones written by kb_bible_commit: each names an id removed from entries at `at` for `reason`. reason \"demoted\" (a kb_demote) is the only one kb_import applies to a local row, and only when that row is withdrawn under the one re-promotion rule. reason \"withdrawn\" is a branch-carried reviewer judgement that the entry no longer holds; it is applied only on an import of the merged base bible (a base-ref import), never from a work tree. Every reason keeps the entry out of a bible view; readers keep reasons they do not know and treat them as view exclusions only. Optional note and evidence_files are carried verbatim across re-commits. Omitted entirely when there are none. Never inferred from an absence. See spec.md section 2.6.",
       "items": {
         "type": "object",
         "required": ["id", "at", "reason"],
         "properties": {
           "id": { "type": "string", "minLength": 1 },
           "at": { "type": "string", "minLength": 1 },
-          "reason": { "type": "string", "minLength": 1 }
+          "reason": { "type": "string", "minLength": 1 },
+          "note": { "type": "string", "minLength": 1, "description": "Optional free-text justification for the removal (a withdrawal carries the reviewer judgement here)." },
+          "evidence_files": {
+            "type": "array",
+            "minItems": 1,
+            "description": "Optional repository-relative files the removal judgement was checked against.",
+            "items": { "$ref": "#/$defs/repoRelativePath" }
+          }
         }
       }
     },

@@ -69,6 +69,38 @@ describe('bible schema and examples', () => {
   });
 });
 
+describe('bible schema: tombstone fields', () => {
+  const validate = validator();
+  const base = () => ({
+    version: 3,
+    provenance: { commit: null, branch: 'main', entry_count: 0 },
+    entries: [],
+  });
+
+  it('validates a withdrawn tombstone with and without note/evidence_files', () => {
+    const bare = { ...base(), demotions: [{ id: 'kb-1', at: '2026-01-01T00:00:00.000Z', reason: 'withdrawn' }] };
+    expect(validate(bare)).toBe(true);
+    const full = {
+      ...base(),
+      demotions: [{
+        id: 'kb-1', at: '2026-01-01T00:00:00.000Z', reason: 'withdrawn',
+        note: 'the cited guard no longer exists in the reader', evidence_files: ['src/a.ts', 'docs/b.md'],
+      }],
+    };
+    const ok = validate(full);
+    expect(validate.errors ?? []).toEqual([]);
+    expect(ok).toBe(true);
+  });
+
+  it('rejects evidence_files that are empty, absolute or escape the repo', () => {
+    const at = '2026-01-01T00:00:00.000Z';
+    for (const evidence_files of [[], ['/etc/passwd'], ['../outside.ts'], ['C:/x.ts']]) {
+      const doc = { ...base(), demotions: [{ id: 'kb-1', at, reason: 'withdrawn', evidence_files }] };
+      expect(validate(doc)).toBe(false);
+    }
+  });
+});
+
 describe('live writer output validates against the bible schema', () => {
   let root: string;
   let provider: SqliteProvider;

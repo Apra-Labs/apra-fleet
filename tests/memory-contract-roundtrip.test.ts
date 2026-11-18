@@ -57,9 +57,12 @@ const ROSTER: string[] = [
 ];
 
 interface SetupOp {
-  op: 'write' | 'delete' | 'commit';
+  op: 'write' | 'delete' | 'commit' | 'ref';
   repo: string;
-  rel: string;
+  /** write / delete / commit: the repo-relative path. */
+  rel?: string;
+  /** ref: the git ref pointed at HEAD. */
+  name?: string;
   contents?: string;
 }
 
@@ -177,7 +180,12 @@ class SqliteContractProvider {
     for (const op of ops) {
       const repoDir = this.repoPaths.get(op.repo);
       if (!repoDir) throw new Error(`setup op names unknown repo "${op.repo}"`);
-      const target = path.join(repoDir, ...op.rel.split('/'));
+      if (op.op === 'ref') {
+        execFileSync('git', ['update-ref', op.name as string, 'HEAD'], { cwd: repoDir, stdio: ['ignore', 'pipe', 'pipe'] });
+        continue;
+      }
+      const rel = op.rel as string;
+      const target = path.join(repoDir, ...rel.split('/'));
       if (op.op === 'write') {
         fs.mkdirSync(path.dirname(target), { recursive: true });
         fs.writeFileSync(target, op.contents ?? '', 'utf-8');
@@ -185,8 +193,8 @@ class SqliteContractProvider {
         fs.rmSync(target, { force: true });
       } else if (op.op === 'commit') {
         const git = (args: string[]) => execFileSync('git', args, { cwd: repoDir, stdio: ['ignore', 'pipe', 'pipe'] });
-        git(['add', '--', op.rel]);
-        git(['-c', 'commit.gpgsign=false', 'commit', '-q', '--no-verify', '-m', 'setup: ' + op.rel, '--', op.rel]);
+        git(['add', '--', rel]);
+        git(['-c', 'commit.gpgsign=false', 'commit', '-q', '--no-verify', '-m', 'setup: ' + rel, '--', rel]);
       } else {
         throw new Error(`unknown setup op "${op.op}"`);
       }
@@ -235,7 +243,7 @@ describe('memory-contract/v1 round trip (sqlite provider)', () => {
   it('dispatched every committed fixture live (no case silently skipped)', () => {
     const undispatched = report.steps.filter((s) => !s.dispatched).map((s) => s.key);
     expect(undispatched).toEqual([]);
-    expect(report.steps.length).toBe(108); // one SCENARIO step per committed fixture outside FIXTURES_OUTSIDE_SCENARIO: 108 of 109 (60 responses + 49 thrown refusals)
+    expect(report.steps.length).toBe(120); // one SCENARIO step per committed fixture outside FIXTURES_OUTSIDE_SCENARIO: 120 of 121 (72 responses + 49 thrown refusals)
   });
 
   it('covers all 26 inventoried tools', () => {

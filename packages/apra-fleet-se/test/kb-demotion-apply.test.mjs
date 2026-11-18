@@ -68,6 +68,7 @@ function harness({ demoteOutcome, skipped = [], currentFileHashes = async () => 
                 }],
             };
         }
+        if (tool === 'kb_promote') return { id: args.id, previous_confidence: 'INFERRED', new_confidence: 'CONFIRMED' };
         return {};
     };
     const client = createKbWorkClient({
