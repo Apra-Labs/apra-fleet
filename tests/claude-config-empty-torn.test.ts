@@ -27,6 +27,7 @@ import { MEMBER_FILE_PRESENT_MARKER, memberMcpUrl, MEMBER_MCP_SERVER_NAME } from
 import type { SSHExecResult } from '../src/types.js';
 import type { MemberShell } from '../src/os/os-commands.js';
 import { makeTestAgent } from './test-helpers.js';
+import { parseLandingMove } from './helpers/landing-move.js';
 
 const ok = (stdout = ''): SSHExecResult => ({ stdout, stderr: '', code: 0 });
 
@@ -72,7 +73,7 @@ function fakeMember(initial: string | null, concurrent?: string) {
     // Repository-root probe: not a git repo, so the key is the work folder.
     if (cmd.startsWith('git -C ')) return { stdout: '', stderr: 'fatal: not a git repository', code: 128 };
     // Content-free move of the staged file over the config.
-    if (/^(mv|Move-Item -Force) "/.test(cmd)) {
+    if (parseLandingMove(cmd)) {
       moves.push(cmd);
       if (staged === null) return { stdout: '', stderr: 'nothing staged', code: 1 };
       content = staged;

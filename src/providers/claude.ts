@@ -1086,6 +1086,26 @@ export interface WorkspaceTrustWritePlan {
 }
 
 /**
+ * PowerShell command that lands staged file `from` on `to` without `to` ever
+ * disappearing. `Move-Item -Force` on Windows PowerShell 5.1 deletes an
+ * existing destination and then moves, leaving a window with no file (Claude
+ * Code may read that as a fresh install) and losing it if the move then
+ * fails. An existing destination is swapped with [IO.File]::Replace
+ * (ReplaceFile, which also keeps the destination's ACL); a missing one is
+ * moved. ReplaceFile needs both on one volume, so a source staged on another
+ * volume is first copied next to the destination. Any failure exits 1 with
+ * the reason on stderr. Both paths arrive already escaped for "...".
+ */
+export function windowsReplaceFileCommand(from: string, to: string): string {
+  return `$s = "${from}"; $d = "${to}"; $t = $null; `
+    + `try { $ErrorActionPreference = 'Stop'; $src = $s; `
+    + `if ([System.IO.Path]::GetPathRoot($s) -ne [System.IO.Path]::GetPathRoot($d)) { $t = $d + '.fleet-land.tmp'; [System.IO.File]::Copy($s, $t, $true); $src = $t }; `
+    + `if ([System.IO.File]::Exists($d)) { [System.IO.File]::Replace($src, $d, [NullString]::Value) } else { [System.IO.File]::Move($src, $d) }; `
+    + `if ($t) { [System.IO.File]::Delete($s) } `
+    + `} catch { if ($t -and [System.IO.File]::Exists($t)) { [System.IO.File]::Delete($t) }; [Console]::Error.WriteLine($_.Exception.Message); exit 1 }`;
+}
+
+/**
  * Deliver `contentStr` (a merged ~/.claude.json) to `homeFile` on the member
  * WITHOUT it ever appearing in an exec string -- not raw, not base64, not
  * chunked, not inside -EncodedCommand. Two channels only:
@@ -1111,7 +1131,7 @@ export async function deliverWorkspaceTrustFile(
 ): Promise<WorkspaceTrustWritePlan> {
   const { isWindows, execCommand, transport, homeFile, tmpFile, staging, homeRel, secretChannel } = opts;
   const moveCmd = (from: string) => (isWindows
-    ? `Move-Item -Force "${from}" "${homeFile}"`
+    ? windowsReplaceFileCommand(from, homeFile)
     : `mv "${from}" "${homeFile}"`);
   const failures: string[] = [];
 

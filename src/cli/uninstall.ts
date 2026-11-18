@@ -333,6 +333,11 @@ interface RemovalFailure {
   error: unknown;
 }
 
+/** Same Windows path (case-insensitive, separators normalised): execPath's case can differ from a readdir join. */
+function sameWin32Path(a: string, b: string): boolean {
+  return path.win32.normalize(a).toLowerCase() === path.win32.normalize(b).toLowerCase();
+}
+
 function errCode(e: unknown): string | undefined {
   return (e as NodeJS.ErrnoException | undefined)?.code;
 }
@@ -646,7 +651,7 @@ Options:
     // failure, hand BIN_DIR's removal to a detached process that waits for us.
     const lockedExeOnly = process.platform === 'win32'
       && removalFailures.length > 0
-      && removalFailures.every(f => f.path === process.execPath && (errCode(f.error) === 'EPERM' || errCode(f.error) === 'EBUSY'));
+      && removalFailures.every(f => sameWin32Path(f.path, process.execPath) && (errCode(f.error) === 'EPERM' || errCode(f.error) === 'EBUSY'));
     if (lockedExeOnly) {
       const manual = `Remove-Item -LiteralPath '${BIN_DIR.replace(/'/g, "''")}' -Recurse -Force`;
       try {

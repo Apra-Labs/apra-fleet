@@ -1017,6 +1017,21 @@ describe('uninstall', () => {
       expect(unref).toHaveBeenCalled();
     });
 
+    it('win32: process.execPath in a different case / separator style still counts as the locked exe', async () => {
+      setProcess('win32');
+      // execPath's case can differ from the readdir join that names the failure.
+      Object.defineProperty(process, 'execPath', { value: exePath.toUpperCase().replace(/\\/g, '/'), configurable: true });
+      const { remove } = failing({ [exePath]: 'EPERM' });
+      const spawnDetached = vi.fn();
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      await runUninstall(['--yes'], { remove, spawnDetached, sleep: () => {} });
+
+      expect(spawnDetached).toHaveBeenCalledTimes(1);
+      expect(errSpy).not.toHaveBeenCalled();
+      expect(process.exit).not.toHaveBeenCalled();
+    });
+
     it('win32 + EPERM on a different BIN_DIR file: retried, reported, exit 1, the rest still removed', async () => {
       setProcess('win32');
       const { remove, removed } = failing({ [doltPath]: 'EPERM' });

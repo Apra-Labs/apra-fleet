@@ -23,6 +23,7 @@ import { NoneProvider } from '../src/providers/none.js';
 import type { SSHExecResult } from '../src/types.js';
 import type { WorkspaceTrustTransport, WorkspaceTrustExecFn } from '../src/providers/provider.js';
 import type { MemberShell } from '../src/os/os-commands.js';
+import { parseLandingMove, isWindowsLandingMove } from './helpers/landing-move.js';
 
 /** The fake member file channel of the CURRENT test's fake exec: stages content
  *  (writeHomeFile) and lands it on the move command -- the content never rides
@@ -70,7 +71,7 @@ function makeFakeExec(initialFileContent: string | null, mcpFileContent?: string
     }
 
     // Content-free move of the staged file over ~/.claude.json.
-    if (/^(mv|Move-Item -Force) /.test(cmd)) {
+    if (parseLandingMove(cmd)) {
       if (staged !== null) fileContent = staged;
       return { stdout: '', stderr: '', code: 0 };
     }
@@ -186,7 +187,7 @@ describe('ClaudeProvider.ensureWorkspaceTrusted (apra-fleet-eft.40.1)', () => {
     await provider.ensureWorkspaceTrusted('C:/akhil/git/project-a', exec, 'windows', undefined, undefined, TEST_HOME('windows', undefined));
 
     expect(calls.some(c => c.includes('Get-Content'))).toBe(true);
-    expect(calls.some(c => c.startsWith('Move-Item -Force ') && !c.includes('WriteAllText'))).toBe(true);
+    expect(calls.some(c => isWindowsLandingMove(c) && !c.includes('WriteAllText'))).toBe(true);
     expect(JSON.parse(getFileContent()!).projects['C:/akhil/git/project-a'].hasTrustDialogAccepted).toBe(true);
   });
 
@@ -215,7 +216,7 @@ describe('ClaudeProvider.ensureWorkspaceTrusted (apra-fleet-eft.40.1)', () => {
     const normalise = (cmds: string[]) => cmds.map(c => c.replace(/fleet-trust-\d+-[a-z0-9]+\./g, 'fleet-trust-TOKEN.'));
     expect(normalise(legacy.exec.mock.calls.map(c => c[0]))).toEqual(normalise(powershell5.exec.mock.calls.map(c => c[0])));
     expect(powershell5.calls.some(c => c.includes('Get-Content'))).toBe(true);
-    expect(powershell5.calls.some(c => c.startsWith('Move-Item -Force ') && !c.includes('WriteAllText'))).toBe(true);
+    expect(powershell5.calls.some(c => isWindowsLandingMove(c) && !c.includes('WriteAllText'))).toBe(true);
   });
 
   it('refuses a corrupted/unparseable ~/.claude.json with E-MEMBER-CONFIG-NOT-JSON and leaves it untouched', async () => {
@@ -226,7 +227,7 @@ describe('ClaudeProvider.ensureWorkspaceTrusted (apra-fleet-eft.40.1)', () => {
       .rejects.toThrow(/E-MEMBER-CONFIG-NOT-JSON/);
 
     expect(getFileContent()).toBe('not-json-at-all{{{');
-    expect(calls.some(c => /^(mv|Move-Item) /.test(c))).toBe(false);
+    expect(calls.some(c => /^(mv|Move-Item) /.test(c) || parseLandingMove(c) !== null)).toBe(false);
   });
 
   it('proves claude trust write stages to a temp file and moves it into place (atomic pattern)', async () => {

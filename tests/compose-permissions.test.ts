@@ -20,6 +20,7 @@ import type { LlmProvider, SSHExecResult } from '../src/types.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { parseLandingMove } from './helpers/landing-move.js';
 
 // GitHub #499: seedWorkspaceTrust now also forwards a 5th `transport` argument (the
 // out-of-band file channel for a large ~/.claude.json) for every non-relay member.
@@ -86,11 +87,11 @@ function makeFsHandler(seed: Record<string, string> = {}): (cmd: string, timeout
     m = cmd.match(/^cat > (.+?) << 'FLEET_TRUST_EOF'\n([\s\S]*)\nFLEET_TRUST_EOF\nmv .+? (.+)$/);
     if (m) { files.set(m[3], m[2]); return { stdout: '', stderr: '', code: 0 }; }
     // Content-free move of a staged file (file channel / secret file).
-    m = cmd.match(/^mv (".+?") (".+?")$/) ?? cmd.match(/^Move-Item -Force (".+?") (".+?")$/);
-    if (m) {
-      const staged = files.get(m[1]);
+    const move = parseLandingMove(cmd);
+    if (move) {
+      const staged = files.get(`"${move.from}"`);
       if (staged === undefined) return { stdout: '', stderr: 'No such file', code: 1 };
-      files.set(m[2], staged);
+      files.set(`"${move.to}"`, staged);
       return { stdout: '', stderr: '', code: 0 };
     }
     // Windows write (WriteAllText); PowerShell single-quote escaping doubles quotes
