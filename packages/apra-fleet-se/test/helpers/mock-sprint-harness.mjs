@@ -2279,6 +2279,8 @@ export async function runDevelopLoopScenario(tag, {
     // Optional `args.decision_notify` (decision-notify.mjs): where the operator
     // is told about a pending decision.
     decisionNotify,
+    // Optional injected KB work client: main() reads context.kbWork.
+    kbWork,
     // apra-fleet-eft.79: optional passthroughs for the multi-streak worklist
     // args (validateArgs: doer_worklist_mode 'resume'|'batch',
     // resume_model_switch boolean, worklist_effort_budget positive number) --
@@ -2419,7 +2421,7 @@ export async function runDevelopLoopScenario(tag, {
         let error = null;
         let result = null;
         try {
-            result = await engine.executeFile(scriptPath, {
+            const sprintArgs = {
                 target_issue: epicBead.id,
                 members,
                 branch,
@@ -2441,7 +2443,12 @@ export async function runDevelopLoopScenario(tag, {
                 ...(expectBeads !== undefined ? { expect_beads: expectBeads } : {}),
                 ...(skipRegression !== undefined ? { skip_regression: skipRegression } : {}),
                 ...(decisionNotify !== undefined ? { decision_notify: decisionNotify } : {}),
-            }, true);
+            };
+            // An injected kbWork client is not a CLI arg; hand it to main() the way
+            // WorkflowEngine.executeFile hands over its context.
+            result = kbWork !== undefined
+                ? await workflow.runWithContext(sprintArgs, async (ctx) => (await import('../../fleet-sprint/runner.js')).main({ ...ctx, kbWork }))
+                : await engine.executeFile(scriptPath, sprintArgs, true);
         } catch (err) {
             error = err;
         }

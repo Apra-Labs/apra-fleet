@@ -9,6 +9,7 @@ import { installFatalDiagnosticsGuard } from '../fleet-sprint/fatal-diagnostics.
 import { fakeMaintainerSelector } from './helpers/kb-maintainer-fakes.mjs';
 import {
     setup, teardown, buildMockFleetApi, withScenarioMarkers, uniqueMockBranch, defaultMockCallTool,
+    runDevelopLoopScenario,
 } from './helpers/mock-sprint-harness.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -116,6 +117,57 @@ describe('held KB writes WARN through the engine entry point', () => {
             assert.equal(s.error, null, `no error: ${s.error && s.error.message}`);
             assert.equal(s.result && s.result.status, 'success');
             assertListedOnce(s.logs);
+        });
+    });
+
+    test('(3) plan-rejected carry-over exit (returned, not thrown): the held writes are listed once', async () => {
+        await withScenarioMarkers('held-kb-carry-over', async () => {
+            const logs = [];
+            const kbWork = await heldClient(logs);
+            const report = (obj) => ({ content: [{ text: JSON.stringify(obj) }] });
+            const ids = (prompt) => {
+                const m = prompt.match(/Assigned bead ids \(comma-separated\):\s*(.+)/);
+                return m ? m[1].split(',').map((x) => x.trim()).filter(Boolean) : [];
+            };
+            const filed = [];
+            let planCalls = 0;
+            const FINDING = 'No in-repo change can meet the open bug; a human must decide.';
+            const run = await runDevelopLoopScenario('heldcarry', {
+                members: ['local'],
+                goal: 'P1/P2',
+                taskSpecs: [{ title: 'Task: closes in cycle one', priority: 'P1' }],
+                maxCycles: 3,
+                withRunbooks: true,
+                withRegressionPlaybook: true,
+                kbWork,
+                doerHandler: async ({ opts, runCmd: rc, tempDir: td }) => {
+                    const assigned = ids(opts.prompt);
+                    for (const id of assigned) await rc(`bd close ${id} --reason "Done"`, td);
+                    return report({ status: 'VERIFY', closedIds: assigned, notes: 'Closed.' });
+                },
+                reviewerHandler: async () => report({ verdict: 'APPROVED', notes: 'Approved.', reopenIds: [], newTasks: [] }),
+                finalReviewHandler: async () => report({ verdict: 'PASS', notes: 'PASS.' }),
+                regressionHandler: async () => report({ passed: true, suitePassed: true, smokePassed: true, bugsFiled: [], summary: 'ok' }),
+                integHandler: async ({ epicBead, runCmd: rc, tempDir: td }) => {
+                    if (filed.length === 0) {
+                        const out = await rc(`bd create -t bug "Bug: budget cannot be met" -d "Filed by integration test." -p P1 --parent ${epicBead.id} --silent`, td);
+                        filed.push(String(out.stdout || '').trim());
+                        return report({ featuresClosed: 0, issuesCreated: 1, passed: false, bugsFiled: [...filed], summary: 'Filed a bug.' });
+                    }
+                    return report({ featuresClosed: 0, issuesCreated: 0, passed: true, bugsFiled: [], summary: 'Nothing to verify.' });
+                },
+                planReviewerHandler: async () => {
+                    planCalls++;
+                    if (planCalls === 1) return report({ verdict: 'APPROVED', notes: 'Plan approved.', taskAssignments: [] });
+                    return report({
+                        verdict: 'CHANGES_NEEDED', notes: FINDING, taskAssignments: [],
+                        findings: filed.map((id) => ({ id, kind: 'feasibility', detail: FINDING })),
+                    });
+                },
+            });
+            assert.ok(!run.error, `carry-over is a returned exit: ${run.error && run.error.message}`);
+            assert.equal(run.result.exitReason, 'plan-rejected-carry-over', JSON.stringify(run.result));
+            assertListedOnce(run.logs.concat(logs));
         });
     });
 });
