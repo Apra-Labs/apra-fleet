@@ -22,7 +22,8 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { createSupervisor, DEFAULT_SERVICE_PORT, DEFAULT_SERVICE_HOST, SUPERVISOR_ALLOWED_HOSTS_ENV, readJsonBody, sendJson } from '../src/supervisor/server.mjs';
-import { createLedger } from '../src/supervisor/ledger.mjs';
+import { createLedger, defaultDataDir as defaultSupervisorDataDir } from '../src/supervisor/ledger.mjs';
+import { createHeartbeat, resolveHeartbeatIntervalMs } from '../src/supervisor/heartbeat.mjs';
 import { createHistory, HISTORY_EVENTS } from '../src/supervisor/history.mjs';
 import { createSpawner } from '../src/supervisor/spawner.mjs';
 import { createReconciler, registerReservationRoutes, killPid } from '../src/supervisor/reconcile.mjs';
@@ -91,6 +92,8 @@ Options:
 Environment:
   FLEET_SE_DATA_DIR                 Service data dir (ledger/history/logs and
                                     child-id-allocator.json).
+  FLEET_SE_HEARTBEAT_INTERVAL_MS    Interval (ms) between supervisor.json liveness
+                                    writes in the data dir. Default: 15000.
   FLEET_SE_SWEEP_OWNER_DATA_DIR     Scope the dolt-orphan-sweep to ephemeral
                                     dolt sql-servers whose --data-dir is under
                                     this path, so an isolated supervisor
@@ -658,6 +661,19 @@ export async function serveMain(argv = process.argv.slice(2), deps = {}) {
 
     await supervisor.start();
 
+    // Liveness record <dataDir>/supervisor.json (src/supervisor/heartbeat.mjs):
+    // started once the port is bound, final record (stoppedAt) written last,
+    // after shutdownRequested below.
+    const heartbeat = createHeartbeat({
+        dataDir: defaultSupervisorDataDir(),
+        port: supervisor.port,
+        beadsDir: discovered ? discovered.beadsDir : null,
+        version: readServeVersion(),
+        intervalMs: resolveHeartbeatIntervalMs(),
+        log: (m) => console.error(m),
+    });
+    heartbeat.start();
+
     // Restart reconciliation (eft.5.4) + re-adoption (eft.4.5): the ledger
     // seam has now loaded from disk. Start the history log, then PID-probe
     // every reloaded entry -- dead children release both axes and are marked
@@ -676,11 +692,20 @@ export async function serveMain(argv = process.argv.slice(2), deps = {}) {
     // Keep the process alive until an explicit shutdown resolves. Awaiting this
     // is what makes `fleet-se serve` "always-on" -- nothing else drives exit.
     await supervisor.shutdownRequested;
+    heartbeat.stop();
     try { beadsView.stop(); } catch (err) { console.error('[supervisor] beadsView stop failed:', err); }
     try { if (typeof backlogMember.stop === 'function') backlogMember.stop(); } catch (err) { console.error('[supervisor] backlogMember stop failed:', err); }
     const hung = supervisor.hungSeams;
     console.log(`[supervisor] exiting (code 0)${hung.length ? `; seams that did not stop in time: ${hung.join(', ')}` : ''}`);
     return { exitCode: 0 };
+}
+
+function readServeVersion() {
+    try {
+        return JSON.parse(fs.readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8')).version ?? null;
+    } catch {
+        return null;
+    }
 }
 
 function isMainModule() {
