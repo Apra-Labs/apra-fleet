@@ -78,6 +78,30 @@ describe('KB write routing: the queue and the maintainer session', () => {
         assert.equal(h.client.pendingCount(), 0);
     });
 
+    test('only a real promotion to CONFIRMED is counted and queued for the bible; no-ops are logged', async () => {
+        const results = {
+            p1: { id: 'p1', previous_confidence: 'INFERRED', new_confidence: 'CONFIRMED' },
+            p2: { id: 'p2', previous_confidence: 'INFERRED', new_confidence: 'INFERRED' },
+            p3: { id: 'p3', previous_confidence: 'CONFIRMED', new_confidence: 'CONFIRMED' },
+            p4: { id: 'p4', previous_confidence: 'UNVERIFIED', new_confidence: 'INFERRED' },
+            p5: 'not json',
+        };
+        const h = harness({ memberCall: (m, tool, args) => (tool === 'kb_promote' ? results[args.id] : {}) });
+        await h.offer('doer-a', ['p1', 'p2', 'p3', 'p4', 'p5']);
+        const out = await h.client.apply('reviewer', 'doer-a', {
+            kb_captures: [capture('claim alongside promotions')],
+            kb_promotions: ['p1', 'p2', 'p3', 'p4', 'p5'].map((id) => ({ id, reason: REASON })),
+        });
+        assert.equal(out.promoted, 1);
+        assert.equal(out.captured, 1, 'other ops in the batch still apply');
+        assert.equal(h.calls().filter((c) => c.tool === 'kb_promote').length, 5);
+        for (const [id, from, to] of [['p2', 'INFERRED', 'INFERRED'], ['p3', 'CONFIRMED', 'CONFIRMED'], ['p4', 'UNVERIFIED', 'INFERRED']]) {
+            assert.ok(h.logs.includes(`[kb-work] kb_promote: ${id} not promoted (${from} -> ${to})`), JSON.stringify(h.logs));
+        }
+        assert.ok(h.logs.some((l) => l.startsWith('[kb-work] kb_promote: p5 not promoted')), JSON.stringify(h.logs));
+        assert.equal(h.logs.filter((l) => l.includes('not promoted')).length, 4);
+    });
+
     test('a bare member name routes the same way as a member record', async () => {
         const h = harness();
         await h.client.apply('doer', 'doer-a', { kb_captures: [CAPTURE] });

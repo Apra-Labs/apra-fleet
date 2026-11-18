@@ -1133,6 +1133,80 @@ await recordNonErrorOutcome('kb_capture', 'non-error-confidence-clamped', {
   }
 }
 
+// -- withdrawals: a branch tombstone, a deferred and a base-ref import, a restore
+// A CONFIRMED entry is merged into repo A's bible (setup). kb_bible_commit
+// withdrawals then removes it and records a "withdrawn" tombstone (the local
+// row is not changed). kb_import of that bible from the work tree lowers
+// nothing and reports the id deferred; read at refs/remotes/origin/main (the
+// bible's provenance.branch, pointed at HEAD here as a merge and fetch would)
+// it lowers the row and reports it withdrawn. Last, restore_ids with the
+// pre-withdrawal commit (a ref) as baseCommit removes the branch-added tombstone and
+// re-adds the base entry.
+{
+  const captureWithdraw = await recordHappy('kb_capture', 'setup-for-bible-withdrawal', {
+    type: 'knowledge',
+    title: 'Entry merged into the bible and then withdrawn',
+    summary: 'Set up to demonstrate kb_bible_commit withdrawals and the base-ref kb_import.',
+    content: 'This entry cites the committed src/helper.ts, is merged into the bible, then withdrawn on a branch.',
+    source_files: ['src/helper.ts'],
+    symbols: ['helperWithdrawalFixture'],
+  });
+  const idWithdraw = parseEnvelopeText(captureWithdraw)?.id;
+  if (idWithdraw) {
+    await recordHappy('kb_promote', 'setup-first-promote-for-bible-withdrawal', {
+      id: idWithdraw,
+      reason: 'First promotion (UNVERIFIED -> INFERRED) of the entry used by the withdrawal fixtures.',
+    });
+    await recordHappy('kb_promote', 'setup-second-promote-for-bible-withdrawal', {
+      id: idWithdraw,
+      reason: 'Second promotion (INFERRED -> CONFIRMED) so the entry can be merged and then withdrawn.',
+    });
+    await recordHappy('kb_bible_commit', 'setup-merge-for-bible-withdrawal', {
+      ids: [idWithdraw],
+      baseBranch: 'main',
+      baseCommit: '0123456789abcdef0123456789abcdef01234567',
+    });
+    // The base bible restore_ids compares against: pinned by a ref (baseCommit
+    // accepts any commit-ish), so the round trip can name it without a sha.
+    execFileSync('git', ['update-ref', 'refs/fixtures/pre-withdrawal', 'HEAD'], { cwd: repoA });
+    await recordHappy('kb_bible_commit', 'withdrawal', {
+      ids: [],
+      withdrawals: [{
+        id: idWithdraw,
+        note: 'Re-read src/helper.ts: the helper no longer behaves as the entry states.',
+        evidence_files: ['src/helper.ts'],
+      }],
+      baseBranch: 'main',
+      baseCommit: '0123456789abcdef0123456789abcdef01234567',
+    });
+    const deferred = await withSession('FULL_A', () => recordHappy('kb_import', 'withdrawal-deferred', {
+      skip_sweep: true,
+    }));
+    if (JSON.stringify(parseEnvelopeText(deferred)?.withdrawals?.deferred) !== JSON.stringify([idWithdraw])) {
+      failures++;
+      console.log(`  [FAIL] kb_import/withdrawal-deferred did not report ${idWithdraw} deferred`);
+    }
+    execFileSync('git', ['update-ref', 'refs/remotes/origin/main', 'HEAD'], { cwd: repoA });
+    const applied = await withSession('FULL_A', () => recordHappy('kb_import', 'withdrawal-base-ref', {
+      ref: 'refs/remotes/origin/main',
+      skip_sweep: true,
+    }));
+    if (JSON.stringify(parseEnvelopeText(applied)?.withdrawals?.withdrawn) !== JSON.stringify([idWithdraw])) {
+      failures++;
+      console.log(`  [FAIL] kb_import/withdrawal-base-ref did not report ${idWithdraw} withdrawn`);
+    }
+    await recordHappy('kb_bible_commit', 'restore', {
+      ids: [],
+      restore_ids: [idWithdraw],
+      baseBranch: 'main',
+      baseCommit: 'refs/fixtures/pre-withdrawal',
+    });
+  } else {
+    failures++;
+    console.log('  [FAIL] kb_capture/setup-for-bible-withdrawal returned no id');
+  }
+}
+
 // Over an http project KB (HTTP_A): kb_bible_commit skips with bible_skipped
 // and kb_invalidate {ids} is refused, both before any request to the server.
 {
@@ -1183,6 +1257,49 @@ await withSession('HTTP_A', () => recordHappy('kb_query', 'http-own-scope', {
   } else {
     failures++;
     console.log('  [FAIL] kb_capture/setup-for-http-demote returned no id');
+  }
+}
+// Withdrawals over an http project KB: kb_bible_commit writes a tombstone-only
+// .fleet/kb-canonical.json (entries stay empty; the KB server holds the
+// entries), and kb_import of that bible read at refs/remotes/origin/main
+// replays the tombstone in one POST /api/kb/withdraw to the sample kb-server.
+{
+  const captureHttpWithdraw = await withSession('HTTP_A', () => recordHappy('kb_capture', 'setup-for-http-withdrawal', {
+    type: 'knowledge',
+    title: 'Widget is exported for the withdrawal fixture',
+    summary: 'src/widget.ts exports widget; set up for the http withdrawal fixtures.',
+    content: 'widget in src/widget.ts is exported. Captured as a synthetic fixture for withdrawals over http.',
+    source_files: ['src/widget.ts'],
+    symbols: ['widgetWithdrawalFixture'],
+    role: 'doer',
+  }));
+  const idHttpWithdraw = parseEnvelopeText(captureHttpWithdraw)?.id;
+  if (idHttpWithdraw) {
+    await withSession('HTTP_A', () => recordHappy('kb_promote', 'setup-promote-for-http-withdrawal', {
+      id: idHttpWithdraw,
+      reason: 'Promotion of the entry used by the http withdrawal fixtures to CONFIRMED (checked against src/widget.ts).',
+    }));
+    await withSession('HTTP_A', () => recordHappy('kb_bible_commit', 'http-tombstone-only', {
+      ids: [],
+      withdrawals: [{
+        id: idHttpWithdraw,
+        note: 'Re-checked src/widget.ts: the export no longer matches the entry.',
+        evidence_files: ['src/widget.ts'],
+      }],
+      baseBranch: 'main',
+      baseCommit: '0123456789abcdef0123456789abcdef01234567',
+    }));
+    execFileSync('git', ['update-ref', 'refs/remotes/origin/main', 'HEAD'], { cwd: repoHttp });
+    const replay = await withSession('HTTP_A', () => recordHappy('kb_import', 'http-withdrawal-replay', {
+      ref: 'refs/remotes/origin/main',
+    }));
+    if (JSON.stringify(parseEnvelopeText(replay)?.withdrawals?.withdrawn) !== JSON.stringify([idHttpWithdraw])) {
+      failures++;
+      console.log(`  [FAIL] kb_import/http-withdrawal-replay did not report ${idHttpWithdraw} withdrawn`);
+    }
+  } else {
+    failures++;
+    console.log('  [FAIL] kb_capture/setup-for-http-withdrawal returned no id');
   }
 }
 // A server for a different project: a read and a promote by id are both

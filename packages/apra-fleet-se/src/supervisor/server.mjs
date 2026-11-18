@@ -83,6 +83,21 @@ export function makeSeamStub(name) {
 }
 
 /**
+ * A request body the supervisor refuses: unparseable JSON (400) or over the
+ * size cap (413). Thrown by readJsonBody; the request catch-all maps it to a
+ * `{ error, field: 'body' }` answer with this status and no stack text.
+ */
+export class RequestBodyError extends Error {
+    /** @param {string} message @param {400|413} status */
+    constructor(message, status) {
+        super(message);
+        this.name = 'RequestBodyError';
+        this.status = status;
+        this.field = 'body';
+    }
+}
+
+/**
  * Reads and JSON-parses a request body with a hard size cap so a hostile or
  * buggy client cannot exhaust memory. Returns `undefined` for an empty body.
  * @param {import('http').IncomingMessage} req
@@ -91,19 +106,37 @@ export function makeSeamStub(name) {
  */
 export function readJsonBody(req, opts = {}) {
     const maxBytes = opts.maxBytes ?? 1_000_000;
+    // Past the cap the rest of the body is discarded up to this many more
+    // bytes and the 413 is answered at 'end', so a client that sends a
+    // moderately oversized body reads the 413 before the connection closes
+    // (closing on unread data sends a reset that can overtake the answer).
+    // Past the budget the 413 is answered at once and the connection closed.
+    const drainBytes = opts.drainBytes ?? maxBytes;
     return new Promise((resolve, reject) => {
         let size = 0;
+        let tooLarge = false;
+        let settled = false;
         const chunks = [];
+        const tooLargeError = () => new RequestBodyError(`request body exceeds ${maxBytes} byte limit`, 413);
         req.on('data', (chunk) => {
             size += chunk.length;
+            if (tooLarge) {
+                if (!settled && size > maxBytes + drainBytes) { settled = true; reject(tooLargeError()); }
+                return;
+            }
             if (size > maxBytes) {
-                reject(new Error(`request body exceeds ${maxBytes} byte limit`));
-                req.destroy();
+                tooLarge = true;
+                chunks.length = 0;
+                if (size > maxBytes + drainBytes) { settled = true; reject(tooLargeError()); }
                 return;
             }
             chunks.push(chunk);
         });
         req.on('end', () => {
+            if (tooLarge) {
+                if (!settled) { settled = true; reject(tooLargeError()); }
+                return;
+            }
             const raw = Buffer.concat(chunks).toString('utf-8').trim();
             if (raw.length === 0) {
                 resolve(undefined);
@@ -112,7 +145,7 @@ export function readJsonBody(req, opts = {}) {
             try {
                 resolve(JSON.parse(raw));
             } catch (err) {
-                reject(new Error(`invalid JSON request body: ${err.message}`));
+                reject(new RequestBodyError(`invalid JSON request body: ${err.message}`, 400));
             }
         });
         req.on('error', reject);
@@ -355,6 +388,22 @@ export function createSupervisor(deps = {}) {
             }
             await matched.handler(req, res, { url, params: matched.params });
         } catch (err) {
+            if (err instanceof RequestBodyError) {
+                // Client error, not a supervisor fault: no stack, no 500.
+                // Close the connection once the answer is flushed: after a
+                // 413 the client may still be writing (or never stop), and
+                // the rest of that body must not be drained without bound.
+                const sock = req.socket;
+                // destroySoon: flush any pending write (the answer), then destroy.
+                const closeSocket = () => { if (sock && !sock.destroyed) sock.destroySoon(); };
+                if (res.writableFinished) closeSocket();
+                else res.once('finish', closeSocket);
+                if (!res.headersSent) {
+                    res.setHeader('Connection', 'close');
+                    sendJson(res, err.status, { error: err.message, field: 'body' });
+                } else { try { res.end(); } catch { /* already gone */ } }
+                return;
+            }
             // Isolate the failure: log it, answer 500 if we still can, and
             // keep the process alive.
             logError(`[supervisor] request ${method} ${path} failed:`, err && err.stack ? err.stack : err);
@@ -448,6 +497,8 @@ export function createSupervisor(deps = {}) {
     }
 
     let stopping = null;
+    let stopReason = null;
+    let forcedExit = false;
     /**
      * Idempotent teardown: close the HTTP server and stop every seam, then
      * resolve `shutdownRequested`. Safe to call more than once.
@@ -455,11 +506,13 @@ export function createSupervisor(deps = {}) {
      */
     function stop(reason = 'explicit') {
         if (stopping) return stopping;
+        stopReason = reason;
         stopping = (async () => {
             log(`[supervisor] shutting down (${reason})`);
             if (forcedExitMs > 0) {
                 const forced = setTimeout(() => {
                     logError(`[supervisor] shutdown did not complete within ${forcedExitMs}ms; forcing exit. Hung: ${hungSeams.length ? hungSeams.join(', ') : '(none recorded; still stopping a seam or closing the http server)'}`);
+                    forcedExit = true;
                     exitFn(0);
                 }, forcedExitMs);
                 if (typeof forced.unref === 'function') forced.unref();
@@ -536,6 +589,8 @@ export function createSupervisor(deps = {}) {
         get port() { return port; },
         /** Resolves once the supervisor has fully shut down. */
         get shutdownRequested() { return shutdownRequested; },
+        /** Why the supervisor is exiting: the stop reason, or forced-exit-timeout. Null until stop() runs. */
+        get exitCause() { return forcedExit ? 'forced-exit-timeout' : stopReason; },
         /** Names of seams whose stop() exceeded its bound during shutdown. */
         get hungSeams() { return [...hungSeams]; },
     };

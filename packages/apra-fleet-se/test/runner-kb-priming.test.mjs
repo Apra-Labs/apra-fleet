@@ -397,6 +397,7 @@ function recorder() {
         calls,
         memberCall: async (member, name, args) => {
             calls.push({ name, args, member });
+            if (name === 'kb_promote') return { id: args.id, previous_confidence: 'INFERRED', new_confidence: 'CONFIRMED' };
             return name === 'kb_query' ? { l1_results: [{ id: 'abc123' }] } : {};
         },
     };
@@ -680,6 +681,7 @@ describe('kb calls run AS the member -- no scope argument anywhere', () => {
                 return { content: [{ text: JSON.stringify(detailFor(args.member_name, `/srv/${args.member_name}/repo`)) }] };
             }
             if (name === 'kb_session_prime') return { top_entries: [] };
+            if (name === 'kb_promote') return { id: args.id, previous_confidence: 'INFERRED', new_confidence: 'CONFIRMED' };
             if (name === 'kb_list') return { results: opts.candidates ?? [] };
             if (name === 'kb_query') return { content: [{ text: JSON.stringify({ l1_results: args && args.tag ? [{ id: 'abc123' }] : [], related_claims: [] }) }] };
             return {};
