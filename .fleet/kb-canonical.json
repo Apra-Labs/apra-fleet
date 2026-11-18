@@ -1,9 +1,9 @@
 {
   "version": 3,
   "provenance": {
-    "commit": "9a7760f37f70876b9b3fdd5360714698ea4dd270",
+    "commit": "5bfc7309d9fab9ead8aada7745fd165ecd32c07b",
     "branch": "main",
-    "entry_count": 142
+    "entry_count": 143
   },
   "entries": [
     {
@@ -972,6 +972,32 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:30.391Z"
+    },
+    {
+      "id": "52cf9b39-5851-41e1-b0eb-198f900bd769",
+      "type": "knowledge",
+      "title": "Claude config writers treat only a missing .claude.json as {}; both re-read before the move",
+      "summary": "ensureWorkspaceTrusted and ClaudeProvider.syncMemberMcpEntry refuse an existing empty or unparseable .claude.json with E-MEMBER-CONFIG-NOT-JSON and no write. An empty read is followed by memberFilePresent, a probe that prints a marker when the file exists. Both re-read right before staging+move and apply only the fleet's own keys to the fresh content.",
+      "symbols": [
+        "readMemberJson",
+        "memberFilePresent",
+        "memberFilePresenceCommand",
+        "MEMBER_FILE_PRESENT_MARKER",
+        "ensureWorkspaceTrusted",
+        "syncMemberMcpEntry"
+      ],
+      "source_files": [
+        "src/services/member-config-io.ts",
+        "src/providers/claude.ts",
+        "tests/claude-config-empty-torn.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T02:39:16.563Z",
+      "source_file_hashes": {
+        "src/providers/claude.ts": "358484af7d5de8d0964866395edd7448e1e67c37",
+        "src/services/member-config-io.ts": "da6b0acd828db2b88ad86ed570897b2a0ee31ed6",
+        "tests/claude-config-empty-torn.test.ts": "8589f42960e603299c5ff2d3abb80cce38540e9b"
+      }
     },
     {
       "id": "5461f16e-7fbf-4e46-9005-1922220c1854",
