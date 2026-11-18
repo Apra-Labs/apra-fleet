@@ -494,6 +494,17 @@ value.
   `{id, at: <local demoted_at>, reason: "demoted"}`. Tombstones already in the
   file are preserved when a later commit carries unrelated ids, and an id
   re-admitted through `ids` (a re-promotion) has its tombstone CLEARED.
+- BASE-BIBLE GATE. A `demoted` tombstone (either source above) is written only
+  for an id the bible at `baseCommit` carries, as an entry or as a tombstone:
+  a tombstone for any other id is never meaningful for that base. A locally
+  demoted entry that only this branch's file carries (absent from the base) is
+  removed from `entries` with no tombstone and listed in `demoted`; any other
+  `demoted_ids` id is skipped with reason `not_in_base_bible`. When
+  `baseCommit` does not resolve, or its bible cannot be read, the writer fails
+  closed: no new `demoted` tombstone and no such removal (`demoted_ids` ids are
+  skipped with `not_in_base_bible`), a warning is logged, and tombstones
+  already in the file are kept unchanged. Withdrawals are not gated by this
+  rule.
 - `kb_export` (scope=project) honours tombstones: it does not re-add a tombstoned
   id unless the local row is RE-PROMOTED under the rule above, in which case it
   re-adds the entry and clears the tombstone in the same write.
@@ -537,9 +548,27 @@ takes effect for other clones only once that branch merges:
   `baseCommit` (any commit-ish) carries none for the id, and the base bible's
   entry for it, if any, is re-added byte-identical. Restored ids are listed in
   `restored`; any other id is a no-op.
-- `kb_import` applies `reason: "withdrawn"` tombstones ONLY when the bible was
-  read with `ref` equal to `refs/remotes/origin/<provenance.branch>` of that
-  same bible (the merged base bible as fetched). Then each id is judged like a
+- A `withdrawn` tombstone in the current bible file -- branch-added or merged
+  from the base -- is never cleared by `ids`. The local row of a withdrawn id
+  is usually still CONFIRMED (a withdrawal never lowers it, and a host that has
+  not yet imported the merged base bible has not applied it), so merging the id
+  would silently undo the withdrawal. Such an id is skipped with reason
+  `withdrawn_tombstone` and its tombstone is kept, unless `restore_ids` undoes
+  that (branch-added) tombstone in the same call. `demoted` tombstones keep the
+  re-promotion rule above: re-admitting the id through `ids` clears them.
+- `kb_import` applies `reason: "withdrawn"` tombstones ONLY when the bible is
+  the merged base bible as fetched: read with `ref` equal to
+  `refs/remotes/<remote>/<base>`, where `<remote>` is any remote configured in
+  the clone (`origin` is always accepted) and `<base>` is the request's
+  `base_branch` (without it, the branch `refs/remotes/<remote>/HEAD` points
+  at), and its
+  `provenance.branch` equals that same `<base>`. `provenance.branch` alone is
+  never trusted: `kb_bible_commit` writes it from its own caller's
+  `baseBranch`, so a branch bible may name its own feature branch. When no
+  `base_branch` is given and `refs/remotes/<remote>/HEAD` is not set, or the
+  ref read is `refs/remotes/<x>/...` for an `<x>` that is not a configured
+  remote, the tombstones are deferred and `withdrawals.warning` says why (the
+  latter naming the refs it expected). Then each id is judged like a
   `demoted` tombstone (same rule, same never-create), with an audit note
   naming "withdrawn in the project bible", the tombstone's note and evidence.
   From any other source (no `ref`, `HEAD`, the work tree, another ref) nothing
@@ -695,8 +724,8 @@ every project KB call and fleet keeps no second copy:
 - Its TOMBSTONES are used: they carry withdrawals across the merge.
   `kb_bible_commit` with `withdrawals` or `restore_ids` writes only the
   tombstones (a tombstone-only bible, `entries: []`, is created when absent;
-  existing entries stay byte-identical) and may commit. `kb_import` read at
-  `refs/remotes/origin/<provenance.branch>` of that bible, from a session that
+  existing entries stay byte-identical) and may commit. `kb_import` of that bible as
+  the merged base bible (same `ref`/`base_branch` rule), from a session that
   is not a MEMBER without the kb_maintainer grant, replays the `withdrawn`
   tombstones in ONE `POST /api/kb/withdraw` (section 2.9.1) and reports each
   outcome in `withdrawals` (a `not_confirmed` answer as `already`) and the ref

@@ -99,7 +99,9 @@
                       "no_source_files",
                       "basis_mismatch",
                       "not_demoted_or_unknown",
-                      "not_withdrawable"
+                      "not_withdrawable",
+                      "withdrawn_tombstone",
+                      "not_in_base_bible"
                     ]
                   }
                 },

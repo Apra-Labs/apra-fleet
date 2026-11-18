@@ -487,16 +487,29 @@ export const SCENARIO = [
     captureId: 'DEMOTED',
     setup: [
       { op: 'write', repo: 'A', rel: 'src/demote-basis.ts', contents: 'export const demoteBasis = 1;\n' },
+      // Committed so the entry's basis matches HEAD and it can enter the bible.
+      { op: 'commit', repo: 'A', rel: 'src/demote-basis.ts' },
     ],
   },
   { tool: 'kb_promote', case: 'setup-first-promote-for-demote', derive: { id: 'DEMOTED' } },
   { tool: 'kb_promote', case: 'setup-second-promote-for-demote', derive: { id: 'DEMOTED' } },
+  // DEMOTED enters the bible before it is demoted: a demoted tombstone is
+  // written only for an id the bible at baseCommit carries.
+  { tool: 'kb_bible_commit', case: 'setup-merge-for-demote', derive: { ids: ['DEMOTED'] }, assertParsed: idListIs('merged', 'DEMOTED') },
   { tool: 'kb_demote', case: 'happy', derive: { id: 'DEMOTED' } },
   { tool: 'kb_demote', case: 'refusal-not-confirmed', derive: { id: 'DEMOTED' } },
   // kb_bible_commit demoted_ids: DEMOTED (now INFERRED, just demoted above) is
   // admitted and tombstoned; FOO (still CONFIRMED, never demoted) is skipped
   // with not_demoted_or_unknown. ids is empty, so this round only tombstones.
-  { tool: 'kb_bible_commit', case: 'tombstone', derive: { demoted_ids: ['DEMOTED', 'FOO'] } },
+  // baseCommit is a ref pinned at the commit that merged DEMOTED, so the base
+  // bible carries it (the base-bible gate on demoted tombstones).
+  {
+    tool: 'kb_bible_commit',
+    case: 'tombstone',
+    derive: { demoted_ids: ['DEMOTED', 'FOO'] },
+    setup: [{ op: 'ref', repo: 'A', name: 'refs/fixtures/pre-demote' }],
+    assertParsed: idListIs('demoted', 'DEMOTED'),
+  },
   { tool: 'kb_query', case: 'happy-confirmed-only', assertParsed: assertConfirmedOnly },
   { tool: 'kb_query', case: 'happy-own-scope', assertParsed: assertOwnConfirmedRow },
   // kb_query files filter: only entries citing src/example.ts, FOO among them.
