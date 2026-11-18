@@ -754,7 +754,7 @@ export function createSprintController(deps = {}) {
                 childRoleMap = { ...(childRoleMap && typeof childRoleMap === 'object' ? childRoleMap : {}), [ROLE_BACKLOG]: [pinnedBacklogName] };
             } else if (requested.some((m) => m !== pinnedBacklogName)) {
                 // Name the key the caller actually sent: the deprecated
-                // deprecated alias is folded into `backlog` by now.
+                // alias is folded into `backlog` by now.
                 const sentAlias = Boolean(forwardRoleMap && typeof forwardRoleMap === 'object'
                     && forwardRoleMap[ROLE_BACKLOG_ALIAS] !== undefined && forwardRoleMap[ROLE_BACKLOG] === undefined);
                 const keyName = sentAlias ? `roleMap.${ROLE_BACKLOG_ALIAS} (the deprecated alias of roleMap.backlog)` : 'roleMap.backlog';

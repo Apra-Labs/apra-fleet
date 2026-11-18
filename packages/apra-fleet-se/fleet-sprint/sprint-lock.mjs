@@ -98,7 +98,7 @@ export function readProcessCommandLine(pid) {
                 ['-NoProfile', '-NonInteractive', '-Command',
                     `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`],
                 opts)
-            : execFileSync('ps', ['-p', String(pid), '-o', 'command='], opts);
+            : execFileSync('ps', ['-ww', '-p', String(pid), '-o', 'command='], opts); // -ww: never truncate --branch
         const trimmed = String(out).trim();
         return trimmed === '' ? null : trimmed;
     } catch {
