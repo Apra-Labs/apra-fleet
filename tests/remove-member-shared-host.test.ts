@@ -55,6 +55,15 @@ function credentialCommands(agent: Agent): string[] {
   return out;
 }
 
+/** A delivery record covering every credential file and auth var of the provider. */
+function fullRecord(llmProvider?: Agent['llmProvider']): NonNullable<Agent['llmAuthDelivered']> {
+  const provider = getProvider(llmProvider);
+  return {
+    files: (provider.oauthCredentialFiles() ?? []).map(f => f.remotePath),
+    envVars: [...new Set([provider.authEnvVar, ...(provider.authEnvVarNames?.() ?? [])].filter(Boolean))],
+  };
+}
+
 describe('removeMember - host+user sharer leaves credentials in place', () => {
   beforeEach(() => {
     backupAndResetRegistry();
@@ -66,8 +75,8 @@ describe('removeMember - host+user sharer leaves credentials in place', () => {
   afterEach(() => restoreRegistry());
 
   it('two remote members on one host+user: no credential remove, unset or VCS revoke; result names the sharer', async () => {
-    const member = makeTestAgent({ friendlyName: 'throwaway', os: 'linux', host: 'build.example', username: 'ci', vcsProvider: 'github' });
-    const sibling = makeTestAgent({ friendlyName: 'keeper', os: 'linux', host: 'BUILD.example', username: 'ci', vcsProvider: 'github' });
+    const member = makeTestAgent({ friendlyName: 'throwaway', os: 'linux', host: 'build.example', username: 'ci', vcsProvider: 'github', llmAuthDelivered: fullRecord() });
+    const sibling = makeTestAgent({ friendlyName: 'keeper', os: 'linux', host: 'BUILD.example', username: 'ci', vcsProvider: 'github', llmAuthDelivered: fullRecord() });
     addAgent(member);
     addAgent(sibling);
 
@@ -84,7 +93,7 @@ describe('removeMember - host+user sharer leaves credentials in place', () => {
   });
 
   it('a single member on that host+user still gets the cleanup commands', async () => {
-    const member = makeTestAgent({ friendlyName: 'solo', os: 'linux', host: 'build.example', username: 'ci', vcsProvider: 'github' });
+    const member = makeTestAgent({ friendlyName: 'solo', os: 'linux', host: 'build.example', username: 'ci', vcsProvider: 'github', llmAuthDelivered: fullRecord() });
     // Same host, different user: not a sharer.
     const other = makeTestAgent({ friendlyName: 'other-user', os: 'linux', host: 'build.example', username: 'someone-else' });
     addAgent(member);
@@ -98,7 +107,7 @@ describe('removeMember - host+user sharer leaves credentials in place', () => {
   });
 
   it('POSIX member: unsets with the marked-only form and notes that unmarked exports may remain', async () => {
-    const member = makeTestAgent({ friendlyName: 'posix-solo', os: 'linux' });
+    const member = makeTestAgent({ friendlyName: 'posix-solo', os: 'linux', llmAuthDelivered: fullRecord() });
     addAgent(member);
 
     const result = await removeMember({ member_id: member.id });
@@ -111,7 +120,7 @@ describe('removeMember - host+user sharer leaves credentials in place', () => {
   });
 
   it('Windows PowerShell member: no unmarked-export note (User env vars carry no marker)', async () => {
-    const member = makeTestAgent({ friendlyName: 'ps-solo', os: 'windows', workFolder: 'C:\\work' });
+    const member = makeTestAgent({ friendlyName: 'ps-solo', os: 'windows', workFolder: 'C:\\work', llmAuthDelivered: fullRecord() });
     addAgent(member);
 
     const result = await removeMember({ member_id: member.id });
@@ -142,5 +151,75 @@ describe('removeMember - host+user sharer leaves credentials in place', () => {
 
     for (const cmd of credentialCommands(member)) expect(sent()).not.toContain(cmd);
     expect(result).toContain('"local-me"');
+  });
+});
+
+describe('removeMember - removes only LLM credentials the fleet recorded delivering', () => {
+  const decode = (cmd: string): string => {
+    const m = /-EncodedCommand ([A-Za-z0-9+/=]+)/.exec(cmd);
+    return m ? Buffer.from(m[1], 'base64').toString('utf16le') : cmd;
+  };
+
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+  });
+  afterEach(() => restoreRegistry());
+
+  it('no delivery record: no credential file removal, no unset, and the result lists what was left', async () => {
+    const member = makeTestAgent({ friendlyName: 'owner-login', os: 'linux' });
+    addAgent(member);
+
+    const result = await removeMember({ member_id: member.id });
+
+    for (const cmd of credentialCommands(member)) expect(sent()).not.toContain(cmd);
+    expect(sent().some(c => c.startsWith('sed -i') || c.startsWith('unset '))).toBe(false);
+    expect(result).toContain('No record that apra-fleet delivered LLM credentials');
+    expect(result).toContain('~/.claude/.credentials.json');
+    expect(result).toContain('ANTHROPIC_API_KEY');
+  });
+
+  it('with a record: removes exactly the recorded file and var, nothing else', async () => {
+    const member = makeTestAgent({
+      friendlyName: 'recorded', os: 'linux',
+      llmAuthDelivered: { files: ['~/.claude/.credentials.json'], envVars: ['CLAUDE_CODE_OAUTH_TOKEN'] },
+    });
+    addAgent(member);
+    const cmds = getOsCommands('linux');
+
+    const result = await removeMember({ member_id: member.id });
+
+    const credSent = sent().filter(c => c.startsWith('rm -f') || c.startsWith('sed -i') || c.startsWith('unset '));
+    expect(credSent.sort()).toEqual([
+      cmds.credentialFileRemove('~/.claude/.credentials.json'),
+      ...cmds.unsetEnv('CLAUDE_CODE_OAUTH_TOKEN'),
+    ].sort());
+    expect(result).not.toContain('No record that apra-fleet delivered');
+  });
+
+  it('Windows PowerShell: unsetEnv is issued only for recorded var names', async () => {
+    const member = makeTestAgent({
+      friendlyName: 'ps-recorded', os: 'windows', workFolder: 'C:\\work',
+      llmAuthDelivered: { files: [], envVars: ['ANTHROPIC_API_KEY'] },
+    });
+    addAgent(member);
+
+    await removeMember({ member_id: member.id });
+
+    const envCmds = sent().map(decode).filter(c => c.includes('SetEnvironmentVariable'));
+    expect(envCmds).toEqual([`[Environment]::SetEnvironmentVariable('ANTHROPIC_API_KEY', $null, 'User')`]);
+    expect(sent().some(c => c.startsWith('Remove-Item') && c.includes('.credentials.json'))).toBe(false);
+  });
+
+  it('Windows PowerShell with no record: no User env var is cleared', async () => {
+    const member = makeTestAgent({ friendlyName: 'ps-none', os: 'windows', workFolder: 'C:\\work' });
+    addAgent(member);
+
+    const result = await removeMember({ member_id: member.id });
+
+    expect(sent().map(decode).some(c => c.includes('SetEnvironmentVariable'))).toBe(false);
+    expect(result).toContain('No record that apra-fleet delivered LLM credentials');
   });
 });

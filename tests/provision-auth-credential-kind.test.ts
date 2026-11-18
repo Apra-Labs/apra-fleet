@@ -461,3 +461,78 @@ describe('provisionAuth profile cleanup removes every export line for the name',
     }
   });
 });
+
+// provision_llm_auth records what it delivered (Agent.llmAuthDelivered) --
+// the only credentials remove_member will later remove.
+describe('provisionAuth records the LLM credentials it delivered', () => {
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    stagedFiles.length = 0;
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValue(ok());
+  });
+  afterEach(() => restoreRegistry());
+
+  it('api_key: records the persisted env var name only', async () => {
+    const member = makeTestAgent({ friendlyName: 'rec-api', os: 'linux' });
+    addAgent(member);
+
+    await provisionAuth({ member_id: member.id, api_key: FAKE_API });
+
+    expect(getAgent(member.id)!.llmAuthDelivered).toEqual({ files: [], envVars: ['ANTHROPIC_API_KEY'] });
+  });
+
+  it('OAuth copy: records the installed credential file paths', async () => {
+    const member = makeTestAgent({ friendlyName: 'rec-oauth', os: 'linux' });
+    addAgent(member);
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue('{"claudeAiOauth":{"accessToken":"sk-ant-oat01-FAKE"}}');
+
+    await provisionAuth({ member_id: member.id });
+
+    const files = (getProvider('claude').oauthCredentialFiles() ?? []).map(f => f.remotePath);
+    expect(files.length).toBeGreaterThan(0);
+    expect(getAgent(member.id)!.llmAuthDelivered).toEqual({ files, envVars: [] });
+  });
+
+  it('a failed persist records nothing', async () => {
+    const member = makeTestAgent({ friendlyName: 'rec-fail', os: 'linux' });
+    addAgent(member);
+    mockExecCommand.mockImplementation(async (cmd: string) => (cmd.includes('.apra-fleet-persist-')
+      ? { stdout: '', stderr: 'disk full', code: 1 } : ok()));
+
+    await provisionAuth({ member_id: member.id, api_key: FAKE_API });
+
+    expect(getAgent(member.id)!.llmAuthDelivered).toBeUndefined();
+  });
+
+  it('switching kinds and an OAuth token moving the login file aside update the record', async () => {
+    const member = makeTestAgent({
+      friendlyName: 'rec-switch', os: 'linux',
+      llmAuthDelivered: { files: ['~/.claude/.credentials.json'], envVars: ['ANTHROPIC_API_KEY'] },
+    });
+    addAgent(member);
+    mockExecCommand.mockImplementation(async (cmd: string) => (cmd.includes('mv -f') ? ok('moved\n') : ok()));
+
+    await provisionAuth({ member_id: member.id, api_key: FAKE_OAUTH });
+
+    expect(getAgent(member.id)!.llmAuthDelivered).toEqual({ files: [], envVars: ['CLAUDE_CODE_OAUTH_TOKEN'] });
+  });
+
+  it('force_oauth_copy drops the cleared env vars from the record', async () => {
+    const member = makeTestAgent({
+      friendlyName: 'rec-force', os: 'linux',
+      llmAuthDelivered: { files: [], envVars: ['ANTHROPIC_API_KEY'] },
+    });
+    addAgent(member);
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue('{"claudeAiOauth":{"accessToken":"sk-ant-oat01-FAKE"}}');
+
+    await provisionAuth({ member_id: member.id, force_oauth_copy: true });
+
+    const rec = getAgent(member.id)!.llmAuthDelivered!;
+    expect(rec.envVars).toEqual([]);
+    expect(rec.files.length).toBeGreaterThan(0);
+  });
+});

@@ -11,7 +11,7 @@ import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { validateCredentials, credentialStatusNote } from '../utils/credential-validation.js';
 import { credentialResolve } from '../services/credential-store.js';
 import { encryptPassword, decryptPassword } from '../utils/crypto.js';
-import { updateAgent } from '../services/registry.js';
+import { updateAgent, getAgent } from '../services/registry.js';
 import { collectOobApiKey } from '../services/auth-socket.js';
 import { logLine, logWarn } from '../utils/log-helpers.js';
 import { findSecretTokens, legacyTokenWarning } from '../services/secret-token.js';
@@ -315,6 +315,24 @@ function storeAuthEnvVars(agent: Agent, drop: string[], extra?: Record<string, s
   if (changed) updateAgent(agent.id, { encryptedEnvVars: next });
 }
 
+/**
+ * Update the member's record of LLM credentials this tool delivered
+ * (Agent.llmAuthDelivered) -- the only thing remove_member will remove.
+ * Read fresh from the registry: other writes in this flow update the entry.
+ */
+function recordLlmAuthDelivery(agentId: string, change: { addFiles?: string[]; removeFiles?: string[]; addEnvVars?: string[]; removeEnvVars?: string[] }): void {
+  const current = getAgent(agentId)?.llmAuthDelivered ?? { files: [], envVars: [] };
+  const merge = (list: string[], add: string[] = [], remove: string[] = []) =>
+    [...new Set([...list.filter(x => !remove.includes(x)), ...add])];
+  const next = {
+    files: merge(current.files, change.addFiles, change.removeFiles),
+    envVars: merge(current.envVars, change.addEnvVars, change.removeEnvVars),
+  };
+  if (next.files.join('\0') !== current.files.join('\0') || next.envVars.join('\0') !== current.envVars.join('\0')) {
+    updateAgent(agentId, { llmAuthDelivered: next });
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Flow A: Copy OAuth credentials using the provider interface
 // ---------------------------------------------------------------------------
@@ -361,6 +379,7 @@ async function provisionOAuthCopy(agent: Agent, provider: ProviderAdapter, clear
           return authResult(`[FAIL] Failed to write ${file.remotePath} on "${agent.friendlyName}": ${result.stderr}`,
             { ...who, reason: 'oauth_credential_write_failed', expiresAt });
         }
+        if (result.code === 0) recordLlmAuthDelivery(agent.id, { addFiles: [file.remotePath] });
       } else {
         return authResult(`[FAIL] Could not find local credential file: ${localPath}`,
           { ...who, reason: 'oauth_credential_file_missing' });
@@ -408,6 +427,7 @@ async function provisionOAuthCopy(agent: Agent, provider: ProviderAdapter, clear
   }
   // Also drop them from the stored member config (dispatch exports it).
   if (envKinds.length > 0) storeAuthEnvVars(agent, envKinds);
+  if (varsToUnset.length > 0) recordLlmAuthDelivery(agent.id, { removeEnvVars: varsToUnset });
   const clearedNote = envKinds.length > 0
     ? `\n  Cleared: ${envKinds.join(', ')} removed from shell profiles and member config (force_oauth_copy)`
     : '';
@@ -518,6 +538,14 @@ async function provisionApiKey(agent: Agent, apiKey: string, provider: ProviderA
       errors.push(sanitizeAuthErrorDetail(`Could not move aside ${file}: ${err.message}`, apiKey));
     }
   }
+
+  // Record what this call delivered (and what it cleared or moved aside),
+  // so remove_member later removes exactly the fleet's own credentials.
+  recordLlmAuthDelivery(agent.id, {
+    addEnvVars: persisted ? [envVarName] : [],
+    removeEnvVars: otherKinds,
+    removeFiles: movedAside,
+  });
 
   // Verify the key was persisted in a new shell
   let verified = false;

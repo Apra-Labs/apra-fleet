@@ -215,16 +215,31 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
           notes.push(`Credentials were left in place on ${owner.host} for user ${owner.user} because member "${hostUserSharer.friendlyName}" (${hostUserSharer.id}) runs as the same user on the same host and still uses them: ${left.length > 0 ? left.join('; ') : 'nothing credential-related was configured'}`);
         }
 
-        // Remove credentials files for any provider that uses them
-        for (const file of hostUserSharer ? [] : credentialFiles) {
-          await strategy.execCommand(cmds.credentialFileRemove(file.remotePath), 10000).catch(() => {});
+        // Only LLM credentials provision_llm_auth recorded delivering are
+        // removed. With no record (registered by an older release, or never
+        // provisioned by the fleet) the files/vars may be the owner's own CLI
+        // login: nothing is removed and the result lists what was left.
+        const delivered = agent.llmAuthDelivered;
+        if (!hostUserSharer && !delivered) {
+          const left: string[] = [];
+          if (credentialFiles.length > 0) left.push(`LLM login files (${credentialFiles.map(f => f.remotePath).join(', ')})`);
+          if (authVars.length > 0) left.push(`auth env vars (${authVars.join(', ')})`);
+          if (left.length > 0) {
+            notes.push(`No record that apra-fleet delivered LLM credentials to this member (registered by an older release, or never provisioned by provision_llm_auth), so none were removed -- left in place, if present: ${left.join('; ')}`);
+          }
+        }
+        const removeFiles = hostUserSharer ? [] : (delivered?.files ?? []);
+        const unsetVars = hostUserSharer ? [] : (delivered?.envVars ?? []);
+
+        // Remove the credential files the fleet delivered
+        for (const file of removeFiles) {
+          await strategy.execCommand(cmds.credentialFileRemove(file), 10000).catch(() => {});
         }
 
-        // Remove the provider's auth env vars (every credential kind) from
-        // shell profiles. Only fleet-marked profile lines are removed: a line
-        // the owner wrote by hand (or one an older release wrote unmarked)
-        // stays, and the result says so.
-        const unsetVars = hostUserSharer ? [] : authVars;
+        // Remove the auth env vars the fleet delivered. On a POSIX profile
+        // only fleet-marked lines are removed: a line the owner wrote by hand
+        // (or one an older release wrote unmarked) stays, and the result says
+        // so. A Windows User env var carries no marker: the record is the gate.
         for (const envVar of unsetVars) {
           for (const cmd of cmds.unsetEnv(envVar)) {
             await strategy.execCommand(cmd, 10000).catch(() => {});

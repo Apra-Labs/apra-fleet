@@ -58,6 +58,13 @@ export interface Agent {
   modelStandard?: string;
   modelPremium?: string;
   encryptedEnvVars?: Record<string, string>;  // envVarName -> encrypted value
+  /** LLM credentials provision_llm_auth itself delivered to this member:
+   *  credential file paths (the provider's remotePath form) it installed and
+   *  env var names it persisted (shell profile / User env). remove_member
+   *  removes only what is listed here; absent (older release, or never
+   *  provisioned by the fleet) means nothing is removed -- the files and vars
+   *  may be the machine owner's own CLI login. */
+  llmAuthDelivered?: { files: string[]; envVars: string[] };
   lastBranch?: string;
   tokenUsage?: { input: number; output: number };
   unattended?: false | 'auto' | 'dangerous';
