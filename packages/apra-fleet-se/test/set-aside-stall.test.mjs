@@ -6,7 +6,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
     collectSetAsideEntries, evaluateSetAsideStall, formatSetAsideItems, formatSetAsideStallMessage,
-    DEPLOY_SET_ASIDE_ID,
+    DEPLOY_SET_ASIDE_ID, SET_ASIDE_CARRY_OVER_EXIT, closedWorkThisRun, buildSetAsideCarryOver,
+    formatCarryOverNotes, applyCarryOverVerdictGate,
 } from '../fleet-sprint/set-aside.mjs';
 import { buildSprintPrBody } from '../fleet-sprint/pr-body.mjs';
 import { buildAnalysisText } from '../fleet-sprint/sprint-report.mjs';
@@ -88,4 +89,44 @@ test('sprint analysis: "Set aside this run" section present only when something 
     const withAside = buildAnalysisText({ ...base, setAside: collectSetAsideEntries({ doctorBlockedIds: blockedMap() }) });
     assert.match(withAside, /## Set aside this run\n\n- b-1: .*\(first seen C1 R1\)/);
     assert.doesNotMatch(buildAnalysisText(base), /Set aside this run/);
+});
+
+test('closedWorkThisRun: only ids this run dispatched or routed to verify that are now closed', () => {
+    const closedIds = new Set(['w-1', 'v-1', 'old-1']);
+    assert.deepEqual(closedWorkThisRun({ workedOnIds: new Set(['w-1', 'w-2']), verifyEverIds: new Set(['v-1']), closedIds }), ['v-1', 'w-1']);
+    // A bead closed before this run (never dispatched or verify-routed here) does not count.
+    assert.deepEqual(closedWorkThisRun({ workedOnIds: new Set(['w-2']), verifyEverIds: new Set(), closedIds }), []);
+    assert.deepEqual(closedWorkThisRun({ closedIds }), []);
+});
+
+test('carry-over: names every blocker with its reason; at/above-goal entries force FAIL, PASS overridden and said so', () => {
+    const stall = evaluateSetAsideStall({ openIds: ['b-1', 'b-2', 'b-dep'], doctorBlockedIds: blockedMap() });
+    const carryOver = buildSetAsideCarryOver(stall, { where: 'Cycle 1 evaluation', cycle: 1, closedIds: ['w-1'] });
+    assert.equal(carryOver.reason, SET_ASIDE_CARRY_OVER_EXIT);
+    assert.deepEqual(carryOver.entries.map((e) => e.id), stall.blockerIds);
+    assert.deepEqual(carryOver.atGoalIds.slice().sort(), ['b-1', 'b-2', 'b-dep']);
+    const notes = formatCarryOverNotes(carryOver);
+    assert.ok(notes.includes('w-1'), notes);
+    for (const e of carryOver.entries) assert.ok(notes.includes(`${e.id} -- ${e.reason}`), notes);
+
+    const passed = applyCarryOverVerdictGate({ verdict: 'PASS', notes: 'LGTM.' }, carryOver);
+    assert.equal(passed.verdict, 'FAIL');
+    assert.ok(passed.notes.startsWith(notes), passed.notes);
+    assert.ok(passed.notes.includes('the engine overrode it to FAIL'), passed.notes);
+    assert.ok(passed.notes.endsWith('\n\nLGTM.'), passed.notes);
+    const failed = applyCarryOverVerdictGate({ verdict: 'FAIL', notes: '' }, carryOver);
+    assert.equal(failed.verdict, 'FAIL');
+    assert.ok(!failed.notes.includes('overrode'), failed.notes);
+    assert.equal(applyCarryOverVerdictGate({ verdict: 'PASS' }, null).verdict, 'PASS');
+});
+
+test('carry-over of only the set-aside deploy names it but leaves the verdict to the other gates', () => {
+    const carryOver = buildSetAsideCarryOver(
+        { blockerIds: [DEPLOY_SET_ASIDE_ID], blockerReasons: { [DEPLOY_SET_ASIDE_ID]: 'permissions (first seen C1)' } },
+        { where: 'Cycle 1 evaluation', cycle: 1, closedIds: ['w-1'] },
+    );
+    assert.deepEqual(carryOver.atGoalIds, []);
+    const out = applyCarryOverVerdictGate({ verdict: 'PASS', notes: '' }, carryOver);
+    assert.equal(out.verdict, 'PASS');
+    assert.ok(out.notes.includes('deploy -- permissions (first seen C1)'), out.notes);
 });

@@ -92,22 +92,21 @@ afterAll(() => {
 });
 
 describe('hybrid kb_query in a MEMBER session', () => {
-  it('CONFIRMED-only read (bible view): files ranks the anchored entry first', async () => {
+  it('CONFIRMED-only read (bible view): files keeps only the entries citing the file', async () => {
+    // kb_query files is the cited (hard) filter; anchor ranking is provider-level.
     const out = await memberQuery({ query: 'harbor ledger', files: ['src/m.ts'], limit: 10 });
-    expect(ids(out)[0]).toBe('hm-target');
-    expect(ids(out)).toEqual(expect.arrayContaining(['hm-decoy-1', 'hm-decoy-2']));
+    expect(ids(out)).toEqual(['hm-target']);
     const other = await memberQuery({ query: 'harbor ledger', files: ['src/n.ts'], limit: 10 });
-    expect(ids(other)[0]).not.toBe('hm-target');
+    expect(ids(other).sort()).toEqual(['hm-decoy-1', 'hm-decoy-2']);
   });
 
-  it('member split read accepts files, symbols and error_text; bible half first, own half after', async () => {
+  it('member split read accepts error_text; bible half first, own half after', async () => {
     const out = await memberQuery({
-      query: 'harbor ledger', files: ['src/m.ts'], symbols: ['Nothing.here'], error_text: SCOPE_ERROR,
+      query: 'harbor ledger', error_text: SCOPE_ERROR,
       confidence: ['CONFIRMED', 'INFERRED'], limit: 20,
     });
     const got = ids(out);
-    // Bible half (CONFIRMED) in its own hybrid order: the anchored entry first.
-    expect(got[0]).toBe('hm-target');
+    expect(got).toEqual(expect.arrayContaining(['hm-target', 'hm-decoy-1', 'hm-decoy-2']));
     // Own half: the INFERRED capture found through error_text, after the bible half.
     expect(got).toContain(ownErrorId);
     const lastBible = Math.max(...['hm-target', 'hm-decoy-1', 'hm-decoy-2'].map(id => got.indexOf(id)));
@@ -259,7 +258,8 @@ describe('MEMBER session: semantic list and code anchors through the bible view'
     expect(v.hasCodeResolver).toBe(true);
     expect(v.codeLinksOf('sem-target').some(l => l.kind === 'symbol' && l.resolved)).toBe(true);
     // HarborClerk.post is in no entry's symbols: only the code link reaches it.
-    const out = await semQuery({ query: 'gearbox', symbols: ['HarborClerk.post'], limit: 10 });
-    expect(ids(out)).toContain('sem-target');
+    // Provider-level anchor input on the member view (kb_query symbols is the cited filter).
+    const out = await v.query({ query: 'gearbox', anchor_symbols: ['HarborClerk.post'], limit: 10, l1_only: true });
+    expect(out.results.map(e => e.id)).toContain('sem-target');
   });
 });

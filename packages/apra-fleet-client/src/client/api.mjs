@@ -805,38 +805,6 @@
  */
 
 /**
- * @typedef {Object} KbQueryOptions
- * @property {string} [query] - Free-text search string. Required unless flagged_only
- *   is true or tag, files, symbols or error_text is provided.
- * @property {'context-cache'|'learning'|'knowledge'|'runbook'} [type] - Filter by content type.
- * @property {string} [tag] - Exact-match tag filter; may be used alone to list a tag.
- * @property {number} [limit] - Max L1 results (default 20; a MEMBER session that omits
- *   it gets 6 slim rows).
- * @property {boolean} [include_stale] - Include stale and superseded entries.
- * @property {boolean} [flagged_only] - Return contradiction-flagged entries instead
- *   ({flagged_entries, total, note}).
- * @property {boolean} [expand_related] - Add related_claims (refines / contradiction_of).
- * @property {Array<'CONFIRMED'|'INFERRED'|'UNVERIFIED'>} [confidence] - Tier allow-list
- *   (default ["CONFIRMED"]).
- * @property {boolean} [exclude_disputed] - Drop entries in an unresolved contradiction.
- * @property {string[]} [files] - Optional, additive: file paths you are working on;
- *   entries whose source_files (or code-index links) touch them rank higher.
- * @property {string[]} [symbols] - Optional, additive: symbol names; entries naming
- *   them, or linked one code-graph hop away, rank higher.
- * @property {string} [error_text] - Optional, additive: an error message; matched
- *   against entries' error_signatures and added to the semantic query text.
- *   files/symbols/error_text are used by the local SQLite KB only; an HTTP KB
- *   backend ignores them.
- * @property {boolean} [relevant_only] - Optional, default false: keep only rows with
- *   strong keyword evidence for the query (strong for the KB's size and at least half
- *   the query's best keyword match) or an error_signatures match for error_text.
- *   Fewer rows, possibly none; meant for pushed context. Local SQLite KB only.
- * @property {boolean} [own_scope] - MEMBER session only: answer a CONFIRMED read from
- *   the per-repo DB with the caller's own ownerTag instead of the checkout bible view,
- *   so a member can read back rows it promoted itself (e.g. to see what it may kb_demote).
- */
-
-/**
  * @typedef {Object} KbUsageOptions
  * @property {string[]} [pushed] - Ids of KB entries the engine delivered to a
  *   dispatch; each is recorded as one returned usage event (duplicates in the
@@ -859,6 +827,44 @@
  *   E-DEMOTE-EVIDENCE-UNRESOLVED and nothing is written. Over a local SQLite KB each
  *   must also resolve to a real file (not a directory) inside the calling session's
  *   repo; over a remote (http) KB the KB server validates the rest of the evidence.
+ */
+
+/**
+ * kb_query options. At least one of query, files, symbols, error_text, tag or
+ * flagged_only is required (E-QUERY-NO-SELECTOR otherwise).
+ * @typedef {Object} KbQueryOptions
+ * @property {string} [query] - Free-text keyword search.
+ * @property {('context-cache'|'learning'|'knowledge'|'runbook')} [type] - Only entries of this content type.
+ * @property {string} [tag] - Only entries carrying this exact tag; may be used alone to list them.
+ * @property {number} [limit] - Max L1 results. Default 20 full rows plus the content of the
+ *   top 5 in l2_expanded; a member session that omits it gets at most 6 summary rows and an
+ *   empty l2_expanded (unless own_scope is set).
+ * @property {boolean} [include_stale] - Include stale and superseded entries (default false).
+ * @property {string[]} [files] - Look up by file: only entries whose source_files cite one of
+ *   these repo-relative paths, or a file under one of them when the path is a directory
+ *   ("src/services" matches "src/services/a.ts", not "src/services-old/a.ts"). A hard filter,
+ *   not a ranking signal; may be used without query. Over a remote (http) KB it is sent only
+ *   when the server lists "files" in query_filters of GET /api/kb/capabilities, otherwise the
+ *   call fails with E-KB-HTTP-UNSUPPORTED and nothing is read.
+ * @property {string[]} [symbols] - Only entries whose symbols name one of these (exact match).
+ *   A hard filter like files; with both, an entry matching either is kept. Same http rule
+ *   ("symbols" in query_filters).
+ * @property {string} [error_text] - Optional, additive: an error message; matched
+ *   against entries' error_signatures and added to the semantic query text. Local SQLite
+ *   KB only (an HTTP KB backend ignores it).
+ * @property {boolean} [relevant_only] - Optional, default false: keep only rows with
+ *   strong keyword evidence for the query (strong for the KB's size and at least half
+ *   the query's best keyword match) or an error_signatures match for error_text.
+ *   Fewer rows, possibly none; meant for pushed context. Local SQLite KB only.
+ * @property {boolean} [flagged_only] - List the contradiction-flagged entries instead
+ *   (result {flagged_entries, total, note}); files, symbols and the trust filters are ignored.
+ * @property {boolean} [expand_related] - Also return related_claims (refines /
+ *   contradiction_of neighbours of the top hits).
+ * @property {Array<'CONFIRMED'|'INFERRED'|'UNVERIFIED'>} [confidence] - Tier allow-list.
+ *   Default ["CONFIRMED"] with exclude_disputed true.
+ * @property {boolean} [exclude_disputed] - Drop both halves of an unresolved contradiction.
+ * @property {boolean} [own_scope] - Member session only: read the member's own captures
+ *   (every requested tier) from the per-repo KB instead of the checkout bible.
  */
 
 /**

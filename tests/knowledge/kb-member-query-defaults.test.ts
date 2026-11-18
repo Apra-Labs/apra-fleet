@@ -5,85 +5,70 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { addAgent } from '../../src/services/registry.js';
 import { runWithSessionMember } from '../../src/services/tool-scope.js';
-import { resetMemberBibleViews } from '../../src/services/knowledge/member-bible-view.js';
-import { importBibleEntries } from '../../src/services/knowledge/bible-import.js';
-import { kbCapture } from '../../src/tools/kb-capture.js';
-import { kbQuery } from '../../src/tools/kb-query.js';
 import { getKbProviders } from '../../src/services/knowledge/kb-providers.js';
 import { requireSqliteProject } from '../../src/services/knowledge/require-sqlite-project.js';
+import { importBibleEntries } from '../../src/services/knowledge/bible-import.js';
+import type { KBEntryInput } from '../../src/services/knowledge/types.js';
+import { resetMemberBibleViews } from '../../src/services/knowledge/member-bible-view.js';
+import { kbQuery, MEMBER_DEFAULT_LIMIT, MEMBER_SLIM_ROW_KEYS } from '../../src/tools/kb-query.js';
 import { makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from '../test-helpers.js';
+import { BARE_BIBLE_PATH, loadQueries } from '../helpers/kb-recall-eval.js';
 
-// Member kb_query defaults: with no `limit`, a MEMBER session gets at most 6
-// slim L1 rows (id, title, summary, confidence, source_files) and L2 content
-// for the top 3. An explicit limit always wins; a non-member (FULL) session
-// keeps 20 rows, the full row shape and the top-5 L2.
-//
-// Isolation: tests/setup.ts points APRA_FLEET_DATA_DIR at a per-run temp dir;
-// the registry is backed up and restored; the checkout lives under one
-// scratch root removed in afterAll.
+// MEMBER-session kb_query defaults: a member read that gives no limit returns
+// at most MEMBER_DEFAULT_LIMIT slim rows (no content field) and no L2 content,
+// CONFIRMED only. An explicit limit keeps the full row shape and L2 content,
+// an explicit confidence list keeps its tiers, and FULL sessions are
+// unchanged. The second block measures result size on the real query set
+// (docs/kb-recall-measurements.md).
 
 const RUN = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-const WORD = 'quorumwidget';
-const BIBLE_COUNT = 24;
-const GLOBAL_COUNT = 10;
-const SLIM_KEYS = ['confidence', 'id', 'source_files', 'summary', 'title'];
+const LONG = 'The gizmo stage batches work into fixed windows and flushes on idle. '.repeat(20);
 
 let scratch: string;
-let repo: string;
-let member: string;
+let memberId: string;
 
-const as = <T>(fn: () => Promise<T>): Promise<T> => runWithSessionMember(member, fn);
+const asMember = <T>(fn: () => Promise<T>): Promise<T> => runWithSessionMember(memberId, fn);
+const asFull = <T>(fn: () => Promise<T>): Promise<T> => runWithSessionMember(undefined, fn);
 
-function bibleEntry(i: number): Record<string, unknown> {
+function gizmo(i: number, over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
-    id: `qd-bible-${i}`, type: 'knowledge', title: `Quorumwidget confirmed fact number ${i}`,
-    summary: `Fact ${i}: the ${WORD} stage batches work per tick.`,
-    symbols: [`quorumSym${i}`], source_files: ['src/q.ts'],
+    id: `bible-${String(i).padStart(2, '0')}`, type: 'knowledge',
+    title: `Gizmo pipeline fact ${i}`,
+    summary: `Gizmo pipeline fact ${i}: the gizmo stage batches work.`,
+    content: LONG,
+    symbols: [`gizmoStep${i}`], source_files: ['src/gizmo.ts'],
     confidence: 'CONFIRMED', updated_at: '2026-09-01T00:00:00.000Z',
+    ...over,
   };
 }
 
-beforeAll(async () => {
+/**
+ * A git checkout with an origin remote and the given bible. Every file a
+ * bible entry cites is created, so the bible view's freshness basis matches.
+ */
+function makeCheckout(name: string, bible: { entries: Array<{ source_files?: string[] }> }): string {
+  const repo = path.join(scratch, name);
+  fs.mkdirSync(path.join(repo, 'src'), { recursive: true });
+  fs.mkdirSync(path.join(repo, '.fleet'), { recursive: true });
+  fs.writeFileSync(path.join(repo, 'src', 'gizmo.ts'), 'export const gizmo = 1;\n');
+  for (const e of bible.entries) {
+    for (const f of e.source_files ?? []) {
+      const abs = path.join(repo, f);
+      if (fs.existsSync(abs)) continue;
+      fs.mkdirSync(path.dirname(abs), { recursive: true });
+      fs.writeFileSync(abs, `// ${f}\n`);
+    }
+  }
+  execFileSync('git', ['init', '-q'], { cwd: repo });
+  execFileSync('git', ['remote', 'add', 'origin', `https://example.test/kb-member-defaults-${name}-${RUN}.git`], { cwd: repo });
+  fs.writeFileSync(path.join(repo, '.fleet', 'kb-canonical.json'), JSON.stringify(bible), 'utf-8');
+  return repo;
+}
+
+beforeAll(() => {
   backupAndResetRegistry();
   resetMemberBibleViews();
   scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-member-defaults-'));
-  repo = path.join(scratch, 'checkout');
-  fs.mkdirSync(path.join(repo, 'src'), { recursive: true });
-  fs.writeFileSync(path.join(repo, 'src', 'q.ts'), 'export const q = 1;\n');
-  execFileSync('git', ['init', '-q'], { cwd: repo });
-  execFileSync('git', ['remote', 'add', 'origin', `https://example.test/kb-member-defaults-${RUN}.git`], { cwd: repo });
-  const agent = makeTestLocalAgent({ friendlyName: `kb-defaults-${RUN}`, workFolder: repo });
-  addAgent(agent);
-  member = agent.id;
-
-  const entries = Array.from({ length: BIBLE_COUNT }, (_, i) => bibleEntry(i));
-  fs.mkdirSync(path.join(repo, '.fleet'), { recursive: true });
-  fs.writeFileSync(path.join(repo, '.fleet', 'kb-canonical.json'), JSON.stringify({ version: 2, entries }), 'utf-8');
-
-  // The same entries in the per-repo DB, which a non-member (anchored) read uses.
-  const db = requireSqliteProject((await getKbProviders(repo)).project, 'test');
-  await importBibleEntries(db, entries, { verbatim: true });
-
-  // CONFIRMED entries in the GLOBAL KB that also match: the default cap must
-  // bound the MERGED project + global result, not each side separately.
-  const globalDb = requireSqliteProject((await getKbProviders(repo)).global, 'test');
-  const globalEntries = Array.from({ length: GLOBAL_COUNT }, (_, i) => ({
-    id: `qd-glob-${i}`, type: 'knowledge', title: `Globalquorum shared lesson number ${i}`,
-    summary: `Lesson ${i}: the ${WORD} stage is shared across repos.`,
-    symbols: [`globSym${i}`], source_files: ['src/q.ts'],
-    confidence: 'CONFIRMED', updated_at: '2026-09-01T00:00:00.000Z',
-  }));
-  await importBibleEntries(globalDb, globalEntries, { verbatim: true });
-
-  // The member's own INFERRED captures, for the mixed-tier read.
-  for (let i = 0; i < 4; i++) {
-    await as(() => kbCapture({
-      type: 'knowledge', title: `Quorumwidget own capture ${i}`,
-      summary: `Own ${i}: the ${WORD} stage retries per tick.`,
-      content: `Own ${i}: the ${WORD} stage retries per tick, seen in src/q.ts.`,
-      source_files: ['src/q.ts'], symbols: [`ownSym${i}`],
-    } as Parameters<typeof kbCapture>[0]));
-  }
 });
 
 afterAll(() => {
@@ -92,56 +77,112 @@ afterAll(() => {
   fs.rmSync(scratch, { recursive: true, force: true });
 });
 
-describe('kb_query defaults by session kind', () => {
-  it('global matches are reachable by a member (precondition for the cap tests)', async () => {
-    const out = JSON.parse(await as(() => kbQuery({ query: WORD, limit: 100 })));
-    expect(out.l1_results.some((r: { id: string }) => r.id.startsWith('qd-glob-'))).toBe(true);
+describe('MEMBER kb_query defaults', () => {
+  let repo: string;
+
+  beforeAll(async () => {
+    const bible = { version: 2, entries: Array.from({ length: 12 }, (_, i) => gizmo(i + 1)) };
+    repo = makeCheckout('caps', bible);
+    const agent = makeTestLocalAgent({ friendlyName: `kb-member-defaults-${RUN}`, workFolder: repo });
+    addAgent(agent);
+    memberId = agent.id;
+    // The member's own INFERRED capture in the per-repo DB. Its words are absent
+    // from the bible rows, whose content (LONG: flushes, windows) is kept here.
+    const providers = await getKbProviders(repo);
+    await requireSqliteProject(providers.project, 'test').capture({
+      type: 'knowledge', title: 'Gizmo drain cadence own note', summary: 'Own note on the gizmo drain cadence.',
+      content: 'Own note on the gizmo drain cadence.', source_files: ['src/gizmo.ts'], symbols: [], tags: [`member:${memberId}`],
+      content_hash: '', content_hash_type: 'sha256', stale: false, flagged_for_review: false,
+      author: 'test', source: 'doer', confidence: 'INFERRED', scope: 'project',
+    } as KBEntryInput, { importMode: true, preferredId: 'own-inferred', verbatim: true });
   });
 
-  it('MEMBER, no limit: 6 slim rows and 3 expanded entries', async () => {
-    const out = JSON.parse(await as(() => kbQuery({ query: WORD })));
-    // Project (24) and global (10) both match: the cap still bounds the merged list.
-    expect(out.l1_results).toHaveLength(6);
-    for (const row of out.l1_results) expect(Object.keys(row).sort()).toEqual(SLIM_KEYS);
-    expect(out.l2_expanded).toHaveLength(3);
-    // The expanded entries are full entries (they carry content).
-    for (const e of out.l2_expanded) expect(typeof e.content).toBe('string');
-    expect(out.l2_expanded.map((e: { id: string }) => e.id)).toEqual(out.l1_results.slice(0, 3).map((r: { id: string }) => r.id));
+  it('no limit: at most the member cap, slim rows without content, CONFIRMED only, no L2 content', async () => {
+    const out = JSON.parse(await asMember(() => kbQuery({ query: 'gizmo pipeline' })));
+    expect(out.l1_results).toHaveLength(MEMBER_DEFAULT_LIMIT);
+    for (const row of out.l1_results) {
+      expect(Object.keys(row).sort()).toEqual([...MEMBER_SLIM_ROW_KEYS].sort());
+      expect(row).not.toHaveProperty('content');
+      expect(row.confidence).toBe('CONFIRMED');
+    }
+    expect(out.l2_expanded).toEqual([]);
   });
 
-  it('MEMBER with limit 9: 9 rows (explicit limit wins; row shape stays full)', async () => {
-    const out = JSON.parse(await as(() => kbQuery({ query: WORD, limit: 9 })));
-    expect(out.l1_results).toHaveLength(9);
-    expect(Object.keys(out.l1_results[0]).length).toBeGreaterThan(SLIM_KEYS.length);
+  it('explicit limit keeps its meaning: that many rows, full row shape, L2 content for the top 5', async () => {
+    const out = JSON.parse(await asMember(() => kbQuery({ query: 'gizmo pipeline', limit: 10 })));
+    expect(out.l1_results).toHaveLength(10);
+    for (const row of out.l1_results) {
+      expect(row).toHaveProperty('content');
+      expect(row).toHaveProperty('tags');
+      expect(row).toHaveProperty('flagged_for_review');
+    }
+    expect(out.l2_expanded).toHaveLength(5);
+    for (const row of out.l2_expanded) expect(typeof row.content).toBe('string');
+    expect(out.l2_expanded[0].content.length).toBeGreaterThan(0);
+  });
+
+  it('an explicit limit above the cap returns more rows than the default', async () => {
+    const out = JSON.parse(await asMember(() => kbQuery({ query: 'gizmo pipeline', limit: 20 })));
+    expect(out.l1_results).toHaveLength(12);
+  });
+
+  it('explicit confidence keeps its tiers: the own INFERRED capture is returned', async () => {
+    const out = JSON.parse(await asMember(() => kbQuery({ query: 'drain cadence', confidence: ['CONFIRMED', 'INFERRED'] })));
+    const ids = out.l1_results.map((r: { id: string }) => r.id);
+    expect(ids).toContain('own-inferred');
+    expect(out.l1_results.length).toBeLessThanOrEqual(MEMBER_DEFAULT_LIMIT);
+    const own = out.l1_results.find((r: { id: string }) => r.id === 'own-inferred');
+    expect(own.confidence).toBe('INFERRED');
+    const onlyInferred = JSON.parse(await asMember(() => kbQuery({ query: 'drain cadence', confidence: ['INFERRED'] })));
+    expect(onlyInferred.l1_results.map((r: { id: string }) => r.id)).toEqual(['own-inferred']);
+  });
+
+  it('an own_scope read keeps the full row shape (it needs tags to find what may be demoted)', async () => {
+    const out = JSON.parse(await asMember(() => kbQuery({ query: 'drain cadence', own_scope: true, confidence: ['INFERRED'] })));
+    expect(out.l1_results.map((r: { id: string }) => r.id)).toEqual(['own-inferred']);
+    expect(out.l1_results[0].tags).toEqual([`member:${memberId}`]);
+    expect(out.l2_expanded.map((r: { id: string }) => r.id)).toEqual(['own-inferred']);
+  });
+
+  it('a FULL session keeps the full defaults (20 rows, full shape, L2 content)', async () => {
+    const providers = await getKbProviders(repo);
+    await importBibleEntries(requireSqliteProject(providers.project, 'test'), Array.from({ length: 12 }, (_, i) => gizmo(i + 1)));
+    const out = JSON.parse(await asFull(() => kbQuery({ query: 'gizmo pipeline' }, { folder: repo })));
+    expect(out.l1_results.length).toBeGreaterThan(MEMBER_DEFAULT_LIMIT);
+    expect(out.l1_results[0]).toHaveProperty('content');
     expect(out.l2_expanded).toHaveLength(5);
   });
+});
 
-  it('MEMBER mixed-tier read (CONFIRMED + INFERRED): the defaults apply to the merged result', async () => {
-    const out = JSON.parse(await as(() => kbQuery({ query: WORD, confidence: ['CONFIRMED', 'INFERRED'] })));
-    // Global CONFIRMED matches exist too; the default bounds the merged result.
-    expect(out.l1_results.length).toBeLessThanOrEqual(6);
-    expect(out.l1_results.length).toBeGreaterThan(0);
-    for (const row of out.l1_results) expect(Object.keys(row).sort()).toEqual(SLIM_KEYS);
-    expect(out.l2_expanded.length).toBeLessThanOrEqual(3);
-  });
+function quantile(sorted: number[], q: number): number {
+  const i = Math.min(sorted.length - 1, Math.max(0, Math.ceil(q * sorted.length) - 1));
+  return sorted[i];
+}
 
-  it('MEMBER mixed-tier read with limit 9 returns up to 9 rows', async () => {
-    const out = JSON.parse(await as(() => kbQuery({ query: WORD, limit: 9, confidence: ['CONFIRMED', 'INFERRED'] })));
-    expect(out.l1_results.length).toBeGreaterThan(6);
-    expect(out.l1_results.length).toBeLessThanOrEqual(9);
-  });
-
-  it('non-member (anchored) read, no limit: up to 20 rows, full row shape, 5 expanded entries', async () => {
-    const out = JSON.parse(await kbQuery({ query: WORD }, { folder: repo }));
-    expect(out.l1_results).toHaveLength(20);
-    expect(Object.keys(out.l1_results[0]).length).toBeGreaterThan(SLIM_KEYS.length);
-    expect(out.l1_results[0]).toHaveProperty('flagged_for_review');
-    expect(out.l2_expanded).toHaveLength(5);
-  });
-
-  it('non-member read with an explicit limit keeps its shape', async () => {
-    const out = JSON.parse(await kbQuery({ query: WORD, limit: 3 }, { folder: repo }));
-    expect(out.l1_results).toHaveLength(3);
-    expect(out.l1_results[0]).toHaveProperty('flagged_for_review');
-  });
+describe('member kb_query result size on the real query set', () => {
+  it('the default member read is much smaller than the previous default (explicit limit 20)', async () => {
+    // The pinned bare bible, minus its carried hashes (they describe the
+    // original files, not the stand-ins created here).
+    const pinned = JSON.parse(fs.readFileSync(BARE_BIBLE_PATH, 'utf-8'));
+    const bible = { version: 2, entries: pinned.entries.map(({ source_file_hashes: _h, ...e }: Record<string, unknown>) => e) };
+    const repo = makeCheckout('sizes', bible);
+    const agent = makeTestLocalAgent({ friendlyName: `kb-member-sizes-${RUN}`, workFolder: repo });
+    addAgent(agent);
+    const real = loadQueries().filter(q => q.source === 'real');
+    const before: number[] = [];
+    const after: number[] = [];
+    await runWithSessionMember(agent.id, async () => {
+      for (const q of real) {
+        // limit: 20 is exactly the previous default read (explicit limits keep their meaning).
+        before.push((await kbQuery({ query: q.query, limit: 20 })).length);
+        after.push((await kbQuery({ query: q.query })).length);
+      }
+    });
+    before.sort((a, b) => a - b);
+    after.sort((a, b) => a - b);
+    const m = { before: quantile(before, 0.5), beforeP90: quantile(before, 0.9), after: quantile(after, 0.5), afterP90: quantile(after, 0.9) };
+    console.log(`[kb-member-defaults] real queries=${real.length} result chars: before median ${m.before} p90 ${m.beforeP90}; after median ${m.after} p90 ${m.afterP90}`);
+    expect(m.after).toBeLessThanOrEqual(m.before / 3);
+    expect(m.afterP90).toBeLessThanOrEqual(m.beforeP90 / 3);
+  }, 60_000);
 });

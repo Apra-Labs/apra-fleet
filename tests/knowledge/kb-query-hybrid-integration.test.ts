@@ -44,6 +44,7 @@ vi.mock('../../src/services/knowledge/kb-self.js', () => {
     getMemberSplitRead: async () => null, // not a member session
     mergeSplitById: (a: unknown[]) => a,
     memberOwnerTag: () => undefined,
+    resolveKbAnchor: () => ({ folder: kbState.repo }),
   };
 });
 
@@ -109,6 +110,10 @@ type QueryResult = { l1_results: Array<{ id: string }>; l2_expanded: Array<{ id:
 const query = async (args: Record<string, unknown>): Promise<QueryResult> =>
   JSON.parse(await kbQuery(kbQuerySchema.parse({ confidence: [...ALL_TIERS], ...args })));
 const ids = (r: { l1_results: Array<{ id: string }> }) => r.l1_results.map(e => e.id);
+// kb_query files/symbols are the cited (hard) filter; anchor ranking is a
+// provider-level input (anchor_files / anchor_symbols), exercised via pq.
+const pq = async (args: { query?: string; anchor_files?: string[]; anchor_symbols?: string[]; error_text?: string }) =>
+  (await p.query({ ...args, confidence: [...ALL_TIERS], l1_only: true, limit: 20 })).results.map(e => e.id);
 /** The same provider read with the anchor list off (falsifiability counterfactual). */
 const withoutAnchors = async (args: { query?: string; anchor_files?: string[]; anchor_symbols?: string[] }) =>
   (await p.query({ ...args, confidence: [...ALL_TIERS], l1_only: true, limit: 20, disable_lists: ['anchor'] })).results.map(e => e.id);
@@ -121,9 +126,9 @@ describe('hybrid kb_query (integration, tool handler)', () => {
     const decoyA = await capture({ title: 'Ledger rounding rule', summary: 'ledger totals round half to even', source_files: ['src/a.ts'] });
     const decoyC = await capture({ title: 'Ledger rounding rule', summary: 'ledger totals round half to even', source_files: ['src/c.ts'] });
 
-    const r = await query({ query: 'ledger rounding', files: ['src/b.ts'] });
-    expect(ids(r)[0]).toBe(target.id);
-    expect(ids(r)).toEqual(expect.arrayContaining([decoyA.id, decoyC.id]));
+    const r = await pq({ query: 'ledger rounding', anchor_files: ['src/b.ts'] });
+    expect(r[0]).toBe(target.id);
+    expect(r).toEqual(expect.arrayContaining([decoyA.id, decoyC.id]));
     // Counterfactual: without the anchor list the target is not first.
     expect((await withoutAnchors({ query: 'ledger rounding', anchor_files: ['src/b.ts'] }))[0]).not.toBe(target.id);
   });
@@ -139,10 +144,10 @@ describe('hybrid kb_query (integration, tool handler)', () => {
     expect(await p.waitForCodeLinks(5000)).toBe(true);
 
     // Queue.push is not named by the target, only linked one hop from it.
-    const r = await query({ query: 'batching', symbols: ['Queue.push'] });
-    expect(ids(r)[0]).toBe(target.id);
-    // Symbols alone (no query text) also return it.
-    expect(ids(await query({ symbols: ['Queue.push'] }))).toEqual([target.id]);
+    const r = await pq({ query: 'batching', anchor_symbols: ['Queue.push'] });
+    expect(r[0]).toBe(target.id);
+    // Anchor symbols alone (no query text) also return it.
+    expect(await pq({ anchor_symbols: ['Queue.push'] })).toEqual([target.id]);
     expect((await withoutAnchors({ query: 'batching', anchor_symbols: ['Queue.push'] }))[0]).not.toBe(target.id);
   });
 
@@ -187,9 +192,9 @@ describe('hybrid kb_query (integration, tool handler)', () => {
     expect(ids(await query({ query: 'automobile dies mending' }))[0]).toBe(paraphraseTarget.id);
 
     fake.fail('model load failed');
-    const r = await query({ query: 'flaky upload', files: ['src/b.ts'], symbols: ['Uploader.send'], error_text: 'ECONNRESET during upload' });
-    expect(ids(r)[0]).toBe(target.id);
-    expect(ids(r)).toContain(anchored.id);
+    const r = await pq({ query: 'flaky upload', anchor_files: ['src/b.ts'], anchor_symbols: ['Uploader.send'], error_text: 'ECONNRESET during upload' });
+    expect(r[0]).toBe(target.id);
+    expect(r).toContain(anchored.id);
     // The paraphrase now has no semantic list: empty, not an error.
     expect(ids(await query({ query: 'automobile dies mending' }))).toEqual([]);
   });
@@ -203,7 +208,7 @@ describe('hybrid kb_query (integration, tool handler)', () => {
     expect(Object.keys(legacyDefault).sort()).toEqual(['l1_results', 'l2_expanded']);
     expect(legacyDefault.l1_results).toHaveLength(7);
 
-    const hybrid = await query({ query: 'retention probe', limit: 3, files: ['src/a.ts'], symbols: ['X.y'], error_text: 'probe failed' });
+    const hybrid = await query({ query: 'retention probe', limit: 3, files: ['src/a.ts'], error_text: 'probe failed' });
     expect(Object.keys(hybrid).sort()).toEqual(['l1_results', 'l2_expanded']);
     expect(hybrid.l1_results).toHaveLength(3);
     // Same row shape either way.
@@ -247,18 +252,18 @@ describe('hybrid kb_query against HttpKbProvider', () => {
     await new Promise<void>(r => server.close(() => r()));
   });
 
-  it('answers a kb_query carrying files, symbols and error_text; the inputs are not forwarded', async () => {
+  it('answers a kb_query carrying error_text; it is not forwarded', async () => {
     const remote = new HttpKbProvider(url, token, p);
     await remote.init();
     kbState.project = remote;
     try {
-      const r = await query({ query: 'remote', files: ['src/a.ts'], symbols: ['A.b'], error_text: SCOPE_ERROR });
+      const r = await query({ query: 'remote', error_text: SCOPE_ERROR });
       expect(Object.keys(r).sort()).toEqual(['l1_results', 'l2_expanded']);
       expect(ids(r)).toContain('remote-1');
       expect(queryUrls.length).toBeGreaterThan(0);
       const all = queryUrls.map(u => new URL(u, 'http://h').searchParams);
       for (const params of all) {
-        for (const k of ['files', 'symbols', 'error_text', 'anchor_files', 'anchor_symbols']) expect(params.has(k)).toBe(false);
+        for (const k of ['error_text', 'anchor_files', 'anchor_symbols']) expect(params.has(k)).toBe(false);
       }
       // The L1 read carried the query (the L2 read is an id lookup).
       expect(all.some(params => params.get('query') === 'remote')).toBe(true);

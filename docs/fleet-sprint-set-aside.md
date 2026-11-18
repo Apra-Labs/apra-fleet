@@ -14,10 +14,36 @@ forever or burning cycles on it.
    result whose `failedStep` is `permissions` does this. Later cycles skip the
    deployer, but the last deploy failure is still reported so the deploy
    verdict gate keeps working.
-3. **Immediate stall.** If nothing is left that can make progress because of
-   set-aside work, the sprint stalls at once, rather than after the usual
-   two no-progress cycles. The stall error names every set-aside bead and
-   `deploy` (blocker ids and reasons). A parent whose children are all
+3. **Immediate stop: carry-over or stall.** If nothing is left that can make
+   progress because of set-aside work, the sprint stops at once, rather than
+   after the usual two no-progress cycles. How it stops depends on whether
+   this run already closed work (a bead it dispatched or routed to verify):
+   - **Work closed this run: carry-over.** The run is not aborted. At Cycle
+     Evaluation the cycle loop exits to Finalization (Final Review,
+     Regression, Harvest, Publish PR) with every set-aside bead, bead stuck
+     behind one, and `deploy` named as a carry-over with its reason. The
+     verdict is forced FAIL while any at/above-goal bead is carried over; the
+     carry-over list leads the verdict notes (and so the PR body), and the
+     run result carries `exitReason: "set-aside-carry-over"` and
+     `carryOver: [{id, reason}]`. At the start of a Develop round the same
+     condition only ends the Develop loop, so Deploy and Integration Test
+     still run for work closed earlier in the cycle; Cycle Evaluation then
+     takes the exit.
+   - **Zero beads closed this run: stall.** The run ends SPRINT_STALLED; the
+     stall error names every set-aside bead and `deploy` (blocker ids and
+     reasons).
+
+   A bead held (by lane order or an open `blocks` prerequisite, transitively)
+   behind a bead that cannot close this run counts as stuck for this check.
+   "Cannot close this run" means set aside (doer BLOCKED, a dependent of one,
+   or awaiting a decision), publish blocked by a permission-scope push
+   failure, or deferred (status `deferred`, e.g. a plan-cap deferral). A
+   publish-blocked bead is itself counted as set aside. The stuck bead's
+   reason names that prerequisite and why, e.g.
+   `held on X (deferred), which cannot close in this run`. A bead whose
+   prerequisites can all still close is not stuck and keeps the run going.
+
+   A parent whose children are all
    closed is not set aside: while Integration Test can still run (deploy.md
    and the playbook present, deploy not set aside), it keeps the run going
    through Deploy and Integration Test. When the deploy is set aside and
@@ -50,9 +76,10 @@ forever or burning cycles on it.
    without a relaunch. A stall with no pending decision is unchanged
    (fleet-sprint/decision-wait.mjs). A decision whose decision bead could not
    be filed (the best-effort `bd create` failed) has no answer path, so it
-   never holds a pause: a stall on it still throws StalledSprintError, whose
-   set-aside reason names it with its full question and says the decision
-   bead could not be filed, and `recordDecisionAnswer` refuses it.
+   never holds a pause: a stop on it follows rule 3 (a carry-over when work
+   closed this run, otherwise StalledSprintError), its set-aside reason names
+   it with its full question, the run log says the decision bead could not be
+   filed, and `recordDecisionAnswer` refuses it.
 
    While parked, NO command runs on any sprint member and the members stay
    reserved by the sprint (the CLI skips the usage-limit pause's reservation
@@ -151,6 +178,82 @@ exhausted the run ends with a log line and a line in the final verdict notes
 naming the released-but-unworked bead and its decision. An answer recorded
 after the cycle loop has ended stays pending and is reported the same way.
 A wait at the start of a develop round dispatches the bead in the same cycle.
+
+## Verify-routed beads the exit stops waiting for
+
+A verify-routed bead (every child closed) only closes when Integration Test
+closes it, and the cycle loop does not exit while one is open. Two shapes no
+cycle can resolve are carried over instead (`fleet-sprint/verify-carry-over.mjs`):
+
+- **needs-external-evidence.** The engine counts, per bead, consecutive
+  cycles in which the bead was handed to Integration Test, is still open
+  afterwards, and has no gap bug filed under it. At
+  `NEEDS_EXTERNAL_EVIDENCE_CYCLE_LIMIT` (2) the bead is not dispatched to
+  verify again and no longer holds the exit. A cycle in which it closes or
+  gets a gap bug resets its count; an infra dispatch failure (no verdict)
+  neither counts nor resets. The run goes on to Final Review, Regression,
+  Harvest and Publish PR; Final Review forces the verdict to FAIL and names
+  the bead with the integ runner's reason (`verifySetLeftOpen`, else its
+  summary) in the verdict notes and PR body. The bead stays open.
+- **deferred during the run.** A verify-routed bead deferred mid-run is
+  dropped from the exit gate and named in the verdict notes. If the engine's
+  verify bounce cap deferred it (it kept failing verification), it is carried
+  over as `deferred-bounce-cap` and the verdict is forced to FAIL. If it was
+  deferred by anyone else (seen deferred at the next Route step), it is
+  carried over as `deferred` and the verdict is left to the other gates.
+
+The run result carries them as `verifyCarryOver: [{ id, kind, reason }]`
+(kind `needs-external-evidence`, `deferred-bounce-cap` or `deferred`).
+
+## A CHANGES_NEEDED that names only below-goal reopens
+
+A reviewer CHANGES_NEEDED (per-round Review or Cycle Evaluation's Re-Review)
+whose every reopenId the goal-scope guard skipped as below goal, with no
+in-goal newTask created, no failing build (`buildFailing` not true) and no
+pending NEEDS-DECISION, counts as APPROVED for the exit decision
+(`belowGoalOnlyReopenIds` in `fleet-sprint/beads-transitions.mjs`). Without
+it the next cycle could only repeat the same verdict until a stall. The
+skipped ids are logged, named in the verdict notes as carried over, and
+returned as `belowGoalCarryOver`. Anything in-goal keeps blocking the exit.
+
+## Lane order and containers
+
+Lane order (a lane-keyed ordering among sibling beads) holds a bead behind
+its lower-order lane-mates. The rule is keyed on the parent edge, not on
+`issue_type`: a lane-mate that is itself a container (a bead with children)
+never holds a bead back, because a container closes only when its children
+do, so waiting on it would deadlock. Lane metadata belongs on leaf tasks
+only; when a container carries lane metadata the engine ignores it and logs
+that once per run. One shared rule (`lowerOrderLaneMates` and
+`containerIdsOf` in `fleet-sprint/beads-scope.mjs`) serves hold-back,
+unmet-prerequisite and goal partitioning, so the blocked-report
+classification agrees with what the dispatcher does.
+
+## Red build gates Integration Test
+
+While the most recent review reported a failing build, Integration Test is
+not dispatched (a red-build skip is recorded as an integration failure), and
+a degraded review round does not change that state. A sprint whose
+Integration Test was skipped for a red build never publishes PASS: the
+verdict is forced FAIL until Integration Test has run again against a green
+build.
+
+## Deploy probe fails closed
+
+The probe for `deploy.md` fails closed: when the probe itself fails (as
+opposed to reporting the file absent), the deploy-failure gate is not
+cleared and the sprint cannot pass on the strength of a deploy that was
+never examined. The other callers of the existence probe still receive a
+plain boolean. The last deploy failure stays reported for that cycle even
+when the deploy was then set aside.
+
+## Permission denials
+
+A refusal advice (grant a permission, rerun) is given only when a refused
+call maps to something a grant can allow; a refusal no grant can allow gets
+no `compose_permissions` advice, and a mixed refusal keeps the grant
+remedy. A doer streak that fails on a permission denial is recorded as
+failed, but the beads it did close are still reviewed.
 
 ## Known gaps
 

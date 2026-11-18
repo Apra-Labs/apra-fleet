@@ -34,6 +34,7 @@ vi.mock('../../src/services/knowledge/kb-self.js', () => {
     getMemberSplitRead: async () => null,
     mergeSplitById: (a: unknown[]) => a,
     memberOwnerTag: () => undefined,
+    resolveKbAnchor: () => ({ folder: kbState.repo }),
   };
 });
 
@@ -73,6 +74,10 @@ const query = async (args: Record<string, unknown>) =>
     l1_results: { id: string }[];
   };
 const ids = (r: { l1_results: { id: string }[] }) => r.l1_results.map(e => e.id);
+// kb_query files/symbols are the cited (hard) filter; anchor ranking is a
+// provider-level input (anchor_files / anchor_symbols), exercised here.
+const pq = async (args: Record<string, unknown>) =>
+  (await p.query({ confidence: ALL_TIERS as never, l1_only: true, limit: 20, ...args })).results.map(e => e.id);
 
 describe('hybrid-rank (pure)', () => {
   it('fuses by 1/(k+rank) and shares ranks on ties', () => {
@@ -104,11 +109,11 @@ describe('kb_query hybrid inputs', () => {
   it('files: the entry whose source_files overlap ranks above an otherwise-equal entry', async () => {
     const a = await capture({ title: 'Widget cache eviction policy', summary: 'How the widget cache evicts entries', source_files: ['src/a.ts'] });
     const b = await capture({ title: 'Widget cache eviction policy', summary: 'How the widget cache evicts entries', source_files: ['src/b.ts'] });
-    const forA = await query({ query: 'widget cache eviction', files: ['src/a.ts'] });
-    const forB = await query({ query: 'widget cache eviction', files: ['./src/b.ts'] });
-    expect(ids(forA)[0]).toBe(a.id);
-    expect(ids(forB)[0]).toBe(b.id);
-    expect(ids(forA)).toContain(b.id);
+    const forA = await pq({ query: 'widget cache eviction', anchor_files: ['src/a.ts'] });
+    const forB = await pq({ query: 'widget cache eviction', anchor_files: ['./src/b.ts'] });
+    expect(forA[0]).toBe(a.id);
+    expect(forB[0]).toBe(b.id);
+    expect(forA).toContain(b.id);
   });
 
   it('symbols: an entry naming the symbol ranks first', async () => {
@@ -116,8 +121,7 @@ describe('kb_query hybrid inputs', () => {
     // unless the symbol anchor lifts the target.
     const target = await capture({ title: 'Parser recovery notes', summary: 'parser recovers after a bad token', symbols: ['Qux.alpha'] });
     await capture({ title: 'Parser recovery notes', summary: 'parser recovers after a bad token', symbols: ['Qux.beta'] });
-    const r = await query({ query: 'parser recovery', symbols: ['Qux.alpha'] });
-    expect(ids(r)[0]).toBe(target.id);
+    expect((await pq({ query: 'parser recovery', anchor_symbols: ['Qux.alpha'] }))[0]).toBe(target.id);
   });
 
   it('error_text: returns the entry whose error_signatures carry the error', async () => {
@@ -159,11 +163,11 @@ describe('kb_query hybrid inputs', () => {
     const anchorOnly = await capture({ title: 'Something else', summary: 'unrelated', source_files: ['src/b.ts'] });
     expect(await p.waitForEmbeddings(5000)).toBe(true);
     fake.fail('model load failed');
-    const r = await query({
-      query: 'flaky upload', files: ['src/b.ts'], symbols: ['Uploader.send'], error_text: 'ECONNRESET during upload',
+    const r = await pq({
+      query: 'flaky upload', anchor_files: ['src/b.ts'], anchor_symbols: ['Uploader.send'], error_text: 'ECONNRESET during upload',
     });
-    expect(ids(r)[0]).toBe(target.id);
-    expect(ids(r)).toContain(anchorOnly.id);
+    expect(r[0]).toBe(target.id);
+    expect(r).toContain(anchorOnly.id);
   });
 
   it('explicit limit is respected and a call without the new inputs keeps its keys', async () => {

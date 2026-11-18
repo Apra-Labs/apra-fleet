@@ -34,6 +34,7 @@ import { CodeLinkStore, normalizeFileRef, type CodeLinkResolver, type CodeLinksS
 import { guardKeywordTop, hybridOrder, keywordGuardFor, passesKeywordCutoff, ranksFromOrder, ranksFromScores, reciprocalRankFusion, RELEVANCE_MIN_DEPTH, trustPrior, type RankedList } from './hybrid-rank.js';
 import { getSessionEngineOrigin } from '../tool-scope.js';
 import { validateFilePaths } from './path-validation.js';
+import { citedFilterSql, hasCitedFilter, normalizeCitedFilter, normalizeCitedPath } from './cited-filter.js';
 import { clampBibleTimeToNow, standingAgainstTombstone } from './bible-import.js';
 import { CAPTURE_TRIGGERS, KB_AUDIT_NOTE_START, KbCaptureRejected, type CaptureTrigger, type DiscardResult, type RetireOptions } from './types.js';
 import type {
@@ -238,6 +239,15 @@ export function capEmbedText(text: string, max: number): string {
   }
   if (cut <= 0) return text.slice(0, max);
   return text.slice(0, cut).trimEnd();
+}
+
+// A caller's path as given and in canonical form (normalizeCitedPath: forward
+// slashes, no leading './', no repeated or trailing '/'). capture() stores
+// source_files as given, so an exact-path lookup matches a row stored in the
+// caller's own form or in the canonical form (a backslash caller finds a
+// forward-slash row). Lookup only; nothing is stored in either form here.
+function storedPathForms(file: string): [string, string] {
+  return [file, normalizeCitedPath(file)];
 }
 
 export class SqliteProvider implements MemoryProvider {
@@ -1762,6 +1772,15 @@ export class SqliteProvider implements MemoryProvider {
       conditions.push('EXISTS (SELECT 1 FROM json_each(e.tags) WHERE value = ?)');
       params.push(opts.tag);
     }
+    if (hasCitedFilter(opts.cited)) {
+      // kb_query cited filter: a hard filter ANDed like tag, so the keyword
+      // ranking (or the newest-first listing) runs inside the kept set only.
+      const cited = citedFilterSql(normalizeCitedFilter(opts.cited, this.repoPath), this.repoPath);
+      if (cited) {
+        conditions.push(cited.condition);
+        params.push(...cited.params);
+      }
+    }
     if (opts.flagged_only) {
       conditions.push('(e.flagged_for_review = 1 OR e.contradiction_of IS NOT NULL)');
     } else {
@@ -2071,10 +2090,10 @@ export class SqliteProvider implements MemoryProvider {
         WHERE type = 'context-cache'
           AND superseded_at IS NULL
           ${confClause}
-          AND EXISTS (SELECT 1 FROM json_each(source_files) WHERE value = ?)
+          AND EXISTS (SELECT 1 FROM json_each(source_files) WHERE value IN (?, ?))
         ORDER BY created_at DESC
         LIMIT 1
-      `).all(...confParams, file) as Record<string, unknown>[];
+      `).all(...confParams, ...storedPathForms(file)) as Record<string, unknown>[];
 
       if (rows.length > 0) {
         fileEntries.set(file, this.rowToEntry(rows[0]));
@@ -2285,9 +2304,9 @@ export class SqliteProvider implements MemoryProvider {
           AND superseded_at IS NULL
           ${ownerClause}
           AND EXISTS (
-            SELECT 1 FROM json_each(source_files) WHERE value = ?
+            SELECT 1 FROM json_each(source_files) WHERE value IN (?, ?)
           )
-      `).all(...ownerParams, file) as { id: string; confidence: string }[];
+      `).all(...ownerParams, ...storedPathForms(file)) as { id: string; confidence: string }[];
       const rows = opts?.keepConfirmed ? candidates.filter(r => r.confidence !== 'CONFIRMED') : candidates;
       if (opts?.keepConfirmed) for (const r of candidates) if (r.confidence === 'CONFIRMED') refused.add(r.id);
 

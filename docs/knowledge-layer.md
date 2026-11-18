@@ -251,6 +251,39 @@ names them explicitly; internal callers that need UNVERIFIED or INFERRED
 entries (e.g. reconcile and prime paths) pass an explicit list. `flagged_only`
 is exempt from the default because its purpose is to surface disputed entries.
 
+**A MEMBER `kb_query` without `limit` returns small results.** It returns at
+most 6 summary rows, counted after the project and global results are
+merged. Each row carries `id`, `type`, `title`, `summary`, `confidence`,
+`source_files` and `symbols`, and `l2_expanded` is empty. Pass any `limit` to
+get the previous shape: up to that many full rows per side, plus the content
+of the top 5 hits. FULL sessions, `own_scope` reads and `flagged_only`
+reads keep the full shape. FULL sessions keep the default of 20 rows. The constants
+are `MEMBER_DEFAULT_LIMIT` and `MEMBER_SLIM_ROW_KEYS` in
+`src/tools/kb-query.ts`. The cap of 6 and the size drop are measured in
+`docs/kb-recall-measurements.md`.
+
+**Look up by file: `kb_query` `files` / `symbols`.** `files` (repo-relative
+paths; a directory matches the files under it, `src/services` matches
+`src/services/a.ts` but not `src/services-old/a.ts`) and `symbols` (exact
+names) are a HARD filter, not a ranking signal: only entries whose
+`source_files` cite one of the files or whose `symbols` name one of the
+symbols come back (with both, either match keeps an entry), however strongly
+another entry matches `query`. Ranking inside the kept set is unchanged
+(keyword ranking with `query`, newest first without it); either field may be
+used without `query`. A `files` path is normalised (backslashes, repeated
+`/`, a leading `./`, a trailing `/`; an absolute path inside the repository
+becomes repo-relative, before any store, http included, is asked); `.` alone
+is refused. Stored `source_files` are kept as captured and compared with only
+backslashes converted to `/` and one leading `./` dropped; other non-canonical
+stored forms (repeated `/`, more than one leading `./`) are not matched.
+SQLite applies it in SQL next to the tag
+filter (`src/services/knowledge/cited-filter.ts`). Under the http provider it
+is sent only when the KB server lists the field in `query_filters` of
+`GET /api/kb/capabilities` (fleet's `kb-server` lists `files` and `symbols`);
+otherwise `kb_query` fails with `E-KB-HTTP-UNSUPPORTED` naming the filter
+before anything is sent, and fleet re-applies the filter to whatever a server
+answers. A request naming neither field gets the same result as before.
+
 **`kb_list` also accepts the legacy single-tier string.** Before the redesign
 `kb_list`'s `confidence` was one tier as a string (`"INFERRED"`); it is now a
 list. Both forms are accepted: a string is read as the one-element list, so
@@ -735,7 +768,7 @@ Another server can stand in for `kb-server` by serving the same routes:
 | Route | Used for |
 |---|---|
 | `POST /api/kb/capture` | kb_capture |
-| `GET /api/kb/query` (`query`, `type`, `tag`, `limit`, `l1_only`, `confidence`, `exclude_disputed`, `include_stale`, `include_superseded`, `flagged_only`, `fts_terms`, `ids`) | kb_query, and the member own-scope lookup (`tag=member:<uuid>`); entries must carry their `tags`. `flagged_only=true` lists only contradiction-flagged entries. `fts_terms` is a JSON array of strings (URL-encoded, e.g. `fts_terms=["Gearwheel","ratio"]`) OR-joined as one FTS match (kb_session_prime's neighbour query). `ids` is a JSON array of entry ids for an exact-id lookup (kb_query's L2 fetch; kb_query keeps only the requested ids). A `fts_terms` or `ids` value that is not a JSON array of strings answers 400 `BAD_REQUEST` |
+| `GET /api/kb/query` (`query`, `type`, `tag`, `limit`, `l1_only`, `confidence`, `exclude_disputed`, `include_stale`, `include_superseded`, `flagged_only`, `fts_terms`, `ids`, `files`, `symbols`) | kb_query, and the member own-scope lookup (`tag=member:<uuid>`); entries must carry their `tags`. `flagged_only=true` lists only contradiction-flagged entries. `fts_terms` is a JSON array of strings (URL-encoded, e.g. `fts_terms=["Gearwheel","ratio"]`) OR-joined as one FTS match (kb_session_prime's neighbour query). `ids` is a JSON array of entry ids for an exact-id lookup (kb_query's L2 fetch; kb_query keeps only the requested ids). `files` / `symbols` are JSON arrays, the cited filter (only entries citing one of the files, or a file under one of them, or naming one of the symbols), honoured only by a server listing them in `query_filters`. A `fts_terms`, `ids`, `files` or `symbols` value that is not a JSON array of strings answers 400 `BAD_REQUEST` |
 | `GET /api/kb/list` (`tag`, `confidence`, `type`, `module`, `symbol`, `exclude_disputed`, `include_stale`, `limit`; no-bump read, entries carry their `tags`) | kb_list, and the member own-scope filter of `kb_context` and `kb_session_prime` reads (never `kb_promote`). A 404 from it surfaces as `E-KB-HTTP-UNSUPPORTED` |
 | `GET /api/kb/context` (`files` comma-separated, required; `confidence` comma-separated; `exclude_disputed`; `tag`) | kb_context. `tag=member:<uuid>` is the member own-scope: each file's newest entry is chosen among the entries carrying that tag, not the newest overall |
 | `POST /api/kb/prime` | kb_session_prime |
@@ -1009,7 +1042,10 @@ The provider holds no local store at all.
 | relatedClaims | local | No remote route: returns no related claims (`related_claims` is empty). |
 
 **Capabilities**: `GET /api/kb/capabilities` (same auth and `X-KB-Project`
-check as every route) answers `{contract, routes, branch_aware}`. capture,
+check as every route) answers `{contract, routes, branch_aware}`, plus the
+optional `query_filters` (the optional `kb_query` filters `GET /api/kb/query`
+honours: `files`, `symbols`; absent = none, and such a filter is refused
+with `E-KB-HTTP-UNSUPPORTED` instead of being sent). capture,
 query and promote are required; context, prime, invalidate, feedback, list and
 demote are optional. The provider reads it once per connection (again after
 a connection error, or after the read itself failed; a 5xx or 429 answer to

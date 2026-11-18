@@ -22,7 +22,11 @@
         "demote",
         "withdraw"
       ],
-      "branch_aware": false
+      "branch_aware": false,
+      "query_filters": [
+        "files",
+        "symbols"
+      ]
     }
   }
 }

@@ -53,6 +53,9 @@ test('unit: reviewScopeBeadIds unions engine-verified closes, de-duplicates, ski
     assert.deepEqual(reviewScopeBeadIds([
         { beadIds: ['a', 'b', 'c'], outcome: 'failed', closedIds: ['a', 'b'], unclosedIds: ['c'] },
         { beadIds: ['b', 'd'], outcome: 'success', closedIds: ['b', 'd'], unclosedIds: [] },
+        // a streak failed by a refused tool call (permission_denied) still
+        // contributes the beads it verifiably closed
+        { beadIds: ['p', 'q'], outcome: 'failed', closedIds: ['p'], unclosedIds: ['q'], failureReason: 'permission_denied' },
         // a failed streak that verified nothing closed contributes nothing
         { beadIds: ['e'], outcome: 'failed', closedIds: [], unclosedIds: ['e'] },
         // unpublished closes are excluded
@@ -60,7 +63,7 @@ test('unit: reviewScopeBeadIds unions engine-verified closes, de-duplicates, ski
         { beadIds: ['g'], outcome: 'success', closedIds: ['g'], postDispatchSyncFailed: true },
         // beadIds alone (a doer claim, no read-back) never counts
         { beadIds: ['h'], outcome: 'success' },
-    ]), ['a', 'b', 'd']);
+    ]), ['a', 'b', 'd', 'p']);
 });
 
 test('mock sprint: a streak that closes 2 of 3 beads then returns BLOCKED reviews exactly those 2', async () => {
@@ -82,10 +85,13 @@ test('mock sprint: a streak that closes 2 of 3 beads then returns BLOCKED review
         });
         const id = (title) => scenario.tasks.find((t) => t.title === title).id;
         // The BLOCKED third bead is set aside for the run; once it is the only
-        // open bead the run stalls at once -- after the round-1 Review ran.
-        check(scenario.error && scenario.error.code === 'SPRINT_STALLED',
-            `expected the set-aside stall, got: ${scenario.error ? scenario.error.message : 'no error'}`);
-        assert.deepEqual(scenario.error.blockerIds, [id(TITLES[2])]);
+        // open bead the run stops at once -- after the round-1 Review ran.
+        // POLICY (set-aside carry-over): two beads closed this run, so that
+        // stop is no longer a SPRINT_STALLED abort but the carry-over exit to
+        // Finalization, with the third bead carried over.
+        check(!scenario.error, `no abort with work closed this run: ${scenario.error ? scenario.error.message : ''}`);
+        assert.equal(scenario.result.exitReason, 'set-aside-carry-over', JSON.stringify(scenario.result));
+        assert.deepEqual(scenario.result.carryOver.map((e) => e.id), [id(TITLES[2])]);
         const reviews = developReviews(scenario);
         check(reviews.length >= 1, 'Expected a develop-round Review dispatch');
         const scope = reviewScopeIds(reviews[0]).slice().sort();

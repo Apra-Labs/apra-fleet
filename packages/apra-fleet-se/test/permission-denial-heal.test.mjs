@@ -139,6 +139,64 @@ test('a heal that cannot make progress fails the sprint with the hook\'s step, n
     assert.equal(rec.dispatches.length, 1);
 });
 
+// A chained/backgrounded shell command maps to no grant: execute_prompt
+// reports the denial with no suggestedGrants at all.
+const UNMAPPABLE_DENIAL = Object.freeze({
+    actions: ['Bash'],
+    denials: [{ action: 'Bash', target: 'npm test > /tmp/t.log 2>&1 &', suggestedGrants: [] }],
+    suggestedGrants: [],
+    hint: 'claude refused Bash "npm test > /tmp/t.log 2>&1 &".',
+    signals: ['result_json'],
+});
+function unmappableDeniedError(denial = UNMAPPABLE_DENIAL) {
+    return new AgentDispatchError(
+        '[Workflow Error] Agent dispatch failed (permission_denied): [FAIL] execute_prompt on "dev": permission denied',
+        { details: { reason: 'permission_denied', member: 'dev', permissionDenied: denial } },
+    );
+}
+
+test('every refused call maps to no grant: the failure says no grant can allow it, with no compose_permissions or rerun advice', async () => {
+    const { ctx, rec } = createRecordingCtx({ responses: [unmappableDeniedError(), APPROVED], members: { 'plan-reviewer': 'dev' } });
+    const heals = withHeal(ctx, {
+        healed: false, step: 'no_progress', composeRole: 'doer', grants: [], rejectedGrants: [],
+        reason: 'no compose_permissions grant maps to Bash "npm test > /tmp/t.log 2>&1 &" (e.g. a chained shell command).',
+    });
+    await assert.rejects(dispatchRole(ctx, 'plan-reviewer', planReviewOpts()), (err) => {
+        assert.ok(err instanceof MemberPermissionDeniedError, String(err));
+        assert.equal(err.step, 'no_progress');
+        assert.match(err.message, /no permission grant can allow: Bash "npm test > \/tmp\/t\.log 2>&1 &"/);
+        assert.doesNotMatch(err.message, /compose_permissions/);
+        assert.doesNotMatch(err.message, /rerun|re-run/i);
+        assert.deepEqual(err.suggestedGrants, []);
+        assert.equal(err.details.unmappable, true);
+        return true;
+    });
+    assert.equal(heals.length, 1);
+    assert.equal(rec.dispatches.length, 1);
+});
+
+test('unmappable refusal with no heal wired gets the same no-grant text', async () => {
+    const { ctx } = createRecordingCtx({ responses: [unmappableDeniedError()], members: { 'plan-reviewer': 'dev' } });
+    await assert.rejects(dispatchRole(ctx, 'plan-reviewer', planReviewOpts()), (err) => (
+        err instanceof MemberPermissionDeniedError && /no permission grant can allow/.test(err.message)
+        && !/compose_permissions|rerun/.test(err.message)
+    ));
+});
+
+test('a mix of an unmappable and a mappable refused call keeps the compose_permissions remedy', async () => {
+    const mixed = {
+        ...UNMAPPABLE_DENIAL,
+        denials: [...UNMAPPABLE_DENIAL.denials, { action: 'Bash', target: 'bd show root-1', suggestedGrants: ['Bash(bd:*)'] }],
+    };
+    const { ctx } = createRecordingCtx({ responses: [unmappableDeniedError(mixed)], members: { 'plan-reviewer': 'dev' } });
+    withHeal(ctx, { healed: false, step: 'no_progress', composeRole: 'doer', grants: [], rejectedGrants: [], reason: 'no grant maps to the chained call' });
+    await assert.rejects(dispatchRole(ctx, 'plan-reviewer', planReviewOpts()), (err) => {
+        assert.match(err.message, /To fix: run compose_permissions for member 'dev' with role doer/);
+        assert.doesNotMatch(err.message, /no permission grant can allow/);
+        return true;
+    });
+});
+
 test('a failing heal fails the sprint at once (step heal), naming the heal failure and out-of-policy grants', async () => {
     const { ctx, rec } = createRecordingCtx({ responses: [deniedError(), APPROVED], members: { 'plan-reviewer': 'rev' } });
     withHeal(ctx, { healed: false, composeRole: 'reviewer', grants: [], rejectedGrants: ['Bash(rm:*)'], reason: 'compose_permissions failed: member offline' });

@@ -25,6 +25,7 @@ function harness() {
         if (tool === 'kb_bible_commit') {
             return { content: [{ text: JSON.stringify({ path: '.fleet/kb-canonical.json', merged: args.ids, skipped: [], entry_count: args.ids.length, committed: true }) }] };
         }
+        if (tool === 'kb_promote') return { content: [{ text: JSON.stringify({ id: args.id, previous_confidence: 'INFERRED', new_confidence: 'CONFIRMED' }) }] };
         if (tool === 'kb_capture') return { content: [{ text: JSON.stringify({ id: 'c1', audn_decision: 'add', confidence_clamped: false }) }] };
         if (tool === 'kb_invalidate') return { content: [{ text: JSON.stringify({ discarded: [args.ids[0]], not_found: [], already_discarded: [] }) }] };
         return { content: [{ text: '{}' }] };
@@ -141,6 +142,13 @@ describe('kb_maintainer grant on engine KB writes', () => {
         assert.ok(logs.some((m) => /WARN kb_import on 'maint' did not report reading refs\/remotes\/origin\/main/.test(m)), logs.join('\n'));
     });
 
+    test('an http bible_skipped import logs the no-bible line and no upgrade WARN', async () => {
+        const { priming, logs } = primingHarness({ baseBranch: 'main' }, { importResult: { bible_skipped: true, reason: 'the KB is served over http' } });
+        await priming.primeAll();
+        assert.ok(logs.some((m) => /no bible import for 'reviewer-1': the KB is served over http/.test(m)), logs.join('\n'));
+        assert.ok(!logs.some((m) => /upgrade apra-fleet on that member/.test(m)), logs.join('\n'));
+    });
+
     test('the priming kb_import on the maintainer carries the grant and reads the base branch ref; kb_session_prime does not', async () => {
         const { priming, calls } = primingHarness({ baseBranch: 'main' });
         await priming.primeAll();
@@ -187,7 +195,7 @@ describe('kb_maintainer writes against a member install that predates --kb-maint
         });
         const memberCall = async (member, tool, args, opts) => {
             if (tool === 'kb_query') return { l1_results: [{ id: 'e1' }, { id: 'e2' }] };
-            if (tool === 'kb_promote' && promoteOk) return { content: [{ text: '{}' }] };
+            if (tool === 'kb_promote' && promoteOk) return { content: [{ text: JSON.stringify({ id: args.id, previous_confidence: 'INFERRED', new_confidence: 'CONFIRMED' }) }] };
             if (opts && opts.kbMaintainer === true) return gated.memberCall(member, tool, args, opts);
             return { content: [{ text: '{}' }] };
         };

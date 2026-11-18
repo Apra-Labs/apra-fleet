@@ -41,6 +41,7 @@ function harness({ pushFailures = 0, committed = true, unpushed = false, skipped
             const sk = all.filter((s) => args.ids.includes(s.id));
             return { content: [{ text: JSON.stringify({ path: '.fleet/kb-canonical.json', merged: args.ids.filter((id) => !sk.some((s) => s.id === id)), skipped: sk, ...(removed === undefined ? {} : { removed }), entry_count: args.ids.length, committed }) }] };
         }
+        if (tool === 'kb_promote') return { id: args.id, previous_confidence: 'INFERRED', new_confidence: 'CONFIRMED' };
         return {};
     };
     const client = createKbWorkClient({
@@ -318,6 +319,7 @@ describe('commitRound: the review-round bible commit on the kb_maintainer', () =
             memberCall: async (m, tool, args) => {
                 if (tool === 'kb_query') return { l1_results: offeredEntries.map((id) => ({ id })) };
                 events.push(tool);
+                if (tool === 'kb_promote') return { id: args.id, previous_confidence: 'INFERRED', new_confidence: 'CONFIRMED' };
                 return tool === 'kb_bible_commit' ? { merged: args.ids, skipped: [], committed: false } : {};
             },
             maintainers: selfMaintainer(MAINT, ['maint', 'reviewer-1']),
@@ -352,9 +354,10 @@ describe('commitRound: the review-round bible commit on the kb_maintainer', () =
         const logs = [];
         const events = [];
         const client = createKbWorkClient({
-            memberCall: async (m, tool) => {
+            memberCall: async (m, tool, args) => {
                 if (tool === 'kb_query') return { l1_results: offeredEntries.map((id) => ({ id })) };
                 events.push(tool);
+                if (tool === 'kb_promote') return { id: args.id, previous_confidence: 'INFERRED', new_confidence: 'CONFIRMED' };
                 return {};
             },
             maintainers: selfMaintainer(MAINT, ['maint', 'reviewer-1']),
@@ -415,6 +418,7 @@ describe('commitRound: demoted_ids travels with ids in one kb_bible_commit call'
                     }],
                 };
             }
+            if (tool === 'kb_promote') return { id: args.id, previous_confidence: 'INFERRED', new_confidence: 'CONFIRMED' };
             return {};
         };
         const client = createKbWorkClient({
@@ -563,6 +567,7 @@ function guardHarness({ branchAnswers, pushFailures = 0 }) {
                 commands.push({ cmd: '(kb_bible_commit: git commit)', member: member.name });
                 return { content: [{ text: JSON.stringify({ merged: args.ids, skipped: [], committed: true }) }] };
             }
+            if (tool === 'kb_promote') return { id: args.id, previous_confidence: 'INFERRED', new_confidence: 'CONFIRMED' };
             return {};
         },
         maintainers: selfMaintainer(MAINT, ['maint', 'reviewer-1']),

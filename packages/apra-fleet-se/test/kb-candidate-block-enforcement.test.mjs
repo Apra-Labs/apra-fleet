@@ -30,6 +30,7 @@ function harness() {
             if (tool === 'kb_invalidate') {
                 return { content: [{ type: 'text', text: JSON.stringify({ discarded: args.ids, not_found: [], already_discarded: [] }) }] };
             }
+            if (tool === 'kb_promote') return { id: args.id, previous_confidence: 'INFERRED', new_confidence: 'CONFIRMED' };
             return {};
         },
         gPull: async () => {},

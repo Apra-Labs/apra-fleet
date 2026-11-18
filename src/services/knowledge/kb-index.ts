@@ -211,12 +211,29 @@ export class KbKeywordIndex {
 
   // -- schema --------------------------------------------------------------
 
+  /**
+   * A kb.sqlite written by a build with a different entries_kw column layout
+   * (e.g. the 6-column keyword index without recall_cues / error_signatures)
+   * keeps that table under CREATE IF NOT EXISTS, and a rebuild would then
+   * insert the wrong column count. Drop the table and its update trigger so
+   * init recreates them; the kw_version mismatch then forces a rebuild.
+   */
+  private dropForeignKeywordLayout(db: DatabaseSync): void {
+    const exists = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'entries_kw'").get();
+    if (!exists) return;
+    const cols = (db.prepare('PRAGMA table_info(entries_kw)').all() as { name: string }[]).map(c => c.name);
+    if (cols.join(',') === KW_COLUMNS.join(',')) return;
+    db.exec('DROP TRIGGER IF EXISTS entries_kw_au; DROP TABLE IF EXISTS entries_kw;');
+    db.prepare("DELETE FROM kb_index_meta WHERE key = 'kw_version'").run();
+  }
+
   /** Create the index tables/triggers (idempotent) and start a rebuild if needed. */
   init(): void {
     const db = this.db();
     // A provider may be closed and re-initialized: start from a clean slate.
     this.closed = false;
     this.readyCached = false;
+    this.dropForeignKeywordLayout(db);
     db.exec(`
       CREATE TABLE IF NOT EXISTS kb_index_meta (
         key TEXT PRIMARY KEY,
