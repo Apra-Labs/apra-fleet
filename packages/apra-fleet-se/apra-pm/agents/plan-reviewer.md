@@ -166,6 +166,10 @@ For each open feature and its tasks, run `bd show <id>` to read the full descrip
       extra review round; name the lanes to merge. Two cohesive lanes with NO `blocks` edge
       between them normally already run in the same review round -- merging them would only
       remove parallelism, usually for no review saving, so that is NOT a finding.
+    - **Lane metadata on leaf tasks only**: a bead that has children (a feature, epic or
+      decomposed task) carrying `streak`/`streakOrder` is a finding (`kind:
+      "lane_cohesion"`): it can only close after its children, so the engine ignores its
+      lane position. Name the bead and ask for its lane metadata to be removed.
     - **No intra-lane `blocks` edges; cross-lane edges wired correctly**: see criterion 5
       for the rule -- report a violation there as `kind: "dependency_wiring"`, not here.
     - **Mutex resources co-laned**: tasks that contend for the same mutual-exclusion

@@ -137,6 +137,9 @@ test('mock sprint: a BLOCKED bead and its dependent chain are set aside; its lat
         }
         // Everything left open is set aside or held behind a set-aside bead,
         // so the run stalls at once in C1 instead of spending a second cycle.
+        // POLICY (set-aside carry-over): still SPRINT_STALLED, deliberately --
+        // b and c were dispatched but nothing this run closed, and the
+        // carry-over exit to Finalization only fires once work closed.
         check(scenario.error, 'the run must end in a stall once only set-aside beads remain');
         assert.equal(scenario.error.code, 'SPRINT_STALLED');
         assert.equal(scenario.error.details.cycle, 1, 'the stall must be declared in C1');

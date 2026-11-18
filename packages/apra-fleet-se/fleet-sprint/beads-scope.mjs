@@ -387,6 +387,107 @@ export function laneOf(bead) {
     return { streak, order };
 }
 
+/**
+ * The ids of every CONTAINER among `beads`: a bead that is the `.parent` of
+ * another bead in the same list (any status). Keyed on the parent edge, never
+ * on issue_type.
+ *
+ * Pure: no I/O.
+ * @param {Iterable<object>} beads
+ * @returns {Set<string>}
+ */
+export function containerIdsOf(beads) {
+    const out = new Set();
+    const list = beads instanceof Map ? [...beads.values()] : [...(beads || [])];
+    const ids = new Set(list.filter((b) => b && b.id !== undefined && b.id !== null).map((b) => String(b.id)));
+    for (const b of list) {
+        const p = b && b.parent;
+        if (p === undefined || p === null || p === '') continue;
+        if (ids.has(String(p)) && String(p) !== String(b.id)) out.add(String(p));
+    }
+    return out;
+}
+
+/**
+ * The ONE lane-order rule: the ids of `bead`'s OPEN lane-mates in `beads`
+ * (same metadata.streak, lower finite streakOrder), sorted by order then id.
+ * A CONTAINER (see containerIdsOf) is never a lane-mate prerequisite: it can
+ * only close after its children, so holding a bead behind one -- its own
+ * parent, or a sibling container whose children are in the same lane --
+ * deadlocks the lane. Its lane metadata is ignored.
+ *
+ * Pure: no I/O.
+ * @param {object} bead
+ * @param {Iterable<object>|Map<string, object>} beads candidate lane-mates, any status
+ * @param {{ containerIds?: Set<string> }} [opts] precomputed containerIdsOf(beads)
+ * @returns {string[]}
+ */
+export function lowerOrderLaneMates(bead, beads, { containerIds } = {}) {
+    const lane = laneOf(bead);
+    if (!lane) return [];
+    const list = beads instanceof Map ? [...beads.values()] : [...(beads || [])];
+    const containers = containerIds instanceof Set ? containerIds : containerIdsOf(list);
+    const id = String(bead && bead.id);
+    const mates = [];
+    for (const m of list) {
+        if (!m || String(m.id) === id || m.status === 'closed' || containers.has(String(m.id))) continue;
+        const ml = laneOf(m);
+        if (ml && ml.streak === lane.streak && ml.order < lane.order) mates.push({ id: String(m.id), order: ml.order });
+    }
+    mates.sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
+    return [...new Set(mates.map((m) => m.id))];
+}
+
+/**
+ * Every CONTAINER in `beads` (see containerIdsOf) that carries lane metadata,
+ * as `{ id, streak }` sorted by id. lowerOrderLaneMates ignores that metadata.
+ *
+ * Pure: no I/O.
+ * @param {Iterable<object>} beads
+ * @returns {Array<{ id: string, streak: string }>}
+ */
+export function lanedContainers(beads) {
+    const list = beads instanceof Map ? [...beads.values()] : [...(beads || [])];
+    const containers = containerIdsOf(list);
+    const out = new Map();
+    for (const b of list) {
+        if (!b || !containers.has(String(b.id)) || out.has(String(b.id))) continue;
+        const lane = laneOf(b);
+        if (lane) out.set(String(b.id), { id: String(b.id), streak: lane.streak });
+    }
+    return [...out.values()].sort((a, b) => a.id.localeCompare(b.id));
+}
+
+/**
+ * The log line for a container whose lane metadata is ignored.
+ * @param {{ id: string, streak: string }} c
+ * @returns {string}
+ */
+export function formatIgnoredContainerLaneLog(c) {
+    return `Lane order: ${c.id} carries lane metadata (streak ${c.streak}) but is a container (the parent of ` +
+        'other in-scope beads) -- its lane position is ignored, because it can only close after its children. ' +
+        'Lane metadata belongs on leaf tasks only.';
+}
+
+/**
+ * The ignored-container log lines not yet emitted this run: one per laned
+ * container whose id is not in `logged`, which is updated in place so the
+ * same container is never logged twice in a run.
+ *
+ * @param {Iterable<object>} beads in-scope beads, any status
+ * @param {Set<string>} logged run-scoped set of already-logged container ids
+ * @returns {string[]}
+ */
+export function newIgnoredContainerLaneLogs(beads, logged) {
+    const lines = [];
+    for (const c of lanedContainers(beads)) {
+        if (logged.has(c.id)) continue;
+        logged.add(c.id);
+        lines.push(formatIgnoredContainerLaneLog(c));
+    }
+    return lines;
+}
+
 function indexById(beads) {
     const byId = new Map();
     for (const b of beads || []) {
@@ -425,17 +526,7 @@ export function unmetPrerequisites(bead, { scopeBeads, allBeads = null }) {
             if (outside && outside.status !== 'closed') outOfScope.push(pre);
         }
     }
-    const lane = laneOf(bead);
-    if (lane) {
-        const mates = [];
-        for (const m of scopeById.values()) {
-            if (!m || String(m.id) === id || m.status === 'closed') continue;
-            const ml = laneOf(m);
-            if (ml && ml.streak === lane.streak && ml.order < lane.order) mates.push(m);
-        }
-        mates.sort((a, b) => laneOf(a).order - laneOf(b).order || String(a.id).localeCompare(String(b.id)));
-        for (const m of mates) if (!inScope.includes(String(m.id))) inScope.push(String(m.id));
-    }
+    for (const m of lowerOrderLaneMates(bead, scopeById)) if (!inScope.includes(m)) inScope.push(m);
     return { inScope, outOfScope };
 }
 
@@ -511,24 +602,10 @@ export function partitionReadyByGoal(ready, scopeBeads, goal, opts = {}) {
     }
     // Lane order is a prerequisite too: a kept bead's open lower-order
     // lane-mates are walked like 'blocks' prerequisites, transitively, so an
-    // [impl] task is kept whenever its [test] lane-mate is.
-    const openLaneMates = new Map(); // streak -> open laned beads
-    for (const b of byId.values()) {
-        const lane = laneOf(b);
-        if (!lane || !isOpen(b)) continue;
-        if (!openLaneMates.has(lane.streak)) openLaneMates.set(lane.streak, []);
-        openLaneMates.get(lane.streak).push(b);
-    }
-    const prereqsOf = (bead) => {
-        const out = blocksPrereqIds(bead);
-        const lane = laneOf(bead);
-        if (lane) {
-            for (const m of openLaneMates.get(lane.streak) || []) {
-                if (laneOf(m).order < lane.order) out.push(String(m.id));
-            }
-        }
-        return out;
-    };
+    // [impl] task is kept whenever its [test] lane-mate is. A container is
+    // never a lane-mate prerequisite (lowerOrderLaneMates).
+    const containerIds = containerIdsOf(byId);
+    const prereqsOf = (bead) => [...blocksPrereqIds(bead), ...lowerOrderLaneMates(bead, byId, { containerIds })];
     const visited = new Set(queue);
     while (queue.length > 0) {
         const id = queue.shift();
