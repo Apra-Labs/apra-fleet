@@ -606,7 +606,12 @@ and `kbExport` / `kbBibleCommit` / `kbDemote` refuse them client-side with the s
 before sending (`assertNoRemovedKbScopeKeys`, `KB_REMOVED_SCOPE_KEYS` are
 exported). For direct `callTool` users: `kb_list` accepts `confidence` as a
 list or as one tier string, and `kb_context` defaults to
-`["CONFIRMED","INFERRED"]`.
+`["CONFIRMED","INFERRED"]`. A member session's `kb_query` that omits `limit`
+returns at most 6 summary rows (`id`, `type`, `title`, `summary`,
+`confidence`, `source_files`, `symbols`; no `content`) and an empty
+`l2_expanded`. Pass `limit` to get full rows and the content of the top 5
+hits. An `own_scope` read keeps the full rows, and FULL sessions default to
+20 full rows.
 
 Bible-related refusals are part of the closed error vocabulary in
 `memory-contract/v1/taxonomy.json`: `E-BIBLE-MALFORMED` (a bible file that is

@@ -31,7 +31,7 @@
         },
         "limit": {
           "type": "number",
-          "description": "Max L1 results (default 20)"
+          "description": "Max L1 results. Default 20 with the full row shape and the content of the top 5 hits in l2_expanded. A MEMBER session that omits it (without own_scope) gets at most 6 summary rows (id, type, title, summary, confidence, source_files, symbols) and an empty l2_expanded; pass a limit to get the full row shape and the content."
         },
         "include_stale": {
           "type": "boolean",

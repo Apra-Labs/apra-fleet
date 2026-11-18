@@ -216,6 +216,18 @@ response then also carries `refused`; the same holds for `kb_capture` with
 `E-MEMBER-VIEW-READ-ONLY`. A FULL session reads and writes the per-repo DB
 unchanged.
 
+A MEMBER `kb_query` that omits `limit` returns at most 6 rows in
+`l1_results`, counted after the project and global results are merged. Each
+row is a summary row with exactly `id`, `type`, `title`, `summary`,
+`confidence`, `source_files` and `symbols` (no `content`), `l2_expanded` is
+empty, and any `related_claims` rows have the same summary shape. Any
+explicit `limit` keeps its meaning: up to that many rows per side, the full
+row shape, and the content of the top 5 hits in `l2_expanded`. The
+confidence default (CONFIRMED, undisputed) and an explicit `confidence` list
+behave as for any other caller. FULL sessions keep the default limit of 20
+and the full shape. The `flagged_only` branch and an `own_scope` read (which
+needs the full row to find what the caller may demote) are not affected.
+
 A row imported from the bible (`kb_import`) carries NO `member:<uuid>` tag at
 all -- bible entries are not stamped with any one member's identity. The
 consequence for `kb_demote` follows directly from the own-scope rule above,

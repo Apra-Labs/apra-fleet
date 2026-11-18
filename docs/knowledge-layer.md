@@ -235,6 +235,17 @@ names them explicitly; internal callers that need UNVERIFIED or INFERRED
 entries (e.g. reconcile and prime paths) pass an explicit list. `flagged_only`
 is exempt from the default because its purpose is to surface disputed entries.
 
+**A MEMBER `kb_query` without `limit` returns small results.** It returns at
+most 6 summary rows, counted after the project and global results are
+merged. Each row carries `id`, `type`, `title`, `summary`, `confidence`,
+`source_files` and `symbols`, and `l2_expanded` is empty. Pass any `limit` to
+get the previous shape: up to that many full rows per side, plus the content
+of the top 5 hits. FULL sessions, `own_scope` reads and `flagged_only`
+reads keep the full shape. FULL sessions keep the default of 20 rows. The constants
+are `MEMBER_DEFAULT_LIMIT` and `MEMBER_SLIM_ROW_KEYS` in
+`src/tools/kb-query.ts`. The cap of 6 and the size drop are measured in
+`docs/kb-recall-measurements.md`.
+
 **`kb_list` also accepts the legacy single-tier string.** Before the redesign
 `kb_list`'s `confidence` was one tier as a string (`"INFERRED"`); it is now a
 list. Both forms are accepted: a string is read as the one-element list, so

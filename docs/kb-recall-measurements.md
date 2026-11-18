@@ -89,6 +89,39 @@ these weights.
   this. It opens a database built from the 0.4.5 schema
   (`tests/fixtures/kb-v045-schema.sql`).
 
+## Member kb_query default: row cap and result size
+
+A MEMBER `kb_query` that omits `limit` returns at most 6 summary rows and no
+`l2_expanded` content (`src/tools/kb-query.ts`). An explicit `limit` keeps
+the previous full shape.
+
+**Choosing the cap.** The cap was chosen from recall at 6 and at 8 with the
+keyword ranking above, on the bare bible. Both cut-offs give the same
+recall, so 8 rows would add size with no recall gain:
+
+| query set | recall@5 | recall@6 | recall@8 |
+|---|---|---|---|
+| real | 1.0000 | 1.0000 | 1.0000 |
+| authored | 0.9281 | 0.9281 | 0.9281 |
+
+**Result size.** Size is the length in chars of the `kb_query` JSON
+result, for a member session reading the bare bible as its checkout bible,
+over the 42 real queries:
+
+- "before" is the previous default read. An explicit `limit: 20` returns
+  exactly that shape: 20 full rows plus the L2 content of the top 5.
+- "after" is the new default.
+
+| read | median chars | p90 chars |
+|---|---|---|
+| before (previous default, `limit: 20`) | 27749 | 28484 |
+| after (member default) | 4241 | 4451 |
+
+The median drops by 85%.
+`tests/knowledge/kb-member-query-defaults.test.ts` measures this. It prints
+the numbers and fails when either the median or the p90 is not at least 3x
+smaller.
+
 ## How to reproduce
 
 `npm test` runs the eval and prints these lines:
