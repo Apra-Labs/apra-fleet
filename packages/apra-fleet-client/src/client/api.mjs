@@ -752,7 +752,9 @@
  *   whose cited files at the repo's HEAD commit no longer match its recorded basis (the
  *   same rule kb_export applies; uncommitted edits never change the verdict) is skipped
  *   with reason basis_mismatch, and a CONFIRMED id citing no source file is skipped with
- *   reason no_source_files. Skips are reported in the result's skipped list.
+ *   reason no_source_files. An id the bible file carries a withdrawn tombstone for is
+ *   skipped with reason withdrawn_tombstone (tombstone kept) unless restore_ids undoes that
+ *   branch-added tombstone in the same call. Skips are reported in the result's skipped list.
  *   Independently of ids, bible entries the KB holds as superseded or invalidated are
  *   removed and reported in the result's removed list, and existing bible entries with
  *   no source_file_hashes gain the KB's stored basis for the same id when it passes the
@@ -765,8 +767,9 @@
  *   local row carries a demoted_at and is now below CONFIRMED is REMOVED from entries and
  *   recorded as an explicit tombstone {id, at, reason} in the bible's optional top-level
  *   demotions array; any other id is skipped with reason not_demoted_or_unknown. Existing
- *   tombstones are preserved, and re-committing a tombstoned id through ids (a
- *   re-promotion) restores its entry and clears its tombstone.
+ *   tombstones are preserved, and re-committing a demoted-tombstoned id through ids (a
+ *   re-promotion) restores its entry and clears its tombstone; a withdrawn tombstone is
+ *   never cleared by ids (see ids).
  * @property {{id: string, note: string, evidence_files: string[]}[]} [withdrawals] - Bible
  *   entries withdrawn this round. note must be at least 20 characters after whitespace is
  *   collapsed (stored collapsed); evidence_files needs at least one repo-relative path (no
@@ -852,8 +855,9 @@
  *   tombstoned "withdrawn"; the local entry is not changed.
  * @property {string[]} restored - Ids from `restore_ids` whose branch-added tombstone was removed.
  * @property {{id: string, reason: string}[]} skipped - Ids not merged, demoted or withdrawn, with
- *   reason not_confirmed_or_unknown, no_source_files, basis_mismatch, not_demoted_or_unknown
- *   or not_withdrawable.
+ *   reason not_confirmed_or_unknown, no_source_files, basis_mismatch, not_demoted_or_unknown,
+ *   not_withdrawable or withdrawn_tombstone (an `ids` id the bible file carries a withdrawn
+ *   tombstone for, not restored by the same call: the tombstone is kept).
  * @property {{id: string, reason: string}[]} removed - Entries removed because the KB holds them
  *   superseded or invalidated.
  * @property {number} entry_count - Entries in the resulting bible (a tombstone is not an entry).

@@ -307,3 +307,77 @@ describe('kb_bible_commit restore_ids (sqlite)', () => {
     expect(head()).not.toBe(baseSha);
   });
 });
+
+// A withdrawal never lowers the local row, so a withdrawn id stays CONFIRMED on
+// this host (and on any host that has not imported the merged base bible). An
+// ids merge must not clear its withdrawn tombstone -- branch-added or merged
+// from the base. FALSIFICATION: with the withdrawn_tombstone block removed from
+// src/tools/kb-bible-commit.ts the first two tests fail (the id is merged, the
+// entry comes back and the tombstone is cleared).
+describe('kb_bible_commit ids never clears a withdrawn tombstone (sqlite)', () => {
+  it('a branch-added withdrawn tombstone blocks an ids merge: skipped withdrawn_tombstone, tombstone kept', async () => {
+    const id = await confirmedCiting('Alpha', 'src/alpha.ts');
+    await kbBibleCommit({ ids: [id], ...base() }, { folder: clone });
+    const baseSha = head();
+    git(clone, ['checkout', '--quiet', '-b', 'feat/withdraw']);
+    await kbBibleCommit({ ids: [], withdrawals: [{ id, note: NOTE, evidence_files: EVIDENCE }], ...base(baseSha) }, { folder: clone });
+    const tombstones = readBible().demotions;
+    const bytes = fs.readFileSync(biblePath());
+    const sha = head();
+    expect(row(id).confidence).toBe('CONFIRMED');
+
+    const r = JSON.parse(await kbBibleCommit({ ids: [id], ...base(baseSha) }, { folder: clone }));
+
+    expect(r.merged).toEqual([]);
+    expect(r.skipped).toEqual([{ id, reason: 'withdrawn_tombstone' }]);
+    expect(r.committed).toBe(false);
+    expect(fs.readFileSync(biblePath()).equals(bytes)).toBe(true);
+    expect(readBible().entries).toEqual([]);
+    expect(readBible().demotions).toEqual(tombstones);
+    expect(head()).toBe(sha);
+  });
+
+  it('a withdrawn tombstone merged from the base blocks an ids merge on a host whose row is still CONFIRMED', async () => {
+    const id = await confirmedCiting('Alpha', 'src/alpha.ts');
+    const other = await confirmedCiting('Beta', 'src/beta.ts');
+    await kbBibleCommit({ ids: [id, other], ...base() }, { folder: clone });
+    // The withdrawal is merged history: it is part of the base the next branch starts from.
+    await kbBibleCommit({ ids: [], withdrawals: [{ id, note: NOTE, evidence_files: EVIDENCE }], ...base() }, { folder: clone });
+    const baseSha = head();
+    git(clone, ['checkout', '--quiet', '-b', 'feat/next']);
+    // This host never imported the merged base bible: its row is still CONFIRMED.
+    expect(row(id)).toEqual({ confidence: 'CONFIRMED', demoted_at: null });
+    const tombstones = readBible().demotions;
+
+    const unrelated = await confirmedCiting('Gamma', 'src/gamma.ts');
+    const r = JSON.parse(await kbBibleCommit({ ids: [id, unrelated], ...base(baseSha) }, { folder: clone }));
+
+    expect(r.merged).toEqual([unrelated]);
+    expect(r.skipped).toEqual([{ id, reason: 'withdrawn_tombstone' }]);
+    expect(readBible().entries.map(e => e.id).sort()).toEqual([other, unrelated].sort());
+    expect(readBible().demotions).toEqual(tombstones);
+
+    // restore_ids cannot lift a merged one either: still blocked.
+    const r2 = JSON.parse(await kbBibleCommit({ ids: [id], restore_ids: [id], ...base(baseSha) }, { folder: clone }));
+    expect(r2.restored).toEqual([]);
+    expect(r2.skipped).toEqual([{ id, reason: 'withdrawn_tombstone' }]);
+    expect(readBible().demotions).toEqual(tombstones);
+  });
+
+  it('restore_ids still removes a branch-added withdrawn tombstone, and ids may merge it in the same call', async () => {
+    const id = await confirmedCiting('Alpha', 'src/alpha.ts');
+    await kbBibleCommit({ ids: [id], ...base() }, { folder: clone });
+    const baseSha = head();
+    git(clone, ['checkout', '--quiet', '-b', 'feat/withdraw']);
+    await kbBibleCommit({ ids: [], withdrawals: [{ id, note: NOTE, evidence_files: EVIDENCE }], ...base(baseSha) }, { folder: clone });
+    expect(readBible().demotions!.map(d => d.id)).toEqual([id]);
+
+    const r = JSON.parse(await kbBibleCommit({ ids: [id], restore_ids: [id], ...base(baseSha) }, { folder: clone }));
+
+    expect(r.restored).toEqual([id]);
+    expect(r.merged).toEqual([id]);
+    expect(r.skipped).toEqual([]);
+    expect(readBible().entries.map(e => e.id)).toEqual([id]);
+    expect(readBible().demotions).toBeUndefined();
+  });
+});

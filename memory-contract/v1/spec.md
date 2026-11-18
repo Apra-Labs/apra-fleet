@@ -525,6 +525,14 @@ takes effect for other clones only once that branch merges:
   `baseCommit` (any commit-ish) carries none for the id, and the base bible's
   entry for it, if any, is re-added byte-identical. Restored ids are listed in
   `restored`; any other id is a no-op.
+- A `withdrawn` tombstone in the current bible file -- branch-added or merged
+  from the base -- is never cleared by `ids`. The local row of a withdrawn id
+  is usually still CONFIRMED (a withdrawal never lowers it, and a host that has
+  not yet imported the merged base bible has not applied it), so merging the id
+  would silently undo the withdrawal. Such an id is skipped with reason
+  `withdrawn_tombstone` and its tombstone is kept, unless `restore_ids` undoes
+  that (branch-added) tombstone in the same call. `demoted` tombstones keep the
+  re-promotion rule above: re-admitting the id through `ids` clears them.
 - `kb_import` applies `reason: "withdrawn"` tombstones ONLY when the bible was
   read with `ref` equal to `refs/remotes/origin/<provenance.branch>` of that
   same bible (the merged base bible as fetched). Then each id is judged like a

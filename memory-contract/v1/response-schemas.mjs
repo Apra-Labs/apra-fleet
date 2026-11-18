@@ -294,7 +294,9 @@ const KB_RESPONSE_BODIES = {
   // restored the restore_ids whose branch-added tombstone was removed; both
   // OPTIONAL for fixtures recorded before they existed, always emitted by the
   // handler. A withdrawal that does not qualify is skipped with reason
-  // not_withdrawable. Under the http provider bible_skipped stays true for the
+  // not_withdrawable. An ids merge of an id the current file carries a
+  // withdrawn tombstone for (and this call does not restore) is skipped with
+  // reason withdrawn_tombstone. Under the http provider bible_skipped stays true for the
   // entry merge, but withdrawals/restores still write the tombstones, so
   // committed may be true there.
   kb_bible_commit: z.object({
@@ -305,7 +307,8 @@ const KB_RESPONSE_BODIES = {
     restored: z.array(z.string()).optional(),
     skipped: z.array(z.object({
       id: z.string(),
-      reason: z.enum(['not_confirmed_or_unknown', 'no_source_files', 'basis_mismatch', 'not_demoted_or_unknown', 'not_withdrawable']),
+      reason: z.enum(['not_confirmed_or_unknown', 'no_source_files', 'basis_mismatch', 'not_demoted_or_unknown', 'not_withdrawable',
+        'withdrawn_tombstone']),
     })),
     removed: z.array(z.object({
       id: z.string(),

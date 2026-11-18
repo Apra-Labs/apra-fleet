@@ -724,8 +724,12 @@ changes for it. An admitted id is removed from `entries` and upserted into the
 bible's optional top-level `demotions` array as `{id, at, reason}`, so another
 clone applies the demotion explicitly instead of inferring it from an absence.
 Tombstones already in the file survive a later commit carrying unrelated ids, and
-re-committing a tombstoned id through `ids` (a re-promotion) restores its entry
-and clears its tombstone. `provenance.entry_count` counts entries only.
+re-committing a demoted-tombstoned id through `ids` (a re-promotion) restores its
+entry and clears its tombstone. A `withdrawn` tombstone in the current file
+(branch-added or merged from the base) is never cleared by `ids`: such an id is
+skipped with reason `withdrawn_tombstone` and the tombstone kept, unless
+`restore_ids` undoes that (branch-added) tombstone in the same call.
+`provenance.entry_count` counts entries only.
 
 Optional `withdrawals` (`[{id, note, evidence_files}]`; `note` at least 20
 characters after whitespace is collapsed, at least one repo-relative evidence
