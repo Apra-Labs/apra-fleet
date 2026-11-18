@@ -837,7 +837,26 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
             : ((denial && denial.actions) || []);
         const actionText = actions.length ? actions.join(', ') : 'unknown actions';
         const suggested = (denial && denial.suggestedGrants) || [];
+        // Every refused call maps to no grant (no per-call suggestedGrants and
+        // no dispatch-level ones -- e.g. a chained or backgrounded shell
+        // command): no compose_permissions run can ever allow it, so the
+        // failure must not send the operator to compose_permissions or to a
+        // rerun that would be refused the same way.
+        const unmappable = Boolean(denial) && denial.denials.length > 0
+            && denial.denials.every((d) => (Array.isArray(d.suggestedGrants) ? d.suggestedGrants : suggested).length === 0);
         const fail = (step, why, heal) => {
+            if (unmappable && step !== 'not_healable') {
+                return new MemberPermissionDeniedError(
+                    `${roleLabel} dispatch on member '${member}' was refused tool calls that no permission grant can allow: ${actionText}. ` +
+                    'No grant maps to these calls (for example a chained or backgrounded shell command), so adding permissions to the member cannot fix this. ' +
+                    `This is a refused-call failure, not a ${roleLabel} result. ` +
+                    'To fix: change the role\'s task or instructions so each such step runs as a separate, plain command.',
+                    {
+                        member, role: policy.role, actions, suggestedGrants: [], rejectedGrants: [], step,
+                        details: { hint: denial ? denial.hint : '', unmappable: true }, cause: err,
+                    },
+                );
+            }
             const composeRole = (heal && heal.composeRole) || 'the role of its sprint roles';
             const rejected = (heal && heal.rejectedGrants) || [];
             const grantFix = rejected.length

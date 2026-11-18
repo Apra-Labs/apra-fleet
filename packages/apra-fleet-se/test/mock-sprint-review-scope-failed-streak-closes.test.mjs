@@ -53,6 +53,9 @@ test('unit: reviewScopeBeadIds unions engine-verified closes, de-duplicates, ski
     assert.deepEqual(reviewScopeBeadIds([
         { beadIds: ['a', 'b', 'c'], outcome: 'failed', closedIds: ['a', 'b'], unclosedIds: ['c'] },
         { beadIds: ['b', 'd'], outcome: 'success', closedIds: ['b', 'd'], unclosedIds: [] },
+        // a streak failed by a refused tool call (permission_denied) still
+        // contributes the beads it verifiably closed
+        { beadIds: ['p', 'q'], outcome: 'failed', closedIds: ['p'], unclosedIds: ['q'], failureReason: 'permission_denied' },
         // a failed streak that verified nothing closed contributes nothing
         { beadIds: ['e'], outcome: 'failed', closedIds: [], unclosedIds: ['e'] },
         // unpublished closes are excluded
@@ -60,7 +63,7 @@ test('unit: reviewScopeBeadIds unions engine-verified closes, de-duplicates, ski
         { beadIds: ['g'], outcome: 'success', closedIds: ['g'], postDispatchSyncFailed: true },
         // beadIds alone (a doer claim, no read-back) never counts
         { beadIds: ['h'], outcome: 'success' },
-    ]), ['a', 'b', 'd']);
+    ]), ['a', 'b', 'd', 'p']);
 });
 
 test('mock sprint: a streak that closes 2 of 3 beads then returns BLOCKED reviews exactly those 2', async () => {

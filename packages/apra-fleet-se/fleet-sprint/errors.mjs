@@ -1153,7 +1153,10 @@ export function permissionDeniedOf(err) {
  * grant within the member's composed policy, retry, repeat while each heal
  * adds a new grant) can make no further progress. Ends the sprint naming the
  * member, the denied actions and the fix; no plan-review or review round is
- * ever charged for it.
+ * ever charged for it. A doer streak ended by it is recorded as a failed
+ * streak (phases/develop.mjs), so the beads it closed are still reviewed.
+ * When every refused call maps to no grant (details.unmappable), the message
+ * says no grant can allow the call and gives no compose_permissions advice.
  *
  * A WorkflowError (so the run records a terminal reason) but deliberately
  * NOT a typed abort, like MemberPermissionConfigError: the fix is a member
