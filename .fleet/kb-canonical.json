@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "f9cb1ca7c3f0f03debb783f6ef40a261554b7b0b",
     "branch": "main",
-    "entry_count": 158
+    "entry_count": 157
   },
   "entries": [
     {
@@ -1843,31 +1843,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:32.234Z"
-    },
-    {
-      "id": "9a141f0a-2dc5-45e2-a6fb-4a32ab8bbb2c",
-      "type": "knowledge",
-      "title": "kb_bible_commit: withdrawn tombstone outranks demotion; base_bible_error reports unreadable base",
-      "summary": "In kb_bible_commit a demoted_ids id with a withdrawn tombstone in the file is skipped withdrawn_tombstone, the every-call demotion rule skips it, and a demoted tombstone never overwrites a withdrawn one. A failed base-bible read (needed by the demotion gate or restore) is reported in the optional result field base_bible_error.",
-      "symbols": [
-        "kbBibleCommit",
-        "baseBibleLoader",
-        "commitTombstonesOnly"
-      ],
-      "source_files": [
-        "src/tools/kb-bible-commit.ts",
-        "memory-contract/v1/response-schemas.mjs",
-        "packages/apra-fleet-client/src/client/api.mjs",
-        "tests/knowledge/kb-bible-withdrawn-precedence.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-11-18T15:54:34.541Z",
-      "source_file_hashes": {
-        "memory-contract/v1/response-schemas.mjs": "fde6d1aae9a730bd3b832a15a6d7f458e8c83283",
-        "packages/apra-fleet-client/src/client/api.mjs": "a0955843c18bfc953aceb786492d62bb182ddc95",
-        "src/tools/kb-bible-commit.ts": "f8c0180371a7bfe2572c29c8c78714c769a64a39",
-        "tests/knowledge/kb-bible-withdrawn-precedence.test.ts": "fa99640f1953b1e2b0f2d9453673b480cd601b40"
-      }
     },
     {
       "id": "9af40daa-2521-430a-a529-7db25d27da87",

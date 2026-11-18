@@ -507,13 +507,10 @@ export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor
   // a file that already holds both (merged history) keeps only the tombstone.
   // Ids this call re-promotes (merged) or restores clear their tombstone
   // instead, and one already removed as retired needs no second report.
-  const existingTombstoneIds = new Set((existingDoc?.demotions ?? []).map(d => d.id));
-  for (const e of existing ?? []) {
-    if (existingTombstoneIds.has(e.id) && !mergedSet.has(e.id) && !restoredSet.has(e.id) && !removedSet.has(e.id)) {
-      logWarn('kb_bible_commit', 'dropping entry ' + e.id + ': tombstoned (the bible holds it as both an entry and a tombstone)');
-      removed.push({ id: e.id, reason: 'tombstoned' });
-    }
-  }
+  removed.push(...tombstonedEntryRemovals(
+    existing ?? [], existingDoc?.demotions ?? [],
+    id => mergedSet.has(id) || restoredSet.has(id) || removedSet.has(id),
+  ));
   removed.sort(compareById);
 
   // Every rule that reads the base bible (demotion gate, restore plan) has run
@@ -716,10 +713,34 @@ async function planRestores(
 }
 
 /**
+ * EXCLUSIVITY HEAL, shared by both provider paths. An id is never written as
+ * both an entry and a tombstone: each entry the file already holds a tombstone
+ * for (merged history) is dropped and reported as removed 'tombstoned', unless
+ * `exempt` says this call clears that tombstone (re-promoted, restored) or
+ * already removed the entry for another reason.
+ */
+function tombstonedEntryRemovals(
+  entries: CanonicalEntry[], tombstones: BibleTombstone[], exempt: (id: string) => boolean,
+): KbBibleCommitRemoval[] {
+  const tombstoneIds = new Set(tombstones.map(d => d.id));
+  const removals: KbBibleCommitRemoval[] = [];
+  for (const e of entries) {
+    if (tombstoneIds.has(e.id) && !exempt(e.id)) {
+      logWarn('kb_bible_commit', 'dropping entry ' + e.id + ': tombstoned (the bible holds it as both an entry and a tombstone)');
+      removals.push({ id: e.id, reason: 'tombstoned' });
+    }
+  }
+  return removals;
+}
+
+/**
  * The http-provider half: no entry merge (bible_skipped stays true), but the
  * withdrawals' tombstones and the restores are written to the bible file,
  * creating a tombstone-only v3 bible when it is absent. Existing entries are
- * kept byte-identical (a restore may re-add the base entry). Every well-formed
+ * kept byte-identical (a restore may re-add the base entry), except that an
+ * entry is dropped when the file ends up holding a tombstone for its id: a
+ * withdrawn id loses its entry, and one already tombstoned in the file is
+ * reported in removed as 'tombstoned' (the same heal as the SQLite path). Every well-formed
  * withdrawal is admitted: there is no local KB to check it against. Never
  * records a trusted blob (that lives in the SQLite KB).
  */
@@ -742,9 +763,12 @@ async function commitTombstonesOnly(
     restoreIds.filter(id => !withdrawnSet.has(id)), existingDoc?.demotions ?? [], loadBase,
   );
   const restored = plan.restored;
+  const restoredSet = new Set(restored);
   const baseBibleError = await loadBase.error();
+  const removed = tombstonedEntryRemovals(existingEntries, existingDoc?.demotions ?? [], id => restoredSet.has(id))
+    .sort(compareById);
   const result = (entryCount: number, committed: boolean): Omit<KbBibleCommitResult, 'path'> => ({
-    merged: [], demoted: [], skipped: [], removed: [], entry_count: entryCount, backfilled: 0, committed,
+    merged: [], demoted: [], skipped: [], removed, entry_count: entryCount, backfilled: 0, committed,
     bible_skipped: true, reason: KB_BIBLE_COMMIT_HTTP_SKIP_REASON, withdrawn, restored,
     ...(baseBibleError !== undefined ? { base_bible_error: baseBibleError } : {}),
   });
@@ -755,7 +779,9 @@ async function commitTombstonesOnly(
   for (const id of restored) tombstones.delete(id);
   const demotions = Array.from(tombstones.values()).sort(compareById);
 
-  const entries = [...existingEntries];
+  // An id the file ends up tombstoning (withdrawn now, or already tombstoned
+  // and not restored) keeps only its tombstone.
+  const entries = existingEntries.filter(e => !tombstones.has(e.id));
   const present = new Set(entries.map(e => e.id));
   for (const [id, entry] of plan.baseEntries) {
     if (!present.has(id)) { entries.push(entry); present.add(id); }
@@ -778,7 +804,7 @@ async function commitTombstonesOnly(
 
   let committed = false;
   if (isGitRepo(repoPath) && bibleContentChanged(repoPath, outPath)) {
-    const message = bibleCommitMessage(0, [], entries.length, 0, 0, withdrawn.length, restored.length);
+    const message = bibleCommitMessage(0, removed, entries.length, 0, 0, withdrawn.length, restored.length);
     try {
       commitBiblePath(repoPath, outPath, message);
     } catch (err) {

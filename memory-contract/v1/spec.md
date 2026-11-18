@@ -455,7 +455,9 @@ working folder, which is typically a feature branch.
   (`committed` false, `entry_count` the number of entries in the existing parseable
   bible, 0 when it is absent or unparseable); it is an answer, not an error, and has
   no code. With `withdrawals` or `restore_ids` it still writes (and may commit)
-  the tombstones only (section 2.9).
+  the tombstones only (section 2.9), dropping the entry of any id the file ends
+  up tombstoning (listed in `removed` when it was already tombstoned), and
+  `entry_count` counts the entries written.
 
 The v3 envelope also carries an OPTIONAL top-level `demotions` array of
 `{id, at, reason}` tombstones, sorted by id: the id left the bible at `at` for
@@ -746,7 +748,8 @@ every project KB call and fleet keeps no second copy:
 - Its TOMBSTONES are used: they carry withdrawals across the merge.
   `kb_bible_commit` with `withdrawals` or `restore_ids` writes only the
   tombstones (a tombstone-only bible, `entries: []`, is created when absent;
-  existing entries stay byte-identical) and may commit. `kb_import` of that bible as
+  existing entries stay byte-identical, except that an id the file ends up
+  tombstoning loses its entry, section 2.6) and may commit. `kb_import` of that bible as
   the merged base bible (same `ref`/`base_branch` rule), from a session that
   is not a MEMBER without the kb_maintainer grant, replays the `withdrawn`
   tombstones in ONE `POST /api/kb/withdraw` (section 2.9.1) and reports each

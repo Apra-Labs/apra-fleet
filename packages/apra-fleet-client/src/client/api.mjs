@@ -1482,13 +1482,15 @@ export class ApraFleet {
      * The removed scope keys (repo_path, repo, repo_remote_url) are refused
      * with E-SCOPE-KEY-REMOVED before anything is sent.
      * Under an http KB provider the entry merge is skipped, never an error: the
-     * result is {path, merged: [], skipped: [], removed: [], entry_count: <entries
-     * in the existing parseable bible, else 0>, backfilled: 0, committed,
+     * result is {path, merged: [], skipped: [], removed, entry_count: <entries
+     * in the parseable bible as left by the call, else 0>, backfilled: 0, committed,
      * bible_skipped: true, reason, withdrawn, restored}; the KB is not read. With
      * no withdrawals and no restore_ids nothing is written or committed; with
      * them, only the tombstones are written to .fleet/kb-canonical.json (a
      * tombstone-only bible is created when absent, existing entries stay
-     * byte-identical) and committed may be true.
+     * byte-identical except that an id the file ends up tombstoning loses its
+     * entry; one already tombstoned is listed in removed with reason
+     * tombstoned) and committed may be true.
      * @param {KbBibleCommitOptions} options
      */
     async kbBibleCommit(options) {

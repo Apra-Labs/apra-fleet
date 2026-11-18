@@ -769,13 +769,15 @@ present only when a rule needed the bible at `baseCommit` (a demotion gate or a
 restore) and it could not be read (`baseCommit` does not resolve, or its bible
 does not parse); the call still fails closed.
 Under the http KB provider the entry merge is skipped, never an error: the
-result is `{path, merged: [], demoted: [], skipped: [], removed: [],
+result is `{path, merged: [], demoted: [], skipped: [], removed,
 entry_count, backfilled: 0, committed, bible_skipped: true, reason, withdrawn,
-restored}`, where `entry_count` counts the entries of the existing bible file
-(0 when it is absent or unreadable); the KB is not read. With no `withdrawals`
+restored}`, where `entry_count` counts the entries of the bible file as left by
+the call (0 when it is absent or unreadable); the KB is not read. With no `withdrawals`
 and no `restore_ids` nothing is written or committed; with them only the
 tombstones are written (a tombstone-only bible, `entries: []`, is created when
-absent) and `committed` may be true.
+absent; an id the file ends up tombstoning loses its entry, and one already
+tombstoned is listed in `removed` with reason `tombstoned`) and `committed` may
+be true.
 
 #### `kbQuery(options: KbQueryOptions)`
 
