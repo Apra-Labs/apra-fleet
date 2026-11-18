@@ -148,6 +148,72 @@ function describeFailingTapEntries(text) {
     return `${header}\n${entries.join('\n')}`;
 }
 
+/** Lines of stderr (or, when there is none, stdout) quoted per late-exit file. */
+export const LATE_EXIT_TAIL_LINES = 10;
+
+/**
+ * Finds FILE-level failures whose subtests all passed: the file's own process
+ * exited non-zero AFTER its tests resolved (a post-test unhandled rejection,
+ * a late process.exitCode, a handle torn down badly). node:test then reports
+ * `not ok N - <file>` with `exitCode: <n>` and `error: 'test failed'`, which
+ * names no cause -- the passing subtests above it look healthy and the
+ * failing-entry excerpt alone is opaque. This reads the cause material back:
+ * the exit code, how many subtests passed, and the file's last stderr lines
+ * (node:test relays a child's stderr as `# ...` TAP comment lines; the
+ * stdout tail is quoted instead when there are none).
+ *
+ * String scan like extractFailingTapEntries: never throws on malformed input.
+ * Real assertion failures (a `not ok` among the file's subtests) and
+ * module-load crashes (no passing subtest) are NOT late exits and yield
+ * nothing, so their summaries stay as they were.
+ *
+ * @param {string|undefined} text - the child's stdout
+ * @returns {{ file: string, exitCode: string, passing: number, tail: string[], tailSource: 'stderr'|'stdout' }[]}
+ */
+export function extractLateExitFailures(text) {
+    if (!text) return [];
+    const lines = String(text).split('\n');
+    const isFileEntry = (l) => /^(?:not )?ok \d+ - .*\.(?:mjs|cjs|js)\s*$/.test(l);
+    const out = [];
+    let segStart = 0;
+    for (let i = 0; i < lines.length; i += 1) {
+        if (!isFileEntry(lines[i])) continue;
+        const segment = lines.slice(segStart, i);
+        segStart = i + 1;
+        // Skip this entry's own YAML block when the next segment starts.
+        while (segStart < lines.length && (lines[segStart].startsWith('  ') || lines[segStart].trim() === '...')) segStart += 1;
+        if (!lines[i].startsWith('not ok')) continue;
+        const yaml = lines.slice(i + 1, segStart).join('\n');
+        const exit = /^\s*exitCode: (\d+)\s*$/m.exec(yaml);
+        if (!exit || exit[1] === '0') continue;
+        const topLevel = segment.filter((l) => /^(?:not )?ok \d+ - /.test(l));
+        if (topLevel.some((l) => l.startsWith('not ok'))) continue;
+        const passing = topLevel.length;
+        if (passing < 1) continue;
+        const stderr = segment.filter((l) => /^# /.test(l) && !/^# (?:Subtest:|tests |suites |pass |fail |cancelled |skipped |todo |duration_ms )/.test(l))
+            .map((l) => l.slice(2));
+        const plain = segment.filter((l) => l.trim() !== '' && !/^\s/.test(l) && !/^(?:not )?ok \d+ - /.test(l) && !l.startsWith('# Subtest:') && !l.startsWith('TAP version'));
+        const useStderr = stderr.length > 0;
+        const name = /^(?:not )?ok \d+ - (.*)$/.exec(lines[i])[1];
+        out.push({
+            file: name, exitCode: exit[1], passing,
+            tail: (useStderr ? stderr : plain).slice(-LATE_EXIT_TAIL_LINES),
+            tailSource: useStderr ? 'stderr' : 'stdout',
+        });
+    }
+    return out;
+}
+
+/** Renders extractLateExitFailures() as a message section ('' when none). */
+function describeLateExitFailures(text) {
+    const found = extractLateExitFailures(text);
+    if (found.length === 0) return '';
+    return '\n' + found.map((f) => (
+        `${f.file} exited ${f.exitCode} after ${f.passing} passing subtests (every subtest passed; the file's process then exited non-zero). ` +
+        `child ${f.tailSource} tail (last ${LATE_EXIT_TAIL_LINES} lines):\n${f.tail.length > 0 ? f.tail.join('\n') : '(empty)'}`
+    )).join('\n');
+}
+
 /**
  * Pure helper: turns a spawnSync error (or lack thereof) into either a pass
  * (returns void) or throws with a descriptive message.
@@ -222,7 +288,7 @@ export function handleNestedSuiteSpawnResult(suiteLabel, spawnError, budgetMs, b
         // never contains 'timed out'/'exceeded its'. A quoted test NAME can
         // legitimately contain those words (several in this repo do), so this
         // section must stay on the child-output side of that split marker.
-        `${describeFailingTapEntries(spawnError.stdout)}`,
+        `${describeFailingTapEntries(spawnError.stdout)}${describeLateExitFailures(spawnError.stdout)}`,
         { cause: spawnError },
     );
 }
