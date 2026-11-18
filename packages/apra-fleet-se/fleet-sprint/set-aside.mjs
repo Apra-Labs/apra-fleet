@@ -16,9 +16,20 @@
 //
 // When nothing is ready and every open in-scope bead is set aside -- or can
 // only close through Integration Test while the deploy is set aside -- no
-// further round or cycle can make progress, so the cycle loop throws the
-// existing StalledSprintError at once instead of after STALL_CYCLE_LIMIT
-// empty cycles. Everything here is pure; runner.js gathers the inputs.
+// further round or cycle can make progress. What happens then depends on
+// whether this run already closed work:
+//   - zero beads this run dispatched or routed to verify are closed: the
+//     cycle loop throws the existing StalledSprintError at once (instead of
+//     after STALL_CYCLE_LIMIT empty cycles), naming every blocker;
+//   - at least one is closed: the run must not throw away that work. The
+//     set-aside beads are a CARRY-OVER (buildSetAsideCarryOver): the cycle
+//     loop exits to Finalization (Final Review, Regression, Harvest, Publish
+//     PR) with the carry-over list, and Final Review forces the verdict to
+//     FAIL while any at/above-goal bead is carried over
+//     (applyCarryOverVerdictGate). At the start of a Develop round the same
+//     condition only ends the Develop loop, so Deploy and Integration Test
+//     still run for the work closed earlier in the cycle.
+// Everything here is pure; runner.js gathers the inputs.
 //
 // A bead a doer reported BLOCKED while it still had an open prerequisite in
 // the sprint is not set aside: it WAITS (`sprintState.waitingIds`, a Map id
@@ -157,6 +168,86 @@ export function formatSetAsideStallMessage(stall, { where, scope }) {
     return `Sprint stalled (${where}): nothing is ready and every open in-scope bead in scope '${scope}' is set aside ` +
         `for this run, so no further round or cycle can make progress. Set aside: ${blockers}. ` +
         'Fix these blockers and re-run the sprint. Aborting now rather than burning the remaining cycles.';
+}
+
+/** The one named cycle-loop exit reason for a set-aside stall with work closed this run. */
+export const SET_ASIDE_CARRY_OVER_EXIT = 'set-aside-carry-over';
+
+/**
+ * Ids this run dispatched to a doer or routed to verify that are now closed.
+ * A non-empty result turns a set-aside stall into a carry-over exit instead
+ * of a SPRINT_STALLED abort.
+ *
+ * @param {{ workedOnIds?: Iterable<string>, verifyEverIds?: Iterable<string>, closedIds: Set<string> }} opts
+ * @returns {string[]} sorted
+ */
+export function closedWorkThisRun({ workedOnIds = [], verifyEverIds = [], closedIds }) {
+    const closed = closedIds instanceof Set ? closedIds : new Set();
+    const ids = new Set([...(workedOnIds || []), ...(verifyEverIds || [])]);
+    return [...ids].filter((id) => closed.has(id)).sort();
+}
+
+/**
+ * The carry-over handed to Finalization when a set-aside stall fires after
+ * this run already closed work: the exit reason, where it fired, the closed
+ * work it preserves, and every carried-over item (set-aside bead, bead stuck
+ * behind one, or the set-aside deploy) with its reason.
+ *
+ * Every carried-over bead is open at/above goal priority (the stall only
+ * considers those), so `atGoalIds` is every entry except the deploy pseudo-id.
+ *
+ * @param {{ blockerIds: string[], blockerReasons: Record<string, string> }} stall evaluateSetAsideStall's result
+ * @param {{ where: string, cycle: number, closedIds: string[] }} ctx
+ * @returns {{ reason: string, where: string, cycle: number, closedIds: string[], entries: { id: string, reason: string }[], atGoalIds: string[] }}
+ */
+export function buildSetAsideCarryOver(stall, { where, cycle, closedIds }) {
+    const entries = (stall.blockerIds || []).map((id) => ({ id, reason: stall.blockerReasons[id] || 'set aside' }));
+    return {
+        reason: SET_ASIDE_CARRY_OVER_EXIT,
+        where,
+        cycle,
+        closedIds: [...(closedIds || [])],
+        entries,
+        atGoalIds: entries.map((e) => e.id).filter((id) => id !== DEPLOY_SET_ASIDE_ID),
+    };
+}
+
+/**
+ * The one-paragraph carry-over text: logged at the exit and put in the
+ * verdict notes (and so in the PR body).
+ *
+ * @param {ReturnType<typeof buildSetAsideCarryOver>} carryOver
+ * @returns {string}
+ */
+export function formatCarryOverNotes(carryOver) {
+    const items = carryOver.entries.map((e) => `${e.id} -- ${e.reason}`).join('; ');
+    return `Carried over (${carryOver.where}): nothing is ready and every open in-scope bead is set aside for this run, ` +
+        `so the sprint went on to Final Review with the work it closed (${carryOver.closedIds.join(', ')}) ` +
+        `instead of aborting. Not finished this run: ${items}.`;
+}
+
+/**
+ * Forces the sprint verdict to FAIL while any at/above-goal bead is carried
+ * over, and puts the carry-over list at the top of the verdict notes. A
+ * carry-over of only the deploy pseudo-id still adds the notes but leaves the
+ * verdict to the other gates (the deploy-failure gate owns that case).
+ *
+ * @param {object|null} verdictResult
+ * @param {ReturnType<typeof buildSetAsideCarryOver>|null} carryOver
+ * @returns {object|null}
+ */
+export function applyCarryOverVerdictGate(verdictResult, carryOver) {
+    if (!carryOver) return verdictResult;
+    const prior = verdictResult && typeof verdictResult.notes === 'string' ? verdictResult.notes : '';
+    const force = carryOver.atGoalIds.length > 0;
+    const overridden = force && (!verdictResult || verdictResult.verdict === 'PASS');
+    return {
+        ...(verdictResult || {}),
+        ...(force ? { verdict: 'FAIL' } : {}),
+        notes: formatCarryOverNotes(carryOver) +
+            (overridden ? ' (Final Review returned PASS; the engine overrode it to FAIL.)' : '') +
+            (prior ? `\n\n${prior}` : ''),
+    };
 }
 
 /**

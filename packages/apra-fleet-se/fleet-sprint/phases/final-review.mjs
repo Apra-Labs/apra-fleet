@@ -92,6 +92,7 @@ import { buildSettleCallback } from '../dolt-settle.mjs';
 import { partitionDeferredBeads } from '../beads-scope.mjs';
 import { applyDeployFailureVerdictGate, formatDeployFailureReason } from './deploy.mjs';
 import { applyVerifyBlockVerdictGate } from '../verify-block.mjs';
+import { applyCarryOverVerdictGate } from '../set-aside.mjs';
 import { applyRedBuildIntegSkipVerdictGate, formatRedBuildIntegSkipVerdictReason } from '../red-build-integ-gate.mjs';
 
 /**
@@ -144,6 +145,11 @@ export async function runFinalReviewPhase({
     // GitHub #717: the named verify-block deadlock diagnosis the cycle loop
     // exited on, or null. Non-null forces a FAIL verdict (never PASS).
     verifyBlockDiagnosis = null,
+    // The carry-over ({ reason, where, cycle, closedIds, entries, atGoalIds },
+    // ../set-aside.mjs buildSetAsideCarryOver) the cycle loop exited on after
+    // a set-aside stall with work closed this run, or null. Its entries are
+    // named in the verdict notes; any at/above-goal entry forces FAIL.
+    carryOverExit = null,
     // The latest cycle whose Integration Test was skipped because the last
     // review reported a red build ({cycle}), or null once a later green
     // review let Integration Test run. Non-null forces a FAIL verdict
@@ -339,6 +345,13 @@ export async function runFinalReviewPhase({
         const llmVerdict = finalVerdictResult && finalVerdictResult.verdict;
         finalVerdictResult = applyVerifyBlockVerdictGate(finalVerdictResult, verifyBlockDiagnosis);
         log(`Final Review: sprint verdict forced to FAIL (Final Review returned ${llmVerdict ?? '(none)'}) -- ${verifyBlockDiagnosis}`);
+    }
+    if (carryOverExit) {
+        const llmVerdict = finalVerdictResult && finalVerdictResult.verdict;
+        finalVerdictResult = applyCarryOverVerdictGate(finalVerdictResult, carryOverExit);
+        log(carryOverExit.atGoalIds.length > 0
+            ? `Final Review: sprint verdict forced to FAIL (Final Review returned ${llmVerdict ?? '(none)'}) -- ${carryOverExit.atGoalIds.length} at/above-goal bead(s) carried over: ${carryOverExit.atGoalIds.join(', ')}`
+            : `Final Review: carry-over named in the verdict notes: ${carryOverExit.entries.map((e) => e.id).join(', ')}`);
     }
     if (redBuildIntegSkip) {
         const llmVerdict = finalVerdictResult && finalVerdictResult.verdict;

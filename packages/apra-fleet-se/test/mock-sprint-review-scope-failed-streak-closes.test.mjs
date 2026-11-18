@@ -82,10 +82,13 @@ test('mock sprint: a streak that closes 2 of 3 beads then returns BLOCKED review
         });
         const id = (title) => scenario.tasks.find((t) => t.title === title).id;
         // The BLOCKED third bead is set aside for the run; once it is the only
-        // open bead the run stalls at once -- after the round-1 Review ran.
-        check(scenario.error && scenario.error.code === 'SPRINT_STALLED',
-            `expected the set-aside stall, got: ${scenario.error ? scenario.error.message : 'no error'}`);
-        assert.deepEqual(scenario.error.blockerIds, [id(TITLES[2])]);
+        // open bead the run stops at once -- after the round-1 Review ran.
+        // POLICY (set-aside carry-over): two beads closed this run, so that
+        // stop is no longer a SPRINT_STALLED abort but the carry-over exit to
+        // Finalization, with the third bead carried over.
+        check(!scenario.error, `no abort with work closed this run: ${scenario.error ? scenario.error.message : ''}`);
+        assert.equal(scenario.result.exitReason, 'set-aside-carry-over', JSON.stringify(scenario.result));
+        assert.deepEqual(scenario.result.carryOver.map((e) => e.id), [id(TITLES[2])]);
         const reviews = developReviews(scenario);
         check(reviews.length >= 1, 'Expected a develop-round Review dispatch');
         const scope = reviewScopeIds(reviews[0]).slice().sort();

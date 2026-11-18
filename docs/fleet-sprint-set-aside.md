@@ -14,10 +14,26 @@ forever or burning cycles on it.
    result whose `failedStep` is `permissions` does this. Later cycles skip the
    deployer, but the last deploy failure is still reported so the deploy
    verdict gate keeps working.
-3. **Immediate stall.** If nothing is left that can make progress because of
-   set-aside work, the sprint stalls at once, rather than after the usual
-   two no-progress cycles. The stall error names every set-aside bead and
-   `deploy` (blocker ids and reasons). A parent whose children are all
+3. **Immediate stop: carry-over or stall.** If nothing is left that can make
+   progress because of set-aside work, the sprint stops at once, rather than
+   after the usual two no-progress cycles. How it stops depends on whether
+   this run already closed work (a bead it dispatched or routed to verify):
+   - **Work closed this run: carry-over.** The run is not aborted. At Cycle
+     Evaluation the cycle loop exits to Finalization (Final Review,
+     Regression, Harvest, Publish PR) with every set-aside bead, bead stuck
+     behind one, and `deploy` named as a carry-over with its reason. The
+     verdict is forced FAIL while any at/above-goal bead is carried over; the
+     carry-over list leads the verdict notes (and so the PR body), and the
+     run result carries `exitReason: "set-aside-carry-over"` and
+     `carryOver: [{id, reason}]`. At the start of a Develop round the same
+     condition only ends the Develop loop, so Deploy and Integration Test
+     still run for work closed earlier in the cycle; Cycle Evaluation then
+     takes the exit.
+   - **Zero beads closed this run: stall.** The run ends SPRINT_STALLED; the
+     stall error names every set-aside bead and `deploy` (blocker ids and
+     reasons).
+
+   A parent whose children are all
    closed is not set aside: while Integration Test can still run (deploy.md
    and the playbook present, deploy not set aside), it keeps the run going
    through Deploy and Integration Test. When the deploy is set aside and
@@ -50,9 +66,10 @@ forever or burning cycles on it.
    without a relaunch. A stall with no pending decision is unchanged
    (fleet-sprint/decision-wait.mjs). A decision whose decision bead could not
    be filed (the best-effort `bd create` failed) has no answer path, so it
-   never holds a pause: a stall on it still throws StalledSprintError, whose
-   set-aside reason names it with its full question and says the decision
-   bead could not be filed, and `recordDecisionAnswer` refuses it.
+   never holds a pause: a stop on it follows rule 3 (a carry-over when work
+   closed this run, otherwise StalledSprintError), its set-aside reason names
+   it with its full question, the run log says the decision bead could not be
+   filed, and `recordDecisionAnswer` refuses it.
 
    While parked, NO command runs on any sprint member and the members stay
    reserved by the sprint (the CLI skips the usage-limit pause's reservation

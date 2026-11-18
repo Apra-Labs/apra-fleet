@@ -167,7 +167,7 @@ import { runDevelopPhase } from './phases/develop.mjs';
 // stayed here.
 import { runReviewPhase } from './phases/review.mjs';
 import { runDeployPhase, latestDeployFailure, formatDeployFailureReason, formatDeploySetAsideNotes, DEPLOY_RETRY_CYCLE_LIMIT } from './phases/deploy.mjs';
-import { collectSetAsideEntries, evaluateSetAsideStall, formatSetAsideStallMessage, stuckBehindSetAside, collectWaitEntries } from './set-aside.mjs';
+import { collectSetAsideEntries, evaluateSetAsideStall, formatSetAsideStallMessage, stuckBehindSetAside, collectWaitEntries, closedWorkThisRun, buildSetAsideCarryOver, formatCarryOverNotes } from './set-aside.mjs';
 // apra-fleet-3swo.6.8: the next two phase() boundaries -- the per-cycle Integ
 // Test and the Re-Review that Cycle Evaluation dispatches when the goal-
 // priority count already reads 0 but no review ran this cycle. Integ Test is
@@ -3392,10 +3392,16 @@ async function runSprintCycle(context) {
     // 'paused-awaiting-decision' until at least one decision is answered,
     // releases the answered bead(s), resets the no-progress counter (an answer
     // is progress), and returns true so the caller re-reads the ready set.
-    // Returns false when there is no stall; throws StalledSprintError when
-    // there is one and no decision is pending. A decision whose decision bead
-    // could not be filed does not count as pending here (nothing can answer
-    // it in-run); the stall error names it with its full question.
+    // Returns false when there is no stall. When there is one and no decision
+    // is pending: if at least one bead this run dispatched (workedOnBeadIds)
+    // or routed to verify (verifyEverIds) is closed, returns
+    // { carryOver } (./set-aside.mjs buildSetAsideCarryOver) so the caller
+    // keeps that work -- Cycle Evaluation exits to Finalization with the
+    // carry-over, the start of a Develop round only ends the Develop loop;
+    // with zero beads closed this run it throws StalledSprintError naming the
+    // blockers. A decision whose decision bead could not be filed does not
+    // count as pending here (nothing can answer it in-run); the stall error
+    // names it with its full question.
     async function throwIfSetAsideStall({ where, cycle, openAtGoal = null, closedIds = null, runbooks = null, queueLateAnswers = false }) {
         const doctorBlockedIds = sprintState.doctorBlockedIds instanceof Map ? sprintState.doctorBlockedIds : new Map();
         const deploySetAside = sprintState.deploySetAside || null;
@@ -3474,6 +3480,15 @@ async function runSprintCycle(context) {
                 `(no bd human respond path): ${unfiledDecisions.map((d) => `${d.beadId} -- ${d.question}`).join('; ')}`,
             );
         }
+        // Work this run already closed is never thrown away by a set-aside
+        // stall: the set-aside beads become a carry-over instead.
+        if (workedOnBeadIds.size > 0 || verifyEverIds.size > 0) {
+            const closedNow = closedIds || new Set((await bdListScoped('--status=closed --json')).map((b) => b.id));
+            const closedThisRun = closedWorkThisRun({ workedOnIds: workedOnBeadIds, verifyEverIds, closedIds: closedNow });
+            if (closedThisRun.length > 0) {
+                return { carryOver: buildSetAsideCarryOver(stall, { where, cycle, closedIds: closedThisRun }) };
+            }
+        }
         const message = formatSetAsideStallMessage(stall, { where, scope: sprintFilter });
         log(message);
         throw new StalledSprintError(message, {
@@ -3532,6 +3547,11 @@ async function runSprintCycle(context) {
     // GitHub #717: set (to the named diagnosis) when the cycle loop exits on a
     // verify-block deadlock; Final Review then forces the verdict to FAIL.
     let verifyBlockDiagnosis = null;
+    // Set (to ./set-aside.mjs buildSetAsideCarryOver's result) when Cycle
+    // Evaluation exits the cycle loop on a set-aside stall after this run
+    // closed work; Final Review then forces FAIL while an at/above-goal bead
+    // is carried over and names every carried-over item in the verdict notes.
+    let carryOverExit = null;
 
     // apra-fleet-nwh.1: integ-test-runner's own tracked spend, broken out of
     // the harvester's cost block so it is never silently folded into
@@ -3801,7 +3821,21 @@ async function runSprintCycle(context) {
                 // true: an operator answered a pending decision while the run
                 // was paused -- re-read the ready set (the released bead is
                 // in it again) and dispatch this round.
-                if (await throwIfSetAsideStall({ where: `start of Develop C${cycle} R${devRounds + 1}`, cycle })) continue;
+                const roundStall = await throwIfSetAsideStall({ where: `start of Develop C${cycle} R${devRounds + 1}`, cycle });
+                if (roundStall === true) continue;
+                // A set-aside stall after this run closed work never finishes
+                // the run here: it only ends the Develop loop, so Deploy and
+                // Integration Test still run for the work closed earlier in
+                // the cycle. Cycle Evaluation re-checks and owns the exit to
+                // Finalization (the carry-over).
+                if (roundStall && roundStall.carryOver) {
+                    log(
+                        `Develop C${cycle} R${devRounds + 1}: every open in-scope bead is set aside for this run, but this run ` +
+                        `already closed work (${roundStall.carryOver.closedIds.join(', ')}) -- ending the Develop loop; ` +
+                        'Deploy and Integration Test still run this cycle.'
+                    );
+                    break;
+                }
                 log(
                     `Develop C${cycle} R${devRounds + 1}: every still-ready bead is set aside for this run ` +
                     `(${currentReadyAll.map((b) => b.id).join(', ')}) -- skipping the remaining develop/review rounds this cycle.`
@@ -4177,10 +4211,20 @@ async function runSprintCycle(context) {
         // Immediate set-aside stall, checked BEFORE the STALL_CYCLE_LIMIT
         // stall and the deploy-blocked retry exit below, so neither can delay
         // it: everything left is set aside, so no later cycle can progress.
-        await throwIfSetAsideStall({
+        // With work closed this run that is a carry-over, not an abort: exit
+        // the cycle loop to Finalization (Final Review, Regression, Harvest,
+        // Publish PR) with the set-aside beads named, like the verify-block
+        // exit below; Final Review forces the verdict to FAIL.
+        const cycleStall = await throwIfSetAsideStall({
             where: `Cycle ${cycle} evaluation`, cycle, openAtGoal, closedIds: closedIdsNow,
             runbooks: { hasDeploy, hasPlaybook }, queueLateAnswers: true,
         });
+        if (cycleStall && cycleStall.carryOver) {
+            carryOverExit = cycleStall.carryOver;
+            log(`Cycle ${cycle}: ${formatCarryOverNotes(carryOverExit)} Exiting cycle loop to Finalization${carryOverExit.atGoalIds.length > 0 ? '; the sprint verdict will be FAIL' : ''}.`);
+            endGroup();
+            break;
+        }
 
         // apra-fleet-b4g.102.1: a cycle spent re-attempting a failed deploy
         // after the work itself was already satisfied is not a stall -- it is
@@ -4484,6 +4528,7 @@ async function runSprintCycle(context) {
         bdListScoped, decomposedParentIds, goalMax, NOT_DONE_STATUSES,
         reclaimCappedIds: orphanClaims.cappedIds(),
         verifyBlockDiagnosis,
+        carryOverExit,
         redBuildIntegSkip,
         workedOnIds: workedOnBeadIds,
         kbPriming, kbWork, kbInjection, kbSprintContext, getMemberForRole,
@@ -4627,6 +4672,10 @@ async function runSprintCycle(context) {
         goal: validated.goal,
         maxCycles: validated.maxCycles,
         pushed,
+        // Present only when the cycle loop exited on a set-aside stall after
+        // this run closed work: the named exit reason and every carried-over
+        // item ({ id, reason }) Finalization reported.
+        ...(carryOverExit ? { exitReason: carryOverExit.reason, carryOver: carryOverExit.entries } : {}),
         // Present only when the branch was pushed but no PR was opened
         // ({ reason, message }); surfaces in the supervisor's persisted
         // terminal state as state.result.prSkipped. Never changes the verdict.
