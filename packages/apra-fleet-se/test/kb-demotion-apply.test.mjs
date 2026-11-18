@@ -2,7 +2,8 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { createKbWorkClient, kbKnowledgeBlock } from '../fleet-sprint/kb.mjs';
 import { E_MEMBER_FLEET_TOO_OLD } from '../fleet-sprint/member-call.mjs';
-import { selfMaintainer } from './helpers/kb-maintainer-fakes.mjs';
+import { buildKbChangesSection } from '../fleet-sprint/pr-body.mjs';
+import { selfMaintainer, currentServerListTools } from './helpers/kb-maintainer-fakes.mjs';
 
 // =============================================================================
 // apply()'s demotion lane after the merge-carried withdrawal rework: a
@@ -32,7 +33,7 @@ let offeredDemotionRows = [];
  * A fake maintainer session. `skipped` is kb_bible_commit's own skipped
  * list; every other id is reported back as merged/withdrawn/restored.
  */
-function harness({ skipped = [], currentFileHashes = async () => ({}), sprintStartMs, bibleCommitError, knowledge = [] } = {}) {
+function harness({ skipped = [], currentFileHashes = async () => ({}), sprintStartMs, bibleCommitError, knowledge = [], reshapeAnswer = (a) => a, branchWithdrawals } = {}) {
     const events = [];
     const logs = [];
     const memberCall = async (member, tool, args) => {
@@ -51,17 +52,17 @@ function harness({ skipped = [], currentFileHashes = async () => ({}), sprintSta
             const restored = (args.restore_ids || []).filter((id) => !isSkipped(id));
             return {
                 content: [{
-                    text: JSON.stringify({
+                    text: JSON.stringify(reshapeAnswer({
                         path: '.fleet/kb-canonical.json', merged, demoted: [], withdrawn, restored, skipped,
                         entry_count: merged.length, committed: true,
-                    }),
+                    })),
                 }],
             };
         }
         if (tool === 'kb_promote') return { id: args.id, previous_confidence: 'INFERRED', new_confidence: 'CONFIRMED' };
         return {};
     };
-    const client = createKbWorkClient({
+    const client = createKbWorkClient({ listTools: currentServerListTools,
         memberCall,
         maintainers: selfMaintainer(MAINT, ['maint', 'reviewer-1']),
         gPull: async () => {},
@@ -70,6 +71,7 @@ function harness({ skipped = [], currentFileHashes = async () => ({}), sprintSta
         bibleUnpushed: async () => ({ unpushed: false }),
         sprintChangedFiles: async () => [CHANGED_FILE],
         currentFileHashes,
+        ...(branchWithdrawals ? { branchWithdrawals } : {}),
         ...(sprintStartMs !== undefined ? { sprintStartMs: () => sprintStartMs } : {}),
         log: (m) => logs.push(m),
     });
@@ -204,6 +206,47 @@ describe('kb_bible_commit receives withdrawals in the SAME call as confirmed ids
         assert.deepEqual(commits[0].args.ids, []);
         assert.deepEqual(commits[0].args.withdrawals.map((w) => w.id), ['kb-demo-only']);
         assert.deepEqual(out, { committed: 1, pending: 0 });
+    });
+});
+
+describe("only kb_bible_commit's own answer counts as withdrawn or restored", () => {
+    test('an answer with no `withdrawn` list (an older server dropped the key) is not reported as a withdrawal anywhere', async () => {
+        const legacy = ({ withdrawn: _w, restored: _r, ...rest }) => rest;
+        const { client, logs } = harness({ reshapeAnswer: legacy });
+        await offerDemotions(client, [demotable('kb-demo')]);
+        await client.apply('reviewer', 'reviewer-1', { kb_demotions: [{ id: 'kb-demo', reason: REASON, evidence_files: [CHANGED_FILE] }] });
+
+        await client.commitRound('final review');
+
+        const warn = logs.find((l) => /WARN/.test(l) && /'maint'/.test(l) && /no 'withdrawn' list/.test(l));
+        assert.ok(warn, logs.join('\n'));
+        assert.match(warn, /kb-demo/);
+        assert.ok(!logs.some((l) => /[1-9]\d* withdrawal\(s\).*(committed and pushed|already in the bible)/.test(l)), `no log line may claim a recorded withdrawal:\n${logs.join('\n')}`);
+        const report = client.kbChangesReport();
+        assert.deepEqual(report.withdrawn, [], 'not reported as withdrawn');
+        assert.deepEqual(report.notRecorded.map((w) => w.id), ['kb-demo']);
+        assert.ok(!client.withdrawnIds().includes('kb-demo'), 'nothing was withdrawn, so the sprint still vouches for it');
+        const section = buildKbChangesSection(report);
+        assert.doesNotMatch(section.text, /Merging withdraws|withdrawn/i, section.text);
+        assert.match(section.text, /Demotion not recorded \(1\):\*\* kb-demo/);
+    });
+
+    test('"restored" counts the ids the tool reported restored, not the holds that asked for it', async () => {
+        const run = async (restoredAnswer) => {
+            const { client } = harness({
+                reshapeAnswer: (a) => ({ ...a, restored: restoredAnswer }),
+                branchWithdrawals: async () => [demotable('kb-back')],
+            });
+            await offerDemotions(client, []);
+            await client.apply('reviewer', 'reviewer-1', { kb_holds: ['kb-back'] });
+            await client.commitRound('final review');
+            return client.kbChangesReport();
+        };
+        const refusedRestore = await run([]);
+        assert.equal(refusedRestore.kept, 1);
+        assert.equal(refusedRestore.restored, 0, 'the tool restored nothing');
+        const done = await run(['kb-back']);
+        assert.equal(done.restored, 1);
     });
 });
 

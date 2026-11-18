@@ -508,19 +508,39 @@ describe('createKbWorkClient.demotionCandidates: final review only, widened, fea
         }
     });
 
-    test('a LOCAL maintainer is served by this process and needs no tools/list', async () => {
+    // A local member is served by the separately running local apra-fleet
+    // server, which can be an older build than the engine: it is feature
+    // detected through its tools/list exactly like a remote one.
+    const localMaintainerClient = (listTools, logs = []) => {
         const local = { ...MAINTAINER, type: 'local' };
-        const { memberCall } = splitReads(OTHERS, []);
+        const { calls, memberCall } = splitReads(OTHERS, []);
         const client = createKbWorkClient({
             memberCall,
             maintainers: fakeMaintainerSelector({
                 repoOf: { [REVIEWER.name]: 'example.com/warehouse', [local.name]: 'example.com/warehouse' },
                 maintainerOf: { 'example.com/warehouse': local },
             }),
-            listTools: async () => { throw new Error('must not be called for a local member'); },
-            sprintChangedFiles: async () => ['server/transit.js'], log: () => {},
+            listTools,
+            sprintChangedFiles: async () => ['server/transit.js'], log: (l) => logs.push(l),
         });
+        return { client, calls };
+    };
+
+    test('a LOCAL maintainer whose server advertises the withdrawal route is offered candidates (read from its tools/list)', async () => {
+        let lists = 0;
+        const { client } = localMaintainerClient(async (...a) => { lists += 1; return newSchemaListTools(...a); });
         assert.deepEqual((await client.demotionCandidates(REVIEWER)).map((e) => e.id), ['kb-other']);
+        assert.equal(lists, 1, 'a local member is feature-detected too');
+    });
+
+    test('a LOCAL maintainer whose running server has an OLD kb_bible_commit schema is offered nothing, with a WARN naming it', async () => {
+        const logs = [];
+        const { client, calls } = localMaintainerClient(oldSchemaListTools, logs);
+        assert.deepEqual(await client.demotionCandidates(REVIEWER), []);
+        assert.equal(calls.filter((c) => c.name === 'kb_query').length, 0);
+        const warn = logs.find((l) => l.includes('WARN') && l.includes(`'${MAINTAINER.name}'`));
+        assert.ok(warn, logs.join('\n'));
+        assert.match(warn, /upgrade/);
     });
 
     test('the schema answer is read once per maintainer and cached', async () => {

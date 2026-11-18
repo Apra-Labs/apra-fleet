@@ -5,7 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { createKbWorkClient } from '../fleet-sprint/kb.mjs';
 import { validateArgs } from '../fleet-sprint/sprint-args.mjs';
-import { selfMaintainer } from './helpers/kb-maintainer-fakes.mjs';
+import { selfMaintainer, currentServerListTools } from './helpers/kb-maintainer-fakes.mjs';
 import { buildRunnerArgs } from '../bin/cli.mjs';
 import { buildSprintArgv, createSpawner } from '../src/supervisor/spawner.mjs';
 import { createSprintController, ApiError } from '../src/supervisor/api.mjs';
@@ -31,7 +31,7 @@ function build(extra = {}) {
         if (tool === 'kb_query') return { l1_results: args.own_scope ? [ROW] : [] };
         return {};
     };
-    const client = createKbWorkClient({
+    const client = createKbWorkClient({ listTools: currentServerListTools,
         memberCall,
         maintainers: selfMaintainer(MAINT, ['maint', 'reviewer-1']),
         gPull: async () => {},

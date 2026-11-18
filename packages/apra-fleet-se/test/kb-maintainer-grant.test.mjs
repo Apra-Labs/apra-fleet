@@ -1,7 +1,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { createKbWorkClient, createKbPrimingClient, KB_MAINTAINER_CALL } from '../fleet-sprint/kb.mjs';
-import { selfMaintainer } from './helpers/kb-maintainer-fakes.mjs';
+import { selfMaintainer, currentServerListTools } from './helpers/kb-maintainer-fakes.mjs';
 import { createMemberCall } from '../fleet-sprint/member-call.mjs';
 
 // =============================================================================
@@ -99,7 +99,7 @@ describe('kb_maintainer grant on engine KB writes', () => {
             ? { id: `id-${args.member_name}`, type: 'local', folder: `/srv/${args.member_name}` }
             : {});
         const priming = createKbPrimingClient({
-            callTool, memberCall, members: ['reviewer-1'],
+            callTool, memberCall, members: ['reviewer-1'], listTools: currentServerListTools,
             maintainers: selfMaintainer(maint, ['maint', 'reviewer-1']),
             log: (m) => logs.push(m),
             ...extra,
@@ -113,15 +113,17 @@ describe('kb_maintainer grant on engine KB writes', () => {
     const REMOTE_MAINT = { id: 'id-rmaint', name: 'maint', type: 'remote' };
     const toolsWith = (props) => ({ tools: [{ name: 'kb_import', inputSchema: { type: 'object', properties: props } }] });
 
-    test('remote maintainer: imported with ref only when its kb_import advertises ref; older or unknown servers are skipped', async () => {
+    // A LOCAL maintainer is served by the separately running local apra-fleet
+    // server, which can be just as old: it is feature-detected the same way.
+    test('remote and local maintainers: imported with ref only when kb_import advertises ref; older or unknown servers are skipped', async () => {
         const cases = [
             { listTools: async () => toolsWith({ path: {}, ref: {} }), expectImport: true },
             { listTools: async () => toolsWith({ path: {}, skip_sweep: {} }), expectImport: false },
             { listTools: async () => { throw new Error('unreachable'); }, expectImport: false },
             { listTools: undefined, expectImport: false },
         ];
-        for (const c of cases) {
-            const { priming, calls, logs } = primingHarness({ baseBranch: 'main', listTools: c.listTools }, { maint: REMOTE_MAINT });
+        for (const c of [REMOTE_MAINT, MAINT].flatMap((maint) => cases.map((x) => ({ ...x, maint })))) {
+            const { priming, calls, logs } = primingHarness({ baseBranch: 'main', listTools: c.listTools }, { maint: c.maint });
             await priming.primeAll();
             const imp = calls.filter((x) => x.tool === 'kb_import');
             if (c.expectImport) {

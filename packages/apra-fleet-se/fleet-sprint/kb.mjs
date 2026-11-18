@@ -597,7 +597,9 @@ export function createKbWorkClient(opts = {}) {
         // session: the feature detection for the withdrawal route
         // (KB_WITHDRAWAL_SCHEMA_PROPERTIES in kb_bible_commit's input
         // schema), the same pattern the bible import uses for kb_import's
-        // `ref`. A local member is served by this process and always has it.
+        // `ref`. A local member is read the same way: it is served by the
+        // separately running local apra-fleet server, which can be an older
+        // build than this engine.
         listTools,
         // (memberName: string) => Promise<object[]>: the entries an EARLIER
         // final review on this branch withdrew (a withdrawn tombstone the
@@ -671,8 +673,13 @@ export function createKbWorkClient(opts = {}) {
         if (!offeringRecord.has(repo)) offeringRecord.set(repo, { offered: new Set(), verdicts: new Map() });
         return offeringRecord.get(repo);
     };
-    // Extra per-offering detail the PR body reads: titles, demote reasons, ids that restore an earlier withdrawal.
-    const detailFor = (rec) => (rec.detail ||= { titles: new Map(), notes: new Map(), restorable: new Set() });
+    // Extra per-offering detail the PR body reads: titles, demote reasons, ids
+    // that restore an earlier withdrawal, and -- from kb_bible_commit's own
+    // answer -- the withdrawals it admitted or did not, and the ids it restored.
+    const detailFor = (rec) => (rec.detail ||= {
+        titles: new Map(), notes: new Map(), restorable: new Set(),
+        admitted: new Set(), notAdmitted: new Set(), restoredDone: new Set(),
+    });
     /** repo -> tail of the serialized flush chain for that repository. */
     const flushChains = new Map();
     /** member name -> open dispatch count (nested brackets count once each). */
@@ -1271,19 +1278,36 @@ export function createKbWorkClient(opts = {}) {
             // Withdrawals and restores leave the queue on every successful call,
             // skipped ones included: a skip (not_withdrawable, or a restore with
             // nothing to undo) cannot change by retrying.
+            // Only the tool's own answer counts: an answer with no `withdrawn`
+            // list (an older apra-fleet whose kb_bible_commit drops the
+            // unknown `withdrawals` key) admitted nothing, and an answer with
+            // no `restored` list restored nothing.
             const settleTombstoneWork = (result) => {
-                const withdrawnNow = Array.isArray(result.withdrawn) ? result.withdrawn : withdrawals.map((w) => w.id);
-                const restoredNow = Array.isArray(result.restored) ? result.restored : [];
-                const admitted = new Set(withdrawnNow);
+                const answered = Array.isArray(result.withdrawn);
+                const admitted = new Set(answered ? result.withdrawn.filter((id) => typeof id === 'string') : []);
+                const restoredNow = Array.isArray(result.restored) ? result.restored.filter((id) => typeof id === 'string') : [];
+                const rec = offeringRecord.get(repo);
+                const det = rec ? detailFor(rec) : null;
+                const notAdmitted = [];
                 for (const w of withdrawals) {
                     if (pendingWithdrawals) pendingWithdrawals.delete(w.id);
-                    // A withdrawal the tool did not admit withdrew nothing.
-                    if (!admitted.has(w.id)) withdrawnIds.delete(w.id);
+                    if (admitted.has(w.id)) {
+                        if (det) { det.admitted.add(w.id); det.notAdmitted.delete(w.id); }
+                    } else {
+                        // A withdrawal the tool did not admit withdrew nothing.
+                        withdrawnIds.delete(w.id);
+                        notAdmitted.push(w.id);
+                        if (det) det.notAdmitted.add(w.id);
+                    }
+                }
+                if (!answered && withdrawals.length > 0) {
+                    log(`[kb-work] WARN: maintainer '${maintainer}' (${repo}) answered kb_bible_commit with no 'withdrawn' list (an apra-fleet older than the withdrawal route) -- ${notAdmitted.length} demotion(s) were NOT recorded in the bible and stay CONFIRMED: ${notAdmitted.join(', ')}; upgrade apra-fleet on that member`);
                 }
                 if (pendingWithdrawals && pendingWithdrawals.size === 0) withdrawalsPending.delete(repo);
                 for (const id of restoreIds) if (pendingRestores) pendingRestores.delete(id);
                 if (pendingRestores && pendingRestores.size === 0) restoresPending.delete(repo);
-                return { withdrawnCount: withdrawnNow.length, restoredCount: restoredNow.length };
+                if (det) for (const id of restoredNow) det.restoredDone.add(id);
+                return { withdrawnCount: withdrawals.length - notAdmitted.length, restoredCount: restoredNow.length };
             };
             if (outcome.bibleSkipped) {
                 // The entry merge is provider-wide skipped (the project KB is
@@ -1337,9 +1361,6 @@ export function createKbWorkClient(opts = {}) {
             if (pending && pending.size === 0) confirmations.delete(repo);
             if (rounds.size === 0) skipRounds.delete(repo);
             const skippedIds = new Set(skipped.map((x) => x && x.id));
-            if (!Array.isArray(outcome.result.withdrawn)) {
-                outcome.result.withdrawn = withdrawals.map((w) => w.id).filter((id) => !skippedIds.has(id));
-            }
             const { withdrawnCount, restoredCount } = settleTombstoneWork(outcome.result);
             const merged = Array.isArray(outcome.result.merged) ? outcome.result.merged.length
                 : ids.length - ids.filter((id) => skippedIds.has(id)).length;
@@ -1478,14 +1499,13 @@ export function createKbWorkClient(opts = {}) {
 
     /**
      * True when `record`'s kb_bible_commit accepts every
-     * KB_WITHDRAWAL_SCHEMA_PROPERTIES key: always for a local member (served
-     * by this process); for a remote member only when its tools/list
-     * advertises them. Any doubt (no listTools wired, an unreadable answer, a
+     * KB_WITHDRAWAL_SCHEMA_PROPERTIES key, as its tools/list advertises --
+     * a local member included: it is served by the separately running local
+     * apra-fleet server, which can be an older build. Any doubt (no listTools wired, an unreadable answer, a
      * failed call) is false -- fail closed, never offer a demotion the
      * maintainer cannot record. A definite answer is cached per member.
      */
     async function supportsWithdrawals(record) {
-        if (String(record && (record.type || record.agentType) || '').toLowerCase() === 'local') return true;
         const key = record && record.id;
         if (key && withdrawalSupport.has(key)) return withdrawalSupport.get(key);
         if (typeof listTools !== 'function') return false;
@@ -1816,26 +1836,31 @@ export function createKbWorkClient(opts = {}) {
         },
         /**
          * What the final review's demotions mean for the PR body, per
-         * repository, merged: { withdrawn: [{id, title, note}], noVerdict: id[],
-         * kept: n, restored: n, refused: [{id, reason}], notPushed: id[] }, or
-         * null when nothing was ever offered. `notPushed` lists withdrawals
-         * still not in a pushed bible commit.
+         * repository, merged: { withdrawn: [{id, title, note}], notRecorded:
+         * [{id, title, note}], noVerdict: id[], kept: n, restored: n, refused:
+         * [{id, reason}], notPushed: id[] }, or null when nothing was ever
+         * offered. `notPushed` lists withdrawals still not in a pushed bible
+         * commit; `notRecorded` lists demotions kb_bible_commit answered
+         * without admitting (they stay CONFIRMED); `restored` counts the ids
+         * kb_bible_commit reported restored, not the holds that asked for it.
          */
         kbChangesReport() {
-            const out = { withdrawn: [], noVerdict: [], kept: 0, restored: 0, refused: [], notPushed: [] };
+            const out = { withdrawn: [], notRecorded: [], noVerdict: [], kept: 0, restored: 0, refused: [], notPushed: [] };
             let any = false;
             for (const [repo, rec] of offeringRecord) {
                 if (rec.offered.size === 0 && rec.verdicts.size === 0) continue;
                 any = true;
                 const det = detailFor(rec);
                 const pending = withdrawalsPending.get(repo);
+                out.restored += det.restoredDone.size;
                 for (const [id, v] of rec.verdicts) {
                     if (v === 'demote') {
-                        out.withdrawn.push({ id, title: det.titles.get(id) || '', note: det.notes.get(id) || '' });
+                        const row = { id, title: det.titles.get(id) || '', note: det.notes.get(id) || '' };
+                        if (det.notAdmitted.has(id)) { out.notRecorded.push(row); continue; }
+                        out.withdrawn.push(row);
                         if (pending && pending.has(id)) out.notPushed.push(id);
                     } else if (v === 'holds') {
                         out.kept += 1;
-                        if (det.restorable.has(id)) out.restored += 1;
                     } else if (v === 'none') out.noVerdict.push(id);
                     else if (v.startsWith('refused:')) out.refused.push({ id, reason: v.slice('refused:'.length) });
                 }
@@ -2286,13 +2311,12 @@ export function createKbPrimingClient(opts = {}) {
         return (m && typeof m.maintainerForMember === 'function') ? m : null;
     };
     /**
-     * True when `target`'s kb_import accepts `ref`: always for a local member
-     * (served by this process); for a remote member only when its tools/list
-     * advertises the property. Any doubt (no listTools, an unreadable answer)
+     * True when `target`'s kb_import accepts `ref`, as its tools/list
+     * advertises -- a local member included (the separately running local
+     * apra-fleet server can be an older build). Any doubt (no listTools, an unreadable answer)
      * is false.
      */
     async function supportsImportRef(target) {
-        if (String(target && (target.type || target.agentType) || '').toLowerCase() === 'local') return true;
         if (typeof opts.listTools !== 'function') return false;
         try {
             const list = parseResult(await opts.listTools(target));
@@ -2457,11 +2481,11 @@ export function createKbPrimingClient(opts = {}) {
                             imported = parseResult(await memberCall(target, 'kb_import', { skip_sweep: true }));
                         } else if (baseBranch) {
                             const ref = 'refs/remotes/origin/' + baseBranch;
-                            // A REMOTE maintainer runs its own apra-fleet: an
-                            // older one drops the unknown `ref` key and would
-                            // grant-import (and trust) its WORK-TREE bible. Fail
-                            // closed: import only when its kb_import advertises
-                            // `ref`. A local member runs in this server.
+                            // A maintainer's apra-fleet server (local or
+                            // remote) can be older: it drops the unknown `ref`
+                            // key and would grant-import (and trust) its
+                            // WORK-TREE bible. Fail closed: import only when its
+                            // kb_import advertises `ref`.
                             if (await supportsImportRef(target)) {
                                 // base_branch names the base the bible must
                                 // belong to: its own provenance.branch is never

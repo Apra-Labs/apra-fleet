@@ -17,7 +17,7 @@ import { createKbWorkClient } from '../fleet-sprint/kb.mjs';
 import {
     createCurrentFileHashes, createSprintChangedFiles,
 } from '../fleet-sprint/runner.js';
-import { fakeMaintainerSelector } from './helpers/kb-maintainer-fakes.mjs';
+import { fakeMaintainerSelector, currentServerListTools } from './helpers/kb-maintainer-fakes.mjs';
 
 const MEMBER = 'guard-maint';
 const roots = [];
@@ -173,7 +173,7 @@ describe('kbWork.demotionCandidates: isBusy/inFlight bracket', () => {
         const { command } = shellCommand(repos.maint, repos.env);
         const reads = [];
         const { lines, log } = collectLog();
-        const client = createKbWorkClient({
+        const client = createKbWorkClient({ listTools: currentServerListTools,
             memberCall: async (member, name) => { reads.push(name); return { l1_results: [CONFIRMED] }; },
             maintainers: selector(),
             sprintChangedFiles: createSprintChangedFiles({ command, pullGitBefore: repos.pull, baseBranch: 'main', branch: 'feat', log }),
@@ -205,7 +205,7 @@ describe('kbWork.demotionCandidates: isBusy/inFlight bracket', () => {
         const readGate = new Promise((r) => { releaseRead = r; });
         let readStarted;
         const readStartedP = new Promise((r) => { readStarted = r; });
-        const client = createKbWorkClient({
+        const client = createKbWorkClient({ listTools: currentServerListTools,
             memberCall: async (member, name) => {
                 events.push(`${name}:start`);
                 readStarted();

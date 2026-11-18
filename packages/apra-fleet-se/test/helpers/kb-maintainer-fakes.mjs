@@ -30,3 +30,15 @@ export function selfMaintainer(record, members = [record.name]) {
     for (const m of members) repoOf[m] = 'example.com/org/repo';
     return fakeMaintainerSelector({ repoOf, maintainerOf: { 'example.com/org/repo': record } });
 }
+
+/**
+ * A tools/list answer from a CURRENT apra-fleet server: its kb_bible_commit
+ * advertises the withdrawal route and its kb_import `ref`. The engine
+ * feature-detects every maintainer, a local one included, through this.
+ */
+export const currentServerListTools = async () => ({
+    tools: [
+        { name: 'kb_bible_commit', inputSchema: { properties: { ids: {}, withdrawals: {}, restore_ids: {} } } },
+        { name: 'kb_import', inputSchema: { properties: { path: {}, ref: {}, skip_sweep: {} } } },
+    ],
+});

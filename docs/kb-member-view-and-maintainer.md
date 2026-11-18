@@ -55,9 +55,10 @@ is imported (`kb_import`).
 1. **Offer (final review only).** A round review is offered no demotion
    candidates. Before the FINAL review dispatch, `demotionCandidates(member)`
    first checks that the maintainer's `kb_bible_commit` accepts
-   `withdrawals` and `restore_ids` (a local member always does; a remote
-   one is read from its tools/list). When it does not, nothing is offered and
-   a WARN names the maintainer and the upgrade. Otherwise it reads every
+   `withdrawals` and `restore_ids`, read from the maintainer's tools/list --
+   a local member too, since it is served by the separately running local
+   apra-fleet server, which can be an older build. When it does not, nothing
+   is offered and a WARN names the maintainer and the upgrade. Otherwise it reads every
    CONFIRMED entry citing a file changed on the sprint branch -- not only the
    maintainer's own: the checkout bible view filtered by `files`, merged with
    the maintainer's own CONFIRMED rows (`own_scope: true`) that are not in the
@@ -86,6 +87,12 @@ is imported (`kb_import`).
    resets and retries with the same load, exactly like a promotion-only
    round. A withdrawal or restore leaves the queue after a successful call,
    skipped ones included (`not_withdrawable` cannot change by retrying).
+   Only the tool's own answer counts: a withdrawal is reported as withdrawn
+   only when the answer's `withdrawn` list names it, and a restore only when
+   its `restored` list does. An answer with no `withdrawn` list (an older
+   apra-fleet that drops the unknown key) admitted nothing: a WARN names the
+   maintainer, and the PR body lists those ids as "Demotion not recorded"
+   (still CONFIRMED after merge).
 4. **Relaunch: a hold can restore an earlier withdrawal.** The checkout bible
    view no longer holds an entry this branch withdrew, so the final review is
    also offered every withdrawn tombstone the sprint branch's committed bible
@@ -106,6 +113,9 @@ is imported (`kb_import`).
    because they are merge-gated (a FAIL branch that never merges carries them
    nowhere). An aborted sprint seals everything. Pending items that never
    reach a pushed bible commit are listed in a WARN at the end of the sprint.
+   An abort AFTER the final review (a failed harvest or PR creation) can leave
+   withdrawals already pushed on the branch; the [ABORTED] PR body carries
+   the same "KB changes on merge" section as a PASS/FAIL body.
 7. **Knowledge blocks.** An id the final review withdrew is excluded from
    every later dispatch's knowledge block in the same sprint (the harvest
    included), whether or not the bible commit has been pushed yet.
