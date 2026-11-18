@@ -3584,10 +3584,12 @@ async function runSprintCycle(context) {
     // open with no gap bug; at NEEDS_EXTERNAL_EVIDENCE_CYCLE_LIMIT the bead
     // moves into needsEvidenceVerifyIds (id -> { reason, cycles }), is not
     // dispatched to verify again and no longer holds the exit; Final Review
-    // forces FAIL and names it. deferredVerifyIds (id -> reason) holds
-    // verify-routed beads deferred during the run (the bounce cap, or seen
-    // deferred at Route), which can never be dispatched again: dropped from the
-    // exit gate and named as a deferred carry-over. None of them is closed.
+    // forces FAIL and names it (at/above goal priority only; a below-goal one
+    // is named without forcing FAIL). deferredVerifyIds (id -> reason, or
+    // { reason, bounceCap: true } for the bounce cap) holds verify-routed
+    // beads deferred during the run (the bounce cap, or seen deferred at
+    // Route), which can never be dispatched again: dropped from the exit gate
+    // and named as a deferred carry-over. None of them is closed.
     const inconclusiveVerifyCounts = new Map();
     const needsEvidenceVerifyIds = new Map();
     const deferredVerifyIds = new Map();
@@ -4862,7 +4864,9 @@ async function runSprintCycle(context) {
         ...(carryOverExit ? { exitReason: carryOverExit.reason, carryOver: carryOverExit.entries } : {}),
         // Present only when verify-routed beads were carried over
         // (./verify-carry-over.mjs): { id, kind: 'needs-external-evidence' |
-        // 'deferred', reason } for each.
+        // 'deferred' | 'deferred-bounce-cap', reason } for each (plus
+        // belowGoal: true when below the sprint goal priority, which names the
+        // bead without forcing FAIL).
         ...(verifyCarryOver ? { verifyCarryOver: verifyCarryOver.entries } : {}),
         // Present only when the run exited on a CHANGES_NEEDED whose only
         // reopenIds were skipped as below goal: those ids, not reopened.
