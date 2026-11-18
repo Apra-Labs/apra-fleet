@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "5a171212f2e1eee116e7f58e2ea29648ffb8ff1f",
     "branch": "main",
-    "entry_count": 165
+    "entry_count": 166
   },
   "entries": [
     {
@@ -426,6 +426,27 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:11.489Z"
+    },
+    {
+      "id": "237505a0-d5ff-4ed1-a78d-ad39873b1a0f",
+      "type": "knowledge",
+      "title": "buildSprintPrBody extras accept placement, fit, hardClip and omitted",
+      "summary": "A caller section passed via buildSprintPrBody's sections option may set placement 'after-merge-assessment' to render between the merge assessment and the notes; any other value renders in the tail. Its fit/hardClip/omitted callbacks are forwarded to fitSectionsToBudget.",
+      "symbols": [
+        "buildSprintPrBody",
+        "fitSectionsToBudget",
+        "buildKbChangesSection"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/pr-body.mjs",
+        "packages/apra-fleet-se/test/pr-body-kb-changes.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T22:17:29.260Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/pr-body.mjs": "240149c9266c68aba260d61938602291ea76f04a",
+        "packages/apra-fleet-se/test/pr-body-kb-changes.test.mjs": "2cfb23d02f4bc20d5856b8d7092934634c5edda9"
+      }
     },
     {
       "id": "2405734f-e88a-42b5-83bb-abce9a2215db",
