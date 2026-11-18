@@ -3270,16 +3270,6 @@
   ],
   "demotions": [
     {
-      "id": "6791ac87-d45f-44ac-9978-cf1cb3d678e0",
-      "at": "2026-11-18T15:54:41.690Z",
-      "reason": "demoted"
-    },
-    {
-      "id": "a015d62e-ae1c-4296-9827-b7ed4b2b6a3d",
-      "at": "2026-11-18T15:54:38.074Z",
-      "reason": "demoted"
-    },
-    {
       "id": "a098caf8-263f-4b72-b5a7-55fc3d290a07",
       "at": "2026-11-18T03:14:58.284Z",
       "reason": "demoted"
