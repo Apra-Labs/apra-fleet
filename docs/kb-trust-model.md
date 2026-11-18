@@ -165,12 +165,20 @@ Write-safety rules in `kb_bible_commit`:
   lifts it, and a restore followed by a merge in the same call works because
   restores are planned before the merge. Demoted tombstones keep the
   re-promotion rule instead.
+- A withdrawn tombstone also outranks a demotion. A `demoted_ids` id with a
+  withdrawn tombstone in the file is skipped with `withdrawn_tombstone`, the
+  every-call demotion rule passes over it, and a demoted tombstone never
+  overwrites a withdrawn one. Otherwise the demoted tombstone would replace the
+  withdrawal, and a later `ids` re-promotion (which clears demoted tombstones)
+  would erase it.
 - `demoted_ids` writes a tombstone only for an id the BASE bible carries (as an
   entry or a tombstone), because a tombstone for an id the base never had would
   be a no-op everywhere else. A demoted entry that exists only in the branch's
   bible, with no tombstone, is simply dropped; anything else is rejected with
-  `not_in_base_bible`. An unresolvable or unreadable base fails closed. A
-  call that only drops entries still commits.
+  `not_in_base_bible`. An unresolvable or unreadable base fails closed, and
+  the result carries `base_bible_error` naming the failure (absent when the
+  base was read fine or never needed). A call that only drops entries still
+  commits.
 
 Known limits of the current design:
 

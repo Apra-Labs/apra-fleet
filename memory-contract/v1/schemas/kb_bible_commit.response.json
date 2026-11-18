@@ -150,6 +150,9 @@
             },
             "reason": {
               "type": "string"
+            },
+            "base_bible_error": {
+              "type": "string"
             }
           },
           "required": [

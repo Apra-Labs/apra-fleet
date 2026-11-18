@@ -770,7 +770,11 @@
  *   tombstone is written only when the bible at baseCommit carries the id (entry or
  *   tombstone): an entry the branch added is removed with no tombstone, any other id is
  *   skipped with reason not_in_base_bible (also when baseCommit does not resolve or its
- *   bible is unreadable -- no new demoted tombstone is written then). Existing
+ *   bible is unreadable -- no new demoted tombstone is written then, and the result
+ *   carries base_bible_error). An id the bible file carries a withdrawn tombstone for is
+ *   skipped with reason withdrawn_tombstone and that tombstone is kept: a demoted
+ *   tombstone never replaces a withdrawn one (the every-call demotion rule passes over
+ *   it too), so a later ids re-promotion cannot clear the withdrawal. Existing
  *   tombstones are preserved, and re-committing a demoted-tombstoned id through ids (a
  *   re-promotion) restores its entry and clears its tombstone; a withdrawn tombstone is
  *   never cleared by ids (see ids).
@@ -896,8 +900,10 @@
  * @property {{id: string, reason: string}[]} skipped - Ids not merged, demoted or withdrawn, with
  *   reason not_confirmed_or_unknown, no_source_files, basis_mismatch, not_demoted_or_unknown,
  *   not_withdrawable, withdrawn_tombstone (an `ids` id the bible file carries a withdrawn
- *   tombstone for, not restored by the same call: the tombstone is kept) or
- *   not_in_base_bible (a demoted_ids id the bible at baseCommit does not carry).
+ *   tombstone for, not restored by the same call, or a demoted_ids id with a withdrawn
+ *   tombstone in the file -- a demoted tombstone never replaces a withdrawn one; the
+ *   tombstone is kept) or not_in_base_bible (a demoted_ids id the bible at baseCommit does
+ *   not carry).
  * @property {{id: string, reason: string}[]} removed - Entries removed because the KB holds them
  *   superseded or invalidated.
  * @property {number} entry_count - Entries in the resulting bible (a tombstone is not an entry).
@@ -905,6 +911,10 @@
  * @property {boolean} committed - True only when a local commit of the bible path was made.
  * @property {true} [bible_skipped] - Present under an http KB provider (no entry merge).
  * @property {string} [reason] - With bible_skipped: why.
+ * @property {string} [base_bible_error] - Why the bible at baseCommit could not be read
+ *   (baseCommit does not resolve, or its bible does not parse), when a rule needed it (a
+ *   demotion gate or a restore). Absent when the base was read fine or never needed. The
+ *   call still fails closed: no new demoted tombstone, no drop, no restore.
  */
 
 /**

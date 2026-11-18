@@ -732,13 +732,18 @@ A demoted tombstone is written only for an id the bible at `baseCommit` carries
 (as an entry or a tombstone): a locally demoted entry the branch added is removed
 from `entries` with no tombstone, and any other `demoted_ids` id is skipped with
 reason `not_in_base_bible`. When `baseCommit` does not resolve or its bible is
-unreadable, no new demoted tombstone is written. Tombstones already in the file survive a later commit carrying unrelated ids, and
+unreadable, no new demoted tombstone is written and the result carries
+`base_bible_error` naming the failure. Tombstones already in the file survive a later commit carrying unrelated ids, and
 re-committing a demoted-tombstoned id through `ids` (a re-promotion) restores its
 entry and clears its tombstone. A `withdrawn` tombstone in the current file
 (branch-added or merged from the base) is never cleared by `ids`: such an id is
 skipped with reason `withdrawn_tombstone` and the tombstone kept, unless
-`restore_ids` undoes that (branch-added) tombstone in the same call.
-`provenance.entry_count` counts entries only.
+`restore_ids` undoes that (branch-added) tombstone in the same call. A
+`withdrawn` tombstone also outranks a demotion: a `demoted_ids` id with a
+withdrawn tombstone in the file is skipped with reason `withdrawn_tombstone`,
+the every-call demotion rule passes over it, and a demoted tombstone never
+replaces a withdrawn one, so a later `ids` re-promotion cannot clear the
+withdrawal. `provenance.entry_count` counts entries only.
 
 Optional `withdrawals` (`[{id, note, evidence_files}]`; `note` at least 20
 characters after whitespace is collapsed, at least one repo-relative evidence
@@ -754,7 +759,10 @@ entry for it is re-added byte-identical. Admitted ids are listed in `withdrawn`
 and `restored`.
 
 Result JSON: `{path, merged, demoted, withdrawn, restored, skipped, removed,
-entry_count, backfilled, committed}`.
+entry_count, backfilled, committed, base_bible_error?}`. `base_bible_error` is
+present only when a rule needed the bible at `baseCommit` (a demotion gate or a
+restore) and it could not be read (`baseCommit` does not resolve, or its bible
+does not parse); the call still fails closed.
 Under the http KB provider the entry merge is skipped, never an error: the
 result is `{path, merged: [], demoted: [], skipped: [], removed: [],
 entry_count, backfilled: 0, committed, bible_skipped: true, reason, withdrawn,

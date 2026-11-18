@@ -556,6 +556,19 @@ takes effect for other clones only once that branch merges:
   `withdrawn_tombstone` and its tombstone is kept, unless `restore_ids` undoes
   that (branch-added) tombstone in the same call. `demoted` tombstones keep the
   re-promotion rule above: re-admitting the id through `ids` clears them.
+- A `withdrawn` tombstone outranks a demotion. A `demoted_ids` id the current
+  bible file carries a `withdrawn` tombstone for is skipped with reason
+  `withdrawn_tombstone` and the tombstone is kept byte-identical; the
+  every-call demotion rule passes over such an id; and a `demoted` tombstone
+  never replaces a `withdrawn` one for the same id. Otherwise the demoted
+  tombstone would replace the withdrawal, and a later `ids` re-promotion (which
+  clears `demoted` tombstones) would erase it -- a route around `restore_ids`.
+- When a rule needs the bible at `baseCommit` (the demotion base gate or a
+  restore) and it cannot be read -- `baseCommit` does not resolve, or its
+  bible does not parse -- the call fails closed (no new `demoted` tombstone, no
+  drop, no restore) and the response carries the optional string
+  `base_bible_error` naming the failure. It is absent when the base was read
+  fine or never needed.
 - `kb_import` applies `reason: "withdrawn"` tombstones ONLY when the bible is
   the merged base bible as fetched: read with `ref` equal to
   `refs/remotes/<remote>/<base>`, where `<remote>` is any remote configured in
