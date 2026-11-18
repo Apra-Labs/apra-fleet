@@ -1,9 +1,10 @@
-import { test, describe } from 'node:test';
+import { test, describe, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { spawnSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import { acquireSprintLock, sprintLockKey, SprintLockHeldError } from '../fleet-sprint/sprint-lock.mjs';
 
 // apra-fleet-eft.75.2: unit coverage for the machine-local pidfile mutex
@@ -11,6 +12,10 @@ import { acquireSprintLock, sprintLockKey, SprintLockHeldError } from '../fleet-
 // engine-level wiring in runner.js's main() (covered separately). Every
 // test gets its own throwaway lockDir under the OS tmpdir so tests never
 // contend with each other or with a real sprint's lock files.
+
+// A live holder (this test process) must look like a fleet-sprint engine to the
+// identity check; the real reader would report the test runner's command line.
+const engineCmd = (branch) => () => `node fleet-sprint/bin/cli.mjs --branch ${branch}`;
 
 function freshLockDir() {
     return fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-sprint-lock-test-'));
@@ -56,7 +61,7 @@ describe('acquireSprintLock', () => {
         const lock = acquireSprintLock({ branch: 'auto-sprint/dup', members: ['local'], lockDir });
         try {
             assert.throws(
-                () => acquireSprintLock({ branch: 'auto-sprint/dup', members: ['local'], lockDir }),
+                () => acquireSprintLock({ branch: 'auto-sprint/dup', members: ['local'], lockDir, readCommandLine: engineCmd('auto-sprint/dup') }),
                 (err) => err instanceof SprintLockHeldError
                     && err.code === 'SPRINT_LOCK_HELD'
                     && err.existingPid === process.pid,
@@ -71,7 +76,7 @@ describe('acquireSprintLock', () => {
         const lock = acquireSprintLock({ branch: 'auto-sprint/dup2', members: ['alice', 'bob'], lockDir });
         try {
             assert.throws(
-                () => acquireSprintLock({ branch: 'auto-sprint/dup2', members: ['bob', 'alice'], lockDir }),
+                () => acquireSprintLock({ branch: 'auto-sprint/dup2', members: ['bob', 'alice'], lockDir, readCommandLine: engineCmd('auto-sprint/dup2') }),
                 (err) => err instanceof SprintLockHeldError,
             );
         } finally {
@@ -142,7 +147,7 @@ describe('acquireSprintLock', () => {
         try {
             let caught = null;
             try {
-                acquireSprintLock({ branch: 'auto-sprint/details', members: ['local', 'other'], lockDir });
+                acquireSprintLock({ branch: 'auto-sprint/details', members: ['local', 'other'], lockDir, readCommandLine: engineCmd('auto-sprint/details') });
             } catch (err) {
                 caught = err;
             }
@@ -153,6 +158,96 @@ describe('acquireSprintLock', () => {
             assert.equal(caught.details.branch, 'auto-sprint/details');
         } finally {
             lock.release();
+        }
+    });
+});
+
+describe('acquireSprintLock identity check on a live pid (recycled pid)', () => {
+    const dirs = [];
+    const mk = () => { const d = freshLockDir(); dirs.push(d); return d; };
+    after(() => { for (const d of dirs) fs.rmSync(d, { recursive: true, force: true }); });
+    const lockFile = (lockDir, branch) => path.join(lockDir, `${sprintLockKey(branch, ['local'])}.lock`);
+
+    test('a live pid whose command line is unrelated is reclaimed and a log line names the old pid and reason', () => {
+        const lockDir = mk();
+        fs.writeFileSync(lockFile(lockDir, 'auto-sprint/recycled'), String(process.pid));
+        const logs = [];
+        const lock = acquireSprintLock({
+            branch: 'auto-sprint/recycled', members: ['local'], lockDir,
+            readCommandLine: () => 'C:\\Windows\\System32\\conhost.exe 0xffffffff',
+            log: (l) => logs.push(l),
+        });
+        assert.equal(fs.readFileSync(lock.path, 'utf8').split('\n')[0].trim(), String(process.pid));
+        assert.equal(logs.length, 1);
+        assert.ok(logs[0].includes(`pid ${process.pid}`) && /not a fleet-sprint engine/.test(logs[0]), logs[0]);
+        lock.release();
+    });
+
+    test('a live engine for the same branch is refused with SprintLockHeldError', () => {
+        const lockDir = mk();
+        fs.writeFileSync(lockFile(lockDir, 'auto-sprint/live'), String(process.pid));
+        assert.throws(
+            () => acquireSprintLock({ branch: 'auto-sprint/live', members: ['local'], lockDir,
+                readCommandLine: () => 'node /x/fleet-sprint/bin/cli.mjs --branch auto-sprint/live --members local' }),
+            (err) => err instanceof SprintLockHeldError && err.existingPid === process.pid,
+        );
+    });
+
+    test('an engine command line for a DIFFERENT branch is a recycled pid: reclaimed', () => {
+        const lockDir = mk();
+        fs.writeFileSync(lockFile(lockDir, 'auto-sprint/mine'), String(process.pid));
+        const lock = acquireSprintLock({ branch: 'auto-sprint/mine', members: ['local'], lockDir,
+            readCommandLine: () => 'node cli.mjs --branch auto-sprint/other', log: () => {} });
+        lock.release();
+    });
+
+    for (const [label, reader] of [['returns null', () => null], ['throws', () => { throw new Error('boom'); }]]) {
+        test(`an unreadable command line (reader ${label}) fails closed, naming the lock path and that identity could not be verified`, () => {
+            const lockDir = mk();
+            const lp = lockFile(lockDir, 'auto-sprint/unreadable');
+            fs.writeFileSync(lp, String(process.pid));
+            assert.throws(
+                () => acquireSprintLock({ branch: 'auto-sprint/unreadable', members: ['local'], lockDir, readCommandLine: reader }),
+                (err) => err instanceof SprintLockHeldError && err.message.includes(lp) && /identity could not be verified/.test(err.message),
+            );
+            assert.ok(fs.existsSync(lp), 'the lock must be left in place');
+        });
+    }
+
+    test('the written lock first line parses with parseInt to the pid; a legacy bare-pid lock is still honoured', () => {
+        const lockDir = mk();
+        const lock = acquireSprintLock({ branch: 'auto-sprint/format', members: ['local'], lockDir });
+        assert.equal(parseInt(fs.readFileSync(lock.path, 'utf8'), 10), process.pid);
+        lock.release();
+        const lp = lockFile(lockDir, 'auto-sprint/legacy');
+        fs.writeFileSync(lp, `${process.pid}\n`);
+        assert.throws(
+            () => acquireSprintLock({ branch: 'auto-sprint/legacy', members: ['local'], lockDir,
+                readCommandLine: () => 'node cli.mjs --branch auto-sprint/legacy' }),
+            (err) => err instanceof SprintLockHeldError && err.existingPid === process.pid,
+        );
+    });
+});
+
+describe('test sandbox sprint-lock dir', () => {
+    test('ensureTestSandbox sets APRA_FLEET_SPRINT_LOCK_DIR inside the sandbox root', () => {
+        // Run in a child so the sandbox's HOME rewrite never touches this process.
+        const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'sprint-lock-sandbox-home-'));
+        const script = `
+            import { ensureTestSandbox } from ${JSON.stringify(pathToFileURL(path.resolve(import.meta.dirname, '../../../scripts/test-sandbox.mjs')).href)};
+            const sb = ensureTestSandbox(process.env);
+            console.log(JSON.stringify({ root: sb.root, dir: process.env.APRA_FLEET_SPRINT_LOCK_DIR }));
+            sb.cleanup();`;
+        const childEnv = { ...process.env, HOME: fakeHome, USERPROFILE: fakeHome };
+        for (const k of ['APRA_TEST_SANDBOX_ROOT', 'APRA_TEST_REAL_HOME', 'NODE_OPTIONS', 'APRA_FLEET_SPRINT_LOCK_DIR']) delete childEnv[k];
+        try {
+            const r = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8', env: childEnv });
+            assert.equal(r.status, 0, r.stderr);
+            const { root, dir } = JSON.parse(r.stdout.trim());
+            assert.ok(dir, 'APRA_FLEET_SPRINT_LOCK_DIR must be set');
+            assert.ok(path.resolve(dir).startsWith(path.resolve(root) + path.sep), `${dir} not under ${root}`);
+        } finally {
+            fs.rmSync(fakeHome, { recursive: true, force: true });
         }
     });
 });
