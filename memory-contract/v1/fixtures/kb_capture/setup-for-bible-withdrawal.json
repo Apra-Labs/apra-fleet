@@ -1,0 +1,25 @@
+{
+  "tool": "kb_capture",
+  "case": "setup-for-bible-withdrawal",
+  "kind": "happy",
+  "request": {
+    "type": "knowledge",
+    "title": "Entry merged into the bible and then withdrawn",
+    "summary": "Set up to demonstrate kb_bible_commit withdrawals and the base-ref kb_import.",
+    "content": "This entry cites the committed src/helper.ts, is merged into the bible, then withdrawn on a branch.",
+    "source_files": [
+      "src/helper.ts"
+    ],
+    "symbols": [
+      "helperWithdrawalFixture"
+    ]
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"id\":\"100ca201-54b4-46b9-9801-2bea030fcb1b\",\"audn_decision\":\"add\",\"confidence_clamped\":false}"
+      }
+    ]
+  }
+}

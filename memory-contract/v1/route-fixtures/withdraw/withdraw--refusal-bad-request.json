@@ -1,0 +1,25 @@
+{
+  "route": "withdraw",
+  "case": "refusal-bad-request",
+  "kind": "refusal",
+  "request": {
+    "method": "POST",
+    "path": "/api/kb/withdraw",
+    "body": {
+      "withdrawals": [
+        {
+          "id": "x",
+          "at": "not a time",
+          "reason": "withdrawn"
+        }
+      ]
+    }
+  },
+  "response": {
+    "status": 400,
+    "body": {
+      "error": "withdrawals must be an array of {id, at (an ISO time), reason, note?, evidence_files?}",
+      "code": "BAD_REQUEST"
+    }
+  }
+}

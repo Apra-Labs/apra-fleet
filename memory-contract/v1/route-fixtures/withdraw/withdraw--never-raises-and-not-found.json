@@ -1,0 +1,38 @@
+{
+  "route": "withdraw",
+  "case": "never-raises-and-not-found",
+  "kind": "happy",
+  "request": {
+    "method": "POST",
+    "path": "/api/kb/withdraw",
+    "body": {
+      "withdrawals": [
+        {
+          "id": "{{ENTRY_INFERRED}}",
+          "at": "2000-01-01T00:00:00.000Z",
+          "reason": "withdrawn"
+        },
+        {
+          "id": "no-such-entry",
+          "at": "2999-01-01T00:00:00.000Z",
+          "reason": "withdrawn"
+        }
+      ]
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "results": [
+        {
+          "id": "{{ENTRY_INFERRED}}",
+          "outcome": "not_confirmed"
+        },
+        {
+          "id": "no-such-entry",
+          "outcome": "not_found"
+        }
+      ]
+    }
+  }
+}

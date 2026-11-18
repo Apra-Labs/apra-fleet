@@ -1,0 +1,20 @@
+{
+  "tool": "kb_bible_commit",
+  "case": "setup-merge-for-bible-withdrawal",
+  "kind": "happy",
+  "request": {
+    "ids": [
+      "100ca201-54b4-46b9-9801-2bea030fcb1b"
+    ],
+    "baseBranch": "main",
+    "baseCommit": "0123456789abcdef0123456789abcdef01234567"
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"path\":\"<SCRATCH_REPO_A>/.fleet/kb-canonical.json\",\"merged\":[\"100ca201-54b4-46b9-9801-2bea030fcb1b\"],\"demoted\":[],\"skipped\":[],\"removed\":[],\"entry_count\":2,\"backfilled\":0,\"committed\":true,\"withdrawn\":[],\"restored\":[]}"
+      }
+    ]
+  }
+}

@@ -109,7 +109,7 @@ describe('kb-server promote and tag filter', () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
       contract: 'v1',
-      routes: ['capture', 'query', 'promote', 'context', 'prime', 'invalidate', 'feedback', 'list', 'demote'],
+      routes: ['capture', 'query', 'promote', 'context', 'prime', 'invalidate', 'feedback', 'list', 'demote', 'withdraw'],
       branch_aware: false,
     });
     const unauthenticated = await request('GET', '/api/kb/capabilities', { token: null });

@@ -1,0 +1,18 @@
+{
+  "tool": "kb_promote",
+  "case": "setup-promote-for-http-withdrawal",
+  "kind": "happy",
+  "request": {
+    "id": "8c52c52e-7a2c-41aa-9ded-75728e08f7e0",
+    "reason": "Promotion of the entry used by the http withdrawal fixtures to CONFIRMED (checked against src/widget.ts)."
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"id\":\"8c52c52e-7a2c-41aa-9ded-75728e08f7e0\",\"previous_confidence\":\"INFERRED\",\"new_confidence\":\"CONFIRMED\"}"
+      }
+    ]
+  },
+  "session": "HTTP_A"
+}

@@ -220,3 +220,69 @@ describe('kb_bible_commit http skip and the existing bible file', () => {
     expect(fs.readFileSync(path.join(clone, BIBLE_REL), 'utf-8')).toBe(malformed);
   });
 });
+
+describe('kb_bible_commit withdrawals and restores under the http KB provider', () => {
+  const NOTE = 'the cited guard was removed when the reader was rewritten';
+  const readBible = () => JSON.parse(fs.readFileSync(path.join(clone, BIBLE_REL), 'utf-8'));
+
+  it('writes a tombstone-only bible when none exists, commits it, and makes no KB request', async () => {
+    await kbSetup({ provider: 'http', remote: `http://127.0.0.1:${port}`, token }, { folder: clone });
+    const head = git(clone, ['rev-parse', 'HEAD']).trim();
+    const requestsBefore = requestCount;
+
+    const result = JSON.parse(await kbBibleCommit({
+      ids: ['kb-some-id'], baseBranch: 'main', baseCommit: head,
+      withdrawals: [{ id: 'kb-withdrawn', note: NOTE, evidence_files: ['src/a.ts'] }],
+    }, { folder: clone, remoteUrl }));
+
+    expect(result.bible_skipped).toBe(true);
+    expect(result.reason).toBe(KB_BIBLE_COMMIT_HTTP_SKIP_REASON);
+    expect(result.merged).toEqual([]);
+    expect(result.withdrawn).toEqual(['kb-withdrawn']);
+    expect(result.restored).toEqual([]);
+    expect(result.committed).toBe(true);
+    const bible = readBible();
+    expect(bible.version).toBe(3);
+    expect(bible.provenance).toEqual({ commit: head, branch: 'main', entry_count: 0 });
+    expect(bible.entries).toEqual([]);
+    expect(bible.demotions).toEqual([{
+      id: 'kb-withdrawn', at: bible.demotions[0].at, reason: 'withdrawn', note: NOTE, evidence_files: ['src/a.ts'],
+    }]);
+    expect(git(clone, ['rev-parse', 'HEAD']).trim()).not.toBe(head);
+    expect(git(clone, ['status', '--porcelain', '--', BIBLE_REL]).trim()).toBe('');
+    expect(requestCount).toBe(requestsBefore);
+
+    // A restore of that branch-added tombstone against the base removes it again.
+    const restored = JSON.parse(await kbBibleCommit({
+      ids: [], baseBranch: 'main', baseCommit: head, restore_ids: ['kb-withdrawn'],
+    }, { folder: clone, remoteUrl }));
+    expect(restored.restored).toEqual(['kb-withdrawn']);
+    expect(restored.committed).toBe(true);
+    expect(readBible().demotions).toBeUndefined();
+    expect(readBible().entries).toEqual([]);
+  });
+
+  it('keeps existing entries byte-identical when adding a tombstone', async () => {
+    await kbSetup({ provider: 'http', remote: `http://127.0.0.1:${port}`, token }, { folder: clone });
+    const entries = [{ id: 'kb-one', title: 'one', extra: { z: 1, a: 2 } }, { id: 'kb-two', title: 'two' }];
+    fs.mkdirSync(path.join(clone, '.fleet'), { recursive: true });
+    fs.writeFileSync(path.join(clone, BIBLE_REL), JSON.stringify({
+      version: 3, provenance: { commit: null, branch: null, entry_count: 2 }, entries,
+    }, null, 2) + '\n');
+    git(clone, ['add', '-A']);
+    git(clone, ['commit', '--quiet', '-m', 'seed bible']);
+    const head = git(clone, ['rev-parse', 'HEAD']).trim();
+
+    const result = JSON.parse(await kbBibleCommit({
+      ids: [], baseBranch: 'main', baseCommit: head,
+      withdrawals: [{ id: 'kb-elsewhere', note: NOTE, evidence_files: ['src/a.ts'] }],
+    }, { folder: clone, remoteUrl }));
+
+    expect(result.withdrawn).toEqual(['kb-elsewhere']);
+    expect(result.entry_count).toBe(2);
+    expect(result.committed).toBe(true);
+    const bible = readBible();
+    expect(JSON.stringify(bible.entries)).toBe(JSON.stringify(entries));
+    expect(bible.demotions.map((d: { id: string }) => d.id)).toEqual(['kb-elsewhere']);
+  });
+});

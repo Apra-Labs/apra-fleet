@@ -1,0 +1,32 @@
+{
+  "route": "withdraw",
+  "case": "evidence-unresolved-accepted",
+  "kind": "happy",
+  "request": {
+    "method": "POST",
+    "path": "/api/kb/withdraw",
+    "body": {
+      "withdrawals": [
+        {
+          "id": "{{ENTRY_GONE_EVIDENCE}}",
+          "at": "2999-01-01T00:00:00.000Z",
+          "reason": "withdrawn",
+          "evidence_files": [
+            "src/deleted-since.ts"
+          ]
+        }
+      ]
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "results": [
+        {
+          "id": "{{ENTRY_GONE_EVIDENCE}}",
+          "outcome": "withdrawn"
+        }
+      ]
+    }
+  }
+}
