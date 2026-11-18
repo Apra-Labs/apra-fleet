@@ -60,3 +60,41 @@ export function formatRedBuildIntegSkipReason(cycle) {
 export function redBuildIntegSkipEntry(cycle) {
     return { cycle, notes: formatRedBuildIntegSkipReason(cycle), bugsFiled: [], redBuildSkip: true };
 }
+
+/**
+ * The Final Review verdict reason for a run whose Integration Test was skipped
+ * for a red build and never ran after a later green review.
+ * @param {{ cycle: number }} skip The latest red-build integ skip.
+ * @returns {string}
+ */
+export function formatRedBuildIntegSkipVerdictReason(skip) {
+    return `Integration Test was skipped in C${skip.cycle} because the last review reported the build/tests ` +
+        'failing, and no later review reported them passing with Integration Test then run -- the sprint ' +
+        'was never integration-tested on a green build and cannot PASS.';
+}
+
+/**
+ * Applies the red-build integ-skip gate to the Final Review verdict. Returns a
+ * NEW verdict object (never mutates the dispatch result). With no outstanding
+ * skip, returns the input unchanged. With one, the verdict is FAIL and the
+ * notes start with the reason; an LLM PASS is overridden, an LLM FAIL keeps
+ * its own notes after it.
+ *
+ * @param {object} verdictResult Final Review verdict ({verdict, notes, ...}).
+ * @param {{ cycle: number } | null} skip The latest red-build integ skip not
+ *   cleared by a later green review and Integration Test run, or null.
+ * @returns {object}
+ */
+export function applyRedBuildIntegSkipVerdictGate(verdictResult, skip) {
+    if (!skip) return verdictResult;
+    const reason = formatRedBuildIntegSkipVerdictReason(skip);
+    const prior = verdictResult && typeof verdictResult.notes === 'string' ? verdictResult.notes : '';
+    const overridden = !verdictResult || verdictResult.verdict === 'PASS';
+    return {
+        ...(verdictResult || {}),
+        verdict: 'FAIL',
+        notes: reason +
+            (overridden ? ' (Final Review returned PASS; the orchestrator overrode it to FAIL.)' : '') +
+            (prior ? `\n\n${prior}` : ''),
+    };
+}

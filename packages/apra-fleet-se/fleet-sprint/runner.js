@@ -3571,6 +3571,11 @@ async function runSprintCycle(context) {
     // ran reported the build/tests failing. Gates the Integration Test
     // dispatch below; a cycle that runs no review carries it unchanged.
     let lastBuildFailing = false;
+    // The latest cycle whose Integration Test was skipped for a red build
+    // ({cycle}); cleared when Integration Test later runs (which it only does
+    // once a later review reported the build green). Non-null at Final Review
+    // forces the sprint verdict to FAIL.
+    let redBuildIntegSkip = null;
 
     while (cycle <= effectiveMaxCycles) {
         group(`Sprint Cycle ${cycle}`);
@@ -4008,7 +4013,9 @@ async function runSprintCycle(context) {
             // in integFailures so Final Review and the sprint report see it.
             log(formatRedBuildIntegSkipReason(cycle));
             integFailures.push(redBuildIntegSkipEntry(cycle));
+            redBuildIntegSkip = { cycle };
         } else if (hasPlaybook && deployedThisCycle) {
+            redBuildIntegSkip = null;
             // The phase body lives in ./phases/integ-test.mjs
             // (apra-fleet-3swo.6.8), which receives its state explicitly
             // instead of closing over runSprintCycle's locals. The two
@@ -4455,6 +4462,7 @@ async function runSprintCycle(context) {
         bdListScoped, decomposedParentIds, goalMax, NOT_DONE_STATUSES,
         reclaimCappedIds: orphanClaims.cappedIds(),
         verifyBlockDiagnosis,
+        redBuildIntegSkip,
         workedOnIds: workedOnBeadIds,
         kbPriming, kbWork, kbInjection, kbSprintContext, getMemberForRole,
         childIdAllocator, sprintMutexId, resolveSettleShell,

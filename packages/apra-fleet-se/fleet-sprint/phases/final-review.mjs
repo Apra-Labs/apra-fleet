@@ -92,6 +92,7 @@ import { buildSettleCallback } from '../dolt-settle.mjs';
 import { partitionDeferredBeads } from '../beads-scope.mjs';
 import { applyDeployFailureVerdictGate, formatDeployFailureReason } from './deploy.mjs';
 import { applyVerifyBlockVerdictGate } from '../verify-block.mjs';
+import { applyRedBuildIntegSkipVerdictGate, formatRedBuildIntegSkipVerdictReason } from '../red-build-integ-gate.mjs';
 
 /**
  * Runs the Final Review phase: the sprint's closing evidence-based verdict,
@@ -143,6 +144,11 @@ export async function runFinalReviewPhase({
     // GitHub #717: the named verify-block deadlock diagnosis the cycle loop
     // exited on, or null. Non-null forces a FAIL verdict (never PASS).
     verifyBlockDiagnosis = null,
+    // The latest cycle whose Integration Test was skipped because the last
+    // review reported a red build ({cycle}), or null once a later green
+    // review let Integration Test run. Non-null forces a FAIL verdict
+    // (../red-build-integ-gate.mjs).
+    redBuildIntegSkip = null,
     // runSprintCycle-scoped locals and runner-module-private values, injected
     // rather than imported (see header).
     bdListScoped,
@@ -333,6 +339,11 @@ export async function runFinalReviewPhase({
         const llmVerdict = finalVerdictResult && finalVerdictResult.verdict;
         finalVerdictResult = applyVerifyBlockVerdictGate(finalVerdictResult, verifyBlockDiagnosis);
         log(`Final Review: sprint verdict forced to FAIL (Final Review returned ${llmVerdict ?? '(none)'}) -- ${verifyBlockDiagnosis}`);
+    }
+    if (redBuildIntegSkip) {
+        const llmVerdict = finalVerdictResult && finalVerdictResult.verdict;
+        finalVerdictResult = applyRedBuildIntegSkipVerdictGate(finalVerdictResult, redBuildIntegSkip);
+        log(`Final Review: sprint verdict forced to FAIL (Final Review returned ${llmVerdict ?? '(none)'}) -- ${formatRedBuildIntegSkipVerdictReason(redBuildIntegSkip)}`);
     }
     if (finalVerdictResult && Array.isArray(reclaimCappedIds) && reclaimCappedIds.length > 0) {
         const cappedNote = `${reclaimCappedIds.length} bead(s) were left 'in_progress' by failed doer streaks of this sprint more often than the re-dispatch cap allows and were NOT re-laned again -- needs human investigation: ${reclaimCappedIds.join(', ')}.`;

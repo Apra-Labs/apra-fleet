@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 
 import {
     nextLastBuildFailing, formatRedBuildIntegSkipReason, redBuildIntegSkipEntry,
+    applyRedBuildIntegSkipVerdictGate, formatRedBuildIntegSkipVerdictReason,
 } from '../fleet-sprint/red-build-integ-gate.mjs';
+import { runFinalReviewPhase } from '../fleet-sprint/phases/final-review.mjs';
 import { runReviewPhase } from '../fleet-sprint/phases/review.mjs';
 import { runReReviewPhase } from '../fleet-sprint/phases/re-review.mjs';
 
@@ -115,5 +117,96 @@ describe('review phases return lastBuildFailing', () => {
         assert.equal(red.lastBuildFailing, true);
         const green = await runReReviewPhase(phaseState(GREEN, { lastBuildFailing: true }));
         assert.equal(green.lastBuildFailing, false);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Final Review: a run whose Integration Test was skipped for a red build, and
+// never ran after a later green review, never publishes PASS.
+// ---------------------------------------------------------------------------
+
+describe('applyRedBuildIntegSkipVerdictGate', () => {
+    test('no outstanding skip returns the verdict unchanged (same object)', () => {
+        const v = { verdict: 'PASS', notes: 'ok' };
+        assert.equal(applyRedBuildIntegSkipVerdictGate(v, null), v);
+    });
+    test('an LLM PASS with an outstanding skip becomes FAIL naming the skip, and says it was overridden', () => {
+        const v = { verdict: 'PASS', notes: 'All good.', newTasks: [] };
+        const out = applyRedBuildIntegSkipVerdictGate(v, { cycle: 3 });
+        assert.equal(out.verdict, 'FAIL');
+        assert.ok(out.notes.startsWith(formatRedBuildIntegSkipVerdictReason({ cycle: 3 })), out.notes);
+        assert.match(out.notes, /Integration Test was skipped in C3 because the last review reported the build\/tests failing/);
+        assert.match(out.notes, /overrode it to FAIL/);
+        assert.match(out.notes, /All good\.$/);
+        assert.deepEqual(out.newTasks, []);
+        assert.equal(v.verdict, 'PASS', 'the dispatch result is never mutated');
+    });
+    test('an LLM FAIL stays FAIL, names the skip, and claims no override', () => {
+        const out = applyRedBuildIntegSkipVerdictGate({ verdict: 'FAIL', notes: 'Red.' }, { cycle: 1 });
+        assert.equal(out.verdict, 'FAIL');
+        assert.match(out.notes, /skipped in C1/);
+        assert.doesNotMatch(out.notes, /overrode/);
+    });
+});
+
+/** The real runFinalReviewPhase against fakes; the dispatch returns `llm`. */
+function finalReviewState({ llm, redBuildIntegSkip }) {
+    const logs = [];
+    const kbWork = {
+        promotionCandidates: async () => [], demotionCandidates: async () => [],
+        apply: async () => ({}), commitRound: async () => ({}), warnPending: () => {}, seal: () => {},
+    };
+    const dispatchCtx = {
+        agent: async () => ({ ...llm }),
+        log: (line) => logs.push(String(line)),
+        getMemberForRole: () => 'reviewer-member',
+        memberSessionGuard: { killIfAlive: async () => {} },
+        onLlmAuthFailure: async () => ({ healed: false }),
+        onUsageLimit: async () => {},
+        fixedRoleTier: () => undefined,
+        budgets: { DISPATCH_INACTIVITY_TIMEOUT_S: 60, DISPATCH_TIMEOUT_S: 600, FINAL_REVIEW_MAX_TURNS: 120 },
+        schemas: { finalVerdict: { type: 'object' } },
+        isNoMutationDispatchFailure: () => false,
+        invalidateAllBeadsCache: () => {},
+        withGitSync: async (member, pushCode, invoke) => invoke(),
+        withDispatchWatchdog: async (inFlight) => inFlight,
+        steps: { 'kb-apply': async () => ({}) },
+    };
+    const state = {
+        phase: () => {}, log: (line) => logs.push(String(line)), command: async () => ({ ok: true, output: '' }),
+        dispatchCtx, args: {},
+        validated: { baseBranch: 'main', branch: 'feat/thing', goal: 'P1' },
+        targetIssues: ['BD-1'], backlogMember: 'backlog-member', finalCycleLabel: 3, sprintState: {},
+        gitSync: { syncBeadsBefore: async () => {}, pushBeadsAfter: async () => {} },
+        deployFailures: [], integFailures: [], rejectedNewTasks: [], verifyEverIds: new Set(),
+        redBuildIntegSkip,
+        bdListScoped: async () => [], decomposedParentIds: async () => new Set(), goalMax: 2,
+        NOT_DONE_STATUSES: 'open,in_progress',
+        kbPriming: { knowledgeOf: () => undefined }, kbInjection: null, kbSprintContext: {}, kbWork,
+        getMemberForRole: () => 'reviewer-member',
+        childIdAllocator: null, sprintMutexId: 'sprint-1', resolveSettleShell: async () => undefined,
+        computeChildFloor: async () => 0, createChildBeadWithAllocatedId: async () => ({}),
+        sanitizePrText: (s) => String(s || ''),
+        reviewMergeBaseFor: async () => 'abcdef0123456789abcdef0123456789abcdef01',
+    };
+    return { state, logs };
+}
+
+describe('Final Review: red-build integ-skip verdict gate', () => {
+    test('Final Review LLM PASS + a recorded red-build integ skip with no later green review -> FAIL, reason logged', async () => {
+        const { state, logs } = finalReviewState({ llm: { verdict: 'PASS', notes: 'Rubber-stamp PASS.' }, redBuildIntegSkip: { cycle: 2 } });
+        const { finalVerdictResult } = await runFinalReviewPhase(state);
+        assert.equal(finalVerdictResult.verdict, 'FAIL');
+        assert.match(finalVerdictResult.notes, /Integration Test was skipped in C2 because the last review reported the build\/tests failing/);
+        const forced = logs.filter((l) => /sprint verdict forced to FAIL \(Final Review returned PASS\)/.test(l));
+        assert.equal(forced.length, 1, `expected one override log line: ${JSON.stringify(logs)}`);
+        assert.ok(forced[0].includes(formatRedBuildIntegSkipVerdictReason({ cycle: 2 })), forced[0]);
+    });
+    test('a red-build skip later cleared by a green review and an integ run (null at Final Review) -> verdict unchanged', async () => {
+        const { state, logs } = finalReviewState({ llm: { verdict: 'PASS', notes: 'All good.' }, redBuildIntegSkip: null });
+        const { finalVerdictResult } = await runFinalReviewPhase(state);
+        assert.equal(finalVerdictResult.verdict, 'PASS');
+        assert.equal(finalVerdictResult.notes, 'All good.');
+        assert.ok(!logs.some((l) => /forced to FAIL/.test(l)), JSON.stringify(logs));
     });
 });
