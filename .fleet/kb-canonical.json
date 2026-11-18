@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "f9cb1ca7c3f0f03debb783f6ef40a261554b7b0b",
     "branch": "main",
-    "entry_count": 157
+    "entry_count": 158
   },
   "entries": [
     {
@@ -2099,6 +2099,29 @@
         "packages/apra-fleet-se/fleet-sprint/member-provisioning.mjs": "0dffb028188c744e0bcc172691eb9fc79bfb354b",
         "scripts/check-ascii-only.mjs": "41b4a29f5da8bab14176874fe7ae5e973f7e2d56",
         "tests/ascii-only-gate.test.ts": "c039aafa21aff35c2f4d50769bb8f72c91be7674"
+      }
+    },
+    {
+      "id": "af3efada-2248-4f8b-b1a8-6ebd81dfd9ec",
+      "type": "knowledge",
+      "title": "kb_bible_commit demoted-tombstone gate uses raw nullable trust time",
+      "summary": "In kbBibleCommit an ids id with a demoted tombstone in the bible file merges only when standingAgainstTombstone(getBibleTrustTimes raw value, at) is repromoted; null trust or at-equal skips with demoted_tombstone. A separate heal drops any entry whose id also has a tombstone, reporting removed reason tombstoned.",
+      "symbols": [
+        "kbBibleCommit",
+        "standingAgainstTombstone",
+        "getBibleTrustTimes"
+      ],
+      "source_files": [
+        "src/tools/kb-bible-commit.ts",
+        "src/services/knowledge/bible-import.ts",
+        "tests/knowledge/kb-bible-tombstone-entry-exclusive.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T17:23:30.545Z",
+      "source_file_hashes": {
+        "src/services/knowledge/bible-import.ts": "a717226586d21e5c2496b21c0ea3e212bde4ca10",
+        "src/tools/kb-bible-commit.ts": "663a7633cfa3731e157fdbf0b3beb25c7addfb9f",
+        "tests/knowledge/kb-bible-tombstone-entry-exclusive.test.ts": "d08879c5dfb4bdf961496bffd90f6c0576312da8"
       }
     },
     {
