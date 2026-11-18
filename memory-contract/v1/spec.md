@@ -426,7 +426,8 @@ working folder, which is typically a feature branch.
   every entry already in the bible is kept unless the KB holds it as
   superseded or invalidated. Those are REMOVED at every call (also with no
   ids) and listed in the response's `removed` as `{id, reason}` (reason
-  `superseded` or `invalidated`) and in the commit message. An entry in the
+  `superseded` or `invalidated`; `tombstoned` for an entry whose id the file
+  also carries a tombstone for) and in the commit message. An entry in the
   file but absent from the KB, one the KB holds as CONFIRMED and current, and
   a merely stale one (freshness sweep) are never dropped. `kb_export` stays
   additive-only: it never removes an entry. Ids that are not live CONFIRMED entries are skipped
@@ -563,6 +564,14 @@ takes effect for other clones only once that branch merges:
   never replaces a `withdrawn` one for the same id. Otherwise the demoted
   tombstone would replace the withdrawal, and a later `ids` re-promotion (which
   clears `demoted` tombstones) would erase it -- a route around `restore_ids`.
+- A `demoted` tombstone in the current bible file blocks an `ids` merge unless
+  the local row's trust time is strictly after the tombstone's `at` (a real
+  re-promotion, which clears the tombstone). Otherwise (trust time at or before
+  `at`, or null because the trust came from a bible) the id is skipped with
+  reason `demoted_tombstone` and the tombstone is kept. An id is never written
+  as both an entry and a tombstone: on every call that reaches the write path,
+  an id found in both entries and demotions loses its entry (the tombstone wins)
+  and is listed in `removed` with reason `tombstoned`.
 - When a rule needs the bible at `baseCommit` (the demotion base gate or a
   restore) and it cannot be read -- `baseCommit` does not resolve, or its
   bible does not parse -- the call fails closed (no new `demoted` tombstone, no

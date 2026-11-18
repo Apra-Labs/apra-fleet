@@ -305,7 +305,11 @@ const KB_RESPONSE_BODIES = {
   // tombstone for is skipped with reason withdrawn_tombstone and the tombstone
   // kept: a demoted tombstone never replaces a withdrawn one (the every-call
   // demotion rule passes over it too), so a later ids re-promotion cannot clear
-  // the withdrawal. base_bible_error (optional string) names why the bible at
+  // the withdrawal. An ids merge of an id the current file carries a demoted
+  // tombstone for is skipped with reason demoted_tombstone (tombstone kept)
+  // unless the local trust time is strictly after the tombstone's at; an id the
+  // file holds in both entries and demotions loses its entry on every call and
+  // is reported in removed with reason tombstoned. base_bible_error (optional string) names why the bible at
   // baseCommit could not be read (baseCommit does not resolve, or its bible does
   // not parse) when a rule needed it (demotion gate or restore); absent when the
   // base was read fine or never needed -- the call still fails closed. Under the
@@ -321,11 +325,11 @@ const KB_RESPONSE_BODIES = {
     skipped: z.array(z.object({
       id: z.string(),
       reason: z.enum(['not_confirmed_or_unknown', 'no_source_files', 'basis_mismatch', 'not_demoted_or_unknown', 'not_withdrawable',
-        'withdrawn_tombstone', 'not_in_base_bible']),
+        'withdrawn_tombstone', 'demoted_tombstone', 'not_in_base_bible']),
     })),
     removed: z.array(z.object({
       id: z.string(),
-      reason: z.enum(['superseded', 'invalidated']),
+      reason: z.enum(['superseded', 'invalidated', 'tombstoned']),
     })),
     entry_count: z.number(),
     backfilled: z.number(),

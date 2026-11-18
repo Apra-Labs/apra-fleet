@@ -754,7 +754,11 @@
  *   with reason basis_mismatch, and a CONFIRMED id citing no source file is skipped with
  *   reason no_source_files. An id the bible file carries a withdrawn tombstone for is
  *   skipped with reason withdrawn_tombstone (tombstone kept) unless restore_ids undoes that
- *   branch-added tombstone in the same call. Skips are reported in the result's skipped list.
+ *   branch-added tombstone in the same call. An id the file carries a demoted tombstone for
+ *   is merged only when its local trust time is strictly after the tombstone's at (a real
+ *   re-promotion); otherwise it is skipped with reason demoted_tombstone and the tombstone
+ *   is kept. An id found in both entries and demotions loses its entry on every call
+ *   (removed, reason tombstoned). Skips are reported in the result's skipped list.
  *   Independently of ids, bible entries the KB holds as superseded or invalidated are
  *   removed and reported in the result's removed list, and existing bible entries with
  *   no source_file_hashes gain the KB's stored basis for the same id when it passes the
@@ -903,9 +907,11 @@
  *   tombstone for, not restored by the same call, or a demoted_ids id with a withdrawn
  *   tombstone in the file -- a demoted tombstone never replaces a withdrawn one; the
  *   tombstone is kept) or not_in_base_bible (a demoted_ids id the bible at baseCommit does
- *   not carry).
+ *   not carry), or demoted_tombstone (an `ids` id the file carries a demoted tombstone for whose
+ *   trust time is not after the tombstone; the tombstone is kept).
  * @property {{id: string, reason: string}[]} removed - Entries removed because the KB holds them
- *   superseded or invalidated.
+ *   superseded or invalidated, or (reason tombstoned) because the file also carries a
+ *   tombstone for the id (the tombstone wins).
  * @property {number} entry_count - Entries in the resulting bible (a tombstone is not an entry).
  * @property {number} backfilled - Legacy entries that gained source_file_hashes.
  * @property {boolean} committed - True only when a local commit of the bible path was made.

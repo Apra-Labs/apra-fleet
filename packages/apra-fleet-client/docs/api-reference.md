@@ -743,7 +743,12 @@ skipped with reason `withdrawn_tombstone` and the tombstone kept, unless
 withdrawn tombstone in the file is skipped with reason `withdrawn_tombstone`,
 the every-call demotion rule passes over it, and a demoted tombstone never
 replaces a withdrawn one, so a later `ids` re-promotion cannot clear the
-withdrawal. `provenance.entry_count` counts entries only.
+withdrawal. A `demoted` tombstone in the file blocks an `ids` merge unless the
+id's local trust time is strictly after the tombstone `at` (a real re-promotion,
+which clears it); otherwise the id is skipped with reason `demoted_tombstone` and
+the tombstone kept. An id found in both entries and demotions loses its entry on
+every call (the tombstone wins) and is listed in `removed` with reason
+`tombstoned`. `provenance.entry_count` counts entries only.
 
 Optional `withdrawals` (`[{id, note, evidence_files}]`; `note` at least 20
 characters after whitespace is collapsed, at least one repo-relative evidence

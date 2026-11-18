@@ -165,6 +165,12 @@ Write-safety rules in `kb_bible_commit`:
   lifts it, and a restore followed by a merge in the same call works because
   restores are planned before the merge. Demoted tombstones keep the
   re-promotion rule instead.
+- A demoted tombstone in the file blocks an `ids` merge unless the id's local
+  trust time is strictly after the tombstone `at` (a real re-promotion, which
+  clears it). Otherwise (trust time at or before `at`, or null) the id is
+  skipped with `demoted_tombstone` and the tombstone is kept. An id found in
+  both entries and demotions loses its entry on every call (`removed`, reason
+  `tombstoned`), so a file never holds an id as both.
 - A withdrawn tombstone also outranks a demotion. A `demoted_ids` id with a
   withdrawn tombstone in the file is skipped with `withdrawn_tombstone`, the
   every-call demotion rule passes over it, and a demoted tombstone never
