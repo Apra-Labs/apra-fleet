@@ -301,7 +301,19 @@ const KB_RESPONSE_BODIES = {
   // withdrawn tombstone for (and this call does not restore) is skipped with
   // reason withdrawn_tombstone. A demoted_ids id the bible at baseCommit does
   // not carry (or an unreadable/unresolvable base) is skipped with reason
-  // not_in_base_bible. Under the http provider bible_skipped stays true for the
+  // not_in_base_bible. A demoted_ids id the current file carries a withdrawn
+  // tombstone for is skipped with reason withdrawn_tombstone and the tombstone
+  // kept: a demoted tombstone never replaces a withdrawn one (the every-call
+  // demotion rule passes over it too), so a later ids re-promotion cannot clear
+  // the withdrawal. An ids merge of an id the current file carries a demoted
+  // tombstone for is skipped with reason demoted_tombstone (tombstone kept)
+  // unless the local trust time is strictly after the tombstone's at; an id the
+  // file holds in both entries and demotions loses its entry on every call and
+  // is reported in removed with reason tombstoned. base_bible_error (optional string) names why the bible at
+  // baseCommit could not be read (baseCommit does not resolve, or its bible does
+  // not parse) when a rule needed it (demotion gate or restore); absent when the
+  // base was read fine or never needed -- the call still fails closed. Under the
+  // http provider bible_skipped stays true for the
   // entry merge, but withdrawals/restores still write the tombstones, so
   // committed may be true there.
   kb_bible_commit: z.object({
@@ -313,17 +325,18 @@ const KB_RESPONSE_BODIES = {
     skipped: z.array(z.object({
       id: z.string(),
       reason: z.enum(['not_confirmed_or_unknown', 'no_source_files', 'basis_mismatch', 'not_demoted_or_unknown', 'not_withdrawable',
-        'withdrawn_tombstone', 'not_in_base_bible']),
+        'withdrawn_tombstone', 'demoted_tombstone', 'not_in_base_bible']),
     })),
     removed: z.array(z.object({
       id: z.string(),
-      reason: z.enum(['superseded', 'invalidated']),
+      reason: z.enum(['superseded', 'invalidated', 'tombstoned']),
     })),
     entry_count: z.number(),
     backfilled: z.number(),
     committed: z.boolean(),
     bible_skipped: z.literal(true).optional(),
     reason: z.string().optional(),
+    base_bible_error: z.string().optional(),
   }),
   // F-9: kb_stats spreads ProviderStats (whose supported/reason/coverage are
   // only present for a provider that cannot compute stats at all) and adds

@@ -1,7 +1,7 @@
 {
   "version": 3,
   "provenance": {
-    "commit": "22bbb3cfdfd5d77962b5fb6d85da8c1e833f79c1",
+    "commit": "f9cb1ca7c3f0f03debb783f6ef40a261554b7b0b",
     "branch": "main",
     "entry_count": 156
   },
@@ -1462,6 +1462,26 @@
       }
     },
     {
+      "id": "7aa5d76d-5714-473e-a9d3-235101aa5fcf",
+      "type": "learning",
+      "title": "parseBibleDocument clamps future tombstone at times to now",
+      "summary": "A tombstone whose at is in the future is clamped to the current time when a bible is parsed, so tests cannot rely on a far-future at to stand against a row's trust time.",
+      "symbols": [
+        "clampBibleTimeToNow",
+        "standingAgainstTombstone"
+      ],
+      "source_files": [
+        "src/services/knowledge/bible-import.ts",
+        "tests/knowledge/kb-bible-tombstone-entry-exclusive.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T17:07:12.521Z",
+      "source_file_hashes": {
+        "src/services/knowledge/bible-import.ts": "a717226586d21e5c2496b21c0ea3e212bde4ca10",
+        "tests/knowledge/kb-bible-tombstone-entry-exclusive.test.ts": "d08879c5dfb4bdf961496bffd90f6c0576312da8"
+      }
+    },
+    {
       "id": "7d7320d0-ed80-4b16-8ac8-c5df806cea55",
       "type": "knowledge",
       "title": "member-init install-currency warning is recorded under a non-gating step",
@@ -1890,32 +1910,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:16.248Z"
-    },
-    {
-      "id": "a098caf8-263f-4b72-b5a7-55fc3d290a07",
-      "type": "knowledge",
-      "title": "Set-aside stall throws StalledSprintError before the 2-cycle stall and deploy-retry exit",
-      "summary": "runner.js throwIfSetAsideStall runs at the start of a Develop round (all ready beads set aside) and at Cycle Evaluation before STALL_CYCLE_LIMIT and the deploy-blocked retry; set-aside.mjs evaluateSetAsideStall decides it purely.",
-      "symbols": [
-        "throwIfSetAsideStall",
-        "evaluateSetAsideStall",
-        "collectSetAsideEntries",
-        "StalledSprintError"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/fleet-sprint/runner.js",
-        "packages/apra-fleet-se/fleet-sprint/set-aside.mjs",
-        "packages/apra-fleet-se/fleet-sprint/abort.mjs",
-        "packages/apra-fleet-se/test/mock-sprint-blocked-stall-cycle1.test.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-10-22T05:40:50.485Z",
-      "source_file_hashes": {
-        "packages/apra-fleet-se/fleet-sprint/abort.mjs": "46fd9dc81c6edbfa975e667e5b3569f60df616a7",
-        "packages/apra-fleet-se/fleet-sprint/runner.js": "7d6e9fb4da7578f3b9c0ccefc2b94c9322a4c13a",
-        "packages/apra-fleet-se/fleet-sprint/set-aside.mjs": "9973ffdded67807fead8b497b2acd817253cb23b",
-        "packages/apra-fleet-se/test/mock-sprint-blocked-stall-cycle1.test.mjs": "773f66cbc9726bc770c4f399da3699cbe5b2e0b5"
-      }
     },
     {
       "id": "a1a279ec-5537-4820-a23a-c9a7737f2507",
