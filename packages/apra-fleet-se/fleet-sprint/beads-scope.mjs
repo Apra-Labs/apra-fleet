@@ -35,7 +35,10 @@
 //       unrecognized `bd` subcommand are conservatively treated as mutations
 //       and drop it. The failure mode is a redundant full fetch, never
 //       silently stale data. Non-`bd` commands (git, node probes) never touch
-//       beads state.
+//       beads state. Classification is on the LOGICAL command: the env
+//       prefix a Windows member's bd sync carries (bd-sync-command.mjs) is
+//       stripped first, and a caller may pass opts.logicalCommand. The drop
+//       happens in a finally, so a mutation that throws still drops it.
 //   (c) EVERY planner dispatch that returns successfully -- runner.js calls
 //       invalidateAllBeadsCache() explicitly right after dispatchPlanner() in
 //       both the main Planning Loop and the in-cycle scoped replan. The
@@ -78,6 +81,8 @@
 // fetchAllBeadsShared().
 // =============================================================================
 
+import { logicalBdCommand } from './bd-sync-command.mjs';
+
 /**
  * `bd` subcommands that can never change beads state, so they must not drop a
  * cached full-DB snapshot. Anything else starting with `bd` is conservatively
@@ -95,8 +100,12 @@ export const BD_READ_ONLY_RE = /^bd\s+(list|show|ready|config)\b/i;
  */
 export function isBeadsMutatingCommand(cmdStr) {
     if (typeof cmdStr !== 'string') return false;
-    const trimmed = cmdStr.trim();
-    return /^bd\b/i.test(trimmed) && !BD_READ_ONLY_RE.test(trimmed);
+    // Classify the LOGICAL command: on a Windows member a D-pull goes out as
+    // `GOMAXPROCS=1 bd dolt pull` (gitbash) or `$env:GOMAXPROCS='1'; bd dolt
+    // pull` (PowerShell). Testing the raw wire string would call both "not a
+    // bd command" and keep a stale snapshot after the pull.
+    const logical = logicalBdCommand(cmdStr);
+    return /^bd\b/i.test(logical) && !BD_READ_ONLY_RE.test(logical);
 }
 
 // ---------------------------------------------------------------------------
@@ -864,13 +873,24 @@ export function createBeadsScope(opts = {}) {
         }
         const onCommand = typeof wrapOpts.onCommand === 'function' ? wrapOpts.onCommand : null;
         const wrapped = async (cmdStr, cmdOpts) => {
-            const result = await rawCommand(cmdStr, cmdOpts);
-            if (typeof cmdStr === 'string') {
-                const trimmed = cmdStr.trim();
-                if (isBeadsMutatingCommand(trimmed)) {
-                    invalidateAllBeadsCache();
-                }
-                if (onCommand) onCommand(trimmed, cmdOpts);
+            // Classify on the LOGICAL command when the caller supplies it
+            // (runDoltStep passes `logicalCommand` alongside its member-bound,
+            // possibly env-prefixed wire string); otherwise on the wire
+            // string, which isBeadsMutatingCommand also de-prefixes.
+            const logical = cmdOpts && typeof cmdOpts.logicalCommand === 'string'
+                ? cmdOpts.logicalCommand
+                : cmdStr;
+            const mutating = isBeadsMutatingCommand(logical);
+            let result;
+            try {
+                result = await rawCommand(cmdStr, cmdOpts);
+            } finally {
+                // In a finally: a mutation that THROWS may still have changed
+                // beads state on the member, so the snapshot is dropped either way.
+                if (mutating) invalidateAllBeadsCache();
+            }
+            if (typeof cmdStr === 'string' && onCommand) {
+                onCommand(logicalBdCommand(typeof logical === 'string' ? logical : cmdStr), cmdOpts);
             }
             return result;
         };

@@ -970,7 +970,9 @@ async function runDoltStep({ command, member, cmd, label, log, maxTransientRetri
     // eslint-disable-next-line no-constant-condition
     while (true) {
         const attemptStartedAt = now();
-        const pending = Promise.resolve(command(issued, { member_name: member, silent: true, failSoft: true, label, timeout_s: timeoutS }));
+        // `logicalCommand` lets the beads-scope wrapper classify the unprefixed
+        // command (a prefixed D-pull must still drop the shared snapshot).
+        const pending = Promise.resolve(command(issued, { member_name: member, silent: true, failSoft: true, label, timeout_s: timeoutS, logicalCommand: cmd }));
         const waited = await awaitSyncAttempt({ pending, command, member, target, label, log, attemptStartedAt, now, lockProbeAfterMs, lockProbeTimer });
         if (waited.lockHeld) {
             // The sync command is still waiting on the member; stop waiting
