@@ -602,7 +602,7 @@ repository with an origin remote, or the fleet server working folder when the
 client offers no roots). The
 pre-redesign scope keys `repo_path`, `repo` and `repo_remote_url` are removed:
 the server refuses a call carrying any of them with `E-SCOPE-KEY-REMOVED`,
-and `kbExport` / `kbBibleCommit` / `kbDemote` refuse them client-side with the same code
+and `kbExport` / `kbBibleCommit` / `kbQuery` / `kbDemote` refuse them client-side with the same code
 before sending (`assertNoRemovedKbScopeKeys`, `KB_REMOVED_SCOPE_KEYS` are
 exported). For direct `callTool` users: `kb_list` accepts `confidence` as a
 list or as one tier string, and `kb_context` defaults to
@@ -718,6 +718,31 @@ Under the http KB provider the call is skipped, never an error: the result is
 backfilled: 0, committed: false, bible_skipped: true, reason}`, where
 `entry_count` counts the entries of the existing bible file (0 when it is
 absent or unreadable); the KB is not read and nothing is written or committed.
+
+#### `kbQuery(options: KbQueryOptions)`
+
+Calls `kb_query` -- the two-level knowledge bank search. Options (`KbQueryOptions`,
+one field per `kb_query` request field): `query`, `type`, `tag`, `limit`,
+`include_stale`, `files`, `symbols`, `flagged_only`, `expand_related`,
+`confidence`, `exclude_disputed`, `own_scope`. At least one of `query`, `files`,
+`symbols`, `tag` or `flagged_only` is required (`E-QUERY-NO-SELECTOR`).
+
+Look up by file with `files` (repo-relative paths; a directory matches the
+files under it, so `src/services` matches `src/services/a.ts` but not
+`src/services-old/a.ts`) and/or `symbols` (exact names). They are a hard
+filter: only entries citing one of the files or naming one of the symbols come
+back (with both, either match keeps an entry), however strongly another entry
+matches `query`; ranking inside the kept set is unchanged, and either may be
+used without `query`. Under the http KB provider the filter is sent only when
+the KB server lists the field in `query_filters` of `GET /api/kb/capabilities`;
+otherwise the call fails with `E-KB-HTTP-UNSUPPORTED` naming the filter and
+nothing is read. Like `kbExport` / `kbBibleCommit`, the removed scope keys
+(`repo_path`, `repo`, `repo_remote_url`) are refused client-side with
+`E-SCOPE-KEY-REMOVED` before anything is sent.
+
+Result JSON: `{l1_results, l2_expanded, related_claims?}`, or
+`{flagged_entries, total, note}` with `flagged_only`; member-session defaults
+as described above.
 
 #### `kbDemote(options: KbDemoteOptions)`
 
