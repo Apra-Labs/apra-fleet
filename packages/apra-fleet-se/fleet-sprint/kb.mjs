@@ -767,6 +767,19 @@ export function createKbWorkClient(opts = {}) {
             args: (p) => ({ id: p.id, reason: p.reason }),
             subject: (p) => p.id,
             counter: 'promoted',
+            // A 2xx is not by itself a promotion: count and queue a
+            // confirmation only for a real move to CONFIRMED. Reads only the
+            // contract fields {id, previous_confidence, new_confidence}.
+            accept: (p, res) => {
+                const parsed = parseResult(res);
+                if (parsed && typeof parsed === 'object') {
+                    if (parsed.new_confidence === 'CONFIRMED' && parsed.previous_confidence !== 'CONFIRMED') return true;
+                    log(`[kb-work] kb_promote: ${p.id} not promoted (${parsed.previous_confidence} -> ${parsed.new_confidence})`);
+                    return false;
+                }
+                log(`[kb-work] kb_promote: ${p.id} not promoted (unparseable result)`);
+                return false;
+            },
         },
         discard: {
             tool: 'kb_invalidate',
@@ -2056,7 +2069,7 @@ export function createKbPrimingClient(opts = {}) {
                             // `ref`. A local member runs in this server.
                             if (await supportsImportRef(target)) {
                                 imported = parseResult(await memberCall(target, 'kb_import', { skip_sweep: true, ref }, KB_MAINTAINER_CALL));
-                                if (imported && imported.bible_source !== ref) {
+                                if (imported && imported.bible_skipped !== true && imported.bible_source !== ref) {
                                     log(`[kb-prime] WARN kb_import on '${target.name || member}' did not report reading ${ref} (bible_source ${JSON.stringify(imported.bible_source)}) -- upgrade apra-fleet on that member`);
                                 }
                             } else {
