@@ -2929,16 +2929,22 @@ async function runSprintCycle(context) {
     // Runs on `member` -- the role member about to consume the probed file --
     // never on backlogMember: a shared/unreservable backlog member
     // carries no git checkout to probe.
-    async function probeFileExists(filename, member) {
+    // Detailed variant: distinguishes "probe says absent" from "the probe
+    // command itself failed" so a caller that must fail closed can tell them
+    // apart. `exists` is false in both non-found cases.
+    async function probeFileExistsDetailed(filename, member) {
         const res = await command(
             `node -e "console.log(require('fs').existsSync('${filename}') ? 'found' : 'not found')"`,
             { member_name: member, silent: true, label: `Probe for '${filename}'`, failSoft: true }
         );
         if (!res.ok) {
             log(`Probe for '${filename}' failed (treating as not-found, skipping the dependent phase): ${res.error}`);
-            return false;
+            return { exists: false, failed: true, error: String(res.error || 'probe command failed') };
         }
-        return res.output.trim() === 'found';
+        return { exists: res.output.trim() === 'found', failed: false, error: null };
+    }
+    async function probeFileExists(filename, member) {
+        return (await probeFileExistsDetailed(filename, member)).exists;
     }
 
     // Defense in depth: the pre-sprint health gate above already pulled this
@@ -3961,16 +3967,27 @@ async function runSprintCycle(context) {
         // error, portability quirk on a given member, etc.) SKIPS the dependent
         // phase with a logged warning -- it must never throw and kill the
         // sprint.
-        const hasDeploy = await probeFileExists('deploy.md', getMemberForRole('deployer'));
+        // The deploy.md probe fails CLOSED: a probe command failure (not a
+        // clean "not found") must not read as "no deploy.md", or it would
+        // clear lastDeployFailure/deployBlockedCycles and hide an earlier
+        // deploy failure or set-aside from both satisfied-exit gates and the
+        // Final Review verdict gate. It records this cycle's deploy failure.
+        const deployProbe = await probeFileExistsDetailed('deploy.md', getMemberForRole('deployer'));
+        const hasDeploy = deployProbe.exists || deployProbe.failed;
         const hasPlaybook = await probeFileExists('integ-test-playbook.md', getMemberForRole('integ-test-runner'));
 
         let deployedThisCycle = false;
+        if (deployProbe.failed) {
+            deployFailures.push({ cycle, notes: `deploy.md probe failed, deploy status unknown (fail closed): ${deployProbe.error}` });
+        }
 
         // Deploy set aside for the run (a Permissions pre-step failure in an
         // earlier cycle -- see DEPLOY SET-ASIDE in ./phases/deploy.mjs): never
         // dispatch the deployer again; this cycle's deploy counts as failed.
         const deploySetAside = sprintState.deploySetAside || null;
-        if (hasDeploy && deploySetAside) {
+        if (deployProbe.failed) {
+            log(`Skipping Deploy Phase C${cycle}: the deploy.md probe failed (${deployProbe.error}); counting this cycle's deploy as failed. Skipping Integration Test phase.`);
+        } else if (hasDeploy && deploySetAside) {
             log(`Skipping Deploy Phase C${cycle}: ${formatDeploySetAsideNotes(deploySetAside)}. Skipping Integration Test phase.`);
         } else if (hasDeploy) {
             // The phase body lives in ./phases/deploy.mjs
