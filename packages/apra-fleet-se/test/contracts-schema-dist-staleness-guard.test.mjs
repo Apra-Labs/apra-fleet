@@ -1,6 +1,7 @@
-import { test, describe } from 'node:test';
+import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 // apra-fleet-spp.2 -- guard against a stale, gitignored local dist/agents/
@@ -16,56 +17,93 @@ import path from 'node:path';
 // bugs) that CI never reproduces, because no CI workflow runs dist-pm before
 // tests.
 //
-// This test is a no-op skip when dist/agents/schemas does not exist locally
-// (the common case, including CI) -- it only activates for a developer who
-// already has a local dist/ build, which is exactly the population at risk
-// of silent staleness. When dist/agents/schemas DOES exist, every schema
-// file in it must be byte-identical to its package-local source
-// counterpart; any mismatch fails loudly and lists every drifted file with
-// a `npm run dist-pm` remediation hint, rather than letting the drift
-// manifest later as a confusing, hard-to-diagnose schema-validation failure.
+// This guard follows the freshness-first resolver: resolveSchemasDir() serves
+// dist/agents/schemas ONLY when its newest schema is at least as new as the
+// package-local source (a strictly older dist is already shadowed by source at
+// runtime, so it is harmless and must not fail the suite after a branch
+// switch). The guard therefore fails only when the resolver would actually
+// serve dist AND a dist schema differs from, or is missing from, the
+// package-local source; it lists every offender with a `npm run dist-pm`
+// remediation hint. No dist-pm run or pretest hook is needed to run npm test.
 
-const { DIST_BUNDLED_SCHEMAS_DIR, PACKAGE_LOCAL_SCHEMAS_DIR } = await import('../fleet-sprint/contracts.mjs');
+const { DIST_BUNDLED_SCHEMAS_DIR, PACKAGE_LOCAL_SCHEMAS_DIR, resolveSchemasDir } = await import('../fleet-sprint/contracts.mjs');
+
+/**
+ * Returns the drift report lines for a dist dir, or [] when nothing needs
+ * failing. `resolved` is what resolveSchemasDir() returned; the check only
+ * applies when it is the dist bundle.
+ */
+function distDriftReport(resolved, distDir, sourceDir) {
+    if (resolved !== DIST_BUNDLED_SCHEMAS_DIR || !isDirectory(distDir)) return [];
+    const drifted = [];
+    const missingSource = [];
+    for (const fileName of fs.readdirSync(distDir).filter((f) => f.endsWith('.json'))) {
+        const sourcePath = path.join(sourceDir, fileName);
+        if (!fs.existsSync(sourcePath)) { missingSource.push(fileName); continue; }
+        if (fs.readFileSync(path.join(distDir, fileName), 'utf-8') !== fs.readFileSync(sourcePath, 'utf-8')) drifted.push(fileName);
+    }
+    if (drifted.length === 0 && missingSource.length === 0) return [];
+    return [
+        'Stale dist/agents/schemas detected -- these schemas differ from (or are missing from) the package-local apra-pm source:',
+        ...drifted.map((f) => `  DRIFTED: ${f}`),
+        ...missingSource.map((f) => `  ONLY IN DIST (no package-local source): ${f}`),
+        '',
+        'Fix: run `npm run dist-pm` to refresh dist/ from the current source schemas.',
+    ];
+}
+
+// Resolver with both dirs present and the given freshness (ms) for each.
+const resolveWith = (distMs, sourceMs) => resolveSchemasDir({
+    env: {},
+    exists: () => true,
+    newestJsonMtimeMs: (dir) => (dir === DIST_BUNDLED_SCHEMAS_DIR ? distMs : sourceMs),
+});
 
 describe('dist/agents/schemas staleness guard', () => {
-    test('every dist-bundled schema (if present) is byte-identical to its package-local source', () => {
-        if (!isDirectory(DIST_BUNDLED_SCHEMAS_DIR)) {
-            // Nothing to guard: this checkout has no local dist/ build, so
-            // resolveSchemasDir() cannot possibly resolve a stale bundled
-            // schema -- the package-local source below is what will load.
-            return;
-        }
+    test('when the resolver would serve dist, every dist schema is byte-identical to its package-local source', () => {
+        const report = distDriftReport(resolveSchemasDir(), DIST_BUNDLED_SCHEMAS_DIR, PACKAGE_LOCAL_SCHEMAS_DIR);
+        if (report.length > 0) assert.fail(report.join('\n'));
+    });
 
-        const distFiles = fs.readdirSync(DIST_BUNDLED_SCHEMAS_DIR).filter((f) => f.endsWith('.json'));
-        const drifted = [];
-        const missingSource = [];
+    describe('temp-dir cases through the resolver deps seam', () => {
+        let tmp;
+        let dist;
+        let src;
+        before(() => {
+            tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dist-guard-'));
+            dist = path.join(tmp, 'dist');
+            src = path.join(tmp, 'src');
+            fs.mkdirSync(dist);
+            fs.mkdirSync(src);
+            fs.writeFileSync(path.join(src, 'a.json'), '{"v":2}');
+            fs.writeFileSync(path.join(dist, 'a.json'), '{"v":1}');
+            fs.writeFileSync(path.join(dist, 'orphan.json'), '{}');
+        });
+        after(() => fs.rmSync(tmp, { recursive: true, force: true }));
 
-        for (const fileName of distFiles) {
-            const distPath = path.join(DIST_BUNDLED_SCHEMAS_DIR, fileName);
-            const sourcePath = path.join(PACKAGE_LOCAL_SCHEMAS_DIR, fileName);
+        test('a dist OLDER than source (drifted) passes: the resolver serves source', () => {
+            assert.equal(resolveWith(100, 200), PACKAGE_LOCAL_SCHEMAS_DIR);
+            assert.deepEqual(distDriftReport(resolveWith(100, 200), dist, src), []);
+        });
 
-            if (!fs.existsSync(sourcePath)) {
-                missingSource.push(fileName);
-                continue;
-            }
+        test('a dist NEWER than source that has drifted fails with the DRIFTED list and remediation', () => {
+            const report = distDriftReport(resolveWith(300, 200), dist, src).join('\n');
+            assert.match(report, /DRIFTED: a\.json/);
+            assert.match(report, /ONLY IN DIST .*: orphan\.json/);
+            assert.match(report, /npm run dist-pm/);
+        });
 
-            const distContent = fs.readFileSync(distPath, 'utf-8');
-            const sourceContent = fs.readFileSync(sourcePath, 'utf-8');
-            if (distContent !== sourceContent) {
-                drifted.push(fileName);
-            }
-        }
+        test('a dist TIED with source that has drifted still fails', () => {
+            assert.notDeepEqual(distDriftReport(resolveWith(200, 200), dist, src), []);
+        });
 
-        if (drifted.length > 0 || missingSource.length > 0) {
-            const lines = [
-                'Stale dist/agents/schemas detected -- these schemas differ from (or are missing from) the package-local apra-pm source:',
-                ...drifted.map((f) => `  DRIFTED: ${f}`),
-                ...missingSource.map((f) => `  ONLY IN DIST (no package-local source): ${f}`),
-                '',
-                'Fix: run `npm run dist-pm` to refresh dist/ from the current source schemas.',
-            ];
-            assert.fail(lines.join('\n'));
-        }
+        test('an identical newer dist passes', () => {
+            const t2 = fs.mkdtempSync(path.join(tmp, 'same-'));
+            const d2 = path.join(t2, 'd'); const s2 = path.join(t2, 's');
+            fs.mkdirSync(d2); fs.mkdirSync(s2);
+            fs.writeFileSync(path.join(d2, 'a.json'), '{}'); fs.writeFileSync(path.join(s2, 'a.json'), '{}');
+            assert.deepEqual(distDriftReport(resolveWith(300, 200), d2, s2), []);
+        });
     });
 });
 

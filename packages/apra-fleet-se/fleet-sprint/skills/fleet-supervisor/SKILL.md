@@ -14,17 +14,31 @@ Default port: **8787**. Never invoke `apra-fleet workflow fleet-sprint` or
 Check first: `curl -s -m 5 http://localhost:8787/api/sprints`. Connection
 refused/timeout = not running. `{"sprints": [...]}` = already up, skip this.
 
-Start it detached (it runs indefinitely -- exits only on `POST
-/api/shutdown` or SIGINT/SIGTERM, never on its own). `apra-fleet install`
-puts it under the user's home (needs Node.js 22.16+):
+The supervisor runs indefinitely -- it exits only on `POST /api/shutdown`,
+a termination signal (SIGINT/SIGTERM/SIGHUP/SIGBREAK) or a fatal error, never
+on its own -- and writes one final line with the cause and exit code to
+`<dataDir>/logs/supervisor.log` when it does. `apra-fleet install` puts it
+under the user's home (needs Node.js 22.16+). The two commands below run it in
+the FOREGROUND of the launching shell: they are NOT detached, and they do NOT
+survive that terminal (or the process that launched it) closing -- closing it
+stops the supervisor, and sprints and launches then fail until it is started
+again.
 
 ```bash
-node ~/.apra-fleet/workflows/fleet-sprint/bin/serve.mjs              # macOS / Linux
+node ~/.apra-fleet/workflows/fleet-sprint/bin/serve.mjs              # macOS / Linux, foreground
 ```
 
 ```powershell
-node "$HOME\.apra-fleet\workflows\fleet-sprint\bin\serve.mjs"    # Windows PowerShell
+node "$HOME\.apra-fleet\workflows\fleet-sprint\bin\serve.mjs"    # Windows PowerShell, foreground
 ```
+
+To keep it running after the launching terminal closes, register it with the
+OS using the "Auto-start on login/boot" section below -- that is the path that
+survives the launcher, and on Windows in particular the only one this skill
+documents as doing so. On macOS / Linux a shell-level background launch
+(`nohup ... &`) also outlives the terminal: a SIGHUP is logged and ignored when the
+supervisor has no terminal on stdin/stdout (a detached launch), and only an
+attached terminal's hangup stops it. Check `GET /api/health` afterwards.
 
 (From a source checkout of apra-fleet the same file is
 `packages/apra-fleet-se/bin/serve.mjs`.)

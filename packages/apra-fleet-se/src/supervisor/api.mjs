@@ -46,7 +46,7 @@ import { readJsonBody, sendJson } from './server.mjs';
 import { validateDecisionNotify } from '../../fleet-sprint/decision-notify.mjs';
 import { validateIssueId, validateBranchName, validateBranchPair } from '../../fleet-sprint/runner.js';
 import { resolveRoleMap } from '../../bin/cli.mjs';
-import { resolveBacklogRoleAlias, ROLE_BACKLOG } from '../../fleet-sprint/backlog-role.mjs';
+import { resolveBacklogRoleAlias, ROLE_BACKLOG, ROLE_BACKLOG_ALIAS } from '../../fleet-sprint/backlog-role.mjs';
 import { normalizeRole } from '../../fleet-sprint/contracts.mjs';
 import { isDeterministicTerminalReason, HISTORY_EVENTS } from './history.mjs';
 import { defaultHasTerminalState } from './watchdog.mjs';
@@ -753,9 +753,14 @@ export function createSprintController(deps = {}) {
             if (requested.length === 0) {
                 childRoleMap = { ...(childRoleMap && typeof childRoleMap === 'object' ? childRoleMap : {}), [ROLE_BACKLOG]: [pinnedBacklogName] };
             } else if (requested.some((m) => m !== pinnedBacklogName)) {
+                // Name the key the caller actually sent: the deprecated
+                // alias is folded into `backlog` by now.
+                const sentAlias = Boolean(forwardRoleMap && typeof forwardRoleMap === 'object'
+                    && forwardRoleMap[ROLE_BACKLOG_ALIAS] !== undefined && forwardRoleMap[ROLE_BACKLOG] === undefined);
+                const keyName = sentAlias ? `roleMap.${ROLE_BACKLOG_ALIAS} (the deprecated alias of roleMap.backlog)` : 'roleMap.backlog';
                 throw new ApiError(
                     400,
-                    `[Arg Contract] roleMap.backlog must be this supervisor's backlog member '${pinnedBacklogName}' (or omitted, ` +
+                    `[Arg Contract] ${keyName} must be this supervisor's backlog member '${pinnedBacklogName}' (or omitted, ` +
                     `which assigns it automatically); got [${requested.join(', ')}].`,
                     'roleMap',
                 );
@@ -1035,13 +1040,7 @@ export function registerSprintRoutes(supervisor, controller) {
     });
 
     supervisor.route('POST', '/api/sprints/:id/decisions/:decisionId', async (req, res, ctx) => {
-        let body;
-        try {
-            body = (await readJsonBody(req)) ?? {};
-        } catch (err) {
-            sendJson(res, 400, { error: String(err && err.message ? err.message : err), field: 'body' });
-            return;
-        }
+        const body = (await readJsonBody(req)) ?? {};
         try {
             sendJson(res, 200, await controller.answerDecision(ctx.params.id, ctx.params.decisionId, body));
         } catch (err) {

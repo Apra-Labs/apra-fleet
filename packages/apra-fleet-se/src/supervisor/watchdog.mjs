@@ -442,7 +442,7 @@ export function defaultHasTerminalState(sprintId, branch, env = process.env) {
 export function formatFinishedDetail(state) {
     if (!state || typeof state !== 'object') return 'finished';
     const terminalReason = state.terminalReason ?? null;
-    const verdict = state?.extensions?.terminal?.verdict ?? null;
+    const verdict = state?.extensions?.terminal?.verdict ?? state?.result?.verdict ?? null;
     const parts = [];
     if (terminalReason) parts.push(`terminalReason=${terminalReason}`);
     if (verdict) parts.push(`verdict=${verdict}`);
@@ -470,7 +470,7 @@ export function defaultRecordFinished({ sprintId, state, logger, history }) {
     log(`[watchdog] FINISHED: Sprint '${sprintId}' finished (${detail}).`);
     if (!history || typeof history.record !== 'function') return;
     const terminalReason = (state && typeof state === 'object' && state.terminalReason) || null;
-    const verdict = (state && typeof state === 'object' && state?.extensions?.terminal?.verdict) || null;
+    const verdict = (state && typeof state === 'object' && (state?.extensions?.terminal?.verdict ?? state?.result?.verdict)) || null;
     try {
         const rs = state && typeof state === 'object' && state.result && typeof state.result === 'object' ? state.result : null;
         const resultStatus = rs && typeof rs.status === 'string' ? rs.status : null;

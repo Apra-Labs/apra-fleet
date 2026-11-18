@@ -41,6 +41,7 @@ function makeCallTool(entries, opts = {}) {
                 if (opts.throwOnList) throw new Error('kb unavailable');
                 return { content: [{ type: 'text', text: JSON.stringify({ l1_results: entries }) }] };
             }
+            if (name === 'kb_promote') return { id: args.id, previous_confidence: 'INFERRED', new_confidence: 'CONFIRMED' };
             return {};
         },
     };
@@ -108,6 +109,7 @@ describe('createKbWorkClient.apply: kb_promote member scoping (apra-fleet-0ef)',
         const client = createKbWorkClient({
             memberCall: async (member, name, args) => {
                 calls.push({ name, args, member });
+                if (name === 'kb_promote') return { id: args.id, previous_confidence: 'INFERRED', new_confidence: 'CONFIRMED' };
                 return name === 'kb_query' ? { l1_results: [{ id: 'kb-aaa' }] } : {};
             },
             maintainers: withMaintainer(),
