@@ -252,6 +252,8 @@ import {
     // Develop-dispatch goal filter: below-goal ready leaves are excluded
     // unless they block in-goal work or the sprint already worked on them.
     partitionReadyByGoal, formatBelowGoalExclusionLog,
+    // Lane metadata on a container is ignored by lane order; logged once per run.
+    newIgnoredContainerLaneLogs,
     // Set-aside v2: a waiting bead is held until its prerequisites close.
     unmetPrerequisites,
     // apra-fleet-rp7a.1: the deferred split the Cycle Evaluation completion
@@ -3239,6 +3241,8 @@ async function runSprintCycle(context) {
     //     lane-mate.
     // A hold line is logged whenever it changes.
     const loggedBelowGoalExclusions = new Set();
+    // Containers whose ignored lane metadata was already logged this run.
+    const loggedIgnoredLaneContainers = new Set();
     let lastDispatchHoldLog = '';
     async function dispatchableReadyLeafBeads() {
         const [ready, scopeAll] = await Promise.all([readyLeafBeads(), bdListScoped('')]);
@@ -3252,6 +3256,7 @@ async function runSprintCycle(context) {
             for (const e of fresh) loggedBelowGoalExclusions.add(e.id);
             log(formatBelowGoalExclusionLog(fresh, validated.goal));
         }
+        for (const line of newIgnoredContainerLaneLogs(scopeAll, loggedIgnoredLaneContainers)) log(line);
         let candidates = dispatchable;
         if (waitingMap.size > 0) {
             const stillWaiting = [];

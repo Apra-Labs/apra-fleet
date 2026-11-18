@@ -438,6 +438,56 @@ export function lowerOrderLaneMates(bead, beads, { containerIds } = {}) {
     return [...new Set(mates.map((m) => m.id))];
 }
 
+/**
+ * Every CONTAINER in `beads` (see containerIdsOf) that carries lane metadata,
+ * as `{ id, streak }` sorted by id. lowerOrderLaneMates ignores that metadata.
+ *
+ * Pure: no I/O.
+ * @param {Iterable<object>} beads
+ * @returns {Array<{ id: string, streak: string }>}
+ */
+export function lanedContainers(beads) {
+    const list = beads instanceof Map ? [...beads.values()] : [...(beads || [])];
+    const containers = containerIdsOf(list);
+    const out = new Map();
+    for (const b of list) {
+        if (!b || !containers.has(String(b.id)) || out.has(String(b.id))) continue;
+        const lane = laneOf(b);
+        if (lane) out.set(String(b.id), { id: String(b.id), streak: lane.streak });
+    }
+    return [...out.values()].sort((a, b) => a.id.localeCompare(b.id));
+}
+
+/**
+ * The log line for a container whose lane metadata is ignored.
+ * @param {{ id: string, streak: string }} c
+ * @returns {string}
+ */
+export function formatIgnoredContainerLaneLog(c) {
+    return `Lane order: ${c.id} carries lane metadata (streak ${c.streak}) but is a container (the parent of ` +
+        'other in-scope beads) -- its lane position is ignored, because it can only close after its children. ' +
+        'Lane metadata belongs on leaf tasks only.';
+}
+
+/**
+ * The ignored-container log lines not yet emitted this run: one per laned
+ * container whose id is not in `logged`, which is updated in place so the
+ * same container is never logged twice in a run.
+ *
+ * @param {Iterable<object>} beads in-scope beads, any status
+ * @param {Set<string>} logged run-scoped set of already-logged container ids
+ * @returns {string[]}
+ */
+export function newIgnoredContainerLaneLogs(beads, logged) {
+    const lines = [];
+    for (const c of lanedContainers(beads)) {
+        if (logged.has(c.id)) continue;
+        logged.add(c.id);
+        lines.push(formatIgnoredContainerLaneLog(c));
+    }
+    return lines;
+}
+
 function indexById(beads) {
     const byId = new Map();
     for (const b of beads || []) {

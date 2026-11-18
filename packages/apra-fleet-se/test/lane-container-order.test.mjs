@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
     containerIdsOf, lowerOrderLaneMates, unmetPrerequisites, partitionReadyByGoal, laneOf,
+    lanedContainers, newIgnoredContainerLaneLogs, formatIgnoredContainerLaneLog,
 } from '../fleet-sprint/beads-scope.mjs';
 import { holdBackByLaneOrder } from '../fleet-sprint/worklists.mjs';
 import { classifyBlockedReport } from '../fleet-sprint/set-aside.mjs';
@@ -125,5 +126,38 @@ describe('lowerOrderLaneMates / containerIdsOf', () => {
         assert.ok(!ancestors.has('epic.B'));
         assert.ok(laneOf(byId.get('epic.B')).order < laneOf(byId.get('epic.A.1')).order);
         assert.deepEqual(lowerOrderLaneMates(byId.get('epic.A.1'), scope), [], 'the container-aware helper excludes B too');
+    });
+});
+
+describe('ignored container lane metadata is logged once per container per run', () => {
+    test('two laned containers -> exactly one line per container, naming it and its streak, across repeated cycles', () => {
+        const logged = new Set();
+        const lines = [];
+        // Three "cycles" over the same run: the scope is re-read each time and
+        // the containers' statuses move on, but each is logged only once.
+        lines.push(...newIgnoredContainerLaneLogs(containerScope(), logged));
+        lines.push(...newIgnoredContainerLaneLogs(containerScope(), logged));
+        const later = containerScope().map((b) => (b.id === 'epic.A.1' ? { ...b, status: 'closed' } : b));
+        lines.push(...newIgnoredContainerLaneLogs(later, logged));
+        assert.equal(lines.length, 2, JSON.stringify(lines));
+        assert.deepEqual(lines, [
+            formatIgnoredContainerLaneLog({ id: 'epic.A', streak: S }),
+            formatIgnoredContainerLaneLog({ id: 'epic.B', streak: S }),
+        ]);
+        assert.match(lines[0], /epic\.A carries lane metadata \(streak lane-s\) but is a container/);
+        assert.match(lines[0], /its lane position is ignored, because it can only close after its children/);
+        assert.match(lines[1], /^Lane order: epic\.B /);
+    });
+
+    test('a scope with no laned container logs nothing (an unlaned container and laned leaves only)', () => {
+        const scope = [
+            { id: 'epic', status: 'open', dependencies: [] },
+            laned('epic.1', 0, { parent: 'epic' }),
+            laned('epic.2', 1, { parent: 'epic' }),
+        ];
+        assert.deepEqual(lanedContainers(scope), []);
+        const logged = new Set();
+        assert.deepEqual(newIgnoredContainerLaneLogs(scope, logged), []);
+        assert.equal(logged.size, 0);
     });
 });
