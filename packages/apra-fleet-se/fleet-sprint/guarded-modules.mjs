@@ -62,6 +62,9 @@ export const GUARDED_MODULES = [
     'mcp-result.mjs',
     'member-target.mjs',
     'member-call.mjs',
+    // File-based VCS request-body transport: stages bodies with send_files
+    // and dispatches the git-exclude / delete commands for them.
+    'vcs-payload.mjs',
     'abort.mjs',
     'branch-ensure.mjs',
     'prompts.mjs',

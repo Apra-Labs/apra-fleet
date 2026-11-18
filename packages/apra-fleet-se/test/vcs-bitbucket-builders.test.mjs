@@ -1,6 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildCreatePrCommand, buildFindPrCommand, buildUpdatePrCommand, capabilities, PR_DESCRIPTION_MAX_LENGTH } from '../fleet-sprint/vcs-module.mjs';
+import { buildCreatePrCommand as rawBuildCreatePrCommand, buildFindPrCommand, buildUpdatePrCommand as rawBuildUpdatePrCommand, capabilities, PR_DESCRIPTION_MAX_LENGTH } from '../fleet-sprint/vcs-module.mjs';
+import { withPayloadPath, stagedJson, posixDataBinaryArg, WINDOWS_PAYLOAD_PATH } from './helpers/vcs-payload-test.mjs';
+
+// Request bodies travel as a staged member-side file (curl --data-binary
+// @<path>); the wrappers supply the fixture payload_path for each call's os.
+const buildCreatePrCommand = withPayloadPath(rawBuildCreatePrCommand);
+const buildUpdatePrCommand = withPayloadPath(rawBuildUpdatePrCommand);
 import { BitbucketVCS } from '../fleet-sprint/vcs-providers/index.mjs';
 
 // =============================================================================
@@ -52,16 +58,19 @@ const POSIX_CREATE_PR = "curl -sS -X POST"
     + " -H 'Authorization: Bearer BB-TOKEN-abc123'"
     + " -H 'Content-Type: application/json'"
     + " -H 'Accept: application/json'"
-    + " -d '{\"title\":\"Sprint'\\''s PR\",\"source\":{\"branch\":{\"name\":\"auto-sprint/feat-x\"}},\"destination\":{\"branch\":{\"name\":\"main\"}},\"description\":\"Body line\"}'"
+    + ` ${posixDataBinaryArg()}`
     + " -w '\n%{http_code}'"
     + ' -D -'
     + ` ${API_BASE}/pullrequests`;
+const CREATE_PR_BODY = { title: "Sprint's PR", source: { branch: { name: 'auto-sprint/feat-x' } }, destination: { branch: { name: 'main' } }, description: 'Body line' };
 
+// The JSON body is staged in a file on every OS: the Windows command differs
+// only in the curl binary and the staged (Windows) path.
 const WINDOWS_CREATE_PR = "curl.exe -sS -X POST"
     + " -H 'Authorization: Bearer BB-TOKEN-abc123'"
     + " -H 'Content-Type: application/json'"
     + " -H 'Accept: application/json'"
-    + " -d '{\\\"title\\\":\\\"Sprint''s\\u0020PR\\\",\\\"source\\\":{\\\"branch\\\":{\\\"name\\\":\\\"auto-sprint/feat-x\\\"}},\\\"destination\\\":{\\\"branch\\\":{\\\"name\\\":\\\"main\\\"}},\\\"description\\\":\\\"Body\\u0020line\\\"}'"
+    + ` --data-binary '@${WINDOWS_PAYLOAD_PATH}'`
     + " -w '\n%{http_code}'"
     + ' -D -'
     + ` ${API_BASE}/pullrequests`;
@@ -71,28 +80,23 @@ test('bitbucket create-pull-request: exact POSIX curl command (endpoint, source/
     assert.equal(built.provider, 'bitbucket');
     assert.equal(built.action, 'create-pull-request');
     assert.equal(built.command, POSIX_CREATE_PR);
+    assert.deepEqual(stagedJson(built), CREATE_PR_BODY);
 });
 
-test('bitbucket create-pull-request: exact Windows curl.exe command (PowerShell doubles the apostrophe, JSON double quotes are CRT-escaped as \\")', () => {
+test('bitbucket create-pull-request: exact Windows curl.exe command (the body is staged, never inline)', () => {
     const built = buildCreatePrCommand({ ...PR_PARAMS, os: 'windows' });
     assert.equal(built.command, WINDOWS_CREATE_PR);
+    assert.deepEqual(stagedJson(built), CREATE_PR_BODY);
 });
 
 test('bitbucket create-pull-request: an omitted body emits NO description key at all', () => {
     const { body, ...noBody } = PR_PARAMS;
     assert.equal(body, 'Body line');
     const built = buildCreatePrCommand({ ...noBody, os: 'linux' });
-    assert.equal(
-        built.command,
-        "curl -sS -X POST"
-        + " -H 'Authorization: Bearer BB-TOKEN-abc123'"
-        + " -H 'Content-Type: application/json'"
-        + " -H 'Accept: application/json'"
-        + " -d '{\"title\":\"Sprint'\\''s PR\",\"source\":{\"branch\":{\"name\":\"auto-sprint/feat-x\"}},\"destination\":{\"branch\":{\"name\":\"main\"}}}'"
-        + " -w '\n%{http_code}'"
-        + ' -D -'
-        + ` ${API_BASE}/pullrequests`,
-    );
+    assert.equal(built.command, POSIX_CREATE_PR);
+    const { description, ...withoutDescription } = CREATE_PR_BODY;
+    assert.equal(description, 'Body line');
+    assert.deepEqual(stagedJson(built), withoutDescription);
 });
 
 test('bitbucket create-pull-request: each coordinate is percent-encoded per URL segment (a space in either slug)', () => {
@@ -242,11 +246,12 @@ test('bitbucket update-pull-request: PUT (not PATCH) to /pullrequests/{id} with 
         + ` -H 'Authorization: Bearer ${TOKEN}'`
         + " -H 'Content-Type: application/json'"
         + " -H 'Accept: application/json'"
-        + " -d '{\"title\":\"new title\",\"description\":\"new body\"}'"
+        + ` ${posixDataBinaryArg()}`
         + " -w '\n%{http_code}'"
         + ' -D -'
         + ` ${API_BASE}/pullrequests/12`,
     );
+    assert.deepEqual(stagedJson(built), { title: 'new title', description: 'new body' });
     assert.throws(() => buildUpdatePrCommand({ ...FIND_PARAMS, pull_request_id: '12; rm', title: 't', os: 'linux' }), /a numeric "pull_request_id"/);
     const long = buildUpdatePrCommand({ ...FIND_PARAMS, pull_request_id: 12, title: 't', body: 'x'.repeat(PR_DESCRIPTION_MAX_LENGTH + 3), os: 'linux' });
     assert.deepEqual(long.descriptionTruncated, { originalLength: PR_DESCRIPTION_MAX_LENGTH + 3, maxLength: PR_DESCRIPTION_MAX_LENGTH });

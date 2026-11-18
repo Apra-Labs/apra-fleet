@@ -11,7 +11,7 @@ import {
     validateBranchPair,
 } from '../fleet-sprint/runner.js';
 import { resolveRoleMapWithWarnings, buildRunnerArgs } from '../bin/cli.mjs';
-import { defaultMockCallTool } from './helpers/mock-sprint-harness.mjs';
+import { defaultMockCallTool, MOCK_MEMBER_WORK_FOLDER, isVcsPayloadStagingCommand, withStagedBody } from './helpers/mock-sprint-harness.mjs';
 
 // Unit + mock-level tests for apra-fleet-unw.14: the CLI->runner argument
 // contract (validateArgs/validateIssueId/validateBranchName), and proof
@@ -370,7 +370,7 @@ function spyCallTool(executeCommand) {
         // provider via VCSModule.resolveProvider() (a 'member_detail' call)
         // BEFORE every provision_vcs_auth call.
         if (name === 'member_detail') {
-            return Promise.resolve({ content: [{ text: JSON.stringify({ vcsProvider: 'github' }) }] });
+            return Promise.resolve({ content: [{ text: JSON.stringify({ vcsProvider: 'github', folder: MOCK_MEMBER_WORK_FOLDER }) }] });
         }
         if (name === 'provision_vcs_auth') {
             const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
@@ -682,13 +682,15 @@ describe('runner.js mock-level execution', () => {
         // checkGitPushLanded) follow the push; skip them -- they verify the
         // push, they are not part of the publish sequence pinned here.
         const isLandedCheckRead = (c) => typeof c === 'string' && (c === 'git rev-parse HEAD' || /^git (ls-remote|fetch|rev-list --count) /.test(c));
-        const last3 = spy.commandLog.filter((c) => !isLandedCheckRead(c)).slice(-3);
+        // The request-body staging bookkeeping (git-exclude + delete of the
+        // staged body) wraps the PR call; it is not part of the pinned tail.
+        const last3 = spy.commandLog.filter((c) => !isLandedCheckRead(c) && !isVcsPayloadStagingCommand(c)).slice(-3);
         assert.match(last3[0], /^git push -u origin auto-sprint\/reach-test/);
         assert.match(last3[1], /^git remote get-url origin\b/);
         assert.match(last3[2], /^curl -sS -X POST\b/);
         assert.ok(last3[2].includes('/pulls'));
-        assert.ok(last3[2].includes('"base":"develop"'));
-        assert.ok(last3[2].includes('"head":"auto-sprint/reach-test"'));
+        assert.ok(withStagedBody(last3[2]).includes('"base":"develop"'));
+        assert.ok(withStagedBody(last3[2]).includes('"head":"auto-sprint/reach-test"'));
         assert.ok(
             !spy.commandLog.some((c) => typeof c === 'string' && /^\$HOME\/\.fleet-git-credential-/.test(c)),
             'the orchestrator must dispatch no credential-helper read of its own -- vcs_credential_exec performs it server-side',

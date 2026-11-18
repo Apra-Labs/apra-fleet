@@ -32,7 +32,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
+import { runDevelopLoopScenario, withScenarioMarkers, withStagedBodies } from './helpers/mock-sprint-harness.mjs';
 import { SprintPlanRejectedError, PlanReviewDispatchFailedError } from '../fleet-sprint/errors.mjs';
 import {
     invalidateSyncRemoteCache, clearLastSyncedTip, clearTipProbeFailures,
@@ -60,7 +60,7 @@ const closingDoer = async ({ opts, runCmd: rc, tempDir: td }) => {
     return report({ status: 'VERIFY', closedIds: ids, notes: 'Closed.' });
 };
 const errText = (run) => (run.error ? `${run.error.constructor.name}: ${run.error.message}` : 'none');
-const publishedPrBody = (run) => run.commandLog.find((c) => c.includes('## Sprint verdict:'));
+const publishedPrBody = (run) => withStagedBodies(run.commandLog).find((c) => c.includes('## Sprint verdict:'));
 const PLAN_CARRY_OVER_EXIT = 'plan-rejected-carry-over';
 const createdId = (out) => String(out.stdout || '').trim();
 

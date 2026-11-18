@@ -22,7 +22,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { runCmd, runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
+import { runCmd, runDevelopLoopScenario, withScenarioMarkers, withStagedBodies } from './helpers/mock-sprint-harness.mjs';
 
 const DEPLOY_NOTES = 'smoke test could not reach the sandbox instance on port 4100';
 
@@ -41,7 +41,7 @@ const rubberStampPass = async () => ({
     content: [{ text: JSON.stringify({ verdict: 'PASS', notes: 'Rubber-stamp PASS from the final reviewer.' }) }],
 });
 
-const findPrCreate = (commandLog) => commandLog.find((c) => c.startsWith('curl -sS -X POST') && c.includes('/pulls'));
+const findPrCreate = (commandLog) => withStagedBodies(commandLog).find((c) => c.startsWith('curl -sS -X POST') && c.includes('/pulls'));
 
 test('mock sprint: a deploy that fails every cycle can never publish a PASS sprint, and the PR names the failure', async () => {
     await withScenarioMarkers('deployfailverdict', async () => {

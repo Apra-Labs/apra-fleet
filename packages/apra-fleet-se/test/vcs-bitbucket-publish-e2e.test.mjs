@@ -5,10 +5,15 @@ import { ApraFleet } from '@apralabs/apra-fleet-client';
 
 import { finalizeAbort } from '../fleet-sprint/runner.js';
 import { raiseVcsPrForMember } from '../fleet-sprint/vcs-auth.mjs';
-import { capabilities as vcsCapabilities, buildCreatePrCommand, parseProviderRepoRef, getVcsProvider } from '../fleet-sprint/vcs-module.mjs';
+import { capabilities as vcsCapabilities, buildCreatePrCommand as rawBuildCreatePrCommand, parseProviderRepoRef, getVcsProvider } from '../fleet-sprint/vcs-module.mjs';
+import { withPayloadPath, posixDataBinaryArg, POSIX_PAYLOAD_PATH } from './helpers/vcs-payload-test.mjs';
 import { BitbucketVCS } from '../fleet-sprint/vcs-providers/bitbucket.mjs';
 import { SprintPlanRejectedError } from '../fleet-sprint/errors.mjs';
-import { defaultMockCallTool, legacyCommandExecuteCommandAdapter } from './helpers/mock-sprint-harness.mjs';
+import { defaultMockCallTool, legacyCommandExecuteCommandAdapter, MOCK_MEMBER_WORK_FOLDER } from './helpers/mock-sprint-harness.mjs';
+
+// Request bodies are staged member-side (curl --data-binary @<path>); the
+// wrapper supplies the fixture payload_path.
+const buildCreatePrCommand = withPayloadPath(rawBuildCreatePrCommand);
 
 const check = (cond, msg) => assert.ok(cond, msg);
 
@@ -124,7 +129,7 @@ function buildMockCommand({ originUrl, credentialFiles, prResponder }) {
 function mockCallTool(vcsProvider, { availableSecrets = [], provisionCalls = [] } = {}, command) {
     const base = defaultMockCallTool({ executeCommand: legacyCommandExecuteCommandAdapter(command) });
     return async (name, toolArgs) => {
-        if (name === 'member_detail') return { content: [{ text: JSON.stringify({ vcsProvider }) }] };
+        if (name === 'member_detail') return { content: [{ text: JSON.stringify({ folder: MOCK_MEMBER_WORK_FOLDER, vcsProvider }) }] };
         if (name === 'credential_store_list') {
             return { content: [{ text: JSON.stringify(availableSecrets.map((n) => ({ name: n, scope: 'persistent' }))) }] };
         }
@@ -194,7 +199,7 @@ test('vcs-bitbucket-publish-e2e: buildCreatePrCommand - URL, method, body and Be
         "-H 'Authorization: Bearer {{vcs_token_inline}}'",
         "-H 'Content-Type: application/json'",
         "-H 'Accept: application/json'",
-        `-d '${expectedPayload}'`,
+        posixDataBinaryArg(),
         "-w '\n%{http_code}'",
         '-D -',
         'https://api.bitbucket.org/2.0/repositories/kumaakh/apra-analytics/pullrequests',
@@ -203,6 +208,10 @@ test('vcs-bitbucket-publish-e2e: buildCreatePrCommand - URL, method, body and Be
     check(
         built.command === expectedCommand,
         `Expected the EXACT pinned command (server token placeholder), got:\n${built.command}\nexpected:\n${expectedCommand}`,
+    );
+    check(
+        built.payload && built.payload.path === POSIX_PAYLOAD_PATH && built.payload.content === expectedPayload,
+        `Expected the EXACT staged request body, got: ${JSON.stringify(built.payload)}`,
     );
 
     const expectedLogSafeCommand = expectedCommand

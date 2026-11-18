@@ -237,6 +237,11 @@ export interface VcsCreatePrRequest {
   body?: string;
   /** Already-minted credential (e.g. a GitHub App installation token). */
   token: string;
+  /** Absolute member-side path the request body is staged at. Bodies are
+   *  never sent inline on the command line: the built command reads this
+   *  file (`curl --data-binary @<path>`), and the caller stages
+   *  `VcsCommandResult.payload` there before dispatch and deletes it after. */
+  payload_path: string;
 }
 
 /** Fields needed to build a "comment on an existing PR/issue" REST call
@@ -246,6 +251,8 @@ export interface VcsCommentRequest {
   issue_number: number;
   body: string;
   token: string;
+  /** See VcsCreatePrRequest.payload_path. */
+  payload_path: string;
 }
 
 /** A fully-built, ready-to-dispatch command plus the metadata needed to
@@ -257,6 +264,10 @@ export interface VcsCommandResult {
   action: 'create-pull-request' | 'comment';
   command: string;
   logSafeCommand: string;
+  /** The request body to stage at `path` on the member before dispatching
+   *  `command` (which reads it with `--data-binary @<path>`); absent for a
+   *  body-less request. Carries no credential. */
+  payload?: { path: string; content: string };
   interpret: {
     successStatusRange: [number, number];
     alreadyExistsStatus?: number;

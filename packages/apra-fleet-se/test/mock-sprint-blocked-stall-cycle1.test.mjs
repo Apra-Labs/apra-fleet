@@ -35,7 +35,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
+import { runDevelopLoopScenario, withScenarioMarkers, withStagedBodies } from './helpers/mock-sprint-harness.mjs';
 import {
     invalidateSyncRemoteCache, clearLastSyncedTip, clearTipProbeFailures,
 } from '../fleet-sprint/dolt-sync.mjs';
@@ -67,7 +67,7 @@ const assertFinalizedWithCarryOver = (run) => {
     assert.equal(run.result.verdict, 'FAIL', JSON.stringify(run.result));
     assert.ok(run.dispatched.some((d) => d.label === 'Final Review'), 'Final Review must run');
     assert.ok(run.dispatched.some((d) => d.agent === 'harvester'), 'Harvest must run');
-    assert.ok(run.commandLog.some((c) => c.includes('Set aside this run')),
+    assert.ok(withStagedBodies(run.commandLog).some((c) => c.includes('Set aside this run')),
         'the published PR body must carry the "Set aside this run" section');
 };
 const carried = (run) => Object.fromEntries((run.result.carryOver || []).map((e) => [e.id, e.reason]));
@@ -140,7 +140,7 @@ test('(a) BLOCKED beads and their dependent are dispatched once at most; the ind
 
         // The PR body this run published carries the "Set aside this run"
         // section: bead, reason, first seen.
-        const prCmd = run.commandLog.find((cmd) => cmd.includes('Set aside this run'));
+        const prCmd = withStagedBodies(run.commandLog).find((cmd) => cmd.includes('Set aside this run'));
         const section = prCmd.slice(prCmd.indexOf('Set aside this run'));
         // The body travels JSON-encoded in the curl payload: items are
         // separated by a literal backslash-n.
@@ -195,7 +195,7 @@ test('(c) a deploy set aside at the Permissions pre-step in C1 is not dispatched
         const reasons = carried(run);
         assert.ok(reasons.deploy && reasons.deploy.includes(PERMISSION_NOTES), JSON.stringify(reasons));
         assert.ok(run.result.notes.includes(PERMISSION_NOTES), run.result.notes);
-        const prCmd = run.commandLog.find((cmd) => cmd.includes('Set aside this run'));
+        const prCmd = withStagedBodies(run.commandLog).find((cmd) => cmd.includes('Set aside this run'));
         assert.match(prCmd, /- deploy: deployer stopped at the deploy\.md Permissions check[^\\]*\(first seen C1\)/);
     });
 });
@@ -316,7 +316,7 @@ test('(f) a set-aside deploy with every bead closed exits at once: no retry cycl
             `no Re-Review after the deploy: ${JSON.stringify(afterDeploy.map((d) => [d.agent, d.label]))}`);
         assert.equal(run.result.verdict, 'FAIL', JSON.stringify(run.result));
         assert.ok(run.result.notes.includes(PERMISSION_NOTES), run.result.notes);
-        assert.ok(run.commandLog.some((c) => c.includes('Set aside this run')),
+        assert.ok(withStagedBodies(run.commandLog).some((c) => c.includes('Set aside this run')),
             'the published PR body must carry the "Set aside this run" section');
     });
 });

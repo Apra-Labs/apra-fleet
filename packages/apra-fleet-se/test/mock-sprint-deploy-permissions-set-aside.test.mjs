@@ -22,7 +22,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { runCmd, runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
+import { runCmd, runDevelopLoopScenario, withScenarioMarkers, withStagedBodies } from './helpers/mock-sprint-harness.mjs';
 import { validateVerdict } from '../fleet-sprint/contracts.mjs';
 import {
     latestDeployFailure, formatDeploySetAsideNotes, DEPLOY_PERMISSIONS_FAILED_STEP,
@@ -105,7 +105,7 @@ test('mock sprint: a deploy failing at the Permissions pre-step in C1 is never d
         assert.ok(reasons.deploy.includes(PERMISSION_NOTES), reasons.deploy);
         assert.match(reasons.deploy, /first seen C1/);
         assert.ok(run.result.notes.includes(PERMISSION_NOTES), run.result.notes);
-        const prCmd = run.commandLog.find((cmd) => cmd.includes('Set aside this run'));
+        const prCmd = withStagedBodies(run.commandLog).find((cmd) => cmd.includes('Set aside this run'));
         assert.ok(prCmd && prCmd.includes('- deploy: '), 'the published PR body must list the set-aside deploy');
     });
 });

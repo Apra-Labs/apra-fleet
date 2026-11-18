@@ -68,7 +68,7 @@
  */
 
 import { VCS_FAILURE_KINDS as K } from '../errors.mjs';
-import { shQuote, shQuoteJson, curlBinary, assertToken } from './shell-helpers.mjs';
+import { shQuote, curlBinary, assertToken, jsonBodyFromFile } from './shell-helpers.mjs';
 
 /** Credential no longer good -- re-minting a PAT (skills/fleet/auth-azdevops.md
  *  "401 Unauthorized -> Create new PAT and re-deploy") is the remedy, so
@@ -534,7 +534,7 @@ function toFullRef(branch) {
  * -- see https://learn.microsoft.com/rest/api/azure/devops/git/pull-requests/create
  */
 function buildAzureDevOpsCreatePrCommand(params) {
-    const { base, head, title, body, token, os, shell } = params || {};
+    const { base, head, title, body, token, os, shell, payload_path: payloadPath } = params || {};
     const coords = assertRepoCoords(params, 'create-pull-request');
     const safeToken = assertToken(token);
     if (!base) throw new Error('ERROR: VCSModule: "base" branch is required to build a create-pull-request command.');
@@ -548,6 +548,7 @@ function buildAzureDevOpsCreatePrCommand(params) {
     };
     if (body !== undefined) payload.description = body;
     const payloadJson = JSON.stringify(payload);
+    const bodyArg = jsonBodyFromFile(payloadJson, payloadPath, os, shell, 'create-pull-request');
     const url = `${repoApiBase(coords)}/pullrequests?api-version=${API_VERSION}`;
 
     const buildCurl = (authToken) => [
@@ -555,7 +556,7 @@ function buildAzureDevOpsCreatePrCommand(params) {
         `-u ${shQuote(`:${authToken}`, os, shell)}`,
         `-H ${shQuote('Content-Type: application/json', os, shell)}`,
         `-H ${shQuote('Accept: application/json', os, shell)}`,
-        `-d ${shQuoteJson(payloadJson, os, shell)}`,
+        bodyArg.arg,
         `-w ${shQuote('\n%{http_code}', os, shell)}`,
         url,
     ].join(' ');
@@ -565,6 +566,9 @@ function buildAzureDevOpsCreatePrCommand(params) {
         action: 'create-pull-request',
         command: buildCurl(safeToken),
         logSafeCommand: buildCurl(REDACTED),
+        // The request body, for the caller to stage at payload.path before
+        // dispatch (see shell-helpers.mjs jsonBodyFromFile).
+        payload: bodyArg.payload,
         // Interpretation contract, same field NAMES github.mjs uses so a
         // consumer reads it generically:
         //   - 2xx                   -> success; body has .pullRequestId
@@ -590,7 +594,7 @@ function buildAzureDevOpsCreatePrCommand(params) {
  * See https://learn.microsoft.com/rest/api/azure/devops/git/pull-request-threads/create
  */
 function buildAzureDevOpsCommentCommand(params) {
-    const { pull_request_id: pullRequestId, body, token, os, shell } = params || {};
+    const { pull_request_id: pullRequestId, body, token, os, shell, payload_path: payloadPath } = params || {};
     const coords = assertRepoCoords(params, 'comment');
     const safeToken = assertToken(token);
     if (!pullRequestId) throw new Error('ERROR: VCSModule: "pull_request_id" is required to build an azure-devops comment command.');
@@ -600,6 +604,7 @@ function buildAzureDevOpsCommentCommand(params) {
         comments: [{ parentCommentId: 0, content: body, commentType: 'text' }],
         status: 'active',
     });
+    const bodyArg = jsonBodyFromFile(payloadJson, payloadPath, os, shell, 'comment');
     const url = `${repoApiBase(coords)}/pullrequests/${encodeURIComponent(String(pullRequestId))}/threads?api-version=${API_VERSION}`;
 
     const buildCurl = (authToken) => [
@@ -607,7 +612,7 @@ function buildAzureDevOpsCommentCommand(params) {
         `-u ${shQuote(`:${authToken}`, os, shell)}`,
         `-H ${shQuote('Content-Type: application/json', os, shell)}`,
         `-H ${shQuote('Accept: application/json', os, shell)}`,
-        `-d ${shQuoteJson(payloadJson, os, shell)}`,
+        bodyArg.arg,
         `-w ${shQuote('\n%{http_code}', os, shell)}`,
         url,
     ].join(' ');
@@ -617,6 +622,9 @@ function buildAzureDevOpsCommentCommand(params) {
         action: 'comment',
         command: buildCurl(safeToken),
         logSafeCommand: buildCurl(REDACTED),
+        // The request body, for the caller to stage at payload.path before
+        // dispatch (see shell-helpers.mjs jsonBodyFromFile).
+        payload: bodyArg.payload,
         interpret: {
             successStatusRange: [200, 299],
         },
@@ -751,7 +759,7 @@ function buildAzureDevOpsFindPrCommand(params) {
  * -- see https://learn.microsoft.com/rest/api/azure/devops/git/pull-requests/update
  */
 function buildAzureDevOpsUpdatePrCommand(params) {
-    const { pull_request_id: pullRequestId, title, body, token, os, shell } = params || {};
+    const { pull_request_id: pullRequestId, title, body, token, os, shell, payload_path: payloadPath } = params || {};
     const coords = assertRepoCoords(params, 'update-pull-request');
     const safeToken = assertToken(token);
     const id = String(pullRequestId ?? '').trim();
@@ -761,6 +769,7 @@ function buildAzureDevOpsUpdatePrCommand(params) {
     const payload = { title };
     if (body !== undefined) payload.description = body;
     const payloadJson = JSON.stringify(payload);
+    const bodyArg = jsonBodyFromFile(payloadJson, payloadPath, os, shell, 'update-pull-request');
     const url = `${repoApiBase(coords)}/pullrequests/${id}?api-version=${API_VERSION}`;
 
     const buildCurl = (authToken) => [
@@ -768,7 +777,7 @@ function buildAzureDevOpsUpdatePrCommand(params) {
         `-u ${shQuote(`:${authToken}`, os, shell)}`,
         `-H ${shQuote('Content-Type: application/json', os, shell)}`,
         `-H ${shQuote('Accept: application/json', os, shell)}`,
-        `-d ${shQuoteJson(payloadJson, os, shell)}`,
+        bodyArg.arg,
         `-w ${shQuote('\n%{http_code}', os, shell)}`,
         url,
     ].join(' ');
@@ -778,6 +787,9 @@ function buildAzureDevOpsUpdatePrCommand(params) {
         action: 'update-pull-request',
         command: buildCurl(safeToken),
         logSafeCommand: buildCurl(REDACTED),
+        // The request body, for the caller to stage at payload.path before
+        // dispatch (see shell-helpers.mjs jsonBodyFromFile).
+        payload: bodyArg.payload,
         interpret: { successStatusRange: [200, 299] },
         mapResponse: (respBody) => mapAzureDevOpsPull(respBody, coords),
     };

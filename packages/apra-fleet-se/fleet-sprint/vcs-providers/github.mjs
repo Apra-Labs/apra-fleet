@@ -26,7 +26,7 @@
  */
 
 import { VCS_FAILURE_KINDS as K } from '../errors.mjs';
-import { shQuote, shQuoteJson, curlBinary, assertToken } from './shell-helpers.mjs';
+import { shQuote, shQuoteJson, curlBinary, assertToken, jsonBodyFromFile } from './shell-helpers.mjs';
 
 const GITHUB_API = 'https://api.github.com';
 const REDACTED = '***REDACTED***';
@@ -43,7 +43,7 @@ function assertRepo(repo) {
 /** Build the GitHub REST "create pull request" curl command.
  *  POST /repos/{owner}/{repo}/pulls -- see
  *  https://docs.github.com/en/rest/pulls/pulls#create-a-pull-request */
-function buildGitHubCreatePrCommand({ repo, base, head, title, body, token, os, shell }) {
+function buildGitHubCreatePrCommand({ repo, base, head, title, body, token, os, shell, payload_path: payloadPath }) {
     const safeRepo = assertRepo(repo);
     const safeToken = assertToken(token);
     if (!base) throw new Error('ERROR: VCSModule: "base" branch is required to build a create-pull-request command.');
@@ -53,6 +53,7 @@ function buildGitHubCreatePrCommand({ repo, base, head, title, body, token, os, 
     const payload = { title, head, base };
     if (body !== undefined) payload.body = body;
     const payloadJson = JSON.stringify(payload);
+    const bodyArg = jsonBodyFromFile(payloadJson, payloadPath, os, shell, 'create-pull-request');
     const url = `${GITHUB_API}/repos/${safeRepo}/pulls`;
 
     const buildCurl = (authToken) => [
@@ -61,7 +62,7 @@ function buildGitHubCreatePrCommand({ repo, base, head, title, body, token, os, 
         `-H ${shQuote('Accept: application/vnd.github+json', os, shell)}`,
         `-H ${shQuote('Content-Type: application/json', os, shell)}`,
         `-H ${shQuote('X-GitHub-Api-Version: 2022-11-28', os, shell)}`,
-        `-d ${shQuoteJson(payloadJson, os, shell)}`,
+        bodyArg.arg,
         `-w ${shQuote('\n%{http_code}', os, shell)}`,
         url,
     ].join(' ');
@@ -71,6 +72,9 @@ function buildGitHubCreatePrCommand({ repo, base, head, title, body, token, os, 
         action: 'create-pull-request',
         command: buildCurl(safeToken),
         logSafeCommand: buildCurl(REDACTED),
+        // The request body, for the caller to stage at payload.path before
+        // dispatch (see shell-helpers.mjs jsonBodyFromFile).
+        payload: bodyArg.payload,
         // Interpretation contract mirrors the reverted server-side tool
         // (src/tools/create-pull-request.ts) so callers migrating to
         // VCSModule keep the same success/already-exists/error semantics:
@@ -90,13 +94,14 @@ function buildGitHubCreatePrCommand({ repo, base, head, title, body, token, os, 
  *  raised (rather than opening a second PR for the same head).
  *  POST /repos/{owner}/{repo}/issues/{issue_number}/comments -- see
  *  https://docs.github.com/en/rest/issues/comments#create-an-issue-comment */
-function buildGitHubCommentCommand({ repo, issue_number: issueNumber, body, token, os, shell }) {
+function buildGitHubCommentCommand({ repo, issue_number: issueNumber, body, token, os, shell, payload_path: payloadPath }) {
     const safeRepo = assertRepo(repo);
     const safeToken = assertToken(token);
     if (!issueNumber) throw new Error('ERROR: VCSModule: "issue_number" is required to build a comment command.');
     if (!body) throw new Error('ERROR: VCSModule: "body" is required to build a comment command.');
 
     const payloadJson = JSON.stringify({ body });
+    const bodyArg = jsonBodyFromFile(payloadJson, payloadPath, os, shell, 'comment');
     const url = `${GITHUB_API}/repos/${safeRepo}/issues/${issueNumber}/comments`;
 
     const buildCurl = (authToken) => [
@@ -105,7 +110,7 @@ function buildGitHubCommentCommand({ repo, issue_number: issueNumber, body, toke
         `-H ${shQuote('Accept: application/vnd.github+json', os, shell)}`,
         `-H ${shQuote('Content-Type: application/json', os, shell)}`,
         `-H ${shQuote('X-GitHub-Api-Version: 2022-11-28', os, shell)}`,
-        `-d ${shQuoteJson(payloadJson, os, shell)}`,
+        bodyArg.arg,
         `-w ${shQuote('\n%{http_code}', os, shell)}`,
         url,
     ].join(' ');
@@ -115,6 +120,9 @@ function buildGitHubCommentCommand({ repo, issue_number: issueNumber, body, toke
         action: 'comment',
         command: buildCurl(safeToken),
         logSafeCommand: buildCurl(REDACTED),
+        // The request body, for the caller to stage at payload.path before
+        // dispatch (see shell-helpers.mjs jsonBodyFromFile).
+        payload: bodyArg.payload,
         interpret: {
             successStatusRange: [200, 299],
         },
@@ -172,7 +180,7 @@ function buildGitHubFindPrCommand({ repo, base, head, token, os, shell }) {
 /** Build the GitHub REST "update a pull request" curl command (title + body).
  *  PATCH /repos/{owner}/{repo}/pulls/{pull_number} -- see
  *  https://docs.github.com/en/rest/pulls/pulls#update-a-pull-request */
-function buildGitHubUpdatePrCommand({ repo, pull_request_id: pullRequestId, title, body, token, os, shell }) {
+function buildGitHubUpdatePrCommand({ repo, pull_request_id: pullRequestId, title, body, token, os, shell, payload_path: payloadPath }) {
     const safeRepo = assertRepo(repo);
     const safeToken = assertToken(token);
     const id = String(pullRequestId ?? '').trim();
@@ -182,6 +190,7 @@ function buildGitHubUpdatePrCommand({ repo, pull_request_id: pullRequestId, titl
     const payload = { title };
     if (body !== undefined) payload.body = body;
     const payloadJson = JSON.stringify(payload);
+    const bodyArg = jsonBodyFromFile(payloadJson, payloadPath, os, shell, 'update-pull-request');
     const url = `${GITHUB_API}/repos/${safeRepo}/pulls/${id}`;
 
     const buildCurl = (authToken) => [
@@ -190,7 +199,7 @@ function buildGitHubUpdatePrCommand({ repo, pull_request_id: pullRequestId, titl
         `-H ${shQuote('Accept: application/vnd.github+json', os, shell)}`,
         `-H ${shQuote('Content-Type: application/json', os, shell)}`,
         `-H ${shQuote('X-GitHub-Api-Version: 2022-11-28', os, shell)}`,
-        `-d ${shQuoteJson(payloadJson, os, shell)}`,
+        bodyArg.arg,
         `-w ${shQuote('\n%{http_code}', os, shell)}`,
         url,
     ].join(' ');
@@ -200,6 +209,9 @@ function buildGitHubUpdatePrCommand({ repo, pull_request_id: pullRequestId, titl
         action: 'update-pull-request',
         command: buildCurl(safeToken),
         logSafeCommand: buildCurl(REDACTED),
+        // The request body, for the caller to stage at payload.path before
+        // dispatch (see shell-helpers.mjs jsonBodyFromFile).
+        payload: bodyArg.payload,
         interpret: { successStatusRange: [200, 299] },
         mapResponse: (respBody) => mapGitHubPull(respBody),
     };

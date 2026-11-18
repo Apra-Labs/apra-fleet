@@ -14,6 +14,7 @@ import { buildCreatePrCommand, buildFindPrCommand, buildUpdatePrCommand, resolve
 import { getSeCommands } from './se-os-commands.mjs';
 import { resolveMemberTarget } from './member-target.mjs';
 import { resultText } from './mcp-result.mjs';
+import { resolveVcsPayloadDir, memberPayloadPath, execVcsWithPayload } from './vcs-payload.mjs';
 
 /**
  * Best-effort, GENERIC extraction of an "owner/repo" string from a git remote
@@ -918,6 +919,20 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
     // endpoint for a windows+gitbash member).
     const { os, shell } = await resolveMemberTarget({ fleetApi, member, log });
 
+    // Request bodies (PR description, title) travel as a member-side file
+    // (curl --data-binary @<path>), never inline on the command line -- see
+    // vcs-payload.mjs. The absolute directory is resolved here, in JS, from
+    // the member registry; a member whose work folder cannot be resolved
+    // cannot publish, and says so loudly instead of falling back to inline.
+    const payloadDirRes = await resolveVcsPayloadDir({ fleetApi, member, memberOs: os });
+    if (payloadDirRes.error) {
+        const message = `Cannot raise a PR for member '${member}': ${payloadDirRes.error}`;
+        log(`${logPrefix}: ${message}`);
+        return { ok: false, alreadyExists: false, prUrl: null, error: message, authFailure: false };
+    }
+    const payloadPath = () => memberPayloadPath(payloadDirRes.dir).path;
+    const execVcs = (b) => execVcsWithPayload({ fleetApi, command, member, label: credentialLabel, built: b, target: { os, shell }, log, logPrefix });
+
     // The provider's own coordinate shape (e.g. Azure DevOps' org/project/repo
     // -- see VCSModule.parseProviderRepoRef()/that provider's parseRepoRef
     // hook) when one exists; null for a provider with no such hook (GitHub),
@@ -945,7 +960,7 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
         // eslint-disable-next-line no-constant-condition
         while (true) {
             const b = buildFn();
-            const res = await fleetApi.vcsCredentialExec({ member_name: member, label: credentialLabel, command: b.command });
+            const res = await execVcs(b);
             const h = (res && res.structuredContent) || {};
             if (!h.ok || (typeof h.exitCode === 'number' && h.exitCode !== 0)) {
                 return { ok: false, error: `${what} dispatch failed (${h.reason || 'nonzero exit'}): ${h.stderr || resultText(res) || '(no detail)'}` };
@@ -1002,6 +1017,7 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
                 const b = buildUpdatePrCommand({
                     ...coords(),
                     pull_request_id: pr.id,
+                    payload_path: payloadPath(),
                     title: next.title || title,
                     body: next.body !== undefined ? next.body : body,
                 });
@@ -1053,6 +1069,7 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
             provider,
             ...(repoRef ? { repoRef } : { repo }),
             base, head, title, body, token, os, shell,
+            payload_path: payloadPath(),
         });
 
         if (built.descriptionTruncated && !truncationWarned) {
@@ -1074,11 +1091,7 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
                 + 'to a version that provides the vcs_credential_exec tool.',
             );
         }
-        const execRes = await fleetApi.vcsCredentialExec({
-            member_name: member,
-            label: credentialLabel,
-            command: built.command,
-        });
+        const execRes = await execVcs(built);
         const handoff = (execRes && execRes.structuredContent) || {};
         const handoffText = resultText(execRes);
         // A credential-side failure HARD-FAILS, exactly as reading the token

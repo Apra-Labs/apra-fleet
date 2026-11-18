@@ -38,7 +38,7 @@
  */
 
 import { VCS_FAILURE_KINDS as K } from '../errors.mjs';
-import { shQuote, shQuoteJson, curlBinary, assertToken } from './shell-helpers.mjs';
+import { shQuote, curlBinary, assertToken, jsonBodyFromFile } from './shell-helpers.mjs';
 
 const AUTH_EXPIRED = [
     /Invalid or expired app password/i,
@@ -579,7 +579,7 @@ function repoApiBase({ workspace, repo }) {
  * -- see https://developer.atlassian.com/cloud/bitbucket/rest/api-group-pullrequests/#api-repositories-workspace-repo-slug-pullrequests-post
  */
 function buildBitbucketCreatePrCommand(params) {
-    const { base, head, title, body, token, os, shell } = params || {};
+    const { base, head, title, body, token, os, shell, payload_path: payloadPath } = params || {};
     const coords = assertRepoCoords(params, 'create-pull-request');
     const safeToken = assertToken(token);
     if (!base) throw new Error('ERROR: VCSModule: "base" branch is required to build a create-pull-request command.');
@@ -593,6 +593,7 @@ function buildBitbucketCreatePrCommand(params) {
     };
     if (body !== undefined) payload.description = body;
     const payloadJson = JSON.stringify(payload);
+    const bodyArg = jsonBodyFromFile(payloadJson, payloadPath, os, shell, 'create-pull-request');
     const url = `${repoApiBase(coords)}/pullrequests`;
 
     const buildCurl = (authToken) => [
@@ -600,7 +601,7 @@ function buildBitbucketCreatePrCommand(params) {
         `-H ${shQuote(`Authorization: Bearer ${authToken}`, os, shell)}`,
         `-H ${shQuote('Content-Type: application/json', os, shell)}`,
         `-H ${shQuote('Accept: application/json', os, shell)}`,
-        `-d ${shQuoteJson(payloadJson, os, shell)}`,
+        bodyArg.arg,
         `-w ${shQuote('\n%{http_code}', os, shell)}`,
         DUMP_RESPONSE_HEADERS,
         url,
@@ -611,6 +612,9 @@ function buildBitbucketCreatePrCommand(params) {
         action: 'create-pull-request',
         command: buildCurl(safeToken),
         logSafeCommand: buildCurl(REDACTED),
+        // The request body, for the caller to stage at payload.path before
+        // dispatch (see shell-helpers.mjs jsonBodyFromFile).
+        payload: bodyArg.payload,
         // Interpretation contract, same field NAMES github.mjs/
         // azure-devops.mjs use so a consumer reads it generically:
         //   - 2xx           -> success
@@ -701,7 +705,7 @@ function buildBitbucketFindPrCommand(params) {
  * https://developer.atlassian.com/cloud/bitbucket/rest/api-group-pullrequests/#api-repositories-workspace-repo-slug-pullrequests-pull-request-id-put
  */
 function buildBitbucketUpdatePrCommand(params) {
-    const { pull_request_id: pullRequestId, title, body, token, os, shell } = params || {};
+    const { pull_request_id: pullRequestId, title, body, token, os, shell, payload_path: payloadPath } = params || {};
     const coords = assertRepoCoords(params, 'update-pull-request');
     const safeToken = assertToken(token);
     const id = String(pullRequestId ?? '').trim();
@@ -711,6 +715,7 @@ function buildBitbucketUpdatePrCommand(params) {
     const payload = { title };
     if (body !== undefined) payload.description = body;
     const payloadJson = JSON.stringify(payload);
+    const bodyArg = jsonBodyFromFile(payloadJson, payloadPath, os, shell, 'update-pull-request');
     const url = `${repoApiBase(coords)}/pullrequests/${id}`;
 
     const buildCurl = (authToken) => [
@@ -718,7 +723,7 @@ function buildBitbucketUpdatePrCommand(params) {
         `-H ${shQuote(`Authorization: Bearer ${authToken}`, os, shell)}`,
         `-H ${shQuote('Content-Type: application/json', os, shell)}`,
         `-H ${shQuote('Accept: application/json', os, shell)}`,
-        `-d ${shQuoteJson(payloadJson, os, shell)}`,
+        bodyArg.arg,
         `-w ${shQuote('\n%{http_code}', os, shell)}`,
         DUMP_RESPONSE_HEADERS,
         url,
@@ -729,6 +734,9 @@ function buildBitbucketUpdatePrCommand(params) {
         action: 'update-pull-request',
         command: buildCurl(safeToken),
         logSafeCommand: buildCurl(REDACTED),
+        // The request body, for the caller to stage at payload.path before
+        // dispatch (see shell-helpers.mjs jsonBodyFromFile).
+        payload: bodyArg.payload,
         interpret: { successStatusRange: [200, 299] },
         mapResponse: (respBody) => mapBitbucketPull(respBody),
     };

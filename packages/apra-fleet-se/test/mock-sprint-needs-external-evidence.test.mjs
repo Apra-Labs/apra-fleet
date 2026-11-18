@@ -40,7 +40,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
+import { runDevelopLoopScenario, withScenarioMarkers, withStagedBodies } from './helpers/mock-sprint-harness.mjs';
 import { StalledSprintError } from '../fleet-sprint/errors.mjs';
 import { NEEDS_EXTERNAL_EVIDENCE_CYCLE_LIMIT } from '../fleet-sprint/verify-carry-over.mjs';
 import { crossMemberGapTopology, INTEG_MEMBER } from './helpers/cross-member-gap-topology.mjs';
@@ -70,7 +70,7 @@ const closingDoer = async ({ opts, runCmd: rc, tempDir: td }) => {
     for (const id of ids) await rc(`bd close ${id} --reason "Done"`, td);
     return report({ status: 'VERIFY', closedIds: ids, notes: 'Closed.' });
 };
-const publishedPrBody = (run) => run.commandLog.find((c) => c.includes('## Sprint verdict:'));
+const publishedPrBody = (run) => withStagedBodies(run.commandLog).find((c) => c.includes('## Sprint verdict:'));
 const errText = (run) => (run.error ? `${run.error.constructor.name}: ${run.error.message}` : 'none');
 
 const EXTERNAL_REASON = 'acceptance needs a live run on a host OS the sprint members do not have';

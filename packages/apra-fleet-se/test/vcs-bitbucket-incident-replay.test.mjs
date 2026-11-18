@@ -78,7 +78,7 @@ async function replayIncident(tag, { store = ['bitbucket_api_token'] } = {}) {
         const base = defaultMockCallTool({ executeCommand });
         return async (name, args) => {
             if (name === 'member_detail') {
-                return { content: [{ text: JSON.stringify({ type: 'local', os: 'linux', shell: '', vcsProvider: 'bitbucket' }) }] };
+                return { content: [{ text: JSON.stringify({ folder: '/work/repo', type: 'local', os: 'linux', shell: '', vcsProvider: 'bitbucket' }) }] };
             }
             if (name === 'credential_store_list') {
                 return { content: [{ text: JSON.stringify(store.map((n) => ({ name: n, scope: 'persistent' }))) }] };
@@ -198,9 +198,10 @@ describe('Publish PR 403 wording', () => {
     async function raiseWith(recording, store) {
         const state = { execs: [] };
         const callTool = async (name, args) => {
-            if (name === 'member_detail') return { content: [{ text: JSON.stringify({ type: 'local', os: 'linux', shell: '', vcsProvider: 'bitbucket' }) }] };
+            if (name === 'member_detail') return { content: [{ text: JSON.stringify({ folder: '/work/repo', type: 'local', os: 'linux', shell: '', vcsProvider: 'bitbucket' }) }] };
             if (name === 'credential_store_list') return { content: [{ text: JSON.stringify(store.map((n) => ({ name: n }))) }] };
             if (name === 'vcs_credential_exec') return credentialExec(state, args, recording);
+            if (name === 'send_files') return { content: [{ text: '[OK] sent' }] };
             throw new Error(`unexpected tool ${name}`);
         };
         const logs = [];
