@@ -50,3 +50,17 @@ handler in both servers.
   per route.
 - Any new mutating route is covered automatically by being behind the
   dispatcher; do not add a route that is served before the guard.
+
+## Malformed and oversized request bodies
+
+Body parsing failures are client errors, never 500s. The shared body reader
+throws a typed `RequestBodyError`; the supervisor's catch-all maps it to a
+400 (malformed JSON) or 413 (body over the size cap) response whose error
+names the field `body` and carries no stack trace. Every route that reads a
+JSON body, including the operator-decisions route, goes through this one
+path, so a new route inherits the mapping by using the shared reader instead
+of parsing the stream itself.
+
+An oversized request can make the server stop reading and answer before the
+client has finished writing; a test client therefore must tolerate an EPIPE
+or reset on write and still assert on the 413 status.

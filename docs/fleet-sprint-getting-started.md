@@ -599,3 +599,24 @@ dashboard and API are reachable only from the same machine. Binding another
 interface requires passing an explicit host option; it is never implied.
 Clients on the same machine, including `localhost` URLs, still connect
 normally.
+
+## Supervisor and engine process hygiene
+
+**Final exit line.** The supervisor's log tee is asynchronous, so a process
+that died used to leave no trace of why. The supervisor now appends exactly
+one synchronous final line to its log, with the cause and exit code, on every
+exit path: SIGINT, SIGTERM, SIGHUP, SIGBREAK (Windows Ctrl+Break or console
+close), an uncaught exception or unhandled rejection, `POST /api/shutdown`,
+and the forced-exit timeout. Signal handlers are persistent, so a second
+Ctrl+C does not kill immediately; the forced-exit timeout is the backstop.
+On POSIX a detached launch (`nohup`) logs and survives SIGHUP; a foreground
+launch is not detached, and the skill says so. On Windows the final SIGHUP
+line is written synchronously and the supervisor stops.
+
+**Sprint lock.** Each (branch, members) pair has a machine-local pidfile lock
+(directory overridable with `APRA_FLEET_SPRINT_LOCK_DIR`; test sandboxes set
+it). The first line is always a bare pid. On a conflict the engine inspects
+the live pid's command line: a fleet-sprint engine for the same branch raises
+`SprintLockHeldError`; any other process means the pid was recycled and the
+lock is reclaimed with a log line; an unreadable command line fails closed
+and the error names the lock path so the operator can decide.
