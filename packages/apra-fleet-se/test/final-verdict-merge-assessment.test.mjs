@@ -5,7 +5,9 @@ import {
     finalVerdict, validateVerdict, MERGE_ASSESSMENT_FIELDS, MERGE_RECOMMENDATIONS,
 } from '../fleet-sprint/contracts.mjs';
 import { buildFinalVerdictPrompt } from '../fleet-sprint/prompts.mjs';
-import { PR_MERGE_RECOMMENDATIONS, MERGE_ASSESSMENT_LABELS } from '../fleet-sprint/pr-body.mjs';
+import {
+    PR_MERGE_RECOMMENDATIONS, MERGE_ASSESSMENT_LABELS, normalizeMergeAssessment, renderMergeAssessment,
+} from '../fleet-sprint/pr-body.mjs';
 
 // =============================================================================
 // The Final Review's optional risk/value merge assessment: the engine-owned
@@ -45,22 +47,18 @@ describe('finalVerdict schema: merge_assessment', () => {
         }
     });
 
-    test('an unknown recommendation value is rejected', () => {
-        const r = validateVerdict('finalVerdict', { verdict: 'PASS', notes: 'x', merge_assessment: { ...COMPLETE, recommendation: 'ship_it' } });
-        assert.equal(r.valid, false);
-        assert.ok(r.errors.some((e) => e.instancePath === '/merge_assessment/recommendation' && e.keyword === 'enum'), JSON.stringify(r.errors));
-    });
-
-    test('a merge_assessment missing a field is rejected (every field is required once the object is given)', () => {
+    test('a malformed assessment (unknown recommendation, missing field, wrong type) still validates: it is advisory', () => {
         const { proof: _omit, ...partial } = COMPLETE;
-        const r = validateVerdict('finalVerdict', { verdict: 'PASS', notes: 'x', merge_assessment: partial });
-        assert.equal(r.valid, false);
+        for (const merge_assessment of [{ ...COMPLETE, recommendation: 'ship_it' }, partial, { value: 5 }, 'text']) {
+            const r = validateVerdict('finalVerdict', { verdict: 'PASS', notes: 'x', merge_assessment });
+            assert.equal(r.valid, true, JSON.stringify(r.errors));
+        }
     });
 
     test('merge_assessment stays optional and verdict/notes stay the only required fields', () => {
         assert.deepEqual(finalVerdict.required, ['verdict', 'notes']);
-        assert.deepEqual(finalVerdict.properties.merge_assessment.required, [...MERGE_ASSESSMENT_FIELDS]);
-        assert.deepEqual(finalVerdict.properties.merge_assessment.properties.recommendation.enum, ['merge', 'merge_after_proof', 'do_not_merge']);
+        assert.equal(finalVerdict.properties.merge_assessment.required, undefined);
+        assert.deepEqual(Object.keys(finalVerdict.properties.merge_assessment.properties).sort(), [...MERGE_ASSESSMENT_FIELDS].sort());
     });
 
     test('the PR body renders exactly the contract recommendation values and every non-recommendation field', () => {
@@ -86,5 +84,41 @@ describe('buildFinalVerdictPrompt: merge_assessment request', () => {
         for (const rec of ['merge', 'merge_after_proof', 'do_not_merge']) {
             assert.ok(prompt.includes('`' + rec + '`'), `the prompt must offer \`${rec}\``);
         }
+    });
+});
+
+describe('normalizeMergeAssessment / renderMergeAssessment', () => {
+    test('a complete assessment normalizes unchanged, drops nothing and renders with no note', () => {
+        const r = normalizeMergeAssessment({ ...COMPLETE });
+        assert.deepEqual(r, { assessment: { ...COMPLETE }, dropped: [] });
+        assert.ok(!renderMergeAssessment(r.assessment, r.dropped).includes('incomplete'));
+    });
+
+    test('a 5-field assessment keeps its fields and names the 3 missing', () => {
+        const five = { value: 'v', risk: 'r', proof: 'p', recommendation: 'merge', reason: 'because' };
+        const r = normalizeMergeAssessment(five);
+        assert.deepEqual(r.assessment, five);
+        assert.deepEqual(r.dropped, ['default_path_changes', 'blast_radius', 'upgrade_impact']);
+        const out = renderMergeAssessment(r.assessment, r.dropped);
+        assert.ok(out.includes('**Value:** v') && out.includes('`merge`'));
+        assert.ok(out.includes('assessment incomplete: default_path_changes, blast_radius, upgrade_impact'), out);
+        assert.ok(!out.includes('(not given)'));
+    });
+
+    test('a misspelled field is dropped and named alongside the field it should have been', () => {
+        const { blast_radius, ...rest } = COMPLETE;
+        const r = normalizeMergeAssessment({ ...rest, blast_radiuss: blast_radius });
+        assert.deepEqual(r.dropped, ['blast_radius', 'blast_radiuss']);
+        assert.ok(renderMergeAssessment(r.assessment, r.dropped).includes('assessment incomplete: blast_radius, blast_radiuss'));
+    });
+
+    test('an invalid recommendation is dropped; no valid field leaves only the note', () => {
+        assert.deepEqual(normalizeMergeAssessment({ ...COMPLETE, recommendation: 'ship_it' }).dropped, ['recommendation']);
+        const none = normalizeMergeAssessment({ nope: 1 });
+        assert.equal(none.assessment, undefined);
+        const out = renderMergeAssessment(none.assessment, none.dropped);
+        assert.ok(out.startsWith('_assessment incomplete:') && !out.includes('- **'), out);
+        assert.equal(normalizeMergeAssessment(undefined).dropped.length, 0);
+        assert.equal(renderMergeAssessment(undefined, []), '');
     });
 });
