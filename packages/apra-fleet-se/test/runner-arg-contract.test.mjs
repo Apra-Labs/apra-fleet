@@ -442,7 +442,12 @@ function buildSpyFleetApi(overrides = {}) {
                 return mockCmdResult(0, JSON.stringify({ database_path: '/spy/.beads/dolt', path: '/spy/.beads', prefix: 'bd', schema_version: 1 }));
             }
             if (/^bd list --all --limit 0 --json$/.test(opts.command)) {
-                return mockCmdResult(0, allBeadsJson);
+                // The target itself must be visible in the snapshot (the engine
+                // refuses TARGET_NOT_VISIBLE otherwise); scope still excludes it.
+                return mockCmdResult(0, JSON.stringify([
+                    ...JSON.parse(allBeadsJson),
+                    { id: 'bd-1', status: 'open', title: 'Target' },
+                ]));
             }
             if (/^bd list .*--ready/.test(opts.command)) {
                 // The first TWO ready-list calls return one bead so the
