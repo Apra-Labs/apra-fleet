@@ -431,7 +431,7 @@ describe('commitRound: demoted_ids travels with ids in one kb_bible_commit call'
             },
             abortRebase: async (m) => { events.push({ ev: 'rebase--abort', member: m }); return false; },
             bibleBase: async () => BASE,
-            roundChangedFiles: async () => ['x.js'],
+            sprintChangedFiles: async () => ['x.js'],
             log: (m) => logs.push(m),
         });
         const confirmAndDemote = async ({ promote = [], demote = [] }) => {
@@ -463,14 +463,14 @@ describe('commitRound: demoted_ids travels with ids in one kb_bible_commit call'
         assert.ok(!logs.slice(before).some((l) => /demotion\(s\)/.test(l)), logs.slice(before).join('\n'));
     });
 
-    test('a KB server without the demote route: the own_scope read is refused, so the reviewer is offered nothing and no kb_demote is sent', async () => {
+    test('a KB server without the demote route: the own_scope read is refused (logged, non-fatal) and nothing it alone would offer is offered', async () => {
         const { client, events, logs } = harnessWithDemotions({ ownScopeUnsupported: true });
 
         const offered = await client.demotionCandidates('reviewer-1');
 
         assert.deepEqual(offered, []);
         assert.equal(events.filter((e) => e.ev === 'kb_query(own_scope)').length, 1);
-        assert.ok(logs.some((l) => /does not serve demote: offering no demotion candidates/.test(l)), logs.join('\n'));
+        assert.ok(logs.some((l) => /kb_query for own demotion candidates rejected/.test(l)), logs.join('\n'));
         const out = await client.apply('reviewer', 'reviewer-1', { kb_demotions: [{ id: 'd1', reason: REASON, evidence_files: ['src/a.ts'] }] });
         assert.equal(out.demoted, 0);
         assert.equal(events.filter((e) => e.ev === 'kb_demote').length, 0);

@@ -77,7 +77,7 @@ function harness({ demoteOutcome, skipped = [], currentFileHashes = async () => 
         gPull: async () => {},
         gPush: async () => {},
         bibleBase: async () => BASE,
-        roundChangedFiles: async () => [CHANGED_FILE],
+        sprintChangedFiles: async () => [CHANGED_FILE],
         currentFileHashes,
         ...(sprintStartMs !== undefined ? { sprintStartMs: () => sprintStartMs } : {}),
         log: (m) => logs.push(m),

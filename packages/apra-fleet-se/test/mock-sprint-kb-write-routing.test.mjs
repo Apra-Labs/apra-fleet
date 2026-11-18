@@ -169,9 +169,14 @@ function buildCallTool(fleet, executeCommand) {
         }
         if (name === 'execute_command' && typeof args.command === 'string' && args.command.includes('apra-fleet call') && args.command.includes('--list-tools')) {
             // A current member server: its kb_import advertises `ref` (the
-            // engine's version gate before the priming grant import).
+            // engine's version gate before the priming grant import) and its
+            // kb_bible_commit the withdrawal route (the gate before the final
+            // review's demotion-candidate read).
             fleet.events.push({ type: 'list-tools' });
-            return { content: [{ type: 'text', text: JSON.stringify({ tools: [{ name: 'kb_import', inputSchema: { type: 'object', properties: { path: { type: 'string' }, ref: { type: 'string' }, skip_sweep: { type: 'boolean' } } } }] }) }] };
+            return { content: [{ type: 'text', text: JSON.stringify({ tools: [
+                { name: 'kb_import', inputSchema: { type: 'object', properties: { path: { type: 'string' }, ref: { type: 'string' }, skip_sweep: { type: 'boolean' } } } },
+                { name: 'kb_bible_commit', inputSchema: { type: 'object', properties: { ids: { type: 'array' }, withdrawals: { type: 'array' }, restore_ids: { type: 'array' } } } },
+            ] }) }] };
         }
         if (name === 'execute_command' && typeof args.command === 'string' && args.command.includes('apra-fleet call')) {
             const m =/apra-fleet call --member (\S+) (?:--kb-maintainer )?(\w+) --args-file/.exec(args.command);
@@ -334,12 +339,11 @@ describe('mock sprint: KB writes route through the kb_maintainer', () => {
             // entries in the reviewer prompt.
             const candidateReads = fleet.events.filter((e) => e.type === 'kb' && e.tool === 'kb_query' && e.args && e.args.tag);
             assert.ok(candidateReads.length >= 1);
-            // dispatchReview also reads DEMOTION
-            // candidates (CONFIRMED entries touching this round's changed
-            // files) alongside the promotion read above -- a second,
-            // differently-shaped kb_query carrying the same tag. Split the
-            // two apart by confidence tier rather than asserting one shape
-            // over every tagged read.
+            // The FINAL review also reads DEMOTION candidates (CONFIRMED
+            // entries touching the sprint's changed files): a tagged
+            // own-scope read alongside an untagged bible-view read. Split the
+            // tagged reads apart by confidence tier rather than asserting one
+            // shape over every tagged read.
             const promotionReads = candidateReads.filter((q) => Array.isArray(q.args.confidence) && q.args.confidence.includes('INFERRED'));
             const demotionReads = candidateReads.filter((q) => Array.isArray(q.args.confidence) && q.args.confidence.includes('CONFIRMED'));
             assert.equal(promotionReads.length + demotionReads.length, candidateReads.length, 'every tagged kb_query must be either a promotion or a demotion candidate read');
@@ -360,7 +364,7 @@ describe('mock sprint: KB writes route through the kb_maintainer', () => {
                 // limit, never by the 20-entry offer cap.
                 assert.equal(q.args.tag, `member:${MAINT}`);
                 assert.equal(q.args.own_scope, true, 'without own_scope this read matches nothing in a real sprint');
-                assert.deepEqual(q.args.confidence, ['CONFIRMED'], 'kb_demote accepts nothing else (E-DEMOTE-NOT-CONFIRMED)');
+                assert.deepEqual(q.args.confidence, ['CONFIRMED'], 'only a CONFIRMED entry is a demotion candidate');
                 assert.equal(q.args.include_stale, true, 'a stale CONFIRMED row is demotable');
                 assert.equal(q.args.exclude_disputed, false, 'a contradiction-flagged CONFIRMED row is demotable too');
                 assert.equal(q.args.limit, KB_DEMOTION_READ_LIMIT, 'the read limit must be the wide one');
@@ -396,7 +400,7 @@ describe('mock sprint: KB writes route through the kb_maintainer', () => {
     // still produce a verdict when the maintainer's own-scope read fails.
     // Isolated to the own-scope read, so the promotion read still works and
     // the rest of the round is unchanged.
-    test('a failing demotion-candidate read still lets the per-round review and the final review dispatch', { timeout: scaledTimeout(240000) }, async () => {
+    test('a failing demotion-candidate read still lets the final review dispatch, and the round review never reads one', { timeout: scaledTimeout(240000) }, async () => {
         await withScenarioMarkers('kb demotion read failure', async () => {
             const fleet = createFakeFleet({ failOwnScopeQuery: true });
             // An owned CONFIRMED entry citing the file this sprint changes:
@@ -438,6 +442,7 @@ describe('mock sprint: KB writes route through the kb_maintainer', () => {
             assert.equal(r.error, null, `sprint error: ${r.error && r.error.message}`);
             const ownScopeReads = fleet.events.filter((e) => e.type === 'kb' && e.tool === 'kb_query' && e.args && e.args.own_scope === true);
             assert.ok(ownScopeReads.length >= 1, 'the demotion-candidate read must have been ATTEMPTED -- otherwise this proves nothing');
+            assert.equal(ownScopeReads.length, 1, 'only the FINAL review reads demotion candidates; a round review never does');
             assert.equal(reviewerPrompts.length, 1, 'the per-round review must still be dispatched after the failed read');
             assert.ok(finalPrompt, 'the final review must still be dispatched after the failed read');
             // The block HEADER is not the discriminator: the reviewer role
@@ -451,18 +456,18 @@ describe('mock sprint: KB writes route through the kb_maintainer', () => {
                 );
             }
             assert.ok(
-                r.logs.some((l) => /could not read demotion candidates from maintainer 'maint' \(non-fatal\)/.test(l)),
+                r.logs.some((l) => /could not read own demotion candidates from maintainer 'maint' \(non-fatal\)|kb_query for own demotion candidates rejected on maintainer 'maint' \(non-fatal\)/.test(l)),
                 'the degradation must be visible in the run log, not silent',
             );
         });
     });
 
-    // The demotion happy path through the REAL runner: the reviewer returns
-    // kb_demotions for a CONFIRMED entry it was offered, the engine issues
-    // kb_demote on the maintainer (with the grant), and the round's bible
-    // commit carries the id as demoted_ids. Asserted from the ordered call
-    // transcript (fleet.events) and the fake maintainer's resulting state.
-    test('reviewer kb_demotions -> kb_demote on the maintainer -> kb_bible_commit {demoted_ids} with that id', { timeout: scaledTimeout(240000) }, async () => {
+    // The demotion happy path through the REAL runner: the FINAL reviewer
+    // returns kb_demotions for a CONFIRMED entry it was offered (a round
+    // reviewer is offered none), and the final review's bible commit carries
+    // the demotion. Asserted from the ordered call transcript (fleet.events)
+    // and the fake maintainer's resulting state.
+    test('final reviewer kb_demotions -> kb_demote on the maintainer -> kb_bible_commit {demoted_ids} with that id', { timeout: scaledTimeout(240000) }, async () => {
         await withScenarioMarkers('kb demotion happy path', async () => {
             const DEMOTED_ID = 'kb-confirmed-to-demote';
             const BIBLE_FILE = '.fleet/kb-canonical.json';
@@ -473,6 +478,7 @@ describe('mock sprint: KB writes route through the kb_maintainer', () => {
                 created_at: '2000-01-01T00:00:00.000Z',
             });
             const reviewerPrompts = [];
+            let finalPrompt = null;
             const doerHandler = async ({ opts, tempDir, runCmd }) => {
                 fleet.events.push({ type: 'dispatch', member: opts.member_name, role: 'doer' });
                 const ids = (opts.prompt.match(/Assigned bead ids \(comma-separated\):\s*(.+)/)?.[1] || '').split(',').map((s) => s.trim()).filter(Boolean);
@@ -483,10 +489,15 @@ describe('mock sprint: KB writes route through the kb_maintainer', () => {
             const reviewerHandler = async ({ opts }) => {
                 fleet.events.push({ type: 'dispatch', member: opts.member_name, role: 'reviewer' });
                 reviewerPrompts.push(opts.prompt);
+                return { content: [{ text: JSON.stringify({ verdict: 'APPROVED', notes: 'Approved.', reopenIds: [], newTasks: [] }) }] };
+            };
+            const finalReviewHandler = async ({ opts }) => {
+                fleet.events.push({ type: 'dispatch', member: opts.member_name, role: 'final-review' });
+                finalPrompt = opts.prompt;
                 // Demote only what this review was actually offered.
                 const offered = opts.prompt.includes(`"id": "${DEMOTED_ID}"`);
                 return { content: [{ text: JSON.stringify({
-                    verdict: 'APPROVED', notes: 'Approved.', reopenIds: [], newTasks: [],
+                    verdict: 'PASS', notes: 'All goal beads closed.',
                     ...(offered ? { kb_demotions: [{ id: DEMOTED_ID, reason: `${CITED}:42 keys by tenant AND id; the claim does not hold`, evidence_files: [CITED] }] } : {}),
                 }) }] };
             };
@@ -511,13 +522,15 @@ describe('mock sprint: KB writes route through the kb_maintainer', () => {
                 roleMap: { doer: ['dev'], reviewer: ['dev'] },
                 beadsIdentity: { maint: { repoRemote: REPO_URL }, dev: { repoRemote: REPO_URL } },
                 taskSpecs: [{ title: 'Task: kb demotion happy path' }],
-                doerHandler, reviewerHandler,
+                doerHandler, reviewerHandler, finalReviewHandler,
                 maxCycles: 1,
                 callToolFactory: (executeCommand) => buildCallTool(fleet, executeCommand),
                 onCommand,
             });
             assert.equal(r.error, null, `sprint error: ${r.error && r.error.message}`);
-            assert.ok(reviewerPrompts.some((p) => p.includes(`"id": "${DEMOTED_ID}"`)), 'the CONFIRMED entry touching this round\'s changed file was never offered for demotion');
+            assert.ok(reviewerPrompts.length >= 1, 'sanity: a round review ran');
+            assert.ok(!reviewerPrompts.some((p) => p.includes(`"id": "${DEMOTED_ID}"`)), 'a ROUND reviewer was offered a demotion candidate');
+            assert.ok(finalPrompt && finalPrompt.includes(`"id": "${DEMOTED_ID}"`), 'the CONFIRMED entry touching the sprint\'s changed file was never offered to the final reviewer');
 
             const kbEvents = fleet.events.filter((e) => e.type === 'kb');
             const demoteIdx = kbEvents.findIndex((e) => e.tool === 'kb_demote');

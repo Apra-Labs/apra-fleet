@@ -37,7 +37,7 @@ function build(extra = {}) {
         gPull: async () => {},
         gPush: async () => {},
         bibleBase: async () => ({ baseBranch: 'main', baseCommit: 'a'.repeat(40) }),
-        roundChangedFiles: async () => [CHANGED_FILE],
+        sprintChangedFiles: async () => [CHANGED_FILE],
         log: (m) => logs.push(m),
         ...extra,
     });

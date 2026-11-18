@@ -49,19 +49,22 @@ The engine, not the reviewer, holds the authority to call `kb_demote` and to
 commit the resulting tombstone -- the reviewer only names which offered id to
 demote and why, exactly like `kb_promotions`/`kb_discards`.
 
-1. **Offer.** Before a review dispatch, `demotionCandidates(member, {scope})`
-   reads the maintainer's own CONFIRMED rows tagged to that maintainer
-   (`own_scope: true`, `confidence: ['CONFIRMED']`, `include_stale: true`,
-   `exclude_disputed: false` -- a stale or contradiction-flagged row is
-   explicitly demotable, not excluded), reading wide (up to 500 rows) BEFORE
-   filtering eligibility (not superseded, not a user-directive) and relevance
-   (the entry's `source_files` overlap this review scope's changed files),
-   and only THEN caps the survivors to the prompt-sized offer limit. Filtering
-   after capping would let an arbitrary slice of a maintainer's rows crowd out
-   the ones actually relevant to this round. The offered id set is recorded
-   per repository and reset at the start of every call, so a failed read
-   never leaves a stale offer and the FINAL (sprint-scope) review never
-   inherits a round's leftover offer.
+1. **Offer (final review only).** A round review is offered no demotion
+   candidates. Before the FINAL review dispatch, `demotionCandidates(member)`
+   first checks that the maintainer's `kb_bible_commit` accepts
+   `withdrawals` and `restore_ids` (a local member always does; a remote
+   one is read from its tools/list). When it does not, nothing is offered and
+   a WARN names the maintainer and the upgrade. Otherwise it reads every
+   CONFIRMED entry citing a file changed on the sprint branch -- not only the
+   maintainer's own: the checkout bible view filtered by `files`, merged with
+   the maintainer's own CONFIRMED rows (`own_scope: true`) that are not in the
+   bible yet. Both reads are wide (`include_stale: true`,
+   `exclude_disputed: false`, up to 500 rows); eligibility (not superseded,
+   not a user-directive) and relevance (the entry's `source_files` overlap the
+   sprint's changed files) are filtered BEFORE the survivors are capped to the
+   prompt-sized offer limit. The offered id set is recorded per repository and
+   reset at the start of every call, so a failed read never leaves a stale
+   offer.
 2. **Judge.** The reviewer returns `kb_demotions: [{id, reason,
    evidence_files?}]`, structurally identical to `kb_promotions`/`kb_discards`.
    An id is accepted only if it was in THIS dispatch's own offered set --

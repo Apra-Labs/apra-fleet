@@ -420,7 +420,7 @@ function reviewDiffRangeLine(range, baseBranch) {
         `do not diff against the local '${baseBranch}' branch or origin/${baseBranch} directly.`;
 }
 
-export function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranch, branch, mergeBaseSha, goal, kbCandidates, kbDemoteCandidates, kbKnowledge, kbBlock }) {
+export function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranch, branch, mergeBaseSha, goal, kbCandidates, kbKnowledge, kbBlock }) {
     const range = reviewDiffRange(mergeBaseSha, branch);
     const ids = Array.isArray(beadIds) ? beadIds : [];
     const scopeWide = ids.length === 0;
@@ -469,7 +469,8 @@ export function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranc
         // which of this sprint's captures earned CONFIRMED.
         ...(Array.isArray(kbBlock) ? kbBlock : kbKnowledgeBlock(kbKnowledge)),
         ...kbPromotionBlock(kbCandidates),
-        ...kbDemotionBlock(kbDemoteCandidates),
+        // No demotion block: demotion candidates are offered at the final
+        // verdict only (buildFinalVerdictPrompt).
         'Do NOT run any `bd` command yourself and do NOT mutate beads directly in any way ' +
         '(no bd update, bd close, bd create, etc.) -- the orchestrator applies your ' +
         '`reopenIds` via `bd update <id> --status=open` and creates your `newTasks` via ' +

@@ -1,12 +1,10 @@
 // Robustness of the reviewer demotion loop's guard plumbing, against REAL git
 // repositories and REALLY failing commands (no faked command results):
 //
-//   1. createCurrentFileHashes / createRoundChangedFiles /
-//      createSprintChangedFiles log a WARN naming the member and the failed
-//      command whenever they degrade to an empty result.
-//   2. createRoundChangedFiles advances its "previous round" sha only when
-//      the round's diff succeeded, so a failed round's files are not lost.
-//   3. kbWork.demotionCandidates() takes the same isBusy/inFlight bracket
+//   1. createCurrentFileHashes / createSprintChangedFiles log a WARN naming
+//      the member and the failed command whenever they degrade to an empty
+//      result.
+//   2. kbWork.demotionCandidates() takes the same isBusy/inFlight bracket
 //      flushRepo/commitRepo take: it never pulls a maintainer that is
 //      mid-dispatch, and a dispatch starting during its read waits it out.
 import { describe, test, after } from 'node:test';
@@ -17,7 +15,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createKbWorkClient } from '../fleet-sprint/kb.mjs';
 import {
-    createCurrentFileHashes, createRoundChangedFiles, createSprintChangedFiles,
+    createCurrentFileHashes, createSprintChangedFiles,
 } from '../fleet-sprint/runner.js';
 import { fakeMaintainerSelector } from './helpers/kb-maintainer-fakes.mjs';
 
@@ -106,54 +104,6 @@ function assertWarned(lines, ...needles) {
     assert.ok(hit, `no WARN line containing ${JSON.stringify(needles)}; log was:\n${lines.join('\n')}`);
 }
 
-describe('createRoundChangedFiles: real git, real failures', () => {
-    test('a failed diff WARNs with the member and command, and does not advance the round sha -- the next round still sees the failed round\'s files', async () => {
-        const repos = makeRepos();
-        // The base-branch ref the first round diffs from is missing on the
-        // maintainer: the diff really fails.
-        git(repos.maint, repos.root, 'update-ref', '-d', 'refs/remotes/origin/main');
-        const { command } = shellCommand(repos.maint, repos.env);
-        const { lines, log } = collectLog();
-        const roundChangedFiles = createRoundChangedFiles({ command, pullGitBefore: repos.pull, baseBranch: 'main', log });
-
-        repos.doerCommit('round1.js');
-        const round1 = await roundChangedFiles(MEMBER);
-        const round1Head = git(repos.maint, repos.root, 'rev-parse', 'HEAD');
-        assert.deepEqual(round1, []);
-        assertWarned(lines, MEMBER, `git diff --name-only origin/main...${round1Head}`);
-
-        // The base ref is back; round 2 commits another file.
-        git(repos.maint, repos.root, 'fetch', '-q', 'origin', 'main');
-        repos.doerCommit('round2.js');
-        const round2 = await roundChangedFiles(MEMBER);
-
-        // Diffing from the failed round's head would return only round2.js.
-        assert.deepEqual(round2.sort(), ['round1.js', 'round2.js'],
-            "the failed round's files were lost: the round sha advanced past a diff that never succeeded");
-    });
-
-    test('a successful diff does advance the round sha (round 2 diffs from round 1\'s tip)', async () => {
-        const repos = makeRepos();
-        const { command } = shellCommand(repos.maint, repos.env);
-        const roundChangedFiles = createRoundChangedFiles({ command, pullGitBefore: repos.pull, baseBranch: 'main', log: () => {} });
-
-        repos.doerCommit('round1.js');
-        assert.deepEqual(await roundChangedFiles(MEMBER), ['round1.js']);
-        repos.doerCommit('round2.js');
-        assert.deepEqual(await roundChangedFiles(MEMBER), ['round2.js']);
-    });
-
-    test('a failed rev-parse (not a git checkout) WARNs with the member and command', async () => {
-        const root = tempDir('demotion-guard-norepo-');
-        const { command } = shellCommand(root, gitEnv(root));
-        const { lines, log } = collectLog();
-        const roundChangedFiles = createRoundChangedFiles({ command, pullGitBefore: async () => {}, baseBranch: 'main', log });
-
-        assert.deepEqual(await roundChangedFiles(MEMBER), []);
-        assertWarned(lines, MEMBER, 'git rev-parse HEAD');
-    });
-});
-
 describe('createSprintChangedFiles: real git, real failures', () => {
     test('a failed diff (sprint branch ref missing) WARNs with the member and command', async () => {
         const repos = makeRepos();
@@ -226,7 +176,7 @@ describe('kbWork.demotionCandidates: isBusy/inFlight bracket', () => {
         const client = createKbWorkClient({
             memberCall: async (member, name) => { reads.push(name); return { l1_results: [CONFIRMED] }; },
             maintainers: selector(),
-            roundChangedFiles: createRoundChangedFiles({ command, pullGitBefore: repos.pull, baseBranch: 'main', log }),
+            sprintChangedFiles: createSprintChangedFiles({ command, pullGitBefore: repos.pull, baseBranch: 'main', branch: 'feat', log }),
             log,
         });
         repos.doerCommit('round1.js');
@@ -264,7 +214,7 @@ describe('kbWork.demotionCandidates: isBusy/inFlight bracket', () => {
                 return { l1_results: [CONFIRMED] };
             },
             maintainers: selector(),
-            roundChangedFiles: createRoundChangedFiles({ command, pullGitBefore: repos.pull, baseBranch: 'main', log: () => {} }),
+            sprintChangedFiles: createSprintChangedFiles({ command, pullGitBefore: repos.pull, baseBranch: 'main', branch: 'feat', log: () => {} }),
             log: () => {},
         });
         repos.doerCommit('round1.js');
@@ -280,7 +230,9 @@ describe('kbWork.demotionCandidates: isBusy/inFlight bracket', () => {
         const offered = await read;
         await started;
         assert.deepEqual(offered.map((e) => e.id), ['kb-1']);
-        assert.deepEqual(events, ['kb_query:start', 'kb_query:end', 'dispatchStarted:resolved']);
+        // Two reads (the bible view and the maintainer's own rows), both
+        // inside the bracket.
+        assert.deepEqual(events, ['kb_query:start', 'kb_query:end', 'kb_query:start', 'kb_query:end', 'dispatchStarted:resolved']);
         await client.dispatchEnded(MAINT.name);
     });
 });
