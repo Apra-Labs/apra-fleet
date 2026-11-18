@@ -257,9 +257,10 @@ another entry matches `query`. Ranking inside the kept set is unchanged
 used without `query`. A `files` path is normalised (backslashes, repeated
 `/`, a leading `./`, a trailing `/`; an absolute path inside the repository
 becomes repo-relative, before any store, http included, is asked); `.` alone
-is refused. Stored `source_files` get the same normalisation on capture and
-import (`SqliteProvider.capture`); rows stored before that are matched with
-only backslashes and one leading `./` normalised. SQLite applies it in SQL next to the tag
+is refused. Stored `source_files` are kept as captured and compared with only
+backslashes converted to `/` and one leading `./` dropped; other non-canonical
+stored forms (repeated `/`, more than one leading `./`) are not matched.
+SQLite applies it in SQL next to the tag
 filter (`src/services/knowledge/cited-filter.ts`). Under the http provider it
 is sent only when the KB server lists the field in `query_filters` of
 `GET /api/kb/capabilities` (fleet's `kb-server` lists `files` and `symbols`);

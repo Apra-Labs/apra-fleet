@@ -7,6 +7,7 @@ import type { AddressInfo } from 'node:net';
 import { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js';
 import { HttpKbProvider } from '../../src/services/knowledge/http-provider.js';
 import { normalizeCitedPath, CitedFilterError } from '../../src/services/knowledge/cited-filter.js';
+import { validateFilePaths } from '../../src/services/knowledge/path-validation.js';
 import { startKbServer, KB_SERVER_CAPABILITIES } from '../../src/commands/kb-server.js';
 import { getProjectSlug } from '../../src/services/knowledge/kb-providers.js';
 import { kbQuery, kbQuerySchema } from '../../src/tools/kb-query.js';
@@ -137,57 +138,91 @@ describe('SqliteProvider.query cited filter', () => {
   });
 });
 
-// Stored source_files are normalised on capture, so a path captured in an odd
-// but valid form (repeated '/', more than one leading './') is found by the
-// files filter like any other; the carried basis of an import is re-keyed to
-// the same form.
-describe('SqliteProvider.capture stores source_files normalised', () => {
+// Stored source_files are kept as captured: capture() does not rewrite them.
+// The files filter compares a stored path after converting backslashes and
+// dropping one leading './'; other odd stored forms are documented as not
+// matched. context() and invalidate() match a caller's path as given or in
+// canonical form, so a backslash caller finds a forward-slash row.
+describe('stored source_files are kept as captured', () => {
+  let base: string;
   let repo: string;
   let provider: SqliteProvider;
 
   beforeEach(async () => {
-    repo = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-cited-store-'));
+    base = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-cited-store-'));
+    repo = path.join(base, 'repo');
     fs.mkdirSync(path.join(repo, 'src', 'svc'), { recursive: true });
     for (const f of ['a.ts', 'b.ts', 'c.ts']) fs.writeFileSync(path.join(repo, 'src', 'svc', f), `export const ${f[0]} = 1;
 `);
+    // A file OUTSIDE the repository, next to it: a path escaping the repo
+    // must never be stored as a basis.
+    fs.writeFileSync(path.join(base, 'x'), 'outside the repository\n');
     provider = new SqliteProvider(':memory:', repo);
     await provider.init();
   });
   afterEach(() => {
     provider.close();
-    fs.rmSync(repo, { recursive: true, force: true });
+    fs.rmSync(base, { recursive: true, force: true });
   });
 
-  it('kb_query {files: ["src/svc"]} finds entries captured as src//svc/a.ts and ././src/svc/b.ts', async () => {
+  const liveRows = () => ((provider as any).db.prepare(
+    'SELECT id, source_files FROM entries WHERE superseded_at IS NULL',
+  ).all() as { id: string; source_files: string }[]);
+
+  it('kb_query {files: ["src/svc"]} matches a one-leading-./ stored path, not repeated / or ././', async () => {
     const capture = async (title: string, file: string, symbol: string) => (await provider.capture(makeInput({
       title, summary: `${title} summary`, source_files: [file], symbols: [symbol],
     }))).id;
     const a = await capture('Service a doubles the input', 'src//svc/a.ts', 'svcA');
     const b = await capture('Service b halves the input', '././src/svc/b.ts', 'svcB');
-    const c = await capture('Service c negates the input', 'src/svc/c.ts', 'svcC');
+    const c = await capture('Service c negates the input', './src/svc/c.ts', 'svcC');
 
     const r = await provider.query({ cited: { files: ['src/svc'] }, limit: 20 });
-    expect(idsOf(r.results).sort()).toEqual([a, b, c].sort());
-    const stored = Object.fromEntries(r.results.map(e => [e.id, e.source_files]));
-    expect(stored[a]).toEqual(['src/svc/a.ts']);
-    expect(stored[b]).toEqual(['src/svc/b.ts']);
+    expect(idsOf(r.results)).toEqual([c]);
+    const stored = Object.fromEntries(liveRows().map(row => [row.id, JSON.parse(row.source_files)]));
+    expect(stored[a]).toEqual(['src//svc/a.ts']);
+    expect(stored[b]).toEqual(['././src/svc/b.ts']);
+    expect(stored[c]).toEqual(['./src/svc/c.ts']);
   });
 
-  it('context() and invalidate() find a normalised stored path by the form the caller captured it with', async () => {
+  it('context() and invalidate() find a canonical stored path by a backslash or ./ caller form', async () => {
     const { id } = await provider.capture(makeInput({
-      type: 'context-cache', title: 'Service a context', source_files: ['src\\svc\\a.ts'], symbols: ['svcACtx'],
+      type: 'context-cache', title: 'Service a context', source_files: ['src/svc/a.ts'], symbols: ['svcACtx'],
     }));
     const ctx = await provider.context(['src\\svc\\a.ts']);
-    expect(ctx[0].entry_id).toBe(id);
+    expect(ctx[0]?.entry_id).toBe(id);
     expect((await provider.invalidate(['./src/svc/a.ts'])).invalidated).toBe(1);
   });
 
-  it('an import re-keys its carried basis to the stored path form', async () => {
-    const { id } = await provider.capture(makeInput({
-      title: 'Service a imported with a carried basis', source_files: ['./src/svc/a.ts'], symbols: ['svcAImported'],
-    }), { importMode: true, carriedBasis: { './src/svc/a.ts': 'abc123' } });
-    const basis = provider.getSourceFileBases([id]).get(id);
-    expect(basis).toEqual({ 'src/svc/a.ts': 'abc123' });
+  // The capture boundaries (kb_capture, POST /api/kb/capture) run
+  // validateFilePaths on the raw source_files, then capture(). The path
+  // validated must be the path stored: a leading space before an absolute
+  // path, or backslash '..' segments (not separators on POSIX), must not turn
+  // into an absolute or traversing stored path that reaches a real file.
+  it('a raw path that passes validateFilePaths is never stored absolute or traversing', async () => {
+    const atBoundary = async (file: string) => {
+      validateFilePaths([file]);
+      return provider.capture(makeInput({ title: `Escape via ${file}`, source_files: [file], symbols: ['escape'] }));
+    };
+    for (const file of [' ' + path.join(base, 'x'), 'a\\..\\..\\x']) {
+      await expect(atBoundary(file)).rejects.toThrow();
+    }
+    expect(liveRows()).toEqual([]);
+  });
+
+  it('re-capturing an entry whose existing row stores ./src/svc/a.ts updates it in place', async () => {
+    const input = makeInput({
+      type: 'context-cache', title: 'Service a context legacy', source_files: ['./src/svc/a.ts'], symbols: ['svcALegacy'],
+    });
+    const { id } = await provider.capture(input);
+    // Pin the row to exactly the form an older build stored.
+    (provider as any).db.prepare('UPDATE entries SET source_files = ? WHERE id = ?')
+      .run(JSON.stringify(['./src/svc/a.ts']), id);
+
+    const again = await provider.capture({ ...input, summary: 'refreshed context summary' });
+    expect(again.id).toBe(id);
+    expect(liveRows().map(r => r.id)).toEqual([id]);
+    expect((await provider.invalidate(['./src/svc/a.ts'])).invalidated).toBe(1);
   });
 });
 

@@ -1598,14 +1598,12 @@ stored path under it (`src/services` matches `src/services/a.ts`, not
 `src/services-old/a.ts`). A `files` value is normalised before matching:
 backslashes become `/`, repeated `/` collapse, a leading `./` and a trailing
 `/` are dropped, and an absolute path inside the repository is made
-repo-relative (by fleet, before the request reaches any store). Stored
-`source_files` are compared in the same form: fleet's reference
-implementation normalises them the same way when an entry is captured or
-imported (an absolute path stays absolute); a row it stored before that
-normalisation existed is compared with only backslashes converted and one
-leading `./` dropped. A `files` value that names no path inside the
-repository (`.`, `./`) is refused. `symbols` match exactly
-(case-sensitive). Ranking inside the kept set is unchanged: the keyword
+repo-relative (by fleet, before the request reaches any store). A stored
+`source_files` value is compared after converting backslashes to `/` and
+dropping one leading `./`; other non-canonical stored forms (repeated `/`,
+more than one leading `./`) are not guaranteed to match. A `files` value
+that names no path inside the repository (`.`, `./`) is refused. `symbols`
+match exactly (case-sensitive). Ranking inside the kept set is unchanged: the keyword
 ranking with `query`, newest first without it; either field may be used
 without `query`. The filters apply to `l1_results`, `l2_expanded` and the
 member split read alike; the `flagged_only` branch ignores them. A request
