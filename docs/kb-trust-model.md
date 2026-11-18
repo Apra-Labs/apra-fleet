@@ -149,6 +149,16 @@ does not know `withdrawn` and treats it like any unknown reason: the entry is
 hidden from its bible view and no row is lowered. (Spec: memory-contract
 `spec.md` 2.6 and 2.9.)
 
+Known limits of the current design:
+
+- The base-ref gate trusts the branch name written inside the bible itself
+  (`provenance.branch`), not a separately configured base branch.
+- The remote name `origin` is hard-coded in the gate's ref.
+- A withdrawn id that is later re-sent in `kb_bible_commit` `ids` is merged
+  back and its tombstone is cleared, with no check against the tombstone time.
+- A withdrawal never touches the local row, so the local KB keeps the entry
+  CONFIRMED until the merged bible is imported.
+
 ## Forward-only enforcement (no migration)
 
 The gate is forward-looking. The KB may contain historical entries that were written
