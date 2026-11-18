@@ -448,6 +448,8 @@ export function createSupervisor(deps = {}) {
     }
 
     let stopping = null;
+    let stopReason = null;
+    let forcedExit = false;
     /**
      * Idempotent teardown: close the HTTP server and stop every seam, then
      * resolve `shutdownRequested`. Safe to call more than once.
@@ -455,11 +457,13 @@ export function createSupervisor(deps = {}) {
      */
     function stop(reason = 'explicit') {
         if (stopping) return stopping;
+        stopReason = reason;
         stopping = (async () => {
             log(`[supervisor] shutting down (${reason})`);
             if (forcedExitMs > 0) {
                 const forced = setTimeout(() => {
                     logError(`[supervisor] shutdown did not complete within ${forcedExitMs}ms; forcing exit. Hung: ${hungSeams.length ? hungSeams.join(', ') : '(none recorded; still stopping a seam or closing the http server)'}`);
+                    forcedExit = true;
                     exitFn(0);
                 }, forcedExitMs);
                 if (typeof forced.unref === 'function') forced.unref();
@@ -536,6 +540,8 @@ export function createSupervisor(deps = {}) {
         get port() { return port; },
         /** Resolves once the supervisor has fully shut down. */
         get shutdownRequested() { return shutdownRequested; },
+        /** Why the supervisor is exiting: the stop reason, or forced-exit-timeout. Null until stop() runs. */
+        get exitCause() { return forcedExit ? 'forced-exit-timeout' : stopReason; },
         /** Names of seams whose stop() exceeded its bound during shutdown. */
         get hungSeams() { return [...hungSeams]; },
     };

@@ -31,6 +31,7 @@ import { createLiveProxy, registerLiveRoutes } from '../src/supervisor/proxy.mjs
 import { createChildPortResolver } from '../src/supervisor/child-port.mjs';
 import { createHistoryView, registerHistoryViewRoutes } from '../src/supervisor/history-view.mjs';
 import { createLogView, registerLogViewRoutes } from '../src/supervisor/log-view.mjs';
+import { installExitLogging } from '../src/supervisor/exit-log.mjs';
 import { installSelfLogTee, createSelfLogView, registerSelfLogRoutes } from '../src/supervisor/self-log.mjs';
 import { createIdAllocator, registerIdAllocatorRoutes, defaultDataDir as defaultAllocatorDataDir } from '../src/supervisor/id-allocator.mjs';
 import { createDoltMutex, registerDoltMutexRoutes } from '../src/supervisor/dolt-mutex.mjs';
@@ -242,6 +243,23 @@ export async function serveMain(argv = process.argv.slice(2), deps = {}) {
     // registered further down, once `supervisor` exists.
     const selfLog = installSelfLogTee();
     process.once('exit', () => selfLog.stop());
+    // Final synchronous exit line (cause + exit code) on every observable exit
+    // path, appended synchronously (bypassing the async tee stream).
+    let supervisor = null;
+    const onSignal = (sig) => {
+        console.log(`[supervisor] received ${sig}`);
+        if (supervisor) supervisor.stop(`signal:${sig}`).catch((err) => console.error(err));
+    };
+    // Only the real entry point owns process-level handlers; an in-process
+    // caller (a test driving serveMain) keeps the plain SIGINT/SIGTERM wiring
+    // so it does not gain fatal-error handlers or leak exit listeners.
+    const exitLog = (deps.installExitLog ?? isMainModule())
+        ? installExitLogging({ logPath: selfLog.logPath, causeProvider: () => (supervisor ? supervisor.exitCause : null), onSignal })
+        : { exitFn: (code) => process.exit(code) };
+    if (!(deps.installExitLog ?? isMainModule())) {
+        process.once('SIGINT', () => onSignal('SIGINT'));
+        process.once('SIGTERM', () => onSignal('SIGTERM'));
+    }
 
     let port = DEFAULT_SERVICE_PORT;
     const host = values.host !== undefined && values.host !== '' ? values.host : DEFAULT_SERVICE_HOST;
@@ -526,7 +544,7 @@ export async function serveMain(argv = process.argv.slice(2), deps = {}) {
         hangable[hangSeam] = { ...hangable[hangSeam], name: hangSeam, stop: () => new Promise(() => {}) };
         console.warn(`[supervisor] TEST HOOK: seam '${hangSeam}' stop() will never settle`);
     }
-    const supervisor = createSupervisor({
+    supervisor = createSupervisor({
         port, host,
         // CLI names add to (not replace) the env var's list.
         allowedHosts: [...(values['allowed-host'] ?? []), ...String(process.env[SUPERVISOR_ALLOWED_HOSTS_ENV] ?? '').split(/[\s,]+/).filter(Boolean)],
@@ -534,6 +552,7 @@ export async function serveMain(argv = process.argv.slice(2), deps = {}) {
         doltOrphanSweep: hangable.doltOrphanSweep, beadsIdentity, backlogMember,
         seamStopTimeoutMs: envMs('FLEET_SE_SHUTDOWN_SEAM_TIMEOUT_MS', 3000),
         forcedExitMs: envMs('FLEET_SE_SHUTDOWN_FORCE_EXIT_MS', 10_000),
+        exit: exitLog.exitFn,
     });
     registerIdAllocatorRoutes(supervisor, idAllocator, { readJsonBody, sendJson });
     registerDoltMutexRoutes(supervisor, doltMutex, { readJsonBody, sendJson });
@@ -623,14 +642,9 @@ export async function serveMain(argv = process.argv.slice(2), deps = {}) {
     const selfLogView = createSelfLogView({ logPath: selfLog.logPath });
     registerSelfLogRoutes(supervisor, selfLogView);
 
-    // Explicit signals are the out-of-band way to stop cleanly, complementing
-    // the in-band POST /api/shutdown route.
-    const onSignal = (sig) => {
-        console.log(`[supervisor] received ${sig}`);
-        supervisor.stop(`signal:${sig}`).catch((err) => console.error(err));
-    };
-    process.once('SIGINT', () => onSignal('SIGINT'));
-    process.once('SIGTERM', () => onSignal('SIGTERM'));
+    // Explicit signals (SIGINT/SIGTERM/SIGHUP/SIGBREAK) are the out-of-band way
+    // to stop cleanly, complementing the in-band POST /api/shutdown route; they
+    // are handled by installExitLogging() above, which also logs the final line.
 
     await supervisor.start();
 
