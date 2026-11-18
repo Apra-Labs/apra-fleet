@@ -1948,7 +1948,7 @@ const DOER_STATUS_SCHEMA = {
           },
           "content": {
             "type": "string",
-            "description": "Full detail of the entry. REQUIRED -- kbCaptureSchema declares content as z.string().min(1), so a capture without it is rejected at the MCP boundary and persists nothing (apra-fleet-23c).",
+            "description": "Full detail of the entry. REQUIRED -- kbCaptureSchema declares content as z.string().min(1), so a capture without it is rejected at the MCP boundary and persists nothing.",
             "minLength": 40
           },
           "source_files": {
@@ -2320,7 +2320,7 @@ const HARVEST_SCHEMA = {
           },
           "content": {
             "type": "string",
-            "description": "Full detail of the entry. REQUIRED -- kbCaptureSchema declares content as z.string().min(1), so a capture without it is rejected at the MCP boundary and persists nothing (apra-fleet-23c).",
+            "description": "Full detail of the entry. REQUIRED -- kbCaptureSchema declares content as z.string().min(1), so a capture without it is rejected at the MCP boundary and persists nothing.",
             "minLength": 40
           },
           "source_files": {
@@ -2408,7 +2408,7 @@ const PLANNER_SCHEMA = {
           },
           "content": {
             "type": "string",
-            "description": "Full detail of the entry. REQUIRED -- kbCaptureSchema declares content as z.string().min(1), so a capture without it is rejected at the MCP boundary and persists nothing (apra-fleet-23c).",
+            "description": "Full detail of the entry. REQUIRED -- kbCaptureSchema declares content as z.string().min(1), so a capture without it is rejected at the MCP boundary and persists nothing.",
             "minLength": 40
           },
           "source_files": {

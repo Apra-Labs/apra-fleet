@@ -399,4 +399,38 @@ describe('bible demotion tombstones', () => {
     expect(onDisk.entries.map(e => e.id)).toEqual([unrelated]);
     expect(onDisk.demotions).toEqual([{ id: demotedId, at: rowDemotedAt(demotedId), reason: 'demoted' }]);
   });
+
+  const byId = <T extends { id: string }>(xs: T[]): T[] => [...xs].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+
+  it('scenario 10: note, evidence_files and an unknown reason survive a kb_bible_commit and a kb_export re-write', async () => {
+    // Tombstones another writer put in the bible: a withdrawal with its
+    // judgement, a bare withdrawal, and a reason this reader does not know.
+    const carried = [
+      {
+        id: 'kb-withdrawn-full', at: '2026-01-02T00:00:00.000Z', reason: 'withdrawn',
+        note: 'the cited guard was removed when the reader was rewritten',
+        evidence_files: ['README.md', 'src/seed.ts'],
+      },
+      { id: 'kb-withdrawn-bare', at: '2026-01-03T00:00:00.000Z', reason: 'withdrawn' },
+      { id: 'kb-future-reason', at: '2026-01-04T00:00:00.000Z', reason: 'some-future-reason', note: 'kept as is' },
+    ];
+    fs.mkdirSync(path.dirname(biblePath()), { recursive: true });
+    fs.writeFileSync(biblePath(), JSON.stringify({
+      version: 3, provenance: { commit: null, branch: null, entry_count: 0 }, entries: [], demotions: carried,
+    }, null, 2) + '\n');
+    git(clone, ['add', '-A']);
+    git(clone, ['commit', '--quiet', '-m', 'seed bible with carried tombstones']);
+
+    const first = await confirmedCiting('Alpha', 'src/alpha.ts');
+    const r = JSON.parse(await kbBibleCommit({ ids: [first], ...BASE }, { folder: clone }));
+    expect(r.committed).toBe(true);
+    expect(bibleIds()).toEqual([first]);
+    expect(readBibleFile().demotions).toEqual(byId(carried));
+
+    const second = await confirmedCiting('Beta', 'src/beta.ts');
+    const out = JSON.parse(await kbExport({}, { folder: clone }));
+    expect(out.exported).toBeGreaterThan(0);
+    expect(bibleIds()).toEqual([first, second].sort());
+    expect(readBibleFile().demotions).toEqual(byId(carried));
+  });
 });

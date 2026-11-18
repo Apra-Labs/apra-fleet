@@ -65,7 +65,9 @@
 // provider's applySetup(); the harness never calls fs.writeFileSync itself.
 // Ops: { op: 'write', repo, rel, contents } writes a file; { op: 'delete',
 // repo, rel } removes it; { op: 'commit', repo, rel } commits that one path in
-// the repo's work tree (git add + commit, the repo's local identity).
+// the repo's work tree (git add + commit, the repo's local identity);
+// { op: 'ref', repo, name } points the git ref `name` at the repo's HEAD (a
+// fetched base branch, or a pinned base commit).
 //
 // `parsed` IS THE CONTRACT'S OWN READING, NOT A WORKAROUND
 // --------------------------------------------------------
@@ -400,6 +402,19 @@ function assertCitesFile(name, file) {
   };
 }
 
+// A response id list (dotted path into the parsed body) must be exactly the
+// one id captured as `name`: a schema-valid response that withdrew, deferred
+// or restored nothing would otherwise pass.
+function idListIs(dottedPath, name) {
+  return (parsed, ctx) => {
+    const want = ctx.ids.get(name)?.live;
+    const got = dottedPath.split('.').reduce((v, k) => (v == null ? undefined : v[k]), parsed);
+    return Array.isArray(got) && got.length === 1 && got[0] === want
+      ? null
+      : `expected ${dottedPath} to be exactly [${want}], got ${JSON.stringify(got)}`;
+  };
+}
+
 function assertDirectiveQuarantined(parsed, ctx) {
   const liveId = ctx.ids.get('DIRECTIVE')?.live;
   const entry = (parsed?.results ?? []).find((r) => r?.id === liveId);
@@ -671,6 +686,31 @@ export const SCENARIO = [
   { tool: 'kb_promote', case: 'setup-second-promote-for-retire-refused', derive: { id: 'GATE' } },
   { tool: 'kb_capture', case: 'refusal-retire-needs-kb-maintainer', derive: { supersedes: 'GATE' }, assertParsed: assertRefusedGate },
   { tool: 'kb_invalidate', case: 'refusal-retire-needs-kb-maintainer', derive: { ids: ['GATE'] }, assertParsed: assertRefusedGate },
+  // Withdrawals (spec section 2.9): a CONFIRMED entry is merged, then withdrawn
+  // on the branch (a "withdrawn" tombstone; the local row is not changed).
+  // kb_import from the work tree defers it; read at refs/remotes/origin/main
+  // (the bible's provenance.branch, pointed at HEAD as a merge and fetch
+  // would) it lowers the row. restore_ids against the pre-withdrawal commit
+  // (pinned by a ref) removes the branch-added tombstone again.
+  { tool: 'kb_capture', case: 'setup-for-bible-withdrawal', captureId: 'WITHDRAWN' },
+  { tool: 'kb_promote', case: 'setup-first-promote-for-bible-withdrawal', derive: { id: 'WITHDRAWN' } },
+  { tool: 'kb_promote', case: 'setup-second-promote-for-bible-withdrawal', derive: { id: 'WITHDRAWN' } },
+  { tool: 'kb_bible_commit', case: 'setup-merge-for-bible-withdrawal', derive: { ids: ['WITHDRAWN'] } },
+  {
+    tool: 'kb_bible_commit',
+    case: 'withdrawal',
+    derive: { 'withdrawals.0.id': 'WITHDRAWN' },
+    setup: [{ op: 'ref', repo: 'A', name: 'refs/fixtures/pre-withdrawal' }],
+    assertParsed: idListIs('withdrawn', 'WITHDRAWN'),
+  },
+  { tool: 'kb_import', case: 'withdrawal-deferred', assertParsed: idListIs('withdrawals.deferred', 'WITHDRAWN') },
+  {
+    tool: 'kb_import',
+    case: 'withdrawal-base-ref',
+    setup: [{ op: 'ref', repo: 'A', name: 'refs/remotes/origin/main' }],
+    assertParsed: idListIs('withdrawals.withdrawn', 'WITHDRAWN'),
+  },
+  { tool: 'kb_bible_commit', case: 'restore', derive: { restore_ids: ['WITHDRAWN'] }, assertParsed: idListIs('restored', 'WITHDRAWN') },
   // Over an http project KB: kb_bible_commit skips (nothing merged or
   // committed) and kb_invalidate {ids} is refused with a typed code.
   { tool: 'kb_bible_commit', case: 'http-skip', assertParsed: assertBibleSkipped },
@@ -691,6 +731,23 @@ export const SCENARIO = [
   { tool: 'kb_query', case: 'http-files-filter', assertParsed: assertCitesFile('HTTP_DEMOTED', 'src/') },
   { tool: 'kb_demote', case: 'http-happy', derive: { id: 'HTTP_DEMOTED' } },
   { tool: 'kb_demote', case: 'refusal-http-not-confirmed', derive: { id: 'HTTP_DEMOTED' } },
+  // Withdrawals over an http project KB: kb_bible_commit writes a
+  // tombstone-only bible, and kb_import read at refs/remotes/origin/main
+  // replays it in one POST /api/kb/withdraw to the sample kb-server.
+  { tool: 'kb_capture', case: 'setup-for-http-withdrawal', captureId: 'HTTP_WITHDRAWN' },
+  { tool: 'kb_promote', case: 'setup-promote-for-http-withdrawal', derive: { id: 'HTTP_WITHDRAWN' } },
+  {
+    tool: 'kb_bible_commit',
+    case: 'http-tombstone-only',
+    derive: { 'withdrawals.0.id': 'HTTP_WITHDRAWN' },
+    assertParsed: idListIs('withdrawn', 'HTTP_WITHDRAWN'),
+  },
+  {
+    tool: 'kb_import',
+    case: 'http-withdrawal-replay',
+    setup: [{ op: 'ref', repo: 'HTTP', name: 'refs/remotes/origin/main' }],
+    assertParsed: idListIs('withdrawals.withdrawn', 'HTTP_WITHDRAWN'),
+  },
   // A server for another project is reachable but wrong: a read and a
   // promote by id are refused, never answered from a local store.
   { tool: 'kb_query', case: 'refusal-http-project-mismatch' },
@@ -1120,7 +1177,17 @@ export async function runRoundTrip(provider, rosterTools) {
         if (!known) fail(`derive needs the id captured as ${name}, which no earlier step produced`);
         else live.push(known.live);
       }
-      if (live.length === names.length) request[field] = Array.isArray(nameOrNames) ? live : live[0];
+      if (live.length !== names.length) continue;
+      const value = Array.isArray(nameOrNames) ? live : live[0];
+      // A dotted field ('withdrawals.0.id') sets a value nested in the request.
+      const pathParts = field.split('.');
+      let target = request;
+      for (const part of pathParts.slice(0, -1)) {
+        if (target == null || typeof target !== 'object') break;
+        target = target[part];
+      }
+      if (target == null || typeof target !== 'object') fail(`derive path ${field} does not exist in the recorded request`);
+      else target[pathParts[pathParts.length - 1]] = value;
     }
     const validateRequest = validatorFor(step.tool, 'request');
     record.requestValid = validateRequest(request);

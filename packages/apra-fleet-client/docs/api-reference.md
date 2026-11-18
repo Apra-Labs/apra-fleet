@@ -622,8 +622,9 @@ and `E-BIBLE-BASIS-NOT-GIT` (`kb_export` / `kb_bible_commit` in a folder that is
 not a git work tree).
 
 Under the http KB provider (`kb_setup provider http`) the KB server is the
-source of truth and the bible is not used: `kb_import` imports nothing and
-answers `bible_skipped: true` with a `reason`, and a member `kb_query`
+source of truth and the bible's entries are not used: `kb_import` imports no
+entry and answers `bible_skipped: true` with a `reason` (only a merged base
+bible's withdrawal tombstones are replayed, see below), and a member `kb_query`
 `flagged_only` read is refused. Four more codes from the same file can be
 thrown: `E-KB-HTTP-UNSUPPORTED` (an operation the http provider cannot serve:
 `kb_invalidate` with `ids`, a member `kb_query` `flagged_only` read, `kb_demote`
@@ -670,6 +671,25 @@ The engine's sprint-start priming uses
 `ref: "refs/remotes/origin/<base branch>"` on the kb_maintainer, so trust is
 seeded from the base branch and never from the maintainer's work tree.
 
+Every `kb_import` result carries `withdrawals: {sent, withdrawn, repromoted,
+already, not_found, unsupported, deferred, warning?}` (id lists, `sent` a
+count). A bible tombstone with reason `withdrawn` takes effect ONLY when the
+bible was read with `ref` equal to `refs/remotes/origin/<provenance.branch>`
+of that same bible (the merged base bible): over SQLite the local row is
+lowered CONFIRMED -> INFERRED (`withdrawn`), left alone when it was promoted
+after the tombstone (`repromoted`) or already lower (`already`), and never
+created (`not_found`). Read any other way (no `ref`, `HEAD`, the work tree,
+another ref) nothing is lowered and the ids are listed in `deferred`. Under
+the http KB provider no entry is imported (`bible_skipped: true`), but that
+same base-ref read -- from a session that is not a member without the
+kb_maintainer grant -- replays the withdrawn tombstones to the KB server in one
+`POST /api/kb/withdraw` and reports each outcome, with `bible_source` naming
+the ref; a ref that holds no bible (an http repo has none until its first
+withdrawal merges) answers the same all-zero report with `bible_source`, not
+`E-BIBLE-NOT-FOUND`; a server without the `withdraw` route gets nothing, and the ids are
+listed in `unsupported` with `warning` carrying the `E-KB-HTTP-UNSUPPORTED`
+message naming the route.
+
 #### `kbExport(options?: KbExportOptions)`
 
 Calls `kb_export` -- exports the calling session's CONFIRMED KB entries to the
@@ -712,12 +732,29 @@ Tombstones already in the file survive a later commit carrying unrelated ids, an
 re-committing a tombstoned id through `ids` (a re-promotion) restores its entry
 and clears its tombstone. `provenance.entry_count` counts entries only.
 
-Result JSON: `{path, merged, demoted, skipped, removed, entry_count, committed}`.
-Under the http KB provider the call is skipped, never an error: the result is
-`{path, merged: [], demoted: [], skipped: [], removed: [], entry_count,
-backfilled: 0, committed: false, bible_skipped: true, reason}`, where
-`entry_count` counts the entries of the existing bible file (0 when it is
-absent or unreadable); the KB is not read and nothing is written or committed.
+Optional `withdrawals` (`[{id, note, evidence_files}]`; `note` at least 20
+characters after whitespace is collapsed, at least one repo-relative evidence
+path) records WITHDRAWALS carried by the branch. An id the bible holds as an
+entry, or the KB holds CONFIRMED (not superseded, not a user-directive), is
+removed from `entries` and tombstoned as `{id, at, reason: "withdrawn", note,
+evidence_files}`; the local entry is NOT changed -- other clones apply it only
+on a `kb_import` of the merged base bible. Any other id, or one also merged or
+demoted in the same call, is skipped with reason `not_withdrawable`. Optional
+`restore_ids` undoes tombstones this branch added: a tombstone is removed only
+when the bible at `baseCommit` carries none for the id, and the base bible's
+entry for it is re-added byte-identical. Admitted ids are listed in `withdrawn`
+and `restored`.
+
+Result JSON: `{path, merged, demoted, withdrawn, restored, skipped, removed,
+entry_count, backfilled, committed}`.
+Under the http KB provider the entry merge is skipped, never an error: the
+result is `{path, merged: [], demoted: [], skipped: [], removed: [],
+entry_count, backfilled: 0, committed, bible_skipped: true, reason, withdrawn,
+restored}`, where `entry_count` counts the entries of the existing bible file
+(0 when it is absent or unreadable); the KB is not read. With no `withdrawals`
+and no `restore_ids` nothing is written or committed; with them only the
+tombstones are written (a tombstone-only bible, `entries: []`, is created when
+absent) and `committed` may be true.
 
 #### `kbQuery(options: KbQueryOptions)`
 

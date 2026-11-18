@@ -45,6 +45,8 @@ const kbExportSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'kb-export.
 const typesSrc = readFileSync(path.join(repoRoot, 'src', 'types.ts'), 'utf8');
 const kbBibleCommitSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'kb-bible-commit.ts'), 'utf8');
 const kbQuerySrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'kb-query.ts'), 'utf8');
+const kbImportSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'kb-import.ts'), 'utf8');
+const bibleImportSrc = readFileSync(path.join(repoRoot, 'src', 'services', 'knowledge', 'bible-import.ts'), 'utf8');
 
 /** Extract the text between a start marker (exclusive) and the next occurrence of an end marker. */
 function extractBlock(source, startMarker, endMarker) {
@@ -233,8 +235,10 @@ describe('apra-fleet-client typedef vs server zod schema parity', () => {
     test('KbBibleCommitOptions matches kbBibleCommitSchema field-for-field', () => {
         const schemaFields = kbBibleCommitSchemaFields();
         const typedefFields = extractTypedefProperties(apiMjsSrc, 'KbBibleCommitOptions');
-        assert.strictEqual(schemaFields.size, 4, `expected 4 kbBibleCommitSchema fields, parsed ${schemaFields.size}`);
+        assert.strictEqual(schemaFields.size, 6, `expected 6 kbBibleCommitSchema fields, parsed ${schemaFields.size}`);
         assert.ok(schemaFields.has('demoted_ids'), 'sanity: kbBibleCommitSchema should declare demoted_ids');
+        assert.ok(schemaFields.has('withdrawals'), 'sanity: kbBibleCommitSchema should declare withdrawals');
+        assert.ok(schemaFields.has('restore_ids'), 'sanity: kbBibleCommitSchema should declare restore_ids');
         assertFieldParity('KbBibleCommitOptions vs kbBibleCommitSchema', schemaFields, typedefFields);
     });
 
@@ -247,6 +251,30 @@ describe('apra-fleet-client typedef vs server zod schema parity', () => {
             assert.ok(typedefFields.has(f), `KbQueryOptions should declare ${f}`);
         }
         assertFieldParity('KbQueryOptions vs kbQuerySchema', schemaFields, typedefFields);
+    });
+
+    test('KbBibleCommitResult matches the KbBibleCommitResult interface kb_bible_commit returns', () => {
+        const block = extractBlock(kbBibleCommitSrc, 'export interface KbBibleCommitResult {', '\n}');
+        const serverFields = new Set([...block.matchAll(/^ {2}([a-zA-Z_]\w*)\??:/gm)].map((m) => m[1]));
+        const typedefFields = extractTypedefProperties(apiMjsSrc, 'KbBibleCommitResult');
+        assert.ok(serverFields.has('withdrawn') && serverFields.has('restored'), 'sanity: KbBibleCommitResult should declare withdrawn, restored');
+        assertFieldParity('KbBibleCommitResult vs kb-bible-commit.ts', serverFields, typedefFields);
+    });
+
+    test('KbImportResult matches the KbImportReport interface kb_import returns', () => {
+        const block = extractBlock(kbImportSrc, 'export interface KbImportReport {', '\n}');
+        const serverFields = new Set([...block.matchAll(/^ {2}([a-zA-Z_]\w*)\??:/gm)].map((m) => m[1]));
+        const typedefFields = extractTypedefProperties(apiMjsSrc, 'KbImportResult');
+        assert.ok(serverFields.has('withdrawals'), 'sanity: KbImportReport should declare withdrawals');
+        assertFieldParity('KbImportResult vs kb-import.ts', serverFields, typedefFields);
+    });
+
+    test('KbImportWithdrawals matches the BibleWithdrawalReport interface (the kb_import withdrawals block)', () => {
+        const block = extractBlock(bibleImportSrc, 'export interface BibleWithdrawalReport {', '\n}');
+        const serverFields = new Set([...block.matchAll(/^ {2}([a-zA-Z_]\w*)\??:/gm)].map((m) => m[1]));
+        const typedefFields = extractTypedefProperties(apiMjsSrc, 'KbImportWithdrawals');
+        assert.ok(serverFields.has('deferred') && serverFields.has('unsupported'), 'sanity: BibleWithdrawalReport should declare deferred, unsupported');
+        assertFieldParity('KbImportWithdrawals vs bible-import.ts', serverFields, typedefFields);
     });
 
     test('MemberDetailResult matches the json-format result object member-detail.ts builds', () => {

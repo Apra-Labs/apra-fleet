@@ -25,6 +25,47 @@
           },
           "description": "Ids demoted this round (kb_demote). Each must name a local entry that HAS a demoted_at and is now below CONFIRMED; any other id is skipped and reported in skipped with reason not_demoted_or_unknown. An admitted id is REMOVED from entries and recorded as an explicit tombstone {id, at, reason: \"demoted\"} in the bible demotions array, so other clones can apply the demotion instead of inferring it from an absence. Independently, every call does the same for each bible entry this KB holds as demoted, unless that bible entry was promoted after the local demotion (another clone re-promoted it). Re-admitting the same id through ids (a re-promotion) clears its tombstone."
         },
+        "withdrawals": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Id of the bible entry being withdrawn."
+              },
+              "note": {
+                "type": "string",
+                "description": "Why the entry no longer holds -- at least 20 characters after whitespace is collapsed. Stored collapsed in the tombstone."
+              },
+              "evidence_files": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "minItems": 1,
+                "description": "At least one repo-relative file the judgement was checked against; an absolute path or a \"..\" segment is refused."
+              }
+            },
+            "required": [
+              "id",
+              "note",
+              "evidence_files"
+            ],
+            "additionalProperties": false
+          },
+          "description": "Bible entries withdrawn this round: [{id, note, evidence_files}]. An id is admitted when the bible already holds an entry for it, or this KB holds it CONFIRMED, not superseded and not a user-directive; any other id is skipped with reason not_withdrawable. An admitted id is removed from entries and recorded as a tombstone {id, at: now, reason: \"withdrawn\", note, evidence_files}; the local entry is NOT changed (the withdrawal takes effect for clones only once the branch merges). An id also merged through ids, or admitted through demoted_ids, in the same call is skipped (not_withdrawable). Under an http KB provider every well-formed withdrawal is admitted and only the tombstone is written."
+        },
+        "restore_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Ids whose tombstone this branch added and should be undone. A tombstone is removed only when the bible at baseCommit carries none for that id; the base bible's entry for the id, when it has one, is re-added byte-identical. Any other id is a no-op. Restored ids are reported in restored."
+        },
         "baseBranch": {
           "type": "string",
           "minLength": 1,

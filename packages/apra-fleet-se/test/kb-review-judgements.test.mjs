@@ -44,6 +44,7 @@ function harness({ entries: initialEntries = [], invalidateResult } = {}) {
                 const r = invalidateResult ? invalidateResult(args) : { discarded: args.ids, not_found: [], already_discarded: [] };
                 return { content: [{ type: 'text', text: JSON.stringify(r) }] };
             }
+            if (tool === 'kb_promote') return { id: args.id, previous_confidence: 'INFERRED', new_confidence: 'CONFIRMED' };
             return {};
         },
         gPull: async (name) => { events.push({ type: 'gpull', member: name }); },
