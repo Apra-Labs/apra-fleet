@@ -4,13 +4,13 @@ import path from 'node:path';
 import { kbSetupSchema } from '../src/tools/kb-setup.js';
 
 // The 0.4.5 release notes may only name commands and options that exist: every
-// `apra-fleet ...` command must be in the help listing in src/index.ts, the
+// `apra-fleet ...` command must be in the help listing (src/cli/top-level-help.ts), the
 // kb_setup option it names must be in kbSetupSchema, and the file is ASCII.
 
 const root = path.resolve(__dirname, '..');
 const notesPath = path.join(root, 'docs', 'release-notes-0.4.5.md');
 const notes = fs.readFileSync(notesPath, 'utf-8');
-const help = fs.readFileSync(path.join(root, 'src', 'index.ts'), 'utf-8');
+const help = fs.readFileSync(path.join(root, 'src', 'cli', 'top-level-help.ts'), 'utf-8');
 
 /** Every backticked `apra-fleet ...` command in the notes. */
 function namedCommands(text: string): string[] {
@@ -47,7 +47,7 @@ describe('release notes 0.4.5', () => {
     expect(cmds.some((c) => c.startsWith('apra-fleet kb model import'))).toBe(true);
   });
 
-  it('every apra-fleet command it names is in the src/index.ts help listing', () => {
+  it('every apra-fleet command it names is in the top-level help listing', () => {
     for (const cmd of namedCommands(notes)) {
       expect(inHelp(cmd), `not in the help listing: ${cmd}`).toBe(true);
     }
