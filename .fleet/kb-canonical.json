@@ -2077,29 +2077,6 @@
       }
     },
     {
-      "id": "af3efada-2248-4f8b-b1a8-6ebd81dfd9ec",
-      "type": "knowledge",
-      "title": "kb_bible_commit demoted-tombstone gate uses raw nullable trust time",
-      "summary": "In kbBibleCommit an ids id with a demoted tombstone in the bible file merges only when standingAgainstTombstone(getBibleTrustTimes raw value, at) is repromoted; null trust or at-equal skips with demoted_tombstone. A separate heal drops any entry whose id also has a tombstone, reporting removed reason tombstoned.",
-      "symbols": [
-        "kbBibleCommit",
-        "standingAgainstTombstone",
-        "getBibleTrustTimes"
-      ],
-      "source_files": [
-        "src/tools/kb-bible-commit.ts",
-        "src/services/knowledge/bible-import.ts",
-        "tests/knowledge/kb-bible-tombstone-entry-exclusive.test.ts"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-11-18T17:23:30.545Z",
-      "source_file_hashes": {
-        "src/services/knowledge/bible-import.ts": "a717226586d21e5c2496b21c0ea3e212bde4ca10",
-        "src/tools/kb-bible-commit.ts": "663a7633cfa3731e157fdbf0b3beb25c7addfb9f",
-        "tests/knowledge/kb-bible-tombstone-entry-exclusive.test.ts": "d08879c5dfb4bdf961496bffd90f6c0576312da8"
-      }
-    },
-    {
       "id": "af9ecaf3-fc46-44b2-bf75-456446e2fc99",
       "type": "learning",
       "title": "Detect an open sync bracket in a mock sprint through workflow._pauseGuard()",
@@ -3249,5 +3226,6 @@
       "at": "2026-11-18T03:14:58.284Z",
       "reason": "demoted"
     }
-  ]
+  ],
+  "entry_count": 156
 }
