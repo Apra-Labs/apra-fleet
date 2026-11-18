@@ -1,9 +1,9 @@
 {
   "version": 3,
   "provenance": {
-    "commit": "5bfc7309d9fab9ead8aada7745fd165ecd32c07b",
+    "commit": "22bbb3cfdfd5d77962b5fb6d85da8c1e833f79c1",
     "branch": "main",
-    "entry_count": 147
+    "entry_count": 149
   },
   "entries": [
     {
@@ -223,6 +223,30 @@
         "src/os/windows.ts": "cdade4c6fc907e43671da60a685254b8295a0673",
         "tests/go-concurrency-default.test.ts": "7ac1b504ac84589832822b0f3340e8a351db531e",
         "tests/windows-gomaxprocs-builders.test.ts": "e19b5155dc8e670671d574da1192b5983cd333ae"
+      }
+    },
+    {
+      "id": "184f9633-8cd2-477b-8b2c-3643c3bcd288",
+      "type": "learning",
+      "title": "Changing buildFinalVerdictPrompt or the finalVerdict schema requires regenerating the happy-path golden",
+      "summary": "test/fixtures/golden-transcript/mock-sprint-happy-path.jsonl embeds the Final Review prompt with its appended finalVerdict schema, so any change to either fails golden-transcript.test.mjs until regenerated with npm run update-golden in packages/apra-fleet-se.",
+      "symbols": [
+        "buildFinalVerdictPrompt",
+        "finalVerdict"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/golden-transcript.test.mjs",
+        "packages/apra-fleet-se/test/fixtures/golden-transcript/mock-sprint-happy-path.jsonl",
+        "packages/apra-fleet-se/fleet-sprint/prompts.mjs",
+        "packages/apra-fleet-se/fleet-sprint/contracts.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T15:03:39.632Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/contracts.mjs": "7a5e61b9e2bcff4b5be81d376073ded10203c96d",
+        "packages/apra-fleet-se/fleet-sprint/prompts.mjs": "c1f8de63018db1a43b5e7b7f441805c1d05f36ce",
+        "packages/apra-fleet-se/test/fixtures/golden-transcript/mock-sprint-happy-path.jsonl": "55c80bc91e74134da034eab96436688925474689",
+        "packages/apra-fleet-se/test/golden-transcript.test.mjs": "7cf16db4a73f2525f40dfb07036e4de174cf9833"
       }
     },
     {
@@ -1710,6 +1734,34 @@
         "src/services/knowledge/bible-import.ts": "9a75635a8ccb17c83c0aef0cc1806386ec3c8cd5",
         "src/services/knowledge/sqlite-provider.ts": "3b70b8d2bfe7a3e3b4c1c522400841d0b5282d6f",
         "tests/knowledge/kb-member-mixed-tier-reads.test.ts": "f452ea5700809ded25e518a2743994214a4bc750"
+      }
+    },
+    {
+      "id": "9bbecb78-9c2b-4e44-8410-f25064e32255",
+      "type": "knowledge",
+      "title": "Sprint PR body sections share one budget via fitSectionsToBudget; the run-history frame is never clipped",
+      "summary": "buildSprintPrBody routes every variable section (merge assessment, notes, set-aside, waited, details, cost, caller extras) through fitSectionsToBudget with the caller's maxLength; header, human-review line and run-history marker block are a fixed frame. Engine tail sections outrank notes (priority 95/90 vs 80), extras default 50.",
+      "symbols": [
+        "fitSectionsToBudget",
+        "buildSprintPrBody",
+        "renderMergeAssessment",
+        "SECTION_PRIORITY",
+        "PR_MERGE_RECOMMENDATIONS",
+        "MERGE_RECOMMENDATIONS"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/pr-body.mjs",
+        "packages/apra-fleet-se/fleet-sprint/contracts.mjs",
+        "packages/apra-fleet-se/test/publish-pr-body-and-update.test.mjs",
+        "packages/apra-fleet-se/test/final-verdict-merge-assessment.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T15:03:39.001Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/contracts.mjs": "7a5e61b9e2bcff4b5be81d376073ded10203c96d",
+        "packages/apra-fleet-se/fleet-sprint/pr-body.mjs": "e51225582051aacb7c4bf959866b038611f71edf",
+        "packages/apra-fleet-se/test/final-verdict-merge-assessment.test.mjs": "377b7efabe7e34a2b0591e2d0754541282fbdde4",
+        "packages/apra-fleet-se/test/publish-pr-body-and-update.test.mjs": "0821699a8289015a0b6bc0918e9eab5ca45a6ad9"
       }
     },
     {
