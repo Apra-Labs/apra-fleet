@@ -278,6 +278,7 @@ describe('sprint KB path over http: capture, promote and recall all reach the KB
         content: 'src/widget.ts exports widget as Object.freeze({}); callers must copy it before adding keys.',
         source_files: [CITED_FILE],
         symbols: ['widget'],
+        trigger: 'hidden-invariant',
       }],
     });
     expect(captured).toMatchObject({ captured: 1, refused: 0 });
@@ -347,6 +348,6 @@ describe('sprint KB path over http: capture, promote and recall all reach the KB
       }
     }
 
-    expect(logs.filter(l => /failed|rejected|WARN/.test(l))).toEqual([]);
+    expect(logs.filter(l => /failed|rejected(?! 0)|WARN/.test(l))).toEqual([]);
   });
 });

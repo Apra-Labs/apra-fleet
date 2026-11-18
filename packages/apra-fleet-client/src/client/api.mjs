@@ -831,6 +831,9 @@
  *   strong keyword evidence for the query (strong for the KB's size and at least half
  *   the query's best keyword match) or an error_signatures match for error_text.
  *   Fewer rows, possibly none; meant for pushed context. Local SQLite KB only.
+ * @property {boolean} [own_scope] - MEMBER session only: answer a CONFIRMED read from
+ *   the per-repo DB with the caller's own ownerTag instead of the checkout bible view,
+ *   so a member can read back rows it promoted itself (e.g. to see what it may kb_demote).
  */
 
 /**

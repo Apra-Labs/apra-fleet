@@ -272,8 +272,14 @@ describe('kb-server promote and tag filter', () => {
       const opts = { fts_terms: [term, 'absent-neighbour.ts'], l1_only: true, limit: 2, confidence: ['INFERRED' as const] };
       const overHttp = await provider.query(opts);
       const overSqlite = await local.query(opts);
-      expect(overHttp.results.map(r => r.id)).toEqual([remoteIds[0]]);
-      expect(overHttp.results.map(r => r.title)).toEqual(overSqlite.results.map(r => r.title));
+      // The FTS match ranks first even though it is the oldest entry; the keyword
+      // index's trigram leg may add a near neighbour, the same over http as locally.
+      expect(overHttp.results[0]?.id).toBe(remoteIds[0]);
+      // The server KB is shared with the other tests in this file: compare only
+      // the rows this test seeded.
+      const seeded = new Set(remoteIds);
+      expect(overHttp.results.filter(r => seeded.has(r.id)).map(r => r.title))
+        .toEqual(overSqlite.results.map(r => r.title));
     } finally {
       provider.dispose();
       // Release the SQLite handle first: Windows refuses to unlink an open file (EBUSY).

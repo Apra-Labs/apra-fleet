@@ -370,6 +370,7 @@ describe('sprint engine over HttpKbProvider: a rate-limited capture stays queued
   const capture = (title: string) => ({
     type: 'knowledge', title, summary: 'The widget cache is keyed per tenant id.',
     content: 'src/widget-cache.ts builds its key from the tenant and the id.', source_files: ['src/widget-cache.ts'],
+    trigger: 'hidden-invariant',
   });
 
   it('429: kept queued with the write behind it; the next flush sends both once', async () => {
@@ -378,10 +379,10 @@ describe('sprint engine over HttpKbProvider: a rate-limited capture stays queued
     const logs: string[] = [];
     const kb = engine(logs);
 
-    const out = await kb.apply('doer', 'doer-a', { kb_captures: [capture('first'), capture('second')] });
+    const out = await kb.apply('doer', 'doer-a', { kb_captures: [capture('first capture'), capture('second capture')] });
     expect(out.captured).toBe(0);
     expect(kb.pendingCount(REPO)).toBe(2);
-    expect(logs.some(l => l.startsWith('[kb-work] WARN: KB server unreachable during kb_capture for "first"') && /HTTP 429/.test(l)), JSON.stringify(logs)).toBe(true);
+    expect(logs.some(l => l.startsWith('[kb-work] WARN: KB server unreachable during kb_capture for "first capture"') && /HTTP 429/.test(l)), JSON.stringify(logs)).toBe(true);
     expect(logs.some(l => /non-fatal/.test(l))).toBe(false);
 
     answers.set('/api/kb/capture', { status: 201, body: { id: 'srv-1', audn_decision: 'add' } });
