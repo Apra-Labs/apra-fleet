@@ -179,7 +179,7 @@ import { NEEDS_EXTERNAL_EVIDENCE_CYCLE_LIMIT, recordInconclusiveVerifyCycle, sti
 // `if (openAtGoal.length === 0 && !reviewedThisCycle)` branch and hands back
 // the same three the per-round Review does. See each module's header for where
 // its boundary is drawn and why the surrounding `if`/exit-gate stayed here.
-import { runIntegTestPhase } from './phases/integ-test.mjs';
+import { runIntegTestPhase, applyVerifyGapAccounting } from './phases/integ-test.mjs';
 import { runReReviewPhase } from './phases/re-review.mjs';
 // apra-fleet-3swo.6.6: the next two phase() boundaries -- the sprint's closing
 // Final Review and the once-per-sprint Regression Test. Final Review runs from
@@ -4130,19 +4130,19 @@ async function runSprintCycle(context) {
             // `let verifySetForIntegTest = []` and both "Skipping Integration
             // Test Phase" else branches below all stay here: the probes decide
             // whether this phase runs at all, and the verify set they feed is
-            // read by Cycle Evaluation whether or not it ran. integFailures,
-            // verifyEverIds and verifyGapCounts are mutated in place exactly as
-            // the closure did; the three genuinely reassigned values come back.
+            // read by Cycle Evaluation whether or not it ran. integFailures and
+            // verifyEverIds are mutated in place exactly as the closure did;
+            // the three genuinely reassigned values come back. The verify
+            // bounce cap on the gap bugs it filed runs at Cycle Evaluation,
+            // after the backlog D-pull (applyVerifyGapAccounting below).
             ({ verifySetForIntegTest, integTestRunnerDispatchCount, integTestRunnerSpend, integVerifyOutcome } = await runIntegTestPhase({
-                phase, log, command, dispatchCtx,
-                cycle, targetIssues, backlogMember, sprintSelfIdLine,
+                phase, log, dispatchCtx,
+                cycle, targetIssues, sprintSelfIdLine,
                 budget,
-                integFailures, verifyEverIds, verifyGapCounts,
+                integFailures, verifyEverIds,
                 verifySetForIntegTest, integTestRunnerDispatchCount, integTestRunnerSpend,
                 getMemberForRole, ensureUnattendedAuto, ensureDeployPermissions,
-                bdListScoped, fetchAllBeadsShared, parseBdJson, updateDashboard,
-                VERIFY_GAP_LIMIT,
-                deferredVerifyIds,
+                bdListScoped, fetchAllBeadsShared, updateDashboard,
                 excludedVerifyIds: new Set(needsEvidenceVerifyIds.keys()),
             }));
         } else if (hasPlaybook && !deployedThisCycle) {
@@ -4170,6 +4170,24 @@ async function runSprintCycle(context) {
         // (apra-fleet-7dir.24).
         const cycleEvalSettleShell = await resolveSettleShell({ args, member: backlogMember, log, sprintState });
         await gitSync.syncBeadsBefore(backlogMember, { fatal: true, settle: buildSettleCallback(backlogMember, { command, log, shell: cycleEvalSettleShell }) });
+        // Verify-fail bounce cap on this cycle's gap bugs, run HERE -- after
+        // the backlog D-pull just above and before any exit-gate math -- not
+        // inside the Integ Test phase: the integ runner files and D-pushes its
+        // gap bugs from its own member, so the backlog clone can resolve their
+        // parents only once it has pulled. Reuses this pull (no extra D-pull).
+        // It feeds verifyGapCounts, deferredVerifyIds (the exit gate) and
+        // integVerifyOutcome.gapParentIds (the needs-external-evidence reset);
+        // a lookup that still misses is a WARN plus an integFailures entry.
+        if (integVerifyOutcome) {
+            const { gapParentIds } = await applyVerifyGapAccounting({
+                log, command, cycle, backlogMember,
+                bugsFiled: integVerifyOutcome.bugsFiled,
+                verifySetIds: integVerifyOutcome.dispatchedIds,
+                verifyGapCounts, integFailures, deferredVerifyIds,
+                parseBdJson, VERIFY_GAP_LIMIT,
+            });
+            integVerifyOutcome.gapParentIds = gapParentIds;
+        }
         // A decomposed parent (any bead that is itself someone's --parent,
         // including a childful --issue target) is excluded here the same way
         // readyLeafBeads() excludes it from dispatch: its own "done" status
