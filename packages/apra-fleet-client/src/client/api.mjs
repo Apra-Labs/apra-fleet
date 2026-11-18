@@ -754,7 +754,11 @@
  *   with reason basis_mismatch, and a CONFIRMED id citing no source file is skipped with
  *   reason no_source_files. An id the bible file carries a withdrawn tombstone for is
  *   skipped with reason withdrawn_tombstone (tombstone kept) unless restore_ids undoes that
- *   branch-added tombstone in the same call. Skips are reported in the result's skipped list.
+ *   branch-added tombstone in the same call. An id the file carries a demoted tombstone for
+ *   is merged only when its local trust time is strictly after the tombstone's at (a real
+ *   re-promotion); otherwise it is skipped with reason demoted_tombstone and the tombstone
+ *   is kept. An id found in both entries and demotions loses its entry on every call
+ *   (removed, reason tombstoned). Skips are reported in the result's skipped list.
  *   Independently of ids, bible entries the KB holds as superseded or invalidated are
  *   removed and reported in the result's removed list, and existing bible entries with
  *   no source_file_hashes gain the KB's stored basis for the same id when it passes the
@@ -770,7 +774,11 @@
  *   tombstone is written only when the bible at baseCommit carries the id (entry or
  *   tombstone): an entry the branch added is removed with no tombstone, any other id is
  *   skipped with reason not_in_base_bible (also when baseCommit does not resolve or its
- *   bible is unreadable -- no new demoted tombstone is written then). Existing
+ *   bible is unreadable -- no new demoted tombstone is written then, and the result
+ *   carries base_bible_error). An id the bible file carries a withdrawn tombstone for is
+ *   skipped with reason withdrawn_tombstone and that tombstone is kept: a demoted
+ *   tombstone never replaces a withdrawn one (the every-call demotion rule passes over
+ *   it too), so a later ids re-promotion cannot clear the withdrawal. Existing
  *   tombstones are preserved, and re-committing a demoted-tombstoned id through ids (a
  *   re-promotion) restores its entry and clears its tombstone; a withdrawn tombstone is
  *   never cleared by ids (see ids).
@@ -896,15 +904,23 @@
  * @property {{id: string, reason: string}[]} skipped - Ids not merged, demoted or withdrawn, with
  *   reason not_confirmed_or_unknown, no_source_files, basis_mismatch, not_demoted_or_unknown,
  *   not_withdrawable, withdrawn_tombstone (an `ids` id the bible file carries a withdrawn
- *   tombstone for, not restored by the same call: the tombstone is kept) or
- *   not_in_base_bible (a demoted_ids id the bible at baseCommit does not carry).
+ *   tombstone for, not restored by the same call, or a demoted_ids id with a withdrawn
+ *   tombstone in the file -- a demoted tombstone never replaces a withdrawn one; the
+ *   tombstone is kept) or not_in_base_bible (a demoted_ids id the bible at baseCommit does
+ *   not carry), or demoted_tombstone (an `ids` id the file carries a demoted tombstone for whose
+ *   trust time is not after the tombstone; the tombstone is kept).
  * @property {{id: string, reason: string}[]} removed - Entries removed because the KB holds them
- *   superseded or invalidated.
+ *   superseded or invalidated, or (reason tombstoned) because the file also carries a
+ *   tombstone for the id (the tombstone wins).
  * @property {number} entry_count - Entries in the resulting bible (a tombstone is not an entry).
  * @property {number} backfilled - Legacy entries that gained source_file_hashes.
  * @property {boolean} committed - True only when a local commit of the bible path was made.
  * @property {true} [bible_skipped] - Present under an http KB provider (no entry merge).
  * @property {string} [reason] - With bible_skipped: why.
+ * @property {string} [base_bible_error] - Why the bible at baseCommit could not be read
+ *   (baseCommit does not resolve, or its bible does not parse), when a rule needed it (a
+ *   demotion gate or a restore). Absent when the base was read fine or never needed. The
+ *   call still fails closed: no new demoted tombstone, no drop, no restore.
  */
 
 /**
@@ -1475,13 +1491,15 @@ export class ApraFleet {
      * The removed scope keys (repo_path, repo, repo_remote_url) are refused
      * with E-SCOPE-KEY-REMOVED before anything is sent.
      * Under an http KB provider the entry merge is skipped, never an error: the
-     * result is {path, merged: [], skipped: [], removed: [], entry_count: <entries
-     * in the existing parseable bible, else 0>, backfilled: 0, committed,
+     * result is {path, merged: [], skipped: [], removed, entry_count: <entries
+     * in the parseable bible as left by the call, else 0>, backfilled: 0, committed,
      * bible_skipped: true, reason, withdrawn, restored}; the KB is not read. With
      * no withdrawals and no restore_ids nothing is written or committed; with
      * them, only the tombstones are written to .fleet/kb-canonical.json (a
      * tombstone-only bible is created when absent, existing entries stay
-     * byte-identical) and committed may be true.
+     * byte-identical except that an id the file ends up tombstoning loses its
+     * entry; one already tombstoned is listed in removed with reason
+     * tombstoned) and committed may be true.
      * @param {KbBibleCommitOptions} options
      */
     async kbBibleCommit(options) {

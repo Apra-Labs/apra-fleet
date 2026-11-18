@@ -101,6 +101,7 @@
                       "not_demoted_or_unknown",
                       "not_withdrawable",
                       "withdrawn_tombstone",
+                      "demoted_tombstone",
                       "not_in_base_bible"
                     ]
                   }
@@ -124,7 +125,8 @@
                     "type": "string",
                     "enum": [
                       "superseded",
-                      "invalidated"
+                      "invalidated",
+                      "tombstoned"
                     ]
                   }
                 },
@@ -149,6 +151,9 @@
               "const": true
             },
             "reason": {
+              "type": "string"
+            },
+            "base_bible_error": {
               "type": "string"
             }
           },
