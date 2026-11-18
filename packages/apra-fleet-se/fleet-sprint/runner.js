@@ -1145,8 +1145,11 @@ async function runSprintCycle(context) {
         // has to exist BEFORE `command` does. No beads read can happen in
         // between, so the getter is always called on a resolved value.
         getBacklogMember: () => backlogMember,
+        // The parent-link guard's ERROR lines (a vanished parent-child link
+        // restored, or a restore that failed) go to the sprint log.
+        log,
     });
-    const { invalidateAllBeadsCache, fetchAllBeadsShared, bdListScoped } = beadsScope;
+    const { invalidateAllBeadsCache, fetchAllBeadsShared, bdListScoped, decomposedParentIds, readyLeafBeads } = beadsScope;
     const command = beadsScope.wrapCommand(rawCommand, {
         // DoltSync memoizes each member's `bd config get sync.remote` answer
         // for the process lifetime (it was being re-spawned 90-160 times per
@@ -2301,35 +2304,13 @@ async function runSprintCycle(context) {
     // one id per invocation and is single-level only) and for the snapshot
     // invalidation contract.
 
-    // The set of scope-member ids that are themselves someone else's
-    // `--parent` -- i.e. decomposed grouping nodes, not leaf units of work.
-    // Built from children of ANY status, not just open ones: once a decomposed
-    // bead's children all close they vanish from an open-only list, the parent
-    // stops looking like a parent, and it would wrongly re-enter leaf/ready
-    // treatment. bdListScoped('') is the no-extra-query path -- the
-    // already-fetched project-wide any-status dump filtered to scope, with no
-    // new bd command issued.
-    async function decomposedParentIds() {
-        const allAnyStatus = await bdListScoped('');
-        return new Set(allAnyStatus.filter((b) => b.parent).map((b) => b.parent));
-    }
-
-    // Returns this scope's ready beads minus any decomposed parent (see
-    // decomposedParentIds() above). Per GRAPH-SEMANTICS.md a decomposed bead's
-    // "done" status comes from its children closing, never from being worked
-    // directly, so it must never be seeded to a doer even when bd's own
-    // `--ready` reports it. The check is STRUCTURAL (does this ready bead have
-    // children?), not an issue_type check -- issue_type has no effect on
-    // `--ready` inclusion, and a bead can be a leaf `type=task` or a decomposed
-    // `type=bug`/`type=feature` parent, so only the has-children structure
-    // tells them apart.
-    async function readyLeafBeads() {
-        const [ready, parentIds] = await Promise.all([
-            bdListScoped('--ready --json'),
-            decomposedParentIds(),
-        ]);
-        return ready.filter((b) => !parentIds.has(b.id));
-    }
+    // decomposedParentIds() / readyLeafBeads() come from the beads-scope
+    // client (destructured above). A decomposed bead (any scope member that is
+    // someone's `--parent`, children of ANY status) is never seeded to a doer
+    // even when bd's own `--ready` reports it -- the check is STRUCTURAL, not
+    // an issue_type check (GRAPH-SEMANTICS.md). It is also MONOTONE within the
+    // run: a bead once seen as a parent stays one even if a beads merge later
+    // drops its parent-child links (see parent-link-guard.mjs).
 
     // Bead ids the PRE-LAUNCH rule (reclaimStaleInProgress below) must never
     // touch again this run: every id it has already reclaimed, and every id a

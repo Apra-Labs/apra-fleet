@@ -82,6 +82,9 @@
 // =============================================================================
 
 import { logicalBdCommand } from './bd-sync-command.mjs';
+import {
+    createParentLinkLedger, parseRunEdgeChange, formatVanishedEdgeLog, formatRestoreFailure, ParentLinkRestoreError,
+} from './parent-link-guard.mjs';
 
 /**
  * `bd` subcommands that can never change beads state, so they must not drop a
@@ -832,6 +835,7 @@ export function classifyVerifySet(allBeads, targetIssues) {
  * @param {string|null} [opts.assignee] - `--assignee` narrowing for filtered queries
  * @param {(raw: string, label: string) => any} opts.parseBdJson - bd JSON parser (injected to avoid an import cycle back into runner.js)
  * @param {() => string} opts.getBacklogMember - resolves the member every read is dispatched to
+ * @param {(line: string) => void} [opts.log] - where the parent-link guard writes its ERROR lines
  */
 export function createBeadsScope(opts = {}) {
     const targetIssues = opts.targetIssues || [];
@@ -845,9 +849,19 @@ export function createBeadsScope(opts = {}) {
         throw new TypeError('createBeadsScope({ getBacklogMember }): getBacklogMember must be a function');
     }
 
+    const log = typeof opts.log === 'function' ? opts.log : () => {};
+
     let allBeadsSnapshot = null; // { beads } -- cleared by invalidateAllBeadsCache()
     let allBeadsInFlight = null;
     let command = null; // installed by wrapCommand(); see fetchAllBeadsShared
+
+    // MONOTONE PARENTHOOD (parent-link-guard.mjs): every in-scope
+    // parent-child edge, parent and scope id this run has seen, plus the
+    // edges this run itself changed. Fed by every fresh full-DB snapshot
+    // (fetchAllBeadsShared) and by the command wrapper. A backlog D-pull
+    // drops the snapshot (clause (b) above), so the first beads read after
+    // every D-pull is a fresh snapshot and runs the vanished-link check.
+    const parentLinks = createParentLinkLedger();
 
     /** Drop the shared snapshot. Cheap and idempotent. */
     function invalidateAllBeadsCache() { allBeadsSnapshot = null; }
@@ -887,7 +901,12 @@ export function createBeadsScope(opts = {}) {
             } finally {
                 // In a finally: a mutation that THROWS may still have changed
                 // beads state on the member, so the snapshot is dropped either way.
-                if (mutating) invalidateAllBeadsCache();
+                if (mutating) {
+                    invalidateAllBeadsCache();
+                    // A parent-child change this run made (attempted) is never
+                    // later "restored" as a vanished link.
+                    parentLinks.noteRunEdgeChange(parseRunEdgeChange(logicalBdCommand(logical)));
+                }
             }
             if (typeof cmdStr === 'string' && onCommand) {
                 onCommand(logicalBdCommand(typeof logical === 'string' ? logical : cmdStr), cmdOpts);
@@ -938,13 +957,61 @@ export function createBeadsScope(opts = {}) {
             const allLabel = 'bd list --all --limit 0 --json';
             allBeadsInFlight = command(allLabel, { member_name: getBacklogMember(), silent: true })
                 .then((raw) => parseBdJson(raw, allLabel))
+                .then((beads) => restoreVanishedParentLinks(beads))
                 .then((beads) => {
+                    parentLinks.observe(beads, scopeOf(beads).scopeIds);
                     allBeadsSnapshot = { beads };
                     return beads;
                 })
                 .finally(() => { allBeadsInFlight = null; });
         }
         return allBeadsInFlight;
+    }
+
+    /**
+     * The vanished-link check on a FRESH snapshot: every in-scope edge this
+     * run recorded whose child is still in the DB but now has no parent, and
+     * that this run did not remove, is restored through the normal command
+     * path (`bd update <child> --parent <parent>`) with an ERROR line naming
+     * child and parent. The returned snapshot carries the restored parents,
+     * so this phase's readers see the run's true structure without a second
+     * full fetch. A failed restore is logged and THROWN
+     * (ParentLinkRestoreError): continuing on a scope that lost its
+     * children would dispatch a parent as a leaf and stall the run.
+     */
+    async function restoreVanishedParentLinks(beads) {
+        const vanished = parentLinks.findVanished(beads);
+        if (vanished.length === 0) return beads;
+        for (const edge of vanished) {
+            log(formatVanishedEdgeLog(edge));
+            const label = `bd update ${edge.child} --parent ${edge.parent}`;
+            let failure = null;
+            try {
+                const res = await command(label, { member_name: getBacklogMember(), silent: true, failSoft: true });
+                if (res && typeof res === 'object' && res.ok === false) failure = res.error || 'command failed';
+            } catch (err) {
+                failure = (err && err.message) || String(err);
+            }
+            if (failure) {
+                const message = formatRestoreFailure(edge, failure);
+                log(message);
+                throw new ParentLinkRestoreError(message, { edges: vanished });
+            }
+        }
+        const restoredParent = new Map(vanished.map((e) => [e.child, e.parent]));
+        return beads.map((b) => (b && restoredParent.has(b.id) ? { ...b, parent: restoredParent.get(b.id) } : b));
+    }
+
+    /**
+     * Scope of a snapshot: the BFS scope, widened by every id this run has
+     * already seen in scope (a descendant once in scope stays in scope).
+     */
+    function scopeOf(allBeads) {
+        const discovered = discoverScope(allBeads, targetIssues);
+        const present = new Set();
+        for (const b of (allBeads || [])) if (b && b.id !== undefined && b.id !== null) present.add(b.id);
+        for (const id of parentLinks.knownScopeIds()) if (present.has(id)) discovered.scopeIds.add(id);
+        return discovered;
     }
 
     /**
@@ -971,7 +1038,7 @@ export function createBeadsScope(opts = {}) {
         const rest = restArgs ? restArgs.trim() : '';
 
         const allBeads = await fetchAllBeadsShared();
-        const { scopeIds } = discoverScope(allBeads, targetIssues);
+        const { scopeIds } = scopeOf(allBeads);
 
         if (scopeIds.size === 0) return [];
 
@@ -988,6 +1055,33 @@ export function createBeadsScope(opts = {}) {
         return parseBdJson(filterRaw, filterLabel).filter((b) => b && scopeIds.has(b.id));
     }
 
+    /**
+     * The scope-member ids that are someone's `--parent` -- decomposed
+     * grouping nodes, never leaf units of work. Built from children of ANY
+     * status (a parent whose children all closed is still a parent), and
+     * MONOTONE within the run: every bead this run has seen as a parent stays
+     * one even if the current snapshot shows it childless (a dropped link, a
+     * child deleted or moved), so it is never seeded to a doer as a leaf.
+     */
+    async function decomposedParentIds() {
+        const allAnyStatus = await bdListScoped('');
+        const ids = new Set(allAnyStatus.filter((b) => b.parent).map((b) => b.parent));
+        for (const id of parentLinks.knownParentIds()) ids.add(id);
+        return ids;
+    }
+
+    /**
+     * This scope's ready beads minus any decomposed parent (see
+     * decomposedParentIds above). STRUCTURAL, not an issue_type check.
+     */
+    async function readyLeafBeads() {
+        const [ready, parentIds] = await Promise.all([
+            bdListScoped('--ready --json'),
+            decomposedParentIds(),
+        ]);
+        return ready.filter((b) => !parentIds.has(b.id));
+    }
+
     return {
         invalidateAllBeadsCache,
         hasCachedSnapshot,
@@ -995,5 +1089,9 @@ export function createBeadsScope(opts = {}) {
         wrapPhase,
         fetchAllBeadsShared,
         bdListScoped,
+        decomposedParentIds,
+        readyLeafBeads,
+        /** Every bead seen as a parent this run -- diagnostics/tests. */
+        knownParentIds: () => parentLinks.knownParentIds(),
     };
 }
