@@ -1151,10 +1151,12 @@ export function permissionDeniedOf(err) {
  * Thrown by the dispatch engine (dispatch-role.mjs) when a role's dispatch
  * was refused tool calls and the progressive heal (createPermissionDenialHeal:
  * grant within the member's composed policy, retry, repeat while each heal
- * adds a new grant) can make no further progress. Ends the sprint naming the
+ * adds a new grant) can make no further progress. The message names the
  * member, the denied actions and the fix; no plan-review or review round is
- * ever charged for it. A doer streak ended by it is recorded as a failed
- * streak (phases/develop.mjs), so the beads it closed are still reviewed.
+ * ever charged for it. It does not end the sprint by itself: a doer streak
+ * ended by it is caught and recorded as a failed streak (phases/develop.mjs),
+ * so the beads it closed are still reviewed and the run goes on. Thrown from
+ * any other role's dispatch it propagates and ends the sprint.
  * When every refused call maps to no grant (details.unmappable), the message
  * says no grant can allow the call and gives no compose_permissions advice.
  *
