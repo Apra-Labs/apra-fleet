@@ -134,23 +134,32 @@ export function syncDeferredVerifyIds(deferred, { beads, verifyEverIds }) {
  * The verify carry-over handed to Final Review, or null when nothing was
  * carried over.
  *
- * @param {{ needsEvidence?: Map<string, { reason: string, cycles: number }>, deferred?: Map<string, string|{ reason: string, bounceCap: true }>, closedIds?: Set<string> }} opts
+ * @param {{ needsEvidence?: Map<string, { reason: string, cycles: number }>, deferred?: Map<string, string|{ reason: string, bounceCap: true }>, closedIds?: Set<string>, atGoalIds?: Set<string> }} opts
  *   closedIds: a carried-over id that closed after all (the runner did close
  *   it on a later pass) is not carried over.
- * @returns {{ entries: { id: string, kind: string, reason: string }[], needsEvidenceIds: string[], deferredIds: string[], bounceCapIds: string[] } | null}
- *   deferredIds holds every deferred id (both sub-kinds); bounceCapIds the
- *   subset the engine's verify bounce cap deferred.
+ *   atGoalIds: the ids of the not-done beads (open, in_progress, blocked or
+ *   deferred) at/above the sprint goal priority. When given, a carried-over
+ *   bead NOT in it is below goal: still named, but not in needsEvidenceIds or
+ *   bounceCapIds, so it cannot force FAIL; it is listed in belowGoalIds. When
+ *   omitted every carried-over bead counts as at/above goal.
+ * @returns {{ entries: { id: string, kind: string, reason: string, belowGoal?: true }[], needsEvidenceIds: string[], deferredIds: string[], bounceCapIds: string[], belowGoalIds: string[] } | null}
+ *   needsEvidenceIds / bounceCapIds hold only the at/above-goal ids that force
+ *   FAIL; deferredIds holds every deferred id (both sub-kinds).
  */
-export function buildVerifyCarryOver({ needsEvidence = new Map(), deferred = new Map(), closedIds = new Set() } = {}) {
+export function buildVerifyCarryOver({
+    needsEvidence = new Map(), deferred = new Map(), closedIds = new Set(), atGoalIds,
+} = {}) {
     const open = (id) => !closedIds.has(id);
-    const needsEvidenceIds = [...needsEvidence.keys()].filter(open).sort();
+    const belowGoal = (id) => atGoalIds instanceof Set && !atGoalIds.has(id);
+    const allNeedsEvidenceIds = [...needsEvidence.keys()].filter(open).sort();
     const deferredIds = [...deferred.keys()].filter((id) => open(id) && !needsEvidence.has(id)).sort();
-    if (needsEvidenceIds.length === 0 && deferredIds.length === 0) return null;
+    if (allNeedsEvidenceIds.length === 0 && deferredIds.length === 0) return null;
     const entries = [
-        ...needsEvidenceIds.map((id) => {
+        ...allNeedsEvidenceIds.map((id) => {
             const rec = needsEvidence.get(id);
             return {
                 id,
+                ...(belowGoal(id) ? { belowGoal: true } : {}),
                 kind: NEEDS_EXTERNAL_EVIDENCE,
                 reason: `left open by Integration Test with no gap bug filed on ${rec.cycles} consecutive cycle(s)` +
                     (rec.reason ? `; integ runner: ${rec.reason}` : ''),
@@ -158,12 +167,15 @@ export function buildVerifyCarryOver({ needsEvidence = new Map(), deferred = new
         }),
         ...deferredIds.map((id) => ({
             id,
+            ...(belowGoal(id) ? { belowGoal: true } : {}),
             kind: isBounceCap(deferred.get(id)) ? DEFERRED_BOUNCE_CAP : DEFERRED_VERIFY,
             reason: deferredReason(deferred.get(id)),
         })),
     ];
-    const bounceCapIds = deferredIds.filter((id) => isBounceCap(deferred.get(id)));
-    return { entries, needsEvidenceIds, deferredIds, bounceCapIds };
+    const needsEvidenceIds = allNeedsEvidenceIds.filter((id) => !belowGoal(id));
+    const bounceCapIds = deferredIds.filter((id) => isBounceCap(deferred.get(id)) && !belowGoal(id));
+    const belowGoalIds = entries.filter((e) => e.belowGoal).map((e) => e.id);
+    return { entries, needsEvidenceIds, deferredIds, bounceCapIds, belowGoalIds };
 }
 
 /**
@@ -203,9 +215,11 @@ export function formatVerifyCarryOverNotes(carryOver) {
 
 /**
  * Puts the verify carry-over at the top of the verdict notes and forces the
- * verdict to FAIL while any needs-external-evidence or deferred-bounce-cap
- * bead is carried over. A plain deferred-only carry-over is named but leaves
- * the verdict to the other gates.
+ * verdict to FAIL while any at/above-goal needs-external-evidence or
+ * deferred-bounce-cap bead is carried over (needsEvidenceIds / bounceCapIds
+ * hold only those; see buildVerifyCarryOver). A below-goal one, and a plain
+ * deferred-only carry-over, is named but leaves the verdict to the other
+ * gates.
  *
  * @param {object|null} verdictResult
  * @param {ReturnType<typeof buildVerifyCarryOver>} carryOver

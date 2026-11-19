@@ -136,7 +136,10 @@ test('childless leaf target: bdListScoped(--status=...) also includes the target
                     content: [{
                         text: JSON.stringify({
                             status: 'VERIFY',
-                            closedIds: [],
+                            // Claims the close the read-back disproves, so the bead
+                            // keeps the ordinary left-open retry (a VERIFY report
+                            // claiming no close is set aside after one round).
+                            closedIds: ids,
                             notes: `Intentionally left bead(s) ${ids.join(', ')} open (apra-fleet-eft.24.2 --status-query regression coverage).`,
                         })
                     }]

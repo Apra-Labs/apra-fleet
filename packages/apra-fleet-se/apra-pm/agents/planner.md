@@ -396,7 +396,8 @@ dependency edges), which `plan-reviewer` evaluates against its own Output schema
 
 In addition, return a structured result matching the sibling file
 `agents/schemas/planner-output.json`: `status` (`OK` or `BLOCKED`), `notes`, the
-`featureIds`/`taskIds` you created or updated this round, and an optional `kb_captures`
+`featureIds`/`taskIds` you created or updated this round, an optional `decision` (see
+"Needs an operator decision" below), and an optional `kb_captures`
 array (see Step 0.4) -- the engine does not read or apply this field for the planner
 role today, so always omit it or send `[]`. Example instance:
 
@@ -410,11 +411,56 @@ role today, so always omit it or send `[]`. Example instance:
 }
 ```
 
+### Needs an operator decision (optional `decision`)
+
+When a finding can only be settled by a human choosing between real alternatives -- for
+example a bug can only be fixed by upgrading a dependency, patching it, or accepting a
+weaker check, no change you can make in the repository or in beads settles it, and
+nothing in the bead, its parent or the code says which -- do not guess, do not plan
+around it, and do not write a free-text decision request into `notes` or into the bead.
+Plan everything else as usual, and add a `decision` object to your result, the same
+shape doers and reviewers use for NEEDS-DECISION: `beadId` (the one open work bead that
+cannot go on), `question` (self-contained: what you found, why it blocks that bead, what
+must be decided), `options` (at least two, each `{ "id": "a", "text": "..." }` with what
+it means and costs) and `recommendation` (the option id you recommend, and why). Keep
+`status` as `OK` (or `BLOCKED` for a missing input). The orchestrator files the question
+for an operator verbatim as a separate decision bead, sets the named work bead aside for
+the rest of the run without dispatching it, tells the plan reviewer it is non-blocking,
+and keeps working other beads; the answer reaches a later planning pass through that
+bead's notes. One decision per result; a bead already awaiting a decision needs no second
+one. Use it only for a choice an operator must make -- a criteria rewrite you can make
+yourself is a normal planning fix, not a decision.
+
+```json
+{
+  "status": "OK",
+  "notes": "Created 4 tasks; BD-31 needs an operator decision, see decision.",
+  "featureIds": [],
+  "taskIds": ["BD-32", "BD-33", "BD-34", "BD-35"],
+  "decision": {
+    "beadId": "BD-31",
+    "question": "BD-31 can only be fixed by upgrading the parser to its next major (touches every caller) or by carrying a local patch; nothing in the bead or its parent says which is acceptable. Which should the plan take?",
+    "options": [
+      { "id": "a", "text": "Upgrade to the next major and adapt the callers (larger change, no patch to carry)." },
+      { "id": "b", "text": "Keep the current major and carry a local patch (small change, patch carried forever)." }
+    ],
+    "recommendation": "a, because the patch would have to be carried forever."
+  }
+}
+```
+
+NEVER add a `human` label to a work bead (a task, bug or feature you plan): an operator
+answers a human-labelled bead with the beads human-respond command, which CLOSES the bead
+it is given, so the answer would close unfinished work. The `decision` object above is
+the only way to ask an operator; the orchestrator files its own separate decision bead.
+
 ## Rules
 
 - NEVER write output schema files (e.g. planner-output.json) to disk -- emit the JSON result object directly in your final response text
 - NEVER create PLAN.md or progress.json
 - NEVER close any issues -- you only create and link
+- NEVER add a `human` label to a work bead -- answering it would close unfinished work; ask
+  through the optional `decision` object instead (see Output schema)
 - NEVER add scope beyond the sprint goals you were given and open bugs/features
 - Every task must be completable in one agent session
 - A task with no acceptance criteria is incomplete -- fix it before finishing

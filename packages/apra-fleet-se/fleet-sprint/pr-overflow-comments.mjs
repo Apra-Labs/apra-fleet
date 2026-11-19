@@ -1,7 +1,7 @@
 // Publishes the part of a sprint PR description that did not fit (the
 // reviewer-notes overflow, see pr-body.mjs buildSprintPrBody /
 // buildOverflowComments) as engine-marked PR comments, and keeps them in step
-// on a relaunch.
+// on a relaunch (the listing follows the provider's pages, bounded).
 //
 // WHY A SEPARATE MODULE. raiseVcsPrForMember (vcs-auth.mjs) owns the REST
 // round trip (credential handoff, staged request body, one-shot auth
@@ -31,6 +31,10 @@ import {
     buildUpdateCommentCommand,
     buildDeleteCommentCommand,
 } from './vcs-module.mjs';
+
+/** Upper bound on comment-list pages followed (100 comments each), so a
+ *  misbehaving API that always answers a next page cannot loop forever. */
+export const MAX_COMMENT_LIST_PAGES = 20;
 
 /**
  * @param {object} opts
@@ -63,15 +67,34 @@ export async function publishPrOverflowComments({
 
     let prior = [];
     if (existing) {
-        const listed = await run(() => buildListCommentsCommand({ ...coords(), pull_request_id: prId }), 'list-comments');
-        if (!listed.ok) return fail(`could not list the comments of ${pr} to upsert the reviewer-notes overflow: ${listed.error}`);
-        let mapped;
-        try {
-            mapped = listed.built.mapResponse(listed.body);
-        } catch (err) {
-            return fail(`could not read the comment list of ${pr}: ${err && err.message ? err.message : err}`);
+        // Follow the provider's pages (the built command's optional
+        // nextPage(body) -> params | null), bounded by MAX_COMMENT_LIST_PAGES.
+        const mapped = [];
+        let pageParams = {};
+        for (let n = 0; n < MAX_COMMENT_LIST_PAGES; n++) {
+            const listed = await run(() => buildListCommentsCommand({ ...coords(), pull_request_id: prId, ...pageParams }), 'list-comments');
+            if (!listed.ok) return fail(`could not list the comments of ${pr} to upsert the reviewer-notes overflow: ${listed.error}`);
+            let pageItems;
+            try {
+                pageItems = listed.built.mapResponse(listed.body);
+            } catch (err) {
+                return fail(`could not read the comment list of ${pr}: ${err && err.message ? err.message : err}`);
+            }
+            mapped.push(...(Array.isArray(pageItems) ? pageItems : []));
+            let next = null;
+            try {
+                next = typeof listed.built.nextPage === 'function' ? listed.built.nextPage(listed.body) : null;
+            } catch {
+                next = null;
+            }
+            if (!next) break;
+            if (n === MAX_COMMENT_LIST_PAGES - 1) {
+                log(`${logPrefix}: WARNING: ${pr} has more than ${MAX_COMMENT_LIST_PAGES} pages of comments; only the first ${mapped.length} were checked for earlier reviewer-notes overflow comments.`);
+                break;
+            }
+            pageParams = next;
         }
-        const marked = (Array.isArray(mapped) ? mapped : [])
+        const marked = mapped
             .map((c, order) => ({ ...c, order, parsed: parseOverflowComment(c.body) }))
             .filter((c) => c.parsed);
         // Chunks in index order first, then superseded stubs (reused before

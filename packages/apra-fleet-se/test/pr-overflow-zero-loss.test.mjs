@@ -58,9 +58,17 @@ function longReview(size, tag = 'f') {
  * PR comments (id -> body) and every REST call; `failComments` makes comment
  * creation answer HTTP 500.
  */
-function fakeProvider(provider, { failComments = false } = {}) {
+function fakeProvider(provider, { failComments = false, failCommentAt = 0, pageSize = 0 } = {}) {
     const staged = createStagedFileRecorder();
-    const state = { provider, pr: null, comments: new Map(), nextCommentId: 100, calls: [], staged, failComments };
+    const state = { provider, pr: null, comments: new Map(), nextCommentId: 100, calls: [], staged, failComments, commentPosts: 0 };
+    // failCommentAt: only the Nth comment POST fails (a partial failure).
+    const postFails = () => { state.commentPosts++; return state.failComments || (failCommentAt > 0 && state.commentPosts === failCommentAt); };
+    // pageSize: the list endpoints page like the real APIs (GitHub per_page/page,
+    // Bitbucket pagelen + a `next` URL); 0 answers everything in one page.
+    const pageOf = (url) => {
+        const m = /[?&]page=(\d+)/.exec(url);
+        return m ? Number(m[1]) : 1;
+    };
     const respond = (status, body) => ({
         content: [{ text: '' }],
         structuredContent: { ok: true, reason: 'ok', exitCode: 0, stdout: `${body === undefined ? '' : JSON.stringify(body)}\n${status}`, stderr: '' },
@@ -94,10 +102,14 @@ function fakeProvider(provider, { failComments = false } = {}) {
                 return respond(200, { number: 42, html_url: 'https://github.com/acme/widgets/pull/42' });
             }
             if (method === 'POST' && /\/issues\/42\/comments$/.test(url)) {
-                if (state.failComments) return respond(500, { message: 'Server Error' });
+                if (postFails()) return respond(500, { message: 'Server Error' });
                 return respond(201, { id: addComment(json().body) });
             }
-            if (method === 'GET' && /\/issues\/42\/comments\?/.test(url)) return respond(200, listOut());
+            if (method === 'GET' && /\/issues\/42\/comments\?/.test(url)) {
+                if (!pageSize) return respond(200, listOut());
+                const pg = pageOf(url);
+                return respond(200, listOut().slice((pg - 1) * pageSize, pg * pageSize));
+            }
             const cm = /\/issues\/comments\/(\d+)$/.exec(url);
             if (cm && method === 'PATCH') { state.comments.set(Number(cm[1]), json().body); return respond(200, { id: Number(cm[1]) }); }
             if (cm && method === 'DELETE') { state.comments.delete(Number(cm[1])); return respond(204); }
@@ -136,11 +148,18 @@ function fakeProvider(provider, { failComments = false } = {}) {
                 return respond(200, { id: 9 });
             }
             if (method === 'POST' && /\/pullrequests\/9\/comments$/.test(url)) {
-                if (state.failComments) return respond(500, { error: { message: 'Server Error' } });
+                if (postFails()) return respond(500, { error: { message: 'Server Error' } });
                 return respond(201, { id: addComment(json().content.raw) });
             }
             if (method === 'GET' && /\/pullrequests\/9\/comments\?/.test(url)) {
-                return respond(200, { values: listOut().map((c) => ({ id: c.id, content: { raw: c.body } })) });
+                const all = listOut().map((c) => ({ id: c.id, content: { raw: c.body } }));
+                if (!pageSize) return respond(200, { values: all });
+                const pg = pageOf(url);
+                const base = url.replace(/[?&]page=\d+/, '');
+                return respond(200, {
+                    values: all.slice((pg - 1) * pageSize, pg * pageSize),
+                    ...(pg * pageSize < all.length ? { next: `${base}${base.includes('?') ? '&' : '?'}page=${pg + 1}` } : {}),
+                });
             }
             const bm = /\/pullrequests\/9\/comments\/(\d+)$/.exec(url);
             if (bm && method === 'PUT') { state.comments.set(Number(bm[1]), json().content.raw); return respond(200, {}); }
@@ -406,5 +425,44 @@ describe('mock-sprint publish on GitHub with a 20k-character final review', () =
         assert.ok(rec.body.length <= getProviderTextLimits('github').descriptionMaxLength);
         assert.ok(rec.body.includes(full), 'the whole sanitized final review is in the GitHub PR description');
         assert.ok(!rec.body.includes(NOTES_CONTINUED_MARKER), 'nothing had to overflow on GitHub');
+    });
+});
+
+describe('relaunch on a PR with 150 existing comments (overflow on page 2)', () => {
+    const MARKED = /^(PATCH .*\/issues\/comments\/\d+|PUT .*\/pullrequests\/9\/comments\/\d+)$/;
+    const POSTED = /^POST .*\/(issues\/42|pullrequests\/9)\/comments$/;
+    for (const [provider, size] of [['github', 150000], ['bitbucket', 20000]]) {
+        test(`${provider}: the relaunch finds the engine comments on page 2 and updates them in place -- none posted, none duplicated`, async () => {
+            const fake = fakeProvider(provider, { pageSize: 100 });
+            fake.nextCommentId = 1000;
+            for (let i = 1; i <= 150; i++) fake.comments.set(i, `human comment ${i}`);
+            await publish(fake, { notes: longReview(size, 'one'), runId: 'run-1' });
+            const run1Ids = [...fake.comments.entries()].filter(([, b]) => parseOverflowComment(b)).map(([id]) => id);
+            assert.ok(run1Ids.length >= 2, `run 1 posted ${run1Ids.length} overflow comments`);
+            assert.ok([...fake.comments.keys()].indexOf(run1Ids[0]) >= 100, 'the engine comments sit past page 1');
+
+            const callsBefore = fake.calls.length;
+            await publish(fake, { notes: longReview(size, 'two'), runId: 'run-2' });
+            const run2Calls = fake.calls.slice(callsBefore);
+            const markedIds = [...fake.comments.entries()].filter(([, b]) => parseOverflowComment(b)).map(([id]) => id);
+            assert.deepEqual(markedIds, run1Ids, 'the same engine comments, none duplicated');
+            assert.ok(!run2Calls.some((c) => POSTED.test(c)), `no new comment posted on the relaunch: ${run2Calls.join(', ')}`);
+            assert.equal(run2Calls.filter((c) => MARKED.test(c)).length, run1Ids.length, 'every existing engine comment updated in place');
+            assert.ok(run2Calls.filter((c) => /^GET .*\/comments\?/.test(c)).length >= 2, 'the comment list was paged');
+            assert.equal(fake.comments.get(1), 'human comment 1');
+            assert.equal(fake.comments.size, 150 + run1Ids.length);
+        });
+    }
+});
+
+describe('a partial overflow-comment post failure', () => {
+    test('bitbucket: the 2nd post fails -> the description pointer names how many comments were posted', async () => {
+        const fake = fakeProvider('bitbucket', { failCommentAt: 2 });
+        const { result, logs } = await publish(fake, { notes: longReview(20000) });
+        assert.deepEqual(result, { pushed: true });
+        assert.ok(logs.some((l) => /WARNING: could not post reviewer-notes overflow comment 2 of \d+/.test(l)), logs.join('\n'));
+        const visible = visibleDescription(fake.pr.body);
+        assert.match(visible, /Reviewer notes continued: \d+ characters did not fit this description; 1 of \d+ overflow comment\(s\) were posted and \d+ could not be -- the rest of the notes are in the sprint run log\.$/);
+        assert.ok(fake.pr.body.length <= getProviderTextLimits('bitbucket').descriptionMaxLength);
     });
 });

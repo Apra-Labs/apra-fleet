@@ -800,20 +800,28 @@ function buildBitbucketCommentCommand(params) {
     };
 }
 
-/** GET .../pullrequests/{id}/comments?pagelen=100&fields=... */
+/** GET .../pullrequests/{id}/comments?pagelen=100&fields=...
+ *  `params.page_url` (the previous page's `next`, accepted only when it is
+ *  under this PR's comments endpoint) selects a later page; the returned
+ *  `nextPage(respBody)` answers { page_url } for the following page or null. */
 function buildBitbucketListCommentsCommand(params) {
     const { token, os, shell } = params || {};
     const coords = assertRepoCoords(params, 'list-comments');
     const safeToken = assertToken(token);
     const prId = assertPullRequestId(params, 'list-comments');
-    const fields = ['values.id', 'values.content.raw', 'values.deleted', 'values.inline'].join(',');
-    const url = `${repoApiBase(coords)}/pullrequests/${prId}/comments?pagelen=100&fields=${encodeURIComponent(fields)}`;
+    const fields = ['next', 'values.id', 'values.content.raw', 'values.deleted', 'values.inline'].join(',');
+    const commentsBase = `${repoApiBase(coords)}/pullrequests/${prId}/comments`;
+    const isOwnPage = (u) => typeof u === 'string' && u.startsWith(`${commentsBase}?`) && !/[\s'"`\\]/.test(u);
+    const url = isOwnPage(params.page_url)
+        ? params.page_url
+        : `${commentsBase}?pagelen=100&fields=${encodeURIComponent(fields)}`;
     return {
         provider: 'bitbucket',
         action: 'list-comments',
         command: bitbucketCommentCurl('GET', url, safeToken, os, shell, null),
         logSafeCommand: bitbucketCommentCurl('GET', url, REDACTED, os, shell, null),
         interpret: { successStatusRange: [200, 299] },
+        nextPage: (respBody) => (respBody && isOwnPage(respBody.next) ? { page_url: respBody.next } : null),
         /** 2xx body ({ values: [...] }) -> [{ id, body, ref: { id } }]. */
         mapResponse: (respBody) => (respBody && Array.isArray(respBody.values) ? respBody.values : [])
             .filter((c) => c && Number.isInteger(c.id) && c.deleted !== true && !c.inline)

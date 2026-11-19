@@ -733,6 +733,28 @@ export function createGitSync(deps = {}) {
             return { branch: found || null, sprintBranch: typeof branch === 'string' && branch ? branch : null };
         },
         /**
+         * A snapshot of the member's checkout for change detection: the commit
+         * HEAD names and whether the work tree has uncommitted changes. Two
+         * snapshots around a dispatch tell whether the dispatch produced a
+         * commit or a diff. Resolves { tip, dirty } or null when either read
+         * fails or does not parse, so a caller treats "unknown" as "may have
+         * changed". Git strings are built in JS (no shell expansion).
+         */
+        branchSnapshot: async (memberName) => {
+            const tipRes = await command('git rev-parse --verify HEAD', {
+                member_name: memberName, silent: true, failSoft: true,
+                label: `read the branch tip on '${memberName}'`,
+            });
+            const tip = tipRes && tipRes.ok && typeof tipRes.output === 'string' ? tipRes.output.trim().split(/\s+/)[0] : '';
+            if (!/^[0-9a-f]{7,64}$/i.test(tip)) return null;
+            const stRes = await command('git status --porcelain', {
+                member_name: memberName, silent: true, failSoft: true,
+                label: `read the work tree state on '${memberName}'`,
+            });
+            if (!stRes || !stRes.ok || typeof stRes.output !== 'string') return null;
+            return { tip, dirty: stRes.output.trim().length > 0 };
+        },
+        /**
          * The base a KB bible commit records as provenance, resolved on the
          * member's checkout: the sprint's TARGET BASE branch, and the commit
          * the sprint branch forked from it (`git merge-base HEAD

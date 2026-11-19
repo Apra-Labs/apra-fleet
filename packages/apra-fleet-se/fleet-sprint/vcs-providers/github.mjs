@@ -166,13 +166,20 @@ function gitHubHeaders(authToken, os, shell, withBody) {
     ];
 }
 
-/** GET /repos/{owner}/{repo}/issues/{n}/comments?per_page=100 */
+/** Comments per page the list asks for; a page this full may have a next one. */
+const GITHUB_COMMENTS_PER_PAGE = 100;
+
+/** GET /repos/{owner}/{repo}/issues/{n}/comments?per_page=100[&page=N]
+ *  `params.page` (a positive integer, default 1) selects the page; the
+ *  returned `nextPage(respBody)` answers the params for the following page
+ *  ({ page }) or null on a short (last) page. */
 function buildGitHubListCommentsCommand(params) {
     const { repo, token, os, shell } = params || {};
     const safeRepo = assertRepo(repo);
     const safeToken = assertToken(token);
     const issue = assertIssueNumber(params || {}, 'list-comments');
-    const url = `${GITHUB_API}/repos/${safeRepo}/issues/${issue}/comments?per_page=100`;
+    const page = Number.isInteger(params.page) && params.page > 1 ? params.page : 1;
+    const url = `${GITHUB_API}/repos/${safeRepo}/issues/${issue}/comments?per_page=${GITHUB_COMMENTS_PER_PAGE}${page > 1 ? `&page=${page}` : ''}`;
     const buildCurl = (authToken) => [
         `${curlBinary(os)} -sS -X GET`,
         ...gitHubHeaders(authToken, os, shell, false),
@@ -185,6 +192,7 @@ function buildGitHubListCommentsCommand(params) {
         command: buildCurl(safeToken),
         logSafeCommand: buildCurl(REDACTED),
         interpret: { successStatusRange: [200, 299] },
+        nextPage: (respBody) => (Array.isArray(respBody) && respBody.length >= GITHUB_COMMENTS_PER_PAGE ? { page: page + 1 } : null),
         /** 2xx body ([...]) -> [{ id, body, ref: { id } }]. */
         mapResponse: (respBody) => (Array.isArray(respBody) ? respBody : [])
             .filter((c) => c && (typeof c.id === 'number' || (typeof c.id === 'string' && /^\d+$/.test(c.id))))

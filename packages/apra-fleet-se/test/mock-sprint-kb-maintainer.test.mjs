@@ -224,7 +224,9 @@ const blockBDoer = (titleB) => async ({ opts, tempDir: td }) => {
             closedIds.push(id);
         }
     }
-    return { content: [{ text: JSON.stringify({ status: 'VERIFY', closedIds, notes: 'Closed A; left B blocked.' }) }] };
+    // Claims B closed too (the read-back disproves it): B keeps the ordinary
+    // left-open retry instead of the VERIFY-no-change set-aside.
+    return { content: [{ text: JSON.stringify({ status: 'VERIFY', closedIds: ids, notes: 'Closed A; left B blocked.' }) }] };
 };
 
 for (const [label, roleMap, rule] of [

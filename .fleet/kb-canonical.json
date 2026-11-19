@@ -1,9 +1,9 @@
 {
   "version": 3,
   "provenance": {
-    "commit": "f9cb1ca7c3f0f03debb783f6ef40a261554b7b0b",
+    "commit": "5a171212f2e1eee116e7f58e2ea29648ffb8ff1f",
     "branch": "main",
-    "entry_count": 163
+    "entry_count": 168
   },
   "entries": [
     {
@@ -1105,6 +1105,29 @@
       "updated_at": "2026-09-25T22:26:30.391Z"
     },
     {
+      "id": "5227dca4-de64-4430-a394-8c16226e121c",
+      "type": "knowledge",
+      "title": "dispatchRole onDispatchWindow fires inside the git-sync bracket",
+      "summary": "dispatchRole opts.onDispatchWindow('before'|'after') runs after the bracket's pre-dispatch G-pull and before its post-dispatch sync. A caller that compares the member checkout across the window sees only what the agent did, not other lanes' pushes.",
+      "symbols": [
+        "dispatchRole",
+        "runDevelopPhase",
+        "branchSnapshot"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/develop.mjs",
+        "packages/apra-fleet-se/test/develop-verify-no-change-set-aside.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-19T00:46:16.089Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs": "65e4fa2b96366223c18535339c6ef35c16c8b50a",
+        "packages/apra-fleet-se/fleet-sprint/phases/develop.mjs": "b1e86b0cbe8b5bffa1a8ce08045d7c62ca20637b",
+        "packages/apra-fleet-se/test/develop-verify-no-change-set-aside.test.mjs": "cb435641ff02b225f4e427e19270e054135f7f62"
+      }
+    },
+    {
       "id": "52cf9b39-5851-41e1-b0eb-198f900bd769",
       "type": "knowledge",
       "title": "Claude config writers treat only a missing .claude.json as {}; both re-read before the move",
@@ -1179,6 +1202,34 @@
         "packages/apra-fleet-se/test/supervisor-csrf-guard.test.mjs": "3e0e41677274ac685d61218451e4ff40d2ce09a5",
         "packages/apra-fleet-workflow/src/viewer/index.mjs": "40a249163390fa53bb1bc336418433a5792f83ea",
         "packages/apra-fleet-workflow/src/viewer/request-guard.mjs": "7ec63f0bc021035080ea03d03f64f7ba0ec3bf75"
+      }
+    },
+    {
+      "id": "56e5cbcb-3f29-4b6e-90a0-3842d8304e5e",
+      "type": "knowledge",
+      "title": "Parent-link guard restores only edges whose child became parentless",
+      "summary": "createBeadsScope keeps a per-run ledger of in-scope parent-child edges and restores, on each fresh full-DB snapshot, an edge whose child now has no parent and that the run did not remove. A child that moved to another parent is not restored, and a failed restore throws ParentLinkRestoreError.",
+      "symbols": [
+        "createParentLinkLedger",
+        "parseRunEdgeChange",
+        "ParentLinkRestoreError",
+        "createBeadsScope",
+        "decomposedParentIds",
+        "readyLeafBeads"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/parent-link-guard.mjs",
+        "packages/apra-fleet-se/fleet-sprint/beads-scope.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/test/parent-link-guard.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T23:19:13.109Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/beads-scope.mjs": "7796bde17217e8f5ac0b751a822b6fe5ba2d4d57",
+        "packages/apra-fleet-se/fleet-sprint/parent-link-guard.mjs": "4d3399ddea7f97c988342864a46f0d95be58dc66",
+        "packages/apra-fleet-se/fleet-sprint/runner.js": "76babaae82e6177a9a5a404ad7fcd6d6d692ca47",
+        "packages/apra-fleet-se/test/parent-link-guard.test.mjs": "cfaabdf2fbfca34dddc441f4a91f594c803ddc4a"
       }
     },
     {
@@ -1497,6 +1548,32 @@
       "updated_at": "2026-09-25T22:26:41.271Z"
     },
     {
+      "id": "75c4aab8-77f1-4f45-89aa-fe89a173ec6b",
+      "type": "knowledge",
+      "title": "finalVerdict merge_assessment is schema-lenient and normalized in final-review",
+      "summary": "contracts.mjs finalVerdict.merge_assessment has no type or required list, so any shape validates. phases/final-review.mjs runs normalizeMergeAssessment (pr-body.mjs) right after dispatch and stores the dropped field names on merge_assessment_incomplete, which publish-pr renders as an incomplete note.",
+      "symbols": [
+        "normalizeMergeAssessment",
+        "renderMergeAssessment",
+        "runFinalReviewPhase",
+        "finalVerdict"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/contracts.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/final-review.mjs",
+        "packages/apra-fleet-se/fleet-sprint/pr-body.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/publish-pr.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T23:19:14.352Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/contracts.mjs": "f8b532c7b98385d000d378be82413e71d8fc661b",
+        "packages/apra-fleet-se/fleet-sprint/phases/final-review.mjs": "9b26ca172f18c32d6517adadb51a511243b59bac",
+        "packages/apra-fleet-se/fleet-sprint/phases/publish-pr.mjs": "97cc74ad0ee28790b709bc097f835f4151e22625",
+        "packages/apra-fleet-se/fleet-sprint/pr-body.mjs": "7887f712324246e372980a0013adca07e41aacad"
+      }
+    },
+    {
       "id": "76754ef3-5ff3-4fb4-a7cf-d74504f5013b",
       "type": "knowledge",
       "title": "A supervisor readiness probe must check GET /api/health pid identity, not just that the port answers",
@@ -1795,6 +1872,33 @@
         "memory-contract/v1/generate-contract.mjs": "dcd3ef9234288e2558712b6bc0c3f4bb4c42d4b6",
         "src/services/tool-registry.ts": "099aa042a6602d90c9401a8fd399cf1bda1f568f",
         "tests/knowledge/kb-member-read-scope-wording.test.ts": "cbd0387bc3c84e6a808d00b76bc625ceba574bc2"
+      }
+    },
+    {
+      "id": "88e2757f-9381-43dc-a1ba-8ceb061f69c5",
+      "type": "knowledge",
+      "title": "Planner NEEDS-DECISION routing is shared by the main plan loop and the scoped replan",
+      "summary": "Both phases/plan.mjs and phases/replan.mjs route a planner result's decision through decisions.mjs applyPlannerDecision inside gitSync.withOpenSyncBracket and D-push when recorded. The plan-reviewer helpers decisionSetAsideList, namedFindingIds and onlyDecisionSetAsideFindings live in decisions.mjs.",
+      "symbols": [
+        "runReplanPhase",
+        "applyPlannerDecision",
+        "decisionSetAsideList",
+        "namedFindingIds",
+        "onlyDecisionSetAsideFindings"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/phases/replan.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/plan.mjs",
+        "packages/apra-fleet-se/fleet-sprint/decisions.mjs",
+        "packages/apra-fleet-se/test/mock-sprint-replan-needs-decision.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-19T01:11:56.411Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/decisions.mjs": "048997e626c25ae04deb7241c650277533746c37",
+        "packages/apra-fleet-se/fleet-sprint/phases/plan.mjs": "4f4c6f39c57e14d042368452742189181058d99c",
+        "packages/apra-fleet-se/fleet-sprint/phases/replan.mjs": "d1024b6fb26c1f9493fd19658bd8e781260441fd",
+        "packages/apra-fleet-se/test/mock-sprint-replan-needs-decision.test.mjs": "4f1bcb09146fad18e38ef13fe62be43636639a9e"
       }
     },
     {
@@ -3259,6 +3363,33 @@
         "src/services/tool-registry.ts": "05e3d5e04b949b3bfefef7693c230e59da947f02",
         "src/tools/kb-setup.ts": "eaa0fe1fc385cafbf2c3f9b14c9e5b7159dc86fe",
         "tests/kb-tool-profile-e2e.test.ts": "949f75c916529d89cd7b80d5433042449935d31a"
+      }
+    },
+    {
+      "id": "f462f414-06c2-4536-b1f1-0e7befe878ab",
+      "type": "knowledge",
+      "title": "Prefixed Windows bd sync commands must be classified on the logical command",
+      "summary": "On Windows members bdSyncCommandFor prefixes bd sync commands with a GOMAXPROCS assignment. Any classifier keyed on /^bd/ must strip that prefix first via logicalBdCommand, or a D-pull will not invalidate the beads snapshot.",
+      "symbols": [
+        "logicalBdCommand",
+        "isBeadsMutatingCommand",
+        "checkFullDbFetchLog",
+        "runDoltStep",
+        "wrapCommand"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/bd-sync-command.mjs",
+        "packages/apra-fleet-se/fleet-sprint/beads-scope.mjs",
+        "packages/apra-fleet-se/fleet-sprint/full-db-fetch-guard.mjs",
+        "packages/apra-fleet-se/fleet-sprint/dolt-sync.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-18T23:19:13.671Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/bd-sync-command.mjs": "8a160be9655f41ebc29a2cf2a79836e813c88fcb",
+        "packages/apra-fleet-se/fleet-sprint/beads-scope.mjs": "7796bde17217e8f5ac0b751a822b6fe5ba2d4d57",
+        "packages/apra-fleet-se/fleet-sprint/dolt-sync.mjs": "3e38bd38f343152693250d65d57d26660f7311d5",
+        "packages/apra-fleet-se/fleet-sprint/full-db-fetch-guard.mjs": "c456986c6694b9d2df4894c72a769e22bf021e29"
       }
     },
     {
