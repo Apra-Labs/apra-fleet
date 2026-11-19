@@ -112,6 +112,7 @@ describe('registerAllTools scope gate', () => {
     }
     expect(isToolInScope('kb_bible_commit', plain)).toBe(true);
     expect(isToolInScope('kb_import', plain)).toBe(true);
+    expect(isToolInScope('kb_capabilities', plain)).toBe(true);
   });
 });
 
