@@ -197,21 +197,60 @@ function sleepSync(ms: number): void {
 }
 
 /**
+ * The file changed between the caller's read and the replace (or appeared /
+ * disappeared): the replace was refused and the file left as the other writer
+ * left it. Thrown only by a writer given an `expected` precondition.
+ */
+export class FileChangedError extends Error {
+  constructor(public readonly filePath: string) {
+    super(`${filePath} was changed by another writer since it was read; the replace was refused`);
+    this.name = 'FileChangedError';
+  }
+}
+
+/**
+ * The current bytes of `file`, or null when it does not exist (existsSync
+ * first, then a read; a file removed in between also reads as null).
+ */
+export function readFileBytesOrNull(file: string): Buffer | null {
+  if (!fs.existsSync(file)) return null;
+  try {
+    const data: unknown = fs.readFileSync(file);
+    return Buffer.isBuffer(data) ? data : Buffer.from(String(data ?? ''), 'utf-8');
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw err;
+  }
+}
+
+/** Throws FileChangedError unless `target` holds exactly `expected` (null = absent). */
+function assertUnchanged(target: string, expected: Buffer | null | undefined): void {
+  if (expected === undefined) return;
+  const now = readFileBytesOrNull(target);
+  if (expected === null ? now !== null : (now === null || !now.equals(expected))) throw new FileChangedError(target);
+}
+
+/**
  * Writes `content` to an owner-only (`mode`) temp file next to `target` and
  * renames it over `target`; the live file is never opened for writing. A
  * failed rename (e.g. EBUSY/EPERM while another process holds the file on
  * Windows) is retried with exponential backoff (25 ms doubling, at most 1 s
  * per wait) for up to RENAME_RETRY_BUDGET_MS. Then the temp file is removed
  * and the error names the target, the attempts and the elapsed time; the
- * target is left byte-identical.
+ * target is left byte-identical. With `expected` set (the bytes the caller
+ * read; null = the file did not exist) the target is compared right before
+ * every rename attempt, and a mismatch removes the temp file and throws
+ * FileChangedError (compare-and-swap; the remaining window is the rename
+ * call itself).
  */
-function replaceByRename(target: string, content: string, mode: number): void {
+function replaceByRename(target: string, content: string, mode: number, expected?: Buffer | null): void {
   const tmp = path.join(path.dirname(target), `.${path.basename(target)}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`);
   try {
     fs.writeFileSync(tmp, content, { mode, flag: 'wx' });
     fs.chmodSync(tmp, mode);
     const start = Date.now();
     for (let attempt = 1; ; attempt++) {
+      assertUnchanged(target, expected);
       try { fs.renameSync(tmp, target); return; } catch (err: unknown) {
         const elapsed = Date.now() - start;
         const wait = Math.min(25 * 2 ** (attempt - 1), 1000);
@@ -242,20 +281,26 @@ function replaceByRename(target: string, content: string, mode: number): void {
  * install run under sudo against the invoking user's config) is written in
  * place, because a rename would hand the file to the current user. That case
  * cannot be atomic; it is kept so a sudo install still updates the user's
- * config instead of failing.
+ * config instead of failing (the `expected` check still runs first).
+ *
+ * `opts.expected` makes the replace a compare-and-swap: the bytes the caller
+ * read (null = the file did not exist); when the file no longer holds them
+ * this throws FileChangedError and writes nothing (see
+ * updateClaudeConfigFile for the re-read loop).
  */
-export function writeOwnerOnlyFileAtomic(file: string, content: string): void {
+export function writeOwnerOnlyFileAtomic(file: string, content: string, opts: { expected?: Buffer | null } = {}): void {
   let target = file;
   try { const real = fs.realpathSync(file); if (typeof real === 'string' && real) target = real; } catch { /* missing: write at `file` */ }
   let st: fs.Stats | undefined;
   try { st = fs.statSync(target); } catch { /* new file */ }
   const getuid = (process as { getuid?: () => number }).getuid;
   if (st && typeof getuid === 'function' && typeof st.uid === 'number' && st.uid !== getuid()) {
+    assertUnchanged(target, opts.expected);
     writeOwnerOnlyFile(target, content);
     return;
   }
   const mode = st && typeof st.mode === 'number' && (st.mode & 0o700) ? (st.mode & 0o700) | 0o600 : 0o600;
-  replaceByRename(target, content, mode);
+  replaceByRename(target, content, mode, opts.expected);
 }
 
 /**
