@@ -359,6 +359,26 @@ export function buildBibleDemotionCandidateQuery(files) {
  */
 export const KB_CAPABILITIES_TOOL = 'kb_capabilities';
 
+/** The first 8 characters of a KB id, for log lines. */
+const kbId8 = (id) => String(id).slice(0, 8);
+
+/**
+ * One log phrase for kb_import's `withdrawals` result (the merged bible's
+ * withdrawn tombstones it applied), or '' when the answer carries none:
+ * absent, not an object, or every count zero. Counts per outcome, then the
+ * withdrawn ids (first 8 characters).
+ */
+export function importWithdrawalsLine(w) {
+    if (!w || typeof w !== 'object') return '';
+    const list = (k) => (Array.isArray(w[k]) ? w[k].filter((id) => typeof id === 'string') : []);
+    const sent = typeof w.sent === 'number' ? w.sent : 0;
+    const keys = ['withdrawn', 'repromoted', 'already', 'not_found', 'unsupported', 'deferred'];
+    if (sent === 0 && keys.every((k) => list(k).length === 0)) return '';
+    const counts = [`sent=${sent}`, ...keys.map((k) => `${k}=${list(k).length}`)].join(' ');
+    const withdrawn = list('withdrawn');
+    return withdrawn.length > 0 ? `${counts}; withdrawn: ${withdrawn.map(kbId8).join(', ')}` : counts;
+}
+
 /**
  * The KB route a merged withdrawal needs: after the merge, every importer's
  * kb_import replays the tombstone through it. kb_capabilities lists it for a
@@ -1049,6 +1069,8 @@ export function createKbWorkClient(opts = {}) {
         if (r > 0) parts.push(`${r} restore(s)`);
         return parts.join(' and ');
     };
+    /** " (restored: <id8>, ...)" for a bible commit log line, or '' when nothing was restored. */
+    const restoredIdList = (ids) => (ids && ids.length > 0 ? ` (restored: ${ids.map(kbId8).join(', ')})` : '');
     /** How many ids a bible-commit load ({ ids, withdrawals, restoreIds }) carries. */
     const loadSize = (l) => l.ids.length + l.withdrawals.length + l.restoreIds.length;
 
@@ -1319,7 +1341,7 @@ export function createKbWorkClient(opts = {}) {
                 for (const id of restoreIds) if (pendingRestores) pendingRestores.delete(id);
                 if (pendingRestores && pendingRestores.size === 0) restoresPending.delete(repo);
                 if (det) for (const id of restoredNow) det.restoredDone.add(id);
-                return { withdrawnCount: withdrawals.length - notAdmitted.length, restoredCount: restoredNow.length };
+                return { withdrawnCount: withdrawals.length - notAdmitted.length, restoredCount: restoredNow.length, restoredIds: restoredNow };
             };
             if (outcome.bibleSkipped) {
                 // The entry merge is provider-wide skipped (the project KB is
@@ -1333,9 +1355,9 @@ export function createKbWorkClient(opts = {}) {
                 confirmations.delete(repo);
                 skipRounds.delete(repo);
                 retirements.delete(repo);
-                const { withdrawnCount, restoredCount } = settleTombstoneWork(outcome.result);
+                const { withdrawnCount, restoredCount, restoredIds } = settleTombstoneWork(outcome.result);
                 const tombstoneNote = withdrawals.length + restoreIds.length > 0
-                    ? `; ${withdrawnCount} withdrawal(s) and ${restoredCount} restore(s) ${outcome.pushed ? 'committed and pushed' : 'already in the bible -- nothing to push'}`
+                    ? `; ${withdrawnCount} withdrawal(s) and ${restoredCount} restore(s)${restoredIdList(restoredIds)} ${outcome.pushed ? 'committed and pushed' : 'already in the bible -- nothing to push'}`
                     : '';
                 log(`[kb-work] kb_bible_commit skipped the entry merge for ${repo} on maintainer '${maintainer}': ${reason} -- ${ids.length} confirmation(s) dropped from the bible queue${tombstoneNote}.`);
                 return { committed: outcome.pushed ? withdrawnCount + restoredCount : 0, pending: heldConfirmations };
@@ -1373,7 +1395,7 @@ export function createKbWorkClient(opts = {}) {
             if (pending && pending.size === 0) confirmations.delete(repo);
             if (rounds.size === 0) skipRounds.delete(repo);
             const skippedIds = new Set(skipped.map((x) => x && x.id));
-            const { withdrawnCount, restoredCount } = settleTombstoneWork(outcome.result);
+            const { withdrawnCount, restoredCount, restoredIds } = settleTombstoneWork(outcome.result);
             const merged = Array.isArray(outcome.result.merged) ? outcome.result.merged.length
                 : ids.length - ids.filter((id) => skippedIds.has(id)).length;
             const describe = (list) => list.map((x) => (x.reason ? `${x.id} (${x.reason})` : x.id)).join(', ');
@@ -1396,7 +1418,7 @@ export function createKbWorkClient(opts = {}) {
             if (loadSize(batch) === 0) {
                 log(`[kb-work] removal-only bible commit for ${repo} on maintainer '${maintainer}': ${outcome.pushed ? `${removed.length} removal(s) committed and pushed` : 'nothing to remove -- nothing to push'}`);
             } else {
-                log(`[kb-work] bible commit for ${repo} on maintainer '${maintainer}': ${describeCounts(merged, withdrawnCount, restoredCount)} ${outcome.pushed ? 'committed and pushed' : 'already in the bible -- nothing to push'}`);
+                log(`[kb-work] bible commit for ${repo} on maintainer '${maintainer}': ${describeCounts(merged, withdrawnCount, restoredCount)}${restoredIdList(restoredIds)} ${outcome.pushed ? 'committed and pushed' : 'already in the bible -- nothing to push'}`);
             }
             const confirmationsLeft = pending ? pending.size : 0;
             return {
@@ -1419,7 +1441,7 @@ export function createKbWorkClient(opts = {}) {
         // that cannot record a withdrawal, or whose KB could not apply one
         // after the merge, is offered nothing to judge. Never a fallback to
         // an immediate demotion.
-        const gap = await withdrawalSupportGap(target.record, target.repo);
+        const gap = await withdrawalSupportGap(target.record, target.repo, target.member);
         if (gap) {
             log(`[kb-work] WARN: maintainer '${target.member}' (${target.repo}): ${gap} -- offering no demotion candidates`);
             return [];
@@ -1689,7 +1711,7 @@ export function createKbWorkClient(opts = {}) {
      * member can maintain more than one repository); a failure is retried at
      * the next offering.
      */
-    async function withdrawalSupportGap(record, repo) {
+    async function withdrawalSupportGap(record, repo, member) {
         const key = record && record.id ? JSON.stringify([record.id, repo || '']) : null;
         if (key && withdrawalSupport.has(key)) return withdrawalSupport.get(key);
         const settle = (gap) => { if (key) withdrawalSupport.set(key, gap); return gap; };
@@ -1714,6 +1736,10 @@ export function createKbWorkClient(opts = {}) {
             return `${KB_CAPABILITIES_TOOL} failed: ${errText(err)}`;
         }
         if (!caps || !Array.isArray(caps.routes)) return `${KB_CAPABILITIES_TOOL} answered no routes list`;
+        // One line per member and repository: a definite answer is cached
+        // below, so a later offering never reaches this point again.
+        const contract = typeof caps.contract === 'string' && caps.contract ? `, contract=${caps.contract}` : '';
+        log(`[kb-work] ${KB_CAPABILITIES_TOOL} on '${member || (record && record.name) || (record && record.id) || 'unknown'}' (${repo || 'unknown repository'}): routes=[${caps.routes.join(', ')}]${contract}`);
         if (!caps.routes.includes(KB_WITHDRAW_ROUTE)) {
             return settle(`its KB server does not serve the '${KB_WITHDRAW_ROUTE}' route (${KB_CAPABILITIES_TOOL} routes: ${caps.routes.join(', ') || 'none'}), so a merged withdrawal could never apply`);
         }
@@ -2711,6 +2737,8 @@ export function createKbPrimingClient(opts = {}) {
                         } else if (imported && typeof imported.imported === 'number' && imported.imported > 0) {
                             log(`[kb-prime] imported ${imported.imported} bible entr(ies) into the warm KB for '${member}'`);
                         }
+                        const wline = importWithdrawalsLine(imported && imported.withdrawals);
+                        if (wline) log(`[kb-prime] merged withdrawals for '${member}': ${wline}`);
                     } catch (err) {
                         log(`[kb-prime] kb_import skipped for '${member}' (non-fatal): ${err.message}`);
                     }

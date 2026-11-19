@@ -563,6 +563,24 @@ describe('createKbWorkClient.demotionCandidates: final review only, widened, fea
         assert.deepEqual(capCalls.map((m) => m.name), [MAINTAINER.name], 'kb_capabilities is read on the maintainer, never the reviewer');
     });
 
+    test('the kb_capabilities answer is logged once per maintainer and repository (routes and contract), not once per offering', async () => {
+        for (const [routes, offered] of [[[...ALL_KB_ROUTES], ['kb-other']], [['capture', 'query', 'demote'], []]]) {
+            const { memberCall } = splitReads(OTHERS, []);
+            const logs = [];
+            const client = createKbWorkClient({
+                memberCall, maintainers: withMaintainer(), listTools: newSchemaListTools,
+                capabilities: async () => ({ content: [{ type: 'text', text: JSON.stringify({ contract: 'v1', routes }) }] }),
+                sprintChangedFiles: async () => ['server/transit.js'], log: (l) => logs.push(l),
+            });
+            assert.deepEqual((await client.demotionCandidates(REVIEWER)).map((e) => e.id), offered);
+            assert.deepEqual((await client.demotionCandidates(REVIEWER)).map((e) => e.id), offered);
+            const lines = logs.filter((l) => /kb_capabilities on /.test(l));
+            assert.deepEqual(lines, [
+                `[kb-work] kb_capabilities on '${MAINTAINER.name}' (example.com/warehouse): routes=[${routes.join(', ')}], contract=v1`,
+            ], logs.join('\n'));
+        }
+    });
+
     test('a failing, rejected or unreadable kb_capabilities answer fails closed with a WARN and is retried at the next offering', async () => {
         const answers = [
             async () => { throw new Error('unreachable'); },

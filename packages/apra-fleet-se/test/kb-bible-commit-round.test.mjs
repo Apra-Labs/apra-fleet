@@ -563,7 +563,7 @@ describe('commitRound: withdrawals and restores travel with ids in one kb_bible_
 
         const skipLine = logs.find((l) => l.includes('kb_bible_commit skipped the entry merge') && l.includes(HTTP_SKIP_REASON));
         assert.ok(skipLine, logs.join('\n'));
-        assert.match(skipLine, /1 confirmation\(s\) dropped from the bible queue; 1 withdrawal\(s\) and 1 restore\(s\) committed and pushed/);
+        assert.match(skipLine, /1 confirmation\(s\) dropped from the bible queue; 1 withdrawal\(s\) and 1 restore\(s\) \(restored: h1\) committed and pushed/);
         assert.ok(events.some((e) => e.ev === 'G-push'), 'the tombstone commit must be published');
         assert.deepEqual(out, { committed: 2, pending: 0 });
         assert.deepEqual(client.pendingConfirmations(), []);

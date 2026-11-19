@@ -700,7 +700,7 @@ describe('mock sprint: KB writes route through the kb_maintainer', () => {
             assert.deepEqual(commit.args.restore_ids, [RESTORED_ID]);
             assert.ok(!fleet.bible.tombstones.has(RESTORED_ID), 'the hold must lift the earlier withdrawal');
             assert.ok(fleet.bible.entries.has(RESTORED_ID), 'the restored entry is back in the bible');
-            assert.ok(r.logs.some((l) => /1 restore\(s\) committed and pushed/.test(l)), r.logs.filter((l) => l.includes('[kb-work]')).join('\n'));
+            assert.ok(r.logs.some((l) => new RegExp(`1 restore\\(s\\) \\(restored: ${RESTORED_ID.slice(0, 8)}\\) committed and pushed`).test(l)), r.logs.filter((l) => l.includes('[kb-work]')).join('\n'));
         });
     });
 

@@ -249,6 +249,16 @@ describe("only kb_bible_commit's own answer counts as withdrawn or restored", ()
         const done = await run(['kb-back']);
         assert.equal(done.restored, 1);
     });
+
+    test('the bible commit log line names the ids the tool restored (first 8 characters), not only their count', async () => {
+        const { client, logs } = harness({ branchWithdrawals: async () => [demotable('0123456789abcdef')] });
+        await offerDemotions(client, []);
+        await client.apply('reviewer', 'reviewer-1', { kb_holds: ['0123456789abcdef'] });
+        await client.commitRound('final review');
+        const line = logs.find((l) => /^\[kb-work\] bible commit for .* on maintainer 'maint':/.test(l));
+        assert.ok(line, logs.join('\n'));
+        assert.match(line, /: 1 restore\(s\) \(restored: 01234567\) (committed and pushed|already in the bible)/, line);
+    });
 });
 
 describe('a fleet-too-old maintainer leaves queued withdrawals pending', () => {

@@ -157,6 +157,24 @@ describe('kb_maintainer grant on engine KB writes', () => {
         assert.ok(!logs.some((m) => /upgrade apra-fleet on that member/.test(m)), logs.join('\n'));
     });
 
+    test("the import's merged withdrawals are logged once, with per-outcome counts and the withdrawn ids; an empty report logs nothing", async () => {
+        const withdrawals = {
+            sent: 3, withdrawn: ['0123456789abcdef', 'fedcba9876543210'], repromoted: ['aaaaaaaa-1'], already: [],
+            not_found: [], unsupported: [], deferred: [],
+        };
+        const { priming, logs } = primingHarness({ baseBranch: 'main' }, { importResult: { imported: 0, bible_source: 'refs/remotes/origin/main', withdrawals } });
+        await priming.primeAll();
+        const lines = logs.filter((m) => /merged withdrawals/.test(m));
+        assert.deepEqual(lines, [
+            "[kb-prime] merged withdrawals for 'reviewer-1': sent=3 withdrawn=2 repromoted=1 already=0 not_found=0 unsupported=0 deferred=0; withdrawn: 01234567, fedcba98",
+        ], logs.join('\n'));
+
+        const empty = { sent: 0, withdrawn: [], repromoted: [], already: [], not_found: [], unsupported: [], deferred: [] };
+        const quiet = primingHarness({ baseBranch: 'main' }, { importResult: { imported: 0, bible_source: 'refs/remotes/origin/main', withdrawals: empty } });
+        await quiet.priming.primeAll();
+        assert.ok(!quiet.logs.some((m) => /merged withdrawals/.test(m)), quiet.logs.join('\n'));
+    });
+
     test('the priming kb_import on the maintainer carries the grant and reads the base branch ref; kb_session_prime does not', async () => {
         const { priming, calls } = primingHarness({ baseBranch: 'main' });
         await priming.primeAll();
