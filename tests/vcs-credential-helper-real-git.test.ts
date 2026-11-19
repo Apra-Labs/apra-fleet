@@ -31,7 +31,7 @@ import { provisionVcsAuth } from '../src/tools/provision-vcs-auth.js';
 import { vcsGitEnvPrefix } from '../src/services/vcs-git-env.js';
 import { getOsCommands } from '../src/os/index.js';
 import { getVcsCredentials } from '../src/services/vcs-credential-record.js';
-import { _getCleanupTimers, cleanupTimerKey } from '../src/services/credential-cleanup.js';
+import { _getCleanupTimers, cleanupTimerKey, scheduleCredentialCleanup } from '../src/services/credential-cleanup.js';
 import { mintGitToken } from '../src/services/github-app.js';
 import type { Agent, SSHExecResult } from '../src/types.js';
 
@@ -60,6 +60,8 @@ function runBash(cmd: string, cwd: string): SSHExecResult {
 
 /** Commands generated for Windows members: recorded, never executed. */
 const windowsCommands: Array<{ memberId: string; cmd: string }> = [];
+/** gh auth login commands a provision issued: recorded, never executed. */
+const ghLoginCommands: Array<{ memberId: string; cmd: string }> = [];
 
 vi.mock('../src/services/strategy.js', () => ({
   getStrategy: (agent: Agent) => ({
@@ -70,7 +72,11 @@ vi.mock('../src/services/strategy.js', () => ({
         return { stdout: '', stderr: '', code: 0 };
       }
       // Network commands of a GitHub provision: answered, never run.
-      if (/gh auth login|git ls-remote/.test(cmd)) return { stdout: '', stderr: '', code: 0 };
+      if (/gh auth login/.test(cmd)) {
+        ghLoginCommands.push({ memberId: agent.id, cmd });
+        return { stdout: '', stderr: '', code: 0 };
+      }
+      if (/git ls-remote/.test(cmd)) return { stdout: '', stderr: '', code: 0 };
       return runBash(cmd, agent.workFolder);
     },
     transferFiles: vi.fn(),
@@ -118,13 +124,17 @@ function makeMember(name: string): Agent {
 }
 
 /** Provision a GitHub App credential; the (mocked) mint returns `token`. */
-async function provisionGithub(agent: Agent, token: string, repos: string[], label?: string) {
-  mockMint.mockResolvedValueOnce({ token, expiresAt: new Date(Date.now() + 3600_000).toISOString() });
+async function provisionGithub(
+  agent: Agent, token: string, repos: string[], label?: string,
+  access: 'push' | 'push+pr' | 'issues' = 'push', expiresInMs = 3600_000,
+) {
+  mockMint.mockResolvedValueOnce({ token, expiresAt: new Date(Date.now() + expiresInMs).toISOString() });
   const res = await provisionVcsAuth({
-    member_id: agent.id, provider: 'github', github_mode: 'github-app', git_access: 'push', repos,
+    member_id: agent.id, provider: 'github', github_mode: 'github-app', git_access: access, repos,
     ...(label ? { label } : {}),
   });
   expect(res.text).toContain('[OK]');
+  return res;
 }
 
 function makeWindowsMember(name: string, shell: 'powershell5' | 'gitbash'): Agent {
@@ -169,6 +179,7 @@ describe.skipIf(!BASH)('per-member git credential helpers (real git, sandboxed H
   beforeEach(() => {
     backupAndResetRegistry();
     windowsCommands.length = 0;
+    ghLoginCommands.length = 0;
     mockMint.mockReset();
     gitAppConfigBackup = fs.existsSync(GIT_APP_CONFIG_PATH) ? fs.readFileSync(GIT_APP_CONFIG_PATH, 'utf-8') : null;
     fs.writeFileSync(GIT_APP_CONFIG_PATH, JSON.stringify({
@@ -340,4 +351,77 @@ describe.skipIf(!BASH)('per-member git credential helpers (real git, sandboxed H
       expect(prefixB).not.toContain(a.id);
     },
   );
+
+  // Re-mint of the same label/access, with the cleanup timer of the FIRST
+  // provisioning still pending in another fleet server process on the host
+  // (each agent session can run its own; the registry on disk is shared).
+  // That stale timer fires at the first token's expiry and must leave the
+  // re-minted credential every reader uses in place.
+  it('re-minting the same label/access keeps the credential readers use when the first provision timer fires', async () => {
+    const m = makeMember('member-remint');
+    addAgent(m);
+    await provisionGithub(m, 'ghs_first', ['acme/widgets'], 'github', 'push+pr', 3600_000);
+    const firstExpiry = getVcsCredentials(getAgent(m.id)!).github.expiresAt!;
+    expect(gitFill(m, 'github.com')).toBe('ghs_first');
+
+    await provisionGithub(m, 'ghs_second', ['acme/widgets'], 'github', 'push+pr', 2 * 3600_000);
+    expect(gitFill(m, 'github.com')).toBe('ghs_second');
+
+    // The other process's timer, scheduled for the first token.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      scheduleCredentialCleanup(m.id, 'github', firstExpiry);
+      await vi.advanceTimersByTimeAsync(3600_000 + 1000);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(gitFill(m, 'github.com')).toBe('ghs_second');
+    expect(readLabel(m, 'github')).toBe('ghs_second');
+    expect(Object.keys(getVcsCredentials(getAgent(m.id)!))).toEqual(['github']);
+  });
+
+  it('a different access level or repo set changes neither the host gh login nor the global git config', async () => {
+    const m = makeMember('member-gh-identity');
+    const other = makeMember('member-gh-identity-other');
+    addAgent(m);
+    addAgent(other);
+    const ghDir = sandboxEnv.GH_CONFIG_DIR!;
+    fs.mkdirSync(ghDir, { recursive: true });
+    const hostsYml = path.join(ghDir, 'hosts.yml');
+    const hostsBefore = 'github.com:\n    oauth_token: ghs_identity_other_processes_use\n';
+    fs.writeFileSync(hostsYml, hostsBefore);
+    const globalBefore = fs.readFileSync(sandboxEnv.GIT_CONFIG_GLOBAL!, 'utf-8');
+
+    const issues = await provisionGithub(m, 'ghs_issues_level', ['acme/widgets'], 'github-issues', 'issues');
+    const otherRepos = await provisionGithub(m, 'ghs_other_repos', ['acme/gadgets'], 'github', 'push');
+
+    expect(ghLoginCommands).toEqual([]);
+    expect(issues.text).toMatch(/ghCliAuth: skipped/);
+    expect(otherRepos.text).toMatch(/ghCliAuth: skipped/);
+    expect(fs.readFileSync(hostsYml, 'utf-8')).toBe(hostsBefore);
+    expect(fs.readFileSync(sandboxEnv.GIT_CONFIG_GLOBAL!, 'utf-8')).toBe(globalBefore);
+    // Each token stays readable on its own label.
+    expect(readLabel(m, 'github-issues')).toBe('ghs_issues_level');
+    expect(readLabel(m, 'github')).toBe('ghs_other_repos');
+  });
+
+  // The 2026-10-23 scenario: a NEW member on the same host user, scoped to
+  // repo X, must not narrow what an existing member uses for repo Y.
+  it('provisioning a new same-user member scoped to repo X does not narrow the credential another member uses for repo Y', async () => {
+    const existing = makeMember('member-repo-y');
+    addAgent(existing);
+    await provisionGithub(existing, 'ghs_repo_y', ['acme/repo-y'], 'github', 'push+pr');
+    ghLoginCommands.length = 0;
+
+    const newcomer = makeMember('member-repo-x');
+    addAgent(newcomer);
+    await provisionGithub(newcomer, 'ghs_repo_x', ['acme/repo-x'], 'github', 'push+pr');
+
+    expect(mockMint.mock.calls.at(-1)?.[3]).toEqual(['acme/repo-x']);
+    expect(ghLoginCommands).toEqual([]);
+    expect(gitFill(existing, 'github.com')).toBe('ghs_repo_y');
+    expect(readLabel(existing, 'github')).toBe('ghs_repo_y');
+    expect(gitFill(newcomer, 'github.com')).toBe('ghs_repo_x');
+  });
 });
