@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "5a171212f2e1eee116e7f58e2ea29648ffb8ff1f",
     "branch": "main",
-    "entry_count": 169
+    "entry_count": 171
   },
   "entries": [
     {
@@ -434,6 +434,28 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:28.024Z"
+    },
+    {
+      "id": "22cad4f1-29e2-4152-9d70-984238357238",
+      "type": "learning",
+      "title": "provision_vcs_auth legacy migration must call revokeVcsCredential with legacyOnly",
+      "summary": "A full revokeVcsCredential of a legacy (non-memberScoped) entry runs service.revoke, which removes the member's per-member helper file of that label. During provision's migration that file was just written, so the migration must pass { legacyOnly: true } to remove only the legacy shared file and global key.",
+      "symbols": [
+        "revokeVcsCredential",
+        "provisionVcsAuth"
+      ],
+      "source_files": [
+        "src/services/vcs-credential-revoke.ts",
+        "src/tools/provision-vcs-auth.ts",
+        "tests/vcs-credential-per-label.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-19T03:11:29.054Z",
+      "source_file_hashes": {
+        "src/services/vcs-credential-revoke.ts": "a4ac581d3ad93b556aa6e12bc340dafc7dae57b4",
+        "src/tools/provision-vcs-auth.ts": "6b466063851d581dc63c59cf72dfb4b2bc967a0e",
+        "tests/vcs-credential-per-label.test.ts": "fc4c324a0530727f85ebda3a9b6937c4ea8030b9"
+      }
     },
     {
       "id": "22dd4e68-3702-4ecd-a500-df6e9b27f4b3",
@@ -3429,6 +3451,39 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-06T09:23:05.562Z"
+    },
+    {
+      "id": "f6e00e91-3055-4436-bfdd-c664ebe67cf2",
+      "type": "knowledge",
+      "title": "Git credential helpers are registered per dispatch via GIT_CONFIG_PARAMETERS, not git config",
+      "summary": "provision_vcs_auth writes only the per-member+label helper file; vcsGitEnvPrefix(agent) prepends GIT_CONFIG_PARAMETERS (empty-value reset then helper paths per scope) to execute_command, execute_prompt, vcs_credential_exec and provision's connectivity check. git run on the member outside a fleet dispatch does not see the fleet helper.",
+      "symbols": [
+        "vcsGitEnvPrefix",
+        "vcsGitHelperRegistrations",
+        "gitCredentialEnvPrefix",
+        "gitCredentialHelperStem",
+        "isSafeGitCredentialScope"
+      ],
+      "source_files": [
+        "src/services/vcs-git-env.ts",
+        "src/os/os-commands.ts",
+        "src/os/linux.ts",
+        "src/os/windows.ts",
+        "src/os/windows-gitbash.ts",
+        "src/tools/execute-command.ts",
+        "src/tools/execute-prompt.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-19T03:11:29.161Z",
+      "source_file_hashes": {
+        "src/os/linux.ts": "8aa7da54946e298aa61c73652ee508ba31c8fc12",
+        "src/os/os-commands.ts": "680aa7fd77d7391da3cd2777bc7c67b32a966dd4",
+        "src/os/windows-gitbash.ts": "9238f9dc8880f0dc41a3358224d91c9ca3556442",
+        "src/os/windows.ts": "e362b142cc098d7aa808ea52f7a55c1bb0d0b00a",
+        "src/services/vcs-git-env.ts": "8444ab7909641c6bdcb8478e5302001c39f71ca5",
+        "src/tools/execute-command.ts": "5fbf2539671b95801981182d4730236866e93b16",
+        "src/tools/execute-prompt.ts": "2286e0a381cb1358b13bdddef5c6529992eb07e4"
+      }
     },
     {
       "id": "f76a103e-797e-4606-b224-bc130e8243e0",
