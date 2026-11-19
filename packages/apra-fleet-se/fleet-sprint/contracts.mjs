@@ -567,6 +567,28 @@ const FALLBACK_doerReport = {
     allOf: [needsDecisionRequires('status')],
 };
 
+// Fallback for role "planner". Canonical source:
+// packages/apra-fleet-se/apra-pm/agents/schemas/planner-output.json. The
+// optional `decision` is the same NEEDS-DECISION request a doer or reviewer
+// returns (FALLBACK_decisionRequest): a planner finding only an operator can
+// settle. The planner dispatch itself carries no schema (its primary output
+// is the beads DAG), so phases/plan.mjs validates a returned report against
+// this contract before routing its decision (decisions.mjs
+// applyPlannerDecision). kb_captures is accepted and ignored, as before.
+const FALLBACK_plannerReport = {
+    $id: 'plannerReport',
+    type: 'object',
+    properties: {
+        status: { type: 'string', enum: ['OK', 'BLOCKED'] },
+        notes: { type: 'string' },
+        featureIds: { type: 'array', items: { type: 'string' } },
+        taskIds: { type: 'array', items: { type: 'string' } },
+        decision: FALLBACK_decisionRequest,
+        kb_captures: { type: 'array' },
+    },
+    required: ['status', 'notes'],
+};
+
 // NEW (apra-fleet-unw.16): no corresponding vendored agents/*.md file --
 // this is the orchestrator's own schema for the Develop-phase "group ready
 // beads into streaks" call in runner.js. Before this issue, that call's
@@ -914,6 +936,7 @@ export const finalVerdict = {
 
 const OUTPUT_SCHEMA_MAJOR_VERSION = 1;
 
+export const plannerReport = resolveOutputSchema('planner', OUTPUT_SCHEMA_MAJOR_VERSION, FALLBACK_plannerReport);
 export const planReviewerVerdict = resolveOutputSchema('plan-reviewer', OUTPUT_SCHEMA_MAJOR_VERSION, FALLBACK_planReviewerVerdict);
 export const reviewerVerdict = resolveOutputSchema('reviewer', OUTPUT_SCHEMA_MAJOR_VERSION, FALLBACK_reviewerVerdict);
 export const doerReport = resolveOutputSchema('doer', OUTPUT_SCHEMA_MAJOR_VERSION, FALLBACK_doerReport);
@@ -929,6 +952,7 @@ export const harvesterReport = resolveOutputSchema('harvester', OUTPUT_SCHEMA_MA
 // consistency test) -- production code never consults this directly, it
 // always goes through resolveOutputSchema()'s vendored-first resolution.
 export const FALLBACK_SCHEMAS = Object.freeze({
+    plannerReport: FALLBACK_plannerReport,
     planReviewerVerdict: FALLBACK_planReviewerVerdict,
     reviewerVerdict: FALLBACK_reviewerVerdict,
     doerReport: FALLBACK_doerReport,
@@ -943,6 +967,7 @@ export const FALLBACK_SCHEMAS = Object.freeze({
 // packages/apra-fleet-se/apra-pm/agents/schemas/<role>-output.json it resolves from.
 // Exported for the same test-only reason as FALLBACK_SCHEMAS above.
 export const ROLE_FOR_SCHEMA_NAME = Object.freeze({
+    plannerReport: 'planner',
     planReviewerVerdict: 'plan-reviewer',
     reviewerVerdict: 'reviewer',
     doerReport: 'doer',
@@ -957,6 +982,7 @@ export const ROLE_FOR_SCHEMA_NAME = Object.freeze({
 // schema object (e.g. to embed in a prompt) rather than a compiled
 // validator.
 export const SCHEMAS = Object.freeze({
+    plannerReport,
     planReviewerVerdict,
     reviewerVerdict,
     doerReport,

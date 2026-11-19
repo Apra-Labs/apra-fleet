@@ -1,9 +1,11 @@
 // =============================================================================
-// NEEDS-DECISION: a doer or reviewer asks a human operator to choose.
+// NEEDS-DECISION: a doer, reviewer or planner asks a human operator to choose.
 //
 // A doer (status) or reviewer (verdict) may return NEEDS-DECISION with a
 // `decision` object -- { beadId, question, options: [{ id, text }, ...],
-// recommendation } (doer-output.json / reviewer-output.json). The bead cannot
+// recommendation } (doer-output.json / reviewer-output.json). A planner
+// returns the same object as an optional `decision` alongside its plan
+// (planner-output.json; applyPlannerDecision below). The bead cannot
 // go on until an operator chooses, so re-dispatching it only burns dispatches.
 // recordPendingDecision() below:
 //
@@ -40,6 +42,7 @@
 import { stageCommandBodyMemberSide } from './member-provisioning.mjs';
 import { openBlocksDependents } from './beads-scope.mjs';
 import { createDecisionBead } from './beads-children.mjs';
+import { validateVerdict } from './contracts.mjs';
 
 /** The doer status / reviewer verdict asking for an operator decision. */
 export const NEEDS_DECISION = 'NEEDS-DECISION';
@@ -367,6 +370,143 @@ export async function applyReviewerDecision({ verdict, scopeIds, reopenedIds = n
     return recordPendingDecision({
         sprintState, decision,
         raisedBy: `reviewer (${site})`,
+        cycle, round, command, member, scopeBeads, log,
+    });
+}
+
+/**
+ * The ids this run holds aside for a pending operator decision: the work bead
+ * of every decision (kind 'needs-decision') and its open blocks-edge
+ * dependents (recorded with the same decisionId). The Plan phase tells the
+ * plan-reviewer these are non-blocking and does not let a finding on them
+ * hold the plan back (phases/plan.mjs).
+ *
+ * @param {{ doctorBlockedIds?: Map<string, object> }|null|undefined} sprintState
+ * @returns {Map<string, object>} id -> its set-aside entry
+ */
+export function decisionSetAsideEntries(sprintState) {
+    const blocked = sprintState && sprintState.doctorBlockedIds instanceof Map ? sprintState.doctorBlockedIds : new Map();
+    const out = new Map();
+    for (const [id, entry] of blocked) {
+        if (entry && (entry.kind === NEEDS_DECISION_KIND || entry.decisionId)) out.set(id, entry);
+    }
+    return out;
+}
+
+// Every top-level JSON object in `text`, in order of appearance: a scan that
+// is string-aware (braces inside JSON strings do not count), so prose or a
+// fenced block around the planner's JSON result does not hide it.
+function jsonObjectsIn(text) {
+    const found = [];
+    const s = String(text ?? '');
+    let i = 0;
+    while (i < s.length) {
+        const start = s.indexOf('{', i);
+        if (start < 0) break;
+        let depth = 0;
+        let inString = false;
+        let escaped = false;
+        let end = -1;
+        for (let j = start; j < s.length; j++) {
+            const c = s[j];
+            if (inString) {
+                if (escaped) escaped = false;
+                else if (c === '\\') escaped = true;
+                else if (c === '"') inString = false;
+                continue;
+            }
+            if (c === '"') inString = true;
+            else if (c === '{') depth++;
+            else if (c === '}') {
+                depth--;
+                if (depth === 0) { end = j; break; }
+            }
+        }
+        if (end < 0) break;
+        try {
+            const parsed = JSON.parse(s.slice(start, end + 1));
+            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                found.push(parsed);
+                i = end + 1;
+                continue;
+            }
+        } catch { /* not JSON from this brace: try the next one */ }
+        i = start + 1;
+    }
+    return found;
+}
+
+/**
+ * Reads the planner's structured result (planner-output.json) out of its
+ * dispatch value. The planner dispatch has no schema (its primary output is
+ * the beads DAG), so the value is usually the reply text with the JSON result
+ * object somewhere in it; an already-parsed object is taken as is. Returns
+ * the LAST object that carries a `decision` key, else the last object that
+ * carries a `status`, else null. Never throws.
+ *
+ * @param {unknown} value
+ * @returns {object|null}
+ */
+export function parsePlannerReport(value) {
+    if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+    if (typeof value !== 'string') return null;
+    const objects = jsonObjectsIn(value);
+    for (let k = objects.length - 1; k >= 0; k--) if ('decision' in objects[k]) return objects[k];
+    for (let k = objects.length - 1; k >= 0; k--) if ('status' in objects[k]) return objects[k];
+    return null;
+}
+
+/**
+ * Applies a planner decision (planner-output.json `decision`): when the
+ * planner's result carries one, it must validate against the planner output
+ * contract (contracts.mjs plannerReport -- the same decision shape as the
+ * doer's) and validateDecisionRequest(), and name a bead that is in the
+ * sprint scope and not closed. The decision is then recorded exactly as for a
+ * doer or reviewer (recordPendingDecision): a separate decision bead, the
+ * request appended to the work bead's notes, the work bead (never labelled
+ * human) and its open blocks dependents set aside, and the run pauses for an
+ * answer once only set-aside work remains. A result without a decision is a
+ * no-op, so a planner that returns none behaves exactly as before.
+ *
+ * @param {object} opts
+ * @param {unknown} opts.value the planner dispatch value (reply text or object)
+ * @param {object} opts.sprintState
+ * @param {Function} opts.command
+ * @param {string} opts.member the member whose beads clone the engine writes through
+ * @param {Function} opts.bdListScoped
+ * @param {number} opts.cycle
+ * @param {number|null} [opts.round]
+ * @param {string} opts.site e.g. 'Plan C1 R1'
+ * @param {Function} [opts.log]
+ * @returns {Promise<object|null>} the pending-decision record, or null
+ */
+export async function applyPlannerDecision({ value, sprintState, command, member, bdListScoped, cycle, round = null, site, log = () => {} }) {
+    const report = parsePlannerReport(value);
+    if (!report || report.decision === undefined || report.decision === null) return null;
+    const contract = validateVerdict('plannerReport', report);
+    if (!contract.valid) {
+        log(`${site}: planner returned a decision that does not match its output contract (${JSON.stringify(contract.errors)}) -- nothing is set aside.`);
+        return null;
+    }
+    const checked = validateDecisionRequest(report.decision);
+    if (!checked.ok) {
+        log(`${site}: planner returned an unusable decision (${checked.reason}) -- nothing is set aside.`);
+        return null;
+    }
+    const decision = checked.decision;
+    const scopeBeads = typeof bdListScoped === 'function' ? await bdListScoped('') : [];
+    const bead = (scopeBeads || []).find((b) => b && String(b.id) === decision.beadId);
+    if (!bead) {
+        log(`${site}: planner returned a decision on '${decision.beadId}', which is not in the sprint scope -- nothing is set aside.`);
+        return null;
+    }
+    if (bead.status === 'closed') {
+        log(`${site}: planner returned a decision on closed bead '${decision.beadId}' -- nothing is set aside.`);
+        return null;
+    }
+    return recordPendingDecision({
+        sprintState, decision,
+        raisedBy: `planner (${site})`,
         cycle, round, command, member, scopeBeads, log,
     });
 }

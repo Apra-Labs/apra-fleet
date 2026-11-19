@@ -170,6 +170,10 @@ const FIXTURES = {
         valid: { status: 'OK', notes: 'docs updated' },
         invalid: { status: 'ok', notes: 'lowercase not allowed' },
     },
+    plannerReport: {
+        valid: { status: 'OK', notes: 'planned', taskIds: ['t-1'] },
+        invalid: { status: 'NEEDS-DECISION', notes: 'status is OK or BLOCKED; a decision rides alongside' },
+    },
     finalVerdict: {
         valid: { verdict: 'PASS', notes: 'sprint goal met' },
         invalid: { verdict: 'PASSED', notes: 'wrong enum value' },
@@ -177,8 +181,9 @@ const FIXTURES = {
 };
 
 describe('verdict schemas', () => {
-    test('SCHEMAS and VALIDATORS export exactly the ten documented verdict names', () => {
+    test('SCHEMAS and VALIDATORS export exactly the eleven documented verdict names', () => {
         const expected = [
+            'plannerReport',
             'planReviewerVerdict',
             'reviewerVerdict',
             'doerReport',

@@ -3737,6 +3737,7 @@ async function runSprintCycle(context) {
                 reconcilePendingRejectedNewTasks,
                 stageCommandBodyMemberSide,
                 updateDashboard,
+                bdListScoped,
             });
         } catch (err) {
             if (!(err instanceof SprintPlanRejectedError)) throw err;
