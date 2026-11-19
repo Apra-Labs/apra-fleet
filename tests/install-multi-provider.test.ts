@@ -18,7 +18,7 @@ vi.mock('node:child_process');
 
 /** The apra-fleet entry written to ~/.claude.json by the last install (atomically, via an owner-only temp file), with the file mode it was written with. */
 function claudeHttpRegistration(): { entry: any; mode: unknown } {
-  const writes = vi.mocked(fs.writeFileSync).mock.calls.filter(c => /[\\/]mock[\\/]home[\\/]\.\.claude\.json\.\d+\.\d+\.tmp$|[\\/]mock[\\/]home[\\/]\.claude\.json$/.test(c[0].toString()));
+  const writes = vi.mocked(fs.writeFileSync).mock.calls.filter(c => /[\\/]mock[\\/]home[\\/]\.\.claude\.json\.\d+\.[0-9a-f]+\.tmp$|[\\/]mock[\\/]home[\\/]\.claude\.json$/.test(c[0].toString()));
   expect(writes.length).toBeGreaterThan(0);
   const last = writes[writes.length - 1];
   return { entry: JSON.parse(String(last[1])).mcpServers['apra-fleet'], mode: (last[2] as any)?.mode };
