@@ -1775,9 +1775,9 @@ async function runSprintCycle(context) {
         maintainers: () => context.kbMaintainers,
         gPull: (maintainerName, options) => gitSync.pullGitBefore(maintainerName, options),
         sprintChangedFiles,
-        // Feature detection for the withdrawal route on a remote maintainer
-        // (kb_bible_commit's input schema), as the bible import does for
-        // kb_import's `ref`.
+        // Feature detection for merge-carried withdrawals on the maintainer,
+        // local or remote: its session must list kb_capabilities (whose
+        // routes must then include `withdraw`).
         listTools: kbListTools,
         branchWithdrawals,
         // D6 in-sprint ping-pong guard (promotionCandidates): re-hash a

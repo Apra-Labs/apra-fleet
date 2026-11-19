@@ -226,11 +226,11 @@ describe('Final Review: the verdict decides what the bible commit carries', () =
     const REASON = 'the handler at server/transit.js:40 now keys by tenant too';
     async function runWithRealClient(verdict) {
         const { createKbWorkClient } = await import('../fleet-sprint/kb.mjs');
-        const { selfMaintainer, currentServerListTools } = await import('./helpers/kb-maintainer-fakes.mjs');
+        const { selfMaintainer, currentServerKbWork } = await import('./helpers/kb-maintainer-fakes.mjs');
         const MAINT = { id: 'id-maint', name: 'maint', type: 'local' };
         const bibleCalls = [];
         let promotionRows = [];
-        const kbWork = createKbWorkClient({ listTools: currentServerListTools,
+        const kbWork = currentServerKbWork(createKbWorkClient, {
             memberCall: async (member, tool, args) => {
                 if (tool === 'kb_query') {
                     if (Array.isArray(args.files)) return { l1_results: DEMOTE_CANDIDATES };

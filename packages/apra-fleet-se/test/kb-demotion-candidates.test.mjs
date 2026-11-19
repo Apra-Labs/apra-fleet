@@ -1,12 +1,11 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-    createKbWorkClient, vetKbWork, kbDemotionBlock, KB_MAX_DEMOTION_CANDIDATES, KB_MIN_PROMOTE_REASON,
+    createKbWorkClient as createKbWorkClientRaw, vetKbWork, kbDemotionBlock, KB_MAX_DEMOTION_CANDIDATES, KB_MIN_PROMOTE_REASON,
     KB_DEMOTION_READ_LIMIT, buildDemotionCandidateQuery, buildBibleDemotionCandidateQuery, isDemotableCandidate,
-    KB_WITHDRAWAL_SCHEMA_PROPERTIES,
 } from '../fleet-sprint/kb.mjs';
 import { createSprintChangedFiles, createBranchWithdrawnEntries, buildReviewerPrompt, buildFinalVerdictPrompt } from '../fleet-sprint/runner.js';
-import { fakeMaintainerSelector } from './helpers/kb-maintainer-fakes.mjs';
+import { fakeMaintainerSelector, withKbCapabilities, ALL_KB_ROUTES } from './helpers/kb-maintainer-fakes.mjs';
 
 // Covers kbWork.demotionCandidates() -- the CONFIRMED entries the FINAL
 // reviewer may demote (a round review is offered none), scoped to the
@@ -19,15 +18,34 @@ const REVIEWER = Object.freeze({ id: 'id-warehouse-reviewer', name: 'warehouse-r
 // Every KB write is routed to the repository's kb_maintainer, so the
 // CONFIRMED candidates live in -- and are read from -- the maintainer's KB.
 const MAINTAINER = Object.freeze({ id: 'id-warehouse-maint', name: 'warehouse-maint', type: 'remote' });
-// MAINTAINER is remote, so every client below must be able to read its
-// tools/list: the candidate read is feature-detected on kb_bible_commit's
-// withdrawal properties (a local member always has them).
+// The candidate read is feature-detected on the maintainer's own session,
+// local or remote: its tools/list must name kb_capabilities and that tool's
+// routes must include `withdraw`. A current server lists kb_capabilities;
+// its kb_bible_commit schema is deliberately left WITHOUT withdrawals /
+// restore_ids, so a detection still sniffing that schema offers nothing.
 const newSchemaListTools = async () => ({
+    tools: [
+        { name: 'kb_capabilities', inputSchema: { properties: {} } },
+        { name: 'kb_bible_commit', inputSchema: { properties: { ids: {} } } },
+    ],
+});
+// An older server: no kb_capabilities -- even though its kb_bible_commit
+// schema advertises withdrawals and restore_ids, it is offered nothing.
+const oldSchemaListTools = async () => ({
     tools: [{ name: 'kb_bible_commit', inputSchema: { properties: { ids: {}, withdrawals: {}, restore_ids: {} } } }],
 });
-const oldSchemaListTools = async () => ({
-    tools: [{ name: 'kb_bible_commit', inputSchema: { properties: { ids: {}, demoted_ids: {} } } }],
-});
+// Every client below answers kb_capabilities on its memberCall with every
+// route (a SQLite KB) unless the test passes `capabilityRoutes` (an http KB
+// server's list) or `capabilities` (a raw kb_capabilities answer).
+function createKbWorkClient(opts = {}) {
+    const { capabilityRoutes, capabilities, ...rest } = opts;
+    if (typeof rest.memberCall !== 'function') return createKbWorkClientRaw(rest);
+    const inner = rest.memberCall;
+    const memberCall = capabilities !== undefined
+        ? async (member, name, ...a) => (name === 'kb_capabilities' ? capabilities(member) : inner(member, name, ...a))
+        : withKbCapabilities(inner, capabilityRoutes || ALL_KB_ROUTES);
+    return createKbWorkClientRaw({ ...rest, memberCall });
+}
 const withMaintainer = () => fakeMaintainerSelector({
     repoOf: { [REVIEWER.name]: 'example.com/warehouse', [MAINTAINER.name]: 'example.com/warehouse' },
     maintainerOf: { 'example.com/warehouse': MAINTAINER },
@@ -468,12 +486,21 @@ describe('createKbWorkClient.demotionCandidates: final review only, widened, fea
         assert.ok(logs.some((l) => /own demotion candidates rejected/.test(l)), logs.join('\n'));
     });
 
-    test('a maintainer on an OLD kb_bible_commit schema (no withdrawals/restore_ids) is offered nothing, with a WARN naming it and the upgrade', async () => {
+    // Withdrawal feature detection: kb_capabilities on the maintainer's own
+    // session. The old detection (sniffing kb_bible_commit's schema for
+    // withdrawals / restore_ids) is gone: oldSchemaListTools advertises both
+    // and is still refused, newSchemaListTools advertises neither and is
+    // still accepted.
+    const warnFor = (logs) => logs.find((l) => l.includes('WARN') && l.includes(`'${MAINTAINER.name}'`));
+
+    test('a maintainer whose server does not offer kb_capabilities (older fleet server) is offered nothing, with a WARN naming it and what is missing', async () => {
         const { calls, memberCall } = splitReads(OTHERS, OWN);
         const logs = [];
         let diffs = 0;
+        let capabilityCalls = 0;
         const client = createKbWorkClient({
             memberCall, maintainers: withMaintainer(), listTools: oldSchemaListTools,
+            capabilities: async () => { capabilityCalls += 1; return { content: [{ type: 'text', text: JSON.stringify({ routes: ['withdraw'] }) }] }; },
             sprintChangedFiles: async () => { diffs += 1; return ['server/transit.js']; },
             log: (l) => logs.push(l),
         });
@@ -481,37 +508,103 @@ describe('createKbWorkClient.demotionCandidates: final review only, widened, fea
         assert.deepEqual(await client.demotionCandidates(REVIEWER), []);
         assert.equal(calls.filter((c) => c.name === 'kb_query').length, 0, 'no KB read for a maintainer that cannot record a withdrawal');
         assert.equal(diffs, 0, 'no git traffic either');
-        const warn = logs.find((l) => l.includes('WARN') && l.includes(`'${MAINTAINER.name}'`));
+        assert.equal(capabilityCalls, 0, 'a tool the session does not list is never called');
+        assert.ok(!calls.some((c) => c.name === 'kb_demote'), 'never a fallback to kb_demote');
+        const warn = warnFor(logs);
         assert.ok(warn, logs.join('\n'));
+        assert.match(warn, /kb_capabilities/);
         assert.match(warn, /upgrade/);
-        for (const p of KB_WITHDRAWAL_SCHEMA_PROPERTIES) assert.ok(warn.includes(p), `the WARN must name '${p}': ${warn}`);
+        assert.match(warn, /no demotion candidates/);
     });
 
-    test('only one of the two properties is not enough: a schema with withdrawals but no restore_ids is treated as old', async () => {
-        const { memberCall } = splitReads(OTHERS, OWN);
+    test('an http KB server whose kb_capabilities routes lack withdraw is offered nothing, with a WARN naming the maintainer and the route', async () => {
+        const { calls, memberCall } = splitReads(OTHERS, OWN);
+        const logs = [];
         const client = createKbWorkClient({
+            // A current fleet server (kb_capabilities, and a kb_bible_commit
+            // that takes withdrawals) in front of an http KB server that
+            // serves demote but not the optional withdraw route.
+            listTools: async () => ({ tools: [{ name: 'kb_capabilities', inputSchema: { properties: {} } }, ...(await oldSchemaListTools()).tools] }),
             memberCall, maintainers: withMaintainer(),
-            listTools: async () => ({ tools: [{ name: 'kb_bible_commit', inputSchema: { properties: { ids: {}, withdrawals: {} } } }] }),
+            capabilityRoutes: ['capture', 'query', 'promote', 'list', 'demote'],
+            sprintChangedFiles: async () => ['server/transit.js'], log: (l) => logs.push(l),
+        });
+
+        assert.deepEqual(await client.demotionCandidates(REVIEWER), []);
+        assert.equal(calls.filter((c) => c.name === 'kb_query').length, 0);
+        assert.ok(!calls.some((c) => c.name === 'kb_demote'), 'never a fallback to kb_demote');
+        const warn = warnFor(logs);
+        assert.ok(warn, logs.join('\n'));
+        assert.match(warn, /'withdraw'/);
+        assert.match(warn, /demote/, 'the WARN lists the routes the server does serve');
+    });
+
+    test('an http KB server whose routes include withdraw is offered candidates', async () => {
+        const { memberCall } = splitReads(OTHERS, []);
+        const logs = [];
+        const client = createKbWorkClient({
+            memberCall, maintainers: withMaintainer(), listTools: newSchemaListTools,
+            capabilityRoutes: ['capture', 'query', 'promote', 'withdraw'],
+            sprintChangedFiles: async () => ['server/transit.js'], log: (l) => logs.push(l),
+        });
+        assert.deepEqual((await client.demotionCandidates(REVIEWER)).map((e) => e.id), ['kb-other']);
+        assert.equal(warnFor(logs), undefined, logs.join('\n'));
+    });
+
+    test('a SQLite KB (kb_capabilities reports every route) is offered candidates, and kb_capabilities is called on the maintainer', async () => {
+        const { memberCall } = splitReads(OTHERS, []);
+        const capCalls = [];
+        const client = createKbWorkClient({
+            memberCall, maintainers: withMaintainer(), listTools: newSchemaListTools,
+            capabilities: async (member) => { capCalls.push(member); return { content: [{ type: 'text', text: JSON.stringify({ contract: 'v1', routes: [...ALL_KB_ROUTES], branch_aware: false, query_filters: ['files', 'symbols'] }) }] }; },
             sprintChangedFiles: async () => ['server/transit.js'], log: () => {},
         });
-        assert.deepEqual(await client.demotionCandidates(REVIEWER), []);
+        assert.deepEqual((await client.demotionCandidates(REVIEWER)).map((e) => e.id), ['kb-other']);
+        assert.deepEqual(capCalls.map((m) => m.name), [MAINTAINER.name], 'kb_capabilities is read on the maintainer, never the reviewer');
     });
 
-    test('a remote maintainer with no listTools wired, or a failing one, is treated as old (fail closed)', async () => {
-        for (const listTools of [undefined, async () => { throw new Error('unreachable'); }, async () => 'not json']) {
-            const { memberCall } = splitReads(OTHERS, OWN);
+    test('a failing, rejected or unreadable kb_capabilities answer fails closed with a WARN and is retried at the next offering', async () => {
+        const answers = [
+            async () => { throw new Error('unreachable'); },
+            async () => ({ isError: true, content: [{ type: 'text', text: 'E-KB-HTTP-UNREACHABLE: 503' }] }),
+            async () => ({ content: [{ type: 'text', text: 'not json' }] }),
+            async () => ({ content: [{ type: 'text', text: JSON.stringify({ contract: 'v1' }) }] }),
+        ];
+        for (const answer of answers) {
+            const { memberCall } = splitReads(OTHERS, []);
+            const logs = [];
+            let calls = 0;
+            let ok = false;
             const client = createKbWorkClient({
-                memberCall, maintainers: withMaintainer(), listTools,
-                sprintChangedFiles: async () => ['server/transit.js'], log: () => {},
+                memberCall, maintainers: withMaintainer(), listTools: newSchemaListTools,
+                capabilities: async (m) => { calls += 1; return ok ? { content: [{ type: 'text', text: JSON.stringify({ routes: ['withdraw'] }) }] } : answer(m); },
+                sprintChangedFiles: async () => ['server/transit.js'], log: (l) => logs.push(l),
             });
             assert.deepEqual(await client.demotionCandidates(REVIEWER), []);
+            assert.ok(warnFor(logs), logs.join('\n'));
+            ok = true;
+            assert.deepEqual((await client.demotionCandidates(REVIEWER)).map((e) => e.id), ['kb-other'], 'a failure is not cached');
+            assert.equal(calls, 2);
+        }
+    });
+
+    test('a maintainer with no listTools wired, or a failing one, is treated as old (fail closed)', async () => {
+        for (const listTools of [undefined, async () => { throw new Error('unreachable'); }, async () => 'not json']) {
+            const { memberCall } = splitReads(OTHERS, OWN);
+            const logs = [];
+            const client = createKbWorkClient({
+                memberCall, maintainers: withMaintainer(), listTools,
+                sprintChangedFiles: async () => ['server/transit.js'], log: (l) => logs.push(l),
+            });
+            assert.deepEqual(await client.demotionCandidates(REVIEWER), []);
+            assert.ok(warnFor(logs), logs.join('\n'));
         }
     });
 
     // A local member is served by the separately running local apra-fleet
     // server, which can be an older build than the engine: it is feature
-    // detected through its tools/list exactly like a remote one.
-    const localMaintainerClient = (listTools, logs = []) => {
+    // detected through its own session exactly like a remote one.
+    const localMaintainerClient = (listTools, logs = [], extra = {}) => {
         const local = { ...MAINTAINER, type: 'local' };
         const { calls, memberCall } = splitReads(OTHERS, []);
         const client = createKbWorkClient({
@@ -522,38 +615,43 @@ describe('createKbWorkClient.demotionCandidates: final review only, widened, fea
             }),
             listTools,
             sprintChangedFiles: async () => ['server/transit.js'], log: (l) => logs.push(l),
+            ...extra,
         });
         return { client, calls };
     };
 
-    test('a LOCAL maintainer whose server advertises the withdrawal route is offered candidates (read from its tools/list)', async () => {
+    test('a LOCAL maintainer whose server offers kb_capabilities with withdraw is offered candidates (read from its own session)', async () => {
         let lists = 0;
         const { client } = localMaintainerClient(async (...a) => { lists += 1; return newSchemaListTools(...a); });
         assert.deepEqual((await client.demotionCandidates(REVIEWER)).map((e) => e.id), ['kb-other']);
         assert.equal(lists, 1, 'a local member is feature-detected too');
     });
 
-    test('a LOCAL maintainer whose running server has an OLD kb_bible_commit schema is offered nothing, with a WARN naming it', async () => {
+    test('a LOCAL maintainer whose running server predates kb_capabilities is offered nothing, with a WARN naming it', async () => {
         const logs = [];
         const { client, calls } = localMaintainerClient(oldSchemaListTools, logs);
         assert.deepEqual(await client.demotionCandidates(REVIEWER), []);
         assert.equal(calls.filter((c) => c.name === 'kb_query').length, 0);
-        const warn = logs.find((l) => l.includes('WARN') && l.includes(`'${MAINTAINER.name}'`));
+        const warn = warnFor(logs);
         assert.ok(warn, logs.join('\n'));
+        assert.match(warn, /kb_capabilities/);
         assert.match(warn, /upgrade/);
     });
 
-    test('the schema answer is read once per maintainer and cached', async () => {
+    test('the capabilities answer is read once per maintainer and cached', async () => {
         let lists = 0;
+        let caps = 0;
         const { memberCall } = splitReads(OTHERS, []);
         const client = createKbWorkClient({
             memberCall, maintainers: withMaintainer(),
             listTools: async (...a) => { lists += 1; return newSchemaListTools(...a); },
+            capabilities: async () => { caps += 1; return { content: [{ type: 'text', text: JSON.stringify({ routes: ['withdraw'] }) }] }; },
             sprintChangedFiles: async () => ['server/transit.js'], log: () => {},
         });
         await client.demotionCandidates(REVIEWER);
         await client.demotionCandidates(REVIEWER);
         assert.equal(lists, 1);
+        assert.equal(caps, 1);
     });
 
     test("no sprintChangedFiles wired yields [] and never calls kb_query", async () => {

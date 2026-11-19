@@ -1,7 +1,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { createKbWorkClient, KB_BIBLE_SKIP_RETRY_ROUNDS } from '../fleet-sprint/kb.mjs';
-import { selfMaintainer, currentServerListTools } from './helpers/kb-maintainer-fakes.mjs';
+import { selfMaintainer, currentServerKbWork } from './helpers/kb-maintainer-fakes.mjs';
 import { createSyncBrackets, createGitSync } from '../fleet-sprint/git-sync.mjs';
 import { syncMemberBefore, syncMemberAfter, syncMemberAfterOrdered, isNoMutationDispatchFailure } from '../fleet-sprint/runner.js';
 
@@ -44,7 +44,7 @@ function harness({ pushFailures = 0, committed = true, unpushed = false, skipped
         if (tool === 'kb_promote') return { id: args.id, previous_confidence: 'INFERRED', new_confidence: 'CONFIRMED' };
         return {};
     };
-    const client = createKbWorkClient({ listTools: currentServerListTools,
+    const client = currentServerKbWork(createKbWorkClient, {
         memberCall,
         maintainers: selfMaintainer(MAINT, ['maint', 'reviewer-1']),
         gPull: async (m, opts = {}) => { events.push({ ev: opts.resetToRemoteTip ? 'G-pull(reset)' : 'G-pull', member: m }); },
@@ -315,7 +315,7 @@ describe('commitRound: the review-round bible commit on the kb_maintainer', () =
     test('committed:false with no publication check wired keeps the ids queued with a WARN -- never assumed published', async () => {
         const logs = [];
         const events = [];
-        const client = createKbWorkClient({ listTools: currentServerListTools,
+        const client = currentServerKbWork(createKbWorkClient, {
             memberCall: async (m, tool, args) => {
                 if (tool === 'kb_query') return { l1_results: offeredEntries.map((id) => ({ id })) };
                 events.push(tool);
@@ -353,7 +353,7 @@ describe('commitRound: the review-round bible commit on the kb_maintainer', () =
     test('an unresolvable base keeps the ids queued and makes no kb_bible_commit call', async () => {
         const logs = [];
         const events = [];
-        const client = createKbWorkClient({ listTools: currentServerListTools,
+        const client = currentServerKbWork(createKbWorkClient, {
             memberCall: async (m, tool, args) => {
                 if (tool === 'kb_query') return { l1_results: offeredEntries.map((id) => ({ id })) };
                 events.push(tool);
@@ -422,7 +422,7 @@ describe('commitRound: withdrawals and restores travel with ids in one kb_bible_
             if (tool === 'kb_promote') return { id: args.id, previous_confidence: 'INFERRED', new_confidence: 'CONFIRMED' };
             return {};
         };
-        const client = createKbWorkClient({ listTools: currentServerListTools,
+        const client = currentServerKbWork(createKbWorkClient, {
             memberCall,
             maintainers: selfMaintainer(MAINT, ['maint', 'reviewer-1']),
             gPull: async (m, opts = {}) => { events.push({ ev: opts.resetToRemoteTip ? 'G-pull(reset)' : 'G-pull', member: m }); },
@@ -630,7 +630,7 @@ function guardHarness({ branchAnswers, pushFailures = 0 }) {
         syncMemberBefore, syncMemberAfter, syncMemberAfterOrdered, isNoMutationDispatchFailure,
     });
     const toolCalls = [];
-    const client = createKbWorkClient({ listTools: currentServerListTools,
+    const client = currentServerKbWork(createKbWorkClient, {
         memberCall: async (member, tool, args) => {
             if (tool === 'kb_query') return { l1_results: offeredEntries.map((id) => ({ id })) };
             toolCalls.push(tool);
@@ -703,7 +703,7 @@ describe('commitRound: removal-only bible commits (a discard applied, nothing co
 
     test('the removal-only call carries the kb_maintainer grant', async () => {
         const grants = [];
-        const client = createKbWorkClient({ listTools: currentServerListTools,
+        const client = currentServerKbWork(createKbWorkClient, {
             memberCall: async (member, tool, args, callOpts) => {
                 if (tool === 'kb_query') return { l1_results: offeredEntries.map((id) => ({ id })) };
                 if (tool === 'kb_bible_commit') {
@@ -759,7 +759,7 @@ describe('commitRound: removal-only bible commits (a discard applied, nothing co
 
     test('a discard that the maintainer reports not found retires nothing: no bible call', async () => {
         const events = [];
-        const client = createKbWorkClient({ listTools: currentServerListTools,
+        const client = currentServerKbWork(createKbWorkClient, {
             memberCall: async (member, tool, args) => {
                 if (tool === 'kb_query') return { l1_results: offeredEntries.map((id) => ({ id })) };
                 events.push(tool);
@@ -808,7 +808,7 @@ describe('commitRound: removal-only bible commits (a discard applied, nothing co
         {
             const logs = [];
             const tools = [];
-            const client = createKbWorkClient({ listTools: currentServerListTools,
+            const client = currentServerKbWork(createKbWorkClient, {
                 memberCall: async (member, tool) => { if (tool === 'kb_query') return { l1_results: offeredEntries.map((id) => ({ id })) }; tools.push(tool); return {}; },
                 maintainers: selfMaintainer(MAINT, ['maint', 'reviewer-1']),
                 log: (m) => logs.push(m),
@@ -824,7 +824,7 @@ describe('commitRound: removal-only bible commits (a discard applied, nothing co
         const logs = [];
         const tools = [];
         let branch = 'other';
-        const client = createKbWorkClient({ listTools: currentServerListTools,
+        const client = currentServerKbWork(createKbWorkClient, {
             memberCall: async (member, tool) => {
                 if (tool === 'kb_query') return { l1_results: offeredEntries.map((id) => ({ id })) };
                 tools.push(tool);

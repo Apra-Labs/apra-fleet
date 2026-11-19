@@ -351,12 +351,22 @@ export function buildBibleDemotionCandidateQuery(files) {
 }
 
 /**
- * The kb_bible_commit input properties the withdrawal route needs on the
- * maintainer: a demotion becomes a `withdrawals` entry and a hold of an
- * earlier withdrawal a `restore_ids` entry. A maintainer whose tool schema
- * lacks either cannot carry a demotion, so it is offered none.
+ * The tool a maintainer's session must list for a demotion to be offered.
+ * kb_capabilities ships in the same apra-fleet build as kb_bible_commit's
+ * `withdrawals` / `restore_ids`, so its presence is the version gate; its
+ * answer ({contract, routes, branch_aware, query_filters?}) says what the
+ * maintainer's project KB serves.
  */
-export const KB_WITHDRAWAL_SCHEMA_PROPERTIES = Object.freeze(['withdrawals', 'restore_ids']);
+export const KB_CAPABILITIES_TOOL = 'kb_capabilities';
+
+/**
+ * The KB route a merged withdrawal needs: after the merge, every importer's
+ * kb_import replays the tombstone through it. kb_capabilities lists it for a
+ * local SQLite KB and for an http KB server that serves it. A maintainer
+ * whose KB does not serve it could never apply a demotion, so it is offered
+ * none.
+ */
+export const KB_WITHDRAW_ROUTE = 'withdraw';
 
 /**
  * Whether an entry may be offered as a demotion candidate. A demotion is a
@@ -594,12 +604,11 @@ export function createKbWorkClient(opts = {}) {
         // through memberCall, never a shell).
         sprintChangedFiles,
         // (member: object) => Promise<tools/list result> on that member's
-        // session: the feature detection for the withdrawal route
-        // (KB_WITHDRAWAL_SCHEMA_PROPERTIES in kb_bible_commit's input
-        // schema), the same pattern the bible import uses for kb_import's
-        // `ref`. A local member is read the same way: it is served by the
-        // separately running local apra-fleet server, which can be an older
-        // build than this engine.
+        // session: the first half of the withdrawal feature detection (the
+        // session must list KB_CAPABILITIES_TOOL; the second half is that
+        // tool's `routes` answer, see withdrawalSupportGap). A local member
+        // is read the same way: it is served by the separately running local
+        // apra-fleet server, which can be an older build than this engine.
         listTools,
         // (memberName: string) => Promise<object[]>: the entries an EARLIER
         // final review on this branch withdrew (a withdrawn tombstone the
@@ -1404,11 +1413,12 @@ export function createKbWorkClient(opts = {}) {
      */
     async function readDemotionCandidates(target, changedFilesFor, scopeLabel) {
         // Feature detection FIRST, before any git or KB traffic: a maintainer
-        // whose kb_bible_commit cannot carry a withdrawal could never apply a
-        // demotion, so the reviewer is offered nothing to judge.
-        if (!(await supportsWithdrawals(target.record))) {
-            const needed = KB_WITHDRAWAL_SCHEMA_PROPERTIES.join("', '");
-            log(`[kb-work] WARN: maintainer '${target.member}' (${target.repo}) runs an apra-fleet whose kb_bible_commit lacks '${needed}' (older version) -- offering no demotion candidates; upgrade apra-fleet on that member`);
+        // that cannot record a withdrawal, or whose KB could not apply one
+        // after the merge, is offered nothing to judge. Never a fallback to
+        // an immediate demotion.
+        const gap = await withdrawalSupportGap(target.record);
+        if (gap) {
+            log(`[kb-work] WARN: maintainer '${target.member}' (${target.repo}): ${gap} -- offering no demotion candidates`);
             return [];
         }
         // Same branch guard flushRepo/commitRepo apply before every G-pull
@@ -1494,34 +1504,53 @@ export function createKbWorkClient(opts = {}) {
         return offered;
     }
 
-    /** member id -> whether its kb_bible_commit advertises the withdrawal route (cached for the sprint). */
+    /** member id -> definite withdrawal-support answer: null (supported) or the gap (cached for the sprint). */
     const withdrawalSupport = new Map();
 
     /**
-     * True when `record`'s kb_bible_commit accepts every
-     * KB_WITHDRAWAL_SCHEMA_PROPERTIES key, as its tools/list advertises --
-     * a local member included: it is served by the separately running local
-     * apra-fleet server, which can be an older build. Any doubt (no listTools wired, an unreadable answer, a
-     * failed call) is false -- fail closed, never offer a demotion the
-     * maintainer cannot record. A definite answer is cached per member.
+     * Whether `record` can carry a merge-carried withdrawal: null when it
+     * can, otherwise what is missing (for the WARN). Two checks, on the
+     * maintainer's own session, a local member included (it is served by
+     * the separately running local apra-fleet server, which can be an older
+     * build than this engine):
+     *  1. its tools/list names KB_CAPABILITIES_TOOL -- the version gate, as
+     *     that tool ships with kb_bible_commit's withdrawals/restore_ids;
+     *  2. that tool's `routes` include KB_WITHDRAW_ROUTE -- a local SQLite
+     *     KB always lists it, an http KB server only when it serves it.
+     * Any doubt (no listTools wired, an unreadable answer, a failed or
+     * rejected call) is a gap -- fail closed, never offer a demotion that
+     * cannot land. Only the two definite answers are cached per member; a
+     * failure is retried at the next offering.
      */
-    async function supportsWithdrawals(record) {
+    async function withdrawalSupportGap(record) {
         const key = record && record.id;
         if (key && withdrawalSupport.has(key)) return withdrawalSupport.get(key);
-        if (typeof listTools !== 'function') return false;
+        const settle = (gap) => { if (key) withdrawalSupport.set(key, gap); return gap; };
+        if (typeof listTools !== 'function') return 'its tools cannot be listed (no member session channel)';
+        let tools;
         try {
             const list = parseResult(await listTools(record));
-            const tools = Array.isArray(list) ? list : (list && Array.isArray(list.tools) ? list.tools : []);
-            const tool = tools.find((t) => t && t.name === 'kb_bible_commit');
-            const props = tool && tool.inputSchema && tool.inputSchema.properties;
-            const ok = !!(props && typeof props === 'object'
-                && KB_WITHDRAWAL_SCHEMA_PROPERTIES.every((p) => Object.prototype.hasOwnProperty.call(props, p)));
-            if (key) withdrawalSupport.set(key, ok);
-            return ok;
+            tools = Array.isArray(list) ? list : (list && Array.isArray(list.tools) ? list.tools : null);
         } catch (err) {
-            log(`[kb-work] could not list the tools of maintainer '${memberLabel(record)}' (non-fatal): ${errText(err)}`);
-            return false;
+            return `its tools could not be listed (${errText(err)})`;
         }
+        if (!tools) return 'its tools/list answer was unreadable';
+        if (!tools.some((t) => t && t.name === KB_CAPABILITIES_TOOL)) {
+            return settle(`its apra-fleet server does not offer ${KB_CAPABILITIES_TOOL} (older version; upgrade apra-fleet on that member)`);
+        }
+        let caps;
+        try {
+            const res = await memberCall(record, KB_CAPABILITIES_TOOL, {}, KB_MAINTAINER_CALL);
+            if (isToolError(res)) return `${KB_CAPABILITIES_TOOL} failed: ${toolErrorText(res)}`;
+            caps = parseResult(res);
+        } catch (err) {
+            return `${KB_CAPABILITIES_TOOL} failed: ${errText(err)}`;
+        }
+        if (!caps || !Array.isArray(caps.routes)) return `${KB_CAPABILITIES_TOOL} answered no routes list`;
+        if (!caps.routes.includes(KB_WITHDRAW_ROUTE)) {
+            return settle(`its KB server does not serve the '${KB_WITHDRAW_ROUTE}' route (${KB_CAPABILITIES_TOOL} routes: ${caps.routes.join(', ') || 'none'}), so a merged withdrawal could never apply`);
+        }
+        return settle(null);
     }
 
     /**
@@ -2001,10 +2030,11 @@ export function createKbWorkClient(opts = {}) {
          * queued for that repository before the read.
          *
          * FEATURE DETECTION. A demotion is recorded as a withdrawal in the
-         * branch's bible commit, so the maintainer's kb_bible_commit must
-         * accept KB_WITHDRAWAL_SCHEMA_PROPERTIES (supportsWithdrawals). When
-         * it does not, nothing is offered and a WARN names the maintainer and
-         * the upgrade.
+         * branch's bible commit and applied by kb_import after the merge, so
+         * the maintainer's session must list kb_capabilities and its routes
+         * must include `withdraw` (withdrawalSupportGap). When either is
+         * missing, nothing is offered and a WARN names the maintainer and
+         * what is missing.
          *
          * THE READ. Every CONFIRMED entry citing a file changed on the branch,
          * not only the maintainer's own: buildBibleDemotionCandidateQuery

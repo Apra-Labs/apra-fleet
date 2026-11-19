@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createKbWorkClient, kbDemotionBlock } from '../fleet-sprint/kb.mjs';
 import { finalVerdict } from '../fleet-sprint/contracts.mjs';
-import { selfMaintainer, currentServerListTools } from './helpers/kb-maintainer-fakes.mjs';
+import { selfMaintainer, currentServerKbWork } from './helpers/kb-maintainer-fakes.mjs';
 
 // =============================================================================
 // The final review's demotion verdict: the prompt rule, the output schema,
@@ -28,7 +28,7 @@ const row = (id) => ({ id, type: 'knowledge', confidence: 'CONFIRMED', title: id
 function harness(offered = []) {
     const events = [];
     const logs = [];
-    const client = createKbWorkClient({ listTools: currentServerListTools,
+    const client = currentServerKbWork(createKbWorkClient, {
         memberCall: async (member, tool, args) => {
             if (tool === 'kb_query') return { l1_results: args.own_scope ? [] : offered };
             events.push({ ev: tool, args });

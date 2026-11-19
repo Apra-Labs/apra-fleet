@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createKbWorkClient, kbKnowledgeBlock } from '../fleet-sprint/kb.mjs';
 import { E_MEMBER_FLEET_TOO_OLD } from '../fleet-sprint/member-call.mjs';
 import { buildKbChangesSection } from '../fleet-sprint/pr-body.mjs';
-import { selfMaintainer, currentServerListTools } from './helpers/kb-maintainer-fakes.mjs';
+import { selfMaintainer, currentServerKbWork } from './helpers/kb-maintainer-fakes.mjs';
 
 // =============================================================================
 // apply()'s demotion lane after the merge-carried withdrawal rework: a
@@ -62,7 +62,7 @@ function harness({ skipped = [], currentFileHashes = async () => ({}), sprintSta
         if (tool === 'kb_promote') return { id: args.id, previous_confidence: 'INFERRED', new_confidence: 'CONFIRMED' };
         return {};
     };
-    const client = createKbWorkClient({ listTools: currentServerListTools,
+    const client = currentServerKbWork(createKbWorkClient, {
         memberCall,
         maintainers: selfMaintainer(MAINT, ['maint', 'reviewer-1']),
         gPull: async () => {},

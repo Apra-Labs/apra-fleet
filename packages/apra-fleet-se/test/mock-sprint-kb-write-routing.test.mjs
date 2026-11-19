@@ -5,6 +5,7 @@ import { runDevelopLoopScenario, withScenarioMarkers, defaultMockCallTool, mockC
 import { scaledTimeout } from './helpers/scaled-timeout.mjs';
 import { createKbWorkClient, KB_DEMOTION_READ_LIMIT, KB_MAX_DEMOTION_CANDIDATES } from '../fleet-sprint/kb.mjs';
 import { createKbMaintainerSelector } from '../fleet-sprint/kb-maintainer.mjs';
+import { ALL_KB_ROUTES } from './helpers/kb-maintainer-fakes.mjs';
 
 // =============================================================================
 // kb_maintainer write routing, end to end with fakes.
@@ -62,6 +63,8 @@ function createFakeFleet({ failOwnScopeQuery = false } = {}) {
         const fail = (message) => { const e = new Error(message); e.toolCode = 'E-TOOL'; throw e; };
         switch (tool) {
             case 'kb_stats': return { entries: kb.length };
+            // A current server's local SQLite KB serves every contract route.
+            case 'kb_capabilities': return { contract: 'v1', routes: [...ALL_KB_ROUTES], branch_aware: false };
             case 'kb_import': return { imported: 0 };
             case 'kb_session_prime': return { top_entries: [] };
             case 'kb_export': return { exported: kb.filter((e) => e.confidence === 'CONFIRMED').length };
@@ -178,11 +181,12 @@ function buildCallTool(fleet, executeCommand) {
         }
         if (name === 'execute_command' && typeof args.command === 'string' && args.command.includes('apra-fleet call') && args.command.includes('--list-tools')) {
             // A current member server: its kb_import advertises `ref` (the
-            // engine's version gate before the priming grant import) and its
-            // kb_bible_commit the withdrawal route (the gate before the final
-            // review's demotion-candidate read).
+            // engine's version gate before the priming grant import) and it
+            // offers kb_capabilities (the gate before the final review's
+            // demotion-candidate read).
             fleet.events.push({ type: 'list-tools' });
             return { content: [{ type: 'text', text: JSON.stringify({ tools: [
+                { name: 'kb_capabilities', inputSchema: { type: 'object', properties: {} } },
                 { name: 'kb_import', inputSchema: { type: 'object', properties: { path: { type: 'string' }, ref: { type: 'string' }, skip_sweep: { type: 'boolean' } } } },
                 { name: 'kb_bible_commit', inputSchema: { type: 'object', properties: { ids: { type: 'array' }, withdrawals: { type: 'array' }, restore_ids: { type: 'array' } } } },
             ] }) }] };
