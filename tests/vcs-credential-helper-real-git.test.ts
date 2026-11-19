@@ -11,16 +11,28 @@
 // nothing is minted and nothing touches the network), throwaway fleet data dir
 // (tests/setup.ts). On Windows the POSIX commands run under Git for Windows'
 // bash; with no usable bash the file is skipped.
+//
+// GitHub members use a mocked App mint (no real token); the two network
+// commands a GitHub provision issues (gh auth login, the git ls-remote
+// connectivity check) are answered by the mock, never run. Windows members
+// (windows-powershell, windows-gitbash) are not executed: their generated
+// commands are recorded and asserted instead.
+//
+// Not covered here (needs-external-evidence): two real same-user members on
+// one host with re-provisionable credentials pushing concurrently.
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync, execFileSync } from 'node:child_process';
-import { makeTestAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
+import { makeTestAgent, backupAndResetRegistry, restoreRegistry, FLEET_DIR } from './test-helpers.js';
 import { addAgent, getAgent } from '../src/services/registry.js';
 import { provisionVcsAuth } from '../src/tools/provision-vcs-auth.js';
 import { vcsGitEnvPrefix } from '../src/services/vcs-git-env.js';
 import { getOsCommands } from '../src/os/index.js';
+import { getVcsCredentials } from '../src/services/vcs-credential-record.js';
+import { _getCleanupTimers, cleanupTimerKey } from '../src/services/credential-cleanup.js';
+import { mintGitToken } from '../src/services/github-app.js';
 import type { Agent, SSHExecResult } from '../src/types.js';
 
 function findBash(): string | null {
@@ -46,14 +58,36 @@ function runBash(cmd: string, cwd: string): SSHExecResult {
   return { stdout: r.stdout ?? '', stderr: r.stderr ?? '', code: r.status ?? 1 };
 }
 
+/** Commands generated for Windows members: recorded, never executed. */
+const windowsCommands: Array<{ memberId: string; cmd: string }> = [];
+
 vi.mock('../src/services/strategy.js', () => ({
   getStrategy: (agent: Agent) => ({
     testConnection: async () => ({ ok: true, latencyMs: 1 }),
-    execCommand: async (cmd: string) => runBash(cmd, agent.workFolder),
+    execCommand: async (cmd: string) => {
+      if (agent.os === 'windows') {
+        windowsCommands.push({ memberId: agent.id, cmd });
+        return { stdout: '', stderr: '', code: 0 };
+      }
+      // Network commands of a GitHub provision: answered, never run.
+      if (/gh auth login|git ls-remote/.test(cmd)) return { stdout: '', stderr: '', code: 0 };
+      return runBash(cmd, agent.workFolder);
+    },
     transferFiles: vi.fn(),
     close: vi.fn(),
   }),
 }));
+
+vi.mock('../src/services/github-app.js', async () => {
+  const actual = await vi.importActual<typeof import('../src/services/github-app.js')>('../src/services/github-app.js');
+  return {
+    ...actual,
+    mintGitToken: vi.fn(),
+    loadPrivateKey: vi.fn().mockReturnValue('-----BEGIN PRIVATE KEY-----\nfake\n-----END PRIVATE KEY-----'),
+  };
+});
+const mockMint = vi.mocked(mintGitToken);
+const GIT_APP_CONFIG_PATH = path.join(FLEET_DIR, 'git-config.json');
 
 vi.mock('../src/services/auth-socket.js', () => ({
   collectOobApiKey: vi.fn().mockResolvedValue({ fallback: '[FAIL] OOB cancelled in test.' }),
@@ -81,6 +115,20 @@ function makeMember(name: string): Agent {
   runBash('git init -q .', workFolder);
   // Same host, same OS user: the case a global helper broke.
   return makeTestAgent({ friendlyName: name, os: 'linux', host: 'build.example', username: 'ci', workFolder });
+}
+
+/** Provision a GitHub App credential; the (mocked) mint returns `token`. */
+async function provisionGithub(agent: Agent, token: string, repos: string[], label?: string) {
+  mockMint.mockResolvedValueOnce({ token, expiresAt: new Date(Date.now() + 3600_000).toISOString() });
+  const res = await provisionVcsAuth({
+    member_id: agent.id, provider: 'github', github_mode: 'github-app', git_access: 'push', repos,
+    ...(label ? { label } : {}),
+  });
+  expect(res.text).toContain('[OK]');
+}
+
+function makeWindowsMember(name: string, shell: 'powershell5' | 'gitbash'): Agent {
+  return makeTestAgent({ friendlyName: name, os: 'windows', shell, host: 'win.example', username: 'ci', workFolder: `C:\\work\\${name}` });
 }
 
 async function provision(agent: Agent, pat: string, label?: string, scope?: string) {
@@ -117,8 +165,27 @@ describe.skipIf(!BASH)('per-member git credential helpers (real git, sandboxed H
     fs.rmSync(sandbox, { recursive: true, force: true });
   });
 
-  beforeEach(() => backupAndResetRegistry());
-  afterEach(() => restoreRegistry());
+  let gitAppConfigBackup: string | null = null;
+  beforeEach(() => {
+    backupAndResetRegistry();
+    windowsCommands.length = 0;
+    mockMint.mockReset();
+    gitAppConfigBackup = fs.existsSync(GIT_APP_CONFIG_PATH) ? fs.readFileSync(GIT_APP_CONFIG_PATH, 'utf-8') : null;
+    fs.writeFileSync(GIT_APP_CONFIG_PATH, JSON.stringify({
+      version: '1.0',
+      github: { appId: '123', privateKeyPath: path.join(sandbox, 'app.pem'), installationId: 999, createdAt: '2026-01-01T00:00:00Z' },
+    }));
+  });
+  afterEach(() => {
+    const timers = _getCleanupTimers();
+    for (const [key, timer] of [...timers]) {
+      clearTimeout(timer);
+      timers.delete(key);
+    }
+    if (gitAppConfigBackup !== null) fs.writeFileSync(GIT_APP_CONFIG_PATH, gitAppConfigBackup);
+    else fs.rmSync(GIT_APP_CONFIG_PATH, { force: true });
+    restoreRegistry();
+  });
 
   it('two members on one OS user each read back their own token (git fill in their clone, and the read path)', async () => {
     const a = makeMember('member-a');
@@ -173,4 +240,104 @@ describe.skipIf(!BASH)('per-member git credential helpers (real git, sandboxed H
     const globalConfig = fs.readFileSync(sandboxEnv.GIT_CONFIG_GLOBAL!, 'utf-8');
     expect(globalConfig).not.toMatch(/credential/i);
   });
+
+  it('two members on one OS user provisioned at the same time each still read back their own token', async () => {
+    const a = makeMember('member-conc-a');
+    const b = makeMember('member-conc-b');
+    addAgent(a);
+    addAgent(b);
+
+    await Promise.all([provision(a, 'concurrent-token-a'), provision(b, 'concurrent-token-b')]);
+
+    expect(gitFill(a, 'dev.azure.com')).toBe('concurrent-token-a');
+    expect(gitFill(b, 'dev.azure.com')).toBe('concurrent-token-b');
+    expect(readLabel(a, 'azure-devops')).toBe('concurrent-token-a');
+    expect(readLabel(b, 'azure-devops')).toBe('concurrent-token-b');
+  });
+
+  // The 2026-11-16 repro: one member, labels github and github-issues for
+  // github.com. The second label must not take over or drop the first --
+  // the record, helper file and cleanup timer of each label survive.
+  it('one member with labels github and github-issues for github.com reads back each label own token', async () => {
+    const m = makeMember('member-gh-labels');
+    addAgent(m);
+
+    await provisionGithub(m, 'ghs_push_token', ['acme/widgets'], 'github');
+    await provisionGithub(m, 'ghs_issues_token', ['acme/widgets'], 'github-issues');
+
+    expect(readLabel(m, 'github')).toBe('ghs_push_token');
+    expect(readLabel(m, 'github-issues')).toBe('ghs_issues_token');
+    // git pushes with the provider-named label.
+    expect(gitFill(m, 'github.com')).toBe('ghs_push_token');
+    expect(Object.keys(getVcsCredentials(getAgent(m.id)!)).sort()).toEqual(['github', 'github-issues']);
+    const prefix = vcsGitEnvPrefix(getAgent(m.id)!);
+    expect(prefix).toContain(`.fleet-git-credential-github.${m.id}`);
+    expect(prefix).toContain(`.fleet-git-credential-github-issues.${m.id}`);
+    expect(_getCleanupTimers().has(cleanupTimerKey(m.id, 'github'))).toBe(true);
+    expect(_getCleanupTimers().has(cleanupTimerKey(m.id, 'github-issues'))).toBe(true);
+  });
+
+  it('after GitHub provisioning of two members, the sandboxed global git config holds no credential helper key', async () => {
+    const a = makeMember('member-gh-global-a');
+    const b = makeMember('member-gh-global-b');
+    addAgent(a);
+    addAgent(b);
+    await provisionGithub(a, 'ghs_a', ['acme/widgets']);
+    await provisionGithub(b, 'ghs_b', ['acme/widgets'], 'github-issues');
+    expect(fs.readFileSync(sandboxEnv.GIT_CONFIG_GLOBAL!, 'utf-8')).not.toMatch(/credential/i);
+    const r = runBash('git config --global --get-regexp credential || true', a.workFolder);
+    expect(r.stdout.trim()).toBe('');
+  });
+
+  it('re-provisioning member A with a different repo scope does not change what member B reads', async () => {
+    const a = makeMember('member-scope-a');
+    const b = makeMember('member-scope-b');
+    addAgent(a);
+    addAgent(b);
+    await provisionGithub(a, 'ghs_a_widgets', ['acme/widgets']);
+    await provisionGithub(b, 'ghs_b_widgets', ['acme/widgets']);
+
+    await provisionGithub(a, 'ghs_a_gadgets', ['acme/gadgets']);
+
+    expect(mockMint.mock.calls.at(-1)?.[3]).toEqual(['acme/gadgets']);
+    expect(gitFill(a, 'github.com')).toBe('ghs_a_gadgets');
+    expect(gitFill(b, 'github.com')).toBe('ghs_b_widgets');
+    expect(readLabel(b, 'github')).toBe('ghs_b_widgets');
+  });
+
+  it.each([['windows-powershell', 'powershell5'], ['windows-gitbash', 'gitbash']] as const)(
+    '%s: two members on one OS user get generated commands that write and register only their own helper',
+    async (_name, shell) => {
+      const a = makeWindowsMember(`win-${shell}-a`, shell);
+      const b = makeWindowsMember(`win-${shell}-b`, shell);
+      addAgent(a);
+      addAgent(b);
+
+      await provision(a, 'win-token-a');
+      await provision(b, 'win-token-b');
+
+      const writesOf = (id: string) => windowsCommands
+        .filter(c => c.memberId === id && c.cmd.includes('win-token-'))
+        .map(c => c.cmd)
+        .join('\n');
+      const writeA = writesOf(a.id);
+      const writeB = writesOf(b.id);
+      expect(writeA).toContain(`.fleet-git-credential-azure-devops.${a.id}`);
+      expect(writeA).toContain('win-token-a');
+      expect(writeA).not.toContain(b.id);
+      expect(writeA).not.toContain('win-token-b');
+      expect(writeA).not.toContain('--global');
+      expect(writeB).toContain(`.fleet-git-credential-azure-devops.${b.id}`);
+      expect(writeB).toContain('win-token-b');
+      expect(writeB).not.toContain(a.id);
+      expect(writeB).not.toContain('--global');
+
+      const prefixA = vcsGitEnvPrefix(getAgent(a.id)!);
+      const prefixB = vcsGitEnvPrefix(getAgent(b.id)!);
+      expect(prefixA).toContain(`.fleet-git-credential-azure-devops.${a.id}`);
+      expect(prefixA).not.toContain(b.id);
+      expect(prefixB).toContain(`.fleet-git-credential-azure-devops.${b.id}`);
+      expect(prefixB).not.toContain(a.id);
+    },
+  );
 });
