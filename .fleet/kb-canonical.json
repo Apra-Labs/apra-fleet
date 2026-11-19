@@ -1,9 +1,9 @@
 {
   "version": 3,
   "provenance": {
-    "commit": "f9cb1ca7c3f0f03debb783f6ef40a261554b7b0b",
+    "commit": "5a171212f2e1eee116e7f58e2ea29648ffb8ff1f",
     "branch": "main",
-    "entry_count": 163
+    "entry_count": 166
   },
   "entries": [
     {
@@ -246,6 +246,30 @@
         "src/os/windows.ts": "cdade4c6fc907e43671da60a685254b8295a0673",
         "tests/go-concurrency-default.test.ts": "7ac1b504ac84589832822b0f3340e8a351db531e",
         "tests/windows-gomaxprocs-builders.test.ts": "e19b5155dc8e670671d574da1192b5983cd333ae"
+      }
+    },
+    {
+      "id": "17c99eee-11cb-4b90-adf6-ab7e8bf9e43e",
+      "type": "knowledge",
+      "title": "remove_member removes only LLM credentials recorded in Agent.llmAuthDelivered",
+      "summary": "provision_llm_auth records the credential files and env vars it delivered in Agent.llmAuthDelivered; remove_member removes only those, and nothing when another member shares the host+user or when there is no record.",
+      "symbols": [
+        "removeMember",
+        "memberSharingHostUser",
+        "recordLlmAuthDelivery",
+        "llmAuthDelivered"
+      ],
+      "source_files": [
+        "src/tools/remove-member.ts",
+        "src/tools/provision-auth.ts",
+        "src/types.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-19T00:02:52.793Z",
+      "source_file_hashes": {
+        "src/tools/provision-auth.ts": "55bb55640ef12665731fe62bcc1e9955b30dcd40",
+        "src/tools/remove-member.ts": "357c8affb4ec811ba312f93517d44159887ddde4",
+        "src/types.ts": "e327603cb283f59b871b552ec31d54e4bc828dd1"
       }
     },
     {
@@ -2419,6 +2443,33 @@
       "updated_at": "2026-10-06T09:41:38.971Z"
     },
     {
+      "id": "bd0bd870-5516-4a99-a0da-4f9c5a6df445",
+      "type": "knowledge",
+      "title": "POSIX profile exports carry an apra-fleet-managed marker; default unsetEnv removes only marked lines",
+      "summary": "persistEnvFileContent appends '# apra-fleet-managed' to each export line; unsetEnv(name) removes only marked lines, unsetEnv(name,{all:true}) removes every export line; persistEnvFromFile strips every export of NAME before appending.",
+      "symbols": [
+        "unsetEnv",
+        "unsetEnvSedExpr",
+        "FLEET_ENV_MARKER",
+        "persistEnvFromFile",
+        "sedInPlace"
+      ],
+      "source_files": [
+        "src/os/os-commands.ts",
+        "src/os/linux.ts",
+        "src/os/macos.ts",
+        "src/os/windows.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-19T00:02:52.688Z",
+      "source_file_hashes": {
+        "src/os/linux.ts": "fb920ac37f75fb519d7c5acae8c0f98698bf9320",
+        "src/os/macos.ts": "52541862d1075aed3a8b1a70311debb7ae9d98fd",
+        "src/os/os-commands.ts": "af50c1624ea6e08e2b3597fa3235487376343097",
+        "src/os/windows.ts": "4e30fc426292eec7f636c70a854ae9a2f00be248"
+      }
+    },
+    {
       "id": "bfcfe1fe-571d-4f3a-a0ce-04fedcd7a088",
       "type": "learning",
       "title": "APRA_TEST_SUITES_JSON narrowing leaks into run-all-tests-suite-enumeration test",
@@ -2955,6 +3006,25 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-02T23:19:56.679Z"
+    },
+    {
+      "id": "e70c7379-3b4e-46f8-bdc6-7a81ccd5c3e9",
+      "type": "learning",
+      "title": "Full vitest stage exceeds the 25-minute default npm test cap on Windows",
+      "summary": "On this Windows dev host the vitest stage of npm test takes about 26 minutes, so the default 25-minute per-suite cap kills it; set APRA_TEST_TIMEOUT_MS higher for a full local run.",
+      "symbols": [
+        "DEFAULT_TIMEOUT_MS"
+      ],
+      "source_files": [
+        "scripts/run-all-tests.mjs",
+        "vitest.config.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-19T00:02:52.900Z",
+      "source_file_hashes": {
+        "scripts/run-all-tests.mjs": "bfa7ff7a8eba998363f061237c9934491ce0e637",
+        "vitest.config.ts": "9a6bf830af480f30786052e44c2feb951c8abbee"
+      }
     },
     {
       "id": "e7d3e8e5-0564-4f16-8318-f5e81c436302",
