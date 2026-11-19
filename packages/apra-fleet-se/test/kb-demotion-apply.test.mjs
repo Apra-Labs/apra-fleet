@@ -424,7 +424,8 @@ describe('kbChangesOnMerge: withdrawals carried on the branch from an earlier ru
     test('a held carried id whose restore is committed on the maintainer but never pushed (push rejected, reset unsafe) is still listed', async () => {
         // The offer reads the tombstone on the branch; the publish-time read is
         // the maintainer's HEAD, where the unpushed restore already lifted it.
-        const branchRead = Object.assign(async () => [carriedRow()], { read: async () => ({ ok: true, rows: [] }) });
+        let reads = 0;
+        const branchRead = Object.assign(async () => [], { read: async () => ({ ok: true, rows: reads++ === 0 ? [carriedRow()] : [] }) });
         const { client, logs } = harness({
             branchWithdrawals: branchRead,
             extra: {
@@ -465,7 +466,7 @@ describe('kbChangesOnMerge: withdrawals carried on the branch from an earlier ru
 
     test('when the offer could not read the branch tombstones, an unpushed held id is listed (over-list, never hide)', async () => {
         let offerRead = true;
-        const branchRead = Object.assign(async () => { if (offerRead) throw new Error('member unreachable'); return []; }, { read: async () => ({ ok: true, rows: [] }) });
+        const branchRead = Object.assign(async () => [], { read: async () => { if (offerRead) throw new Error('member unreachable'); return { ok: true, rows: [] }; } });
         const { client } = harness({
             branchWithdrawals: branchRead,
             extra: {
@@ -479,6 +480,32 @@ describe('kbChangesOnMerge: withdrawals carried on the branch from an earlier ru
         await client.commitRound('final review');
         const report = await client.kbChangesOnMerge();
         assert.deepEqual(report.carried.map((c) => [c.id, c.restoreNotPushed]), [[CARRIED, true]]);
+    });
+
+    test('when the offer\'s branch read answers ok:false (the plain read is failSoft and answers []), an unpushed held carried id is listed', async () => {
+        // The carried id is still CONFIRMED on the maintainer and cites a
+        // changed file, so it is offered unmarked; HEAD already lost its
+        // tombstone to the unpushed restore.
+        let offerRead = true;
+        const branchRead = Object.assign(async () => [], {
+            read: async () => (offerRead
+                ? { ok: false, rows: [], error: "'git show HEAD:.fleet/kb-canonical.json' on 'maint': failed" }
+                : { ok: true, rows: [] }),
+        });
+        const { client, logs } = harness({
+            branchWithdrawals: branchRead,
+            extra: {
+                gPush: async () => { throw new Error('rejected: non-fast-forward'); },
+                canResetCheckout: async () => ({ safe: false, reason: 'unrelated local work' }),
+            },
+        });
+        await offerDemotions(client, [demotable(CARRIED)]);
+        offerRead = false;
+        await client.apply('reviewer', 'reviewer-1', { kb_holds: [CARRIED] });
+        await client.commitRound('final review');
+        const report = await client.kbChangesOnMerge();
+        assert.deepEqual(report.carried.map((c) => [c.id, c.kept, c.restoreNotPushed]), [[CARRIED, true, true]]);
+        assert.ok(logs.some((l) => /could not read this branch's earlier withdrawals on maintainer 'maint'/.test(l)), logs.join('\n'));
     });
 
     test('a branch read that fails, throws, or runs on a maintainer off the sprint branch is an explicit line, never silence', async () => {

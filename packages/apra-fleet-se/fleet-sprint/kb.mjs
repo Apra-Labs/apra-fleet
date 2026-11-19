@@ -1440,16 +1440,27 @@ export function createKbWorkClient(opts = {}) {
         // own pending KB change), so a hold can restore one.
         let earlier = [];
         if (typeof branchWithdrawals === 'function') {
-            try {
-                const rows = await branchWithdrawals(target.member);
-                earlier = (Array.isArray(rows) ? rows : [])
-                    .filter((e) => isDemotableCandidate(e))
-                    .map((e) => ({ ...e, withdrawn_on_branch: true }));
-            } catch (err) {
-                // An earlier withdrawal can then be offered unmarked; the PR
-                // body treats every held id as restorable (over-lists, never hides).
+            // A failed read -- thrown, or `.read` answering ok:false (the plain
+            // read is failSoft and answers [] instead) -- means an earlier
+            // withdrawal can be offered unmarked; the PR body then treats every
+            // held id as restorable (over-lists, never hides).
+            const readFailed = (why) => {
                 detailFor(recordFor(target.repo)).branchReadFailed = true;
-                log(`[kb-work] could not read this branch's earlier withdrawals on maintainer '${target.member}' (non-fatal): ${errText(err)}`);
+                log(`[kb-work] could not read this branch's earlier withdrawals on maintainer '${target.member}' (non-fatal): ${why}`);
+            };
+            try {
+                const res = typeof branchWithdrawals.read === 'function'
+                    ? await branchWithdrawals.read(target.member)
+                    : { ok: true, rows: await branchWithdrawals(target.member) };
+                if (!res || res.ok !== true) {
+                    readFailed((res && res.error) || 'the read failed');
+                } else {
+                    earlier = (Array.isArray(res.rows) ? res.rows : [])
+                        .filter((e) => isDemotableCandidate(e))
+                        .map((e) => ({ ...e, withdrawn_on_branch: true }));
+                }
+            } catch (err) {
+                readFailed(errText(err));
             }
         }
         if (files.length === 0 && earlier.length === 0) return [];
