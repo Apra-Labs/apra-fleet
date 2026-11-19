@@ -45,7 +45,7 @@ async function deployAppToken(
     return { success: false, message: `Token mint failed: ${err.message}` };
   }
 
-  await exec(cmds.gitCredentialHelperWrite(HOST, USERNAME, token, label, scopeUrl));
+  await exec(cmds.gitCredentialHelperWrite(HOST, USERNAME, token, label, scopeUrl, agent.id));
 
   // Best-effort: also log the `gh` CLI itself in, using the same minted token.
   // gh has its own auth store (never reads the git credential helper above),
@@ -77,13 +77,14 @@ async function deployAppToken(
 }
 
 async function deployPat(
+  memberId: string,
   cmds: OsCommands,
   exec: (cmd: string) => Promise<string>,
   token: string,
   label?: string,
   scopeUrl?: string,
 ): Promise<VcsDeployResult> {
-  await exec(cmds.gitCredentialHelperWrite(HOST, USERNAME, token, label, scopeUrl));
+  await exec(cmds.gitCredentialHelperWrite(HOST, USERNAME, token, label, scopeUrl, memberId));
 
   // Best-effort gh CLI login -- see the matching comment in deployAppToken.
   // A PAT's scopes (including Discussions, via classic PAT `repo`/`write:discussion`
@@ -138,11 +139,11 @@ export const githubProvider: VcsProviderService = {
     const creds = credentials as GitHubCredentials;
     return creds.type === 'github-app'
       ? deployAppToken(agent, cmds, exec, creds, label, scopeUrl)
-      : deployPat(cmds, exec, creds.token, label, scopeUrl);
+      : deployPat(agent.id, cmds, exec, creds.token, label, scopeUrl);
   },
 
-  async revoke(_agent, cmds, exec, label?, scopeUrl?) {
-    await exec(cmds.gitCredentialHelperRemove(HOST, label, scopeUrl));
+  async revoke(agent, cmds, exec, label?, scopeUrl?) {
+    await exec(cmds.gitCredentialHelperRemove(HOST, label, scopeUrl, agent.id));
     return { success: true, message: 'GitHub credentials revoked' };
   },
 

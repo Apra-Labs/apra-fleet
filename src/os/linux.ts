@@ -1,6 +1,7 @@
 import { execSync } from 'node:child_process';
 import type { OsCommands, ProviderAdapter, PromptOptions, UnsetEnvOptions } from './os-commands.js';
-import { escapeDoubleQuoted, escapeGrepPattern, sanitizeSessionId, GIT_LS_REMOTE_OK_MARKER, FLEET_ENV_MARKER, unsetEnvSedExpr } from './os-commands.js';
+import { escapeDoubleQuoted, escapeGrepPattern, sanitizeSessionId, GIT_LS_REMOTE_OK_MARKER, FLEET_ENV_MARKER, unsetEnvSedExpr, gitCredentialHelperStem, groupGitCredentialHelpers } from './os-commands.js';
+import type { GitCredentialHelperRegistration } from './os-commands.js';
 import { escapeShellArg } from '../utils/shell-escape.js';
 import { assertAuthorizedKeyMatch } from './ssh-key-match.js';
 
@@ -290,24 +291,17 @@ export class LinuxCommands implements OsCommands {
 
   // --- Git credential helper ---
 
-  gitCredentialHelperWrite(host: string, username: string, token: string, label?: string, scopeUrl?: string): string {
+  gitCredentialHelperWrite(host: string, username: string, token: string, label?: string, _scopeUrl?: string, memberId?: string): string {
     const escapedHost = escapeDoubleQuoted(host);
     const escapedUser = escapeDoubleQuoted(username);
     const escapedToken = escapeDoubleQuoted(token);
     // $HOME (not `~`) -- `~` is only tilde-expanded by the shell in an UNQUOTED
     // leading position; every use below is inside double quotes (needed for
-    // the other interpolated values), which suppresses that expansion. That
-    // silently stored the literal string "~/.fleet-git-credential-..." as the
-    // git config value -- git does not expand `~` itself when reading config,
-    // so it tried to exec a helper literally named
-    // `git-credential-~/.fleet-git-credential-...` ("not a git command").
-    // $HOME expands correctly even inside double quotes, so this actually
-    // resolves to an absolute path both when creating the file and when
-    // storing the git config value.
-    const credFile = label ? `$HOME/.fleet-git-credential-${escapeDoubleQuoted(label)}` : '$HOME/.fleet-git-credential';
-    // scope_url is passed through escapeDoubleQuoted and embedded inside a double-quoted git config arg — safe against injection.
-    const credUrl = scopeUrl ? escapeDoubleQuoted(scopeUrl) : `https://${escapedHost}`;
-    return `printf '#!/bin/sh\\necho "protocol=https"\\necho "host=${escapedHost}"\\necho "username=${escapedUser}"\\necho "password=${escapedToken}"\\n' > "${credFile}" && chmod 600 "${credFile}" && chmod +x "${credFile}" && git config --global --replace-all "credential.${credUrl}.helper" "" && git config --global --add "credential.${credUrl}.helper" "${credFile}"`;
+    // the other interpolated values), which suppresses that expansion.
+    // The file is per member AND label and is registered nowhere in git
+    // config: git finds it through gitCredentialEnvPrefix() at dispatch time.
+    const credFile = `$HOME/${gitCredentialHelperStem(label, memberId)}`;
+    return `printf '#!/bin/sh\\necho "protocol=https"\\necho "host=${escapedHost}"\\necho "username=${escapedUser}"\\necho "password=${escapedToken}"\\n' > "${credFile}" && chmod 600 "${credFile}" && chmod +x "${credFile}"`;
   }
 
   gitCredentialHelperRemoveLegacyFile(): string {
@@ -317,23 +311,49 @@ export class LinuxCommands implements OsCommands {
     return `rm -f "$HOME/.fleet-git-credential"`;
   }
 
-  gitCredentialHelperRead(label?: string): { command: string; path: string } {
+  gitCredentialHelperRead(label?: string, memberId?: string): { command: string; path: string } {
     // Same $HOME-not-`~` reasoning as gitCredentialHelperWrite above: the path
     // is resolved by the member's own shell from $HOME, never by a caller
-    // supplying an expansion of its own, and the label is escaped for the
-    // double-quoted context it lands in.
-    const credFile = label ? `$HOME/.fleet-git-credential-${escapeDoubleQuoted(label)}` : '$HOME/.fleet-git-credential';
+    // supplying an expansion of its own.
+    const credFile = `$HOME/${gitCredentialHelperStem(label, memberId)}`;
     // The helper is an executable script that prints
     // "protocol=/host=/username=/password=" when run with no arguments.
     return { command: `"${credFile}"`, path: credFile };
   }
 
-  gitCredentialHelperRemove(host: string, label?: string, scopeUrl?: string): string {
+  gitCredentialHelperRemove(_host: string, label?: string, _scopeUrl?: string, memberId?: string): string {
+    return `rm -f "$HOME/${gitCredentialHelperStem(label, memberId)}"`;
+  }
+
+  gitCredentialHelperRemoveLegacyGlobal(host: string, label?: string, scopeUrl?: string): string {
     const escapedHost = escapeDoubleQuoted(host);
-    const credFile = label ? `$HOME/.fleet-git-credential-${escapeDoubleQuoted(label)}` : '$HOME/.fleet-git-credential';
-    // scope_url is passed through escapeDoubleQuoted and embedded inside a double-quoted git config arg — safe against injection.
+    const credFile = `$HOME/${gitCredentialHelperStem(label)}`;
+    // scope_url is passed through escapeDoubleQuoted and embedded inside a double-quoted git config arg -- safe against injection.
     const credUrl = scopeUrl ? escapeDoubleQuoted(scopeUrl) : `https://${escapedHost}`;
     return `rm -f "${credFile}" && git config --global --unset-all "credential.${credUrl}.helper" 2>/dev/null || true`;
+  }
+
+  /** The member-side value of one helper path, inside a double-quoted shell string. */
+  protected gitCredentialHelperEnvPath(label: string, memberId: string): string {
+    return `$HOME/${gitCredentialHelperStem(label, memberId)}`;
+  }
+
+  gitCredentialEnvPrefix(helpers: GitCredentialHelperRegistration[], memberId: string): string {
+    const groups = groupGitCredentialHelpers(helpers);
+    if (groups.length === 0) return '';
+    gitCredentialHelperStem(undefined, memberId);
+    // GIT_CONFIG_PARAMETERS entries are single-quoted `key=value` words; the
+    // whole value sits in the member shell's double quotes so $HOME expands.
+    // Scopes and labels are validated to a charset that needs no escaping in
+    // either layer (groupGitCredentialHelpers).
+    const words: string[] = [];
+    for (const g of groups) {
+      words.push(`'credential.${g.scopeUrl}.helper='`);
+      for (const label of g.labels) {
+        words.push(`'credential.${g.scopeUrl}.helper=${this.gitCredentialHelperEnvPath(label, memberId)}'`);
+      }
+    }
+    return `export GIT_CONFIG_PARAMETERS="${words.join(' ')}"; `;
   }
 
   ghAuthLogin(token: string, hostname = 'github.com'): string {

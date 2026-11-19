@@ -134,8 +134,36 @@ export interface OsCommands {
   unsetEnv(name: string, opts?: UnsetEnvOptions): string[];
 
   // --- Git credential helper ---
-  gitCredentialHelperWrite(host: string, username: string, token: string, label?: string, scopeUrl?: string): string;
-  gitCredentialHelperRemove(host: string, label?: string, scopeUrl?: string): string;
+  //
+  // The helper FILE is per member AND label (gitCredentialHelperStem) and is
+  // never registered in any git config file: no --global, no --local. A
+  // per-OS-user (global) registration was shared by every member running as
+  // that user and was overwritten by each provision; a clone-local one is
+  // invisible to git processes that run in another repository (e.g. bd/dolt
+  // pushing through its own bare cache repo). Git finds the helper through
+  // gitCredentialEnvPrefix(), which every fleet dispatch to the member
+  // prepends (src/services/vcs-git-env.ts).
+  /** Write the helper file for (label, memberId). File only -- touches no git config. */
+  gitCredentialHelperWrite(host: string, username: string, token: string, label?: string, scopeUrl?: string, memberId?: string): string;
+  /** Delete the helper file for (label, memberId). File only -- touches no git config. */
+  gitCredentialHelperRemove(host: string, label?: string, scopeUrl?: string, memberId?: string): string;
+  /**
+   * Remove a LEGACY helper registered by releases that wrote the per-OS-user
+   * global git config: the shared `.fleet-git-credential-<label>` file and its
+   * `credential.<scope>.helper` key in the global config. Only for a legacy
+   * entry the member's own record names, and only when no other member runs as
+   * the same user on the same host (the entry is shared by all of them).
+   */
+  gitCredentialHelperRemoveLegacyGlobal(host: string, label?: string, scopeUrl?: string): string;
+  /**
+   * A statement to prepend to a member command (it ends with its own
+   * separator) that makes every git process the command starts use exactly the
+   * given fleet helpers for their scopes, through the GIT_CONFIG_PARAMETERS
+   * environment variable (the form `git -c` itself uses). Per scope an empty
+   * value first resets the inherited helper list, then the helpers follow in
+   * the given order -- git uses the first that answers. '' for no helpers.
+   */
+  gitCredentialEnvPrefix(helpers: GitCredentialHelperRegistration[], memberId: string): string;
   /**
    * Runs the credential helper gitCredentialHelperWrite() deployed, so its
    * `password=<token>` line reaches stdout (apra-fleet-3swo.7.3). `path` is the
@@ -146,7 +174,7 @@ export interface OsCommands {
    * It must never be handed to a caller-visible dispatch -- that stdout
    * round-trip is exactly what the server-side credential handoff replaces.
    */
-  gitCredentialHelperRead(label?: string): { command: string; path: string };
+  gitCredentialHelperRead(label?: string, memberId?: string): { command: string; path: string };
 
   /** Delete ONLY the pre-label, single-file credential helper
    *  (`.fleet-git-credential`, no label suffix) left behind by installs that
@@ -250,4 +278,62 @@ export interface OsCommands {
   // --- Agent provisioning ---
   /** List "<sha256>  ./<relpath>" for every file under a home-relative dir (recursive). Empty output if dir is missing/empty. */
   hashFilesRecursive(dir: string): string;
+}
+// --- Git credential helper naming / registration (shared by every OS) ---
+
+/** One fleet helper to register for a credential scope URL. */
+export interface GitCredentialHelperRegistration {
+  scopeUrl: string;
+  label: string;
+}
+
+const HELPER_LABEL_RE = /^[A-Za-z0-9_-]{1,64}$/;
+const HELPER_MEMBER_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+
+/**
+ * File name (no directory, no extension) of the helper deployed for one member
+ * and label: `.fleet-git-credential-<label>.<memberId>`. Labels never contain
+ * '.', so the name is unambiguous. Without a member id it is the legacy
+ * per-OS-user name `.fleet-git-credential-<label>` (or `.fleet-git-credential`
+ * with no label either), which several members running as one user shared.
+ */
+export function gitCredentialHelperStem(label?: string, memberId?: string): string {
+  if (label !== undefined && !HELPER_LABEL_RE.test(label)) {
+    throw new Error(`Refusing to build a credential helper path for unsafe VCS credential label '${label}' (allowed: letters, digits, '_', '-').`);
+  }
+  if (memberId !== undefined && !HELPER_MEMBER_ID_RE.test(memberId)) {
+    throw new Error(`Refusing to build a credential helper path for unsafe member id '${memberId}' (allowed: letters, digits, '_', '-').`);
+  }
+  const base = label ? `.fleet-git-credential-${label}` : '.fleet-git-credential';
+  return memberId ? `${base}.${memberId}` : base;
+}
+
+/**
+ * A credential scope URL must survive three quoting layers in
+ * gitCredentialEnvPrefix (the member shell's double quotes, the single quotes
+ * of GIT_CONFIG_PARAMETERS and git's own `key=value` split), so anything but a
+ * plain scheme://host[:port][/path] is refused rather than escaped.
+ */
+export const SAFE_GIT_CREDENTIAL_SCOPE_RE = /^[A-Za-z][A-Za-z0-9+.-]*:\/\/[A-Za-z0-9._~:/@%+,;!*()[\]-]+$/;
+
+export function isSafeGitCredentialScope(scopeUrl: string): boolean {
+  return SAFE_GIT_CREDENTIAL_SCOPE_RE.test(scopeUrl);
+}
+
+/**
+ * Group helpers by scope URL, keeping the given order of scopes and of the
+ * helpers inside each scope, and validate every scope and label.
+ */
+export function groupGitCredentialHelpers(helpers: GitCredentialHelperRegistration[]): Array<{ scopeUrl: string; labels: string[] }> {
+  const groups: Array<{ scopeUrl: string; labels: string[] }> = [];
+  for (const h of helpers) {
+    if (!isSafeGitCredentialScope(h.scopeUrl)) {
+      throw new Error(`Refusing to register a git credential helper for unsafe scope URL '${h.scopeUrl}' (expected scheme://host[:port][/path] with no quotes, spaces, '$', '=' or backslashes).`);
+    }
+    gitCredentialHelperStem(h.label);
+    let g = groups.find(x => x.scopeUrl === h.scopeUrl);
+    if (!g) { g = { scopeUrl: h.scopeUrl, labels: [] }; groups.push(g); }
+    if (!g.labels.includes(h.label)) g.labels.push(h.label);
+  }
+  return groups;
 }

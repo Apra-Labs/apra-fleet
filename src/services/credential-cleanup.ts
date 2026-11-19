@@ -1,12 +1,9 @@
 import { getAllAgents } from './registry.js';
 import { listVcsCredentials, forgetVcsCredential } from './vcs-credential-record.js';
+import { revokeVcsCredential } from './vcs-credential-revoke.js';
 import { getStrategy } from './strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getAgentOS, getAgentShell } from '../utils/agent-helpers.js';
-import { githubProvider } from './vcs/github.js';
-import { bitbucketProvider } from './vcs/bitbucket.js';
-import { azureDevOpsProvider } from './vcs/azure-devops.js';
-import type { VcsProviderService } from './vcs/types.js';
 
 // apra-fleet-5co8.5.1: setTimeout's delay is a signed 32-bit int internally;
 // Node (and browsers) SILENTLY CLAMP an overflowing delay to ~1ms rather than
@@ -21,11 +18,6 @@ const MAX_TIMEOUT_MS = 2 ** 31 - 1; // ~24.8 days
 
 const cleanupTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
-const providers: Record<string, VcsProviderService> = {
-  github: githubProvider,
-  bitbucket: bitbucketProvider,
-  'azure-devops': azureDevOpsProvider,
-};
 
 /** Timer key: one cleanup timer per member AND label (labels and member ids never contain '|'). */
 export function cleanupTimerKey(agentId: string, label: string | undefined): string {
@@ -86,9 +78,6 @@ export function scheduleCredentialCleanup(agentId: string, label: string | undef
       const entry = listVcsCredentials(agent).find(e => e.label === label);
       if (!entry) return;
 
-      const service = providers[entry.provider];
-      if (!service) return;
-
       const strategy = getStrategy(agent);
       const conn = await strategy.testConnection();
       if (!conn.ok) return;
@@ -99,8 +88,8 @@ export function scheduleCredentialCleanup(agentId: string, label: string | undef
         return result.stdout;
       };
 
-      await service.revoke(agent, cmds, exec, entry.label, entry.scopeUrl);
-      forgetVcsCredential(agentId, entry.label);
+      const result = await revokeVcsCredential(agent, entry, cmds, exec);
+      if (result.success) forgetVcsCredential(agentId, entry.label);
     } catch { /* silent -- best-effort cleanup */ }
   }, delayMs);
 

@@ -36,6 +36,8 @@ export interface VcsCredentialEntry {
   provider: VcsCredentialRecord['provider'];
   scopeUrl: string | undefined;
   expiresAt?: string;
+  /** See VcsCredentialRecord.memberScoped; never set on a migrated legacy entry. */
+  memberScoped?: boolean;
 }
 
 function defaultScopeUrl(provider: VcsCredentialRecord['provider']): string {
@@ -63,6 +65,7 @@ export function listVcsCredentials(agent: Agent): VcsCredentialEntry[] {
   }
   return Object.entries(getVcsCredentials(agent)).map(([label, r]) => ({
     label, provider: r.provider, scopeUrl: r.scopeUrl, expiresAt: r.expiresAt,
+    ...(r.memberScoped ? { memberScoped: true } : {}),
   }));
 }
 

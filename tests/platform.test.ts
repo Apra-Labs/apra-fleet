@@ -371,26 +371,28 @@ describe('OsCommands via getOsCommands', () => {
 
   describe('git credential helper', () => {
     for (const [name, cmds] of all) {
-      it(`${name}: gitCredentialHelperWrite uses host-specific credential config key`, () => {
-        const cmd = cmds.gitCredentialHelperWrite('github.com', 'x-access-token', 'ghs_testtoken123');
+      // The helper is registered for git through the dispatch environment
+      // (gitCredentialEnvPrefix), never in a git config file.
+      it(`${name}: gitCredentialHelperWrite writes the per-member helper file and touches no git config`, () => {
+        const cmd = cmds.gitCredentialHelperWrite('github.com', 'x-access-token', 'ghs_testtoken123', 'github', undefined, 'member-1');
         expect(cmd).toContain('github.com');
         expect(cmd).toContain('x-access-token');
-        expect(cmd).toContain('credential.https://github.com.helper');
-        expect(cmd).toContain('fleet-git-credential');
+        expect(cmd).toContain('.fleet-git-credential-github.member-1');
+        expect(cmd).not.toContain('git config');
+        expect(cmd).not.toContain('--global');
       });
 
-      it(`${name}: gitCredentialHelperWrite writes stack-reset empty entry before helper`, () => {
-        const cmd = cmds.gitCredentialHelperWrite('github.com', 'x-access-token', 'ghs_testtoken123');
-        const replacePos = cmd.indexOf('--replace-all');
-        const addPos = cmd.indexOf('--add');
-        expect(replacePos).toBeGreaterThan(-1);
-        expect(addPos).toBeGreaterThan(-1);
-        expect(replacePos).toBeLessThan(addPos);
+      it(`${name}: gitCredentialHelperRemove deletes the per-member helper file and touches no git config`, () => {
+        const cmd = cmds.gitCredentialHelperRemove('github.com', 'github', undefined, 'member-1');
+        expect(cmd).toContain('.fleet-git-credential-github.member-1');
+        expect(cmd).not.toContain('git config');
+        expect(cmd).not.toContain('--global');
       });
 
-      it(`${name}: gitCredentialHelperRemove cleans up host-specific git config entry`, () => {
-        const cmd = cmds.gitCredentialHelperRemove('github.com');
-        expect(cmd).toContain('fleet-git-credential');
+      it(`${name}: gitCredentialHelperRemoveLegacyGlobal cleans up the shared legacy file and its global config key`, () => {
+        const cmd = cmds.gitCredentialHelperRemoveLegacyGlobal('github.com', 'github');
+        expect(cmd).toContain('.fleet-git-credential-github');
+        expect(cmd).not.toMatch(/\.fleet-git-credential-github\.(?!bat)/);
         expect(cmd).toContain('credential.https://github.com.helper');
         expect(cmd).toContain('--unset-all');
       });
@@ -443,7 +445,7 @@ describe('OsCommands via getOsCommands', () => {
           const cmd = cmds.gitCredentialHelperWrite(host, user, token);
           expect(cmd).toContain(host);
           expect(cmd).toContain(token);
-          expect(cmd).toContain(`credential.https://${host}.helper`);
+          expect(cmd).not.toContain('git config');
         });
       }
     }

@@ -5,6 +5,9 @@ import { getAgentOS, getAgentShell, touchAgent, checkVcsTokenExpiry } from '../u
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { getAgent } from '../services/registry.js';
 import { getVcsCredentials, recordVcsCredential } from '../services/vcs-credential-record.js';
+import { revokeVcsCredential } from '../services/vcs-credential-revoke.js';
+import { vcsGitEnvPrefix } from '../services/vcs-git-env.js';
+import { isSafeGitCredentialScope } from '../os/os-commands.js';
 import { credentialResolve } from '../services/credential-store.js';
 import { collectOobApiKey } from '../services/auth-socket.js';
 import { decryptPassword } from '../utils/crypto.js';
@@ -116,7 +119,7 @@ export const provisionVcsAuthSchema = z.object({
   provider: z.enum(['github', 'bitbucket', 'azure-devops']).describe('VCS provider to configure'),
   label: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/).optional().describe('Credential label (slug, e.g. "work-github"). Defaults to provider name. Enables multiple credentials per provider.'),
   non_interactive: z.boolean().optional().describe('When true, never prompt out of band: a missing secret field (api_token / pat / token) returns ok=false with reason credential_missing naming the field. Use from automation that has no operator at a terminal. Default false.'),
-  scope_url: z.string().optional().describe('Git credential scope URL (e.g. "https://github.com/my-org"). Defaults to "https://<host>". For an Azure DevOps repo on the legacy host, pass "https://ORG.visualstudio.com" so the PAT is bound to the host the member actually pushes to.'),
+  scope_url: z.string().optional().describe('Git credential scope URL (e.g. "https://github.com/my-org"). Defaults to "https://<host>". For an Azure DevOps repo on the legacy host, pass "https://ORG.visualstudio.com" so the PAT is bound to the host the member actually pushes to. Must be a plain scheme://host[:port][/path] URL (no quotes, spaces, dollar signs, equals signs, query, fragment or backslashes).'),
 
   // GitHub fields
   github_mode: z.enum(['github-app', 'pat']).optional().describe('GitHub auth mode: github-app (mint via configured app) or pat (personal access token)'),
@@ -189,7 +192,9 @@ export type ProvisionVcsAuthReason =
   /** service.deploy() threw. */
   | 'deploy_threw'
   /** service.deploy() returned success:false. */
-  | 'deploy_failed';
+  | 'deploy_failed'
+  /** scope_url is not a plain scheme://host[:port][/path] URL; nothing was deployed. */
+  | 'scope_url_invalid';
 
 interface ProvisionVcsAuthFields {
   /** True when the credential was actually deployed onto the member. */
@@ -387,6 +392,15 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<Pr
 
   const host = PROVIDER_HOSTS[input.provider];
   const scopeUrl = input.scope_url ?? `https://${host}`;
+  // The scope URL is registered for git through the member's dispatch
+  // environment (src/services/vcs-git-env.ts), where it must survive several
+  // quoting layers unescaped -- refuse anything but a plain URL up front.
+  if (!isSafeGitCredentialScope(scopeUrl)) {
+    return vcsResult(
+      `[FAIL] scope_url "${scopeUrl}" is not a plain scheme://host[:port][/path] URL (no quotes, spaces, '$', '=', '?', '#' or backslashes). Nothing was deployed.`,
+      { ...who, reason: 'scope_url_invalid' },
+    );
+  }
 
   // Cancel the cleanup timer of THIS label only: every other label this
   // member holds keeps its own timer (src/services/credential-cleanup.ts).
@@ -425,35 +439,19 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<Pr
   // failing with "could not read Username" while the token on disk was still
   // valid for the better part of an hour).
   //
-  // Dropping the config half costs nothing: gitCredentialHelperWrite's own
-  // `git config --global --replace-all "credential.<url>.helper" ""` already
-  // clears every existing value of that key before re-adding the new one, on
-  // all three OS command implementations. So the unset was pure redundancy
-  // with a destructive failure mode. The FILE removal is kept (rather than
-  // dropping the step wholesale) so a pre-label install does not keep an
-  // orphaned, still-valid token on disk -- the security wart PR #473 called
-  // out.
+  // Dropping the config half costs nothing: helpers are no longer registered
+  // in any git config file at all (src/services/vcs-git-env.ts). The FILE
+  // removal is kept so a pre-label install does not keep an orphaned,
+  // still-valid token on disk -- the security wart PR #473 called out.
   try {
     await exec(cmds.gitCredentialHelperRemoveLegacyFile());
   } catch { /* best-effort */ }
 
-  // Supersede-revoke: only when THIS label was previously provisioned with a
-  // different scopeUrl or provider. Its old git-config registration is keyed
-  // by the old scope (and its file may belong to another provider), so the
-  // write below would not replace it; revoke it with the provider that
-  // deployed it. A same-label/same-scope re-provision (a plain refresh) skips
-  // this: the write overwrites the entry in place. Provisioning a NEW label
+  // What this label held before this provision (read fresh: a concurrent
+  // provision of another label must not be lost). Provisioning a NEW label
   // never touches another label's credential -- a member can hold several
   // labels at once (src/services/vcs-credential-record.ts).
   const previous = getVcsCredentials(getAgent(agent.id) ?? agent)[label];
-  if (previous && (previous.scopeUrl !== scopeUrl || previous.provider !== input.provider)) {
-    const supersededService = providers[previous.provider];
-    if (supersededService) {
-      try {
-        await supersededService.revoke(agent, cmds, exec, label, previous.scopeUrl);
-      } catch { /* best-effort */ }
-    }
-  }
 
   let deployResult;
   try {
@@ -472,20 +470,41 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<Pr
   // SAME credential-helper file/config-key pair, not an unlabeled/default-host
   // guess that could clobber a different, still-valid credential.
   // The record is per label: every other label this member holds is kept.
+  // memberScoped: the helper is this member's own file, registered for git
+  // through the dispatch environment rather than any git config file.
   const expiresAt = deployResult.metadata?.expiresAt;
-  recordVcsCredential(agent.id, label, {
+  const fresh = recordVcsCredential(agent.id, label, {
     provider: input.provider,
     scopeUrl,
     ...(expiresAt ? { expiresAt } : {}),
-  });
+    memberScoped: true,
+  }) ?? agent;
+
+  // Migration of a LEGACY entry this label held (a release that wrote the
+  // shared per-OS-user file and the global git config key): only now, after
+  // the new helper is in place and recorded, so a failure above never leaves
+  // the member with no working registration (the 2026-09-11 failure mode).
+  // revokeVcsCredential removes the legacy file and global key only when no
+  // other member runs as the same user on the same host -- it is shared by
+  // all of them. A previous member-scoped entry needs nothing: the same file
+  // was just overwritten and its registration comes from the record.
+  if (previous && !previous.memberScoped) {
+    try {
+      await revokeVcsCredential(agent, { label, ...previous }, cmds, exec);
+    } catch { /* best-effort */ }
+  }
 
   // Schedule auto-cleanup of this label when its token expires
   scheduleCredentialCleanup(agent.id, label, expiresAt);
 
   // Best-effort connectivity test
   let connectivity: VcsDeployResult;
+  // git in the connectivity check finds the new helper the same way every
+  // dispatch does: through the member's git credential environment.
+  const gitEnv = vcsGitEnvPrefix(fresh, cmds);
+  const execWithGitEnv = (cmd: string) => exec(gitEnv + cmd);
   try {
-    connectivity = await service.testConnectivity(agent, exec, scopeUrl, creds);
+    connectivity = await service.testConnectivity(agent, execWithGitEnv, scopeUrl, creds);
   } catch {
     connectivity = { success: false, message: 'connectivity test threw' };
   }

@@ -52,9 +52,13 @@ describe('revokeVcsAuth', () => {
       expect(result).toContain('✅');
       expect(result).toContain('revoked');
 
-      const cmd = mockExecCommand.mock.calls[0][0];
-      expect(cmd).toContain('fleet-git-credential');
-      expect(cmd).toContain('credential.https://');
+      // No record for this label: the member's own per-member file, then the
+      // shared legacy file and its global key (no host+user sharer here).
+      const sent = mockExecCommand.mock.calls.map(c => String(c[0]));
+      expect(sent[0]).toContain(`fleet-git-credential-${provider}.${member.id}`);
+      expect(sent[0]).not.toContain('git config');
+      expect(sent[1]).toContain(`fleet-git-credential-${provider}`);
+      expect(sent[1]).toContain('credential.https://');
     });
   }
 

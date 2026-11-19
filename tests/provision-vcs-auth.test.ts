@@ -8,6 +8,7 @@ import { credentialSet, credentialDelete } from '../src/services/credential-stor
 import { encryptPassword } from '../src/utils/crypto.js';
 import { provisionVcsAuth } from '../src/tools/provision-vcs-auth.js';
 import { githubProvider } from '../src/services/vcs/github.js';
+import { vcsGitEnvPrefix } from '../src/services/vcs-git-env.js';
 import type { SSHExecResult } from '../src/types.js';
 const GIT_CONFIG_PATH = path.join(FLEET_DIR, 'git-config.json');
 
@@ -469,11 +470,12 @@ describe('provisionVcsAuth', () => {
     });
 
     const execCmds = mockExecCommand.mock.calls.map(c => String(c[0]));
-    // A plain refresh fires no supersession revoke, so NOTHING in this deploy
-    // may unset the host-scoped helper key: the re-registration is done
-    // in-place by gitCredentialHelperWrite's own --replace-all + --add.
-    expect(execCmds.some(cmd => cmd.includes('--unset-all'))).toBe(false);
-    expect(execCmds.some(cmd => cmd.includes('--replace-all') && cmd.includes('--add'))).toBe(true);
+    // A plain refresh fires no supersession revoke and touches no git config:
+    // the helper file is overwritten in place, and git finds it through the
+    // dispatch environment, which still names it.
+    expect(execCmds.some(cmd => cmd.includes('--unset-all') || cmd.includes('git config'))).toBe(false);
+    expect(execCmds.some(cmd => cmd.includes(`.fleet-git-credential-live-label.${member.id}`))).toBe(true);
+    expect(vcsGitEnvPrefix(getAgent(member.id)!)).toContain(`.fleet-git-credential-live-label.${member.id}`);
   });
 
   // --- {{secret.NAME}} token resolution ---

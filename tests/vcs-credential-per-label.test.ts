@@ -9,6 +9,7 @@ import { provisionVcsAuth } from '../src/tools/provision-vcs-auth.js';
 import { revokeVcsAuth } from '../src/tools/revoke-vcs-auth.js';
 import { _getCleanupTimers, cancelCredentialCleanup, cleanupTimerKey } from '../src/services/credential-cleanup.js';
 import { getVcsCredentials, listVcsCredentials } from '../src/services/vcs-credential-record.js';
+import { vcsGitEnvPrefix } from '../src/services/vcs-git-env.js';
 import type { SSHExecResult } from '../src/types.js';
 
 const mockExecCommand = vi.fn<(cmd: string, timeout?: number) => Promise<SSHExecResult>>();
@@ -33,9 +34,9 @@ function execCmds(): string[] {
   return mockExecCommand.mock.calls.map(c => String(c[0]));
 }
 
-/** A command that removes the helper of `label` (POSIX member: rm -f of its file). */
+/** A command that removes the per-member helper of `label` (POSIX member: rm -f of its file). */
 function revokesLabel(cmd: string, label: string): boolean {
-  return cmd.includes('rm -f') && cmd.includes(`.fleet-git-credential-${label}"`);
+  return cmd.includes('rm -f') && cmd.includes(`.fleet-git-credential-${label}.`);
 }
 
 async function provisionAz(memberId: string, label: string, opts: { scope?: string; pat?: string } = {}) {
@@ -78,7 +79,7 @@ describe('per-label VCS credential record', () => {
     expect(_getCleanupTimers().has(cleanupTimerKey(member.id, 'az-b'))).toBe(true);
   });
 
-  it('re-provisioning label A with a different scopeUrl revokes only A\'s previous entry', async () => {
+  it('re-provisioning label A with a different scopeUrl re-registers only A (B untouched, old scope gone)', async () => {
     const member = makeTestAgent({ friendlyName: 'rescope', os: 'linux' });
     addAgent(member);
     await provisionAz(member.id, 'az-a', { scope: 'https://dev.azure.com/old-org' });
@@ -87,13 +88,51 @@ describe('per-label VCS credential record', () => {
 
     await provisionAz(member.id, 'az-a', { scope: 'https://dev.azure.com/new-org' });
 
-    const revokes = execCmds().filter(c => c.includes('--unset-all'));
-    expect(revokes).toHaveLength(1);
-    expect(revokes[0]).toContain('credential.https://dev.azure.com/old-org.helper');
-    expect(revokesLabel(revokes[0], 'az-a')).toBe(true);
+    // A member-scoped helper is one file per member+label: the write
+    // overwrites it, and its registration comes from the record, so nothing
+    // has to be revoked -- and label B is never touched.
+    expect(execCmds().filter(c => c.includes('--unset-all') || c.includes('git config'))).toEqual([]);
     expect(execCmds().some(c => c.includes('.fleet-git-credential-az-b'))).toBe(false);
+    const env = vcsGitEnvPrefix(getAgent(member.id)!);
+    expect(env).toContain('credential.https://dev.azure.com/new-org.helper');
+    expect(env).not.toContain('old-org');
     expect(getVcsCredentials(getAgent(member.id)!)['az-a'].scopeUrl).toBe('https://dev.azure.com/new-org');
     expect(getVcsCredentials(getAgent(member.id)!)['az-b']).toBeDefined();
+  });
+
+  it('migration: re-provisioning a label held as a LEGACY entry removes only this member own legacy file and global key, after the deploy', async () => {
+    const member = makeTestAgent({
+      friendlyName: 'legacy-mig', os: 'linux', host: 'build.example', username: 'ci',
+      vcsProvider: 'azure-devops', vcsCredentialLabel: 'az-a', vcsCredentialScopeUrl: 'https://dev.azure.com/old-org',
+    });
+    addAgent(member);
+
+    expect((await provisionAz(member.id, 'az-a', { scope: 'https://dev.azure.com/new-org' })).text).toContain('[OK]');
+
+    const sent = execCmds();
+    const write = sent.findIndex(c => c.includes(`.fleet-git-credential-az-a.${member.id}`) && c.includes('printf'));
+    const legacy = sent.findIndex(c => c.includes('--unset-all'));
+    expect(write).toBeGreaterThan(-1);
+    expect(legacy).toBeGreaterThan(write);
+    expect(sent[legacy]).toContain('credential.https://dev.azure.com/old-org.helper');
+    expect(sent[legacy]).toContain('rm -f "$HOME/.fleet-git-credential-az-a"');
+    expect(sent.filter(c => c.includes('--unset-all'))).toHaveLength(1);
+    expect(getVcsCredentials(getAgent(member.id)!)['az-a']).toMatchObject({ memberScoped: true, scopeUrl: 'https://dev.azure.com/new-org' });
+  });
+
+  it('migration: a legacy entry another member on the same host+user may still use is left in place', async () => {
+    const member = makeTestAgent({
+      friendlyName: 'legacy-shared', os: 'linux', host: 'build.example', username: 'ci',
+      vcsProvider: 'azure-devops', vcsCredentialLabel: 'az-a', vcsCredentialScopeUrl: 'https://dev.azure.com/old-org',
+    });
+    const sibling = makeTestAgent({ friendlyName: 'sibling', os: 'linux', host: 'build.example', username: 'ci' });
+    addAgent(member);
+    addAgent(sibling);
+
+    expect((await provisionAz(member.id, 'az-a')).text).toContain('[OK]');
+
+    expect(execCmds().filter(c => c.includes('--unset-all') || c.includes('"$HOME/.fleet-git-credential-az-a"'))).toEqual([]);
+    expect(getVcsCredentials(getAgent(member.id)!)['az-a'].memberScoped).toBe(true);
   });
 
   it('re-provisioning label A with the same scope issues no revoke', async () => {
@@ -135,7 +174,7 @@ describe('per-label VCS credential record', () => {
 
     expect(execCmds()).toHaveLength(1);
     expect(revokesLabel(execCmds()[0], 'az-a')).toBe(true);
-    expect(execCmds()[0]).toContain('credential.https://dev.azure.com/org-a.helper');
+    expect(execCmds()[0]).not.toContain('git config');
     expect(Object.keys(getVcsCredentials(getAgent(member.id)!))).toEqual(['az-b']);
     expect(getAgent(member.id)!.vcsCredentialLabel).toBe('az-b');
     expect(_getCleanupTimers().has(cleanupTimerKey(member.id, 'az-a'))).toBe(false);

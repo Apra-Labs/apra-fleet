@@ -79,8 +79,14 @@ describe('removeMember - host+user sharer leaves credentials in place', () => {
   });
   afterEach(() => restoreRegistry());
 
-  it('two remote members on one host+user: no credential remove, unset or VCS revoke; result names the sharer', async () => {
-    const member = makeTestAgent({ friendlyName: 'throwaway', os: 'linux', host: 'build.example', username: 'ci', vcsProvider: 'github', llmAuthDelivered: fullRecord() });
+  it('two remote members on one host+user: no credential remove, unset or legacy VCS revoke (own member-scoped helper still revoked); result names the sharer', async () => {
+    const member = makeTestAgent({
+      friendlyName: 'throwaway', os: 'linux', host: 'build.example', username: 'ci', vcsProvider: 'github', llmAuthDelivered: fullRecord(),
+      vcsCredentials: {
+        github: { provider: 'github', scopeUrl: 'https://github.com', memberScoped: true },
+        'old-github': { provider: 'github', scopeUrl: 'https://github.com' },
+      },
+    });
     const sibling = makeTestAgent({ friendlyName: 'keeper', os: 'linux', host: 'BUILD.example', username: 'ci', vcsProvider: 'github', llmAuthDelivered: fullRecord() });
     addAgent(member);
     addAgent(sibling);
@@ -92,12 +98,16 @@ describe('removeMember - host+user sharer leaves credentials in place', () => {
     expect(forbidden.length).toBeGreaterThan(0);
     for (const cmd of forbidden) expect(sent()).not.toContain(cmd);
     expect(sent().some(c => c.includes('sed -i'))).toBe(false);
-    expect(mockRevokeGithub).not.toHaveBeenCalled();
+    // The member's OWN per-member helper is nobody else's: revoked. The
+    // legacy (shared per-OS-user, global) entry is the sharer's too: skipped.
+    expect(mockRevokeGithub.mock.calls.map(c => c[3])).toEqual(['github']);
+    expect(result).toContain('(label old-github)');
+    expect(result).not.toContain('(label github)');
     expect(result).toContain(`"keeper" (${sibling.id})`);
     expect(result).toContain('left in place');
   });
 
-  it('host+user sharer: no label of a multi-label member is revoked, and the note names every label', async () => {
+  it('host+user sharer: no LEGACY label of a multi-label member is revoked, and the note names every legacy label', async () => {
     const member = makeTestAgent({
       friendlyName: 'two-labels', os: 'linux', host: 'build.example', username: 'ci', vcsProvider: 'github',
       vcsCredentials: {
@@ -114,6 +124,24 @@ describe('removeMember - host+user sharer leaves credentials in place', () => {
     expect(mockRevokeGithub).not.toHaveBeenCalled();
     expect(result).toContain('(label github)');
     expect(result).toContain('(label github-issues)');
+  });
+
+  it('host+user sharer: every member-scoped label is revoked and none is listed as left in place', async () => {
+    const member = makeTestAgent({
+      friendlyName: 'scoped-labels', os: 'linux', host: 'build.example', username: 'ci', vcsProvider: 'github',
+      vcsCredentials: {
+        github: { provider: 'github', scopeUrl: 'https://github.com', memberScoped: true },
+        'github-issues': { provider: 'github', scopeUrl: 'https://github.com', memberScoped: true },
+      },
+    });
+    const sibling = makeTestAgent({ friendlyName: 'keeper', os: 'linux', host: 'build.example', username: 'ci' });
+    addAgent(member);
+    addAgent(sibling);
+
+    const result = await removeMember({ member_id: member.id });
+
+    expect(mockRevokeGithub.mock.calls.map(c => c[3])).toEqual(['github', 'github-issues']);
+    expect(result).not.toContain('git credential helper');
   });
 
   it('a single member on that host+user still gets the cleanup commands', async () => {

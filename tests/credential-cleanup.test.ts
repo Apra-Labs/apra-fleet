@@ -203,8 +203,9 @@ describe('scheduleCredentialCleanup', () => {
   // in tests/git-credential-helper-scoping.test.ts by comparing the actual
   // OS command strings.
   it('cleanup for member A never carries member B\'s label/scopeUrl, even when both target the same host', async () => {
-    const memberA = makeAgent({ id: 'member-1', vcsCredentialLabel: 'label-a', vcsCredentialScopeUrl: 'https://github.com' });
-    const memberB = makeAgent({ id: 'member-2', vcsCredentialLabel: 'label-b', vcsCredentialScopeUrl: 'https://github.com' });
+    // Same host and OS user: per-member helpers, so neither is shared.
+    const memberA = makeAgent({ id: 'member-1', vcsCredentials: { 'label-a': { provider: 'github', scopeUrl: 'https://github.com', memberScoped: true } } });
+    const memberB = makeAgent({ id: 'member-2', vcsCredentials: { 'label-b': { provider: 'github', scopeUrl: 'https://github.com', memberScoped: true } } });
     mockGetAllAgents.mockReturnValue([memberA, memberB]);
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 1 });
     mockRevoke.mockResolvedValue({ success: true, message: 'revoked' });
@@ -230,8 +231,8 @@ describe('scheduleCredentialCleanup', () => {
     const member = makeAgent({
       vcsCredentialLabel: undefined,
       vcsCredentials: {
-        'label-a': { provider: 'github', scopeUrl: 'https://github.com/org-a' },
-        'label-b': { provider: 'github', scopeUrl: 'https://github.com/org-b' },
+        'label-a': { provider: 'github', scopeUrl: 'https://github.com/org-a', memberScoped: true },
+        'label-b': { provider: 'github', scopeUrl: 'https://github.com/org-b', memberScoped: true },
       },
     });
     mockGetAllAgents.mockReturnValue([member]);
@@ -249,7 +250,7 @@ describe('scheduleCredentialCleanup', () => {
     expect(_getCleanupTimers().has(key('member-1', 'label-a'))).toBe(false);
     expect(_getCleanupTimers().has(key('member-1', 'label-b'))).toBe(true);
     expect(mockUpdateAgent).toHaveBeenCalledWith('member-1', expect.objectContaining({
-      vcsCredentials: { 'label-b': { provider: 'github', scopeUrl: 'https://github.com/org-b' } },
+      vcsCredentials: { 'label-b': { provider: 'github', scopeUrl: 'https://github.com/org-b', memberScoped: true } },
     }));
   });
 

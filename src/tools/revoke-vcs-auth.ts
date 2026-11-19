@@ -3,21 +3,13 @@ import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getAgentOS, getAgentShell, touchAgent } from '../utils/agent-helpers.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
-import { githubProvider } from '../services/vcs/github.js';
-import { bitbucketProvider } from '../services/vcs/bitbucket.js';
-import { azureDevOpsProvider } from '../services/vcs/azure-devops.js';
 import { PROVIDER_HOSTS } from '../services/vcs/constants.js';
 import { logLine } from '../utils/log-helpers.js';
 import { cancelCredentialCleanup } from '../services/credential-cleanup.js';
-import { listVcsCredentials, forgetVcsCredential } from '../services/vcs-credential-record.js';
+import { listVcsCredentials, forgetVcsCredential, type VcsCredentialEntry } from '../services/vcs-credential-record.js';
+import { revokeVcsCredential } from '../services/vcs-credential-revoke.js';
 import type { Agent } from '../types.js';
-import type { VcsProviderService } from '../services/vcs/types.js';
 
-const providers: Record<string, VcsProviderService> = {
-  'github': githubProvider,
-  'bitbucket': bitbucketProvider,
-  'azure-devops': azureDevOpsProvider,
-};
 
 export const revokeVcsAuthSchema = z.object({
   ...memberIdentifier,
@@ -32,8 +24,6 @@ export async function revokeVcsAuth(input: RevokeVcsAuthInput): Promise<string> 
   const agentOrError = resolveMember(input.member_id, input.member_name);
   if (typeof agentOrError === 'string') return agentOrError;
   const agent = agentOrError as Agent;
-
-  const service = providers[input.provider];
 
   const strategy = getStrategy(agent);
   const conn = await strategy.testConnection();
@@ -55,29 +45,40 @@ export async function revokeVcsAuth(input: RevokeVcsAuthInput): Promise<string> 
   // timer is cancelled; other labels are untouched.
   const host = PROVIDER_HOSTS[input.provider];
   const recorded = listVcsCredentials(agent);
-  const targets: Array<{ label: string | undefined; scopeUrl: string }> = [];
+  // A label with no record is treated as a legacy entry: its own per-member
+  // file (if any) and the shared legacy file/global key are removed -- the
+  // latter only when no other member runs as the same user on the same host
+  // (src/services/vcs-credential-revoke.ts).
+  const targets: VcsCredentialEntry[] = [];
   if (input.label !== undefined) {
     const entry = recorded.find(e => e.label === input.label);
-    targets.push({ label: input.label, scopeUrl: input.scope_url ?? entry?.scopeUrl ?? `https://${host}` });
+    targets.push({
+      label: input.label, provider: input.provider,
+      scopeUrl: input.scope_url ?? entry?.scopeUrl ?? `https://${host}`,
+      ...(entry?.memberScoped ? { memberScoped: true } : {}),
+    });
   } else {
     for (const entry of recorded.filter(e => e.provider === input.provider && e.label !== undefined)) {
-      targets.push({ label: entry.label, scopeUrl: input.scope_url ?? entry.scopeUrl ?? `https://${host}` });
+      targets.push({ ...entry, scopeUrl: input.scope_url ?? entry.scopeUrl ?? `https://${host}` });
     }
-    if (targets.length === 0) targets.push({ label: input.provider, scopeUrl: input.scope_url ?? `https://${host}` });
+    if (targets.length === 0) targets.push({ label: input.provider, provider: input.provider, scopeUrl: input.scope_url ?? `https://${host}` });
   }
 
   const messages: string[] = [];
   for (const target of targets) {
     let result;
     try {
-      result = await service.revoke(agent, cmds, exec, target.label, target.scopeUrl);
+      result = await revokeVcsCredential(agent, target, cmds, exec);
     } catch (err: any) {
       return `❌ Failed to revoke ${input.provider} credentials${target.label ? ` (label ${target.label})` : ''} on "${agent.friendlyName}": ${err.message}`;
     }
     if (!result.success) return `❌ ${result.message}`;
     cancelCredentialCleanup(agent.id, target.label);
     if (recorded.some(e => e.label === target.label)) forgetVcsCredential(agent.id, target.label);
-    messages.push(target.label ? `${result.message} (label ${target.label})` : result.message);
+    const left = result.legacyLeftForSharer
+      ? `; the shared legacy helper file and global git config key were left in place because member "${result.legacyLeftForSharer.friendlyName}" runs as the same user on the same host`
+      : '';
+    messages.push(`${result.message}${target.label ? ` (label ${target.label})` : ''}${left}`);
   }
 
   touchAgent(agent.id);

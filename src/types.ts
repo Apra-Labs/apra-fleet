@@ -10,6 +10,11 @@ export interface VcsCredentialRecord {
   scopeUrl: string;
   /** ISO 8601 expiry of the deployed token, when known. */
   expiresAt?: string;
+  /** True when the helper is this member's own per-member file, registered
+   *  through the dispatch environment (src/services/vcs-git-env.ts). Absent on
+   *  an entry deployed by a release that wrote the shared per-OS-user file and
+   *  the global git config key (a "legacy" entry). */
+  memberScoped?: boolean;
 }
 
 export interface Agent {

@@ -660,10 +660,11 @@ export const PR_SKIPPED_NO_MCP_CLIENT = 'pr-skipped-no-mcp-client';
 /**
  * @param {{ os?: string, shell?: string }|string} target
  * @param {string} label
+ * @param {string} [memberId] - set only for a member-scoped helper (member_detail vcsCredentials[].memberScoped)
  * @returns {{ command: string, descriptor: string }}
  */
-export function buildCredentialReadCommand(target, label) {
-    return getSeCommands(target).readCredentialHelper(label);
+export function buildCredentialReadCommand(target, label, memberId) {
+    return getSeCommands(target).readCredentialHelper(label, memberId);
 }
 
 // Splits a VCSModule create-pull-request curl result's captured stdout into
@@ -1712,7 +1713,18 @@ export function createVcsAuthPreflightCallback(opts = {}) {
         }
 
         if (typeof probe.expectedUsername === 'string') {
-            const read = getSeCommands(plan.target).readCredentialHelperUsername(label);
+            // A member-scoped helper is the member's own per-member file. The
+            // record is read fresh: a provision earlier in this run may have
+            // just replaced a shared legacy helper with one.
+            let helperMemberId;
+            try {
+                const rec = await readMemberRecord(member, fleetApi);
+                const entry = rec && Array.isArray(rec.vcsCredentials) ? rec.vcsCredentials.find((e) => e && e.label === label) : null;
+                if (entry && entry.memberScoped === true && typeof rec.id === 'string') helperMemberId = rec.id;
+            } catch {
+                // No record: read the shared legacy helper path.
+            }
+            const read = getSeCommands(plan.target).readCredentialHelperUsername(label, helperMemberId);
             let userRes;
             try {
                 userRes = await command(read.command, { member_name: member, silent: true, failSoft: true });

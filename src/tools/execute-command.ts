@@ -16,6 +16,7 @@ import { LogScope, maskSecrets, truncateForLog, logLine, logWarn } from '../util
 import { getLogPreviewChars } from '../services/user-config.js';
 import { tryKillPid } from '../utils/pid-helpers.js';
 import { preflightCheck } from '../services/preflight-check.js';
+import { vcsGitEnvPrefix } from '../services/vcs-git-env.js';
 import { findSecretTokens, legacyTokenWarning } from '../services/secret-token.js';
 import type { Agent } from '../types.js';
 
@@ -298,6 +299,11 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
     const taskId = 'task-' + Date.now().toString(36);
     registerTaskCredentials(taskId, credentials);
 
+    // The member's git credential helpers (src/services/vcs-git-env.ts),
+    // inside the wrapper so the detached task inherits them: the Windows
+    // wrapper is always PowerShell (run.ps1), the POSIX one always bash.
+    const gitEnv = vcsGitEnvPrefix(agent, agentOsVal === 'windows' ? getOsCommands('windows', 'powershell5') : cmds);
+
     let launchCmd: string;
     if (agentOsVal === 'windows') {
       // Detached spawn via WMI (Invoke-CimMethod Win32_Process.Create): the
@@ -317,8 +323,8 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
       // branch it on isPosixShell (apra-fleet-7dir.5.1).
       const wrapperScript = generateTaskWrapperWindows({
         taskId,
-        command: resolvedCommand,
-        restartCommand: resolvedRestartCommand,
+        command: gitEnv + resolvedCommand,
+        restartCommand: resolvedRestartCommand !== undefined ? gitEnv + resolvedRestartCommand : undefined,
         maxRetries: input.max_retries ?? 3,
         activityIntervalSec: 300,
       });
@@ -349,8 +355,8 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
     } else {
       const wrapperScript = generateTaskWrapper({
         taskId,
-        command: resolvedCommand,
-        restartCommand: resolvedRestartCommand,
+        command: gitEnv + resolvedCommand,
+        restartCommand: resolvedRestartCommand !== undefined ? gitEnv + resolvedRestartCommand : undefined,
         maxRetries: input.max_retries ?? 3,
         activityIntervalSec: 300,
       });
@@ -436,7 +442,9 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
     }
     stagedEnvPath = staged.path;
     const timeoutMs = (input.timeout_s ?? 120) * 1000;
-    const result = await strategy.execCommand(staged.prefix + wrapped, timeoutMs, undefined, onPidCaptured);
+    // The member's git credential helpers are registered for this one command
+    // through its environment (src/services/vcs-git-env.ts).
+    const result = await strategy.execCommand(vcsGitEnvPrefix(agent, cmds) + staged.prefix + wrapped, timeoutMs, undefined, onPidCaptured);
     stagedEnvConsumed = result.code === 0;
     touchAgent(agent.id); // T7: idle manager resets its timer via touchAgent
 

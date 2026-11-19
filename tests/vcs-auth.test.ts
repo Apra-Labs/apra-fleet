@@ -115,7 +115,7 @@ describe('GitHub provider', () => {
     const result = await githubProvider.revoke(makeAgent(), cmds, exec);
     expect(result.success).toBe(true);
     expect(execCalls[0]).toContain('fleet-git-credential');
-    expect(execCalls[0]).toContain('credential.https://github.com.helper');
+    expect(execCalls[0]).not.toContain('git config');
   });
 
   it('testConnectivity: succeeds when git ls-remote works', async () => {
@@ -164,7 +164,7 @@ describe('Bitbucket provider', () => {
 
     const result = await bitbucketProvider.revoke(makeAgent(), cmds, exec);
     expect(result.success).toBe(true);
-    expect(execCalls[0]).toContain('credential.https://bitbucket.org.helper');
+    expect(execCalls[0]).not.toContain('git config');
   });
 
   it('testConnectivity: skips (never a false success) without credentials to verify with', async () => {
@@ -203,10 +203,10 @@ describe('Multi-label credential isolation', () => {
     // (see the ghCliAuth wiring in deployPat) alongside the credential-helper
     // write, so filter to the writes rather than assuming a fixed index.
     const credWrites = execCalls.filter(cmd => cmd.includes('.fleet-git-credential-'));
-    expect(credWrites[0]).toContain('.fleet-git-credential-work-github');
-    expect(credWrites[0]).toContain('credential.https://github.com/work-org.helper');
-    expect(credWrites[1]).toContain('.fleet-git-credential-personal-github');
-    expect(credWrites[1]).toContain('credential.https://github.com/personal.helper');
+    expect(credWrites[0]).toContain('.fleet-git-credential-work-github.test-id');
+    expect(credWrites[0]).not.toContain('git config');
+    expect(credWrites[1]).toContain('.fleet-git-credential-personal-github.test-id');
+    expect(credWrites[1]).not.toContain('git config');
   });
 
   it('revoke with label removes only that label file', async () => {
@@ -215,12 +215,12 @@ describe('Multi-label credential isolation', () => {
 
     await githubProvider.revoke(makeAgent(), cmds, exec, 'work-github', 'https://github.com/work-org');
 
-    expect(execCalls[0]).toContain('.fleet-git-credential-work-github');
-    expect(execCalls[0]).toContain('credential.https://github.com/work-org.helper');
+    expect(execCalls[0]).toContain('.fleet-git-credential-work-github.test-id');
+    expect(execCalls[0]).not.toContain('git config');
     expect(execCalls[0]).not.toContain('personal-github');
   });
 
-  it('deploy without label uses old-style credential file (backward compat)', async () => {
+  it('deploy without label uses the unlabeled per-member credential file', async () => {
     const execCalls: string[] = [];
     const exec = async (cmd: string) => { execCalls.push(cmd); return ''; };
 
@@ -229,7 +229,7 @@ describe('Multi-label credential isolation', () => {
       { email: 'dev@test.com', api_token: 'tok', workspace: 'ws' },
     );
 
-    expect(execCalls[0]).toContain('.fleet-git-credential" &&');
+    expect(execCalls[0]).toContain('.fleet-git-credential.test-id" &&');
     expect(execCalls[0]).not.toContain('.fleet-git-credential-');
   });
 
@@ -243,11 +243,11 @@ describe('Multi-label credential isolation', () => {
       'team-bb', 'https://bitbucket.org/team',
     );
 
-    expect(execCalls[0]).toContain('.fleet-git-credential-team-bb');
-    expect(execCalls[0]).toContain('credential.https://bitbucket.org/team.helper');
+    expect(execCalls[0]).toContain('.fleet-git-credential-team-bb.test-id');
+    expect(execCalls[0]).not.toContain('git config');
   });
 
-  it('two providers with different labels coexist in gitconfig', async () => {
+  it('two providers with different labels coexist as separate per-member files', async () => {
     const execCalls: string[] = [];
     const exec = async (cmd: string) => { execCalls.push(cmd); return ''; };
 
@@ -266,11 +266,11 @@ describe('Multi-label credential isolation', () => {
     // credential-helper write (see deployPat), so filter to the writes rather
     // than assuming a fixed index -- azure-devops has no such extra call.
     const credWrites = execCalls.filter(cmd => cmd.includes('.fleet-git-credential-'));
-    expect(credWrites[0]).toContain('.fleet-git-credential-gh-work');
-    expect(credWrites[1]).toContain('.fleet-git-credential-az-work');
-    // Different scope URLs
-    expect(credWrites[0]).toContain('credential.https://github.com/org.helper');
-    expect(credWrites[1]).toContain('credential.https://dev.azure.com/myorg.helper');
+    expect(credWrites[0]).toContain('.fleet-git-credential-gh-work.test-id');
+    expect(credWrites[1]).toContain('.fleet-git-credential-az-work.test-id');
+    // Neither touches git config: registration is per dispatch (vcs-git-env.ts)
+    expect(credWrites[0]).not.toContain('git config');
+    expect(credWrites[1]).not.toContain('git config');
   });
 });
 
@@ -347,7 +347,7 @@ describe('Azure DevOps provider', () => {
 
     const result = await azureDevOpsProvider.revoke(makeAgent(), cmds, exec);
     expect(result.success).toBe(true);
-    expect(execCalls[0]).toContain('credential.https://dev.azure.com.helper');
+    expect(execCalls[0]).not.toContain('git config');
   });
 
   it('testConnectivity: succeeds when git ls-remote works against a known gitRepos URL', async () => {

@@ -1,7 +1,6 @@
 import { z } from 'zod';
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { removeAgent as removeFromRegistry, getAllAgents, getKeysDir } from '../services/registry.js';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
@@ -15,24 +14,16 @@ import { removeKnownHost } from '../services/known-hosts.js';
 import { writeStatusline, readMemberStatus } from '../services/statusline.js';
 import { cancelCredentialCleanup } from '../services/credential-cleanup.js';
 import { listVcsCredentials } from '../services/vcs-credential-record.js';
+import { authorizedKeysOwner, memberSharingHostUser } from '../services/member-host-user.js';
+import { revokeVcsCredential } from '../services/vcs-credential-revoke.js';
 import { getStallDetector } from '../services/stall/index.js';
 import { removeAgyProject } from '../services/agy-project.js';
-import { githubProvider } from '../services/vcs/github.js';
-import { bitbucketProvider } from '../services/vcs/bitbucket.js';
-import { azureDevOpsProvider } from '../services/vcs/azure-devops.js';
 import type { Agent } from '../types.js';
-import type { VcsProviderService } from '../services/vcs/types.js';
 import { logLine } from '../utils/log-helpers.js';
 import { removeMemberFromOwnInstall, getMemberFleetMcpDeps } from '../services/member-fleet-install.js';
 import { invalidatePreflightCache } from '../services/preflight-check.js';
 import { removeComposedMemberConfig } from './compose-permissions.js';
 import { removeLocalSessionMcpConfig } from '../services/session-mcp-config.js';
-
-const vcsProviders: Record<string, VcsProviderService> = {
-  github: githubProvider,
-  bitbucket: bitbucketProvider,
-  'azure-devops': azureDevOpsProvider,
-};
 
 export const removeMemberSchema = z.object({
   ...memberIdentifier,
@@ -58,20 +49,6 @@ function sameKeyPath(a: string, b: string): boolean {
   return process.platform === 'win32' ? ra.toLowerCase() === rb.toLowerCase() : ra === rb;
 }
 
-// The host+user an authorized_keys file belongs to. Host names are
-// case-insensitive; a local member (and a loopback host) is this machine, and
-// a local member with no recorded username runs as the current OS user.
-function authorizedKeysOwner(a: Agent): { host: string; user: string } {
-  const LOOPBACK = new Set(['localhost', '127.0.0.1', '::1']);
-  let host = (a.host ?? '').trim().toLowerCase();
-  if (a.agentType === 'local' || host === '' || LOOPBACK.has(host)) host = 'localhost';
-  let user = (a.username ?? '').trim();
-  if (!user && a.agentType === 'local') {
-    try { user = os.userInfo().username; } catch { /* keep empty */ }
-  }
-  return { host, user };
-}
-
 // Another registered member that authenticates with the same key file into the
 // same authorized_keys (same host and same user). Revoking the key would lock
 // that member out, so the caller must leave it authorized.
@@ -85,20 +62,6 @@ function memberSharingAuthorizedKey(agent: Agent): Agent | undefined {
   });
 }
 
-// Another registered member that runs as the same user on the same host
-// (keyed on authorizedKeysOwner only, so loopback/local hosts compare equal).
-// The LLM login files, shell-profile auth exports and git credential helper
-// live in that user's home and are shared by every such member: removing them
-// would break that member, so the caller must leave them in place.
-function memberSharingHostUser(agent: Agent): Agent | undefined {
-  const mine = authorizedKeysOwner(agent);
-  if (!mine.user) return undefined;
-  return getAllAgents().find(a => {
-    if (a.id === agent.id) return false;
-    const theirs = authorizedKeysOwner(a);
-    return theirs.host === mine.host && theirs.user === mine.user;
-  });
-}
 
 export async function removeMember(input: RemoveMemberInput): Promise<string> {
   const agentOrError = resolveMember(input.member_id, input.member_name);
@@ -212,8 +175,8 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
           const left: string[] = [];
           if (credentialFiles.length > 0) left.push(`LLM login files (${credentialFiles.map(f => f.remotePath).join(', ')})`);
           if (authVars.length > 0) left.push(`auth env vars in shell profiles / user environment (${authVars.join(', ')})`);
-          for (const vcs of listVcsCredentials(agent)) {
-            left.push(`the ${vcs.provider} git credential helper${vcs.label ? ` (label ${vcs.label})` : ''}`);
+          for (const vcs of listVcsCredentials(agent).filter(e => !e.memberScoped)) {
+            left.push(`the shared (legacy) ${vcs.provider} git credential helper${vcs.label ? ` (label ${vcs.label})` : ''}`);
           }
           notes.push(`Credentials were left in place on ${owner.host} for user ${owner.user} because member "${hostUserSharer.friendlyName}" (${hostUserSharer.id}) runs as the same user on the same host and still uses them: ${left.length > 0 ? left.join('; ') : 'nothing credential-related was configured'}`);
         }
@@ -259,14 +222,13 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
         // one actually deployed, leaving the real token file orphaned,
         // unrevoked, on a machine that is being decommissioned.
         // Every recorded label is revoked, each with the provider that
-        // deployed it (src/services/vcs-credential-record.ts).
-        if (!hostUserSharer) {
-          for (const vcs of listVcsCredentials(agent)) {
-            const vcsService = vcsProviders[vcs.provider];
-            if (vcsService) {
-              await vcsService.revoke(agent, cmds, exec, vcs.label, vcs.scopeUrl).catch(() => {});
-            }
-          }
+        // deployed it (src/services/vcs-credential-record.ts). The member's
+        // own per-member helpers are removed even when a host+user sharer
+        // exists -- they are nobody else's. A LEGACY entry (the shared
+        // per-OS-user file and global git config key) is skipped when a sharer
+        // exists (src/services/vcs-credential-revoke.ts).
+        for (const vcs of listVcsCredentials(agent)) {
+          await revokeVcsCredential(agent, vcs, cmds, exec).catch(() => {});
         }
 
         // SSH key removal: remove fleet public key from remote authorized_keys

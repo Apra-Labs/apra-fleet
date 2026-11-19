@@ -200,6 +200,16 @@ git config --global credential.helper ~/.fleet-git-credential`);
 }
 ```
 
+> As implemented, the helper is NOT registered in the global (or any) git config:
+> several members can run as one OS user on one host, and a global entry was shared
+> and overwritten by each of them. `provision_vcs_auth` writes one helper file per
+> member AND label (`.fleet-git-credential-<label>.<member id>` in the member home)
+> and records it on the member (`vcsCredentials`). Every fleet dispatch to the member
+> (execute_command, execute_prompt, vcs_credential_exec) prepends a statement that
+> sets `GIT_CONFIG_PARAMETERS` for that one command, registering exactly that
+> member's helpers per scope URL, so every git it starts -- in the clone, a worktree,
+> or bd/dolt's own cache repository -- finds them. See `src/services/vcs-git-env.ts`.
+
 ### Backend: Azure DevOps
 
 Use an **Azure AD App Registration** (Service Principal):

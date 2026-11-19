@@ -2,7 +2,8 @@ import { defaultWindowsPidWrapper } from './windows-wrapper.js';
 export { defaultWindowsPidWrapper as pidWrapWindows };
 ﻿import { execFileSync } from 'node:child_process';
 import type { OsCommands, ProviderAdapter, PromptOptions, UnsetEnvOptions } from './os-commands.js';
-import { escapeWindowsArg, sanitizeSessionId, GIT_LS_REMOTE_OK_MARKER } from './os-commands.js';
+import { escapeWindowsArg, sanitizeSessionId, GIT_LS_REMOTE_OK_MARKER, gitCredentialHelperStem, groupGitCredentialHelpers } from './os-commands.js';
+import type { GitCredentialHelperRegistration } from './os-commands.js';
 import { escapeBatchMetachars, escapePowerShellArgInner } from '../utils/shell-escape.js';
 import { boundChildEnv, describeBoundedEnv } from './child-env-bound.js';
 import { logWarn } from '../utils/log-helpers.js';
@@ -361,20 +362,18 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
 
   // --- Git credential helper ---
 
-  gitCredentialHelperWrite(host: string, username: string, token: string, label?: string, scopeUrl?: string): string {
+  gitCredentialHelperWrite(host: string, username: string, token: string, label?: string, _scopeUrl?: string, memberId?: string): string {
     const escapedHost = escapePowerShellArgInner(escapeWindowsArg(host));
     const escapedUser = escapePowerShellArgInner(escapeWindowsArg(username));
     const batchToken = escapeBatchMetachars(token);
     const escapedToken = escapePowerShellArgInner(batchToken);
-    const credFileName = label ? `.fleet-git-credential-${escapePowerShellArgInner(escapeWindowsArg(label))}` : '.fleet-git-credential';
-    // scope_url is passed through escapeWindowsArg (single-quote escaped) and embedded in a single-quoted git config arg — safe against injection.
-    const credUrl = scopeUrl ? escapePowerShellArgInner(escapeWindowsArg(scopeUrl)) : `https://${escapedHost}`;
+    // Per member AND label, registered nowhere in git config: git finds it
+    // through gitCredentialEnvPrefix() at dispatch time.
+    const credFileName = gitCredentialHelperStem(label, memberId);
     return [
       `$script = ('@echo off','echo protocol=https','echo host=${escapedHost}','echo username=${escapedUser}','echo password=${escapedToken}') -join [Environment]::NewLine`,
       `Set-Content -Path "$env:USERPROFILE\\${credFileName}.bat" -Value $script -NoNewline`,
       `$gcFile = "$env:USERPROFILE\\${credFileName}.bat"; $u = $env:USERNAME; icacls $gcFile /inheritance:r /grant:r "\${u}:F"`,
-      `git config --global --replace-all 'credential.${credUrl}.helper' ''`,
-      `$helperPath = "$env:USERPROFILE\\${credFileName}.bat" -replace '\\\\','/'; git config --global --add 'credential.${credUrl}.helper' $helperPath`,
     ].join('; ');
   }
 
@@ -383,27 +382,52 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
     return `Remove-Item "$env:USERPROFILE\\.fleet-git-credential.bat" -Force -ErrorAction SilentlyContinue`;
   }
 
-  gitCredentialHelperRead(label?: string): { command: string; path: string } {
-    // Unlike the POSIX branch, the label here is interpolated into a
-    // PowerShell double-quoted string AND a filename, so anything outside a
-    // safe slug alphabet is refused outright rather than escaped -- the same
-    // rule the fleet-sprint side applies in se-windows.mjs.
-    if (label !== undefined && !/^[A-Za-z0-9._-]+$/.test(label)) {
-      throw new Error(`Refusing to build a Windows credential-read command for unsafe VCS credential label '${label}' (allowed: letters, digits, '.', '_', '-').`);
-    }
-    const credFileName = label ? `.fleet-git-credential-${label}` : '.fleet-git-credential';
-    const credPath = `$env:USERPROFILE\\${credFileName}.bat`;
+  gitCredentialHelperRead(label?: string, memberId?: string): { command: string; path: string } {
+    // The label and member id land in a PowerShell double-quoted string AND a
+    // filename, so gitCredentialHelperStem refuses anything outside a safe
+    // slug alphabet rather than escaping it.
+    const credPath = `$env:USERPROFILE\\${gitCredentialHelperStem(label, memberId)}.bat`;
     // `&` is PowerShell's call operator: without it a quoted path is echoed as
     // a string literal rather than executed.
     return { command: `& "${credPath}"`, path: credPath };
   }
 
-  gitCredentialHelperRemove(host: string, label?: string, scopeUrl?: string): string {
+  gitCredentialHelperRemove(_host: string, label?: string, _scopeUrl?: string, memberId?: string): string {
+    return `Remove-Item "$env:USERPROFILE\\${gitCredentialHelperStem(label, memberId)}.bat" -Force -ErrorAction SilentlyContinue`;
+  }
+
+  gitCredentialHelperRemoveLegacyGlobal(host: string, label?: string, scopeUrl?: string): string {
     const escapedHost = escapePowerShellArgInner(escapeWindowsArg(host));
-    const credFileName = label ? `.fleet-git-credential-${escapePowerShellArgInner(escapeWindowsArg(label))}` : '.fleet-git-credential';
-    // scope_url is passed through escapeWindowsArg (single-quote escaped) and embedded in a single-quoted git config arg — safe against injection.
+    const credFileName = gitCredentialHelperStem(label);
+    // scope_url is passed through escapeWindowsArg (single-quote escaped) and embedded in a single-quoted git config arg -- safe against injection.
     const credUrl = scopeUrl ? escapePowerShellArgInner(escapeWindowsArg(scopeUrl)) : `https://${escapedHost}`;
     return `Remove-Item "$env:USERPROFILE\\${credFileName}.bat" -Force -ErrorAction SilentlyContinue; git config --global --unset-all 'credential.${credUrl}.helper' 2>$null`;
+  }
+
+  gitCredentialEnvPrefix(helpers: GitCredentialHelperRegistration[], memberId: string): string {
+    const groups = groupGitCredentialHelpers(helpers);
+    if (groups.length === 0) return '';
+    gitCredentialHelperStem(undefined, memberId);
+    // GIT_CONFIG_PARAMETERS (not GIT_CONFIG_COUNT/KEY/VALUE): PowerShell and
+    // .NET DELETE a variable assigned an empty string, so the empty value that
+    // resets git's inherited helper list cannot be an env var of its own --
+    // inside GIT_CONFIG_PARAMETERS it is just the text after '='. The helper
+    // path is built from $env:USERPROFILE at run time, in git's forward-slash
+    // form. Scopes and labels are validated to a charset needing no escaping
+    // inside a PowerShell double-quoted string.
+    const parts: string[] = [];
+    let literal = '';
+    for (const g of groups) {
+      literal += `${literal ? ' ' : ''}'credential.${g.scopeUrl}.helper='`;
+      for (const label of g.labels) {
+        literal += ` 'credential.${g.scopeUrl}.helper=`;
+        parts.push(`"${literal}"`);
+        parts.push(`("$env:USERPROFILE\\${gitCredentialHelperStem(label, memberId)}.bat" -replace '\\\\','/')`);
+        literal = `'`;
+      }
+    }
+    parts.push(`"${literal}"`);
+    return `$env:GIT_CONFIG_PARAMETERS = ${parts.join(' + ')}; `;
   }
 
   ghAuthLogin(token: string, hostname = 'github.com'): string {

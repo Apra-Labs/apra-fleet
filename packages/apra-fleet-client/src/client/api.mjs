@@ -436,6 +436,10 @@
  * @property {string} folder - Working directory on the target machine
  * @property {string} [repo_remote_url] - Origin URL of the git repo in `folder`, when known
  * @property {string} [vcsProvider] - VCS provider configured for this member
+ * @property {Array<{label: string, provider: string, scopeUrl: string|null, expiresAt: string|null,
+ *   memberScoped: boolean}>} [vcsCredentials] - Every VCS credential label the member holds (never
+ *   the token). memberScoped: the helper is the member's own per-member file
+ *   (`.fleet-git-credential-<label>.<member id>` in the member home), not the shared legacy one.
  * @property {"read" | "push" | "push+pr" | "admin" | "issues" | "full"} [gitAccess] - Git access level
  *   this member's VCS credentials are minted at (register_member/update_member's git_access). Absent
  *   when the member was registered without an explicit level. Consumers that need to know whether a
@@ -612,9 +616,10 @@
  *   "member_not_found" | "member_offline" | "secret_variable_not_found" |
  *   "secret_variable_denied" | "secret_variable_expired" | "oob_cancelled" |
  *   "credential_missing" | "credential_assembly_unsupported" | "credential_assembly_failed" |
- *   "deploy_threw" | "deploy_failed"} reason - Machine-readable outcome code. Branch on this,
- *   never on the text. "credential_missing": non_interactive was set and the secret field is
- *   absent (message names it; nothing was prompted).
+ *   "deploy_threw" | "deploy_failed" | "scope_url_invalid"} reason - Machine-readable outcome
+ *   code. Branch on this, never on the text. "credential_missing": non_interactive was set and
+ *   the secret field is absent (message names it; nothing was prompted). "scope_url_invalid":
+ *   scope_url is not a plain scheme://host[:port][/path] URL; nothing was deployed.
  * @property {string} provider - The VCS provider requested.
  * @property {string} credentialLabel - Credential label the helper was deployed under
  *   (defaults to the provider name).
@@ -655,6 +660,7 @@
  *   field (api_token / pat / token) returns ok=false with reason "credential_missing" naming the
  *   field. Required non-secret fields are validated before any prompt in both modes. Default false.
  * @property {string} [scope_url] - Git credential scope URL (e.g. "https://github.com/my-org").
+ *   Must be a plain scheme://host[:port][/path] URL, else reason "scope_url_invalid".
  *   Defaults to "https://<host>". For an Azure DevOps repo on the legacy host, pass
  *   "https://ORG.visualstudio.com" so the PAT is bound to the host the member pushes to.
  * @property {"github-app" | "pat"} [github_mode] - GitHub auth mode: github-app (mint via
