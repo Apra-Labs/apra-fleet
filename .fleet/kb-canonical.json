@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "5a171212f2e1eee116e7f58e2ea29648ffb8ff1f",
     "branch": "main",
-    "entry_count": 166
+    "entry_count": 169
   },
   "entries": [
     {
@@ -1634,6 +1634,28 @@
       }
     },
     {
+      "id": "7cd8f0f1-59eb-477e-9dd5-cdd3fe104b89",
+      "type": "knowledge",
+      "title": "PowerShell cannot set an empty env var; use GIT_CONFIG_PARAMETERS for the git helper reset",
+      "summary": "PowerShell ($env:X='') and .NET SetEnvironmentVariable delete a variable assigned an empty string. So GIT_CONFIG_COUNT/KEY/VALUE cannot carry the empty value that resets git's credential helper list on Windows members. The old-style GIT_CONFIG_PARAMETERS string can.",
+      "symbols": [
+        "gitCredentialEnvPrefix",
+        "groupGitCredentialHelpers"
+      ],
+      "source_files": [
+        "src/os/windows.ts",
+        "src/os/linux.ts",
+        "src/os/os-commands.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-19T02:33:47.701Z",
+      "source_file_hashes": {
+        "src/os/linux.ts": "8aa7da54946e298aa61c73652ee508ba31c8fc12",
+        "src/os/os-commands.ts": "680aa7fd77d7391da3cd2777bc7c67b32a966dd4",
+        "src/os/windows.ts": "e362b142cc098d7aa808ea52f7a55c1bb0d0b00a"
+      }
+    },
+    {
       "id": "7d7320d0-ed80-4b16-8ac8-c5df806cea55",
       "type": "knowledge",
       "title": "member-init install-currency warning is recorded under a non-gating step",
@@ -3044,6 +3066,29 @@
       "updated_at": "2026-10-01T22:08:20.219Z"
     },
     {
+      "id": "e8bbf6b2-b5ed-4a54-9216-d228f0b7709f",
+      "type": "knowledge",
+      "title": "dolt-settle binary-lock kill uses a per-member pidfile, never the binary path",
+      "summary": "spawnEphemeralServer appends '<pid> <port>' to ~/.apra-fleet/settle-dolt-<member>.pids; killProcessAtPath kills only those pids after re-checking the live command line, and when it kills nothing ensurePinnedDolt skips the install retry and takes the unpinned fallback.",
+      "symbols": [
+        "settlePidfile",
+        "killProcessAtPath",
+        "ensurePinnedDolt",
+        "spawnEphemeralServer",
+        "killServerAndVerify"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/dolt-settle.mjs",
+        "packages/apra-fleet-se/test/dolt-settle-member-scoped-kill.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-19T02:33:47.908Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/dolt-settle.mjs": "ebe9f0cb00ab638eda3341db17e4892d8867db61",
+        "packages/apra-fleet-se/test/dolt-settle-member-scoped-kill.test.mjs": "f861b6f6a43ce96b6a4c61b75b9a11bd0210557d"
+      }
+    },
+    {
       "id": "e8eef38a-b7e3-45e4-b6e5-87941d2a40e8",
       "type": "knowledge",
       "title": "Lane order ignores containers: lowerOrderLaneMates is the single lane-mate rule",
@@ -3470,6 +3515,32 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:39.384Z"
+    },
+    {
+      "id": "ff666b0a-63af-4ad4-a9e4-d268116769a0",
+      "type": "knowledge",
+      "title": "Supervisor liveness: supervisor.json heartbeat read by core status, stale after 3 intervals",
+      "summary": "The supervisor rewrites <dataDir>/supervisor.json atomically every FLEET_SE_HEARTBEAT_INTERVAL_MS (default 15s) and keeps it with stoppedAt on clean stop; core readSupervisorLiveness reports DOWN when updatedAt is older than 3x intervalMs or the pid is dead.",
+      "symbols": [
+        "createHeartbeat",
+        "readSupervisorLiveness",
+        "formatSupervisorLine",
+        "resolveSupervisorDataDir"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/src/supervisor/heartbeat.mjs",
+        "packages/apra-fleet-se/bin/serve.mjs",
+        "src/cli/supervisor-liveness.ts",
+        "src/cli/status.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-19T02:33:47.803Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/bin/serve.mjs": "d406b418f225a8a3a56e052247789d1380976bd3",
+        "packages/apra-fleet-se/src/supervisor/heartbeat.mjs": "5b0ec973c852946a5943967a4dc3601592a3f9ad",
+        "src/cli/status.ts": "4f063654a442fff109d4b5d7f7de801e53e35dfc",
+        "src/cli/supervisor-liveness.ts": "b9c5f827bf9c8b82ef432bc03c3330eda5e54411"
+      }
     }
   ],
   "demotions": [
