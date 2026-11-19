@@ -1334,3 +1334,27 @@ time later than the `last ok call` time (or the error reason is `rejected`),
 the secret exists but the server no longer accepts its value, so the refresher
 is stale or the server token was rotated. `resolves: unreadable` means the
 credential store itself could not be read or decrypted. See [Named credentials](#named-credentials-and-refreshers).
+
+## Discovering KB capabilities (`kb_capabilities`)
+
+`kb_capabilities` is a read-only tool that tells a caller which optional routes
+the project KB serves, so a client can decide whether to call `kb_demote`,
+`kb_withdraw`-style paths or filtered `kb_query` before trying them.
+
+- **http KB**: the server's `GET /api/kb/capabilities` body is returned
+  unchanged (`{contract, routes, branch_aware, query_filters?}`). It is
+  fetched fresh and not cached; the normalized view used internally to gate
+  routes is a separate, cached read of the same endpoint.
+- **SQLite KB**: a fixed local answer (`KB_LOCAL_CAPABILITIES`) that includes
+  `demote` and `withdraw`. The sample kb-server imports this same constant, so
+  the local answer and the reference server answer cannot drift apart.
+- **Any other provider**: a loud error, never a guessed answer.
+- **Errors** follow the route-gating rules: a 404/501 or empty body means the
+  default capability set; a partly typed body is `E-KB-HTTP-UNSUPPORTED`; a
+  5xx/429 is `E-KB-HTTP-UNREACHABLE`.
+- **Profiles**: served by the `full` and `custom` KB tool profiles, hidden by
+  `developer`.
+- **Contract**: specified in memory-contract v1 as method X-12, with schemas,
+  bindings, recorded fixtures (SQLite and http happy path) and roundtrip
+  assertions. Changing the tool means updating those and
+  `packages/apra-fleet-client` together.
