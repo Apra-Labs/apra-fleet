@@ -51,6 +51,7 @@ import * as kbProvidersModule from '../src/services/knowledge/kb-providers.js';
 import { computeHeadFileHashBatch } from '../src/services/knowledge/file-hash.js';
 import type { KBEntryInput } from '../src/services/knowledge/types.js';
 import { commitWorkTree } from './helpers/commit-work-tree.js';
+import { KB_SERVER_CAPABILITIES } from '../src/commands/kb-server.js';
 
 const RECONNECT = { maxRetries: 0, maxReconnectionDelay: 100, initialReconnectionDelay: 100, reconnectionDelayGrowFactor: 1 };
 
@@ -1167,5 +1168,36 @@ describe('kb_capture supersedes needs the kb_maintainer grant to retire a CONFIR
     const commit = JSON.parse((await callText(maint, 'kb_bible_commit', { ids: [], ...BASE })).text);
     expect(commit.removed).toEqual([{ id, reason: 'superseded' }]);
     expect(fx.bibleIds()).not.toContain(id);
+  });
+});
+
+// kb_capabilities is in the base member allowlist (read-only): a member
+// session lists and calls it with or without the kb_maintainer grant, and over
+// a SQLite KB it answers the local implementation -- the same value the sample
+// kb-server answers on GET /api/kb/capabilities.
+//
+// FALSIFICATION: removing kb_capabilities from MEMBER_BASE_TOOLS fails both
+// tests (the plain session neither lists nor can call it).
+describe('kb_capabilities in member sessions', KB_GIT_SUITE, () => {
+  const fx = useKbMemberRepo();
+  const expected = JSON.parse(JSON.stringify(KB_SERVER_CAPABILITIES));
+
+  it('a member session without the kb_maintainer grant lists and calls kb_capabilities', async () => {
+    const handle = await startServer();
+    const plain = await connect(handle.port, { member: fx.memberId });
+    expect(await toolNames(plain)).toContain('kb_capabilities');
+    const r = await callText(plain, 'kb_capabilities', {});
+    expect(r.isError, r.text).toBe(false);
+    expect(JSON.parse(r.text)).toEqual(expected);
+    expect(JSON.parse(r.text).routes).toEqual(expect.arrayContaining(['demote', 'withdraw']));
+  });
+
+  it('the kb_maintainer member session gets the same answer', async () => {
+    const handle = await startServer();
+    const maint = await connect(handle.port, { member: fx.memberId, params: MAINTAINER_PARAMS });
+    expect(await toolNames(maint)).toContain('kb_capabilities');
+    const r = await callText(maint, 'kb_capabilities', {});
+    expect(r.isError, r.text).toBe(false);
+    expect(JSON.parse(r.text)).toEqual(expected);
   });
 });
