@@ -1137,8 +1137,11 @@ async function runSprintCycle(context) {
         // has to exist BEFORE `command` does. No beads read can happen in
         // between, so the getter is always called on a resolved value.
         getBacklogMember: () => backlogMember,
+        // The parent-link guard's ERROR lines (a vanished parent-child link
+        // restored, or a restore that failed) go to the sprint log.
+        log,
     });
-    const { invalidateAllBeadsCache, fetchAllBeadsShared, bdListScoped } = beadsScope;
+    const { invalidateAllBeadsCache, fetchAllBeadsShared, bdListScoped, decomposedParentIds, readyLeafBeads } = beadsScope;
     const command = beadsScope.wrapCommand(rawCommand, {
         // DoltSync memoizes each member's `bd config get sync.remote` answer
         // for the process lifetime (it was being re-spawned 90-160 times per
@@ -2295,35 +2298,14 @@ async function runSprintCycle(context) {
     // one id per invocation and is single-level only) and for the snapshot
     // invalidation contract.
 
-    // The set of scope-member ids that are themselves someone else's
-    // `--parent` -- i.e. decomposed grouping nodes, not leaf units of work.
-    // Built from children of ANY status, not just open ones: once a decomposed
-    // bead's children all close they vanish from an open-only list, the parent
-    // stops looking like a parent, and it would wrongly re-enter leaf/ready
-    // treatment. bdListScoped('') is the no-extra-query path -- the
-    // already-fetched project-wide any-status dump filtered to scope, with no
-    // new bd command issued.
-    async function decomposedParentIds() {
-        const allAnyStatus = await bdListScoped('');
-        return new Set(allAnyStatus.filter((b) => b.parent).map((b) => b.parent));
-    }
-
-    // Returns this scope's ready beads minus any decomposed parent (see
-    // decomposedParentIds() above). Per GRAPH-SEMANTICS.md a decomposed bead's
-    // "done" status comes from its children closing, never from being worked
-    // directly, so it must never be seeded to a doer even when bd's own
-    // `--ready` reports it. The check is STRUCTURAL (does this ready bead have
-    // children?), not an issue_type check -- issue_type has no effect on
-    // `--ready` inclusion, and a bead can be a leaf `type=task` or a decomposed
-    // `type=bug`/`type=feature` parent, so only the has-children structure
-    // tells them apart.
-    async function readyLeafBeads() {
-        const [ready, parentIds] = await Promise.all([
-            bdListScoped('--ready --json'),
-            decomposedParentIds(),
-        ]);
-        return ready.filter((b) => !parentIds.has(b.id));
-    }
+    // decomposedParentIds() / readyLeafBeads() come from the beads-scope
+    // client (destructured above). A decomposed bead (any scope member that is
+    // someone's `--parent`, children of ANY status) is never seeded to a doer
+    // even when bd's own `--ready` reports it -- the check is STRUCTURAL, not
+    // an issue_type check (GRAPH-SEMANTICS.md). A bead stays a parent even if
+    // a beads merge later drops its parent-child links; it stops being one only
+    // when its children are deleted or moved to another parent (see
+    // parent-link-guard.mjs).
 
     // Bead ids the PRE-LAUNCH rule (reclaimStaleInProgress below) must never
     // touch again this run: every id it has already reclaimed, and every id a
@@ -3569,10 +3551,12 @@ async function runSprintCycle(context) {
     // open with no gap bug; at NEEDS_EXTERNAL_EVIDENCE_CYCLE_LIMIT the bead
     // moves into needsEvidenceVerifyIds (id -> { reason, cycles }), is not
     // dispatched to verify again and no longer holds the exit; Final Review
-    // forces FAIL and names it. deferredVerifyIds (id -> reason) holds
-    // verify-routed beads deferred during the run (the bounce cap, or seen
-    // deferred at Route), which can never be dispatched again: dropped from the
-    // exit gate and named as a deferred carry-over. None of them is closed.
+    // forces FAIL and names it (at/above goal priority only; a below-goal one
+    // is named without forcing FAIL). deferredVerifyIds (id -> reason, or
+    // { reason, bounceCap: true } for the bounce cap) holds verify-routed
+    // beads deferred during the run (the bounce cap, or seen deferred at
+    // Route), which can never be dispatched again: dropped from the exit gate
+    // and named as a deferred carry-over. None of them is closed.
     const inconclusiveVerifyCounts = new Map();
     const needsEvidenceVerifyIds = new Map();
     const deferredVerifyIds = new Map();
@@ -3739,6 +3723,7 @@ async function runSprintCycle(context) {
                 reconcilePendingRejectedNewTasks,
                 stageCommandBodyMemberSide,
                 updateDashboard,
+                bdListScoped,
             });
         } catch (err) {
             if (!(err instanceof SprintPlanRejectedError)) throw err;
@@ -3972,6 +3957,7 @@ async function runSprintCycle(context) {
                     gitSync, updateDashboard,
                     verifySetThisCycle, pendingRejectedNewTasks,
                     devRounds, eligibleReplan, replanIds, replannedThisCycle, perBeadFeedback,
+                    command, sprintState, bdListScoped, extractContestedBeadIds,
                 });
                 continue;
             }
@@ -4848,7 +4834,9 @@ async function runSprintCycle(context) {
         ...(carryOverExit ? { exitReason: carryOverExit.reason, carryOver: carryOverExit.entries } : {}),
         // Present only when verify-routed beads were carried over
         // (./verify-carry-over.mjs): { id, kind: 'needs-external-evidence' |
-        // 'deferred', reason } for each.
+        // 'deferred' | 'deferred-bounce-cap', reason } for each (plus
+        // belowGoal: true when below the sprint goal priority, which names the
+        // bead without forcing FAIL).
         ...(verifyCarryOver ? { verifyCarryOver: verifyCarryOver.entries } : {}),
         // Present only when the run exited on a CHANGES_NEEDED whose only
         // reopenIds were skipped as below goal: those ids, not reopened.

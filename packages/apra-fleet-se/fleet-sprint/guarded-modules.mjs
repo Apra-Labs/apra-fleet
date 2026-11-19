@@ -85,6 +85,9 @@ export const GUARDED_MODULES = [
     // Pure lower-quality banner derivation; no command() site.
     'lower-quality.mjs',
     'beads-scope.mjs',
+    // Pure parent-link ledger (record/diff of in-scope parent-child edges);
+    // beads-scope.mjs issues its restore commands, no command() here.
+    'parent-link-guard.mjs',
     'beads-transitions.mjs',
     'role-policies.mjs',
     'inline-ladder-guard.mjs',

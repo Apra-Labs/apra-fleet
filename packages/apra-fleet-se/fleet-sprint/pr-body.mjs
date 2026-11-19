@@ -63,8 +63,12 @@ export function overflowPointer(count) {
 }
 
 /** The description's closing pointer line when the overflow could not be
- *  posted as PR comments. */
-export function overflowFailedPointer(chars) {
+ *  posted as PR comments; with `posted` of `total` comments already on the
+ *  PR (a partial failure) it says how many were posted. */
+export function overflowFailedPointer(chars, posted = 0, total = 0) {
+    if (posted > 0 && total > posted) {
+        return `Reviewer notes continued: ${chars} characters did not fit this description; ${posted} of ${total} overflow comment(s) were posted and ${total - posted} could not be -- the rest of the notes are in the sprint run log.`;
+    }
     return `Reviewer notes continued: ${chars} characters did not fit this description and could not be posted as PR comments -- the full notes are in the sprint run log.`;
 }
 
@@ -581,19 +585,63 @@ function clipInline(text, max) {
  * @param {unknown} assessment
  * @returns {string}
  */
-export function renderMergeAssessment(assessment) {
-    if (!assessment || typeof assessment !== 'object' || Array.isArray(assessment)) return '';
+export function renderMergeAssessment(assessment, incomplete = []) {
+    const missing = Array.isArray(incomplete) ? incomplete.filter((f) => typeof f === 'string' && f) : [];
+    const note = missing.length > 0
+        ? `_assessment incomplete: ${inline(missing.join(', '))}_`
+        : '';
+    const isObj = assessment && typeof assessment === 'object' && !Array.isArray(assessment);
+    if (!isObj) return note ? clipSectionText(note, MERGE_ASSESSMENT_MAX_LENGTH) : '';
     const rec = PR_MERGE_RECOMMENDATIONS.includes(assessment.recommendation) ? assessment.recommendation : null;
     const field = (k) => {
         const v = assessment[k];
         const s = typeof v === 'string' ? clipInline(v, MERGE_ASSESSMENT_FIELD_MAX_LENGTH) : '';
         return s || '(not given)';
     };
-    const lines = [
-        `- **Recommendation:** ${rec ? codeSpan(rec) : '(not given)'} -- ${field('reason')}`,
-        ...Object.entries(MERGE_ASSESSMENT_LABELS).map(([k, label]) => `- **${label}:** ${field(k)}`),
-    ];
+    // A complete assessment renders exactly as before. An incomplete one
+    // renders only its valid fields, then the note naming what was dropped.
+    const given = (k) => typeof assessment[k] === 'string' && assessment[k].trim() !== '';
+    const lines = missing.length === 0
+        ? [
+            `- **Recommendation:** ${rec ? codeSpan(rec) : '(not given)'} -- ${field('reason')}`,
+            ...Object.entries(MERGE_ASSESSMENT_LABELS).map(([k, label]) => `- **${label}:** ${field(k)}`),
+        ]
+        : [
+            ...(rec || given('reason')
+                ? [`- **Recommendation:** ${rec ? codeSpan(rec) : '(not given)'} -- ${field('reason')}`]
+                : []),
+            ...Object.entries(MERGE_ASSESSMENT_LABELS).filter(([k]) => given(k)).map(([k, label]) => `- **${label}:** ${field(k)}`),
+            note,
+        ];
     return clipSectionText(lines.join('\n'), MERGE_ASSESSMENT_MAX_LENGTH);
+}
+
+/**
+ * Normalizes an LLM-authored merge_assessment BEFORE anything validates or
+ * renders it: keeps the valid fields, drops invalid and unknown ones, and
+ * names every field that was missing, invalid or unknown in `dropped`. The
+ * assessment is advisory for humans, so a malformed one must never change
+ * the sprint verdict.
+ * @param {unknown} raw
+ * @returns {{ assessment: object | undefined, dropped: string[] }}
+ */
+export function normalizeMergeAssessment(raw) {
+    if (raw === undefined || raw === null) return { assessment: undefined, dropped: [] };
+    const fields = [...Object.keys(MERGE_ASSESSMENT_LABELS), 'recommendation', 'reason'];
+    if (typeof raw !== 'object' || Array.isArray(raw)) return { assessment: undefined, dropped: fields };
+    const assessment = {};
+    const dropped = [];
+    for (const k of fields) {
+        const v = raw[k];
+        const ok = k === 'recommendation'
+            ? PR_MERGE_RECOMMENDATIONS.includes(v)
+            : typeof v === 'string' && v.trim() !== '';
+        if (ok) assessment[k] = v; else dropped.push(k);
+    }
+    for (const k of Object.keys(raw)) {
+        if (!fields.includes(k)) dropped.push(k);
+    }
+    return { assessment: Object.keys(assessment).length > 0 ? assessment : undefined, dropped };
 }
 
 /**
@@ -620,6 +668,9 @@ export function renderMergeAssessment(assessment) {
  * @param {object} [opts.mergeAssessment] the final verdict's merge_assessment
  *   (untrusted); rendered as a Merge assessment section above the notes,
  *   omitted when absent
+ * @param {string[]} [opts.mergeAssessmentIncomplete] field names
+ *   normalizeMergeAssessment dropped (missing, invalid or unknown); rendered
+ *   as an "assessment incomplete" note
  * @param {Array<{ id: string, priority?: number, heading: string, text: string }>} [opts.sections]
  *   extra caller-registered sections (untrusted text, sanitized here),
  *   rendered in order after the notes; priority defaults to
@@ -640,7 +691,8 @@ export function renderMergeAssessment(assessment) {
  * @param {number} [opts.commentMaxLength] the same provider's PR comment
  *   limit (commentMaxLength); the overflow is split into comments within it
  * @returns {{ body: string, overflow: string, notes: string, comments: string[],
- *   notPosted: number, failedBody: string|null, previousHadOverflow: boolean }}
+ *   notPosted: number, failedBody: string|null, failedBodyFor: (posted: number) => string|null,
+ *   previousHadOverflow: boolean }}
  *   `body` is the description (<= maxLength); `notes` the full sanitized
  *   notes; `overflow` the part of `notes` the description could not carry
  *   ('' when it all fits) -- the section in `body` holds exactly
@@ -655,7 +707,7 @@ export function renderMergeAssessment(assessment) {
  */
 export function buildSprintPrBody({
     verdict, goal, branch, baseBranch, runId, now = new Date(),
-    notes, notesHeading = 'Reviewer notes', mergeAssessment, sections = [],
+    notes, notesHeading = 'Reviewer notes', mergeAssessment, mergeAssessmentIncomplete, sections = [],
     details = [], setAside = [], waited = [], costAnalysis = '', previousBody = '',
     maxLength = PR_DESCRIPTION_MAX_LENGTH, commentMaxLength = PR_DESCRIPTION_MAX_LENGTH,
 }) {
@@ -750,7 +802,7 @@ export function buildSprintPrBody({
         maxLength,
         render,
         sections: [
-            { id: 'merge-assessment', priority: SECTION_PRIORITY.mergeAssessment, text: renderMergeAssessment(mergeAssessment) },
+            { id: 'merge-assessment', priority: SECTION_PRIORITY.mergeAssessment, text: renderMergeAssessment(mergeAssessment, mergeAssessmentIncomplete) },
             {
                 id: 'notes',
                 priority: SECTION_PRIORITY.notes,
@@ -779,7 +831,7 @@ export function buildSprintPrBody({
     if (overflow) {
         // Re-fit with the longest pointer line reserved, so whichever pointer
         // the description ends up with still fits maxLength.
-        pointer = overflowFailedPointer(cleanNotes.length);
+        pointer = overflowFailedPointer(cleanNotes.length, 9999, 99999);
         ({ texts } = fit());
         overflow = overflowOf(texts);
         ({ comments, notPosted } = buildOverflowComments(overflow, { commentMaxLength: commentMaxLength || PR_DESCRIPTION_MAX_LENGTH }));
@@ -794,6 +846,14 @@ export function buildSprintPrBody({
         comments,
         notPosted,
         failedBody,
+        // The failed-post description when `posted` of the comments did make it
+        // onto the PR (a partial failure); the plain failedBody when none did.
+        failedBodyFor: (posted) => {
+            if (!failedBody || !(posted > 0) || posted >= comments.length) return failedBody;
+            const kept = pointer;
+            pointer = overflowFailedPointer(overflow.length, posted, comments.length);
+            try { return render(texts); } finally { pointer = kept; }
+        },
         previousHadOverflow: bodyHasOverflowPointer(previousBody),
     };
 }

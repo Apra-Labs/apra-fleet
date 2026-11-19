@@ -279,6 +279,7 @@ export async function runPublishPrPhase({
             // Optional risk/value assessment from the Final Review (contracts.mjs
             // finalVerdict.merge_assessment); absent -> no section, body unchanged.
             mergeAssessment: finalVerdictResult.merge_assessment,
+            mergeAssessmentIncomplete: finalVerdictResult.merge_assessment_incomplete,
             details: [
                 validated.skipRegression ? 'Regression pass: skipped by launch option -- not run this sprint.' : null,
                 lowerQualityBanner || null,

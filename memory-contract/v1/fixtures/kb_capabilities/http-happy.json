@@ -1,0 +1,15 @@
+{
+  "tool": "kb_capabilities",
+  "case": "http-happy",
+  "kind": "happy",
+  "request": {},
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"contract\":\"v1\",\"routes\":[\"capture\",\"query\",\"promote\",\"context\",\"prime\",\"invalidate\",\"feedback\",\"list\",\"demote\",\"withdraw\"],\"branch_aware\":false,\"query_filters\":[\"files\",\"symbols\"]}"
+      }
+    ]
+  },
+  "session": "HTTP_A"
+}

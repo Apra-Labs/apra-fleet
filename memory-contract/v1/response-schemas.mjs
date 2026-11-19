@@ -364,6 +364,18 @@ const KB_RESPONSE_BODIES = {
     flagged_for_review: z.boolean(),
     confidence: z.string(),
   }),
+  // The GET /api/kb/capabilities body (spec.md section 2.9.1). Under an http
+  // KB provider it is the server's body passed through unchanged, so route
+  // names this client does not call and extra top-level fields are kept:
+  // routes items are plain strings and the object is open (passthrough).
+  // Under SQLite it is the local implementation's answer, the same object
+  // the sample kb-server answers.
+  kb_capabilities: z.object({
+    contract: z.string(),
+    routes: z.array(z.string()),
+    branch_aware: z.boolean(),
+    query_filters: z.array(z.string()).optional(),
+  }).passthrough(),
 };
 
 const CODE_TOOLS = [

@@ -324,6 +324,22 @@ function assertNoForeignEntry(parsed) {
   return rows.length === 0 ? null : `expected no entries (the only server entry is another member's), got ${JSON.stringify(rows.map((r) => r.id))}`;
 }
 
+// kb_capabilities: the GET /api/kb/capabilities shape of fleet's local
+// implementation, which is also exactly what the sample kb-server answers --
+// so the SQLite answer and the http pass-through of that server's body must
+// both equal it (demote and withdraw among the routes).
+const LOCAL_KB_CAPABILITIES = {
+  contract: 'v1',
+  routes: ['capture', 'query', 'promote', 'context', 'prime', 'invalidate', 'feedback', 'list', 'demote', 'withdraw'],
+  branch_aware: false,
+  query_filters: ['files', 'symbols'],
+};
+function assertLocalCapabilities(parsed) {
+  return JSON.stringify(parsed) === JSON.stringify(LOCAL_KB_CAPABILITIES)
+    ? null
+    : `expected ${JSON.stringify(LOCAL_KB_CAPABILITIES)}, got ${JSON.stringify(parsed)}`;
+}
+
 // kb_bible_commit over an http project KB: skipped, with nothing merged,
 // removed or committed. A schema-valid ordinary response (no bible_skipped)
 // would otherwise pass.
@@ -515,6 +531,7 @@ export const SCENARIO = [
   // kb_query files filter: only entries citing src/example.ts, FOO among them.
   { tool: 'kb_query', case: 'happy-files-filter', assertParsed: assertCitesFile('FOO', 'src/example.ts') },
   { tool: 'kb_stats', case: 'happy' },
+  { tool: 'kb_capabilities', case: 'happy', assertParsed: assertLocalCapabilities },
   { tool: 'kb_import', case: 'happy' },
   // Bible v3 round trip: the basis carried in A's exported bible travels to B.
   {
@@ -728,6 +745,9 @@ export const SCENARIO = [
   // committed) and kb_invalidate {ids} is refused with a typed code.
   { tool: 'kb_bible_commit', case: 'http-skip', assertParsed: assertBibleSkipped },
   { tool: 'kb_invalidate', case: 'refusal-kb-http-unsupported' },
+  // kb_capabilities over an http project KB: the sample kb-server's body,
+  // passed through unchanged.
+  { tool: 'kb_capabilities', case: 'http-happy', assertParsed: assertLocalCapabilities },
   // Member own-scope over an http project KB: another member's entry is
   // absent from an INFERRED kb_query (a member read asks the server for the
   // entries carrying its own tag).

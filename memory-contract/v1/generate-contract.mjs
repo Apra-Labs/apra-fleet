@@ -131,6 +131,7 @@ const KB_MODULES = [
   ['kb_stats', 'kb-stats.js', 'kbStatsSchema'],
   ['kb_feedback', 'kb-feedback.js', 'kbFeedbackSchema'],
   ['kb_bible_commit', 'kb-bible-commit.js', 'kbBibleCommitSchema'],
+  ['kb_capabilities', 'kb-capabilities.js', 'kbCapabilitiesSchema'],
 ];
 const CODE_EXPORTS = [
   ['code_graph', 'codeGraphSchema'],
@@ -199,6 +200,8 @@ const BASE_DESCRIPTIONS = {
     'Read-only KB health aggregation: totals by confidence/type, stale/flagged/superseded counts, retrieval hit_rate, promote_ratio, canonical-bible presence/drift, and optional per-symbol coverage. Never bumps use_count/last_accessed (kb_list pattern). Bible drift is visibility for the machine that owns the KB -- CI cannot see the local kb.sqlite, so there is no CI gate on it. In a MEMBER session over a SQLite project KB the counts describe the member\'s checkout bible; under an http KB provider stats are reported as unsupported (the bible is not used).',
   kb_feedback:
     'Downvote a KB entry that proved wrong in practice: { id, reason, role? }. Marks the entry stale=1 + flagged_for_review=1 and appends an ASCII feedback note "[feedback <ISO>] <validated-role>: <reason>" (CONTENT_CAP respected). NEVER deletes and NEVER touches confidence -- a downvoted CONFIRMED entry stays CONFIRMED-but-stale-flagged; the human resolves it in kb-review, this tool only flags it for that review. Exception: an ACTIVE user-directive is flagged for review but NOT staled (directives outrank agent experience -- the human decides); a pending directive proposal stales normally. Not available in a MEMBER session, under a SQLite or an http KB provider: it returns E-MEMBER-VIEW-READ-ONLY and changes nothing.',
+  kb_capabilities:
+    'Read-only: what the calling session\'s project KB serves, in the shape of the KB server\'s GET /api/kb/capabilities body {contract, routes, branch_aware, query_filters?}. Under an http KB provider it returns the server\'s body as-is (route names this fleet server does not call and extra fields included), except that a malformed query_filters (not an array of strings) is dropped and treated as absent; a server without the capabilities route (404/501) yields the default set (every route except demote and withdraw, branch_aware false, no query_filters); a partially-typed body fails with E-KB-HTTP-UNSUPPORTED, a 5xx/429 with E-KB-HTTP-UNREACHABLE. Under a SQLite KB it returns the local implementation: contract v1, every route (demote and withdraw included), branch_aware false, query_filters files and symbols. Never mutates anything and never bumps use_count.',
   code_graph:
     'Trace the call graph for a symbol. Returns callers and callees across the codebase. Prefer this over Glob/Grep/file reads for structural questions (symbol lookup, call chains, impact) -- the answer is pre-indexed.',
   code_impact:

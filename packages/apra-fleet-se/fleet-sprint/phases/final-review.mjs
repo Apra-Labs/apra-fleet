@@ -79,6 +79,7 @@
 import { dispatchRole, secondaryMaxTurns } from '../dispatch-role.mjs';
 import { buildFinalVerdictPrompt } from '../prompts.mjs';
 import { resolveFinalReviewMergeBase } from '../git-topology.mjs';
+import { normalizeMergeAssessment } from '../pr-body.mjs';
 import { applyGuardedReopens, parseIdWithReasonEntry } from '../beads-transitions.mjs';
 import {
     validateNewTask, buildFallbackNewTask, appendRejectedFindingToParentNotes, persistNewTaskBestEffort,
@@ -234,11 +235,16 @@ export async function runFinalReviewPhase({
         const finalClosedIds = new Set(finalClosedBeads.map((b) => b.id));
         finalUnclosedVerifyIds = [...verifyEverIds].filter((id) => !finalClosedIds.has(id));
     }
+    // Only carried-over verify beads at/above the sprint goal priority force
+    // FAIL, matching how openAtGoal is judged: the at-goal not-done read above
+    // (priority-max=goalMax, every not-done status including deferred) names
+    // them, so a carried-over bead absent from it is below goal.
     const verifyCarryOver = (needsEvidenceVerifyIds || deferredVerifyIds)
         ? buildVerifyCarryOver({
             needsEvidence: needsEvidenceVerifyIds || new Map(),
             deferred: deferredVerifyIds || new Map(),
             closedIds: new Set(finalClosedBeads.map((b) => b.id)),
+            atGoalIds: new Set(finalOpenAtGoalRaw.map((b) => b.id)),
         })
         : null;
 
@@ -350,6 +356,19 @@ export async function runFinalReviewPhase({
         resumeLabel: `Final Review (resume, max_turns=${secondaryMaxTurns('final-review')})`,
     });
     finalVerdictResult = finalReviewOutcome.value;
+    // The merge assessment is advisory for humans and must never change the
+    // verdict: the schema accepts any shape for it, and it is normalized here
+    // (valid fields kept, the rest dropped and named) before anything renders it.
+    if (finalVerdictResult && typeof finalVerdictResult === 'object' && 'merge_assessment' in finalVerdictResult) {
+        const { assessment, dropped } = normalizeMergeAssessment(finalVerdictResult.merge_assessment);
+        const { merge_assessment: _raw, ...rest } = finalVerdictResult;
+        finalVerdictResult = {
+            ...rest,
+            ...(assessment ? { merge_assessment: assessment } : {}),
+            ...(dropped.length > 0 ? { merge_assessment_incomplete: dropped } : {}),
+        };
+        if (dropped.length > 0) log(`Final Review: merge_assessment incomplete (${dropped.join(', ')}); verdict unchanged.`);
+    }
     // apra-fleet-b4g.102.1: a sprint whose last cycle's deploy failed never
     // reaches Integration Test against a deployed build, so it can never PASS
     // -- enforced here by the orchestrator rather than trusted to the LLM.

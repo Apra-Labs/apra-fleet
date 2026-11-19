@@ -196,7 +196,10 @@ unclamped configuration.
 ## PR description sizing and overflow comments
 
 The final verdict may carry an optional `merge_assessment`; it renders first in
-the PR body. Body assembly uses one shared section-budget fitter that trims
+the PR body. The schema is lenient: a partial or malformed assessment keeps its
+valid fields, is flagged `merge_assessment_incomplete`, and the PR body renders
+the valid fields plus an "assessment incomplete" note instead of rejecting the
+verdict. Body assembly uses one shared section-budget fitter that trims
 sections to the provider text limit but never cuts the run-history block (the
 marker other tooling parses). Per-provider limits: GitHub 60000 characters,
 Azure DevOps and Bitbucket 3500 (the Bitbucket figure is conservative and has
@@ -211,7 +214,11 @@ the no-longer-needed). Invariants and limits:
   (this also keeps large bodies off the command line on Windows members).
 - A failed comment post is a WARNING; the PR description is then rewritten to
   point at the run log, so nothing is silently lost.
-- Comment listing for GitHub and Bitbucket fetches a single page of 100, so on
-  a very busy PR a relaunch can miss earlier marked comments and post
-  duplicates. At most 20 overflow comments are posted; beyond that the text
-  stays in the run log only.
+- Comment listing pages through results: GitHub until a short page, Bitbucket
+  by following `next` (accepted only under this PR's own comments endpoint),
+  both bounded at 20 pages. Azure DevOps threads take no paging parameters and
+  are not paginated. At most 20 overflow comments are posted; beyond that the
+  text stays in the run log only. A partial post failure rewrites the PR
+  description with a pointer naming "N of M" posted.
+- A VERIFY carry-over below the sprint goal priority is named in the verdict
+  but does not force FAIL; only at/above-goal carry-overs do.
