@@ -616,7 +616,10 @@ export function createKbWorkClient(opts = {}) {
         // shaped like a candidate row with withdrawn_on_branch: true. The
         // checkout bible view no longer holds a withdrawn entry, so without
         // this a relaunched sprint could never hold (restore) one. Injected
-        // because reading the committed bibles is a git operation.
+        // because reading the committed bibles is a git operation. Its
+        // `.read` variant, when present, answers { ok, rows, error } and is
+        // what the offer and the PR body use (the plain read answers [] on
+        // a failed read).
         branchWithdrawals,
         // D6 in-sprint ping-pong guard's disk-hash read --
         // (memberName: string, files: string[]) => Promise<Record<string, string>>,

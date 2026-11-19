@@ -626,10 +626,10 @@ export { createSprintChangedFiles };
 // on the branch, an unreadable one, or no withdrawn tombstone: nothing.
 // A base without a bible (or an unreadable one) counts as no tombstones.
 //
-// `.read(memberName)` on the returned function is the same read for the PR
-// body's "KB changes on merge" section, which must tell "nothing carried"
-// from "could not read": it answers { ok, rows, error }. When the HEAD read
-// fails or is unparseable, `git ls-tree --name-only HEAD -- <bible>` with
+// `.read(memberName)` on the returned function is the same read for the
+// demotion offer and the PR body's "KB changes on merge" section, which must
+// tell "nothing carried" from "could not read": it answers
+// { ok, rows, error }. When the HEAD read fails or is unparseable, `git ls-tree --name-only HEAD -- <bible>` with
 // empty output means the branch has no bible (nothing carried); anything
 // else is ok:false.
 //
