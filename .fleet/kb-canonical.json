@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "5a171212f2e1eee116e7f58e2ea29648ffb8ff1f",
     "branch": "main",
-    "entry_count": 166
+    "entry_count": 167
   },
   "entries": [
     {
@@ -1103,6 +1103,29 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:30.391Z"
+    },
+    {
+      "id": "5227dca4-de64-4430-a394-8c16226e121c",
+      "type": "knowledge",
+      "title": "dispatchRole onDispatchWindow fires inside the git-sync bracket",
+      "summary": "dispatchRole opts.onDispatchWindow('before'|'after') runs after the bracket's pre-dispatch G-pull and before its post-dispatch sync. A caller that compares the member checkout across the window sees only what the agent did, not other lanes' pushes.",
+      "symbols": [
+        "dispatchRole",
+        "runDevelopPhase",
+        "branchSnapshot"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/develop.mjs",
+        "packages/apra-fleet-se/test/develop-verify-no-change-set-aside.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-19T00:46:16.089Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs": "65e4fa2b96366223c18535339c6ef35c16c8b50a",
+        "packages/apra-fleet-se/fleet-sprint/phases/develop.mjs": "b1e86b0cbe8b5bffa1a8ce08045d7c62ca20637b",
+        "packages/apra-fleet-se/test/develop-verify-no-change-set-aside.test.mjs": "cb435641ff02b225f4e427e19270e054135f7f62"
+      }
     },
     {
       "id": "52cf9b39-5851-41e1-b0eb-198f900bd769",
