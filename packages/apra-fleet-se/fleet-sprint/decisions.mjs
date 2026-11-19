@@ -413,14 +413,47 @@ export function namedFindingIds(verdict, extractContestedBeadIds) {
 }
 
 // True when every bead a non-approving verdict names is held aside for a
-// pending decision (and it names at least one). A plan-wide objection (no
-// bead named) or a finding on any other bead is never waved through.
+// pending decision (and it names at least one), AND its notes carry no
+// objection beyond those beads. Conservative by design -- a wrongly refused
+// waiver costs one plan round, a wrongly granted one ships a plan with an
+// open objection -- so the waiver is refused when:
+//   - the verdict has no structured `findings` array (a legacy verdict has
+//     no way to tell a held-bead finding from a plan-wide one);
+//   - a finding names any bead that is not held;
+//   - the notes name an in-scope task that is not held; or
+//   - any sentence or line of the notes names no held bead (a plan-wide
+//     objection carried in notes next to held-bead findings).
 export function onlyDecisionSetAsideFindings(verdict, sprintState, extractContestedBeadIds) {
     if (!verdict || verdict.dispatchFailed) return false;
     const held = decisionSetAsideEntries(sprintState);
     if (held.size === 0) return false;
+    if (!Array.isArray(verdict.findings)) return false;
     const named = namedFindingIds(verdict, extractContestedBeadIds);
-    return named.length > 0 && named.every((id) => held.has(id));
+    if (!(named.length > 0 && named.every((id) => held.has(id)))) return false;
+    return notesTiedToHeldBeads(verdict, held);
+}
+
+function heldIdPattern(id) {
+    const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // A held id never matches inside a longer id: not after an id character,
+    // not before one, and not before a dotted child suffix (`x-1` vs `x-1.2`).
+    return new RegExp(`(?:^|[^A-Za-z0-9_.-])${escaped}(?![A-Za-z0-9_-])(?!\\.[A-Za-z0-9])`);
+}
+
+// Whether every objection in the verdict's notes is tied to a held bead.
+function notesTiedToHeldBeads(verdict, held) {
+    const notes = typeof verdict.notes === 'string' ? verdict.notes : '';
+    const heldRes = [...held.keys()].map(heldIdPattern);
+    const assigned = Array.isArray(verdict.taskAssignments)
+        ? verdict.taskAssignments.map((a) => a && a.id).filter((id) => typeof id === 'string' && id.length > 0 && !held.has(id))
+        : [];
+    if (assigned.some((id) => heldIdPattern(id).test(notes))) return false;
+    const segments = notes
+        .split(/\r?\n+/)
+        .flatMap((line) => line.split(/(?<=[.!?;])\s+/))
+        .map((seg) => seg.replace(/^[\s*#>\-]+|\s+$/g, ''))
+        .filter((seg) => /[A-Za-z0-9]/.test(seg));
+    return segments.every((seg) => heldRes.some((re) => re.test(seg)));
 }
 
 // Every top-level JSON object in `text`, in order of appearance: a scan that

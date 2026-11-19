@@ -1,5 +1,5 @@
-// parent-link-guard.mjs -- keeps the sprint's view of parenthood MONOTONE
-// within a run and detects parent-child links that vanished from the beads DB
+// parent-link-guard.mjs -- keeps the sprint's view of parenthood stable
+// within a run (a merge loss never turns a parent into a leaf) and detects parent-child links that vanished from the beads DB
 // without this run removing them.
 //
 // WHY: a beads merge (a conflicting `bd dolt pull`, run by a sprint member OR
@@ -16,16 +16,25 @@
 //
 // Rules:
 //   - Every in-scope parent-child edge seen in a snapshot is recorded
-//     (child -> parent), as are every parent and every in-scope id seen.
+//     (child -> parent), as is every in-scope id seen.
 //   - Edges this run itself changes through the command path (`bd update
 //     <child> --parent <p>`, `bd dep remove|rm <child> <parent>`) are noted:
 //     a removal is never "restored".
-//   - An edge VANISHED when its child is still in the DB but now has NO
-//     parent, and this run did not remove it. A child that now has a
-//     DIFFERENT parent was moved, not dropped (an agent may legitimately
-//     reparent on its own clone), so it is not restored.
-//   - A bead once seen as a parent stays a parent for the rest of the run,
-//     and an id once in scope stays in scope.
+//   - An edge VANISHED when both its child and its parent are still in the
+//     DB, the child now has NO parent, and this run did not remove it.
+//   - An edge whose child or parent is no longer in the DB at all was
+//     DELETED, not dropped by a merge (`bd delete` removes the issue and
+//     every edge touching it): it is dropped from the ledger and reported
+//     for a WARN, never restored.
+//   - A child that now has a DIFFERENT parent was MOVED, not dropped (an
+//     agent may legitimately reparent on its own clone): the recorded edge
+//     follows it and is never restored.
+//   - A bead is a known parent while some recorded edge still points at it.
+//     A vanished edge stays recorded (and is restored), so a merge loss can
+//     never make a parent look like a leaf; a parent whose children were all
+//     deleted or moved away stops being a parent and is routed by the
+//     ordinary leaf/verify rules instead of sitting open for the whole run.
+//   - An id once in scope stays in scope.
 //
 // ASCII only.
 
@@ -83,6 +92,18 @@ export function formatRestoreFailure({ child, parent }, reason) {
 }
 
 /**
+ * The WARN line for one recorded edge dropped because an endpoint was deleted.
+ * @param {{ child: string, parent: string, reason: 'child-missing'|'parent-missing'|'both-missing' }} drop
+ */
+export function formatDroppedEdgeLog({ child, parent, reason }) {
+    const gone = reason === 'parent-missing' ? `the parent '${parent}' is`
+        : reason === 'child-missing' ? `the child '${child}' is`
+            : `both '${child}' and '${parent}' are`;
+    return `WARN: parent-child link '${child}' -> parent '${parent}' is no longer tracked: ${gone} no longer in the beads database ` +
+        '(deleted). This is not a lost link, so it is not restored.';
+}
+
+/**
  * The per-run ledger. All state lives in the closure; nothing is persisted.
  */
 export function createParentLinkLedger() {
@@ -90,11 +111,10 @@ export function createParentLinkLedger() {
     const edges = new Map();
     /** edgeKey(child, parent) for every edge this run removed or moved away from. */
     const removedByRun = new Set();
-    const knownParents = new Set();
     const knownScope = new Set();
 
     /**
-     * Record a snapshot's in-scope edges, parents and ids.
+     * Record a snapshot's in-scope edges and ids.
      * @param {object[]} allBeads
      * @param {Set<string>} scopeIds
      */
@@ -103,7 +123,6 @@ export function createParentLinkLedger() {
         for (const b of (allBeads || [])) {
             if (!hasParent(b) || !scopeIds.has(b.id)) continue;
             edges.set(b.id, b.parent);
-            knownParents.add(b.parent);
         }
     }
 
@@ -128,36 +147,67 @@ export function createParentLinkLedger() {
         // removed dependency may be a blocks edge rather than the parent
         // link (the pre-sprint blocks-cycle auto-repair). Only mark the pair:
         // if the parent link is then found gone, this run removed it and it
-        // is not restored; the recorded edge itself is kept.
+        // is not restored (reconcile then forgets it).
         removedByRun.add(edgeKey(change.a, change.b));
         removedByRun.add(edgeKey(change.b, change.a));
     }
 
     /**
-     * Recorded edges whose child is still in `allBeads` but now has no
-     * parent, and which this run did not remove.
+     * Classify every recorded edge against a fresh snapshot, without
+     * changing the ledger.
      * @param {object[]} allBeads
-     * @returns {Array<{ child: string, parent: string }>}
      */
-    function findVanished(allBeads) {
+    function classify(allBeads) {
         const byId = new Map();
         for (const b of (allBeads || [])) if (b && b.id !== undefined && b.id !== null) byId.set(b.id, b);
         const vanished = [];
+        const dropped = [];
+        const moved = [];
+        const removed = [];
         for (const [child, parent] of edges) {
             const bead = byId.get(child);
-            if (!bead || hasParent(bead)) continue;
-            if (removedByRun.has(edgeKey(child, parent))) continue;
+            const parentPresent = byId.has(parent);
+            if (!bead || !parentPresent) {
+                const reason = !bead && !parentPresent ? 'both-missing' : (!bead ? 'child-missing' : 'parent-missing');
+                dropped.push({ child, parent, reason });
+                continue;
+            }
+            if (hasParent(bead)) {
+                if (bead.parent !== parent) moved.push({ child, from: parent, to: bead.parent });
+                continue;
+            }
+            if (removedByRun.has(edgeKey(child, parent))) { removed.push({ child, parent }); continue; }
             vanished.push({ child, parent });
         }
-        return vanished;
+        return { vanished, dropped, moved, removed };
+    }
+
+    /**
+     * Reconcile the ledger with a fresh snapshot. Edges with a deleted
+     * endpoint, edges whose child moved to another parent and edges this
+     * run itself removed are forgotten (their old parent stops being a
+     * parent once no recorded edge points at it). Returns the vanished
+     * edges the caller must restore and the dropped ones it must WARN about.
+     * @param {object[]} allBeads
+     * @returns {{ vanished: Array<{child: string, parent: string}>, dropped: Array<{child: string, parent: string, reason: string}>, moved: Array<{child: string, from: string, to: string}> }}
+     */
+    function reconcile(allBeads) {
+        const { vanished, dropped, moved, removed } = classify(allBeads);
+        for (const d of dropped) edges.delete(d.child);
+        // A moved child is re-recorded under its new parent by observe() when in scope.
+        for (const m of moved) edges.delete(m.child);
+        for (const r of removed) edges.delete(r.child);
+        return { vanished, dropped, moved };
     }
 
     return {
         observe,
         noteRunEdgeChange,
-        findVanished,
-        /** Every bead seen as a parent this run (monotone). */
-        knownParentIds: () => new Set(knownParents),
+        reconcile,
+        /** Recorded edges that vanished (both endpoints present, child parentless, not removed by this run). Read-only. */
+        findVanished: (allBeads) => classify(allBeads).vanished,
+        /** Every bead some recorded edge still points at. */
+        knownParentIds: () => new Set(edges.values()),
         /** Every id seen in scope this run (monotone). */
         knownScopeIds: () => new Set(knownScope),
     };

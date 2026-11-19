@@ -83,7 +83,7 @@
 
 import { logicalBdCommand } from './bd-sync-command.mjs';
 import {
-    createParentLinkLedger, parseRunEdgeChange, formatVanishedEdgeLog, formatRestoreFailure, ParentLinkRestoreError,
+    createParentLinkLedger, parseRunEdgeChange, formatVanishedEdgeLog, formatDroppedEdgeLog, formatRestoreFailure, ParentLinkRestoreError,
 } from './parent-link-guard.mjs';
 
 /**
@@ -855,9 +855,9 @@ export function createBeadsScope(opts = {}) {
     let allBeadsInFlight = null;
     let command = null; // installed by wrapCommand(); see fetchAllBeadsShared
 
-    // MONOTONE PARENTHOOD (parent-link-guard.mjs): every in-scope
-    // parent-child edge, parent and scope id this run has seen, plus the
-    // edges this run itself changed. Fed by every fresh full-DB snapshot
+    // STABLE PARENTHOOD (parent-link-guard.mjs): every in-scope
+    // parent-child edge and scope id this run has seen, plus the edges this
+    // run itself changed. Fed by every fresh full-DB snapshot
     // (fetchAllBeadsShared) and by the command wrapper. A backlog D-pull
     // drops the snapshot (clause (b) above), so the first beads read after
     // every D-pull is a fresh snapshot and runs the vanished-link check.
@@ -970,17 +970,21 @@ export function createBeadsScope(opts = {}) {
 
     /**
      * The vanished-link check on a FRESH snapshot: every in-scope edge this
-     * run recorded whose child is still in the DB but now has no parent, and
-     * that this run did not remove, is restored through the normal command
+     * run recorded whose child AND parent are still in the DB, whose child now
+     * has no parent, and that this run did not remove, is restored through the normal command
      * path (`bd update <child> --parent <parent>`) with an ERROR line naming
      * child and parent. The returned snapshot carries the restored parents,
      * so this phase's readers see the run's true structure without a second
      * full fetch. A failed restore is logged and THROWN
      * (ParentLinkRestoreError): continuing on a scope that lost its
      * children would dispatch a parent as a leaf and stall the run.
+     * An edge with a DELETED endpoint (child or parent no longer in the DB)
+     * is not a lost link: it is forgotten with a WARN naming it and why,
+     * never restored. A child moved to another parent is simply followed.
      */
     async function restoreVanishedParentLinks(beads) {
-        const vanished = parentLinks.findVanished(beads);
+        const { vanished, dropped } = parentLinks.reconcile(beads);
+        for (const drop of dropped) log(formatDroppedEdgeLog(drop));
         if (vanished.length === 0) return beads;
         for (const edge of vanished) {
             log(formatVanishedEdgeLog(edge));
@@ -1058,10 +1062,11 @@ export function createBeadsScope(opts = {}) {
     /**
      * The scope-member ids that are someone's `--parent` -- decomposed
      * grouping nodes, never leaf units of work. Built from children of ANY
-     * status (a parent whose children all closed is still a parent), and
-     * MONOTONE within the run: every bead this run has seen as a parent stays
-     * one even if the current snapshot shows it childless (a dropped link, a
-     * child deleted or moved), so it is never seeded to a doer as a leaf.
+     * status (a parent whose children all closed is still a parent), plus
+     * every parent the run's link ledger still records: a link a beads merge
+     * dropped keeps its parent a parent (and is restored), so it is never
+     * seeded to a doer as a leaf. A parent whose children were all deleted or
+     * moved to another parent is no longer one and is routed as a leaf.
      */
     async function decomposedParentIds() {
         const allAnyStatus = await bdListScoped('');
@@ -1091,7 +1096,7 @@ export function createBeadsScope(opts = {}) {
         bdListScoped,
         decomposedParentIds,
         readyLeafBeads,
-        /** Every bead seen as a parent this run -- diagnostics/tests. */
+        /** Every bead the run's link ledger records as a parent -- diagnostics/tests. */
         knownParentIds: () => parentLinks.knownParentIds(),
     };
 }

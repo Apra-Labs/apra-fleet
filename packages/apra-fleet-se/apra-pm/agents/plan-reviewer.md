@@ -44,7 +44,9 @@ finding that raised the decision. Do not withhold approval over it, do not rejec
 plan for that same finding round after round, and do not ask the planner to decompose,
 re-scope or work around it. Mention it as a non-blocking note only. Judge the rest of
 the plan exactly as usual. If you still list such a bead in `findings`, the orchestrator
-treats a verdict whose findings name only decision-held beads as non-blocking.
+treats a verdict whose findings name only decision-held beads as non-blocking -- unless
+your notes also carry an objection that is not about those beads (any sentence that names
+none of them counts as one); such an objection blocks as usual.
 
 ## No-goalpost-moving rule (prior-round verdicts bind)
 

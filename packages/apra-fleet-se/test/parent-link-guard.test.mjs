@@ -4,8 +4,12 @@
 //     fresh snapshot, with an ERROR naming child and parent;
 //   - an edge this run itself removed is NOT restored;
 //   - a failed restore is loud (ERROR logged AND a thrown error);
-//   - a bead once seen as a parent is never returned as a dispatchable leaf,
-//     even when the current snapshot shows it childless;
+//   - a parent whose link a merge dropped is never returned as a
+//     dispatchable leaf;
+//   - an edge whose parent or child was deleted is dropped with a WARN, never
+//     restored, and never aborts the run;
+//   - a parent whose children were all moved to another parent (or deleted)
+//     stops being a parent and is routed as a leaf;
 //   - a descendant once in scope stays in scope.
 
 import { test, describe } from 'node:test';
@@ -123,6 +127,9 @@ describe('parent-link guard: vanished parent-child links', () => {
         await h.scope.fetchAllBeadsShared();
         assert.deepEqual(h.commandLog.filter((c) => /^bd update \S+ --parent /.test(c)), ['bd update leaf-a1 --parent feat-b']);
         assert.equal(h.logs.length, 0, h.logs.join('\n'));
+        // feat-a's only child was moved away by this run: feat-a is no longer a parent.
+        assert.ok(!h.scope.knownParentIds().has('feat-a'), [...h.scope.knownParentIds()].join(','));
+        assert.ok(h.scope.knownParentIds().has('feat-b'));
     });
 
     test('a failed restore is loud: an ERROR line AND a thrown ParentLinkRestoreError (failSoft result)', async () => {
@@ -149,22 +156,15 @@ describe('parent-link guard: vanished parent-child links', () => {
     });
 });
 
-describe('parent-link guard: monotone parenthood and scope', () => {
-    test('a bead once seen as a parent is never returned as a dispatchable leaf, even when the snapshot shows it childless', async () => {
+describe('parent-link guard: parenthood and scope', () => {
+    test('a parent whose only child lost its link to a merge is never returned as a dispatchable leaf', async () => {
         const h = buildHarness({ beads: TREE });
         await h.scope.fetchAllBeadsShared();
-        // The only child of feat-a disappears entirely (nothing to restore).
-        h.db.beads = h.db.beads.filter((b) => b.id !== 'leaf-a1');
+        h.dropEdgeExternally('leaf-a1');
         h.phase('Develop C1 R2');
-
         const ready = (await h.scope.readyLeafBeads()).map((b) => b.id).sort();
-        assert.ok(!ready.includes('feat-a'), `feat-a was seen as a parent: never a leaf (${ready})`);
-        assert.deepEqual(ready, ['leaf-b1']);
+        assert.ok(!ready.includes('feat-a'), `feat-a lost its link to a merge: never a leaf (${ready})`);
         assert.ok((await h.scope.decomposedParentIds()).has('feat-a'));
-
-        // Non-vacuous: a fresh run with no history WOULD call it a leaf.
-        const fresh = buildHarness({ beads: h.db.beads });
-        assert.ok((await fresh.scope.readyLeafBeads()).some((b) => b.id === 'feat-a'));
     });
 
     test('a descendant once in scope stays in scope after another actor moves it out', async () => {
@@ -197,5 +197,84 @@ describe('parent-link guard: pure helpers', () => {
         assert.deepEqual(ledger.findVanished([{ id: 'r' }, { id: 'x' }]), [], 'a deleted child is not a vanished edge');
         assert.deepEqual(ledger.findVanished([{ id: 'r' }, { id: 'c' }, { id: 'x' }]), [{ child: 'c', parent: 'r' }]);
         assert.deepEqual([...ledger.knownParentIds()], ['r']);
+    });
+});
+
+describe('parent-link guard: deleted endpoints', () => {
+    test('a parent deleted mid-run is not a merge loss: WARN once, no restore, no ParentLinkRestoreError', async () => {
+        // failRestore: any restore attempt would throw, so the test also
+        // proves no restore is attempted.
+        const h = buildHarness({ beads: TREE, failRestore: true });
+        await h.scope.fetchAllBeadsShared();
+        // `bd delete feat-b` removes the issue and every edge touching it.
+        h.db.beads = h.db.beads.filter((b) => b.id !== 'feat-b');
+        delete h.db.beads.find((b) => b.id === 'leaf-b1').parent;
+        h.phase('Develop C1 R2');
+        await h.scope.fetchAllBeadsShared();
+        h.phase('Develop C1 R3');
+        await h.scope.fetchAllBeadsShared();
+
+        assert.deepEqual(h.commandLog.filter((c) => /^bd update \S+ --parent /.test(c)), []);
+        assert.ok(!h.logs.some((l) => l.startsWith('ERROR')), h.logs.join('\n'));
+        const warns = h.logs.filter((l) => l.startsWith('WARN: parent-child link'));
+        // One WARN per dropped edge, once across both fresh snapshots: the
+        // edge into the deleted parent, and the deleted bead's own edge up.
+        assert.equal(warns.length, 2, h.logs.join('\n'));
+        assert.ok(warns.some((w) => /'leaf-b1' -> parent 'feat-b'.*the parent 'feat-b' is no longer in the beads database/.test(w)), warns.join('\n'));
+        assert.ok(warns.some((w) => /'feat-b' -> parent 'root'.*the child 'feat-b' is no longer in the beads database/.test(w)), warns.join('\n'));
+        for (const w of warns) assert.doesNotMatch(w, /merge/);
+        assert.ok(!h.scope.knownParentIds().has('feat-b'));
+    });
+
+    test('a deleted child is dropped with a WARN naming it; its parent, now childless, is routed as a leaf', async () => {
+        const h = buildHarness({ beads: TREE });
+        await h.scope.fetchAllBeadsShared();
+        h.db.beads = h.db.beads.filter((b) => b.id !== 'leaf-a1');
+        h.phase('Develop C1 R2');
+        const ready = (await h.scope.readyLeafBeads()).map((b) => b.id).sort();
+        assert.deepEqual(ready, ['feat-a', 'leaf-b1']);
+        const warns = h.logs.filter((l) => l.startsWith('WARN: parent-child link'));
+        assert.equal(warns.length, 1, h.logs.join('\n'));
+        assert.match(warns[0], /the child 'leaf-a1' is no longer in the beads database/);
+    });
+
+    test('a restore that fails on beads that both exist still aborts loudly', async () => {
+        const h = buildHarness({ beads: TREE, failRestore: true });
+        await h.scope.fetchAllBeadsShared();
+        h.dropEdgeExternally('leaf-a1');
+        h.phase('Develop C1 R2');
+        await assert.rejects(h.scope.fetchAllBeadsShared(), ParentLinkRestoreError);
+    });
+});
+
+describe('parent-link guard: stranded parents', () => {
+    test('a parent whose only child another actor re-parented elsewhere is routed as a leaf, with nothing restored', async () => {
+        const h = buildHarness({ beads: TREE });
+        await h.scope.fetchAllBeadsShared();
+        h.db.beads.find((b) => b.id === 'leaf-a1').parent = 'feat-b';
+        h.phase('Develop C1 R2');
+        const ready = (await h.scope.readyLeafBeads()).map((b) => b.id).sort();
+        assert.ok(ready.includes('feat-a'), `feat-a has no children left: a leaf (${ready})`);
+        assert.ok(!(await h.scope.decomposedParentIds()).has('feat-a'));
+        assert.ok((await h.scope.decomposedParentIds()).has('feat-b'));
+        assert.deepEqual(h.commandLog.filter((c) => /^bd update \S+ --parent /.test(c)), []);
+        assert.equal(h.logs.length, 0, h.logs.join('\n'));
+    });
+
+    test('ledger: a moved child releases its old parent only when no other recorded child points at it', () => {
+        const ledger = createParentLinkLedger();
+        const beads = [{ id: 'r' }, { id: 'p' }, { id: 'q' }, { id: 'c1', parent: 'p' }, { id: 'c2', parent: 'p' }];
+        const scope = new Set(['r', 'p', 'q', 'c1', 'c2']);
+        ledger.observe(beads, scope);
+        let next = beads.map((b) => (b.id === 'c1' ? { ...b, parent: 'q' } : b));
+        let r = ledger.reconcile(next);
+        assert.deepEqual(r.moved, [{ child: 'c1', from: 'p', to: 'q' }]);
+        assert.deepEqual(r.vanished, []);
+        ledger.observe(next, scope);
+        assert.deepEqual([...ledger.knownParentIds()].sort(), ['p', 'q'], 'p still has c2');
+        next = next.map((b) => (b.id === 'c2' ? { ...b, parent: 'q' } : b));
+        ledger.reconcile(next);
+        ledger.observe(next, scope);
+        assert.deepEqual([...ledger.knownParentIds()], ['q'], 'p has no children left');
     });
 });

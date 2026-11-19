@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import Ajv from 'ajv';
 import { validateVerdict, FALLBACK_SCHEMAS } from '../fleet-sprint/contracts.mjs';
 import {
-    applyPlannerDecision, parsePlannerReport, decisionSetAsideEntries, NEEDS_DECISION_KIND,
+    applyPlannerDecision, parsePlannerReport, decisionSetAsideEntries, onlyDecisionSetAsideFindings, NEEDS_DECISION_KIND,
 } from '../fleet-sprint/decisions.mjs';
 import { createDecisionWait } from '../fleet-sprint/decision-wait.mjs';
 import { buildPlanReviewerPrompt } from '../fleet-sprint/prompts.mjs';
@@ -183,4 +183,24 @@ test('unit: the plan-reviewer prompt names decision-held beads as non-blocking o
     check(held.includes('SET ASIDE FOR AN OPERATOR DECISION'), 'clause present');
     check(held.includes('x-1 (decision bead x-dec)') && held.includes('x-2'), 'names the held beads');
     check(/NON-BLOCKING/.test(held), 'states they are non-blocking');
+});
+
+test('unit: a CHANGES_NEEDED naming only held beads is waived only when every objection is tied to a held bead', () => {
+    const sprintState = { doctorBlockedIds: new Map([['x-1', { kind: NEEDS_DECISION_KIND, decisionId: 'd1' }]]) };
+    const extract = () => [];
+    const finding = { id: 'x-1', kind: 'coverage', detail: 'x-1 has no task children.' };
+    const waived = (v) => onlyDecisionSetAsideFindings({ verdict: 'CHANGES_NEEDED', taskAssignments: [], ...v }, sprintState, extract);
+
+    check(waived({ notes: 'x-1 has no task children: decompose it.', findings: [finding] }), 'tied to the held bead: waived');
+    check(waived({ notes: "x-1's criteria are defective.\n- x-1 still needs an operator answer.", findings: [finding] }), 'every line tied: waived');
+    check(!waived({ notes: 'x-1 has no task children. The plan as a whole has no integration test task.', findings: [finding] }),
+        'a separate plan-wide objection in notes is not waived');
+    check(!waived({ notes: 'x-1 has no task children.\nOverall the dependency wiring is backwards.', findings: [finding] }),
+        'a plan-wide objection on its own line is not waived');
+    check(!waived({ notes: 'x-1 has no task children; x-3 is too large.', findings: [finding], taskAssignments: [{ id: 'x-3', bucket: 'S', model: 'm' }] }),
+        'notes naming a non-held task are not waived');
+    check(!waived({ notes: 'x-1.2 is too large.', findings: [finding] }), 'a dotted child of a held id is not the held id');
+    check(!waived({ notes: 'x-1 has no task children.' }), 'a legacy verdict without findings is never waived');
+    check(!waived({ notes: 'x-1 has no task children.', findings: [finding, { id: 'x-2', kind: 'coverage', detail: 'd' }] }), 'a finding on a non-held bead');
+    check(!waived({ notes: 'The plan is incomplete.', findings: [] }), 'a plan-wide (empty findings) verdict');
 });

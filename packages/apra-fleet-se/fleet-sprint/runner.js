@@ -2308,9 +2308,10 @@ async function runSprintCycle(context) {
     // client (destructured above). A decomposed bead (any scope member that is
     // someone's `--parent`, children of ANY status) is never seeded to a doer
     // even when bd's own `--ready` reports it -- the check is STRUCTURAL, not
-    // an issue_type check (GRAPH-SEMANTICS.md). It is also MONOTONE within the
-    // run: a bead once seen as a parent stays one even if a beads merge later
-    // drops its parent-child links (see parent-link-guard.mjs).
+    // an issue_type check (GRAPH-SEMANTICS.md). A bead stays a parent even if
+    // a beads merge later drops its parent-child links; it stops being one only
+    // when its children are deleted or moved to another parent (see
+    // parent-link-guard.mjs).
 
     // Bead ids the PRE-LAUNCH rule (reclaimStaleInProgress below) must never
     // touch again this run: every id it has already reclaimed, and every id a
