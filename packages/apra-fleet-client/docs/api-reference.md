@@ -834,6 +834,22 @@ git blob id of the bible it wrote as trusted in the hub-side KB, which is what
 lets a member session without the grant `kb_import` that bible once it is
 committed in its checkout (a call from such a member session records nothing).
 
+#### `kbCapabilities(options?: KbCapabilitiesOptions)`
+
+Calls `kb_capabilities` -- reports what the calling session's project KB
+serves. Takes no fields; the removed scope keys (`repo_path`, `repo`,
+`repo_remote_url`) are refused client-side with `E-SCOPE-KEY-REMOVED` before
+anything is sent. Read-only.
+
+Result JSON (`KbCapabilitiesResult`): `{contract: string, routes: string[],
+branch_aware: boolean, query_filters?: string[]}`, the shape of the KB server's
+`GET /api/kb/capabilities` body. Over an http KB provider it is the server's
+body passed through as sent (unknown route names and extra fields kept); a
+server that does not serve the route yields the default set (`capture`,
+`query`, `promote`, `context`, `prime`, `invalidate`, `feedback`, `list` --
+no `demote` or `withdraw`). Over a local SQLite KB it is the set the sample
+kb-server answers. Extract with `parseToolJson()`.
+
 #### `composePermissions(options: ComposePermissionsOptions)`
 
 Calls `compose_permissions` -- composes and delivers a scoped permission

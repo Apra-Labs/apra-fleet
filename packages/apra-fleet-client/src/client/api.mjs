@@ -798,6 +798,25 @@
  */
 
 /**
+ * @typedef {Object} KbCapabilitiesOptions
+ *   kb_capabilities takes no fields. The removed scope keys (repo_path, repo,
+ *   repo_remote_url) are refused client-side with E-SCOPE-KEY-REMOVED.
+ */
+
+/**
+ * @typedef {Object} KbCapabilitiesResult
+ * @property {string} contract - Contract version the KB serves, e.g. "v1".
+ * @property {string[]} routes - Route names the KB serves. Over an http KB this is the
+ *   server's own GET /api/kb/capabilities body passed through as sent (unknown route
+ *   names and extra fields kept); a server without the route yields the default set
+ *   (capture, query, promote, context, prime, invalidate, feedback, list -- no demote
+ *   or withdraw). Over a local SQLite KB it is the set the sample kb-server answers.
+ * @property {boolean} branch_aware - Whether the KB is branch aware.
+ * @property {string[]} [query_filters] - Optional kb_query filters the KB honours
+ *   (files, symbols); absent when the server does not list any.
+ */
+
+/**
  * @typedef {Object} KbDemoteOptions
  * @property {string} id - ID of the KB entry to demote.
  * @property {string} reason - Why trust is being withdrawn -- at least 20 characters
@@ -1535,6 +1554,20 @@ export class ApraFleet {
     async kbDemote(options) {
         assertNoRemovedKbScopeKeys('kb_demote', options);
         return this.mcpClient.callTool('kb_demote', options);
+    }
+
+    /**
+     * Report what the calling session's project KB serves: {contract, routes,
+     * branch_aware, query_filters?} (KbCapabilitiesResult), the shape of the KB
+     * server's GET /api/kb/capabilities body. Over an http KB it is that body
+     * passed through; a server without the route yields the documented default
+     * set. Read-only. Extract with parseToolJson(). The removed scope keys are
+     * refused with E-SCOPE-KEY-REMOVED before anything is sent.
+     * @param {KbCapabilitiesOptions} [options]
+     */
+    async kbCapabilities(options = {}) {
+        assertNoRemovedKbScopeKeys('kb_capabilities', options);
+        return this.mcpClient.callTool('kb_capabilities', options);
     }
 
     /**
