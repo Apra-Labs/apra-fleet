@@ -36,6 +36,12 @@ node ~/.apra-fleet/workflows/fleet-sprint/bin/serve.mjs --detach          # macO
 node "$HOME\.apra-fleet\workflows\fleet-sprint\bin\serve.mjs" --detach   # Windows PowerShell
 ```
 
+Windows caveat: `--detach` may NOT survive a launcher that runs inside a
+kill-on-close job object (some IDE/agent terminals and CI runners), which can
+kill even a detached child when the launcher exits. Surviving a Windows console
+close is not yet verified. On Windows the durable path is to register the
+supervisor with the OS via the "Auto-start on login/boot" section below.
+
 Without `--detach` the same command runs in the FOREGROUND of the launching
 shell and does NOT survive that terminal (or the process that launched it)
 closing -- sprints and launches then fail until it is started again. To have the
