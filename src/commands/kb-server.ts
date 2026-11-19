@@ -12,6 +12,7 @@ import { validateAuthor } from '../tools/kb-feedback.js';
 import { KbCaptureRejected } from '../services/knowledge/types.js';
 import { requireSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 import { CitedFilterError } from '../services/knowledge/cited-filter.js';
+import { KB_LOCAL_CAPABILITIES } from '../services/knowledge/kb-local-capabilities.js';
 import type { KBEntry, KBEntryInput, Confidence } from '../services/knowledge/types.js';
 
 // my-beads-db-0cd.15 (reopened): startKbServer is an exported library function
@@ -35,14 +36,12 @@ const MAX_BODY_SIZE = 1_048_576; // 1MB
 /** Header every HttpKbProvider request carries: the project slug it is for. */
 export const KB_PROJECT_HEADER = 'x-kb-project';
 
-/** What GET /api/kb/capabilities answers: every contract route (the server always serves a local SQLite KB). */
-export const KB_SERVER_CAPABILITIES = Object.freeze({
-  contract: 'v1',
-  routes: Object.freeze(['capture', 'query', 'promote', 'context', 'prime', 'invalidate', 'feedback', 'list', 'demote', 'withdraw']),
-  branch_aware: false,
-  // The optional kb_query filters GET /api/kb/query honours (the cited filter).
-  query_filters: Object.freeze(['files', 'symbols']),
-});
+/**
+ * What GET /api/kb/capabilities answers: every contract route (the server
+ * always serves a local SQLite KB). The same object kb_capabilities returns
+ * for a SQLite project KB (KB_LOCAL_CAPABILITIES), so the two cannot drift.
+ */
+export const KB_SERVER_CAPABILITIES = KB_LOCAL_CAPABILITIES;
 
 /** A demote refusal's taxonomy code at the start of SqliteProvider.demote's message (answered 422). */
 const DEMOTE_REFUSAL_CODE = /^(E-DEMOTE-[A-Z-]+):/;
