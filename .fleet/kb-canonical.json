@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "5a171212f2e1eee116e7f58e2ea29648ffb8ff1f",
     "branch": "main",
-    "entry_count": 167
+    "entry_count": 168
   },
   "entries": [
     {
@@ -1872,6 +1872,33 @@
         "memory-contract/v1/generate-contract.mjs": "dcd3ef9234288e2558712b6bc0c3f4bb4c42d4b6",
         "src/services/tool-registry.ts": "099aa042a6602d90c9401a8fd399cf1bda1f568f",
         "tests/knowledge/kb-member-read-scope-wording.test.ts": "cbd0387bc3c84e6a808d00b76bc625ceba574bc2"
+      }
+    },
+    {
+      "id": "88e2757f-9381-43dc-a1ba-8ceb061f69c5",
+      "type": "knowledge",
+      "title": "Planner NEEDS-DECISION routing is shared by the main plan loop and the scoped replan",
+      "summary": "Both phases/plan.mjs and phases/replan.mjs route a planner result's decision through decisions.mjs applyPlannerDecision inside gitSync.withOpenSyncBracket and D-push when recorded. The plan-reviewer helpers decisionSetAsideList, namedFindingIds and onlyDecisionSetAsideFindings live in decisions.mjs.",
+      "symbols": [
+        "runReplanPhase",
+        "applyPlannerDecision",
+        "decisionSetAsideList",
+        "namedFindingIds",
+        "onlyDecisionSetAsideFindings"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/phases/replan.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/plan.mjs",
+        "packages/apra-fleet-se/fleet-sprint/decisions.mjs",
+        "packages/apra-fleet-se/test/mock-sprint-replan-needs-decision.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-19T01:11:56.411Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/decisions.mjs": "048997e626c25ae04deb7241c650277533746c37",
+        "packages/apra-fleet-se/fleet-sprint/phases/plan.mjs": "4f4c6f39c57e14d042368452742189181058d99c",
+        "packages/apra-fleet-se/fleet-sprint/phases/replan.mjs": "d1024b6fb26c1f9493fd19658bd8e781260441fd",
+        "packages/apra-fleet-se/test/mock-sprint-replan-needs-decision.test.mjs": "4f1bcb09146fad18e38ef13fe62be43636639a9e"
       }
     },
     {
