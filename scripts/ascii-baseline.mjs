@@ -44,7 +44,6 @@ export default {
     "src/services/cloud/idle-manager.ts": 3,
     "src/services/cloud/lifecycle.ts": 7,
     "src/services/cloud/task-wrapper.ts": 2,
-    "src/services/credential-cleanup.ts": 1,
     "src/services/github-app.ts": 1,
     "src/services/icons.ts": 40,
     "src/services/known-hosts.ts": 2,
