@@ -59,9 +59,9 @@ is imported (`kb_import`).
    an older build): its tools/list must name `kb_capabilities` (it ships
    with `kb_bible_commit`'s `withdrawals`/`restore_ids`), and that tool's
    `routes` must include `withdraw` (always true for a SQLite KB; for an
-   http KB, only when the server serves the route). Otherwise nothing is
-   offered and a WARN names the maintainer and what is missing -- never a
-   fallback to `kb_demote`. Otherwise it reads every
+   http KB, only when the server serves the route). If either check fails,
+   nothing is offered and a WARN names the maintainer and what is missing --
+   never a fallback to `kb_demote`. Otherwise it reads every
    CONFIRMED entry citing a file changed on the sprint branch -- not only the
    maintainer's own: the checkout bible view filtered by `files`, merged with
    the maintainer's own CONFIRMED rows (`own_scope: true`) that are not in the
