@@ -119,6 +119,10 @@ Compose edits files the user may own, so it never destroys them:
   "unreadable" (existence is tested first, and the read's exit code is kept).
   An unreadable `~/.claude.json` raises `MemberConfigUnreadableError` and trust
   seeding never replaces it, so a permission problem cannot turn into data loss.
+  The replace is a compare-and-swap against a fingerprint taken before the
+  re-read; when another writer keeps changing the file it gives up after a few
+  attempts with `E-MEMBER-CONFIG-CHANGED` (typed reason
+  `member-config-changed`), leaving the file as that writer left it.
 
 ## Member-side install
 
