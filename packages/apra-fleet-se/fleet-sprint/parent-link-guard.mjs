@@ -29,6 +29,10 @@
 //   - A child that now has a DIFFERENT parent was MOVED, not dropped (an
 //     agent may legitimately reparent on its own clone): the recorded edge
 //     follows it and is never restored.
+//   - EXCEPT a child now back under a parent it was moved AWAY from this run
+//     (an edge this run removed, or the parent recorded before the current
+//     edge): that is a lossy merge keeping the older side, a REVERT. It is
+//     restored like a vanished edge, with an ERROR naming both parents.
 //   - A bead is a known parent while some recorded edge still points at it.
 //     A vanished edge stays recorded (and is restored), so a merge loss can
 //     never make a parent look like a leaf; a parent whose children were all
@@ -77,8 +81,14 @@ export function parseRunEdgeChange(cmd) {
     return null;
 }
 
-/** The ERROR line for one vanished edge that is being restored. */
-export function formatVanishedEdgeLog({ child, parent }) {
+/** The ERROR line for one vanished (or reverted) edge that is being restored. */
+export function formatVanishedEdgeLog({ child, parent, revertedFrom }) {
+    if (revertedFrom) {
+        return `ERROR: parent-child link reverted in the beads database: '${child}' is back under '${revertedFrom}', ` +
+            `a parent it was moved away from in this run, instead of '${parent}' ` +
+            '(a beads merge or another writer brought back an older link). ' +
+            `Restoring it with 'bd update ${child} --parent ${parent}'.`;
+    }
     return `ERROR: parent-child link vanished from the beads database: '${child}' is no longer a child of '${parent}', ` +
         'and this run did not remove it (a beads merge or another writer dropped it). ' +
         `Restoring it with 'bd update ${child} --parent ${parent}'.`;
@@ -112,6 +122,8 @@ export function createParentLinkLedger() {
     /** edgeKey(child, parent) for every edge this run removed or moved away from. */
     const removedByRun = new Set();
     const knownScope = new Set();
+    /** child -> the parent recorded before its current edge (moved away from this run). */
+    const earlierParent = new Map();
 
     /**
      * Record a snapshot's in-scope edges and ids.
@@ -134,7 +146,10 @@ export function createParentLinkLedger() {
         if (!change) return;
         if (change.kind === 'reparent') {
             const prev = edges.get(change.child);
-            if (prev !== undefined && prev !== change.parent) removedByRun.add(edgeKey(change.child, prev));
+            if (prev !== undefined && prev !== change.parent) {
+                removedByRun.add(edgeKey(change.child, prev));
+                earlierParent.set(change.child, prev);
+            }
             if (change.parent) {
                 edges.set(change.child, change.parent);
                 removedByRun.delete(edgeKey(change.child, change.parent));
@@ -173,7 +188,12 @@ export function createParentLinkLedger() {
                 continue;
             }
             if (hasParent(bead)) {
-                if (bead.parent !== parent) moved.push({ child, from: parent, to: bead.parent });
+                if (bead.parent === parent) continue;
+                if (removedByRun.has(edgeKey(child, bead.parent)) || earlierParent.get(child) === bead.parent) {
+                    vanished.push({ child, parent, revertedFrom: bead.parent });
+                } else {
+                    moved.push({ child, from: parent, to: bead.parent });
+                }
                 continue;
             }
             if (removedByRun.has(edgeKey(child, parent))) { removed.push({ child, parent }); continue; }
@@ -195,7 +215,10 @@ export function createParentLinkLedger() {
         const { vanished, dropped, moved, removed } = classify(allBeads);
         for (const d of dropped) edges.delete(d.child);
         // A moved child is re-recorded under its new parent by observe() when in scope.
-        for (const m of moved) edges.delete(m.child);
+        for (const m of moved) {
+            edges.delete(m.child);
+            earlierParent.set(m.child, m.from);
+        }
         for (const r of removed) edges.delete(r.child);
         return { vanished, dropped, moved };
     }
@@ -204,7 +227,7 @@ export function createParentLinkLedger() {
         observe,
         noteRunEdgeChange,
         reconcile,
-        /** Recorded edges that vanished (both endpoints present, child parentless, not removed by this run). Read-only. */
+        /** Recorded edges to restore: vanished (both endpoints present, child parentless, not removed by this run) or reverted onto a parent the child was moved away from. Read-only. */
         findVanished: (allBeads) => classify(allBeads).vanished,
         /** Every bead some recorded edge still points at. */
         knownParentIds: () => new Set(edges.values()),

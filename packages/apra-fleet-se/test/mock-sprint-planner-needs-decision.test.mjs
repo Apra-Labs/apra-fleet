@@ -56,7 +56,7 @@ const showBead = async (rc, td, id) => {
 // GAP every round, which the engine must treat as non-blocking. OTHER closes
 // at once. `onDecisionPause(workflow, ctx, data, seen)` runs when the run
 // parks awaiting the decision.
-async function plannerDecisionScenario(tag, { onDecisionPause, rejectHeld = false, maxCycles = 1, onCommand } = {}) {
+async function plannerDecisionScenario(tag, { onDecisionPause, rejectHeld = false, rejectOtherOnce = false, heldNotes = null, maxCycles = 1, onCommand } = {}) {
     const seen = {
         states: [], pauses: [], resumed: 0, plannerCalls: 0, planReviewPrompts: [],
         gapStatusAtFirstDispatchAfterAnswer: null, answerError: null,
@@ -97,11 +97,15 @@ async function plannerDecisionScenario(tag, { onDecisionPause, rejectHeld = fals
             seen.planReviewPrompts.push(opts.prompt);
             const list = JSON.parse((await rc('bd list --json', td)).stdout || '[]');
             const gap = list.find((b) => b.title === GAP);
-            const reject = gap && (rejectHeld || !opts.prompt.includes(HELD_CLAUSE));
+            const other = list.find((b) => b.title === OTHER);
+            const rejectOther = rejectOtherOnce && other && seen.planReviewPrompts.length === 1;
+            const reject = gap && (rejectHeld || rejectOther || !opts.prompt.includes(HELD_CLAUSE));
+            const findings = [{ id: gap.id, kind: 'coverage', detail: `${gap.id} is an open bug with no task children.` }];
+            if (rejectOther) findings.push({ id: other.id, kind: 'acceptance_criteria', detail: `${other.id} has no testable acceptance criteria.` });
             return { content: [{ text: JSON.stringify(reject ? {
                 verdict: 'CHANGES_NEEDED',
-                notes: `${gap.id} has no task children: decompose it.`,
-                findings: [{ id: gap.id, kind: 'coverage', detail: `${gap.id} is an open bug with no task children.` }],
+                notes: heldNotes ? heldNotes(gap.id) : `${gap.id} has no task children: decompose it.`,
+                findings,
                 taskAssignments: [],
             } : { verdict: 'APPROVED', notes: 'Approved.', taskAssignments: [] }) }] };
         },
@@ -183,6 +187,9 @@ test('mock sprint: a plan-reviewer finding naming only the decision-held bead do
     await withScenarioMarkers('planner needs-decision held finding non-blocking', async () => {
         const { scenario, seen } = await plannerDecisionScenario('pndec-held', {
             rejectHeld: true,
+            // Several sentences of narration around the held bead: prose is
+            // never an objection, only the structured findings are.
+            heldNotes: (id) => `${id} has no task children; non-blocking per the decision hold. Otherwise the plan looks good.`,
             onDecisionPause: async (workflow) => { workflow.requestStop('test: stop at the decision pause'); },
         });
         const gap = scenario.tasks.find((t) => t.title === GAP).id;
@@ -190,6 +197,19 @@ test('mock sprint: a plan-reviewer finding naming only the decision-held bead do
         check(scenario.logs.some((m) => m.includes('treated as non-blocking') && m.includes(gap)), 'the gate logged the non-blocking finding');
         check(!scenario.logs.some((m) => m.includes('plan-cap deferral')), 'the held bead is not deferred');
         assert.notEqual(scenario.finalBeadsById.get(gap).status, 'deferred', 'the gap bug keeps its status');
+        check(seen.states.some((d) => d.state === PAUSED_AWAITING_DECISION), 'the run still reached decision-wait');
+    });
+});
+
+test('mock sprint: a plan-reviewer finding on a bead that is not decision-held still blocks the plan', async () => {
+    resetSyncMemo();
+    await withScenarioMarkers('planner needs-decision non-held finding blocks', async () => {
+        const { scenario, seen } = await plannerDecisionScenario('pndec-nonheld', {
+            rejectOtherOnce: true,
+            onDecisionPause: async (workflow) => { workflow.requestStop('test: stop at the decision pause'); },
+        });
+        assert.equal(seen.planReviewPrompts.length, 2, 'the finding on the non-held bead cost a second plan round');
+        check(!scenario.logs.some((m) => m.includes('treated as non-blocking')), 'the gate did not waive it');
         check(seen.states.some((d) => d.state === PAUSED_AWAITING_DECISION), 'the run still reached decision-wait');
     });
 });

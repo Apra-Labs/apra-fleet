@@ -980,7 +980,9 @@ export function createBeadsScope(opts = {}) {
      * children would dispatch a parent as a leaf and stall the run.
      * An edge with a DELETED endpoint (child or parent no longer in the DB)
      * is not a lost link: it is forgotten with a WARN naming it and why,
-     * never restored. A child moved to another parent is simply followed.
+     * never restored. A child moved to another parent is simply followed,
+     * unless it is back under a parent it was moved away from this run: that
+     * revert is restored like a vanished edge.
      */
     async function restoreVanishedParentLinks(beads) {
         const { vanished, dropped } = parentLinks.reconcile(beads);

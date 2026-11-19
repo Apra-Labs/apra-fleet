@@ -278,3 +278,42 @@ describe('parent-link guard: stranded parents', () => {
         assert.deepEqual([...ledger.knownParentIds()], ['q'], 'p has no children left');
     });
 });
+
+describe('parent-link guard: reverted reparents', () => {
+    test('a run reparent that a lossy merge reverts is restored with an ERROR; the new parent stays a parent', async () => {
+        const h = buildHarness({ beads: TREE });
+        await h.scope.fetchAllBeadsShared();
+        await h.command('bd update leaf-a1 --parent feat-b', { member_name: 'backlog-member' });
+        h.phase('Develop C1 R2');
+        await h.scope.fetchAllBeadsShared();
+        // A merge keeps the older side: leaf-a1 is back under feat-a.
+        h.db.beads.find((b) => b.id === 'leaf-a1').parent = 'feat-a';
+        h.phase('Develop C1 R3');
+        const after = await h.scope.fetchAllBeadsShared();
+
+        const restores = h.commandLog.filter((c) => /^bd update \S+ --parent /.test(c));
+        assert.deepEqual(restores, ['bd update leaf-a1 --parent feat-b', 'bd update leaf-a1 --parent feat-b']);
+        const errors = h.logs.filter((l) => l.startsWith('ERROR: parent-child link reverted'));
+        assert.equal(errors.length, 1, h.logs.join('\n'));
+        assert.match(errors[0], /'leaf-a1' is back under 'feat-a'.*instead of 'feat-b'/);
+        assert.equal(h.db.beads.find((b) => b.id === 'leaf-a1').parent, 'feat-b');
+        assert.equal(after.find((b) => b.id === 'leaf-a1').parent, 'feat-b');
+        assert.ok(h.scope.knownParentIds().has('feat-b'));
+    });
+
+    test('a child another actor moved and a merge then moved back is restored onto the newer parent', async () => {
+        const h = buildHarness({ beads: TREE });
+        await h.scope.fetchAllBeadsShared();
+        h.db.beads.find((b) => b.id === 'leaf-b1').parent = 'feat-a'; // moved by another actor
+        h.phase('Develop C1 R2');
+        await h.scope.fetchAllBeadsShared();
+        h.db.beads.find((b) => b.id === 'leaf-b1').parent = 'feat-b'; // a merge brings back the older link
+        h.phase('Develop C1 R3');
+        const ready = (await h.scope.readyLeafBeads()).map((b) => b.id).sort();
+
+        assert.deepEqual(h.commandLog.filter((c) => /^bd update \S+ --parent /.test(c)), ['bd update leaf-b1 --parent feat-a']);
+        assert.ok(h.logs.some((l) => l.startsWith('ERROR: parent-child link reverted') && l.includes("'leaf-b1'")), h.logs.join('\n'));
+        assert.ok(!ready.includes('feat-a'), `feat-a keeps its moved-in child: never a leaf (${ready})`);
+        assert.equal(h.db.beads.find((b) => b.id === 'leaf-b1').parent, 'feat-a');
+    });
+});

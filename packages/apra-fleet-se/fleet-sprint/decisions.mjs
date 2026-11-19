@@ -413,16 +413,21 @@ export function namedFindingIds(verdict, extractContestedBeadIds) {
 }
 
 // True when every bead a non-approving verdict names is held aside for a
-// pending decision (and it names at least one), AND its notes carry no
-// objection beyond those beads. Conservative by design -- a wrongly refused
-// waiver costs one plan round, a wrongly granted one ships a plan with an
-// open objection -- so the waiver is refused when:
+// pending decision (and it names at least one). Only the structured channel
+// counts: the plan-reviewer contract carries a plan-wide objection as
+// `findings: []` and every per-bead objection as a finding with that bead's
+// id, so the waiver is refused when:
 //   - the verdict has no structured `findings` array (a legacy verdict has
 //     no way to tell a held-bead finding from a plan-wide one);
-//   - a finding names any bead that is not held;
-//   - the notes name an in-scope task that is not held; or
-//   - any sentence or line of the notes names no held bead (a plan-wide
-//     objection carried in notes next to held-bead findings).
+//   - `findings` is empty (a plan-wide objection);
+//   - a finding names any id that is not a held bead (another bead, or a
+//     plan-level id); or
+//   - the notes name an assigned task that is not held (an objection on
+//     another bead that was left out of `findings`).
+// Free prose in the notes ("x is held; otherwise the plan looks good") is
+// narration and never refuses the waiver: refusing it would re-reject the
+// same verdict every round and end in a plan rejection instead of the
+// decision wait.
 export function onlyDecisionSetAsideFindings(verdict, sprintState, extractContestedBeadIds) {
     if (!verdict || verdict.dispatchFailed) return false;
     const held = decisionSetAsideEntries(sprintState);
@@ -430,30 +435,23 @@ export function onlyDecisionSetAsideFindings(verdict, sprintState, extractContes
     if (!Array.isArray(verdict.findings)) return false;
     const named = namedFindingIds(verdict, extractContestedBeadIds);
     if (!(named.length > 0 && named.every((id) => held.has(id)))) return false;
-    return notesTiedToHeldBeads(verdict, held);
+    return !notesNameOtherAssignedTask(verdict, held);
 }
 
-function heldIdPattern(id) {
+function idPattern(id) {
     const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    // A held id never matches inside a longer id: not after an id character,
+    // An id never matches inside a longer id: not after an id character,
     // not before one, and not before a dotted child suffix (`x-1` vs `x-1.2`).
     return new RegExp(`(?:^|[^A-Za-z0-9_.-])${escaped}(?![A-Za-z0-9_-])(?!\\.[A-Za-z0-9])`);
 }
 
-// Whether every objection in the verdict's notes is tied to a held bead.
-function notesTiedToHeldBeads(verdict, held) {
+// Whether the verdict's notes name an assigned task that is not held.
+function notesNameOtherAssignedTask(verdict, held) {
     const notes = typeof verdict.notes === 'string' ? verdict.notes : '';
-    const heldRes = [...held.keys()].map(heldIdPattern);
     const assigned = Array.isArray(verdict.taskAssignments)
         ? verdict.taskAssignments.map((a) => a && a.id).filter((id) => typeof id === 'string' && id.length > 0 && !held.has(id))
         : [];
-    if (assigned.some((id) => heldIdPattern(id).test(notes))) return false;
-    const segments = notes
-        .split(/\r?\n+/)
-        .flatMap((line) => line.split(/(?<=[.!?;])\s+/))
-        .map((seg) => seg.replace(/^[\s*#>\-]+|\s+$/g, ''))
-        .filter((seg) => /[A-Za-z0-9]/.test(seg));
-    return segments.every((seg) => heldRes.some((re) => re.test(seg)));
+    return assigned.some((id) => idPattern(id).test(notes));
 }
 
 // Every top-level JSON object in `text`, in order of appearance: a scan that
