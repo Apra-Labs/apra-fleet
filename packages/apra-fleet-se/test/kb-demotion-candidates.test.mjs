@@ -1044,7 +1044,7 @@ describe('createBranchWithdrawnEntries (this branch\'s earlier withdrawals)', ()
             const res = await createBranchWithdrawnEntries({ command, baseBranch: 'main' }).read('maint-1');
             assert.equal(res.ok, false, JSON.stringify(c));
             assert.deepEqual(res.rows, []);
-            assert.match(res.error, new RegExp(`'git show HEAD:${BIBLE.replace(/\./g, '\\.')}' on 'maint-1'`));
+            assert.ok(res.error.includes(`'git show HEAD:${BIBLE}' on 'maint-1'`), res.error);
         }
     });
 });
