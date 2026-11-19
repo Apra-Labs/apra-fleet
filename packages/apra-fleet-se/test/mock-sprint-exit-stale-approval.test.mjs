@@ -50,7 +50,9 @@ test('mock sprint: a stale APPROVED verdict must not back a later cycle\'s exit 
                         closedIds.push(id);
                     }
                 }
-                return { content: [{ text: JSON.stringify({ status: 'VERIFY', closedIds, notes: 'Closed A; left B blocked (out-of-scope, deferred).' }) }] };
+                // Claims B closed too (the read-back disproves it): B keeps the ordinary
+                // left-open retry instead of the VERIFY-no-change set-aside.
+                return { content: [{ text: JSON.stringify({ status: 'VERIFY', closedIds: ids, notes: 'Closed A; left B blocked (out-of-scope, deferred).' }) }] };
             },
             // Approves whatever was actually reviewed each round -- this is the
             // verdict cycle 1 ends on ('APPROVED', with B noted as an
@@ -153,7 +155,9 @@ test('mock sprint: a deferred goal-priority bead is treated as out of scope, doe
                         closedIds.push(id);
                     }
                 }
-                return { content: [{ text: JSON.stringify({ status: 'VERIFY', closedIds, notes: 'Closed A; deferred B (goal-priority, never closed).' }) }] };
+                // Claims B closed too (the read-back disproves it): B keeps the ordinary
+                // left-open retry instead of the VERIFY-no-change set-aside.
+                return { content: [{ text: JSON.stringify({ status: 'VERIFY', closedIds: ids, notes: 'Closed A; deferred B (goal-priority, never closed).' }) }] };
             },
             reviewerHandler: async () => ({
                 content: [{ text: JSON.stringify({ verdict: 'APPROVED', notes: 'A approved; B deferred (still counts as goal-priority open).', reopenIds: [], newTasks: [] }) }]

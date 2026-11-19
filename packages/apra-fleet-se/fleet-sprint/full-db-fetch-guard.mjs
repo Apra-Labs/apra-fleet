@@ -47,6 +47,7 @@
 import fs from 'fs';
 import path from 'path';
 import { guardedModulePaths } from './guarded-modules.mjs';
+import { logicalBdCommand } from './bd-sync-command.mjs';
 
 /** The single documented, cache-backed full-DB fetch command (runner.js's fetchAllBeadsShared()). */
 export const FULL_DB_FETCH_CMD = 'bd list --all --limit 0 --json';
@@ -120,8 +121,11 @@ export function checkFullDbFetchLog(entries) {
             return; // a full-list read itself never mutates beads
         }
 
-        const trimmed = command.trim();
-        if (/^bd\b/i.test(trimmed) && !BD_READ_ONLY_RE.test(trimmed)) {
+        // Judge the LOGICAL command, so a Windows-prefixed D-pull
+        // (`GOMAXPROCS=1 bd dolt pull` / `$env:GOMAXPROCS='1'; bd dolt pull`)
+        // invalidates exactly like an unprefixed one.
+        const logical = logicalBdCommand(command);
+        if (/^bd\b/i.test(logical) && !BD_READ_ONLY_RE.test(logical)) {
             cacheValid = false;
         }
     });

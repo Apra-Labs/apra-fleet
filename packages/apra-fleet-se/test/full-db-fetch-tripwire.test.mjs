@@ -72,6 +72,25 @@ test('checker: a re-fetch within the SAME phase is allowed when an intervening b
     assert.deepEqual(checkFullDbFetchLog(log), []);
 });
 
+test('checker: a Windows env-prefixed D-pull (gitbash and PowerShell forms) invalidates the cache like an unprefixed one', () => {
+    for (const pull of ['GOMAXPROCS=1 bd dolt pull', "$env:GOMAXPROCS='1'; bd dolt pull"]) {
+        const log = [
+            { phase: 'Cycle 1 Evaluation', command: FULL_DB_FETCH_CMD },
+            { phase: 'Cycle 1 Evaluation', command: pull },
+            { phase: 'Cycle 1 Evaluation', command: FULL_DB_FETCH_CMD },
+        ];
+        assert.deepEqual(checkFullDbFetchLog(log), [], `${pull} must invalidate the cached snapshot`);
+    }
+    for (const read of ['GOMAXPROCS=1 bd list --json', "$env:GOMAXPROCS='1'; bd show x"]) {
+        const log = [
+            { phase: 'Route C2', command: FULL_DB_FETCH_CMD },
+            { phase: 'Route C2', command: read },
+            { phase: 'Route C2', command: FULL_DB_FETCH_CMD },
+        ];
+        assert.equal(checkFullDbFetchLog(log).length, 1, `${read} is a read: the re-fetch is still a duplicate`);
+    }
+});
+
 test('checker: a fresh full-DB fetch is allowed once per DISTINCT phase step (not a violation)', () => {
     const log = [
         { phase: 'Plan', command: FULL_DB_FETCH_CMD },

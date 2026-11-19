@@ -179,7 +179,10 @@ test('stale pre-launch claim: not reclaimed per cycle while ready work exists', 
                 }
                 // Left-open, not BLOCKED: a BLOCKED Q would be set aside and
                 // stall the run before the second cycle this scenario needs.
-                return doerReport('VERIFY', closed, 'Scenario doer.');
+                // The report claims Q closed too (the read-back disproves it),
+                // so Q keeps the ordinary left-open retry rather than the
+                // VERIFY-no-change set-aside.
+                return doerReport('VERIFY', ids, 'Scenario doer.');
             },
         });
         assert.ok(!res.error, `scenario should not throw: ${res.error ? res.error.message : ''}`);
@@ -274,7 +277,10 @@ test('stale pre-launch claim: once reclaimed and dispatched, the pre-launch rule
                 }
                 // Left-open, not BLOCKED: a BLOCKED S would be set aside and the
                 // run would stall before the in-run re-lane this scenario needs.
-                return doerReport('VERIFY', [], 'Scenario doer: cannot finish.');
+                // It claims the close the read-back disproves, so S keeps the
+                // ordinary left-open retry (a VERIFY report claiming no close of
+                // a bead it left open is set aside after one round instead).
+                return doerReport('VERIFY', assignedIds(opts.prompt), 'Scenario doer: cannot finish.');
             },
             // Right after the in-run tracker re-lanes S, another actor claims
             // it. bd keeps S's pre-launch started_at on that claim, so only the

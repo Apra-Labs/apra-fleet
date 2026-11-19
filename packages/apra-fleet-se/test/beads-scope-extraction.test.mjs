@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import {
     createBeadsScope, discoverScope, buildBeadGraph, classifyVerifySet, isBeadsMutatingCommand,
 } from '../fleet-sprint/beads-scope.mjs';
+import { bdSyncCommandFor, logicalBdCommand } from '../fleet-sprint/bd-sync-command.mjs';
 import * as runner from '../fleet-sprint/runner.js';
 import { parseBdJson } from '../fleet-sprint/runner.js';
 
@@ -333,6 +334,54 @@ describe('apra-fleet-3swo.4.6: the snapshot invalidation contract, enforced', ()
         for (const other of ['git status', 'node -e ""', '', null, undefined, 42]) {
             assert.equal(isBeadsMutatingCommand(other), false, 'non-bd input is never a beads mutation');
         }
+    });
+
+    test('Windows env-prefixed bd commands classify on the LOGICAL command (gitbash and PowerShell forms)', () => {
+        const prefixes = ['GOMAXPROCS=1 ', "$env:GOMAXPROCS='1'; ", '$env:GOMAXPROCS="1";', '  GOMAXPROCS=1   '];
+        for (const prefix of prefixes) {
+            for (const mut of ['bd dolt pull', 'bd dolt push', 'bd close x', 'bd update x --claim', 'bd dep add a b']) {
+                assert.equal(isBeadsMutatingCommand(`${prefix}${mut}`), true, `${JSON.stringify(prefix + mut)} must be a mutation`);
+            }
+            for (const read of ['bd list --json', 'bd show x', 'bd ready', 'bd config get sync.remote']) {
+                assert.equal(isBeadsMutatingCommand(`${prefix}${read}`), false, `${JSON.stringify(prefix + read)} must stay a read`);
+            }
+            assert.equal(isBeadsMutatingCommand(`${prefix}git status`), false, 'a prefixed non-bd command is never a mutation');
+        }
+        // The exact strings bdSyncCommandFor builds for a Windows member.
+        assert.equal(isBeadsMutatingCommand(bdSyncCommandFor('bd dolt pull', { os: 'windows', shell: 'gitbash' })), true);
+        assert.equal(isBeadsMutatingCommand(bdSyncCommandFor('bd dolt pull', { os: 'windows', shell: 'pwsh7' })), true);
+        assert.equal(logicalBdCommand("$env:GOMAXPROCS='1'; bd dolt pull"), 'bd dolt pull');
+        assert.equal(logicalBdCommand('GOMAXPROCS=1 bd dolt pull'), 'bd dolt pull');
+    });
+
+    test('a prefixed D-pull through the wrapper drops the snapshot (wire string and opts.logicalCommand)', async () => {
+        const h = buildScopeHarness({ beads: [{ id: 'root', status: 'open' }] });
+        for (const wire of ['GOMAXPROCS=1 bd dolt pull', "$env:GOMAXPROCS='1'; bd dolt pull"]) {
+            await h.scope.fetchAllBeadsShared();
+            assert.ok(h.scope.hasCachedSnapshot());
+            await h.command(wire, { member_name: 'm' });
+            assert.ok(!h.scope.hasCachedSnapshot(), `${wire} must drop the snapshot`);
+            await h.scope.fetchAllBeadsShared();
+            await h.command(wire, { member_name: 'm', logicalCommand: 'bd dolt pull' });
+            assert.ok(!h.scope.hasCachedSnapshot(), `${wire} with logicalCommand must drop the snapshot`);
+        }
+        // The DoltSync hook sees the logical command, not the prefixed wire string.
+        const last = h.commandLog[h.commandLog.length - 1];
+        assert.equal(last.hook.trimmed, 'bd dolt pull');
+    });
+
+    test('a beads-mutating command that THROWS still drops the snapshot', async () => {
+        const scope = createBeadsScope({ targetIssues: ['root'], parseBdJson, getBacklogMember: () => 'm' });
+        const command = scope.wrapCommand(async (cmd) => {
+            if (/^bd list --all/.test(cmd)) return JSON.stringify([{ id: 'root', status: 'open' }]);
+            throw new Error('pull failed');
+        });
+        await scope.fetchAllBeadsShared();
+        await assert.rejects(command('GOMAXPROCS=1 bd dolt pull', { member_name: 'm' }), /pull failed/);
+        assert.ok(!scope.hasCachedSnapshot(), 'a thrown mutation must still drop the snapshot');
+        await scope.fetchAllBeadsShared();
+        await assert.rejects(command('bd show root', { member_name: 'm' }), /pull failed/);
+        assert.ok(scope.hasCachedSnapshot(), 'a thrown READ keeps the snapshot');
     });
 
     test('the wrapper still delegates its non-snapshot hook (DoltSync memo seam) on every command', async () => {

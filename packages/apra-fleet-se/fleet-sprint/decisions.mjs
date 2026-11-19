@@ -1,9 +1,11 @@
 // =============================================================================
-// NEEDS-DECISION: a doer or reviewer asks a human operator to choose.
+// NEEDS-DECISION: a doer, reviewer or planner asks a human operator to choose.
 //
 // A doer (status) or reviewer (verdict) may return NEEDS-DECISION with a
 // `decision` object -- { beadId, question, options: [{ id, text }, ...],
-// recommendation } (doer-output.json / reviewer-output.json). The bead cannot
+// recommendation } (doer-output.json / reviewer-output.json). A planner
+// returns the same object as an optional `decision` alongside its plan
+// (planner-output.json; applyPlannerDecision below). The bead cannot
 // go on until an operator chooses, so re-dispatching it only burns dispatches.
 // recordPendingDecision() below:
 //
@@ -40,6 +42,7 @@
 import { stageCommandBodyMemberSide } from './member-provisioning.mjs';
 import { openBlocksDependents } from './beads-scope.mjs';
 import { createDecisionBead } from './beads-children.mjs';
+import { validateVerdict } from './contracts.mjs';
 
 /** The doer status / reviewer verdict asking for an operator decision. */
 export const NEEDS_DECISION = 'NEEDS-DECISION';
@@ -367,6 +370,204 @@ export async function applyReviewerDecision({ verdict, scopeIds, reopenedIds = n
     return recordPendingDecision({
         sprintState, decision,
         raisedBy: `reviewer (${site})`,
+        cycle, round, command, member, scopeBeads, log,
+    });
+}
+
+/**
+ * The ids this run holds aside for a pending operator decision: the work bead
+ * of every decision (kind 'needs-decision') and its open blocks-edge
+ * dependents (recorded with the same decisionId). The Plan phase tells the
+ * plan-reviewer these are non-blocking and does not let a finding on them
+ * hold the plan back (phases/plan.mjs).
+ *
+ * @param {{ doctorBlockedIds?: Map<string, object> }|null|undefined} sprintState
+ * @returns {Map<string, object>} id -> its set-aside entry
+ */
+export function decisionSetAsideEntries(sprintState) {
+    const blocked = sprintState && sprintState.doctorBlockedIds instanceof Map ? sprintState.doctorBlockedIds : new Map();
+    const out = new Map();
+    for (const [id, entry] of blocked) {
+        if (entry && (entry.kind === NEEDS_DECISION_KIND || entry.decisionId)) out.set(id, entry);
+    }
+    return out;
+}
+
+// The beads held aside for a pending operator decision, for the plan-reviewer
+// prompt (prompts.mjs buildPlanReviewerPrompt decisionSetAside).
+export function decisionSetAsideList(sprintState) {
+    return [...decisionSetAsideEntries(sprintState)].map(([id, entry]) => ({
+        id, decisionBeadId: entry.decisionBeadId || null, kind: entry.kind,
+    }));
+}
+
+// The bead ids a non-approving verdict names: its structured `findings` ids
+// when present (a held bead is often a bug or feature, absent from the
+// task-level taskAssignments that extractContestedBeadIds intersects with),
+// else the contested set from the deprecated notes scan.
+export function namedFindingIds(verdict, extractContestedBeadIds) {
+    if (Array.isArray(verdict.findings)) {
+        return [...new Set(verdict.findings.map((f) => f && f.id).filter((id) => typeof id === 'string' && id.length > 0))];
+    }
+    return extractContestedBeadIds(verdict);
+}
+
+// True when every bead a non-approving verdict names is held aside for a
+// pending decision (and it names at least one). Only the structured channel
+// counts: the plan-reviewer contract carries a plan-wide objection as
+// `findings: []` and every per-bead objection as a finding with that bead's
+// id, so the waiver is refused when:
+//   - the verdict has no structured `findings` array (a legacy verdict has
+//     no way to tell a held-bead finding from a plan-wide one);
+//   - `findings` is empty (a plan-wide objection);
+//   - a finding names any id that is not a held bead (another bead, or a
+//     plan-level id); or
+//   - the notes name an assigned task that is not held (an objection on
+//     another bead that was left out of `findings`).
+// Free prose in the notes ("x is held; otherwise the plan looks good") is
+// narration and never refuses the waiver: refusing it would re-reject the
+// same verdict every round and end in a plan rejection instead of the
+// decision wait.
+export function onlyDecisionSetAsideFindings(verdict, sprintState, extractContestedBeadIds) {
+    if (!verdict || verdict.dispatchFailed) return false;
+    const held = decisionSetAsideEntries(sprintState);
+    if (held.size === 0) return false;
+    if (!Array.isArray(verdict.findings)) return false;
+    const named = namedFindingIds(verdict, extractContestedBeadIds);
+    if (!(named.length > 0 && named.every((id) => held.has(id)))) return false;
+    return !notesNameOtherAssignedTask(verdict, held);
+}
+
+function idPattern(id) {
+    const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // An id never matches inside a longer id: not after an id character,
+    // not before one, and not before a dotted child suffix (`x-1` vs `x-1.2`).
+    return new RegExp(`(?:^|[^A-Za-z0-9_.-])${escaped}(?![A-Za-z0-9_-])(?!\\.[A-Za-z0-9])`);
+}
+
+// Whether the verdict's notes name an assigned task that is not held.
+function notesNameOtherAssignedTask(verdict, held) {
+    const notes = typeof verdict.notes === 'string' ? verdict.notes : '';
+    const assigned = Array.isArray(verdict.taskAssignments)
+        ? verdict.taskAssignments.map((a) => a && a.id).filter((id) => typeof id === 'string' && id.length > 0 && !held.has(id))
+        : [];
+    return assigned.some((id) => idPattern(id).test(notes));
+}
+
+// Every top-level JSON object in `text`, in order of appearance: a scan that
+// is string-aware (braces inside JSON strings do not count), so prose or a
+// fenced block around the planner's JSON result does not hide it.
+function jsonObjectsIn(text) {
+    const found = [];
+    const s = String(text ?? '');
+    let i = 0;
+    while (i < s.length) {
+        const start = s.indexOf('{', i);
+        if (start < 0) break;
+        let depth = 0;
+        let inString = false;
+        let escaped = false;
+        let end = -1;
+        for (let j = start; j < s.length; j++) {
+            const c = s[j];
+            if (inString) {
+                if (escaped) escaped = false;
+                else if (c === '\\') escaped = true;
+                else if (c === '"') inString = false;
+                continue;
+            }
+            if (c === '"') inString = true;
+            else if (c === '{') depth++;
+            else if (c === '}') {
+                depth--;
+                if (depth === 0) { end = j; break; }
+            }
+        }
+        if (end < 0) break;
+        try {
+            const parsed = JSON.parse(s.slice(start, end + 1));
+            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                found.push(parsed);
+                i = end + 1;
+                continue;
+            }
+        } catch { /* not JSON from this brace: try the next one */ }
+        i = start + 1;
+    }
+    return found;
+}
+
+/**
+ * Reads the planner's structured result (planner-output.json) out of its
+ * dispatch value. The planner dispatch has no schema (its primary output is
+ * the beads DAG), so the value is usually the reply text with the JSON result
+ * object somewhere in it; an already-parsed object is taken as is. Returns
+ * the LAST object that carries a `decision` key, else the last object that
+ * carries a `status`, else null. Never throws.
+ *
+ * @param {unknown} value
+ * @returns {object|null}
+ */
+export function parsePlannerReport(value) {
+    if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+    if (typeof value !== 'string') return null;
+    const objects = jsonObjectsIn(value);
+    for (let k = objects.length - 1; k >= 0; k--) if ('decision' in objects[k]) return objects[k];
+    for (let k = objects.length - 1; k >= 0; k--) if ('status' in objects[k]) return objects[k];
+    return null;
+}
+
+/**
+ * Applies a planner decision (planner-output.json `decision`): when the
+ * planner's result carries one, it must validate against the planner output
+ * contract (contracts.mjs plannerReport -- the same decision shape as the
+ * doer's) and validateDecisionRequest(), and name a bead that is in the
+ * sprint scope and not closed. The decision is then recorded exactly as for a
+ * doer or reviewer (recordPendingDecision): a separate decision bead, the
+ * request appended to the work bead's notes, the work bead (never labelled
+ * human) and its open blocks dependents set aside, and the run pauses for an
+ * answer once only set-aside work remains. A result without a decision is a
+ * no-op, so a planner that returns none behaves exactly as before.
+ *
+ * @param {object} opts
+ * @param {unknown} opts.value the planner dispatch value (reply text or object)
+ * @param {object} opts.sprintState
+ * @param {Function} opts.command
+ * @param {string} opts.member the member whose beads clone the engine writes through
+ * @param {Function} opts.bdListScoped
+ * @param {number} opts.cycle
+ * @param {number|null} [opts.round]
+ * @param {string} opts.site e.g. 'Plan C1 R1'
+ * @param {Function} [opts.log]
+ * @returns {Promise<object|null>} the pending-decision record, or null
+ */
+export async function applyPlannerDecision({ value, sprintState, command, member, bdListScoped, cycle, round = null, site, log = () => {} }) {
+    const report = parsePlannerReport(value);
+    if (!report || report.decision === undefined || report.decision === null) return null;
+    const contract = validateVerdict('plannerReport', report);
+    if (!contract.valid) {
+        log(`${site}: planner returned a decision that does not match its output contract (${JSON.stringify(contract.errors)}) -- nothing is set aside.`);
+        return null;
+    }
+    const checked = validateDecisionRequest(report.decision);
+    if (!checked.ok) {
+        log(`${site}: planner returned an unusable decision (${checked.reason}) -- nothing is set aside.`);
+        return null;
+    }
+    const decision = checked.decision;
+    const scopeBeads = typeof bdListScoped === 'function' ? await bdListScoped('') : [];
+    const bead = (scopeBeads || []).find((b) => b && String(b.id) === decision.beadId);
+    if (!bead) {
+        log(`${site}: planner returned a decision on '${decision.beadId}', which is not in the sprint scope -- nothing is set aside.`);
+        return null;
+    }
+    if (bead.status === 'closed') {
+        log(`${site}: planner returned a decision on closed bead '${decision.beadId}' -- nothing is set aside.`);
+        return null;
+    }
+    return recordPendingDecision({
+        sprintState, decision,
+        raisedBy: `planner (${site})`,
         cycle, round, command, member, scopeBeads, log,
     });
 }

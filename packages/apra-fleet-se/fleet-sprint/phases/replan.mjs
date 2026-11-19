@@ -56,6 +56,7 @@
 
 import { dispatchRole } from '../dispatch-role.mjs';
 import { buildPlannerPrompt, buildPlanReviewerPrompt } from '../prompts.mjs';
+import { applyPlannerDecision, decisionSetAsideList, namedFindingIds, onlyDecisionSetAsideFindings } from '../decisions.mjs';
 
 /**
  * Runs the in-cycle scoped Replan phase for ONE develop round.
@@ -94,6 +95,14 @@ export async function runReplanPhase({
     replanIds,
     replannedThisCycle,
     perBeadFeedback,
+    // Decision routing (same seams phases/plan.mjs takes): a planner decision
+    // is checked against the scoped bead listing and recorded on sprintState.
+    // All optional so a caller without them behaves as before (a decision is
+    // then ignored and logged by applyPlannerDecision).
+    command = null,
+    sprintState = null,
+    bdListScoped = null,
+    extractContestedBeadIds = () => [],
 }) {
     const replanScopeIds = eligibleReplan.map((b) => b.id);
     phase(`Replan C${cycle} R${devRounds}`);
@@ -176,6 +185,16 @@ export async function runReplanPhase({
     const scopedPlannerOk = scopedPlannerOutcome.ok;
     if (scopedPlannerOk) {
         log(`Scoped Replan Planner: ${scopedPlannerOutcome.value}`);
+        // A planner finding only an operator can settle is routed exactly as
+        // in phases/plan.mjs: a separate decision bead, the work bead set
+        // aside (never labelled human). No decision: no bd call runs here.
+        if (scopedPlannerOutcome.value !== undefined && sprintState) {
+            const recorded = await gitSync.withOpenSyncBracket(() => applyPlannerDecision({
+                value: scopedPlannerOutcome.value, sprintState, command, member: backlogMember, bdListScoped,
+                cycle, round: devRounds, site: `Replan C${cycle} R${devRounds}`, log,
+            }));
+            if (recorded) await gitSync.syncBeadsAfter(backlogMember, { pushBeads: true });
+        }
     } else {
         log(`[fleet-sprint] in-cycle scoped replan: planner dispatch failed (${scopedPlannerOutcome.error.message}) -- leaving bead(s) ${replanScopeIds.join(', ')} flagged for the next cycle's planner.`);
     }
@@ -193,7 +212,7 @@ export async function runReplanPhase({
         // approval, and never an abort, the same discipline as the
         // main plan loop.
         const scopedReviewOutcome = await dispatchRole(dispatchCtx, 'scoped-replan-plan-reviewer', {
-            prompt: buildPlanReviewerPrompt({ targetIssues, goal: validated.goal, replanScope: replanScopeIds, verifyExcluded: verifySetThisCycle }),
+            prompt: buildPlanReviewerPrompt({ targetIssues, goal: validated.goal, replanScope: replanScopeIds, verifyExcluded: verifySetThisCycle, decisionSetAside: decisionSetAsideList(sprintState) }),
             label: 'Scoped Replan Review',
             roleLabel: 'Scoped Replan Review',
         });
@@ -201,6 +220,13 @@ export async function runReplanPhase({
             log(`Scoped Replan Reviewer: ${JSON.stringify(scopedReviewOutcome.value)}`);
             // ONLY an explicit APPROVED approves.
             scopedReplanApproved = scopedReviewOutcome.value.verdict === 'APPROVED';
+            if (!scopedReplanApproved && onlyDecisionSetAsideFindings(scopedReviewOutcome.value, sprintState, extractContestedBeadIds)) {
+                // Every finding names a bead set aside for a pending operator
+                // decision: non-blocking, same rule as the main plan loop.
+                log(`[fleet-sprint] in-cycle scoped replan: CHANGES_NEEDED names only bead(s) set aside for a pending operator decision ` +
+                    `[${namedFindingIds(scopedReviewOutcome.value, extractContestedBeadIds).join(', ')}] -- treated as non-blocking.`);
+                scopedReplanApproved = true;
+            }
         } else {
             log(`[fleet-sprint] in-cycle scoped replan: plan-review dispatch failed (${scopedReviewOutcome.error.message}) -- treating the scoped replan as NOT approved; bead(s) ${replanScopeIds.join(', ')} handed to the next cycle's planner.`);
         }

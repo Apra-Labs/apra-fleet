@@ -1058,9 +1058,12 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
             else if (res.removed) log(`${logPrefix}: removed ${res.removed} earlier reviewer-notes overflow comment(s) from PR ${label} (this run's notes fit the description).`);
             return res;
         }
-        if (parts.failedBody) {
+        // A partial failure (some comments did reach the PR) names how many.
+        const onPr = (res.posted || 0) + (res.updated || 0) + (res.unchanged || 0);
+        const failedBody = typeof parts.failedBodyFor === 'function' ? parts.failedBodyFor(onPr) : parts.failedBody;
+        if (failedBody) {
             const fix = await runUpdatePathCall(() => buildUpdatePrCommand({
-                ...coords(), pull_request_id: prId, payload_path: payloadPath(), title: prTitle, body: parts.failedBody,
+                ...coords(), pull_request_id: prId, payload_path: payloadPath(), title: prTitle, body: failedBody,
             }), 'update-pull-request');
             if (!fix.ok) log(`${logPrefix}: WARNING: could not rewrite the description of PR ${label} to say the overflow comments were not posted: ${fix.error}`);
         }
