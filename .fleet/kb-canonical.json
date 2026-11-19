@@ -1,9 +1,9 @@
 {
   "version": 3,
   "provenance": {
-    "commit": "f9cb1ca7c3f0f03debb783f6ef40a261554b7b0b",
+    "commit": "5a171212f2e1eee116e7f58e2ea29648ffb8ff1f",
     "branch": "main",
-    "entry_count": 163
+    "entry_count": 164
   },
   "entries": [
     {
@@ -1858,6 +1858,29 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-30T23:07:12.100Z"
+    },
+    {
+      "id": "90358562-b419-4a44-b88f-f51244556b5b",
+      "type": "knowledge",
+      "title": "methods.json ids X-10/X-11 are taken in INVENTORY.md but absent from methods.json",
+      "summary": "INVENTORY.md section 4 lists X-10 applyBibleDemotion and X-11 applyBibleWithdrawal, but methods.json has no entries for them. A new undeclared provider member must take the next free id across BOTH files (kb_capabilities took X-12), or the two documents name different members with one id.",
+      "symbols": [
+        "capabilitiesBody",
+        "applyBibleDemotion",
+        "applyBibleWithdrawal"
+      ],
+      "source_files": [
+        "memory-contract/v1/methods.json",
+        "memory-contract/v1/INVENTORY.md",
+        "memory-contract/v1/taxonomy.json"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-19T05:09:22.032Z",
+      "source_file_hashes": {
+        "memory-contract/v1/INVENTORY.md": "0f262f1d59c3a9f2fb77e5c6a7fdc2333d8ff275",
+        "memory-contract/v1/methods.json": "fc77fbf0565b024111c3d7794e6047f50dace8d8",
+        "memory-contract/v1/taxonomy.json": "dd20d8eddd2a766fefb67669322abdb91c3eb4c6"
+      }
     },
     {
       "id": "919a3f50-dcb3-4ee9-91d1-767fd503a3b8",
