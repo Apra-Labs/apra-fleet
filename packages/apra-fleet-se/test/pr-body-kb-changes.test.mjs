@@ -63,6 +63,41 @@ describe('buildKbChangesSection', () => {
         for (const id of noVerdict) assert.ok(nv.includes(id.slice(0, 8)), `no-verdict ids are trimmed last:\n${tight}`);
         assert.match(tight, /^- (\d{2}abcdef, )+\+\d+ more \(run log\)$/m, `the withdrawn ids end early, after at least one id:\n${tight}`);
     });
+
+    // A tombstone an earlier run pushed to the branch is withdrawn on merge:
+    // it is listed with the withdrawals and labelled carried, in every form.
+    test('a carried tombstone is listed as withdrawn on merge and labelled carried in every compaction form', () => {
+        const carried = Array.from({ length: 6 }, (_, i) => ({ id: ID(i + 60), title: 'T'.repeat(80), note: 'N'.repeat(200), kept: false }));
+        const s = buildKbChangesSection({
+            withdrawn: [{ id: ID(1), title: 'this run', note: 'false now' }], carried, noVerdict: [ID(2)],
+            kept: 0, restored: 0, refused: [], notPushed: [],
+        });
+        assert.match(s.text, /^Merging withdraws 7 CONFIRMED KB claim\(s\); 6 carried from an earlier run, not re-checked \(tombstones/);
+        assert.ok(s.text.includes(`- ${ID(60).slice(0, 8)} "${'T'.repeat(47)}..."`), s.text);
+        assert.ok(s.text.includes('(carried from an earlier run, not re-checked)'));
+        assert.ok(s.text.includes(`**No verdict (1):** ${ID(2).slice(0, 8)} -- still CONFIRMED`));
+        for (const max of [700, 400, 250, 160]) {
+            const t = s.fit(s.text, max);
+            assert.match(t, /; 6 carried from an earlier run, not re-checked/, `the header keeps the carried count at ${max}:\n${t}`);
+            for (const c of carried) {
+                const line = t.split('\n').find((l) => l.includes(c.id.slice(0, 8)));
+                if (line) assert.match(line, /carried/, `a listed carried id keeps its label at ${max}:\n${t}`);
+            }
+            assert.doesNotMatch(t.split('\n').find((l) => l.startsWith('**No verdict')) || '', /6[0-5]abcdef/, 'a carried id is never "still CONFIRMED"');
+        }
+    });
+
+    test('a branch read failure is an explicit line, even with nothing else to report, and survives compaction', () => {
+        const s = buildKbChangesSection({
+            withdrawn: [], noVerdict: [], kept: 0, restored: 0, refused: [], notPushed: [],
+            carried: [], unreadable: [{ repo: 'example.com/org/repo', member: 'maint', error: 'x' }],
+        });
+        assert.ok(s, 'a read failure alone still yields the section');
+        assert.match(s.text, /\*\*Branch tombstones could not be read\*\* \(maint: example\.com\/org\/repo\) -- a withdrawal an earlier run committed to this branch is not listed here and still applies on merge \(run log\)\./);
+        const many = Array.from({ length: 30 }, (_, i) => ({ id: ID(i), title: 'T'.repeat(80), note: 'N'.repeat(200) }));
+        const big = buildKbChangesSection({ withdrawn: many, noVerdict: [], kept: 0, restored: 0, refused: [], notPushed: [], unreadable: [{ repo: 'r', member: 'm' }] });
+        assert.match(big.fit(big.text, 300), /Branch tombstones could not be read/);
+    });
 });
 
 describe('buildSprintPrBody with the KB section', () => {
@@ -110,7 +145,7 @@ describe('buildSprintPrBody with the KB section', () => {
         assert.ok(body.split('N'.repeat(97)).length - 1 < 20, 'the per-id lines were compacted');
         for (const w of report.withdrawn) assert.ok(body.includes(w.id.slice(0, 8)), `withdrawn ${w.id.slice(0, 8)} missing`);
         for (const id of report.noVerdict) assert.ok(body.includes(id.slice(0, 8)), `no-verdict ${id.slice(0, 8)} missing`);
-        assert.ok(body.includes('**No verdict (20):**'), 'the no-verdict line is never cut');
+        assert.ok(body.includes('**No verdict (20):**'), 'the no-verdict line is kept, with every id');
         assert.ok(body.includes('still CONFIRMED, not re-checked at HEAD.'));
     });
 });

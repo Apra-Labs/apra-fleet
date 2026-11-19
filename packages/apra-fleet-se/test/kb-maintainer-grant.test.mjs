@@ -118,9 +118,12 @@ describe('kb_maintainer grant on engine KB writes', () => {
     test('remote and local maintainers: imported with ref only when kb_import advertises ref; older or unknown servers are skipped', async () => {
         const cases = [
             { listTools: async () => toolsWith({ path: {}, ref: {} }), expectImport: true },
-            { listTools: async () => toolsWith({ path: {}, skip_sweep: {} }), expectImport: false },
-            { listTools: async () => { throw new Error('unreachable'); }, expectImport: false },
-            { listTools: undefined, expectImport: false },
+            // The WARN names WHY: an older server is told apart from a
+            // tools/list that could not be read (never "older version" then).
+            { listTools: async () => toolsWith({ path: {}, skip_sweep: {} }), expectImport: false, warn: /bible import skipped for 'maint': its kb_import has no 'ref' \(older version; upgrade apra-fleet on that member\)/ },
+            { listTools: async () => { throw new Error('unreachable'); }, expectImport: false, warn: /bible import skipped for 'maint': its tools could not be listed \(unreachable\)$/ },
+            { listTools: async () => 'not json', expectImport: false, warn: /bible import skipped for 'maint': its tools\/list answer was unreadable$/ },
+            { listTools: undefined, expectImport: false, warn: /bible import skipped for 'maint': its tools cannot be listed \(no member session channel\)$/ },
         ];
         for (const c of [REMOTE_MAINT, MAINT].flatMap((maint) => cases.map((x) => ({ ...x, maint })))) {
             const { priming, calls, logs } = primingHarness({ baseBranch: 'main', listTools: c.listTools }, { maint: c.maint });
@@ -132,7 +135,10 @@ describe('kb_maintainer grant on engine KB writes', () => {
                 assert.deepEqual(imp[0].opts, { kbMaintainer: true });
             } else {
                 assert.equal(imp.length, 0, JSON.stringify(calls));
-                assert.ok(logs.some((m) => /has no kb_import 'ref' \(older version\) -- bible import skipped/.test(m)), logs.join('\n'));
+                assert.ok(logs.some((m) => c.warn.test(m)), `${c.warn}\n${logs.join('\n')}`);
+                if (!/older version/.test(String(c.warn))) {
+                    assert.ok(!logs.some((m) => /older version/.test(m)), `a listing failure is not an older version:\n${logs.join('\n')}`);
+                }
             }
             assert.ok(calls.some((x) => x.tool === 'kb_session_prime'), 'priming itself still runs');
         }

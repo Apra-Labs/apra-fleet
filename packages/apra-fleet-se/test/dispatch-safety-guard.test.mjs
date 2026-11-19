@@ -467,7 +467,10 @@ const DISPATCH_ROLE_PATH = path.join(__dirname, '../fleet-sprint/dispatch-role.m
 // HEAD:<bible>` and `git show origin/<base>:<bible>`) read this branch's
 // earlier withdrawn tombstones for the final review's demotion offer (so a
 // relaunch can restore one). Both pass member_name and are failSoft.
-const EXPECTED_COMMAND_COUNT = 13;
+// 13 -> 14: the same function's PR-body read (`.read`) tells a branch with
+// no bible from a failed read with `git ls-tree --name-only HEAD -- <bible>`
+// on the maintainer; member_name and failSoft, like the other two.
+const EXPECTED_COMMAND_COUNT = 14;
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant

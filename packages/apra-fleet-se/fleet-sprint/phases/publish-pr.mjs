@@ -108,7 +108,8 @@ export async function runPublishPrPhase({
     // The run's wait records (../set-aside.mjs collectWaitEntries), rendered
     // as one "Waited this run" line; omitted when empty.
     waited = [],
-    // kbWork.kbChangesReport() -- the final review's demotion outcome, or null.
+    // kbWork.kbChangesOnMerge() -- the final review's demotion outcome plus
+    // the withdrawn tombstones the branch carries, or null.
     kbChanges = null,
 }) {
     phase(`Publish PR C${finalCycleLabel}`);

@@ -588,6 +588,55 @@ describe('createKbWorkClient.demotionCandidates: final review only, widened, fea
         }
     });
 
+    test('a tools/list that throws, or answers unreadably, once is not cached: the next offering offers candidates', async () => {
+        const failures = [
+            async () => { throw new Error('session dropped'); },
+            async () => 'not json',
+            async () => ({ content: [{ type: 'text', text: 'not json' }] }),
+        ];
+        for (const failure of failures) {
+            const { memberCall } = splitReads(OTHERS, []);
+            const logs = [];
+            let lists = 0;
+            const client = createKbWorkClient({
+                memberCall, maintainers: withMaintainer(),
+                listTools: async (...a) => { lists += 1; return lists === 1 ? failure(...a) : newSchemaListTools(...a); },
+                sprintChangedFiles: async () => ['server/transit.js'], log: (l) => logs.push(l),
+            });
+            assert.deepEqual(await client.demotionCandidates(REVIEWER), [], 'the failed listing offers nothing');
+            assert.ok(warnFor(logs), logs.join('\n'));
+            assert.deepEqual((await client.demotionCandidates(REVIEWER)).map((e) => e.id), ['kb-other'], 'a tools/list failure is not cached');
+            assert.equal(lists, 2);
+        }
+    });
+
+    test('the support answer is cached per member AND repository: a gap for one repository does not hide another', async () => {
+        const OTHER_REVIEWER = { id: 'id-shop-reviewer', name: 'shop-reviewer', type: 'local' };
+        const { memberCall } = splitReads(OTHERS, []);
+        const logs = [];
+        let caps = 0;
+        const client = createKbWorkClient({
+            memberCall,
+            maintainers: fakeMaintainerSelector({
+                repoOf: { [REVIEWER.name]: 'example.com/warehouse', [OTHER_REVIEWER.name]: 'example.com/shop', [MAINTAINER.name]: 'example.com/warehouse' },
+                maintainerOf: { 'example.com/warehouse': MAINTAINER, 'example.com/shop': MAINTAINER },
+            }),
+            listTools: newSchemaListTools,
+            // The first repository's KB server lacks the withdraw route; the second serves it.
+            capabilities: async () => {
+                caps += 1;
+                return { content: [{ type: 'text', text: JSON.stringify({ contract: 'v1', routes: caps === 1 ? ['capture', 'query'] : [...ALL_KB_ROUTES] }) }] };
+            },
+            sprintChangedFiles: async () => ['server/transit.js'], log: (l) => logs.push(l),
+        });
+        assert.deepEqual(await client.demotionCandidates(REVIEWER), [], 'the first repository has no withdraw route');
+        assert.deepEqual((await client.demotionCandidates(OTHER_REVIEWER)).map((e) => e.id), ['kb-other'],
+            'the second repository is checked on its own, not answered from the first one\'s cached gap');
+        assert.equal(caps, 2);
+        assert.deepEqual(await client.demotionCandidates(REVIEWER), [], 'a definite answer is still cached for its own repository');
+        assert.equal(caps, 2);
+    });
+
     test('a maintainer with no listTools wired, or a failing one, is treated as old (fail closed)', async () => {
         for (const listTools of [undefined, async () => { throw new Error('unreachable'); }, async () => 'not json']) {
             const { memberCall } = splitReads(OTHERS, OWN);
@@ -961,6 +1010,41 @@ describe('createBranchWithdrawnEntries (this branch\'s earlier withdrawals)', ()
             };
             assert.deepEqual(await createBranchWithdrawnEntries({ command, baseBranch: 'main' })('m'), []);
             assert.equal(calls.length, 1, 'the base bible is read only when the branch carries a withdrawal');
+        }
+    });
+
+    // .read is the PR body's read: "nothing carried" and "could not read" must differ.
+    test('.read: rows carry the base title and the tombstone note; no bible on the branch is ok with no rows', async () => {
+        const { command } = fakeCommand({
+            [`git show HEAD:${BIBLE}`]: { entries: [], demotions: [tomb('kb-mine'), tomb('kb-orphan')] },
+            [`git show origin/main:${BIBLE}`]: { entries: [{ id: 'kb-mine', title: 'base title', summary: 's', source_files: [] }] },
+        });
+        const res = await createBranchWithdrawnEntries({ command, baseBranch: 'main' }).read('m');
+        assert.equal(res.ok, true);
+        assert.deepEqual(res.rows.map((r) => [r.id, r.base_title, r.tombstone_note]), [['kb-mine', 'base title', 'note kb-mine'], ['kb-orphan', '', 'note kb-orphan']]);
+
+        const calls = [];
+        const noBible = async (cmd) => {
+            calls.push(cmd);
+            if (cmd.startsWith('git ls-tree --name-only HEAD -- ')) return { ok: true, output: '\n' };
+            return { ok: false, output: `fatal: path '${BIBLE}' does not exist in 'HEAD'` };
+        };
+        assert.deepEqual(await createBranchWithdrawnEntries({ command: noBible, baseBranch: 'main' }).read('m'), { ok: true, rows: [] });
+        assert.deepEqual(calls, [`git show HEAD:${BIBLE}`, `git ls-tree --name-only HEAD -- ${BIBLE}`]);
+    });
+
+    test('.read: a failed or unparseable HEAD read of a bible that exists (or an unanswerable ls-tree) is ok:false naming the command', async () => {
+        const cases = [
+            { show: { ok: false, output: 'ssh: connection reset' }, ls: { ok: true, output: `${BIBLE}\n` } },
+            { show: { ok: true, output: 'not json' }, ls: { ok: true, output: `${BIBLE}\n` } },
+            { show: { ok: false, output: 'ssh: connection reset' }, ls: { ok: false, output: 'ssh: connection reset' } },
+        ];
+        for (const c of cases) {
+            const command = async (cmd) => (cmd.startsWith('git ls-tree') ? c.ls : c.show);
+            const res = await createBranchWithdrawnEntries({ command, baseBranch: 'main' }).read('maint-1');
+            assert.equal(res.ok, false, JSON.stringify(c));
+            assert.deepEqual(res.rows, []);
+            assert.match(res.error, new RegExp(`'git show HEAD:${BIBLE.replace(/\./g, '\\.')}' on 'maint-1'`));
         }
     });
 });

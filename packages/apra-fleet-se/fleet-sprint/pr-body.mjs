@@ -461,21 +461,30 @@ export function fitSectionsToBudget({ sections, render, maxLength }) {
     return { body, texts, clipped: [...clipped] };
 }
 
-/** Max ids the never-cut no-verdict line names before "+K more (run log)". */
+/** Max ids the no-verdict line names before "+K more (run log)" (none is dropped silently). */
 export const KB_NO_VERDICT_MAX_IDS = 40;
+
+/** Max maintainers the "could not be read" line names. */
+const KB_UNREADABLE_MAX_NAMES = 3;
 
 /**
  * The "KB changes on merge" section for buildSprintPrBody's `sections` hook,
- * from kbWork.kbChangesReport(). Registered right after the merge assessment.
- * Lines: the withdrawals header and one line per id (clipped title and note;
- * ids only when no title); a "Demotion not recorded (N)" line for demotions
- * kb_bible_commit did not admit; the never-cut "**No verdict (N):** ..."
- * line; a counts line. Under budget pressure the section degrades step by
- * step, keeping every id as long as the ids alone fit: the per-id lines
- * become one ids-only line, the counts line drops the refused detail, and
- * only then do the id lists end early with "+K more (run log)" -- the
- * withdrawn ids first, the no-verdict ids last. Returns null when there is
- * nothing to report.
+ * from kbWork.kbChangesOnMerge() (this run's verdicts plus the withdrawn
+ * tombstones the branch carries over its base). Registered right after the
+ * merge assessment. Lines: the withdrawals header and one line per id
+ * (clipped title and note; ids only when no title) -- a tombstone carried
+ * from an earlier run on this branch is listed there too, labelled as
+ * carried; a "could not be read" line when a maintainer's branch bible could
+ * not be read; a "Demotion not recorded (N)" line for demotions
+ * kb_bible_commit did not admit; the "**No verdict (N):** ..." line (ids
+ * past KB_NO_VERDICT_MAX_IDS, or past what the budget allows, become "+K
+ * more (run log)"); a counts line. Under budget pressure the section
+ * degrades step by step, keeping every id as long as the ids alone fit: the
+ * per-id lines become one ids-only line, the counts line drops the refused
+ * detail, and only then do the id lists end early with "+K more (run log)"
+ * -- the withdrawn ids first, the no-verdict ids last. The header's counts
+ * and the "could not be read" line stay in every form. Returns null when
+ * there is nothing to report.
  * @param {object|null} report
  * @returns {{ id: string, priority: number, heading: string, text: string, placement: string, fit: Function, hardClip: Function }|null}
  */
@@ -483,25 +492,37 @@ export function buildKbChangesSection(report) {
     if (!report) return null;
     const clip = (t, n) => { const x = inline(t); return x.length > n ? `${x.slice(0, n - 3)}...` : x; };
     const id8 = (id) => String(id).slice(0, 8);
-    const withdrawn = report.withdrawn || [];
+    const carried = (report.carried || []).map((c) => ({ ...c, carried: true }));
+    const withdrawn = [...(report.withdrawn || []), ...carried];
     const notRecorded = report.notRecorded || [];
     const noVerdict = report.noVerdict || [];
     const refused = report.refused || [];
+    const unreadable = report.unreadable || [];
     const notPushed = new Set(report.notPushed || []);
     if (withdrawn.length === 0 && notRecorded.length === 0 && noVerdict.length === 0
-        && !(report.kept || report.restored) && refused.length === 0) return null;
+        && !(report.kept || report.restored) && refused.length === 0 && unreadable.length === 0) return null;
+    const carriedLabel = (w) => (w.kept
+        ? ' (carried from an earlier run; held this run, but the restore is not on the branch)'
+        : ' (carried from an earlier run, not re-checked)');
     const lineOf = (w) => {
         const t = w.title ? ` "${clip(w.title, 50)}"` : '';
         const n = w.note ? ` -- ${clip(w.note, 100)}` : '';
-        return `- ${id8(w.id)}${t}${n}${notPushed.has(w.id) ? ' (not in a pushed bible commit)' : ''}`;
+        return `- ${id8(w.id)}${t}${n}${notPushed.has(w.id) ? ' (not in a pushed bible commit)' : ''}${w.carried ? carriedLabel(w) : ''}`;
     };
+    const carriedUnchecked = carried.filter((c) => !c.kept).length;
+    const carriedKept = carried.length - carriedUnchecked;
+    const carriedHead = (carriedUnchecked > 0 ? `; ${carriedUnchecked} carried from an earlier run, not re-checked` : '')
+        + (carriedKept > 0 ? `; ${carriedKept} carried from an earlier run, held but not restored` : '');
+    const unreadableLine = unreadable.length > 0
+        ? `**Branch tombstones could not be read** (${clip(unreadable.slice(0, KB_UNREADABLE_MAX_NAMES).map((u) => [u.member, u.repo].filter(Boolean).join(': ') || 'the KB report failed').join('; '), 160)}${unreadable.length > KB_UNREADABLE_MAX_NAMES ? `; +${unreadable.length - KB_UNREADABLE_MAX_NAMES} more` : ''}) -- a withdrawal an earlier run committed to this branch is not listed here and still applies on merge (run log).`
+        : '';
     // The first k of `ids` (rendered by `show`), then "+K more (run log)" for the rest.
     const idList = (ids, k, show = id8) => {
         const shown = ids.slice(0, k).map(show);
         if (k < ids.length) shown.push(`+${ids.length - k} more (run log)`);
         return shown.join(', ');
     };
-    const withdrawnId = (w) => `${id8(w.id)}${notPushed.has(w.id) ? ' (not in a pushed bible commit)' : ''}`;
+    const withdrawnId = (w) => `${id8(w.id)}${notPushed.has(w.id) ? ' (not in a pushed bible commit)' : ''}${w.carried ? ' (carried)' : ''}`;
     const noVerdictCap = Math.min(noVerdict.length, KB_NO_VERDICT_MAX_IDS);
     const refusedPart = refused.length > 0
         ? `; refused: ${refused.length} (${clip(refused.map((r) => `${id8(r.id)} ${r.reason}`).join('; '), 120)}; run log)`
@@ -513,11 +534,12 @@ export function buildKbChangesSection(report) {
     const build = ({ detail, wIds, rIds, nvIds, fullCounts }) => {
         const parts = [];
         if (withdrawn.length > 0) {
-            parts.push(`Merging withdraws ${withdrawn.length} CONFIRMED KB claim(s) (tombstones in .fleet/kb-canonical.json):`);
+            parts.push(`Merging withdraws ${withdrawn.length} CONFIRMED KB claim(s)${carriedHead} (tombstones in .fleet/kb-canonical.json):`);
             for (const w of withdrawn.slice(0, detail)) parts.push(lineOf(w));
             const rest = withdrawn.slice(detail);
             if (rest.length > 0) parts.push(`- ${idList(rest, wIds, withdrawnId)}`);
         }
+        if (unreadableLine) parts.push(unreadableLine);
         if (notRecorded.length > 0) {
             parts.push(`**Demotion not recorded (${notRecorded.length}):** ${idList(notRecorded.map((w) => w.id), rIds)} -- the maintainer's kb_bible_commit did not admit it; still CONFIRMED after merge (run log).`);
         }

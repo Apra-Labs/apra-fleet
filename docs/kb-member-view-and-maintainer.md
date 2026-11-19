@@ -119,6 +119,18 @@ is imported (`kb_import`).
    An abort AFTER the final review (a failed harvest or PR creation) can leave
    withdrawals already pushed on the branch; the [ABORTED] PR body carries
    the same "KB changes on merge" section as a PASS/FAIL body.
+   **What the section reports.** At publish and at abort the engine reads, on
+   each repository's maintainer, the withdrawn tombstones the sprint branch's
+   bible adds over the base's (the same `git show` read as item 4), whatever
+   this run offered. Every such tombstone this run did not restore is listed
+   under "Merging withdraws"; one with no verdict this run is labelled
+   "carried from an earlier run, not re-checked" (never "still CONFIRMED"), so
+   the section appears even when this run offered nothing (loop off, a
+   support gap, an abort before the final review, more tombstones than the
+   offer cap). A branch bible that could not be read (or a maintainer not on
+   the sprint branch) is a "Branch tombstones could not be read" line, never
+   silence. No-verdict ids are never dropped: past 40 ids, or when the body
+   budget is short, the rest is "+K more (run log)".
 7. **Knowledge blocks.** An id the final review withdrew is excluded from
    every later dispatch's knowledge block in the same sprint (the harvest
    included), whether or not the bible commit has been pushed yet.

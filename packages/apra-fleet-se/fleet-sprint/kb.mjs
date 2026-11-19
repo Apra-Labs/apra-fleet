@@ -1416,7 +1416,7 @@ export function createKbWorkClient(opts = {}) {
         // that cannot record a withdrawal, or whose KB could not apply one
         // after the merge, is offered nothing to judge. Never a fallback to
         // an immediate demotion.
-        const gap = await withdrawalSupportGap(target.record);
+        const gap = await withdrawalSupportGap(target.record, target.repo);
         if (gap) {
             log(`[kb-work] WARN: maintainer '${target.member}' (${target.repo}): ${gap} -- offering no demotion candidates`);
             return [];
@@ -1504,7 +1504,127 @@ export function createKbWorkClient(opts = {}) {
         return offered;
     }
 
-    /** member id -> definite withdrawal-support answer: null (supported) or the gap (cached for the sprint). */
+    /** This run's offering record as the PR body report (see kbChangesReport), or null. */
+    function buildKbChangesReport() {
+        const out = { withdrawn: [], notRecorded: [], noVerdict: [], kept: 0, restored: 0, refused: [], notPushed: [] };
+        let any = false;
+        for (const [repo, rec] of offeringRecord) {
+            if (rec.offered.size === 0 && rec.verdicts.size === 0) continue;
+            any = true;
+            const det = detailFor(rec);
+            const pending = withdrawalsPending.get(repo);
+            out.restored += det.restoredDone.size;
+            for (const [id, v] of rec.verdicts) {
+                if (v === 'demote') {
+                    const row = { id, title: det.titles.get(id) || '', note: det.notes.get(id) || '' };
+                    if (det.notAdmitted.has(id)) { out.notRecorded.push(row); continue; }
+                    out.withdrawn.push(row);
+                    if (pending && pending.has(id)) out.notPushed.push(id);
+                } else if (v === 'holds') {
+                    out.kept += 1;
+                } else if (v === 'none') out.noVerdict.push(id);
+                else if (v.startsWith('refused:')) out.refused.push({ id, reason: v.slice('refused:'.length) });
+            }
+            for (const id of rec.offered) if (!rec.verdicts.has(id)) out.noVerdict.push(id);
+        }
+        return any ? out : null;
+    }
+
+    /**
+     * The withdrawn tombstones each repository's sprint branch adds over its
+     * base, read on that repository's maintainer with the same read the
+     * relaunch offer uses (branchWithdrawals, its `.read` variant when it has
+     * one, which tells a failed read from "none"): [{ repo, member, ok, rows,
+     * error }]. A maintainer not on the sprint branch, or a read that throws,
+     * is ok:false -- never "nothing carried". Never throws.
+     */
+    async function readCarriedWithdrawals() {
+        const out = [];
+        if (!active || typeof branchWithdrawals !== 'function') return out;
+        const sel = selector();
+        if (!sel || typeof sel.maintainers !== 'function' || typeof sel.getKbMaintainer !== 'function') return out;
+        let repos;
+        try {
+            repos = [...sel.maintainers()].filter(([, m]) => m && m.member).map(([repo]) => repo);
+        } catch (err) {
+            log(`[kb-work] WARN: could not list the kb_maintainers for the PR body's KB section: ${errText(err)}`);
+            return out;
+        }
+        for (const repo of repos) {
+            const m = sel.getKbMaintainer(repo);
+            if (!m || !m.member) continue;
+            const fail = (error) => {
+                log(`[kb-work] WARN: this branch's withdrawn tombstones could not be read for ${repo} on maintainer '${m.member}' (${error}) -- the PR body says so`);
+                out.push({ repo, member: m.member, ok: false, rows: [], error });
+            };
+            try {
+                if (typeof checkedOutBranch === 'function') {
+                    let found = null;
+                    let sprintBranch = null;
+                    let readError = null;
+                    try {
+                        const r = await checkedOutBranch(m.member);
+                        found = r && typeof r.branch === 'string' && r.branch ? r.branch : null;
+                        sprintBranch = r && typeof r.sprintBranch === 'string' && r.sprintBranch ? r.sprintBranch : null;
+                    } catch (err) {
+                        readError = errText(err);
+                    }
+                    if (!(found && sprintBranch && found === sprintBranch)) {
+                        fail(`${found ? `'${found}'` : `an unreadable branch${readError ? ` (${readError})` : ''}`} is checked out, not the sprint branch '${sprintBranch || 'unknown'}'`);
+                        continue;
+                    }
+                }
+                const res = typeof branchWithdrawals.read === 'function'
+                    ? await branchWithdrawals.read(m.member)
+                    : { ok: true, rows: await branchWithdrawals(m.member) };
+                if (!res || res.ok !== true) { fail((res && res.error) || 'the read failed'); continue; }
+                out.push({ repo, member: m.member, ok: true, rows: Array.isArray(res.rows) ? res.rows : [] });
+            } catch (err) {
+                fail(errText(err));
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Merge the branch reads into the report (see kbChangesOnMerge). An id
+     * this run withdrew is already listed; one it restored is gone; every
+     * other branch tombstone is carried.
+     */
+    function mergeCarriedWithdrawals(base, reads) {
+        const out = base || { withdrawn: [], notRecorded: [], noVerdict: [], kept: 0, restored: 0, refused: [], notPushed: [] };
+        out.carried = [];
+        out.unreadable = [];
+        const listed = new Set(out.withdrawn.map((w) => w.id));
+        for (const r of reads) {
+            if (!r.ok) { out.unreadable.push({ repo: r.repo, member: r.member, error: r.error }); continue; }
+            const rec = offeringRecord.get(r.repo);
+            const det = rec ? detailFor(rec) : null;
+            const carriedHere = [];
+            for (const row of r.rows) {
+                if (!row || typeof row.id !== 'string' || !row.id || listed.has(row.id)) continue;
+                if (det && det.restoredDone.has(row.id)) continue;
+                listed.add(row.id);
+                const verdict = rec ? rec.verdicts.get(row.id) : undefined;
+                out.carried.push({
+                    id: row.id,
+                    title: typeof row.base_title === 'string' ? row.base_title : (typeof row.title === 'string' ? row.title : ''),
+                    note: typeof row.tombstone_note === 'string' ? row.tombstone_note : '',
+                    kept: verdict === 'holds',
+                });
+                carriedHere.push(row.id);
+            }
+            if (carriedHere.length > 0) {
+                const ids = new Set(carriedHere);
+                out.noVerdict = out.noVerdict.filter((id) => !ids.has(id));
+                out.notRecorded = out.notRecorded.filter((w) => !ids.has(w.id));
+                log(`[kb-work] withdrawals this branch carries from an earlier run for ${r.repo} (merging applies them): ${carriedHere.join(', ')}`);
+            }
+        }
+        return (base || out.carried.length > 0 || out.unreadable.length > 0) ? out : null;
+    }
+
+    /** JSON [member id, repo] -> definite withdrawal-support answer: null (supported) or the gap (cached for the sprint). */
     const withdrawalSupport = new Map();
 
     /**
@@ -1519,11 +1639,13 @@ export function createKbWorkClient(opts = {}) {
      *     KB always lists it, an http KB server only when it serves it.
      * Any doubt (no listTools wired, an unreadable answer, a failed or
      * rejected call) is a gap -- fail closed, never offer a demotion that
-     * cannot land. Only the two definite answers are cached per member; a
-     * failure is retried at the next offering.
+     * cannot land. Only the two definite answers are cached, per member AND
+     * repository (kb_capabilities describes the session's project KB, and a
+     * member can maintain more than one repository); a failure is retried at
+     * the next offering.
      */
-    async function withdrawalSupportGap(record) {
-        const key = record && record.id;
+    async function withdrawalSupportGap(record, repo) {
+        const key = record && record.id ? JSON.stringify([record.id, repo || '']) : null;
         if (key && withdrawalSupport.has(key)) return withdrawalSupport.get(key);
         const settle = (gap) => { if (key) withdrawalSupport.set(key, gap); return gap; };
         if (typeof listTools !== 'function') return 'its tools cannot be listed (no member session channel)';
@@ -1874,28 +1996,26 @@ export function createKbWorkClient(opts = {}) {
          * kb_bible_commit reported restored, not the holds that asked for it.
          */
         kbChangesReport() {
-            const out = { withdrawn: [], notRecorded: [], noVerdict: [], kept: 0, restored: 0, refused: [], notPushed: [] };
-            let any = false;
-            for (const [repo, rec] of offeringRecord) {
-                if (rec.offered.size === 0 && rec.verdicts.size === 0) continue;
-                any = true;
-                const det = detailFor(rec);
-                const pending = withdrawalsPending.get(repo);
-                out.restored += det.restoredDone.size;
-                for (const [id, v] of rec.verdicts) {
-                    if (v === 'demote') {
-                        const row = { id, title: det.titles.get(id) || '', note: det.notes.get(id) || '' };
-                        if (det.notAdmitted.has(id)) { out.notRecorded.push(row); continue; }
-                        out.withdrawn.push(row);
-                        if (pending && pending.has(id)) out.notPushed.push(id);
-                    } else if (v === 'holds') {
-                        out.kept += 1;
-                    } else if (v === 'none') out.noVerdict.push(id);
-                    else if (v.startsWith('refused:')) out.refused.push({ id, reason: v.slice('refused:'.length) });
-                }
-                for (const id of rec.offered) if (!rec.verdicts.has(id)) out.noVerdict.push(id);
-            }
-            return any ? out : null;
+            return buildKbChangesReport();
+        },
+        /**
+         * The PR body's "KB changes on merge" report, at publish and at
+         * abort: kbChangesReport() merged with the withdrawn tombstones each
+         * repository's sprint branch carries over its base (read on its
+         * maintainer, independently of any offer), so a withdrawal an earlier
+         * run on this branch committed is reported even when this run offered
+         * nothing (loop off, a support gap, an abort before the final review,
+         * more tombstones than the offer cap). Adds `carried: [{id, title,
+         * note, kept}]` -- a branch tombstone this run neither withdrew nor
+         * restored (`kept`: held this run, restore not on the branch) -- and
+         * `unreadable: [{repo, member, error}]` for a branch bible that could
+         * not be read. A carried id is never in `noVerdict` or `notRecorded`
+         * (it is withdrawn on merge). Null when there is nothing to report.
+         * Never throws.
+         * @returns {Promise<object|null>}
+         */
+        async kbChangesOnMerge() {
+            return mergeCarriedWithdrawals(buildKbChangesReport(), await readCarriedWithdrawals());
         },
         /**
          * The per-offering record: [{ repo, offered, verdicts: { id: verdict } }]
@@ -2341,22 +2461,27 @@ export function createKbPrimingClient(opts = {}) {
         return (m && typeof m.maintainerForMember === 'function') ? m : null;
     };
     /**
-     * True when `target`'s kb_import accepts `ref`, as its tools/list
+     * Null when `target`'s kb_import accepts `ref`, as its tools/list
      * advertises -- a local member included (the separately running local
-     * apra-fleet server can be an older build). Any doubt (no listTools, an unreadable answer)
-     * is false.
+     * apra-fleet server can be an older build). Otherwise why not, for the
+     * WARN: tools/list could not be read (no listTools, a failed call, an
+     * unreadable answer) is told apart from a server whose kb_import lacks
+     * `ref` (an older version). Any doubt skips the import.
      */
-    async function supportsImportRef(target) {
-        if (typeof opts.listTools !== 'function') return false;
+    async function importRefGap(target) {
+        if (typeof opts.listTools !== 'function') return 'its tools cannot be listed (no member session channel)';
+        let tools;
         try {
             const list = parseResult(await opts.listTools(target));
-            const tools = Array.isArray(list) ? list : (list && Array.isArray(list.tools) ? list.tools : []);
-            const imp = tools.find((t) => t && t.name === 'kb_import');
-            const props = imp && imp.inputSchema && imp.inputSchema.properties;
-            return !!(props && typeof props === 'object' && Object.prototype.hasOwnProperty.call(props, 'ref'));
-        } catch {
-            return false;
+            tools = Array.isArray(list) ? list : (list && Array.isArray(list.tools) ? list.tools : null);
+        } catch (err) {
+            return `its tools could not be listed (${err && err.message ? err.message : String(err)})`;
         }
+        if (!tools) return 'its tools/list answer was unreadable';
+        const imp = tools.find((t) => t && t.name === 'kb_import');
+        const props = imp && imp.inputSchema && imp.inputSchema.properties;
+        if (props && typeof props === 'object' && Object.prototype.hasOwnProperty.call(props, 'ref')) return null;
+        return "its kb_import has no 'ref' (older version; upgrade apra-fleet on that member)";
     }
     /** maintainer record id -> entries primed there (a repository is imported and primed once). */
     const primedByTarget = new Map();
@@ -2516,7 +2641,8 @@ export function createKbPrimingClient(opts = {}) {
                             // key and would grant-import (and trust) its
                             // WORK-TREE bible. Fail closed: import only when its
                             // kb_import advertises `ref`.
-                            if (await supportsImportRef(target)) {
+                            const refGap = await importRefGap(target);
+                            if (!refGap) {
                                 // base_branch names the base the bible must
                                 // belong to: its own provenance.branch is never
                                 // trusted alone to gate withdrawn tombstones
@@ -2526,7 +2652,7 @@ export function createKbPrimingClient(opts = {}) {
                                     log(`[kb-prime] WARN kb_import on '${target.name || member}' did not report reading ${ref} (bible_source ${JSON.stringify(imported.bible_source)}) -- upgrade apra-fleet on that member`);
                                 }
                             } else {
-                                log(`[kb-prime] WARN the apra-fleet on '${target.name || member}' has no kb_import 'ref' (older version) -- bible import skipped; upgrade apra-fleet on that member`);
+                                log(`[kb-prime] WARN bible import skipped for '${target.name || member}': ${refGap}`);
                             }
                         } else {
                             log(`[kb-prime] no base branch -- bible import skipped for '${member}' (the kb_maintainer imports only the base branch's committed bible)`);

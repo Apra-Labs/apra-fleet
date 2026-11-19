@@ -440,3 +440,103 @@ describe('mock sprint m1: final-review demotion lands as a merge-carried withdra
         });
     });
 });
+
+// A relaunch on a branch an EARLIER run's final review already withdrew an
+// entry on: the tombstone stays on the branch (only a hold restores it), so
+// merging withdraws the entry. The PR body must say so even when this run
+// offers nothing -- the loop is off here -- or aborts before its final review.
+describe('mock sprint: a withdrawal carried on the branch from an earlier run is in the PR body', () => {
+    const BIBLE_FILE = '.fleet/kb-canonical.json';
+    const CARRIED_ID = 'eeee5555-kb-withdrawn-by-an-earlier-run';
+    const branchBible = { version: 3, entries: [], demotions: [{ id: CARRIED_ID, at: '2026-11-17T00:00:00.000Z', reason: 'withdrawn', note: 'an earlier final review judged it false', evidence_files: [CITED] }] };
+    const baseBible = { version: 3, entries: [{ id: CARRIED_ID, type: 'knowledge', confidence: 'CONFIRMED', title: 'Cache keys by tenant id only', summary: 's', source_files: [CITED] }] };
+    const onCommandFor = (fleet) => {
+        const observe = buildOnCommand(fleet);
+        return (ev) => {
+            observe(ev);
+            if (/^git rev-list --count /.test(ev.command)) return mockCmdResult(0, '1\n', '');
+            if (ev.member_name !== 'maint') return undefined;
+            if (ev.command === `git show HEAD:${BIBLE_FILE}`) return mockCmdResult(0, JSON.stringify(branchBible), '');
+            if (ev.command === `git show origin/main:${BIBLE_FILE}`) return mockCmdResult(0, JSON.stringify(baseBible), '');
+            if (/^git rev-parse HEAD\s*$/.test(ev.command)) return mockCmdResult(0, 'b'.repeat(40), '');
+            if (/^git diff --name-only \S+\.\.\.\S+\s*$/.test(ev.command)) return mockCmdResult(0, `${CITED}\n`, '');
+            if (/^git merge-base HEAD origin\//.test(ev.command)) return mockCmdResult(0, 'a'.repeat(40), '');
+            if (/^git log -m --name-only --pretty=format: /.test(ev.command)) return mockCmdResult(0, `${BIBLE_FILE}\n`, '');
+            return undefined;
+        };
+    };
+    const prBodies = (r) => withStagedBodies(r.commandLog)
+        .filter((c) => c.startsWith('curl -sS -X POST') && c.includes('/pulls'))
+        .map((c) => JSON.parse(c.split('\n').find((l) => l.startsWith('{') && l.includes('"body"'))));
+    const doerHandler = (fleet) => async ({ opts, tempDir, runCmd }) => {
+        const ids = (opts.prompt.match(/Assigned bead ids \(comma-separated\):\s*(.+)/)?.[1] || '').split(',').map((s) => s.trim()).filter(Boolean);
+        for (const id of ids) await runCmd(`bd close ${id}`, tempDir);
+        fleet.published.add(CITED);
+        return { content: [{ text: JSON.stringify({ status: 'VERIFY', closedIds: ids, notes: 'done' }) }] };
+    };
+    const reviewerHandler = async () => ({ content: [{ text: JSON.stringify({ verdict: 'APPROVED', notes: 'Approved.', reopenIds: [], newTasks: [] }) }] });
+
+    test('a relaunch with the demotion loop off (nothing offered) still lists the carried id under "Merging withdraws"', { timeout: scaledTimeout(240000) }, async () => {
+        await withScenarioMarkers('kb carried withdrawal loop off', async () => {
+            const fleet = createFakeFleet();
+            let finalPrompt = null;
+            const finalReviewHandler = async ({ opts }) => {
+                finalPrompt = opts.prompt;
+                return { content: [{ text: JSON.stringify({ verdict: 'PASS', notes: 'All goal beads closed.' }) }] };
+            };
+            const r = await runDevelopLoopScenario('kbcarriedoff', {
+                members: ['maint', 'dev'],
+                roleMap: { doer: ['dev'], reviewer: ['dev'] },
+                beadsIdentity: { maint: { repoRemote: REPO_URL }, dev: { repoRemote: REPO_URL } },
+                taskSpecs: [{ title: 'Task: relaunch with a carried withdrawal, loop off' }],
+                doerHandler: doerHandler(fleet), reviewerHandler, finalReviewHandler,
+                maxCycles: 1,
+                kbDemotionLoop: 'off',
+                callToolFactory: (executeCommand) => buildCallTool(fleet, executeCommand),
+                onCommand: onCommandFor(fleet),
+            });
+            assert.equal(r.error, null, `sprint error: ${r.error && r.error.message}`);
+            assert.ok(finalPrompt && !finalPrompt.includes(`"id": "${CARRIED_ID}"`), 'sanity: the loop is off, nothing is offered');
+            const body = prBodies(r).map((p) => p.body).find((b) => /### KB changes on merge/.test(b || ''));
+            assert.ok(body, `no PR body with a KB section; logs:\n${r.logs.filter((l) => l.includes('[kb-work]')).join('\n')}`);
+            assert.match(body, /Merging withdraws 1 CONFIRMED KB claim\(s\); 1 carried from an earlier run, not re-checked/);
+            assert.ok(body.includes(`${CARRIED_ID.slice(0, 8)} "Cache keys by tenant id only" -- an earlier final review judged it false (carried from an earlier run, not re-checked)`), body);
+            assert.doesNotMatch(body, /still CONFIRMED/);
+            assert.ok(body.trimEnd().endsWith('-->'));
+        });
+    });
+
+    test('an abort before the final review on a branch carrying a tombstone: the [ABORTED] PR body lists it', { timeout: scaledTimeout(240000) }, async () => {
+        await withScenarioMarkers('kb carried withdrawal abort before final review', async () => {
+            const fleet = createFakeFleet();
+            let finalReviews = 0;
+            const finalReviewHandler = async () => {
+                finalReviews += 1;
+                return { content: [{ text: JSON.stringify({ verdict: 'PASS', notes: 'All goal beads closed.' }) }] };
+            };
+            // The round review runs out of usage-limit waits: a typed sprint
+            // abort BEFORE any final review.
+            const failingReviewer = async () => {
+                throw new UsageLimitWaitExhaustedError('usage limit still hit after the last wait (review)', { member: 'dev', roleLabel: 'Review' });
+            };
+            const r = await runDevelopLoopScenario('kbcarriedabort', {
+                members: ['maint', 'dev'],
+                roleMap: { doer: ['dev'], reviewer: ['dev'] },
+                beadsIdentity: { maint: { repoRemote: REPO_URL }, dev: { repoRemote: REPO_URL } },
+                taskSpecs: [{ title: 'Task: abort before the final review with a carried withdrawal' }],
+                doerHandler: doerHandler(fleet), reviewerHandler: failingReviewer, finalReviewHandler,
+                maxCycles: 1,
+                callToolFactory: (executeCommand) => buildCallTool(fleet, executeCommand),
+                onCommand: onCommandFor(fleet),
+            });
+            assert.ok(r.error && /usage limit still hit/.test(r.error.message), `expected the review abort, got: ${r.error && r.error.message}`);
+            assert.equal(finalReviews, 0, 'sanity: the sprint aborted before any final review');
+            const aborted = prBodies(r).find((p) => /\[ABORTED\]/.test(p.title || ''));
+            assert.ok(aborted, `no [ABORTED] PR create was dispatched; abort log:\n${r.logs.filter((l) => /finalizeAbort|ABORTED|Abort|Terminal History|kb-work/i.test(l)).join('\n')}`);
+            assert.match(aborted.body, /### KB changes on merge/);
+            assert.match(aborted.body, /Merging withdraws 1 CONFIRMED KB claim\(s\); 1 carried from an earlier run, not re-checked/);
+            assert.ok(aborted.body.includes(CARRIED_ID.slice(0, 8)), aborted.body);
+            assert.ok(aborted.body.trimEnd().endsWith('-->'));
+        });
+    });
+});

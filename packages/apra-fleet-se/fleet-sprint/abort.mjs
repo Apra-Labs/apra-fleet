@@ -448,10 +448,11 @@ export function isTypedAbortError(err) {
  *   callTool?: (name: string, args: object) => Promise<any>,
  *   kbChanges?: object|null,
  * }} opts
- * `kbChanges` is kbWork.kbChangesReport(): a final review can commit
- * withdrawals to the branch's bible before the sprint aborts (e.g. a failed
- * harvest or PR creation), and merging the [ABORTED] PR carries them, so its
- * body lists them exactly as the PASS/FAIL body does.
+ * `kbChanges` is kbWork.kbChangesOnMerge(): a final review -- this run's, or
+ * an earlier run's on the same branch -- can have committed withdrawals to
+ * the branch's bible before the sprint aborts (even before this run's final
+ * review), and merging the [ABORTED] PR carries them, so its body lists them
+ * exactly as the PASS/FAIL body does.
  * @returns {Promise<{ prUrl: string|null, reason: string, pushed: boolean, commitCount: number }>}
  */
 export async function finalizeAbort({ error, branch, baseBranch, member, command, log = () => {}, onAuthFailure, callTool, runId, kbChanges = null }) {

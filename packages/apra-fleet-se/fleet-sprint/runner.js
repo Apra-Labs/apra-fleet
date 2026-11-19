@@ -626,6 +626,13 @@ export { createSprintChangedFiles };
 // on the branch, an unreadable one, or no withdrawn tombstone: nothing.
 // A base without a bible (or an unreadable one) counts as no tombstones.
 //
+// `.read(memberName)` on the returned function is the same read for the PR
+// body's "KB changes on merge" section, which must tell "nothing carried"
+// from "could not read": it answers { ok, rows, error }. When the HEAD read
+// fails or is unparseable, `git ls-tree --name-only HEAD -- <bible>` with
+// empty output means the branch has no bible (nothing carried); anything
+// else is ok:false.
+//
 // @param {{
 //   command: (cmd: string, opts: { member_name: string, silent?: boolean, failSoft?: boolean }) => Promise<{ ok: boolean, output?: string }>,
 //   baseBranch: string,
@@ -645,11 +652,21 @@ function createBranchWithdrawnEntries({ command, baseBranch, bibleFile = '.fleet
     };
     const withdrawnOf = (doc) => (doc && Array.isArray(doc.demotions) ? doc.demotions : [])
         .filter((t) => t && typeof t.id === 'string' && t.id && t.reason === 'withdrawn');
-    return async function branchWithdrawnEntries(memberName) {
+    // One maintainer's rows: { ok, rows, error }. `strict` tells a failed
+    // HEAD read from a branch with no bible (see .read below).
+    async function readCarried(memberName, strict) {
         const headCmd = `git show HEAD:${bibleFile}`;
-        const head = parseDoc(await command(headCmd, { member_name: memberName, silent: true, failSoft: true }));
+        const headRes = await command(headCmd, { member_name: memberName, silent: true, failSoft: true });
+        const head = parseDoc(headRes);
+        if (!head && strict) {
+            const lsCmd = `git ls-tree --name-only HEAD -- ${bibleFile}`;
+            const ls = await command(lsCmd, { member_name: memberName, silent: true, failSoft: true });
+            if (ls && ls.ok && String(ls.output || '').trim() === '') return { ok: true, rows: [] };
+            const why = (headRes && headRes.ok) ? 'not a readable bible' : `failed${failedCommandDetail(headRes)}`;
+            return { ok: false, rows: [], error: `'${headCmd}' on '${memberName}': ${why}` };
+        }
         const tombstones = withdrawnOf(head);
-        if (tombstones.length === 0) return [];
+        if (tombstones.length === 0) return { ok: true, rows: [] };
         const baseCmd = `git show origin/${baseBranch}:${bibleFile}`;
         const baseRes = await command(baseCmd, { member_name: memberName, silent: true, failSoft: true });
         const base = parseDoc(baseRes);
@@ -669,12 +686,42 @@ function createBranchWithdrawnEntries({ command, baseBranch, bibleFile = '.fleet
                 summary: (e && typeof e.summary === 'string') ? e.summary : (typeof t.note === 'string' ? t.note : ''),
                 source_files: (e && Array.isArray(e.source_files)) ? e.source_files
                     : (Array.isArray(t.evidence_files) ? t.evidence_files : []),
+                // For the PR body (.read only): the base entry's own title
+                // ('' without one) and the tombstone's note.
+                ...(strict ? {
+                    base_title: (e && typeof e.title === 'string') ? e.title : '',
+                    tombstone_note: typeof t.note === 'string' ? t.note : '',
+                } : {}),
             });
         }
-        return out;
-    };
+        return { ok: true, rows: out };
+    }
+    const branchWithdrawnEntries = async (memberName) => (await readCarried(memberName, false)).rows;
+    branchWithdrawnEntries.read = (memberName) => readCarried(memberName, true);
+    return branchWithdrawnEntries;
 }
 export { createBranchWithdrawnEntries };
+
+// The PR body's "KB changes on merge" report at publish and at abort:
+// kbWork.kbChangesOnMerge() (this run's verdicts plus the withdrawn tombstones
+// the branch carries), else kbChangesReport() for a kbWork without it. A throw
+// still yields a report that says the branch could not be read -- never a
+// silently missing section.
+async function kbChangesForPrBody(kbWork, log = () => {}) {
+    if (!kbWork) return null;
+    if (typeof kbWork.kbChangesOnMerge === 'function') {
+        try {
+            return await kbWork.kbChangesOnMerge();
+        } catch (err) {
+            log(`[kb-work] WARN: the KB changes report for the PR body failed (${err && err.message ? err.message : String(err)}) -- the section says the branch tombstones could not be read`);
+            const base = typeof kbWork.kbChangesReport === 'function' ? kbWork.kbChangesReport() : null;
+            return { withdrawn: [], notRecorded: [], noVerdict: [], kept: 0, restored: 0, refused: [], notPushed: [], ...(base || {}),
+                unreadable: [{ repo: '', member: '', error: err && err.message ? err.message : String(err) }] };
+        }
+    }
+    return typeof kbWork.kbChangesReport === 'function' ? kbWork.kbChangesReport() : null;
+}
+export { kbChangesForPrBody };
 
 // Factory for kbWork.promotionCandidates()'s D6 in-sprint ping-pong guard:
 // the CURRENT sha256 of a bounded set of files, read on a member's own
@@ -4800,7 +4847,7 @@ async function runSprintCycle(context) {
         finalVerdictResult, costAnalysis,
         setAside: collectSetAsideEntries(sprintState),
         waited: collectWaitEntries(sprintState),
-        kbChanges: typeof kbWork.kbChangesReport === 'function' ? kbWork.kbChangesReport() : null,
+        kbChanges: await kbChangesForPrBody(kbWork, log),
     });
 
     // Final summary line: a skipped PR must not read as a clean success.
@@ -4979,10 +5026,10 @@ export async function main(context) {
                     onAuthFailure: abortOnAuthFailure,
                     callTool: (args && typeof args.callTool === 'function') ? args.callTool : undefined,
                     runId: (args && typeof args.run_id === 'string') ? args.run_id : undefined,
-                    // Withdrawals a final review already committed travel
-                    // with the branch: the [ABORTED] body must list them.
-                    kbChanges: (runContext.kbWork && typeof runContext.kbWork.kbChangesReport === 'function')
-                        ? runContext.kbWork.kbChangesReport() : null,
+                    // Withdrawals a final review (this run's or an earlier
+                    // one's) committed travel with the branch: the
+                    // [ABORTED] body must list them.
+                    kbChanges: await kbChangesForPrBody(runContext.kbWork, log),
                 });
             } catch (finalizeErr) {
                 log(

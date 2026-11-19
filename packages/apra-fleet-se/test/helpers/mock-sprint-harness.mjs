@@ -2307,6 +2307,8 @@ export async function runDevelopLoopScenario(tag, {
     decisionNotify,
     // Optional injected KB work client: main() reads context.kbWork.
     kbWork,
+    // Optional `args.kb_demotion_loop` passthrough ('on' | 'off').
+    kbDemotionLoop,
     // apra-fleet-eft.79: optional passthroughs for the multi-streak worklist
     // args (validateArgs: doer_worklist_mode 'resume'|'batch',
     // resume_model_switch boolean, worklist_effort_budget positive number) --
@@ -2468,6 +2470,7 @@ export async function runDevelopLoopScenario(tag, {
                 ...(roleMap !== undefined ? { roleMap } : {}),
                 ...(roleMapWarnings !== undefined ? { roleMapWarnings } : {}),
                 ...(expectBeads !== undefined ? { expect_beads: expectBeads } : {}),
+                ...(kbDemotionLoop !== undefined ? { kb_demotion_loop: kbDemotionLoop } : {}),
                 ...(skipRegression !== undefined ? { skip_regression: skipRegression } : {}),
                 ...(decisionNotify !== undefined ? { decision_notify: decisionNotify } : {}),
             };

@@ -33,7 +33,7 @@ let offeredDemotionRows = [];
  * A fake maintainer session. `skipped` is kb_bible_commit's own skipped
  * list; every other id is reported back as merged/withdrawn/restored.
  */
-function harness({ skipped = [], currentFileHashes = async () => ({}), sprintStartMs, bibleCommitError, knowledge = [], reshapeAnswer = (a) => a, branchWithdrawals } = {}) {
+function harness({ skipped = [], currentFileHashes = async () => ({}), sprintStartMs, bibleCommitError, knowledge = [], reshapeAnswer = (a) => a, branchWithdrawals, extra = {} } = {}) {
     const events = [];
     const logs = [];
     const memberCall = async (member, tool, args) => {
@@ -74,6 +74,7 @@ function harness({ skipped = [], currentFileHashes = async () => ({}), sprintSta
         ...(branchWithdrawals ? { branchWithdrawals } : {}),
         ...(sprintStartMs !== undefined ? { sprintStartMs: () => sprintStartMs } : {}),
         log: (m) => logs.push(m),
+        ...extra,
     });
     return { client, events, logs };
 }
@@ -329,5 +330,127 @@ describe('IN-SPRINT PING-PONG: an entry demoted this sprint is not re-offered fo
         diskHash = 'HASH-EDITED';
         offered = await offerPromotions(client, [pingEntry]);
         assert.deepEqual(offered.map((e) => e.id), ['kb-ping'], 'a changed basis is new evidence -- the entry is offered again');
+    });
+});
+
+// A withdrawn tombstone an EARLIER run pushed to this sprint branch is carried
+// by the merge unless this run restores it. The PR body's report
+// (kbChangesOnMerge) reads the branch's tombstones on the maintainer at
+// publish and at abort, independently of this run's offer, so it lists every
+// carried one -- even when this run offered nothing -- and never calls a
+// carried id "still CONFIRMED". A read that fails is said, never silent.
+describe('kbChangesOnMerge: withdrawals carried on the branch from an earlier run', () => {
+    const CARRIED = 'kb-carried-from-run-1';
+    const carriedRow = (id = CARRIED) => ({
+        ...demotable(id, { title: `withdrawn entry ${id}` }), base_title: 'Cache keys by tenant id only', tombstone_note: 'the earlier final review judged it false',
+    });
+    /** A branchWithdrawals with the .read variant the engine wires (createBranchWithdrawnEntries). */
+    const reader = (answer) => {
+        const fn = async () => (answer.ok ? answer.rows : []);
+        fn.read = async () => answer;
+        return fn;
+    };
+
+    test('a relaunch that offers nothing (loop off) still lists the carried id under "Merging withdraws"', async () => {
+        const { client } = harness({ branchWithdrawals: reader({ ok: true, rows: [carriedRow()] }), extra: { demotionLoop: 'off' } });
+        assert.deepEqual(await client.demotionCandidates('reviewer-1'), [], 'sanity: the loop is off, nothing is offered');
+        assert.equal(client.kbChangesReport(), null, 'sanity: this run offered nothing');
+
+        const report = await client.kbChangesOnMerge();
+
+        assert.deepEqual(report.carried, [{ id: CARRIED, title: 'Cache keys by tenant id only', note: 'the earlier final review judged it false', kept: false }]);
+        const s = buildKbChangesSection(report);
+        assert.match(s.text, /^Merging withdraws 1 CONFIRMED KB claim\(s\); 1 carried from an earlier run, not re-checked/);
+        assert.ok(s.text.includes(`- ${CARRIED.slice(0, 8)} "Cache keys by tenant id only" -- the earlier final review judged it false (carried from an earlier run, not re-checked)`), s.text);
+        assert.doesNotMatch(s.text, /still CONFIRMED/);
+    });
+
+    test('a maintainer with a support gap (nothing offered, WARN) still lists the carried id', async () => {
+        const { client, logs } = harness({
+            branchWithdrawals: reader({ ok: true, rows: [carriedRow()] }),
+            extra: { listTools: async () => ({ tools: [{ name: 'kb_bible_commit', inputSchema: { properties: {} } }] }) },
+        });
+        assert.deepEqual(await client.demotionCandidates('reviewer-1'), []);
+        assert.ok(logs.some((l) => /WARN: maintainer 'maint'.*offering no demotion candidates/.test(l)), logs.join('\n'));
+        const report = await client.kbChangesOnMerge();
+        assert.deepEqual(report.carried.map((c) => c.id), [CARRIED]);
+    });
+
+    test('a carried id offered this run with no verdict is listed as carried, never as "still CONFIRMED"', async () => {
+        const { client } = harness({ branchWithdrawals: reader({ ok: true, rows: [carriedRow()] }) });
+        await offerDemotions(client, [demotable('kb-plain')]);
+        await client.apply('reviewer', 'reviewer-1', {});
+        assert.deepEqual(client.kbChangesReport().noVerdict.sort(), [CARRIED, 'kb-plain'].sort(), 'sanity: both offered ids got no verdict');
+
+        const report = await client.kbChangesOnMerge();
+
+        assert.deepEqual(report.carried.map((c) => c.id), [CARRIED]);
+        assert.deepEqual(report.noVerdict, ['kb-plain'], 'only an id with no branch tombstone stays "no verdict"');
+        const s = buildKbChangesSection(report);
+        assert.ok(s.text.includes(`${CARRIED.slice(0, 8)} "Cache keys by tenant id only"`), s.text);
+        assert.ok(s.text.includes('(carried from an earlier run, not re-checked)'), s.text);
+        assert.ok(s.text.includes('**No verdict (1):** kb-plain -- still CONFIRMED'), s.text);
+        assert.doesNotMatch(s.text.split('\n').find((l) => l.includes('No verdict')), new RegExp(CARRIED.slice(0, 8)));
+    });
+
+    test('a carried id this run restored is not listed; one this run withdrew again is listed once', async () => {
+        const other = 'kb-carried-and-withdrawn-again';
+        const { client } = harness({ branchWithdrawals: reader({ ok: true, rows: [carriedRow(), carriedRow(other)] }) });
+        await offerDemotions(client, []);
+        await client.apply('reviewer', 'reviewer-1', {
+            kb_holds: [CARRIED],
+            kb_demotions: [{ id: other, reason: REASON, evidence_files: [CHANGED_FILE] }],
+        });
+        await client.commitRound('final review');
+        const report = await client.kbChangesOnMerge();
+        assert.deepEqual(report.carried, [], 'the restored id is gone, the re-withdrawn one is already listed');
+        assert.deepEqual(report.withdrawn.map((w) => w.id), [other]);
+        assert.equal(report.restored, 1);
+    });
+
+    test('a carried id held this run whose restore did not land is still listed as withdrawn on merge', async () => {
+        const { client } = harness({
+            branchWithdrawals: reader({ ok: true, rows: [carriedRow()] }),
+            reshapeAnswer: (a) => ({ ...a, restored: [] }),
+        });
+        await offerDemotions(client, []);
+        await client.apply('reviewer', 'reviewer-1', { kb_holds: [CARRIED] });
+        await client.commitRound('final review');
+        const report = await client.kbChangesOnMerge();
+        assert.deepEqual(report.carried.map((c) => [c.id, c.kept]), [[CARRIED, true]]);
+        assert.match(buildKbChangesSection(report).text, /held this run, but the restore is not on the branch/);
+    });
+
+    test('a branch read that fails, throws, or runs on a maintainer off the sprint branch is an explicit line, never silence', async () => {
+        const cases = [
+            { branchWithdrawals: reader({ ok: false, rows: [], error: "'git show HEAD:.fleet/kb-canonical.json' on 'maint': failed" }) },
+            { branchWithdrawals: Object.assign(async () => [], { read: async () => { throw new Error('member unreachable'); } }) },
+            {
+                branchWithdrawals: reader({ ok: true, rows: [carriedRow()] }),
+                extra: { checkedOutBranch: async () => ({ branch: 'main', sprintBranch: 'feat/x' }) },
+            },
+        ];
+        for (const c of cases) {
+            const { client, logs } = harness({ ...c, extra: { demotionLoop: 'off', ...(c.extra || {}) } });
+            const report = await client.kbChangesOnMerge();
+            assert.ok(report, 'a failed read is a report, not null');
+            assert.equal(report.unreadable.length, 1, JSON.stringify(report));
+            assert.equal(report.unreadable[0].member, 'maint');
+            assert.deepEqual(report.carried, []);
+            const s = buildKbChangesSection(report);
+            assert.match(s.text, /\*\*Branch tombstones could not be read\*\* \(maint: example\.com\/org\/repo\)/);
+            assert.ok(logs.some((l) => /WARN: this branch's withdrawn tombstones could not be read/.test(l)), logs.join('\n'));
+        }
+    });
+
+    test('no tombstone on the branch and nothing offered: no report (no section)', async () => {
+        const { client } = harness({ branchWithdrawals: reader({ ok: true, rows: [] }), extra: { demotionLoop: 'off' } });
+        assert.equal(await client.kbChangesOnMerge(), null);
+    });
+
+    test('a branchWithdrawals without .read is still read (rows only)', async () => {
+        const { client } = harness({ branchWithdrawals: async () => [demotable(CARRIED)], extra: { demotionLoop: 'off' } });
+        const report = await client.kbChangesOnMerge();
+        assert.deepEqual(report.carried.map((c) => [c.id, c.title]), [[CARRIED, CARRIED]]);
     });
 });
