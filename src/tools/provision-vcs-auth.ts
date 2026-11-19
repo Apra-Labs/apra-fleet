@@ -486,11 +486,13 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<Pr
   // the member with no working registration (the 2026-09-11 failure mode).
   // revokeVcsCredential removes the legacy file and global key only when no
   // other member runs as the same user on the same host -- it is shared by
-  // all of them. A previous member-scoped entry needs nothing: the same file
-  // was just overwritten and its registration comes from the record.
+  // all of them. legacyOnly: the per-member file of this label is the one
+  // the deploy above just wrote, so it must never be removed here. A previous
+  // member-scoped entry needs nothing: the same file was just overwritten and
+  // its registration comes from the record.
   if (previous && !previous.memberScoped) {
     try {
-      await revokeVcsCredential(agent, { label, ...previous }, cmds, exec);
+      await revokeVcsCredential(agent, { label, ...previous }, cmds, exec, { legacyOnly: true });
     } catch { /* best-effort */ }
   }
 

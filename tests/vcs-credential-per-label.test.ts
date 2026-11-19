@@ -117,6 +117,10 @@ describe('per-label VCS credential record', () => {
     expect(sent[legacy]).toContain('credential.https://dev.azure.com/old-org.helper');
     expect(sent[legacy]).toContain('rm -f "$HOME/.fleet-git-credential-az-a"');
     expect(sent.filter(c => c.includes('--unset-all'))).toHaveLength(1);
+    // The per-member helper the deploy just wrote must survive the migration:
+    // no later command may remove .fleet-git-credential-az-a.<memberId>.
+    const perMemberFile = `.fleet-git-credential-az-a.${member.id}`;
+    expect(sent.slice(write + 1).filter(c => c.includes('rm -f') && c.includes(perMemberFile))).toEqual([]);
     expect(getVcsCredentials(getAgent(member.id)!)['az-a']).toMatchObject({ memberScoped: true, scopeUrl: 'https://dev.azure.com/new-org' });
   });
 

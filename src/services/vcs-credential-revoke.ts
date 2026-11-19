@@ -10,6 +10,10 @@
  *    is removed (that file and key are shared by all of them) and the result
  *    names the sharer; otherwise the legacy file and global key are removed,
  *    together with any per-member file of that label.
+ *  - opts.legacyOnly (provision_vcs_auth's migration of a legacy entry):
+ *    only the legacy shared file and global key are removed (same sharer
+ *    rule). The member's per-member file of that label is NEVER removed --
+ *    the provision has just written it and the record already points at it.
  */
 import type { Agent } from '../types.js';
 import type { OsCommands } from '../os/os-commands.js';
@@ -37,14 +41,22 @@ export async function revokeVcsCredential(
   entry: Pick<VcsCredentialEntry, 'label' | 'provider' | 'scopeUrl' | 'memberScoped'>,
   cmds: OsCommands,
   exec: (cmd: string) => Promise<string>,
+  opts: { legacyOnly?: boolean } = {},
 ): Promise<VcsCredentialRevokeResult> {
   const service = providers[entry.provider];
   if (!service) return { success: false, message: `Unknown VCS provider "${entry.provider}"` };
+  if (opts.legacyOnly && entry.memberScoped) {
+    return { success: true, message: 'No legacy credential helper to migrate' };
+  }
   if (!entry.memberScoped) {
     const sharer = memberSharingHostUser(agent);
     if (sharer) {
       return { success: true, message: 'Shared legacy credential helper left in place', legacyLeftForSharer: sharer };
     }
+  }
+  if (opts.legacyOnly) {
+    await exec(cmds.gitCredentialHelperRemoveLegacyGlobal(PROVIDER_HOSTS[entry.provider], entry.label, entry.scopeUrl));
+    return { success: true, message: 'Legacy shared credential helper removed' };
   }
   const result: VcsCredentialRevokeResult = await service.revoke(agent, cmds, exec, entry.label, entry.scopeUrl);
   if (!entry.memberScoped) {
