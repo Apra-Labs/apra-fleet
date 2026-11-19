@@ -65,6 +65,37 @@ describe('runInstall multi-provider', () => {
     vi.mocked(fs.readdirSync).mockReturnValue([] as any);
   });
 
+  it('install/upgrade prunes the leaked apra-fleet test project keys from ~/.claude.json, and only those', async () => {
+    const mockOs = os as unknown as { tmpdir?: () => string };
+    mockOs.tmpdir = vi.fn(() => '/mock/tmp');
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const kept = {
+        '/mock/tmp/unrelated-project': { hasTrustDialogAccepted: true },
+        '/srv/work/apra-fleet-bootstrap-gate-repo': { allowedTools: ['Bash'] },
+      };
+      vi.mocked(fs.writeFileSync)(claudeJsonPath(), JSON.stringify({
+        numStartups: 5,
+        projects: {
+          ...kept,
+          '/mock/tmp/apra-fleet-regmember-compose-Ab12Cd': { hasTrustDialogAccepted: true },
+          '/mock/tmp/apra-fleet-bootstrap-gate-Ef34Gh': { hasTrustDialogAccepted: true },
+        },
+      }));
+      vi.mocked(fs.writeFileSync).mockClear();
+
+      await runInstall([]);
+
+      const after = JSON.parse(String(vi.mocked(fs.readFileSync)(claudeJsonPath())));
+      expect(after.projects).toEqual(kept);
+      expect(after.numStartups).toBe(5);
+      expect(log.mock.calls.map(c => String(c[0])).some(m => /removed 2 leaked apra-fleet test project entries/.test(m))).toBe(true);
+    } finally {
+      log.mockRestore();
+      delete mockOs.tmpdir;
+    }
+  });
+
   it('installs for Claude by default', async () => {
     await runInstall([]);
     
