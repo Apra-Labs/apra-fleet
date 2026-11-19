@@ -5,7 +5,8 @@ import path from 'node:path';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js';
-import { HttpKbProvider, KB_DEFAULT_CAPABILITIES, KB_PROJECT_HEADER } from '../../src/services/knowledge/http-provider.js';
+import { HttpKbProvider, KB_DEFAULT_CAPABILITIES, KB_PROJECT_HEADER, KB_REQUIRED_ROUTES, KB_OPTIONAL_ROUTES } from '../../src/services/knowledge/http-provider.js';
+import { KB_LOCAL_CAPABILITIES } from '../../src/services/knowledge/kb-local-capabilities.js';
 import { startKbServer, KB_SERVER_CAPABILITIES } from '../../src/commands/kb-server.js';
 import { getProjectSlug } from '../../src/services/knowledge/kb-providers.js';
 import * as kbProvidersModule from '../../src/services/knowledge/kb-providers.js';
@@ -96,6 +97,10 @@ describe('kb_capabilities against the sample kb-server and a SQLite KB', () => {
     }
   });
 
+  it('local capabilities list exactly the contract routes (KB_REQUIRED_ROUTES + KB_OPTIONAL_ROUTES)', () => {
+    expect([...KB_LOCAL_CAPABILITIES.routes].sort()).toEqual([...KB_REQUIRED_ROUTES, ...KB_OPTIONAL_ROUTES].sort());
+  });
+
   it('SQLite: every route incl. demote and withdraw, branch_aware false, query_filters files+symbols -- the sample kb-server answer', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-capabilities-sqlite-'));
     const provider = new SqliteProvider(path.join(dir, 'kb.sqlite'));
@@ -174,6 +179,19 @@ describe('kb_capabilities over HTTP against a server whose capabilities answer t
     expect(caps.routes).not.toContain('withdraw');
     expect(caps.branch_aware).toBe(false);
     expect(caps).not.toHaveProperty('query_filters');
+  });
+
+  it.each([
+    ['a string', 'files'],
+    ['an object', { files: true }],
+    ['an array with a non-string element', ['files', 3]],
+  ])('a query_filters that is %s is dropped: the server honours no filter (tool and route gating agree)', async (_label, malformed) => {
+    const body = { contract: 'v1', routes: ['capture', 'query', 'promote'], branch_aware: false, query_filters: malformed, server_build: 'b1' };
+    answer = { status: 200, body };
+    const caps = JSON.parse(await kbCapabilities({}, ANCHOR));
+    expect(caps).toEqual({ contract: 'v1', routes: ['capture', 'query', 'promote'], branch_aware: false, server_build: 'b1' });
+    expect(caps).not.toHaveProperty('query_filters');
+    expect(await provider.capabilities()).not.toHaveProperty('query_filters');
   });
 
   it('a partially-typed body is E-KB-HTTP-UNSUPPORTED', async () => {

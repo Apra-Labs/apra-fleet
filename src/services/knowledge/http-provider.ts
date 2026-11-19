@@ -349,6 +349,10 @@ export const KB_OPTIONAL_ROUTES = ['context', 'prime', 'invalidate', 'feedback',
 export type KbRoute = typeof KB_REQUIRED_ROUTES[number] | typeof KB_OPTIONAL_ROUTES[number];
 const KNOWN_ROUTES: readonly string[] = [...KB_REQUIRED_ROUTES, ...KB_OPTIONAL_ROUTES];
 
+function isStringArray(v: unknown): v is string[] {
+  return Array.isArray(v) && v.every(x => typeof x === 'string');
+}
+
 /** One tombstone sent to POST /api/kb/withdraw. */
 export interface KbWithdrawalRequest {
   id: string;
@@ -654,8 +658,8 @@ export class HttpKbProvider implements MemoryProvider {
   /**
    * GET /api/kb/capabilities exactly as the server answered it (kb_capabilities):
    * the validated body, unknown route names, query_filters and extra fields
-   * included, never the normalized view capabilities() keeps for route
-   * gating. Same error semantics as that read: a server without the route
+   * included (a query_filters that is not an array of strings is dropped),
+   * never the normalized view capabilities() keeps for route gating. Same error semantics as that read: a server without the route
    * (404/501, or a body carrying none of contract/routes/branch_aware) yields
    * KB_DEFAULT_CAPABILITIES, a partially-typed body is E-KB-HTTP-UNSUPPORTED,
    * a 5xx/429 is E-KB-HTTP-UNREACHABLE, and auth or project-mismatch errors
@@ -691,6 +695,15 @@ export class HttpKbProvider implements MemoryProvider {
         'fix the KB server so its capabilities answer carries contract (string), routes (array of route names) and branch_aware (boolean).',
       );
     }
+    // query_filters is additive (spec 2.9.1): a server without it honours no
+    // optional kb_query filter, and so does one whose field is not an array of
+    // strings. Such a field is dropped, so neither kb_capabilities nor route
+    // gating reports a filter the server never validly listed; a well-formed
+    // body is returned as the same object (byte-for-byte pass-through).
+    if ('query_filters' in caps && !isStringArray((caps as { query_filters?: unknown }).query_filters)) {
+      const { query_filters: _malformed, ...rest } = caps as Record<string, unknown>;
+      return rest;
+    }
     return caps as Record<string, unknown>;
   }
 
@@ -701,10 +714,11 @@ export class HttpKbProvider implements MemoryProvider {
     // Unknown route names are ignored: a newer server may list routes this client does not call.
     const routes = (caps.routes as string[]).filter((r): r is KbRoute => KNOWN_ROUTES.includes(r));
     const read: KbServerCapabilities = { contract: caps.contract, routes, branch_aware: caps.branch_aware };
-    // query_filters is additive: absent, or not an array of strings, means the
-    // server honours no optional kb_query filter. Unknown names are ignored.
+    // query_filters is additive: absent, or not an array of strings (dropped by
+    // fetchCapabilitiesBody), means the server honours no optional kb_query
+    // filter. Unknown names are ignored.
     const filters = (caps as { query_filters?: unknown }).query_filters;
-    if (Array.isArray(filters)) {
+    if (isStringArray(filters)) {
       read.query_filters = CITED_FILTER_FIELDS.filter(f => filters.includes(f));
     }
     return read;

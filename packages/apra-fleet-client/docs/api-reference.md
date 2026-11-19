@@ -844,7 +844,8 @@ anything is sent. Read-only.
 Result JSON (`KbCapabilitiesResult`): `{contract: string, routes: string[],
 branch_aware: boolean, query_filters?: string[]}`, the shape of the KB server's
 `GET /api/kb/capabilities` body. Over an http KB provider it is the server's
-body passed through as sent (unknown route names and extra fields kept); a
+body passed through as sent (unknown route names and extra fields kept; a
+`query_filters` that is not an array of strings is dropped); a
 server that does not serve the route yields the default set (`capture`,
 `query`, `promote`, `context`, `prime`, `invalidate`, `feedback`, `list` --
 no `demote` or `withdraw`). Over a local SQLite KB it is the set the sample

@@ -745,12 +745,12 @@ export const SCENARIO = [
   // committed) and kb_invalidate {ids} is refused with a typed code.
   { tool: 'kb_bible_commit', case: 'http-skip', assertParsed: assertBibleSkipped },
   { tool: 'kb_invalidate', case: 'refusal-kb-http-unsupported' },
-  // Member own-scope over an http project KB: another member's entry is
-  // absent from an INFERRED kb_query (a member read asks the server for the
-  // entries carrying its own tag).
   // kb_capabilities over an http project KB: the sample kb-server's body,
   // passed through unchanged.
   { tool: 'kb_capabilities', case: 'http-happy', assertParsed: assertLocalCapabilities },
+  // Member own-scope over an http project KB: another member's entry is
+  // absent from an INFERRED kb_query (a member read asks the server for the
+  // entries carrying its own tag).
   { tool: 'kb_query', case: 'http-own-scope', assertParsed: assertNoForeignEntry },
   // kb_demote over an http project KB, served by the sample kb-server's
   // POST /api/kb/demote: the session's own entry is captured, promoted to

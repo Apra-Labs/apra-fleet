@@ -808,7 +808,8 @@
  * @property {string} contract - Contract version the KB serves, e.g. "v1".
  * @property {string[]} routes - Route names the KB serves. Over an http KB this is the
  *   server's own GET /api/kb/capabilities body passed through as sent (unknown route
- *   names and extra fields kept); a server without the route yields the default set
+ *   names and extra fields kept; a query_filters that is not an array of strings is
+ *   dropped); a server without the route yields the default set
  *   (capture, query, promote, context, prime, invalidate, feedback, list -- no demote
  *   or withdraw). Over a local SQLite KB it is the set the sample kb-server answers.
  * @property {boolean} branch_aware - Whether the KB is branch aware.

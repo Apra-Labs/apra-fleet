@@ -114,7 +114,9 @@ mutates anything and never bumps `use_count`.
   `X-KB-Project` and `X-Repository*` headers as every route, on every call)
   and returns the server's body UNCHANGED: route names fleet does not call
   and extra fields are kept, unlike the normalized view fleet keeps for route
-  gating. A server without the route (404 or 501, or a body with none of
+  gating. The one exception: a `query_filters` that is not an array of
+  strings is dropped (the server honours no filter, section 2.9.1), so the
+  answer never claims a filter the server did not validly list. A server without the route (404 or 501, or a body with none of
   `contract`/`routes`/`branch_aware`) yields the default set of section 2.9.1
   (every route except `demote` and `withdraw`, `branch_aware` false, no
   `query_filters`). Errors map exactly as the capabilities read does: a body
@@ -828,7 +830,8 @@ entries per branch (section 2.9.2). It may also carry the optional
 `query_filters`, an array naming the optional `kb_query` request filters
 `GET /api/kb/query` honours: `files` and `symbols` (the cited filter,
 section 4.6), sent as JSON-array query parameters. The field is additive: a
-server without it, or not listing a filter, honours none (unknown names are
+server without it, with it not an array of strings (fleet then treats the
+field as absent), or not listing a filter, honours none (unknown names are
 ignored), and fleet never sends it a filter it does not list -- such a
 `kb_query` fails with `E-KB-HTTP-UNSUPPORTED` naming the filter, because a
 server that ignored an unknown parameter would answer unfiltered. Fleet's

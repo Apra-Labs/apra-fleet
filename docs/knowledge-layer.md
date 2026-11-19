@@ -1339,10 +1339,13 @@ credential store itself could not be read or decrypted. See [Named credentials](
 
 `kb_capabilities` is a read-only tool that tells a caller which optional routes
 the project KB serves, so a client can decide whether to call `kb_demote`,
-`kb_withdraw`-style paths or filtered `kb_query` before trying them.
+withdrawals (`kb_bible_commit` `withdrawals`) or filtered `kb_query` before
+trying them.
 
 - **http KB**: the server's `GET /api/kb/capabilities` body is returned
-  unchanged (`{contract, routes, branch_aware, query_filters?}`). It is
+  unchanged (`{contract, routes, branch_aware, query_filters?}`), except
+  that a `query_filters` that is not an array of strings is dropped (the
+  server honours no filter). It is
   fetched fresh and not cached; the normalized view used internally to gate
   routes is a separate, cached read of the same endpoint.
 - **SQLite KB**: a fixed local answer (`KB_LOCAL_CAPABILITIES`) that includes

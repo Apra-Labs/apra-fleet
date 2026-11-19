@@ -10,7 +10,7 @@ import { KB_LOCAL_CAPABILITIES } from '../services/knowledge/kb-local-capabiliti
 // branch_aware, query_filters?} (memory-contract/v1 spec section 2.9.1).
 //
 // - HTTP provider: the server's body as it sent it (unknown route names and
-//   extra fields kept), NOT the normalized view HttpKbProvider.capabilities()
+//   extra fields kept; a malformed query_filters dropped), NOT the normalized view HttpKbProvider.capabilities()
 //   keeps for route gating. A server without the route yields the documented
 //   default set; errors map exactly as the capabilities read does.
 // - SQLite provider: KB_LOCAL_CAPABILITIES, the same object the sample
