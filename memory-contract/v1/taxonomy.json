@@ -72,6 +72,7 @@
             { "method_id": "X-1", "member": "list", "tool": "kb_export", "position": "pre-provider" },
             { "method_id": "X-1", "member": "list", "tool": "kb_bible_commit", "position": "pre-provider" },
             { "method_id": "X-2", "member": "feedback", "tool": "kb_feedback", "position": "pre-provider" },
+            { "method_id": "X-12", "member": "capabilitiesBody", "tool": "kb_capabilities", "position": "pre-provider" },
             { "method_id": "X-3", "member": "freshnessSweep", "tool": "kb_freshness_sweep", "position": "pre-provider" },
             { "method_id": "X-3", "member": "freshnessSweep", "tool": "kb_import", "position": "pre-provider" },
             { "method_id": "X-4", "member": "resolveContradiction", "tool": "kb_resolve_contradiction", "position": "pre-provider" },
@@ -564,6 +565,7 @@
             { "method_id": "X-1", "member": "list", "tool": "kb_export", "position": "pre-provider" },
             { "method_id": "X-1", "member": "list", "tool": "kb_bible_commit", "position": "pre-provider" },
             { "method_id": "X-2", "member": "feedback", "tool": "kb_feedback", "position": "pre-provider" },
+            { "method_id": "X-12", "member": "capabilitiesBody", "tool": "kb_capabilities", "position": "pre-provider" },
             { "method_id": "X-3", "member": "freshnessSweep", "tool": "kb_freshness_sweep", "position": "pre-provider" },
             { "method_id": "X-3", "member": "freshnessSweep", "tool": "kb_import", "position": "pre-provider" },
             { "method_id": "X-4", "member": "resolveContradiction", "tool": "kb_resolve_contradiction", "position": "pre-provider" },
@@ -607,6 +609,7 @@
             { "method_id": "X-1", "member": "list", "tool": "kb_export", "position": "pre-provider" },
             { "method_id": "X-1", "member": "list", "tool": "kb_bible_commit", "position": "pre-provider" },
             { "method_id": "X-2", "member": "feedback", "tool": "kb_feedback", "position": "pre-provider" },
+            { "method_id": "X-12", "member": "capabilitiesBody", "tool": "kb_capabilities", "position": "pre-provider" },
             { "method_id": "X-3", "member": "freshnessSweep", "tool": "kb_freshness_sweep", "position": "pre-provider" },
             { "method_id": "X-3", "member": "freshnessSweep", "tool": "kb_import", "position": "pre-provider" },
             { "method_id": "X-4", "member": "resolveContradiction", "tool": "kb_resolve_contradiction", "position": "pre-provider" },
@@ -650,6 +653,7 @@
             { "method_id": "X-1", "member": "list", "tool": "kb_export", "position": "pre-provider" },
             { "method_id": "X-1", "member": "list", "tool": "kb_bible_commit", "position": "pre-provider" },
             { "method_id": "X-2", "member": "feedback", "tool": "kb_feedback", "position": "pre-provider" },
+            { "method_id": "X-12", "member": "capabilitiesBody", "tool": "kb_capabilities", "position": "pre-provider" },
             { "method_id": "X-3", "member": "freshnessSweep", "tool": "kb_freshness_sweep", "position": "pre-provider" },
             { "method_id": "X-3", "member": "freshnessSweep", "tool": "kb_import", "position": "pre-provider" },
             { "method_id": "X-4", "member": "resolveContradiction", "tool": "kb_resolve_contradiction", "position": "pre-provider" },
@@ -704,7 +708,8 @@
             { "method_id": "P-8", "member": "promote", "tool": "kb_promote", "position": "provider" },
             { "method_id": "P-13", "member": "demote", "tool": "kb_demote", "position": "provider" },
             { "method_id": "X-1", "member": "list", "tool": "kb_list", "position": "provider" },
-            { "method_id": "X-2", "member": "feedback", "tool": "kb_feedback", "position": "provider" }
+            { "method_id": "X-2", "member": "feedback", "tool": "kb_feedback", "position": "provider" },
+            { "method_id": "X-12", "member": "capabilitiesBody", "tool": "kb_capabilities", "position": "provider" }
           ],
           "source": "src/services/knowledge/http-provider.ts (KbHttpAuthError, HttpKbProvider.request / resolveToken)",
           "surfaced": "thrown",
@@ -740,7 +745,8 @@
             { "method_id": "P-8", "member": "promote", "tool": "kb_promote", "position": "provider" },
             { "method_id": "P-13", "member": "demote", "tool": "kb_demote", "position": "provider" },
             { "method_id": "X-1", "member": "list", "tool": "kb_list", "position": "provider" },
-            { "method_id": "X-2", "member": "feedback", "tool": "kb_feedback", "position": "provider" }
+            { "method_id": "X-2", "member": "feedback", "tool": "kb_feedback", "position": "provider" },
+            { "method_id": "X-12", "member": "capabilitiesBody", "tool": "kb_capabilities", "position": "provider" }
           ],
           "source": "src/services/knowledge/http-provider.ts (KbHttpUnsupportedError), raised by HttpKbProvider.discard, HttpKbProvider.capabilities (a capabilities answer that is malformed, or a 4xx other than 401, 404, 429 and a 409 PROJECT_MISMATCH), HttpKbProvider.routeRequest (route not listed in GET /api/kb/capabilities, or an optional route answered 404/501), HttpKbProvider.promote (a promote 404 without body code ENTRY_NOT_FOUND), src/tools/kb-query.ts (MEMBER flagged_only; MEMBER own_scope when the server does not list demote) and src/tools/kb-invalidate.ts (MEMBER files)",
           "surfaced": "thrown",
@@ -761,7 +767,8 @@
             { "method_id": "P-8", "member": "promote", "tool": "kb_promote", "position": "provider" },
             { "method_id": "P-13", "member": "demote", "tool": "kb_demote", "position": "provider" },
             { "method_id": "X-1", "member": "list", "tool": "kb_list", "position": "provider" },
-            { "method_id": "X-2", "member": "feedback", "tool": "kb_feedback", "position": "provider" }
+            { "method_id": "X-2", "member": "feedback", "tool": "kb_feedback", "position": "provider" },
+            { "method_id": "X-12", "member": "capabilitiesBody", "tool": "kb_capabilities", "position": "provider" }
           ],
           "source": "src/services/knowledge/http-provider.ts (KbHttpProjectMismatchError), raised by HttpKbProvider on a kb-server 409 PROJECT_MISMATCH reply",
           "surfaced": "thrown",
@@ -783,7 +790,8 @@
             { "method_id": "P-8", "member": "promote", "tool": "kb_promote", "position": "provider" },
             { "method_id": "P-13", "member": "demote", "tool": "kb_demote", "position": "provider" },
             { "method_id": "X-1", "member": "list", "tool": "kb_list", "position": "provider" },
-            { "method_id": "X-2", "member": "feedback", "tool": "kb_feedback", "position": "provider" }
+            { "method_id": "X-2", "member": "feedback", "tool": "kb_feedback", "position": "provider" },
+            { "method_id": "X-12", "member": "capabilitiesBody", "tool": "kb_capabilities", "position": "provider" }
           ],
           "source": "src/services/knowledge/http-provider.ts (KbHttpUnreachableError), raised by HttpKbProvider.request on a connection error, by HttpKbProvider.capabilities on a 5xx or 429 capabilities answer, and by HttpKbProvider.writeRequest / readRequest on a 429 or 503 answer to the request",
           "surfaced": "thrown",

@@ -149,7 +149,7 @@ const { resetKbProviders } = await import(pathToFileURL(path.join(DIST, 'service
 // each of those sessions' calls and the prior one restored afterwards.
 const { createKbSampleServers, HTTP_KB_RECORDED_OTHER_URL } =
   await import(pathToFileURL(path.join(HERE, 'kb-sample-servers.mjs')).href);
-const { startKbServer } = await import(pathToFileURL(path.join(DIST, 'commands', 'kb-server.js')).href);
+const { startKbServer, KB_SERVER_CAPABILITIES } = await import(pathToFileURL(path.join(DIST, 'commands', 'kb-server.js')).href);
 const HTTP_KB_CONFIG_PATH = path.join(process.env.APRA_FLEET_DATA_DIR, 'knowledge', 'config.json');
 const HTTP_KB_TOKEN_PATH = path.join(REPO_ROOT, 'tests', 'knowledge', 'fixtures', 'kb-http-test-token.txt');
 const kbSampleServers = createKbSampleServers({
@@ -656,6 +656,17 @@ if (idFoo) {
 await recordHappy('kb_stats', 'happy', {
   symbols: ['exampleFn'],
 });
+
+// --- kb_capabilities (SQLite) ----------------------------------------------
+// The local implementation's answer: every route, withdraw and demote
+// included -- the same value the sample kb-server answers.
+{
+  const caps = parseEnvelopeText(await recordHappy('kb_capabilities', 'happy', {}));
+  if (JSON.stringify(caps) !== JSON.stringify(KB_SERVER_CAPABILITIES) || !caps?.routes?.includes('withdraw')) {
+    failures++;
+    console.log(`  [FAIL] kb_capabilities/happy is not the sample kb-server's capabilities answer: ${JSON.stringify(caps)}`);
+  }
+}
 
 const bibleFromA = path.join(repoA, '.fleet', 'kb-canonical.json');
 
@@ -1246,6 +1257,16 @@ await recordNonErrorOutcome('kb_capture', 'non-error-confidence-clamped', {
   await withSession('HTTP_A', () => recordRefusal('kb_invalidate', 'refusal-kb-http-unsupported', {
     ids: [httpId],
   }, 'E-KB-HTTP-UNSUPPORTED'));
+}
+
+// kb_capabilities over an http project KB: the sample kb-server's
+// GET /api/kb/capabilities body, passed through unchanged.
+{
+  const caps = parseEnvelopeText(await withSession('HTTP_A', () => recordHappy('kb_capabilities', 'http-happy', {})));
+  if (JSON.stringify(caps) !== JSON.stringify(KB_SERVER_CAPABILITIES)) {
+    failures++;
+    console.log(`  [FAIL] kb_capabilities/http-happy is not the sample kb-server's capabilities answer: ${JSON.stringify(caps)}`);
+  }
 }
 
 // Member own-scope over an http project KB: the server's only entry belongs
