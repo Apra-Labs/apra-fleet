@@ -686,7 +686,7 @@ export function createKbWorkClient(opts = {}) {
     // that restore an earlier withdrawal, and -- from kb_bible_commit's own
     // answer -- the withdrawals it admitted or did not, and the ids it restored.
     const detailFor = (rec) => (rec.detail ||= {
-        titles: new Map(), notes: new Map(), restorable: new Set(),
+        titles: new Map(), notes: new Map(), restorable: new Set(), branchRows: new Map(),
         admitted: new Set(), notAdmitted: new Set(), restoredDone: new Set(),
     });
     /** repo -> tail of the serialized flush chain for that repository. */
@@ -1446,6 +1446,9 @@ export function createKbWorkClient(opts = {}) {
                     .filter((e) => isDemotableCandidate(e))
                     .map((e) => ({ ...e, withdrawn_on_branch: true }));
             } catch (err) {
+                // An earlier withdrawal can then be offered unmarked; the PR
+                // body treats every held id as restorable (over-lists, never hides).
+                detailFor(recordFor(target.repo)).branchReadFailed = true;
                 log(`[kb-work] could not read this branch's earlier withdrawals on maintainer '${target.member}' (non-fatal): ${errText(err)}`);
             }
         }
@@ -1497,7 +1500,13 @@ export function createKbWorkClient(opts = {}) {
             for (const e of offered) {
                 rec.offered.add(e.id);
                 if (typeof e.title === 'string') det.titles.set(e.id, e.title);
-                if (e.withdrawn_on_branch) det.restorable.add(e.id);
+                if (e.withdrawn_on_branch) {
+                    det.restorable.add(e.id);
+                    det.branchRows.set(e.id, {
+                        title: typeof e.base_title === 'string' ? e.base_title : (typeof e.title === 'string' ? e.title : ''),
+                        note: typeof e.tombstone_note === 'string' ? e.tombstone_note : '',
+                    });
+                }
             }
             log(`[kb-work] demotion candidates offered to the final review for ${target.repo}: ${offered.length} id(s): ${offered.map((e) => e.id).join(', ')}`);
         }
@@ -1570,7 +1579,8 @@ export function createKbWorkClient(opts = {}) {
                         readError = errText(err);
                     }
                     if (!(found && sprintBranch && found === sprintBranch)) {
-                        fail(`${found ? `'${found}'` : `an unreadable branch${readError ? ` (${readError})` : ''}`} is checked out, not the sprint branch '${sprintBranch || 'unknown'}'`);
+                        const foundText = found ? `'${found}'` : `an unreadable branch${readError ? ` (${readError})` : ''}`;
+                        fail(`${foundText} is checked out, not the sprint branch '${sprintBranch || 'unknown'}'`);
                         continue;
                     }
                 }
@@ -1589,7 +1599,12 @@ export function createKbWorkClient(opts = {}) {
     /**
      * Merge the branch reads into the report (see kbChangesOnMerge). An id
      * this run withdrew is already listed; one it restored is gone; every
-     * other branch tombstone is carried.
+     * other branch tombstone is carried. The read is the maintainer's HEAD,
+     * so a restore committed there but never pushed (push rejected, reset
+     * unsafe) hides a tombstone the remote branch still has: every id still
+     * queued as a restore that was offered as an earlier branch withdrawal
+     * (any held id when the offer's branch read failed), and that the read
+     * does not show, is carried too (`restoreNotPushed`).
      */
     function mergeCarriedWithdrawals(base, reads) {
         const out = base || { withdrawn: [], notRecorded: [], noVerdict: [], kept: 0, restored: 0, refused: [], notPushed: [] };
@@ -1613,6 +1628,22 @@ export function createKbWorkClient(opts = {}) {
                     kept: verdict === 'holds',
                 });
                 carriedHere.push(row.id);
+            }
+            const unpushedRestores = restoresPending.get(r.repo);
+            if (det && unpushedRestores) {
+                for (const id of unpushedRestores) {
+                    if (listed.has(id) || det.restoredDone.has(id) || !(det.restorable.has(id) || det.branchReadFailed)) continue;
+                    listed.add(id);
+                    const known = det.branchRows.get(id) || {};
+                    out.carried.push({
+                        id,
+                        title: known.title || det.titles.get(id) || '',
+                        note: known.note || '',
+                        kept: true,
+                        restoreNotPushed: true,
+                    });
+                    carriedHere.push(id);
+                }
             }
             if (carriedHere.length > 0) {
                 const ids = new Set(carriedHere);
@@ -2006,8 +2037,10 @@ export function createKbWorkClient(opts = {}) {
          * run on this branch committed is reported even when this run offered
          * nothing (loop off, a support gap, an abort before the final review,
          * more tombstones than the offer cap). Adds `carried: [{id, title,
-         * note, kept}]` -- a branch tombstone this run neither withdrew nor
-         * restored (`kept`: held this run, restore not on the branch) -- and
+         * note, kept, restoreNotPushed?}]` -- a branch tombstone this run
+         * neither withdrew nor restored (`kept`: held this run, restore not
+         * on the branch; `restoreNotPushed`: the restore is committed on the
+         * maintainer but not pushed, so the remote branch keeps it) -- and
          * `unreadable: [{repo, member, error}]` for a branch bible that could
          * not be read. A carried id is never in `noVerdict` or `notRecorded`
          * (it is withdrawn on merge). Null when there is nothing to report.

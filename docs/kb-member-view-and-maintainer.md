@@ -127,7 +127,10 @@ is imported (`kb_import`).
    "carried from an earlier run, not re-checked" (never "still CONFIRMED"), so
    the section appears even when this run offered nothing (loop off, a
    support gap, an abort before the final review, more tombstones than the
-   offer cap). A branch bible that could not be read (or a maintainer not on
+   offer cap). The read is the maintainer's checkout, so a held carried id
+   whose restore was committed there but never pushed (push rejected, reset
+   unsafe) is still listed, labelled "restore not in a pushed bible commit".
+   A branch bible that could not be read (or a maintainer not on
    the sprint branch) is a "Branch tombstones could not be read" line, never
    silence. No-verdict ids are never dropped: past 40 ids, or when the body
    budget is short, the rest is "+K more (run log)".

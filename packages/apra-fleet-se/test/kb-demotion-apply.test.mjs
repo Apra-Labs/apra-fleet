@@ -421,6 +421,66 @@ describe('kbChangesOnMerge: withdrawals carried on the branch from an earlier ru
         assert.match(buildKbChangesSection(report).text, /held this run, but the restore is not on the branch/);
     });
 
+    test('a held carried id whose restore is committed on the maintainer but never pushed (push rejected, reset unsafe) is still listed', async () => {
+        // The offer reads the tombstone on the branch; the publish-time read is
+        // the maintainer's HEAD, where the unpushed restore already lifted it.
+        const branchRead = Object.assign(async () => [carriedRow()], { read: async () => ({ ok: true, rows: [] }) });
+        const { client, logs } = harness({
+            branchWithdrawals: branchRead,
+            extra: {
+                gPush: async () => { throw new Error('rejected: non-fast-forward'); },
+                canResetCheckout: async () => ({ safe: false, reason: 'unrelated local work' }),
+            },
+        });
+        await offerDemotions(client, []);
+        await client.apply('reviewer', 'reviewer-1', { kb_holds: [CARRIED] });
+        await client.commitRound('final review');
+        assert.ok(logs.some((l) => /not resetting maintainer 'maint'/.test(l)), logs.join('\n'));
+
+        const report = await client.kbChangesOnMerge();
+
+        assert.deepEqual(report.carried, [{
+            id: CARRIED, title: 'Cache keys by tenant id only', note: 'the earlier final review judged it false', kept: true, restoreNotPushed: true,
+        }]);
+        assert.equal(report.restored, 0);
+        const s = buildKbChangesSection(report);
+        assert.match(s.text, /^Merging withdraws 1 CONFIRMED KB claim\(s\); 1 carried from an earlier run, held but not restored/);
+        assert.ok(s.text.includes(`- ${CARRIED.slice(0, 8)} "Cache keys by tenant id only" -- the earlier final review judged it false (carried from an earlier run; held this run; restore not in a pushed bible commit)`), s.text);
+    });
+
+    test('a held id that was never a branch tombstone is not listed when its restore is unpushed', async () => {
+        const { client } = harness({
+            branchWithdrawals: reader({ ok: true, rows: [] }),
+            extra: {
+                gPush: async () => { throw new Error('rejected: non-fast-forward'); },
+                canResetCheckout: async () => ({ safe: false, reason: 'unrelated local work' }),
+            },
+        });
+        await offerDemotions(client, [demotable('kb-plain')]);
+        await client.apply('reviewer', 'reviewer-1', { kb_holds: ['kb-plain'] });
+        await client.commitRound('final review');
+        const report = await client.kbChangesOnMerge();
+        assert.deepEqual(report.carried, []);
+    });
+
+    test('when the offer could not read the branch tombstones, an unpushed held id is listed (over-list, never hide)', async () => {
+        let offerRead = true;
+        const branchRead = Object.assign(async () => { if (offerRead) throw new Error('member unreachable'); return []; }, { read: async () => ({ ok: true, rows: [] }) });
+        const { client } = harness({
+            branchWithdrawals: branchRead,
+            extra: {
+                gPush: async () => { throw new Error('rejected: non-fast-forward'); },
+                canResetCheckout: async () => ({ safe: false, reason: 'unrelated local work' }),
+            },
+        });
+        await offerDemotions(client, [demotable(CARRIED)]);
+        offerRead = false;
+        await client.apply('reviewer', 'reviewer-1', { kb_holds: [CARRIED] });
+        await client.commitRound('final review');
+        const report = await client.kbChangesOnMerge();
+        assert.deepEqual(report.carried.map((c) => [c.id, c.restoreNotPushed]), [[CARRIED, true]]);
+    });
+
     test('a branch read that fails, throws, or runs on a maintainer off the sprint branch is an explicit line, never silence', async () => {
         const cases = [
             { branchWithdrawals: reader({ ok: false, rows: [], error: "'git show HEAD:.fleet/kb-canonical.json' on 'maint': failed" }) },

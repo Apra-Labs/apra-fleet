@@ -501,9 +501,12 @@ export function buildKbChangesSection(report) {
     const notPushed = new Set(report.notPushed || []);
     if (withdrawn.length === 0 && notRecorded.length === 0 && noVerdict.length === 0
         && !(report.kept || report.restored) && refused.length === 0 && unreadable.length === 0) return null;
-    const carriedLabel = (w) => (w.kept
-        ? ' (carried from an earlier run; held this run, but the restore is not on the branch)'
-        : ' (carried from an earlier run, not re-checked)');
+    const carriedLabel = (w) => {
+        if (w.restoreNotPushed) return ' (carried from an earlier run; held this run; restore not in a pushed bible commit)';
+        return w.kept
+            ? ' (carried from an earlier run; held this run, but the restore is not on the branch)'
+            : ' (carried from an earlier run, not re-checked)';
+    };
     const lineOf = (w) => {
         const t = w.title ? ` "${clip(w.title, 50)}"` : '';
         const n = w.note ? ` -- ${clip(w.note, 100)}` : '';
