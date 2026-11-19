@@ -2351,6 +2351,14 @@ git config --global credential.helper ~/.fleet-git-credential`);
 > sets `GIT_CONFIG_PARAMETERS` for that one command, registering exactly that
 > member's helpers per scope URL, so every git it starts -- in the clone, a worktree,
 > or bd/dolt's own cache repository -- finds them. See `src/services/vcs-git-env.ts`.
+>
+> The `gh` CLI is different: it keeps one login per OS user, so a GitHub deploy
+> runs `gh auth login` only for label `github` on a remote member no other
+> registered member shares, unless the caller passes `gh_login: true` (or never,
+> with `false`). A local member's gh login is the operator's own and is left
+> alone by default. A different access level or repo set is provisioned under
+> its own label and used per call through `vcs_credential_exec`, which changes
+> no host-wide identity. See `ghLoginDecision` in `src/services/vcs/github.ts`.
 
 ### Backend: Azure DevOps
 
@@ -2398,6 +2406,15 @@ Member startup / first git operation
         v
   Member deregistered? Token expires naturally (1hr max)
 ```
+
+Each provision schedules a cleanup timer for its label at the token expiry.
+Timers live in the fleet server process that provisioned, while the member
+registry is shared on disk by every server process on the host. A timer
+therefore revokes only when the label's record still holds the expiry it was
+scheduled for: after a re-provision from another process the record carries
+the newer token's expiry and the stale timer leaves that token in place
+(`src/services/credential-cleanup.ts`). Re-provisioning never revokes the
+replaced token at GitHub; it stays valid until it expires.
 
 ### MCP Tool Interface
 

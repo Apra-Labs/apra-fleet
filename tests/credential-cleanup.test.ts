@@ -122,13 +122,14 @@ describe('scheduleCredentialCleanup', () => {
   });
 
   it('calls revoke when timer fires and member has vcsProvider', async () => {
-    const member = makeAgent();
+    // A real provision records the same expiry it schedules the timer for.
+    const expiresAt = new Date(Date.now() + 55 * 60 * 1000).toISOString();
+    const member = makeAgent({ vcsTokenExpiresAt: expiresAt });
     mockGetAllAgents.mockReturnValue([member]);
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 1 });
     mockRevoke.mockResolvedValue({ success: true, message: 'revoked' });
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
-    const expiresAt = new Date(Date.now() + 55 * 60 * 1000).toISOString();
     scheduleCredentialCleanup('member-1', 'github', expiresAt);
     await vi.advanceTimersByTimeAsync(55 * 60 * 1000 + 1000);
 
@@ -137,13 +138,13 @@ describe('scheduleCredentialCleanup', () => {
   });
 
   it('threads the agent\'s persisted vcsCredentialLabel/vcsCredentialScopeUrl into revoke, not an unlabeled/default-host guess', async () => {
-    const member = makeAgent({ vcsCredentialLabel: 'work-github', vcsCredentialScopeUrl: 'https://github.com/my-org' });
+    const expiresAt = new Date(Date.now() + 55 * 60 * 1000).toISOString();
+    const member = makeAgent({ vcsCredentialLabel: 'work-github', vcsCredentialScopeUrl: 'https://github.com/my-org', vcsTokenExpiresAt: expiresAt });
     mockGetAllAgents.mockReturnValue([member]);
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 1 });
     mockRevoke.mockResolvedValue({ success: true, message: 'revoked' });
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
-    const expiresAt = new Date(Date.now() + 55 * 60 * 1000).toISOString();
     scheduleCredentialCleanup('member-1', 'work-github', expiresAt);
     await vi.advanceTimersByTimeAsync(55 * 60 * 1000 + 1000);
 
@@ -204,16 +205,18 @@ describe('scheduleCredentialCleanup', () => {
   // OS command strings.
   it('cleanup for member A never carries member B\'s label/scopeUrl, even when both target the same host', async () => {
     // Same host and OS user: per-member helpers, so neither is shared.
-    const memberA = makeAgent({ id: 'member-1', vcsCredentials: { 'label-a': { provider: 'github', scopeUrl: 'https://github.com', memberScoped: true } } });
-    const memberB = makeAgent({ id: 'member-2', vcsCredentials: { 'label-b': { provider: 'github', scopeUrl: 'https://github.com', memberScoped: true } } });
+    // Member B's expiry is far enough out that only A's timer fires below.
+    const expA = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+    const expB = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    const memberA = makeAgent({ id: 'member-1', vcsCredentials: { 'label-a': { provider: 'github', scopeUrl: 'https://github.com', expiresAt: expA, memberScoped: true } } });
+    const memberB = makeAgent({ id: 'member-2', vcsCredentials: { 'label-b': { provider: 'github', scopeUrl: 'https://github.com', expiresAt: expB, memberScoped: true } } });
     mockGetAllAgents.mockReturnValue([memberA, memberB]);
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 1 });
     mockRevoke.mockResolvedValue({ success: true, message: 'revoked' });
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
-    // Member B's expiry is far enough out that only A's timer fires below.
-    scheduleCredentialCleanup('member-1', 'label-a', new Date(Date.now() + 30 * 60 * 1000).toISOString());
-    scheduleCredentialCleanup('member-2', 'label-b', new Date(Date.now() + 60 * 60 * 1000).toISOString());
+    scheduleCredentialCleanup('member-1', 'label-a', expA);
+    scheduleCredentialCleanup('member-2', 'label-b', expB);
 
     await vi.advanceTimersByTimeAsync(30 * 60 * 1000 + 1000);
 
@@ -228,19 +231,21 @@ describe('scheduleCredentialCleanup', () => {
   // label A revokes ONLY label A (with A's own provider and scope) and drops
   // only A from the record.
   it('timers are per member+label: expiry of label A revokes only A', async () => {
+    const expA = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+    const expB = new Date(Date.now() + 60 * 60 * 1000).toISOString();
     const member = makeAgent({
       vcsCredentialLabel: undefined,
       vcsCredentials: {
-        'label-a': { provider: 'github', scopeUrl: 'https://github.com/org-a', memberScoped: true },
-        'label-b': { provider: 'github', scopeUrl: 'https://github.com/org-b', memberScoped: true },
+        'label-a': { provider: 'github', scopeUrl: 'https://github.com/org-a', expiresAt: expA, memberScoped: true },
+        'label-b': { provider: 'github', scopeUrl: 'https://github.com/org-b', expiresAt: expB, memberScoped: true },
       },
     });
     mockGetAllAgents.mockReturnValue([member]);
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 1 });
     mockRevoke.mockResolvedValue({ success: true, message: 'revoked' });
 
-    scheduleCredentialCleanup('member-1', 'label-a', new Date(Date.now() + 30 * 60 * 1000).toISOString());
-    scheduleCredentialCleanup('member-1', 'label-b', new Date(Date.now() + 60 * 60 * 1000).toISOString());
+    scheduleCredentialCleanup('member-1', 'label-a', expA);
+    scheduleCredentialCleanup('member-1', 'label-b', expB);
     expect(_getCleanupTimers().size).toBe(2);
 
     await vi.advanceTimersByTimeAsync(30 * 60 * 1000 + 1000);
@@ -250,8 +255,46 @@ describe('scheduleCredentialCleanup', () => {
     expect(_getCleanupTimers().has(key('member-1', 'label-a'))).toBe(false);
     expect(_getCleanupTimers().has(key('member-1', 'label-b'))).toBe(true);
     expect(mockUpdateAgent).toHaveBeenCalledWith('member-1', expect.objectContaining({
-      vcsCredentials: { 'label-b': { provider: 'github', scopeUrl: 'https://github.com/org-b', memberScoped: true } },
+      vcsCredentials: { 'label-b': { provider: 'github', scopeUrl: 'https://github.com/org-b', expiresAt: expB, memberScoped: true } },
     }));
+  });
+
+  // Re-mint from another fleet server process on the same host: each agent
+  // session can run its own server, timers are per process, and the registry
+  // is shared on disk. Process 1 provisioned at t0 (timer at t0+60m); process
+  // 2 re-provisioned the same label at t0+30m (new token, record expiry
+  // t0+90m, its own timer). Process 1's timer must not delete the newer,
+  // still-valid credential at t0+60m.
+  it('a stale timer leaves a label that another process re-provisioned since (record expiry moved) in place', async () => {
+    const firstExpiry = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    scheduleCredentialCleanup('member-1', 'github', firstExpiry);
+
+    const reMintedExpiry = new Date(Date.now() + 90 * 60 * 1000).toISOString();
+    mockGetAllAgents.mockReturnValue([makeAgent({
+      vcsCredentialLabel: undefined,
+      vcsCredentials: { github: { provider: 'github', scopeUrl: 'https://github.com', expiresAt: reMintedExpiry, memberScoped: true } },
+    })]);
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 1 });
+    mockRevoke.mockResolvedValue({ success: true, message: 'revoked' });
+
+    await vi.advanceTimersByTimeAsync(60 * 60 * 1000 + 1000);
+
+    expect(mockRevoke).not.toHaveBeenCalled();
+    expect(mockExecCommand).not.toHaveBeenCalled();
+    expect(mockUpdateAgent).not.toHaveBeenCalled();
+  });
+
+  it('a stale timer also leaves a re-provisioned label with no expiry (e.g. a PAT) in place', async () => {
+    scheduleCredentialCleanup('member-1', 'github', new Date(Date.now() + 60 * 60 * 1000).toISOString());
+    mockGetAllAgents.mockReturnValue([makeAgent({
+      vcsCredentialLabel: undefined,
+      vcsCredentials: { github: { provider: 'github', scopeUrl: 'https://github.com', memberScoped: true } },
+    })]);
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 1 });
+
+    await vi.advanceTimersByTimeAsync(60 * 60 * 1000 + 1000);
+
+    expect(mockRevoke).not.toHaveBeenCalled();
   });
 
   it('rescheduling label A leaves label B timer of the same member in place', () => {

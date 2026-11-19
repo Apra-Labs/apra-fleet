@@ -126,6 +126,7 @@ export const provisionVcsAuthSchema = z.object({
   token: z.string().optional().describe('Personal access token (GitHub PAT or Azure DevOps PAT). Supports {{secret.NAME}} token -- value is resolved from the credential store before use.'),
   git_access: z.enum(['read', 'push', 'push+pr', 'admin', 'issues', 'full']).optional().describe(GIT_ACCESS_DESCRIPTION),
   repos: z.array(z.string()).optional().describe('GitHub App repository list override'),
+  gh_login: z.boolean().optional().describe('GitHub only: also log the gh CLI in with the new token. gh keeps ONE login per OS user, so this replaces the token every other process of that user runs gh with (the operator sessions on a local member, other members on the same host user). Default: only for label "github" on a remote member that no other registered member shares; skipped otherwise, and metadata.ghCliAuth says why. true: always log gh in (refresh the host gh on purpose). false: never. Git and vcs_credential_exec use the per-member, per-label credential either way.'),
 
   // Bitbucket fields
   email: z.string().optional().describe('OPTIONAL Bitbucket account email. Ignored for authentication (git uses the fixed token username x-bitbucket-api-token-auth, REST uses a Bearer token); kept only as metadata if given.'),

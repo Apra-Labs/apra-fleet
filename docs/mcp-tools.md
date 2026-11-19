@@ -463,6 +463,27 @@ field named in `structuredContent.message`. With no terminal available, the
 fallback text tells the operator to store the value as a named secret
 (`apra-fleet secret --set NAME --persist`) and pass `{{secret.NAME}}`.
 
+**GitHub `gh` CLI login (`gh_login`):** the git credential helper is per member
+and per label, but the `gh` CLI keeps ONE login per OS user. Logging gh in
+replaces the token every other process of that user runs gh with -- the
+operator's own sessions on a local member, and every other member registered
+on the same host user -- and a token minted for another access level or repo
+set would silently narrow what they can do. So by default (`gh_login`
+omitted) gh is logged in only for label `github` on a remote member that no
+other registered member shares; in every other case the login is skipped and
+`metadata.ghCliAuth` (also shown in the text result) says why. Pass
+`gh_login: true` to refresh the host gh login on purpose, `false` to never
+touch it. To use a different access level or repo set without changing
+anyone's gh or git identity, provision it under its own `label` (for example
+`github-issues` with `git_access: "issues"`) and use that token per call
+through `vcs_credential_exec` with the same `label`.
+
+Re-provisioning a label never revokes the token it replaces at GitHub: the
+old token stays valid until it expires, and the expiry cleanup only removes
+the helper when the record still holds the credential it was scheduled for (a
+re-provision from another fleet server process on the same host moves the
+expiry, so the earlier process's cleanup leaves the newer token in place).
+
 **Bitbucket parameters** (`provider: "bitbucket"`):
 
 | Name | Type | Required | Description |

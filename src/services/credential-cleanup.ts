@@ -77,6 +77,14 @@ export function scheduleCredentialCleanup(agentId: string, label: string | undef
       // credential's git-config entry and/or delete the wrong on-disk file.
       const entry = listVcsCredentials(agent).find(e => e.label === label);
       if (!entry) return;
+      // Only the credential this timer was scheduled for may be revoked. The
+      // registry is shared on disk by every fleet server process on the host
+      // (each agent session can run its own), and timers are per process: when
+      // another process re-provisioned this label since, the record now holds
+      // a newer, still-valid token with a later expiry, and revoking here
+      // would delete it from under every reader long before it expires. The
+      // process that re-provisioned it scheduled its own timer.
+      if (entry.expiresAt !== expiresAt) return;
 
       const strategy = getStrategy(agent);
       const conn = await strategy.testConnection();
