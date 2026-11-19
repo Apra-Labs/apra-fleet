@@ -3,7 +3,8 @@ import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getAgentOS, getAgentShell, touchAgent, checkVcsTokenExpiry } from '../utils/agent-helpers.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
-import { updateAgent } from '../services/registry.js';
+import { getAgent } from '../services/registry.js';
+import { getVcsCredentials, recordVcsCredential } from '../services/vcs-credential-record.js';
 import { credentialResolve } from '../services/credential-store.js';
 import { collectOobApiKey } from '../services/auth-socket.js';
 import { decryptPassword } from '../utils/crypto.js';
@@ -387,8 +388,9 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<Pr
   const host = PROVIDER_HOSTS[input.provider];
   const scopeUrl = input.scope_url ?? `https://${host}`;
 
-  // Cancel any existing credential cleanup timer before re-provisioning
-  cancelCredentialCleanup(agent.id);
+  // Cancel the cleanup timer of THIS label only: every other label this
+  // member holds keeps its own timer (src/services/credential-cleanup.ts).
+  cancelCredentialCleanup(agent.id, label);
 
   const strategy = getStrategy(agent);
   const conn = await strategy.testConnection();
@@ -435,22 +437,20 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<Pr
     await exec(cmds.gitCredentialHelperRemoveLegacyFile());
   } catch { /* best-effort */ }
 
-  // The agent record only tracks ONE active (label, scopeUrl) pair for
-  // cleanup purposes, and cancelCredentialCleanup() above just discarded
-  // whatever timer belonged to it. If this deploy is SUPERSEDING a different
-  // previously-provisioned credential (a different label and/or scopeUrl,
-  // or even a different provider), that superseded credential's timer is now
-  // gone forever and nothing else will ever revoke it -- explicitly revoke it
-  // here so its git-config registration and on-disk file don't stay orphaned
-  // indefinitely. A same-label/same-scopeUrl re-provision (a plain refresh)
-  // skips this: gitCredentialHelperWrite's --replace-all below overwrites the
-  // existing entry in place, so there is nothing to revoke first.
-  if (agent.vcsProvider && agent.vcsCredentialLabel !== undefined &&
-      (agent.vcsCredentialLabel !== label || agent.vcsCredentialScopeUrl !== scopeUrl)) {
-    const supersededService = providers[agent.vcsProvider];
+  // Supersede-revoke: only when THIS label was previously provisioned with a
+  // different scopeUrl or provider. Its old git-config registration is keyed
+  // by the old scope (and its file may belong to another provider), so the
+  // write below would not replace it; revoke it with the provider that
+  // deployed it. A same-label/same-scope re-provision (a plain refresh) skips
+  // this: the write overwrites the entry in place. Provisioning a NEW label
+  // never touches another label's credential -- a member can hold several
+  // labels at once (src/services/vcs-credential-record.ts).
+  const previous = getVcsCredentials(getAgent(agent.id) ?? agent)[label];
+  if (previous && (previous.scopeUrl !== scopeUrl || previous.provider !== input.provider)) {
+    const supersededService = providers[previous.provider];
     if (supersededService) {
       try {
-        await supersededService.revoke(agent, cmds, exec, agent.vcsCredentialLabel, agent.vcsCredentialScopeUrl);
+        await supersededService.revoke(agent, cmds, exec, label, previous.scopeUrl);
       } catch { /* best-effort */ }
     }
   }
@@ -471,15 +471,16 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<Pr
   // deploy used, so a later cleanup timer (credential-cleanup.ts) revokes the
   // SAME credential-helper file/config-key pair, not an unlabeled/default-host
   // guess that could clobber a different, still-valid credential.
-  updateAgent(agent.id, {
-    vcsProvider: input.provider,
-    vcsTokenExpiresAt: deployResult.metadata?.expiresAt,
-    vcsCredentialLabel: label,
-    vcsCredentialScopeUrl: scopeUrl,
+  // The record is per label: every other label this member holds is kept.
+  const expiresAt = deployResult.metadata?.expiresAt;
+  recordVcsCredential(agent.id, label, {
+    provider: input.provider,
+    scopeUrl,
+    ...(expiresAt ? { expiresAt } : {}),
   });
 
-  // Schedule auto-cleanup when token expires
-  scheduleCredentialCleanup(agent.id, deployResult.metadata?.expiresAt);
+  // Schedule auto-cleanup of this label when its token expires
+  scheduleCredentialCleanup(agent.id, label, expiresAt);
 
   // Best-effort connectivity test
   let connectivity: VcsDeployResult;

@@ -97,6 +97,25 @@ describe('removeMember - host+user sharer leaves credentials in place', () => {
     expect(result).toContain('left in place');
   });
 
+  it('host+user sharer: no label of a multi-label member is revoked, and the note names every label', async () => {
+    const member = makeTestAgent({
+      friendlyName: 'two-labels', os: 'linux', host: 'build.example', username: 'ci', vcsProvider: 'github',
+      vcsCredentials: {
+        github: { provider: 'github', scopeUrl: 'https://github.com' },
+        'github-issues': { provider: 'github', scopeUrl: 'https://github.com' },
+      },
+    });
+    const sibling = makeTestAgent({ friendlyName: 'keeper', os: 'linux', host: 'build.example', username: 'ci' });
+    addAgent(member);
+    addAgent(sibling);
+
+    const result = await removeMember({ member_id: member.id });
+
+    expect(mockRevokeGithub).not.toHaveBeenCalled();
+    expect(result).toContain('(label github)');
+    expect(result).toContain('(label github-issues)');
+  });
+
   it('a single member on that host+user still gets the cleanup commands', async () => {
     const member = makeTestAgent({ friendlyName: 'solo', os: 'linux', host: 'build.example', username: 'ci', vcsProvider: 'github', llmAuthDelivered: fullRecord() });
     // Same host, different user: not a sharer.

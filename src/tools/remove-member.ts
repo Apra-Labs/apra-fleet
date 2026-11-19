@@ -14,6 +14,7 @@ import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { removeKnownHost } from '../services/known-hosts.js';
 import { writeStatusline, readMemberStatus } from '../services/statusline.js';
 import { cancelCredentialCleanup } from '../services/credential-cleanup.js';
+import { listVcsCredentials } from '../services/vcs-credential-record.js';
 import { getStallDetector } from '../services/stall/index.js';
 import { removeAgyProject } from '../services/agy-project.js';
 import { githubProvider } from '../services/vcs/github.js';
@@ -211,7 +212,9 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
           const left: string[] = [];
           if (credentialFiles.length > 0) left.push(`LLM login files (${credentialFiles.map(f => f.remotePath).join(', ')})`);
           if (authVars.length > 0) left.push(`auth env vars in shell profiles / user environment (${authVars.join(', ')})`);
-          if (agent.vcsProvider) left.push(`the ${agent.vcsProvider} git credential helper${agent.vcsCredentialLabel ? ` (label ${agent.vcsCredentialLabel})` : ''}`);
+          for (const vcs of listVcsCredentials(agent)) {
+            left.push(`the ${vcs.provider} git credential helper${vcs.label ? ` (label ${vcs.label})` : ''}`);
+          }
           notes.push(`Credentials were left in place on ${owner.host} for user ${owner.user} because member "${hostUserSharer.friendlyName}" (${hostUserSharer.id}) runs as the same user on the same host and still uses them: ${left.length > 0 ? left.join('; ') : 'nothing credential-related was configured'}`);
         }
 
@@ -249,16 +252,20 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
           notes.push(`Only fleet-marked export lines (# ${FLEET_ENV_MARKER}) for ${unsetVars.join(', ')} were removed from the member's shell profiles; an unmarked export line for these names (written by hand, or by an older apra-fleet release) may remain -- check the profiles and remove it by hand if it is no longer wanted`);
         }
 
-        // VCS auth revoke: remove git credential helper if a VCS provider is configured.
+        // VCS auth revoke: remove every git credential helper the member holds.
         // Must pass the SAME label/scopeUrl persisted at provision time (see
         // credential-cleanup.ts) -- omitting them targets the unlabeled/
         // default-host credential-helper file/config-key pair instead of the
         // one actually deployed, leaving the real token file orphaned,
         // unrevoked, on a machine that is being decommissioned.
-        if (agent.vcsProvider && !hostUserSharer) {
-          const vcsService = vcsProviders[agent.vcsProvider];
-          if (vcsService) {
-            await vcsService.revoke(agent, cmds, exec, agent.vcsCredentialLabel, agent.vcsCredentialScopeUrl).catch(() => {});
+        // Every recorded label is revoked, each with the provider that
+        // deployed it (src/services/vcs-credential-record.ts).
+        if (!hostUserSharer) {
+          for (const vcs of listVcsCredentials(agent)) {
+            const vcsService = vcsProviders[vcs.provider];
+            if (vcsService) {
+              await vcsService.revoke(agent, cmds, exec, vcs.label, vcs.scopeUrl).catch(() => {});
+            }
           }
         }
 

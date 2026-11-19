@@ -3,6 +3,15 @@ import type { CloudConfig } from './services/cloud/types.js';
 
 export type LlmProvider = 'claude' | 'codex' | 'copilot' | 'agy' | 'opencode' | 'none';
 
+/** One VCS credential a member holds under one label (Agent.vcsCredentials). */
+export interface VcsCredentialRecord {
+  provider: 'github' | 'bitbucket' | 'azure-devops';
+  /** The git credential scope URL the helper was registered for. */
+  scopeUrl: string;
+  /** ISO 8601 expiry of the deployed token, when known. */
+  expiresAt?: string;
+}
+
 export interface Agent {
   id: string;
   friendlyName: string;
@@ -47,6 +56,14 @@ export interface Agent {
    *  values that may belong to a different, still-valid credential. */
   vcsCredentialLabel?: string;
   vcsCredentialScopeUrl?: string;
+  /** Every VCS credential provision_vcs_auth deployed on this member, keyed by
+   *  label, so one member can hold several labels at once (e.g. 'github' and
+   *  'github-issues'). Read it through getVcsCredentials()
+   *  (src/services/vcs-credential-record.ts), which migrates a registry entry
+   *  that only carries the legacy single fields above into a one-label map.
+   *  The legacy single fields are still written, mirroring the most recently
+   *  provisioned label, for readers that predate this map. */
+  vcsCredentials?: Record<string, VcsCredentialRecord>;
   llmProvider?: LlmProvider;  // default: 'claude' for backwards compat
   /** AGY only: id of the member's own agy project (~/.gemini/config/projects/<id>.json),
    *  created by `agy --new-project` and passed as `--project <id>` on every dispatch.

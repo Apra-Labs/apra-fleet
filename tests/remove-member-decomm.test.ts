@@ -13,6 +13,7 @@ const mockClose = vi.fn();
 const mockReadMemberStatus = vi.fn<(id: string) => string>(() => 'idle');
 const mockCancelCredentialCleanup = vi.fn();
 const mockRevokeGithub = vi.fn();
+const mockRevokeAzure = vi.fn();
 
 vi.mock('../src/services/strategy.js', () => ({
   getStrategy: () => ({
@@ -42,7 +43,7 @@ vi.mock('../src/services/vcs/bitbucket.js', () => ({
   bitbucketProvider: { revoke: vi.fn(), deploy: vi.fn(), testConnectivity: vi.fn() },
 }));
 vi.mock('../src/services/vcs/azure-devops.js', () => ({
-  azureDevOpsProvider: { revoke: vi.fn(), deploy: vi.fn(), testConnectivity: vi.fn() },
+  azureDevOpsProvider: { revoke: (...args: any[]) => mockRevokeAzure(...args), deploy: vi.fn(), testConnectivity: vi.fn() },
 }));
 
 vi.mock('../src/services/known-hosts.js', () => ({
@@ -58,6 +59,7 @@ describe('removeMember - decommissioning', () => {
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
     mockRevokeGithub.mockResolvedValue({ success: true, message: 'github revoked' });
+    mockRevokeAzure.mockResolvedValue({ success: true, message: 'azure revoked' });
     mockReadMemberStatus.mockReturnValue('idle');
   });
 
@@ -135,6 +137,30 @@ describe('removeMember - decommissioning', () => {
       'work-github',
       'https://github.com/my-org',
     );
+  });
+
+  // A member holds one credential per label: remove_member revokes every
+  // recorded label, each with the provider and scope that deployed it.
+  it('revokes every recorded VCS credential label, each with its own provider and scope', async () => {
+    const member = makeTestAgent({
+      friendlyName: 'vcs-multi-label',
+      vcsProvider: 'github',
+      vcsCredentialLabel: 'github-issues',
+      vcsCredentials: {
+        github: { provider: 'github', scopeUrl: 'https://github.com' },
+        'github-issues': { provider: 'github', scopeUrl: 'https://github.com/my-org' },
+        'azure-devops': { provider: 'azure-devops', scopeUrl: 'https://dev.azure.com/org' },
+      },
+    });
+    addAgent(member);
+
+    await removeMember({ member_id: member.id });
+
+    expect(mockRevokeGithub.mock.calls.map(c => [c[3], c[4]])).toEqual([
+      ['github', 'https://github.com'],
+      ['github-issues', 'https://github.com/my-org'],
+    ]);
+    expect(mockRevokeAzure.mock.calls.map(c => [c[3], c[4]])).toEqual([['azure-devops', 'https://dev.azure.com/org']]);
   });
 
   it('skips VCS revoke for local member', async () => {

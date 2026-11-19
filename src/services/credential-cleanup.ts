@@ -1,4 +1,5 @@
 import { getAllAgents } from './registry.js';
+import { listVcsCredentials, forgetVcsCredential } from './vcs-credential-record.js';
 import { getStrategy } from './strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getAgentOS, getAgentShell } from '../utils/agent-helpers.js';
@@ -26,8 +27,19 @@ const providers: Record<string, VcsProviderService> = {
   'azure-devops': azureDevOpsProvider,
 };
 
-export function scheduleCredentialCleanup(agentId: string, expiresAt?: string): void {
-  cancelCredentialCleanup(agentId);
+/** Timer key: one cleanup timer per member AND label (labels and member ids never contain '|'). */
+export function cleanupTimerKey(agentId: string, label: string | undefined): string {
+  return `${agentId}|${label ?? ''}`;
+}
+
+/**
+ * Schedule the auto-revoke of ONE label's credential on one member. Only that
+ * label's previous timer is replaced: the other labels of the same member keep
+ * theirs (a member can hold several labels at once -- see
+ * src/services/vcs-credential-record.ts).
+ */
+export function scheduleCredentialCleanup(agentId: string, label: string | undefined, expiresAt?: string): void {
+  cancelCredentialCleanup(agentId, label);
 
   // No known real expiry: do NOT fall back to a blind default-TTL
   // self-destruct (a prior version used a hardcoded 55-minute
@@ -61,14 +73,20 @@ export function scheduleCredentialCleanup(agentId: string, expiresAt?: string): 
   }
   const delayMs = Math.max(0, untilExpiry);
 
+  const key = cleanupTimerKey(agentId, label);
   const timer = setTimeout(async () => {
-    cleanupTimers.delete(agentId);
+    cleanupTimers.delete(key);
     try {
-      const agents = getAllAgents();
-      const agent = agents.find(a => a.id === agentId);
-      if (!agent?.vcsProvider) return;
+      const agent = getAllAgents().find(a => a.id === agentId);
+      if (!agent) return;
+      // Revoke the SAME label/scopeUrl/provider this label's deploy recorded
+      // (provision-vcs-auth.ts) -- never another label's, and never an
+      // unlabeled/default-host guess that could unset a different, still-valid
+      // credential's git-config entry and/or delete the wrong on-disk file.
+      const entry = listVcsCredentials(agent).find(e => e.label === label);
+      if (!entry) return;
 
-      const service = providers[agent.vcsProvider];
+      const service = providers[entry.provider];
       if (!service) return;
 
       const strategy = getStrategy(agent);
@@ -81,23 +99,29 @@ export function scheduleCredentialCleanup(agentId: string, expiresAt?: string): 
         return result.stdout;
       };
 
-      // Revoke the SAME label/scopeUrl this deploy actually used (persisted
-      // by provision-vcs-auth.ts at deploy time) -- not an unlabeled/
-      // default-host guess, which can unset a different, still-valid
-      // credential's git-config entry and/or delete the wrong on-disk file.
-      await service.revoke(agent, cmds, exec, agent.vcsCredentialLabel, agent.vcsCredentialScopeUrl);
-    } catch { /* silent — best-effort cleanup */ }
+      await service.revoke(agent, cmds, exec, entry.label, entry.scopeUrl);
+      forgetVcsCredential(agentId, entry.label);
+    } catch { /* silent -- best-effort cleanup */ }
   }, delayMs);
 
   if (timer.unref) timer.unref();
-  cleanupTimers.set(agentId, timer);
+  cleanupTimers.set(key, timer);
 }
 
-export function cancelCredentialCleanup(agentId: string): void {
-  const timer = cleanupTimers.get(agentId);
-  if (timer !== undefined) {
-    clearTimeout(timer);
-    cleanupTimers.delete(agentId);
+/**
+ * Cancel the cleanup timer of one label of a member, or -- with no label
+ * argument -- every cleanup timer of that member (remove_member).
+ */
+export function cancelCredentialCleanup(agentId: string, ...label: [string | undefined] | []): void {
+  const keys = label.length > 0
+    ? [cleanupTimerKey(agentId, label[0])]
+    : [...cleanupTimers.keys()].filter(k => k.startsWith(`${agentId}|`));
+  for (const key of keys) {
+    const timer = cleanupTimers.get(key);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      cleanupTimers.delete(key);
+    }
   }
 }
 
