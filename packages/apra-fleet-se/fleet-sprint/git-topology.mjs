@@ -364,6 +364,11 @@ export function classifyGitFailure(output, provider) {
  *     them is AUTH_EXPIRED anyway; and a publickey refusal after a credential
  *     was mis-deployed IS sometimes fixed by re-provisioning. Flipping them
  *     would be an unrelated behavior change.
+ *   - vcs-providers/generic-git.mjs, /requested URL returned error:\s*403\b/
+ *     (git's HTTPS status refusal): self-healed once, deliberately. For a
+ *     cached credential an ambiguous 403 is most often a stale or narrowed
+ *     repo scope, which a re-provision fixes; a 403 that repeats after the
+ *     heal is returned as 'auth' (never retried as transient).
  *   - vcs-providers/azure-devops.mjs, TF401019 and a REST 403: UNCHANGED
  *     (still self-healed). The self-heal is also that provider's ONLY vehicle
  *     for printing its `authRemedy` hint to the operator

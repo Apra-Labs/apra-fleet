@@ -506,9 +506,18 @@ async function provisionVcsAuthForMember({ fleetApi, command, member, log = () =
     const provisionedExpiry = typeof rawExpiresAt === 'string' && rawExpiresAt.trim() !== ''
         ? new Date(rawExpiresAt)
         : null;
+    // The repo scope the server actually deployed, from the structured
+    // provider metadata (`structuredContent.metadata.repos`, a comma-separated
+    // owner/repo list). null when absent means "not repo-scoped" (provider-
+    // wide), which the preflight cache reads as covering every repo. Inlined
+    // for the same facade-pin reason as the expiry parse above.
+    const rawMetadata = provisionRes && provisionRes.structuredContent ? provisionRes.structuredContent.metadata : null;
+    const rawScope = rawMetadata && typeof rawMetadata.repos === 'string' ? rawMetadata.repos : null;
+    const scopeList = rawScope === null ? [] : rawScope.split(',').map((r) => r.trim()).filter(Boolean);
     return {
         expiresAt: provisionedExpiry && !Number.isNaN(provisionedExpiry.getTime()) ? provisionedExpiry : null,
         repo: derivedRepo,
+        scopeRepos: scopeList.length > 0 ? scopeList : null,
     };
 }
 
@@ -1587,6 +1596,14 @@ export function createVcsAuthPreflightCallback(opts = {}) {
     const fleetApi = new ApraFleet({ callTool });
     /** @type {Map<string, Date|null>} member -> last-known expiresAt (null = no expiry tracked, e.g. PAT mode). */
     const knownGoodUntil = new Map();
+    // Scope half of the freshness cache: member -> { repo, scopeRepos } from
+    // the last provision. repo is the sprint repo derived from the member's
+    // remote; scopeRepos is the repo list the deployed credential covers
+    // (null = provider-wide). Expiry alone is not enough: a credential that
+    // is still fresh but no longer covers the sprint repo gets a 403 on the
+    // next push, so such an entry is never treated as fresh.
+    /** @type {Map<string, { repo: string|null, scopeRepos: string[]|null }>} */
+    const knownScope = new Map();
     // apra-fleet-d1pk.3: PROBE-FIRST branch for members whose credential the
     // fleet cannot mint (provider authRemedy.serverSideReMintable === false,
     // e.g. Bitbucket API tokens, Azure DevOps PATs). Provisioning such a
@@ -1796,8 +1813,9 @@ export function createVcsAuthPreflightCallback(opts = {}) {
         // for a credentialProbe provider the labelled credential is re-probed
         // after it and that re-probe decides the verdict.
         try {
-            const { expiresAt } = await provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix: '[Sync] preflight', azdevopsPatSecretName, refuseLocalNonReMintable: true });
+            const { expiresAt, repo, scopeRepos } = await provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix: '[Sync] preflight', azdevopsPatSecretName, refuseLocalNonReMintable: true });
             knownGoodUntil.set(member, expiresAt);
+            knownScope.set(member, { repo: repo || null, scopeRepos: scopeRepos || null });
         } catch (err) {
             probeVerdicts.set(member, 'failed');
             logProbeFailure(member, plan, `${why}; provision_vcs_auth also failed: ${err.message}`, { remedy: cred.remedy, noPr: !cred.ok });
@@ -1838,7 +1856,16 @@ export function createVcsAuthPreflightCallback(opts = {}) {
         }
         if (knownGoodUntil.has(member)) {
             const expiresAt = knownGoodUntil.get(member);
-            if (expiresAt === null || expiresAt.getTime() - now() > VCS_AUTH_EXPIRY_PREFLIGHT_MS) {
+            // Scope check: a cached credential whose recorded repo scope does
+            // not include the sprint repo (case-insensitive) is not fresh,
+            // whatever its expiry. null scope (provider-wide) or an unknown
+            // sprint repo keeps the expiry-only decision.
+            const scope = knownScope.get(member);
+            const scopeCovers = !scope || !scope.repo || !scope.scopeRepos
+                || scope.scopeRepos.some((r) => r.toLowerCase() === scope.repo.toLowerCase());
+            if (!scopeCovers) {
+                log(`[Sync] preflight: cached credential for member '${member}' does not cover repo '${scope.repo}' (scope: ${scope.scopeRepos.join(', ')}); re-provisioning even though it has not expired.`);
+            } else if (expiresAt === null || expiresAt.getTime() - now() > VCS_AUTH_EXPIRY_PREFLIGHT_MS) {
                 // Still fresh (or a no-expiry credential type) -- skip, so
                 // this is not an unconditional provisioning call on every
                 // dispatch. Still state WHY nothing was provisioned, so the
@@ -1851,8 +1878,9 @@ export function createVcsAuthPreflightCallback(opts = {}) {
         }
         log(`[Sync] preflight: ensuring member '${member}' has a fresh VCS credential before dispatch; calling provision_vcs_auth.`);
         try {
-            const { expiresAt } = await provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix: '[Sync] preflight', azdevopsPatSecretName, refuseLocalNonReMintable: true });
+            const { expiresAt, repo, scopeRepos } = await provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix: '[Sync] preflight', azdevopsPatSecretName, refuseLocalNonReMintable: true });
             knownGoodUntil.set(member, expiresAt);
+            knownScope.set(member, { repo: repo || null, scopeRepos: scopeRepos || null });
             log(`[Sync] preflight: provision_vcs_auth succeeded for member '${member}'${expiresAt ? ` (expires ${expiresAt.toISOString()})` : ''}.`);
         } catch (err) {
             log(`[Sync] preflight: provision_vcs_auth failed for member '${member}' (continuing -- the existing credential may still be valid; the reactive self-heal will fire if a git/dolt command actually fails): ${err.message}`);

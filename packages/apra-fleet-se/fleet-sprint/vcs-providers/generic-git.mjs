@@ -23,11 +23,15 @@
  *
  * PARITY CONSTRAINT (apra-fleet-647.1.3.1 AC2): the DIVERGED and TRANSIENT
  * tables below are runner.js's GIT_DIVERGED_PATTERNS / GIT_TRANSIENT_PATTERNS
- * verbatim, and the AUTH tables are the six PORTABLE members of
+ * verbatim, and the AUTH tables started as the six PORTABLE members of
  * GIT_AUTH_PATTERNS / DOLT_AUTH_PATTERNS (those two lists are identical; their
  * two remaining members are GitHub literals and live in ./github.mjs). This is
- * what lets apra-fleet-647.1.3.2 delete those tables and delegate with no
- * verdict change.
+ * what let apra-fleet-647.1.3.2 delete those tables and delegate with no
+ * verdict change. runner.js no longer carries its own copy (classifyGitFailure
+ * in ../git-topology.mjs delegates here), so the AUTH tables have since grown
+ * past that original set: git's HTTPS status refusal "The requested URL
+ * returned error: 401/403" is AUTH, not TRANSIENT (see AUTH_EXPIRED and
+ * AUTH_DENIED below) -- a deliberate verdict change, not drift.
  *
  * DELIBERATELY NOT FOLDED IN: dolt-sync.mjs's DOLT_TRANSIENT_PATTERNS is
  * BROADER than the git set (bare /lock/i, /database is locked/i, /dial tcp/i,
@@ -84,6 +88,12 @@ const AUTH_EXPIRED = [
     /Authentication failed/i,
     /support for password authentication was removed/i,
     /remote:\s*401 Unauthorized/i,
+    // git's own HTTPS status refusal: "fatal: unable to access <url>: The
+    // requested URL returned error: 401". The same line also matches
+    // TRANSIENT's /unable to access/, but KIND_PRECEDENCE checks AUTH first,
+    // so a 401 now reaches the one-shot self-heal instead of being retried
+    // as a network blip.
+    /requested URL returned error:\s*401\b/i,
 ];
 
 /** Identity understood, access refused. OpenSSH offered a key and the server
@@ -101,6 +111,17 @@ const AUTH_EXPIRED = [
 const AUTH_DENIED = [
     /Permission denied \(publickey\)/i,
     /HTTP Basic:\s*Access denied/i,
+    // git's own HTTPS status refusal with a 403 ("fatal: unable to access
+    // <url>: The requested URL returned error: 403"). Before this entry it
+    // matched only TRANSIENT's /unable to access/, so runGitStep retried it
+    // as transient and never called onAuthFailure. Policy: a generic 403 is
+    // AUTH_DENIED WITHOUT permissionScope, so it spends runGitStep's one-shot
+    // self-heal -- for a cached credential an ambiguous 403 is most often a
+    // stale or narrowed repo scope, and one bounded re-provision is cheap. A
+    // 403 that repeats after the heal fails as auth, never as transient.
+    // Provider permissionScope refusals (e.g. ./github.mjs's workflow-file
+    // refusal) are matched first and are still never self-healed.
+    /requested URL returned error:\s*403\b/i,
 ];
 
 /** Network / lock blips a plain retry can clear. Verbatim
