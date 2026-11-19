@@ -393,6 +393,36 @@ export function decisionSetAsideEntries(sprintState) {
     return out;
 }
 
+// The beads held aside for a pending operator decision, for the plan-reviewer
+// prompt (prompts.mjs buildPlanReviewerPrompt decisionSetAside).
+export function decisionSetAsideList(sprintState) {
+    return [...decisionSetAsideEntries(sprintState)].map(([id, entry]) => ({
+        id, decisionBeadId: entry.decisionBeadId || null, kind: entry.kind,
+    }));
+}
+
+// The bead ids a non-approving verdict names: its structured `findings` ids
+// when present (a held bead is often a bug or feature, absent from the
+// task-level taskAssignments that extractContestedBeadIds intersects with),
+// else the contested set from the deprecated notes scan.
+export function namedFindingIds(verdict, extractContestedBeadIds) {
+    if (Array.isArray(verdict.findings)) {
+        return [...new Set(verdict.findings.map((f) => f && f.id).filter((id) => typeof id === 'string' && id.length > 0))];
+    }
+    return extractContestedBeadIds(verdict);
+}
+
+// True when every bead a non-approving verdict names is held aside for a
+// pending decision (and it names at least one). A plan-wide objection (no
+// bead named) or a finding on any other bead is never waved through.
+export function onlyDecisionSetAsideFindings(verdict, sprintState, extractContestedBeadIds) {
+    if (!verdict || verdict.dispatchFailed) return false;
+    const held = decisionSetAsideEntries(sprintState);
+    if (held.size === 0) return false;
+    const named = namedFindingIds(verdict, extractContestedBeadIds);
+    return named.length > 0 && named.every((id) => held.has(id));
+}
+
 // Every top-level JSON object in `text`, in order of appearance: a scan that
 // is string-aware (braces inside JSON strings do not count), so prose or a
 // fenced block around the planner's JSON result does not hide it.

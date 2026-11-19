@@ -3971,6 +3971,7 @@ async function runSprintCycle(context) {
                     gitSync, updateDashboard,
                     verifySetThisCycle, pendingRejectedNewTasks,
                     devRounds, eligibleReplan, replanIds, replannedThisCycle, perBeadFeedback,
+                    command, sprintState, bdListScoped, extractContestedBeadIds,
                 });
                 continue;
             }

@@ -51,7 +51,7 @@ import { buildPlannerPrompt, buildPlanReviewerPrompt } from '../prompts.mjs';
 import { collectParentNotesStalenessNotes } from '../parent-notes-staleness.mjs';
 import { PlanReviewDispatchFailedError, SprintPlanRejectedError } from '../errors.mjs';
 import { buildSettleCallback } from '../dolt-settle.mjs';
-import { applyPlannerDecision, decisionSetAsideEntries } from '../decisions.mjs';
+import { applyPlannerDecision, decisionSetAsideEntries, decisionSetAsideList, namedFindingIds, onlyDecisionSetAsideFindings } from '../decisions.mjs';
 
 /**
  * Runs the Plan phase for ONE sprint cycle: up to three planner <->
@@ -436,34 +436,4 @@ export async function runPlanPhase({
     }
 
     return { planCapDeferredIds, lastVerdict, planningRounds, pendingRejectedNewTasks };
-}
-
-// The beads held aside for a pending operator decision, for the plan-reviewer
-// prompt (prompts.mjs buildPlanReviewerPrompt decisionSetAside).
-function decisionSetAsideList(sprintState) {
-    return [...decisionSetAsideEntries(sprintState)].map(([id, entry]) => ({
-        id, decisionBeadId: entry.decisionBeadId || null, kind: entry.kind,
-    }));
-}
-
-// The bead ids a non-approving verdict names: its structured `findings` ids
-// when present (a held bead is often a bug or feature, absent from the
-// task-level taskAssignments that extractContestedBeadIds intersects with),
-// else the contested set from the deprecated notes scan.
-function namedFindingIds(verdict, extractContestedBeadIds) {
-    if (Array.isArray(verdict.findings)) {
-        return [...new Set(verdict.findings.map((f) => f && f.id).filter((id) => typeof id === 'string' && id.length > 0))];
-    }
-    return extractContestedBeadIds(verdict);
-}
-
-// True when every bead a non-approving verdict names is held aside for a
-// pending decision (and it names at least one). A plan-wide objection (no
-// bead named) or a finding on any other bead is never waved through.
-function onlyDecisionSetAsideFindings(verdict, sprintState, extractContestedBeadIds) {
-    if (!verdict || verdict.dispatchFailed) return false;
-    const held = decisionSetAsideEntries(sprintState);
-    if (held.size === 0) return false;
-    const named = namedFindingIds(verdict, extractContestedBeadIds);
-    return named.length > 0 && named.every((id) => held.has(id));
 }
