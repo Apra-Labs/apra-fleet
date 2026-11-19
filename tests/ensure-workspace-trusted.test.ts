@@ -23,7 +23,7 @@ import { NoneProvider } from '../src/providers/none.js';
 import type { SSHExecResult } from '../src/types.js';
 import type { WorkspaceTrustTransport, WorkspaceTrustExecFn } from '../src/providers/provider.js';
 import type { MemberShell } from '../src/os/os-commands.js';
-import { parseLandingMove, isWindowsLandingMove } from './helpers/landing-move.js';
+import { parseLandingMove, isWindowsLandingMove, unwrapPowerShellEncoded } from './helpers/landing-move.js';
 
 /** The fake member file channel of the CURRENT test's fake exec: stages content
  *  (writeHomeFile) and lands it on the move command -- the content never rides
@@ -93,9 +93,10 @@ describe('ClaudeProvider.ensureWorkspaceTrusted (apra-fleet-eft.40.1)', () => {
     const written = JSON.parse(getFileContent()!);
     expect(written.projects['/home/member/work/project-a'].hasTrustDialogAccepted).toBe(true);
     // read, presence probe (the read was empty: missing vs empty file),
-    // re-read right before the move, its presence probe, then the move.
-    expect(exec).toHaveBeenCalledTimes(5);
-    expect(exec.mock.calls[4][0]).toMatch(/^mv /);
+    // fingerprint probe, re-read right before the move, its presence probe,
+    // then the conditional move.
+    expect(exec).toHaveBeenCalledTimes(6);
+    expect(parseLandingMove(exec.mock.calls[5][0])).not.toBeNull();
   });
 
   it('seeds trust and merges into an existing ~/.claude.json without disturbing other projects', async () => {
@@ -213,7 +214,7 @@ describe('ClaudeProvider.ensureWorkspaceTrusted (apra-fleet-eft.40.1)', () => {
 
     // The staging file name carries a per-call token (GitHub #499); normalise it
     // before comparing the two members' command sequences.
-    const normalise = (cmds: string[]) => cmds.map(c => c.replace(/fleet-trust-\d+-[a-z0-9]+\./g, 'fleet-trust-TOKEN.'));
+    const normalise = (cmds: string[]) => cmds.map(c => unwrapPowerShellEncoded(c).replace(/fleet-trust-\d+-[a-z0-9]+\./g, 'fleet-trust-TOKEN.'));
     expect(normalise(legacy.exec.mock.calls.map(c => c[0]))).toEqual(normalise(powershell5.exec.mock.calls.map(c => c[0])));
     expect(powershell5.calls.some(c => c.includes('Get-Content'))).toBe(true);
     expect(powershell5.calls.some(c => isWindowsLandingMove(c) && !c.includes('WriteAllText'))).toBe(true);
@@ -246,9 +247,9 @@ describe('ClaudeProvider.ensureWorkspaceTrusted (apra-fleet-eft.40.1)', () => {
     expect(targetRel).toMatch(/\.claude\.json\.fleet-trust-.*\.tmp/);
 
     // Exec moves temp file into place (.claude.json): read + presence probe,
-    // re-read + presence probe right before the move, then the move.
-    expect(exec).toHaveBeenCalledTimes(5);
-    const moveCmd = exec.mock.calls[4][0];
+    // fingerprint probe, re-read + presence probe right before the move, then the move.
+    expect(exec).toHaveBeenCalledTimes(6);
+    const moveCmd = exec.mock.calls[5][0];
     expect(moveCmd).toMatch(/mv ".*\.tmp" ".*\.claude\.json"/);
   });
 });
