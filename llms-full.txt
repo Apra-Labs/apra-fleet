@@ -1324,6 +1324,13 @@ the next interactive logon and never restarts it, and a server started from
 the SSH session stops when that session ends. `apra-fleet status` shows which
 one you got.
 
+`apra-fleet status` also prints a **Supervisor** line. The fleet-sprint supervisor writes a
+`supervisor.json` heartbeat in the data directory; status reports it as UP, DOWN (heartbeat
+stale or its process gone) or stopped, and says "not running (never started ...)" on an
+install that never launched it. Launch the supervisor with `serve.mjs --detach`, which
+respawns it as a background process and waits until the child pid answers its health
+check.
+
 ## The `--skill` flag
 
 By default, `install` writes both the fleet and PM skills. Use `--skill` to

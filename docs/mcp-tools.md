@@ -207,6 +207,8 @@ Unregisters a fleet member and cleans up its connection.
 6. Deletes the local key pair of a fleet-generated key only when no other registered member uses it; a user-supplied key file is never deleted.
 7. Removes the member from the registry file.
 
+**Shared host and user:** several members can run as one OS user on one host, so credentials on the host belong to all of them. When another registered member runs as the same host and user, `remove_member` issues no credential-file removal, no env-var unset and no legacy VCS revoke, and the result names the member that shares the host. Even when nothing is shared, LLM credentials are removed only when the member record shows the fleet delivered them (`provision_auth` records each delivery), and only shell-profile exports carrying the `# apra-fleet-managed` marker are removed (an export the operator wrote by hand is left alone).
+
 **Output:** Confirmation message with member name and ID. Includes notes (e.g. a shared key left authorized, and why) and warnings if something could not be cleared (e.g. member was offline).
 
 **Note:** This does NOT delete the working folder on the target machine.
