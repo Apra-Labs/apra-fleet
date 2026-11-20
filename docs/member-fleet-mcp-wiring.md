@@ -122,7 +122,10 @@ Compose edits files the user may own, so it never destroys them:
   The replace is a compare-and-swap against a fingerprint taken before the
   re-read; when another writer keeps changing the file it gives up after a few
   attempts with `E-MEMBER-CONFIG-CHANGED` (typed reason
-  `member-config-changed`), leaving the file as that writer left it.
+  `member-config-changed`), leaving the file as that writer left it. The staged
+  copy always lives in the destination's own directory, so the landing is a
+  same-directory rename. On the operator machine every `~/.claude.json` writer
+  goes through `updateClaudeConfigFile`, the same compare-and-swap.
 
 ## Member-side install
 

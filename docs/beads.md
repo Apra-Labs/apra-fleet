@@ -79,6 +79,10 @@ for full context on any item.
 
 ## Multi-member sync (Dolt-backed clones)
 
+The dolt-settle step only ever kills dolt servers this member started: it
+stops pids recorded in a per-member pidfile, re-checked against the live command
+line and port, and falls back to the dolt already present when it kills nothing.
+
 Each member's beads DB is an embedded Dolt clone. `apra-fleet install` also
 provisions a portable Dolt CLI binary alongside `bd` (verified with a version
 check at install time) -- this is a hard prerequisite for any sync path that

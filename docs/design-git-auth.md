@@ -217,6 +217,13 @@ git config --global credential.helper ~/.fleet-git-credential`);
 > alone by default. A different access level or repo set is provisioned under
 > its own label and used per call through `vcs_credential_exec`, which changes
 > no host-wide identity. See `ghLoginDecision` in `src/services/vcs/github.ts`.
+>
+> Consequence: because nothing is in git config, a git command run on a member
+> host OUTSIDE a fleet dispatch (an interactive shell, cron, another tool) gets no
+> fleet credential. Run it through `execute_command` or `vcs_credential_exec`.
+> Known limitation: the prefix is built from single-quoted words, so a member home
+> path containing an apostrophe (for example `/home/o'brien`) makes git reject
+> `GIT_CONFIG_PARAMETERS` ("bogus format", exit 128) on every dispatch to that member.
 
 ### Backend: Azure DevOps
 

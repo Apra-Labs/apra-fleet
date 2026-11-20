@@ -533,7 +533,7 @@ third-party verticals.
 | Secret variables and passwords | [docs/secret-variables.md](docs/secret-variables.md) - [docs/features/oob-auth.md](docs/features/oob-auth.md) |
 | Member category and tags | [docs/features/member-tags.md](docs/features/member-tags.md) |
 | Enabling SSH on a remote machine (if it does not have it yet) | [docs/ssh-setup.md](docs/ssh-setup.md) |
-| Git authentication | [docs/design-git-auth.md](docs/design-git-auth.md) |
+| Git authentication (per-member credential helper reaches git only through fleet dispatches; `gh` login only for label `github` on an unshared remote member) | [docs/design-git-auth.md](docs/design-git-auth.md) |
 | GitHub App setup (exact permissions per git_access level) | [docs/github-app-setup.md](docs/github-app-setup.md) |
 | Cloud compute | [docs/cloud-compute.md](docs/cloud-compute.md) |
 | Architecture | [docs/architecture.md](docs/architecture.md) |
@@ -557,7 +557,7 @@ third-party verticals.
 | fleet-sprint CLI reference | [packages/apra-fleet-se/docs/cli-reference.md](packages/apra-fleet-se/docs/cli-reference.md) |
 | fleet-sprint internals (cycle loop, stall detection, budget, topology) | [packages/apra-fleet-se/docs/architecture.md](packages/apra-fleet-se/docs/architecture.md) |
 | fleet-sprint agent role contracts | [packages/apra-fleet-se/docs/role-contracts.md](packages/apra-fleet-se/docs/role-contracts.md) |
-| fleet-supervisor skill (start/stop/restart/auto-start-on-boot, sprint launch via HTTP API) | [packages/apra-fleet-se/fleet-sprint/skills/fleet-supervisor/SKILL.md](packages/apra-fleet-se/fleet-sprint/skills/fleet-supervisor/SKILL.md) |
+| fleet-supervisor skill (start/stop/restart/auto-start-on-boot, `serve.mjs --detach`, `apra-fleet status` Supervisor line, sprint launch via HTTP API) | [packages/apra-fleet-se/fleet-sprint/skills/fleet-supervisor/SKILL.md](packages/apra-fleet-se/fleet-sprint/skills/fleet-supervisor/SKILL.md) |
 | Scoped in-cycle replan findings threading, and the wrapper-injection role KB contract | [docs/scoped-replan-and-planner-kb-contract.md](docs/scoped-replan-and-planner-kb-contract.md) |
 | MCP client SDK overview (transports, `ApraFleet` API) | [packages/apra-fleet-client/docs/overview.md](packages/apra-fleet-client/docs/overview.md) |
 | MCP client SDK API reference | [packages/apra-fleet-client/docs/api-reference.md](packages/apra-fleet-client/docs/api-reference.md) |
@@ -1324,12 +1324,11 @@ the next interactive logon and never restarts it, and a server started from
 the SSH session stops when that session ends. `apra-fleet status` shows which
 one you got.
 
-`apra-fleet status` also prints a **Supervisor** line. The fleet-sprint supervisor writes a
-`supervisor.json` heartbeat in the data directory; status reports it as UP, DOWN (heartbeat
-stale or its process gone) or stopped, and says "not running (never started ...)" on an
-install that never launched it. Launch the supervisor with `serve.mjs --detach`, which
-respawns it as a background process and waits until the child pid answers its health
-check.
+`apra-fleet status` also prints a **Supervisor** line, read from the `supervisor.json` heartbeat
+the fleet-sprint supervisor keeps in the data directory: UP (fresh heartbeat, live pid), DOWN (heartbeat
+older than three intervals, or its pid is gone -- e.g. after a hard kill), stopped (clean shutdown)
+or not running (never started). Launch the supervisor with `serve.mjs --detach`, which respawns
+it in the background and waits for the child pid to answer its health check.
 
 ## The `--skill` flag
 
@@ -2366,6 +2365,13 @@ git config --global credential.helper ~/.fleet-git-credential`);
 > alone by default. A different access level or repo set is provisioned under
 > its own label and used per call through `vcs_credential_exec`, which changes
 > no host-wide identity. See `ghLoginDecision` in `src/services/vcs/github.ts`.
+>
+> Consequence: because nothing is in git config, a git command run on a member
+> host OUTSIDE a fleet dispatch (an interactive shell, cron, another tool) gets no
+> fleet credential. Run it through `execute_command` or `vcs_credential_exec`.
+> Known limitation: the prefix is built from single-quoted words, so a member home
+> path containing an apostrophe (for example `/home/o'brien`) makes git reject
+> `GIT_CONFIG_PARAMETERS` ("bogus format", exit 128) on every dispatch to that member.
 
 ### Backend: Azure DevOps
 
@@ -3340,6 +3346,10 @@ for full context on any item.
 
 ## Multi-member sync (Dolt-backed clones)
 
+The dolt-settle step only ever kills dolt servers this member started: it
+stops pids recorded in a per-member pidfile, re-checked against the live command
+line and port, and falls back to the dolt already present when it kills nothing.
+
 Each member's beads DB is an embedded Dolt clone. `apra-fleet install` also
 provisions a portable Dolt CLI binary alongside `bd` (verified with a version
 check at install time) -- this is a hard prerequisite for any sync path that
@@ -3606,6 +3616,17 @@ name=<NAME>`. The new value is picked up immediately on the next
 
 Minted VCS tokens may lack CI/CD permissions. Run those operations from your
 main AI coding session instead -- it has your full git credentials. See
+[docs/design-git-auth.md](design-git-auth.md).
+
+**Git has no credential outside a fleet dispatch after re-provisioning**
+
+The fleet git credential helper is no longer registered in global git config; it
+reaches git only through the environment of fleet dispatches (`execute_command`,
+`execute_prompt`, `vcs_credential_exec`). Git run by hand or by another tool on
+the member host, and any legacy global helper once the label is re-provisioned,
+no longer gets it. Run the command through a dispatch instead. If every git
+command to one member fails with `bogus format in GIT_CONFIG_PARAMETERS`, the
+member home path contains an apostrophe, which the prefix cannot quote. See
 [docs/design-git-auth.md](design-git-auth.md).
 
 **`git push` from a Windows member hangs or fails silently with no auth prompt**
