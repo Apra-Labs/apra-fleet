@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "5a171212f2e1eee116e7f58e2ea29648ffb8ff1f",
     "branch": "main",
-    "entry_count": 171
+    "entry_count": 172
   },
   "entries": [
     {
@@ -1225,6 +1225,34 @@
         "packages/apra-fleet-se/test/supervisor-csrf-guard.test.mjs": "3e0e41677274ac685d61218451e4ff40d2ce09a5",
         "packages/apra-fleet-workflow/src/viewer/index.mjs": "40a249163390fa53bb1bc336418433a5792f83ea",
         "packages/apra-fleet-workflow/src/viewer/request-guard.mjs": "7ec63f0bc021035080ea03d03f64f7ba0ec3bf75"
+      }
+    },
+    {
+      "id": "573e86e0-0865-4678-88ab-60bd959c96e4",
+      "type": "knowledge",
+      "title": "Local claude.json writers go through updateClaudeConfigFile compare-and-swap",
+      "summary": "registerClaudeHttpMcp, refreshClaudeLocalScopeEntries and pruneLeakedTestProjectKeys write ~/.claude.json only through updateClaudeConfigFile. It passes the bytes it read as writeOwnerOnlyFileAtomic expected, and the file is re-compared before every rename attempt.",
+      "symbols": [
+        "updateClaudeConfigFile",
+        "writeOwnerOnlyFileAtomic",
+        "replaceByRename",
+        "FileChangedError",
+        "pruneLeakedTestProjectKeys",
+        "registerClaudeHttpMcp"
+      ],
+      "source_files": [
+        "src/services/claude-local-scope-mcp.ts",
+        "src/cli/config.ts",
+        "src/cli/install.ts",
+        "tests/claude-local-config-cas.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-20T01:26:59.366Z",
+      "source_file_hashes": {
+        "src/cli/config.ts": "ed3a9165b0aa94425bb57da589203b2345322591",
+        "src/cli/install.ts": "3b129d3aa36c036230492092370734113de70126",
+        "src/services/claude-local-scope-mcp.ts": "66b787a7f6de73420a69805ce699dfc321a113cb",
+        "tests/claude-local-config-cas.test.ts": "9d6f06cd341b9b1926282d10be3d7fccbb75d4f8"
       }
     },
     {
