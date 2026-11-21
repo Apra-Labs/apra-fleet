@@ -18,6 +18,15 @@
       "sha256": "23b25245dcfb9af7262f8ff142e9e2e0af025368117329e7a7458a51e5922f53"
     }
   },
+  "git": {
+    "_comment": "Pass C only. Windows Sandbox has no git; the box extracts this self-extracting PortableGit (7z SFX) when git is not already on PATH. Linux/macOS boxes use the distro/system git.",
+    "version": "v2.56.1.windows.1",
+    "windows": {
+      "file": "PortableGit-2.56.1-64-bit.7z.exe",
+      "url": "https://github.com/git-for-windows/git/releases/download/v2.56.1.windows.1/PortableGit-2.56.1-64-bit.7z.exe",
+      "sha256": "9dd04a608ceb5f6ab32a73709e0ecb159d211da71b697c45ff81f6dd0c6b49c7"
+    }
+  },
   "baselines": {
     "v0.4.2": {
       "repo": "Apra-Labs/apra-fleet",

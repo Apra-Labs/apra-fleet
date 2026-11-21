@@ -8,6 +8,8 @@ param(
   [string]$Base = '',
   [string]$NodeMsi = '',
   [string]$NodeSha = '',
+  [string]$GitExe = '',
+  [string]$GitSha = '',
   [string]$Out = 'C:\fi\out',
   [string]$Work = 'C:\fi\work'
 )
@@ -227,6 +229,33 @@ try {
       Rec V10 'registry.json fi-dummy + secret --list fi_dummy_secret' ([int](-not $m) + [int](-not $s)) "member=$(YesNo $m) secret=$(YesNo $s)"
       TaskStep V11 ApraFleet
       Run V12 status $AF @('status'); Rec V12 'apra-fleet status' $RC (Key $LOG @('State:'))
+    }
+    'C' {
+      # Git credential helpers across an upgrade; the scenarios run in box\pass-c.mjs
+      # (one implementation for both dialects) on the pinned Node.js.
+      InstallNode C01
+      if (-not (Get-Command git -ErrorAction SilentlyContinue) -and $GitExe) {
+        # Windows Sandbox has no git: extract the pinned PortableGit and put it on
+        # the machine PATH (the installer's scheduled-task server reads that one).
+        $got = (Get-FileHash -Algorithm SHA256 $GitExe).Hash.ToLower()
+        if ($got -eq $GitSha.ToLower()) {
+          $gdir = 'C:\fi\git'
+          Start-Process -FilePath $GitExe -ArgumentList "-o$gdir", '-y' -Wait -WindowStyle Hidden
+          [Environment]::SetEnvironmentVariable('Path', [Environment]::GetEnvironmentVariable('Path', 'Machine') + ";$gdir\cmd", 'Machine')
+          RefreshPath
+        } else { Log "PortableGit sha256 mismatch: $got" }
+      }
+      $v = (& git --version 2>&1 | Out-String).Trim(); Rec C02 'git --version' $LASTEXITCODE $v
+      # Git Credential Manager would prompt (and hang the box) on a credential miss.
+      $h = (& git config --system --get-all credential.helper 2>$null | Out-String).Trim()
+      if ($h -match 'manager|helper-selector') { & git config --system --unset-all credential.helper 2>$null | Out-Null; $h = "$h (unset: it would prompt in an unattended box)" }
+      if (-not $h) { $h = 'none' }
+      Rec C03 'git config --system --get-all credential.helper' 0 "system credential.helper: $h" $h
+      Run C04 base-version $BaseExe @('--version'); Rec C04 'base --version' $RC (Key $LOG @('apra-fleet v')) (VerOf $LOG)
+      Run C05 cand-version $CandExe @('--version'); Rec C05 'cand --version' $RC (Key $LOG @('apra-fleet v')) (VerOf $LOG)
+      $env:GCM_INTERACTIVE = 'never'; $env:GIT_TERMINAL_PROMPT = '0'
+      Run C99 pass-c (Get-Command node).Source @((Join-Path $PSScriptRoot 'pass-c.mjs'), '--base', $BaseExe, '--cand', $CandExe, '--out', $Out) $null 5400
+      Log "pass-c.mjs exit $RC"
     }
     default { Log "unknown pass $Pass" }
   }

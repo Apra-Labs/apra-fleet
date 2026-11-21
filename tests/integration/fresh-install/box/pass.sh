@@ -7,9 +7,9 @@
 # checklist step to $OUT/results.jsonl and never aborts on a failed step --
 # verdicts are applied on the host (lib/verdict.mjs + checklist.json).
 #
-# Usage: pass.sh <A|B|U|U2>
-# Env:   CAND (candidate installer), BASE (baseline installer, U/U2),
-#        NODE_TGZ + NODE_SHA (pinned Node tarball, B/U), OUT (results dir)
+# Usage: pass.sh <A|B|U|U2|C>
+# Env:   CAND (candidate installer), BASE (baseline installer, U/U2/C),
+#        NODE_TGZ + NODE_SHA (pinned Node tarball, B/U/C), OUT (results dir)
 set -u
 PASS="${1:?pass id required}"
 OUT="${OUT:-/fi/out}"
@@ -227,6 +227,22 @@ U2)
   rec V10 "registry.json fi-dummy + secret --list fi_dummy_secret" "$((m + s))" "member=$([ $m = 0 ] && echo yes || echo no) secret=$([ $s = 0 ] && echo yes || echo no)"
   svc_step V11 apra-fleet
   run V12 status "$AF" status; rec V12 "apra-fleet status" "$RC" "$(key "$LOG" 'State:')"
+  ;;
+C)
+  # Git credential helpers across an upgrade; the scenarios run in box/pass-c.mjs
+  # (one implementation for both dialects) on the pinned Node.js.
+  install_node C01
+  v=$(git --version 2>&1); rec C02 "git --version" "$?" "$v"
+  h=$(git config --system --get-all credential.helper 2>/dev/null)
+  rec C03 "git config --system --get-all credential.helper" 0 "system credential.helper: ${h:-none}" "${h:-none}"
+  prep_bin "$BASE" "$HOME/base"; prep_bin "$CAND" "$HOME/cand"
+  run C04 base-version "$HOME/base" --version; rec C04 "base --version" "$RC" "$(head -n1 "$LOG")" "$(ver_of "$LOG")"
+  run C05 cand-version "$HOME/cand" --version; rec C05 "cand --version" "$RC" "$(head -n1 "$LOG")" "$(ver_of "$LOG")"
+  # The dispatch prefix escapes the home path with awk; record which awk this box has.
+  aw=$(command -v awk); awv=$(readlink -f "$aw" 2>/dev/null)
+  rec C06 "command -v awk; readlink -f" "$([ -n "$aw" ] && echo 0 || echo 1)" "awk=${aw:-missing} -> ${awv:-?}; HOME=$HOME" "$(basename "${awv:-none}")"
+  node "$(cd "$(dirname "$0")" && pwd)/pass-c.mjs" --base "$HOME/base" --cand "$HOME/cand" --out "$OUT" > "$LOGS/pass-c.log" 2>&1
+  log "pass-c.mjs exit $?"
   ;;
 *) log "unknown pass $PASS"; exit 2 ;;
 esac

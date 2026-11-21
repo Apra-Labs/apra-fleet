@@ -3,7 +3,7 @@
 //
 //   node tests/integration/fresh-install/run.mjs --binary <installer> [--platform windows|linux|macos]
 //        [--driver sandbox|docker|host] [--i-am-disposable]
-//        [--passes A,B,U,U2] [--informational A] [--baseline-version v0.4.3]
+//        [--passes A,B,U,U2,C] [--informational A] [--baseline-version v0.4.3]
 //        [--expect-version v0.4.4_78cefd] [--out <dir>] [--cache <dir>]
 //        [--timeout-min 45] [--keep-docker] [--report-only]
 //
@@ -30,14 +30,19 @@ import { baselineAsset, baselineStaleness, newestBaselineTag, releaseAssetUrl, r
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const BOX_DIR = path.join(HERE, 'box');
-const ALL_PASSES = ['A', 'B', 'U', 'U2'];
+const ALL_PASSES = ['A', 'B', 'U', 'U2', 'C'];
 const DEFAULT_REPO = 'Apra-Labs/apra-fleet';
-// Passes that install the pinned Node.js (A and U2 run without Node).
-const passNeedsNode = p => p === 'B' || p === 'U';
+// Passes that install the pinned Node.js (A and U2 run without Node; C runs
+// its box steps, box/pass-c.mjs, on it).
+const passNeedsNode = p => p === 'B' || p === 'U' || p === 'C';
+// Passes that start from the pinned upgrade baseline.
+const passNeedsBase = p => p === 'U' || p === 'U2' || p === 'C';
+// Passes that need git in the box (C; Windows Sandbox has none).
+const passNeedsGit = p => p === 'C';
 
 function usage(msg) {
   if (msg) console.error(`Error: ${msg}\n`);
-  console.error(`Usage: node tests/integration/fresh-install/run.mjs --binary <installer> [--platform windows|linux|macos] [--driver sandbox|docker|host] [${HOST_OPT_IN_FLAG}] [--passes A,B,U,U2] [--informational A] [--baseline-version <tag>] [--expect-version <v>] [--out <dir>] [--cache <dir>] [--timeout-min 45] [--keep-docker] [--report-only]`);
+  console.error(`Usage: node tests/integration/fresh-install/run.mjs --binary <installer> [--platform windows|linux|macos] [--driver sandbox|docker|host] [${HOST_OPT_IN_FLAG}] [--passes A,B,U,U2,C] [--informational A] [--baseline-version <tag>] [--expect-version <v>] [--out <dir>] [--cache <dir>] [--timeout-min 45] [--keep-docker] [--report-only]`);
   process.exit(2);
 }
 
@@ -108,12 +113,17 @@ async function fetchPinned(url, dest, want) {
 async function prepareCache(o, pins, notes) {
   const out = {};
   const needNode = o.passList.some(passNeedsNode);
-  const needBase = o.passList.some(p => p === 'U' || p === 'U2');
+  const needBase = o.passList.some(passNeedsBase);
   if (needNode) {
     const n = pins.node[o.platform];
     if (!n) throw new Error(`pins.json has no node entry for ${o.platform}`);
     await fetchPinned(n.url, path.join(o.cache, 'node', n.file), n.sha256);
     out.nodeRel = `node/${n.file}`; out.nodeSha = n.sha256;
+  }
+  const g = pins.git?.[o.platform];
+  if (g && o.passList.some(passNeedsGit)) {
+    await fetchPinned(g.url, path.join(o.cache, 'git', g.file), g.sha256);
+    out.gitRel = `git/${g.file}`; out.gitSha = g.sha256;
   }
   if (needBase) {
     const b = pins.baselines[o.baselineVersion];
@@ -128,12 +138,13 @@ async function prepareCache(o, pins, notes) {
 }
 
 function runWindowsSandboxPass(o, pass, inputs, outDir) {
-  const needBase = pass === 'U' || pass === 'U2';
+  const needBase = passNeedsBase(pass);
   const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(HERE, 'drivers', 'windows-sandbox.ps1'),
     '-Pass', pass, '-BoxDir', BOX_DIR, '-CandPath', path.resolve(o.binary), '-CacheDir', o.cache, '-OutDir', outDir,
     '-TimeoutMin', String(o.timeoutMin)];
   if (needBase) args.push('-BaseRel', inputs.baseRel.replace(/\//g, '\\'));
   if (passNeedsNode(pass)) args.push('-NodeRel', inputs.nodeRel.replace(/\//g, '\\'), '-NodeSha', inputs.nodeSha);
+  if (passNeedsGit(pass) && inputs.gitRel) args.push('-GitRel', inputs.gitRel.replace(/\//g, '\\'), '-GitSha', inputs.gitSha);
   const r = sh('powershell.exe', args, (o.timeoutMin + 10) * 60000);
   fs.writeFileSync(path.join(path.dirname(outDir), `driver-${pass}.log`), r.out);
   const err = /DRIVER-ERROR: (.*)/.exec(r.out);
@@ -168,7 +179,7 @@ async function main() {
   const notes = [];
   const inconclusive = [];
   const startedAt = new Date().toISOString();
-  const needBase = o.passList.some(p => p === 'U' || p === 'U2');
+  const needBase = o.passList.some(passNeedsBase);
   const vars = { expectVersion: o.expectVersion ?? null, baselineVersion: needBase ? (pins.baselines[o.baselineVersion]?.version ?? null) : null };
   const driverErrors = {};
   let baseline = null;
@@ -200,10 +211,11 @@ async function main() {
         const outDir = path.join(o.out, `${o.platform}-${pass}`);
         log(`${o.platform}/${o.driver} pass ${pass}: start`);
         const t0 = Date.now();
-        const passBase = pass === 'U' || pass === 'U2';
+        const passBase = passNeedsBase(pass);
         const common = {
           pass, boxDir: BOX_DIR, candPath: path.resolve(o.binary), cacheDir: o.cache, outDir,
           baseRel: passBase ? inputs.baseRel : '', nodeRel: passNeedsNode(pass) ? inputs.nodeRel : '', nodeSha: inputs.nodeSha ?? '',
+          gitRel: passNeedsGit(pass) ? (inputs.gitRel ?? '') : '', gitSha: inputs.gitSha ?? '',
           timeoutMin: o.timeoutMin, log,
         };
         let r;

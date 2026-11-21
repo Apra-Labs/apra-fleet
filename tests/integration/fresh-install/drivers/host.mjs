@@ -25,7 +25,7 @@ export function boxEnv(log) {
 }
 
 /** Run one pass on this machine. Returns { driverError: string|null }. */
-export function runHostPass({ platform, pass, boxDir, candPath, cacheDir, outDir, baseRel, nodeRel, nodeSha, timeoutMin = 45, log }) {
+export function runHostPass({ platform, pass, boxDir, candPath, cacheDir, outDir, baseRel, nodeRel, nodeSha, gitRel = '', gitSha = '', timeoutMin = 45, log }) {
   fs.rmSync(outDir, { recursive: true, force: true });
   fs.mkdirSync(outDir, { recursive: true });
   const { env } = boxEnv(log);
@@ -39,6 +39,7 @@ export function runHostPass({ platform, pass, boxDir, candPath, cacheDir, outDir
       '-Pass', pass, '-Cand', candPath, '-Out', outDir, '-Work', work];
     if (baseRel) args.push('-Base', path.join(cacheDir, baseRel));
     if (nodeRel) args.push('-NodeMsi', path.join(cacheDir, nodeRel), '-NodeSha', nodeSha);
+    if (gitRel) args.push('-GitExe', path.join(cacheDir, gitRel), '-GitSha', gitSha);
   } else {
     cmd = '/bin/bash';
     args = [path.join(boxDir, 'pass.sh'), pass];

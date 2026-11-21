@@ -12,6 +12,8 @@ param(
   [string]$BaseRel = '',
   [string]$NodeRel = '',
   [string]$NodeSha = '',
+  [string]$GitRel = '',
+  [string]$GitSha = '',
   [int]$TimeoutMin = 45,
   [int]$MemoryMB = 6144
 )
@@ -33,6 +35,7 @@ $wsb = Join-Path $runDir "sandbox-$Pass.wsb"
 $logon = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\fi\in\pass.ps1 -Pass $Pass -Cand C:\fi\cand\$candLeaf -Out C:\fi\out"
 if ($BaseRel) { $logon += " -Base C:\fi\cache\$BaseRel" }
 if ($NodeRel) { $logon += " -NodeMsi C:\fi\cache\$NodeRel -NodeSha $NodeSha" }
+if ($GitRel) { $logon += " -GitExe C:\fi\cache\$GitRel -GitSha $GitSha" }
 function Esc($s) { [Security.SecurityElement]::Escape($s) }
 $xml = @"
 <Configuration>

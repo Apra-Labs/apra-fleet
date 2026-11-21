@@ -2,8 +2,9 @@ name: Regression - install/upgrade proof
 
 # Fresh-install harness (tests/integration/fresh-install) on disposable hosted
 # VMs: builds this commit's installers, then runs passes A (no Node), B
-# (Node), U (upgrade from the latest release via install --force) and U2
-# (upgrade along the 'apra-fleet update' path) through the host driver, one
+# (Node), U (upgrade from the latest release via install --force), U2
+# (upgrade along the 'apra-fleet update' path) and C (git credential helpers
+# across an upgrade) through the host driver, one
 # fresh VM per OS x pass. A stale upgrade-baseline pin is INCONCLUSIVE (red).
 #
 # Nightly only (schedule runs on the default branch) plus manual dispatch for
@@ -105,7 +106,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-2022, macos-latest]
-        pass: [A, B, U, U2]
+        pass: [A, B, U, U2, C]
         include:
           - os: ubuntu-latest
             binary: apra-fleet-installer-linux-x64

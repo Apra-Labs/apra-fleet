@@ -8,7 +8,8 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
-const IMAGE = 'ubuntu:24.04';
+// FI_DOCKER_IMAGE: another apt-based glibc image (e.g. debian:12-slim) for one run.
+const IMAGE = process.env.FI_DOCKER_IMAGE || 'ubuntu:24.04';
 const DESKTOP_EXE = 'C:\\Program Files\\Docker\\Docker\\Docker Desktop.exe';
 
 function sleep(ms) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
@@ -83,15 +84,17 @@ export function runLinuxPass({ pass, boxDir, candPath, cacheDir, outDir, baseRel
       ...mountArg(outDir, '/fi/out', false),
       IMAGE, 'sleep', 'infinity'], { timeoutMs: 600000 }));
     if (run.code !== 0) throw new Error(`docker run failed: ${run.out.trim().split('\n').pop()}`);
-    const prep = step('prep (root)', sh('docker', ['exec', name, 'bash', '-c',
-      'export DEBIAN_FRONTEND=noninteractive; apt-get update -qq > /fi/out/apt.log 2>&1 && apt-get install -y -qq curl ca-certificates git procps >> /fi/out/apt.log 2>&1 && useradd -m tester'],
+    // Pass C: the box user's home has an apostrophe and a space (real user, real home).
+    const home = pass === 'C' ? "/home/fi o'brien" : '/home/tester';
+    const prep = step('prep (root)', sh('docker', ['exec', '-e', `FI_HOME=${home}`, name, 'bash', '-c',
+      'export DEBIAN_FRONTEND=noninteractive; apt-get update -qq > /fi/out/apt.log 2>&1 && apt-get install -y -qq curl ca-certificates git procps >> /fi/out/apt.log 2>&1 && useradd -m -d "$FI_HOME" tester'],
       { timeoutMs: 600000 }));
     if (prep.code !== 0) throw new Error('container prep (apt-get/useradd) failed; see apt.log');
-    const env = ['-e', 'HOME=/home/tester', '-e', `CAND=/fi/cand/${leaf}`, '-e', 'OUT=/fi/out'];
+    const env = ['-e', `HOME=${home}`, '-e', `CAND=/fi/cand/${leaf}`, '-e', 'OUT=/fi/out'];
     if (baseRel) env.push('-e', `BASE=/fi/cache/${baseRel}`);
     if (nodeRel) env.push('-e', `NODE_TGZ=/fi/cache/${nodeRel}`, '-e', `NODE_SHA=${nodeSha}`);
     log(`linux pass ${pass}: running box script in ${name}`);
-    const box = step(`pass.sh ${pass} (as tester)`, sh('docker', ['exec', '-u', 'tester', '-w', '/home/tester', ...env, name, 'bash', '/fi/in/pass.sh', pass],
+    const box = step(`pass.sh ${pass} (as tester)`, sh('docker', ['exec', '-u', 'tester', '-w', home, ...env, name, 'bash', '/fi/in/pass.sh', pass],
       { timeoutMs: timeoutMin * 60000 }));
     if (!fs.existsSync(path.join(outDir, 'done.txt'))) driverError = `box script did not finish (exit ${box.code})`;
   } catch (e) {
