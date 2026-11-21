@@ -39,3 +39,29 @@ export function releaseFileDataDir(dir: string): void {
   else process.env.APRA_FLEET_DATA_DIR = previous;
   fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
 }
+
+/**
+ * Every way a suite's view of the fleet data dir is NOT its own, as messages
+ * (empty when isolated): FLEET_DIR and the KB config path the code under test
+ * uses must sit in the dir this file claimed, that dir must be named for this
+ * file, and it must not be the data dir shared by the whole run.
+ */
+export function fileDataDirViolations(o: {
+  label: string; claimed: string | undefined; fleetDir: string; kbConfigPath: string; runSharedDir: string | undefined;
+}): string[] {
+  const out: string[] = [];
+  if (!o.claimed) return ['no per-file data dir was claimed (claimFileDataDir in vi.hoisted)'];
+  if (path.resolve(o.fleetDir) !== path.resolve(o.claimed)) {
+    out.push('FLEET_DIR is ' + o.fleetDir + ', not the claimed ' + o.claimed + ' (claimed after src/paths.ts loaded?)');
+  }
+  if (path.resolve(o.kbConfigPath) !== path.resolve(o.claimed, 'knowledge', 'config.json')) {
+    out.push('the KB config path ' + o.kbConfigPath + ' is outside the claimed dir');
+  }
+  if (!path.basename(o.claimed).startsWith(o.label + '-data-')) {
+    out.push('the claimed dir ' + o.claimed + ' is not named for ' + o.label);
+  }
+  if (o.runSharedDir && path.resolve(o.fleetDir) === path.resolve(o.runSharedDir)) {
+    out.push('FLEET_DIR is the data dir shared by every file of the run');
+  }
+  return out;
+}
