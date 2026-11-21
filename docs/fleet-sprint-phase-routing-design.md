@@ -126,6 +126,10 @@ rides the parent's own verify route instead of living on a leaf -- i.e. never
 create a childless bead whose entire purpose is deployed-product
 verification.
 
+Option (a) is now implemented: a childless bead labelled `needs-live-evidence`
+is a verify target when it has no unmet prerequisite, and the doer-facing ready
+list never offers it. Rule 4 (all children closed) is unchanged for parents.
+
 ### The rejected fix, and why
 
 A `--verify-only` sprint flag was proposed and rejected. A flag is a binary
