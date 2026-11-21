@@ -451,24 +451,37 @@ export class HttpKbProvider implements MemoryProvider {
   // The repository headers for one request. The commit and branch are best
   // effort: an unreadable, throwing or malformed value omits that header and
   // never fails the request.
-  private repositoryHeaders(): Record<string, string> {
+  private async repositoryHeaders(): Promise<Record<string, string>> {
     if (!this.repository) return {};
     const headers: Record<string, string> = { [REPOSITORY_HEADER]: this.repository.remote };
     let commit: string | undefined;
     try {
-      commit = this.repository.commitOf?.();
+      commit = await this.repository.commitOf?.();
     } catch {
       commit = undefined;
     }
     if (commit && COMMIT_SHA.test(commit)) headers[REPOSITORY_COMMIT_HEADER] = commit;
     let branch: string | undefined;
     try {
-      branch = this.repository.branchOf?.();
+      branch = await this.repository.branchOf?.();
     } catch {
       branch = undefined;
     }
     if (typeof branch === 'string' && isValidBranchValue(branch)) headers[REPOSITORY_BRANCH_HEADER] = branch;
     return headers;
+  }
+
+  /**
+   * The raw origin URL the local folder has now, when it no longer matches the
+   * repository this provider sends; else undefined. Never blocks (see
+   * RepositoryIdentity.originChange). Used by getKbProviders to re-select.
+   */
+  repositoryOriginChange(): string | undefined {
+    try {
+      return this.repository?.originChange?.();
+    } catch {
+      return undefined;
+    }
   }
 
   /**
@@ -524,7 +537,7 @@ export class HttpKbProvider implements MemoryProvider {
     let repoHeaders: Record<string, string> | undefined;
     for (let attempt = 1; ; attempt++) {
       const token = this.resolveToken();
-      repoHeaders ??= this.repositoryHeaders();
+      repoHeaders ??= await this.repositoryHeaders();
       try {
         const result = await this.rawRequest<T>(
           token, method, pathname, body, queryParams, secretName !== undefined, repoHeaders,

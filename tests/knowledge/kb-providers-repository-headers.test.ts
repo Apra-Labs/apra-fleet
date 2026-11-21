@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -20,7 +20,7 @@ const KB_CONFIG_DIR = path.join(FLEET_DIR, 'knowledge');
 const KB_CONFIG_PATH = path.join(KB_CONFIG_DIR, 'config.json');
 const FAKE_TOKEN = 'NOT_A_REAL_KEY';
 
-const seen: Array<{ repository?: string; commit?: string; branch?: string; branchRaw: string[] }> = [];
+const seen: Array<{ repository?: string; commit?: string; branch?: string; branchRaw: string[]; project?: string }> = [];
 let server: http.Server;
 let serverUrl: string;
 const tempDirs: string[] = [];
@@ -83,6 +83,7 @@ beforeAll(async () => {
         commit: req.headers['x-repository-commit'] as string | undefined,
         branch: req.headers['x-repository-branch'] as string | undefined,
         branchRaw: req.rawHeaders.filter(h => h.toLowerCase() === 'x-repository-branch'),
+        project: req.headers['x-kb-project'] as string | undefined,
       });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ results: [], total: 0, l1_only: false }));
@@ -254,5 +255,62 @@ describe('getKbProviders: X-Repository-Branch from a real local git folder', () 
     expect(request.repository).toBe('github.com/example/branch-long');
     expect(request.commit).toBe(repo.head);
     expect(request.branch).toBeUndefined();
+  });
+});
+
+describe('getKbProviders: a changed origin is picked up without a restart', () => {
+  // Design: X-Repository and X-KB-Project both derive from the origin, so the
+  // provider is RE-SELECTED (new slug, new identity) rather than only refreshing
+  // the header; they always agree. The origin is re-read asynchronously on the
+  // reader TTL (HEAD_COMMIT_TTL_MS), so Date is faked to pass it. Reverting the
+  // originChange check in getKbProviders makes this test fail: the second and
+  // third requests keep sending the old X-Repository and X-KB-Project.
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('git remote set-url origin changes X-Repository and X-KB-Project on later requests', async () => {
+    writeHttpConfig();
+    const repo = makeRepo('https://github.com/example/old-name.git');
+
+    const before = await requestOf((await getKbProviders(repo.dir)).project);
+    expect(before.repository).toBe('github.com/example/old-name');
+    const oldSlug = before.project;
+
+    git(repo.dir, ['remote', 'set-url', 'origin', 'https://github.com/example/new-name.git']);
+    vi.useFakeTimers({ toFake: ['Date'], now: Date.now() + 60_000 });
+
+    // Inside the same call the old value is still served; the refresh runs behind it.
+    await requestOf((await getKbProviders(repo.dir)).project);
+    let latest = before;
+    await vi.waitFor(async () => {
+      latest = await requestOf((await getKbProviders(repo.dir)).project);
+      expect(latest.repository).toBe('github.com/example/new-name');
+    });
+    expect(latest.project).toBeDefined();
+    expect(latest.project).not.toBe(oldSlug);
+    expect(latest.project).toBe('githubcom-example-new-name');
+    expect(latest.commit).toBe(repo.head);
+  });
+
+  it('a remote member anchor (remoteUrl given) is unaffected: no re-read, same provider', async () => {
+    writeHttpConfig();
+    const folder = makeDir();
+    const first = await getKbProviders(folder, 'https://github.com/example/member-remote.git');
+    vi.useFakeTimers({ toFake: ['Date'], now: Date.now() + 60_000 });
+    expect(await getKbProviders(folder, 'https://github.com/example/member-remote.git')).toBe(first);
+  });
+});
+
+describe('getKbProviders: a branch with a literal percent sign', () => {
+  it('a branch named a%C3%A9 is sent as a%25C3%25A9, distinct from a + e-acute', async () => {
+    writeHttpConfig();
+    const repo = makeRepo('https://github.com/example/branch-percent.git');
+    git(repo.dir, ['checkout', '-q', '-b', 'a%C3%A9']);
+    const literal = await requestOf((await getKbProviders(repo.dir)).project);
+    expect(literal.branch).toBe('a%25C3%25A9');
+
+    resetKbProviders();
+    git(repo.dir, ['checkout', '-q', '-b', 'a\u00e9']);
+    const accented = await requestOf((await getKbProviders(repo.dir)).project);
+    expect(accented.branch).toBe('a%C3%A9');
   });
 });
