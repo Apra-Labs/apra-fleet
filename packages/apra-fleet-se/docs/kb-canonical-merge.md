@@ -69,13 +69,66 @@ written.
 | added by one side | kept |
 | added by both sides under the same id | de-duplicated, one kept |
 
-Merged output preserves base order first, then ours-only additions, then
-theirs-only additions, drops the legacy `provenance.commit` and
+## Tombstones (`demotions`)
+
+Tombstones are merged by id too. A tombstone's content is the whole object
+(`at`, `reason`, `note`, `evidence_files`), carried verbatim.
+
+| situation | result |
+| --- | --- |
+| in base, removed by both sides | removed |
+| in base, removed by one side, unchanged on the other (a re-promotion or a restore cleared it) | removed |
+| in base, removed by one side, changed by the other | **genuine conflict** |
+| in base, unchanged / changed by exactly one side | base / that side's version |
+| changed by both sides to the same content | taken |
+| changed by both sides differently | **genuine conflict** |
+| added by one side | kept |
+| added by both sides, same content | one kept |
+| added by both sides, different content | **genuine conflict** |
+| a tombstone id also present as an entry after the merge | **the tombstone wins**: the entry is dropped |
+
+So no id ever ends in both `entries` and `demotions`. A tombstone without an
+id, or a `demotions` value that is not an array, is malformed input (exit 2);
+a tombstone id listed twice in one input is a genuine conflict (exit 1).
+
+## Output form
+
+Merged output is in writer form: entries and tombstones sorted by id (the order
+every writer uses), `demotions` omitted when empty, serialized like the exporter
+(2-space JSON, non-ASCII escaped, one trailing newline). It drops the legacy `provenance.commit` and
 `provenance.entry_count` (current writers no longer emit either; the entry
 count is `entries.length`), and keeps the highest input `version` (a v3 input
 yields a v3 output).
 
-Tests: `test/merge-kb-canonical.test.mjs`.
+Tests: `test/merge-kb-canonical.test.mjs`; the tombstone rules are checked
+against both implementations (this script and the merge driver below) by
+`tests/knowledge/bible-merge-parity.test.ts` at the repository root.
+
+## The local git merge driver
+
+`kb_setup` registers the same merge (implemented in
+`src/services/knowledge/bible-merge.ts`, run as `apra-fleet kb merge-driver`)
+as a git merge driver in the clone it is run in:
+
+- `git config --local merge.apra-fleet-kb-bible.driver` is set to the absolute
+  path of the installed apra-fleet CLI (resolved when kb_setup runs, never via
+  shell expansion) followed by `kb merge-driver %O %A %B %P`;
+- `.fleet/kb-canonical.json merge=apra-fleet-kb-bible` is added to the clone's
+  `info/attributes` (untracked; nothing is added to the repository).
+
+A local `git merge`, `git rebase` or `git cherry-pick` of two bible-changing
+branches then resolves the bible by id. On a genuine conflict the driver prints
+the conflicting ids, leaves git's own line merge with conflict markers in the
+file and exits 1, so git reports the conflict as usual. Re-run kb_setup after
+moving or reinstalling apra-fleet: the driver records an absolute path. A clone
+where the driver is not registered falls back to git's line merge.
+
+**Hosted merges cannot run it.** A pull request merged on the git server uses
+the server's own merge, which never runs a local driver. When the server
+reports a conflict on `.fleet/kb-canonical.json`, merge the base branch into the
+branch locally in a clone set up by kb_setup (the driver resolves it), or run
+this script with `--refs` on the three commits and commit its output, then
+check the result with `node scripts/check-kb-canonical.mjs`.
 
 ## Validating a merged bible
 

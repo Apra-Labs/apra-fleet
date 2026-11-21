@@ -819,6 +819,14 @@ step and does not create the directory. The hook itself calls a repo-relative
 outside the apra-fleet source tree. Hash-based freshness is the mechanism to
 rely on.)
 
+`kb_setup` also registers the knowledge bible merge driver in the clone (local
+git config `merge.apra-fleet-kb-bible.driver` and a line in the clone's
+`info/attributes`), so a local merge or rebase of two branches that both
+changed `.fleet/kb-canonical.json` merges it by entry id, tombstone-aware. The
+step reports `Registered the knowledge bible merge driver ...` or `Skipped
+bible merge driver: <reason>`. Rules and the hosted-merge fallback:
+`packages/apra-fleet-se/docs/kb-canonical-merge.md`.
+
 ### 5. KB tool profiles (which kb_* tools interactive sessions see)
 
 An interactive session that only reads and captures does not need every

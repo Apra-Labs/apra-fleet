@@ -3,6 +3,7 @@ import { KB_REMOVED_SCOPE_KEYS_SHAPE } from '../services/knowledge/kb-removed-sc
 import fs from 'node:fs';
 import path from 'node:path';
 import { installKbPostCommitHook } from './kb-invalidate.js';
+import { installBibleMergeDriver } from '../cli/kb-merge-driver.js';
 import { KB_CONFIG_PATH, MIN_REQUEST_TIMEOUT_MS, MAX_REQUEST_TIMEOUT_MS, readKbConfigForMerge, KbConfigUnreadableError, KB_CONFIG_HAND_FIX } from '../services/knowledge/kb-config.js';
 import type { KbConfigFile } from '../services/knowledge/kb-config.js';
 import { encryptPassword } from '../utils/crypto.js';
@@ -300,6 +301,12 @@ export async function kbSetup(input: KbSetupInput, anchor?: KbAnchor): Promise<s
       steps.push(hook.installed
         ? 'Installed git post-commit hook for KB invalidation'
         : 'Skipped git hook: ' + hook.reason);
+      // The id-keyed, tombstone-aware merge driver for .fleet/kb-canonical.json,
+      // so a local merge/rebase of two bible-changing branches resolves itself.
+      const driver = installBibleMergeDriver(repoPath);
+      steps.push(driver.installed
+        ? 'Registered the knowledge bible merge driver (git config and ' + driver.attributesPath + ')'
+        : 'Skipped bible merge driver: ' + driver.reason);
     } else {
       steps.push('Skipped git hook: no .git directory found at ' + repoPath);
     }
