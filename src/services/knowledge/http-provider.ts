@@ -142,6 +142,9 @@ function isConnectionError(err: unknown): boolean {
     code === 'ENOTFOUND' ||
     code === 'ETIMEDOUT' ||
     code === 'ECONNRESET' ||
+    code === 'ENETUNREACH' ||
+    code === 'EHOSTUNREACH' ||
+    code === 'EAI_AGAIN' ||
     err.message.includes('ECONNREFUSED') ||
     err.message.includes('ETIMEDOUT') ||
     err.message.includes('socket hang up')

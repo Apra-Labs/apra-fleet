@@ -175,10 +175,10 @@ export function readKbConfigFromDisk(): KbConfigResult {
   let parsed: Record<string, unknown>;
   try {
     parsed = JSON.parse(raw);
-  } catch (err) {
-    throw new Error(
-      `Malformed JSON in KB config at ${KB_CONFIG_PATH}: ${(err as Error).message}`,
-    );
+  } catch {
+    // Fixed reason on purpose: a JSON.parse message can quote the file's
+    // content (a token), and this text reaches the server log.
+    throw new Error(`KB config at ${KB_CONFIG_PATH} is not valid JSON`);
   }
 
   if (parsed.provider !== 'http') {
