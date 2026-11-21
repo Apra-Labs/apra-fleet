@@ -141,6 +141,15 @@ jobs:
             exit 1
           fi
 
+      # A text merge of two branches can leave a bible that still parses but
+      # that no writer produces (duplicate ids, an entry and its tombstone,
+      # a broken envelope). Readers tolerate much of that silently, so this
+      # fails loudly instead. Also covered by npm test; this step names the
+      # failure on its own line. OS-agnostic -> ubuntu-only.
+      - name: Validate the knowledge bible (.fleet/kb-canonical.json)
+        if: matrix.os == 'ubuntu-latest'
+        run: node scripts/check-kb-canonical.mjs
+
       # Runs the real contract:generate write path (not --check) and diffs
       # against committed output, catching drift a --check-mode bug might
       # miss. OS-agnostic generator -> ubuntu-only, same as llms-full.txt above.

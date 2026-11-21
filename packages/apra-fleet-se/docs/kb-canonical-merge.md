@@ -76,3 +76,16 @@ count is `entries.length`), and keeps the highest input `version` (a v3 input
 yields a v3 output).
 
 Tests: `test/merge-kb-canonical.test.mjs`.
+
+## Validating a merged bible
+
+`node scripts/check-kb-canonical.mjs [path]` (repository root; default
+`.fleet/kb-canonical.json`, also `npm run check:kb-canonical`) rejects a bible
+no writer would produce: unexpected or missing envelope keys, a wrong format
+version, a provenance `entry_count` that does not match the entries, duplicate
+or unsorted entry or tombstone ids, an id that is both an entry and a
+tombstone, a tombstone whose reason is unknown or whose keys do not fit that
+reason, and a file not in the exporter's serialization (2-space JSON,
+non-ASCII escaped, one trailing newline). Each problem is printed on its own
+line naming the id; the exit code is 1. It runs in `npm test` and as its own
+CI step, so a bad merge to the base branch fails loudly.
