@@ -149,10 +149,16 @@ test('mock sprint: round-resume -- reviewer/planner warm within-cycle resume, re
 
         // --- Reviewer: warm within-cycle resume, then fresh across cycles ---
         const reviewerDispatches = sc.dispatched.filter((d) => d.agent === 'reviewer' && d.label !== 'Final Review');
+        // The fourth is the catch-up review of B before Final Review: B was
+        // dispatched in cycle 1 and closed later outside any review round.
         check(
-            reviewerDispatches.length === 3,
-            `Expected exactly 3 non-final reviewer dispatches (cycle 1 R1+R2, cycle 2 fresh re-review), got ${reviewerDispatches.length}: ` +
+            reviewerDispatches.length === 4,
+            `Expected exactly 4 non-final reviewer dispatches (cycle 1 R1+R2, cycle 2 fresh re-review, catch-up of B), got ${reviewerDispatches.length}: ` +
             `${JSON.stringify(reviewerDispatches.map((d) => ({ resume: d.resume })))}`
+        );
+        check(
+            reviewerDispatches[3].prompt.includes(taskB.id) && !reviewerDispatches[3].prompt.includes(`${taskA.id},`),
+            'Expected the fourth non-final reviewer dispatch to be the catch-up review of B',
         );
         check(
             reviewerDispatches[0].resume === false,

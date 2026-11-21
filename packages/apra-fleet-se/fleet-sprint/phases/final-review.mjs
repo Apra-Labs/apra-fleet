@@ -193,6 +193,11 @@ export async function runFinalReviewPhase({
     // fetched origin/<base> and the branch) on that member. Injected so this
     // phase issues no fleet command of its own; it throws on failure.
     reviewMergeBaseFor,
+    // Optional async ({ closedIds, titleById }) => ({ ran }): the catch-up
+    // review (phases/review.mjs runReviewCatchUpPhase, wired by runner.js).
+    // Called once, after this phase's D-pull and fresh reads; when it ran
+    // (reviewed or reopened beads) the reads below are taken again.
+    reviewCatchUp = null,
 }) {
     phase(`Final Review C${finalCycleLabel}`);
 
@@ -205,11 +210,28 @@ export async function runFinalReviewPhase({
     // (apra-fleet-7dir.24).
     const finalReviewSettleShell = await resolveSettleShell({ args, member: backlogMember, log, sprintState });
     await gitSync.syncBeadsBefore(backlogMember, { fatal: true, settle: buildSettleCallback(backlogMember, { command, log, shell: finalReviewSettleShell }) });
-    const [finalOpenAtGoalRaw, finalOpenAtGoalParentIds, finalClosedBeads] = await Promise.all([
+    const readFinalCounts = () => Promise.all([
         bdListScoped(`--status=${NOT_DONE_STATUSES} --priority-max=${goalMax} --json`),
         decomposedParentIds(),
         bdListScoped('--status=closed --json'),
     ]);
+    let [finalOpenAtGoalRaw, finalOpenAtGoalParentIds, finalClosedBeads] = await readFinalCounts();
+    // Catch-up review: every bead this sprint dispatched that is closed now
+    // but never entered a review round's scope is reviewed (or reopened)
+    // here, before the final verdict. It reuses the fresh closed read above,
+    // so nothing to catch up costs no extra command; when it did run, its
+    // reopens/newTasks changed the local beads clone, so read again.
+    if (typeof reviewCatchUp === 'function') {
+        const closedList = Array.isArray(finalClosedBeads) ? finalClosedBeads : [];
+        const catchUp = await reviewCatchUp({
+            closedIds: closedList.map((b) => b && b.id).filter(Boolean),
+            titleById: new Map(closedList.filter((b) => b && b.id).map((b) => [b.id, b.title || b.id])),
+        });
+        if (catchUp && catchUp.ran) {
+            phase(`Final Review C${finalCycleLabel}`);
+            [finalOpenAtGoalRaw, finalOpenAtGoalParentIds, finalClosedBeads] = await readFinalCounts();
+        }
+    }
     // apra-fleet-rp7a.1: deferred beads are dropped from the closing count for
     // the same reason Cycle Evaluation drops them -- the dispatcher never
     // offers a deferred bead, so it is not work this sprint left undone. Their

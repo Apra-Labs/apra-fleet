@@ -165,7 +165,7 @@ import { runDevelopPhase } from './phases/develop.mjs';
 // module's header for where its boundary is drawn and why the probe/else
 // around Deploy, and the dashboard/still-open loop control after Review,
 // stayed here.
-import { runReviewPhase } from './phases/review.mjs';
+import { runReviewPhase, runReviewCatchUpPhase } from './phases/review.mjs';
 import { runDeployPhase, latestDeployFailure, formatDeployFailureReason, formatDeploySetAsideNotes, DEPLOY_RETRY_CYCLE_LIMIT } from './phases/deploy.mjs';
 import { collectSetAsideEntries, evaluateSetAsideStall, formatSetAsideStallMessage, stuckBehindSetAside, collectWaitEntries, closedWorkThisRun, buildSetAsideCarryOver, buildPlanRejectedCarryOver, formatCarryOverNotes } from './set-aside.mjs';
 import { NEEDS_EXTERNAL_EVIDENCE_CYCLE_LIMIT, recordInconclusiveVerifyCycle, stillOpenVerifyIdsForExit, syncDeferredVerifyIds, buildVerifyCarryOver, formatVerifyCarryOverNotes } from './verify-carry-over.mjs';
@@ -4686,6 +4686,34 @@ async function runSprintCycle(context) {
     // a reader; the test pin plus the A/B mock sprint in
     // mock-sprint-regression-failure-never-gates.test.mjs are what actually
     // hold the line.
+    //
+    // The catch-up review (./phases/review.mjs runReviewCatchUpPhase) runs
+    // INSIDE Final Review, right after its D-pull and fresh closed-list read,
+    // through this closure: a bead this sprint dispatched that is closed now
+    // but never entered any review round's scope (a FAILED streak whose close
+    // landed later, or a close behind a failed publish) is reviewed there --
+    // or reopened when no review can run -- before the final verdict is
+    // dispatched. Reusing that read means a sprint with nothing to catch up
+    // issues no extra command.
+    const reviewCatchUp = async ({ closedIds, titleById }) => {
+        const out = await runReviewCatchUpPhase({
+            phase, log, command,
+            cycle: finalCycleLabel, validated, targetIssues, backlogMember,
+            gitSync, sprintState,
+            closedIds, titleById,
+            rejectedNewTasks,
+            lastReviewVerdict, pendingRejectedNewTasks, lastBuildFailing,
+            budget,
+            dispatchReview, bdListScoped, goalMax,
+            workedOnIds: workedOnBeadIds,
+            recordReopen,
+            childIdAllocator, sprintMutexId,
+            computeChildFloor, createChildBeadWithAllocatedId,
+            trackRejectedNewTaskForResurfacing, clearResubmittedNewTask,
+        });
+        ({ lastReviewVerdict, pendingRejectedNewTasks, lastBuildFailing } = out);
+        return out;
+    };
     const { finalVerdictResult, finalClosedCount, finalOpenAtGoalCount, finalDeferredAtGoalIds, verifyCarryOver } = await runFinalReviewPhase({
         phase, log, command, dispatchCtx,
         args, validated, targetIssues, backlogMember, finalCycleLabel, sprintState,
@@ -4705,6 +4733,7 @@ async function runSprintCycle(context) {
         childIdAllocator, sprintMutexId, resolveSettleShell,
         computeChildFloor, createChildBeadWithAllocatedId, sanitizePrText,
         reviewMergeBaseFor,
+        reviewCatchUp,
     });
 
     // =======================
