@@ -61,7 +61,9 @@ written.
 
 | situation | result |
 | --- | --- |
-| present in base, missing from **either** side | deleted; never resurrected from the side that still has it |
+| present in base, missing from both sides | deleted |
+| present in base, missing from one side, unchanged on the other | deleted; never resurrected from the side that still has it |
+| present in base, missing from one side, changed by the other | **genuine conflict**, unless the merged tombstones hold the id (then the tombstone wins, see below) |
 | present in all three, unchanged | kept |
 | changed by exactly one side | that side's version |
 | changed by both sides to the same content | taken, not a conflict |

@@ -7,9 +7,9 @@
  * The rules are documented in packages/apra-fleet-se/docs/kb-canonical-merge.md.
  */
 import { describe, it, expect } from 'vitest';
-import { mergeBibleDocuments, serializeBible, MalformedBibleError } from '../../src/services/knowledge/bible-merge.js';
+import { mergeBibleDocuments, serializeBible, formatBibleConflicts, MalformedBibleError } from '../../src/services/knowledge/bible-merge.js';
 // @ts-expect-error -- plain .mjs script without type declarations
-import { mergeKbCanonical, serializeDocument, MalformedInputError } from '../../packages/apra-fleet-se/scripts/merge-kb-canonical.mjs';
+import { mergeKbCanonical, serializeDocument, formatConflicts, MalformedInputError } from '../../packages/apra-fleet-se/scripts/merge-kb-canonical.mjs';
 // @ts-expect-error -- plain .mjs script without type declarations
 import { validateBibleText } from '../../scripts/check-kb-canonical.mjs';
 
@@ -134,6 +134,27 @@ const SCENARIOS: Scenario[] = [
     expect: { conflict: false, entries: ['b'], tombstones: [] },
   },
   {
+    name: 'ours deletes a base entry (no tombstone) that theirs edited: conflict',
+    base: doc([entry('a'), entry('b')]),
+    ours: doc([entry('b')]),
+    theirs: doc([entry('a', 'edited by theirs'), entry('b')]),
+    expect: { conflict: true },
+  },
+  {
+    name: 'theirs deletes a base entry (no tombstone) that ours edited: conflict',
+    base: doc([entry('a'), entry('b')]),
+    ours: doc([entry('a', 'edited by ours'), entry('b')]),
+    theirs: doc([entry('b')]),
+    expect: { conflict: true },
+  },
+  {
+    name: 'one side deletes a base entry the other left unchanged: deleted',
+    base: doc([entry('a'), entry('b')]),
+    ours: doc([entry('a'), entry('b')]),
+    theirs: doc([entry('b')]),
+    expect: { conflict: false, entries: ['b'], tombstones: [] },
+  },
+  {
     name: 'a duplicate tombstone id inside one input: conflict',
     base: doc([entry('b')]),
     ours: doc([entry('b')], [demoted('a'), demoted('a', '2026-02-01T00:00:00.000Z')]),
@@ -167,6 +188,20 @@ describe('the two implementations agree byte for byte', () => {
     expect(a.text).toBe(b.text);
     expect(a.text).toContain('caf\\u00e9 \\u2014');
     expect(/[^\x00-\x7f]/.test(a.text!)).toBe(false);
+  });
+});
+
+describe('a delete-vs-modify conflict is reported, not thrown', () => {
+  it('both conflict formatters name the removed side', () => {
+    const base = doc([entry('a'), entry('b')]);
+    const ours = doc([entry('b')]);
+    const theirs = doc([entry('a', 'edited by theirs'), entry('b')]);
+    const src = mergeBibleDocuments(structuredClone(base), structuredClone(ours), structuredClone(theirs));
+    expect(src.merged).toBeNull();
+    expect(formatBibleConflicts(src.conflicts)).toContain('entry a removed by ours, changed by theirs');
+    const mjs = mergeKbCanonical(structuredClone(base), structuredClone(ours), structuredClone(theirs));
+    expect(mjs.merged).toBeNull();
+    expect(formatConflicts(mjs.conflicts)).toContain('ours: (absent)');
   });
 });
 

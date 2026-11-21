@@ -33,8 +33,13 @@
  *
  * MERGE RULES (per id)
  * --------------------
- *   present in base, missing from EITHER side  -> deleted (a deletion is a
+ *   present in base, missing from both sides   -> deleted
+ *   present in base, missing from one side, the
+ *       other side unchanged                   -> deleted (a deletion is a
  *       deliberate act; never resurrect it from the side that still has it)
+ *   present in base, missing from one side, the
+ *       other side changed it                  -> GENUINE CONFLICT, unless the
+ *       merged tombstones hold the id (then the tombstone wins, below)
  *   present in all three, nobody changed it    -> keep base
  *   changed by exactly one side                -> take the changed version
  *   changed by both sides, to the SAME content -> take it (not a conflict)
@@ -304,6 +309,9 @@ export function mergeKbCanonical(base, ours, theirs) {
     };
     const conflicts = [...duplicates];
     const merged = new Map();
+    // Deleted by one side, changed by the other: decided after the tombstone
+    // merge, since a merged tombstone for the id wins.
+    const deletedVsChanged = [];
 
     // Pass 1: everything the base knew about. (The output is sorted by id at
     // the end, the order every writer uses, so it stays diff-friendly.)
@@ -318,8 +326,16 @@ export function mergeKbCanonical(base, ours, theirs) {
         }
         // A deletion by EITHER side is honoured. Resurrecting the entry from
         // the side that still has it would quietly undo a deliberate removal.
-        if (!inOurs) { summary.removedByOurs += 1; continue; }
-        if (!inTheirs) { summary.removedByTheirs += 1; continue; }
+        if (!inOurs || !inTheirs) {
+            const kept = inOurs ? o.map.get(key) : t.map.get(key);
+            if (contentSignature(kept) !== contentSignature(baseEntry)) {
+                deletedVsChanged.push({ kind: 'content', identity: key, base: baseEntry, ours: o.map.get(key), theirs: t.map.get(key) });
+                continue;
+            }
+            if (!inOurs) summary.removedByOurs += 1;
+            else summary.removedByTheirs += 1;
+            continue;
+        }
 
         const oursEntry = o.map.get(key);
         const theirsEntry = t.map.get(key);
@@ -370,6 +386,14 @@ export function mergeKbCanonical(base, ours, theirs) {
     }
     summary.duplicateIds = duplicates.length;
     const tombstones = mergeTombstones(bt.map, ot.map, tt.map, conflicts, summary);
+    for (const c of deletedVsChanged) {
+        if (tombstones.has(c.identity)) {
+            if (c.ours === undefined) summary.removedByOurs += 1;
+            else summary.removedByTheirs += 1;
+        } else {
+            conflicts.push(c);
+        }
+    }
 
     // A tombstone wins over a same-id entry: no id ends in both lists.
     for (const id of tombstones.keys()) {
@@ -452,7 +476,7 @@ export function formatSummary(summary) {
  */
 export function formatConflicts(conflicts) {
     const lines = [
-        `${conflicts.length} genuine conflict(s): an id changed differently by both sides, a tombstone the sides disagree on, or an id shared by two entries.`,
+        `${conflicts.length} genuine conflict(s): an id changed differently by both sides (or removed by one, changed by the other), a tombstone the sides disagree on, or an id shared by two entries.`,
         'Nothing was merged. Resolve these by hand (edit one side to agree, pick the correct',
         'content, or give one of the duplicate entries its own id) and re-run.',
         '',
@@ -473,6 +497,7 @@ export function formatConflicts(conflicts) {
         }
         lines.push(`--- ${c.identity}`);
         for (const side of ['base', 'ours', 'theirs']) {
+            if (c[side] === undefined) { lines.push(`    ${side}: (absent)`); continue; }
             lines.push(`    ${side}:`);
             for (const field of CONTENT_FIELDS) {
                 const value = c[side]?.[field];

@@ -9,7 +9,13 @@
  * test (tests/knowledge/bible-merge-parity.test.ts) keeps the two identical.
  *
  * ENTRIES (per id; identity is the id, never the title)
- *   in base, missing from either side        -> deleted (never resurrected)
+ *   in base, missing from both sides         -> deleted
+ *   in base, missing from one side, the
+ *     other side unchanged                    -> deleted (never resurrected)
+ *   in base, missing from one side, the
+ *     other side changed it                   -> conflict, unless the merged
+ *                                                tombstones hold the id (then
+ *                                                the tombstone wins, below)
  *   unchanged / changed by one side          -> base / that side
  *   changed by both to the same content      -> taken
  *   changed by both differently              -> conflict
@@ -128,12 +134,23 @@ function indexById(items: Array<Record<string, unknown>>, list: 'entries' | 'dem
 function mergeEntries(
   b: Map<string, Record<string, unknown>>, o: Map<string, Record<string, unknown>>, t: Map<string, Record<string, unknown>>,
   conflicts: BibleMergeConflict[],
+  deletedVsChanged: BibleMergeConflict[],
 ): Map<string, Record<string, unknown>> {
   const merged = new Map<string, Record<string, unknown>>();
   for (const [id, baseEntry] of b) {
     const ours = o.get(id);
     const theirs = t.get(id);
-    if (!ours || !theirs) continue; // deleted by one or both sides
+    if (!ours && !theirs) continue; // deleted by both sides
+    if (!ours || !theirs) {
+      // Deleted by one side. If the other side changed it, that is a conflict
+      // (like a tombstone removed by one side and changed by the other) --
+      // decided after the tombstone merge, since a merged tombstone wins.
+      const kept = (ours ?? theirs)!;
+      if (entrySignature(kept) !== entrySignature(baseEntry)) {
+        deletedVsChanged.push({ kind: 'content', list: 'entries', identity: id, base: baseEntry, ours, theirs });
+      }
+      continue;
+    }
     const bs = entrySignature(baseEntry);
     const os = entrySignature(ours);
     const ts = entrySignature(theirs);
@@ -212,8 +229,14 @@ export function mergeBibleDocuments(base: unknown, ours: unknown, theirs: unknow
   const ot = indexById(listOf(od, 'demotions', 'ours'), 'demotions', 'ours', conflicts);
   const tt = indexById(listOf(td, 'demotions', 'theirs'), 'demotions', 'theirs', conflicts);
 
-  const entries = mergeEntries(be, oe, te, conflicts);
+  const deletedVsChanged: BibleMergeConflict[] = [];
+  const entries = mergeEntries(be, oe, te, conflicts, deletedVsChanged);
   const tombstones = mergeTombstones(bt, ot, tt, conflicts);
+  // Deleted by one side, changed by the other: a conflict unless a merged
+  // tombstone covers the id (the tombstone wins, as below).
+  for (const c of deletedVsChanged) {
+    if (!tombstones.has(c.identity)) conflicts.push(c);
+  }
 
   // A tombstone wins over a same-id entry: no id ends in both lists.
   const dropped: string[] = [];
@@ -263,5 +286,7 @@ export function serializeBible(doc: unknown): string {
 export function formatBibleConflicts(conflicts: BibleMergeConflict[]): string {
   return conflicts.map((c) => (c.kind === 'duplicate-id'
     ? `  duplicate ${c.list === 'entries' ? 'entry' : 'tombstone'} id ${c.identity} in ${c.side} (indexes ${c.indexes.join(', ')})`
-    : `  ${c.list === 'entries' ? 'entry' : 'tombstone'} ${c.identity} changed differently by both sides`)).join('\n');
+    : c.ours === undefined || c.theirs === undefined
+      ? `  ${c.list === 'entries' ? 'entry' : 'tombstone'} ${c.identity} removed by ${c.ours === undefined ? 'ours' : 'theirs'}, changed by ${c.ours === undefined ? 'theirs' : 'ours'}`
+      : `  ${c.list === 'entries' ? 'entry' : 'tombstone'} ${c.identity} changed differently by both sides`)).join('\n');
 }
