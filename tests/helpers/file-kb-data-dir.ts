@@ -37,7 +37,15 @@ export function releaseFileDataDir(dir: string): void {
   claimed.delete(dir);
   if (previous === undefined) delete process.env.APRA_FLEET_DATA_DIR;
   else process.env.APRA_FLEET_DATA_DIR = previous;
-  fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+  try {
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+  } catch (err) {
+    // Windows: the cached SqliteProvider (resetKbProviders does not close it)
+    // holds kb.sqlite open until the worker exits, so retrying is futile (and
+    // long retries overran the afterAll hook timeout); the dir is under os.tmpdir().
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== 'EBUSY' && code !== 'EPERM') throw err;
+  }
 }
 
 /**

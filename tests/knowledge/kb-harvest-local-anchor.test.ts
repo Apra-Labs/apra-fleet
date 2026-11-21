@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi, inject } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -12,6 +12,30 @@ import { autoHarvestAnchor } from '../../src/tools/execute-prompt.js';
 import { encryptPassword } from '../../src/utils/crypto.js';
 import { FLEET_DIR } from '../../src/paths.js';
 import { makeTestAgent, makeTestLocalAgent } from '../test-helpers.js';
+import { releaseFileDataDir, fileDataDirViolations } from '../helpers/file-kb-data-dir.js';
+import { FLEET_DIR as ISOLATED_FLEET_DIR } from '../../src/paths.js';
+import { KB_CONFIG_PATH as ISOLATED_KB_CONFIG_PATH } from '../../src/services/knowledge/kb-config.js';
+
+// This file's OWN fleet data dir, claimed before any src module loads
+// (src/paths.ts fixes FLEET_DIR at import). The per-run data dir tests/setup.ts
+// provides is shared by every file of the run, and so is the KB config file
+// in it (<data dir>/knowledge/config.json), which this file writes and the
+// code under test reads.
+const fileDataDir = await vi.hoisted(async () =>
+  (await import('../helpers/file-kb-data-dir.js')).claimFileDataDir('kb-harvest-local-anchor'));
+afterAll(() => releaseFileDataDir(fileDataDir));
+
+// ISOLATION GUARD: fails if this suite reads the run-shared data dir again --
+// the hoisted claim removed, moved below the imports (FLEET_DIR is then fixed
+// to the shared dir), or the dir not unique to this file.
+describe('isolation guard', () => {
+  it('this suite reads its own fleet data dir and KB config file, not the run-shared ones', () => {
+    expect(fileDataDirViolations({
+      label: 'kb-harvest-local-anchor', claimed: fileDataDir, fleetDir: ISOLATED_FLEET_DIR,
+      kbConfigPath: ISOLATED_KB_CONFIG_PATH, runSharedDir: inject('APRA_FLEET_TEST_DATA_DIR'),
+    })).toEqual([]);
+  });
+});
 
 // apra-fleet-p71k: the auto-harvest anchor for a LOCAL member must resolve the
 // same HTTP provider, X-Repository and X-Repository-Commit as an interactive
@@ -92,7 +116,7 @@ afterEach(() => {
   resetKbProviders();
 });
 
-describe('auto-harvest anchor (apra-fleet-p71k)', () => {
+describe('auto-harvest anchor resolves a local member by its folder', () => {
   it('a local member whose registration URL differs from origin resolves the same provider and headers as an interactive call', async () => {
     const repo = makeRepo('https://github.com/example/real-origin.git');
     const member = makeTestLocalAgent({ workFolder: repo.dir, gitRepos: [REGISTERED_URL] });
