@@ -67,6 +67,25 @@ function call(method: string, urlPath: string, body?: unknown): Promise<{ status
   });
 }
 
+// Sends `raw` as the request body byte-for-byte (no JSON.stringify), so a
+// malformed JSON body can reach the server.
+function callRaw(method: string, urlPath: string, raw: string): Promise<{ status: number; body: any }> {
+  return new Promise((resolve, reject) => {
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json', 'X-KB-Project': getProjectSlug(folder),
+      'Content-Length': Buffer.byteLength(raw).toString(),
+    };
+    const req = http.request({ hostname: '127.0.0.1', port, path: urlPath, method, headers, agent: false }, res => {
+      let text = '';
+      res.on('data', (c: Buffer) => { text += c.toString(); });
+      res.on('end', () => resolve({ status: res.statusCode!, body: text ? JSON.parse(text) : undefined }));
+    });
+    req.on('error', reject);
+    req.write(raw);
+    req.end();
+  });
+}
+
 async function captureEntry(title: string): Promise<string> {
   const res = await call('POST', '/api/kb/capture', {
     type: 'learning', title, summary: `${title} summary for the feedback route test`,
@@ -158,5 +177,14 @@ describe('kb-server POST /api/kb/feedback', () => {
     const res = await call('POST', '/api/kb/feedback', { id: 'x' });
     expect(res.status).toBe(400);
     expect(res.body.code).toBe('BAD_REQUEST');
+  });
+
+  // A body that is not JSON is the caller's fault on every JSON route: the
+  // server's outer catch maps the SyntaxError to 400 BAD_REQUEST, never to
+  // 500 INTERNAL_ERROR.
+  it.each(['/api/kb/feedback', '/api/kb/capture'])('a malformed JSON body to POST %s is a 400 BAD_REQUEST, not a 500', async route => {
+    const res = await callRaw('POST', route, '{"id": "x", "reason": ');
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: 'Request body is not valid JSON', code: 'BAD_REQUEST' });
   });
 });
