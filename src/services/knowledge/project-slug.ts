@@ -29,7 +29,7 @@ export function resolveProjectSlug(cwd?: string, remoteUrl?: string): string {
   return 'default';
 }
 
-function slugify(s: string): string {
+export function slugify(s: string): string {
   return s
     // Strip userinfo ONLY when it is really there. `[^@]*@?` was greedy and
     // unbounded, so a URL with no '@' at all (plain HTTPS -- the common case)

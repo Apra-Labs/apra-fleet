@@ -164,4 +164,23 @@ describe('execute_prompt auto-harvest repo_remote_url wiring (apra-fleet-b4g.6)'
     expect(mockKbHarvest.mock.calls[0][1]).toMatchObject({ folder: tmpDir });
     expect(mockKbHarvest.mock.calls[0][1].remoteUrl).toBeUndefined();
   });
+
+  // apra-fleet-p71k: a LOCAL member's folder is anchored by folder alone, like
+  // an interactive kb_* call; the registration URL must not reach the anchor.
+  it('does not forward the registration URL for a LOCAL member (folder-only anchor)', async () => {
+    const member = makeTestLocalAgent({
+      friendlyName: 'kb-harvest-local-with-url',
+      workFolder: tmpDir,
+      os: 'linux',
+      gitRepos: ['https://github.com/acme/registered-spelling.git'],
+    });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue({ stdout: successResponse, stderr: '', code: 0 });
+
+    await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
+    await flushMicrotasks();
+
+    expect(mockKbHarvest).toHaveBeenCalledTimes(1);
+    expect(mockKbHarvest.mock.calls[0][1]).toEqual({ folder: tmpDir });
+  });
 });

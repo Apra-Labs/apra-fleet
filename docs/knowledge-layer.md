@@ -819,6 +819,14 @@ step and does not create the directory. The hook itself calls a repo-relative
 outside the apra-fleet source tree. Hash-based freshness is the mechanism to
 rely on.)
 
+`kb_setup` also registers the knowledge bible merge driver in the clone (local
+git config `merge.apra-fleet-kb-bible.driver` and a line in the clone's
+`info/attributes`), so a local merge or rebase of two branches that both
+changed `.fleet/kb-canonical.json` merges it by entry id, tombstone-aware. The
+step reports `Registered the knowledge bible merge driver ...` or `Skipped
+bible merge driver: <reason>`. Rules and the hosted-merge fallback:
+`packages/apra-fleet-se/docs/kb-canonical-merge.md`.
+
 ### 5. KB tool profiles (which kb_* tools interactive sessions see)
 
 An interactive session that only reads and captures does not need every
@@ -914,6 +922,13 @@ The AUDN system deduplicates automatically:
 - `none` -- exact duplicate, existing entry returned
 - `update` -- same-topic predecessor linked (refines; both entries stay live unless `supersedes` is passed explicitly)
 - `flagged` -- contradiction detected, both entries flagged for human review
+
+**Bible id aliases.** When `kb_import` answers `none` for a bible entry, the
+bible id is recorded in `bible_id_aliases` against the local row that absorbed
+it, so a later tombstone (demotion or withdrawal) for that bible id still
+reaches the row holding the fact here. Side effect: the tombstone demotes or
+withdraws that local row, not just the bible id. If that row is itself a bible
+entry (under its own id), the clone's next `kb_bible_commit` tombstones it too.
 
 ### When to promote
 

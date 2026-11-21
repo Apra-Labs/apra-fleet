@@ -703,18 +703,20 @@ message naming the route.
 Calls `kb_export` -- exports the calling session's CONFIRMED KB entries to the
 canonical bible file and auto-commits it locally (never pushed). Options:
 `scope?` (`"project" | "global"`), `baseBranch?`, `baseCommit?`. When given,
-`baseBranch` (the target base branch the entries merge into) and `baseCommit`
-are written to the bible's `provenance.branch` / `provenance.commit`; when
-omitted they default to the export folder's HEAD branch and commit. Result
+`baseBranch` (the target base branch the entries merge into) is written to the
+bible's `provenance.branch` and `baseCommit` to a `Verified-Against` trailer on
+the auto-commit (never into the file: a per-file commit or entry count would be
+a line two bible-changing branches both rewrite, so they would text-conflict);
+when omitted they default to the export folder's HEAD branch and commit. Result
 JSON (via `parseToolJson`): `{exported, path, scope, committed}`.
 
 #### `kbBibleCommit(options: KbBibleCommitOptions)`
 
 Calls `kb_bible_commit` -- merges exactly `ids` into the bible at entry level
 (only the given ids are added or replaced; every existing entry is kept unless
-the KB holds it as superseded or invalidated), writes `baseBranch` /
-`baseCommit` into provenance, and makes a local commit scoped to the bible
-path. It never pushes. Every bible entry the KB holds as superseded or
+the KB holds it as superseded or invalidated), writes `baseBranch` to
+`provenance.branch`, and makes a local commit scoped to the bible path carrying
+`baseCommit` as a `Verified-Against` trailer. It never pushes. Every bible entry the KB holds as superseded or
 invalidated is removed at each call (also with an empty `ids`) and listed in
 `removed` as `{id, reason}` (reason `superseded` or `invalidated`) and in the
 commit message; an entry unknown to the KB, or CONFIRMED and current, is never
@@ -756,7 +758,8 @@ id's local trust time is strictly after the tombstone `at` (a real re-promotion,
 which clears it); otherwise the id is skipped with reason `demoted_tombstone` and
 the tombstone kept. An id found in both entries and demotions loses its entry on
 every call (the tombstone wins) and is listed in `removed` with reason
-`tombstoned`. `provenance.entry_count` counts entries only.
+`tombstoned`. The result's `entry_count` counts entries only; the file itself
+carries no entry count (it is `entries.length`).
 
 Optional `withdrawals` (`[{id, note, evidence_files}]`; `note` at least 20
 characters after whitespace is collapsed, at least one repo-relative evidence

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi, inject } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -8,15 +8,38 @@ import { kbSetup } from '../../src/tools/kb-setup.js';
 import { FLEET_DIR } from '../../src/paths.js';
 import { decryptPassword } from '../../src/utils/crypto.js';
 import { isolateGitConfig } from './isolate-git-config.js';
+import { releaseFileDataDir, fileDataDirViolations } from '../helpers/file-kb-data-dir.js';
+import { FLEET_DIR as ISOLATED_FLEET_DIR } from '../../src/paths.js';
+import { KB_CONFIG_PATH as ISOLATED_KB_CONFIG_PATH } from '../../src/services/knowledge/kb-config.js';
+
+// This file's OWN fleet data dir, claimed before any src module loads
+// (src/paths.ts fixes FLEET_DIR at import). The per-run data dir tests/setup.ts
+// provides is shared by every file of the run, and so is the KB config file
+// in it (<data dir>/knowledge/config.json), which this file writes and the
+// code under test reads.
+const fileDataDir = await vi.hoisted(async () =>
+  (await import('../helpers/file-kb-data-dir.js')).claimFileDataDir('kb-setup'));
+afterAll(() => releaseFileDataDir(fileDataDir));
+
+// ISOLATION GUARD: fails if this suite reads the run-shared data dir again --
+// the hoisted claim removed, moved below the imports (FLEET_DIR is then fixed
+// to the shared dir), or the dir not unique to this file.
+describe('isolation guard', () => {
+  it('this suite reads its own fleet data dir and KB config file, not the run-shared ones', () => {
+    expect(fileDataDirViolations({
+      label: 'kb-setup', claimed: fileDataDir, fleetDir: ISOLATED_FLEET_DIR,
+      kbConfigPath: ISOLATED_KB_CONFIG_PATH, runSharedDir: inject('APRA_FLEET_TEST_DATA_DIR'),
+    })).toEqual([]);
+  });
+});
 
 let tmpDir: string;
 const configPath = path.join(FLEET_DIR, 'knowledge', 'config.json');
 
-// FLEET_DIR is shared by every test file in the run, and getKbProviders
+// FLEET_DIR is this file's own data dir (claimed above), and getKbProviders
 // reselects the project provider whenever this config changes. Every test here
 // starts from no config and puts back whatever was there, so an http remote
-// written here (some deliberately unroutable) never becomes the provider a
-// later file's getKbProviders() selects.
+// written here (some deliberately unroutable) never leaks into a later test.
 let savedConfig: string | null;
 let restoreGitConfig: () => void;
 
@@ -226,18 +249,28 @@ describe('kb_setup merges into the existing config', () => {
   });
 
   it.each([
-    ['invalid JSON', '{ this is not json'],
-    ['a JSON array', '["provider", "http"]'],
-    ['JSON null', 'null'],
-  ])('replaces %s with a valid config and reports it, without throwing', async (_label, content) => {
+    ['invalid JSON', '{ this is not json', /is not valid JSON/],
+    ['a JSON array', '["provider", "http"]', /is not a JSON object/],
+    ['JSON null', 'null', /is not a JSON object/],
+  ])('refuses %s, naming the file, leaving its bytes unchanged and installing no hook', async (_label, content, reason) => {
     writeConfig(content);
 
-    const result = await setup({ provider: 'sqlite' });
+    const err = await kbSetup({ provider: 'sqlite' }, { folder: tmpDir }).then(() => null, (e: Error) => e);
 
-    expect(result.success).toBe(true);
-    expect(result.warnings).toHaveLength(1);
-    expect(result.warnings[0]).toMatch(/was discarded because it is not/);
-    expect(readConfig()).toEqual({ provider: 'sqlite' });
+    expect(err).toBeInstanceOf(Error);
+    expect(err!.message).toContain(configPath);
+    expect(err!.message).toMatch(reason);
+    expect(fs.readFileSync(configPath, 'utf-8')).toBe(content);
+    expect(fs.existsSync(path.join(tmpDir, '.git', 'hooks', 'post-commit'))).toBe(false);
+  });
+
+  it('never loses url and token on a profile-only call against a malformed config', async () => {
+    const content = '{"provider":"http","url":"https://kb.example.test","token_encrypted":"abc",}';
+    writeConfig(content);
+
+    await expect(kbSetup({ tool_profile: 'developer' }, { folder: tmpDir })).rejects.toThrow(/is not valid JSON/);
+
+    expect(fs.readFileSync(configPath, 'utf-8')).toBe(content);
   });
 
   // POSIX permission bits only: on Windows fs.chmodSync can only toggle the

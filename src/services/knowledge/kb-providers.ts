@@ -5,7 +5,7 @@ import { SqliteProvider } from './sqlite-provider.js';
 import { HttpKbProvider } from './http-provider.js';
 import { readKbConfigFromDisk, KB_CONFIG_PATH } from './kb-config.js';
 import type { KbConfigResult } from './kb-config.js';
-import { resolveProjectSlug } from './project-slug.js';
+import { resolveProjectSlug, slugify } from './project-slug.js';
 import { resolveRepositoryIdentity } from './repository-header.js';
 import type { MemoryProvider } from './types.js';
 import { FLEET_DIR } from '../../paths.js';
@@ -178,7 +178,7 @@ async function selectProjectProvider(
   const tokenSource = config.tokenSecretName !== undefined
     ? { secretName: config.tokenSecretName }
     : config.token!;
-  const repository = resolveRepositoryIdentity(repoPath, remoteUrl);
+  const repository = await resolveRepositoryIdentity(repoPath, remoteUrl);
   // The slug goes on every request (X-KB-Project) so a server for another
   // project refuses it instead of answering with that project's KB.
   const httpProvider = new HttpKbProvider(config.url!, tokenSource, {
@@ -349,7 +349,25 @@ export async function getKbProviders(cwd?: string, remoteUrl?: string): Promise<
   const configFingerprint = kbConfigFingerprint();
   const current = _selections.get(key);
   if (current && current.configFingerprint === configFingerprint) {
-    return current.providers;
+    const providers = await current.providers;
+    const changedOrigin = providers.project instanceof HttpKbProvider
+      ? providers.project.repositoryOriginChange()
+      : undefined;
+    if (changedOrigin === undefined) return providers;
+    // The folder's origin moved (read in the background, off the request path).
+    // X-KB-Project and X-Repository both come from the origin, so they must move
+    // together: re-derive the slug from the new origin and drop this selection,
+    // so the next build sends the new pair rather than a mixed one. (A selection
+    // under the new slug, if any, is reused.) The old provider is retired.
+    const slugKey = `${cwd ?? process.cwd()}\0${remoteUrl ?? ''}`;
+    const nextSlug = slugify(changedOrigin);
+    if (nextSlug) _slugCache.set(slugKey, nextSlug);
+    else _slugCache.delete(slugKey);
+    if (_selections.get(key) === current) {
+      _selections.delete(key);
+      retireSelection(current);
+    }
+    return getKbProviders(cwd, remoteUrl);
   }
   if (current) {
     retireSelection(current);

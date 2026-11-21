@@ -209,8 +209,15 @@ bible export. It merges at entry level, not by regenerating the bible:
   there, so the two tools can never disagree on a mixed set of ids. The engine
   logs each skip with its reason and drops the id from its queue.
 - An unreadable existing bible is never overwritten.
-- Provenance records the sprint's target base branch and base commit given by
-  the caller, never the working folder's HEAD (usually a feature branch).
+- Bible provenance records only the sprint's target base branch, given by the
+  caller, never the working folder's HEAD (usually a feature branch). The base
+  commit the entries were verified against is not stored in the bible: it goes
+  into a `Verified-Against` trailer of the local commit message. A per-commit
+  value in the file would change on every writer and make any two
+  bible-changing branches conflict on merge. Older readers only read
+  `provenance.branch`, so the format is safe in both directions; the
+  validator (`scripts/check-kb-canonical.mjs`, part of `npm test` and CI)
+  still accepts the legacy `commit` and `entry_count` keys.
 - The commit is local, scoped to the bible file, with the `pm-kb` identity. It
   never pushes. `kb_export` gained the same `baseBranch`/`baseCommit` inputs.
 

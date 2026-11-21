@@ -33,8 +33,13 @@
  *
  * MERGE RULES (per id)
  * --------------------
- *   present in base, missing from EITHER side  -> deleted (a deletion is a
+ *   present in base, missing from both sides   -> deleted
+ *   present in base, missing from one side, the
+ *       other side unchanged                   -> deleted (a deletion is a
  *       deliberate act; never resurrect it from the side that still has it)
+ *   present in base, missing from one side, the
+ *       other side changed it                  -> GENUINE CONFLICT, unless the
+ *       merged tombstones hold the id (then the tombstone wins, below)
  *   present in all three, nobody changed it    -> keep base
  *   changed by exactly one side                -> take the changed version
  *   changed by both sides, to the SAME content -> take it (not a conflict)
@@ -42,6 +47,28 @@
  *       never silently resolved; the CLI exits non-zero
  *   added by one side only                     -> keep it
  *   added by both sides under the same id      -> de-duplicate, keep one
+ *
+ * TOMBSTONES (the `demotions` list), per id; content is the whole tombstone
+ * (at, reason, note, evidence_files):
+ *   in base, missing from both sides          -> removed
+ *   in base, missing from one side, the other
+ *     side unchanged                           -> removed (a re-promotion or a
+ *                                                 restore cleared it)
+ *   in base, missing from one side, the other
+ *     side changed it                          -> GENUINE CONFLICT
+ *   unchanged / changed by exactly one side    -> base / that side
+ *   changed by both, to the same content       -> taken
+ *   changed by both, differently               -> GENUINE CONFLICT
+ *   added by one side                          -> kept
+ *   added by both, same content                -> kept (one copy)
+ *   added by both, different content           -> GENUINE CONFLICT
+ * A TOMBSTONE WINS over a same-id entry: an id in the merged tombstones is
+ * removed from the merged entries, so no id ends in both lists.
+ *
+ * The same rules are implemented by src/services/knowledge/bible-merge.ts,
+ * the engine of `apra-fleet kb merge-driver` (the git merge driver kb_setup
+ * registers in a clone); tests/knowledge/bible-merge-parity.test.ts keeps the
+ * two identical.
  *
  * "Content" is CONTENT_FIELDS, which includes `title` and the v3
  * `source_file_hashes` basis: a re-verified basis on one side is a change
@@ -55,8 +82,12 @@
  *   two entries sharing an id in one input, or in the merged result ->
  *       reported as a genuine conflict (exit 1); such a document is never
  *       written
+ * A tombstone without a usable id, or a `demotions` value that is not an
+ * array, is malformed input too (exit 2).
  * The merged envelope keeps the highest input `version` (a v3 input yields
- * a v3 output).
+ * a v3 output). The merged document is in writer form: entries and
+ * tombstones sorted by id, `demotions` omitted when empty, serialized like
+ * the exporter (2-space JSON, non-ASCII escaped, one trailing newline).
  *
  * USAGE
  * -----
@@ -174,6 +205,58 @@ function highestVersion(docs) {
     return docs.map((d) => d.version).find((v) => v !== undefined);
 }
 
+/** A document's tombstone list (absent -> empty); throws on a malformed one. */
+function tombstonesOf(doc, sideName) {
+    if (doc.demotions === undefined) return [];
+    if (!Array.isArray(doc.demotions)) {
+        throw new MalformedInputError(`merge-kb-canonical: ${sideName} demotions is not an array`);
+    }
+    doc.demotions.forEach((t, index) => {
+        if (entryIdentity(t) === null) {
+            throw new MalformedInputError(`merge-kb-canonical: ${sideName} tombstone #${index} has no usable id (a non-empty string is required)`);
+        }
+    });
+    return doc.demotions;
+}
+
+/** Content signature of a tombstone: the whole object, key order ignored. */
+export function tombstoneSignature(t) {
+    return JSON.stringify(canonicalValue(t));
+}
+
+/** Three-way merge of the tombstone lists (see TOMBSTONES in the header). */
+function mergeTombstones(b, o, t, conflicts, summary) {
+    const merged = new Map();
+    const ids = new Set([...b.keys(), ...o.keys(), ...t.keys()]);
+    const sig = (x) => (x === undefined ? null : tombstoneSignature(x));
+    for (const id of ids) {
+        const base = b.get(id);
+        const ours = o.get(id);
+        const theirs = t.get(id);
+        const bs = sig(base);
+        const os = sig(ours);
+        const ts = sig(theirs);
+        const conflict = () => conflicts.push({ kind: 'tombstone', identity: id, base, ours, theirs });
+        if (base !== undefined) {
+            if (ours === undefined && theirs === undefined) { summary.tombstonesRemoved += 1; continue; }
+            if (ours === undefined) { if (ts === bs) { summary.tombstonesRemoved += 1; continue; } conflict(); continue; }
+            if (theirs === undefined) { if (os === bs) { summary.tombstonesRemoved += 1; continue; } conflict(); continue; }
+            if (os !== bs && ts !== bs && os !== ts) { conflict(); continue; }
+            merged.set(id, os !== bs ? ours : ts !== bs ? theirs : base);
+            continue;
+        }
+        if (ours !== undefined && theirs !== undefined) {
+            if (os === ts) { summary.tombstonesAdded += 1; merged.set(id, ours); } else conflict();
+            continue;
+        }
+        summary.tombstonesAdded += 1;
+        merged.set(id, ours ?? theirs);
+    }
+    return merged;
+}
+
+const compareIds = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+
 /**
  * Id-keyed three-way merge of three parsed canonical documents.
  *
@@ -193,6 +276,9 @@ export function mergeKbCanonical(base, ours, theirs) {
         }
         assertUsableIds(doc, name);
     }
+    const baseTombstones = tombstonesOf(base, 'base');
+    const oursTombstones = tombstonesOf(ours, 'ours');
+    const theirsTombstones = tombstonesOf(theirs, 'theirs');
 
     const b = indexById(base, 'base');
     const o = indexById(ours, 'ours');
@@ -216,12 +302,19 @@ export function mergeKbCanonical(base, ours, theirs) {
         duplicateIds: duplicates.length,
         genuineConflicts: 0,
         mergedEntries: 0,
+        tombstonesAdded: 0,
+        tombstonesRemoved: 0,
+        entriesDroppedForTombstone: 0,
+        mergedTombstones: 0,
     };
     const conflicts = [...duplicates];
     const merged = new Map();
+    // Deleted by one side, changed by the other: decided after the tombstone
+    // merge, since a merged tombstone for the id wins.
+    const deletedVsChanged = [];
 
-    // Pass 1: everything the base knew about. Base order is preserved so the
-    // merged document stays diff-friendly against both sides.
+    // Pass 1: everything the base knew about. (The output is sorted by id at
+    // the end, the order every writer uses, so it stays diff-friendly.)
     for (const [key, baseEntry] of b.map) {
         const inOurs = o.map.has(key);
         const inTheirs = t.map.has(key);
@@ -233,8 +326,16 @@ export function mergeKbCanonical(base, ours, theirs) {
         }
         // A deletion by EITHER side is honoured. Resurrecting the entry from
         // the side that still has it would quietly undo a deliberate removal.
-        if (!inOurs) { summary.removedByOurs += 1; continue; }
-        if (!inTheirs) { summary.removedByTheirs += 1; continue; }
+        if (!inOurs || !inTheirs) {
+            const kept = inOurs ? o.map.get(key) : t.map.get(key);
+            if (contentSignature(kept) !== contentSignature(baseEntry)) {
+                deletedVsChanged.push({ kind: 'content', identity: key, base: baseEntry, ours: o.map.get(key), theirs: t.map.get(key) });
+                continue;
+            }
+            if (!inOurs) summary.removedByOurs += 1;
+            else summary.removedByTheirs += 1;
+            continue;
+        }
 
         const oursEntry = o.map.get(key);
         const theirsEntry = t.map.get(key);
@@ -275,13 +376,38 @@ export function mergeKbCanonical(base, ours, theirs) {
         merged.set(key, entry);
     }
 
-    const entries = [...merged.values()];
+    // Tombstones: duplicate ids inside one input are conflicts, like entries.
+    const bt = indexById({ entries: baseTombstones }, 'base demotions');
+    const ot = indexById({ entries: oursTombstones }, 'ours demotions');
+    const tt = indexById({ entries: theirsTombstones }, 'theirs demotions');
+    for (const d of [...bt.duplicates, ...ot.duplicates, ...tt.duplicates]) {
+        duplicates.push(d);
+        conflicts.push(d);
+    }
+    summary.duplicateIds = duplicates.length;
+    const tombstones = mergeTombstones(bt.map, ot.map, tt.map, conflicts, summary);
+    for (const c of deletedVsChanged) {
+        if (tombstones.has(c.identity)) {
+            if (c.ours === undefined) summary.removedByOurs += 1;
+            else summary.removedByTheirs += 1;
+        } else {
+            conflicts.push(c);
+        }
+    }
+
+    // A tombstone wins over a same-id entry: no id ends in both lists.
+    for (const id of tombstones.keys()) {
+        if (merged.delete(id)) summary.entriesDroppedForTombstone += 1;
+    }
+
+    const entries = [...merged.keys()].sort(compareIds).map((id) => merged.get(id));
     // Duplicate-id guard on the output itself: never hand back a document in
     // which two entries share an id, whatever produced it.
     const out = indexById({ entries }, 'merged');
     conflicts.push(...out.duplicates);
 
     summary.mergedEntries = merged.size;
+    summary.mergedTombstones = tombstones.size;
     summary.genuineConflicts = conflicts.length;
 
     if (conflicts.length > 0) {
@@ -291,10 +417,26 @@ export function mergeKbCanonical(base, ours, theirs) {
     const mergedDoc = {
         ...ours,
         version: highestVersion([ours, theirs, base]),
-        provenance: { ...(ours.provenance ?? {}), entry_count: entries.length },
+        provenance: mergedProvenance(ours.provenance),
         entries,
     };
+    const demotions = [...tombstones.keys()].sort(compareIds).map((id) => tombstones.get(id));
+    if (demotions.length > 0) mergedDoc.demotions = demotions;
+    else delete mergedDoc.demotions;
     return { merged: mergedDoc, summary, conflicts, duplicates };
+}
+
+/**
+ * The merged document's provenance: ours, minus the legacy per-file `commit`
+ * and `entry_count`. Current writers no longer emit either (each was a line
+ * every bible-changing branch rewrote differently, so two such branches always
+ * text-conflicted); readers derive the count from entries.length.
+ */
+function mergedProvenance(provenance) {
+    const out = { ...(provenance && typeof provenance === 'object' ? provenance : {}) };
+    delete out.commit;
+    delete out.entry_count;
+    return out;
 }
 
 /** Plain-text summary block, one count per line. */
@@ -314,8 +456,12 @@ export function formatSummary(summary) {
         ['removed by theirs', summary.removedByTheirs],
         ['removed by both', summary.removedByBoth],
         ['duplicate ids', summary.duplicateIds],
+        ['tombstones added', summary.tombstonesAdded],
+        ['tombstones removed', summary.tombstonesRemoved],
+        ['entries dropped for a tombstone', summary.entriesDroppedForTombstone],
         ['genuine conflicts', summary.genuineConflicts],
         ['merged entries', summary.mergedEntries],
+        ['merged tombstones', summary.mergedTombstones],
     ];
     const width = Math.max(...rows.map(([label]) => label.length));
     const lines = ['Three-way merge summary (identity key: entry id):'];
@@ -330,12 +476,20 @@ export function formatSummary(summary) {
  */
 export function formatConflicts(conflicts) {
     const lines = [
-        `${conflicts.length} genuine conflict(s): an id changed differently by both sides, or an id shared by two entries.`,
+        `${conflicts.length} genuine conflict(s): an id changed differently by both sides (or removed by one, changed by the other), a tombstone the sides disagree on, or an id shared by two entries.`,
         'Nothing was merged. Resolve these by hand (edit one side to agree, pick the correct',
         'content, or give one of the duplicate entries its own id) and re-run.',
         '',
     ];
     for (const c of conflicts) {
+        if (c.kind === 'tombstone') {
+            lines.push(`--- tombstone ${c.identity}: changed differently by the two sides (or removed by one, changed by the other)`);
+            for (const side of ['base', 'ours', 'theirs']) {
+                lines.push(`    ${side}: ${c[side] === undefined ? '(absent)' : JSON.stringify(c[side])}`);
+            }
+            lines.push('');
+            continue;
+        }
         if (c.kind === 'duplicate-id') {
             lines.push(`--- duplicate id ${c.identity}: ${c.side} has ${c.indexes.length} entries with this id (indexes ${c.indexes.join(', ')})`);
             lines.push('');
@@ -343,6 +497,7 @@ export function formatConflicts(conflicts) {
         }
         lines.push(`--- ${c.identity}`);
         for (const side of ['base', 'ours', 'theirs']) {
+            if (c[side] === undefined) { lines.push(`    ${side}: (absent)`); continue; }
             lines.push(`    ${side}:`);
             for (const field of CONTENT_FIELDS) {
                 const value = c[side]?.[field];
@@ -387,7 +542,13 @@ export function readSide(arg, { forceRefs = false, repo = process.cwd(), relPath
 
 /** Serialize a merged document the way the exporter writes it. */
 export function serializeDocument(doc) {
-    return `${JSON.stringify(doc, null, 2)}\n`;
+    const json = JSON.stringify(doc, null, 2);
+    let out = '';
+    for (let i = 0; i < json.length; i += 1) {
+        const code = json.charCodeAt(i);
+        out += code > 127 ? `\\u${code.toString(16).padStart(4, '0')}` : json.charAt(i);
+    }
+    return `${out}\n`;
 }
 
 export function parseArgs(argv) {

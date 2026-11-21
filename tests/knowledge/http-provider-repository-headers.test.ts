@@ -80,7 +80,11 @@ const tempDirs: string[] = [];
 
 afterAll(async () => {
   await new Promise<void>(resolve => server.close(() => resolve()));
-  for (const dir of tempDirs) fs.rmSync(dir, { recursive: true, force: true });
+  // A stale-while-revalidate reader may still have a background git read running
+  // in a dir (it outlives the provider; bounded by its 3 s timeout); on Windows
+  // that holds the dir until it exits. The async rm with retries waits it out
+  // (rmSync with maxRetries did not, on Windows).
+  for (const dir of tempDirs) await fs.promises.rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 function makeDir(): string {
@@ -247,8 +251,8 @@ describe('HttpKbProvider X-Repository-Branch', () => {
     expect(seen.map(s => s.branch)).toEqual(['same']);
   });
 
-  it('a branch whose own name starts with heads/ keeps that whole name', () => {
-    expect(headBranchReader(makeRepoOnBranch('heads/x'))()).toBe('heads/x');
+  it('a branch whose own name starts with heads/ keeps that whole name', async () => {
+    expect(await headBranchReader(makeRepoOnBranch('heads/x'))()).toBe('heads/x');
   });
 
   it('a HEAD not under refs/heads/ is omitted, the request succeeds', async () => {
@@ -269,8 +273,12 @@ describe('HttpKbProvider X-Repository-Branch', () => {
       await provider.query({});
       git(dir, ['checkout', '-q', '-b', 'second']);
       await new Promise(resolve => setTimeout(resolve, ttlMs * 3));
+      // Stale-while-revalidate: this request still carries the old branch and
+      // starts the refresh; the next one carries the new branch.
+      await provider.query({});
+      await new Promise(resolve => setTimeout(resolve, 500));
       await provider.query({});
     });
-    expect(seen.map(s => s.branch)).toEqual(['first', 'second']);
+    expect(seen.map(s => s.branch)).toEqual(['first', 'first', 'second']);
   });
 });

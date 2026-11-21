@@ -143,6 +143,11 @@ ${m.KB_SERVER_USAGE}`);
     import('./cli/kb-profile.js')
       .then(m => process.exit(m.runKbProfile(process.argv.slice(4))))
       .catch(err => { logError('cli', `kb profile failed: ${err.message}`); process.exit(1); });
+  } else if (subCmd === 'merge-driver') {
+    // Git merge driver for the knowledge bible, registered in a clone by kb_setup.
+    import('./cli/kb-merge-driver.js')
+      .then(m => process.exit(m.runKbMergeDriver(process.argv.slice(4))))
+      .catch(err => { logError('cli', `kb merge-driver failed: ${err.message}`); process.exit(1); });
   } else if (subCmd === 'import') {
     // T2.2 (F4, D3): post-merge entry point for absorbing a merged bible into
     // the local KB. Thin wrapper over the same kbImport the MCP tool uses.

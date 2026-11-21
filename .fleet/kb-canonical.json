@@ -1,9 +1,7 @@
 {
   "version": 3,
   "provenance": {
-    "commit": "5a171212f2e1eee116e7f58e2ea29648ffb8ff1f",
-    "branch": "main",
-    "entry_count": 177
+    "branch": "main"
   },
   "entries": [
     {
@@ -744,6 +742,35 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:14.441Z"
+    },
+    {
+      "id": "370cbe0c-3076-4db1-a9e3-ad7ea884e264",
+      "type": "knowledge",
+      "title": "kb_setup registers an id-keyed bible git merge driver in the clone",
+      "summary": "kb_setup calls installBibleMergeDriver, which sets git config --local merge.apra-fleet-kb-bible.driver to the absolute apra-fleet CLI argv plus 'kb merge-driver %O %A %B %P' and adds '.fleet/kb-canonical.json merge=apra-fleet-kb-bible' to the clone's info/attributes. The engine is src/services/knowledge/bible-merge.ts.",
+      "symbols": [
+        "installBibleMergeDriver",
+        "runKbMergeDriver",
+        "mergeBibleDocuments",
+        "mergeKbCanonical",
+        "BIBLE_MERGE_DRIVER_NAME"
+      ],
+      "source_files": [
+        "src/cli/kb-merge-driver.ts",
+        "src/services/knowledge/bible-merge.ts",
+        "src/tools/kb-setup.ts",
+        "packages/apra-fleet-se/scripts/merge-kb-canonical.mjs",
+        "tests/knowledge/bible-merge-parity.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-21T11:22:14.863Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/scripts/merge-kb-canonical.mjs": "a8d68d4ad7945b85143e2df8cf4ce34f7efc97da",
+        "src/cli/kb-merge-driver.ts": "ed1881a9cf7d80a61b3bc2a107a99536004501ac",
+        "src/services/knowledge/bible-merge.ts": "876739bd97e76ed5a415f41bc0c7a1991d0deba9",
+        "src/tools/kb-setup.ts": "a81b51d32d58c5b6c0489dccc7ce8fe3bd944a53",
+        "tests/knowledge/bible-merge-parity.test.ts": "7c45009d68a54e7b947009674db2a727201eddc9"
+      }
     },
     {
       "id": "399f2e9b-c7d1-4c6a-9785-192062276a11",
@@ -2339,6 +2366,31 @@
       }
     },
     {
+      "id": "a4df8a8f-d316-415c-9744-b141ec017807",
+      "type": "learning",
+      "title": "vitest workers of one run share APRA_FLEET_DATA_DIR and the KB config file in it",
+      "summary": "tests/setup.ts sets APRA_FLEET_DATA_DIR from the per-run dir that tests/global-setup.ts provides, so every file of one vitest run shares <data dir>/knowledge/config.json. vitest.config.ts runs files one at a time (fileParallelism: false), which hides this; with --fileParallelism, http-config suites read each other's config.",
+      "symbols": [
+        "claimFileDataDir",
+        "fileDataDirViolations",
+        "FLEET_DIR"
+      ],
+      "source_files": [
+        "tests/setup.ts",
+        "tests/global-setup.ts",
+        "vitest.config.ts",
+        "tests/helpers/file-kb-data-dir.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-21T09:52:21.423Z",
+      "source_file_hashes": {
+        "tests/global-setup.ts": "5e0975e274bac84dd461cef418d7196dde5796a1",
+        "tests/helpers/file-kb-data-dir.ts": "d1a573362a85d638ce4aa40dc964a76b90a2cae3",
+        "tests/setup.ts": "3b840d57c8d34ed1517efe3b4c57a70c0fc85ee1",
+        "vitest.config.ts": "9a6bf830af480f30786052e44c2feb951c8abbee"
+      }
+    },
+    {
       "id": "a67295f1-33ca-4960-93a0-da0275505905",
       "type": "knowledge",
       "title": "VCS provider builders key the curl binary on os and the quoting dialect on shell",
@@ -2474,6 +2526,54 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-06T09:41:37.051Z"
+    },
+    {
+      "id": "b1be6ccd-6dcf-47b4-9461-61638bdc8c6f",
+      "type": "knowledge",
+      "title": "memory-contract bindings descriptions are hardcoded in generate-contract.mjs",
+      "summary": "bindings/mcp/<tool>.json descriptions come from BASE_DESCRIPTIONS in memory-contract/v1/generate-contract.mjs, not from tool-registry.ts. After changing a kb_* tool description, update BASE_DESCRIPTIONS (without the KB_SELF_NOTE suffix) and INVENTORY.md Appendix A, then run npm run build && npm run contract:generate.",
+      "symbols": [
+        "BASE_DESCRIPTIONS",
+        "KB_SELF_NOTE"
+      ],
+      "source_files": [
+        "memory-contract/v1/generate-contract.mjs",
+        "memory-contract/v1/INVENTORY.md",
+        "tests/memory-contract-roster-guard.test.ts",
+        "tests/memory-contract-drift-guard.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-21T10:28:18.261Z",
+      "source_file_hashes": {
+        "memory-contract/v1/INVENTORY.md": "0a0893243084e0526722d67d4ec6467956b5102d",
+        "memory-contract/v1/generate-contract.mjs": "250651d7fe625f070779235ae674ee318e0e3269",
+        "tests/memory-contract-drift-guard.test.ts": "2aab7a4f1fd50425012e525ec21ad7dcbf3ed824",
+        "tests/memory-contract-roster-guard.test.ts": "4b30b1181945497d4ba3a4123208f4b73de1fae4"
+      }
+    },
+    {
+      "id": "b417d1be-a8d5-4662-9b71-97c5f851dbc0",
+      "type": "knowledge",
+      "title": "kb_import keeps bible ids on every AUDN path; duplicates resolve via bible_id_aliases",
+      "summary": "Under importMode, SqliteProvider.capture stores linked ('update') and flagged imports under the bible id when it is free. A bible entry deduplicated ('none') records a bible_id_aliases row pointing at the local row that absorbed it. applyTombstoneToRow resolves through that alias when no row has the id, so kb_import tombstones and POST /api/kb/withdraw reach the row.",
+      "symbols": [
+        "evaluateAudn",
+        "capture",
+        "applyTombstoneToRow",
+        "importBibleEntries"
+      ],
+      "source_files": [
+        "src/services/knowledge/sqlite-provider.ts",
+        "src/services/knowledge/bible-import.ts",
+        "tests/knowledge/kb-import-audn-ids-tombstone.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-21T09:52:17.791Z",
+      "source_file_hashes": {
+        "src/services/knowledge/bible-import.ts": "0f7245962772ebd3558ad3ae3183983284ed1ac7",
+        "src/services/knowledge/sqlite-provider.ts": "e32e86971370ada69962300de4fb73e406f86bae",
+        "tests/knowledge/kb-import-audn-ids-tombstone.test.ts": "94191b53d8488b9a66536be8825c57643d15e8ef"
+      }
     },
     {
       "id": "b7ec6763-407e-4ca3-8cf7-91183e33e39f",
@@ -2681,6 +2781,30 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:36.716Z"
+    },
+    {
+      "id": "c2defe8a-bdfa-4d12-9a71-178f43428860",
+      "type": "knowledge",
+      "title": "KB post-commit hook pins the absolute node/CLI path at kb_setup time",
+      "summary": "installKbPostCommitHook writes a hook that runs resolveKbInvalidateCommand() output: process.execPath (SEA) or absolute node plus dist/index.js. Moving the node binary or install breaks the hook until kb_setup is re-run; failures are reported on stderr.",
+      "symbols": [
+        "resolveKbInvalidateCommand",
+        "buildKbPostCommitHook",
+        "installKbPostCommitHook",
+        "_setKbInvalidateCommandOverride"
+      ],
+      "source_files": [
+        "src/tools/kb-invalidate.ts",
+        "tests/knowledge/isolate-git-config.ts",
+        "src/index.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-21T09:52:29.088Z",
+      "source_file_hashes": {
+        "src/index.ts": "219f7360474ef6a6bc1d063c34e7c9a1db760b53",
+        "src/tools/kb-invalidate.ts": "d6a367158fc50977351c0a8b07001b55582f51b2",
+        "tests/knowledge/isolate-git-config.ts": "2359d6eea97b826cd00e72852490be296d433d2d"
+      }
     },
     {
       "id": "c4fb3b10-577e-46a8-8ddb-bde2844b57c7",
@@ -3182,6 +3306,34 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-02T23:19:56.679Z"
+    },
+    {
+      "id": "e6c61df6-c58d-42ba-9102-5abc8d1729be",
+      "type": "knowledge",
+      "title": "Bible provenance is branch-only; the verified base commit is a commit trailer",
+      "summary": "kb_export and kb_bible_commit write .fleet/kb-canonical.json provenance as {branch} only. The base commit goes into a 'Verified-Against: <sha>' trailer on the git commit that writes the file, and the entry count is entries.length. Older bibles still carrying provenance.commit/entry_count are read-tolerated.",
+      "symbols": [
+        "bibleProvenance",
+        "verifiedAgainstTrailer",
+        "kbBibleCommit",
+        "parseBibleDocument"
+      ],
+      "source_files": [
+        "src/tools/kb-export.ts",
+        "src/tools/kb-bible-commit.ts",
+        "src/services/knowledge/bible-import.ts",
+        "memory-contract/v1/bible/kb-canonical.schema.json",
+        "tests/knowledge/kb-bible-merge-friendly.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-21T10:28:14.688Z",
+      "source_file_hashes": {
+        "memory-contract/v1/bible/kb-canonical.schema.json": "8215ac915511830d3d53eaf7b0d1c364da995ea6",
+        "src/services/knowledge/bible-import.ts": "0f2417ae4a7691d319927153672c80e8f9a58a46",
+        "src/tools/kb-bible-commit.ts": "e12492c5ed8fc4badd475c2fba98cf61fc3c3f7f",
+        "src/tools/kb-export.ts": "e11d5d049cfa70beeec58c22c81c58d78bcd996e",
+        "tests/knowledge/kb-bible-merge-friendly.test.ts": "9f7f3e97495129a5f357dc1395bc0da7c4d52e3f"
+      }
     },
     {
       "id": "e70c7379-3b4e-46f8-bdc6-7a81ccd5c3e9",

@@ -51,9 +51,11 @@ const GENERATE_SCRIPT = path.join(REPO_ROOT, 'memory-contract', 'v1', 'generate-
 const V1_DIR = path.join(REPO_ROOT, 'memory-contract', 'v1');
 
 // Baselines recorded when this guard was authored (my-beads-db-27m.10):
-// taxonomy.json currently disposes 33 names (22 codes across its 7 groups plus
-// 11 non_error_outcomes), methods.json currently has 25 entries (18 methods + 7
-// code_intelligence_methods). Both numbers only grow or hold steady from here --
+// taxonomy.json then disposed 33 names (22 codes across its 7 groups plus 11
+// non_error_outcomes), methods.json then had 25 entries (18 methods + 7
+// code_intelligence_methods). The constants below stay at those floors; the
+// files have since grown to 54 names (44 codes + 10 non_error_outcomes) and 31
+// entries (22 methods + 9 code_intelligence_methods). Both numbers only grow or hold steady --
 // a drop below the baseline means an entry was silently deleted, which policy
 // requires to be a deliberate contract revision (tracked, version-bumped), not a
 // change this guard waves through unnoticed.
