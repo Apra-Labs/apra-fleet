@@ -1152,15 +1152,19 @@ export class MemberConfigChangedError extends MemberConfigError {
 /**
  * Member-side script that prints a fingerprint of `file` (already escaped for
  * "..." in the target shell): POSIX `cksum` (CRC + byte count, present on
- * Linux, macOS and Git for Windows), PowerShell Get-FileHash SHA256, or
+ * Linux, macOS and Git for Windows), PowerShell SHA256 as uppercase hex, or
  * MEMBER_FILE_ABSENT_FINGERPRINT when the file does not exist. The probe and
  * the landing command use the same script, so the two fingerprints compare
  * equal exactly when the file is unchanged. Raw (not encoded) PowerShell.
+ * PowerShell hashes via the .NET SHA256 type, not Get-FileHash: a Windows
+ * PowerShell 5.1 started from pwsh 7 inherits a PSModulePath listing pwsh's
+ * Microsoft.PowerShell.Utility first, and 5.1 then fails "Get-FileHash is not
+ * recognized" (see hashFilesRecursive in src/os/windows.ts).
  */
 export function memberFileFingerprintScript(file: string, posix: boolean): string {
   return posix
     ? `if [ -e "${file}" ]; then cksum < "${file}"; else printf '%s' '${MEMBER_FILE_ABSENT_FINGERPRINT}'; fi`
-    : `if ([System.IO.File]::Exists("${file}")) { (Get-FileHash -LiteralPath "${file}" -Algorithm SHA256).Hash } else { '${MEMBER_FILE_ABSENT_FINGERPRINT}' }`;
+    : `if ([System.IO.File]::Exists("${file}")) { $fleetSha = [System.Security.Cryptography.SHA256]::Create(); try { [System.BitConverter]::ToString($fleetSha.ComputeHash([System.IO.File]::ReadAllBytes("${file}"))).Replace('-', '') } finally { $fleetSha.Dispose() } } else { '${MEMBER_FILE_ABSENT_FINGERPRINT}' }`;
 }
 
 /**

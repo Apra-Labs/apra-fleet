@@ -50,7 +50,7 @@ export function isWindowsLandingMove(cmd: string): boolean {
 export function parseFingerprintProbe(cmd: string): string | null {
   const c = unwrapPowerShellEncoded(cmd);
   const m = c.match(/^if \[ -e "([^"]*)" \]; then cksum < /)
-    ?? c.match(/^if \(\[System\.IO\.File\]::Exists\("([^"]*)"\)\) \{ \(Get-FileHash /);
+    ?? c.match(/^if \(\[System\.IO\.File\]::Exists\("([^"]*)"\)\) \{ \$fleetSha = \[System\.Security\.Cryptography\.SHA256\]::Create\(\); /);
   return m ? m[1] : null;
 }
 

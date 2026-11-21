@@ -54,7 +54,11 @@ function runBash(cmd: string, env: NodeJS.ProcessEnv) {
   return { stdout: r.stdout ?? '', stderr: r.stderr ?? '', code: r.status ?? 1 };
 }
 function runPowerShell(cmd: string, env: NodeJS.ProcessEnv) {
-  const encoded = Buffer.from(`$ErrorActionPreference = 'Continue'; ${cmd}`, 'utf16le').toString('base64');
+  // Under console code page 65001 (GitHub windows runners) PowerShell 5.1
+  // prefixes a UTF-8 BOM to text piped into a native command, and git
+  // credential fill then sees no protocol field. Pipe without a BOM.
+  const noBom = 'try { [Console]::InputEncoding = New-Object System.Text.UTF8Encoding $false } catch { }; ';
+  const encoded = Buffer.from(`$ErrorActionPreference = 'Continue'; ${noBom}${cmd}`, 'utf16le').toString('base64');
   const r = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded], { env, encoding: 'utf-8' });
   return { stdout: r.stdout ?? '', stderr: r.stderr ?? '', code: r.status ?? 1 };
 }

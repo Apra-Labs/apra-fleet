@@ -24,7 +24,9 @@ import { execFile, execFileSync, exec as cpExec, spawn } from 'node:child_proces
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { ClaudeProvider } from '../src/providers/claude.js';
+import { ClaudeProvider, probeMemberFileFingerprint, windowsReplaceFileCommand, MEMBER_FILE_ABSENT_FINGERPRINT } from '../src/providers/claude.js';
+import { wrapPowerShellEncoded } from '../src/os/windows.js';
+import { createHash } from 'node:crypto';
 import { escapeForDoubleQuotes } from '../src/utils/shell-escape.js';
 import type { MemberSecretFileChannel, WorkspaceTrustTransport } from '../src/providers/provider.js';
 import type { SSHExecResult } from '../src/types.js';
@@ -50,7 +52,30 @@ beforeEach(() => {
   vi.stubEnv('USERPROFILE', fakeUserHome);
   childEnv = { ...process.env, HOME: fakeUserHome, USERPROFILE: fakeUserHome };
   delete childEnv.CLAUDE_CONFIG_DIR;
+  if (isWin) {
+    // Windows env names are case-insensitive but a copied env object is not
+    // (vitest workers may carry PSMODULEPATH): replace every spelling.
+    const inherited = process.env.PSModulePath ?? '';
+    for (const k of Object.keys(childEnv)) if (k.toLowerCase() === 'psmodulepath') delete childEnv[k];
+    childEnv.PSModulePath = `${shadowingPwshUtilityModule()};${inherited}`;
+  }
 });
+
+/**
+ * A PSModulePath entry holding a pwsh-7-style Microsoft.PowerShell.Utility
+ * (Core-only manifest exporting Get-FileHash), as a Windows PowerShell 5.1
+ * started from pwsh 7 inherits it (GitHub windows runners run npm test under
+ * pwsh). Ahead of the 5.1 module it makes "Get-FileHash" unresolvable, so every
+ * real-powershell case here runs under the conditions that broke on CI.
+ */
+function shadowingPwshUtilityModule(): string {
+  const root = path.join(sandbox, 'pwsh7-modules');
+  const dir = path.join(root, 'Microsoft.PowerShell.Utility', '7.0.0.0');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'Microsoft.PowerShell.Utility.psd1'),
+    "@{\r\nGUID='1DA87E53-152B-403E-98DC-74D7B4D63D59'\r\nModuleVersion='7.0.0.0'\r\nCompatiblePSEditions=@('Core')\r\nPowerShellVersion='3.0'\r\nNestedModules='Microsoft.PowerShell.Commands.Utility.dll'\r\nFunctionsToExport=@()\r\nCmdletsToExport=@('Get-FileHash')\r\n}\r\n");
+  return root;
+}
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -422,4 +447,20 @@ describe('a failed delete of the copied-from source after a successful swap only
       if (holder && holder.exitCode === null && holder.signalCode === null) await new Promise(r => holder!.once('exit', r));
     }
   }, 60_000);
+});
+
+describe('PowerShell fingerprint under a pwsh-7 PSModulePath', () => {
+  it.skipIf(!isWin)('real powershell.exe: SHA-256 (uppercase hex) of the file, FLEET_ABSENT when missing; the landing CAS accepts it', async () => {
+    const m = setupMember();
+    const exec = powershellExec();
+    const want = createHash('sha256').update(fs.readFileSync(m.file)).digest('hex').toUpperCase();
+    expect(await probeMemberFileFingerprint(exec, escapeForDoubleQuotes(m.file), false)).toBe(want);
+    expect(await probeMemberFileFingerprint(exec, escapeForDoubleQuotes(path.join(m.home, 'missing.json')), false)).toBe(MEMBER_FILE_ABSENT_FINGERPRINT);
+
+    const staged = path.join(m.home, 'staged.json');
+    fs.writeFileSync(staged, '{"landed":true}');
+    const r = await exec(wrapPowerShellEncoded(windowsReplaceFileCommand(escapeForDoubleQuotes(staged), escapeForDoubleQuotes(m.file), want)));
+    expect(r.code, r.stderr).toBe(0);
+    expect(JSON.parse(fs.readFileSync(m.file, 'utf8'))).toEqual({ landed: true });
+  }, 30_000);
 });
