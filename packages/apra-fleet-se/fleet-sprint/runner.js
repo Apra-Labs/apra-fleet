@@ -4807,7 +4807,7 @@ async function runSprintCycle(context) {
     // phase, before the endGroup() below, exactly as the inline version did.
     // Sprint-summary WARN: repeat the lower-quality banner once at the end.
     const lowerQualityBanner = logLowerQualityWarn(log, MEMBER_INIT_LOG_PREFIX, sprintState.memberInit, 'summary');
-    const { pushed, prSkipped } = await runPublishPrPhase({
+    const { pushed, prSkipped, beadsSyncFailure } = await runPublishPrPhase({
         lowerQualityBanner,
         phase, log, command,
         args, validated, targetIssues, backlogMember, finalCycleLabel,
@@ -4820,6 +4820,9 @@ async function runSprintCycle(context) {
     // Final summary line: a skipped PR must not read as a clean success.
     if (prSkipped) {
         log(`[Sprint Summary] ${finalVerdictResult.verdict}, ${prSkipped.message} (reason: ${prSkipped.reason}); branch '${validated.branch}' is pushed.`);
+    }
+    if (beadsSyncFailure) {
+        log(`[Sprint Summary] ${finalVerdictResult.verdict}, ${beadsSyncFailure.message} (reason: ${beadsSyncFailure.reason}).`);
     }
 
     endGroup();
@@ -4864,6 +4867,18 @@ async function runSprintCycle(context) {
             ...(finalVerdictResult.verdict === 'PASS' ? { status: 'success-with-warnings' } : {}),
             prSkipped,
             warnings: [`${prSkipped.message} (reason: ${prSkipped.reason})`],
+        } : {}),
+        // Present only when beads changes still had not reached the shared
+        // remote after the terminal retry ({ reason: 'beads-sync-failed',
+        // message, members: [{ member, kind, detail }] }). Reported, never a
+        // verdict change: a PASS ends 'success-with-warnings', like prSkipped.
+        ...(beadsSyncFailure ? {
+            ...(finalVerdictResult.verdict === 'PASS' ? { status: 'success-with-warnings' } : {}),
+            beadsSyncFailure,
+            warnings: [
+                ...(prSkipped ? [`${prSkipped.message} (reason: ${prSkipped.reason})`] : []),
+                `${beadsSyncFailure.message} (reason: ${beadsSyncFailure.reason})`,
+            ],
         } : {}),
     };
 }

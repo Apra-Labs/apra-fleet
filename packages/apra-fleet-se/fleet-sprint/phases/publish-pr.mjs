@@ -70,6 +70,68 @@ import { ApraFleet } from '@apralabs/apra-fleet-client';
 import { capabilities as vcsCapabilities } from '../vcs-module.mjs';
 import { raiseVcsPrForMember } from '../vcs-auth.mjs';
 import { buildSprintPrBody, buildSprintPrTitle } from '../pr-body.mjs';
+import { DoltSync } from '../dolt-sync.mjs';
+
+/** Reason recorded when beads changes still have not reached the shared remote
+ *  at the sprint terminal (after the one terminal retry). */
+export const BEADS_SYNC_FAILED_REASON = 'beads-sync-failed';
+
+/**
+ * The sprint-terminal beads check. Asks DoltSync.flush() whether any D-push
+ * this run degraded is still pending. When one is, retries the beads push ONCE
+ * per pending member through the bracketed gitSync.syncBeadsAfter() (so the
+ * push mutex and pause guard apply), then asks again. Anything still pending
+ * becomes a typed beads-sync failure, logged loudly. Never throws: a sync
+ * failure is reported, never allowed to stop the PR from being published.
+ *
+ * @param {{ gitSync: object, log: Function, flushBeadsSync: Function }} deps
+ * @returns {Promise<null|{ reason: string, message: string, members: Array<{ member: string, kind: string, detail: string }> }>}
+ */
+export async function checkTerminalBeadsSync({ gitSync, log, flushBeadsSync }) {
+    const pendingMembers = (degradations) => [...new Set((degradations || []).map((d) => d.member).filter(Boolean))];
+    let flushed;
+    try {
+        flushed = flushBeadsSync();
+    } catch (err) {
+        log(`[Beads Sync] could not read pending beads-sync degradations at the sprint terminal (non-fatal): ${(err && err.message) || err}`);
+        return null;
+    }
+    if (!flushed || flushed.published || pendingMembers(flushed.degradations).length === 0) return null;
+    const members = pendingMembers(flushed.degradations);
+    log(`[Beads Sync] ${members.length} member(s) still have beads changes that did not reach the shared remote (${members.join(', ')}); retrying the beads push once before publishing.`);
+    for (const member of members) {
+        try {
+            await gitSync.syncBeadsAfter(member, { pushBeads: true });
+        } catch (err) {
+            log(`[Beads Sync] terminal beads push retry for member '${member}' threw (non-fatal): ${(err && err.message) || err}`);
+        }
+    }
+    let after;
+    try {
+        after = flushBeadsSync();
+    } catch (err) {
+        after = flushed;
+    }
+    const still = (after && after.degradations ? after.degradations : []).filter((d) => d && d.member);
+    if (after && after.published) {
+        log('[Beads Sync] terminal beads push retry landed; no beads changes are pending.');
+        return null;
+    }
+    // One entry per member: its most recent pending record.
+    const latest = new Map();
+    for (const d of still) latest.set(d.member, d);
+    if (latest.size === 0) return null;
+    const entries = [...latest.values()].map((d) => ({
+        member: d.member,
+        kind: d.errorKind || d.kind || 'unknown',
+        detail: String(d.detail || ''),
+    }));
+    const named = entries.map((e) => "member '" + e.member + "' (" + e.kind + ')').join(', ');
+    const details = entries.map((e) => e.member + ': ' + e.detail).join(' | ');
+    const message = `Beads sync failed: changes from ${named} did not reach the shared beads remote`;
+    log(`[Beads Sync FAILED] ${message} after one terminal retry. Those changes are safe in each member's local clone; publish them from that member by hand once the remote accepts them. The sprint verdict is unchanged. Details: ${details}`);
+    return { reason: BEADS_SYNC_FAILED_REASON, message, members: entries };
+}
 
 /**
  * Runs the Publish PR phase: push the sprint branch, then either raise a PR on
@@ -77,7 +139,7 @@ import { buildSprintPrBody, buildSprintPrTitle } from '../pr-body.mjs';
  * issue(s) directly when the verdict passed.
  *
  * @param {object} state Explicit phase state; see this file's header.
- * @returns {Promise<{ pushed: boolean, prSkipped?: { reason: string, message: string } }>} Whether the sprint branch actually
+ * @returns {Promise<{ pushed: boolean, prSkipped?: { reason: string, message: string }, beadsSyncFailure?: { reason: string, message: string, members: object[] } }>} Whether the sprint branch actually
  *   reached the remote. runner.js folds this straight into runSprintCycle's
  *   return value -- it never overrides the sprint's own computed verdict.
  */
@@ -108,6 +170,9 @@ export async function runPublishPrPhase({
     // The run's wait records (../set-aside.mjs collectWaitEntries), rendered
     // as one "Waited this run" line; omitted when empty.
     waited = [],
+    // Reads the pending beads-sync degradations at the terminal (DoltSync.flush
+    // shape: { published, degradations }). Injectable for tests.
+    flushBeadsSync = () => DoltSync.flush(),
 }) {
     phase(`Publish PR C${finalCycleLabel}`);
     // The branch push is the LAST step of a sprint that has already done all of
@@ -165,9 +230,22 @@ export async function runPublishPrPhase({
     } catch (pushErr) {
         lastPushError = pushErr.message;
     }
+    // The sprint-terminal beads check (checkTerminalBeadsSync above), run at
+    // most once: before the PR body is built on the PR path, otherwise just
+    // before this phase returns (after any direct target-issue D-push).
+    let beadsSyncChecked = false;
+    let beadsSyncFailure = null;
+    const ensureTerminalBeadsCheck = async () => {
+        if (beadsSyncChecked) return beadsSyncFailure;
+        beadsSyncChecked = true;
+        beadsSyncFailure = await checkTerminalBeadsSync({ gitSync, log, flushBeadsSync });
+        return beadsSyncFailure;
+    };
+    const withBeadsSync = (result) => (beadsSyncFailure ? { ...result, beadsSyncFailure } : result);
     if (!pushed) {
+        await ensureTerminalBeadsCheck();
         log(`[Publish Push Failed] Could not push sprint branch '${validated.branch}' to origin (bounded transient retry, and a rebase-then-re-push if diverged, both exhausted) -- the sprint's work is COMMITTED LOCALLY ONLY and is NOT on the remote. Skipping PR creation and target-issue closure (neither is meaningful for an unpushed branch); the sprint's own computed verdict (${finalVerdictResult.verdict}) is preserved and returned with pushed:false. Push the branch by hand and raise the PR, or re-run finalization once the remote is reachable. Last error: ${lastPushError}`);
-        return { pushed: false };
+        return withBeadsSync({ pushed: false });
     }
     // The final verdict is surfaced directly in the PR title and body -- a
     // human reviewer must never have to dig through sprint logs to learn
@@ -253,6 +331,7 @@ export async function runPublishPrPhase({
         // applies markdown/transport hygiene instead (no raw HTML, no
         // credential-placeholder spelling, balanced fences, ASCII, capped)
         // while keeping the line structure.
+        const terminalBeadsFailure = await ensureTerminalBeadsCheck();
         const prTitle = buildSprintPrTitle({ verdict: finalVerdictLabel, branch: validated.branch });
         const runId = validated.runId || (args && args.run_id) || '';
         const now = new Date();
@@ -280,6 +359,7 @@ export async function runPublishPrPhase({
             details: [
                 validated.skipRegression ? 'Regression pass: skipped by launch option -- not run this sprint.' : null,
                 lowerQualityBanner || null,
+                terminalBeadsFailure ? `${terminalBeadsFailure.message} (reason: ${terminalBeadsFailure.reason}); the changes are safe in each member's local clone and were not published to the shared beads remote.` : null,
             ],
             setAside,
             waited,
@@ -383,5 +463,6 @@ export async function runPublishPrPhase({
         }
     }
 
-    return prSkipped ? { pushed: true, prSkipped } : { pushed: true };
+    await ensureTerminalBeadsCheck();
+    return withBeadsSync(prSkipped ? { pushed: true, prSkipped } : { pushed: true });
 }

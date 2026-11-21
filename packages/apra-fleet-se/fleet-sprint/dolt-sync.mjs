@@ -2712,7 +2712,10 @@ async function runDegradable(run, ctx) {
             `The sprint CONTINUES -- this member's beads mutations are safe in its local clone and the next ` +
             `D-${operation} bracket for '${member}' is the queued retry. Cause: ${outcome.detail}`,
         );
-        const record = recordDegradedSync({ member, operation, kind, detail: outcome.detail });
+        // `errorKind` keeps the typed error's own finer kind (e.g. a
+        // DoltPushRaceError's 'remote-race', which classifies 'diverged').
+        const errorKind = (err && (err.kind || (err.details && err.details.kind))) || kind;
+        const record = recordDegradedSync({ member, operation, kind, errorKind, detail: outcome.detail });
         if (typeof onDegraded === 'function') {
             try {
                 await onDegraded({ ...outcome, record });
