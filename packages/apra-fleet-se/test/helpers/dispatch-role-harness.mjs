@@ -151,6 +151,31 @@ export function turnExhaustionError(message = 'max turns spent', sessionId = FAI
     return new AgentDispatchError(message, { details: { reason: 'max_turns_exhausted', ...(sessionId ? { sessionId } : {}) } });
 }
 
+/**
+ * A refusal whose only refused call maps to no permission grant (a chained
+ * shell command): the one failure a ladder with retry.unmappableRefusalResume
+ * resumes in the same session, by the refused session's explicit id.
+ */
+export function unmappableRefusalError(sessionId = FAILED_SESSION_ID, target = 'npm test > /tmp/t.log 2>&1 &') {
+    return new AgentDispatchError(
+        '[Workflow Error] Agent dispatch failed (permission_denied): [FAIL] execute_prompt: permission denied',
+        {
+            details: {
+                reason: 'permission_denied',
+                member: 'dev',
+                permissionDenied: {
+                    actions: ['Bash'],
+                    denials: [{ action: 'Bash', target, suggestedGrants: [] }],
+                    suggestedGrants: [],
+                    hint: `claude refused Bash "${target}".`,
+                    signals: ['result_json'],
+                },
+                ...(sessionId ? { sessionId } : {}),
+            },
+        },
+    );
+}
+
 /** The server refused an explicit-id resume: that session is gone or unknown. */
 export function sessionNotFoundError(sessionId = FAILED_SESSION_ID, message = 'session not found') {
     return new AgentDispatchError(message, { details: { reason: 'session_not_found', sessionId } });
@@ -579,11 +604,19 @@ export async function driveEngineDispatch(role, kind, options = {}) {
     }
     let { responses } = options;
     if (!responses) {
-        if (kind === 'max-turns-resume') responses = [turnExhaustionError()];
+        if (kind === 'max-turns-resume') {
+            // A ladder that never resumes on turn exhaustion (the scoped re-plan
+            // rows) reaches its resume-only secondary through an unmappable
+            // refusal instead.
+            responses = ROLE_POLICIES[role].retry.maxTurnsResume ? [turnExhaustionError()] : [unmappableRefusalError()];
+        }
         else if (kind === 'semantic-repair-re-ask') responses = [REJECTED_CANDIDATE, ACCEPTED_CANDIDATE];
         else responses = [];
     }
     const { ctx, rec } = createRecordingCtx({ responses, ...(options.ctx || {}) });
+    if (kind === 'max-turns-resume' && !ROLE_POLICIES[role].retry.maxTurnsResume && !ctx.onPermissionDenied) {
+        ctx.onPermissionDenied = async () => ({ healed: false, step: 'no_progress', composeRole: role, grants: [], rejectedGrants: [], reason: 'no grant maps to the refused call' });
+    }
     const outcome = await dispatchRole(ctx, role, opts);
     const index = kind === 'main' ? 0 : 1;
     return { ctx, rec, outcome, opts, dispatch: rec.dispatches[index] };
