@@ -18,15 +18,24 @@ export type VcsProvider = 'github' | 'bitbucket' | 'azure-devops';
 // Credential discriminated unions
 // ---------------------------------------------------------------------------
 
+/**
+ * The caller's choice for the gh CLI login a GitHub deploy can also perform:
+ * true = always log gh in, false = never, undefined = the default rule in
+ * src/services/vcs/github.ts (ghLoginDecision).
+ */
+export type GitHubGhLogin = boolean | undefined;
+
 export interface GitHubAppCredentials {
   type: 'github-app';
   git_access?: Agent['gitAccess'];
   repos?: string[];
+  ghLogin?: GitHubGhLogin;
 }
 
 export interface GitHubPatCredentials {
   type: 'pat';
   token: string;
+  ghLogin?: GitHubGhLogin;
 }
 
 export type GitHubCredentials = GitHubAppCredentials | GitHubPatCredentials;
@@ -110,6 +119,8 @@ export interface VcsCredentialInput {
   token?: string;
   git_access?: Agent['gitAccess'];
   repos?: string[];
+  /** GitHub only: whether to also run the OS-user-wide gh CLI login (see GitHubGhLogin). */
+  gh_login?: boolean;
   email?: string;
   api_token?: string;
   workspace?: string;

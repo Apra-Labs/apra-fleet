@@ -2,6 +2,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert';
 
 import { createVcsAuthSelfHealCallback, createLlmAuthSelfHealCallback, parseOwnerRepoFromRemoteUrl } from '../fleet-sprint/runner.js';
+import { runGitStep } from '../fleet-sprint/git-topology.mjs';
 
 // apra-fleet-fmu: unit coverage for the real end-to-end onAuthFailure
 // self-heal wiring -- createVcsAuthSelfHealCallback() builds the callback
@@ -478,5 +479,49 @@ describe('createVcsAuthSelfHealCallback / createLlmAuthSelfHealCallback branch o
             logs.some((l) => /provision_llm_auth skipped for local member 'fleet-mac'/.test(l)),
             `expected a skip log entry, got: ${JSON.stringify(logs)}`,
         );
+    });
+});
+
+// git's HTTPS 403 on push (a cached-fresh credential whose scope no longer
+// covers the repo) must reach the one-shot self-heal: before it was
+// classified transient, retried, and onAuthFailure was never called.
+describe('runGitStep: git HTTPS 403 on push spends the one-shot self-heal', () => {
+    const HTTPS_403 = "remote: Permission to acme/widgets.git denied to app[bot].\nfatal: unable to access 'https://github.com/acme/widgets.git/': The requested URL returned error: 403";
+
+    function scripted(results) {
+        const queue = [...results];
+        const cmds = [];
+        const command = async (cmd) => {
+            cmds.push(cmd);
+            return queue.length > 1 ? queue.shift() : queue[0];
+        };
+        return { command, cmds };
+    }
+
+    test('a 403 calls onAuthFailure exactly once and a successful retry does not fail the step', async () => {
+        const { command, cmds } = scripted([{ ok: false, output: '', error: HTTPS_403 }, { ok: true, output: 'pushed', error: null }]);
+        const heals = [];
+        const res = await runGitStep({
+            command, member: 'doer-1', cmd: 'git push origin HEAD', label: 'G-push', log: () => {},
+            maxTransientRetries: 3, onAuthFailure: async (info) => { heals.push(info); },
+        });
+        assert.equal(res.ok, true);
+        assert.equal(heals.length, 1);
+        assert.equal(heals[0].failureKind, 'auth');
+        assert.equal(cmds.length, 2, 'exactly one push, one heal, one retried push -- no transient retries');
+    });
+
+    test('a 403 that repeats after the heal fails as auth: no second heal, no transient retries', async () => {
+        const { command, cmds } = scripted([{ ok: false, output: '', error: HTTPS_403 }]);
+        let heals = 0;
+        const res = await runGitStep({
+            command, member: 'doer-1', cmd: 'git push origin HEAD', label: 'G-push', log: () => {},
+            maxTransientRetries: 3, onAuthFailure: async () => { heals += 1; },
+        });
+        assert.equal(res.ok, false);
+        assert.equal(res.kind, 'auth');
+        assert.notEqual(res.permissionScope, true);
+        assert.equal(heals, 1);
+        assert.equal(cmds.length, 2, 'the original push plus exactly one post-heal retry');
     });
 });

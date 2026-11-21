@@ -3,7 +3,12 @@ import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getAgentOS, getAgentShell, touchAgent, checkVcsTokenExpiry } from '../utils/agent-helpers.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
-import { updateAgent } from '../services/registry.js';
+import { getAgent } from '../services/registry.js';
+import { getVcsCredentials, listVcsCredentials, recordVcsCredential } from '../services/vcs-credential-record.js';
+import { revokeVcsCredential, describeLegacyGlobalKey } from '../services/vcs-credential-revoke.js';
+import type { VcsCredentialRevokeResult } from '../services/vcs-credential-revoke.js';
+import { vcsGitEnvPrefix } from '../services/vcs-git-env.js';
+import { isSafeGitCredentialScope } from '../os/os-commands.js';
 import { credentialResolve } from '../services/credential-store.js';
 import { collectOobApiKey } from '../services/auth-socket.js';
 import { decryptPassword } from '../utils/crypto.js';
@@ -115,13 +120,14 @@ export const provisionVcsAuthSchema = z.object({
   provider: z.enum(['github', 'bitbucket', 'azure-devops']).describe('VCS provider to configure'),
   label: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/).optional().describe('Credential label (slug, e.g. "work-github"). Defaults to provider name. Enables multiple credentials per provider.'),
   non_interactive: z.boolean().optional().describe('When true, never prompt out of band: a missing secret field (api_token / pat / token) returns ok=false with reason credential_missing naming the field. Use from automation that has no operator at a terminal. Default false.'),
-  scope_url: z.string().optional().describe('Git credential scope URL (e.g. "https://github.com/my-org"). Defaults to "https://<host>". For an Azure DevOps repo on the legacy host, pass "https://ORG.visualstudio.com" so the PAT is bound to the host the member actually pushes to.'),
+  scope_url: z.string().optional().describe('Git credential scope URL (e.g. "https://github.com/my-org"). Defaults to "https://<host>". For an Azure DevOps repo on the legacy host, pass "https://ORG.visualstudio.com" so the PAT is bound to the host the member actually pushes to. Must be a plain scheme://host[:port][/path] URL (no quotes, spaces, dollar signs, equals signs, query, fragment or backslashes).'),
 
   // GitHub fields
   github_mode: z.enum(['github-app', 'pat']).optional().describe('GitHub auth mode: github-app (mint via configured app) or pat (personal access token)'),
   token: z.string().optional().describe('Personal access token (GitHub PAT or Azure DevOps PAT). Supports {{secret.NAME}} token -- value is resolved from the credential store before use.'),
   git_access: z.enum(['read', 'push', 'push+pr', 'admin', 'issues', 'full']).optional().describe(GIT_ACCESS_DESCRIPTION),
   repos: z.array(z.string()).optional().describe('GitHub App repository list override'),
+  gh_login: z.boolean().optional().describe('GitHub only: also log the gh CLI in with the new token. gh keeps ONE login per OS user, so this replaces the token every other process of that user runs gh with (the operator sessions on a local member, other members on the same host user). Default: only for label "github" on a remote member that no other registered member shares; skipped otherwise, and metadata.ghCliAuth says why. true: always log gh in (refresh the host gh on purpose). false: never. Git and vcs_credential_exec use the per-member, per-label credential either way.'),
 
   // Bitbucket fields
   email: z.string().optional().describe('OPTIONAL Bitbucket account email. Ignored for authentication (git uses the fixed token username x-bitbucket-api-token-auth, REST uses a Bearer token); kept only as metadata if given.'),
@@ -188,7 +194,9 @@ export type ProvisionVcsAuthReason =
   /** service.deploy() threw. */
   | 'deploy_threw'
   /** service.deploy() returned success:false. */
-  | 'deploy_failed';
+  | 'deploy_failed'
+  /** scope_url is not a plain scheme://host[:port][/path] URL; nothing was deployed. */
+  | 'scope_url_invalid';
 
 interface ProvisionVcsAuthFields {
   /** True when the credential was actually deployed onto the member. */
@@ -231,6 +239,12 @@ interface ProvisionVcsAuthFields {
   metadata: Record<string, string> | null;
   /** Near-expiry warning text when one applies, else null. */
   expiryWarning: string | null;
+  /**
+   * Upgrade migration of a LEGACY helper this label held (an older release
+   * registered it in the per-OS-user global git config), or null when there
+   * was none. Only fleet's own values are ever removed from the global key.
+   */
+  legacyGlobalHelper: LegacyGlobalHelperOutcome | null;
   /** Registry id of the resolved member, or null. */
   memberId: string | null;
   /** Friendly name of the resolved member, or null. */
@@ -248,6 +262,38 @@ interface ProvisionVcsAuthFields {
    * which is why every result goes through that redaction.
    */
   message: string | null;
+}
+
+export interface LegacyGlobalHelperOutcome {
+  /** The credential scope whose global key `credential.<scopeUrl>.helper` was looked at. */
+  scopeUrl: string;
+  /**
+   * "removed": fleet's legacy value was removed from the global key.
+   * "not_present": the key held no fleet value; nothing was changed.
+   * "kept_for_member": left in place because another member runs as the same
+   *   host user (keptForMember names it); fleet no longer refreshes it.
+   * "failed": the cleanup failed or its result could not be confirmed;
+   *   check the key (the notice says how).
+   */
+  outcome: 'removed' | 'not_present' | 'kept_for_member' | 'failed';
+  /** Fleet's own values removed from the key. */
+  removedValues: number;
+  /** Values on the key fleet did not write (counted, never echoed); always kept. */
+  keptValues: number;
+  /** Friendly name of the member the legacy helper was kept for, else null. */
+  keptForMember: string | null;
+  /** The upgrade notice line also shown in `text`, or null when there is nothing to say. */
+  notice: string | null;
+}
+
+function legacyGlobalHelperOutcome(scopeUrl: string, r: VcsCredentialRevokeResult): LegacyGlobalHelperOutcome {
+  const notice = describeLegacyGlobalKey(r) || null;
+  if (r.legacyLeftForSharer) {
+    return { scopeUrl, outcome: 'kept_for_member', removedValues: 0, keptValues: 0, keptForMember: r.legacyLeftForSharer.friendlyName, notice };
+  }
+  const rep = r.legacyGlobalKey?.report ?? null;
+  if (!rep || rep.failed) return { scopeUrl, outcome: 'failed', removedValues: 0, keptValues: 0, keptForMember: null, notice };
+  return { scopeUrl, outcome: rep.removed > 0 ? 'removed' : 'not_present', removedValues: rep.removed, keptValues: rep.kept, keptForMember: null, notice };
 }
 
 export interface ProvisionVcsAuthStructured extends ProvisionVcsAuthFields {
@@ -301,6 +347,7 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<Pr
         verificationReason: fields.verificationReason ?? null,
         metadata: fields.metadata ?? null,
         expiryWarning: fields.expiryWarning ?? null,
+        legacyGlobalHelper: fields.legacyGlobalHelper ?? null,
         memberId: fields.memberId ?? null,
         memberName: fields.memberName ?? null,
         message: fields.message != null ? redact(fields.message) : (ok ? null : stripResultMarker(text)),
@@ -386,9 +433,19 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<Pr
 
   const host = PROVIDER_HOSTS[input.provider];
   const scopeUrl = input.scope_url ?? `https://${host}`;
+  // The scope URL is registered for git through the member's dispatch
+  // environment (src/services/vcs-git-env.ts), where it must survive several
+  // quoting layers unescaped -- refuse anything but a plain URL up front.
+  if (!isSafeGitCredentialScope(scopeUrl)) {
+    return vcsResult(
+      `[FAIL] scope_url "${scopeUrl}" is not a plain scheme://host[:port][/path] URL (no quotes, spaces, '$', '=', '?', '#' or backslashes). Nothing was deployed.`,
+      { ...who, reason: 'scope_url_invalid' },
+    );
+  }
 
-  // Cancel any existing credential cleanup timer before re-provisioning
-  cancelCredentialCleanup(agent.id);
+  // Cancel the cleanup timer of THIS label only: every other label this
+  // member holds keeps its own timer (src/services/credential-cleanup.ts).
+  cancelCredentialCleanup(agent.id, label);
 
   const strategy = getStrategy(agent);
   const conn = await strategy.testConnection();
@@ -423,37 +480,22 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<Pr
   // failing with "could not read Username" while the token on disk was still
   // valid for the better part of an hour).
   //
-  // Dropping the config half costs nothing: gitCredentialHelperWrite's own
-  // `git config --global --replace-all "credential.<url>.helper" ""` already
-  // clears every existing value of that key before re-adding the new one, on
-  // all three OS command implementations. So the unset was pure redundancy
-  // with a destructive failure mode. The FILE removal is kept (rather than
-  // dropping the step wholesale) so a pre-label install does not keep an
-  // orphaned, still-valid token on disk -- the security wart PR #473 called
-  // out.
+  // Dropping the config half costs nothing: helpers are no longer registered
+  // in any git config file at all (src/services/vcs-git-env.ts). The FILE
+  // removal is kept so a pre-label install does not keep an orphaned,
+  // still-valid token on disk -- the security wart PR #473 called out.
   try {
     await exec(cmds.gitCredentialHelperRemoveLegacyFile());
   } catch { /* best-effort */ }
 
-  // The agent record only tracks ONE active (label, scopeUrl) pair for
-  // cleanup purposes, and cancelCredentialCleanup() above just discarded
-  // whatever timer belonged to it. If this deploy is SUPERSEDING a different
-  // previously-provisioned credential (a different label and/or scopeUrl,
-  // or even a different provider), that superseded credential's timer is now
-  // gone forever and nothing else will ever revoke it -- explicitly revoke it
-  // here so its git-config registration and on-disk file don't stay orphaned
-  // indefinitely. A same-label/same-scopeUrl re-provision (a plain refresh)
-  // skips this: gitCredentialHelperWrite's --replace-all below overwrites the
-  // existing entry in place, so there is nothing to revoke first.
-  if (agent.vcsProvider && agent.vcsCredentialLabel !== undefined &&
-      (agent.vcsCredentialLabel !== label || agent.vcsCredentialScopeUrl !== scopeUrl)) {
-    const supersededService = providers[agent.vcsProvider];
-    if (supersededService) {
-      try {
-        await supersededService.revoke(agent, cmds, exec, agent.vcsCredentialLabel, agent.vcsCredentialScopeUrl);
-      } catch { /* best-effort */ }
-    }
-  }
+  // What this label held before this provision (read fresh: a concurrent
+  // provision of another label must not be lost). Provisioning a NEW label
+  // never touches another label's credential -- a member can hold several
+  // labels at once (src/services/vcs-credential-record.ts).
+  const previous = getVcsCredentials(getAgent(agent.id) ?? agent)[label];
+  // A pre-label (unlabeled) entry: recording this label replaces it in the
+  // record, so its global key is migrated below like a labeled legacy one.
+  const unlabeled = listVcsCredentials(getAgent(agent.id) ?? agent).find(e => e.label === undefined);
 
   let deployResult;
   try {
@@ -471,20 +513,57 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<Pr
   // deploy used, so a later cleanup timer (credential-cleanup.ts) revokes the
   // SAME credential-helper file/config-key pair, not an unlabeled/default-host
   // guess that could clobber a different, still-valid credential.
-  updateAgent(agent.id, {
-    vcsProvider: input.provider,
-    vcsTokenExpiresAt: deployResult.metadata?.expiresAt,
-    vcsCredentialLabel: label,
-    vcsCredentialScopeUrl: scopeUrl,
-  });
+  // The record is per label: every other label this member holds is kept.
+  // memberScoped: the helper is this member's own file, registered for git
+  // through the dispatch environment rather than any git config file.
+  const expiresAt = deployResult.metadata?.expiresAt;
+  const fresh = recordVcsCredential(agent.id, label, {
+    provider: input.provider,
+    scopeUrl,
+    ...(expiresAt ? { expiresAt } : {}),
+    memberScoped: true,
+  }) ?? agent;
 
-  // Schedule auto-cleanup when token expires
-  scheduleCredentialCleanup(agent.id, deployResult.metadata?.expiresAt);
+  // Migration of a LEGACY entry this label held (a release that wrote the
+  // shared per-OS-user file and the global git config key): only now, after
+  // the new helper is in place and recorded, so a failure above never leaves
+  // the member with no working registration (the 2026-09-11 failure mode).
+  // revokeVcsCredential removes the legacy file and global key only when no
+  // other member runs as the same user on the same host -- it is shared by
+  // all of them. legacyOnly: the per-member file of this label is the one
+  // the deploy above just wrote, so it must never be removed here. A previous
+  // member-scoped entry needs nothing: the same file was just overwritten and
+  // its registration comes from the record.
+  // The outcome is reported loudly (text + legacyGlobalHelper): a removed
+  // global value changes what git OUTSIDE fleet dispatches authenticates with.
+  let legacyGlobalHelper: LegacyGlobalHelperOutcome | null = null;
+  const legacyEntry = previous && !previous.memberScoped
+    ? { label, provider: previous.provider, scopeUrl: previous.scopeUrl }
+    : unlabeled;
+  if (legacyEntry) {
+    const legacyScope = legacyEntry.scopeUrl ?? `https://${PROVIDER_HOSTS[legacyEntry.provider]}`;
+    try {
+      const r = await revokeVcsCredential(agent, legacyEntry, cmds, exec, { legacyOnly: true });
+      legacyGlobalHelper = legacyGlobalHelperOutcome(legacyScope, r);
+    } catch (err: any) {
+      legacyGlobalHelper = {
+        scopeUrl: legacyScope, outcome: 'failed', removedValues: 0, keptValues: 0, keptForMember: null,
+        notice: `[WARN] Upgrade: the cleanup of fleet's legacy global git credential helper for ${legacyScope} failed (${err?.message ?? err}); the global git config was left as it was.`,
+      };
+    }
+  }
+
+  // Schedule auto-cleanup of this label when its token expires
+  scheduleCredentialCleanup(agent.id, label, expiresAt);
 
   // Best-effort connectivity test
   let connectivity: VcsDeployResult;
+  // git in the connectivity check finds the new helper the same way every
+  // dispatch does: through the member's git credential environment.
+  const gitEnv = vcsGitEnvPrefix(fresh, cmds);
+  const execWithGitEnv = (cmd: string) => exec(gitEnv + cmd);
   try {
-    connectivity = await service.testConnectivity(agent, exec, scopeUrl, creds);
+    connectivity = await service.testConnectivity(agent, execWithGitEnv, scopeUrl, creds);
   } catch {
     connectivity = { success: false, message: 'connectivity test threw' };
   }
@@ -533,11 +612,13 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<Pr
     + (meta ? meta + '\n' : '')
     + `  Verification: ${verificationLine}`
     + (expiryWarning ? `\n  ${expiryWarning}` : '')
-    + (legacyNames.length > 0 ? `\n${legacyTokenWarning(legacyNames)}` : ''),
+    + (legacyNames.length > 0 ? `\n${legacyTokenWarning(legacyNames)}` : '')
+    + (legacyGlobalHelper?.notice ? `\n  ${legacyGlobalHelper.notice}` : ''),
     {
       ...who,
       reason,
       scopeUrl,
+      legacyGlobalHelper,
       expiresAt: deployResult.metadata?.expiresAt ?? null,
       verified: !connectivity.skipped && connectivity.success === true,
       verificationSkipped: connectivity.skipped === true,

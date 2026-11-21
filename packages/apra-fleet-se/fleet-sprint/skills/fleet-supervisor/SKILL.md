@@ -18,27 +18,41 @@ The supervisor runs indefinitely -- it exits only on `POST /api/shutdown`,
 a termination signal (SIGINT/SIGTERM/SIGHUP/SIGBREAK) or a fatal error, never
 on its own -- and writes one final line with the cause and exit code to
 `<dataDir>/logs/supervisor.log` when it does. `apra-fleet install` puts it
-under the user's home (needs Node.js 22.16+). The two commands below run it in
-the FOREGROUND of the launching shell: they are NOT detached, and they do NOT
-survive that terminal (or the process that launched it) closing -- closing it
-stops the supervisor, and sprints and launches then fail until it is started
-again.
+under the user's home (needs Node.js 22.16+). Launch it DETACHED with
+`--detach`: the launcher respawns the supervisor as a background process that
+survives the launching terminal closing, waits until `GET /api/health` answers
+with the new process's own pid (an answer from some other process holding the
+port does not count -- there is no fallback port), prints the pid and port, and
+exits 0. On a timeout, a port already taken, or an early exit it kills the
+child it started, prints the reason plus the launch log path
+(`<dataDir>/logs/supervisor-launch.log`) and exits non-zero. All other options
+(`--port`, `--beads-dir`, ...) are passed through.
 
 ```bash
-node ~/.apra-fleet/workflows/fleet-sprint/bin/serve.mjs              # macOS / Linux, foreground
+node ~/.apra-fleet/workflows/fleet-sprint/bin/serve.mjs --detach          # macOS / Linux
 ```
 
 ```powershell
-node "$HOME\.apra-fleet\workflows\fleet-sprint\bin\serve.mjs"    # Windows PowerShell, foreground
+node "$HOME\.apra-fleet\workflows\fleet-sprint\bin\serve.mjs" --detach   # Windows PowerShell
 ```
 
-To keep it running after the launching terminal closes, register it with the
-OS using the "Auto-start on login/boot" section below -- that is the path that
-survives the launcher, and on Windows in particular the only one this skill
-documents as doing so. On macOS / Linux a shell-level background launch
-(`nohup ... &`) also outlives the terminal: a SIGHUP is logged and ignored when the
-supervisor has no terminal on stdin/stdout (a detached launch), and only an
-attached terminal's hangup stops it. Check `GET /api/health` afterwards.
+Windows caveat: `--detach` may NOT survive a launcher that runs inside a
+kill-on-close job object (some IDE/agent terminals and CI runners), which can
+kill even a detached child when the launcher exits. Surviving a Windows console
+close is not yet verified. On Windows the durable path is to register the
+supervisor with the OS via the "Auto-start on login/boot" section below.
+
+Without `--detach` the same command runs in the FOREGROUND of the launching
+shell and does NOT survive that terminal (or the process that launched it)
+closing -- sprints and launches then fail until it is started again. To have the
+OS start it on login/boot, register it with the "Auto-start on login/boot"
+section below. Liveness can also be read without the HTTP API:
+`apra-fleet status` prints a `Supervisor:` line (UP, DOWN with the last
+heartbeat time, or stopped cleanly) from `<dataDir>/supervisor.json`, which the
+supervisor rewrites on an interval while running. On macOS / Linux a SIGHUP is
+logged and ignored when the supervisor has no terminal on stdin/stdout (a
+detached launch), and only an attached terminal's hangup stops it. Check
+`GET /api/health` afterwards.
 
 (From a source checkout of apra-fleet the same file is
 `packages/apra-fleet-se/bin/serve.mjs`.)

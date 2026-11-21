@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest';
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -41,9 +41,32 @@ vi.mock('../src/tools/compose-permissions.js', async (importOriginal) => {
 
 describe('register-member interactive bootstrap gate', () => {
   let workFolder: string;
+  // registerMember seeds workspace trust into the local member's
+  // ~/.claude.json (home resolved via os.homedir(), and $HOME/USERPROFILE in
+  // the member shell's clean env). Point both at one scratch home for the
+  // whole file so the real ~/.claude.json never receives this test's work
+  // folder as a project key. The name deliberately avoids the leaked-key
+  // prefixes the install-time prune matches.
+  const scratchHome = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-gate-home-'));
+  const scratchClaudeJson = path.join(scratchHome, '.claude.json');
+  afterAll(() => {
+    fs.rmSync(scratchHome, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+  });
+
+  /** The sandbox claude.json, not the real one, received this run's trust seed. */
+  function expectSandboxHomeSeeded(): void {
+    expect(os.homedir()).toBe(scratchHome);
+    const seeded = JSON.parse(fs.readFileSync(scratchClaudeJson, 'utf-8'));
+    expect(Object.keys(seeded.projects ?? {})).toContain(workFolder.replace(/\\/g, '/'));
+  }
 
   beforeEach(() => {
     backupAndResetRegistry();
+    vi.stubEnv('HOME', scratchHome);
+    vi.stubEnv('USERPROFILE', scratchHome);
+    vi.stubEnv('CLAUDE_CONFIG_DIR', '');
+    delete process.env.CLAUDE_CONFIG_DIR;
+    vi.spyOn(os, 'homedir').mockReturnValue(scratchHome);
     workFolder = fs.mkdtempSync(path.join(os.tmpdir(), 'apra-fleet-bootstrap-gate-'));
     mockComposePermissions.mockReset();
     // Cheap stand-in for the real compose_permissions step (my-beads-db-27m.15):
@@ -76,6 +99,8 @@ describe('register-member interactive bootstrap gate', () => {
     // exited -- rmSync would otherwise intermittently fail with EBUSY.
     fs.rmSync(workFolder, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
     delete process.env.APRA_FLEET_ENABLE_INTERACTIVE_BOOTSTRAP;
+    vi.unstubAllEnvs();
+    vi.mocked(os.homedir).mockRestore();
     vi.resetModules();
   });
 
@@ -118,6 +143,7 @@ describe('register-member interactive bootstrap gate', () => {
       expect(fs.existsSync(settingsPath)).toBe(true);
       const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
       expect(settings?.mcpServers?.['apra-fleet-member']).toBeUndefined();
+      expectSandboxHomeSeeded();
     } finally {
       __resetInteractiveBootstrapDeps();
     }
@@ -155,6 +181,7 @@ describe('register-member interactive bootstrap gate', () => {
       expect(fs.existsSync(settingsPath)).toBe(true);
       const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
       expect(settings?.mcpServers?.['apra-fleet-member']).toBeUndefined();
+      expectSandboxHomeSeeded();
     } finally {
       __resetInteractiveBootstrapDeps();
     }

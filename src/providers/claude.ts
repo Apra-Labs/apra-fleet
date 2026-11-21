@@ -17,6 +17,7 @@ import {
   quotePwshPath,
   readMemberJson,
   memberFilePresent,
+  MemberConfigError,
   MemberConfigNotJsonError,
   resolveClaudeProjectKey,
   normalizeProjectKey,
@@ -760,26 +761,42 @@ export class ClaudeProvider implements ProviderAdapter {
     // Re-read right before the move and apply only the fleet delta onto the
     // FRESH content: Claude Code (and install) rewrite this file on their
     // own, and anything they wrote since the first read -- the key probe
-    // above ran in between -- must survive. No member exec runs between this
-    // re-read and the move other than staging the write.
-    const config = await readConfig();
-    if (!applyFleetDelta(config)) return upToDate;
+    // above ran in between -- must survive. The move is conditional on the
+    // file still matching the fingerprint taken BEFORE that re-read; a write
+    // that lands in between makes the move refuse, and the cycle re-reads.
+    // Embedded inside "..." in the delivery commands: escape what is live
+    // there for the member's shell (the read above quotes the path itself).
+    const homeFileQ = escapeForDoubleQuotes(target.file, !posix);
+    for (let attempt = 1; ; attempt++) {
+      const expectedFingerprint = await probeMemberFileFingerprint(exec, homeFileQ, posix);
+      const config = await readConfig();
+      if (!applyFleetDelta(config)) return upToDate;
 
-    const staging = workspaceTrustStagingNames();
-    await deliverWorkspaceTrustFile(JSON.stringify(config, null, 2), {
-      isWindows: !posix,
-      agentOs: ctx.agentOs,
-      execCommand: exec,
-      // The file channel writes relative to the member's HOME, so it only fits
-      // when the config file is home-anchored (not a CLAUDE_CONFIG_DIR override).
-      transport: target.homeAnchored ? ctx.transport : undefined,
-      // Embedded inside "..." in the delivery commands: escape what is live
-      // there for the member's shell (the read above quotes the path itself).
-      homeFile: escapeForDoubleQuotes(target.file, !posix),
-      tmpFile: escapeForDoubleQuotes(joinMemberPath(target.dir, staging.tmpRel, isWindows, ctx.shell), !posix),
-      staging,
-      secretChannel: ctx.secretChannel,
-    });
+      const staging = workspaceTrustStagingNames();
+      try {
+        await deliverWorkspaceTrustFile(JSON.stringify(config, null, 2), {
+          isWindows: !posix,
+          agentOs: ctx.agentOs,
+          // Unchecked: the delivery reads the move's exit code itself (a
+          // changed-file refusal has its own code and must not read as a
+          // channel failure).
+          execCommand: ctx.execCommand,
+          // The file channel writes relative to the member's HOME, so it only fits
+          // when the config file is home-anchored (not a CLAUDE_CONFIG_DIR override).
+          transport: target.homeAnchored ? ctx.transport : undefined,
+          homeFile: homeFileQ,
+          tmpFile: escapeForDoubleQuotes(joinMemberPath(target.dir, staging.tmpRel, isWindows, ctx.shell), !posix),
+          staging,
+          secretChannel: ctx.secretChannel,
+          expectedFingerprint,
+        });
+        break;
+      } catch (err: unknown) {
+        if (err instanceof MemberConfigChangedError && attempt < MEMBER_CONFIG_CAS_ATTEMPTS) continue;
+        if (err instanceof MemberConfigChangedError) throw new MemberConfigChangedError(target.file, attempt);
+        throw err;
+      }
+    }
     const what = url !== null ? `wrote ${MEMBER_MCP_SERVER_NAME} (local scope)` : `removed ${MEMBER_MCP_SERVER_NAME}`;
     return { workFolderFiles: [], detail: `claude: ${what} for ${key} in ${target.file}` };
   }
@@ -1029,24 +1046,45 @@ export class ClaudeProvider implements ProviderAdapter {
 
     // Re-read right before the move and apply only the fleet delta onto the FRESH
     // content: Claude Code rewrites this file on its own, and whatever it wrote since
-    // the first read must survive the fleet write. No member exec runs between this
-    // re-read and the move other than staging the write.
-    const fresh = await parseRead((await execCommand(readCmd, 10000)).stdout);
-    if (!fresh) return unreadable();
-    const { trustNeeded, serversToAdd, merged } = planDelta(fresh.existing);
-    if (!trustNeeded && serversToAdd.length === 0) return alreadyPresent();
-    const contentStr = JSON.stringify(merged, null, 2);
+    // the first read must survive the fleet write. The move is conditional on the
+    // file still matching the fingerprint taken BEFORE that re-read (compare and
+    // swap): a write landing between the re-read and the move makes the move
+    // refuse, and the whole read-merge-stage cycle runs again, a bounded number
+    // of times.
+    let trustNeeded = false;
+    let serversToAdd: string[] = [];
+    for (let attempt = 1; ; attempt++) {
+      const expectedFingerprint = await probeMemberFileFingerprint(execCommand, homeFile, usePosix);
+      const fresh = await parseRead((await execCommand(readCmd, 10000)).stdout);
+      if (!fresh) return unreadable();
+      const plan = planDelta(fresh.existing);
+      if (!plan.trustNeeded && plan.serversToAdd.length === 0) return alreadyPresent();
+      ({ trustNeeded, serversToAdd } = plan);
+      const contentStr = JSON.stringify(plan.merged, null, 2);
+      const attemptStaging = attempt === 1 ? staging : workspaceTrustStagingNames();
 
-    // ATOMIC write: stage the full merged content in a temp file, then rename over the
-    // real file in one filesystem operation -- a crash or concurrent read mid-write can
-    // never observe a partially-written ~/.claude.json.
-    //
-    // The merged content must NEVER ride a command line: ~/.claude.json can hold
-    // other MCP servers' headers/tokens and OAuth state, and a command line is
-    // visible in process listings (and is capped at 32767 chars on Windows).
-    // Delivery is the file channel (node:fs / SFTP) or the owner-only secret
-    // file, then a content-free move into place; with neither, it fails loudly.
-    await deliverWorkspaceTrustFile(contentStr, { isWindows, agentOs, execCommand, transport, homeFile, tmpFile, staging, secretChannel });
+      // ATOMIC write: stage the full merged content in a temp file, then rename over the
+      // real file in one filesystem operation -- a crash or concurrent read mid-write can
+      // never observe a partially-written ~/.claude.json.
+      //
+      // The merged content must NEVER ride a command line: ~/.claude.json can hold
+      // other MCP servers' headers/tokens and OAuth state, and a command line is
+      // visible in process listings (and is capped at 32767 chars on Windows).
+      // Delivery is the file channel (node:fs / SFTP) or the owner-only secret
+      // file, then a content-free move into place; with neither, it fails loudly.
+      try {
+        await deliverWorkspaceTrustFile(contentStr, {
+          isWindows, agentOs, execCommand, transport, homeFile,
+          tmpFile: attempt === 1 ? tmpFile : inHome(attemptStaging.tmpRel),
+          staging: attemptStaging, secretChannel, expectedFingerprint,
+        });
+        break;
+      } catch (err: unknown) {
+        if (err instanceof MemberConfigChangedError && attempt < MEMBER_CONFIG_CAS_ATTEMPTS) continue;
+        if (err instanceof MemberConfigChangedError) throw new MemberConfigChangedError(rawHomeFile, attempt);
+        throw err;
+      }
+    }
 
     const mcpNote = serversToAdd.length > 0 ? `; enabled MCP servers: ${serversToAdd.join(', ')}` : '';
     // eft.40.1 requires logging distinctly when trust is SEEDED vs already present --
@@ -1077,6 +1115,106 @@ export function workspaceTrustStagingNames(): WorkspaceTrustStagingNames {
   };
 }
 
+/** Exit code of a landing command that refused because the destination
+ *  changed since the expected fingerprint was taken (EX_TEMPFAIL). */
+export const MEMBER_CONFIG_CAS_EXIT = 75;
+/** Printed on stdout by a landing command that refused for that reason. The
+ *  refusal is recognised by this marker plus a non-zero exit, not by the exit
+ *  code alone: a PowerShell -Command host reports any failed native command
+ *  (here the -EncodedCommand child) as exit 1. */
+export const MEMBER_CONFIG_CHANGED_MARKER = 'FLEET_MEMBER_CONFIG_CHANGED';
+/** Read-merge-stage-replace cycles tried before a changed-file refusal is final. */
+export const MEMBER_CONFIG_CAS_ATTEMPTS = 3;
+/** Fingerprint printed for a destination that does not exist. */
+export const MEMBER_FILE_ABSENT_FINGERPRINT = 'FLEET_ABSENT';
+
+/**
+ * The member-side config file changed between the fleet's re-read and its
+ * replace (compare-and-swap refusal). Thrown by deliverWorkspaceTrustFile for a
+ * single refusal (the caller re-reads and retries) and by the callers once the
+ * retries are exhausted, naming the file; the file is left as the other writer
+ * left it.
+ */
+export class MemberConfigChangedError extends MemberConfigError {
+  constructor(filePath: string, attempts?: number) {
+    super(
+      'E-MEMBER-CONFIG-CHANGED',
+      'member-config-changed',
+      filePath,
+      attempts
+        ? `E-MEMBER-CONFIG-CHANGED: ${filePath} was changed by another writer between the fleet's re-read and its replace on ${attempts} attempts in a row; the fleet write was abandoned and the file left as the other writer left it. Retry once the other writer (e.g. a running Claude Code) is idle`
+        : `E-MEMBER-CONFIG-CHANGED: ${filePath} was changed by another writer between the fleet's re-read and its replace; the replace was refused`,
+    );
+    this.name = 'MemberConfigChangedError';
+  }
+}
+
+/**
+ * Member-side script that prints a fingerprint of `file` (already escaped for
+ * "..." in the target shell): POSIX `cksum` (CRC + byte count, present on
+ * Linux, macOS and Git for Windows), PowerShell SHA256 as uppercase hex, or
+ * MEMBER_FILE_ABSENT_FINGERPRINT when the file does not exist. The probe and
+ * the landing command use the same script, so the two fingerprints compare
+ * equal exactly when the file is unchanged. Raw (not encoded) PowerShell.
+ * PowerShell hashes via the .NET SHA256 type, not Get-FileHash: a Windows
+ * PowerShell 5.1 started from pwsh 7 inherits a PSModulePath listing pwsh's
+ * Microsoft.PowerShell.Utility first, and 5.1 then fails "Get-FileHash is not
+ * recognized" (see hashFilesRecursive in src/os/windows.ts).
+ */
+export function memberFileFingerprintScript(file: string, posix: boolean): string {
+  return posix
+    ? `if [ -e "${file}" ]; then cksum < "${file}"; else printf '%s' '${MEMBER_FILE_ABSENT_FINGERPRINT}'; fi`
+    : `if ([System.IO.File]::Exists("${file}")) { $fleetSha = [System.Security.Cryptography.SHA256]::Create(); try { [System.BitConverter]::ToString($fleetSha.ComputeHash([System.IO.File]::ReadAllBytes("${file}"))).Replace('-', '') } finally { $fleetSha.Dispose() } } else { '${MEMBER_FILE_ABSENT_FINGERPRINT}' }`;
+}
+
+/**
+ * Fingerprint of the member-side `file` (escaped for "..."), taken BEFORE the
+ * re-read whose merge is about to be staged: a write landing after this probe
+ * changes the fingerprint, so the conditional landing refuses (a write landing
+ * between the probe and the re-read only costs a spurious retry).
+ */
+export async function probeMemberFileFingerprint(exec: WorkspaceTrustExecFn, file: string, posix: boolean): Promise<string> {
+  const script = memberFileFingerprintScript(file, posix);
+  const r = await exec(posix ? script : wrapPowerShellEncoded(script), 10000);
+  if (r.code !== 0) throw new Error(`could not fingerprint ${file} on the member (exit ${r.code}): ${(r.stderr || r.stdout || '').trim().slice(0, 300)}`);
+  const fp = (r.stdout ?? '').trim();
+  if (!/^[A-Za-z0-9_ ]*$/.test(fp)) throw new Error(`unexpected fingerprint output for ${file} on the member: ${fp.slice(0, 120)}`);
+  return fp;
+}
+
+/** Directory part of a member path string (either separator), for a lexical same-directory check. */
+function memberDirOf(p: string): string {
+  const i = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'));
+  return i < 0 ? '' : p.slice(0, i);
+}
+
+/**
+ * POSIX (sh/bash, also a gitbash Windows member) landing of staged file `from`
+ * on `to`, both already escaped for "...". The final step is always a
+ * same-directory rename: a source staged in another directory (the secret-file
+ * channel; possibly another volume) is first copied next to `to` under a
+ * per-call unique name. With `expected` set the rename happens only while `to`
+ * still has that fingerprint (memberFileFingerprintScript); otherwise the
+ * landing file is removed, MEMBER_CONFIG_CHANGED_MARKER is printed and the
+ * command exits MEMBER_CONFIG_CAS_EXIT. Once
+ * the rename succeeded, failing to delete the copied-from source only warns.
+ */
+export function posixLandingCommand(from: string, to: string, expected?: string): string {
+  const sameDir = memberDirOf(from) === memberDirOf(to);
+  const land = sameDir ? from : `${to}.fleet-land-${randomBytes(8).toString('hex')}.tmp`;
+  const parts: string[] = [];
+  if (!sameDir) parts.push(`cp "${from}" "${land}" || { rm -f "${land}"; exit 1; }`);
+  if (expected !== undefined) {
+    // Command substitution only, no shell variable: the command carries
+    // resolved paths and literals, nothing the member shell expands.
+    parts.push(`if [ "$(${memberFileFingerprintScript(to, true)})" != '${expected}' ]; then rm -f "${land}"; printf '%s' '${MEMBER_CONFIG_CHANGED_MARKER}'; exit ${MEMBER_CONFIG_CAS_EXIT}; fi`);
+  }
+  parts.push(`mv "${land}" "${to}" || { ${sameDir ? '' : `rm -f "${land}"; `}exit 1; }`);
+  if (!sameDir) parts.push(`rm -f "${from}" || echo "warning: could not remove staged ${from}" >&2`);
+  // A command list ending in the warning echo exits 0 after a successful rename.
+  return parts.join('; ');
+}
+
 export interface WorkspaceTrustWritePlan {
   /** How the content reached the member. */
   mechanism: 'file-channel' | 'secret-file';
@@ -1092,18 +1230,29 @@ export interface WorkspaceTrustWritePlan {
  * Code may read that as a fresh install) and losing it if the move then
  * fails. An existing destination is swapped with [IO.File]::Replace
  * (ReplaceFile, which also keeps the destination's ACL); a missing one is
- * moved. ReplaceFile needs both on one volume, so a source staged on another
- * volume is first copied next to the destination under a per-call unique
- * name (concurrent landings never share it). Any failure exits 1 with
- * the reason on stderr. Both paths arrive already escaped for "...".
+ * moved. The final step is always a same-directory swap: a source staged in
+ * another directory (the secret-file channel, possibly on another volume) is
+ * first copied next to the destination under a per-call unique name
+ * (concurrent landings never share it). With `expected` set the swap happens
+ * only while the destination still has that fingerprint
+ * (memberFileFingerprintScript); otherwise the staged file is removed and the
+ * script prints MEMBER_CONFIG_CHANGED_MARKER and exits MEMBER_CONFIG_CAS_EXIT.
+ * Any other failure exits 1 with the
+ * reason on stderr. Once the swap succeeded, failing to delete the
+ * copied-from source only warns on stderr (exit 0). Both paths arrive already
+ * escaped for "...". Raw PowerShell: callers hand it to the member wrapped
+ * with wrapPowerShellEncoded.
  */
-export function windowsReplaceFileCommand(from: string, to: string): string {
+export function windowsReplaceFileCommand(from: string, to: string, expected?: string): string {
+  const cas = expected === undefined ? '' : `$fp = ${memberFileFingerprintScript('$d', false).replace(/"\$d"/g, '$d')}; `
+    + `if ($fp -ne '${expected}') { if ($t) { [System.IO.File]::Delete($t) } else { [System.IO.File]::Delete($s) }; [Console]::Out.Write('${MEMBER_CONFIG_CHANGED_MARKER}'); exit ${MEMBER_CONFIG_CAS_EXIT} }; `;
   return `$s = "${from}"; $d = "${to}"; $t = $null; `
     + `try { $ErrorActionPreference = 'Stop'; $src = $s; `
-    + `if ([System.IO.Path]::GetPathRoot($s) -ne [System.IO.Path]::GetPathRoot($d)) { $t = $d + '.fleet-land-' + [Guid]::NewGuid().ToString('N') + '.tmp'; [System.IO.File]::Copy($s, $t, $false); $src = $t }; `
-    + `if ([System.IO.File]::Exists($d)) { [System.IO.File]::Replace($src, $d, [NullString]::Value) } else { [System.IO.File]::Move($src, $d) }; `
-    + `if ($t) { [System.IO.File]::Delete($s) } `
-    + `} catch { if ($t -and [System.IO.File]::Exists($t)) { [System.IO.File]::Delete($t) }; [Console]::Error.WriteLine($_.Exception.Message); exit 1 }`;
+    + `if ([System.IO.Path]::GetDirectoryName([System.IO.Path]::GetFullPath($s)) -ne [System.IO.Path]::GetDirectoryName([System.IO.Path]::GetFullPath($d))) { $t = $d + '.fleet-land-' + [Guid]::NewGuid().ToString('N') + '.tmp'; [System.IO.File]::Copy($s, $t, $false); $src = $t }; `
+    + cas
+    + `if ([System.IO.File]::Exists($d)) { [System.IO.File]::Replace($src, $d, [NullString]::Value) } else { [System.IO.File]::Move($src, $d) } `
+    + `} catch { if ($t -and [System.IO.File]::Exists($t)) { try { [System.IO.File]::Delete($t) } catch { } }; [Console]::Error.WriteLine($_.Exception.Message); exit 1 }; `
+    + `if ($t) { try { [System.IO.File]::Delete($s) } catch { [Console]::Error.WriteLine('warning: could not remove staged ' + $s + ': ' + $_.Exception.Message) } }`;
 }
 
 /**
@@ -1128,12 +1277,19 @@ export async function deliverWorkspaceTrustFile(
     staging: WorkspaceTrustStagingNames;
     homeRel?: string;
     secretChannel?: MemberSecretFileChannel;
+    /** Fingerprint of homeFile taken before the content was read
+     *  (probeMemberFileFingerprint). Set: the landing refuses when homeFile
+     *  changed since, and this throws MemberConfigChangedError (no fallback to
+     *  another channel; the caller re-reads and retries). */
+    expectedFingerprint?: string;
   },
 ): Promise<WorkspaceTrustWritePlan> {
-  const { isWindows, execCommand, transport, homeFile, tmpFile, staging, homeRel, secretChannel } = opts;
+  const { isWindows, execCommand, transport, homeFile, tmpFile, staging, homeRel, secretChannel, expectedFingerprint } = opts;
   const moveCmd = (from: string) => (isWindows
-    ? windowsReplaceFileCommand(from, homeFile)
-    : `mv "${from}" "${homeFile}"`);
+    ? wrapPowerShellEncoded(windowsReplaceFileCommand(from, homeFile, expectedFingerprint))
+    : posixLandingCommand(from, homeFile, expectedFingerprint));
+  const changed = (r: SSHExecResult) => expectedFingerprint !== undefined && r.code !== 0
+    && (r.stdout ?? '').includes(MEMBER_CONFIG_CHANGED_MARKER);
   const failures: string[] = [];
 
   // 1. Out-of-band file channel: content never touches a command line.
@@ -1146,9 +1302,11 @@ export async function deliverWorkspaceTrustFile(
       }
       const cmd = moveCmd(tmpFile);
       const r = await execCommand(cmd, 10000);
+      if (changed(r)) throw new MemberConfigChangedError(homeFile);
       if (r.code !== 0) throw new Error(`move into place failed (exit ${r.code}): ${(r.stderr || r.stdout).trim().slice(0, 300)}`);
       return { mechanism: 'file-channel', commands: [cmd] };
     } catch (err: unknown) {
+      if (err instanceof MemberConfigChangedError) throw err;
       failures.push(`file channel: ${err instanceof Error ? err.message : String(err)}`);
     }
   } else {
@@ -1162,10 +1320,15 @@ export async function deliverWorkspaceTrustFile(
       staged = await secretChannel.write(contentStr);
       const cmd = moveCmd(escapeForDoubleQuotes(staged, isWindows));
       const r = await execCommand(cmd, 10000);
+      if (changed(r)) throw new MemberConfigChangedError(homeFile);
       if (r.code !== 0) throw new Error(`move into place failed (exit ${r.code}): ${(r.stderr || r.stdout).trim().slice(0, 300)}`);
+      // The landing consumed or deleted the staged file; when it could only
+      // warn about a leftover copied-from source, this removes it.
+      try { await secretChannel.remove(staged); } catch { /* best-effort: usually already gone */ }
       return { mechanism: 'secret-file', commands: [cmd] };
     } catch (err: unknown) {
       if (staged) { try { await secretChannel.remove(staged); } catch { /* best-effort */ } }
+      if (err instanceof MemberConfigChangedError) throw err;
       failures.push(`secret-file channel: ${err instanceof Error ? err.message : String(err)}`);
     }
   } else {

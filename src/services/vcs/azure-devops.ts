@@ -258,12 +258,12 @@ export const azureDevOpsProvider: VcsProviderService = {
     promptFor: (memberName) => `Enter Azure DevOps personal access token for ${memberName}`,
   },
 
-  async deploy(_agent, cmds, exec, credentials, label?, scopeUrl?) {
+  async deploy(agent, cmds, exec, credentials, label?, scopeUrl?) {
     const creds = credentials as AzureDevOpsCredentials;
     // Bind the helper to the host git will actually ask for: the legacy
     // host when the scope names one, dev.azure.com otherwise -- see
     // credentialHostForScope().
-    await exec(cmds.gitCredentialHelperWrite(credentialHostForScope(scopeUrl), PAT_USERNAME, creds.pat, label, scopeUrl));
+    await exec(cmds.gitCredentialHelperWrite(credentialHostForScope(scopeUrl), PAT_USERNAME, creds.pat, label, scopeUrl, agent.id));
     return {
       success: true,
       message: 'Azure DevOps credentials deployed',
@@ -280,8 +280,8 @@ export const azureDevOpsProvider: VcsProviderService = {
     };
   },
 
-  async revoke(_agent, cmds, exec, label?, scopeUrl?) {
-    await exec(cmds.gitCredentialHelperRemove(credentialHostForScope(scopeUrl), label, scopeUrl));
+  async revoke(agent, cmds, exec, label?, scopeUrl?) {
+    await exec(cmds.gitCredentialHelperRemove(credentialHostForScope(scopeUrl), label, scopeUrl, agent.id));
     return { success: true, message: 'Azure DevOps credentials revoked' };
   },
 
@@ -297,8 +297,9 @@ export const azureDevOpsProvider: VcsProviderService = {
   // message instead of reporting a false success.
   //
   // (review round 2) `scope_url` is what deploy() actually scoped the
-  // credential to (gitCredentialHelperWrite writes credential.<scopeUrl>.helper
-  // -- see src/os/linux.ts) so a repo-scoped scope_url is preferred over the
+  // credential to (provision_vcs_auth registers the helper for
+  // credential.<scopeUrl>.helper through the exec it hands this method -- see
+  // src/services/vcs-git-env.ts) so a repo-scoped scope_url is preferred over the
   // host-agnostic, access-list-derived gitRepos value; gitRepos is only
   // consulted when scope_url isn't itself a usable repo URL. Both candidates
   // are validated by isValidAzureRepoUrl before use -- see its comment for

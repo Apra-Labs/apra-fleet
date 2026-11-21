@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "5a171212f2e1eee116e7f58e2ea29648ffb8ff1f",
     "branch": "main",
-    "entry_count": 168
+    "entry_count": 177
   },
   "entries": [
     {
@@ -249,6 +249,30 @@
       }
     },
     {
+      "id": "17c99eee-11cb-4b90-adf6-ab7e8bf9e43e",
+      "type": "knowledge",
+      "title": "remove_member removes only LLM credentials recorded in Agent.llmAuthDelivered",
+      "summary": "provision_llm_auth records the credential files and env vars it delivered in Agent.llmAuthDelivered; remove_member removes only those, and nothing when another member shares the host+user or when there is no record.",
+      "symbols": [
+        "removeMember",
+        "memberSharingHostUser",
+        "recordLlmAuthDelivery",
+        "llmAuthDelivered"
+      ],
+      "source_files": [
+        "src/tools/remove-member.ts",
+        "src/tools/provision-auth.ts",
+        "src/types.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-19T00:02:52.793Z",
+      "source_file_hashes": {
+        "src/tools/provision-auth.ts": "55bb55640ef12665731fe62bcc1e9955b30dcd40",
+        "src/tools/remove-member.ts": "357c8affb4ec811ba312f93517d44159887ddde4",
+        "src/types.ts": "e327603cb283f59b871b552ec31d54e4bc828dd1"
+      }
+    },
+    {
       "id": "184f9633-8cd2-477b-8b2c-3643c3bcd288",
       "type": "learning",
       "title": "Changing buildFinalVerdictPrompt or the finalVerdict schema requires regenerating the happy-path golden",
@@ -410,6 +434,28 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:28.024Z"
+    },
+    {
+      "id": "22cad4f1-29e2-4152-9d70-984238357238",
+      "type": "learning",
+      "title": "provision_vcs_auth legacy migration must call revokeVcsCredential with legacyOnly",
+      "summary": "A full revokeVcsCredential of a legacy (non-memberScoped) entry runs service.revoke, which removes the member's per-member helper file of that label. During provision's migration that file was just written, so the migration must pass { legacyOnly: true } to remove only the legacy shared file and global key.",
+      "symbols": [
+        "revokeVcsCredential",
+        "provisionVcsAuth"
+      ],
+      "source_files": [
+        "src/services/vcs-credential-revoke.ts",
+        "src/tools/provision-vcs-auth.ts",
+        "tests/vcs-credential-per-label.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-19T03:11:29.054Z",
+      "source_file_hashes": {
+        "src/services/vcs-credential-revoke.ts": "a4ac581d3ad93b556aa6e12bc340dafc7dae57b4",
+        "src/tools/provision-vcs-auth.ts": "6b466063851d581dc63c59cf72dfb4b2bc967a0e",
+        "tests/vcs-credential-per-label.test.ts": "fc4c324a0530727f85ebda3a9b6937c4ea8030b9"
+      }
     },
     {
       "id": "22dd4e68-3702-4ecd-a500-df6e9b27f4b3",
@@ -1233,6 +1279,34 @@
       }
     },
     {
+      "id": "573e86e0-0865-4678-88ab-60bd959c96e4",
+      "type": "knowledge",
+      "title": "Local claude.json writers go through updateClaudeConfigFile compare-and-swap",
+      "summary": "registerClaudeHttpMcp, refreshClaudeLocalScopeEntries and pruneLeakedTestProjectKeys write ~/.claude.json only through updateClaudeConfigFile. It passes the bytes it read as writeOwnerOnlyFileAtomic expected, and the file is re-compared before every rename attempt.",
+      "symbols": [
+        "updateClaudeConfigFile",
+        "writeOwnerOnlyFileAtomic",
+        "replaceByRename",
+        "FileChangedError",
+        "pruneLeakedTestProjectKeys",
+        "registerClaudeHttpMcp"
+      ],
+      "source_files": [
+        "src/services/claude-local-scope-mcp.ts",
+        "src/cli/config.ts",
+        "src/cli/install.ts",
+        "tests/claude-local-config-cas.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-20T01:26:59.366Z",
+      "source_file_hashes": {
+        "src/cli/config.ts": "ed3a9165b0aa94425bb57da589203b2345322591",
+        "src/cli/install.ts": "3b129d3aa36c036230492092370734113de70126",
+        "src/services/claude-local-scope-mcp.ts": "66b787a7f6de73420a69805ce699dfc321a113cb",
+        "tests/claude-local-config-cas.test.ts": "9d6f06cd341b9b1926282d10be3d7fccbb75d4f8"
+      }
+    },
+    {
       "id": "57f15e8f-cee5-480a-9a64-f494f2ae0a1b",
       "type": "knowledge",
       "title": "PR comment builders return {id, body, ref} and take ref back as comment_ref",
@@ -1684,6 +1758,28 @@
       "source_file_hashes": {
         "src/services/knowledge/bible-import.ts": "a717226586d21e5c2496b21c0ea3e212bde4ca10",
         "tests/knowledge/kb-bible-tombstone-entry-exclusive.test.ts": "d08879c5dfb4bdf961496bffd90f6c0576312da8"
+      }
+    },
+    {
+      "id": "7cd8f0f1-59eb-477e-9dd5-cdd3fe104b89",
+      "type": "knowledge",
+      "title": "PowerShell cannot set an empty env var; use GIT_CONFIG_PARAMETERS for the git helper reset",
+      "summary": "PowerShell ($env:X='') and .NET SetEnvironmentVariable delete a variable assigned an empty string. So GIT_CONFIG_COUNT/KEY/VALUE cannot carry the empty value that resets git's credential helper list on Windows members. The old-style GIT_CONFIG_PARAMETERS string can.",
+      "symbols": [
+        "gitCredentialEnvPrefix",
+        "groupGitCredentialHelpers"
+      ],
+      "source_files": [
+        "src/os/windows.ts",
+        "src/os/linux.ts",
+        "src/os/os-commands.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-19T02:33:47.701Z",
+      "source_file_hashes": {
+        "src/os/linux.ts": "8aa7da54946e298aa61c73652ee508ba31c8fc12",
+        "src/os/os-commands.ts": "680aa7fd77d7391da3cd2777bc7c67b32a966dd4",
+        "src/os/windows.ts": "e362b142cc098d7aa808ea52f7a55c1bb0d0b00a"
       }
     },
     {
@@ -2523,6 +2619,33 @@
       "updated_at": "2026-10-06T09:41:38.971Z"
     },
     {
+      "id": "bd0bd870-5516-4a99-a0da-4f9c5a6df445",
+      "type": "knowledge",
+      "title": "POSIX profile exports carry an apra-fleet-managed marker; default unsetEnv removes only marked lines",
+      "summary": "persistEnvFileContent appends '# apra-fleet-managed' to each export line; unsetEnv(name) removes only marked lines, unsetEnv(name,{all:true}) removes every export line; persistEnvFromFile strips every export of NAME before appending.",
+      "symbols": [
+        "unsetEnv",
+        "unsetEnvSedExpr",
+        "FLEET_ENV_MARKER",
+        "persistEnvFromFile",
+        "sedInPlace"
+      ],
+      "source_files": [
+        "src/os/os-commands.ts",
+        "src/os/linux.ts",
+        "src/os/macos.ts",
+        "src/os/windows.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-19T00:02:52.688Z",
+      "source_file_hashes": {
+        "src/os/linux.ts": "fb920ac37f75fb519d7c5acae8c0f98698bf9320",
+        "src/os/macos.ts": "52541862d1075aed3a8b1a70311debb7ae9d98fd",
+        "src/os/os-commands.ts": "af50c1624ea6e08e2b3597fa3235487376343097",
+        "src/os/windows.ts": "4e30fc426292eec7f636c70a854ae9a2f00be248"
+      }
+    },
+    {
       "id": "bfcfe1fe-571d-4f3a-a0ce-04fedcd7a088",
       "type": "learning",
       "title": "APRA_TEST_SUITES_JSON narrowing leaks into run-all-tests-suite-enumeration test",
@@ -3061,6 +3184,25 @@
       "updated_at": "2026-10-02T23:19:56.679Z"
     },
     {
+      "id": "e70c7379-3b4e-46f8-bdc6-7a81ccd5c3e9",
+      "type": "learning",
+      "title": "Full vitest stage exceeds the 25-minute default npm test cap on Windows",
+      "summary": "On this Windows dev host the vitest stage of npm test takes about 26 minutes, so the default 25-minute per-suite cap kills it; set APRA_TEST_TIMEOUT_MS higher for a full local run.",
+      "symbols": [
+        "DEFAULT_TIMEOUT_MS"
+      ],
+      "source_files": [
+        "scripts/run-all-tests.mjs",
+        "vitest.config.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-19T00:02:52.900Z",
+      "source_file_hashes": {
+        "scripts/run-all-tests.mjs": "bfa7ff7a8eba998363f061237c9934491ce0e637",
+        "vitest.config.ts": "9a6bf830af480f30786052e44c2feb951c8abbee"
+      }
+    },
+    {
       "id": "e7d3e8e5-0564-4f16-8318-f5e81c436302",
       "type": "knowledge",
       "title": "Viewer summary core fields refresh via broadcast(), so a new lifecycle handler must broadcast or call refreshSummary",
@@ -3076,6 +3218,29 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-01T22:08:20.219Z"
+    },
+    {
+      "id": "e8bbf6b2-b5ed-4a54-9216-d228f0b7709f",
+      "type": "knowledge",
+      "title": "dolt-settle binary-lock kill uses a per-member pidfile, never the binary path",
+      "summary": "spawnEphemeralServer appends '<pid> <port>' to ~/.apra-fleet/settle-dolt-<member>.pids; killProcessAtPath kills only those pids after re-checking the live command line, and when it kills nothing ensurePinnedDolt skips the install retry and takes the unpinned fallback.",
+      "symbols": [
+        "settlePidfile",
+        "killProcessAtPath",
+        "ensurePinnedDolt",
+        "spawnEphemeralServer",
+        "killServerAndVerify"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/dolt-settle.mjs",
+        "packages/apra-fleet-se/test/dolt-settle-member-scoped-kill.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-19T02:33:47.908Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/dolt-settle.mjs": "ebe9f0cb00ab638eda3341db17e4892d8867db61",
+        "packages/apra-fleet-se/test/dolt-settle-member-scoped-kill.test.mjs": "f861b6f6a43ce96b6a4c61b75b9a11bd0210557d"
+      }
     },
     {
       "id": "e8eef38a-b7e3-45e4-b6e5-87941d2a40e8",
@@ -3447,6 +3612,39 @@
       "updated_at": "2026-10-06T09:23:05.562Z"
     },
     {
+      "id": "f6e00e91-3055-4436-bfdd-c664ebe67cf2",
+      "type": "knowledge",
+      "title": "Git credential helpers are registered per dispatch via GIT_CONFIG_PARAMETERS, not git config",
+      "summary": "provision_vcs_auth writes only the per-member+label helper file; vcsGitEnvPrefix(agent) prepends GIT_CONFIG_PARAMETERS (empty-value reset then helper paths per scope) to execute_command, execute_prompt, vcs_credential_exec and provision's connectivity check. git run on the member outside a fleet dispatch does not see the fleet helper.",
+      "symbols": [
+        "vcsGitEnvPrefix",
+        "vcsGitHelperRegistrations",
+        "gitCredentialEnvPrefix",
+        "gitCredentialHelperStem",
+        "isSafeGitCredentialScope"
+      ],
+      "source_files": [
+        "src/services/vcs-git-env.ts",
+        "src/os/os-commands.ts",
+        "src/os/linux.ts",
+        "src/os/windows.ts",
+        "src/os/windows-gitbash.ts",
+        "src/tools/execute-command.ts",
+        "src/tools/execute-prompt.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-19T03:11:29.161Z",
+      "source_file_hashes": {
+        "src/os/linux.ts": "8aa7da54946e298aa61c73652ee508ba31c8fc12",
+        "src/os/os-commands.ts": "680aa7fd77d7391da3cd2777bc7c67b32a966dd4",
+        "src/os/windows-gitbash.ts": "9238f9dc8880f0dc41a3358224d91c9ca3556442",
+        "src/os/windows.ts": "e362b142cc098d7aa808ea52f7a55c1bb0d0b00a",
+        "src/services/vcs-git-env.ts": "8444ab7909641c6bdcb8478e5302001c39f71ca5",
+        "src/tools/execute-command.ts": "5fbf2539671b95801981182d4730236866e93b16",
+        "src/tools/execute-prompt.ts": "2286e0a381cb1358b13bdddef5c6529992eb07e4"
+      }
+    },
+    {
       "id": "f76a103e-797e-4606-b224-bc130e8243e0",
       "type": "knowledge",
       "title": "A failed last-cycle deploy forces the sprint verdict to FAIL in the orchestrator, not the LLM",
@@ -3531,6 +3729,32 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:39.384Z"
+    },
+    {
+      "id": "ff666b0a-63af-4ad4-a9e4-d268116769a0",
+      "type": "knowledge",
+      "title": "Supervisor liveness: supervisor.json heartbeat read by core status, stale after 3 intervals",
+      "summary": "The supervisor rewrites <dataDir>/supervisor.json atomically every FLEET_SE_HEARTBEAT_INTERVAL_MS (default 15s) and keeps it with stoppedAt on clean stop; core readSupervisorLiveness reports DOWN when updatedAt is older than 3x intervalMs or the pid is dead.",
+      "symbols": [
+        "createHeartbeat",
+        "readSupervisorLiveness",
+        "formatSupervisorLine",
+        "resolveSupervisorDataDir"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/src/supervisor/heartbeat.mjs",
+        "packages/apra-fleet-se/bin/serve.mjs",
+        "src/cli/supervisor-liveness.ts",
+        "src/cli/status.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-19T02:33:47.803Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/bin/serve.mjs": "d406b418f225a8a3a56e052247789d1380976bd3",
+        "packages/apra-fleet-se/src/supervisor/heartbeat.mjs": "5b0ec973c852946a5943967a4dc3601592a3f9ad",
+        "src/cli/status.ts": "4f063654a442fff109d4b5d7f7de801e53e35dfc",
+        "src/cli/supervisor-liveness.ts": "b9c5f827bf9c8b82ef432bc03c3330eda5e54411"
+      }
     }
   ],
   "demotions": [
