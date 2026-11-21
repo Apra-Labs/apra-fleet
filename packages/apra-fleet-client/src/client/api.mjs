@@ -132,7 +132,15 @@
  *   'max_total_time' (max_total_s, measured from the call including setup, ran out) |
  *   'secret_delivery_unavailable' (the member's stored credentials cannot be delivered
  *   without a command line -- relay member or SFTP disabled; deterministic, do not retry;
- *   no LLM call was made) | ...
+ *   no LLM call was made) |
+ *   'secret_in_prompt' (prompt contains a {{secret.NAME}} token; no LLM call) |
+ *   'invalid_arguments' (fork combined with session_id or a non-default resume; no LLM call) |
+ *   'substitution_failed' (substitutions key/placeholder validation failed; no LLM call) |
+ *   'provider_none' (member has llm_provider none; use execute_command; no LLM call) |
+ *   'agent_file_not_found' (the named `agent` file is missing on the member; no LLM call) |
+ *   'interactive_failed' (interactive-session delivery failed, the session died, or the wait
+ *   timed out; `dispatched:false` only when delivery itself failed) | ...
+ *   Early rejections that invoked no LLM carry `dispatched: false`.
  * @property {PermissionDenied} [permissionDenied] - Present when `reason === 'permission_denied'`:
  *   the member CLI refused tool calls (AGY headless mode auto-denies them and exits 0; Claude
  *   reports them in its result event's non-empty `permission_denials`). For Claude this needs the
