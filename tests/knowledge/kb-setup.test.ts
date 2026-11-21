@@ -226,18 +226,28 @@ describe('kb_setup merges into the existing config', () => {
   });
 
   it.each([
-    ['invalid JSON', '{ this is not json'],
-    ['a JSON array', '["provider", "http"]'],
-    ['JSON null', 'null'],
-  ])('replaces %s with a valid config and reports it, without throwing', async (_label, content) => {
+    ['invalid JSON', '{ this is not json', /is not valid JSON/],
+    ['a JSON array', '["provider", "http"]', /is not a JSON object/],
+    ['JSON null', 'null', /is not a JSON object/],
+  ])('refuses %s, naming the file, leaving its bytes unchanged and installing no hook', async (_label, content, reason) => {
     writeConfig(content);
 
-    const result = await setup({ provider: 'sqlite' });
+    const err = await kbSetup({ provider: 'sqlite' }, { folder: tmpDir }).then(() => null, (e: Error) => e);
 
-    expect(result.success).toBe(true);
-    expect(result.warnings).toHaveLength(1);
-    expect(result.warnings[0]).toMatch(/was discarded because it is not/);
-    expect(readConfig()).toEqual({ provider: 'sqlite' });
+    expect(err).toBeInstanceOf(Error);
+    expect(err!.message).toContain(configPath);
+    expect(err!.message).toMatch(reason);
+    expect(fs.readFileSync(configPath, 'utf-8')).toBe(content);
+    expect(fs.existsSync(path.join(tmpDir, '.git', 'hooks', 'post-commit'))).toBe(false);
+  });
+
+  it('never loses url and token on a profile-only call against a malformed config', async () => {
+    const content = '{"provider":"http","url":"https://kb.example.test","token_encrypted":"abc",}';
+    writeConfig(content);
+
+    await expect(kbSetup({ tool_profile: 'developer' }, { folder: tmpDir })).rejects.toThrow(/is not valid JSON/);
+
+    expect(fs.readFileSync(configPath, 'utf-8')).toBe(content);
   });
 
   // POSIX permission bits only: on Windows fs.chmodSync can only toggle the

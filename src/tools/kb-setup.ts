@@ -3,7 +3,7 @@ import { KB_REMOVED_SCOPE_KEYS_SHAPE } from '../services/knowledge/kb-removed-sc
 import fs from 'node:fs';
 import path from 'node:path';
 import { installKbPostCommitHook } from './kb-invalidate.js';
-import { KB_CONFIG_PATH, MIN_REQUEST_TIMEOUT_MS, MAX_REQUEST_TIMEOUT_MS, readKbConfigForMerge } from '../services/knowledge/kb-config.js';
+import { KB_CONFIG_PATH, MIN_REQUEST_TIMEOUT_MS, MAX_REQUEST_TIMEOUT_MS, readKbConfigForMerge, KbConfigUnreadableError, KB_CONFIG_HAND_FIX } from '../services/knowledge/kb-config.js';
 import type { KbConfigFile } from '../services/knowledge/kb-config.js';
 import { encryptPassword } from '../utils/crypto.js';
 import { findSecretTokens, hasSecretToken, formatSecretToken, legacyTokenWarning } from '../services/secret-token.js';
@@ -186,32 +186,24 @@ function checkTokenRef(input: KbSetupInput, provider: 'sqlite' | 'http'): TokenR
 }
 
 /**
- * The config kb_setup merges into. Absent -> empty. Malformed (bad JSON, or
- * not a JSON object) -> empty plus a warning: kb_setup is the tool an operator
- * runs to REPAIR the KB config, so an unreadable file must not make it throw.
+ * The config kb_setup merges into. Absent -> empty. A file that exists but
+ * cannot be read, is not valid JSON or is not a JSON object is never replaced:
+ * a rewrite would lose its remote url and token. kb_setup refuses, naming the
+ * file and the problem (never quoting it), before any side effect.
  */
-function readExistingConfig(warnings: string[]): KbConfigFile {
-  if (!fs.existsSync(KB_CONFIG_PATH)) return {};
-  let parsed: unknown;
+function readExistingConfig(): KbConfigFile {
   try {
-    parsed = JSON.parse(fs.readFileSync(KB_CONFIG_PATH, 'utf-8'));
-  } catch {
-    // The parser's message quotes part of the file, which may hold the
-    // encrypted token, so it is not repeated here.
-    return discardMalformed(warnings, 'it is not valid JSON');
+    return readKbConfigForMerge();
+  } catch (err) {
+    if (!(err instanceof KbConfigUnreadableError)) throw err;
+    throw new Error(`kb_setup: ${err.message}; nothing was written. ${KB_CONFIG_HAND_FIX}`);
   }
-  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    return discardMalformed(warnings, 'it is not a JSON object');
-  }
-  return parsed as KbConfigFile;
 }
 
-function discardMalformed(warnings: string[], reason: string): KbConfigFile {
-  const warning = `existing KB config at ${KB_CONFIG_PATH} was discarded because ${reason}; ` +
-    'any other settings it held (e.g. bible.autoCommit) must be set again.';
-  logWarn('kb_setup', warning);
-  warnings.push(warning);
-  return {};
+/** True when the input only sets the tool profile (the documented "set alone" form). */
+function isToolProfileOnly(input: KbSetupInput): boolean {
+  return input.tool_profile !== undefined && !input.provider && !input.remote &&
+    input.token === undefined && input.request_timeout_ms === undefined;
 }
 
 /**
@@ -231,7 +223,7 @@ function discardMalformed(warnings: string[], reason: string): KbConfigFile {
 function applySetupInput(config: KbConfigFile, input: KbSetupInput, ref: TokenRef | null, steps: string[], warnings: string[]): void {
   if (input.provider || input.remote) {
     config.provider = input.provider || 'http';
-  } else if (!config.provider) {
+  } else if (!config.provider && !isToolProfileOnly(input)) {
     config.provider = 'sqlite';
   }
 
@@ -285,18 +277,22 @@ export async function kbSetup(input: KbSetupInput, anchor?: KbAnchor): Promise<s
   }
   // Read (not write) the existing config first: whether the named secret must
   // exist depends on the provider the merged config ends up with.
-  const config = readExistingConfig(warnings);
+  const config = readExistingConfig();
   const ref = checkTokenRef(input, effectiveProvider(input, config));
 
   // Install git post-commit hook into the calling session's own repo (kb-self.ts).
   // A folder that cannot carry a KB identity skips the hook with the typed
   // reason; the provider config below is machine-wide and is still written.
+  // A profile-only call is a pure config edit (like `apra-fleet kb profile`):
+  // it touches no repo and does not pick a provider.
   let repoPath: string | null = null;
-  try {
-    repoPath = resolveKbAnchor(anchor).folder;
-  } catch (err) {
-    if (!(err instanceof KbSelfError)) throw err;
-    steps.push('Skipped git hook: ' + err.message);
+  if (!isToolProfileOnly(input)) {
+    try {
+      repoPath = resolveKbAnchor(anchor).folder;
+    } catch (err) {
+      if (!(err instanceof KbSelfError)) throw err;
+      steps.push('Skipped git hook: ' + err.message);
+    }
   }
   if (repoPath !== null) {
     if (fs.existsSync(path.join(repoPath, '.git'))) {

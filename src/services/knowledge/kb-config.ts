@@ -111,14 +111,17 @@ export function readKbConfigForMerge(): KbConfigFile {
  *   never broken by this reader; it does not look at provider/token keys).
  * - A known profile -> that profile; "custom" validates tool_profile_tools
  *   against the registered kb_* tool names.
- * - An unreadable or malformed file throws KbConfigUnreadableError; an unknown
+ * - An unreadable, malformed or non-object file throws KbConfigUnreadableError; an unknown
  *   profile name or an invalid custom list throws an Error naming this config
  *   path and the problem (for a custom list: the unknown names and the valid
  *   ones).
  */
 export function readKbToolProfileFromDisk(): KbToolProfile {
   const parsed = parseKbConfigFile();
-  if (parsed === undefined || parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return FULL_KB_TOOL_PROFILE;
+  if (parsed === undefined) return FULL_KB_TOOL_PROFILE;
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new KbConfigUnreadableError('is not a JSON object');
+  }
   const config = parsed as KbConfigFile;
   if (config.tool_profile === undefined) return FULL_KB_TOOL_PROFILE;
   try {
