@@ -3409,8 +3409,9 @@ async function runSprintCycle(context) {
             const closed = closedIds || new Set(allBeads.filter((b) => b.status === 'closed').map((b) => b.id));
             const fresh = classifyVerifySet(allBeads, targetIssues).verifyIds;
             integBoundIds = [...new Set([...fresh, ...[...verifyEverIds].filter((id) => !closed.has(id))])];
-            const knownClosed = [...closed].map((id) => ({ id, status: 'closed' }));
-            verifyBlockedIds = findVerifyBlockedBeads(open, knownClosed, integBoundIds).map((b) => b.id);
+            // The full snapshot (not closed-id stubs): the ancestor walk needs
+            // parent links and ancestor edges; `closed` stays authoritative.
+            verifyBlockedIds = findVerifyBlockedBeads(open, allBeads, integBoundIds, { closedIds: closed }).map((b) => b.id);
         } else {
             const { hasDeploy, hasPlaybook } = runbooks || await (async () => {
                 const deployMd = await probeFileExists('deploy.md', getMemberForRole('deployer'));
@@ -4464,8 +4465,10 @@ async function runSprintCycle(context) {
         // from this cycle's own fresh closed list and verify set -- no extra
         // bd call.
         if (!integCanRunThisCycle && openAtGoal.length > 0) {
-            const knownClosed = [...closedIdsNow].map((id) => ({ id, status: 'closed' }));
-            const blockedAtGoal = findVerifyBlockedBeads(openAtGoal, knownClosed, verifySetThisCycle);
+            // routeBeads (this cycle's Route snapshot, no extra bd call) carries
+            // the parent links and ancestor edges the inherited-edge walk
+            // needs; closedIdsNow stays the authoritative closed set.
+            const blockedAtGoal = findVerifyBlockedBeads(openAtGoal, routeBeads, verifySetThisCycle, { closedIds: closedIdsNow });
             const blockedAtGoalIds = new Set(blockedAtGoal.map((b) => b.id));
             if (blockedAtGoal.length > 0 && openAtGoal.every((b) => verifyEverIds.has(b.id) || blockedAtGoalIds.has(b.id))) {
                 verifyBlockDiagnosis = buildVerifyBlockDiagnosis({
