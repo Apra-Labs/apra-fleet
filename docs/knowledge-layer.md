@@ -923,6 +923,13 @@ The AUDN system deduplicates automatically:
 - `update` -- same-topic predecessor linked (refines; both entries stay live unless `supersedes` is passed explicitly)
 - `flagged` -- contradiction detected, both entries flagged for human review
 
+**Bible id aliases.** When `kb_import` answers `none` for a bible entry, the
+bible id is recorded in `bible_id_aliases` against the local row that absorbed
+it, so a later tombstone (demotion or withdrawal) for that bible id still
+reaches the row holding the fact here. Side effect: the tombstone demotes or
+withdraws that local row, not just the bible id. If that row is itself a bible
+entry (under its own id), the clone's next `kb_bible_commit` tombstones it too.
+
 ### When to promote
 
 Entries start at `INFERRED` confidence. The reviewer promotes verified facts:

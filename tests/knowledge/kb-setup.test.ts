@@ -36,11 +36,10 @@ describe('isolation guard', () => {
 let tmpDir: string;
 const configPath = path.join(FLEET_DIR, 'knowledge', 'config.json');
 
-// FLEET_DIR is shared by every test file in the run, and getKbProviders
+// FLEET_DIR is this file's own data dir (claimed above), and getKbProviders
 // reselects the project provider whenever this config changes. Every test here
 // starts from no config and puts back whatever was there, so an http remote
-// written here (some deliberately unroutable) never becomes the provider a
-// later file's getKbProviders() selects.
+// written here (some deliberately unroutable) never leaks into a later test.
 let savedConfig: string | null;
 let restoreGitConfig: () => void;
 

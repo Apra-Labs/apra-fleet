@@ -1045,7 +1045,8 @@ export class SqliteProvider implements MemoryProvider {
     // flagged entries are stored under it, and a deduplicated one records an
     // alias to the local row that absorbed it. Minting a fresh id here made a
     // merged withdrawal answer not_found on every clone where AUDN had
-    // matched the entry.
+    // matched the entry. The alias means a tombstone for the bible id also
+    // demotes/withdraws the absorbing local row (see applyTombstoneToRow).
     if (decision.decision === 'none') {
       if (importId !== undefined && importId !== decision.matchedId) {
         db.prepare('INSERT OR IGNORE INTO bible_id_aliases (bible_id, local_id, recorded_at) VALUES (?, ?, ?)')
@@ -2212,6 +2213,9 @@ export class SqliteProvider implements MemoryProvider {
     // A bible id kb_import deduplicated into an existing local row resolves
     // through its alias (bible_id_aliases), so the tombstone reaches the row
     // that holds the fact here. A real row with the id always wins.
+    // Side effect: the local row itself is demoted/withdrawn; if that row is
+    // also a bible entry, the next kb_bible_commit tombstones it too
+    // (docs/knowledge-layer.md, "Bible id aliases").
     if (!row) {
       const alias = db.prepare('SELECT local_id FROM bible_id_aliases WHERE bible_id = ?').get(id) as { local_id: string } | undefined;
       if (alias) row = db.prepare('SELECT * FROM entries WHERE id = ?').get(alias.local_id) as Record<string, unknown> | undefined;

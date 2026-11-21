@@ -38,8 +38,8 @@ describe('isolation guard', () => {
 // The selection seam: getKbProviders resolves the repository from the anchor
 // (folder + optional remoteUrl) and hands it to the HttpKbProvider, which sends
 // it as X-Repository / X-Repository-Commit. Proven against a real local HTTP
-// server; FLEET_DIR is a per-run tmpdir and fileParallelism is off, so the
-// global KB config written here cannot leak into another file.
+// server; FLEET_DIR is this file's own data dir (claimed above), so the KB
+// config written here cannot leak into another file.
 const KB_CONFIG_DIR = path.join(FLEET_DIR, 'knowledge');
 const KB_CONFIG_PATH = path.join(KB_CONFIG_DIR, 'config.json');
 const FAKE_TOKEN = 'NOT_A_REAL_KEY';
