@@ -233,20 +233,21 @@ describe('kb-reconcile two-branch e2e (T3.3, F6/D6)', () => {
     // bible cannot opt in: it is authored on another branch and cannot name
     // THIS worktree's local uuid, so no bible entry can carry `supersedes`.
     // An import refinement is therefore an ordinary refinement -- aRefine stays
-    // LIVE and the fresh row (NOT the bible id, since AUDN's update path always
-    // mints a random id) carries the refined claim and links 'refines' to it.
+    // LIVE and the new row -- stored under the BIBLE id, so a later tombstone
+    // for it reaches this clone -- carries the refined claim and links
+    // 'refines' to it.
     // Retiring the predecessor is a curation act (kb-review.md Step 4), not
     // something an import infers.
     expect(rawRow(aRefine.id).superseded_at).toBeFalsy();
-    expect(provider.hasEntry('b-refine')).toBe(false);
+    expect(provider.hasEntry('b-refine')).toBe(true);
 
     // contradiction #1: pair asymmetry as landed -- aContra (original) is
-    // flagged; the imported challenger gets a FRESH id (AUDN's 'flagged'
-    // branch always mints a new randomUUID -- preferredId applies only on
-    // the pure 'add' path, LOW-2) and points contradiction_of at aContra,
+    // flagged; the imported challenger keeps its BIBLE id (import keeps the
+    // bible id on every AUDN path) and points contradiction_of at aContra,
     // forced UNVERIFIED regardless of the bible's CONFIRMED.
     expect(rawRow(aContra.id).flagged_for_review).toBe(1);
     const bContraId = challengerIdFor(aContra.id);
+    expect(bContraId).toBe('b-contra');
     const bContraRow = rawRow(bContraId);
     expect(bContraRow.contradiction_of).toBe(aContra.id);
     expect(bContraRow.confidence).toBe('UNVERIFIED');
@@ -332,7 +333,9 @@ describe('kb-reconcile two-branch e2e (T3.3, F6/D6)', () => {
     // Admission reads cited files at HEAD, so the merged tree is committed first.
     commitWorkTree(repoDir, 'merged tree');
     const exportReport = JSON.parse(await kbExport({}, { folder: repoDir }));
-    expect(exportReport.exported).toBe(6);
+    // 5, not 6: the winner keeps its bible id (b-contra), so it REPLACES the
+    // bible's own b-contra entry instead of being added beside it.
+    expect(exportReport.exported).toBe(5);
 
     const written = JSON.parse(fs.readFileSync(canonicalPath, 'utf-8')) as {
       version: number; entries: Array<{ id: string; source_file_hashes?: Record<string, string> }>;
@@ -341,7 +344,7 @@ describe('kb-reconcile two-branch e2e (T3.3, F6/D6)', () => {
     const canonical = written.entries;
     const canonicalIds = canonical.map(e => e.id);
 
-    // reconcile winner is exported (the winner id is fresh, so it is NOT one of the bible's pre-existing entries)
+    // reconcile winner is exported under its bible id, with the basis it arrived with
     expect(canonicalIds).toContain(bContraId);
     expect(canonical.find(e => e.id === bContraId)?.source_file_hashes).toEqual(bContra.source_file_hashes);
     expect(canonicalIds).not.toContain(aContra.id);      // loser: superseded, excluded

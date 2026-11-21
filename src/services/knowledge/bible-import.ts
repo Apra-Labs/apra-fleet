@@ -529,6 +529,13 @@ export async function importBibleEntries(
     // basis hashed from this clone: it can go stale when code drifts, but the
     // bible predicate never sees it, so the entry is not re-exported until it
     // is recaptured.
+    //
+    // The bible id is KEPT whatever AUDN decides (preferredId under importMode):
+    // an added, linked or flagged entry is stored under it, and a deduplicated
+    // one records an alias to the local row that absorbed it. The tombstone
+    // pass below, applyBibleWithdrawals and the KB server's withdraw route all
+    // look tombstones up by bible id, so this is what lets a later withdrawal
+    // or demotion reach this clone's row instead of answering not_found.
     let audn_decision: AudnDecision;
     try {
       ({ audn_decision } = await provider.capture(kbInput, {

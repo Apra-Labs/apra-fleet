@@ -226,11 +226,11 @@ describe('kb_import trusted-channel import (T2.1, F4/D3)', () => {
     expect(report.imported).toBe(0);
   });
 
-  it('TEST 5: id preservation -- a fresh bible id is preserved; an id whose content AUDN-matches an existing entry is resolved under a fresh id (never the bible id)', async () => {
+  it('TEST 5: id preservation -- a fresh bible id is preserved, and so is the id of an entry AUDN links to an existing entry', async () => {
     // (a) fresh entry: bible id preserved.
-    // (b) content collision: bible entry AUDN-updates a seeded local; the new
-    //     row gets a fresh random id, and the bible id is NOT used (preferredId
-    //     applies only on the pure 'add' path).
+    // (b) refinement: the bible entry AUDN-updates a seeded local; the new row
+    //     is stored under the BIBLE id too, so a later tombstone for that id
+    //     reaches it. The seeded local keeps its own id and stays live.
     await provider.capture(localInput({
       title: 'collToken', content: 'coll original body',
       symbols: ['collSym'], source_files: ['src/coll.ts'],
@@ -244,7 +244,7 @@ describe('kb_import trusted-channel import (T2.1, F4/D3)', () => {
     const report = JSON.parse(await kbImport({ path: p }, { folder: tmpRepo }));
 
     expect(provider.hasEntry('keep-me-1')).toBe(true);   // fresh id preserved
-    expect(provider.hasEntry('bib-coll')).toBe(false);   // update minted a fresh id
+    expect(provider.hasEntry('bib-coll')).toBe(true);    // linked entry keeps the bible id
     expect(report.imported).toBe(1);   // keep-me-1
     expect(report.linked).toBe(1);     // the collision
   });

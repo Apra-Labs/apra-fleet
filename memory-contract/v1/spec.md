@@ -507,6 +507,15 @@ legitimately holds CONFIRMED rows that were never exported (local-only
 promotions, `basis_mismatch` refusals), and those must not be demoted by an
 import, so withdrawal of trust is only ever carried by an explicit tombstone.
 
+BIBLE IDS SURVIVE IMPORT. A tombstone names a bible id, so `kb_import` keeps
+that id whatever its duplicate/refinement/contradiction routing decides: an
+added, linked or flagged entry is stored under the bible id, and an entry
+skipped as a duplicate of an existing local row records an alias from the
+bible id to that row. A tombstone for the bible id -- applied by `kb_import` or
+by the KB server's withdraw route -- resolves through the alias to the row that
+holds the fact (a row that itself carries the id always wins), and is judged
+there by the rules below.
+
 ONE RE-PROMOTION RULE governs both directions. A row's bible trust time is when
 its trust dates from as a bible records it: its `promoted_at` when it was
 promoted on this clone, else the `updated_at` the bible carried when the row
