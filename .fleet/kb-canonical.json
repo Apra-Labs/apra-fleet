@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "0b13b1ccc8993e056c90ef347492ea9208ebabe2",
     "branch": "main",
-    "entry_count": 173
+    "entry_count": 174
   },
   "entries": [
     {
@@ -698,6 +698,35 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:14.441Z"
+    },
+    {
+      "id": "370cbe0c-3076-4db1-a9e3-ad7ea884e264",
+      "type": "knowledge",
+      "title": "kb_setup registers an id-keyed bible git merge driver in the clone",
+      "summary": "kb_setup calls installBibleMergeDriver, which sets git config --local merge.apra-fleet-kb-bible.driver to the absolute apra-fleet CLI argv plus 'kb merge-driver %O %A %B %P' and adds '.fleet/kb-canonical.json merge=apra-fleet-kb-bible' to the clone's info/attributes. The engine is src/services/knowledge/bible-merge.ts.",
+      "symbols": [
+        "installBibleMergeDriver",
+        "runKbMergeDriver",
+        "mergeBibleDocuments",
+        "mergeKbCanonical",
+        "BIBLE_MERGE_DRIVER_NAME"
+      ],
+      "source_files": [
+        "src/cli/kb-merge-driver.ts",
+        "src/services/knowledge/bible-merge.ts",
+        "src/tools/kb-setup.ts",
+        "packages/apra-fleet-se/scripts/merge-kb-canonical.mjs",
+        "tests/knowledge/bible-merge-parity.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-21T11:22:14.863Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/scripts/merge-kb-canonical.mjs": "a8d68d4ad7945b85143e2df8cf4ce34f7efc97da",
+        "src/cli/kb-merge-driver.ts": "ed1881a9cf7d80a61b3bc2a107a99536004501ac",
+        "src/services/knowledge/bible-merge.ts": "876739bd97e76ed5a415f41bc0c7a1991d0deba9",
+        "src/tools/kb-setup.ts": "a81b51d32d58c5b6c0489dccc7ce8fe3bd944a53",
+        "tests/knowledge/bible-merge-parity.test.ts": "7c45009d68a54e7b947009674db2a727201eddc9"
+      }
     },
     {
       "id": "399f2e9b-c7d1-4c6a-9785-192062276a11",
