@@ -610,6 +610,22 @@
  */
 
 /**
+ * @typedef {Object} LegacyGlobalHelperOutcome
+ * @property {string} scopeUrl - Scope whose global key `credential.<scopeUrl>.helper` was looked at.
+ * @property {"removed" | "not_present" | "kept_for_member" | "failed"} outcome - "removed": fleet's
+ *   legacy value was removed, so git run outside fleet dispatches no longer gets the fleet token
+ *   for that scope. "not_present": no fleet value on the key; nothing changed. "kept_for_member":
+ *   left because another member runs as the same host user; fleet no longer refreshes it.
+ *   "failed": nothing changed.
+ * @property {number} removedValues - Fleet's own values removed from the key.
+ * @property {number} keptValues - Values fleet did not write (counted, never echoed); always kept.
+ * @property {string|null} keptForMember - Member the legacy helper was kept for, else null.
+ * @property {string|null} notice - The warning line also shown in the text, or null.
+ *
+ * Mirrors src/tools/provision-vcs-auth.ts's LegacyGlobalHelperOutcome.
+ */
+
+/**
  * @typedef {Object} ProvisionVcsAuthStructured
  * @property {boolean} ok - True when the credential was actually deployed onto the member.
  * @property {"ok" | "deployed_unverified" | "deployed_verification_skipped" |
@@ -638,6 +654,9 @@
  *   key is dropped, never passed through). Providers additionally mask the token value here to
  *   its first four characters plus asterisks, so this never carries the plaintext token.
  * @property {string|null} expiryWarning - Near-expiry warning text when one applies, else null.
+ * @property {LegacyGlobalHelperOutcome|null} legacyGlobalHelper - Upgrade migration of a legacy
+ *   helper this label held (an older release registered it in the per-OS-user global git
+ *   config), or null when there was none. See LegacyGlobalHelperOutcome.
  * @property {string|null} memberId - Registry id of the resolved member, or null.
  * @property {string|null} memberName - Friendly name of the resolved member, or null.
  * @property {string|null} message - Human-readable cause of a non-ok outcome (e.g. "No repos

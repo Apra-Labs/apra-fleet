@@ -139,6 +139,62 @@ describe('per-label VCS credential record', () => {
     expect(getVcsCredentials(getAgent(member.id)!)['az-a'].memberScoped).toBe(true);
   });
 
+  it('migration: the provision result says loudly what was removed from the global key and what was kept', async () => {
+    const member = makeTestAgent({
+      friendlyName: 'legacy-notice', os: 'linux', host: 'build.example', username: 'ci',
+      vcsProvider: 'azure-devops', vcsCredentialLabel: 'az-a', vcsCredentialScopeUrl: 'https://dev.azure.com/old-org',
+    });
+    addAgent(member);
+    mockExecCommand.mockImplementation(async (cmd: string) => (cmd.includes('--unset-all')
+      ? { stdout: 'FLEET_LEGACY_HELPER removed=1 kept=1 reset_removed=0\n', stderr: '', code: 0 }
+      : { stdout: '', stderr: '', code: 0 }));
+
+    const res = await provisionAz(member.id, 'az-a');
+    expect(res.text).toContain('[WARN] Upgrade: removed fleet\'s legacy helper from global git config key credential.https://dev.azure.com/old-org.helper');
+    expect(res.text).toContain('1 other value(s) on that key were not written by fleet and were kept');
+    expect(res.text).toContain('Upgrading from 0.4.5 or older');
+    expect(res.structuredContent.legacyGlobalHelper).toMatchObject({
+      scopeUrl: 'https://dev.azure.com/old-org', outcome: 'removed', removedValues: 1, keptValues: 1, keptForMember: null,
+    });
+  });
+
+  it('migration: a key with no fleet value is reported as not_present with no notice', async () => {
+    const member = makeTestAgent({
+      friendlyName: 'legacy-absent', os: 'linux', host: 'build.example', username: 'ci',
+      vcsProvider: 'azure-devops', vcsCredentialLabel: 'az-a', vcsCredentialScopeUrl: 'https://dev.azure.com/old-org',
+    });
+    addAgent(member);
+    mockExecCommand.mockImplementation(async (cmd: string) => (cmd.includes('--unset-all')
+      ? { stdout: 'FLEET_LEGACY_HELPER removed=0 kept=2 reset_removed=0\n', stderr: '', code: 0 }
+      : { stdout: '', stderr: '', code: 0 }));
+
+    const res = await provisionAz(member.id, 'az-a');
+    expect(res.text).not.toContain('Upgrade:');
+    expect(res.structuredContent.legacyGlobalHelper).toMatchObject({ outcome: 'not_present', removedValues: 0, keptValues: 2 });
+  });
+
+  it('migration: a legacy helper kept for a same-user member is reported, naming that member', async () => {
+    const member = makeTestAgent({
+      friendlyName: 'legacy-kept', os: 'linux', host: 'build.example', username: 'ci',
+      vcsProvider: 'azure-devops', vcsCredentialLabel: 'az-a', vcsCredentialScopeUrl: 'https://dev.azure.com/old-org',
+    });
+    const sibling = makeTestAgent({ friendlyName: 'sibling-kept', os: 'linux', host: 'build.example', username: 'ci' });
+    addAgent(member);
+    addAgent(sibling);
+
+    const res = await provisionAz(member.id, 'az-a');
+    expect(res.text).toContain('left in place because member "sibling-kept" runs as the same user');
+    expect(res.structuredContent.legacyGlobalHelper).toMatchObject({ outcome: 'kept_for_member', keptForMember: 'sibling-kept' });
+  });
+
+  it('a first provision with no legacy entry reports legacyGlobalHelper null', async () => {
+    const member = makeTestAgent({ friendlyName: 'fresh', os: 'linux' });
+    addAgent(member);
+    const res = await provisionAz(member.id, 'az-a');
+    expect(res.structuredContent.legacyGlobalHelper).toBeNull();
+    expect(res.text).not.toContain('Upgrade:');
+  });
+
   it('re-provisioning label A with the same scope issues no revoke', async () => {
     const member = makeTestAgent({ friendlyName: 'refresh', os: 'linux' });
     addAgent(member);

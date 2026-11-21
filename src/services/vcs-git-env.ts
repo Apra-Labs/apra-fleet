@@ -10,8 +10,10 @@
  * starts inherits it, whatever repository it runs in: the member's clone, a
  * worktree, or the bare cache repository bd/dolt pushes through.
  *
- * Only the member's own entries (memberScoped) are registered. A legacy entry
- * is still served by the global git config key an older release wrote.
+ * The member's own entries (memberScoped) are registered. A legacy entry is
+ * still served by the global git config key an older release wrote, and is
+ * registered here (its shared legacy file) only on a scope that also has a
+ * member-scoped entry, because the prefix resets that scope's global list.
  *
  * Several labels on one scope URL: git uses the FIRST helper that answers, so
  * the order is explicit, never provisioning order (a refresh must not change
@@ -22,18 +24,26 @@
 import type { Agent } from '../types.js';
 import { getOsCommands } from '../os/index.js';
 import type { GitCredentialHelperRegistration, OsCommands } from '../os/os-commands.js';
+import { isSafeGitCredentialScope } from '../os/os-commands.js';
 import { getAgentOS, getAgentShell } from '../utils/agent-helpers.js';
 import { listVcsCredentials } from './vcs-credential-record.js';
 import { logWarn } from '../utils/log-helpers.js';
 
 /** The helpers to register for a member, in the order git should try them. */
 export function vcsGitHelperRegistrations(agent: Agent): GitCredentialHelperRegistration[] {
-  const entries = listVcsCredentials(agent)
-    .filter(e => e.memberScoped && e.label !== undefined && e.scopeUrl !== undefined);
+  const labeled = listVcsCredentials(agent)
+    .filter(e => e.label !== undefined && e.scopeUrl !== undefined);
+  const ownScopes = new Set(labeled.filter(e => e.memberScoped).map(e => e.scopeUrl!));
+  // A legacy entry (still served by the global key an older release wrote) is
+  // registered too when its scope also has a member-scoped helper: the prefix
+  // resets that scope's global list, which would otherwise hide it -- e.g. a
+  // legacy 'github' push credential behind a newly provisioned 'github-issues'.
+  const entries = labeled.filter(e => e.memberScoped
+    || (ownScopes.has(e.scopeUrl!) && isSafeGitCredentialScope(e.scopeUrl!)));
   const rank = (e: (typeof entries)[number]) => (e.label === e.provider ? 0 : 1);
   return [...entries]
     .sort((a, b) => rank(a) - rank(b) || (a.label! < b.label! ? -1 : a.label! > b.label! ? 1 : 0))
-    .map(e => ({ scopeUrl: e.scopeUrl!, label: e.label! }));
+    .map(e => ({ scopeUrl: e.scopeUrl!, label: e.label!, ...(e.memberScoped ? {} : { legacy: true }) }));
 }
 
 /**

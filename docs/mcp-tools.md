@@ -480,6 +480,20 @@ anyone's gh or git identity, provision it under its own `label` (for example
 `github-issues` with `git_access: "issues"`) and use that token per call
 through `vcs_credential_exec` with the same `label`.
 
+**Upgrade from 0.4.5 or older:** the helper is no longer registered in the
+global git config; fleet dispatches get it through `GIT_CONFIG_PARAMETERS`.
+The first re-provision of a label an older release deployed removes from the
+global key `credential.<scope>.helper` ONLY the values fleet wrote (its legacy
+helper path, then the empty reset entry if nothing else is left) -- never an
+operator's or another tool's helper -- unless another member runs as the same
+host user, in which case nothing is removed. `structuredContent.legacyGlobalHelper`
+(`outcome`: `removed`, `not_present`, `kept_for_member`, `failed`) and a
+`[WARN] Upgrade:` line in the text say what happened. After `removed`, git run
+OUTSIDE fleet dispatches no longer gets the fleet token; to keep that, see
+[design-git-auth.md](design-git-auth.md) "Upgrading from 0.4.5 or older".
+`revoke_vcs_auth`, `remove_member` and the expiry cleanup apply the same
+value-scoped removal to a legacy entry.
+
 Re-provisioning a label never revokes the token it replaces at GitHub: the
 old token stays valid until it expires, and the expiry cleanup only removes
 the helper when the record still holds the credential it was scheduled for (a

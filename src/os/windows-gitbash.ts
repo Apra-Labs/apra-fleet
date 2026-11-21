@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { LinuxCommands } from './linux.js';
+import { LinuxCommands, posixLegacyHelperUnset } from './linux.js';
 import { wrapPowerShellEncoded } from './windows.js';
 import { escapeDoubleQuoted, escapeShellArg, escapeBatchMetachars, escapePowerShellArgInner, sanitizeSessionId } from '../utils/shell-escape.js';
 import { isWindowsPosixUname } from '../utils/platform.js';
@@ -250,13 +250,19 @@ export class WindowsGitBashCommands extends LinuxCommands {
   }
 
   override gitCredentialHelperRemoveLegacyGlobal(host: string, label?: string, scopeUrl?: string): string {
-    const credUrl = scopeUrl ? escapeDoubleQuoted(scopeUrl) : `https://${escapeDoubleQuoted(host)}`;
-    return `rm -f "$HOME/${gitCredentialHelperStem(label)}.bat"; git config --global --unset-all "credential.${credUrl}.helper" 2>/dev/null || true`;
+    const stem = gitCredentialHelperStem(label);
+    const key = escapeShellArg(`credential.${scopeUrl ?? `https://${host}`}.helper`);
+    // The legacy release stored `cygpath -m` of the .bat path as the value.
+    return `rm -f "$HOME/${stem}.bat"; ` + posixLegacyHelperUnset(key, `"$(cygpath -m "$HOME")/${stem}.bat"`);
   }
 
   /** git.exe needs the Windows-form (forward-slash) path of the .bat helper. */
-  protected override gitCredentialHelperEnvPath(label: string, memberId: string): string {
-    return `$(cygpath -m "$HOME/${gitCredentialHelperStem(label, memberId)}.bat")`;
+  protected override gitHelperHomeCommand(): string {
+    return `cygpath -m "$HOME"`;
+  }
+
+  protected override gitHelperSuffix(): string {
+    return '.bat';
   }
 
   // --- SSH key deployment ---

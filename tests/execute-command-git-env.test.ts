@@ -41,7 +41,8 @@ describe('execute_command: git credential environment', () => {
     addAgent(member);
     await executeCommand({ member_id: member.id, command: 'bd dolt push', timeout_s: 5 });
     const sent = String(mockExecCommand.mock.calls[0][0]);
-    expect(sent.startsWith('export GIT_CONFIG_PARAMETERS="\'credential.https://github.com.helper=\' ')).toBe(true);
+    expect(sent.startsWith('_fleet_gh=$(')).toBe(true);
+    expect(sent).toContain('; export GIT_CONFIG_PARAMETERS="\'credential.https://github.com.helper=\' ');
     expect(sent.indexOf(`.fleet-git-credential-github.${member.id}`)).toBeLessThan(sent.indexOf(`.fleet-git-credential-github-issues.${member.id}`));
     expect(sent).toContain('bd dolt push');
     expect(sent).not.toContain('git config');
@@ -52,7 +53,8 @@ describe('execute_command: git credential environment', () => {
     addAgent(member);
     await executeCommand({ member_id: member.id, command: 'bd dolt push', timeout_s: 5 });
     const sent = String(mockExecCommand.mock.calls[0][0]);
-    expect(sent.startsWith('$env:GIT_CONFIG_PARAMETERS = ')).toBe(true);
+    expect(sent.startsWith('$fleetGitH = ')).toBe(true);
+    expect(sent).toContain('; $env:GIT_CONFIG_PARAMETERS = ');
     expect(sent).toContain(`.fleet-git-credential-github.${member.id}.bat`);
   });
 
@@ -76,7 +78,8 @@ describe('execute_command: git credential environment', () => {
     const mainB64 = /MAIN_CMD=\$\(printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d\)/.exec(script)?.[1];
     expect(mainB64).toBeDefined();
     const mainCmd = Buffer.from(mainB64!, 'base64').toString('utf-8');
-    expect(mainCmd.startsWith('export GIT_CONFIG_PARAMETERS=')).toBe(true);
+    expect(mainCmd.startsWith('_fleet_gh=$(')).toBe(true);
+    expect(mainCmd).toContain('; export GIT_CONFIG_PARAMETERS=');
     expect(mainCmd).toContain(`.fleet-git-credential-github.${member.id}`);
     expect(mainCmd.endsWith('bd dolt push')).toBe(true);
   });

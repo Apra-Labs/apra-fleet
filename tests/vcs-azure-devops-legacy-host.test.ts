@@ -136,7 +136,7 @@ describe('azureDevOpsProvider: legacy-host credential binding (issue #502)', () 
     expect(execCalls[0]).not.toContain('git config');
     expect(execCalls[0]).not.toContain('host=dev.azure.com');
     expect(cmds.gitCredentialEnvPrefix([{ scopeUrl: 'https://myorg.visualstudio.com', label: 'azure-devops' }], 'agent-1'))
-      .toContain("'credential.https://myorg.visualstudio.com.helper=$HOME/.fleet-git-credential-azure-devops.agent-1'");
+      .toContain("'credential.https://myorg.visualstudio.com.helper=!'\\''${_fleet_gh}/.fleet-git-credential-azure-devops.agent-1'\\'''");
   });
 
   it('deploy: the default scope keeps binding to dev.azure.com (unchanged for modern remotes)', async () => {

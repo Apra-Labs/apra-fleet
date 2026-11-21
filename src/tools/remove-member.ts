@@ -15,7 +15,7 @@ import { writeStatusline, readMemberStatus } from '../services/statusline.js';
 import { cancelCredentialCleanup } from '../services/credential-cleanup.js';
 import { listVcsCredentials } from '../services/vcs-credential-record.js';
 import { authorizedKeysOwner, memberSharingHostUser } from '../services/member-host-user.js';
-import { revokeVcsCredential } from '../services/vcs-credential-revoke.js';
+import { revokeVcsCredential, describeLegacyGlobalKey } from '../services/vcs-credential-revoke.js';
 import { getStallDetector } from '../services/stall/index.js';
 import { removeAgyProject } from '../services/agy-project.js';
 import type { Agent } from '../types.js';
@@ -228,7 +228,9 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
         // per-OS-user file and global git config key) is skipped when a sharer
         // exists (src/services/vcs-credential-revoke.ts).
         for (const vcs of listVcsCredentials(agent)) {
-          await revokeVcsCredential(agent, vcs, cmds, exec).catch(() => {});
+          const revoked = await revokeVcsCredential(agent, vcs, cmds, exec).catch(() => null);
+          const notice = revoked && !revoked.legacyLeftForSharer ? describeLegacyGlobalKey(revoked) : '';
+          if (notice) logLine('remove_member', notice, agent);
         }
 
         // SSH key removal: remove fleet public key from remote authorized_keys

@@ -203,3 +203,62 @@ test('Windows kill script verifies process name and command line, not just the p
     assert.match(text, /\$proc\.Name -eq 'dolt\.exe'/);
     assert.match(text, /CommandLine -match \('sql-server\.\*--port '/);
 });
+
+// ---------------------------------------------------------------------------
+// Port anchoring: a recorded port must not match a longer port with the same
+// prefix (3307 vs 33070). The generated kill scripts run for real with the
+// process lookup and the kill shimmed (no real process is touched).
+// ---------------------------------------------------------------------------
+
+function findBashForTest() {
+    if (process.platform !== 'win32') return 'bash';
+    try {
+        const execPath = spawnSync('git', ['--exec-path'], { encoding: 'utf8' }).stdout.trim();
+        const bash = path.resolve(execPath, '..', '..', '..', 'bin', 'bash.exe');
+        return fs.existsSync(bash) ? bash : null;
+    } catch { return null; }
+}
+const TEST_BASH = findBashForTest();
+
+const PORT_CASES = [
+    { args: 'dolt sql-server --host 127.0.0.1 --port 33070 --data-dir /d', killed: false, what: 'a longer port with the same prefix' },
+    { args: 'dolt sql-server --host 127.0.0.1 --port 3307 --data-dir /d', killed: true, what: 'the recorded port' },
+    { args: 'dolt sql-server --host 127.0.0.1 --port 3307', killed: true, what: 'the recorded port as the last argument' },
+];
+
+for (const c of PORT_CASES) {
+    test(`[posix] recorded-pid kill: ${c.what} -> ${c.killed ? 'killed' : 'not killed'}`, { skip: TEST_BASH ? false : 'no bash' }, async () => {
+        const home = fs.mkdtempSync(path.join(os.tmpdir(), 'settle-port-'));
+        try {
+            fs.mkdirSync(path.join(home, '.apra-fleet'));
+            fs.writeFileSync(path.join(home, '.apra-fleet', settlePidfile('mA').name), '4242 3307\n');
+            const script = await realKillScriptFor('mA');
+            const shim = 'ps() { echo "$FAKE_ARGS"; }; kill() { return 0; }; ';
+            const r = spawnSync(TEST_BASH, ['-c', shim + script], {
+                env: { ...process.env, HOME: home.replace(/\\/g, '/'), FAKE_ARGS: c.args }, encoding: 'utf8',
+            });
+            assert.equal(/KILLED:4242/.test(r.stdout), c.killed, `stdout=${r.stdout} stderr=${r.stderr}`);
+        } finally {
+            fs.rmSync(home, { recursive: true, force: true });
+        }
+    });
+
+    test(`[powershell] recorded-pid kill: ${c.what} -> ${c.killed ? 'killed' : 'not killed'}`, { skip: process.platform === 'win32' ? false : 'Windows-only: needs powershell.exe' }, async () => {
+        const home = fs.mkdtempSync(path.join(os.tmpdir(), 'settle-port-'));
+        try {
+            fs.mkdirSync(path.join(home, '.apra-fleet'));
+            fs.writeFileSync(path.join(home, '.apra-fleet', settlePidfile('mA').name), '4242 3307\n');
+            const { command, calls } = makeLockedRunner({ platform: 'win32', killOutput: () => '', unlockOnKill: false });
+            await ensurePinnedDolt({ command, member: 'mA', platform: 'win32', shell: 'pwsh7' });
+            const script = calls.map(decode).find((t) => /KILLED:/.test(t));
+            const shim = "function Get-CimInstance { [pscustomobject]@{ Name = 'dolt.exe'; CommandLine = $env:FAKE_ARGS } }; function Stop-Process { }; ";
+            const encoded = Buffer.from(shim + script, 'utf16le').toString('base64');
+            const r = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded], {
+                env: { ...process.env, USERPROFILE: home, FAKE_ARGS: c.args }, encoding: 'utf8',
+            });
+            assert.equal(/KILLED:4242/.test(r.stdout), c.killed, `stdout=${r.stdout} stderr=${r.stderr}`);
+        } finally {
+            fs.rmSync(home, { recursive: true, force: true });
+        }
+    });
+}

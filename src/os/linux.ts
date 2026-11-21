@@ -1,9 +1,47 @@
 import { execSync } from 'node:child_process';
 import type { OsCommands, ProviderAdapter, PromptOptions, UnsetEnvOptions } from './os-commands.js';
-import { escapeDoubleQuoted, escapeGrepPattern, sanitizeSessionId, GIT_LS_REMOTE_OK_MARKER, FLEET_ENV_MARKER, unsetEnvSedExpr, gitCredentialHelperStem, groupGitCredentialHelpers } from './os-commands.js';
+import { escapeDoubleQuoted, escapeGrepPattern, sanitizeSessionId, GIT_LS_REMOTE_OK_MARKER, FLEET_ENV_MARKER, unsetEnvSedExpr, gitCredentialHelperStem, groupGitCredentialHelpers, gitHelperParamWord } from './os-commands.js';
 import type { GitCredentialHelperRegistration } from './os-commands.js';
 import { escapeShellArg } from '../utils/shell-escape.js';
 import { assertAuthorizedKeyMatch } from './ssh-key-match.js';
+
+// The two filters below type no backslash: a doubled backslash in a command
+// is halved by some transports before the member shell sees it (a native
+// Windows process starting Git Bash parses its command line MSVC/cygwin
+// style), so awk makes the backslash itself with sprintf("%c", 92).
+
+/** awk filter that single-quote-escapes one line for sh and for GIT_CONFIG_PARAMETERS: ' -> '\'' */
+export const SQ_ESCAPE_AWK = `awk 'BEGIN { q = sprintf("%c", 39); r = q sprintf("%c", 92) q q } `
+  + `{ n = split($0, a, q); s = a[1]; for (i = 2; i <= n; i++) s = s r a[i]; printf "%s", s }'`;
+
+/**
+ * awk filter turning one line into an anchored ERE matching exactly it: each
+ * ERE special character goes into its own bracket expression. Prints nothing
+ * for a value holding '^' (no bracket form), so the caller removes nothing.
+ */
+const EXACT_ERE_AWK = `awk '{ sp = "[].*+?(){}|$" sprintf("%c", 92); r = ""; `
+  + `for (i = 1; i <= length($0); i++) { c = substr($0, i, 1); if (c == "^") exit; r = r (index(sp, c) ? "[" c "]" : c) } `
+  + `printf "^%s$", r }'`;
+
+/**
+ * POSIX: remove from the global key `keyArg` (already shell-quoted) ONLY the
+ * value equal to `valueExpr` (a double-quoted shell word) -- fleet's legacy
+ * helper path -- then the empty reset entry when no non-empty value is left.
+ * Any other value stays. Prints the FLEET_LEGACY_HELPER line, exits 0.
+ */
+export function posixLegacyHelperUnset(keyArg: string, valueExpr: string): string {
+  return String.raw`_fleet_k=${keyArg}; _fleet_v=${valueExpr}; `
+    + String.raw`_fleet_all=$(git config --global --get-all "$_fleet_k" 2>/dev/null); `
+    + String.raw`_fleet_n=$(printf '%s\n' "$_fleet_all" | grep -cxF -- "$_fleet_v"); `
+    + String.raw`if [ "$_fleet_n" -gt 0 ]; then `
+    + `_fleet_re=$(printf '%s' "$_fleet_v" | ${EXACT_ERE_AWK}); `
+    + String.raw`if [ -n "$_fleet_re" ] && git config --global --unset-all "$_fleet_k" "$_fleet_re" 2>/dev/null; then `
+    + String.raw`_fleet_kept=$(git config --global --get-all "$_fleet_k" 2>/dev/null | grep -c .); _fleet_r=0; `
+    + String.raw`if [ "$_fleet_kept" -eq 0 ]; then git config --global --unset-all "$_fleet_k" '^$' 2>/dev/null && _fleet_r=1; fi; `
+    + String.raw`echo "FLEET_LEGACY_HELPER removed=$_fleet_n kept=$_fleet_kept reset_removed=$_fleet_r"; `
+    + String.raw`else echo "FLEET_LEGACY_HELPER failed=1"; fi; `
+    + String.raw`else echo "FLEET_LEGACY_HELPER removed=0 kept=$(printf '%s\n' "$_fleet_all" | grep -c .) reset_removed=0"; fi; true`;
+}
 
 // The member's own fleet bin dir (<home>/.apra-fleet/bin: the member-install
 // apra-fleet, dolt, and bd when the installer could not place it on the system
@@ -326,34 +364,39 @@ export class LinuxCommands implements OsCommands {
   }
 
   gitCredentialHelperRemoveLegacyGlobal(host: string, label?: string, scopeUrl?: string): string {
-    const escapedHost = escapeDoubleQuoted(host);
-    const credFile = `$HOME/${gitCredentialHelperStem(label)}`;
-    // scope_url is passed through escapeDoubleQuoted and embedded inside a double-quoted git config arg -- safe against injection.
-    const credUrl = scopeUrl ? escapeDoubleQuoted(scopeUrl) : `https://${escapedHost}`;
-    return `rm -f "${credFile}" && git config --global --unset-all "credential.${credUrl}.helper" 2>/dev/null || true`;
+    const stem = gitCredentialHelperStem(label);
+    const key = escapeShellArg(`credential.${scopeUrl ?? `https://${host}`}.helper`);
+    // The legacy release stored the expanded "$HOME/<stem>" as the value.
+    return `rm -f "$HOME/${stem}"; ` + posixLegacyHelperUnset(key, `"$HOME/${stem}"`);
   }
 
-  /** The member-side value of one helper path, inside a double-quoted shell string. */
-  protected gitCredentialHelperEnvPath(label: string, memberId: string): string {
-    return `$HOME/${gitCredentialHelperStem(label, memberId)}`;
+  /**
+   * Shell command (no quotes of its own, run inside $(...)) printing the member
+   * home for helper paths. git.exe needs the Windows form on Git Bash.
+   */
+  protected gitHelperHomeCommand(): string {
+    return `printf '%s' "$HOME"`;
+  }
+
+  /** Extension of the helper file ('.bat' where git.exe runs it natively). */
+  protected gitHelperSuffix(): string {
+    return '';
   }
 
   gitCredentialEnvPrefix(helpers: GitCredentialHelperRegistration[], memberId: string): string {
-    const groups = groupGitCredentialHelpers(helpers);
+    const groups = groupGitCredentialHelpers(helpers, memberId);
     if (groups.length === 0) return '';
-    gitCredentialHelperStem(undefined, memberId);
-    // GIT_CONFIG_PARAMETERS entries are single-quoted `key=value` words; the
-    // whole value sits in the member shell's double quotes so $HOME expands.
-    // Scopes and labels are validated to a charset that needs no escaping in
-    // either layer (groupGitCredentialHelpers).
+    // _fleet_gh is the member home, single-quote-escaped twice (see
+    // gitHelperParamWord). The words sit in the member shell's double quotes
+    // so ${_fleet_gh} expands; inside them '\'' is literal text.
     const words: string[] = [];
     for (const g of groups) {
       words.push(`'credential.${g.scopeUrl}.helper='`);
-      for (const label of g.labels) {
-        words.push(`'credential.${g.scopeUrl}.helper=${this.gitCredentialHelperEnvPath(label, memberId)}'`);
+      for (const stem of g.stems) {
+        words.push(gitHelperParamWord(g.scopeUrl, '${_fleet_gh}', `${stem}${this.gitHelperSuffix()}`));
       }
     }
-    return `export GIT_CONFIG_PARAMETERS="${words.join(' ')}"; `;
+    return `_fleet_gh=$(${this.gitHelperHomeCommand()} | ${SQ_ESCAPE_AWK} | ${SQ_ESCAPE_AWK}); export GIT_CONFIG_PARAMETERS="${words.join(' ')}"; `;
   }
 
   ghAuthLogin(token: string, hostname = 'github.com'): string {

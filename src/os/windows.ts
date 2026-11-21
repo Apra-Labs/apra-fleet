@@ -2,7 +2,7 @@ import { defaultWindowsPidWrapper } from './windows-wrapper.js';
 export { defaultWindowsPidWrapper as pidWrapWindows };
 ﻿import { execFileSync } from 'node:child_process';
 import type { OsCommands, ProviderAdapter, PromptOptions, UnsetEnvOptions } from './os-commands.js';
-import { escapeWindowsArg, sanitizeSessionId, GIT_LS_REMOTE_OK_MARKER, gitCredentialHelperStem, groupGitCredentialHelpers } from './os-commands.js';
+import { escapeWindowsArg, sanitizeSessionId, GIT_LS_REMOTE_OK_MARKER, gitCredentialHelperStem, groupGitCredentialHelpers, gitHelperParamWord } from './os-commands.js';
 import type { GitCredentialHelperRegistration } from './os-commands.js';
 import { escapeBatchMetachars, escapePowerShellArgInner } from '../utils/shell-escape.js';
 import { boundChildEnv, describeBoundedEnv } from './child-env-bound.js';
@@ -372,14 +372,14 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
     const credFileName = gitCredentialHelperStem(label, memberId);
     return [
       `$script = ('@echo off','echo protocol=https','echo host=${escapedHost}','echo username=${escapedUser}','echo password=${escapedToken}') -join [Environment]::NewLine`,
-      `Set-Content -Path "$env:USERPROFILE\\${credFileName}.bat" -Value $script -NoNewline`,
+      `Set-Content -LiteralPath "$env:USERPROFILE\\${credFileName}.bat" -Value $script -NoNewline`,
       `$gcFile = "$env:USERPROFILE\\${credFileName}.bat"; $u = $env:USERNAME; icacls $gcFile /inheritance:r /grant:r "\${u}:F"`,
     ].join('; ');
   }
 
   gitCredentialHelperRemoveLegacyFile(): string {
     // File only -- deliberately no `git config --unset-all`.
-    return `Remove-Item "$env:USERPROFILE\\.fleet-git-credential.bat" -Force -ErrorAction SilentlyContinue`;
+    return `Remove-Item -LiteralPath "$env:USERPROFILE\\.fleet-git-credential.bat" -Force -ErrorAction SilentlyContinue`;
   }
 
   gitCredentialHelperRead(label?: string, memberId?: string): { command: string; path: string } {
@@ -393,41 +393,51 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
   }
 
   gitCredentialHelperRemove(_host: string, label?: string, _scopeUrl?: string, memberId?: string): string {
-    return `Remove-Item "$env:USERPROFILE\\${gitCredentialHelperStem(label, memberId)}.bat" -Force -ErrorAction SilentlyContinue`;
+    return `Remove-Item -LiteralPath "$env:USERPROFILE\\${gitCredentialHelperStem(label, memberId)}.bat" -Force -ErrorAction SilentlyContinue`;
   }
 
   gitCredentialHelperRemoveLegacyGlobal(host: string, label?: string, scopeUrl?: string): string {
-    const escapedHost = escapePowerShellArgInner(escapeWindowsArg(host));
-    const credFileName = gitCredentialHelperStem(label);
-    // scope_url is passed through escapeWindowsArg (single-quote escaped) and embedded in a single-quoted git config arg -- safe against injection.
-    const credUrl = scopeUrl ? escapePowerShellArgInner(escapeWindowsArg(scopeUrl)) : `https://${escapedHost}`;
-    return `Remove-Item "$env:USERPROFILE\\${credFileName}.bat" -Force -ErrorAction SilentlyContinue; git config --global --unset-all 'credential.${credUrl}.helper' 2>$null`;
+    const stem = gitCredentialHelperStem(label);
+    // Single-quoted PowerShell literal: ' doubles.
+    const key = `credential.${scopeUrl ?? `https://${host}`}.helper`.replace(/'/g, "''");
+    // Remove ONLY fleet's own value -- the legacy release stored the .bat path
+    // in forward-slash form -- then the empty reset entry when no non-empty
+    // value is left; any other value stays. Values are counted, never echoed.
+    // Always ends with exit code 0 and one FLEET_LEGACY_HELPER line.
+    return `Remove-Item -LiteralPath "$env:USERPROFILE\\${stem}.bat" -Force -ErrorAction SilentlyContinue; `
+      + `$fk = '${key}'; $fv = ($env:USERPROFILE -replace '\\\\','/') + '/${stem}.bat'; `
+      + `$fall = @(git config --global --get-all $fk 2>$null); `
+      + `$fn = @($fall | Where-Object { $_ -ceq $fv }).Count; `
+      + `if ($fn -gt 0) { `
+      + `$fre = '^' + ($fv -replace '([\\[\\]\\\\.*^$+?(){}|])','\\$1') + '$'; `
+      + `git config --global --unset-all $fk $fre 2>$null; `
+      + `if ($LASTEXITCODE -eq 0) { `
+      + `$fkept = @(git config --global --get-all $fk 2>$null | Where-Object { $_ -ne '' }).Count; $fr = 0; `
+      + `if ($fkept -eq 0) { git config --global --unset-all $fk '^$' 2>$null; if ($LASTEXITCODE -eq 0) { $fr = 1 } }; `
+      + `"FLEET_LEGACY_HELPER removed=$fn kept=$fkept reset_removed=$fr" `
+      + `} else { 'FLEET_LEGACY_HELPER failed=1' } `
+      + `} else { $fkept = @($fall | Where-Object { $_ -ne '' }).Count; "FLEET_LEGACY_HELPER removed=0 kept=$fkept reset_removed=0" }; `
+      + `$global:LASTEXITCODE = 0`;
   }
 
   gitCredentialEnvPrefix(helpers: GitCredentialHelperRegistration[], memberId: string): string {
-    const groups = groupGitCredentialHelpers(helpers);
+    const groups = groupGitCredentialHelpers(helpers, memberId);
     if (groups.length === 0) return '';
-    gitCredentialHelperStem(undefined, memberId);
     // GIT_CONFIG_PARAMETERS (not GIT_CONFIG_COUNT/KEY/VALUE): PowerShell and
     // .NET DELETE a variable assigned an empty string, so the empty value that
     // resets git's inherited helper list cannot be an env var of its own --
-    // inside GIT_CONFIG_PARAMETERS it is just the text after '='. The helper
-    // path is built from $env:USERPROFILE at run time, in git's forward-slash
-    // form. Scopes and labels are validated to a charset needing no escaping
-    // inside a PowerShell double-quoted string.
-    const parts: string[] = [];
-    let literal = '';
+    // inside GIT_CONFIG_PARAMETERS it is just the text after '='. $fleetGitH is
+    // $env:USERPROFILE in git's forward-slash form, single-quote-escaped twice
+    // (see gitHelperParamWord) so an apostrophe or a space in it works. Scopes
+    // and file names are validated to a charset needing no escaping inside a
+    // PowerShell double-quoted string.
+    const words: string[] = [];
     for (const g of groups) {
-      literal += `${literal ? ' ' : ''}'credential.${g.scopeUrl}.helper='`;
-      for (const label of g.labels) {
-        literal += ` 'credential.${g.scopeUrl}.helper=`;
-        parts.push(`"${literal}"`);
-        parts.push(`("$env:USERPROFILE\\${gitCredentialHelperStem(label, memberId)}.bat" -replace '\\\\','/')`);
-        literal = `'`;
-      }
+      words.push(`'credential.${g.scopeUrl}.helper='`);
+      for (const stem of g.stems) words.push(gitHelperParamWord(g.scopeUrl, '$($fleetGitH)', `${stem}.bat`));
     }
-    parts.push(`"${literal}"`);
-    return `$env:GIT_CONFIG_PARAMETERS = ${parts.join(' + ')}; `;
+    return `$fleetGitH = (($env:USERPROFILE -replace '\\\\','/') -replace "'","'\\''") -replace "'","'\\''"; `
+      + `$env:GIT_CONFIG_PARAMETERS = "${words.join(' ')}"; `;
   }
 
   ghAuthLogin(token: string, hostname = 'github.com'): string {

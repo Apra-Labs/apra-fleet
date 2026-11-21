@@ -7,7 +7,7 @@ import { PROVIDER_HOSTS } from '../services/vcs/constants.js';
 import { logLine } from '../utils/log-helpers.js';
 import { cancelCredentialCleanup } from '../services/credential-cleanup.js';
 import { listVcsCredentials, forgetVcsCredential, type VcsCredentialEntry } from '../services/vcs-credential-record.js';
-import { revokeVcsCredential } from '../services/vcs-credential-revoke.js';
+import { revokeVcsCredential, describeLegacyGlobalKey } from '../services/vcs-credential-revoke.js';
 import type { Agent } from '../types.js';
 
 
@@ -27,7 +27,7 @@ export async function revokeVcsAuth(input: RevokeVcsAuthInput): Promise<string> 
 
   const strategy = getStrategy(agent);
   const conn = await strategy.testConnection();
-  if (!conn.ok) return `❌ Member "${agent.friendlyName}" is offline: ${conn.error}`;
+  if (!conn.ok) return `[FAIL] Member "${agent.friendlyName}" is offline: ${conn.error}`;
 
   const cmds = getOsCommands(getAgentOS(agent), getAgentShell(agent));
   const exec = async (cmd: string): Promise<string> => {
@@ -65,24 +65,29 @@ export async function revokeVcsAuth(input: RevokeVcsAuthInput): Promise<string> 
   }
 
   const messages: string[] = [];
+  const notices: string[] = [];
   for (const target of targets) {
     let result;
     try {
       result = await revokeVcsCredential(agent, target, cmds, exec);
     } catch (err: any) {
-      return `❌ Failed to revoke ${input.provider} credentials${target.label ? ` (label ${target.label})` : ''} on "${agent.friendlyName}": ${err.message}`;
+      return `[FAIL] Failed to revoke ${input.provider} credentials${target.label ? ` (label ${target.label})` : ''} on "${agent.friendlyName}": ${err.message}`;
     }
-    if (!result.success) return `❌ ${result.message}`;
+    if (!result.success) return `[FAIL] ${result.message}`;
     cancelCredentialCleanup(agent.id, target.label);
     if (recorded.some(e => e.label === target.label)) forgetVcsCredential(agent.id, target.label);
     const left = result.legacyLeftForSharer
       ? `; the shared legacy helper file and global git config key were left in place because member "${result.legacyLeftForSharer.friendlyName}" runs as the same user on the same host`
       : '';
+    if (!result.legacyLeftForSharer) {
+      const notice = describeLegacyGlobalKey(result);
+      if (notice) notices.push(notice);
+    }
     messages.push(`${result.message}${target.label ? ` (label ${target.label})` : ''}${left}`);
   }
 
   touchAgent(agent.id);
   logLine('revoke_vcs_auth', `provider=${input.provider}`, agent);
 
-  return `✅ ${messages.join('; ')} on "${agent.friendlyName}"`;
+  return `[OK] ${messages.join('; ')} on "${agent.friendlyName}"` + notices.map(n => `\n  ${n}`).join('');
 }

@@ -1,6 +1,7 @@
 import { getAllAgents } from './registry.js';
 import { listVcsCredentials, forgetVcsCredential } from './vcs-credential-record.js';
-import { revokeVcsCredential } from './vcs-credential-revoke.js';
+import { revokeVcsCredential, describeLegacyGlobalKey } from './vcs-credential-revoke.js';
+import { logWarn } from '../utils/log-helpers.js';
 import { getStrategy } from './strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getAgentOS, getAgentShell } from '../utils/agent-helpers.js';
@@ -97,6 +98,8 @@ export function scheduleCredentialCleanup(agentId: string, label: string | undef
       };
 
       const result = await revokeVcsCredential(agent, entry, cmds, exec);
+      const notice = describeLegacyGlobalKey(result);
+      if (notice) logWarn('credential_cleanup', notice, agent);
       if (result.success) forgetVcsCredential(agentId, entry.label);
     } catch { /* silent -- best-effort cleanup */ }
   }, delayMs);

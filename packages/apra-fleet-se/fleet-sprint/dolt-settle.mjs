@@ -291,16 +291,18 @@ export function settlePidfile(member) {
 
 /** POSIX fragment: for each recorded "<pid> <port>", kill the pid ONLY if its
  *  live command line is still a dolt sql-server on that port (pid-reuse
- *  guard), printing KILLED:<pid>. Never matches by binary path alone. */
+ *  guard), printing KILLED:<pid>. Never matches by binary path alone. The
+ *  port is anchored (followed by a space or the end), so 3307 never matches
+ *  a server on 33070. */
 function posixKillRecordedScript(member) {
     const f = settlePidfile(member).posix;
-    return `F="${f}"; if [ -f "$F" ]; then while read -r P Q; do if [ -n "$P" ]; then C=$(ps -p "$P" -o args= 2>/dev/null); case "$C" in *dolt*sql-server*"--port $Q"*) kill "$P" 2>/dev/null && echo "KILLED:$P";; esac; fi; done < "$F"; rm -f "$F"; fi; true`;
+    return `F="${f}"; if [ -f "$F" ]; then while read -r P Q; do if [ -n "$P" ]; then C=$(ps -p "$P" -o args= 2>/dev/null); case "$C" in *dolt*sql-server*"--port $Q "*|*dolt*sql-server*"--port $Q") kill "$P" 2>/dev/null && echo "KILLED:$P";; esac; fi; done < "$F"; rm -f "$F"; fi; true`;
 }
 
 /** PowerShell equivalent (pid + process name + port verified; no Path filter). */
 function powershellKillRecordedScript(member) {
     const f = settlePidfile(member).powershell;
-    return `$f = "${f}"; if (Test-Path $f) { Get-Content $f | ForEach-Object { $p = "$_".Trim() -split '\\s+'; if ($p.Count -ge 2) { $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$($p[0])" -ErrorAction SilentlyContinue; if ($proc -and $proc.Name -eq 'dolt.exe' -and $proc.CommandLine -match ('sql-server.*--port ' + $p[1])) { Stop-Process -Id ([int]$p[0]) -Force -ErrorAction SilentlyContinue; Write-Output "KILLED:$($p[0])" } } }; Remove-Item $f -Force -ErrorAction SilentlyContinue }`;
+    return `$f = "${f}"; if (Test-Path $f) { Get-Content $f | ForEach-Object { $p = "$_".Trim() -split '\\s+'; if ($p.Count -ge 2) { $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$($p[0])" -ErrorAction SilentlyContinue; if ($proc -and $proc.Name -eq 'dolt.exe' -and $proc.CommandLine -match ('sql-server.*--port ' + $p[1] + '(\\s|$)')) { Stop-Process -Id ([int]$p[0]) -Force -ErrorAction SilentlyContinue; Write-Output "KILLED:$($p[0])" } } }; Remove-Item $f -Force -ErrorAction SilentlyContinue }`;
 }
 
 /** Stop ONLY the ephemeral dolt sql-servers this member itself recorded
@@ -550,7 +552,7 @@ async function killServerAndVerify({ command, member, platform, shell = '', pid,
     // Both forms are scoped to settle's own port, never to dolt at large.
     const matcher = `sql-server --host ${host} --port ${port}`;
     if (platform === 'win32') {
-        const script = `Stop-Process -Id ${pid} -Force -ErrorAction SilentlyContinue; Get-CimInstance Win32_Process -Filter "Name='dolt.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -match '--port ${port}' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }; $pf = "${settlePidfile(member).powershell}"; if (Test-Path $pf) { $keep = @(Get-Content $pf | Where-Object { $_ -notmatch '^${pid} ' }); if ($keep.Count -gt 0) { Set-Content -Path $pf -Value $keep } else { Remove-Item $pf -Force -ErrorAction SilentlyContinue } }`;
+        const script = `Stop-Process -Id ${pid} -Force -ErrorAction SilentlyContinue; Get-CimInstance Win32_Process -Filter "Name='dolt.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -match '--port ${port}(\\s|$)' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }; $pf = "${settlePidfile(member).powershell}"; if (Test-Path $pf) { $keep = @(Get-Content $pf | Where-Object { $_ -notmatch '^${pid} ' }); if ($keep.Count -gt 0) { Set-Content -Path $pf -Value $keep } else { Remove-Item $pf -Force -ErrorAction SilentlyContinue } }`;
         const wrapped = getSeCommands({ os: platform, shell }).wrapPowerShellScript(script, 'dolt-settle killServerAndVerify');
         await command(
             wrapped,
@@ -558,7 +560,7 @@ async function killServerAndVerify({ command, member, platform, shell = '', pid,
         );
     } else {
         const pf = settlePidfile(member).posix;
-        await command(`kill ${pid} 2>/dev/null; pkill -f '${matcher}' 2>/dev/null; if [ -f "${pf}" ]; then grep -v "^${pid} " "${pf}" > "${pf}.tmp" 2>/dev/null; mv -f "${pf}.tmp" "${pf}" 2>/dev/null; fi; true`, { member_name: member, silent: true, failSoft: true, label: `settle: kill ephemeral sql-server pid ${pid} on '${member}'` });
+        await command(`kill ${pid} 2>/dev/null; pkill -f '${matcher}( |$)' 2>/dev/null; if [ -f "${pf}" ]; then grep -v "^${pid} " "${pf}" > "${pf}.tmp" 2>/dev/null; mv -f "${pf}.tmp" "${pf}" 2>/dev/null; fi; true`, { member_name: member, silent: true, failSoft: true, label: `settle: kill ephemeral sql-server pid ${pid} on '${member}'` });
     }
     for (let i = 0; i < 6; i += 1) {
         // eslint-disable-next-line no-await-in-loop -- bounded teardown-verify poll

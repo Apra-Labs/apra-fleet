@@ -55,7 +55,8 @@ describe('vcs_credential_exec: member-scoped helper path', () => {
       const [readCmd, dispatched] = mockExecCommand.mock.calls.map(c => String(c[0]));
       const m = readShape.exec(readCmd);
       expect(m?.[1]).toBe(member.id);
-      expect(dispatched.startsWith(name === 'windows-powershell' ? '$env:GIT_CONFIG_PARAMETERS = ' : 'export GIT_CONFIG_PARAMETERS=')).toBe(true);
+      expect(dispatched.startsWith(name === 'windows-powershell' ? '$fleetGitH = ' : '_fleet_gh=$(')).toBe(true);
+      expect(dispatched).toContain(name === 'windows-powershell' ? '; $env:GIT_CONFIG_PARAMETERS = ' : '; export GIT_CONFIG_PARAMETERS=');
       expect(dispatched).toContain(`.fleet-git-credential-github.${member.id}`);
     });
 

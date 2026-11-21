@@ -5,7 +5,8 @@ import { getAgentOS, getAgentShell, touchAgent, checkVcsTokenExpiry } from '../u
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { getAgent } from '../services/registry.js';
 import { getVcsCredentials, recordVcsCredential } from '../services/vcs-credential-record.js';
-import { revokeVcsCredential } from '../services/vcs-credential-revoke.js';
+import { revokeVcsCredential, describeLegacyGlobalKey } from '../services/vcs-credential-revoke.js';
+import type { VcsCredentialRevokeResult } from '../services/vcs-credential-revoke.js';
 import { vcsGitEnvPrefix } from '../services/vcs-git-env.js';
 import { isSafeGitCredentialScope } from '../os/os-commands.js';
 import { credentialResolve } from '../services/credential-store.js';
@@ -238,6 +239,12 @@ interface ProvisionVcsAuthFields {
   metadata: Record<string, string> | null;
   /** Near-expiry warning text when one applies, else null. */
   expiryWarning: string | null;
+  /**
+   * Upgrade migration of a LEGACY helper this label held (an older release
+   * registered it in the per-OS-user global git config), or null when there
+   * was none. Only fleet's own values are ever removed from the global key.
+   */
+  legacyGlobalHelper: LegacyGlobalHelperOutcome | null;
   /** Registry id of the resolved member, or null. */
   memberId: string | null;
   /** Friendly name of the resolved member, or null. */
@@ -255,6 +262,37 @@ interface ProvisionVcsAuthFields {
    * which is why every result goes through that redaction.
    */
   message: string | null;
+}
+
+export interface LegacyGlobalHelperOutcome {
+  /** The credential scope whose global key `credential.<scopeUrl>.helper` was looked at. */
+  scopeUrl: string;
+  /**
+   * "removed": fleet's legacy value was removed from the global key.
+   * "not_present": the key held no fleet value; nothing was changed.
+   * "kept_for_member": left in place because another member runs as the same
+   *   host user (keptForMember names it); fleet no longer refreshes it.
+   * "failed": the cleanup could not run or git refused; nothing was changed.
+   */
+  outcome: 'removed' | 'not_present' | 'kept_for_member' | 'failed';
+  /** Fleet's own values removed from the key. */
+  removedValues: number;
+  /** Values on the key fleet did not write (counted, never echoed); always kept. */
+  keptValues: number;
+  /** Friendly name of the member the legacy helper was kept for, else null. */
+  keptForMember: string | null;
+  /** The upgrade notice line also shown in `text`, or null when there is nothing to say. */
+  notice: string | null;
+}
+
+function legacyGlobalHelperOutcome(scopeUrl: string, r: VcsCredentialRevokeResult): LegacyGlobalHelperOutcome {
+  const notice = describeLegacyGlobalKey(r) || null;
+  if (r.legacyLeftForSharer) {
+    return { scopeUrl, outcome: 'kept_for_member', removedValues: 0, keptValues: 0, keptForMember: r.legacyLeftForSharer.friendlyName, notice };
+  }
+  const rep = r.legacyGlobalKey?.report ?? null;
+  if (!rep || rep.failed) return { scopeUrl, outcome: 'failed', removedValues: 0, keptValues: 0, keptForMember: null, notice };
+  return { scopeUrl, outcome: rep.removed > 0 ? 'removed' : 'not_present', removedValues: rep.removed, keptValues: rep.kept, keptForMember: null, notice };
 }
 
 export interface ProvisionVcsAuthStructured extends ProvisionVcsAuthFields {
@@ -308,6 +346,7 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<Pr
         verificationReason: fields.verificationReason ?? null,
         metadata: fields.metadata ?? null,
         expiryWarning: fields.expiryWarning ?? null,
+        legacyGlobalHelper: fields.legacyGlobalHelper ?? null,
         memberId: fields.memberId ?? null,
         memberName: fields.memberName ?? null,
         message: fields.message != null ? redact(fields.message) : (ok ? null : stripResultMarker(text)),
@@ -491,10 +530,20 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<Pr
   // the deploy above just wrote, so it must never be removed here. A previous
   // member-scoped entry needs nothing: the same file was just overwritten and
   // its registration comes from the record.
+  // The outcome is reported loudly (text + legacyGlobalHelper): a removed
+  // global value changes what git OUTSIDE fleet dispatches authenticates with.
+  let legacyGlobalHelper: LegacyGlobalHelperOutcome | null = null;
   if (previous && !previous.memberScoped) {
+    const legacyScope = previous.scopeUrl ?? `https://${PROVIDER_HOSTS[previous.provider]}`;
     try {
-      await revokeVcsCredential(agent, { label, ...previous }, cmds, exec, { legacyOnly: true });
-    } catch { /* best-effort */ }
+      const r = await revokeVcsCredential(agent, { label, ...previous }, cmds, exec, { legacyOnly: true });
+      legacyGlobalHelper = legacyGlobalHelperOutcome(legacyScope, r);
+    } catch (err: any) {
+      legacyGlobalHelper = {
+        scopeUrl: legacyScope, outcome: 'failed', removedValues: 0, keptValues: 0, keptForMember: null,
+        notice: `[WARN] Upgrade: the cleanup of fleet's legacy global git credential helper for ${legacyScope} failed (${err?.message ?? err}); the global git config was left as it was.`,
+      };
+    }
   }
 
   // Schedule auto-cleanup of this label when its token expires
@@ -556,11 +605,13 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<Pr
     + (meta ? meta + '\n' : '')
     + `  Verification: ${verificationLine}`
     + (expiryWarning ? `\n  ${expiryWarning}` : '')
-    + (legacyNames.length > 0 ? `\n${legacyTokenWarning(legacyNames)}` : ''),
+    + (legacyNames.length > 0 ? `\n${legacyTokenWarning(legacyNames)}` : '')
+    + (legacyGlobalHelper?.notice ? `\n  ${legacyGlobalHelper.notice}` : ''),
     {
       ...who,
       reason,
       scopeUrl,
+      legacyGlobalHelper,
       expiresAt: deployResult.metadata?.expiresAt ?? null,
       verified: !connectivity.skipped && connectivity.success === true,
       verificationSkipped: connectivity.skipped === true,
