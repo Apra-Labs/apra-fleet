@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -17,6 +17,18 @@ import { encryptPassword } from '../../src/utils/crypto.js';
 import { FLEET_DIR } from '../../src/paths.js';
 import type { KBEntry, KBEntryInput } from '../../src/services/knowledge/types.js';
 import { commitWorkTree } from '../helpers/commit-work-tree.js';
+import { releaseFileDataDir } from '../helpers/file-kb-data-dir.js';
+
+// This file's OWN fleet data dir, claimed before any src module loads
+// (src/paths.ts fixes FLEET_DIR at import). The per-run data dir tests/setup.ts
+// provides is shared by every file of the run, and so is the KB config file
+// in it (<data dir>/knowledge/config.json), which the code under test reads:
+// http provider selection, and kb_export's auto-commit mode. Under parallel
+// files another suite's http config was read here mid-test
+// (E-KB-HTTP-PROJECT-MISMATCH naming the other suite's kb-server project).
+const fileDataDir = await vi.hoisted(async () =>
+  (await import('../helpers/file-kb-data-dir.js')).claimFileDataDir('kb-withdrawal-round-trip'));
+afterAll(() => releaseFileDataDir(fileDataDir));
 
 // The merge-carried withdrawal, end to end: a branch tombstone written by
 // kb_bible_commit, the branch merged into the base and pushed, and kb_import
