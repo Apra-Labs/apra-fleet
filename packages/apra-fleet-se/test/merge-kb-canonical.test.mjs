@@ -228,14 +228,15 @@ test('genuine conflict: same id changed differently by both sides is reported, n
     assert.match(report, /theirs says Y/);
 });
 
-test('merged document carries a corrected entry_count and a base-first order', () => {
+test('merged document drops the legacy commit/entry_count provenance and keeps a base-first order', () => {
     const base = doc([entry('A'), entry('B')]);
     const ours = doc(base.entries.map((e) => reexport(e)).concat(entry('O1')));
     const theirs = doc(base.entries.map((e) => reexport(e)).concat(entry('T1')));
 
     const result = mergeKbCanonical(base, ours, theirs);
     assert.deepStrictEqual(titlesOf(result), ['A', 'B', 'O1', 'T1']);
-    assert.strictEqual(result.merged.provenance.entry_count, 4);
+    assert.strictEqual(result.merged.entries.length, 4);
+    assert.deepStrictEqual(result.merged.provenance, { branch: 'b' });
     assert.strictEqual(result.merged.version, 2);
 });
 
@@ -378,7 +379,8 @@ test('CLI exits 0 and writes the merged file on a clean merge', () => {
 
         const merged = JSON.parse(fs.readFileSync(out, 'utf8'));
         assert.deepStrictEqual(merged.entries.map((e) => e.title), ['A', 'O1', 'T1']);
-        assert.strictEqual(merged.provenance.entry_count, 3);
+        assert.strictEqual(merged.entries.length, 3);
+        assert.strictEqual(merged.provenance.entry_count, undefined);
     });
 });
 

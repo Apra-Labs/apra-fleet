@@ -742,7 +742,9 @@
  * @property {string} [baseBranch] - The target base branch (the branch the entries merge
  *   into), written to provenance.branch. Omitted: the export folder HEAD branch.
  * @property {string} [baseCommit] - The base commit the entries were verified against,
- *   written to provenance.commit. Omitted: the export folder HEAD commit.
+ *   recorded as a Verified-Against trailer on the auto-commit (never in the file, so two
+ *   branches that each add entries merge without a text conflict). Omitted: the export
+ *   folder HEAD commit.
  */
 
 /**
@@ -766,7 +768,7 @@
  *   or backfill makes no commit.
  * @property {string} baseBranch - The target base branch, written to provenance.branch.
  * @property {string} baseCommit - The base commit the entries were verified against,
- *   written to provenance.commit.
+ *   recorded as a Verified-Against trailer on the local commit (never in the file).
  * @property {string[]} [demoted_ids] - Ids demoted this round (kb_demote). An id whose
  *   local row carries a demoted_at and is now below CONFIRMED is REMOVED from entries and
  *   recorded as an explicit tombstone {id, at, reason} in the bible's optional top-level
@@ -867,8 +869,10 @@
  * One entry of the bible file (.fleet/kb-canonical.json) kb_export and
  * kb_bible_commit write and kb_import reads -- bible format v3, described by
  * memory-contract/v1/bible/kb-canonical.schema.json. The file itself is
- * {version: 3, provenance: {commit, branch, entry_count}, entries: KbBibleEntry[]};
- * readers also accept v2 (same envelope, no hashes) and v1 (a bare entry array).
+ * {version: 3, provenance: {branch}, entries: KbBibleEntry[], demotions?}; a bible
+ * written before the merge-friendly layout also carries provenance.commit and
+ * provenance.entry_count, which readers ignore (the count is entries.length).
+ * Readers also accept v2 (same envelope, no hashes) and v1 (a bare entry array).
  * @typedef {Object} KbBibleEntry
  * @property {string} id - Entry id (unique within the bible; writers refuse a duplicate id).
  * @property {string} type - Content type (knowledge, learning, runbook, context-cache, user-directive).
@@ -1465,7 +1469,8 @@ export class ApraFleet {
     /**
      * Export the calling session's CONFIRMED KB entries to the canonical bible
      * file and auto-commit it locally (never pushed). Pass baseBranch/baseCommit
-     * to record the target base branch and base commit in provenance. Writes
+     * to record the target base branch (provenance.branch) and base commit (a
+     * Verified-Against trailer on the auto-commit, never in the file). Writes
      * bible format v3: each added project entry is a KbBibleEntry carrying its
      * source_file_hashes basis; a bible holding a duplicate id is refused.
      * Result JSON: {exported, path, scope, committed}; extract with parseToolJson().
@@ -1483,9 +1488,9 @@ export class ApraFleet {
      * (existing entries kept unless this KB holds them as superseded or
      * invalidated -- those are removed, also when ids is empty; each merged
      * entry is a v3 KbBibleEntry carrying its source_file_hashes basis; a bible
-     * holding a duplicate id is refused), write baseBranch/baseCommit
-     * provenance, and make a local commit scoped to the bible path whose message
-     * lists each removal. Never pushes; re-running with the
+     * holding a duplicate id is refused), write baseBranch to provenance.branch,
+     * and make a local commit scoped to the bible path whose message lists each
+     * removal and carries baseCommit as a Verified-Against trailer. Never pushes; re-running with the
      * same ids after resetting to a newer HEAD re-merges, so a rejected push can
      * be retried. Result JSON: {path, merged, demoted, skipped, removed,
      * entry_count, backfilled, committed}; extract with parseToolJson(). backfilled counts the

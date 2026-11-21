@@ -243,7 +243,8 @@ describe('kb_bible_commit withdrawals and restores under the http KB provider', 
     expect(result.committed).toBe(true);
     const bible = readBible();
     expect(bible.version).toBe(3);
-    expect(bible.provenance).toEqual({ commit: head, branch: 'main', entry_count: 0 });
+    expect(bible.provenance).toEqual({ branch: 'main' });
+    expect(git(clone, ['log', '-1', '--format=%(trailers:key=Verified-Against,valueonly)']).trim()).toBe(head);
     expect(bible.entries).toEqual([]);
     expect(bible.demotions).toEqual([{
       id: 'kb-withdrawn', at: bible.demotions[0].at, reason: 'withdrawn', note: NOTE, evidence_files: ['src/a.ts'],
@@ -310,7 +311,7 @@ describe('kb_bible_commit withdrawals and restores under the http KB provider', 
     expect(result.withdrawn).toEqual(['kb-one']);
     expect(result.removed).toEqual([{ id: 'kb-two', reason: 'tombstoned' }]);
     expect(result.entry_count).toBe(1);
-    expect(bible.provenance.entry_count).toBe(1);
+    expect(bible.provenance.entry_count).toBeUndefined();
     expect(bible.demotions.map((d: { id: string }) => d.id)).toEqual(['kb-one', 'kb-two']);
     expect(bible.demotions[1]).toEqual(oldTombstone);
     expect(git(clone, ['log', '-1', '--format=%B']).trim()).toContain('- kb-two (tombstoned)');

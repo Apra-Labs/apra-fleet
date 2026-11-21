@@ -70,7 +70,9 @@ written.
 | added by both sides under the same id | de-duplicated, one kept |
 
 Merged output preserves base order first, then ours-only additions, then
-theirs-only additions, rewrites `provenance.entry_count`, and keeps the highest
-input `version` (a v3 input yields a v3 output).
+theirs-only additions, drops the legacy `provenance.commit` and
+`provenance.entry_count` (current writers no longer emit either; the entry
+count is `entries.length`), and keeps the highest input `version` (a v3 input
+yields a v3 output).
 
 Tests: `test/merge-kb-canonical.test.mjs`.

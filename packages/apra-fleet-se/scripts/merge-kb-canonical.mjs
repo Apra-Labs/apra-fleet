@@ -291,10 +291,23 @@ export function mergeKbCanonical(base, ours, theirs) {
     const mergedDoc = {
         ...ours,
         version: highestVersion([ours, theirs, base]),
-        provenance: { ...(ours.provenance ?? {}), entry_count: entries.length },
+        provenance: mergedProvenance(ours.provenance),
         entries,
     };
     return { merged: mergedDoc, summary, conflicts, duplicates };
+}
+
+/**
+ * The merged document's provenance: ours, minus the legacy per-file `commit`
+ * and `entry_count`. Current writers no longer emit either (each was a line
+ * every bible-changing branch rewrote differently, so two such branches always
+ * text-conflicted); readers derive the count from entries.length.
+ */
+function mergedProvenance(provenance) {
+    const out = { ...(provenance && typeof provenance === 'object' ? provenance : {}) };
+    delete out.commit;
+    delete out.entry_count;
+    return out;
 }
 
 /** Plain-text summary block, one count per line. */

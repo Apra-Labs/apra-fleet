@@ -230,12 +230,12 @@ describe('apra-fleet-ong: global-scope shrink guard', () => {
     expect(git(repoDir, ['log', '--format=%an|%s'])).not.toContain('pm-kb');
 
     // The truncation is on disk and dirty -- a human can see and reject it --
-    // and legible in the diff via the v2 entry_count.
+    // and legible in the diff (the removed entry blocks).
     const status = git(repoDir, ['status', '--porcelain', '--', GLOBAL_BIBLE_REL]).trim();
     expect(status).toContain(GLOBAL_BIBLE_REL);
     const written = JSON.parse(fs.readFileSync(path.join(repoDir, GLOBAL_BIBLE_REL), 'utf-8'));
     expect(written.version).toBe(3);
-    expect(written.provenance.entry_count).toBe(2);
+    expect(written.entries).toHaveLength(2);
     expect(written.entries.map((e: { id: string }) => e.id)).toEqual(['aaa-present-1', 'bbb-present-2']);
   });
 
@@ -250,6 +250,6 @@ describe('apra-fleet-ong: global-scope shrink guard', () => {
     // Recorded honestly: opting in re-arms the original failure for the global
     // file. If a guard is ever wanted there, THIS is the assertion that must flip.
     expect(result.committed).toBe(true);
-    expect(globalBibleAtHead()).toHaveProperty('provenance.entry_count', 2);
+    expect(globalBibleAtHead()).toHaveProperty('entries.length', 2);
   });
 });

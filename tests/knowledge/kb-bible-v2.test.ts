@@ -96,7 +96,7 @@ afterEach(() => {
 }, 20000);
 
 describe('kb_export writes the v2 envelope with its export commit', () => {
-  it('records version, commit, branch and entry_count', async () => {
+  it('records version and branch; the verified commit goes in the commit trailer, not the file', async () => {
     await seedConfirmed(['Alpha claim', 'Beta claim']);
     // HEAD *before* the export. Since the 2026-08-11 default flip, kb_export
     // auto-commits the bible, which moves HEAD -- and the recorded commit is
@@ -109,11 +109,12 @@ describe('kb_export writes the v2 envelope with its export commit', () => {
     const bible = readBible();
 
     expect(bible.version).toBe(3);
-    expect(bible.provenance.commit).toBe(head);
-    expect(bible.provenance.commit).toMatch(/^[0-9a-f]{40}$/);
-    expect(bible.provenance.entry_count).toBe(2);
+    expect(Object.keys(bible.provenance)).toEqual(['branch']);
     expect(bible.entries).toHaveLength(2);
     expect(typeof bible.provenance.branch).toBe('string');
+    expect(head).toMatch(/^[0-9a-f]{40}$/);
+    const trailer = execFileSync('git', ['log', '-1', '--format=%(trailers:key=Verified-Against,valueonly)'], { cwd: repo, encoding: 'utf-8' }).trim();
+    expect(trailer).toBe(head);
   }, 20000);
 
   it('writes an explicit target base branch and base commit into provenance, not the HEAD branch', async () => {
@@ -122,8 +123,9 @@ describe('kb_export writes the v2 envelope with its export commit', () => {
     await kbExport({ baseBranch: 'release/main-target', baseCommit: 'feedface' }, { folder: repo });
 
     const bible = readBible();
-    expect(bible.provenance.branch).toBe('release/main-target');
-    expect(bible.provenance.commit).toBe('feedface');
+    expect(bible.provenance).toEqual({ branch: 'release/main-target' });
+    const trailer = execFileSync('git', ['log', '-1', '--format=%(trailers:key=Verified-Against,valueonly)'], { cwd: repo, encoding: 'utf-8' }).trim();
+    expect(trailer).toBe('feedface');
   }, 20000);
 
   it('omitting baseBranch keeps the export HEAD branch (unchanged behaviour)', async () => {
@@ -134,12 +136,13 @@ describe('kb_export writes the v2 envelope with its export commit', () => {
     expect(readBible().provenance.branch).toBe('feature/head-branch');
   }, 20000);
 
-  it('entry_count matches the entry array, making truncation visible in a diff', async () => {
+  it('writes no entry_count: the count is the entry array length, never a line two branches both rewrite', async () => {
     await seedConfirmed(['One claim', 'Two claim', 'Three claim']);
     await kbExport({}, { folder: repo });
 
     const bible = readBible();
-    expect(bible.provenance.entry_count).toBe(bible.entries.length);
+    expect(bible.provenance.entry_count).toBeUndefined();
+    expect(bible.entries).toHaveLength(3);
   }, 20000);
 
   it('refuses with E-BIBLE-BASIS-NOT-GIT, writing nothing, when the folder has no git', async () => {

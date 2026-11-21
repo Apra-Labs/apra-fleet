@@ -58,7 +58,7 @@ async function confirmed(p: SqliteProvider, title: string): Promise<string> {
   return id;
 }
 
-function readBible(dir: string): { provenance: { branch: string; commit: string; entry_count: number }; entries: { id: string; title: string }[] } {
+function readBible(dir: string): { provenance: { branch: string; commit?: string; entry_count?: number }; entries: { id: string; title: string }[] } {
   return JSON.parse(fs.readFileSync(path.join(dir, BIBLE_REL), 'utf-8'));
 }
 
@@ -136,9 +136,12 @@ describe('kb_bible_commit', () => {
     const a = await confirmed(provider, 'Alpha');
     await kbBibleCommit({ ids: [a], baseBranch: 'release/9', baseCommit: 'abc123def' }, { folder: clone });
     const bible = readBible(clone);
-    expect(bible.provenance.branch).toBe('release/9');
-    expect(bible.provenance.commit).toBe('abc123def');
-    expect(bible.provenance.entry_count).toBe(3);
+    // Branch only in the file: a per-file commit or entry count is a line two
+    // bible-changing branches rewrite differently, so they would conflict.
+    expect(bible.provenance).toEqual({ branch: 'release/9' });
+    expect(bible.entries).toHaveLength(3);
+    // The base commit is carried by the commit that wrote the file.
+    expect(git(clone, ['log', '-1', '--format=%(trailers:key=Verified-Against,valueonly)']).trim()).toBe('abc123def');
   });
 
   it('an empty id list makes no commit and writes nothing', async () => {
@@ -236,8 +239,8 @@ describe('bible provenance names the target base branch, not HEAD', () => {
     const result = JSON.parse(await kbBibleCommit({ ids: [a], baseBranch: 'main', baseCommit: base }, { folder: clone }));
     expect(result.committed).toBe(true);
     const bible = readBible(clone);
-    expect(bible.provenance.branch).toBe('main');
-    expect(bible.provenance.commit).toBe(base);
+    expect(bible.provenance).toEqual({ branch: 'main' });
+    expect(git(clone, ['log', '-1', '--format=%(trailers:key=Verified-Against,valueonly)']).trim()).toBe(base);
     // The commit landed on the checked-out feature branch, locally only.
     expect(git(clone, ['rev-parse', '--abbrev-ref', 'HEAD']).trim()).toBe('feature/sprint-work');
     expect(originHead()).toBe(base);
@@ -247,10 +250,12 @@ describe('bible provenance names the target base branch, not HEAD', () => {
     const base = git(clone, ['rev-parse', 'HEAD']).trim();
     git(clone, ['checkout', '--quiet', '-b', 'feature/export-work']);
     await confirmed(provider, 'Alpha');
-    await kbExport({ baseBranch: 'main', baseCommit: base }, { folder: clone });
+    const out = JSON.parse(await kbExport({ baseBranch: 'main', baseCommit: base }, { folder: clone }));
     const bible = readBible(clone);
-    expect(bible.provenance.branch).toBe('main');
-    expect(bible.provenance.commit).toBe(base);
+    expect(bible.provenance).toEqual({ branch: 'main' });
+    if (out.committed) {
+      expect(git(clone, ['log', '-1', '--format=%(trailers:key=Verified-Against,valueonly)']).trim()).toBe(base);
+    }
   });
 });
 
