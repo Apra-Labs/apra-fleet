@@ -4,7 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { kbSetup } from '../../src/tools/kb-setup.js';
-import { installKbPostCommitHook, KB_POST_COMMIT_HOOK, KB_HOOK_MARKER } from '../../src/tools/kb-invalidate.js';
+import { installKbPostCommitHook, buildKbPostCommitHook, resolveKbInvalidateCommand, KB_HOOK_MARKER } from '../../src/tools/kb-invalidate.js';
 import { FLEET_DIR } from '../../src/paths.js';
 import { isolateGitConfig } from './isolate-git-config.js';
 
@@ -139,7 +139,7 @@ describe('kb_setup never overwrites a post-commit hook it did not write', () => 
     const result = JSON.parse(await kbSetup({}, { folder: repo }));
 
     expect(result.steps).toContain(HOOK_STEP);
-    expect(fs.readFileSync(defaultHookPath(repo), 'utf-8')).toBe(KB_POST_COMMIT_HOOK);
+    expect(fs.readFileSync(defaultHookPath(repo), 'utf-8')).toBe(buildKbPostCommitHook(resolveKbInvalidateCommand()));
   });
 
   it('updates a post-commit that carries the fleet marker', async () => {
@@ -150,7 +150,7 @@ describe('kb_setup never overwrites a post-commit hook it did not write', () => 
     const result = JSON.parse(await kbSetup({}, { folder: repo }));
 
     expect(result.steps).toContain(HOOK_STEP);
-    expect(fs.readFileSync(hookPath, 'utf-8')).toBe(KB_POST_COMMIT_HOOK);
+    expect(fs.readFileSync(hookPath, 'utf-8')).toBe(buildKbPostCommitHook(resolveKbInvalidateCommand()));
   });
 
   it('leaves a foreign post-commit untouched and reports the skip', async () => {
