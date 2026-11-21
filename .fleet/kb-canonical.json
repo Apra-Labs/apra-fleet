@@ -1,9 +1,9 @@
 {
   "version": 3,
   "provenance": {
-    "commit": "5a171212f2e1eee116e7f58e2ea29648ffb8ff1f",
+    "commit": "0b13b1ccc8993e056c90ef347492ea9208ebabe2",
     "branch": "main",
-    "entry_count": 168
+    "entry_count": 171
   },
   "entries": [
     {
@@ -2243,6 +2243,31 @@
       }
     },
     {
+      "id": "a4df8a8f-d316-415c-9744-b141ec017807",
+      "type": "learning",
+      "title": "vitest workers of one run share APRA_FLEET_DATA_DIR and the KB config file in it",
+      "summary": "tests/setup.ts sets APRA_FLEET_DATA_DIR from the per-run dir that tests/global-setup.ts provides, so every file of one vitest run shares <data dir>/knowledge/config.json. vitest.config.ts runs files one at a time (fileParallelism: false), which hides this; with --fileParallelism, http-config suites read each other's config.",
+      "symbols": [
+        "claimFileDataDir",
+        "fileDataDirViolations",
+        "FLEET_DIR"
+      ],
+      "source_files": [
+        "tests/setup.ts",
+        "tests/global-setup.ts",
+        "vitest.config.ts",
+        "tests/helpers/file-kb-data-dir.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-21T09:52:21.423Z",
+      "source_file_hashes": {
+        "tests/global-setup.ts": "5e0975e274bac84dd461cef418d7196dde5796a1",
+        "tests/helpers/file-kb-data-dir.ts": "d1a573362a85d638ce4aa40dc964a76b90a2cae3",
+        "tests/setup.ts": "3b840d57c8d34ed1517efe3b4c57a70c0fc85ee1",
+        "vitest.config.ts": "9a6bf830af480f30786052e44c2feb951c8abbee"
+      }
+    },
+    {
       "id": "a67295f1-33ca-4960-93a0-da0275505905",
       "type": "knowledge",
       "title": "VCS provider builders key the curl binary on os and the quoting dialect on shell",
@@ -2378,6 +2403,30 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-06T09:41:37.051Z"
+    },
+    {
+      "id": "b417d1be-a8d5-4662-9b71-97c5f851dbc0",
+      "type": "knowledge",
+      "title": "kb_import keeps bible ids on every AUDN path; duplicates resolve via bible_id_aliases",
+      "summary": "Under importMode, SqliteProvider.capture stores linked ('update') and flagged imports under the bible id when it is free. A bible entry deduplicated ('none') records a bible_id_aliases row pointing at the local row that absorbed it. applyTombstoneToRow resolves through that alias when no row has the id, so kb_import tombstones and POST /api/kb/withdraw reach the row.",
+      "symbols": [
+        "evaluateAudn",
+        "capture",
+        "applyTombstoneToRow",
+        "importBibleEntries"
+      ],
+      "source_files": [
+        "src/services/knowledge/sqlite-provider.ts",
+        "src/services/knowledge/bible-import.ts",
+        "tests/knowledge/kb-import-audn-ids-tombstone.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-21T09:52:17.791Z",
+      "source_file_hashes": {
+        "src/services/knowledge/bible-import.ts": "0f7245962772ebd3558ad3ae3183983284ed1ac7",
+        "src/services/knowledge/sqlite-provider.ts": "e32e86971370ada69962300de4fb73e406f86bae",
+        "tests/knowledge/kb-import-audn-ids-tombstone.test.ts": "94191b53d8488b9a66536be8825c57643d15e8ef"
+      }
     },
     {
       "id": "b7ec6763-407e-4ca3-8cf7-91183e33e39f",
@@ -2558,6 +2607,30 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:36.716Z"
+    },
+    {
+      "id": "c2defe8a-bdfa-4d12-9a71-178f43428860",
+      "type": "knowledge",
+      "title": "KB post-commit hook pins the absolute node/CLI path at kb_setup time",
+      "summary": "installKbPostCommitHook writes a hook that runs resolveKbInvalidateCommand() output: process.execPath (SEA) or absolute node plus dist/index.js. Moving the node binary or install breaks the hook until kb_setup is re-run; failures are reported on stderr.",
+      "symbols": [
+        "resolveKbInvalidateCommand",
+        "buildKbPostCommitHook",
+        "installKbPostCommitHook",
+        "_setKbInvalidateCommandOverride"
+      ],
+      "source_files": [
+        "src/tools/kb-invalidate.ts",
+        "tests/knowledge/isolate-git-config.ts",
+        "src/index.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-21T09:52:29.088Z",
+      "source_file_hashes": {
+        "src/index.ts": "219f7360474ef6a6bc1d063c34e7c9a1db760b53",
+        "src/tools/kb-invalidate.ts": "d6a367158fc50977351c0a8b07001b55582f51b2",
+        "tests/knowledge/isolate-git-config.ts": "2359d6eea97b826cd00e72852490be296d433d2d"
+      }
     },
     {
       "id": "c4fb3b10-577e-46a8-8ddb-bde2844b57c7",
