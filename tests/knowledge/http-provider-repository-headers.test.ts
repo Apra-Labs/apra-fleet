@@ -80,7 +80,10 @@ const tempDirs: string[] = [];
 
 afterAll(async () => {
   await new Promise<void>(resolve => server.close(() => resolve()));
-  for (const dir of tempDirs) fs.rmSync(dir, { recursive: true, force: true });
+  // A stale-while-revalidate reader may still have a background git read running
+  // in a dir (it outlives the provider; bounded by its 3 s timeout); on Windows
+  // that holds the dir until it exits. The async rm retries EBUSY (rmSync does not).
+  for (const dir of tempDirs) await fs.promises.rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 function makeDir(): string {

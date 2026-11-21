@@ -49,7 +49,8 @@ describe('isolation guard', () => {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST_INDEX = path.resolve(__dirname, '..', '..', 'dist', 'index.js');
-const BIBLE = path.join('.fleet', 'kb-canonical.json');
+// A git path (always '/'): git check-attr and diff name it in this form on every OS.
+const BIBLE = '.fleet/kb-canonical.json';
 
 let root: string;
 let savedConfig: string | null;
@@ -206,6 +207,6 @@ describe('a local merge of two bible-changing branches', () => {
 
     expect(gitStatus(clone, 'merge', '--no-edit', 'origin/theirs')).not.toBe(0);
     expect(fs.readFileSync(path.join(clone, BIBLE), 'utf8')).toMatch(/^<<<<<<< /m);
-    expect(git(clone, 'diff', '--name-only', '--diff-filter=U')).toBe(BIBLE.split(path.sep).join('/'));
+    expect(git(clone, 'diff', '--name-only', '--diff-filter=U')).toBe(BIBLE);
   });
 });

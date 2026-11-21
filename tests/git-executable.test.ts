@@ -149,7 +149,7 @@ describe.skipIf(!!skipReason)(`planted git.exe in the work folder never runs (re
     const planted = path.join(repo, 'git.exe');
     try { fs.linkSync(process.execPath, planted); } catch { fs.copyFileSync(process.execPath, planted); }
     const payload = `require('fs').appendFileSync(${JSON.stringify(marker)}, process.argv.join(' ') + '\\n');\n`;
-    for (const sub of ['remote', 'rev-parse', 'init', 'hash-object', 'status']) {
+    for (const sub of ['remote', 'rev-parse', 'symbolic-ref', 'init', 'hash-object', 'status']) {
       fs.writeFileSync(path.join(repo, `${sub}.js`), payload);
     }
   });
@@ -168,8 +168,12 @@ describe.skipIf(!!skipReason)(`planted git.exe in the work folder never runs (re
     expect(slug).toContain('planted-repo');
   });
 
-  it('resolveRepositoryIdentity answers from the real git and the planted git.exe never runs', () => {
-    const id = resolveRepositoryIdentity(repo);
+  it('resolveRepositoryIdentity answers from the real git and the planted git.exe never runs', async () => {
+    const id = await resolveRepositoryIdentity(repo);
+    // The HEAD and branch readers also run git in the folder: await them too, so
+    // no git child is still running (and holding the folder) when afterAll removes it.
+    await id?.commitOf?.();
+    await id?.branchOf?.();
     expect(fs.existsSync(marker), fs.existsSync(marker) ? fs.readFileSync(marker, 'utf-8') : '').toBe(false);
     expect(id?.remote).toContain('planted-repo');
   });

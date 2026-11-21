@@ -138,9 +138,13 @@ describe('bible text merge', () => {
       [s[0], 'withdrawn'], [s[4], 'withdrawn'], [s[8], 'withdrawn'],
     ]);
     // The merge result is itself in the exporter's exact serialization, so the
-    // next writer round-trips it unchanged.
+    // next writer round-trips it unchanged. Checked on the committed blob: the
+    // working-tree copy is git's checkout form, CRLF under core.autocrlf=true
+    // (the Windows default), and differs from the blob only in line endings.
+    const blob = git(repo, ['show', 'HEAD:' + BIBLE_REL]);
+    expect(blob).toBe(asciiSafeStringify(merged) + '\n');
     const raw = fs.readFileSync(path.join(repo, BIBLE_REL), 'utf-8');
-    expect(raw).toBe(asciiSafeStringify(merged) + '\n');
+    expect(raw.replace(/\r\n/g, '\n')).toBe(blob);
     const doc = parseBibleDocument(raw, BIBLE_REL, 'test');
     expect(doc.entries).toHaveLength(7);
     expect(doc.provenanceBranch).toBe('main');
