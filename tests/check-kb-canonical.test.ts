@@ -181,8 +181,8 @@ describe('check-kb-canonical: each malformed case names the problem', () => {
     expect(validateBibleText(compact).map(p => p.code)).toEqual(['format']);
     const noNewline = exporterSerialization(doc).slice(0, -1);
     expect(validateBibleText(noNewline).map(p => p.code)).toEqual(['format']);
-    const literalNonAscii = exporterSerialization({ ...doc, entries: [entry('a-1', { title: 'café' })] })
-      .replace('\\u00e9', 'é');
+    const literalNonAscii = exporterSerialization({ ...doc, entries: [entry('a-1', { title: 'caf\u00e9' })] })
+      .replace('\\u00e9', '\u00e9');
     const problems = validateBibleText(literalNonAscii);
     expect(problems.map(p => p.code)).toEqual(['format']);
     expect(problems[0].message).toMatch(/first difference at line \d+/);
