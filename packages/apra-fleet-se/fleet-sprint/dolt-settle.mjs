@@ -472,7 +472,7 @@ export async function spawnEphemeralServer({ command, member, platform, doltPath
     // silently produced no pid), so it is resolved at runtime and simply
     // omitted where absent -- `nohup` inside the detached subshell is what
     // actually keeps the server alive there.
-    const script = `SETSID=$(command -v setsid || true); ( $SETSID nohup ${doltPath} sql-server --host ${host} --port ${port} --data-dir ${dataDir} > ${logPath} 2>&1 < /dev/null & ) ; sleep 1; P=$(pgrep -f '${matcher}' | head -1); if [ -n "$P" ]; then mkdir -p "$HOME/.apra-fleet" && echo "$P ${port}" >> "${settlePidfile(member).posix}"; fi; echo "PID:$P"`;
+    const script = `SETSID=$(command -v setsid || true); ( $SETSID nohup ${doltPath} sql-server --host ${host} --port ${port} --data-dir ${dataDir} > ${logPath} 2>&1 < /dev/null & ) ; sleep 1; P=$(pgrep -f '${matcher}( |$)' | head -1); if [ -n "$P" ]; then mkdir -p "$HOME/.apra-fleet" && echo "$P ${port}" >> "${settlePidfile(member).posix}"; fi; echo "PID:$P"`;
     const res = await command(script, { member_name: member, silent: true, failSoft: true, label: `settle: spawn ephemeral sql-server on '${member}'` });
     if (res && res.ok === false) {
         throw new DoltSyncError(`[Dolt Settle] failed to spawn ephemeral sql-server for member '${member}': ${res.error}`, { member, doltOutput: res.error });

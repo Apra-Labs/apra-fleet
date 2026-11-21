@@ -4,7 +4,7 @@ import { getOsCommands } from '../os/index.js';
 import { getAgentOS, getAgentShell, touchAgent, checkVcsTokenExpiry } from '../utils/agent-helpers.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { getAgent } from '../services/registry.js';
-import { getVcsCredentials, recordVcsCredential } from '../services/vcs-credential-record.js';
+import { getVcsCredentials, listVcsCredentials, recordVcsCredential } from '../services/vcs-credential-record.js';
 import { revokeVcsCredential, describeLegacyGlobalKey } from '../services/vcs-credential-revoke.js';
 import type { VcsCredentialRevokeResult } from '../services/vcs-credential-revoke.js';
 import { vcsGitEnvPrefix } from '../services/vcs-git-env.js';
@@ -272,7 +272,8 @@ export interface LegacyGlobalHelperOutcome {
    * "not_present": the key held no fleet value; nothing was changed.
    * "kept_for_member": left in place because another member runs as the same
    *   host user (keptForMember names it); fleet no longer refreshes it.
-   * "failed": the cleanup could not run or git refused; nothing was changed.
+   * "failed": the cleanup failed or its result could not be confirmed;
+   *   check the key (the notice says how).
    */
   outcome: 'removed' | 'not_present' | 'kept_for_member' | 'failed';
   /** Fleet's own values removed from the key. */
@@ -492,6 +493,9 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<Pr
   // never touches another label's credential -- a member can hold several
   // labels at once (src/services/vcs-credential-record.ts).
   const previous = getVcsCredentials(getAgent(agent.id) ?? agent)[label];
+  // A pre-label (unlabeled) entry: recording this label replaces it in the
+  // record, so its global key is migrated below like a labeled legacy one.
+  const unlabeled = listVcsCredentials(getAgent(agent.id) ?? agent).find(e => e.label === undefined);
 
   let deployResult;
   try {
@@ -533,10 +537,13 @@ export async function provisionVcsAuth(input: ProvisionVcsAuthInput): Promise<Pr
   // The outcome is reported loudly (text + legacyGlobalHelper): a removed
   // global value changes what git OUTSIDE fleet dispatches authenticates with.
   let legacyGlobalHelper: LegacyGlobalHelperOutcome | null = null;
-  if (previous && !previous.memberScoped) {
-    const legacyScope = previous.scopeUrl ?? `https://${PROVIDER_HOSTS[previous.provider]}`;
+  const legacyEntry = previous && !previous.memberScoped
+    ? { label, provider: previous.provider, scopeUrl: previous.scopeUrl }
+    : unlabeled;
+  if (legacyEntry) {
+    const legacyScope = legacyEntry.scopeUrl ?? `https://${PROVIDER_HOSTS[legacyEntry.provider]}`;
     try {
-      const r = await revokeVcsCredential(agent, { label, ...previous }, cmds, exec, { legacyOnly: true });
+      const r = await revokeVcsCredential(agent, legacyEntry, cmds, exec, { legacyOnly: true });
       legacyGlobalHelper = legacyGlobalHelperOutcome(legacyScope, r);
     } catch (err: any) {
       legacyGlobalHelper = {

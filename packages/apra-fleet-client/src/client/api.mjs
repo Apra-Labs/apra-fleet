@@ -616,7 +616,7 @@
  *   legacy value was removed, so git run outside fleet dispatches no longer gets the fleet token
  *   for that scope. "not_present": no fleet value on the key; nothing changed. "kept_for_member":
  *   left because another member runs as the same host user; fleet no longer refreshes it.
- *   "failed": nothing changed.
+ *   "failed": the cleanup failed or its result could not be confirmed; check the key.
  * @property {number} removedValues - Fleet's own values removed from the key.
  * @property {number} keptValues - Values fleet did not write (counted, never echoed); always kept.
  * @property {string|null} keptForMember - Member the legacy helper was kept for, else null.

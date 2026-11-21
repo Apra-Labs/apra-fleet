@@ -9,7 +9,7 @@ import { provisionVcsAuth } from '../src/tools/provision-vcs-auth.js';
 import { revokeVcsAuth } from '../src/tools/revoke-vcs-auth.js';
 import { _getCleanupTimers, cancelCredentialCleanup, cleanupTimerKey } from '../src/services/credential-cleanup.js';
 import { getVcsCredentials, listVcsCredentials } from '../src/services/vcs-credential-record.js';
-import { vcsGitEnvPrefix } from '../src/services/vcs-git-env.js';
+import { vcsGitEnvPrefix, vcsGitHelperRegistrations } from '../src/services/vcs-git-env.js';
 import type { SSHExecResult } from '../src/types.js';
 
 const mockExecCommand = vi.fn<(cmd: string, timeout?: number) => Promise<SSHExecResult>>();
@@ -185,6 +185,42 @@ describe('per-label VCS credential record', () => {
     const res = await provisionAz(member.id, 'az-a');
     expect(res.text).toContain('left in place because member "sibling-kept" runs as the same user');
     expect(res.structuredContent.legacyGlobalHelper).toMatchObject({ outcome: 'kept_for_member', keptForMember: 'sibling-kept' });
+  });
+
+  it('upgrade path: a legacy label stays registered for git after a second label is provisioned on its scope', async () => {
+    // Rule-2 record (0.4.5 shape): only the single legacy fields are set.
+    const member = makeTestAgent({
+      friendlyName: 'legacy-mixed', os: 'linux',
+      vcsProvider: 'azure-devops', vcsCredentialLabel: 'azure-devops', vcsCredentialScopeUrl: 'https://dev.azure.com',
+    });
+    addAgent(member);
+    expect((await provisionAz(member.id, 'az-issues')).text).toContain('[OK]');
+
+    const fresh = getAgent(member.id)!;
+    expect(getVcsCredentials(fresh)['azure-devops'].memberScoped).toBeUndefined();
+    expect(vcsGitHelperRegistrations(fresh)).toEqual([
+      { scopeUrl: 'https://dev.azure.com', label: 'azure-devops', legacy: true },
+      { scopeUrl: 'https://dev.azure.com', label: 'az-issues' },
+    ]);
+    // The legacy helper is the shared per-OS-user file, ahead of the new one.
+    const prefix = vcsGitEnvPrefix(fresh);
+    expect(prefix.indexOf('/.fleet-git-credential-azure-devops\'')).toBeGreaterThan(-1);
+    expect(prefix.indexOf('/.fleet-git-credential-azure-devops\'')).toBeLessThan(prefix.indexOf(`.fleet-git-credential-az-issues.${member.id}`));
+  });
+
+  it('migration: a pre-label (unlabeled) entry gets the value-scoped global key cleanup too', async () => {
+    const member = makeTestAgent({ friendlyName: 'pre-label', os: 'linux', vcsProvider: 'azure-devops' });
+    addAgent(member);
+    mockExecCommand.mockImplementation(async (cmd: string) => (cmd.includes('--unset-all')
+      ? { stdout: 'FLEET_LEGACY_HELPER removed=1 kept=0 reset_removed=1\n', stderr: '', code: 0 }
+      : { stdout: '', stderr: '', code: 0 }));
+
+    const res = await provisionAz(member.id, 'azure-devops');
+    const legacy = execCmds().filter(c => c.includes('--unset-all'));
+    expect(legacy).toHaveLength(1);
+    expect(legacy[0]).toContain('_fleet_v="$HOME/.fleet-git-credential";');
+    expect(legacy[0]).toContain("'credential.https://dev.azure.com.helper'");
+    expect(res.structuredContent.legacyGlobalHelper).toMatchObject({ outcome: 'removed', scopeUrl: 'https://dev.azure.com' });
   });
 
   it('a first provision with no legacy entry reports legacyGlobalHelper null', async () => {
