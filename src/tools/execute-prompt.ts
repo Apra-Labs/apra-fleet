@@ -12,6 +12,7 @@ import { getAgentOS, getAgentShell, touchAgent, getStoredPid, isPosixShellMember
 import { updateAgent } from '../services/registry.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { isRetryable, authErrorAdvice, workspaceNotTrustedAdvice, type PromptErrorCategory } from '../utils/prompt-errors.js';
+import { vcsGitEnvPrefix } from '../services/vcs-git-env.js';
 import { stageAuthEnv, removeMemberSecretFile, SecretDeliveryError, type StagedAuthEnv } from '../services/member-secret-env.js';
 import { writeStatusline } from '../services/statusline.js';
 import { getModelOverride } from '../services/user-config.js';
@@ -1645,7 +1646,9 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       staged = await stageAuthEnv(agent);
       if (staged.path) stagedEnvPaths.push(staged.path);
     }
-    return strategy.execCommand(staged.prefix + cmd, attemptTimeoutMs, attemptMaxTotalMs, onPidCaptured, dispatchSignal);
+    // The member's git credential helpers reach every git the LLM session
+    // starts through the dispatch environment (src/services/vcs-git-env.ts).
+    return strategy.execCommand(vcsGitEnvPrefix(agent) + staged.prefix + cmd, attemptTimeoutMs, attemptMaxTotalMs, onPidCaptured, dispatchSignal);
   };
   const isMaxTotalKill = (err: unknown): boolean => {
     const msg = (err as { message?: unknown })?.message;

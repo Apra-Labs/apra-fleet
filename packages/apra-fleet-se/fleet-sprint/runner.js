@@ -568,93 +568,19 @@ function computeBranchEnsureMembers(getMembersForRole, kbMaintainers, backlogMem
 }
 export { computeBranchEnsureMembers };
 
-// Factory for kbWork.demotionCandidates()'s
-// roundChangedFiles callback -- THIS REVIEW ROUND's changed-file set,
-// deliberately separate from kbInjection's diffFiles (the cumulative
-// origin/base...branch diff computed for the reviewer/harvester hint
-// context, left completely unchanged by this).
-//
-// Pulled out as its own factory, injected with `command` and `pullGitBefore`
-// rather than written inline, so this can be unit-tested directly against
-// fakes that discriminate the two defects a diff guard spawning git is prone
-// to (a detection function welded to its own git spawn can only be
-// exercised against the one diff a test can cheaply construct in-repo,
-// which proves nothing). Here the two defects are: (1) computing the diff
-// BEFORE the fetch/fast-forward-merge instead of after -- a stale read that
-// can miss exactly the files this round touched -- and (2) collapsing to
-// the cumulative sprint diff instead of the per-round one. A fake
-// `pullGitBefore` and `command` can flip between a pre-merge and a
-// post-merge tree deterministically, so a test can assert the returned set
-// came from the POST-merge tree without needing a real git repository.
-//
-// One factory call carries ONE piece of state across its returned
-// function's calls: the previous round's diffed-to commit sha (`lastSha`).
-// The first call has no previous round, so it diffs from the sprint's base
-// branch instead -- the only point "the previous round" can mean before any
-// round has run.
-//
-// @param {{
-//   command: (cmd: string, opts: { member_name: string, silent?: boolean, failSoft?: boolean }) => Promise<{ ok: boolean, output?: string }>,
-//   pullGitBefore: (memberName: string) => Promise<any>,
-//   baseBranch: string,
-//   log?: Function,
-// }} opts
-// @returns {(memberName: string) => Promise<string[]>}
-function createRoundChangedFiles({ command, pullGitBefore, baseBranch, log = () => {} }) {
-    let lastSha = null;
-    return async function roundChangedFiles(memberName) {
-        // AFTER the fetch and fast-forward merge, never before -- computing
-        // the diff first would read a snapshot that has not yet absorbed
-        // this round's commits (the superseded upstream attempt's defect).
-        try {
-            await pullGitBefore(memberName);
-        } catch (err) {
-            log(`[kb-work] could not fetch/fast-forward-merge '${memberName}' before computing this round's changed files (non-fatal): ${err && err.message ? err.message : String(err)}`);
-            return [];
-        }
-        const revParseCmd = 'git rev-parse HEAD';
-        const headRes = await command(revParseCmd, { member_name: memberName, silent: true, failSoft: true });
-        const head = (headRes && headRes.ok) ? String(headRes.output || '').trim() : '';
-        if (!head) {
-            log(`[kb-work] WARN: '${revParseCmd}' failed on '${memberName}' -- no changed files for this round's demotion candidates${failedCommandDetail(headRes)}`);
-            return [];
-        }
-        // THIS round's diff only: from the previous round's merged tip (or,
-        // on the first round, the sprint's base branch) to the new tip --
-        // never the cumulative origin/base...branch diff diffFiles computes.
-        const fromRef = lastSha || `origin/${baseBranch}`;
-        const diffCmd = `git diff --name-only ${fromRef}...${head}`;
-        const diffRes = await command(diffCmd, { member_name: memberName, silent: true, failSoft: true });
-        if (!diffRes || !diffRes.ok) {
-            // lastSha is NOT advanced: the next round diffs from the last tip
-            // whose diff succeeded, so this round's files are not lost.
-            log(`[kb-work] WARN: '${diffCmd}' failed on '${memberName}' -- no changed files for this round's demotion candidates; the next round diffs from ${fromRef} again${failedCommandDetail(diffRes)}`);
-            return [];
-        }
-        lastSha = head;
-        return String(diffRes.output || '').split('\n').map((l) => l.trim()).filter(Boolean);
-    };
-}
-export { createRoundChangedFiles };
-
 // Factory for kbWork.demotionCandidates({ scope: 'sprint' })'s
 // sprintChangedFiles callback -- the CUMULATIVE sprint changed-file set, which
 // is the FINAL review's scope.
 //
-// WHY THIS EXISTS SEPARATELY FROM createRoundChangedFiles. Final review judges
-// the WHOLE sprint diff in one pass, so "this round" is not a thing it has:
-// there is no previous round's merged tip to diff from, and scoping its
-// demotion candidates to the last round's diff would hide every entry the
-// earlier rounds' files made worth re-checking. The two scopes are therefore
-// two injected callbacks chosen by an explicit `scope` argument, not one
-// callback that tries to work out which review is asking.
+// Final review judges the WHOLE sprint diff in one pass, and it is the only
+// review offered demotion candidates, so their changed-file scope is the
+// cumulative range.
 //
 // WHY IT IS NOT kbInjection's `diffFiles` either. That one computes the same
 // cumulative range but is wired for the reviewer/harvester KB-injection HINT
 // context and is deliberately left untouched; it also does no fetch/merge
-// first. This pulls before diffing for exactly the reason its round sibling
-// does -- a pre-merge tree has not absorbed the sprint's latest commits -- and
-// is STATELESS, unlike the round factory, because a cumulative range has
+// first. This pulls before diffing -- a pre-merge tree has not absorbed the
+// sprint's latest commits -- and is STATELESS, because a cumulative range has
 // nothing to carry between calls.
 //
 // @param {{
@@ -683,6 +609,119 @@ function createSprintChangedFiles({ command, pullGitBefore, baseBranch, branch, 
     };
 }
 export { createSprintChangedFiles };
+
+// Factory for kbWork.demotionCandidates()'s branchWithdrawals callback: the
+// entries an EARLIER final review on this sprint branch withdrew, so a
+// relaunched sprint's final review can hold (restore) one. A withdrawal is a
+// tombstone {id, reason: "withdrawn", note, evidence_files} in the committed
+// bible's `demotions` array; the entry itself has left `entries`, so the
+// checkout bible view no longer offers it. "This branch added it" means the
+// sprint branch's bible (HEAD) carries the tombstone and the base branch's
+// does not -- a tombstone merged from the base is history, not this branch's
+// to restore. The candidate row is the base bible's entry when it has one,
+// else one built from the tombstone.
+//
+// Both reads are plain `git show <ref>:<bible>` on the maintainer (whose
+// checkout the candidate read has just fetched and fast-forwarded). No bible
+// on the branch, an unreadable one, or no withdrawn tombstone: nothing.
+// A base without a bible (or an unreadable one) counts as no tombstones.
+//
+// `.read(memberName)` on the returned function is the same read for the
+// demotion offer and the PR body's "KB changes on merge" section, which must
+// tell "nothing carried" from "could not read": it answers
+// { ok, rows, error }. When the HEAD read fails or is unparseable, `git ls-tree --name-only HEAD -- <bible>` with
+// empty output means the branch has no bible (nothing carried); anything
+// else is ok:false.
+//
+// @param {{
+//   command: (cmd: string, opts: { member_name: string, silent?: boolean, failSoft?: boolean }) => Promise<{ ok: boolean, output?: string }>,
+//   baseBranch: string,
+//   bibleFile?: string,
+//   log?: Function,
+// }} opts
+// @returns {(memberName: string) => Promise<object[]>}
+function createBranchWithdrawnEntries({ command, baseBranch, bibleFile = '.fleet/kb-canonical.json', log = () => {} }) {
+    const parseDoc = (res) => {
+        if (!res || !res.ok) return null;
+        try {
+            const doc = JSON.parse(String(res.output || ''));
+            return (doc && typeof doc === 'object' && !Array.isArray(doc)) ? doc : null;
+        } catch {
+            return null;
+        }
+    };
+    const withdrawnOf = (doc) => (doc && Array.isArray(doc.demotions) ? doc.demotions : [])
+        .filter((t) => t && typeof t.id === 'string' && t.id && t.reason === 'withdrawn');
+    // One maintainer's rows: { ok, rows, error }. `strict` tells a failed
+    // HEAD read from a branch with no bible (see .read below).
+    async function readCarried(memberName, strict) {
+        const headCmd = `git show HEAD:${bibleFile}`;
+        const headRes = await command(headCmd, { member_name: memberName, silent: true, failSoft: true });
+        const head = parseDoc(headRes);
+        if (!head && strict) {
+            const lsCmd = `git ls-tree --name-only HEAD -- ${bibleFile}`;
+            const ls = await command(lsCmd, { member_name: memberName, silent: true, failSoft: true });
+            if (ls && ls.ok && String(ls.output || '').trim() === '') return { ok: true, rows: [] };
+            const why = (headRes && headRes.ok) ? 'not a readable bible' : `failed${failedCommandDetail(headRes)}`;
+            return { ok: false, rows: [], error: `'${headCmd}' on '${memberName}': ${why}` };
+        }
+        const tombstones = withdrawnOf(head);
+        if (tombstones.length === 0) return { ok: true, rows: [] };
+        const baseCmd = `git show origin/${baseBranch}:${bibleFile}`;
+        const baseRes = await command(baseCmd, { member_name: memberName, silent: true, failSoft: true });
+        const base = parseDoc(baseRes);
+        if (!base) log(`[kb-work] no readable bible from '${baseCmd}' on '${memberName}' -- every withdrawn tombstone on the sprint branch counts as this branch's own`);
+        const baseTombstones = new Set(withdrawnOf(base).map((t) => t.id));
+        const baseEntries = new Map((base && Array.isArray(base.entries) ? base.entries : [])
+            .filter((e) => e && typeof e.id === 'string').map((e) => [e.id, e]));
+        const out = [];
+        for (const t of tombstones) {
+            if (baseTombstones.has(t.id)) continue;
+            const e = baseEntries.get(t.id);
+            out.push({
+                id: t.id,
+                type: (e && typeof e.type === 'string') ? e.type : 'knowledge',
+                confidence: 'CONFIRMED',
+                title: (e && typeof e.title === 'string') ? e.title : `withdrawn entry ${t.id}`,
+                summary: (e && typeof e.summary === 'string') ? e.summary : (typeof t.note === 'string' ? t.note : ''),
+                source_files: (e && Array.isArray(e.source_files)) ? e.source_files
+                    : (Array.isArray(t.evidence_files) ? t.evidence_files : []),
+                // For the PR body (.read only): the base entry's own title
+                // ('' without one) and the tombstone's note.
+                ...(strict ? {
+                    base_title: (e && typeof e.title === 'string') ? e.title : '',
+                    tombstone_note: typeof t.note === 'string' ? t.note : '',
+                } : {}),
+            });
+        }
+        return { ok: true, rows: out };
+    }
+    const branchWithdrawnEntries = async (memberName) => (await readCarried(memberName, false)).rows;
+    branchWithdrawnEntries.read = (memberName) => readCarried(memberName, true);
+    return branchWithdrawnEntries;
+}
+export { createBranchWithdrawnEntries };
+
+// The PR body's "KB changes on merge" report at publish and at abort:
+// kbWork.kbChangesOnMerge() (this run's verdicts plus the withdrawn tombstones
+// the branch carries), else kbChangesReport() for a kbWork without it. A throw
+// still yields a report that says the branch could not be read -- never a
+// silently missing section.
+async function kbChangesForPrBody(kbWork, log = () => {}) {
+    if (!kbWork) return null;
+    if (typeof kbWork.kbChangesOnMerge === 'function') {
+        try {
+            return await kbWork.kbChangesOnMerge();
+        } catch (err) {
+            log(`[kb-work] WARN: the KB changes report for the PR body failed (${err && err.message ? err.message : String(err)}) -- the section says the branch tombstones could not be read`);
+            const base = typeof kbWork.kbChangesReport === 'function' ? kbWork.kbChangesReport() : null;
+            return { withdrawn: [], notRecorded: [], noVerdict: [], kept: 0, restored: 0, refused: [], notPushed: [], ...(base || {}),
+                unreadable: [{ repo: '', member: '', error: err && err.message ? err.message : String(err) }] };
+        }
+    }
+    return typeof kbWork.kbChangesReport === 'function' ? kbWork.kbChangesReport() : null;
+}
+export { kbChangesForPrBody };
 
 // Factory for kbWork.promotionCandidates()'s D6 in-sprint ping-pong guard:
 // the CURRENT sha256 of a bounded set of files, read on a member's own
@@ -1758,23 +1797,11 @@ async function runSprintCycle(context) {
     // maintainer is mid-dispatch (dispatchStarted/dispatchEnded below).
     // gitSync is bound further down; the G-pull closure resolves it lazily,
     // and no KB write can be applied before the first dispatch completes.
-    // THIS REVIEW ROUND's changed-file set for
-    // kbWork.demotionCandidates(), deliberately separate from kbInjection's
-    // diffFiles below (the cumulative origin/base...branch diff, left
-    // unchanged for its existing reviewer/harvester hint-context callers).
-    // gitSync.pullGitBefore is bound lazily here exactly like gPull/gPush
-    // below -- gitSync is defined further down in this function, and
-    // roundChangedFiles is not CALLED until long after that assignment runs.
-    const roundChangedFiles = context.roundChangedFiles ?? createRoundChangedFiles({
-        command,
-        pullGitBefore: (memberName) => gitSync.pullGitBefore(memberName),
-        baseBranch: validated.baseBranch,
-        log,
-    });
     // THE SPRINT's CUMULATIVE changed-file set, for the FINAL review's
-    // demotion-candidate read -- final review has no round, so it scopes to
-    // the whole baseBranch...branch diff. Same lazy gitSync binding as its
-    // per-round sibling above.
+    // demotion-candidate read (the only review offered demotion candidates):
+    // the whole baseBranch...branch diff. gitSync.pullGitBefore is bound
+    // lazily -- gitSync is defined further down in this function, and this is
+    // not CALLED until long after that assignment runs.
     const sprintChangedFiles = context.sprintChangedFiles ?? createSprintChangedFiles({
         command,
         pullGitBefore: (memberName) => gitSync.pullGitBefore(memberName),
@@ -1782,13 +1809,24 @@ async function runSprintCycle(context) {
         branch: validated.branch,
         log,
     });
+    // Entries an earlier final review on this branch withdrew (a relaunch's
+    // final review can hold -- restore -- one). See createBranchWithdrawnEntries.
+    const branchWithdrawals = context.branchWithdrawals ?? createBranchWithdrawnEntries({
+        command,
+        baseBranch: validated.baseBranch,
+        log,
+    });
     const currentFileHashes = context.currentFileHashes ?? createCurrentFileHashes({ command, log });
     const kbWork = context.kbWork ?? createKbWorkClient({
         memberCall: kbMemberCall,
         maintainers: () => context.kbMaintainers,
         gPull: (maintainerName, options) => gitSync.pullGitBefore(maintainerName, options),
-        roundChangedFiles,
         sprintChangedFiles,
+        // Feature detection for merge-carried withdrawals on the maintainer,
+        // local or remote: its session must list kb_capabilities (whose
+        // routes must then include `withdraw`).
+        listTools: kbListTools,
+        branchWithdrawals,
         // D6 in-sprint ping-pong guard (promotionCandidates): re-hash a
         // candidate's cited files on demand to tell "basis unchanged since
         // the demotion" from "basis moved on" -- see createCurrentFileHashes.
@@ -1814,6 +1852,9 @@ async function runSprintCycle(context) {
         sprintStartMs: () => sprintState.startedAtMs,
         // Reviewer demotion loop switch ('on' default, 'off'): sprint arg kb_demotion_loop.
         demotionLoop: validated.kbDemotionLoop,
+        // The per-offering record lives in the run context, so a client
+        // rebuilt on a resume keeps what was offered and judged.
+        offeringRecord: (context.kbOfferingRecord ??= new Map()),
         log,
     });
     // Stored on the sprint context (like kbMaintainers) so the terminal-abort
@@ -2598,16 +2639,8 @@ async function runSprintCycle(context) {
         if (kbCandidates.length > 0) {
             log(`[kb-work] offering ${kbCandidates.length} INFERRED entr(ies) to the reviewer for promotion.`);
         }
-        // The CONFIRMED entries this reviewer may demote
-        // back to INFERRED, scoped to the files THIS round's diff actually
-        // touched (see createKbWorkClient's roundChangedFiles wiring above).
-        // Best-effort exactly like promotionCandidates: a cold or unreachable
-        // KB, or a round diff that could not be computed, must not fail the
-        // review.
-        const kbDemoteCandidates = await kbWork.demotionCandidates(reviewerPool[0], { scope: 'round' });
-        if (kbDemoteCandidates.length > 0) {
-            log(`[kb-work] offering ${kbDemoteCandidates.length} CONFIRMED entr(ies) to the reviewer for demotion.`);
-        }
+        // No demotion candidates here: they are offered at the FINAL review
+        // only (see phases/final-review.mjs and kbWork.demotionCandidates).
         // What the KB knows about the beads UNDER REVIEW, not just whatever the
         // sprint-start prime happened to surface. Falls back to the primed set
         // when the query returns nothing (a KB with no matching rows yet).
@@ -2655,7 +2688,6 @@ async function runSprintCycle(context) {
                 mergeBaseSha,
                 goal: validated.goal,
                 kbCandidates,
-                kbDemoteCandidates,
                 kbBlock: reviewerKbBlock,
             }),
             // Restate the review scope: a resumed dispatch replaces the
@@ -4815,6 +4847,7 @@ async function runSprintCycle(context) {
         finalVerdictResult, costAnalysis,
         setAside: collectSetAsideEntries(sprintState),
         waited: collectWaitEntries(sprintState),
+        kbChanges: await kbChangesForPrBody(kbWork, log),
     });
 
     // Final summary line: a skipped PR must not read as a clean success.
@@ -4993,6 +5026,10 @@ export async function main(context) {
                     onAuthFailure: abortOnAuthFailure,
                     callTool: (args && typeof args.callTool === 'function') ? args.callTool : undefined,
                     runId: (args && typeof args.run_id === 'string') ? args.run_id : undefined,
+                    // Withdrawals a final review (this run's or an earlier
+                    // one's) committed travel with the branch: the
+                    // [ABORTED] body must list them.
+                    kbChanges: await kbChangesForPrBody(runContext.kbWork, log),
                 });
             } catch (finalizeErr) {
                 log(

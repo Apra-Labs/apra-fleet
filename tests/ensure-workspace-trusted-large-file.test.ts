@@ -38,7 +38,7 @@ import { getMemberHomeDir } from '../src/services/member-home.js';
 import { workspaceTrustTransportFor, sftpHomePath } from '../src/utils/workspace-trust.js';
 import { getStrategy } from '../src/services/strategy.js';
 import { makeTestAgent, makeTestLocalAgent } from './test-helpers.js';
-import { parseLandingMove, isWindowsLandingMove } from './helpers/landing-move.js';
+import { parseLandingMove, isWindowsLandingMove, parseFingerprintProbe, landingExpectedFingerprint, fakeFingerprint, unwrapPowerShellEncoded } from './helpers/landing-move.js';
 
 /** JS-resolved member homes (getMemberHomeDir) every caller passes; the fake
  *  member fs is keyed by the literal paths built from them. */
@@ -102,9 +102,17 @@ function makeMemberFs(initialHome: string | null, posixFlavour = false) {
       const marker = cmd.match(/(?:echo|Write-Output) "([^"]+)"/)![1];
       return { stdout: `${files.get(m[1]) ?? ''}\n${marker}\n`, stderr: '', code: 0 };
     }
-    // --- PowerShell landing only (file channel) ---
-    const land = isWindowsLandingMove(cmd) ? parseLandingMove(cmd) : null;
+    // --- fingerprint probe taken before the re-read (compare and swap) ---
+    const probed = parseFingerprintProbe(cmd);
+    if (probed !== null) return { stdout: fakeFingerprint(files.get(probed)), stderr: '', code: 0 };
+    // --- conditional landing: PowerShell (encoded) or POSIX ---
+    const land = parseLandingMove(cmd);
     if (land) {
+      const expected = landingExpectedFingerprint(cmd);
+      if (expected !== undefined && expected !== fakeFingerprint(files.get(land.to))) {
+        files.delete(land.from);
+        return { stdout: 'FLEET_MEMBER_CONFIG_CHANGED', stderr: '', code: 75 };
+      }
       if (!files.has(land.from)) return { stdout: '', stderr: `Unable to find the specified file: ${land.from}`, code: 1 };
       files.set(land.to, files.get(land.from)!);
       files.delete(land.from);
@@ -159,14 +167,15 @@ describe('ensureWorkspaceTrusted with a >80 KB ~/.claude.json (GitHub #499, apra
     expect(member.transport.writes).toHaveLength(1);
     expect(member.transport.writes[0].relPath).toMatch(/^\.claude\.json\.fleet-trust-\d+-[a-z0-9]+\.tmp$/);
     expect(member.transport.writes[0].content).toBe(expected);
-    // read + re-read right before the move + one tiny move; nothing else
-    expect(member.calls).toHaveLength(3);
-    expect(isWindowsLandingMove(member.calls[2])).toBe(true);
-    const land = parseLandingMove(member.calls[2])!;
+    // read + fingerprint probe + re-read right before the move + one small
+    // conditional move; nothing else
+    expect(member.calls).toHaveLength(4);
+    expect(isWindowsLandingMove(member.calls[3])).toBe(true);
+    const land = parseLandingMove(member.calls[3])!;
     expect(land.from).toMatch(/^C:\\Users\\member\\\.claude\.json\.fleet-trust-\d+-[a-z0-9]+\.tmp$/);
     expect(land.to).toBe('C:\\Users\\member\\.claude.json');
-    expect(member.calls[2]).not.toContain('Move-Item');
-    expect(member.calls[2].length).toBeLessThan(1000);
+    expect(unwrapPowerShellEncoded(member.calls[3])).not.toContain('Move-Item');
+    expect(member.calls[3].length).toBeLessThan(5000);
     expect(member.home(false)).toBe(expected);
     expect(member.leftovers()).toEqual([]);
   });
@@ -175,8 +184,12 @@ describe('ensureWorkspaceTrusted with a >80 KB ~/.claude.json (GitHub #499, apra
     const member = makeMemberFs(existingStr, true);
     await new ClaudeProvider().ensureWorkspaceTrusted(KEY, member.exec, 'windows', 'gitbash', member.transport, TEST_HOME('windows', 'gitbash'));
 
-    expect(member.calls).toHaveLength(3);
-    expect(member.calls[2]).toMatch(/^mv "\/home\/member\/\.claude\.json\.fleet-trust-\d+-[a-z0-9]+\.tmp" "\/home\/member\/\.claude\.json"$/);
+    expect(member.calls).toHaveLength(4);
+    const land = parseLandingMove(member.calls[3])!;
+    expect(land.from).toMatch(/^\/home\/member\/\.claude\.json\.fleet-trust-\d+-[a-z0-9]+\.tmp$/);
+    expect(land.to).toBe('/home/member/.claude.json');
+    // Same directory: a plain conditional rename, no copy, no PowerShell.
+    expect(member.calls[3]).not.toMatch(/^cp |powershell|Get-Content/);
     expect(member.home(true)).toBe(expected);
   });
 
@@ -184,8 +197,8 @@ describe('ensureWorkspaceTrusted with a >80 KB ~/.claude.json (GitHub #499, apra
     const member = makeMemberFs(existingStr, true);
     const linuxKey = '/home/member/work/project-a';
     await new ClaudeProvider().ensureWorkspaceTrusted(linuxKey, member.exec, 'linux', undefined, member.transport, TEST_HOME('linux', undefined));
-    expect(member.calls).toHaveLength(3);
-    expect(member.calls[2]).toMatch(/^mv "/);
+    expect(member.calls).toHaveLength(4);
+    expect(parseLandingMove(member.calls[3])).not.toBeNull();
     expect(member.home(true)).toBe(expectedMerged(existing, linuxKey));
   });
 
@@ -194,8 +207,8 @@ describe('ensureWorkspaceTrusted with a >80 KB ~/.claude.json (GitHub #499, apra
       const member = makeMemberFs(existingStr);
       await expect(new ClaudeProvider().ensureWorkspaceTrusted(KEY, member.exec, os, shell, undefined, TEST_HOME(os, shell)))
         .rejects.toThrow(/E-MEMBER-CONFIG-NO-FILE-CHANNEL.*file channel.*not available.*secret-file channel: not available/s);
-      // Only the read and the re-read ever ran; no command carries content.
-      expect(member.calls).toHaveLength(2);
+      // Only the read, the fingerprint probe and the re-read ever ran; no command carries content.
+      expect(member.calls).toHaveLength(3);
       expect(member.home(os !== 'windows' || shell === 'gitbash')).toBe(existingStr);
     }
   });
@@ -212,7 +225,7 @@ describe('ensureWorkspaceTrusted with a >80 KB ~/.claude.json (GitHub #499, apra
     expect(result.seeded).toBe(true);
     expect(secret.write).toHaveBeenCalledWith(expected);
     expect(parseLandingMove(member.calls[member.calls.length - 1])).toEqual({ from: 'C:\\Users\\member\\.apra-fleet-claude-config-1', to: 'C:\\Users\\member\\.claude.json' });
-    for (const c of member.calls) expect(c.length).toBeLessThan(1000);
+    for (const c of member.calls) expect(c.length).toBeLessThan(5000);
     expect(member.home(false)).toBe(expected);
   });
 
@@ -241,8 +254,8 @@ describe('ensureWorkspaceTrusted with a >80 KB ~/.claude.json (GitHub #499, apra
     const relA = a.transport.writes[0].relPath;
     const relB = b.transport.writes[0].relPath;
     expect(relA).not.toBe(relB);
-    expect(a.calls[2]).toContain(relA);
-    expect(b.calls[2]).toContain(relB);
+    expect(unwrapPowerShellEncoded(a.calls[3])).toContain(relA);
+    expect(unwrapPowerShellEncoded(b.calls[3])).toContain(relB);
   });
 });
 
@@ -357,14 +370,14 @@ describe('windowsReplaceFileCommand (PowerShell landing of ~/.claude.json)', () 
     expect(cmd).toContain('else { [System.IO.File]::Move($src, $d) }');
   });
 
-  it('copies a source staged on another volume next to the destination first, and cleans up', () => {
-    expect(cmd).toContain("if ([System.IO.Path]::GetPathRoot($s) -ne [System.IO.Path]::GetPathRoot($d)) { $t = $d + '.fleet-land-' + [Guid]::NewGuid().ToString('N') + '.tmp'; [System.IO.File]::Copy($s, $t, $false); $src = $t }");
-    expect(cmd).toContain('if ($t) { [System.IO.File]::Delete($s) }');
-    expect(cmd).toContain('catch { if ($t -and [System.IO.File]::Exists($t)) { [System.IO.File]::Delete($t) }');
+  it('copies a source staged in another directory next to the destination first, and cleans up', () => {
+    expect(cmd).toContain("if ([System.IO.Path]::GetDirectoryName([System.IO.Path]::GetFullPath($s)) -ne [System.IO.Path]::GetDirectoryName([System.IO.Path]::GetFullPath($d))) { $t = $d + '.fleet-land-' + [Guid]::NewGuid().ToString('N') + '.tmp'; [System.IO.File]::Copy($s, $t, $false); $src = $t }");
+    expect(cmd).toContain('if ($t) { try { [System.IO.File]::Delete($s) } catch {');
+    expect(cmd).toContain('catch { if ($t -and [System.IO.File]::Exists($t)) { try { [System.IO.File]::Delete($t) } catch { } }');
   });
 
   it('fails with exit 1 and the reason on stderr', () => {
-    expect(cmd).toMatch(/\[Console\]::Error\.WriteLine\(\$_\.Exception\.Message\); exit 1 \}$/);
+    expect(cmd).toContain('[Console]::Error.WriteLine($_.Exception.Message); exit 1 }');
     expect(cmd).toContain("$ErrorActionPreference = 'Stop'");
   });
 

@@ -436,6 +436,10 @@
  * @property {string} folder - Working directory on the target machine
  * @property {string} [repo_remote_url] - Origin URL of the git repo in `folder`, when known
  * @property {string} [vcsProvider] - VCS provider configured for this member
+ * @property {Array<{label: string, provider: string, scopeUrl: string|null, expiresAt: string|null,
+ *   memberScoped: boolean}>} [vcsCredentials] - Every VCS credential label the member holds (never
+ *   the token). memberScoped: the helper is the member's own per-member file
+ *   (`.fleet-git-credential-<label>.<member id>` in the member home), not the shared legacy one.
  * @property {"read" | "push" | "push+pr" | "admin" | "issues" | "full"} [gitAccess] - Git access level
  *   this member's VCS credentials are minted at (register_member/update_member's git_access). Absent
  *   when the member was registered without an explicit level. Consumers that need to know whether a
@@ -606,15 +610,32 @@
  */
 
 /**
+ * @typedef {Object} LegacyGlobalHelperOutcome
+ * @property {string} scopeUrl - Scope whose global key `credential.<scopeUrl>.helper` was looked at.
+ * @property {"removed" | "not_present" | "kept_for_member" | "failed"} outcome - "removed": fleet's
+ *   legacy value was removed, so git run outside fleet dispatches no longer gets the fleet token
+ *   for that scope. "not_present": no fleet value on the key; nothing changed. "kept_for_member":
+ *   left because another member runs as the same host user; fleet no longer refreshes it.
+ *   "failed": the cleanup failed or its result could not be confirmed; check the key.
+ * @property {number} removedValues - Fleet's own values removed from the key.
+ * @property {number} keptValues - Values fleet did not write (counted, never echoed); always kept.
+ * @property {string|null} keptForMember - Member the legacy helper was kept for, else null.
+ * @property {string|null} notice - The warning line also shown in the text, or null.
+ *
+ * Mirrors src/tools/provision-vcs-auth.ts's LegacyGlobalHelperOutcome.
+ */
+
+/**
  * @typedef {Object} ProvisionVcsAuthStructured
  * @property {boolean} ok - True when the credential was actually deployed onto the member.
  * @property {"ok" | "deployed_unverified" | "deployed_verification_skipped" |
  *   "member_not_found" | "member_offline" | "secret_variable_not_found" |
  *   "secret_variable_denied" | "secret_variable_expired" | "oob_cancelled" |
  *   "credential_missing" | "credential_assembly_unsupported" | "credential_assembly_failed" |
- *   "deploy_threw" | "deploy_failed"} reason - Machine-readable outcome code. Branch on this,
- *   never on the text. "credential_missing": non_interactive was set and the secret field is
- *   absent (message names it; nothing was prompted).
+ *   "deploy_threw" | "deploy_failed" | "scope_url_invalid"} reason - Machine-readable outcome
+ *   code. Branch on this, never on the text. "credential_missing": non_interactive was set and
+ *   the secret field is absent (message names it; nothing was prompted). "scope_url_invalid":
+ *   scope_url is not a plain scheme://host[:port][/path] URL; nothing was deployed.
  * @property {string} provider - The VCS provider requested.
  * @property {string} credentialLabel - Credential label the helper was deployed under
  *   (defaults to the provider name).
@@ -633,6 +654,9 @@
  *   key is dropped, never passed through). Providers additionally mask the token value here to
  *   its first four characters plus asterisks, so this never carries the plaintext token.
  * @property {string|null} expiryWarning - Near-expiry warning text when one applies, else null.
+ * @property {LegacyGlobalHelperOutcome|null} legacyGlobalHelper - Upgrade migration of a legacy
+ *   helper this label held (an older release registered it in the per-OS-user global git
+ *   config), or null when there was none. See LegacyGlobalHelperOutcome.
  * @property {string|null} memberId - Registry id of the resolved member, or null.
  * @property {string|null} memberName - Friendly name of the resolved member, or null.
  * @property {string|null} message - Human-readable cause of a non-ok outcome (e.g. "No repos
@@ -655,6 +679,7 @@
  *   field (api_token / pat / token) returns ok=false with reason "credential_missing" naming the
  *   field. Required non-secret fields are validated before any prompt in both modes. Default false.
  * @property {string} [scope_url] - Git credential scope URL (e.g. "https://github.com/my-org").
+ *   Must be a plain scheme://host[:port][/path] URL, else reason "scope_url_invalid".
  *   Defaults to "https://<host>". For an Azure DevOps repo on the legacy host, pass
  *   "https://ORG.visualstudio.com" so the PAT is bound to the host the member pushes to.
  * @property {"github-app" | "pat"} [github_mode] - GitHub auth mode: github-app (mint via
@@ -666,6 +691,10 @@
  *   docs/api-reference.md for every level). GitHub App access
  *   level override
  * @property {string[]} [repos] - GitHub App repository list override
+ * @property {boolean} [gh_login] - GitHub only: also log the gh CLI in with the new token. gh
+ *   keeps ONE login per OS user, so this replaces the token every other process of that user
+ *   runs gh with. Default: only for label "github" on a remote member no other registered
+ *   member shares; otherwise skipped and metadata.ghCliAuth says why. true: always; false: never.
  * @property {string} [email] - OPTIONAL Bitbucket account email. Ignored for authentication
  *   (git uses the fixed token username x-bitbucket-api-token-auth, REST uses a Bearer token);
  *   kept only as metadata if given.

@@ -459,7 +459,18 @@ const DISPATCH_ROLE_PATH = path.join(__dirname, '../fleet-sprint/dispatch-role.m
 // createCurrentFileHashes) the total is 13: runSprintCycle's four, the KB
 // injection's two, the demotion loop's four, reclaimInRunOrphanedClaims'
 // two and reclaimStaleInProgress' fresh read.
-const EXPECTED_COMMAND_COUNT = 13;
+// 13 -> 11: createRoundChangedFiles is removed with its two command() sites
+// (`git rev-parse HEAD` and the per-round diff) -- demotion candidates are
+// offered at the final review only, which scopes to the cumulative sprint
+// diff (createSprintChangedFiles, still counted above).
+// 11 -> 13: createBranchWithdrawnEntries' two command() sites (`git show
+// HEAD:<bible>` and `git show origin/<base>:<bible>`) read this branch's
+// earlier withdrawn tombstones for the final review's demotion offer (so a
+// relaunch can restore one). Both pass member_name and are failSoft.
+// 13 -> 14: the same function's PR-body read (`.read`) tells a branch with
+// no bible from a failed read with `git ls-tree --name-only HEAD -- <bible>`
+// on the maintainer; member_name and failSoft, like the other two.
+const EXPECTED_COMMAND_COUNT = 14;
 // Bumped 9 -> 10 (2026-07-18): the doer max_turns-exhaustion resume path
 // (dispatchDoerResume) adds one new agent() call site -- a resume-and-continue
 // dispatch on the SAME session with an escalated max_turns, verified compliant

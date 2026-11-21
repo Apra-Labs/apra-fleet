@@ -279,18 +279,47 @@ function isBinaryLockedError(output) {
     return /being used by another process|Access to the path .* is denied|ETXTBSY|EBUSY|text file busy/i.test(text);
 }
 
-/** Kill any process whose executable path is exactly the fleet-managed dolt
- *  path -- by construction the only thing that ever launches a binary there
- *  is settle/the installer, so this is always a legitimate self-heal, never
- *  collateral damage against an unrelated process. */
+/** Per-member pidfile of the ephemeral sql-servers THIS member spawned. It
+ *  lives under the OS user's ~/.apra-fleet dir but is named for the member, so
+ *  two members sharing one OS user (and one dolt binary path) never read each
+ *  other's records. Each line is "<pid> <port>". Returns both dialects. */
+export function settlePidfile(member) {
+    const safe = String(member).replace(/[^A-Za-z0-9_.-]/g, '_');
+    const name = `settle-dolt-${safe}.pids`;
+    return { posix: `$HOME/.apra-fleet/${name}`, powershell: `$env:USERPROFILE\\.apra-fleet\\${name}`, name };
+}
+
+/** POSIX fragment: for each recorded "<pid> <port>", kill the pid ONLY if its
+ *  live command line is still a dolt sql-server on that port (pid-reuse
+ *  guard), printing KILLED:<pid>. Never matches by binary path alone. The
+ *  port is anchored (followed by a space or the end), so 3307 never matches
+ *  a server on 33070. */
+function posixKillRecordedScript(member) {
+    const f = settlePidfile(member).posix;
+    return `F="${f}"; if [ -f "$F" ]; then while read -r P Q; do if [ -n "$P" ]; then C=$(ps -p "$P" -o args= 2>/dev/null); case "$C" in *dolt*sql-server*"--port $Q "*|*dolt*sql-server*"--port $Q") kill "$P" 2>/dev/null && echo "KILLED:$P";; esac; fi; done < "$F"; rm -f "$F"; fi; true`;
+}
+
+/** PowerShell equivalent (pid + process name + port verified; no Path filter). */
+function powershellKillRecordedScript(member) {
+    const f = settlePidfile(member).powershell;
+    return `$f = "${f}"; if (Test-Path $f) { Get-Content $f | ForEach-Object { $p = "$_".Trim() -split '\\s+'; if ($p.Count -ge 2) { $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$($p[0])" -ErrorAction SilentlyContinue; if ($proc -and $proc.Name -eq 'dolt.exe' -and $proc.CommandLine -match ('sql-server.*--port ' + $p[1] + '(\\s|$)')) { Stop-Process -Id ([int]$p[0]) -Force -ErrorAction SilentlyContinue; Write-Output "KILLED:$($p[0])" } } }; Remove-Item $f -Force -ErrorAction SilentlyContinue }`;
+}
+
+/** Stop ONLY the ephemeral dolt sql-servers this member itself recorded
+ *  (pidfile + live command-line verification). A lock held by anyone else --
+ *  typically another member on the same OS user, since the binary path is
+ *  per user -- is never touched. Resolves to the list of killed pids. */
 async function killProcessAtPath({ command, member, platform, doltPath, shell = '', log }) {
-    log(`[Dolt Settle] attempting to kill any process locking '${doltPath}' on member '${member}' before retrying the pinned install.`);
+    log(`[Dolt Settle] attempting to free '${doltPath}' on member '${member}' by stopping only the dolt sql-server(s) this member started, before retrying the pinned install.`);
+    const label = `settle: stop this member's own dolt sql-server on '${member}'`;
+    let res;
     if (platform === 'win32') {
-        const script = `Get-Process | Where-Object { $_.Path -eq ${doltPath} } | Stop-Process -Force -ErrorAction SilentlyContinue`;
-        const wrapped = getSeCommands({ os: platform, shell }).wrapPowerShellScript(script, 'dolt-settle killProcessAtPath');
-        return command(wrapped, { member_name: member, silent: true, failSoft: true, label: `settle: kill locking dolt process on '${member}'` });
+        const wrapped = getSeCommands({ os: platform, shell }).wrapPowerShellScript(powershellKillRecordedScript(member), 'dolt-settle killProcessAtPath');
+        res = await command(wrapped, { member_name: member, silent: true, failSoft: true, label });
+    } else {
+        res = await command(posixKillRecordedScript(member), { member_name: member, silent: true, failSoft: true, label });
     }
-    return command('pkill -f "\\.apra-fleet/bin/dolt" || true', { member_name: member, silent: true, failSoft: true, label: `settle: kill locking dolt process on '${member}'` });
+    return [...String((res && res.output) || '').matchAll(/KILLED:(\d+)/g)].map((m) => Number(m[1]));
 }
 
 /**
@@ -342,16 +371,24 @@ export async function ensurePinnedDolt({ command, member, platform, arch = 'x64'
 
     if (installFailed && isBinaryLockedError(installOutput)) {
         // Kill-first, then retry once (Part 5.6 step 2).
-        await killProcessAtPath({ command, member, platform, doltPath: psDoltPath, shell, log });
-        const retry = await installPinnedDolt({ command, member, platform, arch, doltPath: psDoltPath, shell, log });
-        if (!(retry && retry.ok === false)) {
-            const reprobed = await probeDoltVersion({ command, member, doltPath, platform, shell });
-            if (reprobed.ok) return { doltPath, psDoltPath, version: reprobed.version, pinned: true, warnings };
+        const killed = await killProcessAtPath({ command, member, platform, doltPath: psDoltPath, shell, log });
+        if (killed.length === 0) {
+            // Locked by something this member did not start (the binary path is
+            // per OS user, so most likely another member's dolt). Never kill
+            // it; a retry could not succeed either.
+            log(`[Dolt Settle] '${doltPath}' on member '${member}' is locked by a process this member did not start (likely another member sharing this OS user); not killing it -- falling back to the present dolt.`);
+        } else {
+            log(`[Dolt Settle] stopped this member's own dolt sql-server pid(s) ${killed.join(', ')} on '${member}'; retrying the pinned install.`);
+            const retry = await installPinnedDolt({ command, member, platform, arch, doltPath: psDoltPath, shell, log });
+            if (!(retry && retry.ok === false)) {
+                const reprobed = await probeDoltVersion({ command, member, doltPath, platform, shell });
+                if (reprobed.ok) return { doltPath, psDoltPath, version: reprobed.version, pinned: true, warnings };
+            }
         }
         // Still blocked after kill+retry -- warn and fall back (Part 5.6 step 3).
         const fallback = await probeDoltVersion({ command, member, doltPath, platform, shell });
         if (fallback.ok) {
-            const warn = `[Dolt Settle] pin not enforced on '${member}': could not replace ${doltPath} (locked even after kill+retry); proceeding with dolt ${fallback.version} as a functionally-probed fallback. Landmines unverified on this version -- see docs/dolt-sync-redesign.md Part 5.6.`;
+            const warn = `[Dolt Settle] pin not enforced on '${member}': could not replace ${doltPath} (locked, and not replaceable after stopping only this member's own dolt); proceeding with dolt ${fallback.version} as a functionally-probed fallback. Landmines unverified on this version -- see docs/dolt-sync-redesign.md Part 5.6.`;
             log(warn);
             warnings.push(warn);
             return { doltPath, psDoltPath, version: fallback.version, pinned: false, warnings };
@@ -401,6 +438,7 @@ export async function spawnEphemeralServer({ command, member, platform, doltPath
             `$cl = '"' + $exe + '" sql-server --host ${host} --port ${port} --data-dir ' + '"${dataDir}"'`,
             '$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $cl }',
             'if ($r.ReturnValue -ne 0) { throw "Win32_Process.Create failed with ReturnValue $($r.ReturnValue) for command line: $cl" }',
+            `if ($r.ProcessId) { Add-Content -Path "${settlePidfile(member).powershell}" -Value "$($r.ProcessId) ${port}" -ErrorAction SilentlyContinue }`,
             'Write-Output "PID:$($r.ProcessId)"',
         ].join('; ');
         const wrapped = getSeCommands({ os: platform, shell }).wrapPowerShellScript(script, 'dolt-settle spawnEphemeralServer');
@@ -434,7 +472,7 @@ export async function spawnEphemeralServer({ command, member, platform, doltPath
     // silently produced no pid), so it is resolved at runtime and simply
     // omitted where absent -- `nohup` inside the detached subshell is what
     // actually keeps the server alive there.
-    const script = `SETSID=$(command -v setsid || true); ( $SETSID nohup ${doltPath} sql-server --host ${host} --port ${port} --data-dir ${dataDir} > ${logPath} 2>&1 < /dev/null & ) ; sleep 1; echo "PID:$(pgrep -f '${matcher}' | head -1)"`;
+    const script = `SETSID=$(command -v setsid || true); ( $SETSID nohup ${doltPath} sql-server --host ${host} --port ${port} --data-dir ${dataDir} > ${logPath} 2>&1 < /dev/null & ) ; sleep 1; P=$(pgrep -f '${matcher}( |$)' | head -1); if [ -n "$P" ]; then mkdir -p "$HOME/.apra-fleet" && echo "$P ${port}" >> "${settlePidfile(member).posix}"; fi; echo "PID:$P"`;
     const res = await command(script, { member_name: member, silent: true, failSoft: true, label: `settle: spawn ephemeral sql-server on '${member}'` });
     if (res && res.ok === false) {
         throw new DoltSyncError(`[Dolt Settle] failed to spawn ephemeral sql-server for member '${member}': ${res.error}`, { member, doltOutput: res.error });
@@ -514,14 +552,15 @@ async function killServerAndVerify({ command, member, platform, shell = '', pid,
     // Both forms are scoped to settle's own port, never to dolt at large.
     const matcher = `sql-server --host ${host} --port ${port}`;
     if (platform === 'win32') {
-        const script = `Stop-Process -Id ${pid} -Force -ErrorAction SilentlyContinue; Get-CimInstance Win32_Process -Filter "Name='dolt.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -match '--port ${port}' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`;
+        const script = `Stop-Process -Id ${pid} -Force -ErrorAction SilentlyContinue; Get-CimInstance Win32_Process -Filter "Name='dolt.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -match '--port ${port}(\\s|$)' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }; $pf = "${settlePidfile(member).powershell}"; if (Test-Path $pf) { $keep = @(Get-Content $pf | Where-Object { $_ -notmatch '^${pid} ' }); if ($keep.Count -gt 0) { Set-Content -Path $pf -Value $keep } else { Remove-Item $pf -Force -ErrorAction SilentlyContinue } }`;
         const wrapped = getSeCommands({ os: platform, shell }).wrapPowerShellScript(script, 'dolt-settle killServerAndVerify');
         await command(
             wrapped,
             { member_name: member, silent: true, failSoft: true, label: `settle: kill ephemeral sql-server pid ${pid} on '${member}'` },
         );
     } else {
-        await command(`kill ${pid} 2>/dev/null; pkill -f '${matcher}' 2>/dev/null; true`, { member_name: member, silent: true, failSoft: true, label: `settle: kill ephemeral sql-server pid ${pid} on '${member}'` });
+        const pf = settlePidfile(member).posix;
+        await command(`kill ${pid} 2>/dev/null; pkill -f '${matcher}( |$)' 2>/dev/null; if [ -f "${pf}" ]; then grep -v "^${pid} " "${pf}" > "${pf}.tmp" 2>/dev/null; mv -f "${pf}.tmp" "${pf}" 2>/dev/null; fi; true`, { member_name: member, silent: true, failSoft: true, label: `settle: kill ephemeral sql-server pid ${pid} on '${member}'` });
     }
     for (let i = 0; i < 6; i += 1) {
         // eslint-disable-next-line no-await-in-loop -- bounded teardown-verify poll

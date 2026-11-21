@@ -1,3 +1,4 @@
+import { listVcsCredentials } from '../services/vcs-credential-record.js';
 import { z } from 'zod';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
@@ -60,6 +61,13 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
     // knowledge collapses into the shared 'default' KB.
     repo_remote_url: knownRepoRemoteUrl(agent),
     vcsProvider: agent.vcsProvider ?? undefined,
+    // Every VCS credential label the member holds (never the token): label,
+    // provider, scope URL, expiry and memberScoped -- true when the helper is
+    // the member's own per-member file, which the fleet-sprint engine needs to
+    // build the member-side helper path (its readers have no registry).
+    vcsCredentials: listVcsCredentials(agent)
+      .filter(e => e.label !== undefined)
+      .map(e => ({ label: e.label!, provider: e.provider, scopeUrl: e.scopeUrl ?? null, expiresAt: e.expiresAt ?? null, memberScoped: e.memberScoped === true })),
     // The git access level this member's VCS credentials are minted at
     // (register_member/update_member's git_access, stored as Agent.gitAccess).
     // Surfaced for the same reason as repo_remote_url above: the fleet-sprint
