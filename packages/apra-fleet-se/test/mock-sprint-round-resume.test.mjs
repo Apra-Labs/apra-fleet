@@ -240,13 +240,14 @@ test('mock sprint: round-resume -- on session_not_found the engine never re-send
         });
 
         check(!sc.error, `session_not_found scenario should not error: ${sc.error ? sc.error.constructor.name + ': ' + sc.error.message : ''}`);
+        // Round 1 reopened a bead that ends cycle 2 verify-routed but never
+        // closed (no Integration Test runs in this scenario). Final Review's
+        // open-work gate therefore records FAIL naming it instead of letting a
+        // PASS through; the resume assertions below are what this test is about.
         check(
-            sc.result && sc.result.status === 'success',
-            `Expected the sprint to still complete successfully after a session_not_found round degrades to CHANGES_NEEDED, got: ${JSON.stringify(sc.result)}`
+            sc.result && sc.result.verdict === 'FAIL' && /Verify-routed and not closed at Final Review: /.test(String(sc.result.notes)),
+            `Expected the open-work gate to record FAIL naming the unclosed verify-routed bead, got: ${JSON.stringify(sc.result)}`
         );
-
-        const taskX = sc.tasks.find((t) => t.title.startsWith('Task: RR-SNF target X'));
-        check(sc.finalBeadsById.get(taskX.id)?.status === 'closed', `Expected X closed, got: ${JSON.stringify(sc.finalBeadsById.get(taskX.id))}`);
 
         const reviewerDispatches = sc.dispatched.filter((d) => d.agent === 'reviewer' && d.label !== 'Final Review');
         check(

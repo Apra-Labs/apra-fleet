@@ -93,7 +93,7 @@ import { buildSettleCallback } from '../dolt-settle.mjs';
 import { partitionDeferredBeads } from '../beads-scope.mjs';
 import { applyDeployFailureVerdictGate, formatDeployFailureReason } from './deploy.mjs';
 import { applyVerifyBlockVerdictGate } from '../verify-block.mjs';
-import { applyCarryOverVerdictGate } from '../set-aside.mjs';
+import { applyCarryOverVerdictGate, applyOpenWorkVerdictGate } from '../set-aside.mjs';
 import { buildVerifyCarryOver, applyVerifyCarryOverVerdictGate } from '../verify-carry-over.mjs';
 import { applyRedBuildIntegSkipVerdictGate, formatRedBuildIntegSkipVerdictReason } from '../red-build-integ-gate.mjs';
 
@@ -403,6 +403,27 @@ export async function runFinalReviewPhase({
         const llmVerdict = finalVerdictResult && finalVerdictResult.verdict;
         finalVerdictResult = applyRedBuildIntegSkipVerdictGate(finalVerdictResult, redBuildIntegSkip);
         log(`Final Review: sprint verdict forced to FAIL (Final Review returned ${llmVerdict ?? '(none)'}) -- ${formatRedBuildIntegSkipVerdictReason(redBuildIntegSkip)}`);
+    }
+    // A sprint cannot PASS while at/above-goal work is still open or a
+    // verify-routed bead is unclosed, whatever the reviewer concluded. Ids a
+    // sibling gate above already forced and named are not listed twice.
+    // Unclosed verify-routed beads count only when at/above the goal priority
+    // and not deferred (the at-goal read above names exactly those), matching
+    // how the verify carry-over gate judges them.
+    const blockingVerifyIds = (() => {
+        const atGoal = new Set(finalOpenAtGoalRaw.map((b) => b.id));
+        const deferred = new Set(finalDeferredAtGoalIds);
+        return finalUnclosedVerifyIds.filter((id) => atGoal.has(id) && !deferred.has(id));
+    })();
+    if (finalOpenAtGoal.length > 0 || blockingVerifyIds.length > 0) {
+        const llmVerdict = finalVerdictResult && finalVerdictResult.verdict;
+        const alreadyNamedIds = [
+            ...(carryOverExit ? carryOverExit.atGoalIds : []),
+            ...(verifyCarryOver ? [...verifyCarryOver.needsEvidenceIds, ...(verifyCarryOver.bounceCapIds || [])] : []),
+        ];
+        const openAtGoalIds = finalOpenAtGoal.map((b) => b.id);
+        finalVerdictResult = applyOpenWorkVerdictGate(finalVerdictResult, { openAtGoalIds, unclosedVerifyIds: blockingVerifyIds, alreadyNamedIds });
+        log(`Final Review: sprint verdict forced to FAIL (Final Review returned ${llmVerdict ?? '(none)'}) -- open at/above goal: ${openAtGoalIds.join(', ') || '(none)'}; unclosed verify-routed: ${blockingVerifyIds.join(', ') || '(none)'}`);
     }
     if (finalVerdictResult && belowGoalCarryOverIds && belowGoalCarryOverIds.size > 0) {
         const belowGoalNote = `Carried over (below goal ${validated.goal}, not reopened): a reviewer CHANGES_NEEDED named only these below-goal bead(s), all skipped by the goal-scope guard, so the sprint did not wait on them: ${[...belowGoalCarryOverIds].sort().join(', ')}.`;
