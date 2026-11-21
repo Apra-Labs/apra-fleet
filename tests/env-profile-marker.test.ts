@@ -19,6 +19,13 @@ const windows = getOsCommands('windows');
 const bashProbe = findRealBash();
 const BASH: string | null = bashProbe.path ?? null;
 if (!BASH) console.warn(`env-profile-marker: bash execution tests skipped -- ${bashProbe.reason}`);
+// Each builder targets its member's sed dialect: the linux/gitbash builders
+// emit GNU `sed -i`, the macos builder BSD `sed -i ''`. Execute each only on a
+// host whose sed matches (macOS runner = BSD, Linux/Git Bash = GNU).
+const DARWIN = process.platform === 'darwin';
+const RUN_GNU = !!BASH && !DARWIN;
+const RUN_BSD = !!BASH && DARWIN;
+const MAC_PROFILES = ['.bashrc', '.zshrc', '.zshenv', '.profile'];
 
 /** Run one command in bash with HOME/USERPROFILE pointed at `home`. */
 function runInHome(home: string, cmd: string): void {
@@ -67,7 +74,7 @@ describe('unsetEnv default removes only marked lines', () => {
   });
 
   for (const [label, cmds] of [['linux', linux], ['windows-gitbash', gitbash]] as const) {
-    it.skipIf(!BASH)(`${label}: running the generated commands keeps the hand-written export`, () => {
+    it.skipIf(!RUN_GNU)(`${label}: running the generated commands keeps the hand-written export`, () => {
       const home = tempHome();
       for (const f of ['.bashrc', '.profile']) {
         fs.writeFileSync(path.join(home, f), `# owner\n${unmarked}\n${marked}\nexport KEEP=1\n`);
@@ -79,7 +86,7 @@ describe('unsetEnv default removes only marked lines', () => {
     });
   }
 
-  it.skipIf(!BASH)('linux: { all: true } removes marked and unmarked lines', () => {
+  it.skipIf(!RUN_GNU)('linux: { all: true } removes marked and unmarked lines', () => {
     const home = tempHome();
     fs.writeFileSync(path.join(home, '.bashrc'), `${unmarked}\n${marked}\nexport KEEP=1\n`);
     for (const cmd of linux.unsetEnv('MY_VAR', { all: true })) runInHome(home, cmd);
@@ -105,7 +112,7 @@ describe('unsetEnv default removes only marked lines', () => {
     }
   });
 
-  it.skipIf(!BASH)('linux: persistEnvFromFile leaves exactly one marked line (replaces a hand-written one)', () => {
+  it.skipIf(!RUN_GNU)('linux: persistEnvFromFile leaves exactly one marked line (replaces a hand-written one)', () => {
     const home = tempHome();
     fs.writeFileSync(path.join(home, '.bashrc'), `${unmarked}\n${marked}\nexport KEEP=1\n`);
     const staged = path.join(home, 'staged').split(path.sep).join('/');
@@ -116,7 +123,7 @@ describe('unsetEnv default removes only marked lines', () => {
     expect(fs.existsSync(staged)).toBe(false);
   });
 
-  it.skipIf(!BASH)('linux: persistEnvFromFile with a missing staged file strips nothing', () => {
+  it.skipIf(!RUN_GNU)('linux: persistEnvFromFile with a missing staged file strips nothing', () => {
     const home = tempHome();
     fs.writeFileSync(path.join(home, '.bashrc'), `${marked}\n`);
     runInHome(home, linux.persistEnvFromFile('MY_VAR', path.join(home, 'absent').split(path.sep).join('/')));
@@ -127,5 +134,37 @@ describe('unsetEnv default removes only marked lines', () => {
     for (const cmds of [linux, gitbash]) {
       expect(cmds.unsetEnv('MY_VAR')[0]).toBe(`sed -i '${unsetEnvSedExpr('MY_VAR')}' ~/.bashrc 2>/dev/null || true`);
     }
+  });
+
+  // The macos builder executed for real against BSD sed (macOS runner only).
+  it.skipIf(!RUN_BSD)('macos: running the generated commands keeps the hand-written export on all four profiles', () => {
+    const home = tempHome();
+    for (const f of MAC_PROFILES) {
+      fs.writeFileSync(path.join(home, f), `# owner\n${unmarked}\n${marked}\nexport KEEP=1\n`);
+    }
+    for (const cmd of macos.unsetEnv('MY_VAR')) runInHome(home, cmd);
+    for (const f of MAC_PROFILES) {
+      expect(fs.readFileSync(path.join(home, f), 'utf-8'), f).toBe(`# owner\n${unmarked}\nexport KEEP=1\n`);
+    }
+  });
+
+  it.skipIf(!RUN_BSD)('macos: { all: true } removes marked and unmarked lines on all four profiles', () => {
+    const home = tempHome();
+    for (const f of MAC_PROFILES) fs.writeFileSync(path.join(home, f), `${unmarked}\n${marked}\nexport KEEP=1\n`);
+    for (const cmd of macos.unsetEnv('MY_VAR', { all: true })) runInHome(home, cmd);
+    for (const f of MAC_PROFILES) expect(fs.readFileSync(path.join(home, f), 'utf-8'), f).toBe('export KEEP=1\n');
+  });
+
+  it.skipIf(!RUN_BSD)('macos: persistEnvFromFile leaves exactly one marked line on all four profiles', () => {
+    const home = tempHome();
+    for (const f of MAC_PROFILES) fs.writeFileSync(path.join(home, f), `${unmarked}\n${marked}\nexport KEEP=1\n`);
+    const staged = path.join(home, 'staged');
+    fs.writeFileSync(staged, macos.persistEnvFileContent('MY_VAR', 'new'));
+    runInHome(home, macos.persistEnvFromFile('MY_VAR', staged));
+    for (const f of MAC_PROFILES) {
+      expect(fs.readFileSync(path.join(home, f), 'utf-8'), f)
+        .toBe(`export KEEP=1\nexport MY_VAR="new" # ${FLEET_ENV_MARKER}\n`);
+    }
+    expect(fs.existsSync(staged)).toBe(false);
   });
 });

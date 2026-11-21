@@ -321,14 +321,18 @@ describe('removeMember - POSIX profile round trip in a sandboxed HOME', () => {
   });
   afterEach(() => restoreRegistry());
 
-  it.skipIf(!bash.path)('only the hand-written export survives', async () => {
+  // The member OS follows the host's sed dialect: a macOS runner (BSD sed)
+  // runs the macos builder's commands, other hosts (GNU sed) the linux one's.
+  const rtOs = process.platform === 'darwin' ? 'macos' : 'linux';
+  const rtFiles = rtOs === 'macos' ? ['.bashrc', '.zshrc', '.zshenv', '.profile'] : ['.bashrc', '.profile'];
+  it.skipIf(!bash.path)(`only the hand-written export survives (${rtOs} member)`, async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-rm-roundtrip-'));
     try {
-      const linux = getOsCommands('linux');
-      const fleetLine = linux.persistEnvFileContent('CLAUDE_CODE_OAUTH_TOKEN', 'sk-ant-oat01-FLEETFAKE');
+      const cmds = getOsCommands(rtOs);
+      const fleetLine = cmds.persistEnvFileContent('CLAUDE_CODE_OAUTH_TOKEN', 'sk-ant-oat01-FLEETFAKE');
       const handLine = 'export CLAUDE_CODE_OAUTH_TOKEN="sk-ant-oat01-OWNERFAKE"\n';
-      for (const f of ['.bashrc', '.profile']) fs.writeFileSync(path.join(home, f), `# owner\n${handLine}${fleetLine}`);
-      const member = makeTestAgent({ friendlyName: 'roundtrip', os: 'linux', llmAuthDelivered: { files: [], envVars: ['CLAUDE_CODE_OAUTH_TOKEN'] } });
+      for (const f of rtFiles) fs.writeFileSync(path.join(home, f), `# owner\n${handLine}${fleetLine}`);
+      const member = makeTestAgent({ friendlyName: 'roundtrip', os: rtOs, llmAuthDelivered: { files: [], envVars: ['CLAUDE_CODE_OAUTH_TOKEN'] } });
       addAgent(member);
 
       await removeMember({ member_id: member.id });
@@ -340,7 +344,7 @@ describe('removeMember - POSIX profile round trip in a sandboxed HOME', () => {
         const r = spawnSync(bash.path!, ['--noprofile', '--norc', '-c', cmd], { env: { ...process.env, HOME: h, USERPROFILE: home } });
         expect(r.error).toBeUndefined();
       }
-      for (const f of ['.bashrc', '.profile']) {
+      for (const f of rtFiles) {
         expect(fs.readFileSync(path.join(home, f), 'utf-8'), f).toBe(`# owner\n${handLine}`);
       }
     } finally {

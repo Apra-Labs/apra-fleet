@@ -428,13 +428,17 @@ describe('provisionAuth profile cleanup removes every export line for the name',
   // Rotation: a legacy unmarked export of the delivered name must not survive
   // next to the new marked line. Runs the exact command sequence provisionAuth
   // sent, in bash, against profiles in a temp HOME.
+  // The member OS follows the host's sed dialect: a macOS runner (BSD sed)
+  // runs the macos builder's commands, other hosts (GNU sed) the linux one's.
   const bash = findRealBash();
-  it.skipIf(!bash.path)('rotation over a legacy unmarked export leaves exactly one marked line', async () => {
+  const rotOs = process.platform === 'darwin' ? 'macos' : 'linux';
+  const rotFiles = rotOs === 'macos' ? ['.bashrc', '.zshrc', '.zshenv', '.profile'] : ['.bashrc', '.profile'];
+  it.skipIf(!bash.path)(`rotation over a legacy unmarked export leaves exactly one marked line (${rotOs} member)`, async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-rotation-'));
     try {
       const legacy = 'export CLAUDE_CODE_OAUTH_TOKEN="sk-ant-oat01-OLDFAKE"';
-      for (const f of ['.bashrc', '.profile']) fs.writeFileSync(path.join(home, f), `# owner\n${legacy}\nexport KEEP=1\n`);
-      const member = makeTestAgent({ friendlyName: 'rotate', os: 'linux' });
+      for (const f of rotFiles) fs.writeFileSync(path.join(home, f), `# owner\n${legacy}\nexport KEEP=1\n`);
+      const member = makeTestAgent({ friendlyName: 'rotate', os: rotOs });
       addAgent(member);
 
       await provisionAuth({ member_id: member.id, api_key: FAKE_OAUTH });
@@ -451,7 +455,7 @@ describe('provisionAuth profile cleanup removes every export line for the name',
         spawnSync(bash.path!, ['--noprofile', '--norc', '-c', cmd], { env: { ...process.env, HOME: h, USERPROFILE: home } });
       }
 
-      for (const f of ['.bashrc', '.profile']) {
+      for (const f of rotFiles) {
         const lines = fs.readFileSync(path.join(home, f), 'utf-8').split('\n').filter(l => l.includes('export CLAUDE_CODE_OAUTH_TOKEN='));
         expect(lines, f).toEqual([`export CLAUDE_CODE_OAUTH_TOKEN="${FAKE_OAUTH}" # ${FLEET_ENV_MARKER}`]);
         expect(fs.readFileSync(path.join(home, f), 'utf-8')).toContain('export KEEP=1');
