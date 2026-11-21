@@ -1,9 +1,9 @@
 {
   "version": 3,
   "provenance": {
-    "commit": "5a171212f2e1eee116e7f58e2ea29648ffb8ff1f",
+    "commit": "0b13b1ccc8993e056c90ef347492ea9208ebabe2",
     "branch": "main",
-    "entry_count": 168
+    "entry_count": 169
   },
   "entries": [
     {
@@ -1962,6 +1962,32 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-30T23:07:12.100Z"
+    },
+    {
+      "id": "90451c2d-0461-484c-90f5-89844873dd92",
+      "type": "knowledge",
+      "title": "Live-evidence leaf routing uses a label marker and verifyEverIds-gated exit filtering",
+      "summary": "A childless bead labelled needs-live-evidence is a verify target. readyLeafBeads excludes it, and Cycle Evaluation and Final Review drop it from open-at-goal only once it is in verifyEverIds.",
+      "symbols": [
+        "classifyVerifySet",
+        "readyLeafBeads",
+        "applyLiveEvidenceMarker",
+        "buildIntegVerifyClause"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/beads-scope.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/develop.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/fleet-sprint/phases/final-review.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-21T10:04:04.529Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/beads-scope.mjs": "a219e13c841b1f9c45a111687cb1484ddc086923",
+        "packages/apra-fleet-se/fleet-sprint/phases/develop.mjs": "e5edd33422f2e78aea2c502ca12c705be5587c18",
+        "packages/apra-fleet-se/fleet-sprint/phases/final-review.mjs": "a01b0f62989bdf097a758b2c307178983b7902c2",
+        "packages/apra-fleet-se/fleet-sprint/runner.js": "8f006a00b167c90dc5610845023295eaf3ec940c"
+      }
     },
     {
       "id": "919a3f50-dcb3-4ee9-91d1-767fd503a3b8",
