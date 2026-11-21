@@ -228,10 +228,11 @@ export function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requireme
  *   priorRoundVerdicts?: Array<{ round: number, verdict: string, notes: string|null }>,
  *   replanScope?: string[]|null,
  *   stalenessNotes?: string[],
+ *   decisionSetAside?: Array<{ id: string, decisionBeadId?: string|null, kind?: string }>,
  * }} opts
  * @returns {string}
  */
-export function buildPlanReviewerPrompt({ targetIssues, goal, priorRoundVerdicts = [], replanScope = null, verifyExcluded = [], stalenessNotes = [] }) {
+export function buildPlanReviewerPrompt({ targetIssues, goal, priorRoundVerdicts = [], replanScope = null, verifyExcluded = [], stalenessNotes = [], decisionSetAside = [] }) {
     const hasReplanScope = Array.isArray(replanScope) && replanScope.length > 0;
     const lines = [
         'Review the beads DAG created by the planner for this sprint, per your agent contract.',
@@ -259,6 +260,22 @@ export function buildPlanReviewerPrompt({ targetIssues, goal, priorRoundVerdicts
             `closed) and routed to integration-test verification this cycle: ${verifyExcluded.join(', ')}. ` +
             `Do not withhold approval on the grounds that they are undecomposed, uncovered, or ` +
             `missing model metadata -- they are out of scope for this plan review entirely.`
+        );
+    }
+
+    // Beads this run holds aside for a pending operator decision (a doer,
+    // reviewer or planner NEEDS-DECISION, ./decisions.mjs). Absent when none is
+    // pending, so an ordinary plan-review prompt is unchanged. The engine also
+    // treats a CHANGES_NEEDED whose findings name only these beads as
+    // non-blocking (phases/plan.mjs), so this clause and the gate agree.
+    if (Array.isArray(decisionSetAside) && decisionSetAside.length > 0) {
+        const held = decisionSetAside.map((d) => (d.decisionBeadId ? `${d.id} (decision bead ${d.decisionBeadId})` : d.id));
+        lines.push(
+            `SET ASIDE FOR AN OPERATOR DECISION -- these bead(s) are held aside for the rest of this ` +
+            `run until an operator answers a pending decision: ${held.join(', ')}. They are ` +
+            `NON-BLOCKING: do not withhold approval over them and do not reject the plan for the ` +
+            `finding that raised the decision again -- the operator's answer, not another plan ` +
+            `round, settles it. Mention them as non-blocking notes only.`
         );
     }
 

@@ -54,6 +54,7 @@ holds the target (`connected`) and can receive channel messages
 **Knowledge bank:** `kb_capture`, `kb_query`, `kb_list`, `kb_context`,
 `kb_session_prime`, `kb_invalidate`, `kb_harvest`, `kb_promote`, `kb_feedback`,
 `kb_freshness_sweep`, `kb_import`, `kb_export`, `kb_setup`, `kb_stats`,
+`kb_capabilities`,
 `kb_reconcile_prefilter`, `kb_resolve_contradiction`.
 
 The knowledge-bank family is described in

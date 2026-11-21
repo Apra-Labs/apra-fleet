@@ -85,7 +85,7 @@ method in this surface is classified `consent-gated` on its own (the
 consent-gated CLI-only surface -- `approveDirective`, `rejectDirective`,
 `addDirective` -- is not tool-reachable; see `methods.json`'s `not_in_scope`).
 
-### 2.2 Undeclared members reached by tools but absent from `MemoryProvider` (`methods.json` ids X-1..X-6 and X-8, plus the X-7 property)
+### 2.2 Undeclared members reached by tools but absent from `MemoryProvider` (`methods.json` ids X-1..X-6, X-8, X-9 and X-12, plus the X-7 property)
 
 `list`, `feedback`, `freshnessSweep`, `resolveContradiction`,
 `reconcilePrefilter`, `hasEntry` (methods), and `repoPath` (property, not a
@@ -102,6 +102,39 @@ is not reached through `requireSqliteProject`. Over a remote KB,
 server's response as is; while the server is unreachable the tool fails with
 `E-KB-HTTP-UNREACHABLE` and nothing is queued. Either way the client never writes or invents `confidence`
 (`methods.json` X-2 `providers_note`).
+
+`capabilitiesBody` (X-12) backs the read-only `kb_capabilities` tool: what the
+calling session's project KB serves, in the shape of the
+`GET /api/kb/capabilities` body `{contract, routes, branch_aware,
+query_filters?}` (section 2.9.1). It takes no argument besides the removed
+scope keys (refused with `E-SCOPE-KEY-REMOVED` like every `kb_*` tool), never
+mutates anything and never bumps `use_count`.
+
+- Under an http KB provider it sends `GET /api/kb/capabilities` (same auth,
+  `X-KB-Project` and `X-Repository*` headers as every route, on every call)
+  and returns the server's body UNCHANGED: route names fleet does not call
+  and extra fields are kept, unlike the normalized view fleet keeps for route
+  gating. The one exception: a `query_filters` that is not an array of
+  strings is dropped (the server honours no filter, section 2.9.1), so the
+  answer never claims a filter the server did not validly list. A server without the route (404 or 501, or a body with none of
+  `contract`/`routes`/`branch_aware`) yields the default set of section 2.9.1
+  (every route except `demote` and `withdraw`, `branch_aware` false, no
+  `query_filters`). Errors map exactly as the capabilities read does: a body
+  carrying some but not all of the fields, well typed, is
+  `E-KB-HTTP-UNSUPPORTED`; a 5xx or 429 is `E-KB-HTTP-UNREACHABLE`; a 401
+  (`E-KB-HTTP-AUTH`) and a 409 `PROJECT_MISMATCH`
+  (`E-KB-HTTP-PROJECT-MISMATCH`) pass through as on any route.
+- Under a SQLite KB it answers from the local implementation:
+  `contract` `"v1"`, every route (`demote` and `withdraw` included),
+  `branch_aware` false, `query_filters` `["files", "symbols"]` -- the same
+  value fleet's `kb-server` answers on `GET /api/kb/capabilities`.
+- It is served to every member session (the base member allowlist, no
+  kb_maintainer grant needed, section 2.5a) and to FULL sessions subject to
+  the install-wide KB tool profile (`full` and a `custom` list naming it serve
+  it; `developer` does not).
+- The tool's presence is itself a feature signal: a caller that finds
+  `kb_capabilities` in the tool list talks to a fleet server new enough to
+  report what its KB serves, without probing individual routes.
 
 ### 2.3 `CodeIntelligenceProvider` interface methods (`methods.json` ids C-1..C-9)
 
@@ -305,8 +338,9 @@ A MEMBER session is served an explicit tool list
   same terms as `kb_promote`: only to a member session carrying the
   kb_maintainer grant. The engine applies every reviewer demotion through that
   session; no other member session needs it.
-- Every other `kb_*` tool (including `kb_bible_commit` and `kb_import`) and
-  every `code_*` tool is served to every member session.
+- Every other `kb_*` tool (including `kb_bible_commit`, `kb_import` and the
+  read-only `kb_capabilities`) and every `code_*` tool is served to every
+  member session.
 - `kb_import` with an explicit `path` keeps the named bible's confidence (and a
   v3 bible's carried hashes), which is equivalent in power to `kb_promote`. In
   a member session WITHOUT the grant an explicit path is refused with
@@ -796,7 +830,8 @@ entries per branch (section 2.9.2). It may also carry the optional
 `query_filters`, an array naming the optional `kb_query` request filters
 `GET /api/kb/query` honours: `files` and `symbols` (the cited filter,
 section 4.6), sent as JSON-array query parameters. The field is additive: a
-server without it, or not listing a filter, honours none (unknown names are
+server without it, with it not an array of strings (fleet then treats the
+field as absent), or not listing a filter, honours none (unknown names are
 ignored), and fleet never sends it a filter it does not list -- such a
 `kb_query` fails with `E-KB-HTTP-UNSUPPORTED` naming the filter, because a
 server that ignored an unknown parameter would answer unfiltered. Fleet's
@@ -858,6 +893,12 @@ reports `branch_aware: false`, and it lists `query_filters: ["files", "symbols"]
 It is the reference implementation of these routes; the http fixtures under
 `fixtures/` and the route fixtures under `route-fixtures/` are recorded against
 it.
+
+The `kb_capabilities` tool (section 2.2, `methods.json` X-12) returns this
+answer to an MCP caller: under an http KB provider the server's body
+unchanged (the default set above for a server without the route, with the
+same error mapping as the capabilities read), and under a SQLite KB the same
+value `kb-server` answers.
 
 `demote` is `POST /api/kb/demote` `{id, reason, evidence_files}`, answered
 `{id, previous_confidence, new_confidence}`; like `promote` it is sent by id

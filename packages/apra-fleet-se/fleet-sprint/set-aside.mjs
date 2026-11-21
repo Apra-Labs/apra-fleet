@@ -10,6 +10,8 @@
 //     'blocks' dependents: the same Map, kind 'needs-decision' (the dependents
 //     kind 'dependent'), with the decision's ids and the FULL question as the
 //     reason (written by decisions.mjs recordPendingDecision);
+//   - a bead whose doer streak returned VERIFY but closed none of its beads:
+//     the same Map, kind VERIFY_NO_CHANGE_KIND (written by phases/develop.mjs);
 //   - the deploy itself, when it failed at the deploy.md Permissions pre-step:
 //     `sprintState.deploySetAside` = { reason, notes, cycle } (written by
 //     phases/deploy.mjs).
@@ -41,6 +43,15 @@
 // reported on their own line ("Waited this run"), never as set-asides.
 
 import { unmetPrerequisites } from './beads-scope.mjs';
+
+/**
+ * The set-aside kind for a bead whose doer streak returned VERIFY but closed
+ * none of its beads (phases/develop.mjs): re-dispatching it would only repeat
+ * the same answer, so it is set aside after one round and carried over.
+ */
+export const VERIFY_NO_CHANGE_KIND = 'verify-no-change';
+/** The streak outcome failureReason recorded for such a streak. */
+export const VERIFY_NO_CHANGE_REASON = 'verify-no-change';
 
 /** The pseudo-id naming the set-aside deploy in blockerIds/blockerReasons. */
 export const DEPLOY_SET_ASIDE_ID = 'deploy';
@@ -335,7 +346,8 @@ export function cannotCloseThisRun({ scopeBeads = [], doctorBlockedIds = new Map
         const kind = e && e.kind;
         out.set(String(id), kind === 'needs-decision' ? 'set aside, awaiting an operator decision'
             : kind === 'dependent' ? `set aside, a dependent of ${(e && e.blockedBy) || 'a BLOCKED bead'}`
-                : 'set aside, reported BLOCKED');
+                : kind === VERIFY_NO_CHANGE_KIND ? 'set aside, doer returned VERIFY with no change'
+                    : 'set aside, reported BLOCKED');
     }
     const perm = permissionBlockedIds instanceof Map ? permissionBlockedIds : new Map();
     for (const id of perm.keys()) {

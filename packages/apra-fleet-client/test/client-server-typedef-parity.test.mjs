@@ -46,6 +46,8 @@ const typesSrc = readFileSync(path.join(repoRoot, 'src', 'types.ts'), 'utf8');
 const kbBibleCommitSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'kb-bible-commit.ts'), 'utf8');
 const kbQuerySrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'kb-query.ts'), 'utf8');
 const kbImportSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'kb-import.ts'), 'utf8');
+const kbCapabilitiesSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'kb-capabilities.ts'), 'utf8');
+const kbCapabilitiesResponseSchema = JSON.parse(readFileSync(path.join(repoRoot, 'memory-contract', 'v1', 'schemas', 'kb_capabilities.response.json'), 'utf8'));
 const bibleImportSrc = readFileSync(path.join(repoRoot, 'src', 'services', 'knowledge', 'bible-import.ts'), 'utf8');
 
 /** Extract the text between a start marker (exclusive) and the next occurrence of an end marker. */
@@ -322,5 +324,21 @@ describe('apra-fleet-client typedef vs server zod schema parity', () => {
         const typedefFields = extractTypedefProperties(apiMjsSrc, 'SessionStatsResult');
         assert.ok(resultFields.has('since') && resultFields.has('kb') && resultFields.has('code'), 'sanity: MemberCallStats should declare since, kb, code');
         assertFieldParity('SessionStatsResult vs MemberCallStats', resultFields, typedefFields);
+    });
+
+    test('KbCapabilitiesOptions matches kbCapabilitiesSchema (no fields besides the removed scope keys)', () => {
+        const block = extractBlock(kbCapabilitiesSrc, 'export const kbCapabilitiesSchema = z.object({', '\n});');
+        const schemaFields = extractTopLevelKeys(block, 2);
+        assert.deepStrictEqual([...schemaFields], [], 'kb_capabilities request schema must declare no own fields');
+        assert.deepStrictEqual([...extractTypedefProperties(apiMjsSrc, 'KbCapabilitiesOptions')], []);
+    });
+
+    test('KbCapabilitiesResult matches the kb_capabilities contract response schema parsed body', () => {
+        const parsed = kbCapabilitiesResponseSchema.$defs['v1-kb_capabilities-response'].properties.parsed;
+        const schemaFields = new Set(Object.keys(parsed.properties));
+        assert.ok(schemaFields.has('contract') && schemaFields.has('routes') && schemaFields.has('branch_aware'),
+            'sanity: contract schema should declare contract, routes, branch_aware');
+        const typedefFields = extractTypedefProperties(apiMjsSrc, 'KbCapabilitiesResult');
+        assertFieldParity('KbCapabilitiesResult vs kb_capabilities response schema', schemaFields, typedefFields);
     });
 });

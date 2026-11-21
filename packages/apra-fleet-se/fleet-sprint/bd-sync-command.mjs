@@ -67,3 +67,33 @@ export function bdSyncCommandFor(cmd, target) {
     if (shell === 'gitbash') return `GOMAXPROCS=${WINDOWS_BD_GOMAXPROCS} ${cmd}`;
     return `$env:GOMAXPROCS='${WINDOWS_BD_GOMAXPROCS}'; ${cmd}`;
 }
+
+// One leading env-assignment prefix, in either form bdSyncCommandFor emits:
+//   POSIX/gitbash:  NAME=value<space>          (value unquoted or quoted)
+//   PowerShell:     $env:NAME='value';<space>  (or "value", or bare value)
+// Anchored at the start; applied repeatedly so stacked assignments strip too.
+const POSIX_ENV_PREFIX_RE = /^[A-Za-z_][A-Za-z0-9_]*=(?:'[^']*'|"[^"]*"|[^\s;'"]*)\s+/;
+const PWSH_ENV_PREFIX_RE = /^\$env:[A-Za-z_][A-Za-z0-9_]*\s*=\s*(?:'[^']*'|"[^"]*"|[^\s;'"]*)\s*;\s*/i;
+
+/**
+ * The LOGICAL command behind a member-bound wire string: strips the leading
+ * environment-assignment prefix(es) bdSyncCommandFor adds on a Windows member
+ * (`GOMAXPROCS=1 bd dolt pull` and `$env:GOMAXPROCS='1'; bd dolt pull` both
+ * become `bd dolt pull`). Anything else is returned trimmed but otherwise
+ * unchanged. Classifiers that decide "is this a bd command, and does it
+ * mutate beads" must look at this, never at the raw wire string -- a prefixed
+ * D-pull is still a D-pull.
+ *
+ * @param {string} cmdStr
+ * @returns {string} the trimmed logical command ('' for a non-string)
+ */
+export function logicalBdCommand(cmdStr) {
+    if (typeof cmdStr !== 'string') return '';
+    let rest = cmdStr.trim();
+    // Bounded: each pass strictly shortens `rest`.
+    for (;;) {
+        const m = POSIX_ENV_PREFIX_RE.exec(rest) || PWSH_ENV_PREFIX_RE.exec(rest);
+        if (!m) return rest;
+        rest = rest.slice(m[0].length).trimStart();
+    }
+}
