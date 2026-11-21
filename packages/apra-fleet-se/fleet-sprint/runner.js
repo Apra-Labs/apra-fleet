@@ -245,7 +245,7 @@ import { pathsFromText, isPriorityTierToken } from './kb-hints.mjs';
 // out of runner.js (apra-fleet-3swo.4.6); beads-scope.mjs's header is the
 // written-down version of that contract.
 import {
-    createBeadsScope, classifyVerifySet, hasLiveEvidenceMarker,
+    createBeadsScope, classifyVerifySet, hasLiveEvidenceMarker, LIVE_EVIDENCE_LABEL,
     // apra-fleet-3swo.6.13: parseBdJson/goalPriorityMax/partitionByGoalMembership
     // moved here from runner.js; imported back and re-exported (facade region
     // below) so no importer of runner.js is edited by the move.
@@ -4344,6 +4344,29 @@ async function runSprintCycle(context) {
                     `${inconclusiveVerifyCounts.get(id)} consecutive cycle(s) (limit ${NEEDS_EXTERNAL_EVIDENCE_CYCLE_LIMIT}) -- ` +
                     'carried over as needs-external-evidence: not dispatched to verify again and no longer holding the exit; ' +
                     `the sprint verdict will be FAIL.${reason ? ` Integ runner: ${reason}` : ''}`
+                );
+            }
+        }
+
+        // A verify-routed verification-only leaf (LIVE_EVIDENCE_LABEL) has no
+        // closure path but Integration Test. When this run has no
+        // integ-test-playbook.md or no deploy.md it can never be verified
+        // here, so it is carried over now as needs-external-evidence with that
+        // typed cause (forcing FAIL and naming it), instead of holding the
+        // exit until the stall net fires. A failed deploy is not such a cause:
+        // the deploy-retry path owns it.
+        const runbookCause = integBlockCause({ hasPlaybook, hasDeploy });
+        if (runbookCause && verifyEverIds.size > 0) {
+            // From this cycle's Route snapshot: no extra bd call.
+            const routeParentIds = new Set(routeBeads.filter((b) => b && b.parent).map((b) => b.parent));
+            const liveLeafIds = new Set(routeBeads.filter((b) => hasLiveEvidenceMarker(b) && !routeParentIds.has(b.id)).map((b) => b.id));
+            for (const id of verifyEverIds) {
+                if (closedIdsNow.has(id) || needsEvidenceVerifyIds.has(id) || deferredVerifyIds.has(id) || !liveLeafIds.has(id)) continue;
+                needsEvidenceVerifyIds.set(id, { reason: '', cycles: 0, unverifiableCause: runbookCause });
+                log(
+                    `Cycle ${cycle}: ${id} is a verification-only bead (${LIVE_EVIDENCE_LABEL}) and the Integration Test phase ` +
+                    `cannot run in this run (${runbookCause}) -- carried over as needs-external-evidence: not waited on, ` +
+                    'the sprint verdict will be FAIL.'
                 );
             }
         }

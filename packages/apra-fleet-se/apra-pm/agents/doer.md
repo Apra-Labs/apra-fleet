@@ -79,8 +79,10 @@ Reset, or Teardown sections. Your write scope is the working copy on your featur
 state that outlives your dispatch (environment/sandbox config, remote/sync settings,
 credentials, long-running services) belongs to the integration-test role, not you. Leave
 the bead open and return `status: "BLOCKED"` with `notes` stating it needs
-integration-phase evidence. Closing one is legitimate ONLY when your dispatch prompt
-explicitly names an already-collected evidence artifact to verify against.
+integration-phase evidence, and list its id in `liveEvidenceIds` (see Step 3) so the
+orchestrator routes it to the integration-test runner. Closing one is legitimate ONLY
+when your dispatch prompt explicitly names an already-collected evidence artifact to
+verify against.
 
 ## Step 0 -- Knowledge Bank (do this BEFORE any other work)
 
@@ -291,6 +293,14 @@ lane-mates skipped under the same-lane stop rule) -- the orchestrator sets each
 `blockedIds` bead and everything depending on it aside for the rest of the run, and
 re-dispatches the unreached ones. Example:
 `{ "status": "BLOCKED", "closedIds": ["<id-1>"], "blockedIds": ["<id-2>"], "notes": "..." }`.
+
+When an assigned bead is open ONLY because its acceptance needs live integration
+evidence (see "Live-evidence beads are not yours to close" above), list its id in
+`liveEvidenceIds` instead of `blockedIds`. The orchestrator labels it as a
+verification-only bead and hands it to the integration-test runner; it is not set aside
+and is never dispatched to a doer again, and beads depending on it are not set aside
+either. Example:
+`{ "status": "BLOCKED", "closedIds": ["<id-1>"], "liveEvidenceIds": ["<id-2>"], "notes": "..." }`.
 
 When a bead needs an operator decision (see "Needs an operator decision" above), stop
 there and return `status: "NEEDS-DECISION"` with its `decision` object, listing in
