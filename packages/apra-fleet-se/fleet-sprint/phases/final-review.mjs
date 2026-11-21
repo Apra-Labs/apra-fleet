@@ -90,7 +90,7 @@ import { buildSettleCallback } from '../dolt-settle.mjs';
 // exactly the bug: the cycle loop would exit "satisfied" while this phase
 // reported the deferred bead as still open, and the evidence-based final
 // verdict would then FAIL a sprint the loop had just declared complete.
-import { partitionDeferredBeads } from '../beads-scope.mjs';
+import { partitionDeferredBeads, hasLiveEvidenceMarker } from '../beads-scope.mjs';
 import { applyDeployFailureVerdictGate, formatDeployFailureReason } from './deploy.mjs';
 import { applyVerifyBlockVerdictGate } from '../verify-block.mjs';
 import { applyCarryOverVerdictGate } from '../set-aside.mjs';
@@ -217,7 +217,11 @@ export async function runFinalReviewPhase({
     // silently folded away, so the final reviewer judges "finished with N
     // beads deliberately deferred", not "finished with N beads still open".
     const { active: finalOpenAtGoal, deferredIds: finalDeferredAtGoalIds } =
-        partitionDeferredBeads(finalOpenAtGoalRaw.filter((b) => !finalOpenAtGoalParentIds.has(b.id)));
+        partitionDeferredBeads(finalOpenAtGoalRaw.filter((b) => !finalOpenAtGoalParentIds.has(b.id)
+            // A verify-routed verification-only leaf is reported through the
+            // verify evidence (finalUnclosedVerifyIds / verifyCarryOver), as a
+            // verify-routed parent is -- the same filter Cycle Evaluation applies.
+            && !(verifyEverIds.has(b.id) && hasLiveEvidenceMarker(b))));
     const finalClosedCount = finalClosedBeads.length;
     // apra-fleet-jfo.2: same structural blind spot as the per-cycle exit
     // check -- verify-routed beads are decomposed parents, so they never

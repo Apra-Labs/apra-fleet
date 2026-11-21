@@ -747,6 +747,25 @@ export function discoverScope(allBeads, targetIssues) {
 }
 
 /**
+ * The bead label that marks a verification-only LEAF: a childless bead whose
+ * acceptance needs live evidence from the integration-test runner (a real
+ * deployed build), never more development. classifyVerifySet routes such a
+ * leaf to verify, readyLeafBeads() never hands it to a doer, and a doer that
+ * reports a bead as needing live evidence gets it applied (phases/develop.mjs).
+ */
+export const LIVE_EVIDENCE_LABEL = 'needs-live-evidence';
+
+/**
+ * Whether a bead row carries the live-evidence marker label.
+ *
+ * @param {object} bead - a bd list/show JSON row
+ * @returns {boolean}
+ */
+export function hasLiveEvidenceMarker(bead) {
+    return !!bead && Array.isArray(bead.labels) && bead.labels.includes(LIVE_EVIDENCE_LABEL);
+}
+
+/**
  * Classify beads whose every child is closed as ready for the `verify` route:
  * implementation-complete parents that must be excluded from
  * Plan/Develop/Review and verified against the live deployed product, never
@@ -764,8 +783,12 @@ export function discoverScope(allBeads, targetIssues) {
  *      one -- via discoverScope() above, the same rule bdListScoped uses.
  *   2. status is 'open' or 'in_progress' (not already closed/deferred).
  *   3. has at least one child. Childless beads are leaves -- they route
- *      through the normal Plan/Develop pipeline, never verify. A parent with
- *      NO children is never eligible, regardless of anything else.
+ *      through the normal Plan/Develop pipeline, never verify -- EXCEPT a
+ *      leaf carrying LIVE_EVIDENCE_LABEL (a verification-only leaf): it is
+ *      eligible when it has no unmet prerequisite (an open 'blocks'
+ *      dependency, in or out of scope, or an open lower-order lane-mate --
+ *      unmetPrerequisites()), and otherwise ineligible with the reason
+ *      recorded. Such a leaf is reported in `leafVerifyIds` too.
  *   4. EVERY child (any issue_type) has status 'closed', checked against the
  *      FULL unfiltered `allBeads` list, not a scope-filtered subset -- an
  *      out-of-scope open child must still block eligibility. Partial closure
@@ -774,22 +797,42 @@ export function discoverScope(allBeads, targetIssues) {
  *      implemented in this same run must not be verified against today's
  *      incomplete state.
  *
+ * A marked leaf that gets a gap bug filed under it becomes a parent with an
+ * open child, so rule 4 routes it back to development until that gap's work
+ * closes; it then returns to verify as an all-children-closed parent.
+ *
  * @param {Array<object>} allBeads - the FULL, unfiltered project bead list.
  * @param {string[]} targetIssues - the sprint's target issue root id(s).
- * @returns {{ verifyIds: string[], ineligible: Array<{id: string, reason: string}> }}
+ * @returns {{ verifyIds: string[], leafVerifyIds: string[], ineligible: Array<{id: string, reason: string}> }}
  */
 export function classifyVerifySet(allBeads, targetIssues) {
     const { byId, childrenOf, scopeIds } = discoverScope(allBeads, targetIssues);
 
     const verifyIds = [];
+    const leafVerifyIds = [];
     const ineligible = [];
+    let scopeBeads = null;
     for (const id of scopeIds) {
         const bead = byId.get(id);
         if (!bead) continue;
         if (bead.status !== 'open' && bead.status !== 'in_progress') continue;
 
         const kids = childrenOf.get(id) || [];
-        if (kids.length === 0) continue; // leaf -- normal pipeline, not eligible
+        if (kids.length === 0) {
+            // A plain leaf takes the normal pipeline; only a marked
+            // verification-only leaf is a verify target.
+            if (!hasLiveEvidenceMarker(bead)) continue;
+            if (!scopeBeads) scopeBeads = [...scopeIds].map((s) => byId.get(s)).filter(Boolean);
+            const { inScope, outOfScope } = unmetPrerequisites(bead, { scopeBeads, allBeads: byId });
+            const unmet = [...inScope, ...outOfScope];
+            if (unmet.length > 0) {
+                ineligible.push({ id, reason: `unmet prerequisite(s): ${unmet.join(', ')}` });
+                continue;
+            }
+            verifyIds.push(id);
+            leafVerifyIds.push(id);
+            continue;
+        }
 
         if (!kids.every((k) => k.status === 'closed')) continue; // partial closure never qualifies
 
@@ -808,7 +851,7 @@ export function classifyVerifySet(allBeads, targetIssues) {
         verifyIds.push(id);
     }
 
-    return { verifyIds, ineligible };
+    return { verifyIds, leafVerifyIds, ineligible };
 }
 
 /**
@@ -1078,15 +1121,28 @@ export function createBeadsScope(opts = {}) {
     }
 
     /**
+     * The scope-member ids that are childless verification-only leaves
+     * (LIVE_EVIDENCE_LABEL), any status, read from the snapshot (whose rows
+     * carry labels) rather than from a filtered query.
+     */
+    async function liveEvidenceLeafIds() {
+        const [allAnyStatus, parentIds] = await Promise.all([bdListScoped(''), decomposedParentIds()]);
+        return new Set(allAnyStatus.filter((b) => hasLiveEvidenceMarker(b) && !parentIds.has(b.id)).map((b) => b.id));
+    }
+
+    /**
      * This scope's ready beads minus any decomposed parent (see
-     * decomposedParentIds above). STRUCTURAL, not an issue_type check.
+     * decomposedParentIds above) and minus any verification-only leaf
+     * (liveEvidenceLeafIds above): only the integration-test runner closes
+     * one, so a doer never receives it. STRUCTURAL, not an issue_type check.
      */
     async function readyLeafBeads() {
-        const [ready, parentIds] = await Promise.all([
+        const [ready, parentIds, liveLeafIds] = await Promise.all([
             bdListScoped('--ready --json'),
             decomposedParentIds(),
+            liveEvidenceLeafIds(),
         ]);
-        return ready.filter((b) => !parentIds.has(b.id));
+        return ready.filter((b) => !parentIds.has(b.id) && !liveLeafIds.has(b.id));
     }
 
     return {
@@ -1097,6 +1153,7 @@ export function createBeadsScope(opts = {}) {
         fetchAllBeadsShared,
         bdListScoped,
         decomposedParentIds,
+        liveEvidenceLeafIds,
         readyLeafBeads,
         /** Every bead the run's link ledger records as a parent -- diagnostics/tests. */
         knownParentIds: () => parentLinks.knownParentIds(),

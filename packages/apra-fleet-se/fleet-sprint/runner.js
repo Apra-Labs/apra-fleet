@@ -245,7 +245,7 @@ import { pathsFromText, isPriorityTierToken } from './kb-hints.mjs';
 // out of runner.js (apra-fleet-3swo.4.6); beads-scope.mjs's header is the
 // written-down version of that contract.
 import {
-    createBeadsScope, classifyVerifySet,
+    createBeadsScope, classifyVerifySet, hasLiveEvidenceMarker,
     // apra-fleet-3swo.6.13: parseBdJson/goalPriorityMax/partitionByGoalMembership
     // moved here from runner.js; imported back and re-exported (facade region
     // below) so no importer of runner.js is edited by the move.
@@ -4262,8 +4262,15 @@ async function runSprintCycle(context) {
         // phases/final-review.mjs applies to its closing count too). Only
         // 'deferred' changes meaning: a blocked or orphaned in_progress bead
         // still counts as open, exactly as NOT_DONE_STATUSES intends.
+        // A verify-routed verification-only leaf (LIVE_EVIDENCE_LABEL in
+        // ./beads-scope.mjs) is dropped too, for the same reason as a
+        // verify-routed parent: only Integration Test closes it, and the
+        // stillOpenVerifyIds gate below owns whether the exit waits for it
+        // (so a needs-external-evidence carry-over releases it). A marked leaf
+        // that was never verify-routed keeps holding the exit.
         const { active: openAtGoal, deferredIds: deferredAtGoalIds } =
-            partitionDeferredBeads(openAtGoalRaw.filter((b) => !openAtGoalParentIds.has(b.id)));
+            partitionDeferredBeads(openAtGoalRaw.filter((b) => !openAtGoalParentIds.has(b.id)
+                && !(verifyEverIds.has(b.id) && hasLiveEvidenceMarker(b))));
         // Monotone across the sprint, like verifyEverIds: a bead that was
         // deferred in an earlier cycle and then reopened must still be named
         // in the closing text as something a human was asked to look at, and

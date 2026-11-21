@@ -191,6 +191,15 @@ For each feature create two classes of tasks:
   (architecture, docs, UX judgment).
 - Priority: same as its feature
 
+**Verification-only tasks**: when a task's acceptance can only be met by live evidence
+from the integration-test runner against the deployed build (there is nothing to
+implement or commit), keep it childless and give it the label `needs-live-evidence`
+(`bd create ... --labels needs-live-evidence`). The engine routes a labelled childless
+task straight to the integration-test runner once its prerequisites are closed and never
+hands it to a doer; without the label a doer must refuse it and the sprint cannot finish
+it. Do not use the label on a task that also needs code changes -- split those into an
+implementation task plus the labelled verification task.
+
 **No CI-status criteria in the plan**: never write an acceptance criterion that
 depends on a CI run ("CI is green", "the CI workflow passes on every OS") on any
 task, feature or bug you create. Doers and reviewers do not trigger, wait for, or
