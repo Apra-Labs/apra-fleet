@@ -134,7 +134,8 @@
  *   without a command line -- relay member or SFTP disabled; deterministic, do not retry;
  *   no LLM call was made) |
  *   'secret_in_prompt' (prompt contains a {{secret.NAME}} token; no LLM call) |
- *   'invalid_arguments' (fork combined with session_id or a non-default resume; no LLM call) |
+ *   'invalid_arguments' (fork combined with session_id or a non-default resume, or neither
+ *   member_id nor member_name given; no LLM call) |
  *   'substitution_failed' (substitutions key/placeholder validation failed; no LLM call) |
  *   'provider_none' (member has llm_provider none; use execute_command; no LLM call) |
  *   'agent_file_not_found' (the named `agent` file is missing on the member; no LLM call) |

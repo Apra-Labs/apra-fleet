@@ -150,6 +150,24 @@ describe('runFinalReviewPhase open-work gate', () => {
         assert.match(out.finalVerdictResult.notes, /VER-1/);
         assert.doesNotMatch(out.finalVerdictResult.notes, /VER-2/);
     });
+    test('a verify-routed bead deferred during the run (decomposed parent, goal-satisfied exit) keeps PASS and is named as carry-over', async () => {
+        const { state, logs } = harness({ verifyEverIds: new Set(['VER-D']), openAtGoal: [{ id: 'VER-D', status: 'deferred' }] });
+        state.decomposedParentIds = async () => new Set(['VER-D']);
+        state.deferredVerifyIds = new Map([['VER-D', 'deferred during the run']]);
+        const out = await runFinalReviewPhase(state);
+        assert.equal(out.finalVerdictResult.verdict, 'PASS');
+        assert.match(out.finalVerdictResult.notes, /VER-D/);
+        assert.match(out.finalVerdictResult.notes, /All good\./);
+        assert.ok(!logs.some((l) => /forced to FAIL/.test(l)));
+    });
+    test('control: a verify-routed bead deferred by the verify bounce cap still forces FAIL', async () => {
+        const { state } = harness({ verifyEverIds: new Set(['VER-B']), openAtGoal: [{ id: 'VER-B', status: 'deferred' }] });
+        state.decomposedParentIds = async () => new Set(['VER-B']);
+        state.deferredVerifyIds = new Map([['VER-B', { reason: 'bounce cap reached', bounceCap: true }]]);
+        const out = await runFinalReviewPhase(state);
+        assert.equal(out.finalVerdictResult.verdict, 'FAIL');
+        assert.match(out.finalVerdictResult.notes, /VER-B/);
+    });
     test('control: an unclosed verify bead below the goal priority (absent from the at-goal read) keeps PASS', async () => {
         const { state } = harness({ verifyEverIds: new Set(['VER-3']) });
         const out = await runFinalReviewPhase(state);

@@ -430,11 +430,13 @@ export async function runFinalReviewPhase({
     // verify-routed bead is unclosed, whatever the reviewer concluded. Ids a
     // sibling gate above already forced and named are not listed twice.
     // Unclosed verify-routed beads count only when at/above the goal priority
-    // and not deferred (the at-goal read above names exactly those), matching
-    // how the verify carry-over gate judges them.
+    // and not deferred, matching how the verify carry-over gate judges them.
+    // Deferred is read from the RAW at-goal read: verify-routed beads are
+    // decomposed parents, so finalDeferredAtGoalIds (parent-filtered) never
+    // holds them. A bounce-cap deferral still FAILs via the carry-over gate.
     const blockingVerifyIds = (() => {
         const atGoal = new Set(finalOpenAtGoalRaw.map((b) => b.id));
-        const deferred = new Set(finalDeferredAtGoalIds);
+        const deferred = new Set(partitionDeferredBeads(finalOpenAtGoalRaw).deferredIds);
         return finalUnclosedVerifyIds.filter((id) => atGoal.has(id) && !deferred.has(id));
     })();
     if (finalOpenAtGoal.length > 0 || blockingVerifyIds.length > 0) {

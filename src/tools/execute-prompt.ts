@@ -731,6 +731,16 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
 
   const promptFileName = `.fleet-task.md`;
 
+  // Neither member_id nor member_name: typed invalid_arguments. A member that
+  // is not found keeps its bare 'Member "x" not found.' text -- workflow
+  // clients map exactly that text to MemberNotFoundError, which a structured
+  // isError would turn into a generic AgentDispatchError.
+  if (!input.member_id && !input.member_name) {
+    return {
+      text: 'Error: provide either member_id (UUID) or member_name (friendly name).',
+      structuredContent: { isError: true, reason: 'invalid_arguments', dispatched: false },
+    };
+  }
   const agentOrError = resolveMember(input.member_id, input.member_name);
   if (typeof agentOrError === 'string') return agentOrError;
   let agent: Agent;

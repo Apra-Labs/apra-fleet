@@ -108,4 +108,22 @@ describe('execute_prompt early rejections carry typed structuredContent', () => 
     expect(structured(result)).toMatchObject({ isError: true, reason: 'agent_file_not_found', dispatched: false });
     expect(resultText(result)).toContain('no-such-agent-xyz');
   });
+
+  it('missing agent file on a remote member -> agent_file_not_found', async () => {
+    // Every remote probe reports the file missing; no CLI dispatch may follow.
+    mockExecCommand.mockResolvedValue({ stdout: 'missing', stderr: '', code: 0 });
+    const member = makeTestAgent({ friendlyName: 'early-remote-agent-file', llmProvider: 'claude', os: 'linux' } as any);
+    addAgent(member);
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5, agent: 'no-such-remote-agent' } as any);
+    expect(structured(result)).toMatchObject({ isError: true, reason: 'agent_file_not_found', dispatched: false });
+    expect(resultText(result)).toContain('not found on "early-remote-agent-file"');
+    for (const [cmd] of mockExecCommand.mock.calls) expect(String(cmd)).not.toMatch(/claude\s+-p|--agent/);
+  });
+
+  it('neither member_id nor member_name -> invalid_arguments', async () => {
+    const result = await executePrompt({ prompt: 'hi', resume: false, timeout_s: 5 } as any);
+    expect(structured(result)).toMatchObject({ isError: true, reason: 'invalid_arguments', dispatched: false });
+    expect(resultText(result)).toContain('member_id');
+    expect(mockExecCommand).not.toHaveBeenCalled();
+  });
 });
