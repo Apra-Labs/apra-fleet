@@ -87,7 +87,7 @@ function newWorld(over: Partial<World> = {}): World {
   };
 }
 
-const plain = (cmd: string): string => (cmd.includes('-EncodedCommand') ? decodePowerShellEncodedCommand(cmd) : cmd);
+const plain = (cmd: string): string => decodePowerShellEncodedCommand(cmd);
 
 function fakeDeps(world: World, local?: () => Promise<MemberSession>, home = HOME): MemberFleetMcpDeps {
   const ok = (stdout: string): SSHExecResult => ({ stdout, stderr: '', code: 0 });

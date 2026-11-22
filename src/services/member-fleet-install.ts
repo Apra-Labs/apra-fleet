@@ -122,7 +122,10 @@ export type FleetInstallUnavailableReason =
   /** The opt-in full-install replacement (fleet_install "replace-full") failed
    *  at a step that ran on the member; the detail names the step and, from the
    *  uninstall step on, the rollback commands. */
-  | 'replace-failed';
+  | 'replace-failed'
+  /** replace-full refused before any destructive change: the member's server
+   *  could not be stopped, or still reported running after `stop`. */
+  | 'stop-failed';
 
 /** What the probe observed about the member's current install. */
 export type MemberFleetProbe =
@@ -211,14 +214,28 @@ export function memberJoin(targetOs: TargetOS, shell: MemberShell, ...parts: str
   return trimmed.filter(p => p.length > 0).join(sep);
 }
 
-/** Pick the POSIX or PowerShell form of a member-bound command. PowerShell is
- *  always delivered via -EncodedCommand so no intermediate shell re-tokenizes it. */
+/**
+ * Wrap a POSIX script so it reaches ANY POSIX member shell intact: the script
+ * travels as base64 and is eval'd after decoding. The envelope never starts
+ * with a quote and carries no user quotes, `$` or backticks, so neither sshd's
+ * command-line quoting on a Windows Git Bash member nor an intermediate
+ * cmd/bash layer can touch the payload (a quote-led command lost every argv
+ * entry there and ran the bare binary). `eval` keeps the script's exit code.
+ * `base64 -d` is already relied on for every POSIX member by execute_command.
+ */
+export function wrapPosixEncoded(script: string): string {
+  return `eval "$(echo ${Buffer.from(script, 'utf8').toString('base64')} | base64 -d)"`;
+}
+
+/** Pick the POSIX or PowerShell form of a member-bound command. Both are
+ *  delivered encoded (POSIX: base64 + eval, PowerShell: -EncodedCommand) so no
+ *  intermediate shell re-tokenizes them. */
 export function memberCommandFor(
   targetOs: TargetOS,
   shell: MemberShell,
   forms: { posix: string; powershell: string },
 ): string {
-  return isPosixShell(targetOs, shell) ? forms.posix : wrapPowerShellEncoded(forms.powershell);
+  return isPosixShell(targetOs, shell) ? wrapPosixEncoded(forms.posix) : wrapPowerShellEncoded(forms.powershell);
 }
 
 function posixQuote(s: string): string {
@@ -882,7 +899,7 @@ export interface ReplacedFullInstall {
   backupPath: string;
 }
 
-export type ReplaceStepName = 'backup' | 'uninstall' | 'supervisor' | 'move-data' | 'install';
+export type ReplaceStepName = 'stop' | 'stop-check' | 'backup' | 'uninstall' | 'supervisor' | 'move-data' | 'install';
 
 export interface ReplaceFullInstallPlan {
   backupDir: string;
@@ -904,7 +921,12 @@ export function replaceBackupStamp(d: Date): string {
  * The member-bound command sequence of the opt-in replacement (pure; exported
  * for tests). Every path is resolved here from the probed home and quoted for
  * the member's shell; PowerShell is wrapped via -EncodedCommand. Steps:
- *   backup     -- copy data/ and fleet.key (outside data/) into a timestamped dir;
+ *   stop       -- the installed binary's own `stop`, then `status` must not report
+ *                 the server running (a live server makes the backup torn and
+ *                 the install guard refuse); failing either is a typed
+ *                 stop-failed refusal before any destructive change;
+ *   backup     -- copy data/, fleet.key (outside data/) and the OLD binary into a
+ *                 timestamped dir (the rollback reinstalls from that binary);
  *   uninstall  -- the INSTALLED binary's own uninstall --force --yes;
  *   supervisor -- linux: stop/disable the fleet-supervisor user unit when its
  *                 unit file exists, move the file into the backup, daemon-reload
@@ -930,6 +952,7 @@ export function buildReplaceFullInstallPlan(opts: {
   const backupDir = j(`.apra-fleet-replace-backup-${stamp}`);
   const backupData = memberJoin(targetOs, shell, backupDir, 'data');
   const backupKey = memberJoin(targetOs, shell, backupDir, 'fleet.key');
+  const backupBin = memberJoin(targetOs, shell, backupDir, binaryNameFor(targetOs));
   const dataAside = j('.apra-fleet', `data.replaced-${stamp}`);
   const unitName = 'fleet-supervisor.service';
   const unit = j('.config', 'systemd', 'user', unitName);
@@ -941,11 +964,13 @@ export function buildReplaceFullInstallPlan(opts: {
   const cmd = (posixForm: string, psForm: string) => memberCommandFor(targetOs, shell, { posix: posixForm, powershell: psForm });
 
   const steps: ReplaceFullInstallPlan['steps'] = [
+    { name: 'stop', command: cmd(`${q(bin)} stop`, `& ${q(bin)} stop`) },
+    { name: 'stop-check', command: cmd(`${q(bin)} status`, `& ${q(bin)} status`) },
     {
       name: 'backup',
       command: cmd(
-        `mkdir -p ${q(backupDir)} && cp -R ${q(data)} ${q(backupData)} && if [ -f ${q(key)} ]; then cp ${q(key)} ${q(backupKey)}; fi`,
-        `New-Item -ItemType Directory -Force -Path ${q(backupDir)} | Out-Null; Copy-Item -Recurse -LiteralPath ${q(data)} -Destination ${q(backupData)}; if (Test-Path -LiteralPath ${q(key)} -PathType Leaf) { Copy-Item -LiteralPath ${q(key)} -Destination ${q(backupKey)} }`,
+        `mkdir -p ${q(backupDir)} && cp -R ${q(data)} ${q(backupData)} && cp ${q(bin)} ${q(backupBin)} && if [ -f ${q(key)} ]; then cp ${q(key)} ${q(backupKey)}; fi`,
+        `New-Item -ItemType Directory -Force -Path ${q(backupDir)} | Out-Null; Copy-Item -Recurse -LiteralPath ${q(data)} -Destination ${q(backupData)}; Copy-Item -LiteralPath ${q(bin)} -Destination ${q(backupBin)}; if (Test-Path -LiteralPath ${q(key)} -PathType Leaf) { Copy-Item -LiteralPath ${q(key)} -Destination ${q(backupKey)} }`,
       ),
     },
     {
@@ -959,9 +984,10 @@ export function buildReplaceFullInstallPlan(opts: {
   if (targetOs === 'linux' && posix) {
     steps.push({
       name: 'supervisor',
-      command:
+      command: wrapPosixEncoded(
         `if [ -f ${q(unit)} ]; then systemctl --user stop fleet-supervisor || true; systemctl --user disable fleet-supervisor || true; ` +
         `mv ${q(unit)} ${q(backupUnit)} && printf '%s\\n' '${SUPERVISOR_MOVED_SENTINEL}' && (systemctl --user daemon-reload || true); fi`,
+      ),
     });
   }
   steps.push(
@@ -981,9 +1007,13 @@ export function buildReplaceFullInstallPlan(opts: {
   const unitRestore = targetOs === 'linux' && posix
     ? [`if [ -f ${q(backupUnit)} ]; then mkdir -p ${q(j('.config', 'systemd', 'user'))} && mv ${q(backupUnit)} ${q(unit)} && systemctl --user daemon-reload && systemctl --user enable --now fleet-supervisor; fi`]
     : [];
+  // An SEA binary is its own installer: reinstall the PREVIOUS version from the
+  // copy step 1 took (uninstall deleted the original; the staged installer is the
+  // NEW version and must not be what a rollback restores).
   const reinstall = posix
-    ? `chmod +x ${q(installerPath)} && ${q(installerPath)} install --llm ${provider} --force`
-    : `& ${q(installerPath)} install --llm ${provider} --force`;
+    ? `chmod +x ${q(backupBin)} && ${q(backupBin)} install --llm ${provider} --force`
+    : `& ${q(backupBin)} install --llm ${provider} --force`;
+  const restart = posix ? `${q(bin)} start` : `& ${q(bin)} start`;
   const keyRestoreIfMissing = posix
     ? `if [ ! -f ${q(key)} ] && [ -f ${q(backupKey)} ]; then cp ${q(backupKey)} ${q(key)}; fi`
     : `if (-not (Test-Path -LiteralPath ${q(key)} -PathType Leaf) -and (Test-Path -LiteralPath ${q(backupKey)} -PathType Leaf)) { Copy-Item -LiteralPath ${q(backupKey)} -Destination ${q(key)} }`;
@@ -997,6 +1027,8 @@ export function buildReplaceFullInstallPlan(opts: {
     reinstall,
   ];
   const rollbackFor: ReplaceFullInstallPlan['rollbackFor'] = {
+    stop: [restart],
+    'stop-check': [restart],
     backup: [],
     uninstall: dataInPlace,
     supervisor: dataInPlace,
@@ -1008,6 +1040,8 @@ export function buildReplaceFullInstallPlan(opts: {
 }
 
 const REPLACE_STEP_LABEL: Record<ReplaceStepName, string> = {
+  stop: 'step 0 (stop the member server)',
+  'stop-check': 'step 0 (verify the member server is down)',
   backup: 'step 1 (back up data and fleet.key)',
   uninstall: 'step 2 (uninstall with the installed binary)',
   supervisor: 'step 3 (stop and disable the fleet-supervisor user unit)',
@@ -1074,11 +1108,18 @@ async function replaceFullInstall(
   const stamp = replaceBackupStamp(deps.now ? deps.now() : new Date());
   const plan = buildReplaceFullInstallPlan({ home, targetOs, shell, provider, installerPath, stamp });
   let supervisorMoved = false;
+  const binForHint = memberBinPath(home, targetOs, shell);
   const failedAt = (name: ReplaceStepName | 'verify', why: string): MemberFleetInstallResult => {
     const label = name === 'verify' ? 'the version check after step 5' : REPLACE_STEP_LABEL[name];
+    if (name === 'stop' || name === 'stop-check') {
+      return {
+        state: 'unavailable', reason: 'stop-failed', version: previousVersion,
+        detail: `replacing the full install was refused at ${label}: ${why}. Nothing was removed or backed up; the apra-fleet ${previousVersion} full install is unchanged (if its server is down, bring it back with: ${plan.rollbackFor[name].join('; ')}). Stop the member's apra-fleet server by hand (${binForHint} stop, and check ${binForHint} status), then run update_member {member_id, fleet_install: "replace-full"} again`,
+      };
+    }
     const detail = name === 'backup'
       ? `replacing the full install failed at ${label}: ${why}. Nothing was removed; the apra-fleet ${previousVersion} full install is unchanged`
-      : `replacing the full install failed at ${label}: ${why}. The backup is at ${plan.backupDir}. To roll back, run on the member: ${plan.rollbackFor[name].join('; ')}`;
+      : `replacing the full install failed at ${label}: ${why}. The backup is at ${plan.backupDir}. To roll back (reinstalls apra-fleet ${previousVersion} from the backup copy of its binary, not the newly staged installer), run on the member: ${plan.rollbackFor[name].join('; ')}`;
     return { state: 'unavailable', reason: 'replace-failed', detail, version: previousVersion };
   };
   for (const step of plan.steps) {
@@ -1090,6 +1131,9 @@ async function replaceFullInstall(
     }
     if (r.code !== 0) {
       return failedAt(step.name, `exited ${r.code}: ${(r.stderr.trim() || r.stdout.trim()).slice(-400)}`);
+    }
+    if (step.name === 'stop-check' && /State:\s+running/i.test(r.stdout)) {
+      return failedAt(step.name, `the server is still running after stop (${r.stdout.trim().slice(-200)})`);
     }
     if (step.name === 'supervisor' && r.stdout.includes(SUPERVISOR_MOVED_SENTINEL)) supervisorMoved = true;
   }
@@ -1300,7 +1344,7 @@ export function buildManualInstallSteps(opts: {
 }): string {
   const { home, targetOs, shell, provider, arch, orchestratorVersion, reason } = opts;
   const finish = 'then on the orchestrator run update_member {member_id, fleet_install: "auto"} so the fleet self-registers the member into that install and verifies it';
-  if (reason === 'full-install-running' || reason === 'replace-failed') {
+  if (reason === 'full-install-running' || reason === 'replace-failed' || reason === 'stop-failed') {
     return `follow the owner steps in the reason above, ${finish}.`;
   }
   if (!home || reason === 'home-unresolved' || reason === 'probe-failed') {
@@ -1613,6 +1657,7 @@ export const FLEET_MCP_FIX: Record<FleetMcpUnavailableReason | FleetMcpProviderR
   'full-install-running': 'The member apra-fleet install has no member-install marker (a full install, or a member install older than the marker), so the fleet leaves it alone; its owner replaces it with a member install using the steps in the detail (back up data and fleet.key, uninstall with the installed binary, run the staged current installer with install --member), then update_member {member_id, fleet_install: "auto"} -- or opts in to the fleet doing it with update_member {member_id, fleet_install: "replace-full"}.',
   'transfer-failed': 'Check file transfer to the member works (disk space, permissions), then run update_member with fleet_install "auto".',
   'install-failed': 'Run the apra-fleet installer on the member by hand and read its error, then member_detail with refresh:true.',
+  'stop-failed': 'The member apra-fleet server could not be stopped, so the full install was left untouched; stop it on the member with the installed binary (stop, then status), then run update_member {member_id, fleet_install: "replace-full"} again.',
   'replace-failed': 'The full-install replacement stopped at the step named in the detail; run the rollback commands in the detail (if listed; they restore the consistent data copy, the backup only as a last resort), fix the cause, then run update_member {member_id, fleet_install: "replace-full"} again.',
   'install-unverified': 'Run update_member {member_id, fleet_install: "auto"} to upgrade apra-fleet on the member to the orchestrator version, then member_detail with refresh:true.',
   'install-too-old': 'Run update_member {member_id, fleet_install: "auto"} to upgrade apra-fleet on the member (its install predates register-member --id), then member_detail with refresh:true.',
@@ -2105,7 +2150,7 @@ type Unavailable = (reason: FleetMcpUnavailableReason, detail?: string, extra?: 
  * older install there is intact and stays in use (reported, never silent).
  */
 const INSTALL_FAIL_CLOSED: ReadonlySet<string> = new Set([
-  'install-failed', 'install-unverified', 'full-install-running', 'probe-failed', 'home-unresolved', 'replace-failed',
+  'install-failed', 'install-unverified', 'full-install-running', 'probe-failed', 'home-unresolved', 'replace-failed', 'stop-failed',
 ]);
 
 /** One line naming a failed upgrade and the older install still in use. */

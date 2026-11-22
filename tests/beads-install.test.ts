@@ -185,7 +185,7 @@ describe('fleet-side bd status on a remote member', () => {
     const ok = (stdout: string): SSHExecResult => ({ stdout, stderr: '', code: 0 });
     return {
       exec: async (_a, command) => {
-        const c = command.includes('-EncodedCommand') ? decodePowerShellEncodedCommand(command) : command;
+        const c = decodePowerShellEncodedCommand(command);
         log.push(c);
         if (c.includes('command -v bd') || c.includes('Get-Command bd')) {
           if (bd === 'missing') return ok(`${NO_INSTALL_SENTINEL}\n`);
@@ -229,7 +229,7 @@ describe('fleet-side bd status on a remote member', () => {
   });
 
   it('the probe resolves every path in JS: no shell variable expansion, PATH first then the fleet bin dir', () => {
-    const posix = buildBeadsProbe(`${HOME}/.apra-fleet/bin/bd`, 'linux', 'bash' as any);
+    const posix = decodePowerShellEncodedCommand(buildBeadsProbe(`${HOME}/.apra-fleet/bin/bd`, 'linux', 'bash' as any));
     expect(posix).not.toMatch(/\$HOME|~\/|`/);
     expect(posix.indexOf('command -v bd')).toBeLessThan(posix.indexOf(`'${HOME}/.apra-fleet/bin/bd'`));
     const ps = decodePowerShellEncodedCommand(buildBeadsProbe('C:\\Users\\k\\.apra-fleet\\bin\\bd.exe', 'windows', 'powershell5' as any));

@@ -18,7 +18,11 @@ import { MEMBER_SECRET_HEADER, getOrCreateMemberAccessSecret } from '../src/serv
  */
 export function decodePowerShellEncodedCommand(cmd: string): string {
   const m = cmd.match(/-EncodedCommand (\S+)/);
-  if (!m) return cmd;
+  if (!m) {
+    // POSIX member commands travel as eval "$(echo <b64> | base64 -d)".
+    const p = cmd.match(/^eval "\$\(echo ([A-Za-z0-9+/=]+) \| base64 -d\)"$/);
+    return p ? Buffer.from(p[1], 'base64').toString('utf8') : cmd;
+  }
   return Buffer.from(m[1], 'base64').toString('utf16le');
 }
 

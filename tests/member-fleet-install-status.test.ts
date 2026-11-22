@@ -57,7 +57,7 @@ function entryFor(agent: Agent): Record<string, unknown> {
 }
 
 function text(cmd: string): string {
-  return cmd.includes('-EncodedCommand') ? decodePowerShellEncodedCommand(cmd) : cmd;
+  return decodePowerShellEncodedCommand(cmd);
 }
 
 function deps(world: World, local?: { connect: (id: string) => Promise<MemberSession> }): MemberFleetMcpDeps {

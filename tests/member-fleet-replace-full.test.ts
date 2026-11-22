@@ -15,12 +15,14 @@
  */
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
+import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { makeTestAgent, decodePowerShellEncodedCommand } from './test-helpers.js';
 import type { Agent, SSHExecResult } from '../src/types.js';
 import {
   ensureMemberFleetInstall, buildReplaceFullInstallPlan, REPLACE_FULL_INSTALL, FLEET_MCP_FIX, ReleaseDownloadError,
+  buildSelfRegisterCommand, buildSelfRemoveCommand, buildMemberCallCommand,
   type MemberFleetInstallDeps,
 } from '../src/services/member-fleet-install.js';
 import { updateMemberSchema } from '../src/tools/update-member.js';
@@ -41,10 +43,12 @@ function agentFor(p: Platform): Agent {
 }
 
 type MarkerMode = 'absent' | 'present' | 'timeout';
-type Step = 'backup' | 'uninstall' | 'supervisor' | 'move-data' | 'install';
+type Step = 'stop' | 'stop-check' | 'backup' | 'uninstall' | 'supervisor' | 'move-data' | 'install';
 
 /** Classify a decoded member command as one of the replacement's destructive steps. */
 function stepOf(c: string): Step | null {
+  if (/apra-fleet(\.exe)?' stop(;|$| )/.test(c)) return 'stop';
+  if (/apra-fleet(\.exe)?' status(;|$| )/.test(c)) return 'stop-check';
   if (c.includes('.apra-fleet-replace-backup-') && c.includes('fleet.key') && !c.includes('uninstall')) return 'backup';
   if (c.includes('uninstall --force --yes')) return 'uninstall';
   if (c.includes('systemctl')) return 'supervisor';
@@ -53,7 +57,7 @@ function stepOf(c: string): Step | null {
   return null;
 }
 
-function harness(p: Platform, opts: { marker?: MarkerMode; failStep?: Step } = {}) {
+function harness(p: Platform, opts: { marker?: MarkerMode; failStep?: Step; serverStaysUp?: boolean } = {}) {
   const log: string[] = [];
   const events: string[] = [];
   const w = { installed: OLD as string | null, marker: opts.marker ?? 'absent' as MarkerMode };
@@ -66,6 +70,7 @@ function harness(p: Platform, opts: { marker?: MarkerMode; failStep?: Step } = {
       if (step) {
         events.push(step);
         if (step === opts.failStep) return { stdout: '', stderr: `${step} broke`, code: 1 };
+        if (step === 'stop-check') return ok(opts.serverStaysUp ? 'apra-fleet status\n  State:    running\n' : 'apra-fleet status\n  State:    stopped\n');
         if (step === 'uninstall') w.installed = null;
         if (step === 'install') { w.installed = ORCH; w.marker = 'present'; return ok('installed'); }
         if (step === 'supervisor') return ok('__APRA_FLEET_SUPERVISOR_MOVED__\n');
@@ -92,7 +97,7 @@ function harness(p: Platform, opts: { marker?: MarkerMode; failStep?: Step } = {
   return { deps, log, events, w };
 }
 
-const destructive = (events: string[]) => events.filter(e => !e.startsWith('transfer:'));
+const destructive = (events: string[]) => events.filter(e => !e.startsWith('transfer:') && e !== 'stop' && e !== 'stop-check');
 
 describe('replace-full: full command sequence per OS', () => {
   it('linux: stage, backup (data + fleet.key), uninstall, supervisor stop/disable, move data, member install', async () => {
@@ -100,11 +105,12 @@ describe('replace-full: full command sequence per OS', () => {
     const r = await ensureMemberFleetInstall(agentFor(LINUX), h.deps, { replaceFull: true });
     expect(r).toMatchObject({ state: 'available', version: ORCH, installed: true });
     // The installer is staged BEFORE anything destructive.
-    expect(h.events).toEqual([`transfer:${LINUX.home}/.apra-fleet/staging`, 'backup', 'uninstall', 'supervisor', 'move-data', 'install']);
+    expect(h.events).toEqual([`transfer:${LINUX.home}/.apra-fleet/staging`, 'stop', 'stop-check', 'backup', 'uninstall', 'supervisor', 'move-data', 'install']);
     const backupDir = `${LINUX.home}/.apra-fleet-replace-backup-${STAMP}`;
     const backup = h.log.find(c => stepOf(c) === 'backup')!;
     expect(backup).toContain(`cp -R '${LINUX.home}/.apra-fleet/data' '${backupDir}/data'`);
     expect(backup).toContain(`cp '${LINUX.home}/.apra-fleet/fleet.key' '${backupDir}/fleet.key'`);
+    expect(backup).toContain(`cp '${LINUX.home}/.apra-fleet/bin/apra-fleet' '${backupDir}/apra-fleet'`);
     expect(h.log.find(c => stepOf(c) === 'uninstall')).toBe(`'${LINUX.home}/.apra-fleet/bin/apra-fleet' uninstall --force --yes`);
     const sup = h.log.find(c => stepOf(c) === 'supervisor')!;
     expect(sup).toContain('systemctl --user stop fleet-supervisor');
@@ -195,7 +201,7 @@ describe('replace-full: a failure after the uninstall names the step and the rol
     expect(detail).toContain(`cp -R '${backupDir}/data' '${LINUX.home}/.apra-fleet/data'`);
     expect(detail).toContain(`cp '${backupDir}/fleet.key' '${LINUX.home}/.apra-fleet/fleet.key'`);
     expect(detail).toContain('systemctl --user enable --now fleet-supervisor');
-    expect(detail).toContain(`'${LINUX.home}/.apra-fleet/staging/apra-fleet' install --llm claude --force`);
+    expect(detail).toContain(`chmod +x '${backupDir}/apra-fleet' && '${backupDir}/apra-fleet' install --llm claude --force`);
   });
 
   it('windows: move-data fails -> replace-failed, step 4 named, PowerShell rollback, install never run', async () => {
@@ -275,7 +281,7 @@ function psParseErrors(code: string): string[] | null {
 const hasPs = process.platform === 'win32' && psParseErrors('1') !== null;
 
 describe.skipIf(!hasPs)('replace-full: every emitted PowerShell step and rollback command parses', () => {
-  it('windows plan steps and rollback lines', () => {
+  it('windows plan steps and rollback lines', { timeout: 120_000 }, () => {
     const plan = buildReplaceFullInstallPlan({
       home: WINDOWS.home, targetOs: 'windows', shell: 'powershell5' as never, provider: 'claude',
       installerPath: `${WINDOWS.home}\.apra-fleet\staging\apra-fleet.exe`, stamp: STAMP,
@@ -310,5 +316,206 @@ describe('replace-full: same-core stable fallback', () => {
     const r = await ensureMemberFleetInstall(agentFor(LINUX), devDeps(h), { replaceFull: true });
     expect(r).toMatchObject({ state: 'unavailable', reason: 'no-matching-release' });
     expect(destructive(h.events)).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// apra-fleet-7e9x / ips9 / ne0q
+// ---------------------------------------------------------------------------
+
+const GITBASH: Platform = { os: 'windows', home: '/c/Users/bella', sep: '/', shell: 'gitbash', arch: 'x64' };
+const ENVELOPE = /^eval "\$\(echo ([A-Za-z0-9+/=]+) \| base64 -d\)"$/;
+
+/** Minimal POSIX word splitter for the plain command lines the builders emit
+ *  (single-quoted or bare words; stops at the first && or ;). */
+function posixWords(script: string): string[] {
+  const words: string[] = [];
+  let i = 0;
+  while (i < script.length) {
+    if (script[i] === ' ') { i++; continue; }
+    if (script.startsWith('&&', i) || script[i] === ';') break;
+    let w = '';
+    while (i < script.length && script[i] !== ' ') {
+      if (script[i] === "'") {
+        const end = script.indexOf("'", i + 1);
+        w += script.slice(i + 1, end);
+        i = end + 1;
+      } else { w += script[i++]; }
+    }
+    words.push(w);
+  }
+  return words;
+}
+const lastSimple = (script: string) => posixWords(script.split(' && ').pop()!);
+const decodeEnvelope = (cmd: string): string => {
+  const m = ENVELOPE.exec(cmd);
+  if (!m) throw new Error(`not a POSIX envelope: ${cmd.slice(0, 80)}`);
+  return Buffer.from(m[1], 'base64').toString('utf8');
+};
+
+function posixPlan(p: Platform) {
+  return buildReplaceFullInstallPlan({
+    home: p.home, targetOs: p.os, shell: (p.shell ?? 'bash') as never, provider: 'claude',
+    installerPath: `${p.home}/.apra-fleet/staging/${p.os === 'windows' ? 'apra-fleet.exe' : 'apra-fleet'}`, stamp: STAMP,
+  });
+}
+
+describe('7e9x: POSIX member commands reach the shell encoded, with the full argv', () => {
+  for (const p of [LINUX, MACOS, GITBASH]) {
+    const label = p.shell ?? p.os;
+    const bin = `${p.home}/.apra-fleet/bin/${p.os === 'windows' ? 'apra-fleet.exe' : 'apra-fleet'}`;
+    const agent = makeTestAgent({ os: p.os, ...(p.shell ? { shell: p.shell } : {}), llmProvider: 'claude', workFolder: `${p.home}/repo`, friendlyName: 'bella', id: 'id-1' } as Partial<Agent>);
+
+    it(`${label}: no replace-full step starts with a quote; each decodes to the exact argv`, () => {
+      const plan = posixPlan(p);
+      const byName = Object.fromEntries(plan.steps.map(st => [st.name, st.command]));
+      for (const st of plan.steps) {
+        expect(st.command, st.name).toMatch(ENVELOPE);
+        expect(st.command[0], st.name).not.toMatch(/['"]/);
+      }
+      expect(posixWords(decodeEnvelope(byName.stop))).toEqual([bin, 'stop']);
+      expect(posixWords(decodeEnvelope(byName['stop-check']))).toEqual([bin, 'status']);
+      expect(posixWords(decodeEnvelope(byName.uninstall))).toEqual([bin, 'uninstall', '--force', '--yes']);
+      expect(lastSimple(decodeEnvelope(byName.install)).slice(0, 4)).toEqual([`${p.home}/.apra-fleet/staging/${p.os === 'windows' ? 'apra-fleet.exe' : 'apra-fleet'}`, 'install', '--llm', 'claude']);
+      expect(lastSimple(decodeEnvelope(byName.install))).toContain('--member');
+    });
+
+    it(`${label}: self-register, self-remove and list-tools decode to the exact argv`, () => {
+      const os = p.os as 'linux' | 'macos' | 'windows';
+      const sh = (p.shell ?? 'bash') as never;
+      const reg = buildSelfRegisterCommand(bin, agent, os, sh);
+      const rm = buildSelfRemoveCommand(bin, 'id-1', os, sh);
+      const lt = buildMemberCallCommand(bin, 'id-1', 'list-tools', '/x/args.json', os, sh);
+      for (const c of [reg, rm, lt]) { expect(c).toMatch(ENVELOPE); expect(c[0]).not.toMatch(/['"]/); }
+      expect(posixWords(decodeEnvelope(reg))).toEqual([bin, 'register-member', '--type', 'local', '--id', 'id-1', '--name', 'bella', '--path', `${p.home}/repo`, '--llm', 'claude']);
+      expect(posixWords(decodeEnvelope(rm))).toEqual([bin, 'remove-member', '--id', 'id-1', '--force']);
+      expect(posixWords(decodeEnvelope(lt))).toEqual([bin, 'call', '--member', 'id-1', '--list-tools']);
+    });
+  }
+
+  it('windows PowerShell members stay on -EncodedCommand (not the POSIX envelope)', () => {
+    const plan = buildReplaceFullInstallPlan({
+      home: WINDOWS.home, targetOs: 'windows', shell: 'powershell5' as never, provider: 'claude',
+      installerPath: `${WINDOWS.home}\\.apra-fleet\\staging\\apra-fleet.exe`, stamp: STAMP,
+    });
+    for (const st of plan.steps) { expect(st.command, st.name).toContain('-EncodedCommand '); expect(st.command).not.toMatch(ENVELOPE); }
+  });
+});
+
+/** Git for Windows bash.exe, when present (Windows only). */
+function gitBashExe(): string | null {
+  if (process.platform !== 'win32') return null;
+  const roots = [process.env.ProgramFiles, process.env['ProgramFiles(x86)'], 'C:\\Program Files'].filter(Boolean) as string[];
+  for (const r of roots) for (const rel of ['Git\\usr\\bin\\bash.exe', 'Git\\bin\\bash.exe']) {
+    const f = path.join(r, rel);
+    if (fs.existsSync(f)) return f;
+  }
+  return null;
+}
+const GIT_BASH = gitBashExe();
+
+describe.skipIf(!GIT_BASH)('7e9x: a real Git Bash receives the full argv (Windows only)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-7e9x-'));
+  const toPosix = (w: string) => w.replace(/^([A-Za-z]):/, (_m, d: string) => `/${d.toLowerCase()}`).replace(/\\/g, '/');
+  const home = toPosix(dir);
+  fs.mkdirSync(path.join(dir, '.apra-fleet', 'bin'), { recursive: true });
+  // Stand-in for the apra-fleet binary: prints the argv it received.
+  fs.writeFileSync(path.join(dir, '.apra-fleet', 'bin', 'apra-fleet'), '#!/bin/sh\necho "ARGC=$# ARGV=$*"\n');
+  /** The command line Windows sshd builds for a DefaultShell of bash.exe (model
+   *  from the 7e9x diagnosis): a command that starts with a quote is passed
+   *  through as-is, anything else is wrapped as -c "<command>". */
+  const sshdCommandLine = (cmd: string) => (/^["']/.test(cmd) ? `-c ${cmd}` : `-c "${cmd.replace(/"/g, '\\"')}"`);
+  const run = (cmd: string) => spawnSync(GIT_BASH!, [sshdCommandLine(cmd)], { windowsVerbatimArguments: true, argv0: 'bash.exe', encoding: 'utf8', input: '' });
+
+  it('the built uninstall step prints ARGC=3 (uninstall --force --yes)', () => {
+    const plan = buildReplaceFullInstallPlan({
+      home, targetOs: 'linux', shell: 'bash' as never, provider: 'claude', installerPath: `${home}/staging/apra-fleet`, stamp: STAMP,
+    });
+    const r = run(plan.steps.find(st => st.name === 'uninstall')!.command);
+    expect((r.stdout + r.stderr).trim()).toBe('ARGC=3 ARGV=uninstall --force --yes');
+  });
+
+  it('stop and status steps deliver their subcommand too', () => {
+    const plan = buildReplaceFullInstallPlan({
+      home, targetOs: 'linux', shell: 'bash' as never, provider: 'claude', installerPath: `${home}/staging/apra-fleet`, stamp: STAMP,
+    });
+    expect(run(plan.steps.find(st => st.name === 'stop')!.command).stdout.trim()).toBe('ARGC=1 ARGV=stop');
+    expect(run(plan.steps.find(st => st.name === 'stop-check')!.command).stdout.trim()).toBe('ARGC=1 ARGV=status');
+  });
+});
+
+describe('ips9: the rollback reinstalls the PREVIOUS binary from the backup', () => {
+  for (const p of [LINUX, MACOS, GITBASH, WINDOWS]) {
+    it(`${p.shell ?? p.os}: no rollback references the staged installer; each reinstall runs the backup copy`, () => {
+      const ps = p.shell === 'powershell5';
+      const exe = p.os === 'windows' ? 'apra-fleet.exe' : 'apra-fleet';
+      const installer = ps ? `${p.home}\\.apra-fleet\\staging\\${exe}` : `${p.home}/.apra-fleet/staging/${exe}`;
+      const plan = buildReplaceFullInstallPlan({
+        home: p.home, targetOs: p.os, shell: (p.shell ?? 'bash') as never, provider: 'claude', installerPath: installer, stamp: STAMP,
+      });
+      const backupBin = `${plan.backupDir}${ps ? '\\' : '/'}${exe}`;
+      for (const [step, lines] of Object.entries(plan.rollbackFor)) {
+        const all = lines.join('\n');
+        expect(all, step).not.toContain(installer);
+        expect(all, step).not.toContain('staging');
+        if (['uninstall', 'supervisor', 'move-data', 'install', 'verify'].includes(step)) {
+          expect(all, step).toContain(ps ? `& '${backupBin}' install --llm claude --force` : `'${backupBin}' install --llm claude --force`);
+        }
+      }
+      // Step 1 copies the old binary into the backup (after the server is down).
+      const backupStep = plan.steps.find(st => st.name === 'backup')!.command;
+      const decoded = ps ? decodePowerShellEncodedCommand(backupStep) : decodeEnvelope(backupStep);
+      expect(decoded).toContain(`'${p.home}${ps ? '\\' : '/'}.apra-fleet${ps ? '\\' : '/'}bin${ps ? '\\' : '/'}${exe}'`);
+      expect(decoded).toContain(`'${backupBin}'`);
+    });
+  }
+
+  it('the rollback hint names the previous version and the backup binary, not the new installer', async () => {
+    const h = harness(LINUX, { failStep: 'install' });
+    const r = await ensureMemberFleetInstall(agentFor(LINUX), h.deps, { replaceFull: true });
+    const detail = (r as { detail: string }).detail;
+    expect(detail).toContain(`reinstalls apra-fleet ${OLD} from the backup copy of its binary`);
+    expect(detail).not.toContain('/.apra-fleet/staging/');
+  });
+});
+
+describe('ne0q: step 0 stops the member server and verifies it is down before the backup', () => {
+  for (const p of [LINUX, MACOS, WINDOWS, GITBASH]) {
+    it(`${p.shell ?? p.os}: stop, then the status check, then backup, uninstall, ... in order`, async () => {
+      const h = harness(p);
+      const r = await ensureMemberFleetInstall(agentFor(p), h.deps, { replaceFull: true });
+      expect(r).toMatchObject({ state: 'available', installed: true });
+      const ev = h.events.filter(e => !e.startsWith('transfer:'));
+      expect(ev.slice(0, 3)).toEqual(['stop', 'stop-check', 'backup']);
+      expect(ev.indexOf('uninstall')).toBeGreaterThan(ev.indexOf('backup'));
+    });
+  }
+
+  it('stop fails -> typed stop-failed, no backup/uninstall/move/install ran, server-start hint, fix named', async () => {
+    const h = harness(LINUX, { failStep: 'stop' });
+    const r = await ensureMemberFleetInstall(agentFor(LINUX), h.deps, { replaceFull: true });
+    expect(r).toMatchObject({ state: 'unavailable', reason: 'stop-failed', version: OLD });
+    expect(h.events.filter(e => !e.startsWith('transfer:'))).toEqual(['stop']);
+    const detail = (r as { detail: string }).detail;
+    expect(detail).toContain('step 0 (stop the member server)');
+    expect(detail).toContain('Nothing was removed or backed up');
+    expect(detail).toContain(`'${LINUX.home}/.apra-fleet/bin/apra-fleet' start`);
+    expect(detail).toContain('replace-full');
+    expect(FLEET_MCP_FIX['stop-failed']).toContain('stop');
+  });
+
+  it('server still running after stop -> typed stop-failed before any backup', async () => {
+    const h = harness(MACOS, { serverStaysUp: true });
+    const r = await ensureMemberFleetInstall(agentFor(MACOS), h.deps, { replaceFull: true });
+    expect(r).toMatchObject({ state: 'unavailable', reason: 'stop-failed' });
+    expect(h.events.filter(e => !e.startsWith('transfer:'))).toEqual(['stop', 'stop-check']);
+    expect((r as { detail: string }).detail).toContain('still running after stop');
+  });
+
+  it('windows PowerShell: stop failure is the same typed refusal', async () => {
+    const h = harness(WINDOWS, { failStep: 'stop' });
+    const r = await ensureMemberFleetInstall(agentFor(WINDOWS), h.deps, { replaceFull: true });
+    expect(r).toMatchObject({ state: 'unavailable', reason: 'stop-failed' });
+    expect(h.events.filter(e => !e.startsWith('transfer:'))).toEqual(['stop']);
   });
 });
