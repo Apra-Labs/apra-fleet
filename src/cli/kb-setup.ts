@@ -27,8 +27,8 @@
 // naming this remote and secret, goes ahead.
 
 import { kbConfigMatch } from '../services/knowledge/kb-config.js';
-import { HttpKbProvider, KbHttpAuthError, isConnectionError } from '../services/knowledge/http-provider.js';
-import { SqliteProvider } from '../services/knowledge/sqlite-provider.js';
+import { HttpKbProvider, KbHttpAuthError, KbHttpUnreachableError, isConnectionError } from '../services/knowledge/http-provider.js';
+import { resolveProjectSlug } from '../services/knowledge/project-slug.js';
 import { assertKbTokenSecretUsable, kbSetup } from '../tools/kb-setup.js';
 import { formatSecretToken } from '../services/secret-token.js';
 
@@ -54,15 +54,20 @@ const defaultIo: Io = {
  */
 export function classifyVerifyError(err: unknown): KbSetupVerification {
   if (err instanceof KbHttpAuthError) return err.reason === 'rejected' ? 'rejected' : 'unverified';
-  if (isConnectionError(err)) return 'unreachable';
+  if (err instanceof KbHttpUnreachableError || isConnectionError(err)) return 'unreachable';
   const code = (err as { code?: unknown } | null)?.code;
   if (code === 'HTTP_401' || code === 'HTTP_403') return 'rejected';
   return 'unverified';
 }
 
-/** One authenticated KB call with the secret, through the same provider code the fleet server uses. */
+/**
+ * One authenticated KB call with the secret, through the same provider code the
+ * fleet server uses, for the project of the folder it runs in (X-KB-Project, as
+ * a KB call from that folder sends): a server serving another project answers
+ * 409 and the token is unverified.
+ */
 async function verify(remote: string, name: string): Promise<KbSetupVerification> {
-  const provider = new HttpKbProvider(remote, { secretName: name }, new SqliteProvider(':memory:'));
+  const provider = new HttpKbProvider(remote, { secretName: name }, { projectSlug: resolveProjectSlug(process.cwd()) });
   try {
     await provider.verifyAuth();
     return 'verified';

@@ -35,7 +35,10 @@
 //       unrecognized `bd` subcommand are conservatively treated as mutations
 //       and drop it. The failure mode is a redundant full fetch, never
 //       silently stale data. Non-`bd` commands (git, node probes) never touch
-//       beads state.
+//       beads state. Classification is on the LOGICAL command: the env
+//       prefix a Windows member's bd sync carries (bd-sync-command.mjs) is
+//       stripped first, and a caller may pass opts.logicalCommand. The drop
+//       happens in a finally, so a mutation that throws still drops it.
 //   (c) EVERY planner dispatch that returns successfully -- runner.js calls
 //       invalidateAllBeadsCache() explicitly right after dispatchPlanner() in
 //       both the main Planning Loop and the in-cycle scoped replan. The
@@ -78,6 +81,11 @@
 // fetchAllBeadsShared().
 // =============================================================================
 
+import { logicalBdCommand } from './bd-sync-command.mjs';
+import {
+    createParentLinkLedger, parseRunEdgeChange, formatVanishedEdgeLog, formatDroppedEdgeLog, formatRestoreFailure, ParentLinkRestoreError,
+} from './parent-link-guard.mjs';
+
 /**
  * `bd` subcommands that can never change beads state, so they must not drop a
  * cached full-DB snapshot. Anything else starting with `bd` is conservatively
@@ -95,8 +103,12 @@ export const BD_READ_ONLY_RE = /^bd\s+(list|show|ready|config)\b/i;
  */
 export function isBeadsMutatingCommand(cmdStr) {
     if (typeof cmdStr !== 'string') return false;
-    const trimmed = cmdStr.trim();
-    return /^bd\b/i.test(trimmed) && !BD_READ_ONLY_RE.test(trimmed);
+    // Classify the LOGICAL command: on a Windows member a D-pull goes out as
+    // `GOMAXPROCS=1 bd dolt pull` (gitbash) or `$env:GOMAXPROCS='1'; bd dolt
+    // pull` (PowerShell). Testing the raw wire string would call both "not a
+    // bd command" and keep a stale snapshot after the pull.
+    const logical = logicalBdCommand(cmdStr);
+    return /^bd\b/i.test(logical) && !BD_READ_ONLY_RE.test(logical);
 }
 
 // ---------------------------------------------------------------------------
@@ -387,6 +399,107 @@ export function laneOf(bead) {
     return { streak, order };
 }
 
+/**
+ * The ids of every CONTAINER among `beads`: a bead that is the `.parent` of
+ * another bead in the same list (any status). Keyed on the parent edge, never
+ * on issue_type.
+ *
+ * Pure: no I/O.
+ * @param {Iterable<object>} beads
+ * @returns {Set<string>}
+ */
+export function containerIdsOf(beads) {
+    const out = new Set();
+    const list = beads instanceof Map ? [...beads.values()] : [...(beads || [])];
+    const ids = new Set(list.filter((b) => b && b.id !== undefined && b.id !== null).map((b) => String(b.id)));
+    for (const b of list) {
+        const p = b && b.parent;
+        if (p === undefined || p === null || p === '') continue;
+        if (ids.has(String(p)) && String(p) !== String(b.id)) out.add(String(p));
+    }
+    return out;
+}
+
+/**
+ * The ONE lane-order rule: the ids of `bead`'s OPEN lane-mates in `beads`
+ * (same metadata.streak, lower finite streakOrder), sorted by order then id.
+ * A CONTAINER (see containerIdsOf) is never a lane-mate prerequisite: it can
+ * only close after its children, so holding a bead behind one -- its own
+ * parent, or a sibling container whose children are in the same lane --
+ * deadlocks the lane. Its lane metadata is ignored.
+ *
+ * Pure: no I/O.
+ * @param {object} bead
+ * @param {Iterable<object>|Map<string, object>} beads candidate lane-mates, any status
+ * @param {{ containerIds?: Set<string> }} [opts] precomputed containerIdsOf(beads)
+ * @returns {string[]}
+ */
+export function lowerOrderLaneMates(bead, beads, { containerIds } = {}) {
+    const lane = laneOf(bead);
+    if (!lane) return [];
+    const list = beads instanceof Map ? [...beads.values()] : [...(beads || [])];
+    const containers = containerIds instanceof Set ? containerIds : containerIdsOf(list);
+    const id = String(bead && bead.id);
+    const mates = [];
+    for (const m of list) {
+        if (!m || String(m.id) === id || m.status === 'closed' || containers.has(String(m.id))) continue;
+        const ml = laneOf(m);
+        if (ml && ml.streak === lane.streak && ml.order < lane.order) mates.push({ id: String(m.id), order: ml.order });
+    }
+    mates.sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
+    return [...new Set(mates.map((m) => m.id))];
+}
+
+/**
+ * Every CONTAINER in `beads` (see containerIdsOf) that carries lane metadata,
+ * as `{ id, streak }` sorted by id. lowerOrderLaneMates ignores that metadata.
+ *
+ * Pure: no I/O.
+ * @param {Iterable<object>} beads
+ * @returns {Array<{ id: string, streak: string }>}
+ */
+export function lanedContainers(beads) {
+    const list = beads instanceof Map ? [...beads.values()] : [...(beads || [])];
+    const containers = containerIdsOf(list);
+    const out = new Map();
+    for (const b of list) {
+        if (!b || !containers.has(String(b.id)) || out.has(String(b.id))) continue;
+        const lane = laneOf(b);
+        if (lane) out.set(String(b.id), { id: String(b.id), streak: lane.streak });
+    }
+    return [...out.values()].sort((a, b) => a.id.localeCompare(b.id));
+}
+
+/**
+ * The log line for a container whose lane metadata is ignored.
+ * @param {{ id: string, streak: string }} c
+ * @returns {string}
+ */
+export function formatIgnoredContainerLaneLog(c) {
+    return `Lane order: ${c.id} carries lane metadata (streak ${c.streak}) but is a container (the parent of ` +
+        'other in-scope beads) -- its lane position is ignored, because it can only close after its children. ' +
+        'Lane metadata belongs on leaf tasks only.';
+}
+
+/**
+ * The ignored-container log lines not yet emitted this run: one per laned
+ * container whose id is not in `logged`, which is updated in place so the
+ * same container is never logged twice in a run.
+ *
+ * @param {Iterable<object>} beads in-scope beads, any status
+ * @param {Set<string>} logged run-scoped set of already-logged container ids
+ * @returns {string[]}
+ */
+export function newIgnoredContainerLaneLogs(beads, logged) {
+    const lines = [];
+    for (const c of lanedContainers(beads)) {
+        if (logged.has(c.id)) continue;
+        logged.add(c.id);
+        lines.push(formatIgnoredContainerLaneLog(c));
+    }
+    return lines;
+}
+
 function indexById(beads) {
     const byId = new Map();
     for (const b of beads || []) {
@@ -425,17 +538,7 @@ export function unmetPrerequisites(bead, { scopeBeads, allBeads = null }) {
             if (outside && outside.status !== 'closed') outOfScope.push(pre);
         }
     }
-    const lane = laneOf(bead);
-    if (lane) {
-        const mates = [];
-        for (const m of scopeById.values()) {
-            if (!m || String(m.id) === id || m.status === 'closed') continue;
-            const ml = laneOf(m);
-            if (ml && ml.streak === lane.streak && ml.order < lane.order) mates.push(m);
-        }
-        mates.sort((a, b) => laneOf(a).order - laneOf(b).order || String(a.id).localeCompare(String(b.id)));
-        for (const m of mates) if (!inScope.includes(String(m.id))) inScope.push(String(m.id));
-    }
+    for (const m of lowerOrderLaneMates(bead, scopeById)) if (!inScope.includes(m)) inScope.push(m);
     return { inScope, outOfScope };
 }
 
@@ -511,24 +614,10 @@ export function partitionReadyByGoal(ready, scopeBeads, goal, opts = {}) {
     }
     // Lane order is a prerequisite too: a kept bead's open lower-order
     // lane-mates are walked like 'blocks' prerequisites, transitively, so an
-    // [impl] task is kept whenever its [test] lane-mate is.
-    const openLaneMates = new Map(); // streak -> open laned beads
-    for (const b of byId.values()) {
-        const lane = laneOf(b);
-        if (!lane || !isOpen(b)) continue;
-        if (!openLaneMates.has(lane.streak)) openLaneMates.set(lane.streak, []);
-        openLaneMates.get(lane.streak).push(b);
-    }
-    const prereqsOf = (bead) => {
-        const out = blocksPrereqIds(bead);
-        const lane = laneOf(bead);
-        if (lane) {
-            for (const m of openLaneMates.get(lane.streak) || []) {
-                if (laneOf(m).order < lane.order) out.push(String(m.id));
-            }
-        }
-        return out;
-    };
+    // [impl] task is kept whenever its [test] lane-mate is. A container is
+    // never a lane-mate prerequisite (lowerOrderLaneMates).
+    const containerIds = containerIdsOf(byId);
+    const prereqsOf = (bead) => [...blocksPrereqIds(bead), ...lowerOrderLaneMates(bead, byId, { containerIds })];
     const visited = new Set(queue);
     while (queue.length > 0) {
         const id = queue.shift();
@@ -746,6 +835,7 @@ export function classifyVerifySet(allBeads, targetIssues) {
  * @param {string|null} [opts.assignee] - `--assignee` narrowing for filtered queries
  * @param {(raw: string, label: string) => any} opts.parseBdJson - bd JSON parser (injected to avoid an import cycle back into runner.js)
  * @param {() => string} opts.getBacklogMember - resolves the member every read is dispatched to
+ * @param {(line: string) => void} [opts.log] - where the parent-link guard writes its ERROR lines
  */
 export function createBeadsScope(opts = {}) {
     const targetIssues = opts.targetIssues || [];
@@ -759,9 +849,19 @@ export function createBeadsScope(opts = {}) {
         throw new TypeError('createBeadsScope({ getBacklogMember }): getBacklogMember must be a function');
     }
 
+    const log = typeof opts.log === 'function' ? opts.log : () => {};
+
     let allBeadsSnapshot = null; // { beads } -- cleared by invalidateAllBeadsCache()
     let allBeadsInFlight = null;
     let command = null; // installed by wrapCommand(); see fetchAllBeadsShared
+
+    // STABLE PARENTHOOD (parent-link-guard.mjs): every in-scope
+    // parent-child edge and scope id this run has seen, plus the edges this
+    // run itself changed. Fed by every fresh full-DB snapshot
+    // (fetchAllBeadsShared) and by the command wrapper. A backlog D-pull
+    // drops the snapshot (clause (b) above), so the first beads read after
+    // every D-pull is a fresh snapshot and runs the vanished-link check.
+    const parentLinks = createParentLinkLedger();
 
     /** Drop the shared snapshot. Cheap and idempotent. */
     function invalidateAllBeadsCache() { allBeadsSnapshot = null; }
@@ -787,13 +887,29 @@ export function createBeadsScope(opts = {}) {
         }
         const onCommand = typeof wrapOpts.onCommand === 'function' ? wrapOpts.onCommand : null;
         const wrapped = async (cmdStr, cmdOpts) => {
-            const result = await rawCommand(cmdStr, cmdOpts);
-            if (typeof cmdStr === 'string') {
-                const trimmed = cmdStr.trim();
-                if (isBeadsMutatingCommand(trimmed)) {
+            // Classify on the LOGICAL command when the caller supplies it
+            // (runDoltStep passes `logicalCommand` alongside its member-bound,
+            // possibly env-prefixed wire string); otherwise on the wire
+            // string, which isBeadsMutatingCommand also de-prefixes.
+            const logical = cmdOpts && typeof cmdOpts.logicalCommand === 'string'
+                ? cmdOpts.logicalCommand
+                : cmdStr;
+            const mutating = isBeadsMutatingCommand(logical);
+            let result;
+            try {
+                result = await rawCommand(cmdStr, cmdOpts);
+            } finally {
+                // In a finally: a mutation that THROWS may still have changed
+                // beads state on the member, so the snapshot is dropped either way.
+                if (mutating) {
                     invalidateAllBeadsCache();
+                    // A parent-child change this run made (attempted) is never
+                    // later "restored" as a vanished link.
+                    parentLinks.noteRunEdgeChange(parseRunEdgeChange(logicalBdCommand(logical)));
                 }
-                if (onCommand) onCommand(trimmed, cmdOpts);
+            }
+            if (typeof cmdStr === 'string' && onCommand) {
+                onCommand(logicalBdCommand(typeof logical === 'string' ? logical : cmdStr), cmdOpts);
             }
             return result;
         };
@@ -841,13 +957,67 @@ export function createBeadsScope(opts = {}) {
             const allLabel = 'bd list --all --limit 0 --json';
             allBeadsInFlight = command(allLabel, { member_name: getBacklogMember(), silent: true })
                 .then((raw) => parseBdJson(raw, allLabel))
+                .then((beads) => restoreVanishedParentLinks(beads))
                 .then((beads) => {
+                    parentLinks.observe(beads, scopeOf(beads).scopeIds);
                     allBeadsSnapshot = { beads };
                     return beads;
                 })
                 .finally(() => { allBeadsInFlight = null; });
         }
         return allBeadsInFlight;
+    }
+
+    /**
+     * The vanished-link check on a FRESH snapshot: every in-scope edge this
+     * run recorded whose child AND parent are still in the DB, whose child now
+     * has no parent, and that this run did not remove, is restored through the normal command
+     * path (`bd update <child> --parent <parent>`) with an ERROR line naming
+     * child and parent. The returned snapshot carries the restored parents,
+     * so this phase's readers see the run's true structure without a second
+     * full fetch. A failed restore is logged and THROWN
+     * (ParentLinkRestoreError): continuing on a scope that lost its
+     * children would dispatch a parent as a leaf and stall the run.
+     * An edge with a DELETED endpoint (child or parent no longer in the DB)
+     * is not a lost link: it is forgotten with a WARN naming it and why,
+     * never restored. A child moved to another parent is simply followed,
+     * unless it is back under a parent it was moved away from this run: that
+     * revert is restored like a vanished edge.
+     */
+    async function restoreVanishedParentLinks(beads) {
+        const { vanished, dropped } = parentLinks.reconcile(beads);
+        for (const drop of dropped) log(formatDroppedEdgeLog(drop));
+        if (vanished.length === 0) return beads;
+        for (const edge of vanished) {
+            log(formatVanishedEdgeLog(edge));
+            const label = `bd update ${edge.child} --parent ${edge.parent}`;
+            let failure = null;
+            try {
+                const res = await command(label, { member_name: getBacklogMember(), silent: true, failSoft: true });
+                if (res && typeof res === 'object' && res.ok === false) failure = res.error || 'command failed';
+            } catch (err) {
+                failure = (err && err.message) || String(err);
+            }
+            if (failure) {
+                const message = formatRestoreFailure(edge, failure);
+                log(message);
+                throw new ParentLinkRestoreError(message, { edges: vanished });
+            }
+        }
+        const restoredParent = new Map(vanished.map((e) => [e.child, e.parent]));
+        return beads.map((b) => (b && restoredParent.has(b.id) ? { ...b, parent: restoredParent.get(b.id) } : b));
+    }
+
+    /**
+     * Scope of a snapshot: the BFS scope, widened by every id this run has
+     * already seen in scope (a descendant once in scope stays in scope).
+     */
+    function scopeOf(allBeads) {
+        const discovered = discoverScope(allBeads, targetIssues);
+        const present = new Set();
+        for (const b of (allBeads || [])) if (b && b.id !== undefined && b.id !== null) present.add(b.id);
+        for (const id of parentLinks.knownScopeIds()) if (present.has(id)) discovered.scopeIds.add(id);
+        return discovered;
     }
 
     /**
@@ -874,7 +1044,7 @@ export function createBeadsScope(opts = {}) {
         const rest = restArgs ? restArgs.trim() : '';
 
         const allBeads = await fetchAllBeadsShared();
-        const { scopeIds } = discoverScope(allBeads, targetIssues);
+        const { scopeIds } = scopeOf(allBeads);
 
         if (scopeIds.size === 0) return [];
 
@@ -891,6 +1061,34 @@ export function createBeadsScope(opts = {}) {
         return parseBdJson(filterRaw, filterLabel).filter((b) => b && scopeIds.has(b.id));
     }
 
+    /**
+     * The scope-member ids that are someone's `--parent` -- decomposed
+     * grouping nodes, never leaf units of work. Built from children of ANY
+     * status (a parent whose children all closed is still a parent), plus
+     * every parent the run's link ledger still records: a link a beads merge
+     * dropped keeps its parent a parent (and is restored), so it is never
+     * seeded to a doer as a leaf. A parent whose children were all deleted or
+     * moved to another parent is no longer one and is routed as a leaf.
+     */
+    async function decomposedParentIds() {
+        const allAnyStatus = await bdListScoped('');
+        const ids = new Set(allAnyStatus.filter((b) => b.parent).map((b) => b.parent));
+        for (const id of parentLinks.knownParentIds()) ids.add(id);
+        return ids;
+    }
+
+    /**
+     * This scope's ready beads minus any decomposed parent (see
+     * decomposedParentIds above). STRUCTURAL, not an issue_type check.
+     */
+    async function readyLeafBeads() {
+        const [ready, parentIds] = await Promise.all([
+            bdListScoped('--ready --json'),
+            decomposedParentIds(),
+        ]);
+        return ready.filter((b) => !parentIds.has(b.id));
+    }
+
     return {
         invalidateAllBeadsCache,
         hasCachedSnapshot,
@@ -898,5 +1096,9 @@ export function createBeadsScope(opts = {}) {
         wrapPhase,
         fetchAllBeadsShared,
         bdListScoped,
+        decomposedParentIds,
+        readyLeafBeads,
+        /** Every bead the run's link ledger records as a parent -- diagnostics/tests. */
+        knownParentIds: () => parentLinks.knownParentIds(),
     };
 }

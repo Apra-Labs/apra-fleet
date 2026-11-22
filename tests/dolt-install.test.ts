@@ -145,6 +145,13 @@ describe('resolveDoltAsset (apra-fleet-ire.1)', () => {
     expect(asset.binaryName).toBe('dolt');
   });
 
+  it('resolves the linux/arm64 tar.gz asset (aarch64 hosts)', () => {
+    const asset = resolveDoltAsset('linux', 'arm64');
+    expect(asset.assetName).toBe('dolt-linux-arm64.tar.gz');
+    expect(asset.url).toBe('https://github.com/dolthub/dolt/releases/download/v2.2.0/dolt-linux-arm64.tar.gz');
+    expect(asset.binaryName).toBe('dolt');
+  });
+
   it('resolves the darwin/arm64 tar.gz asset', () => {
     const asset = resolveDoltAsset('darwin', 'arm64');
     expect(asset.assetName).toBe('dolt-darwin-arm64.tar.gz');

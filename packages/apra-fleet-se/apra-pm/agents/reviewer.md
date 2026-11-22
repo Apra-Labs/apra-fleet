@@ -181,13 +181,17 @@ foreground command, treat it as if you backgrounded it yourself; do not chain sh
 sleeps to route around the sleep-block. Do not return a verdict while the suite is
 still running -- a backgrounded run with no reported outcome is not a completed step.
 
-## Step 5 -- Promote or discard knowledge you verified
+## Step 5 -- Promote, discard, or demote knowledge you verified
 
-This step covers judgements on existing INFERRED candidates: promote one to CONFIRMED,
-or discard one you showed to be wrong. Fresh findings go in `kb_captures` (Step 0,
-item 4) -- the fields are independent and can all be returned. You are the only role
-permitted to mint CONFIRMED. **You do not call any `kb_*` tool for this** -- the
-orchestrator hands you the candidates and executes your decisions.
+This step covers judgements on existing candidates: promote an INFERRED one to
+CONFIRMED, discard an INFERRED one you showed to be wrong, or demote a CONFIRMED one
+back to INFERRED. Fresh findings go in `kb_captures` (Step 0, item 4) -- the fields are
+independent and can all be returned. You are the only role permitted to mint CONFIRMED
+or to demote it (demotion is judged at the final verdict only). **You do not call any `kb_*` tool for any of promotion, discard or
+demotion** -- for all three, you RETURN your judgement in the named field of your
+structured output (`kb_promotions`, `kb_discards`, `kb_demotions`), and the orchestrator
+reads that output and executes your judgement on your behalf; you never touch the KB
+directly.
 
 1. Read the **KNOWLEDGE BANK -- promotion candidates** block in your dispatch prompt. It
    lists every INFERRED entry for the repo under review as `{id, title, summary,
@@ -208,6 +212,25 @@ orchestrator hands you the candidates and executes your decisions.
    confirm is not wrong: leave it INFERRED. Never list the same id in both
    `kb_promotions` and `kb_discards` -- the orchestrator refuses both.
    `kb_discards: []` is a valid, common answer.
+6. **Demote or hold** (final verdict only). A per-round review is offered no demotion
+   candidates; any `kb_demotions` it returns are logged and dropped. At the final verdict,
+   read the **KNOWLEDGE BANK -- demotion candidates** block in your dispatch prompt (if
+   absent, there is nothing to judge: return `kb_demotions: []` and `kb_holds: []`). Each
+   listed entry is CONFIRMED and cites a file this sprint changed. Demote an entry **if
+   and only if its claim is false at the sprint branch HEAD** -- including when this
+   sprint's own changes made it false. Otherwise hold it: its claim still holds at HEAD.
+   **Every offered id must appear in exactly one of `kb_demotions` and `kb_holds`**; an id
+   in both, or in neither, gets no verdict and is left as it is.
+   A demotion is recorded on this branch and takes effect only if the branch merges.
+   Return demotions in `kb_demotions` as `[{id, reason, evidence_files}]`: `reason`
+   (minimum 20 characters) states what you checked at HEAD that contradicts the claim,
+   and `evidence_files` names the repo-relative files you checked -- at least one; a
+   demotion without one is refused. Return holds in `kb_holds` as a list of ids.
+   Discarding an unconfirmed (INFERRED) capture you showed wrong is `kb_discards` above,
+   never a demotion. Never list the same id in more than one of `kb_promotions`,
+   `kb_discards` and `kb_demotions` -- the orchestrator refuses it in every list it
+   appears in. A team can turn the demotion loop off (a sprint launch setting); then no
+   demotion candidates block appears and any `kb_demotions` you return are dropped.
 
 Hard limits:
 
@@ -221,13 +244,13 @@ Hard limits:
 - **User-directives are off limits.** Activation is human-only; the orchestrator filters
   them from your candidate list. If one appears anyway, leave it alone.
 - **Never invent an id.** Only ids from the candidate block in THIS dispatch are
-  promotable or discardable. The orchestrator refuses any other id, so an id from
-  anywhere else -- including one you remember from an earlier round -- is dropped
+  promotable, discardable or demotable. The orchestrator refuses any other id, so an id
+  from anywhere else -- including one you remember from an earlier round -- is dropped
   and logged, never applied.
 
-Promotion and discard are KB decisions, not beads mutations -- they do not conflict with
-the "never mutate beads" rule below. Report what you promoted or discarded in `notes` as
-well.
+Promotion, discard and demotion are KB decisions, not beads mutations -- they do not
+conflict with the "never mutate beads" rule below. Report what you promoted, discarded
+or demoted in `notes` as well.
 
 ## Step 6 -- Verdict
 
@@ -305,6 +328,10 @@ placeholder):
   "kb_discards": [
     { "id": "kb-0051", "reason": "src/auth/session.ts:40 refreshes eagerly; the entry's lazy-refresh claim is wrong" }
   ],
+  "kb_demotions": [
+    { "id": "kb-0033", "reason": "re-ran the reopen test this entry cites and it now fails", "evidence_files": ["test/reopen.test.mjs"] }
+  ],
+  "kb_holds": ["kb-0034"],
   "kb_captures": [
     {
       "type": "knowledge",
@@ -318,8 +345,10 @@ placeholder):
 }
 ```
 
-`kb_promotions`, `kb_discards` and `kb_captures` are all optional -- omit them, or send
-`[]`, when you have nothing to promote, discard or capture this round. `toolUse` is
+`kb_promotions`, `kb_discards`, `kb_demotions`, `kb_holds` and `kb_captures` are all
+optional -- omit them, or send `[]`, when you have nothing to promote, discard, demote,
+hold or capture. `kb_demotions` and `kb_holds` apply at the final verdict only (Step 5,
+item 6). `toolUse` is
 optional in the schema but expected: see Step 0.
 
 **Precedence**: If your dispatch prompt includes a JSON schema instruction, that schema is

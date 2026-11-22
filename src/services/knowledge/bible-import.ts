@@ -46,10 +46,29 @@ export interface BibleTombstone {
   id: string;
   at: string;
   reason: string;
+  /**
+   * OPTIONAL free-text justification (a withdrawal carries the reviewer's
+   * judgement here). Carried verbatim across every re-commit.
+   */
+  note?: string;
+  /**
+   * OPTIONAL repo-relative files the judgement was checked against. Carried
+   * verbatim across every re-commit.
+   */
+  evidence_files?: string[];
 }
 
 /** The tombstone reason a kb_demote produces; the only one that demotes on import. */
 export const TOMBSTONE_DEMOTED = 'demoted';
+
+/**
+ * The tombstone reason a branch-carried withdrawal produces: a reviewer judged a
+ * bible entry no longer holds. It travels with the branch and takes effect for
+ * other clones only once the branch merges (applied on a base-ref import, never
+ * from a work tree). Like every reason it keeps the entry out of a bible view;
+ * a reader that does not know it treats it as a view exclusion only.
+ */
+export const TOMBSTONE_WITHDRAWN = 'withdrawn';
 
 /**
  * A parsed bible: its entries AND its tombstones. The two readers that return
@@ -60,6 +79,104 @@ export const TOMBSTONE_DEMOTED = 'demoted';
 export interface BibleDocument {
   entries: unknown[];
   demotions: BibleTombstone[];
+  /**
+   * provenance.branch of a v2/v3 envelope (the base branch the bible was
+   * committed for), when it is a non-empty string. Absent for a legacy bare
+   * array or an envelope without it. kb_import requires it to equal the base
+   * branch it established independently of the bible (the caller's
+   * base_branch, or the remote's default branch) before it applies the
+   * bible's "withdrawn" tombstones; on its own it is never trusted, because
+   * kb_bible_commit writes it from a caller-supplied value.
+   */
+  provenanceBranch?: string;
+}
+
+/** The remote-tracking ref of `branch` on `remote` (refs/remotes/<remote>/<branch>). */
+export function remoteTrackingRef(remote: string, branch: string): string {
+  return 'refs/remotes/' + remote + '/' + branch;
+}
+
+/**
+ * Split a remote-tracking ref into the remote it belongs to and the branch it
+ * tracks, given the remote names this clone knows. Remote and branch names may
+ * both contain '/', so the LONGEST known remote that prefixes the ref wins.
+ * Null when `ref` is not refs/remotes/<known remote>/<branch>, or names the
+ * remote's HEAD pointer rather than a branch.
+ */
+export function parseRemoteTrackingRef(ref: string, remotes: readonly string[]): { remote: string; branch: string } | null {
+  let best: { remote: string; branch: string } | null = null;
+  for (const remote of remotes) {
+    if (remote === '') continue;
+    const prefix = 'refs/remotes/' + remote + '/';
+    if (!ref.startsWith(prefix)) continue;
+    const branch = ref.slice(prefix.length);
+    if (branch === '' || branch === 'HEAD') continue;
+    if (best === null || remote.length > best.remote.length) best = { remote, branch };
+  }
+  return best;
+}
+
+/** The "withdrawn" tombstones of a parsed bible (other reasons are not withdrawals). */
+export function withdrawnTombstones(doc: BibleDocument): BibleTombstone[] {
+  return doc.demotions.filter(t => t.reason === TOMBSTONE_WITHDRAWN);
+}
+
+/**
+ * What applying a bible's "withdrawn" tombstones did, as kb_import reports it.
+ *  - sent: how many tombstones were applied locally (SQLite) or sent to the KB
+ *    server in one request (http); 0 when they were deferred or unsupported.
+ *  - withdrawn: rows taken CONFIRMED -> INFERRED.
+ *  - repromoted: rows whose trust postdates the tombstone; left CONFIRMED.
+ *  - already: rows already below CONFIRMED (a repeat import), left as they are.
+ *  - not_found: no such row (never created).
+ *  - unsupported: ids not applied because the KB server does not serve the
+ *    withdraw route (with `warning`).
+ *  - deferred: ids not applied because the bible was not read from the merged
+ *    base bible (they are view exclusions only until the branch merges).
+ */
+export interface BibleWithdrawalReport {
+  sent: number;
+  withdrawn: string[];
+  repromoted: string[];
+  already: string[];
+  not_found: string[];
+  unsupported: string[];
+  deferred: string[];
+  warning?: string;
+}
+
+/** An empty withdrawal report (nothing to apply). */
+export function emptyWithdrawalReport(): BibleWithdrawalReport {
+  return { sent: 0, withdrawn: [], repromoted: [], already: [], not_found: [], unsupported: [], deferred: [] };
+}
+
+/**
+ * File one per-id outcome (the SQLite applyBibleWithdrawal / KB server withdraw
+ * route vocabulary) into a report. not_confirmed is reported as already: the
+ * application is idempotent and a repeat is done, not a failure.
+ */
+export function recordWithdrawalOutcome(
+  report: BibleWithdrawalReport, id: string, outcome: 'withdrawn' | 'repromoted' | 'not_confirmed' | 'not_found',
+): void {
+  if (outcome === 'withdrawn') report.withdrawn.push(id);
+  else if (outcome === 'repromoted') report.repromoted.push(id);
+  else if (outcome === 'not_confirmed') report.already.push(id);
+  else report.not_found.push(id);
+}
+
+/**
+ * Apply a merged base bible's "withdrawn" tombstones to a SQLite KB through
+ * SqliteProvider.applyBibleWithdrawal (never create, the one re-promotion rule,
+ * never raise confidence). The caller decides that the bible IS the merged base
+ * bible; from any other source the ids are reported deferred instead.
+ */
+export function applyBibleWithdrawals(provider: SqliteProvider, tombstones: BibleTombstone[]): BibleWithdrawalReport {
+  const report = emptyWithdrawalReport();
+  for (const t of tombstones) {
+    report.sent++;
+    recordWithdrawalOutcome(report, t.id, provider.applyBibleWithdrawal(t.id, t.at, t.reason, t.note, t.evidence_files));
+  }
+  return report;
 }
 
 /**
@@ -69,6 +186,10 @@ export interface BibleDocument {
  * OPTIONAL, and a malformed tombstone is dropped individually rather than
  * failing the whole bible -- exactly how a malformed ENTRY is treated by
  * importBibleEntries below. kb-export.ts's reader calls this too.
+ *
+ * The optional `note` and `evidence_files` are kept (and so survive every
+ * writer that re-serializes the tombstones it read), as is any reason string,
+ * known or not.
  *
  * Each `at` is clamped to `now` (clampBibleTimeToNow): a future-dated tombstone
  * would otherwise become a future demoted_at on import, and every later
@@ -85,7 +206,15 @@ export function extractBibleDemotions(parsed: unknown, now: Date = new Date()): 
     if (typeof r.id !== 'string' || r.id.length === 0) continue;
     if (typeof r.at !== 'string' || r.at.length === 0) continue;
     if (typeof r.reason !== 'string' || r.reason.length === 0) continue;
-    byId.set(r.id, { id: r.id, at: clampBibleTimeToNow(r.at, now), reason: r.reason });
+    const tombstone: BibleTombstone = { id: r.id, at: clampBibleTimeToNow(r.at, now), reason: r.reason };
+    // The optional fields are carried only when well formed; a malformed one is
+    // dropped on its own, never the whole tombstone (it still removes the id).
+    if (typeof r.note === 'string' && r.note.length > 0) tombstone.note = r.note;
+    if (Array.isArray(r.evidence_files) && r.evidence_files.length > 0
+      && r.evidence_files.every(f => typeof f === 'string' && f.length > 0)) {
+      tombstone.evidence_files = [...(r.evidence_files as string[])];
+    }
+    byId.set(r.id, tombstone);
   }
   return Array.from(byId.values()).sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 }
@@ -169,7 +298,10 @@ export function excludeTombstonedEntries(entries: unknown[], demotions: BibleTom
  * The bible has THREE on-disk shapes and must accept all of them.
  *   v1 (legacy): a bare JSON array of entries.
  *   v2:          { version, provenance: {commit, branch, entry_count}, entries }
- *   v3:          the v2 envelope; entries may carry source_file_hashes.
+ *   v3:          the v2 envelope; entries may carry source_file_hashes. Current
+ *                writers emit provenance {branch} only (commit and entry_count
+ *                made every two bible-changing branches text-conflict); only
+ *                provenance.branch is read, so both provenance shapes parse.
  * Selection is on Array.isArray (v2 and v3 share the envelope). The reader
  * must never lag the writer.
  */
@@ -205,7 +337,13 @@ export function parseBibleDocument(raw: string, biblePath: string, label: string
     throw new KbBibleError(`${label}: bible file is not a JSON array of entries: ${biblePath}`, biblePath);
   }
   // A legacy bare array carries no demotions field; extract returns [] for it.
-  return { entries, demotions: extractBibleDemotions(parsed) };
+  const doc: BibleDocument = { entries, demotions: extractBibleDemotions(parsed) };
+  if (!Array.isArray(parsed)) {
+    const provenance = (parsed as { provenance?: unknown }).provenance;
+    const branch = provenance && typeof provenance === 'object' ? (provenance as { branch?: unknown }).branch : undefined;
+    if (typeof branch === 'string' && branch.length > 0) doc.provenanceBranch = branch;
+  }
+  return doc;
 }
 
 const VALID_TYPES: readonly ContentType[] = ['context-cache', 'learning', 'knowledge', 'runbook', 'user-directive'];
@@ -394,6 +532,13 @@ export async function importBibleEntries(
     // basis hashed from this clone: it can go stale when code drifts, but the
     // bible predicate never sees it, so the entry is not re-exported until it
     // is recaptured.
+    //
+    // The bible id is KEPT whatever AUDN decides (preferredId under importMode):
+    // an added, linked or flagged entry is stored under it, and a deduplicated
+    // one records an alias to the local row that absorbed it. The tombstone
+    // pass below, applyBibleWithdrawals and the KB server's withdraw route all
+    // look tombstones up by bible id, so this is what lets a later withdrawal
+    // or demotion reach this clone's row instead of answering not_found.
     let audn_decision: AudnDecision;
     try {
       ({ audn_decision } = await provider.capture(kbInput, {

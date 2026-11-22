@@ -307,7 +307,8 @@ describe('kb-setup (real CLI)', () => {
     const serverData = path.join(sandbox, 'kb-server-data');
     fs.mkdirSync(serverData);
     const kb = spawn(process.execPath, [CLI, 'kb-server', '--port', String(port), '--token-file', tokenFile, '--db', path.join(sandbox, 'kb.sqlite')],
-      { env: { ...process.env, APRA_FLEET_DATA_DIR: serverData }, stdio: ['ignore', 'ignore', 'pipe'] });
+      // cwd: the CLI's own folder, so both derive the same project slug (X-KB-Project).
+      { env: { ...process.env, APRA_FLEET_DATA_DIR: serverData }, cwd: sandbox, stdio: ['ignore', 'ignore', 'pipe'] });
     try {
       await new Promise<void>((resolve, reject) => {
         kb.stderr!.on('data', (d) => { if (String(d).includes('listening')) resolve(); });
@@ -320,7 +321,10 @@ describe('kb-setup (real CLI)', () => {
       await new Promise((r) => setTimeout(r, 600));
       expect(lastJson(await cli(['kb-setup', '--remote', url, '--token-ref', NAME]))).toEqual({ kbSetup: 'unchanged', verification: 'rejected' });
     } finally {
+      // Wait for the exit: on Windows a live process holds its cwd (the sandbox) open.
+      const exited = new Promise<void>((r) => { if (kb.exitCode !== null) r(); else kb.once('exit', () => r()); });
       kb.kill();
+      await exited;
     }
   });
 

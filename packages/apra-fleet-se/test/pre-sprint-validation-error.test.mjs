@@ -104,17 +104,23 @@ test('every refusal reason in the vocabulary is used by a runner.js throw site, 
     );
 });
 
-test('the stale-in-progress reclaim still runs BEFORE any refusal is raised', () => {
+test('the stale-in-progress reclaim still runs BEFORE the nothing-to-do refusal is raised', () => {
     // An empty `--ready` set is not by itself "nothing left to do": a bead
     // stuck in_progress by an interrupted run must be reclaimed first. Anchor
     // by symbol, and require the reclaim call to precede every refusal site.
     const reclaimAt = RUNNER_SRC.indexOf('await reclaimStaleInProgress({');
     assert.ok(reclaimAt > -1, 'reclaimStaleInProgress call site not found -- re-locate by symbol');
 
-    const firstRefusal = RUNNER_SRC.indexOf('Pre-sprint validation failed:');
+    // The TARGET_NOT_VISIBLE refusal is deliberately exempt: it runs
+    // unconditionally BEFORE any bead mutation (including the reclaim), so a
+    // bad target id aborts the sprint before anything is written. Every other
+    // refusal (the empty-scope ones) must still follow the reclaim.
+    const guardAt = RUNNER_SRC.indexOf('if (initialBeads.length === 0 && preSprintVerifyIds.length === 0) {');
+    const firstGuardedRefusal = RUNNER_SRC.indexOf('Pre-sprint validation failed:', guardAt);
+    assert.ok(guardAt > -1 && firstGuardedRefusal > guardAt, 'guarded refusal not found');
     assert.ok(
-        reclaimAt < firstRefusal,
-        'the stale-in-progress reclaim must run before the first pre-sprint refusal'
+        reclaimAt < firstGuardedRefusal,
+        'the stale-in-progress reclaim must run before the first empty-scope pre-sprint refusal'
     );
 });
 
@@ -131,10 +137,21 @@ test('the verify-only sprint path is still outside the refusal block and cannot 
         guardAt > -1,
         'the refusal block must stay guarded on BOTH an empty ready set and an empty verify set'
     );
+    // TARGET_NOT_VISIBLE is exempt: it is checked unconditionally, before the
+    // guard and before any bead mutation, by design.
+    const visibilityAt = RUNNER_SRC.indexOf('PRE_SPRINT_REFUSAL_REASONS.TARGET_NOT_VISIBLE');
+    assert.ok(visibilityAt > -1 && visibilityAt < guardAt, 'visibility refusal must precede the guard');
     for (const site of throwSitesFor(RUNNER_SRC, 'Pre-sprint validation failed:')) {
+        if (site.index < guardAt) {
+            assert.ok(
+                site.index > visibilityAt - 2500 && site.index < visibilityAt,
+                'only the TARGET_NOT_VISIBLE refusal may sit before the guard'
+            );
+            continue;
+        }
         assert.ok(
             site.index > guardAt,
-            'every pre-sprint refusal must sit inside the "no ready AND no verify-routed beads" guard'
+            'every other pre-sprint refusal must sit inside the "no ready AND no verify-routed beads" guard'
         );
     }
 });

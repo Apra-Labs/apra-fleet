@@ -1,13 +1,15 @@
 import { defaultWindowsPidWrapper } from './windows-wrapper.js';
 export { defaultWindowsPidWrapper as pidWrapWindows };
 ﻿import { execFileSync } from 'node:child_process';
-import type { OsCommands, ProviderAdapter, PromptOptions } from './os-commands.js';
-import { escapeWindowsArg, sanitizeSessionId, GIT_LS_REMOTE_OK_MARKER } from './os-commands.js';
+import type { OsCommands, ProviderAdapter, PromptOptions, UnsetEnvOptions } from './os-commands.js';
+import { escapeWindowsArg, sanitizeSessionId, GIT_LS_REMOTE_OK_MARKER, gitCredentialHelperStem, groupGitCredentialHelpers, gitHelperParamWord } from './os-commands.js';
+import type { GitCredentialHelperRegistration } from './os-commands.js';
 import { escapeBatchMetachars, escapePowerShellArgInner } from '../utils/shell-escape.js';
 import { boundChildEnv, describeBoundedEnv } from './child-env-bound.js';
 import { logWarn } from '../utils/log-helpers.js';
 import { withGoMaxProcsDefault, GO_MAXPROCS_DEFAULT_PWSH } from './go-concurrency.js';
 import { windowsExecutable } from './windows-executable.js';
+import { assertAuthorizedKeyMatch } from './ssh-key-match.js';
 
 /**
  * Wrap a PowerShell script as a base64 `-EncodedCommand` invocation.
@@ -351,56 +353,91 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
     return `$f = ${q}; try { $v = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(([IO.File]::ReadAllText($f)).Trim())); [Environment]::SetEnvironmentVariable('${name}', $v, 'User') } catch { [Console]::Error.WriteLine('apra-fleet: could not apply the staged env file'); exit 1 } finally { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue }`;
   }
 
-  unsetEnv(name: string): string[] {
+  // A User env var carries no marker: `opts.all` changes nothing here, the
+  // caller decides from its own delivery record whether to unset at all.
+  unsetEnv(name: string, _opts?: UnsetEnvOptions): string[] {
     if (!/^[A-Z_][A-Z0-9_]*$/i.test(name)) throw new Error('Invalid env var name: ' + name);
     return [`[Environment]::SetEnvironmentVariable('${name}', $null, 'User')`];
   }
 
   // --- Git credential helper ---
 
-  gitCredentialHelperWrite(host: string, username: string, token: string, label?: string, scopeUrl?: string): string {
+  gitCredentialHelperWrite(host: string, username: string, token: string, label?: string, _scopeUrl?: string, memberId?: string): string {
     const escapedHost = escapePowerShellArgInner(escapeWindowsArg(host));
     const escapedUser = escapePowerShellArgInner(escapeWindowsArg(username));
     const batchToken = escapeBatchMetachars(token);
     const escapedToken = escapePowerShellArgInner(batchToken);
-    const credFileName = label ? `.fleet-git-credential-${escapePowerShellArgInner(escapeWindowsArg(label))}` : '.fleet-git-credential';
-    // scope_url is passed through escapeWindowsArg (single-quote escaped) and embedded in a single-quoted git config arg — safe against injection.
-    const credUrl = scopeUrl ? escapePowerShellArgInner(escapeWindowsArg(scopeUrl)) : `https://${escapedHost}`;
+    // Per member AND label, registered nowhere in git config: git finds it
+    // through gitCredentialEnvPrefix() at dispatch time.
+    const credFileName = gitCredentialHelperStem(label, memberId);
     return [
       `$script = ('@echo off','echo protocol=https','echo host=${escapedHost}','echo username=${escapedUser}','echo password=${escapedToken}') -join [Environment]::NewLine`,
-      `Set-Content -Path "$env:USERPROFILE\\${credFileName}.bat" -Value $script -NoNewline`,
+      `Set-Content -LiteralPath "$env:USERPROFILE\\${credFileName}.bat" -Value $script -NoNewline`,
       `$gcFile = "$env:USERPROFILE\\${credFileName}.bat"; $u = $env:USERNAME; icacls $gcFile /inheritance:r /grant:r "\${u}:F"`,
-      `git config --global --replace-all 'credential.${credUrl}.helper' ''`,
-      `$helperPath = "$env:USERPROFILE\\${credFileName}.bat" -replace '\\\\','/'; git config --global --add 'credential.${credUrl}.helper' $helperPath`,
     ].join('; ');
   }
 
   gitCredentialHelperRemoveLegacyFile(): string {
     // File only -- deliberately no `git config --unset-all`.
-    return `Remove-Item "$env:USERPROFILE\\.fleet-git-credential.bat" -Force -ErrorAction SilentlyContinue`;
+    return `Remove-Item -LiteralPath "$env:USERPROFILE\\.fleet-git-credential.bat" -Force -ErrorAction SilentlyContinue`;
   }
 
-  gitCredentialHelperRead(label?: string): { command: string; path: string } {
-    // Unlike the POSIX branch, the label here is interpolated into a
-    // PowerShell double-quoted string AND a filename, so anything outside a
-    // safe slug alphabet is refused outright rather than escaped -- the same
-    // rule the fleet-sprint side applies in se-windows.mjs.
-    if (label !== undefined && !/^[A-Za-z0-9._-]+$/.test(label)) {
-      throw new Error(`Refusing to build a Windows credential-read command for unsafe VCS credential label '${label}' (allowed: letters, digits, '.', '_', '-').`);
-    }
-    const credFileName = label ? `.fleet-git-credential-${label}` : '.fleet-git-credential';
-    const credPath = `$env:USERPROFILE\\${credFileName}.bat`;
+  gitCredentialHelperRead(label?: string, memberId?: string): { command: string; path: string } {
+    // The label and member id land in a PowerShell double-quoted string AND a
+    // filename, so gitCredentialHelperStem refuses anything outside a safe
+    // slug alphabet rather than escaping it.
+    const credPath = `$env:USERPROFILE\\${gitCredentialHelperStem(label, memberId)}.bat`;
     // `&` is PowerShell's call operator: without it a quoted path is echoed as
     // a string literal rather than executed.
     return { command: `& "${credPath}"`, path: credPath };
   }
 
-  gitCredentialHelperRemove(host: string, label?: string, scopeUrl?: string): string {
-    const escapedHost = escapePowerShellArgInner(escapeWindowsArg(host));
-    const credFileName = label ? `.fleet-git-credential-${escapePowerShellArgInner(escapeWindowsArg(label))}` : '.fleet-git-credential';
-    // scope_url is passed through escapeWindowsArg (single-quote escaped) and embedded in a single-quoted git config arg — safe against injection.
-    const credUrl = scopeUrl ? escapePowerShellArgInner(escapeWindowsArg(scopeUrl)) : `https://${escapedHost}`;
-    return `Remove-Item "$env:USERPROFILE\\${credFileName}.bat" -Force -ErrorAction SilentlyContinue; git config --global --unset-all 'credential.${credUrl}.helper' 2>$null`;
+  gitCredentialHelperRemove(_host: string, label?: string, _scopeUrl?: string, memberId?: string): string {
+    return `Remove-Item -LiteralPath "$env:USERPROFILE\\${gitCredentialHelperStem(label, memberId)}.bat" -Force -ErrorAction SilentlyContinue`;
+  }
+
+  gitCredentialHelperRemoveLegacyGlobal(host: string, label?: string, scopeUrl?: string): string {
+    const stem = gitCredentialHelperStem(label);
+    // Single-quoted PowerShell literal: ' doubles.
+    const key = `credential.${scopeUrl ?? `https://${host}`}.helper`.replace(/'/g, "''");
+    // Remove ONLY fleet's own value -- the legacy release stored the .bat path
+    // in forward-slash form -- then the empty reset entry when no non-empty
+    // value is left; any other value stays. Values are counted, never echoed.
+    // Always ends with exit code 0 and one FLEET_LEGACY_HELPER line.
+    return `Remove-Item -LiteralPath "$env:USERPROFILE\\${stem}.bat" -Force -ErrorAction SilentlyContinue; `
+      + `$fk = '${key}'; $fv = ($env:USERPROFILE -replace '\\\\','/') + '/${stem}.bat'; `
+      + `$fall = @(git config --global --get-all $fk 2>$null); `
+      + `$fn = @($fall | Where-Object { $_ -ceq $fv }).Count; `
+      + `if ($fn -gt 0) { `
+      + `$fre = '^' + ($fv -replace '([\\[\\]\\\\.*^$+?(){}|])','\\$1') + '$'; `
+      + `git config --global --unset-all $fk $fre 2>$null; `
+      + `if ($LASTEXITCODE -eq 0) { `
+      + `$fkept = @(git config --global --get-all $fk 2>$null | Where-Object { $_ -ne '' }).Count; $fr = 0; `
+      + `if ($fkept -eq 0) { git config --global --unset-all $fk '^$' 2>$null; if ($LASTEXITCODE -eq 0) { $fr = 1 } }; `
+      + `"FLEET_LEGACY_HELPER removed=$fn kept=$fkept reset_removed=$fr" `
+      + `} else { 'FLEET_LEGACY_HELPER failed=1' } `
+      + `} else { $fkept = @($fall | Where-Object { $_ -ne '' }).Count; "FLEET_LEGACY_HELPER removed=0 kept=$fkept reset_removed=0" }; `
+      + `$global:LASTEXITCODE = 0`;
+  }
+
+  gitCredentialEnvPrefix(helpers: GitCredentialHelperRegistration[], memberId: string): string {
+    const groups = groupGitCredentialHelpers(helpers, memberId);
+    if (groups.length === 0) return '';
+    // GIT_CONFIG_PARAMETERS (not GIT_CONFIG_COUNT/KEY/VALUE): PowerShell and
+    // .NET DELETE a variable assigned an empty string, so the empty value that
+    // resets git's inherited helper list cannot be an env var of its own --
+    // inside GIT_CONFIG_PARAMETERS it is just the text after '='. $fleetGitH is
+    // $env:USERPROFILE in git's forward-slash form, single-quote-escaped twice
+    // (see gitHelperParamWord) so an apostrophe or a space in it works. Scopes
+    // and file names are validated to a charset needing no escaping inside a
+    // PowerShell double-quoted string.
+    const words: string[] = [];
+    for (const g of groups) {
+      words.push(`'credential.${g.scopeUrl}.helper='`);
+      for (const stem of g.stems) words.push(gitHelperParamWord(g.scopeUrl, '$($fleetGitH)', `${stem}.bat`));
+    }
+    return `$fleetGitH = (($env:USERPROFILE -replace '\\\\','/') -replace "'","'\\''") -replace "'","'\\''"; `
+      + `$env:GIT_CONFIG_PARAMETERS = "${words.join(' ')}"; `;
   }
 
   ghAuthLogin(token: string, hostname = 'github.com'): string {
@@ -428,6 +465,27 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
       // Only attempt if user is in Administrators group (non-admins can't write to ProgramData\ssh).
       `$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator); if ($isAdmin) { $adminKeys = "$env:ProgramData\\ssh\\administrators_authorized_keys"; if (!(Test-Path $adminKeys)) { New-Item -Path $adminKeys -ItemType File -Force | Out-Null }; [System.IO.File]::AppendAllText($adminKeys, '${escaped}' + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false)); icacls $adminKeys /inheritance:r /grant:r "SYSTEM:F" /grant:r "Administrators:F" }`,
     ];
+  }
+
+  removeSSHPublicKey(keyMatch: string, memberHome: string): string {
+    assertAuthorizedKeyMatch(keyMatch);
+    const key = escapePowerShellArgInner(keyMatch);
+    const akFile = escapePowerShellArgInner(`${memberHome.replace(/[\\/]+$/, '')}\\.ssh\\authorized_keys`);
+    // String.Contains is a literal match (no regex). The file is rewritten in
+    // place (UTF-8, no BOM, as deploy writes it), so the ACL deploy set stays.
+    // The admin probe and administrators_authorized_keys path mirror
+    // deploySSHPublicKey exactly.
+    return wrapPowerShellEncoded(
+      `$k = '${key}'; `
+      + `$files = @('${akFile}'); `
+      + `$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator); `
+      + `if ($isAdmin) { $files += "$env:ProgramData\\ssh\\administrators_authorized_keys" }; `
+      + `foreach ($f in $files) { if (Test-Path -LiteralPath $f) { `
+      + `$lines = [System.IO.File]::ReadAllLines($f); `
+      + `$keep = [string[]]@($lines | Where-Object { -not $_.Contains($k) }); `
+      + `if ($keep.Count -ne $lines.Count) { [System.IO.File]::WriteAllLines($f, $keep, [System.Text.UTF8Encoding]::new($false)) } `
+      + `} }`,
+    );
   }
 
   // --- Local exec ---

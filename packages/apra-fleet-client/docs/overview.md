@@ -96,7 +96,7 @@ Declared in `package.json#exports`:
 
 | Import path | File | Contents |
 |---|---|---|
-| `@apralabs/apra-fleet-client` | `src/client/api.mjs` | `ApraFleet` class, `deriveTimeoutMs()`, `parseToolJson()` |
+| `@apralabs/apra-fleet-client` | `src/client/api.mjs` | `ApraFleet` class, `EXECUTE_PROMPT_MAX_TURNS`, `deriveTimeoutMs()`, `parseToolJson()` |
 | `@apralabs/apra-fleet-client/client` | `src/client/client.mjs` | `McpClient` class, `DEFAULT_REQUEST_TIMEOUT_MS` |
 | `@apralabs/apra-fleet-client/factory` | `src/client/factory.mjs` | `createWorkflowEngine()` |
 | `@apralabs/apra-fleet-client/transport` | `src/client/transport.mjs` | `StdioTransport`, `StreamableHttpTransport` |

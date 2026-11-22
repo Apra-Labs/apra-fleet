@@ -14,6 +14,7 @@ import {
     runDevelopLoopScenario,
     withScenarioMarkers,
     defaultMockCallTool,
+    MOCK_MEMBER_WORK_FOLDER,
 } from './helpers/mock-sprint-harness.mjs';
 import { scaledTimeout } from './helpers/scaled-timeout.mjs';
 
@@ -75,7 +76,7 @@ async function readBackAfterReservationReleased(sprintId, result) {
 const callToolFactory = (executeCommand) => {
     const base = defaultMockCallTool({ executeCommand });
     return async (name, args) => {
-        if (name === 'member_detail') return { content: [{ text: JSON.stringify({ vcsProvider: 'github' }) }] };
+        if (name === 'member_detail') return { content: [{ text: JSON.stringify({ vcsProvider: 'github', folder: MOCK_MEMBER_WORK_FOLDER }) }] };
         if (name === 'provision_vcs_auth') {
             const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
             return { content: [{ text: `[OK] Mock ${args.provider} credentials deployed on "${args.member_name}"\n  expiresAt: ${expiresAt}\n` }] };

@@ -119,6 +119,7 @@ export function vetKbWork(role, result) {
     const captures = [];
     const promotions = [];
     const refused = [];
+    const demotions = [];
 
     const rawCaptures = (result && Array.isArray(result.kb_captures)) ? result.kb_captures : [];
     for (const c of rawCaptures) {
@@ -189,28 +190,273 @@ export function vetKbWork(role, result) {
         }
     }
 
-    // One output may not both CONFIRM and DISCARD the same entry: the two
-    // judgements contradict each other, so neither is executed and both sides
-    // are logged.
+    // kb_demotions: the final reviewer's DEMOTE judgement -- an offered
+    // CONFIRMED entry whose claim is false at the sprint branch HEAD. Same
+    // role gate and reason bar as kb_promotions and kb_discards, plus at
+    // least one evidence file: the withdrawal it becomes (kb_bible_commit
+    // `withdrawals`) refuses one without, so it is refused here first.
+    const rawDemotions = (result && Array.isArray(result.kb_demotions)) ? result.kb_demotions : [];
+    if (rawDemotions.length > 0 && !KB_PROMOTER_ROLES.has(role)) {
+        refused.push(`${role}: kb_demotions refused -- demotion is reviewer-only`);
+    } else {
+        for (const d of rawDemotions) {
+            if (!d || typeof d.id !== 'string' || d.id.length === 0) {
+                refused.push(`${role}: demotion missing id`);
+                continue;
+            }
+            if (typeof d.reason !== 'string' || d.reason.trim().length < KB_MIN_PROMOTE_REASON) {
+                refused.push(`${role}: demotion ${d.id} has no recorded evidence`);
+                continue;
+            }
+            const evidenceFiles = Array.isArray(d.evidence_files)
+                ? d.evidence_files.filter((f) => typeof f === 'string' && f.length > 0)
+                : [];
+            if (evidenceFiles.length === 0) {
+                refused.push(`${role}: demotion ${d.id} names no evidence file`);
+                continue;
+            }
+            demotions.push({ id: d.id, reason: d.reason.trim(), evidence_files: evidenceFiles });
+        }
+    }
+
+    // One output may not judge the same entry more than one way: an id in
+    // more than one of kb_promotions, kb_discards and kb_demotions is refused
+    // in EVERY list it appears in, with a refusal logged per side naming the
+    // other judgements. The pre-existing two-way promote/discard behaviour is
+    // preserved exactly for the cases it already covered.
+    const promotionIds = new Set(promotions.map((p) => p.id));
     const discardIds = new Set(discards.map((d) => d.id));
-    const conflicted = new Set(promotions.filter((p) => discardIds.has(p.id)).map((p) => p.id));
+    const demotionIds = new Set(demotions.map((d) => d.id));
+    const conflicted = new Set();
+    for (const id of promotionIds) if (discardIds.has(id) || demotionIds.has(id)) conflicted.add(id);
+    for (const id of discardIds) if (promotionIds.has(id) || demotionIds.has(id)) conflicted.add(id);
+    for (const id of demotionIds) if (promotionIds.has(id) || discardIds.has(id)) conflicted.add(id);
+
+    const otherSidesFor = (id, excludeKind) => {
+        const sides = [];
+        if (excludeKind !== 'promotion' && promotionIds.has(id)) sides.push('promotes');
+        if (excludeKind !== 'discard' && discardIds.has(id)) sides.push('discards');
+        if (excludeKind !== 'demotion' && demotionIds.has(id)) sides.push('demotes');
+        return sides;
+    };
     for (const p of promotions) {
-        if (conflicted.has(p.id)) refused.push(`${role}: promotion ${p.id} refused -- the same output also discards it (promote reason: ${p.reason})`);
+        if (conflicted.has(p.id)) refused.push(`${role}: promotion ${p.id} refused -- the same output also ${otherSidesFor(p.id, 'promotion').join(' and ')} it (promote reason: ${p.reason})`);
     }
     for (const d of discards) {
-        if (conflicted.has(d.id)) refused.push(`${role}: discard ${d.id} refused -- the same output also promotes it (discard reason: ${d.reason})`);
+        if (conflicted.has(d.id)) refused.push(`${role}: discard ${d.id} refused -- the same output also ${otherSidesFor(d.id, 'discard').join(' and ')} it (discard reason: ${d.reason})`);
+    }
+    for (const d of demotions) {
+        if (conflicted.has(d.id)) refused.push(`${role}: demotion ${d.id} refused -- the same output also ${otherSidesFor(d.id, 'demotion').join(' and ')} it (demote reason: ${d.reason})`);
     }
 
     return {
         captures,
         promotions: promotions.filter((p) => !conflicted.has(p.id)),
         discards: discards.filter((d) => !conflicted.has(d.id)),
+        demotions: demotions.filter((d) => !conflicted.has(d.id)),
         refused,
     };
 }
 
 /** Max promotion candidates offered to one reviewer, so the prompt stays bounded. */
 export const KB_MAX_PROMOTION_CANDIDATES = 40;
+
+/** Max demotion candidates offered to one reviewer, so the prompt stays bounded. */
+export const KB_MAX_DEMOTION_CANDIDATES = 20;
+
+/**
+ * How many owned CONFIRMED rows the demotion-candidate READ asks for, which is
+ * deliberately NOT the offer cap above.
+ *
+ * The cap is an OFFER cap -- how much of this prompt the candidate block may
+ * occupy. Using it as the read limit instead makes it a PRE-filter: a
+ * maintainer holding more owned CONFIRMED rows than the cap has an arbitrary
+ * 20 of them fetched, and the eligibility/changed-file filters then run over
+ * that arbitrary slice, so a genuinely relevant entry can be truncated away
+ * before anything ever looks at whether it is relevant. Read wide, filter,
+ * THEN cap.
+ */
+export const KB_DEMOTION_READ_LIMIT = 500;
+
+/**
+ * The EXACT kb_query arguments demotionCandidates issues, as a standalone
+ * pure function so the real read path can be exercised end-to-end against a
+ * real member session (tests/knowledge/) rather than only against a fake that
+ * re-states these arguments and therefore cannot catch them being wrong.
+ *
+ * Every field is load-bearing, and the previous shape of this read returned
+ * nothing in a real sprint:
+ *
+ *  - `own_scope: true` is the whole fix. In a MEMBER session getSelfReadKb
+ *    routes any read that does not explicitly name INFERRED/UNVERIFIED to the
+ *    member's CHECKOUT BIBLE VIEW, and bible-import.ts stamps every row of
+ *    that view `tags: []` -- so a CONFIRMED read filtered by a member tag can
+ *    never match anything, in any sprint. own_scope forces the PER-REPO DB
+ *    with the caller's own ownerTag applied, which is exactly the row set
+ *    kb_demote's ownerTag check can act on.
+ *  - `tag` is still required: kb_query refuses a call carrying neither
+ *    `query`, `tag` nor `flagged_only`, and this is a listing, not a search.
+ *    It names the same member tag own_scope's server-side ownerTag applies.
+ *  - `confidence: ['CONFIRMED']` -- kb_demote refuses anything else
+ *    (E-DEMOTE-NOT-CONFIRMED).
+ *  - `include_stale: true` and `exclude_disputed: false` ADMIT the rows most
+ *    worth demoting. SqliteProvider.demote() documents a STALE entry as
+ *    demotable on purpose (staleness is a freshness verdict; trust is a
+ *    separate axis), and a contradiction-flagged row is likewise demotable.
+ *    The default read drops both, which silently excluded the best
+ *    candidates.
+ *  - include_stale ALSO admits SUPERSEDED rows (kb_query maps the one input
+ *    flag onto both provider options), and kb_demote refuses those
+ *    (E-DEMOTE-SUPERSEDED) -- so the caller must drop them itself. See
+ *    isDemotableCandidate below.
+ *
+ * @param {string} memberId the maintainer member uuid whose session the read runs in
+ * @returns {object} kb_query arguments
+ */
+export function buildDemotionCandidateQuery(memberId) {
+    return {
+        tag: `member:${memberId}`,
+        own_scope: true,
+        confidence: ['CONFIRMED'],
+        include_stale: true,
+        exclude_disputed: false,
+        limit: KB_DEMOTION_READ_LIMIT,
+    };
+}
+
+/**
+ * The OTHER half of the final review's demotion-candidate read: every
+ * CONFIRMED entry (not only the maintainer's own) citing one of `files`.
+ *
+ * Demotions are no longer kb_demote calls bound to the caller's own rows:
+ * they become withdrawals in the branch's bible commit, which admit any entry
+ * the bible holds. A MEMBER-session CONFIRMED read without own_scope is
+ * answered from the member's checkout bible view (every CONFIRMED entry the
+ * branch's bible carries, whoever captured it); `files` makes the read a hard
+ * file filter so it stays bounded. buildDemotionCandidateQuery (own_scope)
+ * still runs alongside it for the maintainer's own CONFIRMED rows that are not
+ * in the bible yet (promoted this sprint, confirmation not yet committed).
+ *
+ * @param {string[]} files the sprint's changed files
+ * @returns {object} kb_query arguments
+ */
+export function buildBibleDemotionCandidateQuery(files) {
+    return {
+        files: [...files],
+        confidence: ['CONFIRMED'],
+        include_stale: true,
+        exclude_disputed: false,
+        limit: KB_DEMOTION_READ_LIMIT,
+    };
+}
+
+/**
+ * The tool a maintainer's session must list for a demotion to be offered.
+ * kb_capabilities ships in the same apra-fleet build as kb_bible_commit's
+ * `withdrawals` / `restore_ids`, so its presence is the version gate; its
+ * answer ({contract, routes, branch_aware, query_filters?}) says what the
+ * maintainer's project KB serves.
+ */
+export const KB_CAPABILITIES_TOOL = 'kb_capabilities';
+
+/** The first 8 characters of a KB id, for log lines. */
+const kbId8 = (id) => String(id).slice(0, 8);
+
+/**
+ * One log phrase for kb_import's `withdrawals` result (the merged bible's
+ * withdrawn tombstones it applied), or '' when the answer carries none:
+ * absent, not an object, or every count zero. Counts per outcome, then the
+ * withdrawn ids (first 8 characters).
+ */
+export function importWithdrawalsLine(w) {
+    if (!w || typeof w !== 'object') return '';
+    const list = (k) => (Array.isArray(w[k]) ? w[k].filter((id) => typeof id === 'string') : []);
+    const sent = typeof w.sent === 'number' ? w.sent : 0;
+    const keys = ['withdrawn', 'repromoted', 'already', 'not_found', 'unsupported', 'deferred'];
+    if (sent === 0 && keys.every((k) => list(k).length === 0)) return '';
+    const counts = [`sent=${sent}`, ...keys.map((k) => `${k}=${list(k).length}`)].join(' ');
+    const withdrawn = list('withdrawn');
+    return withdrawn.length > 0 ? `${counts}; withdrawn: ${withdrawn.map(kbId8).join(', ')}` : counts;
+}
+
+/**
+ * The KB route a merged withdrawal needs: after the merge, every importer's
+ * kb_import replays the tombstone through it. kb_capabilities lists it for a
+ * local SQLite KB and for an http KB server that serves it. A maintainer
+ * whose KB does not serve it could never apply a demotion, so it is offered
+ * none.
+ */
+export const KB_WITHDRAW_ROUTE = 'withdraw';
+
+/**
+ * Whether an entry may be offered as a demotion candidate. A demotion is a
+ * kb_bible_commit withdrawal, which admits a CONFIRMED, non-superseded entry
+ * that is not a user-directive (anything else is skipped not_withdrawable),
+ * so the reviewer is never offered an id that can only produce a skip:
+ *
+ *   superseded_at set        -> not offered
+ *   type user-directive      -> not offered
+ *   confidence != CONFIRMED  -> not offered
+ *
+ * NOT filtered: `stale` and `flagged_for_review`/`contradiction_of` -- a
+ * stale or disputed CONFIRMED entry is exactly the kind most worth
+ * re-checking.
+ *
+ * @param {object} entry
+ * @returns {boolean}
+ */
+export function isDemotableCandidate(entry) {
+    if (!entry || typeof entry.id !== 'string' || !entry.id) return false;
+    if (entry.confidence !== 'CONFIRMED') return false;
+    if (entry.type === 'user-directive') return false;
+    if (entry.superseded_at) return false;
+    return true;
+}
+
+/**
+ * D6 in-sprint ping-pong guard: true when `entry` was demoted DURING THIS
+ * SPRINT -- i.e. its `demoted_at` (an INFERRED entry's kb_query row carries
+ * this when it was ever demoted, per rowToEntry) falls at or after the
+ * sprint's start. `since` is the sprint start in ms
+ * (createKbWorkClient's sprintStartMs()); when it is null the guard cannot
+ * tell "this sprint" from "ever demoted", so it answers false -- the SAME
+ * permissive default promotionCandidates' own created_at window filter uses
+ * for an unknown sprint start, never a reason to exclude.
+ *
+ * @param {object} entry
+ * @param {number|null} since
+ * @returns {boolean}
+ */
+export function wasDemotedThisSprint(entry, since) {
+    if (!entry || typeof entry.demoted_at !== 'string' || since === null) return false;
+    const t = Date.parse(entry.demoted_at);
+    return Number.isFinite(t) && t >= since;
+}
+
+/**
+ * D6 in-sprint ping-pong guard: true when EVERY file `basis` (an entry's
+ * demoted_basis_hashes snapshot, taken AS THE FILES WERE ON DISK AT DEMOTE
+ * TIME) cites still hashes, in `current` (this moment's re-read), to the
+ * SAME value -- i.e. nothing the demotion was based on has changed since.
+ *
+ * NEVER A MATCH -- so the entry stays offered rather than silently
+ * ping-ponged out forever on an unprovable basis -- when: `basis` is
+ * missing or empty (a legacy row, or one demoted before this snapshot
+ * existed); `current` is missing (the disk-hash callback was never wired,
+ * or its read failed); or any cited file is absent from `current` (deleted,
+ * unreadable, or moved outside the checkout). This mirrors
+ * isDemotableCandidate's own "never falsely suppress" rule for an
+ * unparseable basis.
+ *
+ * @param {Record<string,string>|undefined} basis
+ * @param {Record<string,string>|undefined} current
+ * @returns {boolean}
+ */
+export function demotionBasisUnchanged(basis, current) {
+    const files = basis ? Object.keys(basis) : [];
+    if (files.length === 0 || !current) return false;
+    return files.every((f) => typeof current[f] === 'string' && current[f] === basis[f]);
+}
 
 /** Display label for a member record in log lines. */
 function memberLabel(member) {
@@ -249,6 +495,30 @@ function isUnreachableError(err) {
     return !!(err && typeof err.code === 'string' && err.code.length > 0 && !KB_TOOL_REJECTION_CODES.has(err.code));
 }
 
+/**
+ * The error codes a remote (http) KB provider throws for a write the server
+ * never handled, each with the reason the engine logs:
+ *   - E-KB-HTTP-UNREACHABLE: the KB server cannot be reached, or refused the
+ *     request before handling it (429, 503);
+ *   - E-KB-HTTP-AUTH: the KB server token (a named secret) is missing,
+ *     expired or refused; the identical write succeeds once it is fixed.
+ * The provider queues nothing, so the engine owns the retry: a write that
+ * fails with one of these stays queued for the next flush.
+ */
+const KB_SERVER_KEEP_CODES = Object.freeze([
+    ['E-KB-HTTP-UNREACHABLE', 'KB server unreachable'],
+    ['E-KB-HTTP-AUTH', 'KB server token refused'],
+]);
+
+/** The keep-queued reason when a kb_* tool's error text carries one of KB_SERVER_KEEP_CODES, else null. */
+function kbServerKeepReason(text) {
+    if (typeof text !== 'string') return null;
+    for (const [code, reason] of KB_SERVER_KEEP_CODES) {
+        if (new RegExp(`(^|[^A-Z-])${code}\\b`).test(text)) return reason;
+    }
+    return null;
+}
+
 /** The member name a kb work call names (a member record or a bare name). */
 function memberNameOf(member) {
     if (typeof member === 'string') return member;
@@ -261,8 +531,8 @@ function memberNameOf(member) {
  * never through the member whose dispatch produced it, and never through the
  * orchestrator's own session.
  *
- *   - apply() vets a role's kb_captures / kb_promotions, then QUEUES them per
- *     repository and flushes that repository's queue.
+ *   - apply() vets a role's kb_captures / kb_promotions / kb_demotions, then
+ *     QUEUES them per repository and flushes that repository's queue.
  *   - A flush runs the existing G-pull (opts.gPull -> git-sync's bracketed
  *     syncMemberBefore) on the maintainer BEFORE the batch, so the
  *     maintainer's checkout holds the files a capture cites and the KB's
@@ -277,29 +547,44 @@ function memberNameOf(member) {
  *     maintainer and is dropped with a WARN.
  *   - A write the maintainer cannot be reached for mid-batch is put back at
  *     the head of the queue: nothing is lost and nothing is silently dropped.
+ *     The same holds when the maintainer answers but its remote KB server
+ *     cannot be reached or refuses the request before handling it
+ *     (E-KB-HTTP-UNREACHABLE), or refuses its token (E-KB-HTTP-AUTH): the
+ *     http provider queues nothing, so the engine keeps the write and
+ *     retries it next flush.
  *
  * The bible commit (commitRound): every promotion the maintainer applied is
- * remembered per repository as a CONFIRMATION awaiting the bible. After each
- * review round (reviewer, final reviewer, harvester) the engine calls
- * commitRound(), which per repository with confirmations runs, on the
- * maintainer: G-pull, kb_bible_commit {ids, baseBranch, baseCommit}, G-push.
- * baseBranch is the sprint's TARGET BASE branch and baseCommit the base
- * commit the entries were verified against (opts.bibleBase resolves both on
- * the maintainer). A rejected G-push is retried exactly once: abort any
- * in-progress rebase, G-pull onto the new remote tip, kb_bible_commit again
- * with the same ids (it merges at entry level, so the concurrent change's
- * entries survive with no manual merge) and G-push again. A second failure
- * keeps the ids queued for the next round with a WARN. When kb_bible_commit
- * commits nothing (committed:false) the ids leave the queue only once origin
- * is shown to hold the bible (opts.bibleUnpushed): an earlier round's bible
- * commit still unpushed on the maintainer is G-pushed (same retry and reset
- * guards), and an undecidable check keeps the ids queued with a WARN. After
- * seal() (a FAIL verdict or an aborted sprint) nothing further is committed.
+ * remembered per repository as a CONFIRMATION, every final-review demotion as
+ * a pending WITHDRAWAL and every final-review hold as a pending RESTORE, all
+ * awaiting the bible. No kb_demote is ever issued: a demotion is a withdrawn
+ * tombstone on the sprint branch's bible, which takes effect for clones only
+ * once that branch merges. After each review round (reviewer, final
+ * reviewer, harvester) the engine calls commitRound(), which per repository
+ * with any of them runs, on the maintainer: G-pull, kb_bible_commit {ids,
+ * withdrawals, restore_ids, baseBranch, baseCommit}, G-push -- all three are
+ * ALWAYS sent in the same call, so a round makes at most one kb_bible_commit
+ * call per repository. baseBranch is the sprint's TARGET BASE branch and
+ * baseCommit the base commit the entries were verified against (opts.bibleBase
+ * resolves both on the maintainer). A rejected G-push is retried exactly
+ * once: abort any in-progress rebase, G-pull onto the new remote tip,
+ * kb_bible_commit again with the same load (it merges at entry level, so the
+ * concurrent change's entries survive with no manual merge) and G-push
+ * again. A second failure keeps the whole load queued for the
+ * next round with a WARN. When kb_bible_commit commits nothing
+ * (committed:false) the ids leave the queue only once origin is shown to hold
+ * the bible (opts.bibleUnpushed): an earlier round's bible commit still
+ * unpushed on the maintainer is G-pushed (same retry and reset guards), and
+ * an undecidable check keeps the ids queued with a WARN. After a FAIL verdict
+ * (seal with confirmationsOnly) confirmations are no longer committed but
+ * withdrawals and restores still are; after an aborted sprint (seal) nothing
+ * further is committed.
  * An id kb_bible_commit skips with basis_mismatch stays queued and is offered
  * again next round (the mismatch can be transient), for at most
  * opts.bibleSkipRetryRounds (default KB_BIBLE_SKIP_RETRY_ROUNDS) skipped
  * rounds in a row, then is dropped with a WARN naming it and the reason; any
- * other skip reason drops the id at once.
+ * other skip reason drops the id at once. A withdrawal or restore always
+ * leaves the queue after a successful call, skipped ones included (a skip
+ * such as not_withdrawable cannot change by retrying).
  *
  * @param {{
  *   memberCall?: (member: object, name: string, args: object, opts?: { kbMaintainer?: boolean }) => Promise<any>,
@@ -312,6 +597,8 @@ function memberNameOf(member) {
  *   checkedOutBranch?: (memberName: string) => Promise<{ branch: string|null, sprintBranch: string|null }>,
  *   bibleUnpushed?: (memberName: string, bibleFile: string) => Promise<{ unpushed: boolean|null, reason?: string }>,
  *   unpushedOnlyBible?: (memberName: string, bibleFile: string) => Promise<{ onlyBible: boolean, reason?: string }>,
+ *   listTools?: (member: object) => Promise<any>,
+ *   sprintChangedFiles?: (memberName: string) => Promise<string[]>,
  *   sprintStartMs?: number|(() => number),
  *   bibleSkipRetryRounds?: number,
  *   log?: Function,
@@ -326,13 +613,64 @@ function memberNameOf(member) {
 export const KB_MAINTAINER_CALL = Object.freeze({ kbMaintainer: true });
 
 export function createKbWorkClient(opts = {}) {
-    const { memberCall, gPull, gPush, abortRebase, bibleBase, canResetCheckout, checkedOutBranch, bibleUnpushed, unpushedOnlyBible, log = () => {} } = opts;
+    const {
+        memberCall, gPull, gPush, abortRebase, bibleBase, canResetCheckout, checkedOutBranch, bibleUnpushed, unpushedOnlyBible,
+        // The CUMULATIVE sprint changed-file set (baseBranch...branch) for
+        // demotionCandidates() -- (memberName: string) => Promise<string[]>.
+        // Demotion candidates are offered at the FINAL review only (a round
+        // review gets none), and final review judges the whole sprint diff.
+        // Injected because the fetch/fast-forward merge and the git diff are
+        // git operations kb.mjs has no access to (every kb_* call here goes
+        // through memberCall, never a shell).
+        sprintChangedFiles,
+        // (member: object) => Promise<tools/list result> on that member's
+        // session: the first half of the withdrawal feature detection (the
+        // session must list KB_CAPABILITIES_TOOL; the second half is that
+        // tool's `routes` answer, see withdrawalSupportGap). A local member
+        // is read the same way: it is served by the separately running local
+        // apra-fleet server, which can be an older build than this engine.
+        listTools,
+        // (memberName: string) => Promise<object[]>: the entries an EARLIER
+        // final review on this branch withdrew (a withdrawn tombstone the
+        // sprint branch's bible carries and the base branch's does not), each
+        // shaped like a candidate row with withdrawn_on_branch: true. The
+        // checkout bible view no longer holds a withdrawn entry, so without
+        // this a relaunched sprint could never hold (restore) one. Injected
+        // because reading the committed bibles is a git operation. Its
+        // `.read` variant, when present, answers { ok, rows, error } and is
+        // what the offer and the PR body use (the plain read answers [] on
+        // a failed read).
+        branchWithdrawals,
+        // D6 in-sprint ping-pong guard's disk-hash read --
+        // (memberName: string, files: string[]) => Promise<Record<string, string>>,
+        // the CURRENT sha256 of each file in `files` on `memberName`'s own
+        // checkout (absent files are simply missing from the result, never a
+        // fabricated hash). Injected for the same reason sprintChangedFiles is:
+        // kb.mjs has no shell/fs access of its own, and this is the one disk
+        // fact kb_query cannot answer -- demoted_basis_hashes (surfaced on an
+        // INFERRED entry's kb_query row) is a demote-TIME snapshot, not a live
+        // one. MUST hash the SAME way SqliteProvider's demoteBasisHashes does
+        // (plain sha256 of the raw bytes) so the two sides compare like for
+        // like; see promotionCandidates' guard below. Optional: when not
+        // wired, the guard degrades to "never exclude" (see
+        // demotionBasisUnchanged), never to a failed or wrongly-filtered read.
+        currentFileHashes,
+        log = () => {},
+    } = opts;
     /** The sprint's start time (ms since epoch) from the sprint state, or null when unknown. */
     const sprintStartMs = () => {
         const v = typeof opts.sprintStartMs === 'function' ? opts.sprintStartMs() : opts.sprintStartMs;
         return (typeof v === 'number' && Number.isFinite(v)) ? v : null;
     };
     const active = typeof memberCall === 'function';
+    // Reviewer demotion loop switch (sprint arg kb_demotion_loop, CLI
+    // --kb-demotion-loop): 'on' (default when absent) or 'off'. Any other value
+    // fails loudly rather than silently falling back to a default.
+    const demotionLoopSetting = opts.demotionLoop === undefined ? 'on' : opts.demotionLoop;
+    if (demotionLoopSetting !== 'on' && demotionLoopSetting !== 'off') {
+        throw new Error(`[kb-work] Invalid demotionLoop ${JSON.stringify(demotionLoopSetting)}: must be 'on' (default) or 'off'.`);
+    }
+    const demotionLoopOn = demotionLoopSetting === 'on';
 
     /** The kb_maintainer selector (createKbMaintainerSelector), or null. */
     function selector() {
@@ -344,6 +682,36 @@ export function createKbWorkClient(opts = {}) {
     const queues = new Map();
     /** repo -> Set of candidate ids the latest promotionCandidates() call offered. */
     const offeredCandidates = new Map();
+    /** repo -> Set of candidate ids the latest demotionCandidates() call offered. */
+    const offeredDemotions = new Map();
+    /**
+     * Repositories whose FINAL review demotion offer is open: demotionCandidates
+     * ran for them (even when it offered nothing) and apply() has not yet
+     * recorded that review's verdicts. kb_demotions/kb_holds from a review
+     * with no open offer (a round review) are logged and dropped.
+     */
+    const demotionOfferOpen = new Set();
+    /** repo -> the final review's demotion verdicts: { offered, demoted, held, noVerdict } (id lists). */
+    const demotionVerdicts = new Map();
+    /**
+     * The per-offering record: repo -> { offered: Set<id>, verdicts: Map<id, verdict> }
+     * where verdict is demote | holds | none | refused:<why>. It is never
+     * cleared by a later offer, and it is the caller's own Map when
+     * opts.offeringRecord is given (the engine keeps one in its run context),
+     * so a client rebuilt after a resume keeps what an earlier one offered.
+     */
+    const offeringRecord = opts.offeringRecord instanceof Map ? opts.offeringRecord : new Map();
+    const recordFor = (repo) => {
+        if (!offeringRecord.has(repo)) offeringRecord.set(repo, { offered: new Set(), verdicts: new Map() });
+        return offeringRecord.get(repo);
+    };
+    // Extra per-offering detail the PR body reads: titles, demote reasons, ids
+    // that restore an earlier withdrawal, and -- from kb_bible_commit's own
+    // answer -- the withdrawals it admitted or did not, and the ids it restored.
+    const detailFor = (rec) => (rec.detail ||= {
+        titles: new Map(), notes: new Map(), restorable: new Set(), branchRows: new Map(),
+        admitted: new Set(), notAdmitted: new Set(), restoredDone: new Set(),
+    });
     /** repo -> tail of the serialized flush chain for that repository. */
     const flushChains = new Map();
     /** member name -> open dispatch count (nested brackets count once each). */
@@ -352,6 +720,21 @@ export function createKbWorkClient(opts = {}) {
     const inFlight = new Map();
     /** repo -> ids the maintainer CONFIRMED that are not yet in a pushed bible commit (insertion order). */
     const confirmations = new Map();
+    /**
+     * repo -> (id -> {id, note, evidence_files}): the final review's
+     * demotions, recorded as kb_bible_commit `withdrawals` (a withdrawn
+     * tombstone on the sprint branch, which takes effect only if the branch
+     * merges), not yet in a pushed bible commit. No kb_demote is ever issued.
+     */
+    const withdrawalsPending = new Map();
+    /**
+     * repo -> ids the final review HELD: sent as kb_bible_commit
+     * `restore_ids`, which lifts a withdrawn tombstone this branch added
+     * earlier (a no-op for any other id). Not yet in a pushed bible commit.
+     */
+    const restoresPending = new Map();
+    /** Ids withdrawn this sprint (queued or committed): excluded from every later knowledge block. */
+    const withdrawnIds = new Set();
     /** repo -> (id -> rounds in a row kb_bible_commit skipped it with a retryable reason). */
     const skipRounds = new Map();
     const skipRetryRounds = Number.isInteger(opts.bibleSkipRetryRounds) && opts.bibleSkipRetryRounds > 0
@@ -366,8 +749,14 @@ export function createKbWorkClient(opts = {}) {
      * nothing.
      */
     const retirements = new Set();
-    /** Why the bible commit was sealed (a FAIL verdict, an abort), or null while open. */
+    /** Why EVERY bible commit was sealed (an aborted sprint), or null while open. */
     let sealedReason = null;
+    /**
+     * Why CONFIRMATIONS were sealed (a FAIL verdict), or null. Withdrawals and
+     * restores still commit after this: they are merge-gated (a FAIL sprint
+     * branch that never merges carries them nowhere).
+     */
+    let confirmationsSealedReason = null;
 
     const isBusy = (memberName) => (busy.get(memberName) || 0) > 0;
 
@@ -483,7 +872,8 @@ export function createKbWorkClient(opts = {}) {
         }
     }
 
-    const zeroCounts = () => ({ captured: 0, promoted: 0, discarded: 0 });
+    let warnedPending = false;
+    const zeroCounts = () => ({ captured: 0, promoted: 0, discarded: 0, demoted: 0 });
 
     const OPS = {
         capture: {
@@ -497,6 +887,19 @@ export function createKbWorkClient(opts = {}) {
             args: (p) => ({ id: p.id, reason: p.reason }),
             subject: (p) => p.id,
             counter: 'promoted',
+            // A 2xx is not by itself a promotion: count and queue a
+            // confirmation only for a real move to CONFIRMED. Reads only the
+            // contract fields {id, previous_confidence, new_confidence}.
+            accept: (p, res) => {
+                const parsed = parseResult(res);
+                if (parsed && typeof parsed === 'object') {
+                    if (parsed.new_confidence === 'CONFIRMED' && parsed.previous_confidence !== 'CONFIRMED') return true;
+                    log(`[kb-work] kb_promote: ${p.id} not promoted (${parsed.previous_confidence} -> ${parsed.new_confidence})`);
+                    return false;
+                }
+                log(`[kb-work] kb_promote: ${p.id} not promoted (unparseable result)`);
+                return false;
+            },
         },
         discard: {
             tool: 'kb_invalidate',
@@ -561,6 +964,13 @@ export function createKbWorkClient(opts = {}) {
             }
         }
         const batch = queue.splice(0, queue.length);
+        // The KB server (not the maintainer) cannot be reached or refused the
+        // token: this write and every one behind it go back to the head of the
+        // queue for the next flush.
+        const keepForServer = (i, spec, op, text, reason) => {
+            queue.unshift(...batch.slice(i));
+            log(`[kb-work] WARN: ${reason} during ${spec.tool} for ${spec.subject(op.payload)} on maintainer '${maintainer}' (${text}) -- ${batch.length - i} KB write(s) for ${repo} stay queued`);
+        };
         for (let i = 0; i < batch.length; i++) {
             const op = batch[i];
             if (isBusy(maintainer)) {
@@ -592,6 +1002,11 @@ export function createKbWorkClient(opts = {}) {
                     log(`[kb-work] WARN: maintainer '${maintainer}' unreachable during ${spec.tool} for ${spec.subject(op.payload)} (${err.message}) -- ${batch.length - i} KB write(s) for ${repo} stay queued`);
                     break;
                 }
+                const thrownReason = kbServerKeepReason(err && err.message);
+                if (thrownReason) {
+                    keepForServer(i, spec, op, err.message, thrownReason);
+                    break;
+                }
                 log(`[kb-work] ${spec.tool} failed for ${spec.subject(op.payload)} (non-fatal): ${err && err.message ? err.message : String(err)}`);
                 continue;
             } finally {
@@ -601,7 +1016,13 @@ export function createKbWorkClient(opts = {}) {
             // tool-level failure rather than throwing, so a non-throwing call
             // is not by itself a success.
             if (isToolError(res)) {
-                log(`[kb-work] ${spec.tool} rejected for ${spec.subject(op.payload)} (non-fatal): ${toolErrorText(res)}`);
+                const text = toolErrorText(res);
+                const resultReason = kbServerKeepReason(text);
+                if (resultReason) {
+                    keepForServer(i, spec, op, text, resultReason);
+                    break;
+                }
+                log(`[kb-work] ${spec.tool} rejected for ${spec.subject(op.payload)} (non-fatal): ${text}`);
                 continue;
             }
             if (typeof spec.accept === 'function' && !spec.accept(op.payload, res)) continue;
@@ -636,13 +1057,34 @@ export function createKbWorkClient(opts = {}) {
     const errText = (err) => (err && err.message ? err.message : String(err));
 
     /**
-     * What a bible commit carries, for its log lines: the confirmations, or
-     * -- for a removal-only call (ids []) -- the pending bible removals.
+     * Log-message phrase for (confirmations, withdrawals, restores) counts,
+     * IDENTICAL to the "N confirmation(s)" wording when there are no
+     * withdrawals or restores, so every confirmation-only log line reads as
+     * it always has.
      */
-    const bibleLoad = (ids) => (ids.length > 0 ? `${ids.length} confirmation(s)` : 'the pending bible removal(s)');
-    /** onSprintBranch for a bible commit carrying `ids` (see bibleLoad). */
-    const bibleOnSprintBranch = (maintainer, repo, ids) => (ids.length > 0
-        ? onSprintBranch(maintainer, repo, ids.length)
+    const describeCounts = (n, w = 0, r = 0) => {
+        const parts = [];
+        if (n > 0 || (w === 0 && r === 0)) parts.push(`${n} confirmation(s)`);
+        if (w > 0) parts.push(`${w} withdrawal(s)`);
+        if (r > 0) parts.push(`${r} restore(s)`);
+        return parts.join(' and ');
+    };
+    /** " (restored: <id8>, ...)" for a bible commit log line, or '' when nothing was restored. */
+    const restoredIdList = (ids) => (ids && ids.length > 0 ? ` (restored: ${ids.map(kbId8).join(', ')})` : '');
+    /** How many ids a bible-commit load ({ ids, withdrawals, restoreIds }) carries. */
+    const loadSize = (l) => l.ids.length + l.withdrawals.length + l.restoreIds.length;
+
+    /**
+     * What a bible commit carries, for its log lines: the confirmations,
+     * withdrawals and restores, or -- for a removal-only call (none of them)
+     * -- the pending bible removals.
+     */
+    const bibleLoad = (l) => (loadSize(l) > 0
+        ? describeCounts(l.ids.length, l.withdrawals.length, l.restoreIds.length)
+        : 'the pending bible removal(s)');
+    /** onSprintBranch for a bible commit carrying load `l` (see bibleLoad). */
+    const bibleOnSprintBranch = (maintainer, repo, l) => (loadSize(l) > 0
+        ? onSprintBranch(maintainer, repo, loadSize(l))
         : onSprintBranch(maintainer, repo, 'the', 'pending bible removal'));
 
     /**
@@ -653,10 +1095,14 @@ export function createKbWorkClient(opts = {}) {
      * maintainer holds a local bible commit the remote tip does not, so a
      * fast-forward pull would fail by construction; kb_bible_commit re-merges
      * the same ids at entry level on top of the new tip instead.
+     *
+     * `load` is { ids, withdrawals, restoreIds }: this round's confirmations,
+     * the final review's withdrawals and its restores, all in the SAME
+     * kb_bible_commit call -- never two.
      */
-    async function bibleAttempt(target, repo, ids, { resetToRemoteTip = false } = {}) {
+    async function bibleAttempt(target, repo, load, { resetToRemoteTip = false } = {}) {
         const maintainer = target.member;
-        if (!(await bibleOnSprintBranch(maintainer, repo, ids))) return { ok: false, stage: 'branch check', error: 'the maintainer is not on the sprint branch', branchBlocked: true };
+        if (!(await bibleOnSprintBranch(maintainer, repo, load))) return { ok: false, stage: 'branch check', error: 'the maintainer is not on the sprint branch', branchBlocked: true };
         try {
             await gPull(maintainer, resetToRemoteTip ? { resetToRemoteTip: true } : {});
         } catch (err) {
@@ -671,15 +1117,28 @@ export function createKbWorkClient(opts = {}) {
         if (!base || typeof base.baseBranch !== 'string' || !base.baseBranch || typeof base.baseCommit !== 'string' || !base.baseCommit) {
             return { ok: false, stage: 'base resolution', error: 'the base branch or base commit could not be resolved on the maintainer' };
         }
-        if (!(await bibleOnSprintBranch(maintainer, repo, ids))) return { ok: false, stage: 'branch check', error: 'the maintainer is not on the sprint branch', branchBlocked: true };
+        if (!(await bibleOnSprintBranch(maintainer, repo, load))) return { ok: false, stage: 'branch check', error: 'the maintainer is not on the sprint branch', branchBlocked: true };
         let res;
         try {
-            res = await memberCall(target.record, 'kb_bible_commit', { ids, baseBranch: base.baseBranch, baseCommit: base.baseCommit }, KB_MAINTAINER_CALL);
+            res = await memberCall(target.record, 'kb_bible_commit', {
+                ids: load.ids,
+                ...(load.withdrawals.length > 0 ? { withdrawals: load.withdrawals } : {}),
+                ...(load.restoreIds.length > 0 ? { restore_ids: load.restoreIds } : {}),
+                baseBranch: base.baseBranch,
+                baseCommit: base.baseCommit,
+            }, KB_MAINTAINER_CALL);
         } catch (err) {
             return { ok: false, stage: 'kb_bible_commit', error: errText(err), fleetTooOld: !!(err && err.code === E_MEMBER_FLEET_TOO_OLD) };
         }
         if (isToolError(res)) return { ok: false, stage: 'kb_bible_commit', error: toolErrorText(res) };
         const result = parseResult(res) || {};
+        // The tool skipped the entry merge (the project KB is remote and has
+        // no bible entries to commit). With no withdrawal or restore in the
+        // call nothing was written, so there is nothing to check or push.
+        // With one, the tool still wrote (and committed) the tombstone half of
+        // the bible, which must be published like any bible commit.
+        const bibleSkipped = result.bible_skipped === true;
+        if (bibleSkipped && load.withdrawals.length + load.restoreIds.length === 0) return { ok: true, result, pushed: false, bibleSkipped: true };
         // Nothing committed (every id skipped, or the entry set unchanged).
         // That alone does not mean the entries are published: an earlier
         // round's bible commit may still sit unpushed on the maintainer (its
@@ -690,11 +1149,11 @@ export function createKbWorkClient(opts = {}) {
         // established) the ids stay queued.
         if (result.committed === false) {
             const where = await bibleOnOrigin(maintainer);
-            if (where.unpushed === false) return { ok: true, result, pushed: false };
+            if (where.unpushed === false) return { ok: true, result, pushed: false, bibleSkipped };
             if (where.unpushed !== true) return { ok: false, stage: 'publication check', error: where.reason || 'whether origin holds the bible could not be established' };
             log(`[kb-work] kb_bible_commit made no new commit on maintainer '${maintainer}', but an earlier bible commit is not on origin yet -- pushing it`);
         }
-        if (!(await bibleOnSprintBranch(maintainer, repo, ids))) return { ok: false, stage: 'branch check', error: 'the maintainer is not on the sprint branch', branchBlocked: true };
+        if (!(await bibleOnSprintBranch(maintainer, repo, load))) return { ok: false, stage: 'branch check', error: 'the maintainer is not on the sprint branch', branchBlocked: true };
         // A bible push must publish the bible commit(s) only: never a doer
         // commit that sits unpushed underneath them. Without an injected
         // probe the push is allowed.
@@ -702,7 +1161,7 @@ export function createKbWorkClient(opts = {}) {
             let verdict;
             try { verdict = await unpushedOnlyBible(maintainer, BIBLE_FILE); } catch (err) { verdict = { onlyBible: false, reason: errText(err) }; }
             if (!verdict || verdict.onlyBible !== true) {
-                log(`[kb-work] WARN: not pushing the bible commit from maintainer '${maintainer}' (${repo}): ${(verdict && verdict.reason) || 'unknown'} -- a bible push must not publish other commits; ${bibleLoad(ids)} stay queued for the next round`);
+                log(`[kb-work] WARN: not pushing the bible commit from maintainer '${maintainer}' (${repo}): ${(verdict && verdict.reason) || 'unknown'} -- a bible push must not publish other commits; ${bibleLoad(load)} stay queued for the next round`);
                 return { ok: false, stage: 'push guard', error: (verdict && verdict.reason) || 'unpushed non-bible commits', branchBlocked: true };
             }
         }
@@ -711,7 +1170,7 @@ export function createKbWorkClient(opts = {}) {
         } catch (err) {
             return { ok: false, stage: 'G-push', error: errText(err) };
         }
-        return { ok: true, result, pushed: true };
+        return { ok: true, result, pushed: true, bibleSkipped };
     }
 
     /**
@@ -773,70 +1232,135 @@ export function createKbWorkClient(opts = {}) {
     }
 
     /**
-     * Commit one repository's pending confirmations to the bible on its
-     * maintainer. Never throws; ids that do not reach a pushed commit stay
-     * pending for the next round.
+     * Commit one repository's pending confirmations, withdrawals and
+     * restores to the bible on its maintainer, in a single kb_bible_commit
+     * call (`ids`, `withdrawals` and `restore_ids` together -- see
+     * bibleAttempt). Once confirmations are sealed (a FAIL verdict) `ids` is
+     * empty but withdrawals and restores still commit. Never throws; ids that
+     * do not reach a pushed commit stay pending for the next round.
      * @returns {Promise<{ committed: number, pending: number }>}
      */
     async function commitRepo(repo) {
-        const pending = confirmations.get(repo) || new Set();
-        // No confirmations and no retirements: no call at all (no member
-        // traffic). Retirements alone make a removal-only call with ids [].
-        if (pending.size === 0 && !retirements.has(repo)) return { committed: 0, pending: 0 };
-        const ids = [...pending];
-        const load = bibleLoad(ids);
-        if (sealedReason) return { committed: 0, pending: ids.length };
+        const pending = confirmations.get(repo);
+        const pendingWithdrawals = withdrawalsPending.get(repo);
+        const pendingRestores = restoresPending.get(repo);
+        const heldConfirmations = (pending && confirmationsSealedReason) ? pending.size : 0;
+        const ids = (pending && !confirmationsSealedReason) ? [...pending] : [];
+        const withdrawals = pendingWithdrawals ? [...pendingWithdrawals.values()].map((w) => ({ ...w, evidence_files: [...w.evidence_files] })) : [];
+        const restoreIds = pendingRestores ? [...pendingRestores] : [];
+        const batch = { ids, withdrawals, restoreIds };
+        // Nothing to carry and no retirements: no call at all (no member
+        // traffic). Retirements alone make a removal-only call with ids [] --
+        // but not once confirmations are sealed (a FAIL sprint publishes only
+        // its merge-gated withdrawals and restores).
+        if (loadSize(batch) === 0 && (confirmationsSealedReason || !retirements.has(repo))) return { committed: 0, pending: heldConfirmations };
+        const totalPending = () => loadSize(batch) + heldConfirmations;
+        const load = bibleLoad(batch);
+        if (sealedReason) return { committed: 0, pending: totalPending() };
         const sel = selector();
         const target = sel && typeof sel.getKbMaintainer === 'function' ? sel.getKbMaintainer(repo) : null;
         if (!target || !target.record) {
             log(`[kb-work] WARN: repository ${repo} has no kb_maintainer -- ${load} stay queued for the bible`);
-            return { committed: 0, pending: ids.length };
+            return { committed: 0, pending: totalPending() };
         }
         const maintainer = target.member;
         if (typeof gPull !== 'function' || typeof gPush !== 'function' || typeof bibleBase !== 'function') {
             log(`[kb-work] WARN: no git sync wired for the bible commit -- ${load} for ${repo} stay queued`);
-            return { committed: 0, pending: ids.length };
+            return { committed: 0, pending: totalPending() };
         }
         if (isBusy(maintainer)) {
             log(`[kb-work] WARN: maintainer '${maintainer}' is mid-dispatch -- ${load} for ${repo} stay queued for the next round's bible commit`);
-            return { committed: 0, pending: ids.length };
+            return { committed: 0, pending: totalPending() };
         }
         let release;
         inFlight.set(maintainer, new Promise((r) => { release = r; }));
         try {
-            let outcome = await bibleAttempt(target, repo, ids);
+            let outcome = await bibleAttempt(target, repo, batch);
             if (!outcome.ok && outcome.stage === 'G-push') {
                 log(`[kb-work] G-push of the bible commit on maintainer '${maintainer}' (${repo}) was rejected (${outcome.error}) -- retrying once: rebase --abort, G-pull, kb_bible_commit, G-push`);
-                if (typeof abortRebase === 'function' && (await bibleOnSprintBranch(maintainer, repo, ids))) {
+                if (typeof abortRebase === 'function' && (await bibleOnSprintBranch(maintainer, repo, batch))) {
                     try { await abortRebase(maintainer); } catch (err) { log(`[kb-work] rebase --abort on maintainer '${maintainer}' failed (non-fatal): ${errText(err)}`); }
                 }
                 // The reset throws away the maintainer's local-only commits and
                 // uncommitted changes; it is usually also a doer, so only reset
                 // when that is the bible commit alone.
-                if (!(await bibleOnSprintBranch(maintainer, repo, ids))) return { committed: 0, pending: ids.length };
-                if (!(await resetIsSafe(maintainer, repo))) return { committed: 0, pending: ids.length };
-                outcome = await bibleAttempt(target, repo, ids, { resetToRemoteTip: true });
+                if (!(await bibleOnSprintBranch(maintainer, repo, batch))) return { committed: 0, pending: totalPending() };
+                if (!(await resetIsSafe(maintainer, repo))) return { committed: 0, pending: totalPending() };
+                outcome = await bibleAttempt(target, repo, batch, { resetToRemoteTip: true });
                 if (!outcome.ok && (outcome.stage === 'G-push' || outcome.stage === 'kb_bible_commit')) {
                     // Leave the checkout on the remote tip: an unpushed bible
                     // commit would make the maintainer's next fast-forward
                     // G-pull fail. The ids stay queued and are re-merged by
                     // the next round's kb_bible_commit.
-                    if (typeof abortRebase === 'function' && !outcome.branchBlocked && (await bibleOnSprintBranch(maintainer, repo, ids))) {
+                    if (typeof abortRebase === 'function' && !outcome.branchBlocked && (await bibleOnSprintBranch(maintainer, repo, batch))) {
                         try { await abortRebase(maintainer); } catch { /* best-effort */ }
                     }
-                    try { if ((await bibleOnSprintBranch(maintainer, repo, ids)) && (await resetIsSafe(maintainer, repo))) await gPull(maintainer, { resetToRemoteTip: true }); } catch (err) {
+                    try { if ((await bibleOnSprintBranch(maintainer, repo, batch)) && (await resetIsSafe(maintainer, repo))) await gPull(maintainer, { resetToRemoteTip: true }); } catch (err) {
                         log(`[kb-work] WARN: could not reset maintainer '${maintainer}' onto the remote tip after the failed bible commit: ${errText(err)}`);
                     }
                 }
             }
-            if (!outcome.ok && outcome.branchBlocked) return { committed: 0, pending: ids.length };
+            if (!outcome.ok && outcome.branchBlocked) return { committed: 0, pending: totalPending() };
             if (!outcome.ok && outcome.fleetTooOld) {
                 log(`[kb-work] WARNING: bible commit for ${repo} cannot run on maintainer '${maintainer}': ${outcome.error} -- ${load} stay queued for the next round`);
-                return { committed: 0, pending: ids.length };
+                return { committed: 0, pending: totalPending() };
             }
             if (!outcome.ok) {
                 log(`[kb-work] WARN: bible commit for ${repo} on maintainer '${maintainer}' failed at ${outcome.stage} (${outcome.error}) -- ${load} stay queued for the next round`);
-                return { committed: 0, pending: ids.length };
+                return { committed: 0, pending: totalPending() };
+            }
+            // Withdrawals and restores leave the queue on every successful call,
+            // skipped ones included: a skip (not_withdrawable, or a restore with
+            // nothing to undo) cannot change by retrying.
+            // Only the tool's own answer counts: an answer with no `withdrawn`
+            // list (an older apra-fleet whose kb_bible_commit drops the
+            // unknown `withdrawals` key) admitted nothing, and an answer with
+            // no `restored` list restored nothing.
+            const settleTombstoneWork = (result) => {
+                const answered = Array.isArray(result.withdrawn);
+                const admitted = new Set(answered ? result.withdrawn.filter((id) => typeof id === 'string') : []);
+                const restoredNow = Array.isArray(result.restored) ? result.restored.filter((id) => typeof id === 'string') : [];
+                const rec = offeringRecord.get(repo);
+                const det = rec ? detailFor(rec) : null;
+                const notAdmitted = [];
+                for (const w of withdrawals) {
+                    if (pendingWithdrawals) pendingWithdrawals.delete(w.id);
+                    if (admitted.has(w.id)) {
+                        if (det) { det.admitted.add(w.id); det.notAdmitted.delete(w.id); }
+                    } else {
+                        // A withdrawal the tool did not admit withdrew nothing.
+                        withdrawnIds.delete(w.id);
+                        notAdmitted.push(w.id);
+                        if (det) det.notAdmitted.add(w.id);
+                    }
+                }
+                if (!answered && withdrawals.length > 0) {
+                    log(`[kb-work] WARN: maintainer '${maintainer}' (${repo}) answered kb_bible_commit with no 'withdrawn' list (an apra-fleet older than the withdrawal route) -- ${notAdmitted.length} demotion(s) were NOT recorded in the bible and stay CONFIRMED: ${notAdmitted.join(', ')}; upgrade apra-fleet on that member`);
+                }
+                if (pendingWithdrawals && pendingWithdrawals.size === 0) withdrawalsPending.delete(repo);
+                for (const id of restoreIds) if (pendingRestores) pendingRestores.delete(id);
+                if (pendingRestores && pendingRestores.size === 0) restoresPending.delete(repo);
+                if (det) for (const id of restoredNow) det.restoredDone.add(id);
+                return { withdrawnCount: withdrawals.length - notAdmitted.length, restoredCount: restoredNow.length, restoredIds: restoredNow };
+            };
+            if (outcome.bibleSkipped) {
+                // The entry merge is provider-wide skipped (the project KB is
+                // served over http), so a retry cannot succeed for a
+                // confirmation: drop the repo's confirmation state (as for any
+                // non-retryable skip) so later rounds do not repeat the call or
+                // warn about pending ids. Withdrawals and restores are NOT
+                // dropped: the tool wrote their tombstones, and they were
+                // published with the bible commit above.
+                const reason = typeof outcome.result.reason === 'string' && outcome.result.reason ? outcome.result.reason : 'no reason given';
+                confirmations.delete(repo);
+                skipRounds.delete(repo);
+                retirements.delete(repo);
+                const { withdrawnCount, restoredCount, restoredIds } = settleTombstoneWork(outcome.result);
+                const tombstoneNote = withdrawals.length + restoreIds.length > 0
+                    ? `; ${withdrawnCount} withdrawal(s) and ${restoredCount} restore(s)${restoredIdList(restoredIds)} ${outcome.pushed ? 'committed and pushed' : 'already in the bible -- nothing to push'}`
+                    : '';
+                log(`[kb-work] kb_bible_commit skipped the entry merge for ${repo} on maintainer '${maintainer}': ${reason} -- ${ids.length} confirmation(s) dropped from the bible queue${tombstoneNote}.`);
+                return { committed: outcome.pushed ? withdrawnCount + restoredCount : 0, pending: heldConfirmations };
             }
             // The call succeeded: whatever retirements the maintainer held were
             // removed by it (kb_bible_commit drops them at every call).
@@ -848,6 +1372,7 @@ export function createKbWorkClient(opts = {}) {
             // and is offered again next round, for a bounded number of rounds.
             // Any other skip (not CONFIRMED or unknown, no source files) cannot
             // change by retrying and leaves the queue. Merged ids leave it too.
+            // A round can carry withdrawals or restores only, so pending may be absent.
             if (!skipRounds.has(repo)) skipRounds.set(repo, new Map());
             const rounds = skipRounds.get(repo);
             const retained = [];
@@ -864,12 +1389,15 @@ export function createKbWorkClient(opts = {}) {
             const keep = new Set(retained.map((x) => x.id));
             for (const id of ids) {
                 if (keep.has(id)) continue;
-                pending.delete(id);
+                if (pending) pending.delete(id);
                 rounds.delete(id);
             }
-            if (pending.size === 0) confirmations.delete(repo);
+            if (pending && pending.size === 0) confirmations.delete(repo);
             if (rounds.size === 0) skipRounds.delete(repo);
-            const merged = Array.isArray(outcome.result.merged) ? outcome.result.merged.length : ids.length - skipped.length;
+            const skippedIds = new Set(skipped.map((x) => x && x.id));
+            const { withdrawnCount, restoredCount, restoredIds } = settleTombstoneWork(outcome.result);
+            const merged = Array.isArray(outcome.result.merged) ? outcome.result.merged.length
+                : ids.length - ids.filter((id) => skippedIds.has(id)).length;
             const describe = (list) => list.map((x) => (x.reason ? `${x.id} (${x.reason})` : x.id)).join(', ');
             if (dropped.length > 0) {
                 log(`[kb-work] kb_bible_commit skipped ${dropped.length} id(s) for ${repo} that cannot succeed on a retry (dropped from the queue, with the reason the tool returned): ${describe(dropped)}`);
@@ -887,16 +1415,449 @@ export function createKbWorkClient(opts = {}) {
             if (removed.length > 0) {
                 log(`[kb-work] kb_bible_commit removed ${removed.length} superseded/invalidated entry(ies) from the bible for ${repo}: ${describe(removed)}`);
             }
-            if (ids.length === 0) {
+            if (loadSize(batch) === 0) {
                 log(`[kb-work] removal-only bible commit for ${repo} on maintainer '${maintainer}': ${outcome.pushed ? `${removed.length} removal(s) committed and pushed` : 'nothing to remove -- nothing to push'}`);
             } else {
-                log(`[kb-work] bible commit for ${repo} on maintainer '${maintainer}': ${merged} confirmation(s) ${outcome.pushed ? 'committed and pushed' : 'already in the bible -- nothing to push'}`);
+                log(`[kb-work] bible commit for ${repo} on maintainer '${maintainer}': ${describeCounts(merged, withdrawnCount, restoredCount)}${restoredIdList(restoredIds)} ${outcome.pushed ? 'committed and pushed' : 'already in the bible -- nothing to push'}`);
             }
-            return { committed: outcome.pushed ? merged : 0, pending: pending.size };
+            const confirmationsLeft = pending ? pending.size : 0;
+            return {
+                committed: outcome.pushed ? merged + withdrawnCount + restoredCount : 0,
+                pending: confirmationsLeft + (pendingWithdrawals ? pendingWithdrawals.size : 0) + (pendingRestores ? pendingRestores.size : 0),
+            };
         } finally {
             inFlight.delete(maintainer);
             release();
         }
+    }
+
+    /**
+     * The body of demotionCandidates(), run inside its isBusy/inFlight
+     * bracket. Never throws.
+     * @returns {Promise<object[]>}
+     */
+    async function readDemotionCandidates(target, changedFilesFor, scopeLabel) {
+        // Feature detection FIRST, before any git or KB traffic: a maintainer
+        // that cannot record a withdrawal, or whose KB could not apply one
+        // after the merge, is offered nothing to judge. Never a fallback to
+        // an immediate demotion.
+        const gap = await withdrawalSupportGap(target.record, target.repo, target.member);
+        if (gap) {
+            log(`[kb-work] WARN: maintainer '${target.member}' (${target.repo}): ${gap} -- offering no demotion candidates`);
+            return [];
+        }
+        // Same branch guard flushRepo/commitRepo apply before every G-pull
+        // on the maintainer: a fast-forward merge does not care what
+        // branch HEAD is currently on, only that HEAD is an ancestor of
+        // the fetched tip, so pulling on a maintainer not actually on the
+        // sprint branch could silently advance the wrong branch.
+        if (!(await onSprintBranch(target.member, target.repo, 0, 'demotion candidate read'))) return [];
+        let changed;
+        try {
+            changed = await changedFilesFor(target.member);
+        } catch (err) {
+            log(`[kb-work] could not compute ${scopeLabel} changed files on maintainer '${target.member}' (non-fatal): ${err.message}`);
+            return [];
+        }
+        const files = Array.isArray(changed) ? changed.filter((f) => typeof f === 'string' && f.trim()) : [];
+        // Entries an earlier final review on this branch withdrew: offered
+        // FIRST and regardless of the changed files (they are this branch's
+        // own pending KB change), so a hold can restore one.
+        let earlier = [];
+        if (typeof branchWithdrawals === 'function') {
+            // A failed read -- thrown, or `.read` answering ok:false (the plain
+            // read is failSoft and answers [] instead) -- means an earlier
+            // withdrawal can be offered unmarked; the PR body then treats every
+            // held id as restorable (over-lists, never hides).
+            const readFailed = (why) => {
+                detailFor(recordFor(target.repo)).branchReadFailed = true;
+                log(`[kb-work] could not read this branch's earlier withdrawals on maintainer '${target.member}' (non-fatal): ${why}`);
+            };
+            try {
+                const res = typeof branchWithdrawals.read === 'function'
+                    ? await branchWithdrawals.read(target.member)
+                    : { ok: true, rows: await branchWithdrawals(target.member) };
+                if (!res || res.ok !== true) {
+                    readFailed((res && res.error) || 'the read failed');
+                } else {
+                    earlier = (Array.isArray(res.rows) ? res.rows : [])
+                        .filter((e) => isDemotableCandidate(e))
+                        .map((e) => ({ ...e, withdrawn_on_branch: true }));
+                }
+            } catch (err) {
+                readFailed(errText(err));
+            }
+        }
+        if (files.length === 0 && earlier.length === 0) return [];
+        // Two reads, merged by id (the bible view wins on a shared id): every
+        // CONFIRMED entry the branch's bible holds that cites a changed file,
+        // and the maintainer's own CONFIRMED rows (promoted this sprint, not
+        // in the bible yet). Each read degrades on its own.
+        const readOne = async (label, args) => {
+            try {
+                const res = await memberCall(target.record, 'kb_query', args);
+                if (isToolError(res)) {
+                    log(`[kb-work] kb_query for ${label} demotion candidates rejected on maintainer '${target.member}' (non-fatal): ${toolErrorText(res)}`);
+                    return [];
+                }
+                const parsed = parseResult(res);
+                return parsed && Array.isArray(parsed.l1_results) ? parsed.l1_results
+                    : (parsed && Array.isArray(parsed.results) ? parsed.results : []);
+            } catch (err) {
+                log(`[kb-work] could not read ${label} demotion candidates from maintainer '${target.member}' (non-fatal): ${err.message}`);
+                return [];
+            }
+        };
+        const results = [];
+        const seen = new Set(earlier.map((e) => e.id));
+        const reads = files.length === 0 ? [] : [
+            await readOne('bible', buildBibleDemotionCandidateQuery(files)),
+            await readOne('own', buildDemotionCandidateQuery(target.record.id)),
+        ];
+        for (const rows of reads) {
+            for (const e of rows) {
+                if (!e || typeof e.id !== 'string' || seen.has(e.id)) continue;
+                seen.add(e.id);
+                results.push(e);
+            }
+        }
+        const fileSet = new Set(files);
+        const touchesChangedFiles = (e) => Array.isArray(e.source_files) && e.source_files.some((f) => fileSet.has(f));
+        // Filter the WHOLE read first (eligibility, then relevance), and only
+        // cap the survivors -- see the method comment.
+        const offered = [
+            ...earlier,
+            ...results.filter((e) => isDemotableCandidate(e) && touchesChangedFiles(e)),
+        ].slice(0, KB_MAX_DEMOTION_CANDIDATES);
+        offeredDemotions.set(target.repo, new Set(offered.map((e) => e.id)));
+        if (offered.length > 0) {
+            const rec = recordFor(target.repo);
+            const det = detailFor(rec);
+            for (const e of offered) {
+                rec.offered.add(e.id);
+                if (typeof e.title === 'string') det.titles.set(e.id, e.title);
+                if (e.withdrawn_on_branch) {
+                    det.restorable.add(e.id);
+                    det.branchRows.set(e.id, {
+                        title: typeof e.base_title === 'string' ? e.base_title : (typeof e.title === 'string' ? e.title : ''),
+                        note: typeof e.tombstone_note === 'string' ? e.tombstone_note : '',
+                    });
+                }
+            }
+            log(`[kb-work] demotion candidates offered to the final review for ${target.repo}: ${offered.length} id(s): ${offered.map((e) => e.id).join(', ')}`);
+        }
+        return offered;
+    }
+
+    /** This run's offering record as the PR body report (see kbChangesReport), or null. */
+    function buildKbChangesReport() {
+        const out = { withdrawn: [], notRecorded: [], noVerdict: [], kept: 0, restored: 0, refused: [], notPushed: [] };
+        let any = false;
+        for (const [repo, rec] of offeringRecord) {
+            if (rec.offered.size === 0 && rec.verdicts.size === 0) continue;
+            any = true;
+            const det = detailFor(rec);
+            const pending = withdrawalsPending.get(repo);
+            out.restored += det.restoredDone.size;
+            for (const [id, v] of rec.verdicts) {
+                if (v === 'demote') {
+                    const row = { id, title: det.titles.get(id) || '', note: det.notes.get(id) || '' };
+                    if (det.notAdmitted.has(id)) { out.notRecorded.push(row); continue; }
+                    out.withdrawn.push(row);
+                    if (pending && pending.has(id)) out.notPushed.push(id);
+                } else if (v === 'holds') {
+                    out.kept += 1;
+                } else if (v === 'none') out.noVerdict.push(id);
+                else if (v.startsWith('refused:')) out.refused.push({ id, reason: v.slice('refused:'.length) });
+            }
+            for (const id of rec.offered) if (!rec.verdicts.has(id)) out.noVerdict.push(id);
+        }
+        return any ? out : null;
+    }
+
+    /**
+     * The withdrawn tombstones each repository's sprint branch adds over its
+     * base, read on that repository's maintainer with the same read the
+     * relaunch offer uses (branchWithdrawals, its `.read` variant when it has
+     * one, which tells a failed read from "none"): [{ repo, member, ok, rows,
+     * error }]. A maintainer not on the sprint branch, or a read that throws,
+     * is ok:false -- never "nothing carried". Never throws.
+     */
+    async function readCarriedWithdrawals() {
+        const out = [];
+        if (!active || typeof branchWithdrawals !== 'function') return out;
+        const sel = selector();
+        if (!sel || typeof sel.maintainers !== 'function' || typeof sel.getKbMaintainer !== 'function') return out;
+        let repos;
+        try {
+            repos = [...sel.maintainers()].filter(([, m]) => m && m.member).map(([repo]) => repo);
+        } catch (err) {
+            log(`[kb-work] WARN: could not list the kb_maintainers for the PR body's KB section: ${errText(err)}`);
+            return out;
+        }
+        for (const repo of repos) {
+            const m = sel.getKbMaintainer(repo);
+            if (!m || !m.member) continue;
+            const fail = (error) => {
+                log(`[kb-work] WARN: this branch's withdrawn tombstones could not be read for ${repo} on maintainer '${m.member}' (${error}) -- the PR body says so`);
+                out.push({ repo, member: m.member, ok: false, rows: [], error });
+            };
+            try {
+                if (typeof checkedOutBranch === 'function') {
+                    let found = null;
+                    let sprintBranch = null;
+                    let readError = null;
+                    try {
+                        const r = await checkedOutBranch(m.member);
+                        found = r && typeof r.branch === 'string' && r.branch ? r.branch : null;
+                        sprintBranch = r && typeof r.sprintBranch === 'string' && r.sprintBranch ? r.sprintBranch : null;
+                    } catch (err) {
+                        readError = errText(err);
+                    }
+                    if (!(found && sprintBranch && found === sprintBranch)) {
+                        const foundText = found ? `'${found}'` : `an unreadable branch${readError ? ` (${readError})` : ''}`;
+                        fail(`${foundText} is checked out, not the sprint branch '${sprintBranch || 'unknown'}'`);
+                        continue;
+                    }
+                }
+                const res = typeof branchWithdrawals.read === 'function'
+                    ? await branchWithdrawals.read(m.member)
+                    : { ok: true, rows: await branchWithdrawals(m.member) };
+                if (!res || res.ok !== true) { fail((res && res.error) || 'the read failed'); continue; }
+                out.push({ repo, member: m.member, ok: true, rows: Array.isArray(res.rows) ? res.rows : [] });
+            } catch (err) {
+                fail(errText(err));
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Merge the branch reads into the report (see kbChangesOnMerge). An id
+     * this run withdrew is already listed; one it restored is gone; every
+     * other branch tombstone is carried. The read is the maintainer's HEAD,
+     * so a restore committed there but never pushed (push rejected, reset
+     * unsafe) hides a tombstone the remote branch still has: every id still
+     * queued as a restore that was offered as an earlier branch withdrawal
+     * (any held id when the offer's branch read failed), and that the read
+     * does not show, is carried too (`restoreNotPushed`).
+     */
+    function mergeCarriedWithdrawals(base, reads) {
+        const out = base || { withdrawn: [], notRecorded: [], noVerdict: [], kept: 0, restored: 0, refused: [], notPushed: [] };
+        out.carried = [];
+        out.unreadable = [];
+        const listed = new Set(out.withdrawn.map((w) => w.id));
+        for (const r of reads) {
+            if (!r.ok) { out.unreadable.push({ repo: r.repo, member: r.member, error: r.error }); continue; }
+            const rec = offeringRecord.get(r.repo);
+            const det = rec ? detailFor(rec) : null;
+            const carriedHere = [];
+            for (const row of r.rows) {
+                if (!row || typeof row.id !== 'string' || !row.id || listed.has(row.id)) continue;
+                if (det && det.restoredDone.has(row.id)) continue;
+                listed.add(row.id);
+                const verdict = rec ? rec.verdicts.get(row.id) : undefined;
+                out.carried.push({
+                    id: row.id,
+                    title: typeof row.base_title === 'string' ? row.base_title : (typeof row.title === 'string' ? row.title : ''),
+                    note: typeof row.tombstone_note === 'string' ? row.tombstone_note : '',
+                    kept: verdict === 'holds',
+                });
+                carriedHere.push(row.id);
+            }
+            const unpushedRestores = restoresPending.get(r.repo);
+            if (det && unpushedRestores) {
+                for (const id of unpushedRestores) {
+                    if (listed.has(id) || det.restoredDone.has(id) || !(det.restorable.has(id) || det.branchReadFailed)) continue;
+                    listed.add(id);
+                    const known = det.branchRows.get(id) || {};
+                    out.carried.push({
+                        id,
+                        title: known.title || det.titles.get(id) || '',
+                        note: known.note || '',
+                        kept: true,
+                        restoreNotPushed: true,
+                    });
+                    carriedHere.push(id);
+                }
+            }
+            if (carriedHere.length > 0) {
+                const ids = new Set(carriedHere);
+                out.noVerdict = out.noVerdict.filter((id) => !ids.has(id));
+                out.notRecorded = out.notRecorded.filter((w) => !ids.has(w.id));
+                log(`[kb-work] withdrawals this branch carries from an earlier run for ${r.repo} (merging applies them): ${carriedHere.join(', ')}`);
+            }
+        }
+        return (base || out.carried.length > 0 || out.unreadable.length > 0) ? out : null;
+    }
+
+    /** JSON [member id, repo] -> definite withdrawal-support answer: null (supported) or the gap (cached for the sprint). */
+    const withdrawalSupport = new Map();
+
+    /**
+     * Whether `record` can carry a merge-carried withdrawal: null when it
+     * can, otherwise what is missing (for the WARN). Two checks, on the
+     * maintainer's own session, a local member included (it is served by
+     * the separately running local apra-fleet server, which can be an older
+     * build than this engine):
+     *  1. its tools/list names KB_CAPABILITIES_TOOL -- the version gate, as
+     *     that tool ships with kb_bible_commit's withdrawals/restore_ids;
+     *  2. that tool's `routes` include KB_WITHDRAW_ROUTE -- a local SQLite
+     *     KB always lists it, an http KB server only when it serves it.
+     * Any doubt (no listTools wired, an unreadable answer, a failed or
+     * rejected call) is a gap -- fail closed, never offer a demotion that
+     * cannot land. Only the two definite answers are cached, per member AND
+     * repository (kb_capabilities describes the session's project KB, and a
+     * member can maintain more than one repository); a failure is retried at
+     * the next offering.
+     */
+    async function withdrawalSupportGap(record, repo, member) {
+        const key = record && record.id ? JSON.stringify([record.id, repo || '']) : null;
+        if (key && withdrawalSupport.has(key)) return withdrawalSupport.get(key);
+        const settle = (gap) => { if (key) withdrawalSupport.set(key, gap); return gap; };
+        if (typeof listTools !== 'function') return 'its tools cannot be listed (no member session channel)';
+        let tools;
+        try {
+            const list = parseResult(await listTools(record));
+            tools = Array.isArray(list) ? list : (list && Array.isArray(list.tools) ? list.tools : null);
+        } catch (err) {
+            return `its tools could not be listed (${errText(err)})`;
+        }
+        if (!tools) return 'its tools/list answer was unreadable';
+        if (!tools.some((t) => t && t.name === KB_CAPABILITIES_TOOL)) {
+            return settle(`its apra-fleet server does not offer ${KB_CAPABILITIES_TOOL} (older version; upgrade apra-fleet on that member)`);
+        }
+        let caps;
+        try {
+            const res = await memberCall(record, KB_CAPABILITIES_TOOL, {}, KB_MAINTAINER_CALL);
+            if (isToolError(res)) return `${KB_CAPABILITIES_TOOL} failed: ${toolErrorText(res)}`;
+            caps = parseResult(res);
+        } catch (err) {
+            return `${KB_CAPABILITIES_TOOL} failed: ${errText(err)}`;
+        }
+        if (!caps || !Array.isArray(caps.routes)) return `${KB_CAPABILITIES_TOOL} answered no routes list`;
+        // One line per member and repository: a definite answer is cached
+        // below, so a later offering never reaches this point again.
+        const contract = typeof caps.contract === 'string' && caps.contract ? `, contract=${caps.contract}` : '';
+        log(`[kb-work] ${KB_CAPABILITIES_TOOL} on '${member || (record && record.name) || (record && record.id) || 'unknown'}' (${repo || 'unknown repository'}): routes=[${caps.routes.join(', ')}]${contract}`);
+        if (!caps.routes.includes(KB_WITHDRAW_ROUTE)) {
+            return settle(`its KB server does not serve the '${KB_WITHDRAW_ROUTE}' route (${KB_CAPABILITIES_TOOL} routes: ${caps.routes.join(', ') || 'none'}), so a merged withdrawal could never apply`);
+        }
+        return settle(null);
+    }
+
+    /**
+     * The kb_holds ids of a role's output: reviewer-only (a hold is the other
+     * half of a demotion verdict), non-empty strings (an {id} object is
+     * accepted too), de-duplicated in order. Anything else is logged.
+     */
+    function holdIdsOf(role, result) {
+        const raw = (result && Array.isArray(result.kb_holds)) ? result.kb_holds : [];
+        if (raw.length === 0) return [];
+        if (!KB_PROMOTER_ROLES.has(role)) {
+            log(`[kb-work] refused -- ${role}: kb_holds refused -- a hold is reviewer-only`);
+            return [];
+        }
+        const out = [];
+        for (const h of raw) {
+            const id = typeof h === 'string' ? h : (h && typeof h.id === 'string' ? h.id : '');
+            if (!id) { log(`[kb-work] refused -- ${role}: hold missing id`); continue; }
+            if (!out.includes(id)) out.push(id);
+        }
+        return out;
+    }
+
+    /**
+     * Resolve the FINAL review's demotion verdicts against its open offer for
+     * `repo`, record them (demotionVerdicts), close the offer, and return the
+     * demotions to execute. Every offered id should be in exactly one of
+     * kb_demotions and kb_holds: an id in both is refused on both sides, an
+     * id not offered is refused, and an offered id with no verdict is
+     * recorded as no-verdict -- logged, never a stall or a re-dispatch.
+     * @returns {{ accepted: object[], held: string[], refused: number }}
+     */
+    function resolveDemotionVerdicts(role, repo, demotions, holds) {
+        const offered = offeredDemotions.get(repo) || new Set();
+        const holdSet = new Set(holds);
+        const both = new Set(demotions.filter((d) => holdSet.has(d.id)).map((d) => d.id));
+        let refused = 0;
+        for (const id of both) { log(`[kb-work] refused -- ${role}: ${id} is in both kb_demotions and kb_holds -- no verdict`); refused += 2; }
+        const accepted = [];
+        for (const d of demotions) {
+            if (both.has(d.id)) continue;
+            if (!offered.has(d.id)) { log(`[kb-work] refused -- ${role}: demotion ${d.id} not in this dispatch's candidate block`); refused += 1; continue; }
+            accepted.push(d);
+        }
+        const held = [];
+        for (const id of holds) {
+            if (both.has(id)) continue;
+            if (!offered.has(id)) { log(`[kb-work] refused -- ${role}: hold ${id} not in this dispatch's candidate block`); refused += 1; continue; }
+            held.push(id);
+        }
+        const judged = new Set([...accepted.map((d) => d.id), ...held]);
+        const noVerdict = [...offered].filter((id) => !judged.has(id));
+        // One verdict line per offered id (a refused id may not be offered at
+        // all; it still gets its line), and the same verdict in the record.
+        const rec = recordFor(repo);
+        const verdictOf = (id, v) => { rec.verdicts.set(id, v); log(`[kb-work] demotion verdict for ${id}: ${v}`); };
+        for (const d of accepted) { verdictOf(d.id, 'demote'); detailFor(rec).notes.set(d.id, d.reason); }
+        for (const id of held) verdictOf(id, 'holds');
+        for (const id of noVerdict) {
+            verdictOf(id, both.has(id) ? 'refused:in both kb_demotions and kb_holds' : 'none');
+        }
+        for (const d of demotions) if (!offered.has(d.id) && !both.has(d.id)) verdictOf(d.id, 'refused:not in the candidate block');
+        for (const id of holds) if (!offered.has(id) && !both.has(id)) verdictOf(id, 'refused:not in the candidate block');
+        demotionVerdicts.set(repo, {
+            offered: [...offered],
+            demoted: accepted.map((d) => d.id),
+            held,
+            noVerdict,
+        });
+        demotionOfferOpen.delete(repo);
+        log(`[kb-work] final review demotion verdicts for ${repo}: ${offered.size} offered, ${accepted.length} demoted, ${held.length} held, ${noVerdict.length} with no verdict${noVerdict.length > 0 ? ` (${noVerdict.join(', ')})` : ''}`);
+        for (const d of accepted) log(`[kb-work] demote ${d.id} (${role}): ${d.reason}`);
+        for (const id of held) log(`[kb-work] hold ${id} (${role})`);
+        return { accepted, held, refused };
+    }
+
+    /**
+     * Queue the final review's verdicts for `repo`'s next bible commit: each
+     * accepted demotion as a withdrawal {id, note, evidence_files} (note = the
+     * reviewer's reason) and each hold as a restore id. A hold cancels a
+     * pending withdrawal of the same id and vice versa. Withdrawn ids join
+     * withdrawnIds so no later knowledge block injects them. Returns the
+     * number of withdrawals queued.
+     */
+    function queueWithdrawals(repo, accepted, held) {
+        if (!withdrawalsPending.has(repo)) withdrawalsPending.set(repo, new Map());
+        if (!restoresPending.has(repo)) restoresPending.set(repo, new Set());
+        const w = withdrawalsPending.get(repo);
+        const r = restoresPending.get(repo);
+        for (const d of accepted) {
+            w.set(d.id, { id: d.id, note: d.reason, evidence_files: [...d.evidence_files] });
+            r.delete(d.id);
+            withdrawnIds.add(d.id);
+        }
+        for (const id of held) {
+            r.add(id);
+            w.delete(id);
+            withdrawnIds.delete(id);
+        }
+        if (w.size === 0) withdrawalsPending.delete(repo);
+        if (r.size === 0) restoresPending.delete(repo);
+        if (accepted.length > 0 || held.length > 0) {
+            log(`[kb-work] final review for ${repo}: ${accepted.length} withdrawal(s) and ${held.length} restore(s) queued for the bible commit on the sprint branch (they take effect only if the branch merges)`);
+        }
+        return accepted.length;
+    }
+
+    /** Every confirmation, withdrawal and restore not yet in a pushed bible commit. */
+    function pendingBibleCount() {
+        let n = 0;
+        for (const ids of confirmations.values()) n += ids.size;
+        for (const byId of withdrawalsPending.values()) n += byId.size;
+        for (const ids of restoresPending.values()) n += ids.size;
+        return n;
     }
 
     function enqueue(repo, kind, role, payload) {
@@ -955,26 +1916,45 @@ export function createKbWorkClient(opts = {}) {
             for (const q of queues.values()) n += q.length;
             return n;
         },
-        /** Log a WARN for every repository that still has queued writes or confirmations. */
+        /**
+         * Log a WARN for every repository that still has queued writes,
+         * confirmations, withdrawals or restores, listing each held write (tool
+         * plus title or id) and each pending id. Idempotent:
+         * the list prints at most once per client (one per sprint), so the
+         * engine entry point's finally and the fatal handler can both call it.
+         */
         warnPending() {
+            if (warnedPending) return;
+            warnedPending = true;
             for (const [repo, q] of queues) {
-                if (q.length > 0) log(`[kb-work] WARN: ${q.length} KB write(s) for ${repo} are still queued (maintainer busy or unreachable) -- not applied`);
+                if (q.length > 0) {
+                    const held = q.map((op) => `${OPS[op.kind].tool} ${OPS[op.kind].subject(op.payload)}`).join(', ');
+                    log(`[kb-work] WARN: ${q.length} KB write(s) for ${repo} are still queued (maintainer busy or unreachable, or KB server unreachable or its token refused) -- not applied: ${held}`);
+                }
             }
             for (const [repo, ids] of confirmations) {
-                if (ids.size > 0) log(`[kb-work] WARN: ${ids.size} confirmation(s) for ${repo} are not in a pushed bible commit${sealedReason ? ` (bible commits sealed: ${sealedReason})` : ''}`);
+                if (ids.size > 0) log(`[kb-work] WARN: ${ids.size} confirmation(s) for ${repo} are not in a pushed bible commit${sealedReason ? ` (bible commits sealed: ${sealedReason})` : ''}: ${[...ids].join(', ')}`);
+            }
+            for (const [repo, byId] of withdrawalsPending) {
+                if (byId.size > 0) log(`[kb-work] WARN: ${byId.size} withdrawal(s) for ${repo} are not in a pushed bible commit${sealedReason ? ` (bible commits sealed: ${sealedReason})` : ''}: ${[...byId.keys()].join(', ')}`);
+            }
+            for (const [repo, ids] of restoresPending) {
+                if (ids.size > 0) log(`[kb-work] WARN: ${ids.size} restore(s) for ${repo} are not in a pushed bible commit${sealedReason ? ` (bible commits sealed: ${sealedReason})` : ''}: ${[...ids].join(', ')}`);
             }
             for (const repo of retirements) {
-                if (!confirmations.has(repo)) log(`[kb-work] WARN: the pending bible removal(s) for ${repo} are not in a pushed bible commit${sealedReason ? ` (bible commits sealed: ${sealedReason})` : ''}`);
+                if (!confirmations.has(repo) && !withdrawalsPending.has(repo) && !restoresPending.has(repo)) log(`[kb-work] WARN: the pending bible removal(s) for ${repo} are not in a pushed bible commit${sealedReason ? ` (bible commits sealed: ${sealedReason})` : ''}`);
             }
         },
         /**
          * The review-round bible commit: apply whatever is still queued, then
-         * for every repository with confirmations, on its maintainer: G-pull,
-         * kb_bible_commit, G-push (see the client header for the retry). A
-         * repository with no confirmations but a discard applied since its
-         * last bible commit gets a removal-only call (ids []). A round with
-         * neither makes no call at all. A no-op once
-         * sealed. Never throws.
+         * for every repository with confirmations, withdrawals or restores, on
+         * its maintainer: G-pull, kb_bible_commit (ids, withdrawals and
+         * restore_ids together), G-push (see the client header for the
+         * retry). A repository with none of them but a discard applied since
+         * its last bible commit gets a removal-only call (ids []). A round
+         * with none makes no call at all. After a FAIL verdict only
+         * withdrawals and restores are committed; a no-op once fully sealed
+         * (an aborted sprint). Never throws.
          * @param {string} [label] the round, for the log
          * @returns {Promise<{ committed: number, pending: number }>}
          */
@@ -982,15 +1962,19 @@ export function createKbWorkClient(opts = {}) {
             const out = { committed: 0, pending: 0 };
             if (!active) return out;
             if (sealedReason) {
+                const n = pendingBibleCount();
+                if (n > 0) log(`[kb-work] ${label}: bible commits are sealed (${sealedReason}) -- ${n} confirmation(s)/withdrawal(s)/restore(s) not committed`);
+                return { committed: 0, pending: n };
+            }
+            if (confirmationsSealedReason) {
                 let n = 0;
                 for (const ids of confirmations.values()) n += ids.size;
-                if (n > 0) log(`[kb-work] ${label}: bible commits are sealed (${sealedReason}) -- ${n} confirmation(s) not committed`);
-                return { committed: 0, pending: n };
+                if (n > 0) log(`[kb-work] ${label}: bible confirmations are sealed (${confirmationsSealedReason}) -- ${n} confirmation(s) not committed; withdrawals and restores still commit (they take effect only if the branch merges)`);
             }
             for (const repo of [...queues.keys()]) {
                 if (queues.get(repo).length > 0) await flush(repo);
             }
-            for (const repo of new Set([...confirmations.keys(), ...retirements])) {
+            for (const repo of new Set([...confirmations.keys(), ...withdrawalsPending.keys(), ...restoresPending.keys(), ...retirements])) {
                 const r = await serialize(repo, () => commitRepo(repo));
                 out.committed += r.committed;
                 out.pending += r.pending;
@@ -998,16 +1982,29 @@ export function createKbWorkClient(opts = {}) {
             return out;
         },
         /**
-         * Stop every further bible commit: a FAIL verdict or an aborted
-         * sprint commits nothing more, and the confirmation queue is not
-         * flushed. Idempotent; the first reason wins.
+         * Stop further bible commits. Idempotent; the first reason of each
+         * kind wins.
+         *
+         *   seal(reason) -- an ABORTED sprint: nothing more is committed at
+         *     all, and no queue is flushed.
+         *   seal(reason, { confirmationsOnly: true }) -- a FAIL verdict:
+         *     confirmations are no longer committed, but the final review's
+         *     withdrawals and restores still are -- they are merge-gated, so a
+         *     branch that never merges carries them nowhere.
          */
-        seal(reason) {
+        seal(reason, { confirmationsOnly = false } = {}) {
             if (sealedReason) return;
+            if (confirmationsOnly) {
+                if (confirmationsSealedReason) return;
+                confirmationsSealedReason = String(reason || 'sealed');
+                let n = 0;
+                for (const ids of confirmations.values()) n += ids.size;
+                log(`[kb-work] bible confirmations sealed (${confirmationsSealedReason})${n > 0 ? ` -- ${n} confirmation(s) will not be committed` : ''}; withdrawals and restores still commit (they take effect only if the branch merges)`);
+                return;
+            }
             sealedReason = String(reason || 'sealed');
-            let n = 0;
-            for (const ids of confirmations.values()) n += ids.size;
-            log(`[kb-work] bible commits sealed (${sealedReason})${n > 0 ? ` -- ${n} confirmation(s) will not be committed` : ''}`);
+            const n = pendingBibleCount();
+            log(`[kb-work] bible commits sealed (${sealedReason})${n > 0 ? ` -- ${n} confirmation(s)/withdrawal(s)/restore(s) will not be committed` : ''}`);
         },
         /** Confirmations not yet in a pushed bible commit (all repositories, or one). */
         pendingConfirmations(repo) {
@@ -1026,7 +2023,80 @@ export function createKbWorkClient(opts = {}) {
         unpublishedBible() {
             const repos = [];
             for (const [repo, ids] of confirmations) if (ids.size > 0) repos.push({ repo, count: ids.size });
-            return { repos, sealedReason };
+            return { repos, sealedReason: sealedReason || confirmationsSealedReason };
+        },
+        /** Ids the final review withdrew this sprint (queued or committed), excluded from every later knowledge block. */
+        withdrawnIds() {
+            return [...withdrawnIds];
+        },
+        /**
+         * Withdrawals and restores not yet in a pushed bible commit, per
+         * repository: [{ repo, withdrawals: [{id, note, evidence_files}], restores: [id] }].
+         */
+        pendingWithdrawals() {
+            const out = [];
+            for (const repo of new Set([...withdrawalsPending.keys(), ...restoresPending.keys()])) {
+                out.push({
+                    repo,
+                    withdrawals: [...(withdrawalsPending.get(repo) || new Map()).values()].map((w) => ({ ...w, evidence_files: [...w.evidence_files] })),
+                    restores: [...(restoresPending.get(repo) || [])],
+                });
+            }
+            return out;
+        },
+        /**
+         * The FINAL review's demotion verdicts per repository, as recorded
+         * when its output was applied: [{ repo, offered, demoted, held,
+         * noVerdict }] (id lists). An offered id the reviewer put in neither
+         * (or both) of kb_demotions and kb_holds is in noVerdict.
+         * @returns {Array<{ repo: string, offered: string[], demoted: string[], held: string[], noVerdict: string[] }>}
+         */
+        demotionVerdicts() {
+            return [...demotionVerdicts].map(([repo, v]) => ({
+                repo, offered: [...v.offered], demoted: [...v.demoted], held: [...v.held], noVerdict: [...v.noVerdict],
+            }));
+        },
+        /**
+         * What the final review's demotions mean for the PR body, per
+         * repository, merged: { withdrawn: [{id, title, note}], notRecorded:
+         * [{id, title, note}], noVerdict: id[], kept: n, restored: n, refused:
+         * [{id, reason}], notPushed: id[] }, or null when nothing was ever
+         * offered. `notPushed` lists withdrawals still not in a pushed bible
+         * commit; `notRecorded` lists demotions kb_bible_commit answered
+         * without admitting (they stay CONFIRMED); `restored` counts the ids
+         * kb_bible_commit reported restored, not the holds that asked for it.
+         */
+        kbChangesReport() {
+            return buildKbChangesReport();
+        },
+        /**
+         * The PR body's "KB changes on merge" report, at publish and at
+         * abort: kbChangesReport() merged with the withdrawn tombstones each
+         * repository's sprint branch carries over its base (read on its
+         * maintainer, independently of any offer), so a withdrawal an earlier
+         * run on this branch committed is reported even when this run offered
+         * nothing (loop off, a support gap, an abort before the final review,
+         * more tombstones than the offer cap). Adds `carried: [{id, title,
+         * note, kept, restoreNotPushed?}]` -- a branch tombstone this run
+         * neither withdrew nor restored (`kept`: held this run, restore not
+         * on the branch; `restoreNotPushed`: the restore is committed on the
+         * maintainer but not pushed, so the remote branch keeps it) -- and
+         * `unreadable: [{repo, member, error}]` for a branch bible that could
+         * not be read. A carried id is never in `noVerdict` or `notRecorded`
+         * (it is withdrawn on merge). Null when there is nothing to report.
+         * Never throws.
+         * @returns {Promise<object|null>}
+         */
+        async kbChangesOnMerge() {
+            return mergeCarriedWithdrawals(buildKbChangesReport(), await readCarriedWithdrawals());
+        },
+        /**
+         * The per-offering record: [{ repo, offered, verdicts: { id: verdict } }]
+         * (verdict: demote | holds | none | refused:<why>). Survives a resume
+         * when the caller passes the same opts.offeringRecord Map.
+         */
+        offeringRecord() {
+            return [...offeringRecord].map(([repo, r]) => ({ repo, offered: [...r.offered], verdicts: Object.fromEntries(r.verdicts) }));
         },
         /**
          * The maintainer member record a reviewer's KB reads and judgements
@@ -1051,6 +2121,22 @@ export function createKbWorkClient(opts = {}) {
          *
          * Best-effort by design -- a cold or unreachable KB must degrade to
          * "nothing to promote", never fail the review dispatch.
+         *
+         * D6 IN-SPRINT PING-PONG GUARD. Without this, an entry the reviewer
+         * demoted in round N is offered right back for promotion in round
+         * N+1 -- promotionCandidates' own in-window filter admits it (an
+         * INFERRED entry created this sprint still matches, whether it got
+         * there by a fresh capture or by a demotion of a CONFIRMED one), and
+         * nothing has changed about it to re-judge. An entry wasDemotedThisSprint
+         * (its demoted_at falls at or after sprintStartMs()) is excluded when
+         * demotionBasisUnchanged is true for it -- i.e. unless at least one
+         * of its cited files now hashes differently from the
+         * demoted_basis_hashes snapshot taken at demote time (currentFileHashes,
+         * read ONLY for the files these candidates actually cite, never
+         * recomputed from scratch). A changed basis is new evidence, so that
+         * entry stays offered. The guard runs HERE, at offering time -- a
+         * ping-ponged id is never in the candidate block apply() later checks
+         * offeredCandidates against, never merely refused there.
          */
         async promotionCandidates(member) {
             // The candidates live in the reviewer's repository MAINTAINER's KB
@@ -1088,17 +2174,132 @@ export function createKbWorkClient(opts = {}) {
                     const t = typeof e.created_at === 'string' ? Date.parse(e.created_at) : NaN;
                     return Number.isFinite(t) && t >= since;
                 };
-                const offered = results
+                const eligible = results
                     // promote() refuses type='user-directive' outright (activation
                     // is human-terminal, CLI-only), so offering one as a candidate
                     // can only produce a guaranteed refusal.
-                    .filter((e) => e && typeof e.id === 'string' && e.type !== 'user-directive' && inWindow(e))
-                    .slice(0, KB_MAX_PROMOTION_CANDIDATES);
+                    .filter((e) => e && typeof e.id === 'string' && e.type !== 'user-directive' && inWindow(e));
+                // D6 ping-pong guard (see the method comment): only entries
+                // demoted THIS sprint are even candidates for exclusion, and
+                // only a disk re-hash can tell whether their basis moved on
+                // since. Reading is bounded to exactly the files THESE
+                // candidates cite -- never every file in the repository --
+                // and skipped entirely when there is nothing to check or no
+                // callback wired, so the common case (no in-sprint demotion)
+                // costs nothing extra.
+                const pingPonged = eligible.filter((e) => wasDemotedThisSprint(e, since));
+                let unchanged = new Set();
+                if (pingPonged.length > 0 && typeof currentFileHashes === 'function') {
+                    const files = new Set();
+                    for (const e of pingPonged) for (const f of Object.keys(e.demoted_basis_hashes || {})) files.add(f);
+                    if (files.size > 0) {
+                        try {
+                            const current = await currentFileHashes(target.member, [...files]);
+                            for (const e of pingPonged) {
+                                if (demotionBasisUnchanged(e.demoted_basis_hashes, current)) unchanged.add(e.id);
+                            }
+                        } catch (err) {
+                            log(`[kb-work] could not re-hash the in-sprint ping-pong basis on maintainer '${target.member}' (non-fatal, nothing excluded): ${err.message}`);
+                        }
+                    }
+                }
+                const offered = eligible.filter((e) => !unchanged.has(e.id)).slice(0, KB_MAX_PROMOTION_CANDIDATES);
                 offeredCandidates.set(target.repo, new Set(offered.map((e) => e.id)));
                 return offered;
             } catch (err) {
                 log(`[kb-work] could not read promotion candidates from maintainer '${target.member}' (non-fatal): ${err.message}`);
                 return [];
+            }
+        },
+        /**
+         * The CONFIRMED entries the FINAL reviewer may demote, offered at the
+         * final review only (a round review gets none).
+         *
+         * Mirrors promotionCandidates in every structural respect it shares
+         * with it -- reviewMaintainerFor to resolve the reviewer's repository
+         * MAINTAINER (refusing rather than reading some other KB when there is
+         * none), replacing (never accumulating) the offered set up front so a
+         * failed read leaves nothing offered, and flushing any writes still
+         * queued for that repository before the read.
+         *
+         * FEATURE DETECTION. A demotion is recorded as a withdrawal in the
+         * branch's bible commit and applied by kb_import after the merge, so
+         * the maintainer's session must list kb_capabilities and its routes
+         * must include `withdraw` (withdrawalSupportGap). When either is
+         * missing, nothing is offered and a WARN names the maintainer and
+         * what is missing.
+         *
+         * THE READ. Every CONFIRMED entry citing a file changed on the branch,
+         * not only the maintainer's own: buildBibleDemotionCandidateQuery
+         * (the branch's bible view, file-filtered) merged with
+         * buildDemotionCandidateQuery (the maintainer's own CONFIRMED rows not
+         * in the bible yet). Both reads are wide (stale and
+         * contradiction-flagged rows included -- the ones most worth
+         * re-checking) and limited to KB_DEMOTION_READ_LIMIT, not the offer
+         * cap.
+         *
+         * THEN FILTER, THEN CAP, in that order. Eligibility
+         * (isDemotableCandidate) and changed-file relevance run over the WHOLE
+         * read; only the survivors are capped at KB_MAX_DEMOTION_CANDIDATES.
+         *
+         * SCOPE. `sprintChangedFiles` gives the CUMULATIVE baseBranch...branch
+         * diff, computed after a fetch/fast-forward merge. `opts.scope` must be
+         * 'sprint' (the default); any other value offers nothing. An empty
+         * changed-file set offers nothing.
+         *
+         * Best-effort like every other KB read here: no maintainer, an
+         * unreachable one, no changed-files callback wired, a diff that could
+         * not be computed, or an erroring/rejecting kb_query all degrade to []
+         * and must never fail the final review dispatch.
+         *
+         * @param {object} member
+         * @param {{ scope?: 'sprint' }} [opts]
+         * @returns {Promise<object[]>}
+         */
+        async demotionCandidates(member, { scope = 'sprint' } = {}) {
+            if (!demotionLoopOn) {
+                log("[kb-work] reviewer demotion loop is disabled by the kb_demotion_loop setting ('off'): offering no demotion candidates.");
+                offeredDemotions.clear();
+                return [];
+            }
+            // Demotion candidates are offered at the FINAL review only: a
+            // round review judges one round's diff, and a demotion recorded
+            // mid-sprint could be invalidated by a later round. Any other
+            // scope is a wiring bug -- degrade to nothing, never to a guess.
+            if (scope !== 'sprint') {
+                log(`[kb-work] demotion candidates requested with scope '${scope}' (non-fatal): only the final review ('sprint') is offered demotion candidates -- offering none.`);
+                return [];
+            }
+            const changedFilesFor = sprintChangedFiles;
+            const scopeLabel = "this sprint's cumulative";
+            const target = active ? reviewMaintainerFor(memberNameOf(member)) : null;
+            if (!target) return [];
+            // Replace (never accumulate) the offered set up front, so a
+            // failed read leaves nothing offered from an earlier call.
+            offeredDemotions.set(target.repo, new Set());
+            demotionOfferOpen.add(target.repo);
+            // Writes still queued for this repository (a capture or a
+            // promotion/discard from this very round) get their chance to
+            // land before the read, same as promotionCandidates.
+            if (queues.has(target.repo)) await flush(target.repo);
+            if (typeof changedFilesFor !== 'function') return [];
+            // Same isBusy/inFlight bracket flushRepo and commitRepo use: the
+            // read below G-pulls the maintainer's checkout and runs git and
+            // kb_query there, so it must neither start while a dispatch is
+            // running on the maintainer nor run concurrently with one that
+            // starts mid-read (dispatchStarted() awaits the inFlight entry).
+            // Taken AFTER flush() above, which brackets itself.
+            if (isBusy(target.member)) {
+                log(`[kb-work] maintainer '${target.member}' is mid-dispatch -- no pull and no demotion candidate read over ${scopeLabel} changed files for ${target.repo}; offering none`);
+                return [];
+            }
+            let release;
+            inFlight.set(target.member, new Promise((r) => { release = r; }));
+            try {
+                return await readDemotionCandidates(target, changedFilesFor, scopeLabel);
+            } finally {
+                inFlight.delete(target.member);
+                release();
             }
         },
         /**
@@ -1165,12 +2366,16 @@ export function createKbWorkClient(opts = {}) {
                 log(`[kb-work] no kb_maintainer to read knowledge from for ${memberLabel(member)} -- no knowledge this dispatch`);
                 return nothing;
             }
+            // An entry the final review withdrew this sprint is no longer
+            // knowledge the engine vouches for: it never reaches a later
+            // dispatch's block (the harvest included), merged or not.
+            const notWithdrawn = (list) => list.filter((e) => !withdrawnIds.has(e.id));
             if (terms.length > 0) {
-                const queried = await queryEntries(target, terms.join(' '));
+                const queried = notWithdrawn(await queryEntries(target, terms.join(' ')));
                 if (queried.length > 0) return { entries: queried, source: 'query' };
             }
             if (hintSymbols.length > 0 || hintModules.length > 0) {
-                const primed = await primeEntries(target, hintSymbols, hintModules);
+                const primed = notWithdrawn(await primeEntries(target, hintSymbols, hintModules));
                 if (primed.length > 0) return { entries: primed, source: 'prime' };
             }
             return nothing;
@@ -1183,12 +2388,41 @@ export function createKbWorkClient(opts = {}) {
          * record or a bare name); it decides WHICH repository, never which
          * session -- no write is ever sent to it unless it is the maintainer.
          *
-         * @returns {Promise<{captured: number, promoted: number, discarded: number, refused: number}>}
+         * @returns {Promise<{captured: number, promoted: number, discarded: number, demoted: number, refused: number}>}
          *   counts of the writes applied by this call's flush (writes left
          *   queued for a busy or unreachable maintainer are not counted).
          */
         async apply(role, member, result) {
-            const { captures, promotions, discards, refused } = vetKbWork(role, result);
+            const vetted = vetKbWork(role, result);
+            const { captures, promotions, discards, refused } = vetted;
+            let demotions = vetted.demotions;
+            let holds = holdIdsOf(role, result);
+            if (!demotionLoopOn && demotions.length > 0) {
+                log(`[kb-work] reviewer demotion loop is disabled by the kb_demotion_loop setting ('off'): ${demotions.length} demotion(s) from ${role} dropped, no withdrawal recorded.`);
+                demotions = [];
+            }
+            if (!demotionLoopOn) holds = [];
+            // Demotions and holds are judged at the FINAL review only. A
+            // verdict from a review that was offered no demotion candidates
+            // (a round review) is logged and dropped; the final review's
+            // verdicts are resolved against its offer (resolveDemotionVerdicts).
+            const reviewRepo = (demotions.length > 0 || holds.length > 0 || demotionOfferOpen.size > 0)
+                ? (reviewMaintainerFor(memberNameOf(member)) || null) : null;
+            let extraRefused = 0;
+            let withdrawalsQueued = 0;
+            if (reviewRepo && demotionOfferOpen.has(reviewRepo.repo) && KB_PROMOTER_ROLES.has(role)) {
+                const resolved = resolveDemotionVerdicts(role, reviewRepo.repo, demotions, holds);
+                extraRefused += resolved.refused;
+                // No kb_demote: a demotion becomes a withdrawal and a hold a
+                // restore, both carried by the next bible commit on the sprint
+                // branch, so they take effect only if the branch merges.
+                withdrawalsQueued = queueWithdrawals(reviewRepo.repo, resolved.accepted, resolved.held);
+                demotions = [];
+            } else if (demotions.length > 0 || holds.length > 0) {
+                log(`[kb-work] ${role}: ${demotions.length} kb_demotions and ${holds.length} kb_holds from a review that was offered no demotion candidates -- demotions are judged at the final review only; logged and dropped: ${[...demotions.map((d) => d.id), ...holds].join(', ')}`);
+                extraRefused += demotions.length + holds.length;
+                demotions = [];
+            }
 
             for (const r of refused) log(`[kb-work] refused -- ${r}`);
             // Log every promotion with its stated evidence BEFORE attempting it.
@@ -1196,8 +2430,8 @@ export function createKbWorkClient(opts = {}) {
             for (const p of promotions) log(`[kb-work] promote ${p.id} (${role}): ${p.reason}`);
             for (const d of discards) log(`[kb-work] discard ${d.id} (${role}): ${d.reason}`);
 
-            let extraRefused = 0;
-            const done = (counts) => ({ ...counts, refused: refused.length + extraRefused });
+            // `demoted` counts the withdrawals this call queued for the bible.
+            const done = (counts) => ({ ...counts, demoted: counts.demoted + withdrawalsQueued, refused: refused.length + extraRefused });
             if (captures.length === 0 && promotions.length === 0 && discards.length === 0) return done(zeroCounts());
             const dropped = `${captures.length} capture(s), ${promotions.length} promotion(s) and ${discards.length} discard(s) dropped`;
 
@@ -1212,9 +2446,10 @@ export function createKbWorkClient(opts = {}) {
             const nonRepo = !!(sel && typeof sel.isNonRepoMember === 'function' && sel.isNonRepoMember(producer));
             // A capture belongs to the PRODUCER's repository: a member whose
             // work folder is not a repository has none, so its captures are
-            // dropped. Review judgements (CONFIRM/DISCARD) act on candidates
-            // read from the reviewer's maintainer (reviewMaintainerFor), so
-            // they follow the same resolution as the candidate read.
+            // dropped. Review judgements (CONFIRM/DISCARD) act on
+            // candidates read from the reviewer's maintainer
+            // (reviewMaintainerFor), so they follow the same resolution as
+            // the candidate read.
             let target = null;
             if (captures.length > 0) {
                 if (nonRepo) {
@@ -1234,15 +2469,17 @@ export function createKbWorkClient(opts = {}) {
                 if (review) {
                     // Only ids offered in this dispatch's candidate block may be
                     // judged; anything else is refused before any kb_* call.
+                    // (Demotions are resolved against their OWN offered set in
+                    // resolveDemotionVerdicts, never the promotion one.)
                     const offered = offeredCandidates.get(review.repo) || new Set();
-                    const inBlock = (kind, x) => {
-                        if (offered.has(x.id)) return true;
+                    const inBlock = (kind, x, offeredSet) => {
+                        if (offeredSet.has(x.id)) return true;
                         log(`[kb-work] refused -- ${role}: ${kind} ${x.id} not in this dispatch's candidate block`);
                         extraRefused += 1;
                         return false;
                     };
-                    for (const p of promotions) if (inBlock('promotion', p)) enqueue(review.repo, 'promote', role, p);
-                    for (const d of discards) if (inBlock('discard', d)) enqueue(review.repo, 'discard', role, d);
+                    for (const p of promotions) if (inBlock('promotion', p, offered)) enqueue(review.repo, 'promote', role, p);
+                    for (const d of discards) if (inBlock('discard', d, offered)) enqueue(review.repo, 'discard', role, d);
                     repos.add(review.repo);
                 } else {
                     log(`[kb-work] WARN: no kb_maintainer for member '${producer}' (${role}) -- ${promotions.length} promotion(s) and ${discards.length} discard(s) dropped`);
@@ -1297,23 +2534,27 @@ export function createKbPrimingClient(opts = {}) {
         return (m && typeof m.maintainerForMember === 'function') ? m : null;
     };
     /**
-     * True when `target`'s kb_import accepts `ref`: always for a local member
-     * (served by this process); for a remote member only when its tools/list
-     * advertises the property. Any doubt (no listTools, an unreadable answer)
-     * is false.
+     * Null when `target`'s kb_import accepts `ref`, as its tools/list
+     * advertises -- a local member included (the separately running local
+     * apra-fleet server can be an older build). Otherwise why not, for the
+     * WARN: tools/list could not be read (no listTools, a failed call, an
+     * unreadable answer) is told apart from a server whose kb_import lacks
+     * `ref` (an older version). Any doubt skips the import.
      */
-    async function supportsImportRef(target) {
-        if (String(target && (target.type || target.agentType) || '').toLowerCase() === 'local') return true;
-        if (typeof opts.listTools !== 'function') return false;
+    async function importRefGap(target) {
+        if (typeof opts.listTools !== 'function') return 'its tools cannot be listed (no member session channel)';
+        let tools;
         try {
             const list = parseResult(await opts.listTools(target));
-            const tools = Array.isArray(list) ? list : (list && Array.isArray(list.tools) ? list.tools : []);
-            const imp = tools.find((t) => t && t.name === 'kb_import');
-            const props = imp && imp.inputSchema && imp.inputSchema.properties;
-            return !!(props && typeof props === 'object' && Object.prototype.hasOwnProperty.call(props, 'ref'));
-        } catch {
-            return false;
+            tools = Array.isArray(list) ? list : (list && Array.isArray(list.tools) ? list.tools : null);
+        } catch (err) {
+            return `its tools could not be listed (${err && err.message ? err.message : String(err)})`;
         }
+        if (!tools) return 'its tools/list answer was unreadable';
+        const imp = tools.find((t) => t && t.name === 'kb_import');
+        const props = imp && imp.inputSchema && imp.inputSchema.properties;
+        if (props && typeof props === 'object' && Object.prototype.hasOwnProperty.call(props, 'ref')) return null;
+        return "its kb_import has no 'ref' (older version; upgrade apra-fleet on that member)";
     }
     /** maintainer record id -> entries primed there (a repository is imported and primed once). */
     const primedByTarget = new Map();
@@ -1468,25 +2709,36 @@ export function createKbPrimingClient(opts = {}) {
                             imported = parseResult(await memberCall(target, 'kb_import', { skip_sweep: true }));
                         } else if (baseBranch) {
                             const ref = 'refs/remotes/origin/' + baseBranch;
-                            // A REMOTE maintainer runs its own apra-fleet: an
-                            // older one drops the unknown `ref` key and would
-                            // grant-import (and trust) its WORK-TREE bible. Fail
-                            // closed: import only when its kb_import advertises
-                            // `ref`. A local member runs in this server.
-                            if (await supportsImportRef(target)) {
-                                imported = parseResult(await memberCall(target, 'kb_import', { skip_sweep: true, ref }, KB_MAINTAINER_CALL));
-                                if (imported && imported.bible_source !== ref) {
+                            // A maintainer's apra-fleet server (local or
+                            // remote) can be older: it drops the unknown `ref`
+                            // key and would grant-import (and trust) its
+                            // WORK-TREE bible. Fail closed: import only when its
+                            // kb_import advertises `ref`.
+                            const refGap = await importRefGap(target);
+                            if (!refGap) {
+                                // base_branch names the base the bible must
+                                // belong to: its own provenance.branch is never
+                                // trusted alone to gate withdrawn tombstones
+                                // (an older server ignores the key).
+                                imported = parseResult(await memberCall(target, 'kb_import', { skip_sweep: true, ref, base_branch: baseBranch }, KB_MAINTAINER_CALL));
+                                if (imported && imported.bible_skipped !== true && imported.bible_source !== ref) {
                                     log(`[kb-prime] WARN kb_import on '${target.name || member}' did not report reading ${ref} (bible_source ${JSON.stringify(imported.bible_source)}) -- upgrade apra-fleet on that member`);
                                 }
                             } else {
-                                log(`[kb-prime] WARN the apra-fleet on '${target.name || member}' has no kb_import 'ref' (older version) -- bible import skipped; upgrade apra-fleet on that member`);
+                                log(`[kb-prime] WARN bible import skipped for '${target.name || member}': ${refGap}`);
                             }
                         } else {
                             log(`[kb-prime] no base branch -- bible import skipped for '${member}' (the kb_maintainer imports only the base branch's committed bible)`);
                         }
-                        if (imported && typeof imported.imported === 'number' && imported.imported > 0) {
+                        if (imported && imported.bible_skipped === true) {
+                            // An http project KB: the KB server is the source of
+                            // truth, so the member imported nothing.
+                            log(`[kb-prime] no bible import for '${member}': ${imported.reason || 'the KB is served over http'}`);
+                        } else if (imported && typeof imported.imported === 'number' && imported.imported > 0) {
                             log(`[kb-prime] imported ${imported.imported} bible entr(ies) into the warm KB for '${member}'`);
                         }
+                        const wline = importWithdrawalsLine(imported && imported.withdrawals);
+                        if (wline) log(`[kb-prime] merged withdrawals for '${member}': ${wline}`);
                     } catch (err) {
                         log(`[kb-prime] kb_import skipped for '${member}' (non-fatal): ${err.message}`);
                     }
@@ -1641,6 +2893,61 @@ export function kbKnowledgeBlock(entries, { captureChannel = true, source = 'pri
                 title: e.title,
                 summary: e.summary,
                 source_files: e.source_files,
+            })),
+            null,
+            2
+        )),
+    ];
+}
+
+/**
+ * KNOWLEDGE BANK -- demotion candidates, rendered into the FINAL verdict
+ * prompt only (a round review is offered none). Same bounded shape as
+ * kbPromotionBlock (list the offered ids with enough context to judge, say
+ * nothing when the list is empty).
+ *
+ * The rule: an offered CONFIRMED entry is demoted if and only if its claim is
+ * false at the sprint branch HEAD -- including when this sprint made it false
+ * (a drifted basis is a demote case now: the branch is what merges). A
+ * demotion is recorded on this branch and takes effect only if it merges.
+ * Every offered id belongs in exactly one of kb_demotions and kb_holds; an id
+ * in both or neither gets no verdict (recorded, never a stall).
+ *
+ * @param {object[]|undefined} kbCandidates
+ * @returns {string[]}
+ */
+export function kbDemotionBlock(kbCandidates) {
+    if (!Array.isArray(kbCandidates) || kbCandidates.length === 0) return [];
+    return [
+        'KNOWLEDGE BANK -- demotion candidates. These entries are currently CONFIRMED and each '
+        + 'cites a file this sprint changed. Judge every one of them against the code at the '
+        + 'sprint branch HEAD. Do NOT call any kb_* tool yourself: return your decisions in your '
+        + 'structured output and the orchestrator records them.\n'
+        + 'Demote an entry if and only if its claim is false at the sprint branch HEAD -- '
+        + 'including when this sprint\'s own changes made it false. Otherwise hold it: its claim '
+        + 'still holds at HEAD. A demotion is recorded on this branch and takes effect only if '
+        + 'the branch merges.\n'
+        + 'Every id listed below must appear in exactly one of `kb_demotions` and `kb_holds`. '
+        + 'An id in both, or in neither, gets no verdict and is left as it is.\n'
+        + '`kb_demotions` is [{id, reason, evidence_files}]: the `reason` states what you checked '
+        + 'at HEAD that contradicts the claim (at least 20 characters, e.g. "the handler at '
+        + 'src/queue.js:40 now retries twice; the claim says it never retries"), and '
+        + '`evidence_files` names the repo-relative files you checked -- at least one; a demotion '
+        + 'without one is refused. `kb_holds` is a list of ids. Discarding an unconfirmed '
+        + '(INFERRED) capture you showed to be wrong is `kb_discards`, never a demotion. Never '
+        + 'list the same id in more than one of `kb_promotions`, `kb_discards` and '
+        + '`kb_demotions`; the orchestrator refuses it in every list it appears in.\n'
+        + (kbCandidates.some((e) => e && e.withdrawn_on_branch === true)
+            ? 'An entry marked `withdrawn_on_this_branch` was withdrawn by an earlier final review on '
+              + 'this branch: holding it restores it, demoting it keeps the withdrawal.\n'
+            : '')
+        + wrapUntrustedBlock('kb_query --confidence CONFIRMED --files <files changed on the sprint branch>', JSON.stringify(
+            kbCandidates.map((e) => ({
+                id: e.id,
+                title: e.title,
+                summary: e.summary,
+                source_files: e.source_files,
+                ...(e && e.withdrawn_on_branch === true ? { withdrawn_on_this_branch: true } : {}),
             })),
             null,
             2

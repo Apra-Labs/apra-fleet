@@ -6,6 +6,7 @@ import { encryptPassword } from '../utils/crypto.js';
 import { enforceOwnerOnly } from '../utils/file-permissions.js';
 import { FLEET_DIR } from '../paths.js';
 import { assignIcon } from './icons.js';
+import { writeOwnerOnlyFileAtomicStrict } from '../cli/config.js';
 
 const LEGACY_FLEET_DIR = path.join(os.homedir(), '.claude-fleet');
 const REGISTRY_PATH = path.join(FLEET_DIR, 'registry.json');
@@ -46,7 +47,7 @@ function migrateFromLegacyDir(): void {
           }
         }
       }
-      fs.writeFileSync(regPath, JSON.stringify(reg, null, 2), { mode: 0o600 });
+      writeOwnerOnlyFileAtomicStrict(regPath, JSON.stringify(reg, null, 2));
     }
     process.stderr.write('Migrated data from ~/.claude-fleet/ to ~/.apra-fleet/data/\n');
   }
@@ -57,7 +58,7 @@ function loadRegistry(): FleetRegistry {
   ensureFleetDir();
   if (!fs.existsSync(REGISTRY_PATH)) {
     const empty: FleetRegistry = { version: '1.0', agents: [] };
-    fs.writeFileSync(REGISTRY_PATH, JSON.stringify(empty, null, 2), { mode: 0o600 });
+    writeOwnerOnlyFileAtomicStrict(REGISTRY_PATH, JSON.stringify(empty, null, 2));
     enforceOwnerOnly(REGISTRY_PATH);
     return empty;
   }
@@ -84,7 +85,7 @@ function loadRegistry(): FleetRegistry {
 
 function saveRegistry(registry: FleetRegistry): void {
   ensureFleetDir();
-  fs.writeFileSync(REGISTRY_PATH, JSON.stringify(registry, null, 2), { mode: 0o600 });
+  writeOwnerOnlyFileAtomicStrict(REGISTRY_PATH, JSON.stringify(registry, null, 2));
   enforceOwnerOnly(REGISTRY_PATH);
 }
 

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi, inject } from 'vitest';
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -18,6 +18,32 @@ import {
 import * as kbProvidersModule from '../../src/services/knowledge/kb-providers.js';
 import type { KBEntryInput, KBEntry } from '../../src/services/knowledge/types.js';
 import { commitWorkTree } from '../helpers/commit-work-tree.js';
+import { releaseFileDataDir, fileDataDirViolations } from '../helpers/file-kb-data-dir.js';
+import { FLEET_DIR as ISOLATED_FLEET_DIR } from '../../src/paths.js';
+import { KB_CONFIG_PATH as ISOLATED_KB_CONFIG_PATH } from '../../src/services/knowledge/kb-config.js';
+
+// This file's OWN fleet data dir, claimed before any src module loads
+// (src/paths.ts fixes FLEET_DIR at import). The per-run data dir tests/setup.ts
+// provides is shared by every file of the run, and so is the KB config file
+// in it (<data dir>/knowledge/config.json), which the code under test reads:
+// http provider selection, and kb_export's auto-commit mode. Under parallel
+// files another suite's http config was read here mid-test
+// (E-KB-HTTP-PROJECT-MISMATCH naming the other suite's kb-server project).
+const fileDataDir = await vi.hoisted(async () =>
+  (await import('../helpers/file-kb-data-dir.js')).claimFileDataDir('kb-tombstone-import'));
+afterAll(() => releaseFileDataDir(fileDataDir));
+
+// ISOLATION GUARD: fails if this suite reads the run-shared data dir again --
+// the hoisted claim removed, moved below the imports (FLEET_DIR is then fixed
+// to the shared dir), or the dir not unique to this file.
+describe('isolation guard', () => {
+  it('this suite reads its own fleet data dir and KB config file, not the run-shared ones', () => {
+    expect(fileDataDirViolations({
+      label: 'kb-tombstone-import', claimed: fileDataDir, fleetDir: ISOLATED_FLEET_DIR,
+      kbConfigPath: ISOLATED_KB_CONFIG_PATH, runSharedDir: inject('APRA_FLEET_TEST_DATA_DIR'),
+    })).toEqual([]);
+  });
+});
 
 // Does a demotion actually CROSS CLONES? kb_demote lowers trust here;
 // kb_bible_commit records the tombstone; this file proves the other side --
@@ -66,7 +92,11 @@ import { commitWorkTree } from '../helpers/commit-work-tree.js';
 //
 // ASCII only.
 
-const BASE = { baseBranch: 'main', baseCommit: 'b'.repeat(40) };
+// baseCommit is HEAD: kb_bible_commit tombstones a demoted id only when the
+// bible at baseCommit carries it (and writes no new demoted tombstone when
+// baseCommit does not resolve). In these single-branch scenarios the committed
+// bible at HEAD is the base each call builds on.
+const BASE = { baseBranch: 'main', baseCommit: 'HEAD' };
 const DEMOTE_REASON = 'the cited behaviour did not hold on the case checked this round';
 // kb_demote requires evidence (Rulebook P-1, 2026-10-13); README.md is the seed file every clone holds.
 const DEMOTE_EVIDENCE = ['README.md'];
@@ -664,6 +694,47 @@ describe('a re-promotion on one clone is not undone by another', () => {
     expect(commit.committed).toBe(false);
     expect(fs.readFileSync(biblePathOf(cloneB), 'utf-8')).toBe(before);
     expect(readBible(cloneB).entries.map(e => e.id)).toContain(y);
+  });
+
+  // The same no-flap rule from the DEMOTING clone's side: A demotes Y with its
+  // own kb_demote, B re-promotes Y and commits it. A's local row stays demoted
+  // (an import never raises an existing row), so only the rule -- a bible
+  // entry promoted after this clone's demotion is not tombstoned again --
+  // keeps A's next bible commit from undoing B's re-promotion.
+  it('A demotes, B re-promotes and commits; A\'s next bible commit does not tombstone the entry again', async () => {
+    const y = await confirmedCiting(providerA, cloneA, 'Ypsilon', 'src/y.ts');
+    await kbBibleCommit({ ids: [y], ...BASE }, { folder: cloneA });
+    mergeBibleIntoB();
+    await kbImport({ skip_sweep: true }, { folder: cloneB });
+
+    await kbDemote({ id: y, reason: DEMOTE_REASON, evidence_files: DEMOTE_EVIDENCE }, { folder: cloneA });
+    await kbBibleCommit({ ids: [], demoted_ids: [y], ...BASE }, { folder: cloneA });
+    const demotedAt = row(providerA, y)!.demoted_at!;
+    mergeBibleIntoB();
+    await kbImport({ skip_sweep: true }, { folder: cloneB });
+    expect(row(providerB, y)!.confidence).toBe('INFERRED');
+
+    // B re-promotes Y (INFERRED -> CONFIRMED), strictly after A's demotion, and commits it.
+    while (Date.now() <= Date.parse(demotedAt)) { /* wait out clock resolution */ }
+    await providerB.promote(y, 'test fixture: re-verified on B after the demotion');
+    const recommit = JSON.parse(await kbBibleCommit({ ids: [y], ...BASE }, { folder: cloneB }));
+    expect(recommit.merged).toEqual([y]);
+    expect(readBible(cloneB).demotions ?? []).toEqual([]);
+
+    // B's bible reaches A. A's own row is still the demoted one.
+    fs.copyFileSync(biblePathOf(cloneB), biblePathOf(cloneA));
+    commitWorkTree(cloneA);
+    await kbImport({ skip_sweep: true }, { folder: cloneA });
+    expect(row(providerA, y)!.confidence).toBe('INFERRED');
+    expect(row(providerA, y)!.demoted_at).toBe(demotedAt);
+
+    const before = fs.readFileSync(biblePathOf(cloneA), 'utf-8');
+    const commit = JSON.parse(await kbBibleCommit({ ids: [], ...BASE }, { folder: cloneA }));
+    expect(commit.demoted).toEqual([]);
+    expect(commit.committed).toBe(false);
+    expect(fs.readFileSync(biblePathOf(cloneA), 'utf-8')).toBe(before);
+    expect(readBible(cloneA).entries.map(e => e.id)).toContain(y);
+    expect(readBible(cloneA).demotions ?? []).toEqual([]);
   });
 });
 

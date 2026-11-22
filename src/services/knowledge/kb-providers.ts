@@ -5,7 +5,7 @@ import { SqliteProvider } from './sqlite-provider.js';
 import { HttpKbProvider } from './http-provider.js';
 import { readKbConfigFromDisk, KB_CONFIG_PATH } from './kb-config.js';
 import type { KbConfigResult } from './kb-config.js';
-import { resolveProjectSlug } from './project-slug.js';
+import { resolveProjectSlug, slugify } from './project-slug.js';
 import { resolveRepositoryIdentity } from './repository-header.js';
 import type { MemoryProvider } from './types.js';
 import { FLEET_DIR } from '../../paths.js';
@@ -84,7 +84,7 @@ async function withSelectedProject(
   configFingerprint: string,
 ): Promise<KbProviders> {
   return {
-    project: await selectProjectProvider(base.projectSqlite, repoPath, remoteUrl, configFingerprint),
+    project: await selectProjectProvider(base.projectSqlite, repoPath, remoteUrl, configFingerprint, slug),
     global: base.global,
     projectSlug: slug,
   };
@@ -137,11 +137,8 @@ function kbConfigFingerprint(): string {
  * after a warning, once per distinct config content -- see the note above
  * _warnedKbConfigFailures.
  *
- * The HTTP branch passes that same SqliteProvider as the explicit fallback:
- * HttpKbProvider's default is a NO-ARG `new SqliteProvider()`, which resolves its
- * database from process.cwd() rather than this repo's path.
- *
- * It also passes the resolved repository (repoPath's origin remote and HEAD,
+ * The HTTP branch gives HttpKbProvider no local store: over http the KB
+ * server is the only source of truth. It passes the resolved repository (repoPath's origin remote and HEAD,
  * or the remote member's remoteUrl), which HttpKbProvider sends as the
  * X-Repository / X-Repository-Commit / X-Repository-Branch headers (commit and
  * branch only for a local folder) so a shared remote KB can keep
@@ -152,6 +149,7 @@ async function selectProjectProvider(
   repoPath: string,
   remoteUrl: string | undefined,
   configFingerprint: string,
+  slug: string,
 ): Promise<MemoryProvider> {
   let config: KbConfigResult;
   try {
@@ -170,12 +168,8 @@ async function selectProjectProvider(
     return projectProvider;
   }
   // my-beads-db-u00.4: the HTTP provider is init'd like any other provider,
-  // rather than relying on HttpKbProvider.init() doing nothing beyond
-  // re-init'ing its fallback. That fallback is the already-init'd
-  // projectProvider, and SqliteProvider.init() returns early once its db is
-  // open, so the double init is harmless (pinned in
-  // tests/knowledge/kb-providers-http-selection.test.ts) -- and any setup
-  // HttpKbProvider.init() grows later runs here instead of being skipped.
+  // so any setup HttpKbProvider.init() grows later runs here instead of being
+  // skipped.
   // readKbConfigFromDisk throws on http-without-url/token, so the url and one
   // token source are present here. A token_ref config hands the provider the
   // secret NAME, never a value: the provider looks it up on every request, so a
@@ -184,20 +178,37 @@ async function selectProjectProvider(
   const tokenSource = config.tokenSecretName !== undefined
     ? { secretName: config.tokenSecretName }
     : config.token!;
-  const repository = resolveRepositoryIdentity(repoPath, remoteUrl);
-  const httpProvider = new HttpKbProvider(config.url!, tokenSource, projectProvider, {
+  const repository = await resolveRepositoryIdentity(repoPath, remoteUrl);
+  // The slug goes on every request (X-KB-Project) so a server for another
+  // project refuses it instead of answering with that project's KB.
+  const httpProvider = new HttpKbProvider(config.url!, tokenSource, {
     requestTimeoutMs: config.requestTimeoutMs,
+    projectSlug: slug,
     ...(repository ? { repository } : {}),
   });
   try {
     await httpProvider.init();
   } catch (err) {
-    // Not yet tracked in _httpProviders, so release its beforeExit listener here.
+    // Not yet tracked in _httpProviders, so dispose it here.
     httpProvider.dispose();
     throw err;
   }
   _httpProviders.push(httpProvider);
   return httpProvider;
+}
+
+/**
+ * True when the KB config selects the http project provider, decided from the
+ * config file alone: no provider is built and no per-repo kb.sqlite is opened.
+ * A config that fails to read gives false, the same SQLite decision
+ * selectProjectProvider makes for it (and warns about on the next provider build).
+ */
+export function kbConfigSelectsHttp(): boolean {
+  try {
+    return readKbConfigFromDisk().provider === 'http';
+  } catch {
+    return false;
+  }
 }
 
 // Keyed by (slug, repoPath), NOT slug alone and NOT a single slot. The fleet
@@ -269,24 +280,14 @@ function getBaseProviders(slug: string, repoPath: string, key: string): Promise<
 
 function disposeIfHttp(provider: MemoryProvider): void {
   if (!(provider instanceof HttpKbProvider)) return;
-  // dispose() removes the beforeExit hook that would have reported unsent
-  // captures at exit, so report them now instead of dropping them silently.
-  if (provider.offlineQueue.length > 0) {
-    logWarn(
-      'kb-providers',
-      `KB config changed: the replaced remote KB provider still had ${provider.offlineQueue.length} ` +
-      'unsent captures in its offline queue. Run kb_harvest on the session transcript to recover them.',
-    );
-  }
   provider.dispose();
   const index = _httpProviders.indexOf(provider);
   if (index !== -1) _httpProviders.splice(index, 1);
 }
 
-// A superseded selection's HttpKbProvider is disposed so its beforeExit
-// listener does not outlive it (the leak my-beads-db-u00.2 fixed in kb-server).
-// dispose() only removes that listener, so a caller still holding the old
-// provider mid-call keeps a working provider.
+// A superseded selection's HttpKbProvider is disposed. dispose() releases
+// nothing today (the provider holds no queue, listener or handle), so a caller
+// still holding the old provider mid-call keeps a working provider.
 function retireSelection(selection: KbSelection): void {
   selection.providers.then(
     providers => disposeIfHttp(providers.project),
@@ -348,7 +349,25 @@ export async function getKbProviders(cwd?: string, remoteUrl?: string): Promise<
   const configFingerprint = kbConfigFingerprint();
   const current = _selections.get(key);
   if (current && current.configFingerprint === configFingerprint) {
-    return current.providers;
+    const providers = await current.providers;
+    const changedOrigin = providers.project instanceof HttpKbProvider
+      ? providers.project.repositoryOriginChange()
+      : undefined;
+    if (changedOrigin === undefined) return providers;
+    // The folder's origin moved (read in the background, off the request path).
+    // X-KB-Project and X-Repository both come from the origin, so they must move
+    // together: re-derive the slug from the new origin and drop this selection,
+    // so the next build sends the new pair rather than a mixed one. (A selection
+    // under the new slug, if any, is reused.) The old provider is retired.
+    const slugKey = `${cwd ?? process.cwd()}\0${remoteUrl ?? ''}`;
+    const nextSlug = slugify(changedOrigin);
+    if (nextSlug) _slugCache.set(slugKey, nextSlug);
+    else _slugCache.delete(slugKey);
+    if (_selections.get(key) === current) {
+      _selections.delete(key);
+      retireSelection(current);
+    }
+    return getKbProviders(cwd, remoteUrl);
   }
   if (current) {
     retireSelection(current);
@@ -363,9 +382,8 @@ export async function getKbProviders(cwd?: string, remoteUrl?: string): Promise<
 }
 
 export function resetKbProviders(): void {
-  // HttpKbProvider registers a process 'beforeExit' listener in its constructor;
-  // clearing the maps alone leaks one listener per reset, and a suite that resets
-  // repeatedly hits MaxListenersExceededWarning.
+  // Every tracked HttpKbProvider is disposed before the maps are cleared, so a
+  // provider that ever holds a resource releases it on reset.
   for (const httpProvider of _httpProviders) {
     httpProvider.dispose();
   }

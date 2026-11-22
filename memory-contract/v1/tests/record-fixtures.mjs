@@ -133,18 +133,52 @@ const RECORD_ONLY = process.env.RECORD_ONLY
 
 // Synthetic scratch repos -- no real BluSKY code, credentials, or customer
 // text anywhere below. repoA/repoB are deliberately NOT git repos (no .git).
-const { ENVIRONMENT, RECORDED_REMOTE_A, RECORDED_REMOTE_B, RECORDED_REMOTE_IMPORT_REJECTED, RECORDED_REMOTE_BARE, UNTRUSTED_COMMITTED_BIBLE } =
+const { ENVIRONMENT, RECORDED_REMOTE_A, RECORDED_REMOTE_B, RECORDED_REMOTE_IMPORT_REJECTED, RECORDED_REMOTE_BARE, UNTRUSTED_COMMITTED_BIBLE, RECORDED_REMOTE_HTTP } =
   await import(pathToFileURL(path.join(HERE, 'roundtrip-harness.mjs')).href);
 const { materializeSessionWorld } = await import(pathToFileURL(path.join(HERE, 'session-world.mjs')).href);
 const { registerAllTools } = await import(pathToFileURL(path.join(DIST, 'services', 'tool-registry.js')).href);
 const { memberToolScope } = await import(pathToFileURL(path.join(DIST, 'services', 'tool-scope.js')).href);
 const { addAgent, removeAgent } = await import(pathToFileURL(path.join(DIST, 'services', 'registry.js')).href);
+const { kbSetup } = await import(pathToFileURL(path.join(DIST, 'tools', 'kb-setup.js')).href);
+const { resetKbProviders } = await import(pathToFileURL(path.join(DIST, 'services', 'knowledge', 'kb-providers.js')).href);
+
+// The http-backed sessions' KB servers are fleet's sample kb-server
+// (kb-sample-servers.mjs: one serving the http sessions' project, holding one
+// entry another member captured, and one serving a different project); the
+// token is the committed obviously-fake test value. The config is scoped to
+// each of those sessions' calls and the prior one restored afterwards.
+const { createKbSampleServers, HTTP_KB_RECORDED_OTHER_URL } =
+  await import(pathToFileURL(path.join(HERE, 'kb-sample-servers.mjs')).href);
+const { startKbServer, KB_SERVER_CAPABILITIES } = await import(pathToFileURL(path.join(DIST, 'commands', 'kb-server.js')).href);
+const HTTP_KB_CONFIG_PATH = path.join(process.env.APRA_FLEET_DATA_DIR, 'knowledge', 'config.json');
+const HTTP_KB_TOKEN_PATH = path.join(REPO_ROOT, 'tests', 'knowledge', 'fixtures', 'kb-http-test-token.txt');
+const kbSampleServers = createKbSampleServers({
+  startKbServer,
+  tokenFile: HTTP_KB_TOKEN_PATH,
+  scratchDir: path.join(SCRATCH_ROOT, 'kb-sample-servers'),
+  servedFolder: () => world.repoPaths.get('HTTP'),
+});
+async function withHttpKb(fn, variant) {
+  const remote = await kbSampleServers.urlFor(variant);
+  const prior = fs.existsSync(HTTP_KB_CONFIG_PATH) ? fs.readFileSync(HTTP_KB_CONFIG_PATH) : null;
+  resetKbProviders();
+  try {
+    const token = fs.readFileSync(HTTP_KB_TOKEN_PATH, 'utf-8').trim();
+    await kbSetup({ provider: 'http', remote, token }, { folder: os.tmpdir() });
+    return await fn();
+  } finally {
+    if (prior === null) fs.rmSync(HTTP_KB_CONFIG_PATH, { force: true });
+    else fs.writeFileSync(HTTP_KB_CONFIG_PATH, prior);
+    resetKbProviders();
+  }
+}
 
 const RECORDED_REMOTES = {
   A: RECORDED_REMOTE_A,
   B: RECORDED_REMOTE_B,
   IMPORT_REJECTED: RECORDED_REMOTE_IMPORT_REJECTED,
   BARE: RECORDED_REMOTE_BARE,
+  HTTP: RECORDED_REMOTE_HTTP,
 };
 
 const world = await materializeSessionWorld(ENVIRONMENT, SCRATCH_ROOT, {
@@ -153,10 +187,12 @@ const world = await materializeSessionWorld(ENVIRONMENT, SCRATCH_ROOT, {
   removeAgent,
   registerAllTools,
   memberToolScope,
+  withHttpKb,
 });
 const repoA = world.repoPaths.get('A');
 const repoB = world.repoPaths.get('B');
 const repoCode = world.repoPaths.get('CODE');
+const repoHttp = world.repoPaths.get('HTTP');
 
 // Every record* call below dispatches as `currentSession`; withSession() runs
 // one call as another session and stamps that session into the fixture.
@@ -191,6 +227,7 @@ const RAW_PATH_PAIRS = [
   [repoA, '<SCRATCH_REPO_A>'],
   [repoB, '<SCRATCH_REPO_B>'],
   [repoCode, '<SCRATCH_REPO_CODE>'],
+  [repoHttp, '<SCRATCH_REPO_HTTP>'],
   [SCRATCH_ROOT, '<SCRATCH_ROOT>'],
 ];
 const PATH_REPLACEMENTS = RAW_PATH_PAIRS.flatMap(([search, replacement]) => {
@@ -250,7 +287,7 @@ async function recordHappy(tool, caseName, request) {
   }
 }
 
-async function recordRefusal(tool, caseName, request, expectedErrorCode) {
+async function recordRefusal(tool, caseName, request, expectedErrorCode, literals = []) {
   const handler = handlerFor(tool);
   if (!handler) {
     failures++;
@@ -275,7 +312,9 @@ async function recordRefusal(tool, caseName, request, expectedErrorCode) {
     console.log(`  [FAIL] ${tool}/${caseName} expected a throw for ${expectedErrorCode} but got a response`);
     void response;
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    let message = err instanceof Error ? err.message : String(err);
+    // Live values that vary per run (an ephemeral stand-in port) are recorded as stable literals.
+    for (const [live, recorded] of literals) message = message.split(live).join(recorded);
     writeFixture(tool, caseName, {
       tool,
       case: caseName,
@@ -508,6 +547,9 @@ if (idFoo) {
 // scenarios.
 {
   fs.writeFileSync(path.join(repoA, 'src', 'demote-basis.ts'), 'export const demoteBasis = 1;\n');
+  // Committed so the entry's basis matches HEAD and it can enter the bible.
+  execFileSync('git', ['add', '--', 'src/demote-basis.ts'], { cwd: repoA });
+  execFileSync('git', ['commit', '--quiet', '-m', 'demote basis', '--', 'src/demote-basis.ts'], { cwd: repoA });
   const captureForDemote = await recordHappy('kb_capture', 'setup-for-demote', {
     type: 'knowledge',
     title: 'Entry walked up to CONFIRMED so it can be demoted',
@@ -525,6 +567,15 @@ if (idFoo) {
       id: idDemote,
       reason: 'Second promotion (INFERRED -> CONFIRMED) so kb_demote has a CONFIRMED entry to lower.',
     });
+    // The entry enters the bible before it is demoted: a demoted tombstone is
+    // written only for an id the bible at baseCommit carries. The ref pins
+    // that commit as the base for the tombstone call below.
+    await recordHappy('kb_bible_commit', 'setup-merge-for-demote', {
+      ids: [idDemote],
+      baseBranch: 'main',
+      baseCommit: '0123456789abcdef0123456789abcdef01234567',
+    });
+    execFileSync('git', ['update-ref', 'refs/fixtures/pre-demote', 'HEAD'], { cwd: repoA });
     await recordHappy('kb_demote', 'happy', {
       id: idDemote,
       reason: 'Re-read src/demote-basis.ts and the claim holds in fewer cases than the promotion note asserts.',
@@ -551,7 +602,7 @@ if (idFoo) {
         ids: [],
         demoted_ids: [idDemote, idFoo],
         baseBranch: 'main',
-        baseCommit: '0123456789abcdef0123456789abcdef01234567',
+        baseCommit: 'refs/fixtures/pre-demote',
       });
     }
   }
@@ -568,12 +619,54 @@ if (idFoo) {
     exclude_disputed: true,
     expand_related: true,
   });
+
+  // --- kb_query own_scope ---------------------------------------------------
+  // The same member session reads back its OWN CONFIRMED row. Without
+  // own_scope a member's CONFIRMED read is answered from the checkout bible
+  // view, whose rows are untagged (happy-confirmed-only above); own_scope asks
+  // the per-repo DB for the member's own captures instead, so idFoo comes back
+  // carrying its member:<uuid> owner tag.
+  const ownScope = await recordHappy('kb_query', 'happy-own-scope', {
+    query: 'exampleFn',
+    confidence: ['CONFIRMED'],
+    own_scope: true,
+  });
+  const ownRow = (parseEnvelopeText(ownScope)?.l1_results ?? []).find((e) => e?.id === idFoo);
+  if (!ownRow || ownRow.confidence !== 'CONFIRMED' || !(ownRow.tags ?? []).some((t) => t.startsWith('member:'))) {
+    failures++;
+    console.log(`  [FAIL] kb_query/happy-own-scope did not return the member's own CONFIRMED row ${idFoo} with its member: tag`);
+  }
+
+  // --- kb_query files filter (look up by file) -------------------------------
+  // A hard filter: only entries citing src/example.ts come back. idFoo cites
+  // it; every row must.
+  const filesFilter = await recordHappy('kb_query', 'happy-files-filter', {
+    query: 'exampleFn',
+    files: ['src/example.ts'],
+  });
+  const filesRows = parseEnvelopeText(filesFilter)?.l1_results ?? [];
+  if (!filesRows.some((e) => e?.id === idFoo)
+    || !filesRows.every((e) => (e?.source_files ?? []).includes('src/example.ts'))) {
+    failures++;
+    console.log(`  [FAIL] kb_query/happy-files-filter did not return only entries citing src/example.ts (with ${idFoo})`);
+  }
 }
 
 // --- kb_stats -------------------------------------------------------------
 await recordHappy('kb_stats', 'happy', {
   symbols: ['exampleFn'],
 });
+
+// --- kb_capabilities (SQLite) ----------------------------------------------
+// The local implementation's answer: every route, withdraw and demote
+// included -- the same value the sample kb-server answers.
+{
+  const caps = parseEnvelopeText(await recordHappy('kb_capabilities', 'happy', {}));
+  if (JSON.stringify(caps) !== JSON.stringify(KB_SERVER_CAPABILITIES) || !caps?.routes?.includes('withdraw')) {
+    failures++;
+    console.log(`  [FAIL] kb_capabilities/happy is not the sample kb-server's capabilities answer: ${JSON.stringify(caps)}`);
+  }
+}
 
 const bibleFromA = path.join(repoA, '.fleet', 'kb-canonical.json');
 
@@ -1076,6 +1169,212 @@ await recordNonErrorOutcome('kb_capture', 'non-error-confidence-clamped', {
     }, 'E-RETIRE-NEEDS-KB-MAINTAINER', refusedGate));
   }
 }
+
+// -- withdrawals: a branch tombstone, a deferred and a base-ref import, a restore
+// A CONFIRMED entry is merged into repo A's bible (setup). kb_bible_commit
+// withdrawals then removes it and records a "withdrawn" tombstone (the local
+// row is not changed). kb_import of that bible from the work tree lowers
+// nothing and reports the id deferred; read at refs/remotes/origin/main with
+// base_branch main (the bible's provenance.branch, the ref pointed at HEAD
+// here as a merge and fetch would) it lowers the row and reports it withdrawn. Last, restore_ids with the
+// pre-withdrawal commit (a ref) as baseCommit removes the branch-added tombstone and
+// re-adds the base entry.
+{
+  const captureWithdraw = await recordHappy('kb_capture', 'setup-for-bible-withdrawal', {
+    type: 'knowledge',
+    title: 'Entry merged into the bible and then withdrawn',
+    summary: 'Set up to demonstrate kb_bible_commit withdrawals and the base-ref kb_import.',
+    content: 'This entry cites the committed src/helper.ts, is merged into the bible, then withdrawn on a branch.',
+    source_files: ['src/helper.ts'],
+    symbols: ['helperWithdrawalFixture'],
+  });
+  const idWithdraw = parseEnvelopeText(captureWithdraw)?.id;
+  if (idWithdraw) {
+    await recordHappy('kb_promote', 'setup-first-promote-for-bible-withdrawal', {
+      id: idWithdraw,
+      reason: 'First promotion (UNVERIFIED -> INFERRED) of the entry used by the withdrawal fixtures.',
+    });
+    await recordHappy('kb_promote', 'setup-second-promote-for-bible-withdrawal', {
+      id: idWithdraw,
+      reason: 'Second promotion (INFERRED -> CONFIRMED) so the entry can be merged and then withdrawn.',
+    });
+    await recordHappy('kb_bible_commit', 'setup-merge-for-bible-withdrawal', {
+      ids: [idWithdraw],
+      baseBranch: 'main',
+      baseCommit: '0123456789abcdef0123456789abcdef01234567',
+    });
+    // The base bible restore_ids compares against: pinned by a ref (baseCommit
+    // accepts any commit-ish), so the round trip can name it without a sha.
+    execFileSync('git', ['update-ref', 'refs/fixtures/pre-withdrawal', 'HEAD'], { cwd: repoA });
+    await recordHappy('kb_bible_commit', 'withdrawal', {
+      ids: [],
+      withdrawals: [{
+        id: idWithdraw,
+        note: 'Re-read src/helper.ts: the helper no longer behaves as the entry states.',
+        evidence_files: ['src/helper.ts'],
+      }],
+      baseBranch: 'main',
+      baseCommit: '0123456789abcdef0123456789abcdef01234567',
+    });
+    const deferred = await withSession('FULL_A', () => recordHappy('kb_import', 'withdrawal-deferred', {
+      skip_sweep: true,
+    }));
+    if (JSON.stringify(parseEnvelopeText(deferred)?.withdrawals?.deferred) !== JSON.stringify([idWithdraw])) {
+      failures++;
+      console.log(`  [FAIL] kb_import/withdrawal-deferred did not report ${idWithdraw} deferred`);
+    }
+    execFileSync('git', ['update-ref', 'refs/remotes/origin/main', 'HEAD'], { cwd: repoA });
+    const applied = await withSession('FULL_A', () => recordHappy('kb_import', 'withdrawal-base-ref', {
+      ref: 'refs/remotes/origin/main',
+      base_branch: 'main',
+      skip_sweep: true,
+    }));
+    if (JSON.stringify(parseEnvelopeText(applied)?.withdrawals?.withdrawn) !== JSON.stringify([idWithdraw])) {
+      failures++;
+      console.log(`  [FAIL] kb_import/withdrawal-base-ref did not report ${idWithdraw} withdrawn`);
+    }
+    await recordHappy('kb_bible_commit', 'restore', {
+      ids: [],
+      restore_ids: [idWithdraw],
+      baseBranch: 'main',
+      baseCommit: 'refs/fixtures/pre-withdrawal',
+    });
+  } else {
+    failures++;
+    console.log('  [FAIL] kb_capture/setup-for-bible-withdrawal returned no id');
+  }
+}
+
+// Over an http project KB (HTTP_A): kb_bible_commit skips with bible_skipped
+// and kb_invalidate {ids} is refused, both before any request to the server.
+{
+  const httpId = '4b0c2b5e-7d3a-4c1e-9a55-0f6d2e8a1c77';
+  await withSession('HTTP_A', () => recordHappy('kb_bible_commit', 'http-skip', {
+    ids: [httpId],
+    baseBranch: 'main',
+    baseCommit: '0123456789abcdef0123456789abcdef01234567',
+  }));
+  await withSession('HTTP_A', () => recordRefusal('kb_invalidate', 'refusal-kb-http-unsupported', {
+    ids: [httpId],
+  }, 'E-KB-HTTP-UNSUPPORTED'));
+}
+
+// kb_capabilities over an http project KB: the sample kb-server's
+// GET /api/kb/capabilities body, passed through unchanged.
+{
+  const caps = parseEnvelopeText(await withSession('HTTP_A', () => recordHappy('kb_capabilities', 'http-happy', {})));
+  if (JSON.stringify(caps) !== JSON.stringify(KB_SERVER_CAPABILITIES)) {
+    failures++;
+    console.log(`  [FAIL] kb_capabilities/http-happy is not the sample kb-server's capabilities answer: ${JSON.stringify(caps)}`);
+  }
+}
+
+// Member own-scope over an http project KB: the server's only entry belongs
+// to another member, so a member read keeps nothing.
+await withSession('HTTP_A', () => recordHappy('kb_query', 'http-own-scope', {
+  query: 'widget batching', confidence: ['INFERRED'],
+}));
+// kb_demote over an http project KB, against the sample kb-server's real
+// POST /api/kb/demote: the session captures its own entry on the server,
+// promotes it to CONFIRMED (a member capture lands INFERRED), demotes it (happy), and a second demote of the
+// now-INFERRED entry is the server's 422 E-DEMOTE-NOT-CONFIRMED. Recorded
+// after http-own-scope, which must not see this entry.
+{
+  const captureHttpDemote = await withSession('HTTP_A', () => recordHappy('kb_capture', 'setup-for-http-demote', {
+    type: 'knowledge',
+    title: 'Widget export is a constant',
+    summary: 'src/widget.ts exports widget as a numeric constant; set up for the http demote fixtures.',
+    content: 'widget in src/widget.ts is exported as the constant 1. Captured as a synthetic fixture for kb_demote over http.',
+    source_files: ['src/widget.ts'],
+    symbols: ['widget'],
+    role: 'doer',
+  }));
+  const idHttpDemote = parseEnvelopeText(captureHttpDemote)?.id;
+  if (idHttpDemote) {
+    await withSession('HTTP_A', () => recordHappy('kb_promote', 'setup-first-promote-for-http-demote', {
+      id: idHttpDemote,
+      reason: 'Promotion of the entry used by the http demote fixtures to CONFIRMED (checked against src/widget.ts).',
+    }));
+    // The files filter over http: the sample kb-server lists it in
+    // query_filters, so it is forwarded; the now-CONFIRMED entry citing
+    // src/widget.ts is found through its directory.
+    const httpFiles = await withSession('HTTP_A', () => recordHappy('kb_query', 'http-files-filter', {
+      query: 'widget', files: ['src'],
+    }));
+    const httpFilesRows = parseEnvelopeText(httpFiles)?.l1_results ?? [];
+    if (!httpFilesRows.some((e) => e?.id === idHttpDemote)) {
+      failures++;
+      console.log(`  [FAIL] kb_query/http-files-filter did not return ${idHttpDemote} citing src/widget.ts`);
+    }
+    const demoteRequest = {
+      id: idHttpDemote,
+      reason: 'Re-checked src/widget.ts: the export is a constant only in this fixture, so CONFIRMED overstates it.',
+      evidence_files: ['src/widget.ts'],
+    };
+    await withSession('HTTP_A', () => recordHappy('kb_demote', 'http-happy', demoteRequest));
+    await withSession('HTTP_A', () => recordRefusal('kb_demote', 'refusal-http-not-confirmed', demoteRequest, 'E-DEMOTE-NOT-CONFIRMED'));
+  } else {
+    failures++;
+    console.log('  [FAIL] kb_capture/setup-for-http-demote returned no id');
+  }
+}
+// Withdrawals over an http project KB: kb_bible_commit writes a tombstone-only
+// .fleet/kb-canonical.json (entries stay empty; the KB server holds the
+// entries), and kb_import of that bible read at refs/remotes/origin/main
+// replays the tombstone in one POST /api/kb/withdraw to the sample kb-server.
+{
+  const captureHttpWithdraw = await withSession('HTTP_A', () => recordHappy('kb_capture', 'setup-for-http-withdrawal', {
+    type: 'knowledge',
+    title: 'Widget is exported for the withdrawal fixture',
+    summary: 'src/widget.ts exports widget; set up for the http withdrawal fixtures.',
+    content: 'widget in src/widget.ts is exported. Captured as a synthetic fixture for withdrawals over http.',
+    source_files: ['src/widget.ts'],
+    symbols: ['widgetWithdrawalFixture'],
+    role: 'doer',
+  }));
+  const idHttpWithdraw = parseEnvelopeText(captureHttpWithdraw)?.id;
+  if (idHttpWithdraw) {
+    await withSession('HTTP_A', () => recordHappy('kb_promote', 'setup-promote-for-http-withdrawal', {
+      id: idHttpWithdraw,
+      reason: 'Promotion of the entry used by the http withdrawal fixtures to CONFIRMED (checked against src/widget.ts).',
+    }));
+    await withSession('HTTP_A', () => recordHappy('kb_bible_commit', 'http-tombstone-only', {
+      ids: [],
+      withdrawals: [{
+        id: idHttpWithdraw,
+        note: 'Re-checked src/widget.ts: the export no longer matches the entry.',
+        evidence_files: ['src/widget.ts'],
+      }],
+      baseBranch: 'main',
+      baseCommit: '0123456789abcdef0123456789abcdef01234567',
+    }));
+    execFileSync('git', ['update-ref', 'refs/remotes/origin/main', 'HEAD'], { cwd: repoHttp });
+    const replay = await withSession('HTTP_A', () => recordHappy('kb_import', 'http-withdrawal-replay', {
+      ref: 'refs/remotes/origin/main',
+      base_branch: 'main',
+    }));
+    if (JSON.stringify(parseEnvelopeText(replay)?.withdrawals?.withdrawn) !== JSON.stringify([idHttpWithdraw])) {
+      failures++;
+      console.log(`  [FAIL] kb_import/http-withdrawal-replay did not report ${idHttpWithdraw} withdrawn`);
+    }
+  } else {
+    failures++;
+    console.log('  [FAIL] kb_capture/setup-for-http-withdrawal returned no id');
+  }
+}
+// A server for a different project: a read and a promote by id are both
+// refused with the server's 409, not answered locally.
+{
+  const otherUrl = await kbSampleServers.urlFor('other-project');
+  await withSession('HTTP_MISMATCH', () => recordRefusal('kb_query', 'refusal-http-project-mismatch', {
+    query: 'widget batching',
+  }, 'E-KB-HTTP-PROJECT-MISMATCH', [[otherUrl, HTTP_KB_RECORDED_OTHER_URL]]));
+  await withSession('HTTP_MISMATCH', () => recordRefusal('kb_promote', 'refusal-http-project-mismatch', {
+    id: '9d4e7a10-3b2c-4f5e-8a61-2c7d0e9b4f13',
+    reason: 'Attempting to promote an entry through a server for another project.',
+  }, 'E-KB-HTTP-PROJECT-MISMATCH', [[otherUrl, HTTP_KB_RECORDED_OTHER_URL]]));
+}
+await kbSampleServers.close();
 
 // ===========================================================================
 // Summary + named T7 gaps

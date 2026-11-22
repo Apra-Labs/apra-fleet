@@ -184,6 +184,24 @@
  *                                                // not yet implemented" (fails
  *                                                // closed with a typed ERROR:,
  *                                                // never a silently wrong command)
+ *                                                // PR-comment actions: 'comment'
+ *                                                // (create), 'list-comments',
+ *                                                // 'update-comment' and
+ *                                                // 'delete-comment'; a list
+ *                                                // builder's mapResponse yields
+ *                                                // [{ id, body, ref }] and
+ *                                                // update/delete take that
+ *                                                // `ref` as `comment_ref`.
+ *     descriptionMaxLength: number        // OPTIONAL; text-limit axis. The
+ *                                         //   longest PR description (chars)
+ *                                         //   this provider is sent, with a
+ *                                         //   margin under its real limit.
+ *     commentMaxLength: number            // OPTIONAL; the same for one PR
+ *                                         //   comment. Both are declared by
+ *                                         //   every hosted provider; a
+ *                                         //   classification-only provider
+ *                                         //   (generic-git, dolt) has no PR
+ *                                         //   text and declares neither.
  *     httpFailureHint: (statusOrCtx) => string|{ hint, remedy }  // OPTIONAL;
  *                                         //   REST failure explanation.
  *                                         //   Called with a bare status
@@ -441,6 +459,13 @@ export function registerVcsProvider(impl) {
     // malformed remedy must fail at registration, not while reporting an
     // already-failed self-heal attempt, where the error would mask the real
     // auth failure.
+    // The text-limit axis: a positive integer when declared, so a typo can
+    // never turn into an unbounded (or zero-length) PR description.
+    for (const field of ['descriptionMaxLength', 'commentMaxLength']) {
+        if (impl[field] != null && !(Number.isInteger(impl[field]) && impl[field] > 0)) {
+            throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a non-positive-integer ${field}.`);
+        }
+    }
     if (impl.authRemedy != null) {
         const remedy = impl.authRemedy;
         if (typeof remedy !== 'object') {

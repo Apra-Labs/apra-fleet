@@ -24,6 +24,41 @@
       "description": "Task-level bead ids created or updated this round.",
       "items": { "type": "string" }
     },
+    "decision": {
+      "type": "object",
+      "description": "Optional. Send it only when a finding needs an operator decision that no change you can make in the repository or in beads can settle, and nothing in the bead, its parent or the code says which alternative to take. Same shape as the doer and reviewer NEEDS-DECISION decision. The orchestrator files it for an operator verbatim (never truncated) as a separate decision bead, sets the named work bead aside for the rest of the run without re-dispatching it, and keeps working other ready beads. Never add a human label to the work bead yourself: answering a bead with the human-respond command closes it.",
+      "required": ["beadId", "question", "options", "recommendation"],
+      "properties": {
+        "beadId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The one open work bead id that cannot go on until the decision is made."
+        },
+        "question": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The full question, self-contained: what was found, why it blocks the bead, and what must be decided. An operator reads only this and the options."
+        },
+        "options": {
+          "type": "array",
+          "minItems": 2,
+          "description": "At least two concrete alternatives, each with a short stable id (for example \"a\", \"b\") and its full text: what it means and what it costs.",
+          "items": {
+            "type": "object",
+            "required": ["id", "text"],
+            "properties": {
+              "id": { "type": "string", "minLength": 1 },
+              "text": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "recommendation": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The option id you recommend, followed by why."
+        }
+      }
+    },
     "kb_captures": {
       "type": "array",
       "description": "IGNORED FOR THIS ROLE -- the planner has no apply path, so anything sent here is silently dropped rather than captured. Declared only for forward compatibility and shape-parity with the roles that do capture; always omit it or send []. Do not spend planning effort producing entries for it.",
@@ -45,7 +80,7 @@
           },
           "content": {
             "type": "string",
-            "description": "Full detail of the entry. REQUIRED -- kbCaptureSchema declares content as z.string().min(1), so a capture without it is rejected at the MCP boundary and persists nothing (apra-fleet-23c).",
+            "description": "Full detail of the entry. REQUIRED -- kbCaptureSchema declares content as z.string().min(1), so a capture without it is rejected at the MCP boundary and persists nothing.",
             "minLength": 40
           },
           "source_files": {

@@ -567,6 +567,28 @@ const FALLBACK_doerReport = {
     allOf: [needsDecisionRequires('status')],
 };
 
+// Fallback for role "planner". Canonical source:
+// packages/apra-fleet-se/apra-pm/agents/schemas/planner-output.json. The
+// optional `decision` is the same NEEDS-DECISION request a doer or reviewer
+// returns (FALLBACK_decisionRequest): a planner finding only an operator can
+// settle. The planner dispatch itself carries no schema (its primary output
+// is the beads DAG), so phases/plan.mjs validates a returned report against
+// this contract before routing its decision (decisions.mjs
+// applyPlannerDecision). kb_captures is accepted and ignored, as before.
+const FALLBACK_plannerReport = {
+    $id: 'plannerReport',
+    type: 'object',
+    properties: {
+        status: { type: 'string', enum: ['OK', 'BLOCKED'] },
+        notes: { type: 'string' },
+        featureIds: { type: 'array', items: { type: 'string' } },
+        taskIds: { type: 'array', items: { type: 'string' } },
+        decision: FALLBACK_decisionRequest,
+        kb_captures: { type: 'array' },
+    },
+    required: ['status', 'notes'],
+};
+
 // NEW (apra-fleet-unw.16): no corresponding vendored agents/*.md file --
 // this is the orchestrator's own schema for the Develop-phase "group ready
 // beads into streaks" call in runner.js. Before this issue, that call's
@@ -737,6 +759,15 @@ const FALLBACK_harvesterReport = {
 // Application-owned per the layering proposal (section 4.4): there is
 // nothing to load from packages/apra-fleet-se/apra-pm for this one, and there never will
 // be.
+/** The merge_assessment fields, in the order the prompt asks for and the PR
+ *  body renders them. */
+export const MERGE_ASSESSMENT_FIELDS = Object.freeze([
+    'value', 'risk', 'default_path_changes', 'blast_radius', 'upgrade_impact', 'proof', 'recommendation', 'reason',
+]);
+
+/** Allowed merge_assessment.recommendation values. */
+export const MERGE_RECOMMENDATIONS = Object.freeze(['merge', 'merge_after_proof', 'do_not_merge']);
+
 export const finalVerdict = {
     $id: 'finalVerdict',
     type: 'object',
@@ -831,6 +862,81 @@ export const finalVerdict = {
                 required: ['id', 'reason'],
             },
         },
+        // The Final Review's DEMOTE judgement, mirroring reviewer-output.json's
+        // kb_demotions: same {id, reason, evidence_files} shape as kb_discards,
+        // executed by the same kbWork.apply path. Only ids actually offered to
+        // the final review (the only review offered demotion candidates), and
+        // only when the claim is false at the sprint branch HEAD -- including
+        // when this sprint made it false. Every offered id belongs in exactly
+        // one of kb_demotions and kb_holds. The reason minLength is the
+        // engine's evidence bar (kb.mjs KB_MIN_PROMOTE_REASON, enforced in
+        // vetKbWork); kept as a literal so this schema module stays
+        // dependency-free, pinned equal by test/kb-review-judgements.test.mjs.
+        kb_demotions: {
+            type: 'array',
+            description: 'Offered CONFIRMED entries whose claim is false at the sprint branch HEAD, including when this sprint made it false. A demotion is recorded on this branch and takes effect only if the branch merges. Every offered id must appear in exactly one of kb_demotions and kb_holds. Same evidence bar as kb_promotions and kb_discards. An id may appear in only one of kb_promotions, kb_discards and kb_demotions -- the engine refuses it in every list it appears in. The engine records the demotions.',
+            items: {
+                type: 'object',
+                properties: {
+                    id: {
+                        type: 'string',
+                        description: "The entry id, copied verbatim from the 'KNOWLEDGE BANK -- demotion candidates' block in your dispatch prompt. Never invent one.",
+                        minLength: 1,
+                    },
+                    reason: {
+                        type: 'string',
+                        description: 'What you re-checked this review that the claim does not hold up against.',
+                        minLength: 20,
+                    },
+                    evidence_files: {
+                        type: 'array',
+                        description: 'The repo-relative files you re-checked -- at least one, each a real file in the repo.',
+                        minItems: 1,
+                        items: { type: 'string', minLength: 1 },
+                    },
+                },
+                required: ['id', 'reason', 'evidence_files'],
+            },
+        },
+        // The other half of the final review's demotion verdict: offered ids
+        // whose claim still holds at the sprint branch HEAD. Every offered id
+        // belongs in exactly one of kb_demotions and kb_holds; an id the
+        // reviewer leaves out of both is recorded as no-verdict (never a
+        // stall or a re-dispatch). Optional, like every KB field.
+        kb_holds: {
+            type: 'array',
+            description: 'Ids of offered demotion candidates whose claim still holds at the sprint branch HEAD. Every offered id must appear in exactly one of kb_demotions and kb_holds; an id in both, or in neither, gets no verdict and is left as it is.',
+            items: {
+                type: 'string',
+                description: "The entry id, copied verbatim from the 'KNOWLEDGE BANK -- demotion candidates' block in your dispatch prompt. Never invent one.",
+                minLength: 1,
+            },
+        },
+        // The Final Review's risk/value merge assessment, published near the
+        // top of the sprint PR body (pr-body.mjs) so a human merger sees the
+        // reviewer's merge recommendation before the free-text notes.
+        // Optional: a verdict without it stays valid and the PR body is
+        // unchanged. Every string is LLM-authored and is sanitized and
+        // length-capped by pr-body.mjs before it reaches the PR.
+        // Deliberately LENIENT: the assessment is advisory, so a partial,
+        // misspelled or wrongly typed one must never fail validation (and so
+        // never trigger schema repair or a synthesized FAIL). Phase
+        // final-review normalizes it (pr-body.mjs normalizeMergeAssessment)
+        // after dispatch: valid fields kept, the rest dropped and named. The
+        // prompt still asks for all eight fields.
+        merge_assessment: {
+            description: 'Risk/value merge assessment of the whole sprint diff, shown near the top of the pull request description. Optional. An object with these fields: value, risk, default_path_changes, blast_radius, upgrade_impact, proof, recommendation (merge, merge_after_proof or do_not_merge), reason.',
+            properties: {
+                value: { description: 'What merging delivers: the user-visible or operational value of this change.' },
+                risk: { description: 'What could go wrong if this is merged, and how likely and severe that is.' },
+                default_path_changes: { description: 'Behaviour that changes for users who change nothing (default configuration, default code paths); say "none" if none.' },
+                blast_radius: { description: 'Which components, users or workflows are affected if a change here is wrong.' },
+                upgrade_impact: { description: 'What an existing installation must do or will notice on upgrade (migrations, config, compatibility); say "none" if none.' },
+                proof: { description: 'The evidence that the change works: tests run, checks performed, and what is still unproven.' },
+                recommendation: { description: 'merge, merge_after_proof (merge once the named proof exists) or do_not_merge.' },
+                reason: { description: 'Why that recommendation; for merge_after_proof, name the proof still needed.' },
+            },
+        },
     },
     required: ['verdict', 'notes'],
 };
@@ -844,6 +950,7 @@ export const finalVerdict = {
 
 const OUTPUT_SCHEMA_MAJOR_VERSION = 1;
 
+export const plannerReport = resolveOutputSchema('planner', OUTPUT_SCHEMA_MAJOR_VERSION, FALLBACK_plannerReport);
 export const planReviewerVerdict = resolveOutputSchema('plan-reviewer', OUTPUT_SCHEMA_MAJOR_VERSION, FALLBACK_planReviewerVerdict);
 export const reviewerVerdict = resolveOutputSchema('reviewer', OUTPUT_SCHEMA_MAJOR_VERSION, FALLBACK_reviewerVerdict);
 export const doerReport = resolveOutputSchema('doer', OUTPUT_SCHEMA_MAJOR_VERSION, FALLBACK_doerReport);
@@ -859,6 +966,7 @@ export const harvesterReport = resolveOutputSchema('harvester', OUTPUT_SCHEMA_MA
 // consistency test) -- production code never consults this directly, it
 // always goes through resolveOutputSchema()'s vendored-first resolution.
 export const FALLBACK_SCHEMAS = Object.freeze({
+    plannerReport: FALLBACK_plannerReport,
     planReviewerVerdict: FALLBACK_planReviewerVerdict,
     reviewerVerdict: FALLBACK_reviewerVerdict,
     doerReport: FALLBACK_doerReport,
@@ -873,6 +981,7 @@ export const FALLBACK_SCHEMAS = Object.freeze({
 // packages/apra-fleet-se/apra-pm/agents/schemas/<role>-output.json it resolves from.
 // Exported for the same test-only reason as FALLBACK_SCHEMAS above.
 export const ROLE_FOR_SCHEMA_NAME = Object.freeze({
+    plannerReport: 'planner',
     planReviewerVerdict: 'plan-reviewer',
     reviewerVerdict: 'reviewer',
     doerReport: 'doer',
@@ -887,6 +996,7 @@ export const ROLE_FOR_SCHEMA_NAME = Object.freeze({
 // schema object (e.g. to embed in a prompt) rather than a compiled
 // validator.
 export const SCHEMAS = Object.freeze({
+    plannerReport,
     planReviewerVerdict,
     reviewerVerdict,
     doerReport,

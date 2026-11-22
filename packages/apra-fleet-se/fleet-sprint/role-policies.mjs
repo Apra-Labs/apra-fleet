@@ -382,6 +382,14 @@ const retry = (over) => ({
      * budget is spent.
      */
     retryOnInvalidResult: false,
+    /**
+     * A refusal whose EVERY refused call maps to no permission grant (no heal
+     * can ever allow it) resumes the refused session ONCE with a notice naming
+     * the refused call(s), instead of failing at once. Only the resumed reply
+     * can become the result; a second such refusal fails as before. Needs a
+     * same-session ('max-turns-resume') secondary to resume through.
+     */
+    unmappableRefusalResume: false,
     ...over,
 });
 
@@ -856,6 +864,7 @@ const doer = policy('doer', {
         resumeAttempts: 2,
         turnEscalation: 'double',
         abortAfterSpentResumeLadder: true,
+        unmappableRefusalResume: true,
     }),
     degrade: degrade({
         kind: 'per-bead-attribution',

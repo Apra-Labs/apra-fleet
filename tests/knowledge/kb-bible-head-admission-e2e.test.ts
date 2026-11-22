@@ -177,7 +177,7 @@ describe('the engine bible queue against the real kb_bible_commit: a transient b
       }
       if (tool === 'kb_promote') {
         await provider.promote(args.id, args.reason);
-        return { id: args.id, promoted: true };
+        return { id: args.id, previous_confidence: 'INFERRED', new_confidence: 'CONFIRMED' };
       }
       if (tool === 'kb_bible_commit') return kbBibleCommit(args, { folder: clone });
       return {};

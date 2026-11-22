@@ -108,8 +108,11 @@ describe('apra-fleet-19o.3: bracketed titles validate and rejected newTasks reap
                         await runCmd(`bd close ${id}`, td);
                         closedIds.push(id);
                     }
+                    // Claims B closed too: the read-back disproves it, so B keeps the
+                    // ordinary left-open retry. (A VERIFY report claiming no close of a
+                    // bead it left open is set aside after one round instead.)
                     return {
-                        content: [{ text: JSON.stringify({ status: 'VERIFY', closedIds, notes: 'Closed A (and any filler/resurfaced tasks); left B open (deliberately unfinished, forces further cycles).' }) }],
+                        content: [{ text: JSON.stringify({ status: 'VERIFY', closedIds: ids, notes: 'Closed A (and any filler/resurfaced tasks); left B open (deliberately unfinished, forces further cycles).' }) }],
                     };
                 };
 

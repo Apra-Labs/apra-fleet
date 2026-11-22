@@ -14,17 +14,45 @@ Default port: **8787**. Never invoke `apra-fleet workflow fleet-sprint` or
 Check first: `curl -s -m 5 http://localhost:8787/api/sprints`. Connection
 refused/timeout = not running. `{"sprints": [...]}` = already up, skip this.
 
-Start it detached (it runs indefinitely -- exits only on `POST
-/api/shutdown` or SIGINT/SIGTERM, never on its own). `apra-fleet install`
-puts it under the user's home (needs Node.js 22.16+):
+The supervisor runs indefinitely -- it exits only on `POST /api/shutdown`,
+a termination signal (SIGINT/SIGTERM/SIGHUP/SIGBREAK) or a fatal error, never
+on its own -- and writes one final line with the cause and exit code to
+`<dataDir>/logs/supervisor.log` when it does. `apra-fleet install` puts it
+under the user's home (needs Node.js 22.16+). Launch it DETACHED with
+`--detach`: the launcher respawns the supervisor as a background process that
+survives the launching terminal closing, waits until `GET /api/health` answers
+with the new process's own pid (an answer from some other process holding the
+port does not count -- there is no fallback port), prints the pid and port, and
+exits 0. On a timeout, a port already taken, or an early exit it kills the
+child it started, prints the reason plus the launch log path
+(`<dataDir>/logs/supervisor-launch.log`) and exits non-zero. All other options
+(`--port`, `--beads-dir`, ...) are passed through.
 
 ```bash
-node ~/.apra-fleet/workflows/fleet-sprint/bin/serve.mjs              # macOS / Linux
+node ~/.apra-fleet/workflows/fleet-sprint/bin/serve.mjs --detach          # macOS / Linux
 ```
 
 ```powershell
-node "$HOME\.apra-fleet\workflows\fleet-sprint\bin\serve.mjs"    # Windows PowerShell
+node "$HOME\.apra-fleet\workflows\fleet-sprint\bin\serve.mjs" --detach   # Windows PowerShell
 ```
+
+Windows caveat: `--detach` may NOT survive a launcher that runs inside a
+kill-on-close job object (some IDE/agent terminals and CI runners), which can
+kill even a detached child when the launcher exits. Surviving a Windows console
+close is not yet verified. On Windows the durable path is to register the
+supervisor with the OS via the "Auto-start on login/boot" section below.
+
+Without `--detach` the same command runs in the FOREGROUND of the launching
+shell and does NOT survive that terminal (or the process that launched it)
+closing -- sprints and launches then fail until it is started again. To have the
+OS start it on login/boot, register it with the "Auto-start on login/boot"
+section below. Liveness can also be read without the HTTP API:
+`apra-fleet status` prints a `Supervisor:` line (UP, DOWN with the last
+heartbeat time, or stopped cleanly) from `<dataDir>/supervisor.json`, which the
+supervisor rewrites on an interval while running. On macOS / Linux a SIGHUP is
+logged and ignored when the supervisor has no terminal on stdin/stdout (a
+detached launch), and only an attached terminal's hangup stops it. Check
+`GET /api/health` afterwards.
 
 (From a source checkout of apra-fleet the same file is
 `packages/apra-fleet-se/bin/serve.mjs`.)
@@ -348,6 +376,7 @@ Field names, exactly as the API expects them:
 | `roleMap` | no | `{"doer":["m1","m2"], "reviewer":["m3"]}`. Leave out `backlog`: the supervisor injects its own backlog member; naming any other member there is a 400. `orchestrator` is the deprecated alias of `backlog` (removed in v0.5). |
 | `budget` | no | USD cap. |
 | `phases` | no | `{"regression": "skip"}` skips the regression pass (`"run"` is the default). Any other key or value is a 400. |
+| `kbDemotionLoop` | no | `"on"` (default) or `"off"`: the reviewer KB demotion loop switch, forwarded as `--kb-demotion-loop`. Any other value is a 400. |
 | `overrideRelaunchGate` | no | bool. See below. |
 
 Response has `sprintId`, `pid`, `port` (its own dashboard), `logPath`, and

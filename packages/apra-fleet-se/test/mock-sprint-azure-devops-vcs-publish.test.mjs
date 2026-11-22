@@ -5,7 +5,7 @@ import { finalizeAbort } from '../fleet-sprint/runner.js';
 import { capabilities as vcsCapabilities } from '../fleet-sprint/vcs-module.mjs';
 import { AzureDevOpsVCS } from '../fleet-sprint/vcs-providers/azure-devops.mjs';
 import { SprintPlanRejectedError } from '../fleet-sprint/errors.mjs';
-import { defaultMockCallTool, legacyCommandExecuteCommandAdapter } from './helpers/mock-sprint-harness.mjs';
+import { defaultMockCallTool, legacyCommandExecuteCommandAdapter, MOCK_MEMBER_WORK_FOLDER, stagedCurlBody } from './helpers/mock-sprint-harness.mjs';
 
 const check = (cond, msg) => assert.ok(cond, msg);
 
@@ -88,7 +88,7 @@ function buildMockCommand({ originUrl, credentialFiles, prResponder, findRespond
 function mockCallTool(vcsProvider, { availableSecrets = [] } = {}, command) {
     const base = defaultMockCallTool({ executeCommand: legacyCommandExecuteCommandAdapter(command) });
     return async (name, toolArgs) => {
-        if (name === 'member_detail') return { content: [{ text: JSON.stringify({ vcsProvider }) }] };
+        if (name === 'member_detail') return { content: [{ text: JSON.stringify({ vcsProvider, folder: MOCK_MEMBER_WORK_FOLDER }) }] };
         if (name === 'credential_store_list') {
             return { content: [{ text: JSON.stringify(availableSecrets.map((n) => ({ name: n, scope: 'persistent' }))) }] };
         }
@@ -222,8 +222,7 @@ test('finalizeAbort (Azure DevOps): an existing PR is found and rewritten to the
         prResponder: () => `${JSON.stringify({ message: 'TF401179: An active pull request for the source and target branch already exists.' })}\n409`,
         findResponder: () => `${JSON.stringify({ value: [{ pullRequestId: 777, title: `Auto-sprint [PASS]: ${branch}`, description: oldBody }] })}\n200`,
         updateResponder: (cmd) => {
-            const m = /-d '((?:[^']|'\\'')*)' -w/.exec(cmd);
-            patched = { url: cmd.trim().split(' ').pop(), payload: JSON.parse(m[1].replace(/'\\''/g, "'")) };
+            patched = { url: cmd.trim().split(' ').pop(), payload: JSON.parse(stagedCurlBody(cmd)) };
             return `${JSON.stringify({ pullRequestId: 777 })}\n200`;
         },
     });

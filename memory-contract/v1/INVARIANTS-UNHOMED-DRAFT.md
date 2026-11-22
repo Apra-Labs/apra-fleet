@@ -104,8 +104,11 @@ Placement candidate: a subsection of its own, possibly merged with `U3` as one
 "import channel" subsection.
 
 **THE RULE.** An implementation that exports a shareable bible MUST record its
-provenance as exactly ONE FILE-LEVEL block, `{commit, branch, entry_count}`,
-and MUST NOT anchor entries individually: no per-entry commit, sha, or anchor
+provenance as exactly ONE FILE-LEVEL block -- `{branch}` today (bibles
+written before the merge-friendly layout also carry `commit` and
+`entry_count`, which readers ignore; the verified commit now travels as a
+`Verified-Against` trailer on the git commit that writes the file, spec.md
+section 2.8) -- and MUST NOT anchor entries individually: no per-entry commit, sha, or anchor
 field exists in the exported entry shape, and a reader MUST NOT expect one.
 `commit` and `branch` MUST each degrade to `null` rather than failing the
 export when git is absent or the repo has no commits; the BLOCK itself is

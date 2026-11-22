@@ -18,7 +18,7 @@ vi.mock('node:child_process');
 
 /** The apra-fleet entry written to ~/.claude.json by the last install (atomically, via an owner-only temp file), with the file mode it was written with. */
 function claudeHttpRegistration(): { entry: any; mode: unknown } {
-  const writes = vi.mocked(fs.writeFileSync).mock.calls.filter(c => /[\\/]mock[\\/]home[\\/]\.\.claude\.json\.\d+\.\d+\.tmp$|[\\/]mock[\\/]home[\\/]\.claude\.json$/.test(c[0].toString()));
+  const writes = vi.mocked(fs.writeFileSync).mock.calls.filter(c => /[\\/]mock[\\/]home[\\/]\.\.claude\.json\.\d+\.[0-9a-f]+\.tmp$|[\\/]mock[\\/]home[\\/]\.claude\.json$/.test(c[0].toString()));
   expect(writes.length).toBeGreaterThan(0);
   const last = writes[writes.length - 1];
   return { entry: JSON.parse(String(last[1])).mcpServers['apra-fleet'], mode: (last[2] as any)?.mode };
@@ -63,6 +63,37 @@ describe('runInstall multi-provider', () => {
     });
 
     vi.mocked(fs.readdirSync).mockReturnValue([] as any);
+  });
+
+  it('install/upgrade prunes the leaked apra-fleet test project keys from ~/.claude.json, and only those', async () => {
+    const mockOs = os as unknown as { tmpdir?: () => string };
+    mockOs.tmpdir = vi.fn(() => '/mock/tmp');
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const kept = {
+        '/mock/tmp/unrelated-project': { hasTrustDialogAccepted: true },
+        '/srv/work/apra-fleet-bootstrap-gate-repo': { allowedTools: ['Bash'] },
+      };
+      vi.mocked(fs.writeFileSync)(claudeJsonPath(), JSON.stringify({
+        numStartups: 5,
+        projects: {
+          ...kept,
+          '/mock/tmp/apra-fleet-regmember-compose-Ab12Cd': { hasTrustDialogAccepted: true },
+          '/mock/tmp/apra-fleet-bootstrap-gate-Ef34Gh': { hasTrustDialogAccepted: true },
+        },
+      }));
+      vi.mocked(fs.writeFileSync).mockClear();
+
+      await runInstall([]);
+
+      const after = JSON.parse(String(vi.mocked(fs.readFileSync)(claudeJsonPath())));
+      expect(after.projects).toEqual(kept);
+      expect(after.numStartups).toBe(5);
+      expect(log.mock.calls.map(c => String(c[0])).some(m => /removed 2 leaked apra-fleet test project entries/.test(m))).toBe(true);
+    } finally {
+      log.mockRestore();
+      delete mockOs.tmpdir;
+    }
   });
 
   it('installs for Claude by default', async () => {

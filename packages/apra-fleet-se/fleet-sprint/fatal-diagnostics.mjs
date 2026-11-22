@@ -21,19 +21,28 @@ import { DoltDivergedError } from './errors.mjs';
 // process-level event fires the process's control flow is in an unspecified
 // state.
 /**
- * @param {{ log?: (msg: string) => void, publishState?: (namespace: string, data: any) => void, phaseOf?: () => string|null }} deps
+ * @param {{ log?: (msg: string) => void, publishState?: (namespace: string, data: any) => void, phaseOf?: () => string|null, kbWorkOf?: () => ({ warnPending?: () => void }|null|undefined) }} deps
  * @returns {() => void} uninstall() -- removes both listeners.
  */
 export function installFatalDiagnosticsGuard(deps = {}) {
     const log = typeof deps.log === 'function' ? deps.log : () => {};
     const publishState = typeof deps.publishState === 'function' ? deps.publishState : null;
     const phaseOf = typeof deps.phaseOf === 'function' ? deps.phaseOf : () => null;
+    const kbWorkOf = typeof deps.kbWorkOf === 'function' ? deps.kbWorkOf : () => null;
 
     const handle = (kind) => (err) => {
         const message = (err && err.message) || String(err);
         const stack = (err && err.stack) || null;
         const phase = phaseOf();
         log(`[FATAL] ${kind} (last known phase: ${phase ?? 'unknown'}): ${message}${stack ? `\n${stack}` : ''}`);
+        // Held KB writes would otherwise vanish with the process: list them
+        // (idempotent -- a no-op when already reported). Never throws.
+        try {
+            const kbWork = kbWorkOf();
+            if (kbWork && typeof kbWork.warnPending === 'function') kbWork.warnPending();
+        } catch (warnErr) {
+            log(`[FATAL] ${kind}: failed to report held KB writes: ${(warnErr && warnErr.message) || warnErr}`);
+        }
         if (publishState) {
             try {
                 publishState('terminal', {

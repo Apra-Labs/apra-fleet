@@ -1,0 +1,29 @@
+{
+  "route": "withdraw",
+  "case": "evidence-not-required",
+  "kind": "happy",
+  "request": {
+    "method": "POST",
+    "path": "/api/kb/withdraw",
+    "body": {
+      "withdrawals": [
+        {
+          "id": "{{ENTRY_NO_EVIDENCE}}",
+          "at": "2999-01-01T00:00:00.000Z",
+          "reason": "demoted"
+        }
+      ]
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "results": [
+        {
+          "id": "{{ENTRY_NO_EVIDENCE}}",
+          "outcome": "withdrawn"
+        }
+      ]
+    }
+  }
+}

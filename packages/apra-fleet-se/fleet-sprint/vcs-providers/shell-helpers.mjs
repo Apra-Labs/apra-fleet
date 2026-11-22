@@ -166,4 +166,40 @@ function assertToken(token) {
     return value;
 }
 
-export { shQuote, shQuoteJson, usesPowerShellQuoting, escapeForWindowsArgv, curlBinary, assertToken };
+/** File-based request-body transport for every body-carrying VCS builder
+ *  (create/update pull request, comments). The JSON body never travels on
+ *  the command line: a Windows member runs the dispatched command through
+ *  powershell.exe (CreateProcess caps a command line at 32767 chars) and an
+ *  SSH session into a Windows member may go through cmd.exe (8191 chars), so
+ *  an inline `-d '<json>'` payload put a hard ceiling on PR descriptions and
+ *  comments far below what the providers accept. Instead the builder names a
+ *  member-side file and returns the payload text for the caller to stage
+ *  there (fleet-sprint/vcs-payload.mjs, through send_files) before the
+ *  command is dispatched; curl reads it with `--data-binary @<path>`, which
+ *  sends the bytes exactly as written (no newline stripping, unlike `-d @`).
+ *
+ *  `payloadPath` is an ABSOLUTE member-side path the caller resolved in
+ *  JavaScript (vcs-payload.mjs memberPayloadPath) -- never a shell variable or
+ *  `~`, which no shell dialect here is allowed to expand. It is quoted in the
+ *  member shell's own dialect like every other argument; the leading `@`
+ *  sits inside the quotes, so PowerShell never reads it as a splat.
+ *
+ *  Returns { arg, payload } where `arg` is the curl argument text and
+ *  `payload` is { path, content } for the caller to stage. Throws the typed
+ *  ERROR when no path was supplied, rather than silently falling back to an
+ *  inline body. */
+function jsonBodyFromFile(payloadJson, payloadPath, os, shell, action) {
+    const p = String(payloadPath ?? '').trim();
+    if (!p) {
+        throw new Error(`ERROR: VCSModule: "payload_path" (an absolute member-side file path for the request body) is required to build a ${action} command -- request bodies are sent from a staged file, never inline on the command line.`);
+    }
+    if (/[\r\n\0]/.test(p)) {
+        throw new Error(`ERROR: VCSModule: "payload_path" must not contain a newline or NUL character (got ${JSON.stringify(p)}).`);
+    }
+    return {
+        arg: `--data-binary ${shQuote(`@${p}`, os, shell)}`,
+        payload: { path: p, content: String(payloadJson) },
+    };
+}
+
+export { shQuote, shQuoteJson, usesPowerShellQuoting, escapeForWindowsArgv, curlBinary, assertToken, jsonBodyFromFile };

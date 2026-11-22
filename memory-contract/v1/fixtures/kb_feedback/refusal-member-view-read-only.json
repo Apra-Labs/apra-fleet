@@ -8,7 +8,7 @@
     "role": "reviewer"
   },
   "error": {
-    "message": "E-MEMBER-VIEW-READ-ONLY: kb_feedback is not available in a member session: member KB reads come from the checkout bible, which is read-only; entry '5dfe9670-72fc-4231-b4f4-a0cd99137775' was not changed. Remediation: Run kb_feedback from a FULL session (no member identity), or flag the entry for review through the maintainer.",
+    "message": "E-MEMBER-VIEW-READ-ONLY: kb_feedback is not available in a member session: a member session does not flag entries in the shared KB (over SQLite its reads come from the read-only checkout bible; under an http KB provider the server's entries are shared by every member); entry '5dfe9670-72fc-4231-b4f4-a0cd99137775' was not changed. Remediation: Run kb_feedback from a FULL session (no member identity), or flag the entry for review through the maintainer.",
     "thrown": true
   },
   "expected_error_code": "E-MEMBER-VIEW-READ-ONLY"

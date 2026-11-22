@@ -1,3 +1,4 @@
+import { EXECUTE_PROMPT_MAX_TURNS } from '@apralabs/apra-fleet-client';
 import { policyFor, PRE_DISPATCH_STEPS_IN_BRACKET } from './role-policies.mjs';
 import {
     isNonRetryableDispatchError,
@@ -213,8 +214,30 @@ export function resolveBudget(ctx, name) {
  */
 export function resolveMaxTurns(maxTurns, bindings = {}) {
     if (!maxTurns) return undefined;
-    if (maxTurns.kind === 'runtime') return bindings[maxTurns.binding];
-    return turnBaseValue(maxTurns.base) * maxTurns.multiplier;
+    if (maxTurns.kind === 'runtime') return clampMaxTurns(bindings[maxTurns.binding]);
+    return clampMaxTurns(turnBaseValue(maxTurns.base) * maxTurns.multiplier);
+}
+
+/**
+ * The ONE clamp every engine dispatch's max_turns goes through (runDispatch
+ * and every resume/redispatch label read it via resolveMaxTurns): a computed
+ * budget above what the execute_prompt tool accepts would be rejected at
+ * schema validation, so it is capped at the client's exported maximum.
+ * Non-numbers (undefined = transport default) pass through unchanged.
+ */
+export function clampMaxTurns(turns) {
+    if (typeof turns !== 'number' || !Number.isFinite(turns)) return turns;
+    return Math.min(turns, EXECUTE_PROMPT_MAX_TURNS);
+}
+
+/**
+ * The max_turns a role's max-turns resume secondary actually sends (first
+ * resume attempt), for resume labels: derived from the policy table through
+ * the same clamp the dispatch uses, never recomputed by the caller.
+ */
+export function secondaryMaxTurns(roleName, bindings = {}) {
+    const secondary = policyFor(roleName).secondary;
+    return secondary ? resolveMaxTurns(secondary.maxTurns, bindings) : undefined;
 }
 
 function turnBaseValue(name) {
@@ -226,6 +249,26 @@ function turnBaseValue(name) {
         );
     }
     return base;
+}
+
+/**
+ * The resume notice for a refusal whose every refused call maps to no
+ * permission grant: names the refused call(s) and says no grant can ever
+ * allow them, so the role re-runs each such step as a separate, plain
+ * command. LLM-facing engine text -- generic, never target-specific.
+ *
+ * @param {string[]} actions the refused calls, e.g. 'Bash "a && b"'
+ * @returns {string}
+ */
+export function unmappableRefusalResumeNotice(actions) {
+    const list = (actions || []).filter(Boolean);
+    const named = list.length ? list.map((a) => `- ${a}`).join('\n') : '- (the refused call was not named)';
+    return 'Your last reply in this session cannot be used: these tool call(s) were refused, and no permission grant ' +
+        'can ever allow them, so retrying them in the same form will be refused again:\n' +
+        `${named}\n` +
+        'Do not retry them as written. Run each step as a separate, plain command instead -- no chaining with ' +
+        '&&, ||, ; or pipes, no loops, no command substitution, no backgrounding with &. Then finish your remaining ' +
+        'work and return your final report exactly as the required output schema asks.';
 }
 
 /** The session id a failed dispatch's error reports, or null. */
@@ -292,7 +335,7 @@ function evalLabelExpr(expr, bindings) {
     if (Object.prototype.hasOwnProperty.call(bindings, expr)) return bindings[expr];
     const m = /^([A-Za-z_$][\w$]*)(?:\s*\*\s*(\d+))?$/.exec(String(expr).trim());
     if (m && Object.prototype.hasOwnProperty.call(TURN_BASES, m[1])) {
-        return m[2] ? TURN_BASES[m[1]] * Number(m[2]) : TURN_BASES[m[1]];
+        return clampMaxTurns(m[2] ? TURN_BASES[m[1]] * Number(m[2]) : TURN_BASES[m[1]]);
     }
     throw new Error(
         `dispatch-role: watchdog label expression ${JSON.stringify(expr)} is neither a supplied binding nor ` +
@@ -505,6 +548,8 @@ async function runDegradeSteps(ctx, policy, err, errorClass) {
  *   label/resumeLabel/repairLabel -- presentation labels (NOT policy: see
  *                       role-policies.mjs's "deliberately out of scope" note)
  *   attemptOptions   -- ({ attempt, skipPreDispatchSync }) => extra withGitSync options
+ *   onDispatchWindow -- async ('before'|'after') => void, fired inside the
+ *                       git-sync bracket right before/after the agent call
  *   afterAttempt     -- async (value) => void, run INSIDE the attempt's try so
  *                       a failure in it is classified by the same ladder
  *   onResultRejected -- (reason) => Error, the error a `retryOnInvalidResult`
@@ -579,6 +624,11 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
             // A fresh-session fallback (no explicit session id to resume) must
             // never carry a resume argument, whatever prepare offered.
             if (extra.freshSession) prepared.resumeArg = false;
+            // The unmappable-refusal resume's notice is ALWAYS delivered, even
+            // by a caller whose prepare() does not place it itself.
+            if (extra.refusalNotice && typeof prepared.prompt === 'string' && !prepared.prompt.includes(extra.refusalNotice)) {
+                prepared.prompt = `${extra.refusalNotice}\n\n${prepared.prompt}`;
+            }
             const localBindings = { ...bindingsFor(extra.resumeAttempt || 0), ...(prepared.bindings || {}) };
             const localOpts = {
                 ...opts,
@@ -613,23 +663,33 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
             if (typeof ctx.beforeAgentDispatch === 'function') {
                 await ctx.beforeAgentDispatch({ member, lease: watchdogLease });
             }
+            // Window hook: 'before' fires AFTER the bracket's pre-dispatch
+            // sync and 'after' BEFORE its post-dispatch sync, so a caller
+            // comparing the member's checkout across the window never sees a
+            // tip moved by another lane's push being merged in or out.
+            if (opts.onDispatchWindow) await opts.onDispatchWindow('before');
             const inFlight = agent(prepared.prompt ?? defaultPrompt, {
                 ...options,
                 watchdogLease,
                 member_name: member,
             });
-            if (!dispatch.watchdog.armed) return inFlight;
             // Raced against a client-side watchdog so a frozen-but-alive
             // member session can never leave this await silently hanging past
             // its budget -- needed in ADDITION to, not instead of, the
             // server-side timeout_s/max_total_s above.
-            return ctx.withDispatchWatchdog(inFlight, {
-                timeoutS: resolveBudget(ctx, dispatch.watchdog.timeoutS),
-                member,
-                label: resolveWatchdogLabel(dispatch.watchdog.label, localBindings),
-                log: ctx.log,
-                lease: watchdogLease,
-            });
+            const settled = !dispatch.watchdog.armed
+                ? inFlight
+                : ctx.withDispatchWatchdog(inFlight, {
+                    timeoutS: resolveBudget(ctx, dispatch.watchdog.timeoutS),
+                    member,
+                    label: resolveWatchdogLabel(dispatch.watchdog.label, localBindings),
+                    log: ctx.log,
+                    lease: watchdogLease,
+                });
+            if (!opts.onDispatchWindow) return settled;
+            const windowResult = await settled;
+            await opts.onDispatchWindow('after');
+            return windowResult;
         };
         // `dispatch.bracket`, not `policy.bracket`: a secondary dispatch
         // inherits its main dispatch's bracket by spread today, but reading it
@@ -805,6 +865,27 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
         }
     };
 
+    // The ONE same-session resume after a refusal whose every refused call
+    // maps to no permission grant (retry.unmappableRefusalResume). The
+    // refused reply itself is never used: the session is resumed with a
+    // notice that names the refused call(s) and says no grant can ever allow
+    // them, and only the RESUMED reply can become the result -- through the
+    // normal schema and postResult path, exactly like any other attempt. A
+    // refusal is reported after the turn ended, so there is no live session
+    // to kill, and the secondary's pre-dispatch shortcut is deliberately not
+    // run: the doer is told about the refusal even when its beads are closed.
+    const redispatchViaUnmappableRefusalResume = async (attemptOpts, { sessionId, actions }) => {
+        resumesIssued += 1;
+        const notice = unmappableRefusalResumeNotice(actions);
+        return runDispatch(
+            policy.secondary,
+            notice,
+            opts.resumeLabel ?? opts.label,
+            attemptOpts,
+            { resumeAttempt: 1, resumeSessionId: sessionId, refusalNotice: notice },
+        );
+    };
+
     let lastErr = null;
     let value;
     let ok = false;
@@ -839,6 +920,11 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
     // its own heals for the per-ladder cap.
     let permissionHeals = 0;
     let permissionHealRedispatch = false;
+    // retry.unmappableRefusalResume: whether this ladder already spent its
+    // one same-session resume after an unmappable refusal, and the pending
+    // resume ({ sessionId, actions }) for the next loop pass.
+    let unmappableResumeSpent = false;
+    let unmappableResumeNext = null;
     // Resolves null when the heal succeeded (re-run the attempt), else the
     // MemberPermissionDeniedError that ends the sprint.
     const healPermissionDenial = async (err) => {
@@ -848,7 +934,26 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
             : ((denial && denial.actions) || []);
         const actionText = actions.length ? actions.join(', ') : 'unknown actions';
         const suggested = (denial && denial.suggestedGrants) || [];
+        // Every refused call maps to no grant (no per-call suggestedGrants and
+        // no dispatch-level ones -- e.g. a chained or backgrounded shell
+        // command): no compose_permissions run can ever allow it, so the
+        // failure must not send the operator to compose_permissions or to a
+        // rerun that would be refused the same way.
+        const unmappable = Boolean(denial) && denial.denials.length > 0
+            && denial.denials.every((d) => (Array.isArray(d.suggestedGrants) ? d.suggestedGrants : suggested).length === 0);
         const fail = (step, why, heal) => {
+            if (unmappable && step !== 'not_healable') {
+                return new MemberPermissionDeniedError(
+                    `${roleLabel} dispatch on member '${member}' was refused tool calls that no permission grant can allow: ${actionText}. ` +
+                    'No grant maps to these calls (for example a chained or backgrounded shell command), so adding permissions to the member cannot fix this. ' +
+                    `This is a refused-call failure, not a ${roleLabel} result. ` +
+                    'To fix: change the role\'s task or instructions so each such step runs as a separate, plain command.',
+                    {
+                        member, role: policy.role, actions, suggestedGrants: [], rejectedGrants: [], step,
+                        details: { hint: denial ? denial.hint : '', unmappable: true }, cause: err,
+                    },
+                );
+            }
             const composeRole = (heal && heal.composeRole) || 'the role of its sprint roles';
             const rejected = (heal && heal.rejectedGrants) || [];
             const grantFix = rejected.length
@@ -957,9 +1062,15 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
             // re-dispatch hits the limit again.
             const redispatchMode = usageLimitRedispatch;
             usageLimitRedispatch = null;
-            value = redispatchMode === 'resume'
-                ? await redispatchViaUsageLimitResume(attemptOpts, usageLimitSessionId)
-                : await runAttempt(attemptOpts);
+            const refusalResume = unmappableResumeNext;
+            unmappableResumeNext = null;
+            if (refusalResume) {
+                value = await redispatchViaUnmappableRefusalResume(attemptOpts, refusalResume);
+            } else {
+                value = redispatchMode === 'resume'
+                    ? await redispatchViaUsageLimitResume(attemptOpts, usageLimitSessionId)
+                    : await runAttempt(attemptOpts);
+            }
             if (opts.afterAttempt) await opts.afterAttempt(value);
             // A postResult step may REJECT the result (the reviewer's
             // contract guard: a CHANGES_NEEDED verdict with nothing for the
@@ -1036,6 +1147,34 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
             // member, the denied actions and the fix.
             if (!completedButSyncFailed && isPermissionDeniedDispatchError(err)) {
                 const healError = await healPermissionDenial(err);
+                // Every refused call maps to no grant, so no heal can ever
+                // allow it. A ladder with retry.unmappableRefusalResume resumes
+                // the refused session ONCE, telling the role which call(s) can
+                // never be granted, instead of failing at once. A second such
+                // refusal (or none to resume: no session id, no resume
+                // secondary) fails with the unmappable remedy text as before.
+                if (healError && healError.details && healError.details.unmappable === true
+                    && retry.unmappableRefusalResume && !unmappableResumeSpent) {
+                    const refusedSessionId = sessionIdOfError(err);
+                    const canResume = Boolean(refusedSessionId)
+                        && policy.secondary && policy.secondary.kind === 'max-turns-resume';
+                    if (canResume) {
+                        unmappableResumeSpent = true;
+                        unmappableResumeNext = { sessionId: refusedSessionId, actions: healError.actions || [] };
+                        ctx.log(
+                            `${roleLabel}: unmappable refusal on member '${member}' -- no permission grant can allow ` +
+                            `${(healError.actions || []).join(', ') || 'unknown actions'}; its reply is NOT used; resuming session ` +
+                            `'${refusedSessionId}' once, naming the refused call(s), so the role can finish with plain commands.`
+                        );
+                        permissionHealRedispatch = true;
+                        attempt -= 1;
+                        continue;
+                    }
+                    ctx.log(
+                        `${roleLabel}: cannot resume after the unmappable refusal -- ` +
+                        (refusedSessionId ? 'the role has no same-session resume.' : 'the refused dispatch reported no session id.')
+                    );
+                }
                 if (healError) throw healError;
                 permissionHealRedispatch = true;
                 attempt -= 1;

@@ -1603,6 +1603,48 @@ const REVIEW_SCHEMA = {
         }
       }
     },
+    "kb_demotions": {
+      "type": "array",
+      "description": "Final verdict only: offered CONFIRMED entries whose claim is false at the sprint branch HEAD, including when this sprint made it false. A demotion is recorded on this branch and takes effect only if the branch merges. Every offered id must appear in exactly one of kb_demotions and kb_holds. A per-round review is offered no demotion candidates; kb_demotions from a round review are logged and dropped. Reviewer-only, with the same evidence bar as kb_promotions and kb_discards. An id may appear in only one of kb_promotions, kb_discards and kb_demotions -- the engine refuses it in all lists it appears in. The engine records the demotions.",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "reason",
+          "evidence_files"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The entry id, copied verbatim from the 'KNOWLEDGE BANK -- demotion candidates' block in your dispatch prompt. That block is the ONLY source of demotable ids -- do not call a kb_* tool to find one, and never invent one.",
+            "minLength": 1
+          },
+          "reason": {
+            "type": "string",
+            "description": "What you re-checked this review that the claim does not hold up against.",
+            "minLength": 20
+          },
+          "evidence_files": {
+            "type": "array",
+            "description": "The repo-relative files you re-checked -- at least one, each a real file in the repo.",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
+    "kb_holds": {
+      "type": "array",
+      "description": "Final verdict only: ids of offered demotion candidates whose claim still holds at the sprint branch HEAD. Every offered id must appear in exactly one of kb_demotions and kb_holds; an id in both, or in neither, gets no verdict and is left as it is.",
+      "items": {
+        "type": "string",
+        "description": "The entry id, copied verbatim from the 'KNOWLEDGE BANK -- demotion candidates' block in your dispatch prompt. Never invent one.",
+        "minLength": 1
+      }
+    },
     "kb_captures": {
       "type": "array",
       "description": "Durable knowledge this role verified during its run. The engine makes the kb_capture calls; the role only decides. Optional -- omit or send [] to capture nothing.",
@@ -1915,7 +1957,7 @@ const DOER_STATUS_SCHEMA = {
           },
           "content": {
             "type": "string",
-            "description": "Full detail of the entry. REQUIRED -- kbCaptureSchema declares content as z.string().min(1), so a capture without it is rejected at the MCP boundary and persists nothing (apra-fleet-23c).",
+            "description": "Full detail of the entry. REQUIRED -- kbCaptureSchema declares content as z.string().min(1), so a capture without it is rejected at the MCP boundary and persists nothing.",
             "minLength": 40
           },
           "source_files": {
@@ -2287,7 +2329,7 @@ const HARVEST_SCHEMA = {
           },
           "content": {
             "type": "string",
-            "description": "Full detail of the entry. REQUIRED -- kbCaptureSchema declares content as z.string().min(1), so a capture without it is rejected at the MCP boundary and persists nothing (apra-fleet-23c).",
+            "description": "Full detail of the entry. REQUIRED -- kbCaptureSchema declares content as z.string().min(1), so a capture without it is rejected at the MCP boundary and persists nothing.",
             "minLength": 40
           },
           "source_files": {
@@ -2375,7 +2417,7 @@ const PLANNER_SCHEMA = {
           },
           "content": {
             "type": "string",
-            "description": "Full detail of the entry. REQUIRED -- kbCaptureSchema declares content as z.string().min(1), so a capture without it is rejected at the MCP boundary and persists nothing (apra-fleet-23c).",
+            "description": "Full detail of the entry. REQUIRED -- kbCaptureSchema declares content as z.string().min(1), so a capture without it is rejected at the MCP boundary and persists nothing.",
             "minLength": 40
           },
           "source_files": {

@@ -1,7 +1,7 @@
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs/promises';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import os from 'os';
 import crypto from 'node:crypto';
 import { runCmd as bdRunCmd } from './bd-replay.mjs';
@@ -35,6 +35,12 @@ export const DELAY_MS = Number(process.env.MOCK_SPRINT_DELAY_MS || 0);
 export const NO_SESSION_ID_MARKER = null;
 
 /** The commit SHA the mock answers `git merge-base origin/<base> <branch>` with (the review diff base). */
+/** member name -> the commit `git rev-parse --verify HEAD` answers (default all zeros); a doer handler sets it to simulate a commit. */
+export const MOCK_BRANCH_TIPS = new Map();
+// When `.on` is true, every remote-moving git command (fetch/merge/reset/
+// rebase/pull/push) run on a member advances that member's branch tip, the way
+// another lane's push merged in by the pre-/post-dispatch sync does.
+export const MOCK_TIP_DRIFT = { on: false, counters: new Map() };
 export const MOCK_REVIEW_MERGE_BASE_SHA = 'c0ffee0000000000000000000000000000c0ffee';
 
 // apra-fleet-1cb.1 AUDIT NOTE: grepped runner.js for every read of
@@ -333,13 +339,71 @@ export function redactNetworkCommandForLog(command) {
 // substituting an empty token, and this mock must fail the same way (that is
 // exactly the label-mismatch bug those two exact-match executeCommand
 // branches exist to catch).
-// Reads the POSIX-quoted `-d '<json>'` payload back out of a VCSModule curl
-// command (the mock member is POSIX). Returns null when absent/unparseable.
-function extractMockCurlJson(cmd) {
-    const m = /-d '((?:[^']|'\\'')*)' -w/.exec(cmd);
+// Request bodies staged through send_files (VCS file-based transport, see
+// fleet-sprint/vcs-payload.mjs), keyed by the staged file's base name. The
+// engine names each staged body with a random file name, so concurrent
+// scenarios in one process never collide.
+export const MOCK_STAGED_FILES = new Map();
+
+// The absolute work folder defaultMockCallTool's member_detail reports, so the
+// engine can resolve a member-side request-body path (POSIX mock member).
+export const MOCK_MEMBER_WORK_FOLDER = '/mock-member/work';
+
+// The same, for a mock Windows member (PowerShell or gitbash shell).
+export const MOCK_WINDOWS_MEMBER_WORK_FOLDER = 'C:\\mock-member\\work';
+
+/** Record every local file a send_files call carries, by base name. */
+function recordMockSendFiles(toolArgs) {
+    const paths = (toolArgs && Array.isArray(toolArgs.local_paths)) ? toolArgs.local_paths : [];
+    for (const p of paths) {
+        try {
+            MOCK_STAGED_FILES.set(path.basename(p), readFileSync(p, 'utf8'));
+        } catch { /* a missing local file is the caller's bug; leave it unrecorded */ }
+    }
+}
+
+/** The staged request body a `--data-binary '@<path>'` curl argument names,
+ *  or null when the command carries none / it was never staged. */
+export function stagedCurlBody(cmd) {
+    const m = /--data-binary '@([^']+)'/.exec(String(cmd));
     if (!m) return null;
+    const name = m[1].split(/[\\/]/).pop();
+    return MOCK_STAGED_FILES.has(name) ? MOCK_STAGED_FILES.get(name) : null;
+}
+
+/** Whether `cmd` is one of the engine's own request-body staging commands
+ *  (the git-exclude of the staging directory, or the post-call delete of a
+ *  staged body) -- bookkeeping around a VCS call, not part of what a
+ *  publish-sequence assertion pins. */
+export function isVcsPayloadStagingCommand(cmd) {
+    let c = String(cmd);
+    // A PowerShell member's commands arrive as -EncodedCommand (UTF-16LE base64).
+    const enc = /^powershell -EncodedCommand (\S+)$/.exec(c);
+    if (enc) c = Buffer.from(enc[1], 'base64').toString('utf16le');
+    return (c.includes("'.apra-call/'") && c.includes('info/exclude')) || (/\.apra-call[\\/]vcs-body-[0-9a-f]+\.json/.test(c) && !/--data-binary/.test(c));
+}
+
+/** A VCS curl command with its staged request body appended (for substring
+ *  assertions that used to read the inline -d JSON off the command). */
+export function withStagedBody(cmd) {
+    const body = stagedCurlBody(cmd);
+    return body === null ? String(cmd) : `${cmd}\n${body}`;
+}
+
+/** A command log with each VCS curl's staged request body appended (see
+ *  withStagedBody) -- for assertions about PR title/body text. */
+export function withStagedBodies(commandLog) {
+    return commandLog.map(withStagedBody);
+}
+
+// Reads the JSON request body back out of a VCSModule curl command: the
+// staged `--data-binary '@<path>'` file (the mock member is POSIX). Returns
+// null when absent/unparseable.
+function extractMockCurlJson(cmd) {
+    const text = stagedCurlBody(cmd);
+    if (text === null) return null;
     try {
-        return JSON.parse(m[1].replace(/'\\''/g, "'"));
+        return JSON.parse(text);
     } catch {
         return null;
     }
@@ -521,7 +585,11 @@ export function defaultMockCallTool({ executeCommand } = {}) {
         // a "no registered VCS provider" ERROR: for every scenario that
         // relies on this default rather than its own callTool override.
         if (name === 'member_detail') {
-            return { content: [{ text: JSON.stringify({ vcsProvider: 'github' }) }] };
+            return { content: [{ text: JSON.stringify({ vcsProvider: 'github', folder: MOCK_MEMBER_WORK_FOLDER }) }] };
+        }
+        if (name === 'send_files') {
+            recordMockSendFiles(toolArgs);
+            return { content: [{ text: `[OK] mock send_files (${(toolArgs && toolArgs.local_paths || []).length} file(s))` }] };
         }
         if (name === 'provision_vcs_auth') {
             const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
@@ -1030,6 +1098,10 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
         deployHandler = null,
         integHandler = null,
         finalReviewHandler = null,
+        // Optional ({ opts, tempDir, runCmd, epicBead }) => result override for
+        // the 'harvester' dispatch (it may also throw, e.g. a typed abort
+        // AFTER the final review). Omitted: the default contract-checked mock.
+        harvesterHandler = null,
         // apra-fleet-417.4: optional (opts, tempDir, runCmd, epicBead) =>
         // result override for the 'regression-test-runner' dispatch, mirroring
         // deployHandler/integHandler above. Only reachable when the scenario
@@ -1458,8 +1530,8 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                     });
                     return mockCmdResult(0, `${body}\n201`, '');
                 }
-                const headMatch = /"head":"([^"]*)"/.exec(opts.command);
-                const branch = headMatch ? headMatch[1] : null;
+                const created = extractMockCurlJson(opts.command);
+                const branch = created && typeof created.head === 'string' ? created.head : null;
                 if (branch && prExistsState.has(branch)) {
                     const body = JSON.stringify({
                         message: 'Validation Failed',
@@ -1468,7 +1540,6 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                     return mockCmdResult(0, `${body}\n422`, '');
                 }
                 if (branch) prExistsState.add(branch);
-                const created = extractMockCurlJson(opts.command);
                 if (branch && created) prRecordState.set(branch, { number: 101, title: created.title, body: created.body });
                 const body = JSON.stringify({ number: 101, html_url: 'https://github.com/mock-org/mock-repo/pull/101' });
                 return mockCmdResult(0, `${body}\n201`, '');
@@ -1535,6 +1606,19 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
                 if (/^git rev-parse HEAD \S+\s*$/.test(opts.command)) {
                     const sha = '0'.repeat(40);
                     return mockCmdResult(0, `${sha}\n${sha}\n`, '');
+                }
+                if (MOCK_TIP_DRIFT.on && /^git (?:-c \S+ )*(?:fetch|merge|reset|rebase|pull|push)\b/.test(opts.command)) {
+                    const key = opts.member_name || '(none)';
+                    MOCK_TIP_DRIFT.counters.set(key, (MOCK_TIP_DRIFT.counters.get(key) || 0) + 1);
+                }
+                if (/^git rev-parse --verify HEAD\s*$/.test(opts.command)) {
+                    const key = opts.member_name || '(none)';
+                    const drift = MOCK_TIP_DRIFT.on ? (MOCK_TIP_DRIFT.counters.get(key) || 0) : 0;
+                    const base = MOCK_BRANCH_TIPS.get(key) || '0'.repeat(40);
+                    return mockCmdResult(0, drift ? `${String(drift).padStart(8, 'd')}${base.slice(8)}` : base, '');
+                }
+                if (/^git status --porcelain\s*$/.test(opts.command)) {
+                    return mockCmdResult(0, '', '');
                 }
                 if (/^git (?:-c \S+ )*stash create\s*$/.test(opts.command)) {
                     return mockCmdResult(0, '', '');
@@ -1933,6 +2017,9 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
             // dispatch actually received. Prior to apra-fleet-unw2.10 the
             // runner told the harvester these were UNAVAILABLE; this check
             // fails loudly if that regression ever comes back.
+            if (opts.agent === 'harvester' && harvesterHandler) {
+                return harvesterHandler({ opts, tempDir, runCmd, epicBead });
+            }
             if (opts.agent === 'harvester') {
                 const missing = checkHarvesterContract(opts.prompt);
                 if (missing.length > 0) {
@@ -2177,7 +2264,7 @@ export async function runDevelopLoopScenario(tag, {
     // of the default 'approve-immediately' mode below.
     planReviewerHandler,
     // apra-fleet-unw.17 additions:
-    deployHandler, integHandler, finalReviewHandler, commandFailurePattern,
+    deployHandler, integHandler, finalReviewHandler, harvesterHandler, commandFailurePattern,
     // apra-fleet-417.4: optional (opts, tempDir, runCmd, epicBead) => result
     // override for the 'regression-test-runner' dispatch -- see
     // buildMockFleetApi's option comment above. Paired with
@@ -2250,6 +2337,10 @@ export async function runDevelopLoopScenario(tag, {
     // Optional `args.decision_notify` (decision-notify.mjs): where the operator
     // is told about a pending decision.
     decisionNotify,
+    // Optional injected KB work client: main() reads context.kbWork.
+    kbWork,
+    // Optional `args.kb_demotion_loop` passthrough ('on' | 'off').
+    kbDemotionLoop,
     // apra-fleet-eft.79: optional passthroughs for the multi-streak worklist
     // args (validateArgs: doer_worklist_mode 'resume'|'batch',
     // resume_model_switch boolean, worklist_effort_budget positive number) --
@@ -2356,6 +2447,7 @@ export async function runDevelopLoopScenario(tag, {
             deployHandler,
             integHandler,
             finalReviewHandler,
+            harvesterHandler,
             regressionHandler,
             commandFailurePattern,
             commandLogDetailed,
@@ -2390,7 +2482,7 @@ export async function runDevelopLoopScenario(tag, {
         let error = null;
         let result = null;
         try {
-            result = await engine.executeFile(scriptPath, {
+            const sprintArgs = {
                 target_issue: epicBead.id,
                 members,
                 branch,
@@ -2410,9 +2502,15 @@ export async function runDevelopLoopScenario(tag, {
                 ...(roleMap !== undefined ? { roleMap } : {}),
                 ...(roleMapWarnings !== undefined ? { roleMapWarnings } : {}),
                 ...(expectBeads !== undefined ? { expect_beads: expectBeads } : {}),
+                ...(kbDemotionLoop !== undefined ? { kb_demotion_loop: kbDemotionLoop } : {}),
                 ...(skipRegression !== undefined ? { skip_regression: skipRegression } : {}),
                 ...(decisionNotify !== undefined ? { decision_notify: decisionNotify } : {}),
-            }, true);
+            };
+            // An injected kbWork client is not a CLI arg; hand it to main() the way
+            // WorkflowEngine.executeFile hands over its context.
+            result = kbWork !== undefined
+                ? await workflow.runWithContext(sprintArgs, async (ctx) => (await import('../../fleet-sprint/runner.js')).main({ ...ctx, kbWork }))
+                : await engine.executeFile(scriptPath, sprintArgs, true);
         } catch (err) {
             error = err;
         }

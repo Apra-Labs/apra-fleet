@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { raiseVcsPrForMember } from '../fleet-sprint/vcs-auth.mjs';
 import { BitbucketVCS } from '../fleet-sprint/vcs-providers/bitbucket.mjs';
 import { buildCreatePrCommand, buildFindPrCommand, buildUpdatePrCommand } from '../fleet-sprint/vcs-module.mjs';
+import { createStagedFileRecorder } from './helpers/vcs-payload-test.mjs';
 import { ApraFleet } from '@apralabs/apra-fleet-client';
 
 // =============================================================================
@@ -51,10 +52,11 @@ const API_TOKEN_403 = [
  * recording) and redacts the token from what it returns.
  */
 function fakeFleet({ recording, store }) {
-    const state = { dispatched: [], tools: [] };
+    const state = { dispatched: [], tools: [], staged: createStagedFileRecorder() };
     const callTool = async (name, args) => {
         state.tools.push(name);
-        if (name === 'member_detail') return { content: [{ text: JSON.stringify({ vcsProvider: 'bitbucket', os: 'linux', shell: '' }) }] };
+        if (name === 'send_files') return state.staged.record(args);
+        if (name === 'member_detail') return { content: [{ text: JSON.stringify({ folder: '/work/repo', vcsProvider: 'bitbucket', os: 'linux', shell: '' }) }] };
         if (name === 'credential_store_list') return { content: [{ text: JSON.stringify(store.map((n) => ({ name: n }))) }] };
         if (name === 'provision_vcs_auth') return { content: [{ text: '[FAIL] unexpected' }], structuredContent: { ok: false, reason: 'unexpected' } };
         if (name === 'vcs_credential_exec') {
@@ -173,10 +175,12 @@ describe('command builders capture response headers on every member shell', () =
     ];
     for (const t of targets) {
         test(`${t.label}: create/find/update carry -D - and the -w status line; logSafeCommand holds no token`, () => {
+            // An apostrophe in the staged-body path keeps the dialect check meaningful.
+            const payloadPath = t.os === 'windows' ? "C:\\Users\\o'brien\\w\\.apra-call\\b.json" : "/home/o'brien/w/.apra-call/b.json";
             const built = [
-                buildCreatePrCommand({ ...coords, base: 'main', head: 'feat/x', title: "it's a PR", body: 'b', os: t.os, shell: t.shell }),
+                buildCreatePrCommand({ ...coords, base: 'main', head: 'feat/x', title: "it's a PR", body: 'b', os: t.os, shell: t.shell, payload_path: payloadPath }),
                 buildFindPrCommand({ ...coords, base: 'main', head: 'feat/x', os: t.os, shell: t.shell }),
-                buildUpdatePrCommand({ ...coords, pull_request_id: 7, title: 't', body: 'b', os: t.os, shell: t.shell }),
+                buildUpdatePrCommand({ ...coords, pull_request_id: 7, title: 't', body: 'b', os: t.os, shell: t.shell, payload_path: payloadPath }),
             ];
             for (const b of built) {
                 assert.match(b.command, t.curl);
@@ -186,8 +190,10 @@ describe('command builders capture response headers on every member shell', () =
                 assert.ok(!b.logSafeCommand.includes(TOKEN), `token in logSafeCommand: ${b.logSafeCommand}`);
                 assert.ok(!JSON.stringify({ ...b, command: undefined }).includes(TOKEN), 'token only in command');
             }
-            const quote = t.shell === 'powershell5' ? /'it''s a PR'|it''s/ : /it'\\''s/;
+            const quote = t.shell === 'powershell5' ? /o''brien/ : /o'\\''brien/;
             assert.match(built[0].command, quote, 'the shell dialect still picks the quoting');
+            assert.ok(!built[0].command.includes("it's a PR") && !built[0].command.includes('a PR'), 'the title is staged, never on the command line');
+            assert.equal(JSON.parse(built[0].payload.content).title, "it's a PR");
         });
     }
 });

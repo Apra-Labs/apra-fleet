@@ -45,6 +45,11 @@ curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra
 curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-linux-x64 -o apra-fleet-installer && chmod +x apra-fleet-installer && ./apra-fleet-installer
 ```
 
+**Linux (ARM64 / aarch64)**
+```bash
+curl -fsSL https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-linux-arm64 -o apra-fleet-installer && chmod +x apra-fleet-installer && ./apra-fleet-installer
+```
+
 **Windows (x64)** -- download `apra-fleet-installer-win-x64.exe` and double-click it, or run in PowerShell:
 ```powershell
 curl.exe -fL -o apra-fleet-installer.exe https://github.com/Apra-Labs/apra-fleet/releases/latest/download/apra-fleet-installer-win-x64.exe; .\apra-fleet-installer.exe
@@ -69,6 +74,7 @@ Download the installer for your platform from
 [GitHub Releases](https://github.com/Apra-Labs/apra-fleet/releases):
 
 - `apra-fleet-installer-linux-x64` -- Linux (x86_64)
+- `apra-fleet-installer-linux-arm64` -- Linux (ARM64 / aarch64)
 - `apra-fleet-installer-darwin-arm64` -- macOS (Apple Silicon)
 - `apra-fleet-installer-darwin-x64` -- macOS (Intel, x64)
 - `apra-fleet-installer-win-x64.exe` -- Windows
@@ -81,6 +87,9 @@ chmod +x apra-fleet-installer-darwin-arm64 && ./apra-fleet-installer-darwin-arm6
 
 # Linux (x64)
 chmod +x apra-fleet-installer-linux-x64 && ./apra-fleet-installer-linux-x64
+
+# Linux (ARM64 / aarch64)
+chmod +x apra-fleet-installer-linux-arm64 && ./apra-fleet-installer-linux-arm64
 ```
 
 ```powershell
@@ -194,6 +203,12 @@ falls back to a per-user HKCU Run entry. That entry starts the server only at
 the next interactive logon and never restarts it, and a server started from
 the SSH session stops when that session ends. `apra-fleet status` shows which
 one you got.
+
+`apra-fleet status` also prints a **Supervisor** line, read from the `supervisor.json` heartbeat
+the fleet-sprint supervisor keeps in the data directory: UP (fresh heartbeat, live pid), DOWN (heartbeat
+older than three intervals, or its pid is gone -- e.g. after a hard kill), stopped (clean shutdown)
+or not running (never started). Launch the supervisor with `serve.mjs --detach`, which respawns
+it in the background and waits for the child pid to answer its health check.
 
 ## The `--skill` flag
 

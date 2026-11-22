@@ -47,6 +47,9 @@ export const DESIGN_DOC = 'docs/generic-engine-boundary.md';
 export const ENGINE_FILE_SET = [
     { dir: 'fleet-sprint', match: /\.(?:js|mjs|cjs)$/, kind: 'js' },
     { dir: 'apra-pm/agents', match: /\.md$/, kind: 'md' },
+    // Output schemas ship to every target and their descriptions are LLM-facing;
+    // the js string-literal tokenizer reads JSON string values correctly.
+    { dir: 'apra-pm/agents/schemas', match: /\.json$/, kind: 'js' },
 ];
 
 /**

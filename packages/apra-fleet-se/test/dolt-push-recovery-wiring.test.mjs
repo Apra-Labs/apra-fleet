@@ -210,6 +210,12 @@ test('detectMemberPlatform: probes process.platform/arch via command(), never as
     assert.ok(calls.every((c) => c.opts.member_name === 'fleet-mac'), 'the probe must carry explicit member_name');
 });
 
+test('detectMemberPlatform: passes the real arch through (aarch64 Linux is arm64; an unknown arch is not coerced to x64)', async () => {
+    const probe = (out) => async () => ({ ok: true, output: out, error: null });
+    assert.deepEqual(await detectMemberPlatform({ command: probe('linux arm64\n'), member: 'm' }), { platform: 'linux', arch: 'arm64' });
+    assert.deepEqual(await detectMemberPlatform({ command: probe('linux ia32\n'), member: 'm' }), { platform: 'linux', arch: 'ia32' });
+});
+
 test('detectMemberPlatform: an unparsable probe output throws rather than silently assuming a platform', async () => {
     const command = async () => ({ ok: false, output: '', error: 'permission denied' });
     await assert.rejects(() => detectMemberPlatform({ command, member: 'fleet-mac' }), DoltSyncError);

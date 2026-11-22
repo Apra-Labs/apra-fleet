@@ -1,10 +1,12 @@
 import { existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { LinuxCommands } from './linux.js';
+import { LinuxCommands, posixLegacyHelperUnset } from './linux.js';
 import { wrapPowerShellEncoded } from './windows.js';
 import { escapeDoubleQuoted, escapeShellArg, escapeBatchMetachars, escapePowerShellArgInner, sanitizeSessionId } from '../utils/shell-escape.js';
 import { isWindowsPosixUname } from '../utils/platform.js';
 import { gitBashCandidates } from './git-bash-candidates.js';
+import { gitCredentialHelperStem } from './os-commands.js';
+import { assertAuthorizedKeyMatch } from './ssh-key-match.js';
 import { boundChildEnv, describeBoundedEnv } from './child-env-bound.js';
 import { defaultIsFile, envValue, searchWindowsPath } from './windows-executable.js';
 import { logWarn } from '../utils/log-helpers.js';
@@ -213,20 +215,17 @@ export class WindowsGitBashCommands extends LinuxCommands {
 
   // --- Git credential helper ---
 
-  override gitCredentialHelperWrite(host: string, username: string, token: string, label?: string, scopeUrl?: string): string {
-    const credFileName = label ? `.fleet-git-credential-${escapeDoubleQuoted(label)}` : '.fleet-git-credential';
-    const credUrl = scopeUrl ? escapeDoubleQuoted(scopeUrl) : `https://${escapeDoubleQuoted(host)}`;
+  override gitCredentialHelperWrite(host: string, username: string, token: string, label?: string, _scopeUrl?: string, memberId?: string): string {
     // A .bat helper (not the POSIX `#!/bin/sh` one LinuxCommands writes):
     // git.exe execs the helper itself, so it must be a native Windows
     // executable at a Windows-form absolute path -- the same shape windows.ts
-    // writes and windows-credential-helper.test.ts pins.
+    // writes and windows-credential-helper.test.ts pins. Per member AND label,
+    // registered nowhere in git config (see gitCredentialEnvPrefix).
     const batch = (s: string) => escapeShellArg(escapeBatchMetachars(s));
     return [
-      `_fleet_gc="$HOME/${credFileName}.bat"`,
+      `_fleet_gc="$HOME/${gitCredentialHelperStem(label, memberId)}.bat"`,
       `printf '@echo off\\r\\necho protocol=https\\r\\necho host=%s\\r\\necho username=%s\\r\\necho password=%s\\r\\n' ${batch(host)} ${batch(username)} ${batch(token)} > "$_fleet_gc"`,
       `icacls "$(cygpath -w "$_fleet_gc")" /inheritance:r /grant:r "$USERNAME:F" >/dev/null`,
-      `git config --global --replace-all "credential.${credUrl}.helper" ""`,
-      `git config --global --add "credential.${credUrl}.helper" "$(cygpath -m "$_fleet_gc")"`,
     ].join('; ');
   }
 
@@ -237,20 +236,33 @@ export class WindowsGitBashCommands extends LinuxCommands {
     return `rm -f "$HOME/.fleet-git-credential.bat"`;
   }
 
-  override gitCredentialHelperRead(label?: string): { command: string; path: string } {
+  override gitCredentialHelperRead(label?: string, memberId?: string): { command: string; path: string } {
     // The inherited POSIX read would look for an extensionless helper, but
     // this member's gitCredentialHelperWrite above deploys a native Windows
     // `.bat` (git.exe execs the helper itself). The SHELL is still bash, so
     // the invocation stays POSIX -- only the filename differs.
-    const credFileName = label ? `.fleet-git-credential-${escapeDoubleQuoted(label)}` : '.fleet-git-credential';
-    const credFile = `$HOME/${credFileName}.bat`;
+    const credFile = `$HOME/${gitCredentialHelperStem(label, memberId)}.bat`;
     return { command: `"${credFile}"`, path: credFile };
   }
 
-  override gitCredentialHelperRemove(host: string, label?: string, scopeUrl?: string): string {
-    const credFileName = label ? `.fleet-git-credential-${escapeDoubleQuoted(label)}` : '.fleet-git-credential';
-    const credUrl = scopeUrl ? escapeDoubleQuoted(scopeUrl) : `https://${escapeDoubleQuoted(host)}`;
-    return `rm -f "$HOME/${credFileName}.bat"; git config --global --unset-all "credential.${credUrl}.helper" 2>/dev/null || true`;
+  override gitCredentialHelperRemove(_host: string, label?: string, _scopeUrl?: string, memberId?: string): string {
+    return `rm -f "$HOME/${gitCredentialHelperStem(label, memberId)}.bat"`;
+  }
+
+  override gitCredentialHelperRemoveLegacyGlobal(host: string, label?: string, scopeUrl?: string): string {
+    const stem = gitCredentialHelperStem(label);
+    const key = escapeShellArg(`credential.${scopeUrl ?? `https://${host}`}.helper`);
+    // The legacy release stored `cygpath -m` of the .bat path as the value.
+    return `rm -f "$HOME/${stem}.bat"; ` + posixLegacyHelperUnset(key, `"$(cygpath -m "$HOME")/${stem}.bat"`);
+  }
+
+  /** git.exe needs the Windows-form (forward-slash) path of the .bat helper. */
+  protected override gitHelperHomeCommand(): string {
+    return `cygpath -m "$HOME"`;
+  }
+
+  protected override gitHelperSuffix(): string {
+    return '.bat';
   }
 
   // --- SSH key deployment ---
@@ -274,6 +286,23 @@ export class WindowsGitBashCommands extends LinuxCommands {
         + `icacls "$(cygpath -w "$_fleet_ak")" /inheritance:r /grant:r "SYSTEM:F" /grant:r "Administrators:F" >/dev/null; `
         + `fi`,
     ];
+  }
+
+  override removeSSHPublicKey(keyMatch: string, memberHome: string): string {
+    assertAuthorizedKeyMatch(keyMatch);
+    // A local gitbash member's home comes from os.homedir() (C:\Users\x);
+    // a probed one is already POSIX (/c/Users/x). Bash accepts C:/Users/x.
+    const home = memberHome.replace(/\\/g, '/').replace(/\/+$/, '');
+    // Rewrite in place (not mv): the files carry the explicit ACLs deploy set
+    // with icacls, and a renamed temp file would carry the directory's instead.
+    const install = 'cat "$_fleet_tmp" > "$_fleet_ak" && rm -f "$_fleet_tmp"';
+    return `_fleet_ak=${escapeShellArg(`${home}/.ssh/authorized_keys`)}; `
+      + `${this.filterAuthorizedKeysPosix(keyMatch, install)}; `
+      // Same admin probe and file deploySSHPublicKey uses.
+      + `if net session >/dev/null 2>&1; then `
+      + `_fleet_ak="$(cygpath -u "\${ProgramData:-C:/ProgramData}")/ssh/administrators_authorized_keys"; `
+      + `${this.filterAuthorizedKeysPosix(keyMatch, install)}; `
+      + `fi`;
   }
 
   // --- Local exec ---

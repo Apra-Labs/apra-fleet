@@ -3,7 +3,7 @@ import { fileURLToPath } from 'url';
 import fs from 'fs/promises';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { runCmd, runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
+import { runCmd, runDevelopLoopScenario, withScenarioMarkers, withStagedBodies } from './helpers/mock-sprint-harness.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -50,7 +50,9 @@ test('mock sprint: a stale APPROVED verdict must not back a later cycle\'s exit 
                         closedIds.push(id);
                     }
                 }
-                return { content: [{ text: JSON.stringify({ status: 'VERIFY', closedIds, notes: 'Closed A; left B blocked (out-of-scope, deferred).' }) }] };
+                // Claims B closed too (the read-back disproves it): B keeps the ordinary
+                // left-open retry instead of the VERIFY-no-change set-aside.
+                return { content: [{ text: JSON.stringify({ status: 'VERIFY', closedIds: ids, notes: 'Closed A; left B blocked (out-of-scope, deferred).' }) }] };
             },
             // Approves whatever was actually reviewed each round -- this is the
             // verdict cycle 1 ends on ('APPROVED', with B noted as an
@@ -153,7 +155,9 @@ test('mock sprint: a deferred goal-priority bead is treated as out of scope, doe
                         closedIds.push(id);
                     }
                 }
-                return { content: [{ text: JSON.stringify({ status: 'VERIFY', closedIds, notes: 'Closed A; deferred B (goal-priority, never closed).' }) }] };
+                // Claims B closed too (the read-back disproves it): B keeps the ordinary
+                // left-open retry instead of the VERIFY-no-change set-aside.
+                return { content: [{ text: JSON.stringify({ status: 'VERIFY', closedIds: ids, notes: 'Closed A; deferred B (goal-priority, never closed).' }) }] };
             },
             reviewerHandler: async () => ({
                 content: [{ text: JSON.stringify({ verdict: 'APPROVED', notes: 'A approved; B deferred (still counts as goal-priority open).', reopenIds: [], newTasks: [] }) }]
@@ -237,7 +241,7 @@ test('mock sprint: an explicit final FAIL verdict propagates to status:failed an
         // apra-fleet-tfx.8.4: the reverted gh-based path is gone -- the PR is
         // now raised via VCSModule's `curl ... /pulls` create-pull-request
         // command, with title/body carried as JSON fields in the -d payload.
-        const explicitFailPrCmd = explicitFail.commandLog.find((c) => c.startsWith('curl -sS -X POST') && c.includes('/pulls'));
+        const explicitFailPrCmd = withStagedBodies(explicitFail.commandLog).find((c) => c.startsWith('curl -sS -X POST') && c.includes('/pulls'));
         check(
             !!explicitFailPrCmd,
             `A FAIL verdict must still publish the PR (plan.md's already-made decision) -- expected a VCSModule create-pull-request command, commandLog: ${JSON.stringify(explicitFail.commandLog)}`

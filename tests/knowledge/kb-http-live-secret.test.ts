@@ -15,7 +15,6 @@ import path from 'node:path';
 // or the environment.
 
 import { HttpKbProvider, KbHttpAuthError } from '../../src/services/knowledge/http-provider.js';
-import { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js';
 import { KB_CONFIG_PATH, readKbConfigFromDisk } from '../../src/services/knowledge/kb-config.js';
 import { resetKbHttpAuthState } from '../../src/services/knowledge/kb-http-auth-state.js';
 import { prepareLiveSecret, saveLiveSecret, credentialDelete, lookupLiveSecret } from '../../src/services/credential-store.js';
@@ -58,7 +57,7 @@ function register(): void {
 }
 
 function newProvider(): HttpKbProvider {
-  return new HttpKbProvider(stub.url, { secretName: NAME }, new SqliteProvider(path.join(tmp, 'fallback.sqlite')));
+  return new HttpKbProvider(stub.url, { secretName: NAME });
 }
 
 function entry(title: string): KBEntryInput {
@@ -178,9 +177,8 @@ describe('HttpKbProvider with a credential helper', () => {
 
     const second = await expectAuthError(provider.query({ query: 'gear' }), 'live-secret-failed');
     expect(second.message).toContain('not run again until');
-    const queued = await expectAuthError(provider.capture(entry('Queued while failing')), 'live-secret-failed');
-    expect(queued.queued).toBe(true);
-    expect(provider.offlineQueue).toHaveLength(1);
+    // A write fails the same way and is not queued (the caller owns the retry).
+    await expectAuthError(provider.capture(entry('Refused while failing')), 'live-secret-failed');
     expect(helper.runs()).toHaveLength(1);
     expect(stub.requests).toHaveLength(0);
 
@@ -190,8 +188,7 @@ describe('HttpKbProvider with a credential helper', () => {
     register();
     await query();
     expect(helper.runs()).toHaveLength(2);
-    expect(provider.offlineQueue).toHaveLength(0); // the queued capture was flushed first
-    expect(stub.requests.map(r => r.path)).toEqual(['/api/kb/capture', '/api/kb/query']);
+    expect(stub.requests.map(r => r.path)).toEqual(['/api/kb/query']); // nothing was queued
   });
 
   it('401: drops the cached token, runs the helper once more and the retry succeeds', async () => {
@@ -201,16 +198,14 @@ describe('HttpKbProvider with a credential helper', () => {
     expect(stub.requests.map(r => [helperRunOf(r.token, PREFIX), r.authorized])).toEqual([[1, false], [2, true]]);
   });
 
-  it('kb_feedback goes the same way: a 401 re-mints once and the retry succeeds; a second 401 queues it', async () => {
+  it('kb_feedback goes the same way: a 401 re-mints once and the retry succeeds; a second 401 throws, nothing queued', async () => {
     stub.accept = (token) => helperRunOf(token, PREFIX) >= 2;
     await provider.feedback('e1', 'wrong in practice', 'doer');
     expect(helper.runs()).toHaveLength(2);
     expect(stub.requests.map(r => [r.path, helperRunOf(r.token, PREFIX), r.authorized]))
       .toEqual([['/api/kb/feedback', 1, false], ['/api/kb/feedback', 2, true]]);
     stub.accept = () => false;
-    const err = await expectAuthError(provider.feedback('e2', 'wrong again', 'doer'), 'rejected');
-    expect(err.queued).toBe(true);
-    expect(provider.offlineQueue).toEqual([{ op: 'feedback', id: 'e2', reason: 'wrong again', role: 'doer' }]);
+    await expectAuthError(provider.feedback('e2', 'wrong again', 'doer'), 'rejected');
   });
 
   it('a second 401 raises E-KB-HTTP-AUTH after exactly one helper re-run', async () => {

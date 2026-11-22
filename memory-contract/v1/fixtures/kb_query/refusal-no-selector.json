@@ -4,7 +4,7 @@
   "kind": "refusal",
   "request": {},
   "error": {
-    "message": "Provide query (free-text search), tag (exact-match tag listing), or flagged_only: true (list contradictions)",
+    "message": "Provide query (free-text search), files or symbols (entries citing them), tag (exact-match tag listing), or flagged_only: true (list contradictions)",
     "thrown": true
   },
   "expected_error_code": "E-QUERY-NO-SELECTOR"

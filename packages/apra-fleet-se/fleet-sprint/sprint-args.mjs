@@ -99,6 +99,10 @@ const KNOWN_ARG_KEYS = new Set([
     // Never silent: the engine logs it and the sprint report and PR body say
     // "skipped by launch option". The integration-test phase is unaffected.
     'skip_regression',
+    // Reviewer KB demotion loop switch: 'on' (default when absent) or 'off'.
+    // Off: the reviewer is offered no demotion candidates and no kb_demote is
+    // issued. Any other value is rejected loudly (never a silent fallback).
+    'kb_demotion_loop',
     // Multi-streak worklist dispatch mode when a develop round has more ready
     // streaks than doers. 'resume' (default): per-streak dispatches that resume
     // the SAME doer session by explicit session id (warm-context carryover,
@@ -239,6 +243,29 @@ export function validateCiGate(raw) {
  * @param {unknown} id
  * @returns {string}
  */
+export function validateGoal(goal) {
+    if (typeof goal !== 'string' || !GOAL_PATTERN.test(goal)) {
+        throw new Error(`[Arg Contract] Invalid goal "${goal}": must match ${GOAL_PATTERN} (e.g. 'P1', 'P1/P2', 'P1/P2/P3').`);
+    }
+    return goal;
+}
+
+/** Shared max_cycles check (sprint args and the supervisor launch request). */
+export function validateMaxCycles(maxCycles) {
+    if (typeof maxCycles !== 'number' || !Number.isInteger(maxCycles) || maxCycles < 1) {
+        throw new Error(`[Arg Contract] Invalid max_cycles "${maxCycles}": must be a positive integer.`);
+    }
+    return maxCycles;
+}
+
+/** Shared budget check (sprint args and the supervisor launch request). */
+export function validateBudget(budget) {
+    if (typeof budget !== 'number' || !Number.isFinite(budget) || budget < 0) {
+        throw new Error(`[Arg Contract] Invalid budget "${budget}": must be a non-negative finite number (USD ceiling).`);
+    }
+    return budget;
+}
+
 export function validateIssueId(id) {
     if (typeof id !== 'string' || id.length === 0 || !ISSUE_ID_PATTERN.test(id)) {
         throw new Error(`[Arg Contract] Invalid issue id "${id}": must match ${ISSUE_ID_PATTERN} (letters, digits, '.', '_', '-' only).`);
@@ -266,7 +293,7 @@ export function validateBranchName(name, label) {
 // "origin/main" and "refs/heads/main" all compare equal. Compared
 // case-insensitively: a pair differing only in case is never a legitimate
 // sprint (case-insensitive filesystems and hosts treat them as one branch).
-function normalizeBranchForCompare(name) {
+export function normalizeBranchForCompare(name) {
     let n = String(name).toLowerCase();
     for (const prefix of ['refs/remotes/origin/', 'refs/heads/', 'origin/']) {
         if (n.startsWith(prefix)) { n = n.slice(prefix.length); break; }
@@ -351,16 +378,10 @@ export function validateArgs(args) {
 
     // --- goal (optional, default 'P1/P2'; the priority band this sprint aims
     // to clear, consumed by the exit-condition logic) ---
-    const goal = args.goal === undefined ? 'P1/P2' : args.goal;
-    if (typeof goal !== 'string' || !GOAL_PATTERN.test(goal)) {
-        throw new Error(`[Arg Contract] Invalid goal "${goal}": must match ${GOAL_PATTERN} (e.g. 'P1', 'P1/P2', 'P1/P2/P3').`);
-    }
+    const goal = args.goal === undefined ? 'P1/P2' : validateGoal(args.goal);
 
     // --- max_cycles (optional, default 5) ---
-    const maxCycles = args.max_cycles === undefined ? 5 : args.max_cycles;
-    if (typeof maxCycles !== 'number' || !Number.isInteger(maxCycles) || maxCycles < 1) {
-        throw new Error(`[Arg Contract] Invalid max_cycles "${maxCycles}": must be a positive integer.`);
-    }
+    const maxCycles = args.max_cycles === undefined ? 5 : validateMaxCycles(args.max_cycles);
 
     // --- requirementsFile (optional) ---
     if (args.requirementsFile !== undefined && (typeof args.requirementsFile !== 'string' || args.requirementsFile.length === 0)) {
@@ -433,9 +454,7 @@ export function validateArgs(args) {
     // main() sets `context.budget.total` to this value BEFORE any dispatch, so
     // `agent()`'s budget-exceeded check can actually fire. Omitted,
     // `context.budget.total` stays `null` (unlimited).
-    if (args.budget !== undefined && (typeof args.budget !== 'number' || !Number.isFinite(args.budget) || args.budget < 0)) {
-        throw new Error(`[Arg Contract] Invalid budget "${args.budget}": must be a non-negative finite number (USD ceiling).`);
-    }
+    if (args.budget !== undefined) validateBudget(args.budget);
 
     // --- run_id (optional) -------------------------------------------------
     // Free-form supervisor-generated identity; only its shape is checked here.
@@ -506,6 +525,12 @@ export function validateArgs(args) {
     const doerWorklistMode = args.doer_worklist_mode === undefined ? 'resume' : args.doer_worklist_mode;
     if (doerWorklistMode !== 'resume' && doerWorklistMode !== 'batch') {
         throw new Error(`[Arg Contract] Invalid doer_worklist_mode "${doerWorklistMode}": must be 'resume' (default) or 'batch'.`);
+    }
+
+    // --- kb_demotion_loop (optional, default 'on') ---------------------------
+    const kbDemotionLoop = args.kb_demotion_loop === undefined ? 'on' : args.kb_demotion_loop;
+    if (kbDemotionLoop !== 'on' && kbDemotionLoop !== 'off') {
+        throw new Error(`[Arg Contract] Invalid kb_demotion_loop ${JSON.stringify(kbDemotionLoop)}: must be 'on' (default) or 'off'.`);
     }
 
     // --- skip_regression (optional, default false) -------------------------
@@ -589,6 +614,7 @@ export function validateArgs(args) {
         doerWorklistMode,
         resumeModelSwitch,
         skipRegression,
+        kbDemotionLoop,
         worklistEffortBudget: args.worklist_effort_budget,
         usageLimitMaxWaitS: args.usage_limit_max_wait_s,
         usageLimitMaxReprobes: args.usage_limit_max_reprobes,

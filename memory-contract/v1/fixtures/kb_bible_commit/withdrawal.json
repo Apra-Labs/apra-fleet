@@ -1,0 +1,27 @@
+{
+  "tool": "kb_bible_commit",
+  "case": "withdrawal",
+  "kind": "happy",
+  "request": {
+    "ids": [],
+    "withdrawals": [
+      {
+        "id": "100ca201-54b4-46b9-9801-2bea030fcb1b",
+        "note": "Re-read src/helper.ts: the helper no longer behaves as the entry states.",
+        "evidence_files": [
+          "src/helper.ts"
+        ]
+      }
+    ],
+    "baseBranch": "main",
+    "baseCommit": "0123456789abcdef0123456789abcdef01234567"
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"path\":\"<SCRATCH_REPO_A>/.fleet/kb-canonical.json\",\"merged\":[],\"demoted\":[],\"skipped\":[],\"removed\":[],\"entry_count\":1,\"backfilled\":0,\"committed\":true,\"withdrawn\":[\"100ca201-54b4-46b9-9801-2bea030fcb1b\"],\"restored\":[]}"
+      }
+    ]
+  }
+}

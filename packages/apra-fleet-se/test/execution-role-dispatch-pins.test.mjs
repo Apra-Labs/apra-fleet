@@ -1,5 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
+import { EXECUTE_PROMPT_MAX_TURNS } from '@apralabs/apra-fleet-client';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -674,8 +675,8 @@ describe('execution-role dispatch: retry and degrade ladders', () => {
         assert.strictEqual(resumes.length, p.retry.resumeAttempts, 'The escalation is bounded, never unbounded.');
         assert.deepStrictEqual(
             resumes.map((d) => d.options.max_turns),
-            [TURN_BASES.BASE_DOER_MAX_TURNS * 2, TURN_BASES.BASE_DOER_MAX_TURNS * 4],
-            'The first resume doubles the base turn budget; each further exhaustion doubles again.'
+            [Math.min(TURN_BASES.BASE_DOER_MAX_TURNS * 2, EXECUTE_PROMPT_MAX_TURNS), Math.min(TURN_BASES.BASE_DOER_MAX_TURNS * 4, EXECUTE_PROMPT_MAX_TURNS)],
+            'The first resume doubles the base turn budget and each further exhaustion doubles again, each clamped to the execute_prompt maximum.'
         );
         assert.strictEqual(p.retry.turnEscalation, 'double');
 

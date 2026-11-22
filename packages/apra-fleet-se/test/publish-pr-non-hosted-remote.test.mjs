@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { capabilities } from '../fleet-sprint/vcs-module.mjs';
-import { runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
+import { runDevelopLoopScenario, withScenarioMarkers, withStagedBody } from './helpers/mock-sprint-harness.mjs';
 
 const check = (cond, msg) => assert.ok(cond, msg);
 
@@ -106,7 +106,7 @@ test('mock sprint: hosted GitHub origin remote still routes through PR creation 
             `Expected the origin-remote classification probe to be dispatched, commandLog: ${JSON.stringify(run.commandLog)}`
         );
         check(
-            run.commandLog.some((c) => /^curl -sS -X POST\b/.test(c) && /\/pulls\b/.test(c) && c.includes(`"head":"${run.branch}"`)),
+            run.commandLog.some((c) => /^curl -sS -X POST\b/.test(c) && /\/pulls\b/.test(c) && withStagedBody(c).includes(`"head":"${run.branch}"`)),
             `Expected VCSModule's PR-create curl command to still be dispatched for the hosted remote, commandLog: ${JSON.stringify(run.commandLog)}`
         );
 

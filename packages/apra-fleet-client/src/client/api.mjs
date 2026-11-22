@@ -430,7 +430,7 @@
  * @typedef {Object} UpdateMemberOptions
  * @property {string} [member_id] - UUID of the member
  * @property {string} [member_name] - Friendly name of the member
- * @property {"auto" | "skip" | "replace-full"} [fleet_install] - "auto": for a remote member, install/upgrade the member's own apra-fleet when missing or older (build-aware), self-register, write its per-folder apra-fleet MCP entry and verify, even when nothing else changed; an install/upgrade that ran (or an install that only now became available) also adds the member apra-fleet tool rules to a claude member's permission allow-list through compose_permissions grant mode, keeping its role and grants (a NOTICE says so; a failure is a WARNING); a full install without the member-install marker is never touched. "replace-full": "auto" plus an explicit opt-in to replace such a full install with a member install (backup of data and fleet.key, uninstall, member install, self-register). "skip": never install. Omit: install only on a provider change. A requested install/upgrade that cannot happen never fails the update: the result adds a WARNING (consequence, exact reason, OS-correct manual install steps; also fleetMcp.manualInstall). Unknown input keys are rejected by the server.
+ * @property {"auto" | "skip" | "replace-full"} [fleet_install] - "auto": for a remote member, install/upgrade the member's own apra-fleet when missing or older (build-aware), self-register, write its per-folder apra-fleet MCP entry and verify, even when nothing else changed; an install/upgrade that ran (or an install that only now became available) also adds the member apra-fleet tool rules to a claude member's permission allow-list through compose_permissions grant mode, keeping its role and grants (a NOTICE says so; a failure is a WARNING); a full install without the member-install marker is never touched. "replace-full": "auto" plus an explicit opt-in to replace such a full install with a member install (backup of data and fleet.key, uninstall, member install, self-register). "skip": never install. Omit: install only on a provider change. An install/upgrade/replace requested with "auto" or "replace-full" that does not happen fails the call: the MCP result has isError true, its text starts with an ERROR line naming the reason (plus a WARNING with consequence and OS-correct manual install steps; also fleetMcp.manualInstall) and structuredContent is {error: "fleet-install-not-done", fleet_install, reason, detail?, memberUpdated: true, memberId, fleetMcp?}; the other settings were saved. Nothing to install (up to date) is a success; an install implied by a provider change that does not happen stays a WARNING. Unknown input keys are rejected by the server.
  * @property {string} [friendly_name] - New friendly name
  * @property {string} [work_folder] - New working directory. For non-local (remote/relay) members, must be a fully-qualified/absolute path -- "~" and relative paths are rejected. A folder may hold at most one LLM member and one LLM-less (llm_provider none) member.
  * @property {string} [host] - New host
@@ -477,7 +477,7 @@
  * @property {number} [port] - Remote members: the port of the member's own apra-fleet install, resolved from its member-install marker; the member MCP URL (per-folder entry and per-session config) uses it
  * @property {"marker" | "default"} [portSource] - Where port came from: the member-install marker, or the built-in default because the install recorded no port (detail says so)
  * @property {{previousVersion: string, removed: string[], backupPath: string}} [replacedFullInstall] - Set by the probe that replaced a full install with a member install (fleet_install "replace-full"): replaced version, what was removed or moved, and the timestamped backup directory on the member
- * @property {string} [manualInstall] - Set when a requested apra-fleet install/upgrade on the member did not happen (any install reason, e.g. no-matching-release, checksum-unavailable, download-failed): OS-correct manual steps to install the orchestrator build on the member by hand (anonymous release download URL, SHA-256 check, member-mode install, then update_member); register_member/update_member print them in a WARNING and still succeed
+ * @property {string} [manualInstall] - Set when a requested apra-fleet install/upgrade on the member did not happen (any install reason, e.g. no-matching-release, checksum-unavailable, download-failed): OS-correct manual steps to install the orchestrator build on the member by hand (anonymous release download URL, SHA-256 check, member-mode install, then update_member); register_member prints them in a WARNING and still succeeds; update_member also fails the call (isError) when fleet_install "auto"/"replace-full" was requested
  * @property {{tag: string, wantedBuild: string, why: string}} [sameCoreFallback] - Set when no release carries the orchestrator's exact build and the member had no apra-fleet or an older core, so the signed stable release of the same core (tag) was installed instead of wantedBuild; register_member/update_member print a NOTICE
  */
 
@@ -507,6 +507,10 @@
  * @property {string} folder - Working directory on the target machine
  * @property {string} [repo_remote_url] - Origin URL of the git repo in `folder`, when known
  * @property {string} [vcsProvider] - VCS provider configured for this member
+ * @property {Array<{label: string, provider: string, scopeUrl: string|null, expiresAt: string|null,
+ *   memberScoped: boolean}>} [vcsCredentials] - Every VCS credential label the member holds (never
+ *   the token). memberScoped: the helper is the member's own per-member file
+ *   (`.fleet-git-credential-<label>.<member id>` in the member home), not the shared legacy one.
  * @property {"read" | "push" | "push+pr" | "admin" | "issues" | "full"} [gitAccess] - Git access level
  *   this member's VCS credentials are minted at (register_member/update_member's git_access). Absent
  *   when the member was registered without an explicit level. Consumers that need to know whether a
@@ -677,15 +681,32 @@
  */
 
 /**
+ * @typedef {Object} LegacyGlobalHelperOutcome
+ * @property {string} scopeUrl - Scope whose global key `credential.<scopeUrl>.helper` was looked at.
+ * @property {"removed" | "not_present" | "kept_for_member" | "failed"} outcome - "removed": fleet's
+ *   legacy value was removed, so git run outside fleet dispatches no longer gets the fleet token
+ *   for that scope. "not_present": no fleet value on the key; nothing changed. "kept_for_member":
+ *   left because another member runs as the same host user; fleet no longer refreshes it.
+ *   "failed": the cleanup failed or its result could not be confirmed; check the key.
+ * @property {number} removedValues - Fleet's own values removed from the key.
+ * @property {number} keptValues - Values fleet did not write (counted, never echoed); always kept.
+ * @property {string|null} keptForMember - Member the legacy helper was kept for, else null.
+ * @property {string|null} notice - The warning line also shown in the text, or null.
+ *
+ * Mirrors src/tools/provision-vcs-auth.ts's LegacyGlobalHelperOutcome.
+ */
+
+/**
  * @typedef {Object} ProvisionVcsAuthStructured
  * @property {boolean} ok - True when the credential was actually deployed onto the member.
  * @property {"ok" | "deployed_unverified" | "deployed_verification_skipped" |
  *   "member_not_found" | "member_offline" | "secret_variable_not_found" |
  *   "secret_variable_denied" | "secret_variable_expired" | "oob_cancelled" |
  *   "credential_missing" | "credential_assembly_unsupported" | "credential_assembly_failed" |
- *   "deploy_threw" | "deploy_failed"} reason - Machine-readable outcome code. Branch on this,
- *   never on the text. "credential_missing": non_interactive was set and the secret field is
- *   absent (message names it; nothing was prompted).
+ *   "deploy_threw" | "deploy_failed" | "scope_url_invalid"} reason - Machine-readable outcome
+ *   code. Branch on this, never on the text. "credential_missing": non_interactive was set and
+ *   the secret field is absent (message names it; nothing was prompted). "scope_url_invalid":
+ *   scope_url is not a plain scheme://host[:port][/path] URL; nothing was deployed.
  * @property {string} provider - The VCS provider requested.
  * @property {string} credentialLabel - Credential label the helper was deployed under
  *   (defaults to the provider name).
@@ -704,6 +725,9 @@
  *   key is dropped, never passed through). Providers additionally mask the token value here to
  *   its first four characters plus asterisks, so this never carries the plaintext token.
  * @property {string|null} expiryWarning - Near-expiry warning text when one applies, else null.
+ * @property {LegacyGlobalHelperOutcome|null} legacyGlobalHelper - Upgrade migration of a legacy
+ *   helper this label held (an older release registered it in the per-OS-user global git
+ *   config), or null when there was none. See LegacyGlobalHelperOutcome.
  * @property {string|null} memberId - Registry id of the resolved member, or null.
  * @property {string|null} memberName - Friendly name of the resolved member, or null.
  * @property {string|null} message - Human-readable cause of a non-ok outcome (e.g. "No repos
@@ -775,6 +799,7 @@
  *   field (api_token / pat / token) returns ok=false with reason "credential_missing" naming the
  *   field. Required non-secret fields are validated before any prompt in both modes. Default false.
  * @property {string} [scope_url] - Git credential scope URL (e.g. "https://github.com/my-org").
+ *   Must be a plain scheme://host[:port][/path] URL, else reason "scope_url_invalid".
  *   Defaults to "https://<host>". For an Azure DevOps repo on the legacy host, pass
  *   "https://ORG.visualstudio.com" so the PAT is bound to the host the member pushes to.
  * @property {"github-app" | "pat"} [github_mode] - GitHub auth mode: github-app (mint via
@@ -786,6 +811,10 @@
  *   docs/api-reference.md for every level). GitHub App access
  *   level override
  * @property {string[]} [repos] - GitHub App repository list override
+ * @property {boolean} [gh_login] - GitHub only: also log the gh CLI in with the new token. gh
+ *   keeps ONE login per OS user, so this replaces the token every other process of that user
+ *   runs gh with. Default: only for label "github" on a remote member no other registered
+ *   member shares; otherwise skipped and metadata.ghCliAuth says why. true: always; false: never.
  * @property {string} [email] - OPTIONAL Bitbucket account email. Ignored for authentication
  *   (git uses the fixed token username x-bitbucket-api-token-auth, REST uses a Bearer token);
  *   kept only as metadata if given.
@@ -862,7 +891,9 @@
  * @property {string} [baseBranch] - The target base branch (the branch the entries merge
  *   into), written to provenance.branch. Omitted: the export folder HEAD branch.
  * @property {string} [baseCommit] - The base commit the entries were verified against,
- *   written to provenance.commit. Omitted: the export folder HEAD commit.
+ *   recorded as a Verified-Against trailer on the auto-commit (never in the file, so two
+ *   branches that each add entries merge without a text conflict). Omitted: the export
+ *   folder HEAD commit.
  */
 
 /**
@@ -872,7 +903,13 @@
  *   whose cited files at the repo's HEAD commit no longer match its recorded basis (the
  *   same rule kb_export applies; uncommitted edits never change the verdict) is skipped
  *   with reason basis_mismatch, and a CONFIRMED id citing no source file is skipped with
- *   reason no_source_files. Skips are reported in the result's skipped list.
+ *   reason no_source_files. An id the bible file carries a withdrawn tombstone for is
+ *   skipped with reason withdrawn_tombstone (tombstone kept) unless restore_ids undoes that
+ *   branch-added tombstone in the same call. An id the file carries a demoted tombstone for
+ *   is merged only when its local trust time is strictly after the tombstone's at (a real
+ *   re-promotion); otherwise it is skipped with reason demoted_tombstone and the tombstone
+ *   is kept. An id found in both entries and demotions loses its entry on every call
+ *   (removed, reason tombstoned). Skips are reported in the result's skipped list.
  *   Independently of ids, bible entries the KB holds as superseded or invalidated are
  *   removed and reported in the result's removed list, and existing bible entries with
  *   no source_file_hashes gain the KB's stored basis for the same id when it passes the
@@ -880,13 +917,55 @@
  *   or backfill makes no commit.
  * @property {string} baseBranch - The target base branch, written to provenance.branch.
  * @property {string} baseCommit - The base commit the entries were verified against,
- *   written to provenance.commit.
+ *   recorded as a Verified-Against trailer on the local commit (never in the file).
  * @property {string[]} [demoted_ids] - Ids demoted this round (kb_demote). An id whose
  *   local row carries a demoted_at and is now below CONFIRMED is REMOVED from entries and
  *   recorded as an explicit tombstone {id, at, reason} in the bible's optional top-level
- *   demotions array; any other id is skipped with reason not_demoted_or_unknown. Existing
- *   tombstones are preserved, and re-committing a tombstoned id through ids (a
- *   re-promotion) restores its entry and clears its tombstone.
+ *   demotions array; any other id is skipped with reason not_demoted_or_unknown. The
+ *   tombstone is written only when the bible at baseCommit carries the id (entry or
+ *   tombstone): an entry the branch added is removed with no tombstone, any other id is
+ *   skipped with reason not_in_base_bible (also when baseCommit does not resolve or its
+ *   bible is unreadable -- no new demoted tombstone is written then, and the result
+ *   carries base_bible_error). An id the bible file carries a withdrawn tombstone for is
+ *   skipped with reason withdrawn_tombstone and that tombstone is kept: a demoted
+ *   tombstone never replaces a withdrawn one (the every-call demotion rule passes over
+ *   it too), so a later ids re-promotion cannot clear the withdrawal. Existing
+ *   tombstones are preserved, and re-committing a demoted-tombstoned id through ids (a
+ *   re-promotion) restores its entry and clears its tombstone; a withdrawn tombstone is
+ *   never cleared by ids (see ids).
+ * @property {{id: string, note: string, evidence_files: string[]}[]} [withdrawals] - Bible
+ *   entries withdrawn this round. note must be at least 20 characters after whitespace is
+ *   collapsed (stored collapsed); evidence_files needs at least one repo-relative path (no
+ *   absolute path, no ".." segment). An id the bible holds as an entry, or one the KB holds
+ *   CONFIRMED, not superseded and not a user-directive, is removed from entries and
+ *   recorded as a tombstone {id, at, reason: "withdrawn", note, evidence_files}; the local
+ *   entry is NOT changed. Any other id (or one merged or demoted by the same call) is
+ *   skipped with reason not_withdrawable. Admitted ids are reported in the result's
+ *   withdrawn list.
+ * @property {string[]} [restore_ids] - Ids whose tombstone this branch added and should be
+ *   undone: removed only when the bible at baseCommit carries no tombstone for the id, and
+ *   the base bible's entry for it (if any) is re-added byte-identical; anything else is a
+ *   no-op. Restored ids are reported in the result's restored list.
+ */
+
+/**
+ * @typedef {Object} KbCapabilitiesOptions
+ *   kb_capabilities takes no fields. The removed scope keys (repo_path, repo,
+ *   repo_remote_url) are refused client-side with E-SCOPE-KEY-REMOVED.
+ */
+
+/**
+ * @typedef {Object} KbCapabilitiesResult
+ * @property {string} contract - Contract version the KB serves, e.g. "v1".
+ * @property {string[]} routes - Route names the KB serves. Over an http KB this is the
+ *   server's own GET /api/kb/capabilities body passed through as sent (unknown route
+ *   names and extra fields kept; a query_filters that is not an array of strings is
+ *   dropped); a server without the route yields the default set
+ *   (capture, query, promote, context, prime, invalidate, feedback, list -- no demote
+ *   or withdraw). Over a local SQLite KB it is the set the sample kb-server answers.
+ * @property {boolean} branch_aware - Whether the KB is branch aware.
+ * @property {string[]} [query_filters] - Optional kb_query filters the KB honours
+ *   (files, symbols); absent when the server does not list any.
  */
 
 /**
@@ -898,17 +977,51 @@
  *   is refused.
  * @property {string[]} evidence_files - At least one repo-relative file backing the
  *   demotion; an absent or empty list is refused by input validation before the
- *   tool runs. Each must resolve to a real file inside the calling session's repo; a
- *   path that does not resolve, names a directory, is ABSOLUTE, or contains a ".."
- *   segment is refused with E-DEMOTE-EVIDENCE-UNRESOLVED and nothing is written.
+ *   tool runs. A path that is ABSOLUTE or contains a ".." segment is refused with
+ *   E-DEMOTE-EVIDENCE-UNRESOLVED and nothing is written. Over a local SQLite KB each
+ *   must also resolve to a real file (not a directory) inside the calling session's
+ *   repo; over a remote (http) KB the KB server validates the rest of the evidence.
+ */
+
+/**
+ * kb_query options. At least one of query, files, symbols, tag or
+ * flagged_only is required (E-QUERY-NO-SELECTOR otherwise).
+ * @typedef {Object} KbQueryOptions
+ * @property {string} [query] - Free-text keyword search.
+ * @property {('context-cache'|'learning'|'knowledge'|'runbook')} [type] - Only entries of this content type.
+ * @property {string} [tag] - Only entries carrying this exact tag; may be used alone to list them.
+ * @property {number} [limit] - Max L1 results. Default 20 full rows plus the content of the
+ *   top 5 in l2_expanded; a member session that omits it gets at most 6 summary rows and an
+ *   empty l2_expanded (unless own_scope is set).
+ * @property {boolean} [include_stale] - Include stale and superseded entries (default false).
+ * @property {string[]} [files] - Look up by file: only entries whose source_files cite one of
+ *   these repo-relative paths, or a file under one of them when the path is a directory
+ *   ("src/services" matches "src/services/a.ts", not "src/services-old/a.ts"). A hard filter,
+ *   not a ranking signal; may be used without query. Over a remote (http) KB it is sent only
+ *   when the server lists "files" in query_filters of GET /api/kb/capabilities, otherwise the
+ *   call fails with E-KB-HTTP-UNSUPPORTED and nothing is read.
+ * @property {string[]} [symbols] - Only entries whose symbols name one of these (exact match).
+ *   A hard filter like files; with both, an entry matching either is kept. Same http rule
+ *   ("symbols" in query_filters).
+ * @property {boolean} [flagged_only] - List the contradiction-flagged entries instead
+ *   (result {flagged_entries, total, note}); files, symbols and the trust filters are ignored.
+ * @property {boolean} [expand_related] - Also return related_claims (refines /
+ *   contradiction_of neighbours of the top hits).
+ * @property {Array<'CONFIRMED'|'INFERRED'|'UNVERIFIED'>} [confidence] - Tier allow-list.
+ *   Default ["CONFIRMED"] with exclude_disputed true.
+ * @property {boolean} [exclude_disputed] - Drop both halves of an unresolved contradiction.
+ * @property {boolean} [own_scope] - Member session only: read the member's own captures
+ *   (every requested tier) from the per-repo KB instead of the checkout bible.
  */
 
 /**
  * One entry of the bible file (.fleet/kb-canonical.json) kb_export and
  * kb_bible_commit write and kb_import reads -- bible format v3, described by
  * memory-contract/v1/bible/kb-canonical.schema.json. The file itself is
- * {version: 3, provenance: {commit, branch, entry_count}, entries: KbBibleEntry[]};
- * readers also accept v2 (same envelope, no hashes) and v1 (a bare entry array).
+ * {version: 3, provenance: {branch}, entries: KbBibleEntry[], demotions?}; a bible
+ * written before the merge-friendly layout also carries provenance.commit and
+ * provenance.entry_count, which readers ignore (the count is entries.length).
+ * Readers also accept v2 (same envelope, no hashes) and v1 (a bare entry array).
  * @typedef {Object} KbBibleEntry
  * @property {string} id - Entry id (unique within the bible; writers refuse a duplicate id).
  * @property {string} type - Content type (knowledge, learning, runbook, context-cache, user-directive).
@@ -946,6 +1059,79 @@
  *   E-BIBLE-NOT-FOUND, and a kb_maintainer or FULL session records that
  *   verified blob as trusted. The engine's sprint-start priming seeds trust
  *   this way from the base branch, never from the maintainer's work tree.
+ *   kb_import also takes an optional `base_branch` (a plain branch name): the
+ *   base branch the bible is expected to belong to, which gates its withdrawn
+ *   tombstones (see KbImportWithdrawals).
+ */
+
+/**
+ * The result of kb_bible_commit (parse the text content with parseToolJson).
+ * @typedef {Object} KbBibleCommitResult
+ * @property {string} path - The bible file written (or that would have been).
+ * @property {string[]} merged - Ids merged from `ids`.
+ * @property {string[]} demoted - Ids removed from entries as demoted; tombstoned "demoted" when
+ *   the bible at baseCommit carries the id (an entry the branch added gets no tombstone).
+ * @property {string[]} withdrawn - Ids admitted from `withdrawals`: removed from entries and
+ *   tombstoned "withdrawn"; the local entry is not changed.
+ * @property {string[]} restored - Ids from `restore_ids` whose branch-added tombstone was removed.
+ * @property {{id: string, reason: string}[]} skipped - Ids not merged, demoted or withdrawn, with
+ *   reason not_confirmed_or_unknown, no_source_files, basis_mismatch, not_demoted_or_unknown,
+ *   not_withdrawable, withdrawn_tombstone (an `ids` id the bible file carries a withdrawn
+ *   tombstone for, not restored by the same call, or a demoted_ids id with a withdrawn
+ *   tombstone in the file -- a demoted tombstone never replaces a withdrawn one; the
+ *   tombstone is kept) or not_in_base_bible (a demoted_ids id the bible at baseCommit does
+ *   not carry), or demoted_tombstone (an `ids` id the file carries a demoted tombstone for whose
+ *   trust time is not after the tombstone; the tombstone is kept).
+ * @property {{id: string, reason: string}[]} removed - Entries removed because the KB holds them
+ *   superseded or invalidated, or (reason tombstoned) because the file also carries a
+ *   tombstone for the id (the tombstone wins).
+ * @property {number} entry_count - Entries in the resulting bible (a tombstone is not an entry).
+ * @property {number} backfilled - Legacy entries that gained source_file_hashes.
+ * @property {boolean} committed - True only when a local commit of the bible path was made.
+ * @property {true} [bible_skipped] - Present under an http KB provider (no entry merge).
+ * @property {string} [reason] - With bible_skipped: why.
+ * @property {string} [base_bible_error] - Why the bible at baseCommit could not be read
+ *   (baseCommit does not resolve, or its bible does not parse), when a rule needed it (a
+ *   demotion gate or a restore). Absent when the base was read fine or never needed. The
+ *   call still fails closed: no new demoted tombstone, no drop, no restore.
+ */
+
+/**
+ * What a bible's "withdrawn" tombstones did on kb_import (KbImportResult.withdrawals).
+ * They take effect only for the merged base bible: read with `ref` equal to
+ * refs/remotes/<remote>/<base> (<remote> any remote configured in the clone, such as
+ * origin) where <base> is the kb_import `base_branch` (without it, the branch
+ * refs/remotes/<remote>/HEAD names) AND the bible's provenance.branch is that same
+ * <base> (provenance.branch alone is never trusted).
+ * @typedef {Object} KbImportWithdrawals
+ * @property {number} sent - Tombstones applied locally (SQLite) or sent in one
+ *   POST /api/kb/withdraw (http); 0 when deferred or unsupported.
+ * @property {string[]} withdrawn - Rows lowered CONFIRMED -> INFERRED.
+ * @property {string[]} repromoted - Rows promoted after the tombstone; left CONFIRMED.
+ * @property {string[]} already - Rows already below CONFIRMED (a repeat import).
+ * @property {string[]} not_found - No such row (none is created).
+ * @property {string[]} unsupported - Not applied: the KB server does not serve the withdraw route.
+ * @property {string[]} deferred - Not applied: the bible was not read from the merged base bible.
+ * @property {string} [warning] - With unsupported: the E-KB-HTTP-UNSUPPORTED message naming the route.
+ *   With deferred: why, when the ref read belongs to no configured remote (naming the
+ *   expected ref) or the base branch could not be established.
+ */
+
+/**
+ * The result of kb_import (parse the text content with parseToolJson).
+ * @typedef {Object} KbImportResult
+ * @property {number} imported - Entries added.
+ * @property {number} skipped - Entries skipped (malformed, id already present, or duplicate).
+ * @property {number} linked - Entries linked to a same-topic predecessor (both stay live).
+ * @property {number} flagged - Entries flagged as a contradiction.
+ * @property {number} rejected - Entries refused by the capture basis check.
+ * @property {number} demoted - Local rows lowered by a "demoted" tombstone.
+ * @property {{checked: number, staled: number, unstaled: number}} sweep - The post-import freshness sweep.
+ * @property {string} [bible_source] - The git ref the bible was read at, when read from git.
+ * @property {boolean} [worktree_ignored] - With bible_source: the work-tree copy differed.
+ * @property {true} [bible_skipped] - Present under an http KB provider (no entry imported).
+ * @property {string} [reason] - With bible_skipped: why.
+ * @property {KbImportWithdrawals} withdrawals - What the bible's "withdrawn" tombstones did.
  */
 
 /**
@@ -991,6 +1177,15 @@
 // server's typed error. Do not widen this to max_total_s * 2 unless that
 // server-side sharing invariant is removed.
 const TIMEOUT_GRACE_MS = 30 * 1000;
+
+/**
+ * Maximum `max_turns` the execute_prompt tool accepts. Mirrors the upper bound
+ * of the `max_turns` field in the server's execute_prompt input schema; a root
+ * test pins the two together. Callers that compute a turn budget (for example
+ * by doubling a base on resume) MUST clamp to this value before dispatch,
+ * otherwise the server rejects the call at schema validation.
+ */
+export const EXECUTE_PROMPT_MAX_TURNS = 500;
 
 /**
  * Derives a client-side McpClient.request() timeout (ms) from a payload's
@@ -1308,6 +1503,8 @@ export class ApraFleet {
      * removes the composed permission/MCP config written for the old
      * provider/folder and re-composes for the member as updated (see
      * docs/api-reference.md).
+     * The MCP result has `isError: true` (and the reason in its text and
+     * structuredContent) when a requested `fleet_install` did not happen.
      * @param {UpdateMemberOptions} options
      */
     async updateMember(options) {
@@ -1440,7 +1637,8 @@ export class ApraFleet {
     /**
      * Export the calling session's CONFIRMED KB entries to the canonical bible
      * file and auto-commit it locally (never pushed). Pass baseBranch/baseCommit
-     * to record the target base branch and base commit in provenance. Writes
+     * to record the target base branch (provenance.branch) and base commit (a
+     * Verified-Against trailer on the auto-commit, never in the file). Writes
      * bible format v3: each added project entry is a KbBibleEntry carrying its
      * source_file_hashes basis; a bible holding a duplicate id is refused.
      * Result JSON: {exported, path, scope, committed}; extract with parseToolJson().
@@ -1458,9 +1656,9 @@ export class ApraFleet {
      * (existing entries kept unless this KB holds them as superseded or
      * invalidated -- those are removed, also when ids is empty; each merged
      * entry is a v3 KbBibleEntry carrying its source_file_hashes basis; a bible
-     * holding a duplicate id is refused), write baseBranch/baseCommit
-     * provenance, and make a local commit scoped to the bible path whose message
-     * lists each removal. Never pushes; re-running with the
+     * holding a duplicate id is refused), write baseBranch to provenance.branch,
+     * and make a local commit scoped to the bible path whose message lists each
+     * removal and carries baseCommit as a Verified-Against trailer. Never pushes; re-running with the
      * same ids after resetting to a newer HEAD re-merges, so a rejected push can
      * be retried. Result JSON: {path, merged, demoted, skipped, removed,
      * entry_count, backfilled, committed}; extract with parseToolJson(). backfilled counts the
@@ -1485,11 +1683,35 @@ export class ApraFleet {
      * entries and tombstoned as {id, at, reason}; entry_count counts entries only.
      * The removed scope keys (repo_path, repo, repo_remote_url) are refused
      * with E-SCOPE-KEY-REMOVED before anything is sent.
+     * Under an http KB provider the entry merge is skipped, never an error: the
+     * result is {path, merged: [], skipped: [], removed, entry_count: <entries
+     * in the parseable bible as left by the call, else 0>, backfilled: 0, committed,
+     * bible_skipped: true, reason, withdrawn, restored}; the KB is not read. With
+     * no withdrawals and no restore_ids nothing is written or committed; with
+     * them, only the tombstones are written to .fleet/kb-canonical.json (a
+     * tombstone-only bible is created when absent, existing entries stay
+     * byte-identical except that an id the file ends up tombstoning loses its
+     * entry; one already tombstoned is listed in removed with reason
+     * tombstoned) and committed may be true.
      * @param {KbBibleCommitOptions} options
      */
     async kbBibleCommit(options) {
         assertNoRemovedKbScopeKeys('kb_bible_commit', options);
         return this.mcpClient.callTool('kb_bible_commit', options);
+    }
+
+    /**
+     * Two-level knowledge bank search (kb_query). Result JSON:
+     * {l1_results, l2_expanded, related_claims?}, or {flagged_entries, total, note}
+     * with flagged_only; extract with parseToolJson(). Pass files and/or symbols to
+     * look up by file: only the entries citing them come back.
+     * The removed scope keys (repo_path, repo, repo_remote_url) are refused
+     * with E-SCOPE-KEY-REMOVED before anything is sent.
+     * @param {KbQueryOptions} options
+     */
+    async kbQuery(options) {
+        assertNoRemovedKbScopeKeys('kb_query', options);
+        return this.mcpClient.callTool('kb_query', options);
     }
 
     /**
@@ -1506,6 +1728,20 @@ export class ApraFleet {
     async kbDemote(options) {
         assertNoRemovedKbScopeKeys('kb_demote', options);
         return this.mcpClient.callTool('kb_demote', options);
+    }
+
+    /**
+     * Report what the calling session's project KB serves: {contract, routes,
+     * branch_aware, query_filters?} (KbCapabilitiesResult), the shape of the KB
+     * server's GET /api/kb/capabilities body. Over an http KB it is that body
+     * passed through; a server without the route yields the documented default
+     * set. Read-only. Extract with parseToolJson(). The removed scope keys are
+     * refused with E-SCOPE-KEY-REMOVED before anything is sent.
+     * @param {KbCapabilitiesOptions} [options]
+     */
+    async kbCapabilities(options = {}) {
+        assertNoRemovedKbScopeKeys('kb_capabilities', options);
+        return this.mcpClient.callTool('kb_capabilities', options);
     }
 
     /**

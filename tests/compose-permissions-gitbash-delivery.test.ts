@@ -32,6 +32,7 @@ import { addAgent } from '../src/services/registry.js';
 import { composePermissions } from '../src/tools/compose-permissions.js';
 import type { SSHExecResult } from '../src/types.js';
 import type { MemberShell } from '../src/os/os-commands.js';
+import { parseFingerprintProbe } from './helpers/landing-move.js';
 
 const mockExecCommand = vi.fn<(cmd: string, timeout?: number) => Promise<SSHExecResult>>();
 
@@ -71,6 +72,8 @@ function makeFsHandler(): (cmd: string, timeout?: number) => Promise<SSHExecResu
     // Member home-directory probe (src/services/member-home.ts): POSIX form for
     // a gitbash member, encoded PowerShell for every other Windows shell. The
     // per-folder member MCP entry lives in the member's ~/.claude.json.
+    // Fingerprint probe taken before the ~/.claude.json re-read (compare and swap).
+    if (parseFingerprintProbe(cmd) !== null) return { stdout: 'FLEET_ABSENT', stderr: '', code: 0 };
     if (cmd === 'printf \'%s\' "$HOME"') return { stdout: '/c/Users/gitbash-member', stderr: '', code: 0 };
     if (cmd.includes('-EncodedCommand')) return { stdout: 'C:\\Users\\win-member', stderr: '', code: 0 };
     // mkdir/New-Item, detectStacks (ls), workspace-trust writes/reads, everything else

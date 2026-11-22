@@ -31,6 +31,7 @@ import {
 import { readMemberMcpEntryUrl } from '../src/services/member-fleet-install.js';
 import type { SSHExecResult } from '../src/types.js';
 import { makeTestAgent } from './test-helpers.js';
+import { parseLandingMove } from './helpers/landing-move.js';
 
 const isWin = process.platform === 'win32';
 
@@ -119,8 +120,8 @@ describe('writer and probe share the resolver (real git)', () => {
         const f = read[1];
         return { stdout: fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : '', stderr: '', code: 0 };
       }
-      const move = cmd.match(/^(?:mv|Move-Item -Force) "([^"]+)" "([^"]+)"$/);
-      if (move) { fs.renameSync(move[1], move[2]); return { stdout: '', stderr: '', code: 0 }; }
+      const move = parseLandingMove(cmd);
+      if (move) { fs.renameSync(move.from, move.to); return { stdout: '', stderr: '', code: 0 }; }
       // CLAUDE_CONFIG_DIR probe: unset.
       return { stdout: '', stderr: '', code: 0 };
     };

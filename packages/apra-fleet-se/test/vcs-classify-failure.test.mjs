@@ -235,7 +235,9 @@ describe('VCSModule.classifyFailure -- provider split and inheritance', () => {
         );
         assert.strictEqual(withCode.providerCode, '403');
         // Still branchable on kind alone -- the code is a diagnostic detail.
-        assert.strictEqual(withCode.kind, K.TRANSIENT);
+        // git's HTTPS 403 is AUTH_DENIED (one-shot self-heal), not TRANSIENT.
+        assert.strictEqual(withCode.kind, K.AUTH_DENIED);
+        assert.strictEqual(withCode.permissionScope, false);
         // generic-git has no vendor codes to extract.
         assert.strictEqual(
             classifyFailure('The requested URL returned error: 403', { provider: 'generic-git' }).providerCode,
@@ -446,5 +448,45 @@ describe('VCSModule.classifyFailure -- GitHub workflow-permission refusal (apra-
         // what changes its self-heal/retry treatment (git-topology.mjs).
         const denied = classifyFailure(GITHUB_APP_WORKFLOW_REFUSAL, { provider: 'github' });
         assert.strictEqual(denied.kind, K.AUTH_DENIED);
+    });
+});
+
+// git's own HTTPS status refusal ("fatal: unable to access <url>: The
+// requested URL returned error: 401/403") is AUTH, not TRANSIENT: as transient
+// runGitStep retried it and never reached the credential self-heal.
+describe('VCSModule.classifyFailure -- git HTTPS 401/403 status refusal', () => {
+    const HTTPS_403 = "remote: Permission to acme/widgets.git denied to app[bot].\nfatal: unable to access 'https://github.com/acme/widgets.git/': The requested URL returned error: 403";
+    const HTTPS_401 = "fatal: unable to access 'https://github.com/acme/widgets.git/': The requested URL returned error: 401";
+
+    for (const provider of ['generic-git', 'github']) {
+        test(`(${provider}) 403 -> AUTH_DENIED with no permissionScope; 401 -> AUTH_EXPIRED`, () => {
+            const denied = classifyFailure(HTTPS_403, { provider });
+            assert.strictEqual(denied.kind, K.AUTH_DENIED);
+            assert.strictEqual(denied.permissionScope, false);
+            assert.strictEqual(denied.retryable, false);
+            assert.strictEqual(toGitVerdict(denied.kind), 'auth');
+            const expired = classifyFailure(HTTPS_401, { provider });
+            assert.strictEqual(expired.kind, K.AUTH_EXPIRED);
+            assert.strictEqual(toGitVerdict(expired.kind), 'auth');
+        });
+
+        test(`(${provider}) plain "unable to access" network text with no 401/403 stays TRANSIENT`, () => {
+            for (const sample of [
+                "fatal: unable to access 'https://github.com/x/y.git/': Could not resolve host: github.com",
+                "fatal: unable to access 'https://github.com/x/y.git/': Failed to connect",
+                "fatal: unable to access 'https://github.com/x/y.git/': The requested URL returned error: 502",
+                "fatal: unable to access 'https://github.com/x/y.git/': The requested URL returned error: 4031",
+            ]) {
+                assert.strictEqual(classifyFailure(sample, { provider }).kind, K.TRANSIENT, `for ${JSON.stringify(sample)}`);
+            }
+        });
+    }
+
+    test('the GitHub workflow-permission refusal still wins as AUTH_DENIED with permissionScope true, even next to a 403 line', () => {
+        const text = '! [remote rejected]        feat/x -> feat/x (refusing to allow a GitHub App to create or update workflow .github/workflows/ci.yml without workflows permission)\n' +
+            "fatal: unable to access 'https://github.com/acme/widgets.git/': The requested URL returned error: 403";
+        const result = classifyFailure(text, { provider: 'github' });
+        assert.strictEqual(result.kind, K.AUTH_DENIED);
+        assert.strictEqual(result.permissionScope, true);
     });
 });

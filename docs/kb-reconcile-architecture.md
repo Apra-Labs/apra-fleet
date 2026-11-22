@@ -84,7 +84,7 @@ After the entry loop, `kb_import` runs a `freshnessSweep` so entries whose basis
 does not match THIS worktree are immediately staled rather than serving
 wrong-branch claims. It reports `{imported, skipped, linked, flagged}` plus
 the sweep's `{checked, staled, unstaled}`. It is exposed both as an MCP tool and
-as `apra-fleet kb import [--repo <path>] [--path <file>]` for post-merge use.
+as `apra-fleet kb import [--repo <path>] [--path <file>] [--ref <ref>] [--base-branch <branch>]` for post-merge use.
 
 **Tombstones ride the same import, as a separate pass.** A bible can also carry
 an explicit `demotions: [{id, at, reason}]` array (v3 only; written by

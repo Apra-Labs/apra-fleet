@@ -10,7 +10,7 @@
     "content": [
       {
         "type": "text",
-        "text": "{\"entries_captured\":1,\"entries_updated\":0,\"entries_skipped\":0,\"entries_rejected\":0}"
+        "text": "{\"entries_captured\":1,\"entries_updated\":0,\"entries_skipped\":0,\"entries_rejected\":0,\"entries_failed\":0}"
       }
     ]
   }

@@ -22,7 +22,9 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { createSupervisor, DEFAULT_SERVICE_PORT, DEFAULT_SERVICE_HOST, SUPERVISOR_ALLOWED_HOSTS_ENV, readJsonBody, sendJson } from '../src/supervisor/server.mjs';
-import { createLedger } from '../src/supervisor/ledger.mjs';
+import { createLedger, defaultDataDir as defaultSupervisorDataDir } from '../src/supervisor/ledger.mjs';
+import { detachSupervisor } from '../src/supervisor/detach.mjs';
+import { createHeartbeat, resolveHeartbeatIntervalMs } from '../src/supervisor/heartbeat.mjs';
 import { createHistory, HISTORY_EVENTS } from '../src/supervisor/history.mjs';
 import { createSpawner } from '../src/supervisor/spawner.mjs';
 import { createReconciler, registerReservationRoutes, killPid } from '../src/supervisor/reconcile.mjs';
@@ -31,6 +33,7 @@ import { createLiveProxy, registerLiveRoutes } from '../src/supervisor/proxy.mjs
 import { createChildPortResolver } from '../src/supervisor/child-port.mjs';
 import { createHistoryView, registerHistoryViewRoutes } from '../src/supervisor/history-view.mjs';
 import { createLogView, registerLogViewRoutes } from '../src/supervisor/log-view.mjs';
+import { installExitLogging } from '../src/supervisor/exit-log.mjs';
 import { installSelfLogTee, createSelfLogView, registerSelfLogRoutes } from '../src/supervisor/self-log.mjs';
 import { createIdAllocator, registerIdAllocatorRoutes, defaultDataDir as defaultAllocatorDataDir } from '../src/supervisor/id-allocator.mjs';
 import { createDoltMutex, registerDoltMutexRoutes } from '../src/supervisor/dolt-mutex.mjs';
@@ -48,7 +51,7 @@ import { createBacklog, registerBacklogRoutes } from '../src/supervisor/backlog.
 // actually wires the Launch Sprint form onto the page.
 import { createDashboard, registerDashboardRoutes } from '../src/supervisor/dashboard.mjs';
 import { createSprintController, registerSprintRoutes, defaultMemberOverlapGuard, ApiError } from '../src/supervisor/api.mjs';
-import { createScopeGuard, formatScopeConflict } from '../src/supervisor/scope-overlap.mjs';
+import { createScopeGuard, formatScopeConflict, formatMissingRoots } from '../src/supervisor/scope-overlap.mjs';
 import { listFleetMembers, executeFleetCommand, registerFleetMember, updateFleetMember } from '../src/supervisor/fleet-members.mjs';
 import { ensureBacklogMember, BacklogMemberRefusedError } from '../src/supervisor/backlog-member.mjs';
 import { BeadsViewUnavailableError, createBeadsView, createBeadsViewCommand, createLaunchRowsFetcher, createSnapshotRowsReader } from '../src/supervisor/beads-view.mjs';
@@ -85,11 +88,21 @@ Options:
                             logs a WARNING and reports beads as unknown until
                             GET /api/health?refresh=1 finds one. A path that
                             does not exist is an error.
+      --detach              Respawn the supervisor as a detached background process
+                            (survives this terminal closing), wait until its
+                            /api/health answers with the child's pid, print the
+                            pid/port and exit 0. On timeout, a port already taken
+                            by another process, or an early child exit it kills
+                            the child it started, prints the reason and the log
+                            path (<dataDir>/logs/supervisor-launch.log) and exits
+                            non-zero. All other options are passed through.
   -h, --help                Show this help message.
 
 Environment:
   FLEET_SE_DATA_DIR                 Service data dir (ledger/history/logs and
                                     child-id-allocator.json).
+  FLEET_SE_HEARTBEAT_INTERVAL_MS    Interval (ms) between supervisor.json liveness
+                                    writes in the data dir. Default: 15000.
   FLEET_SE_SWEEP_OWNER_DATA_DIR     Scope the dolt-orphan-sweep to ephemeral
                                     dolt sql-servers whose --data-dir is under
                                     this path, so an isolated supervisor
@@ -178,6 +191,11 @@ export function composeBeforeLaunch({ memberOverlapGuard, scopeGuard }) {
             }
             throw err;
         }
+        // A root absent from the guard's own backlog snapshot is a loud 400,
+        // never a silent "expands to itself" launch (zero extra bd calls).
+        if (Array.isArray(scopeResult.missingRoots) && scopeResult.missingRoots.length > 0) {
+            throw new ApiError(400, formatMissingRoots(scopeResult.missingRoots, scopeResult.suggestions), 'issue');
+        }
         if (!scopeResult.ok) {
             throw new ApiError(409, formatScopeConflict(scopeResult.conflicts), 'issue');
         }
@@ -193,6 +211,7 @@ export function parseServeArgs(argv) {
                 host: { type: 'string' },
                 'allowed-host': { type: 'string', multiple: true },
                 'beads-dir': { type: 'string' },
+                detach: { type: 'boolean' },
                 help: { type: 'boolean', short: 'h' },
             },
             strict: true,
@@ -240,8 +259,45 @@ export async function serveMain(argv = process.argv.slice(2), deps = {}) {
     // unaffected). This is the supervisor's own equivalent of spawner.mjs's
     // per-sprint-child raw log; a dashboard link to GET /supervisor/log is
     // registered further down, once `supervisor` exists.
+    // --detach: this process is only the launcher; the real supervisor is the
+    // detached child (same entry point, flag removed).
+    if (values.detach) {
+        const detachPort = values.port !== undefined ? Number(values.port) : DEFAULT_SERVICE_PORT;
+        if (!Number.isInteger(detachPort) || detachPort < 1 || detachPort > 65535) {
+            console.error(`Error: --port must be a valid TCP port number, got "${values.port}".`);
+            return { exitCode: 1 };
+        }
+        const { exitCode } = await detachSupervisor({
+            argv, scriptPath: fileURLToPath(import.meta.url), dataDir: defaultSupervisorDataDir(),
+            port: detachPort, host: values.host,
+        });
+        return { exitCode };
+    }
+
     const selfLog = installSelfLogTee();
     process.once('exit', () => selfLog.stop());
+    // Final synchronous exit line (cause + exit code) on every observable exit
+    // path, appended synchronously (bypassing the async tee stream).
+    let supervisor = null;
+    const onSignal = (sig) => {
+        console.log(`[supervisor] received ${sig}`);
+        if (supervisor) { supervisor.stop(`signal:${sig}`).catch((err) => console.error(err)); return; }
+        // In-process (non-main) caller still starting up: our listener stops
+        // Node's default terminate, so exit right away. (The main entry point
+        // is handled inside installExitLogging via canStop.)
+        if (!ownsProcessHandlers) process.exit(sig === 'SIGINT' ? 130 : 143);
+    };
+    const ownsProcessHandlers = Boolean(deps.installExitLog ?? isMainModule());
+    // Only the real entry point owns process-level handlers; an in-process
+    // caller (a test driving serveMain) keeps the plain SIGINT/SIGTERM wiring
+    // so it does not gain fatal-error handlers or leak exit listeners.
+    const exitLog = ownsProcessHandlers
+        ? installExitLogging({ logPath: selfLog.logPath, canStop: () => supervisor !== null, causeProvider: () => (supervisor ? supervisor.exitCause : null), onSignal })
+        : { exitFn: (code) => process.exit(code) };
+    if (!ownsProcessHandlers) {
+        process.once('SIGINT', () => onSignal('SIGINT'));
+        process.once('SIGTERM', () => onSignal('SIGTERM'));
+    }
 
     let port = DEFAULT_SERVICE_PORT;
     const host = values.host !== undefined && values.host !== '' ? values.host : DEFAULT_SERVICE_HOST;
@@ -526,7 +582,7 @@ export async function serveMain(argv = process.argv.slice(2), deps = {}) {
         hangable[hangSeam] = { ...hangable[hangSeam], name: hangSeam, stop: () => new Promise(() => {}) };
         console.warn(`[supervisor] TEST HOOK: seam '${hangSeam}' stop() will never settle`);
     }
-    const supervisor = createSupervisor({
+    supervisor = createSupervisor({
         port, host,
         // CLI names add to (not replace) the env var's list.
         allowedHosts: [...(values['allowed-host'] ?? []), ...String(process.env[SUPERVISOR_ALLOWED_HOSTS_ENV] ?? '').split(/[\s,]+/).filter(Boolean)],
@@ -534,6 +590,7 @@ export async function serveMain(argv = process.argv.slice(2), deps = {}) {
         doltOrphanSweep: hangable.doltOrphanSweep, beadsIdentity, backlogMember,
         seamStopTimeoutMs: envMs('FLEET_SE_SHUTDOWN_SEAM_TIMEOUT_MS', 3000),
         forcedExitMs: envMs('FLEET_SE_SHUTDOWN_FORCE_EXIT_MS', 10_000),
+        exit: exitLog.exitFn,
     });
     registerIdAllocatorRoutes(supervisor, idAllocator, { readJsonBody, sendJson });
     registerDoltMutexRoutes(supervisor, doltMutex, { readJsonBody, sendJson });
@@ -623,16 +680,24 @@ export async function serveMain(argv = process.argv.slice(2), deps = {}) {
     const selfLogView = createSelfLogView({ logPath: selfLog.logPath });
     registerSelfLogRoutes(supervisor, selfLogView);
 
-    // Explicit signals are the out-of-band way to stop cleanly, complementing
-    // the in-band POST /api/shutdown route.
-    const onSignal = (sig) => {
-        console.log(`[supervisor] received ${sig}`);
-        supervisor.stop(`signal:${sig}`).catch((err) => console.error(err));
-    };
-    process.once('SIGINT', () => onSignal('SIGINT'));
-    process.once('SIGTERM', () => onSignal('SIGTERM'));
+    // Explicit signals (SIGINT/SIGTERM/SIGHUP/SIGBREAK) are the out-of-band way
+    // to stop cleanly, complementing the in-band POST /api/shutdown route; they
+    // are handled by installExitLogging() above, which also logs the final line.
 
     await supervisor.start();
+
+    // Liveness record <dataDir>/supervisor.json (src/supervisor/heartbeat.mjs):
+    // started once the port is bound, final record (stoppedAt) written last,
+    // after shutdownRequested below.
+    const heartbeat = createHeartbeat({
+        dataDir: defaultSupervisorDataDir(),
+        port: supervisor.port,
+        beadsDir: discovered ? discovered.beadsDir : null,
+        version: readServeVersion(),
+        intervalMs: resolveHeartbeatIntervalMs(),
+        log: (m) => console.error(m),
+    });
+    heartbeat.start();
 
     // Restart reconciliation (eft.5.4) + re-adoption (eft.4.5): the ledger
     // seam has now loaded from disk. Start the history log, then PID-probe
@@ -652,11 +717,20 @@ export async function serveMain(argv = process.argv.slice(2), deps = {}) {
     // Keep the process alive until an explicit shutdown resolves. Awaiting this
     // is what makes `fleet-se serve` "always-on" -- nothing else drives exit.
     await supervisor.shutdownRequested;
+    heartbeat.stop();
     try { beadsView.stop(); } catch (err) { console.error('[supervisor] beadsView stop failed:', err); }
     try { if (typeof backlogMember.stop === 'function') backlogMember.stop(); } catch (err) { console.error('[supervisor] backlogMember stop failed:', err); }
     const hung = supervisor.hungSeams;
     console.log(`[supervisor] exiting (code 0)${hung.length ? `; seams that did not stop in time: ${hung.join(', ')}` : ''}`);
     return { exitCode: 0 };
+}
+
+function readServeVersion() {
+    try {
+        return JSON.parse(fs.readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8')).version ?? null;
+    } catch {
+        return null;
+    }
 }
 
 function isMainModule() {

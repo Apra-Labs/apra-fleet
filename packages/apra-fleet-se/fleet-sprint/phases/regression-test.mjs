@@ -69,7 +69,7 @@
 // baselines are pinned rather than assumed.
 // =============================================================================
 
-import { dispatchRole, TURN_BASES } from '../dispatch-role.mjs';
+import { dispatchRole, secondaryMaxTurns } from '../dispatch-role.mjs';
 import { formatRegressionParts, formatRegressionHeadline, regressionVerdictOf } from '../sprint-report.mjs';
 
 /**
@@ -159,7 +159,7 @@ export async function runRegressionTestPhase({
             'Continue the regression pass exactly where you left off in this same session -- do not restart the playbook or rebuild any environment it already brought up. Finish the remaining work, run the playbook\'s Teardown if it defines one, and return your final report now. ' +
             'Your original instructions, restated so a resumed dispatch never loses them: ' + regressionPrompt,
         roleLabel: 'Regression Test Runner',
-        resumeLabel: `Regression Test (resume, max_turns=${TURN_BASES.REGRESSION_TEST_MAX_TURNS * 2})`,
+        resumeLabel: `Regression Test (resume, max_turns=${secondaryMaxTurns('regression-test-runner')})`,
     });
     regressionResult = regressionOutcome.value;
     // No duplicate log() dump -- see dispatchReview() for why. Only an

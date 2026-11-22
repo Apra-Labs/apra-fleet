@@ -115,6 +115,14 @@ export function startStubKbServer(): Promise<StubKbServer> {
     req.resume();
     req.on('end', () => {
       const pathname = (req.url ?? '').split('?')[0];
+      // The provider reads capabilities once per connection before its first
+      // KB call. Answered 404 (default route set) before the auth check and kept
+      // out of `requests`, which records only the KB calls under test.
+      if (pathname === '/api/kb/capabilities') {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Not found' }));
+        return;
+      }
       const auth = req.headers.authorization ?? '';
       const token = auth.startsWith('Bearer ') ? auth.slice('Bearer '.length) : '';
       const authorized = stub.accept(token);

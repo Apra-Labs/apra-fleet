@@ -351,30 +351,37 @@ describe('VCS create-pull-request curl builders quote by member shell across the
     // out of the JSON on a live member. helpers/windows-argv.mjs models those
     // (see test/vcs-powershell-argv-roundtrip.test.mjs for the real-
     // powershell.exe proof), so this returns what curl.exe actually receives.
-    function extractDashDPayload(command, dialect) {
-        const marker = ' -d ';
+    // The JSON body is staged in a member-side file (curl --data-binary
+    // @<path>); the only quote-sensitive word left is that @<path> argument.
+    // Payload paths carrying an apostrophe (the character whose escaping
+    // differs between the dialects) keep the dialect check meaningful.
+    const PAYLOAD_PATH = { posix: "/home/o'brien/work/.apra-call/vcs-body-x.json", windows: "C:\\Users\\o'brien\\work\\.apra-call\\vcs-body-x.json" };
+    const pathFor = (os) => (os === 'windows' ? PAYLOAD_PATH.windows : PAYLOAD_PATH.posix);
+    function extractDataBinaryArg(command, dialect) {
+        const marker = ' --data-binary ';
         const markerIndex = command.indexOf(marker);
-        assert.ok(markerIndex !== -1, `expected a ' -d ' flag in the built command: ${command}`);
+        assert.ok(markerIndex !== -1, `expected a ' --data-binary ' flag in the built command: ${command}`);
+        assert.ok(!command.includes(' -d '), `no inline -d body may remain: ${command}`);
         const argStart = markerIndex + marker.length;
         if (dialect === 'posix') return nextPosixArg(command, argStart).value;
         const { value } = nextPowerShellArg(command, argStart);
         const argv = crtParseCommandLine(legacyBinderCommandLine([value]));
-        assert.equal(argv.length, 1, `the -d word must reach curl.exe as exactly one argument, got ${JSON.stringify(argv)}`);
+        assert.equal(argv.length, 1, `the --data-binary word must reach curl.exe as exactly one argument, got ${JSON.stringify(argv)}`);
         return argv[0];
     }
 
     for (const { label, os, shell, dialect } of SHELL_MATRIX) {
-        test(`github: ${label} -> ${dialect} quoting, -d payload round-trips to the exact same JSON object`, () => {
-            const built = buildCreatePrCommand({ ...GITHUB_PARAMS, os, shell });
-            const payloadText = extractDashDPayload(built.command, dialect);
-            const payload = JSON.parse(payloadText);
+        test(`github: ${label} -> ${dialect} quoting, the @<path> word round-trips and the staged body is the exact JSON object`, () => {
+            const built = buildCreatePrCommand({ ...GITHUB_PARAMS, os, shell, payload_path: pathFor(os) });
+            assert.equal(extractDataBinaryArg(built.command, dialect), `@${pathFor(os)}`);
+            const payload = JSON.parse(built.payload.content);
             assert.deepEqual(payload, { title: TITLE, head: GITHUB_PARAMS.head, base: GITHUB_PARAMS.base, body: BODY });
         });
 
-        test(`azure-devops: ${label} -> ${dialect} quoting, -d payload round-trips to the exact same JSON object`, () => {
-            const built = buildCreatePrCommand({ ...ADO_PARAMS, os, shell });
-            const payloadText = extractDashDPayload(built.command, dialect);
-            const payload = JSON.parse(payloadText);
+        test(`azure-devops: ${label} -> ${dialect} quoting, the @<path> word round-trips and the staged body is the exact JSON object`, () => {
+            const built = buildCreatePrCommand({ ...ADO_PARAMS, os, shell, payload_path: pathFor(os) });
+            assert.equal(extractDataBinaryArg(built.command, dialect), `@${pathFor(os)}`);
+            const payload = JSON.parse(built.payload.content);
             assert.deepEqual(payload, {
                 sourceRefName: `refs/heads/${ADO_PARAMS.head}`,
                 targetRefName: `refs/heads/${ADO_PARAMS.base}`,
@@ -385,8 +392,8 @@ describe('VCS create-pull-request curl builders quote by member shell across the
 
         test(`curlBinary stays OS-keyed for ${label} (never shell-keyed): both providers agree`, () => {
             const expectedBinary = os === 'windows' ? 'curl.exe' : 'curl';
-            const githubBuilt = buildCreatePrCommand({ ...GITHUB_PARAMS, os, shell });
-            const adoBuilt = buildCreatePrCommand({ ...ADO_PARAMS, os, shell });
+            const githubBuilt = buildCreatePrCommand({ ...GITHUB_PARAMS, os, shell, payload_path: pathFor(os) });
+            const adoBuilt = buildCreatePrCommand({ ...ADO_PARAMS, os, shell, payload_path: pathFor(os) });
             assert.ok(githubBuilt.command.startsWith(`${expectedBinary} -sS -X POST`), `github: expected curl binary '${expectedBinary}' for os=${os}, got: ${githubBuilt.command}`);
             assert.ok(adoBuilt.command.startsWith(`${expectedBinary} -sS -X POST`), `azure-devops: expected curl binary '${expectedBinary}' for os=${os}, got: ${adoBuilt.command}`);
         });
@@ -396,20 +403,18 @@ describe('VCS create-pull-request curl builders quote by member shell across the
     // above is the one that fails if azure-devops.mjs's shQuote calls drop
     // back to two arguments (os only) -- usesPowerShellQuoting('windows',
     // undefined) is true, so a reverted builder would emit PowerShell-doubled
-    // quoting ('' instead of '\'') for a gitbash member, corrupting the -d
-    // JSON payload exactly as the paired [impl] bead describes. Pin the
-    // DISTINCT string shapes directly (not just successful JSON.parse, which
-    // a sufficiently-simple payload could satisfy under either dialect) so a
-    // dialect mix-up is caught even when JSON.parse would not itself throw.
+    // quoting ('' instead of '\'') for a gitbash member, corrupting the
+    // quoted @<path> argument. Pin the DISTINCT string shapes directly so a
+    // dialect mix-up is caught even when a decoder would not itself fail.
     test('azure-devops: windows+gitbash produces POSIX close-reopen quoting, DISTINCT from windows+unresolved-shell PowerShell doubling', () => {
-        const gitbash = buildCreatePrCommand({ ...ADO_PARAMS, os: 'windows', shell: 'gitbash' });
-        const unresolved = buildCreatePrCommand({ ...ADO_PARAMS, os: 'windows', shell: '' });
+        const gitbash = buildCreatePrCommand({ ...ADO_PARAMS, os: 'windows', shell: 'gitbash', payload_path: PAYLOAD_PATH.windows });
+        const unresolved = buildCreatePrCommand({ ...ADO_PARAMS, os: 'windows', shell: '', payload_path: PAYLOAD_PATH.windows });
 
-        assert.ok(gitbash.command.includes(`Sprint'\\''s`), `expected POSIX close-reopen quoting ('\\'') for the embedded apostrophe under gitbash, got: ${gitbash.command}`);
-        assert.ok(!gitbash.command.includes(`Sprint''s`), `gitbash must NOT use PowerShell doubling for the embedded apostrophe, got: ${gitbash.command}`);
+        assert.ok(gitbash.command.includes(`o'\\''brien`), `expected POSIX close-reopen quoting ('\\'') for the embedded apostrophe under gitbash, got: ${gitbash.command}`);
+        assert.ok(!gitbash.command.includes(`o''brien`), `gitbash must NOT use PowerShell doubling for the embedded apostrophe, got: ${gitbash.command}`);
 
-        assert.ok(unresolved.command.includes(`Sprint''s`), `expected PowerShell doubling ('') for the embedded apostrophe when shell is unresolved on windows, got: ${unresolved.command}`);
-        assert.ok(!unresolved.command.includes(`Sprint'\\''s`), `unresolved-shell windows must NOT use POSIX close-reopen quoting, got: ${unresolved.command}`);
+        assert.ok(unresolved.command.includes(`o''brien`), `expected PowerShell doubling ('') for the embedded apostrophe when shell is unresolved on windows, got: ${unresolved.command}`);
+        assert.ok(!unresolved.command.includes(`o'\\''brien`), `unresolved-shell windows must NOT use POSIX close-reopen quoting, got: ${unresolved.command}`);
 
         assert.notEqual(gitbash.command, unresolved.command, 'the two dialects must not coincidentally produce byte-identical commands');
     });

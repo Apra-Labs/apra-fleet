@@ -144,7 +144,7 @@ describe('auto-harvest reports its counters (apra-fleet-4wz.8)', () => {
     addAgent(member);
     mockExecCommand.mockResolvedValue({ stdout: successResponse, stderr: '', code: 0 });
     mockKbHarvest.mockResolvedValue(JSON.stringify({
-      entries_captured: 1, entries_updated: 0, entries_skipped: 0, entries_rejected: 7,
+      entries_captured: 1, entries_updated: 0, entries_skipped: 0, entries_rejected: 7, entries_failed: 2,
     }));
 
     await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });
@@ -152,6 +152,7 @@ describe('auto-harvest reports its counters (apra-fleet-4wz.8)', () => {
 
     expect(logged()).toContain('rejected=7');
     expect(logged()).toContain('captured=1');
+    expect(logged()).toContain('failed=2');
   });
 
   it('stays quiet when the harvest produced nothing at all', async () => {
@@ -159,7 +160,7 @@ describe('auto-harvest reports its counters (apra-fleet-4wz.8)', () => {
     addAgent(member);
     mockExecCommand.mockResolvedValue({ stdout: successResponse, stderr: '', code: 0 });
     mockKbHarvest.mockResolvedValue(JSON.stringify({
-      entries_captured: 0, entries_updated: 0, entries_skipped: 0, entries_rejected: 0,
+      entries_captured: 0, entries_updated: 0, entries_skipped: 0, entries_rejected: 0, entries_failed: 0,
     }));
 
     await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5 });

@@ -7,6 +7,11 @@ import { SERVER_INFO_PATH } from '../paths.js';
 import { readStoppedMarker, describeStoppedMarker } from '../services/stopped-marker.js';
 import { serverVersion } from '../version.js';
 import { showPendingServiceNotice } from '../services/service-notice.js';
+import { checkClaudeUserScopeRegistration, claudeUserConfigPath, type ClaudeRegistrationState } from '../services/claude-local-scope-mcp.js';
+import { memberAccessSecretPath, readMemberAccessSecret } from '../services/member-access-secret.js';
+import { readInstallConfig } from './config.js';
+import { DEFAULT_PORT } from '../paths.js';
+import { readSupervisorLiveness, formatSupervisorLine } from './supervisor-liveness.js';
 
 function versionCore(v: string | undefined): string | null {
   // Capped like the client's versionCore: v comes from a server's /health reply.
@@ -66,6 +71,31 @@ export function formatServiceLabel(svcStatus: ServiceStatus): string {
   return svcStatus.detail ? `installed (${state} -- ${svcStatus.detail})` : `installed (${state})`;
 }
 
+const REGISTRATION_PROBLEM: Partial<Record<ClaudeRegistrationState, string>> = {
+  missing: 'has no apra-fleet MCP registration',
+  'wrong-url': 'registers apra-fleet at a different URL than this install',
+  'wrong-secret': "registers apra-fleet with a member access secret that does not match this install's",
+  unreadable: 'is not valid JSON',
+};
+
+/** The Warning line for a broken claude user-scope registration, or null when healthy / not applicable. */
+function claudeRegistrationWarning(): string | null {
+  let state: ClaudeRegistrationState;
+  const file = claudeUserConfigPath();
+  try {
+    // Same source install step 5 registers: http://localhost:<DEFAULT_PORT>/mcp.
+    // The secret file is only READ here; status must never create it.
+    state = checkClaudeUserScopeRegistration({
+      configFile: file,
+      expectedUrl: `http://localhost:${DEFAULT_PORT}/mcp`,
+      expectedSecret: readMemberAccessSecret(memberAccessSecretPath()),
+      claudeRecorded: !!readInstallConfig().providers?.claude,
+    });
+  } catch { return null; }
+  const problem = REGISTRATION_PROBLEM[state];
+  return problem ? `  Warning:  claude user config ${file} ${problem} -- run 'apra-fleet install --force' to restore it.` : null;
+}
+
 export async function runStatus(_args: string[]): Promise<void> {
   // Guidance a detached install (apra-fleet update) could not show.
   showPendingServiceNotice();
@@ -79,6 +109,9 @@ export async function runStatus(_args: string[]): Promise<void> {
   const serviceLabel = formatServiceLabel(svcStatus)
     + (svcStatus.notice ? '\n' + svcStatus.notice.split('\n').map(l => `            ${l}`).join('\n') : '');
 
+  const registrationWarning = claudeRegistrationWarning();
+  const supervisorLine = formatSupervisorLine(readSupervisorLiveness());
+
   if (instance.state === 'unresponsive') {
     console.log('apra-fleet status');
     console.log(`  State:    unresponsive`);
@@ -87,6 +120,8 @@ export async function runStatus(_args: string[]): Promise<void> {
     console.log(`  URL:      ${instance.url}`);
     console.log(`  Service:  ${serviceLabel}`);
     console.log('  The server process is alive but not answering /health. Run "apra-fleet stop" to stop it.');
+    console.log(supervisorLine);
+    if (registrationWarning) console.log(registrationWarning);
     return;
   }
 
@@ -95,6 +130,8 @@ export async function runStatus(_args: string[]): Promise<void> {
     console.log('apra-fleet status');
     console.log(`  State:    ${marker ? `stopped (${describeStoppedMarker(marker)})` : 'stopped'}`);
     console.log(`  Service:  ${serviceLabel}`);
+    console.log(supervisorLine);
+    if (registrationWarning) console.log(registrationWarning);
     return;
   }
 
@@ -118,4 +155,6 @@ export async function runStatus(_args: string[]): Promise<void> {
   if (runningCore && ownCore && runningCore !== ownCore) {
     console.log(`  Warning:  the running server is ${health!.version} but this apra-fleet is ${serverVersion} -- stop it ('apra-fleet stop'), then run 'apra-fleet install' and 'apra-fleet start'.`);
   }
+  console.log(supervisorLine);
+  if (registrationWarning) console.log(registrationWarning);
 }

@@ -76,9 +76,10 @@
 // turns red instead of landing on an unguarded site.
 // =============================================================================
 
-import { dispatchRole, TURN_BASES } from '../dispatch-role.mjs';
+import { dispatchRole, secondaryMaxTurns } from '../dispatch-role.mjs';
 import { buildFinalVerdictPrompt } from '../prompts.mjs';
 import { resolveFinalReviewMergeBase } from '../git-topology.mjs';
+import { normalizeMergeAssessment } from '../pr-body.mjs';
 import { applyGuardedReopens, parseIdWithReasonEntry } from '../beads-transitions.mjs';
 import {
     validateNewTask, buildFallbackNewTask, appendRejectedFindingToParentNotes, persistNewTaskBestEffort,
@@ -92,6 +93,9 @@ import { buildSettleCallback } from '../dolt-settle.mjs';
 import { partitionDeferredBeads } from '../beads-scope.mjs';
 import { applyDeployFailureVerdictGate, formatDeployFailureReason } from './deploy.mjs';
 import { applyVerifyBlockVerdictGate } from '../verify-block.mjs';
+import { applyCarryOverVerdictGate } from '../set-aside.mjs';
+import { buildVerifyCarryOver, applyVerifyCarryOverVerdictGate } from '../verify-carry-over.mjs';
+import { applyRedBuildIntegSkipVerdictGate, formatRedBuildIntegSkipVerdictReason } from '../red-build-integ-gate.mjs';
 
 /**
  * Runs the Final Review phase: the sprint's closing evidence-based verdict,
@@ -143,6 +147,27 @@ export async function runFinalReviewPhase({
     // GitHub #717: the named verify-block deadlock diagnosis the cycle loop
     // exited on, or null. Non-null forces a FAIL verdict (never PASS).
     verifyBlockDiagnosis = null,
+    // The carry-over ({ reason, where, cycle, closedIds, entries, atGoalIds },
+    // ../set-aside.mjs buildSetAsideCarryOver) the cycle loop exited on after
+    // a set-aside stall with work closed this run, or null. Its entries are
+    // named in the verdict notes; any at/above-goal entry forces FAIL.
+    carryOverExit = null,
+    // Verify-routed beads the cycle loop stopped waiting for
+    // (../verify-carry-over.mjs): needs-external-evidence (id -> { reason,
+    // cycles }) and deferred during the run (id -> reason). Any still-open
+    // needs-external-evidence bead forces FAIL; both kinds are named in the
+    // verdict notes.
+    needsEvidenceVerifyIds = null,
+    deferredVerifyIds = null,
+    // Below-goal reopenIds a CHANGES_NEEDED verdict named that the cycle loop
+    // exited past (treated as APPROVED: every one was skipped as below goal).
+    // Named in the verdict notes; never changes the verdict.
+    belowGoalCarryOverIds = null,
+    // The latest cycle whose Integration Test was skipped because the last
+    // review reported a red build ({cycle}), or null once a later green
+    // review let Integration Test run. Non-null forces a FAIL verdict
+    // (../red-build-integ-gate.mjs).
+    redBuildIntegSkip = null,
     // runSprintCycle-scoped locals and runner-module-private values, injected
     // rather than imported (see header).
     bdListScoped,
@@ -210,6 +235,18 @@ export async function runFinalReviewPhase({
         const finalClosedIds = new Set(finalClosedBeads.map((b) => b.id));
         finalUnclosedVerifyIds = [...verifyEverIds].filter((id) => !finalClosedIds.has(id));
     }
+    // Only carried-over verify beads at/above the sprint goal priority force
+    // FAIL, matching how openAtGoal is judged: the at-goal not-done read above
+    // (priority-max=goalMax, every not-done status including deferred) names
+    // them, so a carried-over bead absent from it is below goal.
+    const verifyCarryOver = (needsEvidenceVerifyIds || deferredVerifyIds)
+        ? buildVerifyCarryOver({
+            needsEvidence: needsEvidenceVerifyIds || new Map(),
+            deferred: deferredVerifyIds || new Map(),
+            closedIds: new Set(finalClosedBeads.map((b) => b.id)),
+            atGoalIds: new Set(finalOpenAtGoalRaw.map((b) => b.id)),
+        })
+        : null;
 
     let finalVerdictResult;
     // The Final Review covers an entire epic's worth of work, categorically
@@ -228,6 +265,28 @@ export async function runFinalReviewPhase({
     const finalKbCandidates = await kbWork.promotionCandidates(getMemberForRole('reviewer'));
     if (finalKbCandidates.length > 0) {
         log(`[kb-work] offering ${finalKbCandidates.length} INFERRED entr(ies) to the final reviewer for promotion.`);
+    }
+    // The CONFIRMED entries the final reviewer may demote back to INFERRED.
+    // buildFinalVerdictPrompt has always accepted and rendered kbDemoteCandidates,
+    // but nothing ever passed it here, so that block was dead on this path and
+    // the final reviewer -- the one review that reads the WHOLE diff -- could
+    // never demote, exactly as it could never promote before promotion
+    // candidates were added above.
+    //
+    // SCOPE IS 'sprint', PASSED EXPLICITLY. Final review judges the entire
+    // sprint diff and has no round, so its changed-file scope is the
+    // cumulative baseBranch...branch diff. demotionCandidates never infers
+    // this from who called it -- see its doc comment.
+    //
+    // Fetched ONCE, BEFORE the dispatch, for the same reason the promotion
+    // candidates above are: the retry and resume paths then reuse the
+    // identical block rather than re-reading a KB this review's own
+    // demotions may already have changed. Best-effort like every other KB
+    // read: a cold or unreachable KB, or a diff that could not be computed,
+    // degrades to [] and must never fail the final review.
+    const finalKbDemoteCandidates = await kbWork.demotionCandidates(getMemberForRole('reviewer'), { scope: 'sprint' });
+    if (finalKbDemoteCandidates.length > 0) {
+        log(`[kb-work] offering ${finalKbDemoteCandidates.length} CONFIRMED entr(ies) to the final reviewer for demotion.`);
     }
     // apra-fleet-3swo.5.7: the final-review ladder -- its dispatch, its
     // read-side git-sync bracket, its max_turns-exhaustion resume at doubled
@@ -278,6 +337,7 @@ export async function runFinalReviewPhase({
             unclosedVerifyIds: finalUnclosedVerifyIds,
             deferredAtGoalIds: finalDeferredAtGoalIds,
             kbCandidates: finalKbCandidates,
+            kbDemoteCandidates: finalKbDemoteCandidates,
             kbKnowledge: kbInjection ? undefined : kbPriming.knowledgeOf(getMemberForRole('reviewer')),
             kbBlock: kbInjection
                 ? await kbInjection.blockFor({
@@ -293,9 +353,22 @@ export async function runFinalReviewPhase({
             'Weigh the remaining evidence and return your final PASS/FAIL verdict now (with newTasks findings if FAIL).',
         roleLabel: 'Final Review',
         label: 'Final Review',
-        resumeLabel: `Final Review (resume, max_turns=${TURN_BASES.FINAL_REVIEW_MAX_TURNS * 2})`,
+        resumeLabel: `Final Review (resume, max_turns=${secondaryMaxTurns('final-review')})`,
     });
     finalVerdictResult = finalReviewOutcome.value;
+    // The merge assessment is advisory for humans and must never change the
+    // verdict: the schema accepts any shape for it, and it is normalized here
+    // (valid fields kept, the rest dropped and named) before anything renders it.
+    if (finalVerdictResult && typeof finalVerdictResult === 'object' && 'merge_assessment' in finalVerdictResult) {
+        const { assessment, dropped } = normalizeMergeAssessment(finalVerdictResult.merge_assessment);
+        const { merge_assessment: _raw, ...rest } = finalVerdictResult;
+        finalVerdictResult = {
+            ...rest,
+            ...(assessment ? { merge_assessment: assessment } : {}),
+            ...(dropped.length > 0 ? { merge_assessment_incomplete: dropped } : {}),
+        };
+        if (dropped.length > 0) log(`Final Review: merge_assessment incomplete (${dropped.join(', ')}); verdict unchanged.`);
+    }
     // apra-fleet-b4g.102.1: a sprint whose last cycle's deploy failed never
     // reaches Integration Test against a deployed build, so it can never PASS
     // -- enforced here by the orchestrator rather than trusted to the LLM.
@@ -310,6 +383,32 @@ export async function runFinalReviewPhase({
         const llmVerdict = finalVerdictResult && finalVerdictResult.verdict;
         finalVerdictResult = applyVerifyBlockVerdictGate(finalVerdictResult, verifyBlockDiagnosis);
         log(`Final Review: sprint verdict forced to FAIL (Final Review returned ${llmVerdict ?? '(none)'}) -- ${verifyBlockDiagnosis}`);
+    }
+    if (carryOverExit) {
+        const llmVerdict = finalVerdictResult && finalVerdictResult.verdict;
+        finalVerdictResult = applyCarryOverVerdictGate(finalVerdictResult, carryOverExit);
+        log(carryOverExit.atGoalIds.length > 0
+            ? `Final Review: sprint verdict forced to FAIL (Final Review returned ${llmVerdict ?? '(none)'}) -- ${carryOverExit.atGoalIds.length} at/above-goal bead(s) carried over: ${carryOverExit.atGoalIds.join(', ')}`
+            : `Final Review: carry-over named in the verdict notes: ${carryOverExit.entries.map((e) => e.id).join(', ')}`);
+    }
+    if (verifyCarryOver) {
+        const llmVerdict = finalVerdictResult && finalVerdictResult.verdict;
+        finalVerdictResult = applyVerifyCarryOverVerdictGate(finalVerdictResult, verifyCarryOver);
+        const forcedIds = [...verifyCarryOver.needsEvidenceIds, ...verifyCarryOver.bounceCapIds];
+        log(forcedIds.length > 0
+            ? `Final Review: sprint verdict forced to FAIL (Final Review returned ${llmVerdict ?? '(none)'}) -- ${forcedIds.length} verify-routed bead(s) carried over as needs-external-evidence or deferred by the verify bounce cap: ${forcedIds.join(', ')}`
+            : `Final Review: deferred verify carry-over named in the verdict notes: ${verifyCarryOver.deferredIds.join(', ')}`);
+    }
+    if (redBuildIntegSkip) {
+        const llmVerdict = finalVerdictResult && finalVerdictResult.verdict;
+        finalVerdictResult = applyRedBuildIntegSkipVerdictGate(finalVerdictResult, redBuildIntegSkip);
+        log(`Final Review: sprint verdict forced to FAIL (Final Review returned ${llmVerdict ?? '(none)'}) -- ${formatRedBuildIntegSkipVerdictReason(redBuildIntegSkip)}`);
+    }
+    if (finalVerdictResult && belowGoalCarryOverIds && belowGoalCarryOverIds.size > 0) {
+        const belowGoalNote = `Carried over (below goal ${validated.goal}, not reopened): a reviewer CHANGES_NEEDED named only these below-goal bead(s), all skipped by the goal-scope guard, so the sprint did not wait on them: ${[...belowGoalCarryOverIds].sort().join(', ')}.`;
+        const prior = typeof finalVerdictResult.notes === 'string' ? finalVerdictResult.notes : '';
+        finalVerdictResult = { ...finalVerdictResult, notes: prior ? `${prior}\n\n${belowGoalNote}` : belowGoalNote };
+        log(`Final Review: ${belowGoalNote}`);
     }
     if (finalVerdictResult && Array.isArray(reclaimCappedIds) && reclaimCappedIds.length > 0) {
         const cappedNote = `${reclaimCappedIds.length} bead(s) were left 'in_progress' by failed doer streaks of this sprint more often than the re-dispatch cap allows and were NOT re-laned again -- needs human investigation: ${reclaimCappedIds.join(', ')}.`;
@@ -333,24 +432,28 @@ export async function runFinalReviewPhase({
     // fabricated by the engine and carries no KB fields at all, so there is
     // nothing to apply.
 
-    // Commit the final review round's confirmations to the bible on each
-    // repository's kb_maintainer (G-pull, kb_bible_commit, G-push) -- unless
-    // the verdict is FAIL: a FAIL sprint commits nothing further to the bible
-    // and its queued confirmations are not flushed. A degraded FAIL counts
-    // too: the engine fabricated it, so no reviewer stood behind it.
+    // Commit the final review round's confirmations, withdrawals and
+    // restores to the bible on each repository's kb_maintainer (G-pull,
+    // kb_bible_commit, G-push). A FAIL verdict -- a degraded FAIL included:
+    // the engine fabricated it, so no reviewer stood behind it -- seals the
+    // CONFIRMATIONS only: they are not committed and not flushed. The final
+    // review's withdrawals and restores still commit, because they are
+    // merge-gated (a demotion is recorded on the sprint branch and takes
+    // effect only if that branch merges). An aborted sprint seals everything
+    // (runner.js).
     //
     // Writes still queued behind a busy maintainer get one last attempt
     // first (the commit itself applies them before committing); any that
     // remain (an unreachable maintainer) are reported with a WARN, never
     // dropped silently.
     if (finalVerdictResult && finalVerdictResult.verdict === 'FAIL') {
-        if (typeof kbWork.seal === 'function') kbWork.seal('final review verdict FAIL');
+        if (typeof kbWork.seal === 'function') kbWork.seal('final review verdict FAIL', { confirmationsOnly: true });
+        if (typeof kbWork.commitRound === 'function') await kbWork.commitRound('final review');
     } else if (typeof kbWork.commitRound === 'function') {
         await kbWork.commitRound('final review');
     } else if (typeof kbWork.flushAll === 'function') {
         await kbWork.flushAll();
     }
-    if (typeof kbWork.warnPending === 'function') kbWork.warnPending();
 
     // Persist the Final Review's actionable findings to BEADS -- the only
     // artifact the next sprint's planner reads (notes reach only the PR body
@@ -497,5 +600,7 @@ export async function runFinalReviewPhase({
         // apra-fleet-rp7a.1: carried out so the sprint analysis document names
         // what was skipped, not just how many beads remained open.
         finalDeferredAtGoalIds,
+        // The verify carry-over applied above, or null.
+        verifyCarryOver,
     };
 }

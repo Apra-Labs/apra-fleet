@@ -11,7 +11,6 @@ import path from 'node:path';
 // HTTP server.
 
 import { HttpKbProvider, KbHttpAuthError } from '../../src/services/knowledge/http-provider.js';
-import { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js';
 import { KB_CONFIG_PATH, readKbConfigFromDisk } from '../../src/services/knowledge/kb-config.js';
 import {
   credentialDelete,
@@ -91,9 +90,8 @@ beforeEach(() => {
   saveLiveSecret(prepareLiveSecret(LIVE, { program: helper.launch.program, args: helper.launch.args, env: [] }));
   resetLiveTokenCache();
   stub.requests.length = 0;
-  const fallback = new SqliteProvider(path.join(tmp, 'fallback.sqlite'));
-  provider = new HttpKbProvider(stub.url, { secretName: STATIC }, fallback);
-  liveProvider = new HttpKbProvider(stub.url, { secretName: LIVE }, fallback);
+  provider = new HttpKbProvider(stub.url, { secretName: STATIC });
+  liveProvider = new HttpKbProvider(stub.url, { secretName: LIVE });
 });
 
 afterEach(() => {
@@ -127,7 +125,7 @@ describe('a store with no restrictions behaves as before', () => {
   });
 
   it('a literal token has no record, so no policy applies', async () => {
-    const literal = new HttpKbProvider(stub.url, 'literal-token', new SqliteProvider(path.join(tmp, 'literal.sqlite')));
+    const literal = new HttpKbProvider(stub.url, 'literal-token');
     try {
       await asMember(member.id, () => literal.query({ query: 'gear' }));
       expect(stub.requests[0].token).toBe('literal-token');
@@ -177,27 +175,24 @@ describe('deny', () => {
     expect(stub.requests).toHaveLength(1);
   });
 
-  it('a refused capture or invalidate is not queued, so it does not go out once allowed', async () => {
+  it('a refused capture or invalidate sends nothing, and does not go out once allowed', async () => {
     credentialUpdate(STATIC, { network_policy: 'deny' });
     const capture = await authError(provider.capture(entry('refused')), 'policy-deny', STATIC);
-    const invalidate = await authError(provider.invalidate(['src/gear.ts']), 'policy-deny', STATIC);
-    expect([capture.queued, invalidate.queued]).toEqual([false, false]);
+    await authError(provider.invalidate(['src/gear.ts']), 'policy-deny', STATIC);
     expect(capture.message).not.toContain('queued');
-    expect(provider.offlineQueue).toHaveLength(0);
+    expect(stub.requests).toEqual([]);
     credentialUpdate(STATIC, { network_policy: 'allow' });
     await provider.capture(entry('next'));
     expect(stub.requests.map((r) => r.path)).toEqual(['/api/kb/capture']);
   });
 
-  it('a refused feedback is not queued either, static and live, with no request or script run', async () => {
+  it('a refused feedback sends nothing either, static and live, with no request or script run', async () => {
     credentialUpdate(STATIC, { network_policy: 'deny' });
     credentialUpdate(LIVE, { network_policy: 'deny' });
     const staticErr = await authError(provider.feedback('e1', 'wrong in practice', 'doer'), 'policy-deny', STATIC);
     const liveErr = await authError(liveProvider.feedback('e1', 'wrong in practice', 'doer'), 'policy-deny', LIVE);
-    expect([staticErr.queued, liveErr.queued]).toEqual([false, false]);
     expect(staticErr.message).not.toContain('queued');
-    expect(provider.offlineQueue).toHaveLength(0);
-    expect(liveProvider.offlineQueue).toHaveLength(0);
+    expect(liveErr.message).not.toContain('queued');
     expect(helper.runs()).toEqual([]);
     expect(stub.requests).toEqual([]);
     credentialUpdate(STATIC, { network_policy: 'allow' });
@@ -208,18 +203,6 @@ describe('deny', () => {
     expect(stub.requests[0].token).toBe(VALUE);
     expect(stub.requests[1].token).toContain(PREFIX);
   }, 30_000);
-
-  it('a write queued before the refusal stays queued through it, and goes once allowed', async () => {
-    credentialDelete(STATIC);
-    await authError(provider.capture(entry('from an outage of the secret')), 'missing', STATIC).then((e) => expect(e.queued).toBe(true));
-    credentialSet(STATIC, VALUE, true, 'deny');
-    await authError(provider.capture(entry('refused')), 'policy-deny', STATIC);
-    expect(provider.offlineQueue).toHaveLength(1);
-    credentialUpdate(STATIC, { network_policy: 'allow' });
-    await provider.query({ query: 'gear' });
-    expect(provider.offlineQueue).toHaveLength(0);
-    expect(stub.requests.map((r) => r.path)).toEqual(['/api/kb/capture', '/api/kb/query']);
-  });
 
   it('kb_setup refuses a deny secret, static and live, and takes it once allowed', async () => {
     const refused = async (name: string) => {
@@ -304,28 +287,25 @@ describe('allowedMembers', () => {
 
   it('a member refused here has its capture dropped, not sent by the next session on this provider', async () => {
     credentialUpdate(STATIC, { members: member.friendlyName });
-    const err = await asMember(other.id, () => authError(provider.capture(entry('from outsider')), 'member-not-allowed', STATIC));
-    expect(err.queued).toBe(false);
+    await asMember(other.id, () => authError(provider.capture(entry('from outsider')), 'member-not-allowed', STATIC));
     await asMember(other.id, () => authError(provider.invalidate(['src/gear.ts']), 'member-not-allowed', STATIC));
-    expect(provider.offlineQueue).toHaveLength(0);
+    expect(stub.requests).toEqual([]);
     await asMember(member.id, () => provider.capture(entry('from member')));
     expect(stub.requests.map((r) => r.path)).toEqual(['/api/kb/capture']);
   });
 
   it('a member refused here has its feedback dropped, not sent by the next session on this provider', async () => {
     credentialUpdate(STATIC, { members: member.friendlyName });
-    const err = await asMember(other.id, () => authError(provider.feedback('e1', 'from outsider', 'doer'), 'member-not-allowed', STATIC));
-    expect(err.queued).toBe(false);
-    expect(provider.offlineQueue).toHaveLength(0);
+    await asMember(other.id, () => authError(provider.feedback('e1', 'from outsider', 'doer'), 'member-not-allowed', STATIC));
+    expect(stub.requests).toEqual([]);
     await asMember(member.id, () => provider.capture(entry('from member')));
     expect(stub.requests.map((r) => r.path)).toEqual(['/api/kb/capture']);
   });
 
-  it('on an expired secret a refused member is refused, not queued, so its write never goes out once the secret is renewed', async () => {
+  it('on an expired secret a refused member is refused for the policy, not the expiry, and its write never goes out once the secret is renewed', async () => {
     credentialUpdate(STATIC, { members: member.friendlyName, expiresAt: Date.now() - 1000 });
-    const err = await asMember(other.id, () => authError(provider.capture(entry('from outsider')), 'member-not-allowed', STATIC));
-    expect(err.queued).toBe(false);
-    expect(provider.offlineQueue).toHaveLength(0);
+    await asMember(other.id, () => authError(provider.capture(entry('from outsider')), 'member-not-allowed', STATIC));
+    expect(stub.requests).toEqual([]);
     credentialUpdate(STATIC, { expiresAt: null });
     await asMember(member.id, () => provider.query({ query: 'gear' }));
     expect(stub.requests.map((r) => r.path)).toEqual(['/api/kb/query']);

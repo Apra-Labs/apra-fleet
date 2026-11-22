@@ -1,0 +1,33 @@
+{
+  "route": "withdraw",
+  "case": "withdrawn",
+  "kind": "happy",
+  "request": {
+    "method": "POST",
+    "path": "/api/kb/withdraw",
+    "body": {
+      "withdrawals": [
+        {
+          "id": "{{ENTRY_RULE}}",
+          "at": "2999-01-01T00:00:00.000Z",
+          "reason": "withdrawn",
+          "note": "the cited guard was removed when the reader was rewritten",
+          "evidence_files": [
+            "src/widget.ts"
+          ]
+        }
+      ]
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "results": [
+        {
+          "id": "{{ENTRY_RULE}}",
+          "outcome": "withdrawn"
+        }
+      ]
+    }
+  }
+}

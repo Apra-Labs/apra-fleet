@@ -1,0 +1,17 @@
+{
+  "tool": "kb_import",
+  "case": "withdrawal-deferred",
+  "kind": "happy",
+  "request": {
+    "skip_sweep": true
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"imported\":0,\"skipped\":1,\"linked\":0,\"flagged\":0,\"rejected\":0,\"demoted\":0,\"sweep\":{\"checked\":0,\"staled\":0,\"unstaled\":0},\"withdrawals\":{\"sent\":0,\"withdrawn\":[],\"repromoted\":[],\"already\":[],\"not_found\":[],\"unsupported\":[],\"deferred\":[\"100ca201-54b4-46b9-9801-2bea030fcb1b\"]}}"
+      }
+    ]
+  },
+  "session": "FULL_A"
+}

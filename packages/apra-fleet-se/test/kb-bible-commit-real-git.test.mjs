@@ -110,7 +110,7 @@ function createFakeKb(fixture, { afterBibleCommit } = {}) {
         if (tool === 'kb_promote') {
             if (!kb.has(args.id)) kb.set(args.id, { ...entry(args.id), confidence: 'INFERRED' });
             kb.get(args.id).confidence = 'CONFIRMED';
-            return { id: args.id, confidence_after: 'CONFIRMED' };
+            return { id: args.id, previous_confidence: 'INFERRED', new_confidence: 'CONFIRMED' };
         }
         if (tool === 'kb_bible_commit') {
             const file = path.join(fixture.clonePath, BIBLE);

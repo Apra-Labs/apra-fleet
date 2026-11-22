@@ -1,0 +1,16 @@
+{
+  "tool": "kb_invalidate",
+  "case": "refusal-kb-http-unsupported",
+  "kind": "refusal",
+  "request": {
+    "ids": [
+      "4b0c2b5e-7d3a-4c1e-9a55-0f6d2e8a1c77"
+    ]
+  },
+  "error": {
+    "message": "E-KB-HTTP-UNSUPPORTED: kb_invalidate {ids} (id-level discard) is not supported by the http KB provider; nothing was discarded. Remediation: run it against a local SQLite KB (kb_setup provider sqlite), or use kb_invalidate with files.",
+    "thrown": true
+  },
+  "expected_error_code": "E-KB-HTTP-UNSUPPORTED",
+  "session": "HTTP_A"
+}

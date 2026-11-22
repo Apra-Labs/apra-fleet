@@ -234,10 +234,15 @@ MCP tools that ship with the KB:
 | `kb_invalidate` | Mark files stale immediately (also called by the git hook), or discard own entries by `ids` |
 | `kb_promote` | Advance confidence: UNVERIFIED -> INFERRED -> CONFIRMED (FULL session, or the sprint's kb_maintainer member session only) |
 | `kb_demote` | Withdraw trust: lower a CONFIRMED entry back to INFERRED (the one reversible rung; never a ladder in its own direction) |
+| `kb_capabilities` | Report what the project KB serves: `{contract, routes, branch_aware, query_filters?}` (the KB server's GET /api/kb/capabilities body for http KBs; read-only) |
 | `kb_harvest` | Extract learnings from a session transcript (auto-fires after execute_prompt) |
 | `kb_export` | Additively merge live CONFIRMED entries whose cited files still match their recorded hashes into `.fleet/kb-canonical.json` -- the git-shareable team bible (FULL session only) |
-| `kb_bible_commit` | Merge confirmed entry ids into the bible (format v3, per-entry file hashes), remove superseded or invalidated entries, and commit locally with base-branch provenance (used by the sprint kb_maintainer) |
+| `kb_bible_commit` | Merge confirmed entry ids into the bible (format v3, per-entry file hashes), remove superseded or invalidated entries, and commit locally with base-branch provenance (used by the sprint kb_maintainer); `withdrawals` records a reviewer's withdrawal as a bible tombstone (no local row change; applied by `kb_import` only once merged) and `restore_ids` undoes one (`ids` never clears a withdrawn tombstone; `demoted_ids` tombstones only ids the base bible carries); on an http KB project entries are skipped (`bible_skipped: true`) but withdrawals are still written as tombstones; a withdrawn tombstone outranks a demotion, an id is never both an entry and a tombstone, and an unreadable base bible is reported as `base_bible_error`. To apply merged withdrawals from the CLI run `apra-fleet kb import --ref refs/remotes/origin/main --base-branch main` after fetching |
 | `kb_setup` | Install git hook, write provider config, store remote token encrypted (FULL session only) |
+
+`kb_query` accepts `files` (repo-relative paths; a directory matches the files under it) and `symbols` as a hard filter: only entries citing one of those files or naming one of those symbols come back, with or without a `query`. Against an http KB server it needs the server to list the field in `query_filters`, otherwise it fails with `E-KB-HTTP-UNSUPPORTED`. A MEMBER `kb_query` without `limit` returns at most 6 slim summary rows (pass `limit` for full rows). See [docs/knowledge-layer.md](docs/knowledge-layer.md) and [docs/kb-recall-measurements.md](docs/kb-recall-measurements.md).
+
+`kb_query` accepts `own_scope: true` so a MEMBER session can read its own CONFIRMED rows from the per-repo database instead of the bible view. The fleet-sprint final review uses it, with the checkout bible view, to offer demotion candidates; a demotion is recorded as a `kb_bible_commit` withdrawal on the sprint branch and takes effect only if that branch merges. The loop is on by default and `--kb-demotion-loop off` disables it. See [docs/kb-member-view-and-maintainer.md](docs/kb-member-view-and-maintainer.md).
 
 `code_*` tools resolve the calling session's own folder, refuse with typed
 `E-CODE-INDEX-NOT-READY` / `E-CODE-INTEL-DISABLED` errors when the index is not
@@ -265,15 +270,18 @@ fleet server runs to mint and cache the token itself (see
 [Live secrets](docs/knowledge-layer.md#live-secrets)).
 `--request_timeout_ms <ms>` (1000-120000, default 5000) sets the socket idle
 timeout for each request to the remote KB server. It is not a per-request
-deadline: a call can wait up to about twice the value while queued offline
-writes flush first. See
+deadline: a call can wait up to about twice the value when it first reads
+the server capabilities. See
 [docs/knowledge-layer.md](docs/knowledge-layer.md).
 
 **The provider config is install-wide, not per repo.** There is one
 `knowledge/config.json` per fleet install, so pointing it at a remote KB
 points EVERY repo that install serves -- every member, every project -- at
 that server. `kb_setup` only places the git post-commit hook (in the calling
-session's own repo, including linked worktrees and custom `core.hooksPath`);
+session's own repo, including linked worktrees and custom `core.hooksPath`)
+and registers the knowledge bible merge driver in that clone (local merges of
+`.fleet/kb-canonical.json` resolve by entry id; see
+[packages/apra-fleet-se/docs/kb-canonical-merge.md](packages/apra-fleet-se/docs/kb-canonical-merge.md));
 it does not scope the config. On a shared fleet server, treat
 `kb_setup --remote` as a change for all of its users.
 
@@ -529,7 +537,7 @@ third-party verticals.
 | Secret variables and passwords | [docs/secret-variables.md](docs/secret-variables.md) - [docs/features/oob-auth.md](docs/features/oob-auth.md) |
 | Member category and tags | [docs/features/member-tags.md](docs/features/member-tags.md) |
 | Enabling SSH on a remote machine (if it does not have it yet) | [docs/ssh-setup.md](docs/ssh-setup.md) |
-| Git authentication | [docs/design-git-auth.md](docs/design-git-auth.md) |
+| Git authentication (per-member credential helper reaches git only through fleet dispatches; `gh` login only for label `github` on an unshared remote member) | [docs/design-git-auth.md](docs/design-git-auth.md) |
 | GitHub App setup (exact permissions per git_access level) | [docs/github-app-setup.md](docs/github-app-setup.md) |
 | Cloud compute | [docs/cloud-compute.md](docs/cloud-compute.md) |
 | Architecture | [docs/architecture.md](docs/architecture.md) |
@@ -553,7 +561,7 @@ third-party verticals.
 | fleet-sprint CLI reference | [packages/apra-fleet-se/docs/cli-reference.md](packages/apra-fleet-se/docs/cli-reference.md) |
 | fleet-sprint internals (cycle loop, stall detection, budget, topology) | [packages/apra-fleet-se/docs/architecture.md](packages/apra-fleet-se/docs/architecture.md) |
 | fleet-sprint agent role contracts | [packages/apra-fleet-se/docs/role-contracts.md](packages/apra-fleet-se/docs/role-contracts.md) |
-| fleet-supervisor skill (start/stop/restart/auto-start-on-boot, sprint launch via HTTP API) | [packages/apra-fleet-se/fleet-sprint/skills/fleet-supervisor/SKILL.md](packages/apra-fleet-se/fleet-sprint/skills/fleet-supervisor/SKILL.md) |
+| fleet-supervisor skill (start/stop/restart/auto-start-on-boot, `serve.mjs --detach`, `apra-fleet status` Supervisor line, sprint launch via HTTP API) | [packages/apra-fleet-se/fleet-sprint/skills/fleet-supervisor/SKILL.md](packages/apra-fleet-se/fleet-sprint/skills/fleet-supervisor/SKILL.md) |
 | Scoped in-cycle replan findings threading, and the wrapper-injection role KB contract | [docs/scoped-replan-and-planner-kb-contract.md](docs/scoped-replan-and-planner-kb-contract.md) |
 | MCP client SDK overview (transports, `ApraFleet` API) | [packages/apra-fleet-client/docs/overview.md](packages/apra-fleet-client/docs/overview.md) |
 | MCP client SDK API reference | [packages/apra-fleet-client/docs/api-reference.md](packages/apra-fleet-client/docs/api-reference.md) |

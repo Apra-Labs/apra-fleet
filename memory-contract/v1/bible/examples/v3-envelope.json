@@ -1,9 +1,7 @@
 {
   "version": 3,
   "provenance": {
-    "commit": "0123456789abcdef0123456789abcdef01234567",
-    "branch": "main",
-    "entry_count": 2
+    "branch": "main"
   },
   "entries": [
     {

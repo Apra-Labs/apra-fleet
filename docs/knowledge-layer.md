@@ -235,6 +235,39 @@ names them explicitly; internal callers that need UNVERIFIED or INFERRED
 entries (e.g. reconcile and prime paths) pass an explicit list. `flagged_only`
 is exempt from the default because its purpose is to surface disputed entries.
 
+**A MEMBER `kb_query` without `limit` returns small results.** It returns at
+most 6 summary rows, counted after the project and global results are
+merged. Each row carries `id`, `type`, `title`, `summary`, `confidence`,
+`source_files` and `symbols`, and `l2_expanded` is empty. Pass any `limit` to
+get the previous shape: up to that many full rows per side, plus the content
+of the top 5 hits. FULL sessions, `own_scope` reads and `flagged_only`
+reads keep the full shape. FULL sessions keep the default of 20 rows. The constants
+are `MEMBER_DEFAULT_LIMIT` and `MEMBER_SLIM_ROW_KEYS` in
+`src/tools/kb-query.ts`. The cap of 6 and the size drop are measured in
+`docs/kb-recall-measurements.md`.
+
+**Look up by file: `kb_query` `files` / `symbols`.** `files` (repo-relative
+paths; a directory matches the files under it, `src/services` matches
+`src/services/a.ts` but not `src/services-old/a.ts`) and `symbols` (exact
+names) are a HARD filter, not a ranking signal: only entries whose
+`source_files` cite one of the files or whose `symbols` name one of the
+symbols come back (with both, either match keeps an entry), however strongly
+another entry matches `query`. Ranking inside the kept set is unchanged
+(keyword ranking with `query`, newest first without it); either field may be
+used without `query`. A `files` path is normalised (backslashes, repeated
+`/`, a leading `./`, a trailing `/`; an absolute path inside the repository
+becomes repo-relative, before any store, http included, is asked); `.` alone
+is refused. Stored `source_files` are kept as captured and compared with only
+backslashes converted to `/` and one leading `./` dropped; other non-canonical
+stored forms (repeated `/`, more than one leading `./`) are not matched.
+SQLite applies it in SQL next to the tag
+filter (`src/services/knowledge/cited-filter.ts`). Under the http provider it
+is sent only when the KB server lists the field in `query_filters` of
+`GET /api/kb/capabilities` (fleet's `kb-server` lists `files` and `symbols`);
+otherwise `kb_query` fails with `E-KB-HTTP-UNSUPPORTED` naming the filter
+before anything is sent, and fleet re-applies the filter to whatever a server
+answers. A request naming neither field gets the same result as before.
+
 **`kb_list` also accepts the legacy single-tier string.** Before the redesign
 `kb_list`'s `confidence` was one tier as a string (`"INFERRED"`); it is now a
 list. Both forms are accepted: a string is read as the one-element list, so
@@ -268,8 +301,16 @@ global KB; the other half is the per-repo DB and global KB filtered to
 `member:<caller uuid>` and asks for every requested tier, CONFIRMED included,
 so the member's own capture promoted to CONFIRMED in the per-repo DB is
 returned before it reaches the bible. Results merge by id and the bible copy wins on a
-duplicate. A per-repo KB that is not sqlite is refused with a typed error naming
-the tool. Known limits: with a `limit`, a mixed `kb_list` sorts by id before
+duplicate. Under the http project provider the split still applies, with the
+KB server in place of the per-repo DB: the own half is the server, owner-tagged
+(checked by fleet on the entry tags the server returns). The CONFIRMED half is
+the KB server too, for every read tool (`kb_query`, `kb_session_prime`,
+`kb_context`, `kb_list`): the bible is not used under http. A mixed read over http therefore has the same shape as over SQLite
+and never shows another member's unconfirmed captures. One difference follows
+from the store, not the split: on the server the member's own promoted capture
+is part of the CONFIRMED set, so it arrives in the CONFIRMED half (and counts
+toward `kb_session_prime`'s cold-seed threshold). Any other non-sqlite per-repo
+KB is refused with a typed error naming the tool. Known limits: with a `limit`, a mixed `kb_list` sorts by id before
 limiting, so it is not guaranteed to be a superset of the CONFIRMED-only list at
 the same limit (`kb_query` keeps the bible half first). The tool descriptions, the memory-contract bindings and spec, and a
 wording test must all describe this scope together.
@@ -296,7 +337,7 @@ The KB write policy for member sessions:
 | `kb_export` | never (it auto-commits into the work tree) |
 | `kb_promote`, `kb_resolve_contradiction`, `kb_reconcile_prefilter` | only the kb_maintainer session (they mint CONFIRMED) |
 | `kb_import` | yes; but an explicit `path` (other than the session's own `.fleet/kb-canonical.json`) needs the kb_maintainer grant, else it is refused with `E-KB-MAINTAINER-REQUIRED`; without the grant the own bible is read as committed at `HEAD` (never the work-tree file), with no committed copy nothing is imported (`E-KB-MAINTAINER-REQUIRED`), and a committed bible whose git blob id the maintainer side never recorded (via `kb_bible_commit` or a FULL / kb_maintainer `kb_import`) is refused the same way with nothing imported (see kb-trust-model.md) |
-| `kb_invalidate` | yes; but without the kb_maintainer grant it never retires a CONFIRMED entry (by `ids` or `files`) -- those ids are left untouched and listed in `refused` |
+| `kb_invalidate` | yes; but without the kb_maintainer grant it never retires a CONFIRMED entry (by `ids` or `files`) -- those ids are left untouched and listed in `refused`; under an http KB both forms are refused with `E-KB-HTTP-UNSUPPORTED` |
 | `kb_capture` | yes; but without the kb_maintainer grant `supersedes` never retires a CONFIRMED entry -- the capture links to it (`refines`, both live) and lists it in `refused` |
 | every other `kb_*` (incl. `kb_bible_commit`) | yes |
 
@@ -567,9 +608,9 @@ point is `/pm kb-reconcile`.
 
 ### 1. Quick start (SQLite, local)
 
-No setup required. The KB initializes automatically on first use at:
+No setup required. Each repo's KB initializes automatically on first use at:
 ```
-~/.apra-fleet/data/knowledge/kb.sqlite
+~/.apra-fleet/data/knowledge/<project-slug>/kb.sqlite
 ```
 
 Staleness needs no git hook: `context-cache` entries store a per-file hash
@@ -619,7 +660,7 @@ The token is stored AES-256-GCM encrypted. It is never written in plaintext.
 
 #### Named credentials and refreshers
 
-For servers whose token expires (for example an Entra ID access token), store
+For servers whose token expires (for example a short-lived OAuth access token), store
 the token as a fleet secret and give `kb_setup` the placeholder instead of the
 value. The value of `token` is exactly the placeholder:
 
@@ -667,8 +708,8 @@ caller gets the error, and retries once the policy allows it. `kb_setup` refuses
 **Failure behaviour.** When the secret is missing, expired or unreadable, or
 the server answers 401 twice (the request, then one retry after re-reading the
 secret), the KB call fails with `E-KB-HTTP-AUTH` naming the secret and the
-reason. Captures, invalidates and feedback are queued offline and sent once
-the secret is accepted; the queue is kept, not dropped. Member reads of CONFIRMED entries
+reason. Nothing is queued: a write that fails this way was not applied, and
+the caller decides whether to repeat it once the secret is fixed. Member reads of CONFIRMED entries
 are still served from the checkout bible. After a refresh nothing needs
 restarting.
 
@@ -880,17 +921,31 @@ default; it does not fail, so the config keeps working.
 
 A request whose socket is idle for longer than the timeout fails with code
 `ETIMEDOUT` and a message naming the timeout in ms; like any
-unreachable-server error, that queues a capture, invalidate or feedback offline and
-falls back to the local store for reads.
+unreachable-server error, it is `E-KB-HTTP-UNREACHABLE`: nothing is queued
+and nothing is answered from a local store.
 
 It is a socket idle timeout, not a per-request deadline:
 
 - The timer restarts whenever data arrives, so a server that keeps sending
   bytes slowly can take longer than the value without timing out.
-- When writes are queued offline, capture, query, context, invalidate,
-  feedback and prime first try to flush them, and the flush attempt has the same timeout. Against an unresponsive server a call can
-  therefore wait up to about twice the value: one timeout for the flush, one
-  for the call itself.
+- The first call on a connection reads `GET /api/kb/capabilities` first, with
+  the same timeout. Against an unresponsive server that call can therefore
+  wait up to about twice the value: one timeout for the capabilities read,
+  one for the call itself.
+
+Routes the http provider uses (all except `/health` need the bearer token).
+Another server can stand in for `kb-server` by serving the same routes:
+
+| Route | Used for |
+|---|---|
+| `POST /api/kb/capture` | kb_capture |
+| `GET /api/kb/query` (`query`, `type`, `tag`, `limit`, `l1_only`, `confidence`, `exclude_disputed`, `include_stale`, `include_superseded`, `flagged_only`, `fts_terms`, `ids`, `files`, `symbols`) | kb_query, and the member own-scope lookup (`tag=member:<uuid>`); entries must carry their `tags`. `flagged_only=true` lists only contradiction-flagged entries. `fts_terms` is a JSON array of strings (URL-encoded, e.g. `fts_terms=["Gearwheel","ratio"]`) OR-joined as one FTS match (kb_session_prime's neighbour query). `ids` is a JSON array of entry ids for an exact-id lookup (kb_query's L2 fetch; kb_query keeps only the requested ids). `files` / `symbols` are JSON arrays, the cited filter (only entries citing one of the files, or a file under one of them, or naming one of the symbols), honoured only by a server listing them in `query_filters`. A `fts_terms`, `ids`, `files` or `symbols` value that is not a JSON array of strings answers 400 `BAD_REQUEST` |
+| `GET /api/kb/list` (`tag`, `confidence`, `type`, `module`, `symbol`, `exclude_disputed`, `include_stale`, `limit`; no-bump read, entries carry their `tags`) | kb_list, and the member own-scope filter of `kb_context` and `kb_session_prime` reads (never `kb_promote`). A 404 from it surfaces as `E-KB-HTTP-UNSUPPORTED` |
+| `GET /api/kb/context` (`files` comma-separated, required; `confidence` comma-separated; `exclude_disputed`; `tag`) | kb_context. `tag=member:<uuid>` is the member own-scope: each file's newest entry is chosen among the entries carrying that tag, not the newest overall |
+| `POST /api/kb/prime` | kb_session_prime |
+| `POST /api/kb/invalidate` (`{files}`) | kb_invalidate with files |
+| `POST /api/kb/promote` (`{id, reason}` -> `{id, previous_confidence, new_confidence}`; 404 unknown id, 422 refused) | kb_promote |
+| `POST /api/kb/demote` (`{id, reason, evidence_files}` -> `{id, previous_confidence, new_confidence}`; optional, served by the bundled `kb-server`: 404 `ENTRY_NOT_FOUND` for an unknown id, 422 with the `E-DEMOTE-*` code for a demote refusal, an absolute or `..` evidence path refused with 422 `E-DEMOTE-EVIDENCE-UNRESOLVED`) | kb_demote, and the gate for a MEMBER `kb_query` `own_scope` read |
 
 ### 3. GitNexus (optional, codebase plane)
 
@@ -950,6 +1005,14 @@ step and does not create the directory. The hook itself calls a repo-relative
 `node dist/index.js` path and swallows all errors, so it is effectively inert
 outside the apra-fleet source tree. Hash-based freshness is the mechanism to
 rely on.)
+
+`kb_setup` also registers the knowledge bible merge driver in the clone (local
+git config `merge.apra-fleet-kb-bible.driver` and a line in the clone's
+`info/attributes`), so a local merge or rebase of two branches that both
+changed `.fleet/kb-canonical.json` merges it by entry id, tombstone-aware. The
+step reports `Registered the knowledge bible merge driver ...` or `Skipped
+bible merge driver: <reason>`. Rules and the hosted-merge fallback:
+`packages/apra-fleet-se/docs/kb-canonical-merge.md`.
 
 ### 5. KB tool profiles (which kb_* tools interactive sessions see)
 
@@ -1047,6 +1110,13 @@ The AUDN system deduplicates automatically:
 - `update` -- same-topic predecessor linked (refines; both entries stay live unless `supersedes` is passed explicitly)
 - `flagged` -- contradiction detected, both entries flagged for human review
 
+**Bible id aliases.** When `kb_import` answers `none` for a bible entry, the
+bible id is recorded in `bible_id_aliases` against the local row that absorbed
+it, so a later tombstone (demotion or withdrawal) for that bible id still
+reaches the row holding the fact here. Side effect: the tombstone demotes or
+withdraws that local row, not just the bible id. If that row is itself a bible
+entry (under its own id), the clone's next `kb_bible_commit` tombstones it too.
+
 ### When to promote
 
 Entries start at `INFERRED` confidence. The reviewer promotes verified facts:
@@ -1101,8 +1171,8 @@ Run `kb_setup` with `remote` and `token` to write this. Do not write
 With the http provider, `kb_feedback` is sent to the server as
 `POST /api/kb/feedback` with body `{id, reason, role}` and returns the
 server's answer unchanged; the client never sets confidence. While the server
-is unreachable the feedback is queued offline with captures and invalidates
-and the tool answers `{id, queued: true}`. The bundled `kb-server` command
+is unreachable, or answers 429 or 503, the tool fails with
+`E-KB-HTTP-UNREACHABLE`; any other 5xx answer is `E-KB-HTTP-SERVER-ERROR`. Nothing is queued. The bundled `kb-server` command
 serves that route: it validates the role like the tool does, marks the entry
 stale and flagged without touching confidence, and answers an unknown id with
 HTTP 404 and code `ENTRY_NOT_FOUND`.
@@ -1121,37 +1191,229 @@ Write it with `kb_setup ... token={{secret.KB_TOKEN}}`; see
 [Named credentials and refreshers](#named-credentials-and-refreshers). The
 same `token_ref` can name a [live secret](#live-secrets).
 
-`HttpKbProvider` proxy behavior:
-- **Reads** (query, context, prime): if server unreachable, fall back to local
-  SqliteProvider. Session continues uninterrupted.
-- **Writes** (capture, invalidate): if server unreachable, queue in memory
-  (max 1000 entries). On reconnect, queue is flushed before the next request.
-- **Queue overflow**: if 1000 pending writes accumulate, the oldest is dropped
-  and a warning is printed to stderr.
-- **Process exit**: if the queue is non-empty on exit, a warning is emitted.
-- **Repository headers**: kb_* tools take no repository argument, but fleet
-  passes the repository it resolved for the calling session to the provider,
-  and `HttpKbProvider` sends it on every request (queued writes included) as
-  `X-Repository` (the normalised origin remote, `host/path`: no scheme, no
-  credentials, no trailing `.git`; Azure DevOps remotes folded to
-  `dev.azure.com/<org>/<project>/_git/<repo>`) and `X-Repository-Commit` (the
-  local folder's HEAD sha, omitted when it cannot be read, e.g. for a remote
-  member's folder) and `X-Repository-Branch` (the local folder's checked-out
-  branch from `git symbolic-ref --quiet HEAD` with `refs/heads/` stripped,
-  characters outside printable ASCII percent-encoded as UTF-8; omitted on a
-  detached HEAD, when HEAD is not under `refs/heads/`, for a remote member's
-  folder, when git fails or times out, or when the encoded
-  value is longer than 255 characters). Commit and branch are each cached for
-  5 seconds, so a branch switch shows within that time. A shared server can use them to keep repositories apart; a
-  server may ignore them. No local path is ever sent, and nothing goes in the
-  URL. A remote whose host does not parse as a hostname sends no header at all.
-  The commit is best effort: a queued write replayed later carries the HEAD at
-  replay time, not at capture time. With a named-secret token the secret is
-  looked up first, so a missing secret fails before the commit or branch is
-  read; the one 401 retry re-reads the secret but resends the same repository
-  headers (same commit and branch),
-  and a replayed queued write gets both the current secret and its provider's
-  repository headers.
+#### MemoryProvider operations
+
+Every method in the `MemoryProvider` interface is classified as one of:
+- **remote** -- calls the HTTP server. On a connection error the call
+  throws `E-KB-HTTP-UNREACHABLE` (retryable) and nothing is queued: the
+  caller owns the retry (the sprint engine keeps its own KB write queued on
+  this code and on `E-KB-HTTP-AUTH`, and repeats it on its next flush). A 429
+  or 503 answering a request is also `E-KB-HTTP-UNREACHABLE`: the server
+  refused it before handling it. Any other 5xx answering a write (capture,
+  invalidate, feedback, promote, demote) is `E-KB-HTTP-SERVER-ERROR`: the
+  write may have been applied, so it is neither retried nor queued. Any other
+  5xx answering a read (query, context, prime, list) is
+  `E-KB-HTTP-SERVER-ERROR` too, never a raw HTTP error. Nothing is ever answered from a
+  local store or the checkout bible: the server is the source of truth.
+- **local** -- no remote route; answers without any local store.
+- **unsupported** -- returns a documented refusal or throws a typed error.
+
+The provider holds no local store at all.
+
+| Method | Classification | Notes |
+|--------|---|---|
+| init | local | Nothing to open. |
+| capture | remote | Posts entry to server. On connection error, `E-KB-HTTP-UNREACHABLE`; on a 429/503 answer, `E-KB-HTTP-UNREACHABLE`; on any other 5xx, `E-KB-HTTP-SERVER-ERROR`. Never queued. |
+| query | remote | Retrieves entries from server. On connection error, `E-KB-HTTP-UNREACHABLE`; on a 429/503 answer, `E-KB-HTTP-UNREACHABLE`; on any other 5xx, `E-KB-HTTP-SERVER-ERROR`. |
+| context | remote | Retrieves file context from server. On connection error, `E-KB-HTTP-UNREACHABLE`; on a 429/503 answer, `E-KB-HTTP-UNREACHABLE`; on any other 5xx, `E-KB-HTTP-SERVER-ERROR`. |
+| invalidate | remote | Invalidates files on server. On connection error, `E-KB-HTTP-UNREACHABLE`; on a 429/503 answer, `E-KB-HTTP-UNREACHABLE`; on any other 5xx, `E-KB-HTTP-SERVER-ERROR`. Never queued. |
+| discard | unsupported | Throws E-KB-HTTP-UNSUPPORTED (id-level discard not supported). Use kb_invalidate with files instead. |
+| getLinked | local | No remote route: returns no linked entries. |
+| prime | remote | Retrieves primed context from server. On connection error, `E-KB-HTTP-UNREACHABLE`; on a 429/503 answer, `E-KB-HTTP-UNREACHABLE`; on any other 5xx, `E-KB-HTTP-SERVER-ERROR`. `kb_session_prime` does not cold-seed from the checkout bible under http. |
+| promote | remote | POST /api/kb/promote with `{id, reason}`. On connection error, `E-KB-HTTP-UNREACHABLE` naming the server URL; on a 429/503 answer, `E-KB-HTTP-UNREACHABLE`; on any other 5xx, `E-KB-HTTP-SERVER-ERROR`. Sent by id with no list lookup first: the server refuses an unknown, superseded or out-of-scope id itself. The bundled `kb-server` answers an unknown id 404 with code `ENTRY_NOT_FOUND`, and that body code is required: such a 404 rejects as `Entry not found: <id>` followed by the server's answer, and a 404 without it (a server that does not serve promote, such as `kb-server` from v0.4.4) is `E-KB-HTTP-UNSUPPORTED` naming the promote route, with the remediation to upgrade the KB server; any other refusal (non-2xx, including problem+json) rejects with the HTTP status plus the server's text and code. |
+| feedback | remote | POST /api/kb/feedback with `{id, reason, role}`; returns the server response unchanged. On connection error, `E-KB-HTTP-UNREACHABLE`; on a 429/503 answer, `E-KB-HTTP-UNREACHABLE`; on any other 5xx, `E-KB-HTTP-SERVER-ERROR`. Never queued. |
+| demote | remote (optional route) | POST /api/kb/demote with `{id, reason, evidence_files}` -> `{id, previous_confidence, new_confidence}`, sent by id only when `GET /api/kb/capabilities` lists `demote`; otherwise (or on a 404/501 from the route) `E-KB-HTTP-UNSUPPORTED` naming the route, and nothing is changed. The server enforces which ids the caller may demote; a 404 whose body code says the entry is unknown rejects as `Entry not found: <id>`. A MEMBER `kb_query` `own_scope` read (which exists to find what may be demoted) is refused the same way when the server does not list `demote`. |
+| sync | unsupported | Returns {synced: false} (no remote sync over http). |
+| stats | unsupported | Returns supported:false with empty results (stats not supported over http). |
+| touch | local | No remote route: records nothing (returns 0); the per-repo DB is not written. |
+| relatedClaims | local | No remote route: returns no related claims (`related_claims` is empty). |
+
+**Capabilities**: `GET /api/kb/capabilities` (same auth and `X-KB-Project`
+check as every route) answers `{contract, routes, branch_aware}`, plus the
+optional `query_filters` (the optional `kb_query` filters `GET /api/kb/query`
+honours: `files`, `symbols`; absent = none, and such a filter is refused
+with `E-KB-HTTP-UNSUPPORTED` instead of being sent). capture,
+query and promote are required; context, prime, invalidate, feedback, list and
+demote are optional. The provider reads it once per connection (again after
+a connection error, or after the read itself failed; a 5xx or 429 answer to
+another request does not trigger a re-read); it is not
+re-read between two successful calls, so a server upgraded in place keeps
+the route set read before until the next connection error or fleet restart. It never calls a route the answer does not list:
+the tool fails with `E-KB-HTTP-UNSUPPORTED` naming the route. A server without
+the capabilities route is assumed to serve every route but demote. Any other
+failed capabilities read is typed: a 5xx or 429 is `E-KB-HTTP-UNREACHABLE`
+(the caller's request was never sent), another status but 401 and a 409
+project mismatch is `E-KB-HTTP-UNSUPPORTED` naming the capabilities read. A
+429 or 503 answering a request itself is `E-KB-HTTP-UNREACHABLE` naming the
+status; any other 5xx is `E-KB-HTTP-SERVER-ERROR` naming the status. Nothing
+is queued in either case. A 404 or 501
+from an optional route is also `E-KB-HTTP-UNSUPPORTED` (a 404 whose body code is
+`ENTRY_NOT_FOUND` / `E-ENTRY-NOT-FOUND` stays "entry not found"). The bundled
+`kb-server` always serves a local SQLite KB and lists every route, demote included,
+`branch_aware: false`. Contract:
+`memory-contract/v1/spec.md` section 2.9.1.
+
+**Named-secret token**: with `token_ref`, the secret is looked up on every
+request; a 401 re-reads it and retries once, then throws `E-KB-HTTP-AUTH`.
+Nothing is queued.
+
+#### Bible commit under HTTP
+
+`kb_bible_commit` is not supported over the HTTP KB provider. When called, it
+returns `bible_skipped: true` with reason `KB_BIBLE_COMMIT_HTTP_SKIP_REASON`
+(`src/tools/kb-bible-commit.ts`). The sprint round logs one skip line and
+continues without error.
+
+Design notes:
+
+- The guard is a soft skip, not an error: a non-SQLite project is not misconfigured,
+  it simply has no local bible to commit. The skip returns before any KB write or
+  git commit; the sprint client drops its queued confirmations, skip rounds and
+  retirements for that round and does not push or run the publication check.
+- Id-level `discard` is the opposite: it throws a typed error rather than
+  skipping, because silently ignoring a discard would leave a wrong entry live
+  on the shared server. The refusal names `kb_invalidate` with files as the
+  supported alternative.
+- `memory-contract/v1` spec prose and conformance fixtures cover both
+  `bible_skipped` and `E-KB-HTTP-UNSUPPORTED`.
+
+#### Promote and member recall under HTTP
+
+- `kb_promote` stays gated to the `kb_maintainer` grant but no longer needs a
+  SQLite project: under http it calls the provider's `promote` directly, by
+  id, with no list lookup first (a KB server need not implement the optional
+  `GET /api/kb/list` route). Fleet does not check the member's owner tag for it: the
+  KB server decides which ids a caller may promote and refuses an unknown,
+  superseded or out-of-scope id itself. The bundled `kb-server` answers an
+  unknown id with 404 and code `ENTRY_NOT_FOUND`, the code a server must use
+  on an optional id route such as demote. Any 404 from promote surfaces as
+  `Entry not found: <id>` with the server's answer; any other refusal carries
+  its HTTP status and the server's text and code. Against the bundled
+  `kb-server`, which has no per-member scope, a member can promote any id that
+  server holds.
+- HTTP mode does not use the bible: the KB server is the source of truth.
+  Member reads of every tier (`kb_query`, `kb_session_prime`, `kb_context`,
+  `kb_list`, `kb_stats`) go to the http provider
+  (`src/services/knowledge/kb-self.ts`); `kb_session_prime` does not cold-seed
+  from the checkout bible; `kb_import` imports nothing and answers
+  `bible_skipped: true` (so the sprint start imports nothing); and
+  `kb_bible_commit` answers `bible_skipped: true`.
+- Exception: a member `kb_query({flagged_only: true})` is refused under http
+  with `E-KB-HTTP-UNSUPPORTED`. A flagged listing carries no owner tag, so on
+  the server it would show other members' entries, and the bible is not used.
+  A non-member flagged read goes to the server: the provider sends
+  `flagged_only=true`, `kb-server`'s `GET /api/kb/query` honours it, and
+  `kb_query` re-applies the flagged filter to whatever the server returns.
+- Server down: every call fails with `E-KB-HTTP-UNREACHABLE` (retryable;
+  nothing is queued). Nothing is answered from the checkout bible or the
+  per-repo database; a token the server refuses is `E-KB-HTTP-AUTH`.
+- Every request carries the project slug in `X-KB-Project`. `kb-server` serves
+  one project and answers any other (or a missing header) with 409 naming
+  both slugs, surfaced as `E-KB-HTTP-PROJECT-MISMATCH`, never as a fallback
+  to the local store.
+- Upgrade `kb-server` and its clients together. A v0.4.4 client sends no
+  `X-KB-Project` header, so a current `kb-server` answers it with 409
+  `E-KB-HTTP-PROJECT-MISMATCH` on every call; a current client against an older
+  server that lacks `GET /api/kb/list` gets `E-KB-HTTP-UNSUPPORTED` from kb_list.
+- Invariant: no write is queued and nothing falls back to a local store,
+  since the server is the source of truth. A malformed or non-JSON error body still surfaces as
+  a thrown error rather than a silent success.
+- `kb_bible_commit` under http reports the `entry_count` of the existing bible
+  file (read without touching the KB) and logs, rather than throws, when the
+  bible is unreadable.
+
+#### How-to: Point fleet at a central KB server
+
+To redirect every repo on a fleet install to a central KB server (fleet's own
+`kb-server`, or any server that implements the same HTTP routes), configure
+the HTTP provider from a FULL session (orchestrator or local CLI). The setting
+is install-wide (one config file covers every repo the install serves), but a
+`kb-server` serves ONE project: requests carry their repo's project slug
+(`X-KB-Project`), and a repo whose slug differs from the server's gets
+`E-KB-HTTP-PROJECT-MISMATCH` on every call. Use the http provider on an
+install that serves that one repo.
+
+**Command:**
+
+```
+kb_setup with provider='http', remote='<server-url>', token='<bearer-token>'
+```
+
+**Setup steps:**
+
+1. Obtain the server URL and a bearer token from the central KB server's
+   operator. For fleet's own `node dist/index.js kb-server`, the token comes
+   from `--generate-token` (see [Central server](#2-central-server-http-team-shared)).
+
+2. On each client machine (one per fleet install), call the `kb_setup` MCP tool
+   from a FULL session (orchestrator or local session) with the server URL and
+   token. That includes every member host: a member's kb tools run on its own
+   host and read that host's config, so a member host without it keeps using
+   SQLite. The tool encrypts the token into the fleet config at
+   `~/.apra-fleet/data/knowledge/config.json`. On a member host the CLI form
+   `apra-fleet kb-setup --remote <url> --token-ref <name>` does the same with
+   a named secret (provision_kb_auth runs it for you).
+
+3. The repo on that fleet install whose project the server serves now reads
+   and writes its KB to the central server. To switch back to local SQLite, call `kb_setup` with
+   `provider='sqlite'`.
+
+**Scope**: the provider setting is install-wide, not per-repo or per-sprint. All
+members on the fleet install see the same server.
+
+**Deployment advice**: run the central server and client setup on an isolated
+fleet install first, not your live install, because every repo served by that
+install starts reading and writing the server immediately. Verify the flow
+works before scaling to production.
+
+**Authentication**: only `Authorization: Bearer <token>` is sent in HTTP
+headers; the token is the sole credential the server sees. Member own-scope
+for reads is enforced by fleet: MEMBER reads of INFERRED or UNVERIFIED keep
+only entries carrying the caller's tag (member:<uuid>), which needs the server
+to return each entry's tags (untagged entries are dropped from those reads).
+A MEMBER kb_promote is sent by id with no lookup first; which ids the caller
+may promote is the server's decision, and its refusal is surfaced.
+
+**Capabilities over HTTP**: see the [MemoryProvider operations](#memoryprovider-operations)
+table above. In summary:
+- **Supported**: `kb_capture`, `kb_query`, `kb_context`, `kb_invalidate` with
+  `files` outside a MEMBER session, `kb_feedback` (refused in a MEMBER
+  session), `kb_promote` (server-side only; every call fails on a connection
+  error with no fallback and nothing queued), and the member-session read
+  tools (`kb_query`, `kb_session_prime`, `kb_context`, `kb_list`), answered by
+  the server for every tier with fleet re-checking member own-scope.
+- **Optional routes**, used only when `GET /api/kb/capabilities` lists them
+  (otherwise `E-KB-HTTP-UNSUPPORTED` naming the route): context (`kb_context`),
+  prime (`kb_session_prime`), invalidate, feedback, list (`kb_list`) and demote
+  (`kb_demote`, and a MEMBER `kb_query` `own_scope` read). The bundled
+  `kb-server` serves all of them.
+- **Not supported**: `kb_stats` reports `supported: false`; `kb_import` and
+  `kb_bible_commit` answer `bible_skipped: true`; id-level `kb_invalidate` by
+  `ids`, a MEMBER `kb_invalidate` with `files` (no own-scope invalidate on the
+  server) and a MEMBER `kb_query` `flagged_only` read throw
+  `E-KB-HTTP-UNSUPPORTED` (use `kb_invalidate` with `files` instead of `ids`,
+  from a non-MEMBER session).
+
+**Repository headers**: kb_* tools take no repository argument, but fleet
+passes the repository it resolved for the calling session to the provider,
+and `HttpKbProvider` sends it on every request as
+`X-Repository` (the normalised origin remote, `host/path`: no scheme, no
+credentials, no trailing `.git`; Azure DevOps remotes folded to
+`dev.azure.com/<org>/<project>/_git/<repo>`) and `X-Repository-Commit` (the
+local folder's HEAD sha, omitted when it cannot be read, e.g. for a remote
+member's folder) and `X-Repository-Branch` (the local folder's checked-out
+branch from `git symbolic-ref --quiet HEAD` with `refs/heads/` stripped,
+characters outside printable ASCII percent-encoded as UTF-8; omitted on a
+detached HEAD, when HEAD is not under `refs/heads/`, for a remote member's
+folder, when git fails or times out, or when the encoded
+value is longer than 255 characters). Commit and branch are each cached for
+5 seconds, so a branch switch shows within that time. A shared server can use them to keep repositories apart; a
+server may ignore them. No local path is ever sent, and nothing goes in the
+URL. A remote whose host does not parse as a hostname sends no header at all.
+The commit is best effort. With a named-secret token the secret is
+looked up first, so a missing secret fails before the commit or branch is
+read; the one 401 retry re-reads the secret but resends the same repository
+headers (same commit and branch).
 
 ### Future: Postgres
 
@@ -1252,27 +1514,6 @@ and revives freshness-staled entries whose files match again. Superseded,
 feedback-downvoted, and invalidated entries stay retired by design -- see
 [Bidirectional staleness](#bidirectional-staleness).
 
-### Offline queue warning on exit
-
-**Symptom**: at process exit you see:
-```
-[KB] WARNING: offline queue has N unsaved operations (captures, invalidations, feedback). They never reached the KB server and the queue is lost when this process exits. Repeat them once the KB server is reachable.
-```
-
-**Cause**: the HTTP KB server was unreachable while captures, invalidations or feedback were made. The
-queue is in-memory and not persisted.
-
-**Recovery**: start the KB server and repeat the lost calls. Invalidations and
-feedback can only be repeated: `kb_harvest` extracts learnings from a session
-transcript and cannot restore them. For captures, on an install whose KB tool
-profile lists it, you can also run:
-```
-kb_harvest with session_output="<paste session transcript>"
-```
-
-AUDN deduplication ensures entries from the harvest do not create duplicates
-if some were already sent before the server went offline.
-
 ### Token rejected (401)
 
 **Symptom**: KB server returns 401 for all requests.
@@ -1310,3 +1551,30 @@ script by hand as the fleet server's user, fix what it reports (for az, see
 register it again to retry at once. Reason `rejected` means a freshly minted
 token was still refused with 401: the script is minting for the wrong resource
 or tenant, or the server's expectations changed.
+
+## Discovering KB capabilities (`kb_capabilities`)
+
+`kb_capabilities` is a read-only tool that tells a caller which optional routes
+the project KB serves, so a client can decide whether to call `kb_demote`,
+withdrawals (`kb_bible_commit` `withdrawals`) or filtered `kb_query` before
+trying them.
+
+- **http KB**: the server's `GET /api/kb/capabilities` body is returned
+  unchanged (`{contract, routes, branch_aware, query_filters?}`), except
+  that a `query_filters` that is not an array of strings is dropped (the
+  server honours no filter). It is
+  fetched fresh and not cached; the normalized view used internally to gate
+  routes is a separate, cached read of the same endpoint.
+- **SQLite KB**: a fixed local answer (`KB_LOCAL_CAPABILITIES`) that includes
+  `demote` and `withdraw`. The sample kb-server imports this same constant, so
+  the local answer and the reference server answer cannot drift apart.
+- **Any other provider**: a loud error, never a guessed answer.
+- **Errors** follow the route-gating rules: a 404/501 or empty body means the
+  default capability set; a partly typed body is `E-KB-HTTP-UNSUPPORTED`; a
+  5xx/429 is `E-KB-HTTP-UNREACHABLE`.
+- **Profiles**: served by the `full` and `custom` KB tool profiles, hidden by
+  `developer`.
+- **Contract**: specified in memory-contract v1 as method X-12, with schemas,
+  bindings, recorded fixtures (SQLite and http happy path) and roundtrip
+  assertions. Changing the tool means updating those and
+  `packages/apra-fleet-client` together.

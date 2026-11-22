@@ -118,7 +118,10 @@ describe('credentialHostForScope', () => {
 describe('azureDevOpsProvider: legacy-host credential binding (issue #502)', () => {
   const cmds = getOsCommands('linux');
 
-  it('deploy: a legacy-host scope_url binds the helper and the git-config key to that host', async () => {
+  // The helper is registered for git through the dispatch environment
+  // (src/services/vcs-git-env.ts), keyed on the scope URL -- the helper script
+  // itself carries the host, and no git config is written.
+  it('deploy: a legacy-host scope_url binds the helper to that host and its registration to that scope', async () => {
     const execCalls: string[] = [];
     const exec = async (cmd: string) => { execCalls.push(cmd); return ''; };
     const result = await azureDevOpsProvider.deploy(
@@ -130,8 +133,10 @@ describe('azureDevOpsProvider: legacy-host credential binding (issue #502)', () 
     expect(result.metadata?.org).toBe('myorg');
     expect(execCalls).toHaveLength(1);
     expect(execCalls[0]).toContain('host=myorg.visualstudio.com');
-    expect(execCalls[0]).toContain('credential.https://myorg.visualstudio.com.helper');
+    expect(execCalls[0]).not.toContain('git config');
     expect(execCalls[0]).not.toContain('host=dev.azure.com');
+    expect(cmds.gitCredentialEnvPrefix([{ scopeUrl: 'https://myorg.visualstudio.com', label: 'azure-devops' }], 'agent-1'))
+      .toContain("'credential.https://myorg.visualstudio.com.helper=!'\\''${_fleet_gh}/.fleet-git-credential-azure-devops.agent-1'\\'''");
   });
 
   it('deploy: the default scope keeps binding to dev.azure.com (unchanged for modern remotes)', async () => {
@@ -143,7 +148,7 @@ describe('azureDevOpsProvider: legacy-host credential binding (issue #502)', () 
       'azure-devops', 'https://dev.azure.com',
     );
     expect(execCalls[0]).toContain('host=dev.azure.com');
-    expect(execCalls[0]).toContain('credential.https://dev.azure.com.helper');
+    expect(execCalls[0]).not.toContain('git config');
   });
 
   it('deploy: a legacy org_url still yields the org in metadata', async () => {
@@ -170,15 +175,19 @@ describe('azureDevOpsProvider: legacy-host credential binding (issue #502)', () 
     const script = execCalls.find((c) => c.includes('.fleet-git-credential-'));
     expect(script).toBeDefined();
     expect(script!).toContain('myorg.visualstudio.com');
-    expect(script!).toContain('credential.https://myorg.visualstudio.com.helper');
+    expect(script!).not.toContain('git config');
+    expect(osCmds.gitCredentialEnvPrefix([{ scopeUrl: 'https://myorg.visualstudio.com', label: 'azure-devops' }], 'agent-1'))
+      .toContain('credential.https://myorg.visualstudio.com.helper=');
   });
 
-  it('revoke: removes the git-config key for the same legacy host deploy wrote', async () => {
+  it('revoke: removes the member helper deploy wrote; the legacy cleanup names the legacy host key', async () => {
     const execCalls: string[] = [];
     const exec = async (cmd: string) => { execCalls.push(cmd); return ''; };
     const result = await azureDevOpsProvider.revoke(makeAgent(), cmds, exec, 'azure-devops', 'https://myorg.visualstudio.com');
     expect(result.success).toBe(true);
-    expect(execCalls[0]).toContain('credential.https://myorg.visualstudio.com.helper');
+    expect(execCalls[0]).toContain('.fleet-git-credential-azure-devops.agent-1');
+    expect(cmds.gitCredentialHelperRemoveLegacyGlobal('dev.azure.com', 'azure-devops', 'https://myorg.visualstudio.com'))
+      .toContain('credential.https://myorg.visualstudio.com.helper');
   });
 
   it('testConnectivity: probes a legacy-host repo URL with git ls-remote', async () => {

@@ -30,6 +30,7 @@ function harness() {
             if (tool === 'kb_invalidate') {
                 return { content: [{ type: 'text', text: JSON.stringify({ discarded: args.ids, not_found: [], already_discarded: [] }) }] };
             }
+            if (tool === 'kb_promote') return { id: args.id, previous_confidence: 'INFERRED', new_confidence: 'CONFIRMED' };
             return {};
         },
         gPull: async () => {},
@@ -84,7 +85,7 @@ describe('reviewer promotions and discards are limited to the offered candidate 
             kb_promotions: [{ id: 'kb-good', reason: REASON }],
             kb_discards: [{ id: 'kb-bad', reason: REASON }],
         });
-        assert.deepEqual(out, { captured: 0, promoted: 1, discarded: 1, refused: 0 });
+        assert.deepEqual(out, { captured: 0, promoted: 1, discarded: 1, demoted: 0, refused: 0 });
         assert.deepEqual(h.writes().map((c) => c.tool), ['kb_promote', 'kb_invalidate']);
         assert.deepEqual(h.writes()[0].args, { id: 'kb-good', reason: REASON });
         assert.deepEqual(h.writes()[1].args, { ids: ['kb-bad'] });
