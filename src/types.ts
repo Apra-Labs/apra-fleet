@@ -176,7 +176,8 @@ export interface FleetMcpStatus {
    *  exact manual steps, built for the member's OS/shell, to install this
    *  orchestrator's build there by hand (anonymous download URL, SHA-256
    *  check, member-mode install, then update_member). register_member /
-   *  update_member print it in a WARNING; the call itself still succeeds. */
+   *  update_member print it in a WARNING; register_member still succeeds,
+   *  update_member fails the call when fleet_install was requested explicitly. */
   manualInstall?: string;
   /** Set by the probe that installed the signed stable release of the
    *  orchestrator's core (`tag`, e.g. v0.4.4) because no release carries the

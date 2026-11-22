@@ -47,6 +47,21 @@ export function resolveRemotePath(workFolder: string, subPath: string): string {
 }
 
 /**
+ * The path form a member's SFTP server accepts. A Windows member runs
+ * Win32-OpenSSH, whose SFTP server does not understand the MSYS/Git Bash
+ * drive form (/c/Users/x): it answers "No such file". A Git Bash member's
+ * probed home -- and every path built from it for its shell -- is in that
+ * form, so every SFTP operation rewrites it to C:/Users/x here. Only a
+ * Windows member is rewritten (on POSIX, /c/x is a real path); every other
+ * spelling passes through unchanged.
+ */
+export function toSftpPath(remotePath: string, agentOs: RemoteOS | undefined): string {
+  if (agentOs !== 'windows') return remotePath;
+  const m = remotePath.match(/^\/([A-Za-z])(?:\/(.*))?$/);
+  return m ? `${m[1].toUpperCase()}:/${m[2] ?? ''}` : remotePath;
+}
+
+/**
  * True when `uname -s` output identifies a POSIX-emulation layer running on
  * Windows (Git-for-Windows / MSYS2 / Cygwin). This is the ONLY reliable way to
  * tell a Git-for-Windows bash.exe apart from the WSL launcher of the same name

@@ -76,12 +76,20 @@ export const updateMemberSchema = z.object({
   unreservable: z.boolean().optional().describe('Mark this member as never exclusively reservable, so it can be shared by more than one sprint at once (e.g. a member filling fleet-sprint\'s shared "backlog" role). reserve/release/force_release become no-op successes and overlap guards skip it.'),
   shell: z.enum(['gitbash', 'pwsh7', 'powershell5']).optional().describe('Override the probed Windows shell for this member (gitbash, pwsh7, or powershell5). Windows members only -- ignored for non-windows members.'),
   vcs_provider: z.enum(['github', 'bitbucket', 'azure-devops', 'none']).optional().describe('Directly set (override) this member\'s VCS provider -- an explicit operator value, never auto-detected. Use this to correct a wrong auto-detect from register_member, or to set the provider for a member with no credentials to provision (so provision_vcs_auth is not required just to record it). Pass "none" to clear it, declaring the member deliberately has no VCS provider.'),
-  fleet_install: z.enum(['auto', 'skip', 'replace-full']).optional().describe('Upgrade or skip the member\'s own apra-fleet install. "auto": for a remote member, probe it and install/upgrade apra-fleet when it is missing or older than this orchestrator (build-aware), self-register, write its per-folder apra-fleet MCP entry and verify a MEMBER session, even when nothing else changed; an install/upgrade that ran (or an install that only now became available) also adds the member apra-fleet tool rules to a claude member\'s permission allow-list through compose_permissions grant mode, keeping its role and grants (a NOTICE says so; a failure is a WARNING); local members only get the MEMBER-session probe. An install without the member-install marker (a full install) is never touched by "auto". "replace-full": everything "auto" does, plus an explicit opt-in to REPLACE such a full install with a member install (back up data and fleet.key to a timestamped dir, uninstall with the installed binary, stop the linux fleet-supervisor unit, move data aside, run the current installer in member mode, self-register); refused with no destructive command when the marker probe fails. "skip": no install (a refresh triggered by another change runs with install off). Omit to keep the default: install only on a provider change. The result reports the recoverable fleetMcp status (re-probe with member_detail refresh:true). A requested install/upgrade that cannot happen (no release for this build, checksum or download failure, unsupported platform, full install present, ...) never fails the update: it adds a WARNING naming the consequence, the exact reason and OS-correct manual install steps (also in fleetMcp.manualInstall).'),
+  fleet_install: z.enum(['auto', 'skip', 'replace-full']).optional().describe('Upgrade or skip the member\'s own apra-fleet install. "auto": for a remote member, probe it and install/upgrade apra-fleet when it is missing or older than this orchestrator (build-aware), self-register, write its per-folder apra-fleet MCP entry and verify a MEMBER session, even when nothing else changed; an install/upgrade that ran (or an install that only now became available) also adds the member apra-fleet tool rules to a claude member\'s permission allow-list through compose_permissions grant mode, keeping its role and grants (a NOTICE says so; a failure is a WARNING); local members only get the MEMBER-session probe. An install without the member-install marker (a full install) is never touched by "auto". "replace-full": everything "auto" does, plus an explicit opt-in to REPLACE such a full install with a member install (back up data and fleet.key to a timestamped dir, uninstall with the installed binary, stop the linux fleet-supervisor unit, move data aside, run the current installer in member mode, self-register); refused with no destructive command when the marker probe fails. "skip": no install (a refresh triggered by another change runs with install off). Omit to keep the default: install only on a provider change. The result reports the recoverable fleetMcp status (re-probe with member_detail refresh:true). An install/upgrade/replace requested with fleet_install "auto" or "replace-full" that does not happen (no release for this build, checksum, download or transfer failure, unsupported platform, full install present, ...) fails the call (isError, reason in the text and structuredContent) after saving the other settings, with a WARNING naming the consequence, the exact reason and OS-correct manual install steps (also in fleetMcp.manualInstall); nothing to install (up to date) is a success. An install implied by a provider change that does not happen stays a WARNING.'),
 });
 
 export type UpdateMemberInput = z.infer<typeof updateMemberSchema>;
 
-export async function updateMember(input: UpdateMemberInput): Promise<string> {
+/** A loud failure: the explicitly requested fleet_install did not happen. The
+ *  MCP layer returns it with isError true; the other settings were saved. */
+export interface UpdateMemberFailure {
+  text: string;
+  isError: true;
+  structuredContent: Record<string, unknown>;
+}
+
+export async function updateMember(input: UpdateMemberInput): Promise<string | UpdateMemberFailure> {
   const existingOrError = resolveMember(input.member_id, input.member_name);
   if (typeof existingOrError === 'string') return existingOrError;
   const existing = existingOrError as Agent;
@@ -361,6 +369,9 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
   // and the outcome is a recorded, recoverable status (apra-fleet-b4g.56).
   const nameChanged = updated.friendlyName !== existing.friendlyName;
   let fleetMcpLine: string | undefined;
+  // Set when an explicitly requested fleet_install ("auto"/"replace-full") on
+  // a remote member did not happen: the call then fails loudly (isError).
+  let installNotDone: { reason: string; detail?: string; fleetMcp?: unknown } | undefined;
   // "replace-full" is "auto" plus the opt-in full-install replacement.
   const fleetInstallAuto = input.fleet_install === 'auto' || input.fleet_install === 'replace-full';
   if (providerChanged || nameChanged || workFolderMoved || fleetInstallAuto) {
@@ -382,12 +393,21 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
         ? `available${status.version ? ` (apra-fleet ${status.version})` : ''}${(status.installFailure || status.replacedFullInstall) && status.detail ? ` -- ${status.installFailure ? 'warning: ' : ''}${status.detail}` : ''}`
         : `unavailable (${status.reason ?? 'unknown'})${status.detail ? ` -- ${status.detail}` : ''}`;
       fleetMcpLine += beadsStatusNote(status);
-      // A requested install that did not happen never fails the update: it is
-      // a prominent WARNING with the consequence, reason and manual steps.
+      // A requested install that did not happen is a WARNING with the
+      // consequence, reason and manual steps (manualInstall is set exactly
+      // then). An explicit fleet_install request additionally fails the call
+      // (isError); an implicit one (provider change) keeps the update a success.
       const installWarning = fleetInstallWarning(updated.friendlyName, status);
       if (installWarning) {
         fleetMcpLine += installWarning.startsWith('NOTICE') ? ' (see NOTICE below)' : ' (see WARNING below)';
         warnings.unshift(installWarning);
+      }
+      if (install && fleetInstallAuto && (status.manualInstall || status.reason === 'home-unresolved')) {
+        installNotDone = {
+          reason: status.installFailure?.reason ?? status.reason ?? 'unknown',
+          detail: status.installFailure?.detail ?? status.detail,
+          fleetMcp: status,
+        };
       }
       // A fresh install/upgrade/replace -- or an install that only now became
       // usable (e.g. a failed autostart fixed by `apra-fleet start`) -- can
@@ -420,6 +440,9 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
       }
     } catch (e: any) {
       fleetMcpLine = `unavailable (probe-failed) -- ${e?.message ?? String(e)}`;
+      if (fleetInstallAuto && updated.agentType !== 'local') {
+        installNotDone = { reason: 'probe-failed', detail: e?.message ?? String(e) };
+      }
     }
   }
 
@@ -435,7 +458,10 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
     if (shadowWarning) warnings.push(shadowWarning);
   }
 
-  let result = `✅ Member "${updated.friendlyName}" updated.\n\n`;
+  let result = installNotDone
+    ? `ERROR: fleet_install "${input.fleet_install}" did not happen on member "${updated.friendlyName}": ${installNotDone.reason}${installNotDone.detail ? ` -- ${installNotDone.detail}` : ''}\n` +
+      `The member's other settings were saved; its apra-fleet install was not installed/upgraded/replaced. Fix the reason (details below), then retry update_member with fleet_install "${input.fleet_install}".\n\n`
+    : `✅ Member "${updated.friendlyName}" updated.\n\n`;
   result += `  Icon:    ${updated.icon ?? DEFAULT_ICON}\n`;
   result += `  ID:      ${updated.id}\n`;
   result += `  Name:    ${updated.friendlyName}\n`;
@@ -479,5 +505,20 @@ export async function updateMember(input: UpdateMemberInput): Promise<string> {
     }
   }
 
+  if (installNotDone) {
+    return {
+      text: result,
+      isError: true,
+      structuredContent: {
+        error: 'fleet-install-not-done',
+        fleet_install: input.fleet_install,
+        reason: installNotDone.reason,
+        ...(installNotDone.detail ? { detail: installNotDone.detail } : {}),
+        memberUpdated: true,
+        memberId: updated.id,
+        ...(installNotDone.fleetMcp ? { fleetMcp: installNotDone.fleetMcp } : {}),
+      },
+    };
+  }
   return result;
 }
