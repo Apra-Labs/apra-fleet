@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "f9120840430d27924cc7797240f4660c5f35c226",
     "branch": "main",
-    "entry_count": 185
+    "entry_count": 186
   },
   "entries": [
     {
@@ -2251,6 +2251,29 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:32.234Z"
+    },
+    {
+      "id": "9a125191-7853-43a6-ae23-30ac3e5680a6",
+      "type": "knowledge",
+      "title": "Bible merge driver string is guarded against a stale install path",
+      "summary": "buildBibleMergeDriverCommand registers a POSIX sh guard: it checks every recorded path with [ -f ], runs the CLI, and on missing paths or sh exit 126/127 falls back to git merge-file with conflict markers plus a message naming kb_setup, then exits 1. installBibleMergeDriver re-registers a differing driver and returns repairedFrom.",
+      "symbols": [
+        "buildBibleMergeDriverCommand",
+        "installBibleMergeDriver",
+        "BIBLE_MERGE_DRIVER_STALE_MESSAGE"
+      ],
+      "source_files": [
+        "src/cli/kb-merge-driver.ts",
+        "src/tools/kb-setup.ts",
+        "tests/knowledge/kb-bible-merge-driver.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-22T11:07:00.549Z",
+      "source_file_hashes": {
+        "src/cli/kb-merge-driver.ts": "cb44162c5dfe39b177f783dc8e8526e25a8bdd59",
+        "src/tools/kb-setup.ts": "d1e12f8ea1553555a5613c6ec33cec2b6a318067",
+        "tests/knowledge/kb-bible-merge-driver.test.ts": "36b5005e32482dfebae733bcc242fded39f8ca85"
+      }
     },
     {
       "id": "9af40daa-2521-430a-a529-7db25d27da87",
