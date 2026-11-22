@@ -27,12 +27,10 @@ compose_permissions tool delivers); a broader prefix entry counts as coverage:
   classifier.
 - `Bash(curl * localhost:8787/api/reservations/*)` -- only for the documented
   force-release of a stale reservation.
-- `Bash(test -f *member-install.json*)` and `Bash(cat *member-install.json*)` --
-  the member-host detection and verification in Deploy (POSIX).
-- `Bash(curl -s http://localhost:*/health)` -- the member-host server check on
-  the marker-recorded port.
-- `Bash(powershell -NoProfile -Command *)` -- the Windows forms of the
-  member-host detection and verification.
+- Member-host detection and verification need NO extra entry: they are
+  `node scripts/deploy-install.mjs --member-host-check` and `--verify-member-host`,
+  covered by the `deploy-install.mjs*` prefix above (data dir, installed binary
+  and `/health` are resolved inside the script).
 
 `## Sandbox Deploy` never runs the installer. It shares the build prefixes
 above (`preflight-clear-build-locks`, `npm ci`, `npm run build`) and
@@ -188,24 +186,17 @@ npm run build:binary
 curl -s http://localhost:8787/api/sprints
 node scripts/check-foreign-sprints.mjs --self-sprint-id "<your-sprint-id>"
 
-# Member-host detection (see "Member host" above). Prints MEMBER-HOST or FULL-HOST:
-test -f "${APRA_FLEET_DATA_DIR:-$HOME/.apra-fleet/data}/member-install.json" && echo MEMBER-HOST || echo FULL-HOST
-# Windows: powershell -NoProfile -Command 'if ($env:APRA_FLEET_DATA_DIR) { $d = $env:APRA_FLEET_DATA_DIR } else { $d = Join-Path $env:USERPROFILE ".apra-fleet\data" }; if (Test-Path (Join-Path $d "member-install.json")) { "MEMBER-HOST" } else { "FULL-HOST" }'
+# Member-host detection (see "Member host" above). Prints MEMBER-HOST or FULL-HOST
+# (any OS; the data dir is resolved inside the script):
+node scripts/deploy-install.mjs --member-host-check
 #
 # MEMBER-HOST -> install --member --force, then verify, and STOP here (no launch step):
 #   node scripts/deploy-install.mjs -- --member --workflows none --transport http
-#   Verify (POSIX): the marker still exists and its "version" equals the
-#   installed binary's --version, and the server answers on the marker's "port"
-#   (7523 when the marker records none):
-#     cat "${APRA_FLEET_DATA_DIR:-$HOME/.apra-fleet/data}/member-install.json"
-#     "$HOME/.apra-fleet/bin/apra-fleet" --version
-#     curl -s http://localhost:<marker-port>/health
-#   Verify (Windows):
-#     powershell -NoProfile -Command 'if ($env:APRA_FLEET_DATA_DIR) { $d = $env:APRA_FLEET_DATA_DIR } else { $d = Join-Path $env:USERPROFILE ".apra-fleet\data" }; Get-Content (Join-Path $d "member-install.json")'
-#     powershell -NoProfile -Command '& (Join-Path $env:USERPROFILE ".apra-fleet\bin\apra-fleet.exe") --version'
-#     powershell -NoProfile -Command 'Invoke-RestMethod http://localhost:<marker-port>/health'
-#   A missing marker, a version mismatch or no /health answer is a failed
-#   deploy: return deployed: false with the output.
+#   node scripts/deploy-install.mjs --verify-member-host
+#   The verify step checks that the marker still exists, its "version" equals the
+#   installed binary's --version, and /health answers on the marker's "port"
+#   (7523 when the marker records none). Non-zero exit = failed deploy: return
+#   deployed: false with the output.
 # FULL-HOST -> continue with the full install below, unchanged.
 
 # Resolves dist/apra-fleet-installer-<platform>-<arch>[.exe] and runs

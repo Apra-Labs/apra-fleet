@@ -268,15 +268,16 @@ describe('deploy on a member host keeps a member install of the deployed build',
     if (realHome) expect(touched.filter(p => p.startsWith(`${realHome}/`) && !p.startsWith(`${runDataDir}/`))).toEqual([]);
   });
 
-  it('deploy.md Deploy pins member-install.json detection and install --member --force', async () => {
+  it('deploy.md Deploy pins node-helper member-host detection and install --member --force', async () => {
     const realFs = await vi.importActual<typeof import('node:fs')>('node:fs');
     const md = realFs.readFileSync(path.resolve(__dirname, '..', 'deploy.md'), 'utf8');
     const start = md.indexOf('\n## Deploy\n');
     expect(start).toBeGreaterThanOrEqual(0);
     const end = md.indexOf('\n## ', start + 1);
     const deploy = md.slice(start, end < 0 ? undefined : end);
-    expect(deploy).toMatch(/test -f [^\n]*member-install\.json/);
-    expect(deploy).toMatch(/Test-Path[^\n]*member-install\.json/);
+    expect(deploy).toContain('deploy-install.mjs --member-host-check');
+    expect(deploy).toContain('deploy-install.mjs --verify-member-host');
+    expect(deploy).not.toMatch(/powershell -NoProfile -Command/);
     expect(deploy).toMatch(/deploy-install\.mjs -- --member\b/);
     expect(deploy).toContain('install --member --force');
   });
