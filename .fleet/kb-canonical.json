@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "fdd28500257f50b0fdf05135bee9f23ce7d61947",
     "branch": "main",
-    "entry_count": 186
+    "entry_count": 188
   },
   "entries": [
     {
@@ -1030,6 +1030,38 @@
       "updated_at": "2026-09-25T22:26:30.271Z"
     },
     {
+      "id": "48187764-14b0-46d2-9367-b7e74c08e6b9",
+      "type": "knowledge",
+      "title": "Process-kill grants: one matcher in server and engine, kept in step by a parity test",
+      "summary": "compose_permissions refuses process-killing grants (kill, pkill, killall, taskkill, tskill, Stop-Process, wmic process delete) and writes fleet-derived deny rules for them for claude, agy and copilot. The fleet-sprint engine has its own copy of the matcher; tests/process-kill-rules-parity.test.ts keeps the two identical.",
+      "symbols": [
+        "isProcessKillGrant",
+        "payloadKillsProcesses",
+        "claudeProcessKillDenyRules",
+        "agyProcessKillDenyRules",
+        "isNeverAutoGrant",
+        "isFleetDerivedDenyRule",
+        "createPermissionDenialHeal",
+        "grantWithinPolicy"
+      ],
+      "source_files": [
+        "src/services/process-kill-rules.ts",
+        "src/tools/compose-permissions.ts",
+        "packages/apra-fleet-se/fleet-sprint/process-kill-rules.mjs",
+        "packages/apra-fleet-se/fleet-sprint/member-provisioning.mjs",
+        "tests/process-kill-rules-parity.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-22T22:48:55.700Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/member-provisioning.mjs": "028a7dc117f54b2c1327aad0750f4b1319f60ca7",
+        "packages/apra-fleet-se/fleet-sprint/process-kill-rules.mjs": "454622c52d28a531e5b0e7b546b315385cff11ef",
+        "src/services/process-kill-rules.ts": "3e182476534a87a3b8db976d26970a8e800e8456",
+        "src/tools/compose-permissions.ts": "6eb082c123494c378407b0b587465a9bc69fab51",
+        "tests/process-kill-rules-parity.test.ts": "8a02f3335e0d7d9edbd03750bf4d9a670e52587a"
+      }
+    },
+    {
       "id": "483c4334-ebbd-4dda-9e66-ca7899110f85",
       "type": "knowledge",
       "title": "Member kb_promote/kb_resolve_contradiction need the engine kb_maintainer grant",
@@ -1225,6 +1257,33 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:30.391Z"
+    },
+    {
+      "id": "50fa09e7-507d-46d3-b689-40818da75f45",
+      "type": "knowledge",
+      "title": "Git Bash FLEET_PID carries the Windows pid read from /proc/<msys-pid>/winpid",
+      "summary": "Bash $! on Git for Windows is an MSYS pid, which taskkill reads as an unrelated Windows pid. WindowsGitBashCommands overrides the LinuxCommands.pidWrap hook so wrapPidCapture and buildAgentPromptCommand print the subshell's winpid instead. It prints no marker if the winpid cannot be read.",
+      "symbols": [
+        "pidWrapGitBash",
+        "LinuxCommands.pidWrap",
+        "WindowsGitBashCommands.pidWrap",
+        "wrapPidCapture",
+        "buildAgentPromptCommand"
+      ],
+      "source_files": [
+        "src/os/windows-gitbash.ts",
+        "src/os/linux.ts",
+        "tests/go-concurrency-default.test.ts",
+        "tests/provider-install-shell-matrix.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-22T22:48:56.005Z",
+      "source_file_hashes": {
+        "src/os/linux.ts": "1ee4cec7322a0fc89b5c1e8be9e9dfe20aa31178",
+        "src/os/windows-gitbash.ts": "18c6299a400d13f3cc2ab7a1695835ed5c2264d8",
+        "tests/go-concurrency-default.test.ts": "17a3070e288edf15d92eff123c053c0b2c9d7820",
+        "tests/provider-install-shell-matrix.test.ts": "5957d111ba8dd05e8dfd9bdab7784f57ab7b013d"
+      }
     },
     {
       "id": "5227dca4-de64-4430-a394-8c16226e121c",
