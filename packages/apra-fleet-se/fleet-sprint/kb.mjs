@@ -2266,7 +2266,14 @@ export function createKbWorkClient(opts = {}) {
         expireReverification(label = 'final review') {
             const out = [];
             for (const [repo, byId] of [...reverifyPending]) {
+                // A reviewer already re-verified an id whose kb_promote is
+                // still queued (its flush failed or the maintainer was busy):
+                // the bible commit applies it first, so it is not expired.
+                const queuedRe = new Set((queues.get(repo) || [])
+                    .filter((op) => op.kind === 'promote' && op.payload && op.payload.reverify === true)
+                    .map((op) => op.payload.id));
                 for (const r of [...byId.values()]) {
+                    if (queuedRe.has(r.id)) continue;
                     dropFromBible(repo, r.id, `no reviewer re-verified it by the ${label}, the sprint's last review (retries exhausted)`, r.changed_files);
                     out.push(r.id);
                 }

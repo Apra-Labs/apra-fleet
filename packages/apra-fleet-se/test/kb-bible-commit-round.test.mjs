@@ -1185,6 +1185,7 @@ describe('commitRound: a basis_mismatch confirmation is re-verified by the next 
     function reverifyHarness({ bibleSkipRetryRounds } = {}) {
         const calls = [];
         const logs = [];
+        const pull = { fail: false };
         let restamped = false;
         let inferred = [ENTRY];
         const memberCall = async (member, tool, args, callOpts) => {
@@ -1209,14 +1210,14 @@ describe('commitRound: a basis_mismatch confirmation is re-verified by the next 
         const client = currentServerKbWork(createKbWorkClient, {
             memberCall,
             maintainers: selfMaintainer(MAINT, ['maint', 'reviewer-1']),
-            gPull: async () => {},
+            gPull: async () => { if (pull.fail) throw new Error('could not reach origin'); },
             gPush: async () => {},
             bibleBase: async () => BASE,
             bibleUnpushed: async () => ({ unpushed: false }),
             log: (m) => logs.push(m),
             ...(bibleSkipRetryRounds === undefined ? {} : { bibleSkipRetryRounds }),
         });
-        return { client, calls, logs };
+        return { client, calls, logs, pull };
     }
 
     /** Round 1: the reviewer confirms DRIFTED (INFERRED -> CONFIRMED); its bible commit is skipped with basis_mismatch. */
@@ -1328,6 +1329,29 @@ describe('commitRound: a basis_mismatch confirmation is re-verified by the next 
         assert.ok(h.logs.some((l) => /WARN: dropping kb-drifted-x .*by the final review, the sprint's last review/.test(l)), h.logs.join('\n'));
         assert.deepEqual(h.client.pendingConfirmations(), []);
         assert.deepEqual(h.client.expireReverification('final review'), [], 'idempotent');
+    });
+
+    test('expireReverification keeps a re-verified id whose kb_promote is still queued behind a failed G-pull', async () => {
+        const h = reverifyHarness();
+        await confirmedThenSkipped(h);
+        await h.client.promotionCandidates('reviewer-1');
+        const mark = h.calls.length;
+
+        // The final review CONFIRMs it, but the flush's G-pull fails: the promote stays queued.
+        h.pull.fail = true;
+        await h.client.apply('reviewer', 'reviewer-1', { kb_promotions: [{ id: DRIFTED, reason: REVIEW_REASON }] });
+        assert.ok(!h.calls.slice(mark).some((c) => c.tool === 'kb_promote'), 'sanity: the promote did not run');
+
+        assert.deepEqual(h.client.expireReverification('final review'), [], 'a queued re-verify is not expired');
+        assert.ok(!h.logs.some((l) => /WARN: dropping kb-drifted-x/.test(l)), h.logs.join('\n'));
+
+        h.pull.fail = false;
+        const out = await h.client.commitRound('final review');
+        assert.ok(h.calls.slice(mark).some((c) => c.tool === 'kb_promote' && c.args.id === DRIFTED), 'the queued promote applies before the bible commit');
+        const commits = h.calls.slice(mark).filter((c) => c.tool === 'kb_bible_commit');
+        assert.deepEqual(commits.map((c) => c.args.ids), [[DRIFTED]]);
+        assert.deepEqual(out, { committed: 1, pending: 0 });
+        assert.deepEqual(h.client.unpublishedBible().dropped, [], 'nothing is reported dropped');
     });
 
     test('kbPromotionBlock renders the INFERRED and re-verification candidates as two blocks', () => {
