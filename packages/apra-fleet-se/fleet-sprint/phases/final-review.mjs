@@ -262,6 +262,12 @@ export async function runFinalReviewPhase({
     // Candidates are read from (and the confirmations later committed to the
     // bible on) the reviewer's repository kb_maintainer, whose KB every write
     // is routed to.
+    // The sprint's own bible entries, re-checked at the branch's final head
+    // BEFORE the candidate read: an entry a later code commit drifted comes
+    // back as a basis_mismatch skip and is offered to the final reviewer for
+    // re-verification next to the promotion candidates (re-stamped and
+    // re-merged on CONFIRM, withdrawn from the branch bible otherwise).
+    if (typeof kbWork.recheckSprintBible === 'function') await kbWork.recheckSprintBible('final head');
     const finalKbCandidates = await kbWork.promotionCandidates(getMemberForRole('reviewer'));
     // Re-verification rows (reverify: true) are logged by kbWork itself.
     const finalKbInferredCount = finalKbCandidates.filter((e) => !(e && e.reverify === true)).length;
