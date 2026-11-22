@@ -1644,7 +1644,7 @@ describe('composePermissions -- process-killing commands', () => {
       addAgent(member);
       installFsMock();
       const result = await composePermissions({ member_id: member.id, role: 'doer', grant: [grant] });
-      expect(result.startsWith('❌ Cannot auto-grant dangerous permissions:')).toBe(true);
+      expect(result.startsWith('\u274c Cannot auto-grant dangerous permissions:')).toBe(true);
       expect(result).toContain(grant);
       expect(result).toContain('process-killing command');
       expect(result).toContain('cannot rule it out');
