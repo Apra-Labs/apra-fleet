@@ -1,7 +1,9 @@
 {
   "version": 3,
   "provenance": {
-    "branch": "main"
+    "commit": "f9120840430d27924cc7797240f4660c5f35c226",
+    "branch": "main",
+    "entry_count": 184
   },
   "entries": [
     {
@@ -1111,6 +1113,34 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:30.213Z"
+    },
+    {
+      "id": "4e5fa491-46ca-4621-bc56-d79b89364f94",
+      "type": "knowledge",
+      "title": "Full install refuses on a member host: E-MEMBER-HOST-FULL-INSTALL guard",
+      "summary": "runInstall refuses a full (non --member) install when the targeted data dir holds member-install.json, before any destructive step; --convert-member-host overrides and clears the marker. apra-fleet update switches to install --member --force on a marker host.",
+      "symbols": [
+        "readMemberInstallMarker",
+        "memberHostRefusalText",
+        "CONVERT_MEMBER_HOST_FLAG",
+        "MEMBER_HOST_FULL_INSTALL_CODE",
+        "runInstall",
+        "runUpdate"
+      ],
+      "source_files": [
+        "src/cli/install-guard.ts",
+        "src/cli/install.ts",
+        "src/cli/update.ts",
+        "tests/install-member-host-guard.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-22T10:31:22.583Z",
+      "source_file_hashes": {
+        "src/cli/install-guard.ts": "84d340da90ce8c3d5729b323e093d8feb4d922c6",
+        "src/cli/install.ts": "178687848782b1b1afbdb171bb3f374bd0250cf3",
+        "src/cli/update.ts": "5994f872c18576277ec9cd2af5fd60c0db1dfd4b",
+        "tests/install-member-host-guard.test.ts": "ccaac22fe855219149c1099f322c02376ece8828"
+      }
     },
     {
       "id": "4f62e71d-0544-49f1-863f-6bbc503604ac",
