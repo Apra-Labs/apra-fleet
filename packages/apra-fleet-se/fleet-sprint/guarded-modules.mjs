@@ -409,6 +409,10 @@ export const GUARDED_MODULES = [
     // scans clean under itself and every other guard rather than needing a
     // GUARD_REGISTRATION_EXEMPT carve-out.
     'explicit-id-create-guard.mjs',
+    // The process-killing command set the engine never grants (pure matching
+    // helpers used by member-provisioning.mjs). No command() or agent() site:
+    // zero baseline.
+    'process-kill-rules.mjs',
     // The beads identity contract (pure parse/compare helpers, no command()
     // or agent() site -- zero baseline) and the precondition that runs its
     // three read-only probes: beads-identity-check.mjs carries TWO
