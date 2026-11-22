@@ -39,3 +39,22 @@ test('a success result logs its text (no [object Object]) and is cached', async 
     assert.ok(!line.includes('[object Object]'), line);
     assert.equal(calls.length, 1, 'second call served from cache');
 });
+
+test('a process-killing deploy.md grant is never requested; it is logged as refused and the other grants still land', async () => {
+    const deployMd = '# Deploy\n\n## Permissions\n\n- `Bash(docker compose:*)`\n- `Bash(taskkill:*)`\n- `Bash(pkill -f app)`\n- `Bash(node scripts/kill-port.mjs:*)`\n\n## Steps\n';
+    const logs = [];
+    const calls = [];
+    const command = async () => ({ ok: true, output: deployMd });
+    const callTool = async (name, args) => {
+        calls.push(args);
+        return { content: [{ type: 'text', text: 'Permissions composed OK' }] };
+    };
+    const ensure = createDeployPermissionsProvisioner({ callTool, command, log: (l) => logs.push(l) });
+    await ensure('dev1');
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0].grant, ['Bash(docker compose:*)', 'Bash(node scripts/kill-port.mjs:*)']);
+    const refused = logs.find((l) => l.includes('REFUSED (process_kill_refused)'));
+    assert.ok(refused, logs.join('\n'));
+    assert.ok(refused.includes('Bash(taskkill:*)') && refused.includes('Bash(pkill -f app)'), refused);
+    assert.ok(logs.some((l) => l.includes('ensured')), logs.join('\n'));
+});

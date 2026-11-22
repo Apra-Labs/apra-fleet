@@ -16,6 +16,8 @@ import { ClaudeProvider } from '../src/providers/claude.js';
 import { AgyProvider } from '../src/providers/agy.js';
 import { readInstallConfig } from '../src/cli/config.js';
 import { claudeMemberDenyRules, memberMcpAllowRules } from '../src/services/member-config-io.js';
+import { agyProcessKillDenyRules, claudeProcessKillDenyRules } from '../src/services/process-kill-rules.js';
+import { agyCommandRules } from '../src/providers/agy.js';
 import type { LlmProvider, SSHExecResult } from '../src/types.js';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -1612,6 +1614,134 @@ describe('composePermissions -- member tool allow rules', () => {
       const perms = JSON.parse(extractWrittenContent(writeCmd)).permissions;
       assertMemberRules(perms.allow);
       for (const r of DENY) expect(perms.deny).toContain(r);
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Process-killing commands: never granted, denied in every composed config.
+// A local member shares its host with the fleet server and other sprints, so
+// a kill by name there takes them down.
+// ---------------------------------------------------------------------------
+
+describe('composePermissions -- process-killing commands', () => {
+  const CLAUDE_FILE = '/home/testuser/project/.claude/settings.local.json';
+  const COPILOT_FILE = '/home/testuser/project/.github/copilot/settings.local.json';
+  const KILL_ALLOW = ['Bash(kill:*)', 'Bash(pkill:*)'];
+  const writtenJson = (file: string) => {
+    const cmd = mockExecCommand.mock.calls.map(c => c[0] as string)
+      .filter(c => c.includes('FLEET_PERMS_EOF') && c.includes(file)).pop();
+    expect(cmd, `no write to ${file}`).toBeDefined();
+    return JSON.parse(extractWrittenContent(cmd!));
+  };
+
+  for (const grant of [
+    'Bash(kill:*)', 'Bash(pkill -f node)', 'Bash(killall:*)', 'Bash(taskkill //F //IM node.exe)',
+    'Bash(tskill:*)', 'PowerShell(Stop-Process:*)', 'Bash(wmic process where name="node.exe" delete)',
+  ]) {
+    it(`refuses a grant of ${grant} with the refusal text and touches no member`, async () => {
+      const member = makeTestAgent({ friendlyName: 'claude-kill-grant', llmProvider: 'claude', os: 'linux' });
+      addAgent(member);
+      installFsMock();
+      const result = await composePermissions({ member_id: member.id, role: 'doer', grant: [grant] });
+      expect(result.startsWith('❌ Cannot auto-grant dangerous permissions:')).toBe(true);
+      expect(result).toContain(grant);
+      expect(result).toContain('process-killing command');
+      expect(result).toContain('cannot rule it out');
+      expect(mockExecCommand).not.toHaveBeenCalled();
+    });
+  }
+
+  it('claude doer: the composed allow list has no kill grant and the deny list carries every kill rule', async () => {
+    const member = makeTestAgent({ friendlyName: 'claude-kill-doer', llmProvider: 'claude', os: 'linux' });
+    addAgent(member);
+    installFsMock();
+    await composePermissions({ member_id: member.id, role: 'doer' });
+    const perms = writtenJson(CLAUDE_FILE).permissions;
+    for (const r of KILL_ALLOW) expect(perms.allow).not.toContain(r);
+    for (const r of claudeProcessKillDenyRules()) expect(perms.deny).toContain(r);
+    // The member tool policy deny rules are still there alongside.
+    for (const r of claudeMemberDenyRules()) expect(perms.deny).toContain(r);
+  });
+
+  it('dry_run: the doer policy no longer contains Bash(kill:*) or Bash(pkill:*)', async () => {
+    const member = makeTestAgent({ friendlyName: 'claude-kill-dry', llmProvider: 'claude', os: 'linux' });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue(OK);
+    const out = JSON.parse(await composePermissions({ member_id: member.id, role: 'doer', dry_run: true }));
+    for (const r of KILL_ALLOW) expect(out.allow).not.toContain(r);
+  });
+
+  it('a kill grant recorded in an older ledger is never composed back into the allow list', async () => {
+    const ledgerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-kill-ledger-'));
+    try {
+      fs.writeFileSync(path.join(ledgerDir, 'permissions.json'), JSON.stringify({
+        stacks: [],
+        granted: [
+          { permission: 'Bash(pkill:*)', reason: 'old', date: '2026-01-01' },
+          { permission: 'Bash(docker:*)', reason: 'old', date: '2026-01-01' },
+        ],
+      }));
+      const member = makeTestAgent({ friendlyName: 'claude-kill-ledger', llmProvider: 'claude', os: 'linux' });
+      addAgent(member);
+      installFsMock();
+      await composePermissions({ member_id: member.id, role: 'doer', project_folder: ledgerDir });
+      const perms = writtenJson(CLAUDE_FILE).permissions;
+      expect(perms.allow).toContain('Bash(docker:*)');
+      expect(perms.allow).not.toContain('Bash(pkill:*)');
+    } finally {
+      fs.rmSync(ledgerDir, { recursive: true, force: true });
+    }
+  });
+
+  it('a reactive grant drops a kill grant the existing allow list still held', async () => {
+    const member = makeTestAgent({ friendlyName: 'claude-kill-reactive', llmProvider: 'claude', os: 'linux' });
+    addAgent(member);
+    installFsMock({ [`"${CLAUDE_FILE}"`]: JSON.stringify({ permissions: { allow: ['Read', 'Bash(kill:*)'] } }) });
+    await composePermissions({ member_id: member.id, role: 'doer', grant: ['Bash(docker:*)'] });
+    const perms = writtenJson(CLAUDE_FILE).permissions;
+    expect(perms.allow).toContain('Read');
+    expect(perms.allow).toContain('Bash(docker:*)');
+    expect(perms.allow).not.toContain('Bash(kill:*)');
+    for (const r of claudeProcessKillDenyRules()) expect(perms.deny).toContain(r);
+  });
+
+  it('a user-authored deny rule in an existing file survives a recompose, next to the fleet kill rules', async () => {
+    const member = makeTestAgent({ friendlyName: 'claude-kill-userdeny', llmProvider: 'claude', os: 'linux' });
+    addAgent(member);
+    const userRules = ['Bash(rm -rf /:*)', 'Bash(kill -9:*)', 'WebFetch(domain:example.com)'];
+    installFsMock({ [`"${CLAUDE_FILE}"`]: JSON.stringify({ permissions: { allow: ['Read'], deny: userRules } }) });
+    await composePermissions({ member_id: member.id, role: 'doer' });
+    await composePermissions({ member_id: member.id, role: 'reviewer' });
+    const perms = writtenJson(CLAUDE_FILE).permissions;
+    for (const r of userRules) expect(perms.deny).toContain(r);
+    for (const r of claudeProcessKillDenyRules()) expect(perms.deny).toContain(r);
+    // Each rule appears once (the merge never duplicates on recompose).
+    expect(new Set(perms.deny).size).toBe(perms.deny.length);
+  });
+
+  it('agy doer: the project file allows no kill command and denies every kill rule', async () => {
+    const AGY_PID = '2bfd6dbb-498f-4918-a9d9-6da64b75a204';
+    const AGY_FILE = `/home/testuser/.gemini/config/projects/${AGY_PID}.json`;
+    const member = makeTestAgent({ friendlyName: 'agy-kill-doer', llmProvider: 'agy', os: 'linux', agyProjectId: AGY_PID });
+    addAgent(member);
+    installFsMock({ [`"${AGY_FILE}"`]: JSON.stringify({ id: AGY_PID, name: 'project' }) });
+    await composePermissions({ member_id: member.id, role: 'doer' });
+    const grants = writtenJson(AGY_FILE).permissionGrants.permissionGrants;
+    expect(grants.allow).not.toContain('command(kill)');
+    expect(grants.allow).not.toContain('command(pkill)');
+    for (const r of agyProcessKillDenyRules(agyCommandRules)) expect(grants.deny).toContain(r);
+  });
+
+  for (const role of ['doer', 'reviewer'] as const) {
+    it(`copilot ${role}: tools.deny carries every kill rule`, async () => {
+      const member = makeTestAgent({ friendlyName: `copilot-kill-${role}`, llmProvider: 'copilot', os: 'linux' });
+      addAgent(member);
+      installFsMock();
+      await composePermissions({ member_id: member.id, role });
+      const tools = writtenJson(COPILOT_FILE).tools;
+      for (const r of claudeProcessKillDenyRules()) expect(tools.deny).toContain(r);
+      for (const r of KILL_ALLOW) expect(tools.allow ?? []).not.toContain(r);
     });
   }
 });
