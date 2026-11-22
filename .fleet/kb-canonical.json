@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "0b13b1ccc8993e056c90ef347492ea9208ebabe2",
     "branch": "main",
-    "entry_count": 169
+    "entry_count": 170
   },
   "entries": [
     {
@@ -2563,6 +2563,31 @@
       "source_file_hashes": {
         "scripts/run-all-tests.mjs": "bfa7ff7a8eba998363f061237c9934491ce0e637",
         "tests/run-all-tests-suite-enumeration.test.ts": "6b869932251561145575443ff2d70652ba73b787"
+      }
+    },
+    {
+      "id": "c01db3c6-1f1b-443d-a855-5951b0bf8d3e",
+      "type": "knowledge",
+      "title": "Unmappable refusal on a fallback-value ladder degrades instead of throwing",
+      "summary": "In dispatchRole, an unmappable permission refusal that cannot be resumed ends the ladder through its degrade (value null, validate still runs) when policy.degrade.kind is fallback-value; every other degrade kind still throws MemberPermissionDeniedError.",
+      "symbols": [
+        "dispatchRole",
+        "selectStreaks",
+        "runDevelopPhase"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/develop.mjs",
+        "packages/apra-fleet-se/test/doer-unmappable-refusal-resume.test.mjs",
+        "packages/apra-fleet-se/test/mock-sprint-streak-assignment-unmappable-refusal.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-22T06:39:38.371Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs": "a4b179fe34332569bb0a670049afa774d5a7a328",
+        "packages/apra-fleet-se/fleet-sprint/phases/develop.mjs": "e5edd33422f2e78aea2c502ca12c705be5587c18",
+        "packages/apra-fleet-se/test/doer-unmappable-refusal-resume.test.mjs": "6c3d91d01959e925edc805f6556c2b757ec23957",
+        "packages/apra-fleet-se/test/mock-sprint-streak-assignment-unmappable-refusal.test.mjs": "859032511686cf3b34ee548fde5caa81ba8b5d4b"
       }
     },
     {
