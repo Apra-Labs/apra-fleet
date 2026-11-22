@@ -151,9 +151,19 @@ export class SePosixCommands {
    * provision_vcs_auth deployed. fleet-sprint only ever READS this file; the
    * write side belongs to core.
    * @param {string} label
+   * @param {string} [memberId] - set only for a member-scoped helper
    * @returns {string}
    */
-  credentialHelperPath(label) {
+  credentialHelperPath(label, memberId) {
+    // A member-scoped helper (member_detail vcsCredentials[].memberScoped) is
+    // the member's own file `.fleet-git-credential-<label>.<member id>`; without
+    // a member id this is the shared per-OS-user file older releases wrote.
+    if (memberId !== undefined && memberId !== null && memberId !== '') {
+      if (!/^[A-Za-z0-9_-]+$/.test(String(memberId))) {
+        throw new Error(`Refusing to build a credential helper path for unsafe member id '${memberId}' (allowed: letters, digits, '_', '-').`);
+      }
+      return this.homePath(`.fleet-git-credential-${label}.${memberId}${this.credentialHelperSuffix}`);
+    }
     return this.homePath(`.fleet-git-credential-${label}${this.credentialHelperSuffix}`);
   }
 
@@ -171,8 +181,8 @@ export class SePosixCommands {
    * @param {string} label
    * @returns {{ command: string, descriptor: string }}
    */
-  readCredentialHelper(label) {
-    const descriptor = this.credentialHelperPath(label);
+  readCredentialHelper(label, memberId) {
+    const descriptor = this.credentialHelperPath(label, memberId);
     return { command: this.wrapForMember(this.invoke(descriptor)), descriptor };
   }
 
@@ -187,11 +197,11 @@ export class SePosixCommands {
    * @param {string} label
    * @returns {{ command: string, descriptor: string }}
    */
-  readCredentialHelperUsername(label) {
+  readCredentialHelperUsername(label, memberId) {
     if (!/^[A-Za-z0-9._-]+$/.test(String(label))) {
       throw new Error(`Refusing to build a credential username-read command for unsafe VCS credential label '${label}' (allowed: letters, digits, '.', '_', '-').`);
     }
-    const descriptor = this.credentialHelperPath(label);
+    const descriptor = this.credentialHelperPath(label, memberId);
     return { command: this.wrapForMember(`${this.invoke(descriptor)} | grep '^username='`), descriptor };
   }
 

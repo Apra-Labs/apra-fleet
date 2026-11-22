@@ -10,10 +10,12 @@
 // (provisionOutcome below), keeping the prose regexes only as a fallback for
 // a result with no structuredContent at all.
 import { ApraFleet } from '@apralabs/apra-fleet-client';
-import { buildCreatePrCommand, buildFindPrCommand, buildUpdatePrCommand, resolveProvider, capabilities as vcsCapabilities, parseProviderRepoRef, getVcsProvider, resolveVcsAuthProviderForHost, isAuthBackend, VCS_NO_REGISTERED_PROVIDER, DEFAULT_VCS_PROVIDER } from './vcs-module.mjs';
+import { buildCreatePrCommand, buildFindPrCommand, buildUpdatePrCommand, getProviderTextLimits, resolveProvider, capabilities as vcsCapabilities, parseProviderRepoRef, getVcsProvider, resolveVcsAuthProviderForHost, isAuthBackend, VCS_NO_REGISTERED_PROVIDER, DEFAULT_VCS_PROVIDER } from './vcs-module.mjs';
 import { getSeCommands } from './se-os-commands.mjs';
 import { resolveMemberTarget } from './member-target.mjs';
 import { resultText } from './mcp-result.mjs';
+import { resolveVcsPayloadDir, memberPayloadPath, execVcsWithPayload } from './vcs-payload.mjs';
+import { publishPrOverflowComments } from './pr-overflow-comments.mjs';
 
 /**
  * Best-effort, GENERIC extraction of an "owner/repo" string from a git remote
@@ -504,9 +506,18 @@ async function provisionVcsAuthForMember({ fleetApi, command, member, log = () =
     const provisionedExpiry = typeof rawExpiresAt === 'string' && rawExpiresAt.trim() !== ''
         ? new Date(rawExpiresAt)
         : null;
+    // The repo scope the server actually deployed, from the structured
+    // provider metadata (`structuredContent.metadata.repos`, a comma-separated
+    // owner/repo list). null when absent means "not repo-scoped" (provider-
+    // wide), which the preflight cache reads as covering every repo. Inlined
+    // for the same facade-pin reason as the expiry parse above.
+    const rawMetadata = provisionRes && provisionRes.structuredContent ? provisionRes.structuredContent.metadata : null;
+    const rawScope = rawMetadata && typeof rawMetadata.repos === 'string' ? rawMetadata.repos : null;
+    const scopeList = rawScope === null ? [] : rawScope.split(',').map((r) => r.trim()).filter(Boolean);
     return {
         expiresAt: provisionedExpiry && !Number.isNaN(provisionedExpiry.getTime()) ? provisionedExpiry : null,
         repo: derivedRepo,
+        scopeRepos: scopeList.length > 0 ? scopeList : null,
     };
 }
 
@@ -658,10 +669,11 @@ export const PR_SKIPPED_NO_MCP_CLIENT = 'pr-skipped-no-mcp-client';
 /**
  * @param {{ os?: string, shell?: string }|string} target
  * @param {string} label
+ * @param {string} [memberId] - set only for a member-scoped helper (member_detail vcsCredentials[].memberScoped)
  * @returns {{ command: string, descriptor: string }}
  */
-export function buildCredentialReadCommand(target, label) {
-    return getSeCommands(target).readCredentialHelper(label);
+export function buildCredentialReadCommand(target, label, memberId) {
+    return getSeCommands(target).readCredentialHelper(label, memberId);
 }
 
 // Splits a VCSModule create-pull-request curl result's captured stdout into
@@ -769,7 +781,18 @@ function isPrAuthFailure(status, errorText) {
 // the caller to log as a WARNING, leaving the PR as it was. Without
 // `updateExisting` the returned shape is exactly the historical one.
 /**
- * @param {{ fleetApi: object, command: Function, member: string, base: string, head: string, title: string, body?: string, log?: Function, logPrefix: string, updateExisting?: Function }} opts
+ * `body` may also be a function of the provider's text limits
+ * ({ descriptionMaxLength, commentMaxLength }, see vcs-module.mjs
+ * getProviderTextLimits), called once the provider is resolved, and
+ * `updateExisting(old, limits)` receives the same limits as its second
+ * argument; either may answer a string or a { body } object. A pr-body.mjs
+ * buildSprintPrBody answer ({ body, comments, failedBody, ... }) also has its
+ * reviewer-notes overflow posted as engine-marked PR comments once the PR is
+ * created or updated (upserted on a relaunch, see ./pr-overflow-comments.mjs);
+ * the result then carries `overflow` ({ ok, posted, updated, unchanged,
+ * removed, error }). An overflow failure never fails the call: it is logged
+ * as a WARNING and the description is rewritten to point at the run log.
+ * @param {{ fleetApi: object, command: Function, member: string, base: string, head: string, title: string, body?: string|Function, log?: Function, logPrefix: string, updateExisting?: Function }} opts
  * @returns {Promise<{ ok: boolean, alreadyExists: boolean, prUrl: string|null, error: string|null, authFailure: boolean, updated?: boolean, updateError?: string|null }>}
  */
 export async function raiseVcsPrForMember({ fleetApi, command, member, base, head, title, body, log = () => {}, logPrefix, remoteUrlOverride, updateExisting }) {
@@ -855,6 +878,23 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
     // resolveProvider() throw here -- use the provider the skip named instead.
     const { provider } = skippedProvider ? { provider: skippedProvider } : await resolveProvider(member, { fleetApi });
     const credentialLabel = vcsCredentialLabelForProvider(provider);
+    // The provider's own text limits (its descriptor's descriptionMaxLength /
+    // commentMaxLength). A caller that passes `body` (or answers
+    // `updateExisting`) as a function of these gets a description built to
+    // THIS provider's limit rather than one global cap; a function answer may
+    // be a string or a pr-body.mjs buildSprintPrBody result ({ body, ... }).
+    const textLimits = getProviderTextLimits(provider);
+    const bodyText = (v) => (v && typeof v === 'object' && typeof v.body === 'string' ? v.body : v);
+    // A { body, comments, failedBody, ... } answer (pr-body.mjs
+    // buildSprintPrBody) also carries the reviewer-notes overflow, posted as
+    // PR comments once the PR exists (publishOverflow below).
+    const bodyParts = (v) => (v && typeof v === 'object' && Array.isArray(v.comments) ? v : null);
+    let createParts = null;
+    if (typeof body === 'function') {
+        const composed = body(textLimits);
+        createParts = bodyParts(composed);
+        body = bodyText(composed);
+    }
     // The provider's operator-facing remedy, appended to every degraded
     // (authFailure) outcome below when the credential is out-of-band only.
     const skippedRemedy = () => {
@@ -918,6 +958,20 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
     // endpoint for a windows+gitbash member).
     const { os, shell } = await resolveMemberTarget({ fleetApi, member, log });
 
+    // Request bodies (PR description, title) travel as a member-side file
+    // (curl --data-binary @<path>), never inline on the command line -- see
+    // vcs-payload.mjs. The absolute directory is resolved here, in JS, from
+    // the member registry; a member whose work folder cannot be resolved
+    // cannot publish, and says so loudly instead of falling back to inline.
+    const payloadDirRes = await resolveVcsPayloadDir({ fleetApi, member, memberOs: os });
+    if (payloadDirRes.error) {
+        const message = `Cannot raise a PR for member '${member}': ${payloadDirRes.error}`;
+        log(`${logPrefix}: ${message}`);
+        return { ok: false, alreadyExists: false, prUrl: null, error: message, authFailure: false };
+    }
+    const payloadPath = () => memberPayloadPath(payloadDirRes.dir).path;
+    const execVcs = (b) => execVcsWithPayload({ fleetApi, command, member, label: credentialLabel, built: b, target: { os, shell }, log, logPrefix });
+
     // The provider's own coordinate shape (e.g. Azure DevOps' org/project/repo
     // -- see VCSModule.parseProviderRepoRef()/that provider's parseRepoRef
     // hook) when one exists; null for a provider with no such hook (GitHub),
@@ -945,7 +999,7 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
         // eslint-disable-next-line no-constant-condition
         while (true) {
             const b = buildFn();
-            const res = await fleetApi.vcsCredentialExec({ member_name: member, label: credentialLabel, command: b.command });
+            const res = await execVcs(b);
             const h = (res && res.structuredContent) || {};
             if (!h.ok || (typeof h.exitCode === 'number' && h.exitCode !== 0)) {
                 return { ok: false, error: `${what} dispatch failed (${h.reason || 'nonzero exit'}): ${h.stderr || resultText(res) || '(no detail)'}` };
@@ -984,6 +1038,47 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
             return { ok: false, error: (err && err.message) ? err.message : String(err) };
         }
     };
+    // Posts (or, on a relaunch, upserts) the reviewer-notes overflow as
+    // engine-marked PR comments (./pr-overflow-comments.mjs). Never throws and
+    // never fails the publish: a failure is logged as a WARNING naming the PR
+    // and chunk, and the description is rewritten to point at the run log
+    // (parts.failedBody). Returns null when the body carries no overflow
+    // contract (a plain string body) or there is nothing to do.
+    const publishOverflow = async ({ prId, prUrl, parts, existing, prTitle }) => {
+        if (!parts) return null;
+        const comments = parts.comments || [];
+        if (!comments.length && !(existing && parts.previousHadOverflow)) return null;
+        const label = prUrl || `#${prId}`;
+        if (prId === null || prId === undefined || prId === '') {
+            log(`${logPrefix}: WARNING: the PR id is unknown, so the ${comments.length} reviewer-notes overflow comment(s) could not be posted -- the full notes are in this run log.`);
+            return { ok: false, posted: 0, error: 'PR id unknown' };
+        }
+        let res;
+        try {
+            res = await publishPrOverflowComments({
+                comments, prId, prLabel: label, existing, run: runUpdatePathCall, coords, payloadPath, log, logPrefix,
+            });
+        } catch (err) {
+            const error = (err && err.message) ? err.message : String(err);
+            log(`${logPrefix}: WARNING: posting the reviewer-notes overflow comments on PR ${label} failed: ${error} -- the full notes are in this run log.`);
+            res = { ok: false, posted: 0, error };
+        }
+        if (res.ok) {
+            if (comments.length) log(`${logPrefix}: reviewer-notes overflow on PR ${label}: ${comments.length} comment(s) (${res.posted || 0} posted, ${res.updated || 0} updated, ${res.unchanged || 0} unchanged)${res.removed ? `, ${res.removed} earlier comment(s) removed` : ''}.`);
+            else if (res.removed) log(`${logPrefix}: removed ${res.removed} earlier reviewer-notes overflow comment(s) from PR ${label} (this run's notes fit the description).`);
+            return res;
+        }
+        // A partial failure (some comments did reach the PR) names how many.
+        const onPr = (res.posted || 0) + (res.updated || 0) + (res.unchanged || 0);
+        const failedBody = typeof parts.failedBodyFor === 'function' ? parts.failedBodyFor(onPr) : parts.failedBody;
+        if (failedBody) {
+            const fix = await runUpdatePathCall(() => buildUpdatePrCommand({
+                ...coords(), pull_request_id: prId, payload_path: payloadPath(), title: prTitle, body: failedBody,
+            }), 'update-pull-request');
+            if (!fix.ok) log(`${logPrefix}: WARNING: could not rewrite the description of PR ${label} to say the overflow comments were not posted: ${fix.error}`);
+        }
+        return res;
+    };
     // `knownPr` skips the lookup when the caller already found the PR.
     const updateExistingPr = async (knownPr = null) => {
         try {
@@ -996,12 +1091,15 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
                 }
                 pr = found.prs[0];
             }
-            const next = updateExisting({ title: pr.title, body: pr.body }) || {};
+            const next = { ...(updateExisting({ title: pr.title, body: pr.body }, textLimits) || {}) };
+            const nextParts = bodyParts(next.body);
+            if (next.body !== undefined) next.body = bodyText(next.body);
             let warned = false;
             const upd = await runUpdatePathCall(() => {
                 const b = buildUpdatePrCommand({
                     ...coords(),
                     pull_request_id: pr.id,
+                    payload_path: payloadPath(),
                     title: next.title || title,
                     body: next.body !== undefined ? next.body : body,
                 });
@@ -1012,7 +1110,8 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
                 return b;
             }, 'update-pull-request');
             if (!upd.ok) return { updated: false, updateError: upd.error, prUrl: pr.url };
-            return { updated: true, updateError: null, prUrl: pr.url };
+            const overflow = await publishOverflow({ prId: pr.id, prUrl: pr.url, parts: nextParts, existing: true, prTitle: next.title || title });
+            return { updated: true, updateError: null, prUrl: pr.url, ...(overflow ? { overflow } : {}) };
         } catch (err) {
             return { updated: false, updateError: (err && err.message) ? err.message : String(err), prUrl: null };
         }
@@ -1032,7 +1131,7 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
                 const upd = await updateExistingPr(pr);
                 const updUrl = upd.prUrl || pr.url;
                 if (updUrl) log(`${logPrefix}: updated PR URL for member '${member}': ${updUrl}`);
-                return { ok: true, alreadyExists: true, prUrl: updUrl, error: null, authFailure: false, updated: upd.updated, updateError: upd.updateError };
+                return { ok: true, alreadyExists: true, prUrl: updUrl, error: null, authFailure: false, updated: upd.updated, updateError: upd.updateError, ...(upd.overflow ? { overflow: upd.overflow } : {}) };
             }
             if (!pre.ok) {
                 log(`${logPrefix}: could not check for an existing open PR before creating (${pre.error}); creating a new one.`);
@@ -1053,6 +1152,7 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
             provider,
             ...(repoRef ? { repoRef } : { repo }),
             base, head, title, body, token, os, shell,
+            payload_path: payloadPath(),
         });
 
         if (built.descriptionTruncated && !truncationWarned) {
@@ -1074,11 +1174,7 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
                 + 'to a version that provides the vcs_credential_exec tool.',
             );
         }
-        const execRes = await fleetApi.vcsCredentialExec({
-            member_name: member,
-            label: credentialLabel,
-            command: built.command,
-        });
+        const execRes = await execVcs(built);
         const handoff = (execRes && execRes.structuredContent) || {};
         const handoffText = resultText(execRes);
         // A credential-side failure HARD-FAILS, exactly as reading the token
@@ -1140,7 +1236,8 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
                 ? impl.pullRequestResponse.map(respBody, repoRef ? { repoRef } : { repo })
                 : { id: null, url: null };
             if (mapped.url) log(`${logPrefix}: opened PR URL for member '${member}': ${mapped.url}`);
-            return { ok: true, alreadyExists: false, prUrl: mapped.url, error: null, authFailure: false };
+            const overflow = await publishOverflow({ prId: mapped.id, prUrl: mapped.url, parts: createParts, existing: false, prTitle: title });
+            return { ok: true, alreadyExists: false, prUrl: mapped.url, error: null, authFailure: false, ...(overflow ? { overflow } : {}) };
         }
 
         const errorMessages = [];
@@ -1159,7 +1256,7 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
             const existing = { ok: true, alreadyExists: true, prUrl: existingUrl, error: null, authFailure: false };
             if (typeof updateExisting !== 'function') return existing;
             const upd = await updateExistingPr();
-            return { ...existing, prUrl: upd.prUrl || existingUrl, updated: upd.updated, updateError: upd.updateError };
+            return { ...existing, prUrl: upd.prUrl || existingUrl, updated: upd.updated, updateError: upd.updateError, ...(upd.overflow ? { overflow: upd.overflow } : {}) };
         }
 
         const authFailed = isPrAuthFailure(status, errorText);
@@ -1182,7 +1279,7 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
                 const existing = { ok: true, alreadyExists: true, prUrl: pr.url, error: null, authFailure: false };
                 if (typeof updateExisting !== 'function') return existing;
                 const upd = await updateExistingPr(pr);
-                return { ...existing, prUrl: upd.prUrl || pr.url, updated: upd.updated, updateError: upd.updateError };
+                return { ...existing, prUrl: upd.prUrl || pr.url, updated: upd.updated, updateError: upd.updateError, ...(upd.overflow ? { overflow: upd.overflow } : {}) };
             }
             if (!found.ok) {
                 log(`${logPrefix}: could not check for an existing open PR after the create failure (${found.error}); reporting the create failure.`);
@@ -1502,6 +1599,14 @@ export function createVcsAuthPreflightCallback(opts = {}) {
     const fleetApi = new ApraFleet({ callTool });
     /** @type {Map<string, Date|null>} member -> last-known expiresAt (null = no expiry tracked, e.g. PAT mode). */
     const knownGoodUntil = new Map();
+    // Scope half of the freshness cache: member -> { repo, scopeRepos } from
+    // the last provision. repo is the sprint repo derived from the member's
+    // remote; scopeRepos is the repo list the deployed credential covers
+    // (null = provider-wide). Expiry alone is not enough: a credential that
+    // is still fresh but no longer covers the sprint repo gets a 403 on the
+    // next push, so such an entry is never treated as fresh.
+    /** @type {Map<string, { repo: string|null, scopeRepos: string[]|null }>} */
+    const knownScope = new Map();
     // apra-fleet-d1pk.3: PROBE-FIRST branch for members whose credential the
     // fleet cannot mint (provider authRemedy.serverSideReMintable === false,
     // e.g. Bitbucket API tokens, Azure DevOps PATs). Provisioning such a
@@ -1628,7 +1733,18 @@ export function createVcsAuthPreflightCallback(opts = {}) {
         }
 
         if (typeof probe.expectedUsername === 'string') {
-            const read = getSeCommands(plan.target).readCredentialHelperUsername(label);
+            // A member-scoped helper is the member's own per-member file. The
+            // record is read fresh: a provision earlier in this run may have
+            // just replaced a shared legacy helper with one.
+            let helperMemberId;
+            try {
+                const rec = await readMemberRecord(member, fleetApi);
+                const entry = rec && Array.isArray(rec.vcsCredentials) ? rec.vcsCredentials.find((e) => e && e.label === label) : null;
+                if (entry && entry.memberScoped === true && typeof rec.id === 'string') helperMemberId = rec.id;
+            } catch {
+                // No record: read the shared legacy helper path.
+            }
+            const read = getSeCommands(plan.target).readCredentialHelperUsername(label, helperMemberId);
             let userRes;
             try {
                 userRes = await command(read.command, { member_name: member, silent: true, failSoft: true });
@@ -1700,8 +1816,9 @@ export function createVcsAuthPreflightCallback(opts = {}) {
         // for a credentialProbe provider the labelled credential is re-probed
         // after it and that re-probe decides the verdict.
         try {
-            const { expiresAt } = await provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix: '[Sync] preflight', azdevopsPatSecretName, refuseLocalNonReMintable: true });
+            const { expiresAt, repo, scopeRepos } = await provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix: '[Sync] preflight', azdevopsPatSecretName, refuseLocalNonReMintable: true });
             knownGoodUntil.set(member, expiresAt);
+            knownScope.set(member, { repo: repo || null, scopeRepos: scopeRepos || null });
         } catch (err) {
             probeVerdicts.set(member, 'failed');
             logProbeFailure(member, plan, `${why}; provision_vcs_auth also failed: ${err.message}`, { remedy: cred.remedy, noPr: !cred.ok });
@@ -1742,7 +1859,16 @@ export function createVcsAuthPreflightCallback(opts = {}) {
         }
         if (knownGoodUntil.has(member)) {
             const expiresAt = knownGoodUntil.get(member);
-            if (expiresAt === null || expiresAt.getTime() - now() > VCS_AUTH_EXPIRY_PREFLIGHT_MS) {
+            // Scope check: a cached credential whose recorded repo scope does
+            // not include the sprint repo (case-insensitive) is not fresh,
+            // whatever its expiry. null scope (provider-wide) or an unknown
+            // sprint repo keeps the expiry-only decision.
+            const scope = knownScope.get(member);
+            const scopeCovers = !scope || !scope.repo || !scope.scopeRepos
+                || scope.scopeRepos.some((r) => r.toLowerCase() === scope.repo.toLowerCase());
+            if (!scopeCovers) {
+                log(`[Sync] preflight: cached credential for member '${member}' does not cover repo '${scope.repo}' (scope: ${scope.scopeRepos.join(', ')}); re-provisioning even though it has not expired.`);
+            } else if (expiresAt === null || expiresAt.getTime() - now() > VCS_AUTH_EXPIRY_PREFLIGHT_MS) {
                 // Still fresh (or a no-expiry credential type) -- skip, so
                 // this is not an unconditional provisioning call on every
                 // dispatch. Still state WHY nothing was provisioned, so the
@@ -1755,8 +1881,9 @@ export function createVcsAuthPreflightCallback(opts = {}) {
         }
         log(`[Sync] preflight: ensuring member '${member}' has a fresh VCS credential before dispatch; calling provision_vcs_auth.`);
         try {
-            const { expiresAt } = await provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix: '[Sync] preflight', azdevopsPatSecretName, refuseLocalNonReMintable: true });
+            const { expiresAt, repo, scopeRepos } = await provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix: '[Sync] preflight', azdevopsPatSecretName, refuseLocalNonReMintable: true });
             knownGoodUntil.set(member, expiresAt);
+            knownScope.set(member, { repo: repo || null, scopeRepos: scopeRepos || null });
             log(`[Sync] preflight: provision_vcs_auth succeeded for member '${member}'${expiresAt ? ` (expires ${expiresAt.toISOString()})` : ''}.`);
         } catch (err) {
             log(`[Sync] preflight: provision_vcs_auth failed for member '${member}' (continuing -- the existing credential may still be valid; the reactive self-heal will fire if a git/dolt command actually fails): ${err.message}`);

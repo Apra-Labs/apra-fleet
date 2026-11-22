@@ -1,7 +1,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { createKbWorkClient, createKbPrimingClient, KB_MAINTAINER_CALL } from '../fleet-sprint/kb.mjs';
-import { selfMaintainer } from './helpers/kb-maintainer-fakes.mjs';
+import { selfMaintainer, currentServerListTools } from './helpers/kb-maintainer-fakes.mjs';
 import { createMemberCall } from '../fleet-sprint/member-call.mjs';
 
 // =============================================================================
@@ -25,6 +25,7 @@ function harness() {
         if (tool === 'kb_bible_commit') {
             return { content: [{ text: JSON.stringify({ path: '.fleet/kb-canonical.json', merged: args.ids, skipped: [], entry_count: args.ids.length, committed: true }) }] };
         }
+        if (tool === 'kb_promote') return { content: [{ text: JSON.stringify({ id: args.id, previous_confidence: 'INFERRED', new_confidence: 'CONFIRMED' }) }] };
         if (tool === 'kb_capture') return { content: [{ text: JSON.stringify({ id: 'c1', audn_decision: 'add', confidence_clamped: false }) }] };
         if (tool === 'kb_invalidate') return { content: [{ text: JSON.stringify({ discarded: [args.ids[0]], not_found: [], already_discarded: [] }) }] };
         return { content: [{ text: '{}' }] };
@@ -98,7 +99,7 @@ describe('kb_maintainer grant on engine KB writes', () => {
             ? { id: `id-${args.member_name}`, type: 'local', folder: `/srv/${args.member_name}` }
             : {});
         const priming = createKbPrimingClient({
-            callTool, memberCall, members: ['reviewer-1'],
+            callTool, memberCall, members: ['reviewer-1'], listTools: currentServerListTools,
             maintainers: selfMaintainer(maint, ['maint', 'reviewer-1']),
             log: (m) => logs.push(m),
             ...extra,
@@ -112,24 +113,32 @@ describe('kb_maintainer grant on engine KB writes', () => {
     const REMOTE_MAINT = { id: 'id-rmaint', name: 'maint', type: 'remote' };
     const toolsWith = (props) => ({ tools: [{ name: 'kb_import', inputSchema: { type: 'object', properties: props } }] });
 
-    test('remote maintainer: imported with ref only when its kb_import advertises ref; older or unknown servers are skipped', async () => {
+    // A LOCAL maintainer is served by the separately running local apra-fleet
+    // server, which can be just as old: it is feature-detected the same way.
+    test('remote and local maintainers: imported with ref only when kb_import advertises ref; older or unknown servers are skipped', async () => {
         const cases = [
             { listTools: async () => toolsWith({ path: {}, ref: {} }), expectImport: true },
-            { listTools: async () => toolsWith({ path: {}, skip_sweep: {} }), expectImport: false },
-            { listTools: async () => { throw new Error('unreachable'); }, expectImport: false },
-            { listTools: undefined, expectImport: false },
+            // The WARN names WHY: an older server is told apart from a
+            // tools/list that could not be read (never "older version" then).
+            { listTools: async () => toolsWith({ path: {}, skip_sweep: {} }), expectImport: false, warn: /bible import skipped for 'maint': its kb_import has no 'ref' \(older version; upgrade apra-fleet on that member\)/ },
+            { listTools: async () => { throw new Error('unreachable'); }, expectImport: false, warn: /bible import skipped for 'maint': its tools could not be listed \(unreachable\)$/ },
+            { listTools: async () => 'not json', expectImport: false, warn: /bible import skipped for 'maint': its tools\/list answer was unreadable$/ },
+            { listTools: undefined, expectImport: false, warn: /bible import skipped for 'maint': its tools cannot be listed \(no member session channel\)$/ },
         ];
-        for (const c of cases) {
-            const { priming, calls, logs } = primingHarness({ baseBranch: 'main', listTools: c.listTools }, { maint: REMOTE_MAINT });
+        for (const c of [REMOTE_MAINT, MAINT].flatMap((maint) => cases.map((x) => ({ ...x, maint })))) {
+            const { priming, calls, logs } = primingHarness({ baseBranch: 'main', listTools: c.listTools }, { maint: c.maint });
             await priming.primeAll();
             const imp = calls.filter((x) => x.tool === 'kb_import');
             if (c.expectImport) {
                 assert.equal(imp.length, 1, JSON.stringify(calls));
-                assert.deepEqual(imp[0].args, { skip_sweep: true, ref: 'refs/remotes/origin/main' });
+                assert.deepEqual(imp[0].args, { skip_sweep: true, ref: 'refs/remotes/origin/main', base_branch: 'main' });
                 assert.deepEqual(imp[0].opts, { kbMaintainer: true });
             } else {
                 assert.equal(imp.length, 0, JSON.stringify(calls));
-                assert.ok(logs.some((m) => /has no kb_import 'ref' \(older version\) -- bible import skipped/.test(m)), logs.join('\n'));
+                assert.ok(logs.some((m) => c.warn.test(m)), `${c.warn}\n${logs.join('\n')}`);
+                if (!/older version/.test(String(c.warn))) {
+                    assert.ok(!logs.some((m) => /older version/.test(m)), `a listing failure is not an older version:\n${logs.join('\n')}`);
+                }
             }
             assert.ok(calls.some((x) => x.tool === 'kb_session_prime'), 'priming itself still runs');
         }
@@ -141,6 +150,31 @@ describe('kb_maintainer grant on engine KB writes', () => {
         assert.ok(logs.some((m) => /WARN kb_import on 'maint' did not report reading refs\/remotes\/origin\/main/.test(m)), logs.join('\n'));
     });
 
+    test('an http bible_skipped import logs the no-bible line and no upgrade WARN', async () => {
+        const { priming, logs } = primingHarness({ baseBranch: 'main' }, { importResult: { bible_skipped: true, reason: 'the KB is served over http' } });
+        await priming.primeAll();
+        assert.ok(logs.some((m) => /no bible import for 'reviewer-1': the KB is served over http/.test(m)), logs.join('\n'));
+        assert.ok(!logs.some((m) => /upgrade apra-fleet on that member/.test(m)), logs.join('\n'));
+    });
+
+    test("the import's merged withdrawals are logged once, with per-outcome counts and the withdrawn ids; an empty report logs nothing", async () => {
+        const withdrawals = {
+            sent: 3, withdrawn: ['0123456789abcdef', 'fedcba9876543210'], repromoted: ['aaaaaaaa-1'], already: [],
+            not_found: [], unsupported: [], deferred: [],
+        };
+        const { priming, logs } = primingHarness({ baseBranch: 'main' }, { importResult: { imported: 0, bible_source: 'refs/remotes/origin/main', withdrawals } });
+        await priming.primeAll();
+        const lines = logs.filter((m) => /merged withdrawals/.test(m));
+        assert.deepEqual(lines, [
+            "[kb-prime] merged withdrawals for 'reviewer-1': sent=3 withdrawn=2 repromoted=1 already=0 not_found=0 unsupported=0 deferred=0; withdrawn: 01234567, fedcba98",
+        ], logs.join('\n'));
+
+        const empty = { sent: 0, withdrawn: [], repromoted: [], already: [], not_found: [], unsupported: [], deferred: [] };
+        const quiet = primingHarness({ baseBranch: 'main' }, { importResult: { imported: 0, bible_source: 'refs/remotes/origin/main', withdrawals: empty } });
+        await quiet.priming.primeAll();
+        assert.ok(!quiet.logs.some((m) => /merged withdrawals/.test(m)), quiet.logs.join('\n'));
+    });
+
     test('the priming kb_import on the maintainer carries the grant and reads the base branch ref; kb_session_prime does not', async () => {
         const { priming, calls } = primingHarness({ baseBranch: 'main' });
         await priming.primeAll();
@@ -149,7 +183,7 @@ describe('kb_maintainer grant on engine KB writes', () => {
         assert.equal(imp.length, 1, JSON.stringify(calls));
         assert.equal(imp[0].member, 'maint');
         assert.deepEqual(imp[0].opts, { kbMaintainer: true });
-        assert.deepEqual(imp[0].args, { skip_sweep: true, ref: 'refs/remotes/origin/main' });
+        assert.deepEqual(imp[0].args, { skip_sweep: true, ref: 'refs/remotes/origin/main', base_branch: 'main' });
         for (const c of calls.filter((c) => c.tool === 'kb_session_prime')) {
             assert.equal(c.opts, undefined, 'the prime read is not made with the maintainer grant');
         }
@@ -187,7 +221,7 @@ describe('kb_maintainer writes against a member install that predates --kb-maint
         });
         const memberCall = async (member, tool, args, opts) => {
             if (tool === 'kb_query') return { l1_results: [{ id: 'e1' }, { id: 'e2' }] };
-            if (tool === 'kb_promote' && promoteOk) return { content: [{ text: '{}' }] };
+            if (tool === 'kb_promote' && promoteOk) return { content: [{ text: JSON.stringify({ id: args.id, previous_confidence: 'INFERRED', new_confidence: 'CONFIRMED' }) }] };
             if (opts && opts.kbMaintainer === true) return gated.memberCall(member, tool, args, opts);
             return { content: [{ text: '{}' }] };
         };

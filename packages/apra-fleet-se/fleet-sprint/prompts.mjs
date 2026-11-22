@@ -12,10 +12,9 @@
 // stay in runner.js (out of this bead's scope) and are imported back here;
 // the resulting runner.js <-> prompts.mjs cycle is safe because every use is
 // inside a function body, never at module-evaluation time.
-import { wrapUntrustedBlock } from './contracts.mjs';
-import { PR_DESCRIPTION_MAX_LENGTH } from './vcs-module.mjs';
+import { wrapUntrustedBlock, MERGE_RECOMMENDATIONS } from './contracts.mjs';
 import { formatStalenessBlock } from './parent-notes-staleness.mjs';
-import { buildRejectedNewTaskResurfaceLines, kbKnowledgeBlock, kbPromotionBlock } from './runner.js';
+import { buildRejectedNewTaskResurfaceLines, kbKnowledgeBlock, kbPromotionBlock, kbDemotionBlock } from './runner.js';
 
 /**
  * Deterministic hard cap on the code-reviewer findings text threaded into a
@@ -229,10 +228,11 @@ export function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requireme
  *   priorRoundVerdicts?: Array<{ round: number, verdict: string, notes: string|null }>,
  *   replanScope?: string[]|null,
  *   stalenessNotes?: string[],
+ *   decisionSetAside?: Array<{ id: string, decisionBeadId?: string|null, kind?: string }>,
  * }} opts
  * @returns {string}
  */
-export function buildPlanReviewerPrompt({ targetIssues, goal, priorRoundVerdicts = [], replanScope = null, verifyExcluded = [], stalenessNotes = [] }) {
+export function buildPlanReviewerPrompt({ targetIssues, goal, priorRoundVerdicts = [], replanScope = null, verifyExcluded = [], stalenessNotes = [], decisionSetAside = [] }) {
     const hasReplanScope = Array.isArray(replanScope) && replanScope.length > 0;
     const lines = [
         'Review the beads DAG created by the planner for this sprint, per your agent contract.',
@@ -260,6 +260,22 @@ export function buildPlanReviewerPrompt({ targetIssues, goal, priorRoundVerdicts
             `closed) and routed to integration-test verification this cycle: ${verifyExcluded.join(', ')}. ` +
             `Do not withhold approval on the grounds that they are undecomposed, uncovered, or ` +
             `missing model metadata -- they are out of scope for this plan review entirely.`
+        );
+    }
+
+    // Beads this run holds aside for a pending operator decision (a doer,
+    // reviewer or planner NEEDS-DECISION, ./decisions.mjs). Absent when none is
+    // pending, so an ordinary plan-review prompt is unchanged. The engine also
+    // treats a CHANGES_NEEDED whose findings name only these beads as
+    // non-blocking (phases/plan.mjs), so this clause and the gate agree.
+    if (Array.isArray(decisionSetAside) && decisionSetAside.length > 0) {
+        const held = decisionSetAside.map((d) => (d.decisionBeadId ? `${d.id} (decision bead ${d.decisionBeadId})` : d.id));
+        lines.push(
+            `SET ASIDE FOR AN OPERATOR DECISION -- these bead(s) are held aside for the rest of this ` +
+            `run until an operator answers a pending decision: ${held.join(', ')}. They are ` +
+            `NON-BLOCKING: do not withhold approval over them and do not reject the plan for the ` +
+            `finding that raised the decision again -- the operator's answer, not another plan ` +
+            `round, settles it. Mention them as non-blocking notes only.`
         );
     }
 
@@ -470,6 +486,8 @@ export function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranc
         // which of this sprint's captures earned CONFIRMED.
         ...(Array.isArray(kbBlock) ? kbBlock : kbKnowledgeBlock(kbKnowledge)),
         ...kbPromotionBlock(kbCandidates),
+        // No demotion block: demotion candidates are offered at the final
+        // verdict only (buildFinalVerdictPrompt).
         'Do NOT run any `bd` command yourself and do NOT mutate beads directly in any way ' +
         '(no bd update, bd close, bd create, etc.) -- the orchestrator applies your ' +
         '`reopenIds` via `bd update <id> --status=open` and creates your `newTasks` via ' +
@@ -503,7 +521,7 @@ export function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranc
  * }} opts
  * @returns {string}
  */
-export function buildFinalVerdictPrompt({ targetIssues, branch, baseBranch, mergeBaseSha, goal, cyclesRun, closedCount, openAtGoalCount, deployFailures, integFailures, rejectedNewTasks = [], unclosedVerifyIds = [], deferredAtGoalIds = [], kbCandidates, kbKnowledge, kbBlock }) {
+export function buildFinalVerdictPrompt({ targetIssues, branch, baseBranch, mergeBaseSha, goal, cyclesRun, closedCount, openAtGoalCount, deployFailures, integFailures, rejectedNewTasks = [], unclosedVerifyIds = [], deferredAtGoalIds = [], kbCandidates, kbDemoteCandidates, kbKnowledge, kbBlock }) {
     const range = reviewDiffRange(mergeBaseSha, branch);
     const lines = [
         `Final review for sprint scope issue id(s): ${targetIssues.join(', ')}.`,
@@ -577,11 +595,11 @@ export function buildFinalVerdictPrompt({ targetIssues, branch, baseBranch, merg
         // command string, and spelling them as escaped backticks inside a
         // template literal is exactly the construct shell-command-guard.mjs
         // flags. Plain concatenation keeps the emitted text byte-identical.
-        'Keep `notes` concise: it is embedded verbatim into the pull request description this ' +
-        'sprint raises, which has a hard cap of ' + PR_DESCRIPTION_MAX_LENGTH + ' characters -- a pull ' +
-        'request whose description exceeds that many characters can be rejected outright by the ' +
-        'hosting provider. A too-long `notes` value is truncated before the pull request is raised, ' +
-        'so anything past the limit is silently lost; stay well within it so your findings actually reach the reviewer.'
+        'Keep `notes` focused and put the most important findings first: they are embedded into the ' +
+        'pull request this sprint raises, after the sprint verdict and the merge assessment. Each ' +
+        'hosting provider limits how long a pull request description may be; notes that do not fit ' +
+        'continue in pull request comments posted below the description, so nothing is dropped, but ' +
+        'a reviewer reads the description first.'
     );
     lines.push(
         'Return any actionable findings as `newTasks` (title, description, priority each) so they ' +
@@ -604,6 +622,24 @@ export function buildFinalVerdictPrompt({ targetIssues, branch, baseBranch, merg
         'NEVER touch beads yourself (no bd create/update/reopen) -- the orchestrator applies your ' +
         'newTasks and reopenIds.'
     );
+    lines.push(
+        // Single-quoted on purpose, like the notes paragraph above: the code
+        // spans are agent-prompt prose, never a dispatched command string.
+        'Also return a `merge_assessment` object: a risk/value assessment of merging this sprint\'s net diff, ' +
+        'shown near the top of the pull request description so whoever merges sees it first. Give every field, ' +
+        'each a short plain-text answer grounded in the diff and the evidence above: ' +
+        '`value` (what merging delivers), ' +
+        '`risk` (what could go wrong, how likely and how severe), ' +
+        '`default_path_changes` (behaviour that changes for users who change nothing -- say "none" if none), ' +
+        '`blast_radius` (which components, users or workflows are affected if a change is wrong), ' +
+        '`upgrade_impact` (what an existing installation must do or will notice on upgrade -- say "none" if none), ' +
+        '`proof` (the evidence that it works, and what is still unproven), ' +
+        '`recommendation` (exactly one of ' + MERGE_RECOMMENDATIONS.map((r) => '`' + r + '`').join(', ') + ') and ' +
+        '`reason` (why that recommendation; for `merge_after_proof`, name the proof still needed). ' +
+        'Recommend `merge` only when the proof covers the risk, `merge_after_proof` when the change looks right ' +
+        'but a named check is still missing, and `do_not_merge` when the change is wrong or its risk outweighs its value. ' +
+        'Keep the whole assessment brief: it shares the pull request description length limit with `notes`.'
+    );
     // apra-fleet-nx7: the Final Review is the best-positioned promoter in the
     // whole run -- it has read the entire diff, run the full suite and judged the
     // sprint as a whole, which is exactly the evidence standard reviewer.md
@@ -613,6 +649,7 @@ export function buildFinalVerdictPrompt({ targetIssues, branch, baseBranch, merg
     // and was stranded at INFERRED forever.
     lines.push(...(Array.isArray(kbBlock) ? kbBlock : kbKnowledgeBlock(kbKnowledge)));
     lines.push(...kbPromotionBlock(kbCandidates));
+    lines.push(...kbDemotionBlock(kbDemoteCandidates));
     return lines.join('\n\n');
 }
 

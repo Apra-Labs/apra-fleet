@@ -13,7 +13,7 @@
         "query": {
           "type": "string",
           "minLength": 1,
-          "description": "Free-text search string. Required unless flagged_only is true or tag is provided."
+          "description": "Free-text search string. Required unless flagged_only is true, or tag, files or symbols is provided."
         },
         "type": {
           "type": "string",
@@ -31,11 +31,29 @@
         },
         "limit": {
           "type": "number",
-          "description": "Max L1 results (default 20)"
+          "description": "Max L1 results. Default 20 with the full row shape and the content of the top 5 hits in l2_expanded. A MEMBER session that omits it (without own_scope) gets at most 6 summary rows (id, type, title, summary, confidence, source_files, symbols) and an empty l2_expanded; pass a limit to get the full row shape and the content."
         },
         "include_stale": {
           "type": "boolean",
           "description": "Include stale and superseded entries (default false)"
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "description": "Look up by file: return only entries whose source_files cite one of these repo-relative paths, or a file under one of them when the path is a directory (e.g. \"src/services\" matches \"src/services/a.ts\"). Backslashes and a leading \"./\" are normalised; an absolute path inside the repository is made repo-relative. A hard filter: an entry citing none of them is never returned, however well it matches query. Ranking inside the kept set is unchanged (keyword ranking with query, newest first without). May be used without query. With symbols too, an entry matching either is kept. Ignored when flagged_only is true."
+        },
+        "symbols": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "description": "Return only entries whose symbols array names one of these symbols (exact, case-sensitive match). A hard filter like files; with files too, an entry matching either is kept. May be used without query. Ignored when flagged_only is true."
         },
         "flagged_only": {
           "type": "boolean",
@@ -61,6 +79,10 @@
         "exclude_disputed": {
           "type": "boolean",
           "description": "Drop entries on either side of an unresolved contradiction (flagged_for_review, or contradiction_of set). Applies to l1_results, l2_expanded and related_claims alike. Default true when confidence is omitted (CONFIRMED-undisputed default); default false when confidence is given explicitly. Ignored when flagged_only is true."
+        },
+        "own_scope": {
+          "type": "boolean",
+          "description": "MEMBER session only. A default CONFIRMED read is answered from the checkout bible view, where every row is untagged -- a tag: \"member:<id>\" filter can never match there. Set true to force the per-repo DB instead, with the caller's own ownerTag applied, so a member can read back a CONFIRMED row it itself promoted (e.g. to check what it may kb_demote). For a request naming CONFIRMED plus another tier it drops the bible half of the merged member read and returns only the own half (the caller's own captures at every requested tier). No effect for a FULL session, an in-process caller passing an explicit anchor, or a request naming only INFERRED/UNVERIFIED -- those already read the per-repo DB. It changes which store answers and nothing else, so to span everything kb_demote accepts combine it with confidence: [\"CONFIRMED\"] and include_stale: true: a stale or contradiction-flagged CONFIRMED row is still demotable, but the default read drops stale rows and (with no explicit confidence list) disputed ones. The widened read also returns superseded rows, which kb_demote refuses -- drop those yourself."
         },
         "repo_path": {
           "description": "REMOVED -- do not pass. A call carrying it fails with E-SCOPE-KEY-REMOVED; the KB is always the calling session's own."

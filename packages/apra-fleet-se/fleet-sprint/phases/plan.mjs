@@ -46,11 +46,12 @@
 // dispatchRole call sites for the planner and plan-reviewer ladders.
 // =============================================================================
 
-import { dispatchRole, TURN_BASES } from '../dispatch-role.mjs';
+import { dispatchRole, secondaryMaxTurns } from '../dispatch-role.mjs';
 import { buildPlannerPrompt, buildPlanReviewerPrompt } from '../prompts.mjs';
 import { collectParentNotesStalenessNotes } from '../parent-notes-staleness.mjs';
 import { PlanReviewDispatchFailedError, SprintPlanRejectedError } from '../errors.mjs';
 import { buildSettleCallback } from '../dolt-settle.mjs';
+import { applyPlannerDecision, decisionSetAsideEntries, decisionSetAsideList, namedFindingIds, onlyDecisionSetAsideFindings } from '../decisions.mjs';
 
 /**
  * Runs the Plan phase for ONE sprint cycle: up to three planner <->
@@ -97,6 +98,10 @@ export async function runPlanPhase({
     reconcilePendingRejectedNewTasks,
     stageCommandBodyMemberSide,
     updateDashboard,
+    // The scoped bead listing (beads-scope.mjs) a planner decision is checked
+    // against. Optional: without it a planner decision cannot be placed in
+    // scope and is ignored (logged).
+    bdListScoped = null,
 }) {
     // The one reassigned input (header: MUTABLE STATE IS THREADED). Rebound to
     // a local so the body below reads exactly as it did inline, and handed
@@ -194,11 +199,11 @@ export async function runPlanPhase({
         // a DISTINCT clone from the orchestrator (never freshened by the
         // setup pull).
         const plannerSharesBacklogClone = getMemberForRole('planner') === backlogMember;
-        await dispatchRole(dispatchCtx, 'planner', {
+        const plannerOutcome = await dispatchRole(dispatchCtx, 'planner', {
             prompt: plannerPrompt,
             resumePrompt: 'Continue your planning pass exactly where you left off in this same session -- do not restart or re-derive the DAG from scratch. Finish creating/updating the remaining beads and return your final summary now.',
             roleLabel: 'Planner',
-            resumeLabel: `Plan (resume, max_turns=${TURN_BASES.PLANNER_MAX_TURNS * 2})`,
+            resumeLabel: `Plan (resume, max_turns=${secondaryMaxTurns('planner')})`,
             // Within THIS cycle's plan-review loop, resume the planner's own
             // prior-round session by explicit session id so a re-plan keeps
             // warm context. False on the first round of any cycle
@@ -259,6 +264,22 @@ export async function runPlanPhase({
                 }
             }
         }
+        // A planner finding only an operator can settle comes back as the
+        // optional `decision` of its result (planner-output.json). It is
+        // routed exactly like a doer/reviewer NEEDS-DECISION
+        // (../decisions.mjs): a separate decision bead, the work bead set
+        // aside (never labelled human), and a pause for the answer once only
+        // set-aside work remains. No decision: nothing here runs a bd call.
+        if (plannerOutcome && plannerOutcome.value !== undefined) {
+            const site = `Plan C${cycle} R${planningRounds}`;
+            const recorded = await gitSync.withOpenSyncBracket(() => applyPlannerDecision({
+                value: plannerOutcome.value, sprintState, command, member: backlogMember, bdListScoped,
+                cycle, round: planningRounds, site, log,
+            }));
+            // The engine just mutated beads (decision bead, note) in its own
+            // clone: D-push so the operator and every member see them.
+            if (recorded) await gitSync.syncBeadsAfter(backlogMember, { pushBeads: true });
+        }
         // Deliberately no log() dump of the planner's response here: the
         // agent() call inside dispatchPlanner() already emits it as the
         // dispatch's own AGENT activity row, so logging it again would
@@ -287,10 +308,10 @@ export async function runPlanPhase({
         // stamps that marker from the policy row; the notes below are the
         // per-error-class text this call site still owns.
         const planReviewOutcome = await dispatchRole(dispatchCtx, 'plan-reviewer', {
-            prompt: buildPlanReviewerPrompt({ targetIssues, goal: validated.goal, priorRoundVerdicts: priorPlanRoundVerdicts, verifyExcluded: verifySetThisCycle, stalenessNotes: parentNotesStalenessNotes }),
+            prompt: buildPlanReviewerPrompt({ targetIssues, goal: validated.goal, priorRoundVerdicts: priorPlanRoundVerdicts, verifyExcluded: verifySetThisCycle, stalenessNotes: parentNotesStalenessNotes, decisionSetAside: decisionSetAsideList(sprintState) }),
             resumePrompt: 'Continue your plan review exactly where you left off in this same session -- do not restart or re-read the DAG from scratch. Finish the remaining criteria and return your final verdict now.',
             roleLabel: 'Plan Reviewer',
-            resumeLabel: `Plan Review (resume, max_turns=${TURN_BASES.PLAN_REVIEWER_MAX_TURNS * 2})`,
+            resumeLabel: `Plan Review (resume, max_turns=${secondaryMaxTurns('plan-reviewer')})`,
         });
         const verdict = planReviewOutcome.value;
         lastVerdict = verdict;
@@ -301,6 +322,14 @@ export async function runPlanPhase({
         priorPlanRoundVerdicts.push({ round: planningRounds, verdict: verdict.verdict, notes: verdict.notes });
 
         if (verdict.verdict === 'APPROVED') {
+            planApproved = true;
+        } else if (onlyDecisionSetAsideFindings(verdict, sprintState, extractContestedBeadIds)) {
+            // Every finding names a bead set aside for a pending operator
+            // decision: those beads are non-blocking (the operator's answer,
+            // not another plan round, settles them), so rejecting the plan
+            // over them again would only burn rounds.
+            log(`[fleet-sprint] Plan C${cycle} R${planningRounds}: CHANGES_NEEDED names only bead(s) set aside for a pending operator decision ` +
+                `[${namedFindingIds(verdict, extractContestedBeadIds).join(', ')}] -- treated as non-blocking; the plan proceeds.`);
             planApproved = true;
         } else {
             plannerFeedback = verdict.notes; // Pass textual feedback to planner, wrapped as untrusted by buildPlannerPrompt
@@ -326,7 +355,10 @@ export async function runPlanPhase({
         const allTaskIds = (lastVerdict && Array.isArray(lastVerdict.taskAssignments))
             ? lastVerdict.taskAssignments.map((a) => a && a.id).filter((id) => typeof id === 'string' && id.length > 0)
             : [];
-        const contestedIds = extractContestedBeadIds(lastVerdict);
+        // A bead set aside for a pending decision is never deferred here: its
+        // decision bead already holds it, and the answer releases it.
+        const decisionHeld = decisionSetAsideEntries(sprintState);
+        const contestedIds = extractContestedBeadIds(lastVerdict).filter((id) => !decisionHeld.has(id));
         const wholePlanContested = allTaskIds.length === 0
             || contestedIds.length === 0
             || contestedIds.length >= allTaskIds.length;
@@ -356,6 +388,10 @@ export async function runPlanPhase({
                     }
                 );
             }
+            // details.contestedIds / details.findings let the runner turn
+            // this rejection into a carry-over when the run already closed
+            // work (runner.js planRejectedCarryOver); with none closed the
+            // error propagates and aborts the sprint as before.
             throw new SprintPlanRejectedError(
                 `Plan phase for cycle ${cycle} was not approved after ${planningRounds} round(s). ` +
                 'Refusing to proceed to Develop with an unapproved plan.',
@@ -363,6 +399,10 @@ export async function runPlanPhase({
                     notes: lastVerdict ? lastVerdict.notes : null,
                     cycle,
                     planningRounds,
+                    details: {
+                        contestedIds,
+                        findings: lastVerdict && Array.isArray(lastVerdict.findings) ? lastVerdict.findings : null,
+                    },
                 }
             );
         }

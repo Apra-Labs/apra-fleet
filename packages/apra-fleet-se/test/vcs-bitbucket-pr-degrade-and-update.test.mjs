@@ -9,6 +9,7 @@ import { raiseVcsPrForMember } from '../fleet-sprint/vcs-auth.mjs';
 import { buildFindPrCommand } from '../fleet-sprint/vcs-module.mjs';
 import { RUN_HISTORY_MARKER } from '../fleet-sprint/pr-body.mjs';
 import { ApraFleet } from '@apralabs/apra-fleet-client';
+import { createStagedFileRecorder, TEST_MEMBER_FOLDER } from './helpers/vcs-payload-test.mjs';
 
 // =============================================================================
 // Bitbucket Cloud PR publishing: degrade + existing-PR update parity.
@@ -31,14 +32,9 @@ import { ApraFleet } from '@apralabs/apra-fleet-client';
 const BB_ORIGIN = 'git@bitbucket.org:acme/widgets.git';
 const PR_URL = 'https://bitbucket.org/acme/widgets/pull-requests/42';
 
-function posixDashD(command) {
-    const m = /-d '((?:[^']|'\\'')*)' -w/.exec(command);
-    assert.ok(m, `no POSIX -d payload in: ${command}`);
-    return JSON.parse(m[1].replace(/'\\''/g, "'"));
-}
-
 function fakeBitbucket({ registered = true, registeredAs = 'bitbucket', credential = 'ok', existing = null, postStatus = null } = {}) {
-    const state = { pr: existing ? { id: 42, ...existing } : null, calls: [], provisionCalls: [], execCommands: [], execLabels: [] };
+    const staged = createStagedFileRecorder();
+    const state = { pr: existing ? { id: 42, ...existing } : null, calls: [], provisionCalls: [], execCommands: [], execLabels: [], staged };
     const respond = (status, body) => ({ content: [{ text: '' }], structuredContent: { ok: true, reason: 'ok', exitCode: 0, stdout: `${JSON.stringify(body)}\n${status}`, stderr: '' } });
     const pull = () => ({ id: state.pr.id, title: state.pr.title, description: state.pr.description, links: { html: { href: PR_URL } } });
     state.exec = (cmd) => {
@@ -56,13 +52,13 @@ function fakeBitbucket({ registered = true, registeredAs = 'bitbucket', credenti
         if (method === 'POST') {
             if (postStatus) return respond(postStatus, { type: 'error', error: { message: `mock HTTP ${postStatus}` } });
             if (state.pr) return respond(400, { type: 'error', error: { message: 'mock: a pull request for this source/destination is already open' } });
-            const p = posixDashD(cmd);
+            const p = staged.json(cmd);
             state.pr = { id: 42, title: p.title, description: p.description };
             return respond(201, pull());
         }
         if (method === 'GET') return respond(200, { values: state.pr ? [pull()] : [] });
         if (method === 'PUT') {
-            const p = posixDashD(cmd);
+            const p = staged.json(cmd);
             state.pr = { ...state.pr, title: p.title, description: p.description };
             return respond(200, pull());
         }
@@ -70,8 +66,9 @@ function fakeBitbucket({ registered = true, registeredAs = 'bitbucket', credenti
     };
     state.callTool = async (name, toolArgs) => {
         if (name === 'member_detail') {
-            return { content: [{ text: JSON.stringify({ ...(registered ? { vcsProvider: registeredAs } : {}), os: 'linux', shell: '' }) }] };
+            return { content: [{ text: JSON.stringify({ ...(registered ? { vcsProvider: registeredAs } : {}), os: 'linux', shell: '', folder: TEST_MEMBER_FOLDER }) }] };
         }
+        if (name === 'send_files') return staged.record(toolArgs);
         if (name === 'provision_vcs_auth') {
             state.provisionCalls.push(toolArgs);
             return { content: [{ text: '[FAIL] unexpected provision' }], structuredContent: { ok: false, reason: 'credential_assembly_failed' } };
@@ -336,6 +333,7 @@ describe('(d) find-before-create: relaunch updates in place, no duplicate POST, 
         const res = await raiseVcsPrForMember({
             fleetApi: { memberDetail: (m) => bb.callTool('member_detail', { member_name: m }),
                 provisionVcsAuth: (a) => bb.callTool('provision_vcs_auth', a),
+                sendFiles: (a) => bb.callTool('send_files', a),
                 vcsCredentialExec: (a) => bb.callTool('vcs_credential_exec', a) },
             command: remoteCommand, member: 'bb-direct', base: 'main', head: 'feat/x', title: 't', body: 'b',
             log: (m) => logs.push(m), logPrefix: '[T]', remoteUrlOverride: BB_ORIGIN,

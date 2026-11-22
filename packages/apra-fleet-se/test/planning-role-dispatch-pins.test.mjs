@@ -1,3 +1,4 @@
+import { EXECUTE_PROMPT_MAX_TURNS } from '@apralabs/apra-fleet-client';
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
 import fs from 'node:fs';
@@ -571,8 +572,8 @@ describe('planning-role dispatch: retry and degrade ladders', () => {
         assert.strictEqual(rec.dispatches[1].options.resume, FAILED_SESSION_ID, 'The resume must continue the SAME session by its explicit id.');
         assert.strictEqual(
             rec.dispatches[1].options.max_turns,
-            rec.dispatches[0].options.max_turns * 2,
-            'The resume must double the turn budget.'
+            Math.min(rec.dispatches[0].options.max_turns * 2, EXECUTE_PROMPT_MAX_TURNS),
+            'The resume must double the turn budget, clamped to the execute_prompt maximum.'
         );
         assert.strictEqual(rec.dispatches[1].prompt, ROLE_CALL_OPTS.planner.resumePrompt);
 

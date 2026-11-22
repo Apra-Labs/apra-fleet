@@ -29,11 +29,29 @@ function validator() {
 describe('bible schema and examples', () => {
   const validate = validator();
 
-  it('ships one example per accepted shape (v1, v2, v3)', () => {
-    expect(fs.readdirSync(EXAMPLES_DIR).sort()).toEqual(['v1-bare-array.json', 'v2-envelope.json', 'v3-envelope.json']);
+  const EXAMPLES = ['v1-bare-array.json', 'v2-envelope.json', 'v3-envelope-legacy-provenance.json', 'v3-envelope.json'];
+
+  it('ships one example per accepted shape (v1, v2, v3 with legacy provenance, v3 as written today)', () => {
+    expect(fs.readdirSync(EXAMPLES_DIR).sort()).toEqual(EXAMPLES);
   });
 
-  for (const name of ['v1-bare-array.json', 'v2-envelope.json', 'v3-envelope.json']) {
+  it('the current v3 example writes branch-only provenance; the legacy one keeps commit and entry_count', () => {
+    const current = JSON.parse(fs.readFileSync(path.join(EXAMPLES_DIR, 'v3-envelope.json'), 'utf-8'));
+    expect(current.provenance).toEqual({ branch: 'main' });
+    const legacy = JSON.parse(fs.readFileSync(path.join(EXAMPLES_DIR, 'v3-envelope-legacy-provenance.json'), 'utf-8'));
+    expect(Object.keys(legacy.provenance).sort()).toEqual(['branch', 'commit', 'entry_count']);
+  });
+
+  it('provenance requires branch; commit and entry_count are optional legacy keys', () => {
+    const doc = (provenance: unknown) => ({ version: 3, provenance, entries: [] });
+    expect(validate(doc({ branch: 'main' }))).toBe(true);
+    expect(validate(doc({ branch: null }))).toBe(true);
+    expect(validate(doc({ commit: null, branch: 'main', entry_count: 0 }))).toBe(true);
+    expect(validate(doc({ commit: 'abc', entry_count: 0 }))).toBe(false);
+    expect(validate(doc({ branch: 'main', entry_count: -1 }))).toBe(false);
+  });
+
+  for (const name of EXAMPLES) {
     it(name + ' validates against the schema and parses with the reader', () => {
       const raw = fs.readFileSync(path.join(EXAMPLES_DIR, name), 'utf-8');
       const ok = validate(JSON.parse(raw));
@@ -66,6 +84,38 @@ describe('bible schema and examples', () => {
     const v2WithHashes = structuredClone(base);
     v2WithHashes.version = 2;
     expect(validate(v2WithHashes)).toBe(false);
+  });
+});
+
+describe('bible schema: tombstone fields', () => {
+  const validate = validator();
+  const base = () => ({
+    version: 3,
+    provenance: { commit: null, branch: 'main', entry_count: 0 },
+    entries: [],
+  });
+
+  it('validates a withdrawn tombstone with and without note/evidence_files', () => {
+    const bare = { ...base(), demotions: [{ id: 'kb-1', at: '2026-01-01T00:00:00.000Z', reason: 'withdrawn' }] };
+    expect(validate(bare)).toBe(true);
+    const full = {
+      ...base(),
+      demotions: [{
+        id: 'kb-1', at: '2026-01-01T00:00:00.000Z', reason: 'withdrawn',
+        note: 'the cited guard no longer exists in the reader', evidence_files: ['src/a.ts', 'docs/b.md'],
+      }],
+    };
+    const ok = validate(full);
+    expect(validate.errors ?? []).toEqual([]);
+    expect(ok).toBe(true);
+  });
+
+  it('rejects evidence_files that are empty, absolute or escape the repo', () => {
+    const at = '2026-01-01T00:00:00.000Z';
+    for (const evidence_files of [[], ['/etc/passwd'], ['../outside.ts'], ['C:/x.ts']]) {
+      const doc = { ...base(), demotions: [{ id: 'kb-1', at, reason: 'withdrawn', evidence_files }] };
+      expect(validate(doc)).toBe(false);
+    }
   });
 });
 

@@ -1,0 +1,32 @@
+{
+  "route": "capabilities",
+  "case": "lists-withdraw",
+  "kind": "happy",
+  "request": {
+    "method": "GET",
+    "path": "/api/kb/capabilities"
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "contract": "v1",
+      "routes": [
+        "capture",
+        "query",
+        "promote",
+        "context",
+        "prime",
+        "invalidate",
+        "feedback",
+        "list",
+        "demote",
+        "withdraw"
+      ],
+      "branch_aware": false,
+      "query_filters": [
+        "files",
+        "symbols"
+      ]
+    }
+  }
+}

@@ -8,6 +8,7 @@ import { credentialSet, credentialDelete } from '../src/services/credential-stor
 import { encryptPassword } from '../src/utils/crypto.js';
 import { provisionVcsAuth } from '../src/tools/provision-vcs-auth.js';
 import { githubProvider } from '../src/services/vcs/github.js';
+import { vcsGitEnvPrefix } from '../src/services/vcs-git-env.js';
 import type { SSHExecResult } from '../src/types.js';
 const GIT_CONFIG_PATH = path.join(FLEET_DIR, 'git-config.json');
 
@@ -360,16 +361,12 @@ describe('provisionVcsAuth', () => {
     expect(updated.vcsCredentialScopeUrl).toBe('https://github.com/my-org');
   });
 
-  // Regression: the agent record only tracks ONE active (label, scopeUrl)
-  // pair for cleanup purposes. Deploying credential B under a DIFFERENT
-  // label than the previously-deployed credential A cancels A's cleanup
-  // timer (re-provisioning always does) -- without an explicit revoke here,
-  // A's git-config registration and on-disk token file would be silently
-  // orphaned forever (never scheduled for cleanup again, never revoked).
-  // Assert the superseded credential (label-a) is actually revoked as part
-  // of deploying the new one.
-  it('github: revokes a superseded credential (different label) when a new one is provisioned', async () => {
-    const member = makeTestAgent({ friendlyName: 'gh-supersede' });
+  // A member holds one credential PER LABEL (src/services/vcs-credential-record.ts):
+  // provisioning label-b must leave label-a's credential alone -- revoking it
+  // (as releases that tracked a single label did) deleted label-a's helper
+  // file, so a later read of label-a failed with exit 127.
+  it('github: provisioning a different label keeps the first label and issues no revoke for it', async () => {
+    const member = makeTestAgent({ friendlyName: 'gh-two-labels' });
     addAgent(member);
     mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
@@ -386,10 +383,11 @@ describe('provisionVcsAuth', () => {
     });
 
     const execCmds = mockExecCommand.mock.calls.map(c => String(c[0]));
-    expect(execCmds.some(cmd => cmd.includes('fleet-git-credential-label-a'))).toBe(true);
+    expect(execCmds.some(cmd => cmd.includes('fleet-git-credential-label-a'))).toBe(false);
 
     const updated = getAgent(member.id)!;
     expect(updated.vcsCredentialLabel).toBe('label-b');
+    expect(Object.keys(updated.vcsCredentials ?? {})).toEqual(['label-a', 'label-b']);
   });
 
   // Same-label re-provision is a plain refresh (gitCredentialHelperWrite's
@@ -472,11 +470,12 @@ describe('provisionVcsAuth', () => {
     });
 
     const execCmds = mockExecCommand.mock.calls.map(c => String(c[0]));
-    // A plain refresh fires no supersession revoke, so NOTHING in this deploy
-    // may unset the host-scoped helper key: the re-registration is done
-    // in-place by gitCredentialHelperWrite's own --replace-all + --add.
-    expect(execCmds.some(cmd => cmd.includes('--unset-all'))).toBe(false);
-    expect(execCmds.some(cmd => cmd.includes('--replace-all') && cmd.includes('--add'))).toBe(true);
+    // A plain refresh fires no supersession revoke and touches no git config:
+    // the helper file is overwritten in place, and git finds it through the
+    // dispatch environment, which still names it.
+    expect(execCmds.some(cmd => cmd.includes('--unset-all') || cmd.includes('git config'))).toBe(false);
+    expect(execCmds.some(cmd => cmd.includes(`.fleet-git-credential-live-label.${member.id}`))).toBe(true);
+    expect(vcsGitEnvPrefix(getAgent(member.id)!)).toContain(`.fleet-git-credential-live-label.${member.id}`);
   });
 
   // --- {{secret.NAME}} token resolution ---

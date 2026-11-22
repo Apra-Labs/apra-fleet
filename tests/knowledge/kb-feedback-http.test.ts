@@ -8,25 +8,23 @@ import Ajv2020 from 'ajv/dist/2020.js';
 import { resetKbProviders } from '../../src/services/knowledge/kb-providers.js';
 import { getSelfKbProviders } from '../../src/services/knowledge/kb-self.js';
 import { HttpKbProvider } from '../../src/services/knowledge/http-provider.js';
-import { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js';
 import { runWithSessionMember } from '../../src/services/tool-scope.js';
 import { encryptPassword } from '../../src/utils/crypto.js';
 import { FLEET_DIR } from '../../src/paths.js';
 import { kbFeedback } from '../../src/tools/kb-feedback.js';
-import type { KBEntryInput } from '../../src/services/knowledge/types.js';
 
 // GitHub #761: kb_feedback on an HTTP-backed install, end to end. Real
 // kbFeedback tool, real HttpKbProvider selected from a real http config file,
-// real SqliteProvider fallback, and a real local node:http server standing in
-// for the remote KB. Nothing here is mocked.
+// and a real local node:http server standing in for the remote KB (no local
+// store stands in for it). Nothing here is mocked.
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REQUEST_SCHEMA_PATH = path.join(
   __dirname, '..', '..', 'memory-contract', 'v1', 'schemas', 'kb_feedback.request.json',
 );
 
-const QUEUED_FIXTURE_PATH = path.join(
-  __dirname, '..', '..', 'memory-contract', 'v1', 'fixtures', 'kb_feedback', 'happy-queued-offline.json',
+const UNREACHABLE_FIXTURE_PATH = path.join(
+  __dirname, '..', '..', 'memory-contract', 'v1', 'fixtures', 'kb_feedback', 'refusal-unreachable.json',
 );
 
 const TOKEN_ENV_VAR = 'APRA_FLEET_TEST_KB_HTTP_TOKEN';
@@ -61,6 +59,13 @@ let recorded: RecordedRequest[] = [];
 
 function startStub(): Promise<void> {
   const s = http.createServer((req, res) => {
+    // A server without GET /api/kb/capabilities: the route set from before
+    // that route existed. (The capabilities read is tested on its own.)
+    if ((req.url ?? '').startsWith('/api/kb/capabilities')) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Not found', code: 'NOT_FOUND' }));
+      return;
+    }
     let raw = '';
     req.on('data', (chunk: Buffer) => { raw += chunk.toString(); });
     req.on('end', () => {
@@ -119,10 +124,6 @@ function makeRepoPath(): string {
   return dir;
 }
 
-function fallbackOf(provider: HttpKbProvider): SqliteProvider {
-  return (provider as unknown as { fallback: SqliteProvider }).fallback;
-}
-
 async function httpProviderFor(folder: string): Promise<HttpKbProvider> {
   const providers = await getSelfKbProviders({ folder });
   expect(providers.project).toBeInstanceOf(HttpKbProvider);
@@ -172,74 +173,51 @@ describe('kb_feedback over the HTTP KB provider (GitHub #761)', () => {
     expect(out).toEqual({ id: 'remote-entry-1', ...SERVER_RESPONSE });
   });
 
-  it('confidence untouched: the server answer is kept, no other request is sent, the local fallback store is not written', async () => {
+  it('confidence untouched: the server answer is kept and no other request is sent', async () => {
     const folder = makeRepoPath();
-    const provider = await httpProviderFor(folder);
-    const fallback = fallbackOf(provider);
-    // Seed the LOCAL fallback with an entry; feedback on its id must not touch it.
-    const seed: KBEntryInput = {
-      type: 'knowledge',
-      title: 'local fallback seed entry',
-      summary: 'A row in the local fallback store that remote feedback must leave alone.',
-      content: 'seed content',
-      source_files: ['fixture.ts'],
-      symbols: ['kbFeedbackHttpSeed'],
-      tags: [],
-      content_hash: '',
-      content_hash_type: 'sha256',
-      flagged_for_review: false,
-      author: 'doer',
-      source: 'session',
-      confidence: 'INFERRED',
-    };
-    const { id } = await fallback.capture(seed);
-    const before = (await fallback.query({ ids: [id], include_stale: true })).results[0];
-    expect(before).toBeDefined();
+    const out = JSON.parse(await kbFeedback({ id: 'remote-entry-0', reason: 'Wrong in practice.', role: 'doer' }, { folder }));
 
-    const out = JSON.parse(await kbFeedback({ id, reason: 'Wrong in practice.', role: 'doer' }, { folder }));
-
-    expect(out).toEqual({ id, stale: true, flagged_for_review: true, confidence: 'CONFIRMED' });
+    expect(out).toEqual({ id: 'remote-entry-0', stale: true, flagged_for_review: true, confidence: 'CONFIRMED' });
     expect(recorded.map(r => `${r.method} ${r.url}`)).toEqual(['POST /api/kb/feedback']);
-    const after = (await fallback.query({ ids: [id], include_stale: true })).results[0];
-    expect(after.stale).toBe(false);
-    expect(after.flagged_for_review).toBe(false);
-    expect(after.confidence).toBe('INFERRED');
-    expect(after.content).toBe(before.content);
   });
 
-  it('offline: queues the feedback, then sends it exactly once after the server is back', async () => {
+  it('offline: E-KB-HTTP-UNREACHABLE, nothing queued; the server never receives it unless the caller repeats it', async () => {
     const folder = makeRepoPath();
     const provider = await httpProviderFor(folder);
     await stopStub();
 
-    const out = JSON.parse(await kbFeedback({ id: 'remote-entry-2', reason: 'Stale advice.', role: 'planner' }, { folder }));
-    expect(out).toEqual({ id: 'remote-entry-2', queued: true });
-    expect(provider.offlineQueue).toEqual([
-      { op: 'feedback', id: 'remote-entry-2', reason: 'Stale advice.', role: 'planner' },
-    ]);
+    const err = await kbFeedback({ id: 'remote-entry-2', reason: 'Stale advice.', role: 'planner' }, { folder })
+      .then(() => null, (e: unknown) => e);
+    expect((err as { code?: string }).code).toBe('E-KB-HTTP-UNREACHABLE');
+    expect((err as Error).message).not.toMatch(/queued/);
     expect(recorded).toHaveLength(0);
 
     await startStub();
     await provider.query({ query: 'anything' });
-    expect(provider.offlineQueue).toHaveLength(0);
-    // A further call must not resend it.
-    await provider.query({ query: 'again' });
+    expect(feedbackRequests()).toHaveLength(0);
 
+    // The caller repeating it sends it exactly once.
+    await kbFeedback({ id: 'remote-entry-2', reason: 'Stale advice.', role: 'planner' }, { folder });
     const fb = feedbackRequests();
     expect(fb).toHaveLength(1);
     expect(fb[0].body).toEqual({ id: 'remote-entry-2', reason: 'Stale advice.', role: 'planner' });
   });
 
-  it('the committed happy-queued-offline fixture is what the real tool answers offline', async () => {
-    const fixture = JSON.parse(fs.readFileSync(QUEUED_FIXTURE_PATH, 'utf-8'));
+  it('the committed refusal-unreachable fixture is what the real tool throws offline', async () => {
+    const fixture = JSON.parse(fs.readFileSync(UNREACHABLE_FIXTURE_PATH, 'utf-8'));
     const folder = makeRepoPath();
-    const provider = await httpProviderFor(folder);
+    await httpProviderFor(folder);
     await stopStub();
 
-    const text = await kbFeedback(fixture.request, { folder });
+    const err = await kbFeedback(fixture.request, { folder }).then(() => null, (e: unknown) => e);
 
-    expect(text).toBe(fixture.response.content[0].text);
-    expect(provider.offlineQueue).toHaveLength(1);
+    expect((err as { code?: string }).code).toBe(fixture.expected_error_code);
+    // The live port and the socket error text vary; the fixture records them
+    // as port 0 and "<cause>".
+    const normalized = (err as Error).message
+      .replace(/127\.0\.0\.1:\d+/g, '127.0.0.1:0')
+      .replace(/is unreachable \([^)]*\)/, 'is unreachable (<cause>)');
+    expect(normalized).toBe(fixture.error.message);
   });
 
   it('member session: E-MEMBER-VIEW-READ-ONLY and the server receives nothing', async () => {

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { runDevelopLoopScenario, withScenarioMarkers, defaultMockCallTool } from './helpers/mock-sprint-harness.mjs';
+import { runDevelopLoopScenario, withScenarioMarkers, defaultMockCallTool, MOCK_MEMBER_WORK_FOLDER } from './helpers/mock-sprint-harness.mjs';
 
 const check = (cond, msg) => assert.ok(cond, msg);
 
@@ -45,7 +45,7 @@ test('mock sprint: an Azure DevOps member is provisioned unattended by the prefl
             const base = defaultMockCallTool({ executeCommand });
             return async (name, args) => {
                 if (name === 'member_detail') {
-                    return { content: [{ text: JSON.stringify({ vcsProvider: 'azure-devops' }) }] };
+                    return { content: [{ text: JSON.stringify({ vcsProvider: 'azure-devops', folder: MOCK_MEMBER_WORK_FOLDER }) }] };
                 }
                 if (name === 'credential_store_list') {
                     return { content: [{ text: JSON.stringify([{ name: 'azdevops_pat', scope: 'persistent' }]) }] };
@@ -139,7 +139,7 @@ test("mock sprint: a member whose Azure DevOps PAT secret is absent from the cre
             const base = defaultMockCallTool({ executeCommand });
             return async (name, args) => {
                 if (name === 'member_detail') {
-                    return { content: [{ text: JSON.stringify({ vcsProvider: 'azure-devops' }) }] };
+                    return { content: [{ text: JSON.stringify({ vcsProvider: 'azure-devops', folder: MOCK_MEMBER_WORK_FOLDER }) }] };
                 }
                 if (name === 'credential_store_list') {
                     // The store is reachable but simply has no azdevops_pat entry.

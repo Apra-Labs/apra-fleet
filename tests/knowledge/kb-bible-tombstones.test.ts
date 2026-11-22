@@ -40,7 +40,11 @@ import { commitWorkTree } from '../helpers/commit-work-tree.js';
 // ASCII only.
 
 const BIBLE_REL = '.fleet/kb-canonical.json';
-const BASE = { baseBranch: 'main', baseCommit: 'a'.repeat(40) };
+// baseCommit is HEAD: kb_bible_commit tombstones a demoted id only when the
+// bible at baseCommit carries it (and writes no new demoted tombstone when
+// baseCommit does not resolve). In these single-branch scenarios the committed
+// bible at HEAD is the base each call builds on.
+const BASE = { baseBranch: 'main', baseCommit: 'HEAD' };
 const DEMOTE_REASON = 'the cited behaviour did not hold on the case checked this round';
 // kb_demote requires evidence (Rulebook P-1, 2026-10-13); README.md is the seed file every clone holds.
 const DEMOTE_EVIDENCE = ['README.md'];
@@ -48,7 +52,7 @@ const DEMOTE_EVIDENCE = ['README.md'];
 interface Tombstone { id: string; at: string; reason: string }
 interface BibleFile {
   version?: number;
-  provenance?: { commit: string | null; branch: string | null; entry_count: number };
+  provenance?: { commit?: string | null; branch: string | null; entry_count?: number };
   entries: { id: string }[];
   demotions?: Tombstone[];
 }
@@ -164,7 +168,8 @@ describe('bible demotion tombstones', () => {
     // exactly like one written before the field existed.
     expect(onDisk.demotions).toBeUndefined();
     expect(Object.prototype.hasOwnProperty.call(onDisk, 'demotions')).toBe(false);
-    expect(onDisk.provenance!.entry_count).toBe(1);
+    // No per-file entry count: it would be a line two branches both rewrite.
+    expect(onDisk.provenance!.entry_count).toBeUndefined();
   });
 
   it('scenario 2: after kb_demote, demoted_ids removes the entry and records {id, at, reason} from the LOCAL row', async () => {
@@ -186,8 +191,8 @@ describe('bible demotion tombstones', () => {
     const onDisk = readBibleFile();
     expect(onDisk.entries.map(e => e.id)).toEqual([other]);
     expect(onDisk.demotions).toEqual([{ id, at: localDemotedAt, reason: 'demoted' }]);
-    // entry_count counts ENTRIES only -- a tombstone is not an entry.
-    expect(onDisk.provenance!.entry_count).toBe(1);
+    // The result's entry_count counts ENTRIES only -- a tombstone is not an entry.
+    expect(onDisk.provenance!.entry_count).toBeUndefined();
     expect(r.entry_count).toBe(1);
   });
 
@@ -376,5 +381,61 @@ describe('bible demotion tombstones', () => {
     expect(fs.readFileSync(biblePath(), 'utf-8')).toBe(garbage);
     // Nothing was committed over the refusals.
     expect(git(clone, ['rev-parse', 'HEAD']).trim()).toBe(head);
+  });
+
+  it('scenario 9: a demotion whose sprint ended before its bible commit is DEFERRED, not dropped: the next bible commit on this KB tombstones it without naming it', async () => {
+    // Sprint 1: the entry reaches the bible, then kb_demote runs on this
+    // maintainer's KB. The sprint fails before its round bible commit, so the
+    // engine's in-memory demoted_ids queue is gone with it.
+    const demotedId = await confirmedCiting('Alpha', 'src/alpha.ts');
+    await kbBibleCommit({ ids: [demotedId], ...BASE }, { folder: clone });
+    await kbDemote({ id: demotedId, reason: DEMOTE_REASON, evidence_files: DEMOTE_EVIDENCE }, { folder: clone });
+    expect(bibleIds()).toEqual([demotedId]);
+
+    // Sprint 2 on the same machine: its first bible commit carries only its own
+    // confirmation and no demoted_ids at all.
+    const unrelated = await confirmedCiting('Gamma', 'src/gamma.ts');
+    const r = JSON.parse(await kbBibleCommit({ ids: [unrelated], ...BASE }, { folder: clone }));
+
+    expect(r.merged).toEqual([unrelated]);
+    expect(r.demoted).toEqual([demotedId]);
+    expect(r.committed).toBe(true);
+    const onDisk = readBibleFile();
+    expect(onDisk.entries.map(e => e.id)).toEqual([unrelated]);
+    expect(onDisk.demotions).toEqual([{ id: demotedId, at: rowDemotedAt(demotedId), reason: 'demoted' }]);
+  });
+
+  const byId = <T extends { id: string }>(xs: T[]): T[] => [...xs].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+
+  it('scenario 10: note, evidence_files and an unknown reason survive a kb_bible_commit and a kb_export re-write', async () => {
+    // Tombstones another writer put in the bible: a withdrawal with its
+    // judgement, a bare withdrawal, and a reason this reader does not know.
+    const carried = [
+      {
+        id: 'kb-withdrawn-full', at: '2026-01-02T00:00:00.000Z', reason: 'withdrawn',
+        note: 'the cited guard was removed when the reader was rewritten',
+        evidence_files: ['README.md', 'src/seed.ts'],
+      },
+      { id: 'kb-withdrawn-bare', at: '2026-01-03T00:00:00.000Z', reason: 'withdrawn' },
+      { id: 'kb-future-reason', at: '2026-01-04T00:00:00.000Z', reason: 'some-future-reason', note: 'kept as is' },
+    ];
+    fs.mkdirSync(path.dirname(biblePath()), { recursive: true });
+    fs.writeFileSync(biblePath(), JSON.stringify({
+      version: 3, provenance: { commit: null, branch: null, entry_count: 0 }, entries: [], demotions: carried,
+    }, null, 2) + '\n');
+    git(clone, ['add', '-A']);
+    git(clone, ['commit', '--quiet', '-m', 'seed bible with carried tombstones']);
+
+    const first = await confirmedCiting('Alpha', 'src/alpha.ts');
+    const r = JSON.parse(await kbBibleCommit({ ids: [first], ...BASE }, { folder: clone }));
+    expect(r.committed).toBe(true);
+    expect(bibleIds()).toEqual([first]);
+    expect(readBibleFile().demotions).toEqual(byId(carried));
+
+    const second = await confirmedCiting('Beta', 'src/beta.ts');
+    const out = JSON.parse(await kbExport({}, { folder: clone }));
+    expect(out.exported).toBeGreaterThan(0);
+    expect(bibleIds()).toEqual([first, second].sort());
+    expect(readBibleFile().demotions).toEqual(byId(carried));
   });
 });

@@ -100,7 +100,7 @@ import {
     createWorkflowsPermissionPreflightCallback,
     createLlmAuthSelfHealCallback,
 } from './vcs-auth.mjs';
-import { validateIssueId, validateBranchName, validateBranchPair, validateArgs } from './sprint-args.mjs';
+import { validateIssueId, validateBranchName, validateBranchPair, validateArgs, validateGoal, validateMaxCycles, validateBudget } from './sprint-args.mjs';
 import { verifyBeadsIdentity, createBeadsIdentityProber, BEADS_READING_ROLES } from './beads-identity-check.mjs';
 import { ROLE_BACKLOG, selectBacklogMember, formatBacklogSelection } from './backlog-role.mjs';
 import { createKbMaintainerSelector, createMemberDetailResolver, ROLE_KB_MAINTAINER } from './kb-maintainer.mjs';
@@ -131,7 +131,7 @@ import { createSyncBrackets, createGitSync } from './git-sync.mjs';
 // because the turn-budget constants moved there with the dispatch that
 // consumes them, and a few runner-side presentation labels still interpolate
 // a resume's doubled budget.
-import { dispatchRole, TURN_BASES } from './dispatch-role.mjs';
+import { dispatchRole, TURN_BASES, secondaryMaxTurns } from './dispatch-role.mjs';
 // The policy TABLE the engine executes. runner.js reads it only to state, in a
 // log line, the bound the row itself sets -- never to re-implement a ladder.
 // USAGE_LIMIT_BUDGET_DEFAULTS is the usage-limit controller's budget row,
@@ -167,7 +167,8 @@ import { runDevelopPhase } from './phases/develop.mjs';
 // stayed here.
 import { runReviewPhase } from './phases/review.mjs';
 import { runDeployPhase, latestDeployFailure, formatDeployFailureReason, formatDeploySetAsideNotes, DEPLOY_RETRY_CYCLE_LIMIT } from './phases/deploy.mjs';
-import { collectSetAsideEntries, evaluateSetAsideStall, formatSetAsideStallMessage, stuckBehindSetAside, collectWaitEntries } from './set-aside.mjs';
+import { collectSetAsideEntries, evaluateSetAsideStall, formatSetAsideStallMessage, stuckBehindSetAside, collectWaitEntries, closedWorkThisRun, buildSetAsideCarryOver, buildPlanRejectedCarryOver, formatCarryOverNotes } from './set-aside.mjs';
+import { NEEDS_EXTERNAL_EVIDENCE_CYCLE_LIMIT, recordInconclusiveVerifyCycle, stillOpenVerifyIdsForExit, syncDeferredVerifyIds, buildVerifyCarryOver, formatVerifyCarryOverNotes } from './verify-carry-over.mjs';
 // apra-fleet-3swo.6.8: the next two phase() boundaries -- the per-cycle Integ
 // Test and the Re-Review that Cycle Evaluation dispatches when the goal-
 // priority count already reads 0 but no review ran this cycle. Integ Test is
@@ -178,7 +179,7 @@ import { collectSetAsideEntries, evaluateSetAsideStall, formatSetAsideStallMessa
 // `if (openAtGoal.length === 0 && !reviewedThisCycle)` branch and hands back
 // the same three the per-round Review does. See each module's header for where
 // its boundary is drawn and why the surrounding `if`/exit-gate stayed here.
-import { runIntegTestPhase } from './phases/integ-test.mjs';
+import { runIntegTestPhase, applyVerifyGapAccounting } from './phases/integ-test.mjs';
 import { runReReviewPhase } from './phases/re-review.mjs';
 // apra-fleet-3swo.6.6: the next two phase() boundaries -- the sprint's closing
 // Final Review and the once-per-sprint Regression Test. Final Review runs from
@@ -233,7 +234,7 @@ import {
 // second one.
 import {
     createKbPrimingClient, KB_SELF_INJECTING_ROLES, kbQueryTerms,
-    kbKnowledgeBlock, kbPromotionBlock,
+    kbKnowledgeBlock, kbPromotionBlock, kbDemotionBlock,
 } from './kb.mjs';
 import { createKbInjection } from './kb-injection.mjs';
 import { pathsFromText, isPriorityTierToken } from './kb-hints.mjs';
@@ -252,6 +253,8 @@ import {
     // Develop-dispatch goal filter: below-goal ready leaves are excluded
     // unless they block in-goal work or the sprint already worked on them.
     partitionReadyByGoal, formatBelowGoalExclusionLog,
+    // Lane metadata on a container is ignored by lane order; logged once per run.
+    newIgnoredContainerLaneLogs,
     // Set-aside v2: a waiting bead is held until its prerequisites close.
     unmetPrerequisites,
     // apra-fleet-rp7a.1: the deferred split the Cycle Evaluation completion
@@ -331,6 +334,7 @@ import {
 import {
     integCanRun, integBlockCause, findVerifyBlockedBeads, partitionByGoal, buildVerifyBlockDiagnosis,
 } from './verify-block.mjs';
+import { formatRedBuildIntegSkipReason, redBuildIntegSkipEntry } from './red-build-integ-gate.mjs';
 // The dispatch-outcome classification surface: isTerminalSprintFailure,
 // isNoMutationDispatchFailure and withDispatchWatchdog. Extracted out of
 // runner.js (apra-fleet-3swo.6.15); imported only to be re-exported below,
@@ -374,7 +378,7 @@ export {
 // Re-exported so importers of the CLI arg-contract validators from runner.js
 // keep working (notably bin/cli.mjs); sprint-args.mjs is the single source of
 // truth for their implementation (apra-fleet-3swo.3.3).
-export { validateIssueId, validateBranchName, validateBranchPair, validateArgs };
+export { validateIssueId, validateBranchName, validateBranchPair, validateArgs, validateGoal, validateMaxCycles, validateBudget };
 // Re-exported so importers of the five previously-exported prompt builders
 // from runner.js keep working; prompts.mjs is the single source of truth for
 // their implementation (apra-fleet-3swo.3.4). buildPlanReviewerPrompt and
@@ -421,12 +425,12 @@ export {
     KB_CAPTURE_TYPES, KB_MAX_PROMOTION_CANDIDATES, vetKbWork, createKbWorkClient,
 };
 // Re-exported so importers of the KB priming client and the prompt-
-// construction helpers (kbKnowledgeBlock, kbPromotionBlock, kbQueryTerms,
-// KB_SELF_INJECTING_ROLES) from runner.js keep working; kb.mjs is the
-// single source of truth for their implementation (apra-fleet-3swo.6.11).
+// construction helpers (kbKnowledgeBlock, kbPromotionBlock, kbDemotionBlock,
+// kbQueryTerms, KB_SELF_INJECTING_ROLES) from runner.js keep working; kb.mjs
+// is the single source of truth for their implementation (apra-fleet-3swo.6.11).
 export {
     createKbPrimingClient, KB_SELF_INJECTING_ROLES, kbQueryTerms,
-    kbKnowledgeBlock, kbPromotionBlock,
+    kbKnowledgeBlock, kbPromotionBlock, kbDemotionBlock,
 };
 // member-call.mjs is the single owner of memberCall/listTools (a MEMBER-scoped
 // tool call: local in-process session, or remote/relay via send_files +
@@ -565,6 +569,247 @@ function computeBranchEnsureMembers(getMembersForRole, kbMaintainers, backlogMem
     ])];
 }
 export { computeBranchEnsureMembers };
+
+// Factory for kbWork.demotionCandidates({ scope: 'sprint' })'s
+// sprintChangedFiles callback -- the CUMULATIVE sprint changed-file set, which
+// is the FINAL review's scope.
+//
+// Final review judges the WHOLE sprint diff in one pass, and it is the only
+// review offered demotion candidates, so their changed-file scope is the
+// cumulative range.
+//
+// WHY IT IS NOT kbInjection's `diffFiles` either. That one computes the same
+// cumulative range but is wired for the reviewer/harvester KB-injection HINT
+// context and is deliberately left untouched; it also does no fetch/merge
+// first. This pulls before diffing -- a pre-merge tree has not absorbed the
+// sprint's latest commits -- and is STATELESS, because a cumulative range has
+// nothing to carry between calls.
+//
+// @param {{
+//   command: (cmd: string, opts: { member_name: string, silent?: boolean, failSoft?: boolean }) => Promise<{ ok: boolean, output?: string }>,
+//   pullGitBefore: (memberName: string) => Promise<any>,
+//   baseBranch: string,
+//   branch: string,
+//   log?: Function,
+// }} opts
+// @returns {(memberName: string) => Promise<string[]>}
+function createSprintChangedFiles({ command, pullGitBefore, baseBranch, branch, log = () => {} }) {
+    return async function sprintChangedFiles(memberName) {
+        try {
+            await pullGitBefore(memberName);
+        } catch (err) {
+            log(`[kb-work] could not fetch/fast-forward-merge '${memberName}' before computing the sprint's cumulative changed files (non-fatal): ${err && err.message ? err.message : String(err)}`);
+            return [];
+        }
+        const diffCmd = `git diff --name-only origin/${baseBranch}...${branch}`;
+        const diffRes = await command(diffCmd, { member_name: memberName, silent: true, failSoft: true });
+        if (!diffRes || !diffRes.ok) {
+            log(`[kb-work] WARN: '${diffCmd}' failed on '${memberName}' -- no changed files for the final review's demotion candidates${failedCommandDetail(diffRes)}`);
+            return [];
+        }
+        return String(diffRes.output || '').split('\n').map((l) => l.trim()).filter(Boolean);
+    };
+}
+export { createSprintChangedFiles };
+
+// Factory for kbWork.demotionCandidates()'s branchWithdrawals callback: the
+// entries an EARLIER final review on this sprint branch withdrew, so a
+// relaunched sprint's final review can hold (restore) one. A withdrawal is a
+// tombstone {id, reason: "withdrawn", note, evidence_files} in the committed
+// bible's `demotions` array; the entry itself has left `entries`, so the
+// checkout bible view no longer offers it. "This branch added it" means the
+// sprint branch's bible (HEAD) carries the tombstone and the base branch's
+// does not -- a tombstone merged from the base is history, not this branch's
+// to restore. The candidate row is the base bible's entry when it has one,
+// else one built from the tombstone.
+//
+// Both reads are plain `git show <ref>:<bible>` on the maintainer (whose
+// checkout the candidate read has just fetched and fast-forwarded). No bible
+// on the branch, an unreadable one, or no withdrawn tombstone: nothing.
+// A base without a bible (or an unreadable one) counts as no tombstones.
+//
+// `.read(memberName)` on the returned function is the same read for the
+// demotion offer and the PR body's "KB changes on merge" section, which must
+// tell "nothing carried" from "could not read": it answers
+// { ok, rows, error }. When the HEAD read fails or is unparseable, `git ls-tree --name-only HEAD -- <bible>` with
+// empty output means the branch has no bible (nothing carried); anything
+// else is ok:false.
+//
+// @param {{
+//   command: (cmd: string, opts: { member_name: string, silent?: boolean, failSoft?: boolean }) => Promise<{ ok: boolean, output?: string }>,
+//   baseBranch: string,
+//   bibleFile?: string,
+//   log?: Function,
+// }} opts
+// @returns {(memberName: string) => Promise<object[]>}
+function createBranchWithdrawnEntries({ command, baseBranch, bibleFile = '.fleet/kb-canonical.json', log = () => {} }) {
+    const parseDoc = (res) => {
+        if (!res || !res.ok) return null;
+        try {
+            const doc = JSON.parse(String(res.output || ''));
+            return (doc && typeof doc === 'object' && !Array.isArray(doc)) ? doc : null;
+        } catch {
+            return null;
+        }
+    };
+    const withdrawnOf = (doc) => (doc && Array.isArray(doc.demotions) ? doc.demotions : [])
+        .filter((t) => t && typeof t.id === 'string' && t.id && t.reason === 'withdrawn');
+    // One maintainer's rows: { ok, rows, error }. `strict` tells a failed
+    // HEAD read from a branch with no bible (see .read below).
+    async function readCarried(memberName, strict) {
+        const headCmd = `git show HEAD:${bibleFile}`;
+        const headRes = await command(headCmd, { member_name: memberName, silent: true, failSoft: true });
+        const head = parseDoc(headRes);
+        if (!head && strict) {
+            const lsCmd = `git ls-tree --name-only HEAD -- ${bibleFile}`;
+            const ls = await command(lsCmd, { member_name: memberName, silent: true, failSoft: true });
+            if (ls && ls.ok && String(ls.output || '').trim() === '') return { ok: true, rows: [] };
+            const why = (headRes && headRes.ok) ? 'not a readable bible' : `failed${failedCommandDetail(headRes)}`;
+            return { ok: false, rows: [], error: `'${headCmd}' on '${memberName}': ${why}` };
+        }
+        const tombstones = withdrawnOf(head);
+        if (tombstones.length === 0) return { ok: true, rows: [] };
+        const baseCmd = `git show origin/${baseBranch}:${bibleFile}`;
+        const baseRes = await command(baseCmd, { member_name: memberName, silent: true, failSoft: true });
+        const base = parseDoc(baseRes);
+        if (!base) log(`[kb-work] no readable bible from '${baseCmd}' on '${memberName}' -- every withdrawn tombstone on the sprint branch counts as this branch's own`);
+        const baseTombstones = new Set(withdrawnOf(base).map((t) => t.id));
+        const baseEntries = new Map((base && Array.isArray(base.entries) ? base.entries : [])
+            .filter((e) => e && typeof e.id === 'string').map((e) => [e.id, e]));
+        const out = [];
+        for (const t of tombstones) {
+            if (baseTombstones.has(t.id)) continue;
+            const e = baseEntries.get(t.id);
+            out.push({
+                id: t.id,
+                type: (e && typeof e.type === 'string') ? e.type : 'knowledge',
+                confidence: 'CONFIRMED',
+                title: (e && typeof e.title === 'string') ? e.title : `withdrawn entry ${t.id}`,
+                summary: (e && typeof e.summary === 'string') ? e.summary : (typeof t.note === 'string' ? t.note : ''),
+                source_files: (e && Array.isArray(e.source_files)) ? e.source_files
+                    : (Array.isArray(t.evidence_files) ? t.evidence_files : []),
+                // For the PR body (.read only): the base entry's own title
+                // ('' without one) and the tombstone's note.
+                ...(strict ? {
+                    base_title: (e && typeof e.title === 'string') ? e.title : '',
+                    tombstone_note: typeof t.note === 'string' ? t.note : '',
+                } : {}),
+            });
+        }
+        return { ok: true, rows: out };
+    }
+    const branchWithdrawnEntries = async (memberName) => (await readCarried(memberName, false)).rows;
+    branchWithdrawnEntries.read = (memberName) => readCarried(memberName, true);
+    return branchWithdrawnEntries;
+}
+export { createBranchWithdrawnEntries };
+
+// The PR body's "KB changes on merge" report at publish and at abort:
+// kbWork.kbChangesOnMerge() (this run's verdicts plus the withdrawn tombstones
+// the branch carries), else kbChangesReport() for a kbWork without it. A throw
+// still yields a report that says the branch could not be read -- never a
+// silently missing section.
+async function kbChangesForPrBody(kbWork, log = () => {}) {
+    if (!kbWork) return null;
+    if (typeof kbWork.kbChangesOnMerge === 'function') {
+        try {
+            return await kbWork.kbChangesOnMerge();
+        } catch (err) {
+            log(`[kb-work] WARN: the KB changes report for the PR body failed (${err && err.message ? err.message : String(err)}) -- the section says the branch tombstones could not be read`);
+            const base = typeof kbWork.kbChangesReport === 'function' ? kbWork.kbChangesReport() : null;
+            return { withdrawn: [], notRecorded: [], noVerdict: [], kept: 0, restored: 0, refused: [], notPushed: [], ...(base || {}),
+                unreadable: [{ repo: '', member: '', error: err && err.message ? err.message : String(err) }] };
+        }
+    }
+    return typeof kbWork.kbChangesReport === 'function' ? kbWork.kbChangesReport() : null;
+}
+export { kbChangesForPrBody };
+
+// Factory for kbWork.promotionCandidates()'s D6 in-sprint ping-pong guard:
+// the CURRENT sha256 of a bounded set of files, read on a member's own
+// checkout. kb.mjs has no shell/fs access of its own (every kb_* call there
+// goes through memberCall, never a shell) and this is the one disk fact no
+// kb_* tool answers -- demoted_basis_hashes (surfaced on an INFERRED entry's
+// kb_query row once it has ever been demoted) is a snapshot taken AT DEMOTE
+// TIME, not a live one, so telling "basis unchanged" from "basis moved on"
+// needs a fresh read of the SAME files right now.
+//
+// MUST hash the SAME way SqliteProvider's demoteBasisHashes does -- plain
+// sha256 of the raw bytes, never `git hash-object` (which normalizes line
+// endings and therefore would not reliably equal a plain sha256 of the same
+// content) -- or the two sides of kb.mjs's comparison would silently never
+// match. Run through a disposable `node -e` script rather than a shell
+// pipeline. The file list is KB-supplied text, so it is NEVER interpolated
+// into the command string: it travels as one base64 argv token (alphabet
+// A-Za-z0-9+/=, inert in POSIX shells, PowerShell and cmd.exe) and the fixed
+// script, which carries no `$`, backticks or double quotes, decodes it --
+// the same recipe as stageCommandBodyMemberSide in member-provisioning.mjs.
+// A JSON.stringify'd list inside a double-quoted shell string is NOT safe:
+// POSIX shells still expand `$(...)` and backticks inside double quotes.
+//
+// A missing or unreadable file is simply absent from the result (never a
+// fabricated hash); a failed command, or output that is not the JSON object
+// this script prints, degrades to {} with a WARN naming the member -- the caller's "never falsely
+// suppress" rule then leaves every candidate offered, exactly as it does for
+// an unparseable demoted_basis_hashes snapshot.
+//
+// @param {{
+//   command: (cmd: string, opts: { member_name: string, silent?: boolean, failSoft?: boolean }) => Promise<{ ok: boolean, output?: string }>,
+//   log?: Function,
+// }} opts
+// @returns {(memberName: string, files: string[]) => Promise<Record<string, string>>}
+const CURRENT_FILE_HASHES_SCRIPT =
+    "const fs=require('fs'),crypto=require('crypto');" +
+    "const files=JSON.parse(Buffer.from(process.argv[1],'base64').toString('utf8'));" +
+    "const out={};" +
+    "for (const f of files) { try { out[f]=crypto.createHash('sha256').update(fs.readFileSync(f)).digest('hex'); } catch (e) {} }" +
+    "process.stdout.write(JSON.stringify(out));";
+// How a WARN line names the hashing command: the full string carries the whole
+// script plus a base64 file list, which would bury the message.
+const CURRENT_FILE_HASHES_LABEL = 'node -e <current-file-hashes script> <base64 file list>';
+const FAILED_OUTPUT_MAX_CHARS = 300;
+
+// ": <the command's output, capped at FAILED_OUTPUT_MAX_CHARS>", or "" when it
+// printed nothing -- the reason a WARN line quotes for a failed member command.
+function failedCommandDetail(res) {
+    const out = res && typeof res.output === 'string' ? res.output.trim() : '';
+    if (!out) return '';
+    return `: ${out.length > FAILED_OUTPUT_MAX_CHARS ? `${out.slice(0, FAILED_OUTPUT_MAX_CHARS)}...` : out}`;
+}
+
+function createCurrentFileHashes({ command, log = () => {} }) {
+    return async function currentFileHashes(memberName, files) {
+        const list = Array.isArray(files) ? files.filter((f) => typeof f === 'string' && f.length > 0) : [];
+        if (list.length === 0) return {};
+        const filesB64 = Buffer.from(JSON.stringify(list), 'utf-8').toString('base64');
+        let res;
+        try {
+            res = await command(`node -e "${CURRENT_FILE_HASHES_SCRIPT}" "${filesB64}"`, { member_name: memberName, silent: true, failSoft: true });
+        } catch (err) {
+            log(`[kb-work] could not re-hash ${list.length} file(s) on '${memberName}' for the in-sprint ping-pong guard (non-fatal): ${err && err.message ? err.message : String(err)}`);
+            return {};
+        }
+        // A member without a working `node` lands here on every call, which
+        // disables the guard -- so say so, every time.
+        if (!res || !res.ok) {
+            log(`[kb-work] WARN: '${CURRENT_FILE_HASHES_LABEL}' failed on '${memberName}' -- the in-sprint ping-pong guard has no current hashes for ${list.length} file(s) and suppresses nothing${failedCommandDetail(res)}`);
+            return {};
+        }
+        let parsed;
+        try {
+            parsed = JSON.parse(String(res.output || '{}'));
+        } catch (err) {
+            log(`[kb-work] WARN: '${CURRENT_FILE_HASHES_LABEL}' on '${memberName}' printed output that is not JSON (${err.message}) -- the in-sprint ping-pong guard has no current hashes for ${list.length} file(s) and suppresses nothing${failedCommandDetail(res)}`);
+            return {};
+        }
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+            log(`[kb-work] WARN: '${CURRENT_FILE_HASHES_LABEL}' on '${memberName}' printed JSON that is not a file -> hash object -- the in-sprint ping-pong guard suppresses nothing${failedCommandDetail(res)}`);
+            return {};
+        }
+        return parsed;
+    };
+}
+export { createCurrentFileHashes };
 
 // ---------------------------------------------------------------------------
 // Canonical role-name constants for the Develop/Review loop
@@ -941,8 +1186,11 @@ async function runSprintCycle(context) {
         // has to exist BEFORE `command` does. No beads read can happen in
         // between, so the getter is always called on a resolved value.
         getBacklogMember: () => backlogMember,
+        // The parent-link guard's ERROR lines (a vanished parent-child link
+        // restored, or a restore that failed) go to the sprint log.
+        log,
     });
-    const { invalidateAllBeadsCache, fetchAllBeadsShared, bdListScoped } = beadsScope;
+    const { invalidateAllBeadsCache, fetchAllBeadsShared, bdListScoped, decomposedParentIds, readyLeafBeads } = beadsScope;
     const command = beadsScope.wrapCommand(rawCommand, {
         // DoltSync memoizes each member's `bd config get sync.remote` answer
         // for the process lifetime (it was being re-spawned 90-160 times per
@@ -1571,10 +1819,40 @@ async function runSprintCycle(context) {
     // maintainer is mid-dispatch (dispatchStarted/dispatchEnded below).
     // gitSync is bound further down; the G-pull closure resolves it lazily,
     // and no KB write can be applied before the first dispatch completes.
+    // THE SPRINT's CUMULATIVE changed-file set, for the FINAL review's
+    // demotion-candidate read (the only review offered demotion candidates):
+    // the whole baseBranch...branch diff. gitSync.pullGitBefore is bound
+    // lazily -- gitSync is defined further down in this function, and this is
+    // not CALLED until long after that assignment runs.
+    const sprintChangedFiles = context.sprintChangedFiles ?? createSprintChangedFiles({
+        command,
+        pullGitBefore: (memberName) => gitSync.pullGitBefore(memberName),
+        baseBranch: validated.baseBranch,
+        branch: validated.branch,
+        log,
+    });
+    // Entries an earlier final review on this branch withdrew (a relaunch's
+    // final review can hold -- restore -- one). See createBranchWithdrawnEntries.
+    const branchWithdrawals = context.branchWithdrawals ?? createBranchWithdrawnEntries({
+        command,
+        baseBranch: validated.baseBranch,
+        log,
+    });
+    const currentFileHashes = context.currentFileHashes ?? createCurrentFileHashes({ command, log });
     const kbWork = context.kbWork ?? createKbWorkClient({
         memberCall: kbMemberCall,
         maintainers: () => context.kbMaintainers,
         gPull: (maintainerName, options) => gitSync.pullGitBefore(maintainerName, options),
+        sprintChangedFiles,
+        // Feature detection for merge-carried withdrawals on the maintainer,
+        // local or remote: its session must list kb_capabilities (whose
+        // routes must then include `withdraw`).
+        listTools: kbListTools,
+        branchWithdrawals,
+        // D6 in-sprint ping-pong guard (promotionCandidates): re-hash a
+        // candidate's cited files on demand to tell "basis unchanged since
+        // the demotion" from "basis moved on" -- see createCurrentFileHashes.
+        currentFileHashes,
         // The review-round bible commit (kbWork.commitRound): G-push, the
         // retry's rebase --abort, and the base branch/commit recorded as the
         // bible's provenance -- all on the maintainer, all bracketed.
@@ -1594,6 +1872,11 @@ async function runSprintCycle(context) {
         // Promotion candidates are limited to entries created since the
         // sprint started -- the sprint state's one start stamp.
         sprintStartMs: () => sprintState.startedAtMs,
+        // Reviewer demotion loop switch ('on' default, 'off'): sprint arg kb_demotion_loop.
+        demotionLoop: validated.kbDemotionLoop,
+        // The per-offering record lives in the run context, so a client
+        // rebuilt on a resume keeps what was offered and judged.
+        offeringRecord: (context.kbOfferingRecord ??= new Map()),
         log,
     });
     // Stored on the sprint context (like kbMaintainers) so the terminal-abort
@@ -2088,35 +2371,14 @@ async function runSprintCycle(context) {
     // one id per invocation and is single-level only) and for the snapshot
     // invalidation contract.
 
-    // The set of scope-member ids that are themselves someone else's
-    // `--parent` -- i.e. decomposed grouping nodes, not leaf units of work.
-    // Built from children of ANY status, not just open ones: once a decomposed
-    // bead's children all close they vanish from an open-only list, the parent
-    // stops looking like a parent, and it would wrongly re-enter leaf/ready
-    // treatment. bdListScoped('') is the no-extra-query path -- the
-    // already-fetched project-wide any-status dump filtered to scope, with no
-    // new bd command issued.
-    async function decomposedParentIds() {
-        const allAnyStatus = await bdListScoped('');
-        return new Set(allAnyStatus.filter((b) => b.parent).map((b) => b.parent));
-    }
-
-    // Returns this scope's ready beads minus any decomposed parent (see
-    // decomposedParentIds() above). Per GRAPH-SEMANTICS.md a decomposed bead's
-    // "done" status comes from its children closing, never from being worked
-    // directly, so it must never be seeded to a doer even when bd's own
-    // `--ready` reports it. The check is STRUCTURAL (does this ready bead have
-    // children?), not an issue_type check -- issue_type has no effect on
-    // `--ready` inclusion, and a bead can be a leaf `type=task` or a decomposed
-    // `type=bug`/`type=feature` parent, so only the has-children structure
-    // tells them apart.
-    async function readyLeafBeads() {
-        const [ready, parentIds] = await Promise.all([
-            bdListScoped('--ready --json'),
-            decomposedParentIds(),
-        ]);
-        return ready.filter((b) => !parentIds.has(b.id));
-    }
+    // decomposedParentIds() / readyLeafBeads() come from the beads-scope
+    // client (destructured above). A decomposed bead (any scope member that is
+    // someone's `--parent`, children of ANY status) is never seeded to a doer
+    // even when bd's own `--ready` reports it -- the check is STRUCTURAL, not
+    // an issue_type check (GRAPH-SEMANTICS.md). A bead stays a parent even if
+    // a beads merge later drops its parent-child links; it stops being one only
+    // when its children are deleted or moved to another parent (see
+    // parent-link-guard.mjs).
 
     // Bead ids the PRE-LAUNCH rule (reclaimStaleInProgress below) must never
     // touch again this run: every id it has already reclaimed, and every id a
@@ -2403,6 +2665,8 @@ async function runSprintCycle(context) {
         if (kbCandidates.length > 0) {
             log(`[kb-work] offering ${kbCandidates.length} INFERRED entr(ies) to the reviewer for promotion.`);
         }
+        // No demotion candidates here: they are offered at the FINAL review
+        // only (see phases/final-review.mjs and kbWork.demotionCandidates).
         // What the KB knows about the beads UNDER REVIEW, not just whatever the
         // sprint-start prime happened to surface. Falls back to the primed set
         // when the query returns nothing (a KB with no matching rows yet).
@@ -2466,7 +2730,7 @@ async function runSprintCycle(context) {
                 + `on branch ${validated.branch}, diff range ${mergeBaseSha}..${validated.branch} (use exactly this range for git diff and git log). ` +
                 'Finish evaluating the remaining acceptance criteria and return your final verdict now.',
             roleLabel: 'Reviewer',
-            resumeLabel: `Review (resume, max_turns=${TURN_BASES.BASE_REVIEWER_MAX_TURNS * 2})`,
+            resumeLabel: `Review (resume, max_turns=${secondaryMaxTurns('reviewer')})`,
             // The reviewer pool head is a runner-local value; the policy names
             // it by binding and the engine resolves it from here.
             bindings: { 'reviewerPool[0]': reviewerPool[0] },
@@ -2708,16 +2972,22 @@ async function runSprintCycle(context) {
     // Runs on `member` -- the role member about to consume the probed file --
     // never on backlogMember: a shared/unreservable backlog member
     // carries no git checkout to probe.
-    async function probeFileExists(filename, member) {
+    // Detailed variant: distinguishes "probe says absent" from "the probe
+    // command itself failed" so a caller that must fail closed can tell them
+    // apart. `exists` is false in both non-found cases.
+    async function probeFileExistsDetailed(filename, member) {
         const res = await command(
             `node -e "console.log(require('fs').existsSync('${filename}') ? 'found' : 'not found')"`,
             { member_name: member, silent: true, label: `Probe for '${filename}'`, failSoft: true }
         );
         if (!res.ok) {
             log(`Probe for '${filename}' failed (treating as not-found, skipping the dependent phase): ${res.error}`);
-            return false;
+            return { exists: false, failed: true, error: String(res.error || 'probe command failed') };
         }
-        return res.output.trim() === 'found';
+        return { exists: res.output.trim() === 'found', failed: false, error: null };
+    }
+    async function probeFileExists(filename, member) {
+        return (await probeFileExistsDetailed(filename, member)).exists;
     }
 
     // Defense in depth: the pre-sprint health gate above already pulled this
@@ -2743,6 +3013,30 @@ async function runSprintCycle(context) {
     });
 
     await updateDashboard();
+
+    // Target visibility, checked UNCONDITIONALLY before any dispatch or bead
+    // mutation: a target id that is not visible to the backlog member's bd
+    // clone at all is a different problem from beads being closed/done, and one
+    // valid id plus one bad id must not run a full sprint on the valid one.
+    // Reuses the shared project-wide snapshot (cached; no extra bd call).
+    {
+        const knownTargetIds = new Set((await fetchAllBeadsShared()).map((b) => b.id));
+        const invisibleTargets = targetIssues.filter((id) => !knownTargetIds.has(id));
+        if (invisibleTargets.length > 0) {
+            throw new PreSprintValidationError(
+                `Pre-sprint validation failed: ${invisibleTargets.length} of ${targetIssues.length} target issue id(s) ` +
+                `are not visible to the backlog member ('${backlogMember}')'s bd clone at all: ` +
+                `${invisibleTargets.join(', ')}. This is NOT the same as those beads being closed/done -- it usually ` +
+                `means they were created/updated on a different clone that was never synced to the shared Dolt remote ` +
+                `(dolt-push it there first), the id is misspelled or carries the wrong prefix, or this member's clone has not picked them up yet. Scope: '${sprintFilter}'.`,
+                {
+                    reason: PRE_SPRINT_REFUSAL_REASONS.TARGET_NOT_VISIBLE,
+                    scope: sprintFilter,
+                    invisibleTargets,
+                }
+            );
+        }
+    }
 
     // readyLeafBeads(), not raw bdListScoped('--ready --json'): bd's own
     // `--ready` reports a decomposed childful target (e.g. this sprint's own
@@ -2816,36 +3110,6 @@ async function runSprintCycle(context) {
 
         if (initialBeads.length === 0) {
             if (notDoneBeads.length === 0) {
-                // Distinguish "every target issue is genuinely done" from "one
-                // or more target ids are not visible to this orchestrator
-                // member's own bd clone AT ALL" -- the latter reads
-                // identically as "Nothing to do" without this check (an empty
-                // `notDoneBeads` either way), but is a completely different
-                // problem: those beads are not closed, they are invisible
-                // here, most commonly because they were created/mutated on a
-                // different clone that was never `bd dolt push`ed to the
-                // shared remote before this sprint launched, or because a
-                // members-persistent-across-sprints orchestrator (see
-                // DoltSync.syncBefore's fatal:true D-pull above) still hasn't
-                // synced them for some other reason. Reusing the already-
-                // fetched project-wide snapshot -- no extra bd call.
-                const allBeadsForVisibilityCheck = await fetchAllBeadsShared();
-                const knownIds = new Set(allBeadsForVisibilityCheck.map((b) => b.id));
-                const invisibleTargets = targetIssues.filter((id) => !knownIds.has(id));
-                if (invisibleTargets.length > 0) {
-                    throw new PreSprintValidationError(
-                        `Pre-sprint validation failed: ${invisibleTargets.length} of ${targetIssues.length} target issue id(s) ` +
-                        `are not visible to the backlog member ('${backlogMember}')'s bd clone at all: ` +
-                        `${invisibleTargets.join(', ')}. This is NOT the same as those beads being closed/done -- it usually ` +
-                        `means they were created/updated on a different clone that was never synced to the shared Dolt remote ` +
-                        `(dolt-push it there first) or this member's clone has not picked them up yet. Scope: '${sprintFilter}'.`,
-                        {
-                            reason: PRE_SPRINT_REFUSAL_REASONS.TARGET_NOT_VISIBLE,
-                            scope: sprintFilter,
-                            invisibleTargets,
-                        }
-                    );
-                }
                 throw new PreSprintValidationError(
                     `Pre-sprint validation failed: No open/in-progress/blocked/deferred beads found for scope '${sprintFilter}'. Nothing to do.`,
                     { reason: PRE_SPRINT_REFUSAL_REASONS.NOTHING_TO_DO, scope: sprintFilter }
@@ -3012,6 +3276,8 @@ async function runSprintCycle(context) {
     //     lane-mate.
     // A hold line is logged whenever it changes.
     const loggedBelowGoalExclusions = new Set();
+    // Containers whose ignored lane metadata was already logged this run.
+    const loggedIgnoredLaneContainers = new Set();
     let lastDispatchHoldLog = '';
     async function dispatchableReadyLeafBeads() {
         const [ready, scopeAll] = await Promise.all([readyLeafBeads(), bdListScoped('')]);
@@ -3025,6 +3291,7 @@ async function runSprintCycle(context) {
             for (const e of fresh) loggedBelowGoalExclusions.add(e.id);
             log(formatBelowGoalExclusionLog(fresh, validated.goal));
         }
+        for (const line of newIgnoredContainerLaneLogs(scopeAll, loggedIgnoredLaneContainers)) log(line);
         let candidates = dispatchable;
         if (waitingMap.size > 0) {
             const stillWaiting = [];
@@ -3160,14 +3427,27 @@ async function runSprintCycle(context) {
     // 'paused-awaiting-decision' until at least one decision is answered,
     // releases the answered bead(s), resets the no-progress counter (an answer
     // is progress), and returns true so the caller re-reads the ready set.
-    // Returns false when there is no stall; throws StalledSprintError when
-    // there is one and no decision is pending. A decision whose decision bead
-    // could not be filed does not count as pending here (nothing can answer
-    // it in-run); the stall error names it with its full question.
+    // Returns false when there is no stall. When there is one and no decision
+    // is pending: if at least one bead this run dispatched (workedOnBeadIds)
+    // or routed to verify (verifyEverIds) is closed, returns
+    // { carryOver } (./set-aside.mjs buildSetAsideCarryOver) so the caller
+    // keeps that work -- Cycle Evaluation exits to Finalization with the
+    // carry-over, the start of a Develop round only ends the Develop loop;
+    // with zero beads closed this run it throws StalledSprintError naming the
+    // blockers. A decision whose decision bead could not be filed does not
+    // count as pending here (nothing can answer it in-run); the stall error
+    // names it with its full question.
     async function throwIfSetAsideStall({ where, cycle, openAtGoal = null, closedIds = null, runbooks = null, queueLateAnswers = false }) {
         const doctorBlockedIds = sprintState.doctorBlockedIds instanceof Map ? sprintState.doctorBlockedIds : new Map();
         const deploySetAside = sprintState.deploySetAside || null;
-        if (doctorBlockedIds.size === 0 && !deploySetAside) return false;
+        const permissionBlockedIds = sprintState.permissionScopeBlockedBeads instanceof Map ? sprintState.permissionScopeBlockedBeads : new Map();
+        // A bead deferred during the run (a plan-cap deferral, or one seen
+        // deferred at goal priority) is never dispatched, yet lane order and
+        // 'blocks' edges still hold its successors behind it -- so it can hold
+        // the run on its own, and the check must not be skipped then.
+        if (doctorBlockedIds.size === 0 && !deploySetAside && permissionBlockedIds.size === 0
+            && deferredEverIds.size === 0 && planCapDeferredEverIds.size === 0) return false;
+        let scopeAll = null;
         let open = openAtGoal;
         if (!open) {
             const [raw, parentIds] = await Promise.all([
@@ -3207,20 +3487,22 @@ async function runSprintCycle(context) {
         }
         // Set-aside v2: an open bead that is not set aside but can only run
         // after a prerequisite that cannot close in this run (set aside,
+        // publish blocked by a permission-scope push failure, deferred,
         // itself stuck, or -- for a bead waiting after a BLOCKED report --
-        // outside the scope) is stuck too. Computed only when some open bead
-        // is otherwise uncovered, from the same in-memory scope read.
+        // outside the scope) is stuck too, with a reason naming that
+        // prerequisite and why. Computed only when some open bead is
+        // otherwise uncovered, from the same in-memory scope read.
         let stuckIds = new Map();
-        if (doctorBlockedIds.size > 0 && open.some((b) => !doctorBlockedIds.has(b.id))) {
-            const scopeAll = await bdListScoped('');
+        if (open.some((b) => !doctorBlockedIds.has(b.id) && !permissionBlockedIds.has(b.id))) {
+            if (!scopeAll) scopeAll = await bdListScoped('');
             const allBeads = await fetchAllBeadsShared();
             stuckIds = stuckBehindSetAside({
-                scopeBeads: scopeAll, allBeads, doctorBlockedIds,
+                scopeBeads: scopeAll, allBeads, doctorBlockedIds, permissionBlockedIds,
                 waitingIds: sprintState.waitingIds instanceof Map ? sprintState.waitingIds : new Map(),
             });
         }
         const stall = evaluateSetAsideStall({
-            openIds: open.map((b) => b.id), integBoundIds, verifyBlockedIds, doctorBlockedIds, deploySetAside, stuckIds,
+            openIds: open.map((b) => b.id), integBoundIds, verifyBlockedIds, doctorBlockedIds, deploySetAside, stuckIds, permissionBlockedIds,
         });
         if (!stall) return false;
         if (decisionWait && decisionWait.hasPending()) {
@@ -3242,6 +3524,15 @@ async function runSprintCycle(context) {
                 `(no bd human respond path): ${unfiledDecisions.map((d) => `${d.beadId} -- ${d.question}`).join('; ')}`,
             );
         }
+        // Work this run already closed is never thrown away by a set-aside
+        // stall: the set-aside beads become a carry-over instead.
+        if (workedOnBeadIds.size > 0 || verifyEverIds.size > 0) {
+            const closedNow = closedIds || new Set((await bdListScoped('--status=closed --json')).map((b) => b.id));
+            const closedThisRun = closedWorkThisRun({ workedOnIds: workedOnBeadIds, verifyEverIds, closedIds: closedNow });
+            if (closedThisRun.length > 0) {
+                return { carryOver: buildSetAsideCarryOver(stall, { where, cycle, closedIds: closedThisRun }) };
+            }
+        }
         const message = formatSetAsideStallMessage(stall, { where, scope: sprintFilter });
         log(message);
         throw new StalledSprintError(message, {
@@ -3256,6 +3547,44 @@ async function runSprintCycle(context) {
         });
     }
 
+    // A SprintPlanRejectedError (from the Plan phase, or from the empty-ready
+    // check after a plan-cap deferral) would abort a sprint that already
+    // closed work, throwing that work's Final Review, Regression, Harvest and
+    // Publish away. When at least one bead this run dispatched or routed to
+    // verify is closed, return a carry-over (./set-aside.mjs
+    // buildPlanRejectedCarryOver) naming each contested bead with the
+    // plan-reviewer finding instead; the caller exits the cycle loop to
+    // Finalization and Final Review forces FAIL while an at/above-goal bead is
+    // carried over. With nothing closed this run, returns null and the caller
+    // rethrows. The contested beads are the error's details.contestedIds; when
+    // the verdict named none (e.g. a plan with no task in it), every open
+    // at/above-goal in-scope leaf bead is carried over instead.
+    async function planRejectedCarryOver(err, { where, cycle }) {
+        if (workedOnBeadIds.size === 0 && verifyEverIds.size === 0) return null;
+        const closedNow = new Set((await bdListScoped('--status=closed --json')).map((b) => b.id));
+        const closedThisRun = closedWorkThisRun({ workedOnIds: workedOnBeadIds, verifyEverIds, closedIds: closedNow });
+        if (closedThisRun.length === 0) return null;
+        const details = (err && err.details) || {};
+        const [rawAtGoal, parentIds] = await Promise.all([
+            bdListScoped(`--status=${NOT_DONE_STATUSES} --priority-max=${goalMax} --json`),
+            decomposedParentIds(),
+        ]);
+        const atGoalIds = rawAtGoal.map((b) => String(b.id));
+        let contestedIds = Array.isArray(details.contestedIds) ? details.contestedIds.filter((id) => typeof id === 'string' && id) : [];
+        if (contestedIds.length === 0) {
+            contestedIds = partitionDeferredBeads(rawAtGoal.filter((b) => !parentIds.has(b.id))).active.map((b) => String(b.id)).sort();
+        }
+        return buildPlanRejectedCarryOver({
+            where, cycle,
+            planningRounds: details.planningRounds,
+            closedIds: closedThisRun,
+            contestedIds,
+            verdictNotes: details.notes ?? err.notes ?? null,
+            findings: details.findings || null,
+            atGoalIds,
+        });
+    }
+
     // apra-fleet-rp7a.1: every bead id ever seen DEFERRED at/above goal
     // priority during Cycle Evaluation, monotone for the same reason
     // verifyEverIds is. These beads are excluded from the completion/stall
@@ -3264,6 +3593,10 @@ async function runSprintCycle(context) {
     // text this set feeds -- it must not be possible for an id to fall out of
     // it because a later cycle happened to read a different status.
     const deferredEverIds = new Set();
+    // Every bead the Plan phase deferred per plan-cap exhaustion this run, at
+    // any priority: such a bead can hold an in-goal lane-mate behind it, so
+    // throwIfSetAsideStall must look for beads stuck behind it.
+    const planCapDeferredEverIds = new Set();
 
     // apra-fleet-66u.2: separate two different facts the stall-abort message
     // used to conflate -- "closed count did not increase across N cycles"
@@ -3285,6 +3618,22 @@ async function runSprintCycle(context) {
     const VERIFY_GAP_LIMIT = 2;
     const verifyGapCounts = new Map();
 
+    // Verify-routed beads the exit gate stops waiting for
+    // (./verify-carry-over.mjs). inconclusiveVerifyCounts is the engine's own
+    // per-bead count of consecutive Integration Test cycles that left the bead
+    // open with no gap bug; at NEEDS_EXTERNAL_EVIDENCE_CYCLE_LIMIT the bead
+    // moves into needsEvidenceVerifyIds (id -> { reason, cycles }), is not
+    // dispatched to verify again and no longer holds the exit; Final Review
+    // forces FAIL and names it (at/above goal priority only; a below-goal one
+    // is named without forcing FAIL). deferredVerifyIds (id -> reason, or
+    // { reason, bounceCap: true } for the bounce cap) holds verify-routed
+    // beads deferred during the run (the bounce cap, or seen deferred at
+    // Route), which can never be dispatched again: dropped from the exit gate
+    // and named as a deferred carry-over. None of them is closed.
+    const inconclusiveVerifyCounts = new Map();
+    const needsEvidenceVerifyIds = new Map();
+    const deferredVerifyIds = new Map();
+
     // Deploy/Integration failure evidence, threaded into the Final Review's
     // evidence-based prompt below -- never silently swallowed.
     const deployFailures = [];
@@ -3300,6 +3649,13 @@ async function runSprintCycle(context) {
     // GitHub #717: set (to the named diagnosis) when the cycle loop exits on a
     // verify-block deadlock; Final Review then forces the verdict to FAIL.
     let verifyBlockDiagnosis = null;
+    // Set (to ./set-aside.mjs buildSetAsideCarryOver's result) when Cycle
+    // Evaluation exits the cycle loop on a set-aside stall after this run
+    // closed work, or to buildPlanRejectedCarryOver's result when the Plan
+    // phase ends unapproved after this run closed work; Final Review then
+    // forces FAIL while an at/above-goal bead is carried over and names every
+    // carried-over item in the verdict notes.
+    let carryOverExit = null;
 
     // apra-fleet-nwh.1: integ-test-runner's own tracked spend, broken out of
     // the harvester's cost block so it is never silently folded into
@@ -3344,6 +3700,26 @@ async function runSprintCycle(context) {
     // a re-review before trusting the latter.
     let lastReviewVerdict = null;
     let reviewedThisCycle = false;
+    // Set (to the skipped ids) when this cycle's last review returned
+    // CHANGES_NEEDED whose every reopenId the goal-scope guard skipped as
+    // below goal, with nothing in-goal left behind
+    // (./beads-transitions.mjs belowGoalOnlyReopenIds): that verdict counts
+    // as APPROVED for the exit decision. Reset per cycle with the verdict.
+    let reviewBelowGoalOnlyIds = null;
+    // Run-scoped: below-goal reopen ids such a verdict skipped at the exit,
+    // named as carry-over in the verdict notes and the run result.
+    const belowGoalCarryOverIds = new Set();
+
+    // RUN-scoped and sticky -- deliberately NOT reset per cycle (see
+    // ./red-build-integ-gate.mjs): true while the last review that genuinely
+    // ran reported the build/tests failing. Gates the Integration Test
+    // dispatch below; a cycle that runs no review carries it unchanged.
+    let lastBuildFailing = false;
+    // The latest cycle whose Integration Test was skipped for a red build
+    // ({cycle}); cleared when Integration Test later runs (which it only does
+    // once a later review reported the build green). Non-null at Final Review
+    // forces the sprint verdict to FAIL.
+    let redBuildIntegSkip = null;
 
     while (cycle <= effectiveMaxCycles) {
         group(`Sprint Cycle ${cycle}`);
@@ -3356,6 +3732,7 @@ async function runSprintCycle(context) {
         // for the cycle that actually produced it.
         lastReviewVerdict = null;
         reviewedThisCycle = false;
+        reviewBelowGoalOnlyIds = null;
 
         // After the first cycle, re-ensure (non-destructively) that every
         // member is still on the sprint branch before this cycle's doers run.
@@ -3373,8 +3750,13 @@ async function runSprintCycle(context) {
         // every cycle (no persisted list); classification itself counts as
         // sprint progress (see the stall-detector high-water-mark change
         // below), which is the actual fix for tonight's false-stall bug.
-        const { verifyIds: verifySetThisCycle } = classifyVerifySet(await fetchAllBeadsShared(), targetIssues);
+        const routeBeads = await fetchAllBeadsShared();
+        const { verifyIds: verifySetThisCycle } = classifyVerifySet(routeBeads, targetIssues);
         for (const id of verifySetThisCycle) verifyEverIds.add(id);
+        // A verify-routed bead deferred by anyone since the last Route can
+        // never be dispatched again: record it from the same snapshot (no
+        // extra bd call) so the exit gate stops waiting on it.
+        syncDeferredVerifyIds(deferredVerifyIds, { beads: routeBeads, verifyEverIds });
         if (verifySetThisCycle.length > 0) {
             log(`Route C${cycle}: ${verifySetThisCycle.length} bead(s) implementation-complete, routed to verify (excluded from Plan/Develop): ${verifySetThisCycle.join(', ')}`);
         }
@@ -3394,21 +3776,40 @@ async function runSprintCycle(context) {
         // below still reads (planCapDeferredIds / lastVerdict / planningRounds)
         // plus the pendingRejectedNewTasks list it reassigns -- the one mutable
         // local that used to be shared through the closure.
-        const planOutcome = await runPlanPhase({
-            phase, log, command, dispatchCtx,
-            cycle, validated, targetIssues, requirementsContent,
-            backlogMember, getMemberForRole,
-            sprintState, gitSync, args,
-            verifySetThisCycle, roundSessions, pendingRejectedNewTasks,
-            resolveSettleShell,
-            parseBdJson,
-            extractContestedBeadIds,
-            reconcilePendingRejectedNewTasks,
-            stageCommandBodyMemberSide,
-            updateDashboard,
-        });
+        //
+        // A plan the plan-reviewer never approved throws
+        // SprintPlanRejectedError; after this run closed work that becomes a
+        // carry-over exit to Finalization instead (planRejectedCarryOver).
+        // PlanReviewDispatchFailedError is a different class and always
+        // propagates.
+        let planOutcome;
+        try {
+            planOutcome = await runPlanPhase({
+                phase, log, command, dispatchCtx,
+                cycle, validated, targetIssues, requirementsContent,
+                backlogMember, getMemberForRole,
+                sprintState, gitSync, args,
+                verifySetThisCycle, roundSessions, pendingRejectedNewTasks,
+                resolveSettleShell,
+                parseBdJson,
+                extractContestedBeadIds,
+                reconcilePendingRejectedNewTasks,
+                stageCommandBodyMemberSide,
+                updateDashboard,
+                bdListScoped,
+            });
+        } catch (err) {
+            if (!(err instanceof SprintPlanRejectedError)) throw err;
+            const planCarryOver = await planRejectedCarryOver(err, { where: `Plan C${cycle}`, cycle });
+            if (!planCarryOver) throw err;
+            carryOverExit = planCarryOver;
+            log(`Cycle ${cycle}: ${formatCarryOverNotes(carryOverExit)} Exiting cycle loop to Finalization${carryOverExit.atGoalIds.length > 0 ? '; the sprint verdict will be FAIL' : ''}.`);
+            endGroup();
+            break;
+        }
         pendingRejectedNewTasks = planOutcome.pendingRejectedNewTasks;
         const { planCapDeferredIds, lastVerdict, planningRounds } = planOutcome;
+        for (const id of planCapDeferredIds) planCapDeferredEverIds.add(id);
 
         // =======================
         // 2. Execution Prep
@@ -3471,8 +3872,10 @@ async function runSprintCycle(context) {
         // decides completion), but immediately after a deferral it means the
         // approved remainder was empty all along, which is the same failure as
         // a whole-plan-contested exhaustion.
+        // After this run closed work it is a carry-over exit naming the
+        // deferred beads instead (planRejectedCarryOver).
         if (planCapDeferredIds.length > 0 && readyBeads.length === 0) {
-            throw new SprintPlanRejectedError(
+            const rejected = new SprintPlanRejectedError(
                 `Plan phase for cycle ${cycle}: after deferring contested bead(s) ` +
                 `[${planCapDeferredIds.join(', ')}] per plan-cap exhaustion, the resulting ready set is empty. ` +
                 'Refusing to proceed to Develop with nothing dispatchable.',
@@ -3480,8 +3883,18 @@ async function runSprintCycle(context) {
                     notes: lastVerdict ? lastVerdict.notes : null,
                     cycle,
                     planningRounds,
+                    details: {
+                        contestedIds: planCapDeferredIds,
+                        findings: lastVerdict && Array.isArray(lastVerdict.findings) ? lastVerdict.findings : null,
+                    },
                 }
             );
+            const deferralCarryOver = await planRejectedCarryOver(rejected, { where: `Plan C${cycle} (after plan-cap deferral)`, cycle });
+            if (!deferralCarryOver) throw rejected;
+            carryOverExit = deferralCarryOver;
+            log(`Cycle ${cycle}: ${formatCarryOverNotes(carryOverExit)} Exiting cycle loop to Finalization${carryOverExit.atGoalIds.length > 0 ? '; the sprint verdict will be FAIL' : ''}.`);
+            endGroup();
+            break;
         }
 
         // An empty `--ready` list is NOT, by itself, evidence the sprint
@@ -3548,17 +3961,34 @@ async function runSprintCycle(context) {
             if (currentReadyAll.length === 0) break;
 
             // Start-of-round set-aside check: when every still-ready bead is set
-            // aside for this run (doer-BLOCKED or a dependent of one), stall now
+            // aside for this run (doer-BLOCKED or a dependent of one, or publish
+            // blocked by a permission-scope push failure), stall now
             // if nothing else open can progress; otherwise skip the remaining
             // rounds (nothing here is dispatchable) and go on to Cycle
             // Evaluation. Mixed rounds are passed through unchanged --
             // ./phases/develop.mjs excludes the set-aside beads itself.
-            const roundSetAside = sprintState.doctorBlockedIds instanceof Map ? sprintState.doctorBlockedIds : null;
-            if (roundSetAside && currentReadyAll.every((b) => roundSetAside.has(b.id))) {
+            const roundSetAside = sprintState.doctorBlockedIds instanceof Map ? sprintState.doctorBlockedIds : new Map();
+            const roundPublishBlocked = sprintState.permissionScopeBlockedBeads instanceof Map ? sprintState.permissionScopeBlockedBeads : new Map();
+            if ((roundSetAside.size > 0 || roundPublishBlocked.size > 0)
+                && currentReadyAll.every((b) => roundSetAside.has(b.id) || roundPublishBlocked.has(b.id))) {
                 // true: an operator answered a pending decision while the run
                 // was paused -- re-read the ready set (the released bead is
                 // in it again) and dispatch this round.
-                if (await throwIfSetAsideStall({ where: `start of Develop C${cycle} R${devRounds + 1}`, cycle })) continue;
+                const roundStall = await throwIfSetAsideStall({ where: `start of Develop C${cycle} R${devRounds + 1}`, cycle });
+                if (roundStall === true) continue;
+                // A set-aside stall after this run closed work never finishes
+                // the run here: it only ends the Develop loop, so Deploy and
+                // Integration Test still run for the work closed earlier in
+                // the cycle. Cycle Evaluation re-checks and owns the exit to
+                // Finalization (the carry-over).
+                if (roundStall && roundStall.carryOver) {
+                    log(
+                        `Develop C${cycle} R${devRounds + 1}: every open in-scope bead is set aside for this run, but this run ` +
+                        `already closed work (${roundStall.carryOver.closedIds.join(', ')}) -- ending the Develop loop; ` +
+                        'Deploy and Integration Test still run this cycle.'
+                    );
+                    break;
+                }
                 log(
                     `Develop C${cycle} R${devRounds + 1}: every still-ready bead is set aside for this run ` +
                     `(${currentReadyAll.map((b) => b.id).join(', ')}) -- skipping the remaining develop/review rounds this cycle.`
@@ -3600,6 +4030,7 @@ async function runSprintCycle(context) {
                     gitSync, updateDashboard,
                     verifySetThisCycle, pendingRejectedNewTasks,
                     devRounds, eligibleReplan, replanIds, replannedThisCycle, perBeadFeedback,
+                    command, sprintState, bdListScoped, extractContestedBeadIds,
                 });
                 continue;
             }
@@ -3680,13 +4111,14 @@ async function runSprintCycle(context) {
             // back through this destructuring assignment; on the round where
             // every streak failed (empty review scope) they come back
             // unchanged, which is why no `if` is needed here.
-            ({ lastReviewVerdict, reviewedThisCycle, pendingRejectedNewTasks } = await runReviewPhase({
+            ({ lastReviewVerdict, reviewedThisCycle, pendingRejectedNewTasks, lastBuildFailing, belowGoalOnlySkippedIds: reviewBelowGoalOnlyIds } = await runReviewPhase({
                 phase, log, command,
                 cycle, validated, targetIssues, backlogMember,
                 gitSync, sprintState,
                 replanIds, replannedThisCycle, perBeadFeedback, rejectedNewTasks,
                 devRounds, streakOutcomes, readyTitleById,
-                lastReviewVerdict, reviewedThisCycle, pendingRejectedNewTasks,
+                lastReviewVerdict, reviewedThisCycle, pendingRejectedNewTasks, lastBuildFailing,
+                belowGoalOnlySkippedIds: reviewBelowGoalOnlyIds,
                 dispatchReview, bdListScoped, goalMax, recordReopen,
                 workedOnIds: workedOnBeadIds,
                 childIdAllocator, sprintMutexId,
@@ -3729,16 +4161,27 @@ async function runSprintCycle(context) {
         // error, portability quirk on a given member, etc.) SKIPS the dependent
         // phase with a logged warning -- it must never throw and kill the
         // sprint.
-        const hasDeploy = await probeFileExists('deploy.md', getMemberForRole('deployer'));
+        // The deploy.md probe fails CLOSED: a probe command failure (not a
+        // clean "not found") must not read as "no deploy.md", or it would
+        // clear lastDeployFailure/deployBlockedCycles and hide an earlier
+        // deploy failure or set-aside from both satisfied-exit gates and the
+        // Final Review verdict gate. It records this cycle's deploy failure.
+        const deployProbe = await probeFileExistsDetailed('deploy.md', getMemberForRole('deployer'));
+        const hasDeploy = deployProbe.exists || deployProbe.failed;
         const hasPlaybook = await probeFileExists('integ-test-playbook.md', getMemberForRole('integ-test-runner'));
 
         let deployedThisCycle = false;
+        if (deployProbe.failed) {
+            deployFailures.push({ cycle, notes: `deploy.md probe failed, deploy status unknown (fail closed): ${deployProbe.error}` });
+        }
 
         // Deploy set aside for the run (a Permissions pre-step failure in an
         // earlier cycle -- see DEPLOY SET-ASIDE in ./phases/deploy.mjs): never
         // dispatch the deployer again; this cycle's deploy counts as failed.
         const deploySetAside = sprintState.deploySetAside || null;
-        if (hasDeploy && deploySetAside) {
+        if (deployProbe.failed) {
+            log(`Skipping Deploy Phase C${cycle}: the deploy.md probe failed (${deployProbe.error}); counting this cycle's deploy as failed. Skipping Integration Test phase.`);
+        } else if (hasDeploy && deploySetAside) {
             log(`Skipping Deploy Phase C${cycle}: ${formatDeploySetAsideNotes(deploySetAside)}. Skipping Integration Test phase.`);
         } else if (hasDeploy) {
             // The phase body lives in ./phases/deploy.mjs
@@ -3773,7 +4216,20 @@ async function runSprintCycle(context) {
         // playbook, or Deploy failed) correctly counts as "no verify
         // dispatch attempt", not a crash.
         let verifySetForIntegTest = [];
-        if (hasPlaybook && deployedThisCycle) {
+        // This cycle's per-verify-bead integ outcome (phases/integ-test.mjs),
+        // null when Integration Test did not run.
+        let integVerifyOutcome = null;
+        if (hasPlaybook && deployedThisCycle && lastBuildFailing) {
+            // The last review that ran reported the build/tests failing and no
+            // later review has reported them passing: Integration Test is not
+            // dispatched against a red branch (it would run a subset of tests
+            // and could close verify-set beads the red suite covers). Recorded
+            // in integFailures so Final Review and the sprint report see it.
+            log(formatRedBuildIntegSkipReason(cycle));
+            integFailures.push(redBuildIntegSkipEntry(cycle));
+            redBuildIntegSkip = { cycle };
+        } else if (hasPlaybook && deployedThisCycle) {
+            redBuildIntegSkip = null;
             // The phase body lives in ./phases/integ-test.mjs
             // (apra-fleet-3swo.6.8), which receives its state explicitly
             // instead of closing over runSprintCycle's locals. The two
@@ -3781,18 +4237,20 @@ async function runSprintCycle(context) {
             // `let verifySetForIntegTest = []` and both "Skipping Integration
             // Test Phase" else branches below all stay here: the probes decide
             // whether this phase runs at all, and the verify set they feed is
-            // read by Cycle Evaluation whether or not it ran. integFailures,
-            // verifyEverIds and verifyGapCounts are mutated in place exactly as
-            // the closure did; the three genuinely reassigned values come back.
-            ({ verifySetForIntegTest, integTestRunnerDispatchCount, integTestRunnerSpend } = await runIntegTestPhase({
-                phase, log, command, dispatchCtx,
-                cycle, targetIssues, backlogMember, sprintSelfIdLine,
+            // read by Cycle Evaluation whether or not it ran. integFailures and
+            // verifyEverIds are mutated in place exactly as the closure did;
+            // the three genuinely reassigned values come back. The verify
+            // bounce cap on the gap bugs it filed runs at Cycle Evaluation,
+            // after the backlog D-pull (applyVerifyGapAccounting below).
+            ({ verifySetForIntegTest, integTestRunnerDispatchCount, integTestRunnerSpend, integVerifyOutcome } = await runIntegTestPhase({
+                phase, log, dispatchCtx,
+                cycle, targetIssues, sprintSelfIdLine,
                 budget,
-                integFailures, verifyEverIds, verifyGapCounts,
+                integFailures, verifyEverIds,
                 verifySetForIntegTest, integTestRunnerDispatchCount, integTestRunnerSpend,
                 getMemberForRole, ensureUnattendedAuto, ensureDeployPermissions,
-                bdListScoped, fetchAllBeadsShared, parseBdJson, updateDashboard,
-                VERIFY_GAP_LIMIT,
+                bdListScoped, fetchAllBeadsShared, updateDashboard,
+                excludedVerifyIds: new Set(needsEvidenceVerifyIds.keys()),
             }));
         } else if (hasPlaybook && !deployedThisCycle) {
             log('Skipping Integration Test Phase (deploy did not succeed this cycle, or no deploy.md was present to attempt)');
@@ -3819,6 +4277,24 @@ async function runSprintCycle(context) {
         // (apra-fleet-7dir.24).
         const cycleEvalSettleShell = await resolveSettleShell({ args, member: backlogMember, log, sprintState });
         await gitSync.syncBeadsBefore(backlogMember, { fatal: true, settle: buildSettleCallback(backlogMember, { command, log, shell: cycleEvalSettleShell }) });
+        // Verify-fail bounce cap on this cycle's gap bugs, run HERE -- after
+        // the backlog D-pull just above and before any exit-gate math -- not
+        // inside the Integ Test phase: the integ runner files and D-pushes its
+        // gap bugs from its own member, so the backlog clone can resolve their
+        // parents only once it has pulled. Reuses this pull (no extra D-pull).
+        // It feeds verifyGapCounts, deferredVerifyIds (the exit gate) and
+        // integVerifyOutcome.gapParentIds (the needs-external-evidence reset);
+        // a lookup that still misses is a WARN plus an integFailures entry.
+        if (integVerifyOutcome) {
+            const { gapParentIds } = await applyVerifyGapAccounting({
+                log, command, cycle, backlogMember,
+                bugsFiled: integVerifyOutcome.bugsFiled,
+                verifySetIds: integVerifyOutcome.dispatchedIds,
+                verifyGapCounts, integFailures, deferredVerifyIds,
+                parseBdJson, VERIFY_GAP_LIMIT,
+            });
+            integVerifyOutcome.gapParentIds = gapParentIds;
+        }
         // A decomposed parent (any bead that is itself someone's --parent,
         // including a childful --issue target) is excluded here the same way
         // readyLeafBeads() excludes it from dispatch: its own "done" status
@@ -3898,7 +4374,35 @@ async function runSprintCycle(context) {
         // apra-fleet-2sn. `verifyEverIds` is monotone (only ever grows), so a
         // bead cannot re-earn credit by oscillating in and out of
         // eligibility -- the high-water-mark oscillation-proofing survives.
-        const progressScore = closedCount + verifyEverIds.size;
+        // Engine-derived needs-external-evidence count (./verify-carry-over.mjs),
+        // on the same live closed list: a verify-routed bead Integration Test
+        // was handed, that is still open after it and has no gap bug filed
+        // under it, was inconclusive this cycle. An infra dispatch failure
+        // produced no verdict, so it neither counts nor resets.
+        if (integVerifyOutcome && !integVerifyOutcome.inconclusive && integVerifyOutcome.dispatchedIds.length > 0) {
+            const tripped = recordInconclusiveVerifyCycle(inconclusiveVerifyCounts, {
+                dispatchedIds: integVerifyOutcome.dispatchedIds,
+                closedIds: closedIdsNow,
+                gapParentIds: integVerifyOutcome.gapParentIds,
+                limit: NEEDS_EXTERNAL_EVIDENCE_CYCLE_LIMIT,
+            });
+            for (const id of tripped) {
+                const reason = integVerifyOutcome.leftOpenReasons.get(id) || integVerifyOutcome.summary || '';
+                needsEvidenceVerifyIds.set(id, { reason, cycles: inconclusiveVerifyCounts.get(id) });
+                log(
+                    `Cycle ${cycle}: ${id} was left open by Integration Test with no gap bug filed on ` +
+                    `${inconclusiveVerifyCounts.get(id)} consecutive cycle(s) (limit ${NEEDS_EXTERNAL_EVIDENCE_CYCLE_LIMIT}) -- ` +
+                    'carried over as needs-external-evidence: not dispatched to verify again and no longer holding the exit; ' +
+                    `the sprint verdict will be FAIL.${reason ? ` Integ runner: ${reason}` : ''}`
+                );
+            }
+        }
+
+        // A needs-external-evidence carry-over is progress in the same sense
+        // a verify routing is (monotone, only ever grows): the bead was
+        // resolved for this run, so the cycle that carries it over is not a
+        // stale cycle.
+        const progressScore = closedCount + verifyEverIds.size + needsEvidenceVerifyIds.size;
         // High-water-mark progress. A cycle only counts as progress when it sets
         // a NEW all-time high for this sprint -- returning to a previously-seen
         // value (even one different from the immediately prior cycle, e.g.
@@ -3913,10 +4417,20 @@ async function runSprintCycle(context) {
         // Immediate set-aside stall, checked BEFORE the STALL_CYCLE_LIMIT
         // stall and the deploy-blocked retry exit below, so neither can delay
         // it: everything left is set aside, so no later cycle can progress.
-        await throwIfSetAsideStall({
+        // With work closed this run that is a carry-over, not an abort: exit
+        // the cycle loop to Finalization (Final Review, Regression, Harvest,
+        // Publish PR) with the set-aside beads named, like the verify-block
+        // exit below; Final Review forces the verdict to FAIL.
+        const cycleStall = await throwIfSetAsideStall({
             where: `Cycle ${cycle} evaluation`, cycle, openAtGoal, closedIds: closedIdsNow,
             runbooks: { hasDeploy, hasPlaybook }, queueLateAnswers: true,
         });
+        if (cycleStall && cycleStall.carryOver) {
+            carryOverExit = cycleStall.carryOver;
+            log(`Cycle ${cycle}: ${formatCarryOverNotes(carryOverExit)} Exiting cycle loop to Finalization${carryOverExit.atGoalIds.length > 0 ? '; the sprint verdict will be FAIL' : ''}.`);
+            endGroup();
+            break;
+        }
 
         // apra-fleet-b4g.102.1: a cycle spent re-attempting a failed deploy
         // after the work itself was already satisfied is not a stall -- it is
@@ -4041,12 +4555,13 @@ async function runSprintCycle(context) {
             // Cycle Evaluation, not to this phase. rejectedNewTasks is pushed
             // to in place exactly as the closure did; the three genuinely
             // reassigned values come back.
-            ({ lastReviewVerdict, reviewedThisCycle, pendingRejectedNewTasks } = await runReReviewPhase({
+            ({ lastReviewVerdict, reviewedThisCycle, pendingRejectedNewTasks, lastBuildFailing, belowGoalOnlySkippedIds: reviewBelowGoalOnlyIds } = await runReReviewPhase({
                 phase, log, command,
                 cycle, validated, targetIssues, backlogMember,
                 gitSync, sprintState,
                 rejectedNewTasks,
-                lastReviewVerdict, reviewedThisCycle, pendingRejectedNewTasks,
+                lastReviewVerdict, reviewedThisCycle, pendingRejectedNewTasks, lastBuildFailing,
+                belowGoalOnlySkippedIds: reviewBelowGoalOnlyIds,
                 dispatchReview, bdListScoped, goalMax, recordReopen,
                 workedOnIds: workedOnBeadIds,
                 childIdAllocator, sprintMutexId,
@@ -4069,10 +4584,16 @@ async function runSprintCycle(context) {
         // stale here for the same reason noted at the closedBeadsNow read
         // above -- this check runs after the Re-Review block may have pushed
         // further mutations this cycle.
+        // Carried-over verify ids (needs external evidence, or deferred during
+        // the run) are not waited on: no cycle can close them
+        // (./verify-carry-over.mjs).
         let stillOpenVerifyIds = [];
         if (verifyEverIds.size > 0) {
             const closedIdsForExitCheck = new Set((await bdListScoped('--status=closed --json')).map((b) => b.id));
-            stillOpenVerifyIds = [...verifyEverIds].filter((id) => !closedIdsForExitCheck.has(id));
+            stillOpenVerifyIds = stillOpenVerifyIdsForExit({
+                verifyEverIds, closedIds: closedIdsForExitCheck,
+                needsEvidence: needsEvidenceVerifyIds, deferred: deferredVerifyIds,
+            });
         }
 
         // apra-fleet-rp7a.2: independent escape hatch, alongside (not instead
@@ -4111,7 +4632,15 @@ async function runSprintCycle(context) {
         // phases, where Final Review forces a FAIL that names the failure. A
         // sprint with no deploy.md never sets lastDeployFailure.
         const rootsAllClosed = targetIssues.length > 0 && targetIssues.every((id) => closedIdsNow.has(id));
-        const goalSatisfied = openAtGoal.length === 0 && lastReviewVerdict === 'APPROVED' && stillOpenVerifyIds.length === 0;
+        // A CHANGES_NEEDED whose only reopenIds were skipped as below goal
+        // (nothing in-goal left behind) is APPROVED for this decision: the
+        // next cycle could only repeat it until a stall.
+        const reviewApprovedForExit = lastReviewVerdict === 'APPROVED' ||
+            (lastReviewVerdict === 'CHANGES_NEEDED' && Array.isArray(reviewBelowGoalOnlyIds) && reviewBelowGoalOnlyIds.length > 0);
+        const goalSatisfied = openAtGoal.length === 0 && reviewApprovedForExit && stillOpenVerifyIds.length === 0;
+        if (goalSatisfied && lastReviewVerdict !== 'APPROVED') {
+            for (const id of reviewBelowGoalOnlyIds) belowGoalCarryOverIds.add(id);
+        }
         if ((rootsAllClosed || goalSatisfied) && lastDeployFailure) {
             const which = rootsAllClosed ? 'every configured sprint root/target bead is closed' : `goal priority ${validated.goal} (<=${goalMax}) is otherwise satisfied`;
             // A deploy set aside for the run is never re-dispatched, so a
@@ -4151,8 +4680,12 @@ async function runSprintCycle(context) {
             // SPRINT_STALLED, and a human reading "satisfied" must be able to
             // see, in the same sentence, exactly what was skipped to get there.
             const deferredExitIds = [...deferredEverIds];
+            const verifyCarryOverAtExit = buildVerifyCarryOver({ needsEvidence: needsEvidenceVerifyIds, deferred: deferredVerifyIds, closedIds: closedIdsNow });
+            if (verifyCarryOverAtExit) log(`Cycle ${cycle}: ${formatVerifyCarryOverNotes(verifyCarryOverAtExit)}`);
             log(
-                `Goal priority ${validated.goal} (<=${goalMax}) satisfied: 0 open bead(s) in scope and last reviewer verdict was APPROVED. Exiting cycle loop.` +
+                (lastReviewVerdict === 'APPROVED'
+                    ? `Goal priority ${validated.goal} (<=${goalMax}) satisfied: 0 open bead(s) in scope and last reviewer verdict was APPROVED. Exiting cycle loop.`
+                    : `Goal priority ${validated.goal} (<=${goalMax}) satisfied: 0 open bead(s) in scope and the last reviewer verdict was CHANGES_NEEDED naming only below-goal reopenIds, all skipped -- treated as APPROVED. Exiting cycle loop. Carried over (below goal ${validated.goal}, not reopened): ${reviewBelowGoalOnlyIds.join(', ')}.`) +
                 (deferredExitIds.length > 0
                     ? ` ${deferredExitIds.length} bead(s) were treated as out of scope because they are DEFERRED (never dispatchable, so no cycle could advance them): ${deferredExitIds.join(', ')}. Reopen them and re-run the sprint if that was not intended.`
                     : '')
@@ -4211,7 +4744,7 @@ async function runSprintCycle(context) {
     // a reader; the test pin plus the A/B mock sprint in
     // mock-sprint-regression-failure-never-gates.test.mjs are what actually
     // hold the line.
-    const { finalVerdictResult, finalClosedCount, finalOpenAtGoalCount, finalDeferredAtGoalIds } = await runFinalReviewPhase({
+    const { finalVerdictResult, finalClosedCount, finalOpenAtGoalCount, finalDeferredAtGoalIds, verifyCarryOver } = await runFinalReviewPhase({
         phase, log, command, dispatchCtx,
         args, validated, targetIssues, backlogMember, finalCycleLabel, sprintState,
         gitSync,
@@ -4220,6 +4753,11 @@ async function runSprintCycle(context) {
         bdListScoped, decomposedParentIds, goalMax, NOT_DONE_STATUSES,
         reclaimCappedIds: orphanClaims.cappedIds(),
         verifyBlockDiagnosis,
+        carryOverExit,
+        needsEvidenceVerifyIds,
+        deferredVerifyIds,
+        belowGoalCarryOverIds,
+        redBuildIntegSkip,
         workedOnIds: workedOnBeadIds,
         kbPriming, kbWork, kbInjection, kbSprintContext, getMemberForRole,
         childIdAllocator, sprintMutexId, resolveSettleShell,
@@ -4335,6 +4873,7 @@ async function runSprintCycle(context) {
         finalVerdictResult, costAnalysis,
         setAside: collectSetAsideEntries(sprintState),
         waited: collectWaitEntries(sprintState),
+        kbChanges: await kbChangesForPrBody(kbWork, log),
     });
 
     // Final summary line: a skipped PR must not read as a clean success.
@@ -4362,6 +4901,19 @@ async function runSprintCycle(context) {
         goal: validated.goal,
         maxCycles: validated.maxCycles,
         pushed,
+        // Present only when the cycle loop exited on a set-aside stall after
+        // this run closed work: the named exit reason and every carried-over
+        // item ({ id, reason }) Finalization reported.
+        ...(carryOverExit ? { exitReason: carryOverExit.reason, carryOver: carryOverExit.entries } : {}),
+        // Present only when verify-routed beads were carried over
+        // (./verify-carry-over.mjs): { id, kind: 'needs-external-evidence' |
+        // 'deferred' | 'deferred-bounce-cap', reason } for each (plus
+        // belowGoal: true when below the sprint goal priority, which names the
+        // bead without forcing FAIL).
+        ...(verifyCarryOver ? { verifyCarryOver: verifyCarryOver.entries } : {}),
+        // Present only when the run exited on a CHANGES_NEEDED whose only
+        // reopenIds were skipped as below goal: those ids, not reopened.
+        ...(belowGoalCarryOverIds.size > 0 ? { belowGoalCarryOver: [...belowGoalCarryOverIds].sort() } : {}),
         // Present only when the branch was pushed but no PR was opened
         // ({ reason, message }); surfaces in the supervisor's persisted
         // terminal state as state.result.prSkipped. Never changes the verdict.
@@ -4439,6 +4991,7 @@ export async function main(context) {
         log,
         publishState,
         phaseOf: () => lastPhaseTitle,
+        kbWorkOf: () => runContext.kbWork,
     });
 
     try {
@@ -4499,6 +5052,10 @@ export async function main(context) {
                     onAuthFailure: abortOnAuthFailure,
                     callTool: (args && typeof args.callTool === 'function') ? args.callTool : undefined,
                     runId: (args && typeof args.run_id === 'string') ? args.run_id : undefined,
+                    // Withdrawals a final review (this run's or an earlier
+                    // one's) committed travel with the branch: the
+                    // [ABORTED] body must list them.
+                    kbChanges: await kbChangesForPrBody(runContext.kbWork, log),
                 });
             } catch (finalizeErr) {
                 log(
@@ -4535,6 +5092,15 @@ export async function main(context) {
         throw err;
     } finally {
         uninstallFatalGuard();
+        // Held KB writes/confirmations/demotions must never vanish silently:
+        // report them on every exit that reaches here (PASS, FAIL, typed
+        // abort, cancel, stall or carry-over return, untyped error). The
+        // client's warnPending is idempotent, so this prints at most once.
+        try {
+            if (runContext.kbWork && typeof runContext.kbWork.warnPending === 'function') runContext.kbWork.warnPending();
+        } catch (warnErr) {
+            log(`[kb-work] failed to report held KB writes (non-fatal): ${warnErr && warnErr.message ? warnErr.message : String(warnErr)}`);
+        }
         // Always release the sprint lock, on every exit path (success, typed
         // abort, or an untyped re-thrown error) -- a lock never released here
         // would falsely block every future launch of this exact sprint

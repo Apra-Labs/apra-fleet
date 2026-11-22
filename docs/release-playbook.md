@@ -10,7 +10,9 @@ real STANDARD account (Windows Sandbox or a standard user on a fleet member), wi
 candidate binary, run `apra-fleet install` (no elevation; status `installed (enabled)`), kill the
 server tree (`taskkill /F /T`) and confirm the task revives it within the trigger interval with no
 console window, `apra-fleet stop` keeps it stopped across two intervals (status shows stopped by
-user), `apra-fleet start` re-enables and starts it, and `apra-fleet uninstall` removes the task.
+user), `apra-fleet start` re-enables and starts it, and `apra-fleet uninstall` removes the task (stop the server first with `apra-fleet stop`, or run
+`apra-fleet uninstall --force`: a plain uninstall right after start refuses with "server is currently
+running").
 Attach the evidence to the release PR.
 
 ## 1. Bump the version -- in both package.json AND version.json
@@ -43,7 +45,17 @@ git commit -m "chore: bump version to X.Y.Z"
 git push
 ```
 
-## 2. Tag and push
+## 2. Update CHANGELOG.md
+
+Right before tagging, in a PR to main titled `docs(changelog): X.Y.Z`, move
+`CHANGELOG.md`'s `[Unreleased]` content into a new `## [X.Y.Z] - YYYY-MM-DD`
+section condensed from the draft release notes (upgrade notes,
+Added/Changed/Fixed/Security/Removed, release link), and leave `[Unreleased]`
+empty. Only the release cut edits this file: feature PRs and sprints never do
+(CI refuses a CHANGELOG.md change in any PR whose title does not start with
+`docs(changelog)`). ASCII only.
+
+## 3. Tag and push
 
 Releases are tag-triggered. Pushing a `v*` tag kicks off the `release` job
 in `.github/workflows/ci.yml`, which builds the binaries and creates the
@@ -54,7 +66,7 @@ git tag vX.Y.Z
 git push origin vX.Y.Z
 ```
 
-## 3. Wait for CI
+## 4. Wait for CI
 
 ```bash
 gh run list --workflow=ci.yml --branch vX.Y.Z --limit 3
@@ -62,7 +74,7 @@ gh run list --workflow=ci.yml --branch vX.Y.Z --limit 3
 
 Wait until it shows `completed / success`.
 
-## 4. Clean up the release notes
+## 5. Clean up the release notes
 
 `generate_release_notes: true` makes GitHub auto-write draft notes from the
 raw commit log the moment the release is created. Those are a placeholder,
@@ -74,10 +86,12 @@ gh release view vX.Y.Z                 # see the auto-generated draft
 gh release edit vX.Y.Z --notes "..."   # replace with a clean summary
 ```
 
-Keep the summary short: what changed and why. It's fine to leave GitHub's
+Keep the summary short: what changed and why, and in agreement with the
+`CHANGELOG.md` section (fix the CHANGELOG in a PR to main if the notes change
+after tagging). It's fine to leave GitHub's
 "Full Changelog" link at the bottom for anyone who wants the raw commit diff.
 
-## 5. Pin the new release as the upgrade baseline
+## 6. Pin the new release as the upgrade baseline
 
 The nightly install/upgrade proof (`regression.yml`) starts its upgrade
 passes from the newest baseline in `tests/integration/fresh-install/pins.json`

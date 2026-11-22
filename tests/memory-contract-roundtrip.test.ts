@@ -23,10 +23,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { fileURLToPath } from 'node:url';
 
 import { registerAllTools } from '../src/services/tool-registry.js';
 import { memberToolScope } from '../src/services/tool-scope.js';
 import { addAgent, removeAgent } from '../src/services/registry.js';
+import { kbSetup } from '../src/tools/kb-setup.js';
+import { resetKbProviders } from '../src/services/knowledge/kb-providers.js';
+import { FLEET_DIR } from '../src/paths.js';
 import { resolveProjectSlug } from '../src/services/knowledge/project-slug.js';
 import {
   runRoundTrip,
@@ -34,8 +38,11 @@ import {
   RECORDED_REMOTE_B,
   RECORDED_REMOTE_IMPORT_REJECTED,
   RECORDED_REMOTE_BARE,
+  RECORDED_REMOTE_HTTP,
 } from '../memory-contract/v1/tests/roundtrip-harness.mjs';
 import { materializeSessionWorld } from '../memory-contract/v1/tests/session-world.mjs';
+import { createKbSampleServers, HTTP_KB_RECORDED_OTHER_URL } from '../memory-contract/v1/tests/kb-sample-servers.mjs';
+import { startKbServer } from '../src/commands/kb-server.js';
 import { KB_MODULES, CODE_EXPORTS } from '../memory-contract/v1/generate-contract.mjs';
 
 type ToolHandler = (input: unknown, extra?: unknown) => Promise<{ content: { type: string; text: string }[] }>;
@@ -50,9 +57,12 @@ const ROSTER: string[] = [
 ];
 
 interface SetupOp {
-  op: 'write' | 'delete' | 'commit';
+  op: 'write' | 'delete' | 'commit' | 'ref';
   repo: string;
-  rel: string;
+  /** write / delete / commit: the repo-relative path. */
+  rel?: string;
+  /** ref: the git ref pointed at HEAD. */
+  name?: string;
   contents?: string;
 }
 
@@ -67,7 +77,32 @@ const RECORDED_REMOTES: Record<string, string> = {
   B: RECORDED_REMOTE_B,
   IMPORT_REJECTED: RECORDED_REMOTE_IMPORT_REJECTED,
   BARE: RECORDED_REMOTE_BARE,
+  HTTP: RECORDED_REMOTE_HTTP,
 };
+
+// The http-backed sessions' KB servers are fleet's sample kb-server
+// (kb-sample-servers.mjs). Each provider owns its own pair: the 'tagged'
+// server serves that provider's HTTP repo, whose per-run remote decides the
+// project slug. The token is the committed obviously-fake fixture value.
+type KbSampleServers = ReturnType<typeof createKbSampleServers>;
+const HTTP_KB_TOKEN_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), 'knowledge', 'fixtures', 'kb-http-test-token.txt');
+const KB_CONFIG_PATH = path.join(FLEET_DIR, 'knowledge', 'config.json');
+
+/** Runs fn with the project KB configured as http (sample-server variant), then restores the prior config and provider cache. */
+async function withHttpKb<T>(kbSampleServers: KbSampleServers, fn: () => Promise<T>, variant: string): Promise<T> {
+  const remote = await kbSampleServers.urlFor(variant);
+  const prior = fs.existsSync(KB_CONFIG_PATH) ? fs.readFileSync(KB_CONFIG_PATH) : null;
+  resetKbProviders();
+  try {
+    const token = fs.readFileSync(HTTP_KB_TOKEN_PATH, 'utf-8').trim();
+    await kbSetup({ provider: 'http', remote, token }, { folder: os.tmpdir() });
+    return await fn();
+  } finally {
+    if (prior === null) fs.rmSync(KB_CONFIG_PATH, { force: true });
+    else fs.writeFileSync(KB_CONFIG_PATH, prior);
+    resetKbProviders();
+  }
+}
 
 /**
  * The sqlite adapter. It owns everything provider-specific: the scratch repos
@@ -92,6 +127,7 @@ class SqliteContractProvider {
   private repoPaths = new Map<string, string>();
   private sessionHandlers = new Map<string, Map<string, ToolHandler>>();
   private cleanupWorld: (() => void) | null = null;
+  private kbSampleServers: KbSampleServers | null = null;
   private runId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
   liveRemote(key: string): string {
@@ -103,12 +139,20 @@ class SqliteContractProvider {
     // symlinks resolved (macOS /var -> /private/var), so substitutions must
     // use that same spelling.
     this.root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'memory-contract-roundtrip-')));
+    const servers = createKbSampleServers({
+      startKbServer,
+      tokenFile: HTTP_KB_TOKEN_PATH,
+      scratchDir: path.join(this.root, 'kb-sample-servers'),
+      servedFolder: () => this.repoPaths.get('HTTP') as string,
+    });
+    this.kbSampleServers = servers;
     const world = await materializeSessionWorld(env, this.root, {
       remoteUrl: (key: string) => this.liveRemote(key),
       addAgent,
       removeAgent,
       registerAllTools,
       memberToolScope,
+      withHttpKb: <T>(fn: () => Promise<T>, variant: string) => withHttpKb(servers, fn, variant),
     });
     this.repoPaths = world.repoPaths;
     this.sessionHandlers = world.sessionHandlers as Map<string, Map<string, ToolHandler>>;
@@ -125,6 +169,9 @@ class SqliteContractProvider {
     const literals: Record<string, string> = {};
     for (const [key, recorded] of Object.entries(RECORDED_REMOTES)) literals[recorded] = this.liveRemote(key);
     for (const [recorded, live] of world.memberLiterals as [string, string][]) literals[recorded] = live;
+    literals[HTTP_KB_RECORDED_OTHER_URL] = await servers.urlFor('other-project');
+    // The http sessions' project slug is part of the project-mismatch message.
+    literals['exampletest-memory-contract-fixtures-http'] = resolveProjectSlug(this.repoPaths.get('HTTP') as string);
 
     return { substitutions: { paths, literals } };
   }
@@ -133,7 +180,12 @@ class SqliteContractProvider {
     for (const op of ops) {
       const repoDir = this.repoPaths.get(op.repo);
       if (!repoDir) throw new Error(`setup op names unknown repo "${op.repo}"`);
-      const target = path.join(repoDir, ...op.rel.split('/'));
+      if (op.op === 'ref') {
+        execFileSync('git', ['update-ref', op.name as string, 'HEAD'], { cwd: repoDir, stdio: ['ignore', 'pipe', 'pipe'] });
+        continue;
+      }
+      const rel = op.rel as string;
+      const target = path.join(repoDir, ...rel.split('/'));
       if (op.op === 'write') {
         fs.mkdirSync(path.dirname(target), { recursive: true });
         fs.writeFileSync(target, op.contents ?? '', 'utf-8');
@@ -141,8 +193,8 @@ class SqliteContractProvider {
         fs.rmSync(target, { force: true });
       } else if (op.op === 'commit') {
         const git = (args: string[]) => execFileSync('git', args, { cwd: repoDir, stdio: ['ignore', 'pipe', 'pipe'] });
-        git(['add', '--', op.rel]);
-        git(['-c', 'commit.gpgsign=false', 'commit', '-q', '--no-verify', '-m', 'setup: ' + op.rel, '--', op.rel]);
+        git(['add', '--', rel]);
+        git(['-c', 'commit.gpgsign=false', 'commit', '-q', '--no-verify', '-m', 'setup: ' + rel, '--', rel]);
       } else {
         throw new Error(`unknown setup op "${op.op}"`);
       }
@@ -161,11 +213,14 @@ class SqliteContractProvider {
     return handler(request);
   }
 
-  dispose(): void {
+  async dispose(): Promise<void> {
+    await this.kbSampleServers?.close();
+    this.kbSampleServers = null;
     this.cleanupWorld?.();
     if (this.root) fs.rmSync(this.root, { recursive: true, force: true });
   }
 }
+
 
 describe('memory-contract/v1 round trip (sqlite provider)', () => {
   let report: Awaited<ReturnType<typeof runRoundTrip>>;
@@ -175,8 +230,8 @@ describe('memory-contract/v1 round trip (sqlite provider)', () => {
     report = await runRoundTrip(provider, ROSTER);
   }, 120_000);
 
-  afterAll(() => {
-    provider.dispose();
+  afterAll(async () => {
+    await provider.dispose();
   });
 
   it('round-trips every inventoried tool green against sqlite', () => {
@@ -188,12 +243,12 @@ describe('memory-contract/v1 round trip (sqlite provider)', () => {
   it('dispatched every committed fixture live (no case silently skipped)', () => {
     const undispatched = report.steps.filter((s) => !s.dispatched).map((s) => s.key);
     expect(undispatched).toEqual([]);
-    expect(report.steps.length).toBe(98); // one SCENARIO step per committed fixture: 98 (54 responses + 44 thrown refusals)
+    expect(report.steps.length).toBe(125); // one SCENARIO step per committed fixture outside FIXTURES_OUTSIDE_SCENARIO: 125 of 126 (77 responses + 49 thrown refusals)
   });
 
-  it('covers all 26 inventoried tools', () => {
+  it('covers all 28 inventoried tools', () => {
     expect(new Set(report.steps.map((s) => s.tool)).size).toBe(ROSTER.length);
-    expect(ROSTER.length).toBe(27);
+    expect(ROSTER.length).toBe(28);
   });
 
   it('exercises a (slug, repoPath) PAIR, not a bare slug', () => {
@@ -260,8 +315,8 @@ class AdmitsDriftedEntryProvider extends SqliteContractProvider {
 describe('memory-contract/v1 round trip: a provider that admits a drifted id fails the basis-mismatch step', () => {
   const provider = new AdmitsDriftedEntryProvider();
 
-  afterAll(() => {
-    provider.dispose();
+  afterAll(async () => {
+    await provider.dispose();
   });
 
   it('reports exactly the kb_bible_commit/basis-mismatch step as failed', async () => {

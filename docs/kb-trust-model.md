@@ -69,7 +69,9 @@ already follow applies: in a MEMBER session, `kb_capture` tags every stored
 entry `member:<caller uuid>`, and `kb_demote` (like `kb_promote` and
 `kb_invalidate`) acts only on entries carrying the caller's own tag -- any
 other id is reported not found, exactly like an unknown id, so an entry's mere
-existence is never disclosed to a session that does not own it. The
+existence is never disclosed to a session that does not own it. (Over an http
+project KB, `kb_promote` leaves this to the KB server: fleet sends the id with
+no lookup first and surfaces the server's refusal.) The
 consequence worth stating explicitly: a row that reached this clone through
 `kb_import` (the project bible) carries NO member tag at all, because the
 bible is not scoped to any one contributor. So inside a MEMBER session, only
@@ -121,6 +123,83 @@ otherwise look re-promoted and keep the entry. (Spec: memory-contract
 After that happens, the next `kb_bible_commit` from a clone holding the entry
 as demoted removes it again and restores the tombstone.
 
+## Sprint withdrawals: take effect only on merge
+
+A withdrawal is a reviewer's judgement, made on a sprint branch, that a bible
+entry no longer holds. Unlike `kb_demote` it changes no local row:
+
+- `kb_bible_commit` `withdrawals: [{id, note, evidence_files}]` removes the
+  entry from the branch's bible and records a tombstone
+  `{id, at, reason: "withdrawn", note, evidence_files}`. `restore_ids` undoes
+  a tombstone this branch added (the base bible's entry comes back
+  byte-identical).
+- `kb_import` lowers the row (CONFIRMED -> INFERRED, same re-promotion rule as
+  above) only when it reads the bible at the remote-tracking ref of the REAL
+  base branch, and the bible's `provenance.branch` equals that base. The base
+  comes from the caller's `base_branch` input, or else from the remote's
+  default (`refs/remotes/<remote>/HEAD`); the bible's own `provenance.branch`
+  is never trusted to name it, so a feature-branch bible that names itself as
+  its base is not applied. The remote may be any remote in the repo's git
+  config (longest name prefix wins), not only `origin`. From the work tree,
+  `HEAD`, a feature ref, a ref of an unknown remote, a `base_branch` that does
+  not match the bible, or a repo with no remote `HEAD` and no `base_branch`,
+  the ids are only reported in `withdrawals.deferred` (with a warning naming
+  the expected refs where that helps); the member bible view already hides the
+  entry. The sprint engine's prime-time import passes `base_branch`; a server
+  that predates the key strips it and keeps the old behaviour.
+- Over HTTP the bible keeps no entries, only tombstones, and that same
+  base-ref `kb_import` replays them to the KB server in one
+  `POST /api/kb/withdraw`. A server without that route gets nothing and the
+  ids are reported `unsupported` with a warning.
+
+`kb_demote` keeps its meaning: an immediate local demotion. A 0.4.5 clone
+does not know `withdrawn` and treats it like any unknown reason: the entry is
+hidden from its bible view and no row is lowered. (Spec: memory-contract
+`spec.md` 2.6 and 2.9.)
+
+Write-safety rules in `kb_bible_commit`:
+
+- A withdrawn tombstone already in the file is never cleared by `ids`. An id
+  carrying one (added on this branch, or merged in from base while the host row
+  is still CONFIRMED) is skipped with `withdrawn_tombstone`; only `restore_ids`
+  lifts it, and a restore followed by a merge in the same call works because
+  restores are planned before the merge. Demoted tombstones keep the
+  re-promotion rule instead.
+- A demoted tombstone in the file blocks an `ids` merge unless the id's local
+  trust time is strictly after the tombstone `at` (a real re-promotion, which
+  clears it). Otherwise (trust time at or before `at`, or null) the id is
+  skipped with `demoted_tombstone` and the tombstone is kept. An id found in
+  both entries and demotions loses its entry on every call (`removed`, reason
+  `tombstoned`), so a file never holds an id as both.
+- A withdrawn tombstone also outranks a demotion. A `demoted_ids` id with a
+  withdrawn tombstone in the file is skipped with `withdrawn_tombstone`, the
+  every-call demotion rule passes over it, and a demoted tombstone never
+  overwrites a withdrawn one. Otherwise the demoted tombstone would replace the
+  withdrawal, and a later `ids` re-promotion (which clears demoted tombstones)
+  would erase it.
+- `demoted_ids` writes a tombstone only for an id the BASE bible carries (as an
+  entry or a tombstone), because a tombstone for an id the base never had would
+  be a no-op everywhere else. A demoted entry that exists only in the branch's
+  bible, with no tombstone, is simply dropped; anything else is rejected with
+  `not_in_base_bible`. An unresolvable or unreadable base fails closed, and
+  the result carries `base_bible_error` naming the failure (absent when the
+  base was read fine or never needed). A call that only drops entries still
+  commits.
+
+Known limits of the current design:
+
+- To apply withdrawn tombstones from the CLI, run
+  `apra-fleet kb import --ref refs/remotes/origin/main --base-branch main`
+  (after fetching). Both values go to `kb_import`, which validates them with
+  its own schema (an invalid value exits 1). Without `--base-branch` the base
+  is `refs/remotes/<remote>/HEAD`, which a clone not made by `git clone` often
+  lacks; the tombstones are then deferred and the CLI prints the warning.
+- A withdrawal never touches the local row, so the local KB keeps the entry
+  CONFIRMED until the merged bible is imported.
+- An id the base bible carries, demoted locally because of another branch's
+  claim, still gets a demoted tombstone; this leak remains until the sprint
+  engine stops demoting before merge.
+
 ## Forward-only enforcement (no migration)
 
 The gate is forward-looking. The KB may contain historical entries that were written
@@ -135,6 +214,32 @@ Enforcement applies only to captures made from the gate onward.
 - Auto-harvest: entries produced by the kb_harvest autowire are regex-extracted
   from session transcripts, unreviewed, and always captured at UNVERIFIED. Harvest
   can never mint CONFIRMED -- the same gate covers it.
+
+## HTTP provider
+
+With `kb_setup provider http` the project KB lives on a KB server, and the
+guarantees above change:
+
+- Promotes are live for every member at once. A `kb_promote` on the server is
+  read by every member's next query; there is no bible in between, and no
+  basis-at-HEAD check (the check `kb_export` / `kb_bible_commit` apply) before
+  other members see the entry.
+- Basis and freshness are checked against the SERVER's checkout: capture's
+  basis check and context-cache freshness hash the files in the folder the
+  server runs in, not the member's checkout.
+- The shared bearer token is the only credential. Anyone holding it can read
+  and write every entry on that server. The owner tags that scope a member's
+  reads (`member:<uuid>`) are asserted by the client, so they keep agent
+  sessions apart; they do not stop a holder of the token.
+- Promote is by id and fleet does not tag-check it over HTTP: `kb_promote`
+  sends the id, and the server enforces project scope (and any per-caller
+  scope it keeps), refusing an id outside it. A promote from another project
+  is refused (409, `E-KB-HTTP-PROJECT-MISMATCH`) and the entry keeps its tier.
+  The bundled `kb-server` has no per-member scope, so within its one project a
+  member can promote any id it holds.
+- A server serves one project; requests carry their project slug
+  (`X-KB-Project`) and any other project is refused with 409
+  (`E-KB-HTTP-PROJECT-MISMATCH`).
 
 ## Routing guidance: which tool for which situation
 

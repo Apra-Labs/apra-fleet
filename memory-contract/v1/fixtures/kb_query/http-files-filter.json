@@ -1,0 +1,20 @@
+{
+  "tool": "kb_query",
+  "case": "http-files-filter",
+  "kind": "happy",
+  "request": {
+    "query": "widget",
+    "files": [
+      "src"
+    ]
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"l1_results\":[{\"id\":\"60d46a0d-e886-4037-92b5-4578ea71901c\",\"type\":\"knowledge\",\"title\":\"Widget export is a constant\",\"summary\":\"src/widget.ts exports widget as a numeric constant; set up for the http demote fixtures.\",\"confidence\":\"CONFIRMED\",\"source_files\":[\"src/widget.ts\"],\"symbols\":[\"widget\"]}],\"l2_expanded\":[]}"
+      }
+    ]
+  },
+  "session": "HTTP_A"
+}

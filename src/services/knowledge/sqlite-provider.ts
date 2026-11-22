@@ -19,10 +19,11 @@ import {
   filesOverlap,
   makeFtsQuery,
   makeAudnDecision,
-  orJoinFtsTerms,
 } from './audn.js';
 import { computeFileHashBatch } from './file-hash.js';
+import { ensureKeywordIndex, keywordMatchExpression, keywordSearch } from './kb-keyword-index.js';
 import { validateFilePaths } from './path-validation.js';
+import { citedFilterSql, hasCitedFilter, normalizeCitedFilter, normalizeCitedPath } from './cited-filter.js';
 import { clampBibleTimeToNow, standingAgainstTombstone } from './bible-import.js';
 import { KbCaptureRejected, type DiscardResult, type RetireOptions } from './types.js';
 import type {
@@ -107,6 +108,12 @@ function buildDemotionNote(normalizedReason: string, evidence: string[], author:
  */
 export const BIBLE_DEMOTION_REASON = 'demoted in the project bible';
 
+/** The reason recorded when a withdrawal tombstone lowers a row (KB server withdraw route). */
+export const BIBLE_WITHDRAWAL_REASON = 'withdrawn in the project bible';
+
+/** What applying one tombstone did to the local row (KB server withdraw route). */
+export type BibleWithdrawalOutcome = 'withdrawn' | 'repromoted' | 'not_confirmed' | 'not_found';
+
 class NotImplementedError extends Error {
   constructor(method: string) {
     super(`SqliteProvider.${method}() not yet implemented`);
@@ -133,6 +140,15 @@ function trustFilterSql(filter: EntryTrustFilter | undefined): { conditions: str
     params.push(filter.owner_tag);
   }
   return { conditions, params };
+}
+
+// A caller's path as given and in canonical form (normalizeCitedPath: forward
+// slashes, no leading './', no repeated or trailing '/'). capture() stores
+// source_files as given, so an exact-path lookup matches a row stored in the
+// caller's own form or in the canonical form (a backslash caller finds a
+// forward-slash row). Lookup only; nothing is stored in either form here.
+function storedPathForms(file: string): [string, string] {
+  return [file, normalizeCitedPath(file)];
 }
 
 export class SqliteProvider implements MemoryProvider {
@@ -295,7 +311,7 @@ export class SqliteProvider implements MemoryProvider {
     // withdrawn, demoted_basis_hashes the sha256 of each cited source file AS
     // IT WAS ON DISK AT DEMOTE TIME. The second column is deliberately NOT a
     // copy of source_file_hashes (which is the CAPTURE-time basis): the
-    // question it exists to answer is "has the tree moved on since we
+    // ping-pong guard built on top of it asks "has the tree moved on since we
     // demoted?", and a capture-time copy answers the wrong question, so a file
     // edited between capture and demote would look unchanged forever. Same
     // guarded-ALTER pattern as scope/source_file_hashes above: it runs on a
@@ -331,6 +347,29 @@ export class SqliteProvider implements MemoryProvider {
         recorded_at TEXT NOT NULL
       );
     `);
+
+    // kb_import id aliases: a bible entry AUDN deduplicated against an
+    // existing local row (audn_decision 'none') is stored under no row of its
+    // own, so its bible id is unknown locally. The alias records which local
+    // row absorbed it, and applyTombstoneToRow resolves a tombstone for that
+    // bible id through it -- otherwise a merged withdrawal or demotion of the
+    // bible id answers not_found on exactly the clones that already held the
+    // fact. Linked ('update') and flagged imports need no alias: capture()
+    // stores them under the bible id itself. A real row with the bible id
+    // always wins over an alias. Created idempotently; existing DBs start
+    // empty (a re-import of the same bible records the missing aliases).
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS bible_id_aliases (
+        bible_id TEXT PRIMARY KEY,
+        local_id TEXT NOT NULL,
+        recorded_at TEXT NOT NULL
+      );
+    `);
+
+    // Keyword index (kb-keyword-index.ts): created on open and rebuilt from
+    // entries when its version is missing (a KB from before it existed) or
+    // older. Runs last, after every column migration above.
+    ensureKeywordIndex(this.db);
   }
 
   /**
@@ -696,8 +735,9 @@ export class SqliteProvider implements MemoryProvider {
 
   /**
    * Read-only accessor for the demotion state of the given entry ids: the
-   * CURRENT confidence and demoted_at of each id that exists. An unknown id is
-   * simply absent from the map.
+   * CURRENT confidence and demoted_at of each id that exists, plus whether it
+   * is superseded and its type (kb_bible_commit's withdrawal admission needs
+   * both). An unknown id is simply absent from the map.
    *
    * Deliberately NOT routed through list(): list() excludes stale and superseded
    * rows, and a demoted entry that later went stale is exactly the one whose
@@ -706,8 +746,10 @@ export class SqliteProvider implements MemoryProvider {
    * (src/tools/kb-bible-commit.ts); this member only reports the two columns.
    * Internal to this provider, not an MCP surface.
    */
-  getDemotionState(ids: string[]): Map<string, { confidence: Confidence; demoted_at?: string }> {
-    const out = new Map<string, { confidence: Confidence; demoted_at?: string }>();
+  getDemotionState(ids: string[]): Map<string, {
+    confidence: Confidence; demoted_at?: string; superseded: boolean; type: string;
+  }> {
+    const out = new Map<string, { confidence: Confidence; demoted_at?: string; superseded: boolean; type: string }>();
     if (ids.length === 0) return out;
     const db = this.getDb();
     // Chunk to stay well under SQLite's bound-parameter limit (as above).
@@ -715,12 +757,14 @@ export class SqliteProvider implements MemoryProvider {
     for (let i = 0; i < ids.length; i += CHUNK) {
       const chunk = ids.slice(i, i + CHUNK);
       const rows = db.prepare(
-        `SELECT id, confidence, demoted_at FROM entries WHERE id IN (${chunk.map(() => '?').join(',')})`
-      ).all(...chunk) as { id: string; confidence: string; demoted_at: string | null }[];
+        `SELECT id, confidence, demoted_at, superseded_at, type FROM entries WHERE id IN (${chunk.map(() => '?').join(',')})`
+      ).all(...chunk) as { id: string; confidence: string; demoted_at: string | null; superseded_at: string | null; type: string }[];
       for (const row of rows) {
         out.set(row.id, {
           confidence: row.confidence as Confidence,
           demoted_at: row.demoted_at ?? undefined,
+          superseded: row.superseded_at !== null && row.superseded_at !== undefined,
+          type: row.type,
         });
       }
     }
@@ -989,25 +1033,38 @@ export class SqliteProvider implements MemoryProvider {
     now: string,
     sourceFileHashes: Record<string, string>,
     localBasisOnly = false,
-    keepConfirmed = false
+    keepConfirmed = false,
+    importId?: string
   ): CaptureResult | null {
     const decision = makeAudnDecision(input, candidates, newContent);
     if (!decision) return null;
 
+    // importId (kb_import only: importMode plus preferredId, and the id is
+    // still free) is the bible entry's id. It is KEPT on every AUDN path, so a
+    // later tombstone for that bible id reaches this clone's row: linked and
+    // flagged entries are stored under it, and a deduplicated one records an
+    // alias to the local row that absorbed it. Minting a fresh id here made a
+    // merged withdrawal answer not_found on every clone where AUDN had
+    // matched the entry. The alias means a tombstone for the bible id also
+    // demotes/withdraws the absorbing local row (see applyTombstoneToRow).
     if (decision.decision === 'none') {
+      if (importId !== undefined && importId !== decision.matchedId) {
+        db.prepare('INSERT OR IGNORE INTO bible_id_aliases (bible_id, local_id, recorded_at) VALUES (?, ?, ?)')
+          .run(importId, decision.matchedId, now);
+      }
       return { id: decision.matchedId, audn_decision: 'none' };
     }
 
     if (decision.decision === 'flagged') {
       db.prepare('UPDATE entries SET flagged_for_review = 1 WHERE id = ?').run(decision.matchedId);
-      const newId = randomUUID();
+      const newId = importId ?? randomUUID();
       this.insertEntry(db, newId, { ...input, ...decision.newEntryOverrides }, newContent, now, sourceFileHashes, localBasisOnly);
       this.wireLinks(db, newId, input);
       return { id: newId, audn_decision: 'flagged' };
     }
 
     if (decision.decision === 'update') {
-      const newId = randomUUID();
+      const newId = importId ?? randomUUID();
 
       // keepConfirmed (a member session without the kb_maintainer grant): a
       // CONFIRMED target is never retired by supersedes -- retiring it would
@@ -1237,18 +1294,32 @@ export class SqliteProvider implements MemoryProvider {
     // CONFIRMED entry). Skip AUDN and keep the bible id.
     const verbatim = opts?.verbatim === true && opts.importMode === true && opts.preferredId !== undefined;
     const candidates = verbatim ? [] : this.findAudnCandidates(db, input);
+    // The bible id survives every AUDN path under import mode (see
+    // evaluateAudn). Only a FREE id is used: kb_import checks hasEntry()
+    // before calling capture, and this re-check means an AUDN path never
+    // resolves an id collision by overwriting an existing row -- it falls back
+    // to a fresh id there.
+    const importId = opts?.importMode === true && opts.preferredId !== undefined && !this.hasEntry(opts.preferredId)
+      ? opts.preferredId
+      : undefined;
     if (candidates.length > 0) {
-      const result = this.evaluateAudn(db, input, candidates, content, now, sourceFileHashes, localBasisOnly, opts?.keepConfirmed === true);
-      if (result) return result;
+      const result = this.evaluateAudn(db, input, candidates, content, now, sourceFileHashes, localBasisOnly, opts?.keepConfirmed === true, importId);
+      if (result) {
+        // A linked or flagged import is a new row like an 'add': it keeps the
+        // updated_at the bible carried as its trust time, so the one
+        // re-promotion rule judges it the same way.
+        if (importId !== undefined && result.id === importId && opts?.carriedUpdatedAt !== undefined) {
+          db.prepare('UPDATE entries SET bible_updated_at = ? WHERE id = ?').run(opts.carriedUpdatedAt, importId);
+        }
+        return result;
+      }
     }
 
     // T2.1 (F4, D3, LOW-2): on the pure 'add' path, kb_import preserves the
     // bible entry's id (opts.preferredId) so a re-import dedupes EXACTLY via the
     // id-skip gate (kb_import checks hasEntry() before ever calling capture, so
-    // the id is guaranteed free here). AUDN's update/flagged branches above
-    // always mint a fresh randomUUID -- an id collision with different content is
-    // resolved by AUDN under a new id, never by overwriting the preserved id.
-    const id = opts?.preferredId ?? randomUUID();
+    // the id is guaranteed free here).
+    const id = importId ?? opts?.preferredId ?? randomUUID();
     this.insertEntry(db, id, input, content, now, sourceFileHashes, localBasisOnly);
     if (opts?.importMode === true && opts.carriedUpdatedAt !== undefined) {
       db.prepare('UPDATE entries SET bible_updated_at = ? WHERE id = ?').run(opts.carriedUpdatedAt, id);
@@ -1335,6 +1406,15 @@ export class SqliteProvider implements MemoryProvider {
       conditions.push('EXISTS (SELECT 1 FROM json_each(e.tags) WHERE value = ?)');
       params.push(opts.tag);
     }
+    if (hasCitedFilter(opts.cited)) {
+      // kb_query cited filter: a hard filter ANDed like tag, so the keyword
+      // ranking (or the newest-first listing) runs inside the kept set only.
+      const cited = citedFilterSql(normalizeCitedFilter(opts.cited, this.repoPath), this.repoPath);
+      if (cited) {
+        conditions.push(cited.condition);
+        params.push(...cited.params);
+      }
+    }
     if (opts.flagged_only) {
       conditions.push('(e.flagged_for_review = 1 OR e.contradiction_of IS NOT NULL)');
     } else {
@@ -1360,22 +1440,17 @@ export class SqliteProvider implements MemoryProvider {
     let rows: Record<string, unknown>[];
 
     if (opts.query || opts.fts_terms?.length) {
-      // ONE sanitization point. Free text is tokenized then OR-joined; internal
-      // callers pass discrete terms via fts_terms. Raw MATCH threw on '.', '-',
-      // '(', ')', '/' and implicit-AND'd multi-term queries to zero rows.
-      const ftsQuery = opts.fts_terms?.length
-        ? orJoinFtsTerms(opts.fts_terms)
-        : orJoinFtsTerms(opts.query!.match(/[A-Za-z0-9_]+/g) ?? []);
+      // ONE sanitization point. Free text and discrete terms go through the
+      // same normalizer the keyword index was built with (identifier split,
+      // stemming); free text is bounded to MAX_QUERY_KEYWORD_TERMS distinct
+      // terms and OR-joined, internal callers pass discrete terms via
+      // fts_terms (tokens of one term ANDed). Every token is quoted, so '.',
+      // '-', '(', ')' and '/' in caller text can never break MATCH.
+      const ftsQuery = keywordMatchExpression(
+        opts.fts_terms?.length ? { terms: opts.fts_terms } : { query: opts.query! }
+      );
       if (!ftsQuery) return { results: [], total: 0, l1_only: !!opts.l1_only };
-      const ftsWhere = conditions.length > 0 ? 'AND ' + conditions.join(' AND ') : '';
-      rows = db.prepare(`
-        SELECT e.* FROM entries e
-        JOIN entries_fts ON entries_fts.rowid = e.rowid
-        WHERE entries_fts MATCH ?
-        ${ftsWhere}
-        ORDER BY rank
-        LIMIT ?
-      `).all(ftsQuery, ...params, limit) as Record<string, unknown>[];
+      rows = keywordSearch(db, ftsQuery, conditions, params, limit);
     } else {
       rows = db.prepare(`
         SELECT e.* FROM entries e
@@ -1420,10 +1495,10 @@ export class SqliteProvider implements MemoryProvider {
         WHERE type = 'context-cache'
           AND superseded_at IS NULL
           ${confClause}
-          AND EXISTS (SELECT 1 FROM json_each(source_files) WHERE value = ?)
+          AND EXISTS (SELECT 1 FROM json_each(source_files) WHERE value IN (?, ?))
         ORDER BY created_at DESC
         LIMIT 1
-      `).all(...confParams, file) as Record<string, unknown>[];
+      `).all(...confParams, ...storedPathForms(file)) as Record<string, unknown>[];
 
       if (rows.length > 0) {
         fileEntries.set(file, this.rowToEntry(rows[0]));
@@ -1540,9 +1615,9 @@ export class SqliteProvider implements MemoryProvider {
           AND superseded_at IS NULL
           ${ownerClause}
           AND EXISTS (
-            SELECT 1 FROM json_each(source_files) WHERE value = ?
+            SELECT 1 FROM json_each(source_files) WHERE value IN (?, ?)
           )
-      `).all(...ownerParams, file) as { id: string; confidence: string }[];
+      `).all(...ownerParams, ...storedPathForms(file)) as { id: string; confidence: string }[];
       const rows = opts?.keepConfirmed ? candidates.filter(r => r.confidence !== 'CONFIRMED') : candidates;
       if (opts?.keepConfirmed) for (const r of candidates) if (r.confidence === 'CONFIRMED') refused.add(r.id);
 
@@ -1711,8 +1786,9 @@ export class SqliteProvider implements MemoryProvider {
   // CONFIRMED set what we think it is") which should not perturb that
   // telemetry. A dedicated method keeps the two contracts textually distinct
   // instead of an easy-to-miss opt-out flag threaded through query(). Always
-  // excludes superseded and stale entries (no override -- this is an
-  // audit-the-live-set tool, not a full-history query).
+  // excludes superseded entries, and stale ones unless include_stale is set
+  // (kb_list never sets it -- it is an audit-the-live-set tool, not a
+  // full-history query; the kb-server ownership lookup does).
   async list(opts: {
     confidence?: Confidence[];
     type?: KBEntry['type'];
@@ -1723,9 +1799,12 @@ export class SqliteProvider implements MemoryProvider {
     exclude_disputed?: boolean;
     /** MEMBER own-scope: only entries tagged with this value (ANDed with `tag`). */
     owner_tag?: string;
+    /** Also list stale entries (kb_list never sets it; the kb-server ownership lookup does). */
+    include_stale?: boolean;
   }): Promise<KBEntry[]> {
     const db = this.getDb();
-    const conditions: string[] = ['e.superseded_at IS NULL', 'e.stale = 0'];
+    const conditions: string[] = ['e.superseded_at IS NULL'];
+    if (!opts.include_stale) conditions.push('e.stale = 0');
     const params: SQLInputValue[] = [];
     if (opts.exclude_disputed) {
       conditions.push('e.flagged_for_review = 0 AND e.contradiction_of IS NULL');
@@ -1924,8 +2003,8 @@ export class SqliteProvider implements MemoryProvider {
    *
    * This MUST NOT be derived from the source_file_hashes column. That column
    * is the CAPTURE-time basis; copying it was the defect in the superseded
-   * upstream attempt, and it cannot answer whether the tree has moved on
-   * SINCE the demotion. Files that cannot be
+   * upstream attempt, and it silently breaks the ping-pong guard that asks
+   * whether the tree has moved on SINCE the demotion. Files that cannot be
    * read are simply absent from the map (a demote is still allowed on an
    * entry whose basis has since disappeared -- unlike promote, which refuses).
    *
@@ -2097,20 +2176,63 @@ export class SqliteProvider implements MemoryProvider {
    * able to deactivate a directive a human set here.
    */
   applyBibleDemotion(id: string, tombstoneAt: string): boolean {
-    const db = this.getDb();
-    const row = db.prepare('SELECT * FROM entries WHERE id = ?').get(id) as Record<string, unknown> | undefined;
-    // NEVER CREATE.
-    if (!row) return false;
-    const entry = this.rowToEntry(row);
+    return this.applyTombstoneToRow(id, tombstoneAt, BIBLE_DEMOTION_REASON, []) === 'withdrawn';
+  }
 
-    if (entry.confidence !== 'CONFIRMED') return false;
-    if (entry.superseded_at) return false;
-    if (entry.type === 'user-directive') return false;
+  /**
+   * Apply one tombstone that arrived over the KB server's withdraw route
+   * (POST /api/kb/withdraw): the same rules as applyBibleDemotion -- never
+   * create, the one re-promotion rule against `at` clamped to now, never raise
+   * confidence, superseded rows and user-directives untouched -- reported as an
+   * outcome instead of a boolean:
+   *  - 'withdrawn': the row was CONFIRMED and is now INFERRED;
+   *  - 'repromoted': the row's trust postdates `at` (or a time is
+   *    unparseable), so it stays CONFIRMED;
+   *  - 'not_confirmed': the row is already below CONFIRMED -- nothing to do,
+   *    which counts as done (the route is idempotent) -- or it is a
+   *    user-directive, which a tombstone never lowers;
+   *  - 'not_found': no such row, or a superseded one (out of every read path).
+   * The audit note names the tombstone reason, the optional note and the
+   * optional evidence files. Evidence is not resolved against the checkout: a
+   * withdrawal is often recorded because a cited file went away.
+   */
+  applyBibleWithdrawal(
+    id: string, at: string, reason: string, note?: string, evidenceFiles?: string[],
+  ): BibleWithdrawalOutcome {
+    const base = reason === 'demoted' ? BIBLE_DEMOTION_REASON : BIBLE_WITHDRAWAL_REASON;
+    const cleanNote = note === undefined ? '' : normalizeDemoteReason(note).replace(/\s+/g, ' ');
+    return this.applyTombstoneToRow(id, at, cleanNote ? base + ': ' + cleanNote : base, evidenceFiles ?? []);
+  }
+
+  /** The shared body of applyBibleDemotion and applyBibleWithdrawal. */
+  private applyTombstoneToRow(
+    id: string, tombstoneAt: string, noteReason: string, evidence: string[],
+  ): BibleWithdrawalOutcome {
+    const db = this.getDb();
+    let row = db.prepare('SELECT * FROM entries WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    // A bible id kb_import deduplicated into an existing local row resolves
+    // through its alias (bible_id_aliases), so the tombstone reaches the row
+    // that holds the fact here. A real row with the id always wins.
+    // Side effect: the local row itself is demoted/withdrawn; if that row is
+    // also a bible entry, the next kb_bible_commit tombstones it too
+    // (docs/knowledge-layer.md, "Bible id aliases").
+    if (!row) {
+      const alias = db.prepare('SELECT local_id FROM bible_id_aliases WHERE bible_id = ?').get(id) as { local_id: string } | undefined;
+      if (alias) row = db.prepare('SELECT * FROM entries WHERE id = ?').get(alias.local_id) as Record<string, unknown> | undefined;
+    }
+    // NEVER CREATE.
+    if (!row) return 'not_found';
+    const entry = this.rowToEntry(row);
+    const rowId = entry.id;
+
+    if (entry.superseded_at) return 'not_found';
+    if (entry.confidence !== 'CONFIRMED') return 'not_confirmed';
+    if (entry.type === 'user-directive') return 'not_confirmed';
 
     const demotedAt = clampBibleTimeToNow(tombstoneAt);
-    if (standingAgainstTombstone(this.bibleTrustTimeOf(row), demotedAt) !== 'withdrawn') return false;
+    if (standingAgainstTombstone(this.bibleTrustTimeOf(row), demotedAt) !== 'withdrawn') return 'repromoted';
 
-    const demotionNote = buildDemotionNote(BIBLE_DEMOTION_REASON, [], entry.author);
+    const demotionNote = buildDemotionNote(noteReason, evidence, entry.author);
     const newContent = truncateContent(entry.content + demotionNote);
 
     // Same SET as demote(): promoted_at and source stay untouched, so the
@@ -2122,9 +2244,9 @@ export class SqliteProvider implements MemoryProvider {
       demotedAt,
       JSON.stringify(this.demoteBasisHashes(entry.source_files)),
       newContent,
-      id,
+      rowId,
     );
-    return true;
+    return 'withdrawn';
   }
 
   // T3.1 (F8, D7): kb_feedback downvote path -- marks an entry stale=1 +

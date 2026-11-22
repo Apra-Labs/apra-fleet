@@ -14,6 +14,9 @@ import {
     mockCmdResult,
     withScenarioMarkers,
     legacyCommandExecuteCommandAdapter,
+    MOCK_WINDOWS_MEMBER_WORK_FOLDER,
+    isVcsPayloadStagingCommand,
+    stagedCurlBody,
 } from './helpers/mock-sprint-harness.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -183,7 +186,7 @@ function mockWindowsAbortCallTool(command, { credentialShouldFail = false } = {}
             // parse this same member_detail response -- os:'windows' drives the
             // credential-command OS branch, vcsProvider:'github' satisfies the
             // provider resolution both call sites also need.
-            return { content: [{ text: JSON.stringify({ os: 'windows', vcsProvider: 'github' }) }] };
+            return { content: [{ text: JSON.stringify({ os: 'windows', vcsProvider: 'github', folder: MOCK_WINDOWS_MEMBER_WORK_FOLDER }) }] };
         }
         if (name === 'provision_vcs_auth') {
             const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
@@ -269,8 +272,8 @@ test('finalizeAbort (Windows member): a failing credential read still throws the
         `Expected the error to name the member and the credential label it could not read, got: ${thrown.message}`
     );
     check(
-        !log.some((c) => /^powershell -EncodedCommand\b/.test(c)),
-        `The orchestrator must dispatch no credential-read command of its own; the handoff owns that read. Command log: ${JSON.stringify(log)}`
+        !log.some((c) => /^powershell -EncodedCommand\b/.test(c) && !isVcsPayloadStagingCommand(c)),
+        `The orchestrator must dispatch no credential-read command of its own (request-body staging aside); the handoff owns that read. Command log: ${JSON.stringify(log)}`
     );
     // No PR was ever raised -- the failure happened before the create-pull-request dispatch.
     check(!log.some((c) => c.startsWith('curl.exe -sS -X POST') && c.includes('/pulls')), 'Expected NO create-pull-request dispatch when the credential read failed');
@@ -318,7 +321,7 @@ function mockGitbashAbortCallTool(command) {
     const base = defaultMockCallTool({ executeCommand: legacyCommandExecuteCommandAdapter(command) });
     return async (name, toolArgs) => {
         if (name === 'member_detail') {
-            return { content: [{ text: JSON.stringify({ os: 'windows', shell: 'gitbash', vcsProvider: 'github' }) }] };
+            return { content: [{ text: JSON.stringify({ os: 'windows', shell: 'gitbash', vcsProvider: 'github', folder: MOCK_WINDOWS_MEMBER_WORK_FOLDER }) }] };
         }
         if (name === 'provision_vcs_auth') {
             const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
@@ -363,11 +366,11 @@ test('finalizeAbort (Windows gitbash member): PR curl uses POSIX quoting, not Po
 
     const prCmd = log.find((c) => c.startsWith('curl.exe -sS -X POST') && c.includes('/pulls'));
     check(!!prCmd, `Expected a create-pull-request command to be dispatched (routed through the handoff and substituted), command log: ${JSON.stringify(log)}`);
-    // POSIX close-escape-reopen around the apostrophe; the PowerShell
-    // doubled form (doer''s) must NOT appear -- bash would collapse it and
-    // corrupt the JSON payload.
-    check(prCmd.includes(`doer'\\''s`), `Expected POSIX '\\'' quoting of the apostrophe in the PR command, got: ${prCmd}`);
-    check(!prCmd.includes(`doer''s`), `Expected NO PowerShell doubled-quote escaping for a gitbash member, got: ${prCmd}`);
+    // The apostrophe-bearing body is staged in a file, so no quoting dialect
+    // touches it; the only quoted word left (the @<path>) is POSIX-quoted.
+    check(!prCmd.includes('doer'), `Expected the PR text to stay off the command line, got: ${prCmd}`);
+    check(/--data-binary '@C:\\[^']+\.json'/.test(prCmd), `Expected a POSIX-quoted --data-binary @<path> word, got: ${prCmd}`);
+    check(JSON.parse(stagedCurlBody(prCmd)).body.includes("doer's plan failed"), `Expected the staged body to carry the apostrophe intact, got: ${stagedCurlBody(prCmd)}`);
     check(prCmd.startsWith('curl.exe '), `curl binary token stays OS-keyed (curl.exe on Windows), got: ${prCmd}`);
 });
 
@@ -419,7 +422,7 @@ function mockWindowsMemberDetailCallTool(executeCommand) {
     const base = defaultMockCallTool({ executeCommand });
     return async (name, toolArgs) => {
         if (name === 'member_detail') {
-            return { content: [{ text: JSON.stringify({ os: 'windows', vcsProvider: 'github' }) }] };
+            return { content: [{ text: JSON.stringify({ os: 'windows', vcsProvider: 'github', folder: MOCK_WINDOWS_MEMBER_WORK_FOLDER }) }] };
         }
         return base(name, toolArgs);
     };

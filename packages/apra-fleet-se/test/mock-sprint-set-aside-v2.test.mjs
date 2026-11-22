@@ -9,12 +9,17 @@
 //   (c) a [test] task reported BLOCKED while its impl lane-mate is still open
 //       waits, and runs once the impl closes;
 //   (d) the same, reported BLOCKED again after the impl closed: set aside.
+//
+// POLICY (set-aside carry-over): (b) and (d) close the impl this run, so the
+// set-aside stall no longer aborts SPRINT_STALLED -- the run exits to
+// Finalization (Final Review, Harvest, Publish PR) with the set-aside beads as
+// a named carry-over and a forced FAIL verdict. Their assertions were flipped
+// deliberately; zero-close runs still end SPRINT_STALLED.
 // =============================================================================
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
-import { buildSprintPrBody } from '../fleet-sprint/pr-body.mjs';
+import { runDevelopLoopScenario, withScenarioMarkers, withStagedBodies } from './helpers/mock-sprint-harness.mjs';
 import {
     invalidateSyncRemoteCache, clearLastSyncedTip, clearTipProbeFailures,
 } from '../fleet-sprint/dolt-sync.mjs';
@@ -33,6 +38,14 @@ const doerOrder = (run) => doerDispatches(run).flatMap((d) => assignedIds(d.prom
 const timesDispatched = (run, id) => doerDispatches(run).filter((d) => assignedIds(d.prompt).includes(id)).length;
 const report = (obj) => ({ content: [{ text: JSON.stringify(obj) }] });
 const approve = async () => report({ verdict: 'APPROVED', notes: 'Approved.', reopenIds: [], newTasks: [] });
+const carried = (run) => Object.fromEntries((run.result.carryOver || []).map((e) => [e.id, e.reason]));
+const assertFinalizedWithCarryOver = (run) => {
+    assert.ok(!run.error, `no abort with work closed this run: ${run.error && run.error.message}`);
+    assert.equal(run.result.exitReason, 'set-aside-carry-over', JSON.stringify(run.result));
+    assert.equal(run.result.verdict, 'FAIL', JSON.stringify(run.result));
+    assert.ok(run.dispatched.some((d) => d.label === 'Final Review'), 'Final Review must run');
+    assert.ok(run.dispatched.some((d) => d.agent === 'harvester'), 'Harvest must run');
+};
 const setAsideLogged = (logs) => logs.some((m) => m.includes('Doer BLOCKED set-aside'));
 const ENV_NOTES = 'Environment: the installer test host is unreachable from this member.';
 
@@ -129,9 +142,13 @@ test('(b) the [test] task genuinely BLOCKED: it and its blocks dependents are se
         const [tst, b1, b2, b3] = [T.test, T.b1, T.b2, T.b3].map(id);
         assert.equal(run.finalBeadsById.get(id(T.impl)).status, 'closed');
         for (const b of [b1, b2, b3]) assert.equal(timesDispatched(run, b), 0, `${b} must not be dispatched`);
-        assert.ok(run.error && run.error.code === 'SPRINT_STALLED', `expected the set-aside stall, got: ${run.error ? run.error.message : 'no error'}`);
-        assert.deepEqual(run.error.blockerIds.slice().sort(), [tst, b1, b2, b3].sort());
-        for (const b of [b1, b2, b3]) assert.ok(run.error.blockerReasons[b].includes(tst), run.error.blockerReasons[b]);
+        // POLICY (set-aside carry-over): the impl closed this run, so the run
+        // finishes through Finalization with every blocker carried over
+        // instead of ending SPRINT_STALLED.
+        assertFinalizedWithCarryOver(run);
+        const reasons = carried(run);
+        assert.deepEqual(Object.keys(reasons).sort(), [tst, b1, b2, b3].sort());
+        for (const b of [b1, b2, b3]) assert.ok(reasons[b].includes(tst), reasons[b]);
     });
 });
 
@@ -211,13 +228,18 @@ test('(d) a waiting [test] task reported BLOCKED again after its impl closed is 
         const [impl, tst] = [PAIR.impl, PAIR.test].map(id);
         assert.equal(timesDispatched(run, tst), 2, 'the test task gets exactly one extra dispatch');
         assert.equal(run.finalBeadsById.get(impl).status, 'closed');
-        assert.ok(run.error && run.error.code === 'SPRINT_STALLED', `expected the set-aside stall, got: ${run.error ? run.error.message : 'no error'}`);
-        assert.deepEqual(run.error.blockerIds, [tst]);
-        assert.match(run.error.blockerReasons[tst], new RegExp(`BLOCKED again after waiting on ${impl}`));
-        // The [ABORTED] PR body: the test task under "Set aside this run",
+        // POLICY (set-aside carry-over): the impl closed this run, so the run
+        // finishes through Finalization carrying the test task over instead
+        // of ending SPRINT_STALLED.
+        assertFinalizedWithCarryOver(run);
+        assert.deepEqual(run.result.carryOver.map((e) => e.id), [tst]);
+        assert.match(carried(run)[tst], new RegExp(`BLOCKED again after waiting on ${impl}`));
+        assert.ok(run.result.notes.includes(tst), run.result.notes);
+        // The published PR body: the test task under "Set aside this run",
         // and the earlier wait on its own line.
-        const body = buildSprintPrBody({ verdict: 'ABORTED', branch: run.branch, notes: run.error.message, setAside: run.error.setAside, waited: run.error.waited });
-        assert.match(body, new RegExp(`### Set aside this run\\n\\n- ${tst}: `));
-        assert.ok(body.includes(`Waited this run: ${tst} on ${impl}`), body);
+        const prCmd = withStagedBodies(run.commandLog).find((cmd) => cmd.includes('Set aside this run'));
+        assert.ok(prCmd, 'the published PR body must carry the "Set aside this run" section');
+        assert.ok(prCmd.includes(`- ${tst}: `), prCmd);
+        assert.ok(prCmd.includes(`Waited this run: ${tst} on ${impl}`), prCmd);
     });
 });

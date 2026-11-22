@@ -3,7 +3,8 @@ import { KB_REMOVED_SCOPE_KEYS_SHAPE } from '../services/knowledge/kb-removed-sc
 import fs from 'node:fs';
 import path from 'node:path';
 import { installKbPostCommitHook } from './kb-invalidate.js';
-import { KB_CONFIG_PATH, MIN_REQUEST_TIMEOUT_MS, MAX_REQUEST_TIMEOUT_MS, readKbConfigForMerge } from '../services/knowledge/kb-config.js';
+import { installBibleMergeDriver } from '../cli/kb-merge-driver.js';
+import { KB_CONFIG_PATH, MIN_REQUEST_TIMEOUT_MS, MAX_REQUEST_TIMEOUT_MS, readKbConfigForMerge, KbConfigUnreadableError, KB_CONFIG_HAND_FIX } from '../services/knowledge/kb-config.js';
 import type { KbConfigFile } from '../services/knowledge/kb-config.js';
 import { encryptPassword } from '../utils/crypto.js';
 import { findSecretTokens, hasSecretToken, formatSecretToken, legacyTokenWarning } from '../services/secret-token.js';
@@ -20,7 +21,7 @@ export const kbSetupSchema = z.object({
   token: z.string().optional()
     .describe('Authentication token for remote KB server. Either a literal token (stored encrypted, never logged) or exactly one named fleet secret placeholder of the form {{secret.NAME}} with nothing around it: then only the placeholder is stored and the server looks the secret up on each request, so rotating the secret needs no kb_setup re-run. For provider http the secret must already exist (apra-fleet secret --set NAME --persist -y), or NAME must be a registered live secret (apra-fleet secret --live NAME ...) whose script the server runs to mint the token. Either way it must not have network_policy deny, which every KB call would refuse.'),
   request_timeout_ms: z.number().int().min(MIN_REQUEST_TIMEOUT_MS).max(MAX_REQUEST_TIMEOUT_MS).optional()
-    .describe('Socket idle timeout in milliseconds for each request to the remote KB server, 1000-120000 (default 5000). Not a per-request deadline: a call can wait up to about twice this while queued offline writes flush first.'),
+    .describe('Socket idle timeout in milliseconds for each request to the remote KB server, 1000-120000 (default 5000). Not a per-request deadline: a call can wait up to about twice this when it first reads the server capabilities.'),
   tool_profile: z.enum(['full', 'developer', 'custom']).optional()
     .describe('Install-wide KB tool profile for interactive (non-member) sessions: full (every kb_* tool, the default), developer (kb_session_prime, kb_query, kb_context, kb_capture, kb_feedback) or custom (the kb_* names in tool_profile_tools). Member sessions and sprint roles are unaffected. Takes effect when a session reconnects. A usability control, not a security boundary; developer hides kb_setup, so switch back with the CLI: apra-fleet kb profile full. Can be set alone, without provider/remote/token.'),
   tool_profile_tools: z.array(z.string()).optional()
@@ -209,32 +210,24 @@ export function assertKbTokenSecretUsable(name: string): void {
 }
 
 /**
- * The config kb_setup merges into. Absent -> empty. Malformed (bad JSON, or
- * not a JSON object) -> empty plus a warning: kb_setup is the tool an operator
- * runs to REPAIR the KB config, so an unreadable file must not make it throw.
+ * The config kb_setup merges into. Absent -> empty. A file that exists but
+ * cannot be read, is not valid JSON or is not a JSON object is never replaced:
+ * a rewrite would lose its remote url and token. kb_setup refuses, naming the
+ * file and the problem (never quoting it), before any side effect.
  */
-function readExistingConfig(warnings: string[]): KbConfigFile {
-  if (!fs.existsSync(KB_CONFIG_PATH)) return {};
-  let parsed: unknown;
+function readExistingConfig(): KbConfigFile {
   try {
-    parsed = JSON.parse(fs.readFileSync(KB_CONFIG_PATH, 'utf-8'));
-  } catch {
-    // The parser's message quotes part of the file, which may hold the
-    // encrypted token, so it is not repeated here.
-    return discardMalformed(warnings, 'it is not valid JSON');
+    return readKbConfigForMerge();
+  } catch (err) {
+    if (!(err instanceof KbConfigUnreadableError)) throw err;
+    throw new Error(`kb_setup: ${err.message}; nothing was written. ${KB_CONFIG_HAND_FIX}`);
   }
-  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    return discardMalformed(warnings, 'it is not a JSON object');
-  }
-  return parsed as KbConfigFile;
 }
 
-function discardMalformed(warnings: string[], reason: string): KbConfigFile {
-  const warning = `existing KB config at ${KB_CONFIG_PATH} was discarded because ${reason}; ` +
-    'any other settings it held (e.g. bible.autoCommit) must be set again.';
-  logWarn('kb_setup', warning);
-  warnings.push(warning);
-  return {};
+/** True when the input only sets the tool profile (the documented "set alone" form). */
+function isToolProfileOnly(input: KbSetupInput): boolean {
+  return input.tool_profile !== undefined && !input.provider && !input.remote &&
+    input.token === undefined && input.request_timeout_ms === undefined;
 }
 
 /**
@@ -254,7 +247,7 @@ function discardMalformed(warnings: string[], reason: string): KbConfigFile {
 function applySetupInput(config: KbConfigFile, input: KbSetupInput, ref: TokenRef | null, steps: string[], warnings: string[]): void {
   if (input.provider || input.remote) {
     config.provider = input.provider || 'http';
-  } else if (!config.provider) {
+  } else if (!config.provider && !isToolProfileOnly(input)) {
     config.provider = 'sqlite';
   }
 
@@ -309,16 +302,18 @@ export async function kbSetup(input: KbSetupInput, anchor?: KbAnchor, opts: { ho
   }
   // Read (not write) the existing config first: whether the named secret must
   // exist depends on the provider the merged config ends up with.
-  const config = readExistingConfig(warnings);
+  const config = readExistingConfig();
   const ref = checkTokenRef(input, effectiveProvider(input, config));
 
   // Install git post-commit hook into the calling session's own repo (kb-self.ts).
   // A folder that cannot carry a KB identity skips the hook with the typed
   // reason; the provider config below is machine-wide and is still written.
+  // A profile-only call is a pure config edit (like `apra-fleet kb profile`):
+  // it touches no repo and does not pick a provider.
   let repoPath: string | null = null;
   if (opts.hook === false) {
     steps.push('Skipped git hook: not requested');
-  } else {
+  } else if (!isToolProfileOnly(input)) {
     try {
       repoPath = resolveKbAnchor(anchor).folder;
     } catch (err) {
@@ -332,6 +327,12 @@ export async function kbSetup(input: KbSetupInput, anchor?: KbAnchor, opts: { ho
       steps.push(hook.installed
         ? 'Installed git post-commit hook for KB invalidation'
         : 'Skipped git hook: ' + hook.reason);
+      // The id-keyed, tombstone-aware merge driver for .fleet/kb-canonical.json,
+      // so a local merge/rebase of two bible-changing branches resolves itself.
+      const driver = installBibleMergeDriver(repoPath);
+      steps.push(driver.installed
+        ? 'Registered the knowledge bible merge driver (git config and ' + driver.attributesPath + ')'
+        : 'Skipped bible merge driver: ' + driver.reason);
     } else {
       steps.push('Skipped git hook: no .git directory found at ' + repoPath);
     }

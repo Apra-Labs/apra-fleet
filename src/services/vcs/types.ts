@@ -18,15 +18,24 @@ export type VcsProvider = 'github' | 'bitbucket' | 'azure-devops';
 // Credential discriminated unions
 // ---------------------------------------------------------------------------
 
+/**
+ * The caller's choice for the gh CLI login a GitHub deploy can also perform:
+ * true = always log gh in, false = never, undefined = the default rule in
+ * src/services/vcs/github.ts (ghLoginDecision).
+ */
+export type GitHubGhLogin = boolean | undefined;
+
 export interface GitHubAppCredentials {
   type: 'github-app';
   git_access?: Agent['gitAccess'];
   repos?: string[];
+  ghLogin?: GitHubGhLogin;
 }
 
 export interface GitHubPatCredentials {
   type: 'pat';
   token: string;
+  ghLogin?: GitHubGhLogin;
 }
 
 export type GitHubCredentials = GitHubAppCredentials | GitHubPatCredentials;
@@ -110,6 +119,8 @@ export interface VcsCredentialInput {
   token?: string;
   git_access?: Agent['gitAccess'];
   repos?: string[];
+  /** GitHub only: whether to also run the OS-user-wide gh CLI login (see GitHubGhLogin). */
+  gh_login?: boolean;
   email?: string;
   api_token?: string;
   workspace?: string;
@@ -237,6 +248,11 @@ export interface VcsCreatePrRequest {
   body?: string;
   /** Already-minted credential (e.g. a GitHub App installation token). */
   token: string;
+  /** Absolute member-side path the request body is staged at. Bodies are
+   *  never sent inline on the command line: the built command reads this
+   *  file (`curl --data-binary @<path>`), and the caller stages
+   *  `VcsCommandResult.payload` there before dispatch and deletes it after. */
+  payload_path: string;
 }
 
 /** Fields needed to build a "comment on an existing PR/issue" REST call
@@ -246,6 +262,8 @@ export interface VcsCommentRequest {
   issue_number: number;
   body: string;
   token: string;
+  /** See VcsCreatePrRequest.payload_path. */
+  payload_path: string;
 }
 
 /** A fully-built, ready-to-dispatch command plus the metadata needed to
@@ -257,6 +275,10 @@ export interface VcsCommandResult {
   action: 'create-pull-request' | 'comment';
   command: string;
   logSafeCommand: string;
+  /** The request body to stage at `path` on the member before dispatching
+   *  `command` (which reads it with `--data-binary @<path>`); absent for a
+   *  body-less request. Carries no credential. */
+  payload?: { path: string; content: string };
   interpret: {
     successStatusRange: [number, number];
     alreadyExistsStatus?: number;

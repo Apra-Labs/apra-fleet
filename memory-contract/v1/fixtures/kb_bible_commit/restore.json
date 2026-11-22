@@ -1,0 +1,21 @@
+{
+  "tool": "kb_bible_commit",
+  "case": "restore",
+  "kind": "happy",
+  "request": {
+    "ids": [],
+    "restore_ids": [
+      "100ca201-54b4-46b9-9801-2bea030fcb1b"
+    ],
+    "baseBranch": "main",
+    "baseCommit": "refs/fixtures/pre-withdrawal"
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"path\":\"<SCRATCH_REPO_A>/.fleet/kb-canonical.json\",\"merged\":[],\"demoted\":[],\"skipped\":[],\"removed\":[],\"entry_count\":2,\"backfilled\":0,\"committed\":true,\"withdrawn\":[],\"restored\":[\"100ca201-54b4-46b9-9801-2bea030fcb1b\"]}"
+      }
+    ]
+  }
+}

@@ -72,6 +72,18 @@
                 "type": "string"
               }
             },
+            "withdrawn": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "restored": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
             "skipped": {
               "type": "array",
               "items": {
@@ -86,7 +98,11 @@
                       "not_confirmed_or_unknown",
                       "no_source_files",
                       "basis_mismatch",
-                      "not_demoted_or_unknown"
+                      "not_demoted_or_unknown",
+                      "not_withdrawable",
+                      "withdrawn_tombstone",
+                      "demoted_tombstone",
+                      "not_in_base_bible"
                     ]
                   }
                 },
@@ -109,7 +125,8 @@
                     "type": "string",
                     "enum": [
                       "superseded",
-                      "invalidated"
+                      "invalidated",
+                      "tombstoned"
                     ]
                   }
                 },
@@ -128,6 +145,16 @@
             },
             "committed": {
               "type": "boolean"
+            },
+            "bible_skipped": {
+              "type": "boolean",
+              "const": true
+            },
+            "reason": {
+              "type": "string"
+            },
+            "base_bible_error": {
+              "type": "string"
             }
           },
           "required": [

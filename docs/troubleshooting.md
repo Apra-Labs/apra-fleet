@@ -206,6 +206,17 @@ Minted VCS tokens may lack CI/CD permissions. Run those operations from your
 main AI coding session instead -- it has your full git credentials. See
 [docs/design-git-auth.md](design-git-auth.md).
 
+**Git has no credential outside a fleet dispatch after re-provisioning**
+
+The fleet git credential helper is no longer registered in global git config; it
+reaches git only through the environment of fleet dispatches (`execute_command`,
+`execute_prompt`, `vcs_credential_exec`). Git run by hand or by another tool on
+the member host, and any legacy global helper once the label is re-provisioned,
+no longer gets it. Run the command through a dispatch instead. If every git
+command to one member fails with `bogus format in GIT_CONFIG_PARAMETERS`, the
+member home path contains an apostrophe, which the prefix cannot quote. See
+[docs/design-git-auth.md](design-git-auth.md).
+
 **`git push` from a Windows member hangs or fails silently with no auth prompt**
 
 If the member's git config has `credential.helper=manager` (Git Credential

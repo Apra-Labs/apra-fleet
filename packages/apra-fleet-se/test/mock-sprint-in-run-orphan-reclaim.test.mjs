@@ -52,10 +52,12 @@ const assignedIds = (opts) => {
 };
 
 const verify = (ids) => ({ content: [{ text: JSON.stringify({ status: 'VERIFY', closedIds: ids, notes: 'Closed all assigned beads.' }) }] });
-// A failed doer that is NOT BLOCKED: it returns a success-looking report but
-// leaves its bead open, so the engine's read-back marks the streak failed
-// (failureReason 'left-open') and the bead stays eligible for re-laning.
-const leftOpen = () => ({ content: [{ text: JSON.stringify({ status: 'VERIFY', closedIds: [], notes: 'Stopped before closing.' }) }] });
+// A failed doer that is NOT BLOCKED: it returns a success-looking report that
+// claims its beads closed but leaves them open, so the engine's read-back marks
+// the streak failed (failureReason 'left-open') and the bead stays eligible for
+// re-laning. (A VERIFY report that claims no close of a bead it left open is
+// set aside after one round instead.)
+const leftOpen = (ids) => ({ content: [{ text: JSON.stringify({ status: 'VERIFY', closedIds: ids, notes: 'Stopped before closing.' }) }] });
 
 const approvingReviewer = async () => ({
     content: [{ text: JSON.stringify({ verdict: 'APPROVED', notes: 'Looks good.', reopenIds: [], newTasks: [] }) }],
@@ -80,7 +82,7 @@ const scriptedDoer = ({ getXId, events, onFirstX, getStuckIds = () => [] }) => {
         // A "stuck" bead is never claimed or closed: the doer leaves it open
         // and it stays 'open' (ready) every cycle.
         const stuck = new Set(getStuckIds());
-        if (assigned.length > 0 && assigned.every((id) => stuck.has(id))) return leftOpen();
+        if (assigned.length > 0 && assigned.every((id) => stuck.has(id))) return leftOpen(assigned);
         const ids = assigned.filter((id) => !stuck.has(id));
         for (const id of ids) await runCmd(`bd update ${id} --claim`, tempDir);
         if (ids.includes(xId)) {
@@ -108,7 +110,7 @@ test('in-run reclaim: a failed doer\'s claim is re-laned next cycle and its depe
             taskSpecs: [{ title: X_TITLE }, { title: Y_TITLE }],
             maxCycles: 3,
             beforeSprint: async (ctx) => { xId = ctx.tasks[0].id; await wireYBlockedByX(ctx); },
-            doerHandler: scriptedDoer({ getXId: () => xId, events, onFirstX: () => leftOpen() }),
+            doerHandler: scriptedDoer({ getXId: () => xId, events, onFirstX: ({ ids }) => leftOpen(ids) }),
             reviewerHandler: approvingReviewer,
         });
         assert.ok(!run.error, `scenario must not throw: ${run.error && run.error.message}`);
@@ -141,7 +143,7 @@ test('in-run reclaim: a bead the fresh read shows closed is never reopened, what
             beforeSprint: async (ctx) => { xId = ctx.tasks[0].id; tempDirRef = ctx.tempDir; await wireYBlockedByX(ctx); },
             doerHandler: scriptedDoer({
                 getXId: () => xId, events,
-                onFirstX: () => { armedShows = 1; return leftOpen(); },
+                onFirstX: ({ ids }) => { armedShows = 1; return leftOpen(ids); },
             }),
             reviewerHandler: approvingReviewer,
             // The first `bd show X` after the failed return is the engine's
@@ -177,7 +179,7 @@ test('in-run reclaim: the failed doer session is stopped before its bead is disp
             taskSpecs: [{ title: X_TITLE }, { title: Y_TITLE }],
             maxCycles: 3,
             beforeSprint: async (ctx) => { xId = ctx.tasks[0].id; await wireYBlockedByX(ctx); },
-            doerHandler: scriptedDoer({ getXId: () => xId, events, onFirstX: () => leftOpen() }),
+            doerHandler: scriptedDoer({ getXId: () => xId, events, onFirstX: ({ ids }) => leftOpen(ids) }),
             reviewerHandler: approvingReviewer,
             callToolFactory: (executeCommand) => {
                 const base = defaultMockCallTool({ executeCommand });
@@ -259,7 +261,7 @@ test('in-run reclaim: a reclaimed id leaves the record, so a later claim by anot
             taskSpecs: [{ title: X_TITLE }, { title: Y_TITLE }, { title: 'Task: Z independent work' }, { title: 'Task: W never claimed' }],
             maxCycles: 3,
             beforeSprint: async (ctx) => { xId = ctx.tasks[0].id; wId = ctx.tasks[3].id; tempDirRef = ctx.tempDir; await wireYBlockedByX(ctx); },
-            doerHandler: scriptedDoer({ getXId: () => xId, events, onFirstX: () => leftOpen(), getStuckIds: () => [wId] }),
+            doerHandler: scriptedDoer({ getXId: () => xId, events, onFirstX: ({ ids }) => leftOpen(ids), getStuckIds: () => [wId] }),
             reviewerHandler: approvingReviewer,
             // Right after the reclaim re-opens X, another actor claims it.
             onCommand: async ({ command }) => {

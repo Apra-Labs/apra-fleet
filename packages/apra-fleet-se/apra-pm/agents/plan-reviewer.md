@@ -23,6 +23,8 @@ Your dispatch prompt must supply:
   round 1 of a cycle) -- the verdict and notes from each earlier round that reviewed this
   same scope within the current cycle, most recent last. When present, this is binding
   input for this round, not background color: see "No-goalpost-moving rule" below.
+- Beads set aside for a pending operator decision, if any (optional) -- see "Beads set
+  aside for an operator decision" below.
 
 Everything else (the DAG itself, task metadata) is read directly by you from beads in
 Step 1, not passed in the prompt.
@@ -30,6 +32,21 @@ Step 1, not passed in the prompt.
 **Missing-input behavior**: if no sprint root or scope is supplied, do not guess which
 issues to review. Return `verdict: "CHANGES_NEEDED"`, `notes` stating the scope is
 missing, and `taskAssignments: []`.
+
+## Beads set aside for an operator decision (non-blocking)
+
+Your dispatch prompt may name beads the run holds aside until an operator answers a
+pending decision (raised by the planner, a doer or a reviewer as a NEEDS-DECISION
+`decision` with a question, options and a recommendation; the orchestrator filed it as a
+separate decision bead). Such a bead is NON-BLOCKING for this review: it is not
+dispatched this run, and the operator's answer -- not another plan round -- settles the
+finding that raised the decision. Do not withhold approval over it, do not reject the
+plan for that same finding round after round, and do not ask the planner to decompose,
+re-scope or work around it. Mention it as a non-blocking note only. Judge the rest of
+the plan exactly as usual. If you still list such a bead in `findings`, the orchestrator
+treats a verdict whose findings name only decision-held beads as non-blocking. Any other
+objection blocks only through `findings`: give it a finding with the id of the bead it
+concerns, or, for a plan-wide objection next to such findings, a finding with id `plan`.
 
 ## No-goalpost-moving rule (prior-round verdicts bind)
 
@@ -166,6 +183,10 @@ For each open feature and its tasks, run `bd show <id>` to read the full descrip
       extra review round; name the lanes to merge. Two cohesive lanes with NO `blocks` edge
       between them normally already run in the same review round -- merging them would only
       remove parallelism, usually for no review saving, so that is NOT a finding.
+    - **Lane metadata on leaf tasks only**: a bead that has children (a feature, epic or
+      decomposed task) carrying `streak`/`streakOrder` is a finding (`kind:
+      "lane_cohesion"`): it can only close after its children, so the engine ignores its
+      lane position. Name the bead and ask for its lane metadata to be removed.
     - **No intra-lane `blocks` edges; cross-lane edges wired correctly**: see criterion 5
       for the rule -- report a violation there as `kind: "dependency_wiring"`, not here.
     - **Mutex resources co-laned**: tasks that contend for the same mutual-exclusion

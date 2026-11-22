@@ -1,0 +1,17 @@
+{
+  "tool": "kb_promote",
+  "case": "setup-first-promote-for-bible-withdrawal",
+  "kind": "happy",
+  "request": {
+    "id": "100ca201-54b4-46b9-9801-2bea030fcb1b",
+    "reason": "First promotion (UNVERIFIED -> INFERRED) of the entry used by the withdrawal fixtures."
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"id\":\"100ca201-54b4-46b9-9801-2bea030fcb1b\",\"previous_confidence\":\"INFERRED\",\"new_confidence\":\"CONFIRMED\"}"
+      }
+    ]
+  }
+}

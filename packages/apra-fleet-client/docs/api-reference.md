@@ -226,6 +226,14 @@ below).
 
 ## `src/client/api.mjs`
 
+### `export const EXECUTE_PROMPT_MAX_TURNS`
+
+The maximum `max_turns` value the `execute_prompt` tool accepts (`500`). It
+mirrors the upper bound of the tool's `max_turns` schema field; a root test
+asserts the two stay equal. Callers that compute a turn budget (for example
+by doubling a base on resume) must clamp to this value before dispatch,
+otherwise the server rejects the call at schema validation.
+
 ### `export function deriveTimeoutMs(payload = {})`
 
 Derives a client-side `McpClient.request()` timeout, in milliseconds, from
@@ -547,7 +555,7 @@ error naming the key (the member is not updated) -- they are no longer silently 
 |---|---|---|
 | `member_id` | `string?` | UUID of the member. |
 | `member_name` | `string?` | Friendly name of the member. |
-| `fleet_install` | `"auto" \| "skip" \| "replace-full"?` | `"auto"`: for a remote member, probe it and install/upgrade its own apra-fleet when missing or older than the orchestrator (build-aware: same-core different builds upgrade, newer cores never downgrade), self-register, write its per-folder apra-fleet MCP entry and verify (for a claude member the entry is only the fallback of the per-session `--mcp-config`, so neither its write nor its check gates `fleetMcp`), even when nothing else changed; an install/upgrade that ran (or an install that only now became available) also adds the member apra-fleet tool rules to a claude member's permission allow-list through `compose_permissions` grant mode, keeping its role and grants (a `NOTICE` says so; a failure is a `WARNING`); the result includes the `fleetMcp` line (then `member_detail` with `refresh: true`); a full install (no member-install marker) is never touched. `"replace-full"`: everything `"auto"` does, plus an explicit opt-in to replace such a full install with a member install (back up data and fleet.key to a timestamped dir, uninstall with the installed binary, stop the linux fleet-supervisor unit, move data aside, member install, self-register); refused with no destructive command when the marker probe fails; `fleetMcp.replacedFullInstall` reports it. `"skip"`: no install. Omitted: install only on a provider change. A requested install/upgrade that cannot happen (no release for the orchestrator build, checksum or download failure, unsupported platform, full install present, ...) never fails the update: the result adds a `WARNING` naming the consequence (no KB/code tools from the member's own apra-fleet, or its installed build kept), the exact reason and OS-correct manual install steps (also `fleetMcp.manualInstall`). |
+| `fleet_install` | `"auto" \| "skip" \| "replace-full"?` | `"auto"`: for a remote member, probe it and install/upgrade its own apra-fleet when missing or older than the orchestrator (build-aware: same-core different builds upgrade, newer cores never downgrade), self-register, write its per-folder apra-fleet MCP entry and verify (for a claude member the entry is only the fallback of the per-session `--mcp-config`, so neither its write nor its check gates `fleetMcp`), even when nothing else changed; an install/upgrade that ran (or an install that only now became available) also adds the member apra-fleet tool rules to a claude member's permission allow-list through `compose_permissions` grant mode, keeping its role and grants (a `NOTICE` says so; a failure is a `WARNING`); the result includes the `fleetMcp` line (then `member_detail` with `refresh: true`); a full install (no member-install marker) is never touched. `"replace-full"`: everything `"auto"` does, plus an explicit opt-in to replace such a full install with a member install (back up data and fleet.key to a timestamped dir, uninstall with the installed binary, stop the linux fleet-supervisor unit, move data aside, member install, self-register); refused with no destructive command when the marker probe fails; `fleetMcp.replacedFullInstall` reports it. `"skip"`: no install. Omitted: install only on a provider change. An install/upgrade/replace requested with `"auto"` or `"replace-full"` that does not happen (no release for the orchestrator build, checksum, download or transfer failure, unsupported platform, full install present, ...) fails the call after saving the other settings: `isError: true`, the text starts with an `ERROR:` line naming the reason and keeps the `WARNING` naming the consequence (no KB/code tools from the member's own apra-fleet, or its installed build kept), the exact reason and OS-correct manual install steps (also `fleetMcp.manualInstall`); `structuredContent` is `{error: "fleet-install-not-done", fleet_install, reason, detail?, memberUpdated: true, memberId, fleetMcp?}`. Nothing to install (up to date) is a success; an install implied by a provider change that does not happen stays a `WARNING`. |
 | `friendly_name` | `string?` | New friendly name. |
 | `work_folder` | `string?` | New working directory. For non-local (remote/relay) members, must be a fully-qualified/absolute path (e.g. `/home/bella/repo` or `C:\Users\bella\repo`) -- tilde and relative paths are rejected. A folder may hold at most one LLM member and one LLM-less (llm_provider none) member. A real change removes what `compose_permissions` wrote in the OLD folder (per-folder `apra-fleet` MCP entry, permission keys, `.git/info/exclude` lines) and re-runs `compose_permissions`, so the new folder gets its `?member=<uuid>` entry at once. |
 | `host` | `string?` | New host (remote members only). |
@@ -579,7 +587,7 @@ error naming the key (the member is not updated) -- they are no longer silently 
 
 #### `removeMember(options: RemoveMemberOptions)`
 
-Calls `remove_member` -- removes a member from the fleet. Before the member is deleted (and before the fleet's own SSH key is removed from the member), it removes what `compose_permissions` wrote for the member (per-folder `apra-fleet` MCP entry, permission keys, `.git/info/exclude` lines); anything it could not remove, or could not reach, is reported as a warning in the result. The registration on the member's own apra-fleet install is removed only when that install carries the member-install marker; an unmarked install, or a failed marker probe, is skipped and the warning says so and why. A local member's per-session MCP config file (`session-mcp/<uuid>.json` in the server data dir) is deleted too.
+Calls `remove_member` -- removes a member from the fleet. Before the member is deleted (and before the fleet's own SSH key is removed from the member), it removes what `compose_permissions` wrote for the member (per-folder `apra-fleet` MCP entry, permission keys, `.git/info/exclude` lines); anything it could not remove, or could not reach, is reported as a warning in the result. The registration on the member's own apra-fleet install is removed only when that install carries the member-install marker; an unmarked install, or a failed marker probe, is skipped and the warning says so and why. A local member's per-session MCP config file (`session-mcp/<uuid>.json` in the server data dir) is deleted too. For a remote member registered with a fleet-generated SSH key, the key's line is removed from the member user's `authorized_keys` (and, on a Windows administrator account, from `ProgramData\ssh\administrators_authorized_keys`) unless another registered member on the same host and username still uses that key -- then it stays authorized and the result names that member. A fleet `.pub` file that is not a complete ssh-rsa (2048+ bits), ssh-ed25519, ecdsa or sk- public key (empty, truncated, type only, a certificate) is never used for revocation: `authorized_keys` is left untouched and the result warns. A user-supplied `key_path` is never removed from `authorized_keys`, and the local key pair is deleted only when no other member uses it.
 
 | Field | Type | Notes |
 |---|---|---|
@@ -656,11 +664,16 @@ repository with an origin remote, or the fleet server working folder when the
 client offers no roots). The
 pre-redesign scope keys `repo_path`, `repo` and `repo_remote_url` are removed:
 the server refuses a call carrying any of them with `E-SCOPE-KEY-REMOVED`,
-and `kbExport` / `kbBibleCommit` / `kbDemote` refuse them client-side with the same code
+and `kbExport` / `kbBibleCommit` / `kbQuery` / `kbDemote` refuse them client-side with the same code
 before sending (`assertNoRemovedKbScopeKeys`, `KB_REMOVED_SCOPE_KEYS` are
 exported). For direct `callTool` users: `kb_list` accepts `confidence` as a
 list or as one tier string, and `kb_context` defaults to
-`["CONFIRMED","INFERRED"]`.
+`["CONFIRMED","INFERRED"]`. A member session's `kb_query` that omits `limit`
+returns at most 6 summary rows (`id`, `type`, `title`, `summary`,
+`confidence`, `source_files`, `symbols`; no `content`) and an empty
+`l2_expanded`. Pass `limit` to get full rows and the content of the top 5
+hits. An `own_scope` read keeps the full rows, and FULL sessions default to
+20 full rows.
 
 Bible-related refusals are part of the closed error vocabulary in
 `memory-contract/v1/taxonomy.json`: `E-BIBLE-MALFORMED` (a bible file that is
@@ -670,14 +683,32 @@ session's `kb_query` / `kb_session_prime` / `kb_stats`), `E-MEMBER-VIEW-REMOTE`
 and `E-BIBLE-BASIS-NOT-GIT` (`kb_export` / `kb_bible_commit` in a folder that is
 not a git work tree).
 
-`E-KB-HTTP-AUTH` is thrown by `kb_capture`, `kb_harvest`, `kb_invalidate`,
-`kb_feedback`, `kb_query`, `kb_context` and `kb_session_prime` when the remote (HTTP) KB takes
+Under the http KB provider (`kb_setup provider http`) the KB server is the
+source of truth and the bible's entries are not used: `kb_import` imports no
+entry and answers `bible_skipped: true` with a `reason` (only a merged base
+bible's withdrawal tombstones are replayed, see below), and a member `kb_query`
+`flagged_only` read is refused. Four more codes from the same file can be
+thrown: `E-KB-HTTP-UNSUPPORTED` (an operation the http provider cannot serve:
+`kb_invalidate` with `ids`, a member `kb_query` `flagged_only` read, `kb_demote`
+or a member `kb_query` `own_scope` read when the server does not list `demote`, or a route
+the KB server does not list in `GET /api/kb/capabilities` or answers 404/501;
+the message names the route and nothing is changed), `E-KB-HTTP-PROJECT-MISMATCH` (the configured KB server serves a
+different project; nothing is read or written), `E-KB-HTTP-UNREACHABLE`
+(the KB server cannot be reached, or answered 429 or 503; nothing is queued,
+no read is answered from a local store or the bible, and the code is
+retryable: the caller decides whether to repeat the call) and
+`E-KB-HTTP-SERVER-ERROR` (the KB server answered with another 5xx: for a
+capture, invalidate, feedback, promote or demote whether it took effect is
+unknown, so it is neither retried nor queued; for a query, context, prime or
+list nothing was read).
+
+`E-KB-HTTP-AUTH` is thrown by `kb_capture`, `kb_invalidate`, `kb_feedback`,
+`kb_query`, `kb_context`, `kb_session_prime`, `kb_list`, `kb_promote`, `kb_demote`
+and `kb_capabilities` when the remote (HTTP) KB takes
 its token from a named fleet secret (`kb_setup` token `{{secret.NAME}}`) and that
 secret is missing, expired, or still rejected (HTTP 401) after one re-read and
-retry. The message names the secret and the reason, never the value. A capture,
-invalidate or feedback is queued offline first and sent once the secret is accepted; a
-member session's CONFIRMED read comes from its checkout bible and is unaffected.
-Fix: `apra-fleet secret --set NAME --persist -y` -- the next call uses it, no
+retry. The message names the secret and the reason, never the value. Nothing
+is queued. Fix: `apra-fleet secret --set NAME --persist -y` -- the next call uses it, no
 restart. On a remote member's own install the secret is renewed from the
 orchestrator with `provisionKbAuth`, and the message says so. When NAME is a live secret (`apra-fleet secret --live NAME ...`), the
 code is also raised (reason `live-secret-failed`) when its script fails or is
@@ -686,8 +717,7 @@ inside its retry backoff, and (reason `rejected`) when the server still answers
 `az login`), or register it again, which also clears the backoff. The secret's own
 policy applies on every KB call, before any request or script run: reason
 `policy-deny` when its network policy is deny, reason `member-not-allowed` when
-`allowedMembers` does not name the calling member session. A capture, invalidate
-or feedback refused this way is not queued, and the caller retries it. An operator changes the
+`allowedMembers` does not name the calling member session. An operator changes the
 policy with `apra-fleet secret --update NAME --allow` or `--members <list>`.
 `kb_setup` refuses a secret whose policy is deny.
 
@@ -714,23 +744,44 @@ The engine's sprint-start priming uses
 `ref: "refs/remotes/origin/<base branch>"` on the kb_maintainer, so trust is
 seeded from the base branch and never from the maintainer's work tree.
 
+Every `kb_import` result carries `withdrawals: {sent, withdrawn, repromoted,
+already, not_found, unsupported, deferred, warning?}` (id lists, `sent` a
+count). A bible tombstone with reason `withdrawn` takes effect ONLY when the
+bible was read with `ref` equal to `refs/remotes/origin/<provenance.branch>`
+of that same bible (the merged base bible): over SQLite the local row is
+lowered CONFIRMED -> INFERRED (`withdrawn`), left alone when it was promoted
+after the tombstone (`repromoted`) or already lower (`already`), and never
+created (`not_found`). Read any other way (no `ref`, `HEAD`, the work tree,
+another ref) nothing is lowered and the ids are listed in `deferred`. Under
+the http KB provider no entry is imported (`bible_skipped: true`), but that
+same base-ref read -- from a session that is not a member without the
+kb_maintainer grant -- replays the withdrawn tombstones to the KB server in one
+`POST /api/kb/withdraw` and reports each outcome, with `bible_source` naming
+the ref; a ref that holds no bible (an http repo has none until its first
+withdrawal merges) answers the same all-zero report with `bible_source`, not
+`E-BIBLE-NOT-FOUND`; a server without the `withdraw` route gets nothing, and the ids are
+listed in `unsupported` with `warning` carrying the `E-KB-HTTP-UNSUPPORTED`
+message naming the route.
+
 #### `kbExport(options?: KbExportOptions)`
 
 Calls `kb_export` -- exports the calling session's CONFIRMED KB entries to the
 canonical bible file and auto-commits it locally (never pushed). Options:
 `scope?` (`"project" | "global"`), `baseBranch?`, `baseCommit?`. When given,
-`baseBranch` (the target base branch the entries merge into) and `baseCommit`
-are written to the bible's `provenance.branch` / `provenance.commit`; when
-omitted they default to the export folder's HEAD branch and commit. Result
+`baseBranch` (the target base branch the entries merge into) is written to the
+bible's `provenance.branch` and `baseCommit` to a `Verified-Against` trailer on
+the auto-commit (never into the file: a per-file commit or entry count would be
+a line two bible-changing branches both rewrite, so they would text-conflict);
+when omitted they default to the export folder's HEAD branch and commit. Result
 JSON (via `parseToolJson`): `{exported, path, scope, committed}`.
 
 #### `kbBibleCommit(options: KbBibleCommitOptions)`
 
 Calls `kb_bible_commit` -- merges exactly `ids` into the bible at entry level
 (only the given ids are added or replaced; every existing entry is kept unless
-the KB holds it as superseded or invalidated), writes `baseBranch` /
-`baseCommit` into provenance, and makes a local commit scoped to the bible
-path. It never pushes. Every bible entry the KB holds as superseded or
+the KB holds it as superseded or invalidated), writes `baseBranch` to
+`provenance.branch`, and makes a local commit scoped to the bible path carrying
+`baseCommit` as a `Verified-Against` trailer. It never pushes. Every bible entry the KB holds as superseded or
 invalidated is removed at each call (also with an empty `ids`) and listed in
 `removed` as `{id, reason}` (reason `superseded` or `invalidated`) and in the
 commit message; an entry unknown to the KB, or CONFIRMED and current, is never
@@ -752,11 +803,82 @@ on it); any other id is skipped with reason `not_demoted_or_unknown` and nothing
 changes for it. An admitted id is removed from `entries` and upserted into the
 bible's optional top-level `demotions` array as `{id, at, reason}`, so another
 clone applies the demotion explicitly instead of inferring it from an absence.
-Tombstones already in the file survive a later commit carrying unrelated ids, and
-re-committing a tombstoned id through `ids` (a re-promotion) restores its entry
-and clears its tombstone. `provenance.entry_count` counts entries only.
+A demoted tombstone is written only for an id the bible at `baseCommit` carries
+(as an entry or a tombstone): a locally demoted entry the branch added is removed
+from `entries` with no tombstone, and any other `demoted_ids` id is skipped with
+reason `not_in_base_bible`. When `baseCommit` does not resolve or its bible is
+unreadable, no new demoted tombstone is written and the result carries
+`base_bible_error` naming the failure. Tombstones already in the file survive a later commit carrying unrelated ids, and
+re-committing a demoted-tombstoned id through `ids` (a re-promotion) restores its
+entry and clears its tombstone. A `withdrawn` tombstone in the current file
+(branch-added or merged from the base) is never cleared by `ids`: such an id is
+skipped with reason `withdrawn_tombstone` and the tombstone kept, unless
+`restore_ids` undoes that (branch-added) tombstone in the same call. A
+`withdrawn` tombstone also outranks a demotion: a `demoted_ids` id with a
+withdrawn tombstone in the file is skipped with reason `withdrawn_tombstone`,
+the every-call demotion rule passes over it, and a demoted tombstone never
+replaces a withdrawn one, so a later `ids` re-promotion cannot clear the
+withdrawal. A `demoted` tombstone in the file blocks an `ids` merge unless the
+id's local trust time is strictly after the tombstone `at` (a real re-promotion,
+which clears it); otherwise the id is skipped with reason `demoted_tombstone` and
+the tombstone kept. An id found in both entries and demotions loses its entry on
+every call (the tombstone wins) and is listed in `removed` with reason
+`tombstoned`. The result's `entry_count` counts entries only; the file itself
+carries no entry count (it is `entries.length`).
 
-Result JSON: `{path, merged, demoted, skipped, removed, entry_count, committed}`.
+Optional `withdrawals` (`[{id, note, evidence_files}]`; `note` at least 20
+characters after whitespace is collapsed, at least one repo-relative evidence
+path) records WITHDRAWALS carried by the branch. An id the bible holds as an
+entry, or the KB holds CONFIRMED (not superseded, not a user-directive), is
+removed from `entries` and tombstoned as `{id, at, reason: "withdrawn", note,
+evidence_files}`; the local entry is NOT changed -- other clones apply it only
+on a `kb_import` of the merged base bible. Any other id, or one also merged or
+demoted in the same call, is skipped with reason `not_withdrawable`. Optional
+`restore_ids` undoes tombstones this branch added: a tombstone is removed only
+when the bible at `baseCommit` carries none for the id, and the base bible's
+entry for it is re-added byte-identical. Admitted ids are listed in `withdrawn`
+and `restored`.
+
+Result JSON: `{path, merged, demoted, withdrawn, restored, skipped, removed,
+entry_count, backfilled, committed, base_bible_error?}`. `base_bible_error` is
+present only when a rule needed the bible at `baseCommit` (a demotion gate or a
+restore) and it could not be read (`baseCommit` does not resolve, or its bible
+does not parse); the call still fails closed.
+Under the http KB provider the entry merge is skipped, never an error: the
+result is `{path, merged: [], demoted: [], skipped: [], removed,
+entry_count, backfilled: 0, committed, bible_skipped: true, reason, withdrawn,
+restored}`, where `entry_count` counts the entries of the bible file as left by
+the call (0 when it is absent or unreadable); the KB is not read. With no `withdrawals`
+and no `restore_ids` nothing is written or committed; with them only the
+tombstones are written (a tombstone-only bible, `entries: []`, is created when
+absent; an id the file ends up tombstoning loses its entry, and one already
+tombstoned is listed in `removed` with reason `tombstoned`) and `committed` may
+be true.
+
+#### `kbQuery(options: KbQueryOptions)`
+
+Calls `kb_query` -- the two-level knowledge bank search. Options (`KbQueryOptions`,
+one field per `kb_query` request field): `query`, `type`, `tag`, `limit`,
+`include_stale`, `files`, `symbols`, `flagged_only`, `expand_related`,
+`confidence`, `exclude_disputed`, `own_scope`. At least one of `query`, `files`,
+`symbols`, `tag` or `flagged_only` is required (`E-QUERY-NO-SELECTOR`).
+
+Look up by file with `files` (repo-relative paths; a directory matches the
+files under it, so `src/services` matches `src/services/a.ts` but not
+`src/services-old/a.ts`) and/or `symbols` (exact names). They are a hard
+filter: only entries citing one of the files or naming one of the symbols come
+back (with both, either match keeps an entry), however strongly another entry
+matches `query`; ranking inside the kept set is unchanged, and either may be
+used without `query`. Under the http KB provider the filter is sent only when
+the KB server lists the field in `query_filters` of `GET /api/kb/capabilities`;
+otherwise the call fails with `E-KB-HTTP-UNSUPPORTED` naming the filter and
+nothing is read. Like `kbExport` / `kbBibleCommit`, the removed scope keys
+(`repo_path`, `repo`, `repo_remote_url`) are refused client-side with
+`E-SCOPE-KEY-REMOVED` before anything is sent.
+
+Result JSON: `{l1_results, l2_expanded, related_claims?}`, or
+`{flagged_entries, total, note}` with `flagged_only`; member-session defaults
+as described above.
 
 #### `kbDemote(options: KbDemoteOptions)`
 
@@ -779,6 +901,23 @@ Called from the kb_maintainer session or a FULL session, it also records the
 git blob id of the bible it wrote as trusted in the hub-side KB, which is what
 lets a member session without the grant `kb_import` that bible once it is
 committed in its checkout (a call from such a member session records nothing).
+
+#### `kbCapabilities(options?: KbCapabilitiesOptions)`
+
+Calls `kb_capabilities` -- reports what the calling session's project KB
+serves. Takes no fields; the removed scope keys (`repo_path`, `repo`,
+`repo_remote_url`) are refused client-side with `E-SCOPE-KEY-REMOVED` before
+anything is sent. Read-only.
+
+Result JSON (`KbCapabilitiesResult`): `{contract: string, routes: string[],
+branch_aware: boolean, query_filters?: string[]}`, the shape of the KB server's
+`GET /api/kb/capabilities` body. Over an http KB provider it is the server's
+body passed through as sent (unknown route names and extra fields kept; a
+`query_filters` that is not an array of strings is dropped); a
+server that does not serve the route yields the default set (`capture`,
+`query`, `promote`, `context`, `prime`, `invalidate`, `feedback`, `list` --
+no `demote` or `withdraw`). Over a local SQLite KB it is the set the sample
+kb-server answers. Extract with `parseToolJson()`.
 
 #### `composePermissions(options: ComposePermissionsOptions)`
 

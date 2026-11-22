@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
+import { runDevelopLoopScenario, withScenarioMarkers, withStagedBodies } from './helpers/mock-sprint-harness.mjs';
 
 const check = (cond, msg) => assert.ok(cond, msg);
 
@@ -41,7 +41,7 @@ test('mock sprint: re-running finalization against the same branch is idempotent
         `Idempotent-PR run1 should succeed, got: ${JSON.stringify(idemPrRun1.result)}`
     );
     check(
-        idemPrRun1.commandLog.some((c) => c.startsWith('curl -sS -X POST') && c.includes('/pulls') && c.includes(`"head":"${idempotentBranch}"`)),
+        withStagedBodies(idemPrRun1.commandLog).some((c) => c.startsWith('curl -sS -X POST') && c.includes('/pulls') && c.includes(`"head":"${idempotentBranch}"`)),
         `Expected run1 to dispatch a VCSModule create-pull-request command for '${idempotentBranch}', commandLog: ${JSON.stringify(idemPrRun1.commandLog)}`
     );
 
@@ -62,7 +62,7 @@ test('mock sprint: re-running finalization against the same branch is idempotent
         `Idempotent-PR run2 (re-run against a branch with an existing PR) should still resolve to success, got: ${JSON.stringify(idemPrRun2.result)}`
     );
     check(
-        idemPrRun2.commandLog.some((c) => c.startsWith('curl -sS -X POST') && c.includes('/pulls') && c.includes(`"head":"${idempotentBranch}"`)),
+        withStagedBodies(idemPrRun2.commandLog).some((c) => c.startsWith('curl -sS -X POST') && c.includes('/pulls') && c.includes(`"head":"${idempotentBranch}"`)),
         `Expected run2 to still dispatch a VCSModule create-pull-request command (idempotently) for '${idempotentBranch}', commandLog: ${JSON.stringify(idemPrRun2.commandLog)}`
     );
     // A relaunch must REWRITE the existing PR for its own run (stale

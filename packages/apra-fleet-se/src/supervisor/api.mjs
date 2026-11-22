@@ -44,9 +44,9 @@ import { fileURLToPath } from 'node:url';
 
 import { readJsonBody, sendJson } from './server.mjs';
 import { validateDecisionNotify } from '../../fleet-sprint/decision-notify.mjs';
-import { validateIssueId, validateBranchName, validateBranchPair } from '../../fleet-sprint/runner.js';
+import { validateIssueId, validateBranchName, validateBranchPair, validateGoal, validateMaxCycles, validateBudget } from '../../fleet-sprint/runner.js';
 import { resolveRoleMap } from '../../bin/cli.mjs';
-import { resolveBacklogRoleAlias, ROLE_BACKLOG } from '../../fleet-sprint/backlog-role.mjs';
+import { resolveBacklogRoleAlias, ROLE_BACKLOG, ROLE_BACKLOG_ALIAS } from '../../fleet-sprint/backlog-role.mjs';
 import { normalizeRole } from '../../fleet-sprint/contracts.mjs';
 import { isDeterministicTerminalReason, HISTORY_EVENTS } from './history.mjs';
 import { defaultHasTerminalState } from './watchdog.mjs';
@@ -527,6 +527,21 @@ export function createSprintController(deps = {}) {
         if (members.length === 0) {
             throw new ApiError(400, 'members must be a non-empty list of member names', 'members');
         }
+        // goal / maxCycles / budget (optional): the SAME validators validateArgs
+        // uses (sprint-args.mjs), so an invalid value is a 400 here instead of
+        // a spawned child that reserves members and then dies at the arg contract.
+        if (body.goal !== undefined) {
+            try { validateGoal(body.goal); }
+            catch (err) { throw new ApiError(400, err.message, 'goal'); }
+        }
+        if (body.maxCycles !== undefined) {
+            try { validateMaxCycles(body.maxCycles); }
+            catch (err) { throw new ApiError(400, err.message, 'maxCycles'); }
+        }
+        if (body.budget !== undefined) {
+            try { validateBudget(body.budget); }
+            catch (err) { throw new ApiError(400, err.message, 'budget'); }
+        }
         // phases (optional): per-launch phase settings. Only `regression` is
         // supported: "run" (default) or "skip". Anything else is rejected here,
         // before any spawn, so a typo can never silently run or skip a phase.
@@ -559,7 +574,18 @@ export function createSprintController(deps = {}) {
             catch (err) { throw new ApiError(400, err.message, 'decisionNotify'); }
             decisionNotify = typeof body.decisionNotify === 'string' ? body.decisionNotify : JSON.stringify(body.decisionNotify);
         }
-        return { issue: issueIds.join(','), issueIds, branch, base, members, skipRegression, decisionNotify };
+        // kbDemotionLoop (optional): the reviewer KB demotion loop switch, "on"
+        // (the engine default) or "off" -- the same values as the CLI's
+        // --kb-demotion-loop. Anything else is a 400 before any spawn; omitted
+        // means the child is launched without the flag (engine default).
+        let kbDemotionLoop;
+        if (body.kbDemotionLoop !== undefined) {
+            if (body.kbDemotionLoop !== 'on' && body.kbDemotionLoop !== 'off') {
+                throw new ApiError(400, `kbDemotionLoop must be "on" or "off", got ${JSON.stringify(body.kbDemotionLoop)}`, 'kbDemotionLoop');
+            }
+            kbDemotionLoop = body.kbDemotionLoop;
+        }
+        return { issue: issueIds.join(','), issueIds, branch, base, members, skipRegression, kbDemotionLoop, decisionNotify };
     }
 
     // -- GET /api/members : list_members + live-reservation overlay -----------
@@ -600,7 +626,7 @@ export function createSprintController(deps = {}) {
 
     // -- POST /api/sprints : validated, goal-forwarding launch ----------------
     async function launch(body = {}) {
-        const { issue, issueIds, branch, base, members, skipRegression, decisionNotify } = validateLaunchRequest(body);
+        const { issue, issueIds, branch, base, members, skipRegression, kbDemotionLoop, decisionNotify } = validateLaunchRequest(body);
         // An '@file' roleMap is a CLI-only convenience: over HTTP it would make
         // the supervisor read an arbitrary server-side path named by the request
         // body, and the alias warning could not be computed from it. Reject it.
@@ -742,9 +768,14 @@ export function createSprintController(deps = {}) {
             if (requested.length === 0) {
                 childRoleMap = { ...(childRoleMap && typeof childRoleMap === 'object' ? childRoleMap : {}), [ROLE_BACKLOG]: [pinnedBacklogName] };
             } else if (requested.some((m) => m !== pinnedBacklogName)) {
+                // Name the key the caller actually sent: the deprecated
+                // alias is folded into `backlog` by now.
+                const sentAlias = Boolean(forwardRoleMap && typeof forwardRoleMap === 'object'
+                    && forwardRoleMap[ROLE_BACKLOG_ALIAS] !== undefined && forwardRoleMap[ROLE_BACKLOG] === undefined);
+                const keyName = sentAlias ? `roleMap.${ROLE_BACKLOG_ALIAS} (the deprecated alias of roleMap.backlog)` : 'roleMap.backlog';
                 throw new ApiError(
                     400,
-                    `[Arg Contract] roleMap.backlog must be this supervisor's backlog member '${pinnedBacklogName}' (or omitted, ` +
+                    `[Arg Contract] ${keyName} must be this supervisor's backlog member '${pinnedBacklogName}' (or omitted, ` +
                     `which assigns it automatically); got [${requested.join(', ')}].`,
                     'roleMap',
                 );
@@ -777,6 +808,7 @@ export function createSprintController(deps = {}) {
             budget: body.budget,
             runId: sprintId,
             skipRegression,
+            kbDemotionLoop,
             decisionNotify,
         };
         let spawned;
@@ -1023,13 +1055,7 @@ export function registerSprintRoutes(supervisor, controller) {
     });
 
     supervisor.route('POST', '/api/sprints/:id/decisions/:decisionId', async (req, res, ctx) => {
-        let body;
-        try {
-            body = (await readJsonBody(req)) ?? {};
-        } catch (err) {
-            sendJson(res, 400, { error: String(err && err.message ? err.message : err), field: 'body' });
-            return;
-        }
+        const body = (await readJsonBody(req)) ?? {};
         try {
             sendJson(res, 200, await controller.answerDecision(ctx.params.id, ctx.params.decisionId, body));
         } catch (err) {

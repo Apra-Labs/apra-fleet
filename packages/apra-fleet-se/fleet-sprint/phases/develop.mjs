@@ -56,18 +56,18 @@
 import { pathsFromText } from '../kb-hints.mjs';
 import { WorkflowError } from '@apralabs/apra-fleet-workflow';
 
-import { dispatchRole, TURN_BASES } from '../dispatch-role.mjs';
+import { dispatchRole, TURN_BASES, clampMaxTurns } from '../dispatch-role.mjs';
 import { buildStreakAssignmentPrompt, buildDoerPrompt } from '../prompts.mjs';
 import {
     selectStreaks, groupStreaksFromLaneMetadata, streakRequiredTier,
     resolveWorklistTierPolicy, hasContextHeadroomForResume, assignDoerWorklists,
 } from '../worklists.mjs';
-import { isPostDispatchSyncFailure } from '../errors.mjs';
+import { isPostDispatchSyncFailure, MemberPermissionDeniedError, PERMISSION_DENIED_DISPATCH_REASON } from '../errors.mjs';
 import { isPermissionScopePostDispatchSyncFailure } from '../dispatch-failure.mjs';
 import { policyFor } from '../role-policies.mjs';
 import { CLAIMED_ELSEWHERE_REASON } from '../orphan-reclaim.mjs';
 import { openBlocksDependents } from '../beads-scope.mjs';
-import { classifyBlockedReport } from '../set-aside.mjs';
+import { classifyBlockedReport, VERIFY_NO_CHANGE_KIND, VERIFY_NO_CHANGE_REASON } from '../set-aside.mjs';
 import { NEEDS_DECISION, validateDecisionRequest, recordPendingDecision } from '../decisions.mjs';
 
 /**
@@ -346,6 +346,52 @@ export async function runDevelopPhase({
         return true;
     };
 
+    // Records a doer streak that returned VERIFY (nothing left to code) while
+    // the engine's own read-back shows it closed NONE of its beads. Before,
+    // such a streak counted as an ordinary left-open failure and its bead came
+    // back every round (and every cycle) to a doer that had already said there
+    // was nothing to do -- burning the cycle and ending in a stall. Now, after
+    // that ONE round, the streak's first still-open bead (in dispatch order:
+    // the bead the doer works first, which a lane's later beads wait behind)
+    // is set aside for the run (kind VERIFY_NO_CHANGE_KIND) and so carried over
+    // instead of re-dispatched. A streak that closed any of its beads made a
+    // change and keeps the existing left-open retry for the rest, and so does
+    // one whose dispatch committed or left a diff (branch tip or work tree
+    // changed) and one whose report claims a close of its own beads. Returns the
+    // set-aside id, or null when nothing was set aside.
+    const readBranchSnapshot = async (member) => {
+        try { return await gitSync.branchSnapshot(member); } catch { return null; }
+    };
+    // True only when both snapshots read and show the same commit and a clean
+    // work tree: a dispatch that committed or left a diff, or whose state
+    // cannot be read, is NOT a no-change VERIFY.
+    const branchUnchanged = (before, after) => Boolean(before && after && !after.dirty && before.tip === after.tip);
+
+    const recordDoerVerifyNoChange = ({ report, streakIds, unclosedIds, doerMember }) => {
+        if (unclosedIds.length === 0 || unclosedIds.length !== streakIds.length) return null;
+        // The doer's own report must agree that it closed nothing. A report
+        // that CLAIMS closes the read-back disproves is a different failure (a
+        // false claim, or a close that never reached the shared DB) and keeps
+        // the ordinary left-open retry.
+        const claimed = Array.isArray(report.closedIds) ? report.closedIds.map(String) : [];
+        if (claimed.some((x) => streakIds.includes(x))) return null;
+        const id = streakIds.find((x) => unclosedIds.includes(x));
+        if (!id || doctorBlockedIds.has(id)) return null;
+        const doerNotes = typeof report.notes === 'string' ? report.notes.replace(/\s+/g, ' ').trim() : '';
+        doctorBlockedIds.set(id, {
+            kind: VERIFY_NO_CHANGE_KIND, blockedBy: id,
+            reason: `doer on member '${doerMember}' returned VERIFY on streak [${streakIds.join(', ')}] but closed none of its beads ` +
+                '(no change); not re-dispatched to a doer this run' + (doerNotes ? `: ${doerNotes}` : ''),
+            cycle, round: devRounds,
+        });
+        log(
+            `Doer VERIFY-no-change set-aside C${cycle} R${devRounds}: setting aside for the rest of this run bead '${id}' -- ` +
+            `streak [${streakIds.join(', ')}] reported VERIFY but closed none of its beads, so re-dispatching it would only repeat ` +
+            `the same answer. Entry: ${JSON.stringify({ [id]: doctorBlockedIds.get(id) })}`
+        );
+        return id;
+    };
+
     // --- Streak grouping ------------------------------------------
     // PREFER deterministic grouping straight from the planner's lane
     // metadata (`streak`/`streakOrder`, emitted per planner.md through
@@ -564,12 +610,27 @@ export async function runDevelopPhase({
         // failed outcome, so it stays here: the row's degrade is
         // 'per-bead-attribution' and fabricates nothing.
         const streakScope = () => `[${actualBeadIds.join(', ')}]`;
+        // Branch snapshot before the dispatch, so a VERIFY that closed nothing
+        // can be told apart from one that committed work (see
+        // recordDoerVerifyNoChange). Never throws; null = unknown.
+        // Taken INSIDE the dispatch's git-sync bracket (onDispatchWindow below),
+        // after the pre-dispatch pull and before the post-dispatch push, so a
+        // tip moved by another lane's push is never read as the doer's work.
+        let snapshotBefore = null;
+        let snapshotAfter = null;
         const doerOutcome = await dispatchRole(dispatchCtx, 'doer', {
             roleLabel: `Doer streak ${streakScope()}`,
             // Never used: `prepare` builds both prompts, because both
             // depend on the streak the claim actually secured.
             prompt: null,
             resumePrompt: null,
+            onDispatchWindow: async (phase) => {
+                if (phase === 'before') {
+                    if (!snapshotBefore) snapshotBefore = await readBranchSnapshot(doerMember);
+                } else {
+                    snapshotAfter = await readBranchSnapshot(doerMember);
+                }
+            },
             onSessionId: (id, meta) => {
                 if (!worklistCtx) return;
                 worklistCtx.sessionId = id;
@@ -638,13 +699,29 @@ export async function runDevelopPhase({
             },
             // Built INSIDE the bracket, after the claim: the streak this
             // dispatch actually owns is only known once the claim has run.
-            prepare: async ({ dispatch, resumeAttempt, freshSession }) => {
+            prepare: async ({ dispatch, resumeAttempt, freshSession, refusalNotice }) => {
+                // The engine's one same-session resume after a refusal no
+                // permission grant can allow: its notice names the refused
+                // call(s); the streak scope is restated below it.
+                if (refusalNotice && !freshSession) {
+                    log(
+                        `Doer streak ${streakScope()} on member '${doerMember}' was refused tool calls no permission grant can allow -- ` +
+                        'resuming the same session once with a notice naming them.'
+                    );
+                    return {
+                        prompt:
+                            `${refusalNotice}\n\n` +
+                            `Your scope, restated so a resumed dispatch never loses it: assigned bead id(s) ${actualBeadIds.join(', ')} on sprint branch ${validated.branch}. ` +
+                            'Pick up from your last action on those bead(s) and proceed to the VERIFY checkpoint.',
+                        label: `Streak ${streakScope()} (resume after refused calls)`,
+                    };
+                }
                 // freshSession: the engine has no explicit session id to resume
                 // (or the id was not found), so this secondary dispatch is a
                 // FRESH session and gets the FULL streak prompt below, with the
                 // worklist's warm-session resume suppressed.
                 if (dispatch.kind === 'max-turns-resume' && !freshSession) {
-                    const resumeTurns = BASE_DOER_MAX_TURNS * (2 ** resumeAttempt);
+                    const resumeTurns = clampMaxTurns(BASE_DOER_MAX_TURNS * (2 ** resumeAttempt));
                     log(
                         `Doer streak ${streakScope()} on member '${doerMember}' exhausted its turn limit ` +
                         `(max_turns) -- resuming the same session with max_turns=${resumeTurns} ` +
@@ -783,6 +860,17 @@ export async function runDevelopPhase({
                     bindings: { doerMember, doerModel },
                 };
             },
+        }).catch((err) => {
+            // A refused tool call the permission heal could not fix ends the
+            // doer ladder with MemberPermissionDeniedError. The member CLI
+            // ran (a refusal is reported after the turn), so the streak may
+            // already have closed beads: record it as a dispatch failure
+            // through the per-bead attribution below, so the beads it closed
+            // still enter this round's Review instead of the streak vanishing
+            // from the outcomes. Any other ladder throw propagates unchanged.
+            if (!(err instanceof MemberPermissionDeniedError)) throw err;
+            log(`Doer streak ${streakScope()} on member '${doerMember}' failed on refused tool calls: ${err.message}`);
+            return { value: null, error: err, attempts: 1, resumesIssued: 0, stepResults: {} };
         });
         const report = doerOutcome.value;
         const dispatchError = doerOutcome.error;
@@ -845,7 +933,8 @@ export async function runDevelopPhase({
             const failureFacts = {
                 failureReason: claimedElsewhere
                     ? CLAIMED_ELSEWHERE_REASON
-                    : ((dispatchError.details && dispatchError.details.reason) || 'dispatch-error'),
+                    : ((dispatchError.details && dispatchError.details.reason)
+                        || (dispatchError instanceof MemberPermissionDeniedError ? PERMISSION_DENIED_DISPATCH_REASON : 'dispatch-error')),
                 ...(isPostDispatchSyncFailure(dispatchError) ? { postDispatchSyncFailed: true } : {}),
             };
             // NOTE ON REVIEW SCOPE: review.mjs's reviewScopeBeadIds() builds the
@@ -978,6 +1067,26 @@ export async function runDevelopPhase({
         if (leftOpenReason === 'needs-decision' && unclosedIds.length > 0) {
             await recordDoerNeedsDecision({ report, unclosedIds, streakIds: actualBeadIds, doerMember });
         }
+        // VERIFY with no change: only when the whole dispatch closed nothing
+        // (in batch mode one dispatch carries several sub-streaks; a dispatch
+        // that closed any bead may simply not have reached a later one), then
+        // per sub-streak -- see recordDoerVerifyNoChange.
+        const noChangeSetAside = new Set();
+        if (leftOpenReason === 'left-open' && report && report.status === 'VERIFY'
+            && unclosedIds.length > 0 && closedIds.length === 0
+            && branchUnchanged(snapshotBefore, snapshotAfter)) {
+            const groups = batchStreaks
+                ? batchStreaks.map((sub) => sub.map((b) => b.id).filter((id) => actualBeadIds.includes(id)))
+                : [actualBeadIds];
+            for (const ids of groups) {
+                if (ids.length === 0) continue;
+                const id = recordDoerVerifyNoChange({
+                    report, streakIds: ids, unclosedIds: ids.filter((x) => unclosedIds.includes(x)), doerMember,
+                });
+                if (id) noChangeSetAside.add(id);
+            }
+        }
+        const failureReasonFor = (ids) => (ids.some((id) => noChangeSetAside.has(id)) ? VERIFY_NO_CHANGE_REASON : leftOpenReason);
 
         if (batchStreaks) {
             // Mode (i): PER-STREAK outcome attribution for the batch
@@ -992,14 +1101,14 @@ export async function runDevelopPhase({
                     beadIds: subIds, doerMember, wasRetried, report,
                     unclosedIds: subUnclosed, closedIds: subClosed,
                     outcome: subUnclosed.length > 0 ? 'failed' : (wasRetried ? 'retried' : 'success'),
-                    ...(subUnclosed.length > 0 ? { failureReason: leftOpenReason } : {}),
+                    ...(subUnclosed.length > 0 ? { failureReason: failureReasonFor(subUnclosed) } : {}),
                 });
             }
         } else {
             streakOutcomes.push({
                 beadIds: actualBeadIds, doerMember, wasRetried, report, unclosedIds, closedIds,
                 outcome: unclosedIds.length > 0 ? 'failed' : (wasRetried ? 'retried' : 'success'),
-                ...(unclosedIds.length > 0 ? { failureReason: leftOpenReason } : {}),
+                ...(unclosedIds.length > 0 ? { failureReason: failureReasonFor(unclosedIds) } : {}),
             });
         }
         await updateDashboard();

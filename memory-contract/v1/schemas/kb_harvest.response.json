@@ -68,13 +68,20 @@
             },
             "entries_rejected": {
               "type": "number"
+            },
+            "entries_failed": {
+              "type": "number"
+            },
+            "first_error": {
+              "type": "string"
             }
           },
           "required": [
             "entries_captured",
             "entries_updated",
             "entries_skipped",
-            "entries_rejected"
+            "entries_rejected",
+            "entries_failed"
           ],
           "additionalProperties": false
         }

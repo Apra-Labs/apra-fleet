@@ -172,6 +172,7 @@ export function ensureTestSandbox(env = process.env) {
         xdgConfig: path.join(home, '.config'),
         xdgData: path.join(home, '.local', 'share'),
         data: path.join(root, 'fleet-data'),
+        sprintLocks: path.join(root, 'sprint-locks'),
     };
     for (const d of Object.values(dirs)) fs.mkdirSync(d, { recursive: true });
     // git and other tools read identity from the home dir: give tests a
@@ -194,6 +195,9 @@ export function ensureTestSandbox(env = process.env) {
     env.XDG_CONFIG_HOME = dirs.xdgConfig;
     env.XDG_DATA_HOME = dirs.xdgData;
     env.APRA_FLEET_DATA_DIR = dirs.data;
+    // fleet-sprint's pidfile locks default to <os tmpdir>/apra-fleet-sprint-locks;
+    // keep every test (and env-inheriting child) out of the real tmpdir.
+    env.APRA_FLEET_SPRINT_LOCK_DIR = dirs.sprintLocks;
     const opt = `--import=${GUARD_URL}`;
     if (!(env.NODE_OPTIONS || '').includes(opt)) env.NODE_OPTIONS = `${env.NODE_OPTIONS ? env.NODE_OPTIONS + ' ' : ''}${opt}`;
     assertNotRealProfile(env);

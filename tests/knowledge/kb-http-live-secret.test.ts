@@ -15,7 +15,6 @@ import path from 'node:path';
 // or the environment.
 
 import { HttpKbProvider, KbHttpAuthError } from '../../src/services/knowledge/http-provider.js';
-import { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js';
 import { KB_CONFIG_PATH, readKbConfigFromDisk } from '../../src/services/knowledge/kb-config.js';
 import { resetKbHttpAuthState } from '../../src/services/knowledge/kb-http-auth-state.js';
 import { prepareLiveSecret, saveLiveSecret, credentialDelete, lookupLiveSecret } from '../../src/services/credential-store.js';
@@ -34,11 +33,13 @@ import { makeTempDir } from './token-command-helpers.js';
 import {
   writeCountingHelper,
   startStubKbServer,
+  kbRouteRequests,
   helperRunOf,
   type CountingHelper,
   type StubKbServer,
 } from './kb-live-secret-fixture.js';
 
+const routes = () => kbRouteRequests(stub);
 const RUN = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 const NAME = `KB_LIVE_${RUN}`;
 const PREFIX = `zqcanary-kblive-${RUN}`;
@@ -58,7 +59,7 @@ function register(): void {
 }
 
 function newProvider(): HttpKbProvider {
-  return new HttpKbProvider(stub.url, { secretName: NAME }, new SqliteProvider(path.join(tmp, 'fallback.sqlite')));
+  return new HttpKbProvider(stub.url, { secretName: NAME });
 }
 
 function entry(title: string): KBEntryInput {
@@ -145,16 +146,17 @@ describe('HttpKbProvider with a credential helper', () => {
     await query();
     await provider.capture(entry('Helper gear'));
     expect(helper.runs()).toEqual([{ credential: NAME }]);
-    expect(stub.requests).toHaveLength(3);
-    expect(stub.requests.every(r => r.authorized && helperRunOf(r.token, PREFIX) === 1)).toBe(true);
+    expect(routes()).toHaveLength(3);
+    expect(routes().every(r => r.authorized && helperRunOf(r.token, PREFIX) === 1)).toBe(true);
+    expect(stub.requests.filter(r => r.path === '/api/kb/capabilities')).toHaveLength(1); // once per connection
   });
 
   it('10 concurrent requests share one helper run', async () => {
     helper.setControl({ delayMs: 400 });
     await Promise.all(Array.from({ length: 10 }, () => query()));
     expect(helper.runs()).toHaveLength(1);
-    expect(stub.requests).toHaveLength(10);
-    expect(stub.requests.every(r => r.authorized)).toBe(true);
+    expect(routes()).toHaveLength(10);
+    expect(routes().every(r => r.authorized)).toBe(true);
   });
 
   it('a token past its refresh point is replaced before the request; the server never sees an expired token', async () => {
@@ -164,8 +166,8 @@ describe('HttpKbProvider with a credential helper', () => {
     await sleep(2_850);
     await query();
     expect(helper.runs()).toHaveLength(2);
-    expect(stub.requests.map(r => helperRunOf(r.token, PREFIX))).toEqual([1, 2]);
-    for (const r of stub.requests) {
+    expect(routes().map(r => helperRunOf(r.token, PREFIX))).toEqual([1, 2]);
+    for (const r of routes()) {
       expect(r.atMs).toBeLessThan(helper.expiresAtOf(helperRunOf(r.token, PREFIX)));
     }
   });
@@ -178,9 +180,8 @@ describe('HttpKbProvider with a credential helper', () => {
 
     const second = await expectAuthError(provider.query({ query: 'gear' }), 'live-secret-failed');
     expect(second.message).toContain('not run again until');
-    const queued = await expectAuthError(provider.capture(entry('Queued while failing')), 'live-secret-failed');
-    expect(queued.queued).toBe(true);
-    expect(provider.offlineQueue).toHaveLength(1);
+    // A write fails the same way and is not queued (the caller owns the retry).
+    await expectAuthError(provider.capture(entry('Refused while failing')), 'live-secret-failed');
     expect(helper.runs()).toHaveLength(1);
     expect(stub.requests).toHaveLength(0);
 
@@ -190,27 +191,28 @@ describe('HttpKbProvider with a credential helper', () => {
     register();
     await query();
     expect(helper.runs()).toHaveLength(2);
-    expect(provider.offlineQueue).toHaveLength(0); // the queued capture was flushed first
-    expect(stub.requests.map(r => r.path)).toEqual(['/api/kb/capture', '/api/kb/query']);
+    expect(routes().map(r => r.path)).toEqual(['/api/kb/query']); // nothing was queued
   });
 
   it('401: drops the cached token, runs the helper once more and the retry succeeds', async () => {
     stub.accept = (token) => helperRunOf(token, PREFIX) >= 2;
     await query();
     expect(helper.runs()).toHaveLength(2);
-    expect(stub.requests.map(r => [helperRunOf(r.token, PREFIX), r.authorized])).toEqual([[1, false], [2, true]]);
+    expect(routes().map(r => [helperRunOf(r.token, PREFIX), r.authorized])).toEqual([[1, false], [2, true]]);
   });
 
-  it('kb_feedback goes the same way: a 401 re-mints once and the retry succeeds; a second 401 queues it', async () => {
+  it('kb_feedback goes the same way: a 401 re-mints once and the retry succeeds; a second 401 throws, nothing queued', async () => {
     stub.accept = (token) => helperRunOf(token, PREFIX) >= 2;
     await provider.feedback('e1', 'wrong in practice', 'doer');
     expect(helper.runs()).toHaveLength(2);
-    expect(stub.requests.map(r => [r.path, helperRunOf(r.token, PREFIX), r.authorized]))
+    expect(routes().map(r => [r.path, helperRunOf(r.token, PREFIX), r.authorized]))
       .toEqual([['/api/kb/feedback', 1, false], ['/api/kb/feedback', 2, true]]);
     stub.accept = () => false;
-    const err = await expectAuthError(provider.feedback('e2', 'wrong again', 'doer'), 'rejected');
-    expect(err.queued).toBe(true);
-    expect(provider.offlineQueue).toEqual([{ op: 'feedback', id: 'e2', reason: 'wrong again', role: 'doer' }]);
+    const before = routes().length;
+    await expectAuthError(provider.feedback('e2', 'wrong again', 'doer'), 'rejected');
+    // One request and one retry with a fresh mint, and no further send of it.
+    expect(routes().slice(before).map(r => [r.path, r.authorized])).toEqual([['/api/kb/feedback', false], ['/api/kb/feedback', false]]);
+    expect(helper.runs()).toHaveLength(3);
   });
 
   it('a second 401 raises E-KB-HTTP-AUTH after exactly one helper re-run', async () => {
@@ -218,16 +220,16 @@ describe('HttpKbProvider with a credential helper', () => {
     const err = await expectAuthError(provider.query({ query: 'gear' }), 'rejected');
     expect(err.message).toContain('HTTP 401');
     expect(helper.runs()).toHaveLength(2);
-    expect(stub.requests).toHaveLength(2);
+    expect(routes()).toHaveLength(2);
   });
 
   it('a server that rejects every token: after the replacement is rejected too, KB calls run no script and send nothing until a cool-down ends', async () => {
     stub.accept = () => false;
     await expectAuthError(provider.query({ query: 'gear' }), 'rejected');
-    expect([helper.runs().length, stub.requests.length]).toEqual([2, 2]);
+    expect([helper.runs().length, routes().length]).toEqual([2, 2]);
     for (let i = 1; i <= 3; i++) {
       const err = await expectAuthError(provider.query({ query: 'gear' }), 'rejected');
-      expect([helper.runs().length, stub.requests.length]).toEqual([2, 2]);
+      expect([helper.runs().length, routes().length]).toEqual([2, 2]);
       expect(err.message).toContain('no new token is minted for the KB before');
     }
     vi.useFakeTimers({ toFake: ['Date'] });
@@ -235,10 +237,10 @@ describe('HttpKbProvider with a credential helper', () => {
       // Past the 10 s cool-down: one new mint and request, then a 20 s cool-down.
       vi.setSystemTime(Date.now() + LIVE_BACKOFF_BASE_MS + 1000);
       await expectAuthError(provider.query({ query: 'gear' }), 'rejected');
-      expect([helper.runs().length, stub.requests.length]).toEqual([3, 3]);
+      expect([helper.runs().length, routes().length]).toEqual([3, 3]);
       vi.setSystemTime(Date.now() + LIVE_BACKOFF_BASE_MS + 1000);
       await expectAuthError(provider.query({ query: 'gear' }), 'rejected');
-      expect([helper.runs().length, stub.requests.length]).toEqual([3, 3]);
+      expect([helper.runs().length, routes().length]).toEqual([3, 3]);
       // Accepted once: the count resets, so a later rejection gets its one re-mint.
       vi.setSystemTime(Date.now() + LIVE_BACKOFF_BASE_MS);
       stub.accept = (token) => token.includes(PREFIX);
@@ -254,7 +256,7 @@ describe('HttpKbProvider with a credential helper', () => {
   it('during the KB cool-down no other consumer is handed a token the KB server rejected', async () => {
     stub.accept = () => false;
     await expectAuthError(provider.query({ query: 'gear' }), 'rejected');
-    const rejected = stub.requests.map((r) => r.token);
+    const rejected = routes().map((r) => r.token);
     const detail = await getLiveTokenDetail(NAME, lookupLiveSecret(NAME)!);
     expect(rejected).not.toContain(detail.token);
     expect(helperRunOf(detail.token, PREFIX)).toBe(3);

@@ -23,7 +23,7 @@
       "affected_methods": ["P-2 capture", "P-3 query", "P-7 prime", "P-10 stats", "P-11 touch", "X-1 list", "X-3 freshnessSweep", "X-6 hasEntry", "X-8 getSourceFileBases"]
     },
     "not_in_scope": "approveDirective, rejectDirective, addDirective, flaggedPairs (INVENTORY.md section 4.2) are CLI-only and not reachable by any registered MCP tool, so they have no entry here.",
-    "kb_setup_absence_note": "kb_setup is intentionally absent from every `tools` array below, and its absence is not a gap. It is a pre-provider configuration tool: it installs the git post-commit hook, writes a single GLOBAL provider config (including the install-wide KB tool profile, tool_profile, which decides which kb_* tools a FULL non-member session registers and never changes a member session's tools), and stores remote credentials -- it never resolves a project KB and reaches no MemoryProvider member, so there is no P-*/X-* entry it could map to. Like every kb_* tool it takes no scope argument; it installs the hook into the calling session's own folder and, when that folder cannot carry a KB identity, skips the hook with the typed E-SELF-* reason as a step instead of refusing (INVENTORY.md section 2, 'Scope-field note'). It still has a request schema, a response schema, an MCP binding and a fixture, because it is one of the 23 registered tools; only the provider-method mapping is empty, and its binding therefore carries an empty errors[] array.",
+    "kb_setup_absence_note": "kb_setup is intentionally absent from every `tools` array below, and its absence is not a gap. It is a pre-provider configuration tool: it installs the git post-commit hook and registers the knowledge bible merge driver in the clone (local git config and info/attributes), writes a single GLOBAL provider config (including the install-wide KB tool profile, tool_profile, which decides which kb_* tools a FULL non-member session registers and never changes a member session's tools), and stores remote credentials -- it never resolves a project KB and reaches no MemoryProvider member, so there is no P-*/X-* entry it could map to. Like every kb_* tool it takes no scope argument; it installs the hook into the calling session's own folder and, when that folder cannot carry a KB identity, skips the hook with the typed E-SELF-* reason as a step instead of refusing (INVENTORY.md section 2, 'Scope-field note'). It still has a request schema, a response schema, an MCP binding and a fixture, because it is one of the 23 registered tools; only the provider-method mapping is empty, and its binding therefore carries an empty errors[] array.",
     "httpKbProvider_note": "HttpKbProvider is live: a KB config with provider http makes getKbProviders construct it for project scopes (INVENTORY.md section 4.4 and F-10 record an earlier tree where nothing did). Every MemoryProvider entry below describes SqliteProvider behavior unless it says otherwise, as X-2's providers_note does.",
     "non_error_outcomes_note": "A method's `error_codes` field cites ONLY names taxonomy.json's groups[].codes disposes as real error codes. A method that can also reach one of taxonomy.json's `non_error_outcomes` (a documented success-path adjustment or degradation that deliberately gets no code, with its own reason_no_code there) cites that name in a separate `non_error_outcomes` field instead, never bare inside `error_codes` -- tests/memory-contract-taxonomy.test.ts enforces this split. Affected methods: P-2 capture (E-CLAMP, E-CONTRADICTION-FLAGGED, E-DEDUP-NONE, E-DIRECTIVE-QUARANTINE), P-10 stats (E-STATS-UNSUPPORTED, E-BIBLE-READ-DEGRADED), P-12 relatedClaims (E-RELATED-CLAIMS-DEGRADED), X-2 feedback (E-ROLE-UNKNOWN-DEGRADED)."
   },
@@ -58,7 +58,7 @@
       "side_effect_class": "trust-mutating",
       "idempotent": false,
       "idempotent_note": "New row per call unless AUDN dedupes to E-DEDUP-NONE.",
-      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-NO-BASIS", "E-BASIS-MISSING-FILES", "E-SUPERSEDE-CONSENT-MISSING", "E-ACTIVE-DIRECTIVE-SUPERSEDE-GUARD", "E-BIBLE-MALFORMED", "E-KB-MAINTAINER-REQUIRED", "E-RETIRE-NEEDS-KB-MAINTAINER", "E-KB-HTTP-AUTH", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-NO-BASIS", "E-BASIS-MISSING-FILES", "E-SUPERSEDE-CONSENT-MISSING", "E-ACTIVE-DIRECTIVE-SUPERSEDE-GUARD", "E-BIBLE-MALFORMED", "E-KB-MAINTAINER-REQUIRED", "E-RETIRE-NEEDS-KB-MAINTAINER", "E-KB-HTTP-AUTH", "E-KB-HTTP-UNREACHABLE", "E-KB-HTTP-SERVER-ERROR", "E-KB-HTTP-UNSUPPORTED", "E-KB-HTTP-PROJECT-MISMATCH", "E-PROVIDER-UNINITIALIZED"],
       "non_error_outcomes": ["E-CLAMP", "E-CONTRADICTION-FLAGGED", "E-DEDUP-NONE", "E-DIRECTIVE-QUARANTINE"],
       "see_also": ["Capture provenance and confidence clamp", "Directive quarantine", "Superseding and AUDN matching", "Freshness and content hashing"]
     },
@@ -76,7 +76,7 @@
       "side_effect_class": "append",
       "idempotent": false,
       "idempotent_note": "Read result is stable but each call bumps use_count/last_accessed telemetry.",
-      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-QUERY-NO-SELECTOR", "E-BIBLE-MALFORMED", "E-MEMBER-VIEW-REMOTE", "E-KB-HTTP-AUTH", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-QUERY-NO-SELECTOR", "E-BIBLE-MALFORMED", "E-MEMBER-VIEW-REMOTE", "E-KB-HTTP-AUTH", "E-KB-HTTP-UNREACHABLE", "E-KB-HTTP-SERVER-ERROR", "E-KB-HTTP-UNSUPPORTED", "E-PROVIDER-UNINITIALIZED"],
       "see_also": ["Query modes"]
     },
     {
@@ -91,7 +91,7 @@
       ],
       "side_effect_class": "pure read",
       "idempotent": true,
-      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-PATH-TRAVERSAL", "E-KB-HTTP-AUTH", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-PATH-TRAVERSAL", "E-KB-HTTP-AUTH", "E-KB-HTTP-UNREACHABLE", "E-KB-HTTP-SERVER-ERROR", "E-KB-HTTP-UNSUPPORTED", "E-PROVIDER-UNINITIALIZED"],
       "see_also": ["Freshness and content hashing"]
     },
     {
@@ -106,7 +106,7 @@
       ],
       "side_effect_class": "trust-mutating",
       "idempotent": true,
-      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-PATH-TRAVERSAL", "E-RETIRE-NEEDS-KB-MAINTAINER", "E-KB-HTTP-AUTH", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-PATH-TRAVERSAL", "E-RETIRE-NEEDS-KB-MAINTAINER", "E-KB-HTTP-AUTH", "E-KB-HTTP-UNREACHABLE", "E-KB-HTTP-SERVER-ERROR", "E-PROVIDER-UNINITIALIZED", "E-KB-HTTP-UNSUPPORTED"],
       "see_also": ["Freshness and content hashing"]
     },
     {
@@ -135,7 +135,7 @@
       ],
       "side_effect_class": "pure read",
       "idempotent": true,
-      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-KB-HTTP-AUTH", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-KB-HTTP-AUTH", "E-KB-HTTP-UNREACHABLE", "E-KB-HTTP-SERVER-ERROR", "E-KB-HTTP-UNSUPPORTED", "E-PROVIDER-UNINITIALIZED"],
       "see_also": []
     },
     {
@@ -151,7 +151,7 @@
       "side_effect_class": "trust-mutating",
       "idempotent": false,
       "idempotent_note": "No-op only at the CONFIRMED ceiling; below it every call advances one tier.",
-      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-ENTRY-NOT-FOUND", "E-PROMOTE-SUPERSEDED", "E-PROMOTE-REFUSED-DIRECTIVE", "E-PROMOTE-REASON-REQUIRED", "E-PROMOTE-BASIS-UNRESOLVED", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-ENTRY-NOT-FOUND", "E-PROMOTE-SUPERSEDED", "E-PROMOTE-REFUSED-DIRECTIVE", "E-PROMOTE-REASON-REQUIRED", "E-PROMOTE-BASIS-UNRESOLVED", "E-KB-HTTP-UNREACHABLE", "E-KB-HTTP-SERVER-ERROR", "E-KB-HTTP-UNSUPPORTED", "E-KB-HTTP-PROJECT-MISMATCH", "E-KB-HTTP-AUTH", "E-PROVIDER-UNINITIALIZED"],
       "see_also": ["Directive quarantine"]
     },
     {
@@ -159,7 +159,7 @@
       "member": "demote",
       "kind": "interface-method",
       "interface": "MemoryProvider",
-      "signature": "demote(id: string, reason: string, evidenceFiles?: string[], opts?: {ownerTag?: string}): Promise<{id, confidence_before, confidence_after}>",
+      "signature": "demote(id: string, reason: string, evidenceFiles: string[], opts?: {ownerTag?: string}): Promise<{id, confidence_before, confidence_after}>",
       "purpose": "Withdraw trust from a CONFIRMED entry, lowering it to INFERRED, appending the reason and the required evidence files as an audit note and snapshotting the sha256 of each cited source file as it is on disk at demote time.",
       "tools": [
         { "name": "kb_demote", "request_schema_ref": "schemas/kb_demote.request.json", "response_schema_ref": "schemas/kb_demote.response.json", "anchor_validation": "self-validated" }
@@ -167,7 +167,7 @@
       "side_effect_class": "trust-mutating",
       "idempotent": false,
       "idempotent_note": "Not a ladder and never a no-op: only CONFIRMED is demotable, so a second call on the now-INFERRED entry is REFUSED with E-DEMOTE-NOT-CONFIRMED rather than returning unchanged.",
-      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-ENTRY-NOT-FOUND", "E-DEMOTE-SUPERSEDED", "E-DEMOTE-REFUSED-DIRECTIVE", "E-DEMOTE-NOT-CONFIRMED", "E-DEMOTE-REASON-REQUIRED", "E-DEMOTE-EVIDENCE-UNRESOLVED", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-ENTRY-NOT-FOUND", "E-DEMOTE-SUPERSEDED", "E-DEMOTE-REFUSED-DIRECTIVE", "E-DEMOTE-NOT-CONFIRMED", "E-DEMOTE-REASON-REQUIRED", "E-DEMOTE-EVIDENCE-UNRESOLVED", "E-KB-HTTP-UNSUPPORTED", "E-KB-HTTP-PROJECT-MISMATCH", "E-KB-HTTP-UNREACHABLE", "E-KB-HTTP-SERVER-ERROR", "E-KB-HTTP-AUTH", "E-PROVIDER-UNINITIALIZED"],
       "see_also": ["Directive quarantine"]
     },
     {
@@ -250,7 +250,7 @@
       "tools_note": "kb_stats calls it for bible-drift comparison; kb_export calls it (confidence: 'CONFIRMED') to select entries to export; kb_bible_commit calls it (confidence: 'CONFIRMED') to resolve the given ids to live CONFIRMED entries before merging them into the bible.",
       "side_effect_class": "pure read",
       "idempotent": true,
-      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-REPO-PATH-INVALID", "E-BIBLE-BASIS-NOT-GIT", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-REPO-PATH-INVALID", "E-BIBLE-BASIS-NOT-GIT", "E-KB-HTTP-UNREACHABLE", "E-KB-HTTP-SERVER-ERROR", "E-KB-HTTP-UNSUPPORTED", "E-KB-HTTP-PROJECT-MISMATCH", "E-KB-HTTP-AUTH", "E-PROVIDER-UNINITIALIZED"],
       "error_codes_note": "E-REPO-PATH-INVALID only applies on the kb_export and kb_bible_commit routes (a remote member session, whose folder is not on this host; no member session is served kb_export, so on that route it is defence in depth), thrown before this member is reached. The E-SELF-* codes apply on every route, also before this member is reached.",
       "see_also": []
     },
@@ -261,14 +261,14 @@
       "interface": "SqliteProvider and HttpKbProvider (not declared on MemoryProvider)",
       "signature": "feedback(id: string, reason: string, author): Promise<KBEntry>",
       "purpose": "Downvote an entry that proved wrong in practice: sets stale + flagged_for_review, appends a note; never deletes, never touches confidence.",
-      "providers_note": "Served by both providers; it is not behind requireSqliteProject. SqliteProvider.feedback writes the local store and returns the KBEntry (the tool answers {id, stale, flagged_for_review, confidence}). HttpKbProvider.feedback(id, reason, author): Promise<server response | {id, queued: true}> POSTs the kb_feedback request body {id, reason, role} (role carries the validated author) to /api/kb/feedback with the same auth and X-Repository* headers as the other routes, and the tool returns the server response as is. When the server is unreachable the feedback is kept in the offline queue, replayed in order with queued captures and invalidates, and the tool answers {id, queued: true}; on E-KB-HTTP-AUTH it is queued too and the error is rethrown, except a refusal by the secret's policy (policy-deny, member-not-allowed), which is thrown and not queued. The HTTP client never writes or invents confidence and never writes the local fallback store.",
+      "providers_note": "Served by both providers; it is not behind requireSqliteProject. SqliteProvider.feedback writes the local store and returns the KBEntry (the tool answers {id, stale, flagged_for_review, confidence}). HttpKbProvider.feedback(id, reason, author): Promise<server response> POSTs the kb_feedback request body {id, reason, role} (role carries the validated author) to /api/kb/feedback with the same auth and X-Repository* headers as the other routes, and the tool returns the server response as is. Nothing is queued: an unreachable server or a 429/503 answer (E-KB-HTTP-UNREACHABLE), any other 5xx answer (E-KB-HTTP-SERVER-ERROR) or a refused token (E-KB-HTTP-AUTH) is thrown, and the caller decides whether to repeat the feedback. The HTTP client never writes or invents confidence and never writes a local store.",
       "tools": [
         { "name": "kb_feedback", "request_schema_ref": "schemas/kb_feedback.request.json", "response_schema_ref": "schemas/kb_feedback.response.json", "anchor_validation": "self-validated" }
       ],
       "side_effect_class": "trust-mutating",
       "idempotent": false,
       "idempotent_note": "Each call appends another note.",
-      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-MEMBER-VIEW-READ-ONLY", "E-ENTRY-NOT-FOUND", "E-KB-HTTP-AUTH", "E-PROVIDER-UNINITIALIZED"],
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-MEMBER-VIEW-READ-ONLY", "E-ENTRY-NOT-FOUND", "E-KB-HTTP-AUTH", "E-KB-HTTP-UNREACHABLE", "E-KB-HTTP-SERVER-ERROR", "E-KB-HTTP-UNSUPPORTED", "E-KB-HTTP-PROJECT-MISMATCH", "E-PROVIDER-UNINITIALIZED"],
       "non_error_outcomes": ["E-ROLE-UNKNOWN-DEGRADED"],
       "see_also": []
     },
@@ -373,6 +373,24 @@
       "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-REPO-PATH-INVALID", "E-PROVIDER-UNINITIALIZED"],
       "error_codes_note": "E-REPO-PATH-INVALID (a remote member session, whose folder is not on this host) and the E-SELF-* codes are thrown by kb_bible_commit before this member is reached.",
       "see_also": ["X-1", "P-13"]
+    },
+    {
+      "id": "X-12",
+      "member": "capabilitiesBody",
+      "kind": "undeclared-member",
+      "interface": "HttpKbProvider (not declared on MemoryProvider); a SQLite project KB is answered from a shared constant, not a provider member",
+      "signature": "capabilitiesBody(): Promise<{contract: string, routes: string[], branch_aware: boolean, query_filters?: string[]}> (any extra fields the server sent are kept)",
+      "purpose": "What the calling session's project KB serves, in the shape of the GET /api/kb/capabilities body (spec.md section 2.9.1). Under an http KB provider: the server's validated body exactly as sent (route names the client does not call and extra fields kept), never the normalized view the client keeps for route gating; a server without the route (404/501, or a body carrying none of contract/routes/branch_aware) yields the documented default set. Under SQLite: contract v1, every route (demote and withdraw included), branch_aware false, query_filters files and symbols -- the same object the sample kb-server answers.",
+      "providers_note": "Served by both providers. HttpKbProvider.capabilitiesBody() sends GET /api/kb/capabilities with the same auth, X-KB-Project and X-Repository* headers as every route, on every call (not cached). A body carrying some but not all of contract/routes/branch_aware, well typed, is E-KB-HTTP-UNSUPPORTED; a 5xx or 429 answer is E-KB-HTTP-UNREACHABLE; any other status but 404/501 is E-KB-HTTP-UNSUPPORTED; a refused token (E-KB-HTTP-AUTH) and a project mismatch (E-KB-HTTP-PROJECT-MISMATCH) pass through as on any route. The SQLite answer touches no store.",
+      "tools": [
+        { "name": "kb_capabilities", "request_schema_ref": "schemas/kb_capabilities.request.json", "response_schema_ref": "schemas/kb_capabilities.response.json", "anchor_validation": "self-validated" }
+      ],
+      "side_effect_class": "pure read",
+      "idempotent": true,
+      "idempotent_note": "Never writes; never bumps use_count or last_accessed.",
+      "error_codes": ["E-SCOPE-KEY-REMOVED", "E-SELF-NO-WORKFOLDER", "E-SELF-NOT-A-REPO", "E-SELF-NO-REMOTE", "E-KB-HTTP-AUTH", "E-KB-HTTP-UNREACHABLE", "E-KB-HTTP-UNSUPPORTED", "E-KB-HTTP-PROJECT-MISMATCH"],
+      "error_codes_note": "E-SCOPE-KEY-REMOVED and the E-SELF-* codes are thrown by kb_capabilities before this member is reached; the E-KB-HTTP-* codes only under an http KB provider.",
+      "see_also": []
     }
   ],
   "properties": [

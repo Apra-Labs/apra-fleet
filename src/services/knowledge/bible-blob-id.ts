@@ -84,6 +84,28 @@ export function isSafeBibleRef(ref: string): boolean {
   return /^[A-Za-z0-9_][A-Za-z0-9._/-]*$/.test(ref) && !ref.includes('..') && !ref.endsWith('/') && !ref.endsWith('.lock');
 }
 
+/** The remote names configured in this clone (`git remote`); [] when git cannot answer. */
+export async function configuredGitRemotes(folder: string): Promise<string[]> {
+  const out = await git(['remote'], folder);
+  if (out === null) return [];
+  return out.split(/\r?\n/).map(l => l.trim()).filter(l => l !== '');
+}
+
+/**
+ * The branch `refs/remotes/<remote>/HEAD` points at (the remote's default
+ * branch as this clone last recorded it: set by git clone or
+ * `git remote set-head <remote> --auto`). null when that symbolic ref is
+ * missing, points outside refs/remotes/<remote>/, or git cannot answer.
+ */
+export async function remoteDefaultBranch(folder: string, remote: string): Promise<string | null> {
+  if (!isSafeBibleRef('refs/remotes/' + remote + '/HEAD')) return null;
+  const target = (await git(['symbolic-ref', '--quiet', 'refs/remotes/' + remote + '/HEAD'], folder))?.trim() ?? '';
+  const prefix = 'refs/remotes/' + remote + '/';
+  if (!target.startsWith(prefix)) return null;
+  const branch = target.slice(prefix.length);
+  return branch === '' || branch === 'HEAD' ? null : branch;
+}
+
 /**
  * The bible at `rel` (default the own bible, a path relative to `folder`) as
  * committed at `ref` (default HEAD): its blob id and its bytes, read as ONE
@@ -104,6 +126,16 @@ export async function readCommittedBibleBlob(
   if (bytes === null) return null;
   if (!blobBytesMatchId(id, bytes)) throw new BibleBlobIntegrityError(id, ref + ':' + rel);
   return { blobId: id, text: bytes.toString('utf-8') };
+}
+
+/**
+ * True when `ref` (a safe ref name or object id, see isSafeBibleRef) resolves
+ * to a commit in the repository containing `folder`.
+ */
+export async function commitResolves(folder: string, ref: string): Promise<boolean> {
+  if (!isSafeBibleRef(ref)) return false;
+  const out = await git(['rev-parse', '--verify', '--quiet', ref + '^{commit}'], folder);
+  return out !== null && OBJECT_ID.test(out.trim());
 }
 
 /**

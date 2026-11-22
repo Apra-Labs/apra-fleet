@@ -99,6 +99,13 @@ export interface SeenRequest {
   authorized: boolean;
 }
 
+export const CAPABILITIES_PATH = '/api/kb/capabilities';
+
+/** The stub's requests other than the capabilities read: the KB calls under test. */
+export function kbRouteRequests(stub: StubKbServer): SeenRequest[] {
+  return stub.requests.filter((r) => r.path !== CAPABILITIES_PATH);
+}
+
 export interface StubKbServer {
   url: string;
   requests: SeenRequest[];
@@ -120,6 +127,14 @@ export function startStubKbServer(): Promise<StubKbServer> {
       const authorized = stub.accept(token);
       stub.requests.push({ path: pathname, token, atMs: Date.now(), authorized });
       res.setHeader('Content-Type', 'application/json');
+      // The provider reads capabilities once per connection before its first KB
+      // call. Recorded, then answered 404 whatever the token (the default route
+      // set), so the 401 tests see only the KB route's own answer.
+      if (pathname === CAPABILITIES_PATH) {
+        res.writeHead(404);
+        res.end(JSON.stringify({ error: 'Not found' }));
+        return;
+      }
       if (!authorized) {
         res.writeHead(401);
         res.end(JSON.stringify({ error: 'Unauthorized' }));

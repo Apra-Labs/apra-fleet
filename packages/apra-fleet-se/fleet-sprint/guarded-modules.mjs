@@ -62,6 +62,9 @@ export const GUARDED_MODULES = [
     'mcp-result.mjs',
     'member-target.mjs',
     'member-call.mjs',
+    // File-based VCS request-body transport: stages bodies with send_files
+    // and dispatches the git-exclude / delete commands for them.
+    'vcs-payload.mjs',
     'abort.mjs',
     'branch-ensure.mjs',
     'prompts.mjs',
@@ -86,6 +89,9 @@ export const GUARDED_MODULES = [
     // Pure lower-quality banner derivation; no command() site.
     'lower-quality.mjs',
     'beads-scope.mjs',
+    // Pure parent-link ledger (record/diff of in-scope parent-child edges);
+    // beads-scope.mjs issues its restore commands, no command() here.
+    'parent-link-guard.mjs',
     'beads-transitions.mjs',
     'role-policies.mjs',
     'inline-ladder-guard.mjs',
@@ -336,6 +342,11 @@ export const GUARDED_MODULES = [
     // no agent(), no push -- registered so a future dispatch landing here is
     // caught rather than silently unguarded.
     'pr-body.mjs',
+    // The PR-body overflow comment upsert (Publish PR and the [ABORTED] PR
+    // path, via raiseVcsPrForMember). No command(), no agent(): every REST
+    // call goes through the caller-supplied `run` callback -- registered so a
+    // future dispatch landing here is caught rather than silently unguarded.
+    'pr-overflow-comments.mjs',
     'newtask-text.mjs',
     // apra-fleet-fsxg: the parent-NOTES staleness signal. Its pure core is text
     // formatting, but collectParentNotesStalenessNotes carries TWO member_name-
@@ -445,12 +456,19 @@ export const GUARDED_MODULES = [
     // Verify-block deadlock diagnosis (pure): no command() or agent() site;
     // runner.js owns the runbook probes, the stop and the mid-run exit.
     'verify-block.mjs',
+    // Red-build integ gate (pure): no command() or agent() site; runner.js
+    // owns the sticky flag and the integ skip, final-review.mjs the verdict gate.
+    'red-build-integ-gate.mjs',
     // Pre-launch stale-claim rule, fresh-read gate and downstream naming
     // (pure): no command() or agent() site; runner.js owns the read and write.
     'beads-reachability.mjs',
     // Run-scoped set-aside stall decision and report section (pure): no
     // command() or agent() site; runner.js owns the reads and the throw.
     'set-aside.mjs',
+    // Verify carry-over (needs-external-evidence count, deferred verify ids,
+    // verdict gate) (pure): no command() or agent() site; runner.js and
+    // phases/integ-test.mjs own the reads, final-review.mjs the verdict gate.
+    'verify-carry-over.mjs',
     'vcs-providers/azure-devops.mjs',
     'vcs-providers/bitbucket.mjs',
     'vcs-providers/dolt.mjs',

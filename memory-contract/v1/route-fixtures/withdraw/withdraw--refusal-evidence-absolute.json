@@ -1,0 +1,28 @@
+{
+  "route": "withdraw",
+  "case": "refusal-evidence-absolute",
+  "kind": "refusal",
+  "request": {
+    "method": "POST",
+    "path": "/api/kb/withdraw",
+    "body": {
+      "withdrawals": [
+        {
+          "id": "{{ENTRY_GONE_EVIDENCE}}",
+          "at": "2999-01-01T00:00:00.000Z",
+          "reason": "withdrawn",
+          "evidence_files": [
+            "/etc/passwd"
+          ]
+        }
+      ]
+    }
+  },
+  "response": {
+    "status": 422,
+    "body": {
+      "error": "E-DEMOTE-EVIDENCE-UNRESOLVED: withdrawal evidence is absolute or contains a '..' segment: /etc/passwd",
+      "code": "E-DEMOTE-EVIDENCE-UNRESOLVED"
+    }
+  }
+}

@@ -47,6 +47,11 @@ const memberErrorQuerySrc = readFileSync(path.join(repoRoot, 'src', 'services', 
 const kbExportSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'kb-export.ts'), 'utf8');
 const typesSrc = readFileSync(path.join(repoRoot, 'src', 'types.ts'), 'utf8');
 const kbBibleCommitSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'kb-bible-commit.ts'), 'utf8');
+const kbQuerySrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'kb-query.ts'), 'utf8');
+const kbImportSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'kb-import.ts'), 'utf8');
+const kbCapabilitiesSrc = readFileSync(path.join(repoRoot, 'src', 'tools', 'kb-capabilities.ts'), 'utf8');
+const kbCapabilitiesResponseSchema = JSON.parse(readFileSync(path.join(repoRoot, 'memory-contract', 'v1', 'schemas', 'kb_capabilities.response.json'), 'utf8'));
+const bibleImportSrc = readFileSync(path.join(repoRoot, 'src', 'services', 'knowledge', 'bible-import.ts'), 'utf8');
 
 /** Extract the text between a start marker (exclusive) and the next occurrence of an end marker. */
 function extractBlock(source, startMarker, endMarker) {
@@ -189,6 +194,11 @@ function kbBibleCommitSchemaFields() {
     return extractTopLevelKeys(block, 2);
 }
 
+function kbQuerySchemaFields() {
+    const block = extractBlock(kbQuerySrc, 'export const kbQuerySchema = z.object({', '\n});');
+    return extractTopLevelKeys(block, 2);
+}
+
 describe('apra-fleet-client typedef vs server zod schema parity', () => {
     test('RegisterMemberOptions matches registerMemberSchema field-for-field', () => {
         const schemaFields = registerMemberSchemaFields();
@@ -230,9 +240,46 @@ describe('apra-fleet-client typedef vs server zod schema parity', () => {
     test('KbBibleCommitOptions matches kbBibleCommitSchema field-for-field', () => {
         const schemaFields = kbBibleCommitSchemaFields();
         const typedefFields = extractTypedefProperties(apiMjsSrc, 'KbBibleCommitOptions');
-        assert.strictEqual(schemaFields.size, 4, `expected 4 kbBibleCommitSchema fields, parsed ${schemaFields.size}`);
+        assert.strictEqual(schemaFields.size, 6, `expected 6 kbBibleCommitSchema fields, parsed ${schemaFields.size}`);
         assert.ok(schemaFields.has('demoted_ids'), 'sanity: kbBibleCommitSchema should declare demoted_ids');
+        assert.ok(schemaFields.has('withdrawals'), 'sanity: kbBibleCommitSchema should declare withdrawals');
+        assert.ok(schemaFields.has('restore_ids'), 'sanity: kbBibleCommitSchema should declare restore_ids');
         assertFieldParity('KbBibleCommitOptions vs kbBibleCommitSchema', schemaFields, typedefFields);
+    });
+
+    test('KbQueryOptions matches kbQuerySchema field-for-field (files/symbols filter included)', () => {
+        const schemaFields = kbQuerySchemaFields();
+        const typedefFields = extractTypedefProperties(apiMjsSrc, 'KbQueryOptions');
+        assert.ok(schemaFields.size >= 12, `expected at least 12 kbQuerySchema fields, parsed ${schemaFields.size}`);
+        for (const f of ['files', 'symbols', 'limit', 'own_scope']) {
+            assert.ok(schemaFields.has(f), `sanity: kbQuerySchema should declare ${f}`);
+            assert.ok(typedefFields.has(f), `KbQueryOptions should declare ${f}`);
+        }
+        assertFieldParity('KbQueryOptions vs kbQuerySchema', schemaFields, typedefFields);
+    });
+
+    test('KbBibleCommitResult matches the KbBibleCommitResult interface kb_bible_commit returns', () => {
+        const block = extractBlock(kbBibleCommitSrc, 'export interface KbBibleCommitResult {', '\n}');
+        const serverFields = new Set([...block.matchAll(/^ {2}([a-zA-Z_]\w*)\??:/gm)].map((m) => m[1]));
+        const typedefFields = extractTypedefProperties(apiMjsSrc, 'KbBibleCommitResult');
+        assert.ok(serverFields.has('withdrawn') && serverFields.has('restored'), 'sanity: KbBibleCommitResult should declare withdrawn, restored');
+        assertFieldParity('KbBibleCommitResult vs kb-bible-commit.ts', serverFields, typedefFields);
+    });
+
+    test('KbImportResult matches the KbImportReport interface kb_import returns', () => {
+        const block = extractBlock(kbImportSrc, 'export interface KbImportReport {', '\n}');
+        const serverFields = new Set([...block.matchAll(/^ {2}([a-zA-Z_]\w*)\??:/gm)].map((m) => m[1]));
+        const typedefFields = extractTypedefProperties(apiMjsSrc, 'KbImportResult');
+        assert.ok(serverFields.has('withdrawals'), 'sanity: KbImportReport should declare withdrawals');
+        assertFieldParity('KbImportResult vs kb-import.ts', serverFields, typedefFields);
+    });
+
+    test('KbImportWithdrawals matches the BibleWithdrawalReport interface (the kb_import withdrawals block)', () => {
+        const block = extractBlock(bibleImportSrc, 'export interface BibleWithdrawalReport {', '\n}');
+        const serverFields = new Set([...block.matchAll(/^ {2}([a-zA-Z_]\w*)\??:/gm)].map((m) => m[1]));
+        const typedefFields = extractTypedefProperties(apiMjsSrc, 'KbImportWithdrawals');
+        assert.ok(serverFields.has('deferred') && serverFields.has('unsupported'), 'sanity: BibleWithdrawalReport should declare deferred, unsupported');
+        assertFieldParity('KbImportWithdrawals vs bible-import.ts', serverFields, typedefFields);
     });
 
     test('MemberDetailResult matches the json-format result object member-detail.ts builds', () => {
@@ -302,5 +349,21 @@ describe('apra-fleet-client typedef vs server zod schema parity', () => {
         const report = new Set([...union.matchAll(/([a-zA-Z_]\w*)\??:/g)].map((m) => m[1]));
         assert.ok(report.has('available') && report.has('detail'), 'sanity: ToolErrorsReport should declare available, detail');
         assertFieldParity('ToolErrorsReport vs src/services/member-error-query.ts', report, extractTypedefProperties(apiMjsSrc, 'ToolErrorsReport'));
+    });
+
+    test('KbCapabilitiesOptions matches kbCapabilitiesSchema (no fields besides the removed scope keys)', () => {
+        const block = extractBlock(kbCapabilitiesSrc, 'export const kbCapabilitiesSchema = z.object({', '\n});');
+        const schemaFields = extractTopLevelKeys(block, 2);
+        assert.deepStrictEqual([...schemaFields], [], 'kb_capabilities request schema must declare no own fields');
+        assert.deepStrictEqual([...extractTypedefProperties(apiMjsSrc, 'KbCapabilitiesOptions')], []);
+    });
+
+    test('KbCapabilitiesResult matches the kb_capabilities contract response schema parsed body', () => {
+        const parsed = kbCapabilitiesResponseSchema.$defs['v1-kb_capabilities-response'].properties.parsed;
+        const schemaFields = new Set(Object.keys(parsed.properties));
+        assert.ok(schemaFields.has('contract') && schemaFields.has('routes') && schemaFields.has('branch_aware'),
+            'sanity: contract schema should declare contract, routes, branch_aware');
+        const typedefFields = extractTypedefProperties(apiMjsSrc, 'KbCapabilitiesResult');
+        assertFieldParity('KbCapabilitiesResult vs kb_capabilities response schema', schemaFields, typedefFields);
     });
 });

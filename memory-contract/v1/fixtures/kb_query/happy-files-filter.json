@@ -1,0 +1,19 @@
+{
+  "tool": "kb_query",
+  "case": "happy-files-filter",
+  "kind": "happy",
+  "request": {
+    "query": "exampleFn",
+    "files": [
+      "src/example.ts"
+    ]
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"l1_results\":[{\"id\":\"093ef071-ff0f-452f-8473-9f19153e8f4f\",\"type\":\"knowledge\",\"title\":\"exampleFn returns x + 1\",\"summary\":\"exampleFn in src/example.ts is a trivial increment helper used by the fixture corpus.\",\"confidence\":\"CONFIRMED\",\"source_files\":[\"src/example.ts\"],\"symbols\":[\"exampleFn\"]}],\"l2_expanded\":[]}"
+      }
+    ]
+  }
+}

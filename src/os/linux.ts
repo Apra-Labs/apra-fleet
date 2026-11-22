@@ -1,7 +1,47 @@
 import { execSync } from 'node:child_process';
-import type { OsCommands, ProviderAdapter, PromptOptions } from './os-commands.js';
-import { escapeDoubleQuoted, escapeGrepPattern, sanitizeSessionId, GIT_LS_REMOTE_OK_MARKER } from './os-commands.js';
+import type { OsCommands, ProviderAdapter, PromptOptions, UnsetEnvOptions } from './os-commands.js';
+import { escapeDoubleQuoted, escapeGrepPattern, sanitizeSessionId, GIT_LS_REMOTE_OK_MARKER, FLEET_ENV_MARKER, unsetEnvSedExpr, gitCredentialHelperStem, groupGitCredentialHelpers, gitHelperParamWord } from './os-commands.js';
+import type { GitCredentialHelperRegistration } from './os-commands.js';
 import { escapeShellArg } from '../utils/shell-escape.js';
+import { assertAuthorizedKeyMatch } from './ssh-key-match.js';
+
+// The two filters below type no backslash: a doubled backslash in a command
+// is halved by some transports before the member shell sees it (a native
+// Windows process starting Git Bash parses its command line MSVC/cygwin
+// style), so awk makes the backslash itself with sprintf("%c", 92).
+
+/** awk filter that single-quote-escapes one line for sh and for GIT_CONFIG_PARAMETERS: ' -> '\'' */
+export const SQ_ESCAPE_AWK = `awk 'BEGIN { q = sprintf("%c", 39); r = q sprintf("%c", 92) q q } `
+  + `{ n = split($0, a, q); s = a[1]; for (i = 2; i <= n; i++) s = s r a[i]; printf "%s", s }'`;
+
+/**
+ * awk filter turning one line into an anchored ERE matching exactly it: each
+ * ERE special character goes into its own bracket expression. Prints nothing
+ * for a value holding '^' (no bracket form), so the caller removes nothing.
+ */
+const EXACT_ERE_AWK = `awk '{ sp = "[].*+?(){}|$" sprintf("%c", 92); r = ""; `
+  + `for (i = 1; i <= length($0); i++) { c = substr($0, i, 1); if (c == "^") exit; r = r (index(sp, c) ? "[" c "]" : c) } `
+  + `printf "^%s$", r }'`;
+
+/**
+ * POSIX: remove from the global key `keyArg` (already shell-quoted) ONLY the
+ * value equal to `valueExpr` (a double-quoted shell word) -- fleet's legacy
+ * helper path -- then the empty reset entry when no non-empty value is left.
+ * Any other value stays. Prints the FLEET_LEGACY_HELPER line, exits 0.
+ */
+export function posixLegacyHelperUnset(keyArg: string, valueExpr: string): string {
+  return String.raw`_fleet_k=${keyArg}; _fleet_v=${valueExpr}; `
+    + String.raw`_fleet_all=$(git config --global --get-all "$_fleet_k" 2>/dev/null); `
+    + String.raw`_fleet_n=$(printf '%s\n' "$_fleet_all" | grep -cxF -- "$_fleet_v"); `
+    + String.raw`if [ "$_fleet_n" -gt 0 ]; then `
+    + `_fleet_re=$(printf '%s' "$_fleet_v" | ${EXACT_ERE_AWK}); `
+    + String.raw`if [ -n "$_fleet_re" ] && git config --global --unset-all "$_fleet_k" "$_fleet_re" 2>/dev/null; then `
+    + String.raw`_fleet_kept=$(git config --global --get-all "$_fleet_k" 2>/dev/null | grep -c .); _fleet_r=0; `
+    + String.raw`if [ "$_fleet_kept" -eq 0 ]; then git config --global --unset-all "$_fleet_k" '^$' 2>/dev/null && _fleet_r=1; fi; `
+    + String.raw`echo "FLEET_LEGACY_HELPER removed=$_fleet_n kept=$_fleet_kept reset_removed=$_fleet_r"; `
+    + String.raw`else echo "FLEET_LEGACY_HELPER failed=1"; fi; `
+    + String.raw`else echo "FLEET_LEGACY_HELPER removed=0 kept=$(printf '%s\n' "$_fleet_all" | grep -c .) reset_removed=0"; fi; true`;
+}
 
 // The member's own fleet bin dir (<home>/.apra-fleet/bin: the member-install
 // apra-fleet, dolt, and bd when the installer could not place it on the system
@@ -250,49 +290,56 @@ export class LinuxCommands implements OsCommands {
     return ['~/.bashrc', '~/.profile'];
   }
 
-  // The profile line keeps the historical `export NAME="..."` shape so
-  // unsetEnv's sed (and members provisioned by earlier releases) match it.
+  // The profile line is `export NAME="..." # apra-fleet-managed`: the trailing
+  // marker comment tells a fleet-written line apart from one the owner wrote
+  // by hand, so the default unsetEnv removes only the fleet's own line.
   persistEnvFileContent(name: string, value: string): string {
     if (!/^[A-Z_][A-Z0-9_]*$/i.test(name)) throw new Error('Invalid env var name: ' + name);
-    return `export ${name}="${escapeDoubleQuoted(value)}"\n`;
+    return `export ${name}="${escapeDoubleQuoted(value)}" # ${FLEET_ENV_MARKER}\n`;
   }
 
+  /** In-place sed: GNU sed (linux, Git Bash) takes no backup-suffix argument. */
+  protected sedInPlace(): string {
+    return 'sed -i';
+  }
+
+  // Persisting replaces: each profile first drops every existing
+  // `export NAME=` line (marked or hand-written -- provisioning is an explicit
+  // delivery of that var), then gets the staged marked line appended, so it
+  // ends with exactly one export of NAME. Nothing is stripped when the staged
+  // file is missing.
   persistEnvFromFile(name: string, filePath: string): string {
     if (!/^[A-Z_][A-Z0-9_]*$/i.test(name)) throw new Error('Invalid env var name: ' + name);
     const q = escapeShellArg(filePath);
-    const appends = this.envProfileFiles().map(f => `cat ${q} >> ${f}`).join(' && ');
-    return `{ ${appends}; }; _fleet_rc=$?; rm -f ${q}; exit $_fleet_rc`;
+    const expr = unsetEnvSedExpr(name, { all: true });
+    const appends = this.envProfileFiles()
+      .map(f => `{ ${this.sedInPlace()} '${expr}' ${f} 2>/dev/null || true; cat ${q} >> ${f}; }`)
+      .join(' && ');
+    return `test -f ${q} && ${appends}; _fleet_rc=$?; rm -f ${q}; exit $_fleet_rc`;
   }
 
-  unsetEnv(name: string): string[] {
+  unsetEnv(name: string, opts?: UnsetEnvOptions): string[] {
     if (!/^[A-Z_][A-Z0-9_]*$/i.test(name)) throw new Error('Invalid env var name: ' + name);
+    const expr = unsetEnvSedExpr(name, opts);
     return [
-      `sed -i '/export ${name}=/d' ~/.bashrc 2>/dev/null || true`,
-      `sed -i '/export ${name}=/d' ~/.profile 2>/dev/null || true`,
+      ...this.envProfileFiles().map(f => `${this.sedInPlace()} '${expr}' ${f} 2>/dev/null || true`),
       `unset ${name}`,
     ];
   }
 
   // --- Git credential helper ---
 
-  gitCredentialHelperWrite(host: string, username: string, token: string, label?: string, scopeUrl?: string): string {
+  gitCredentialHelperWrite(host: string, username: string, token: string, label?: string, _scopeUrl?: string, memberId?: string): string {
     const escapedHost = escapeDoubleQuoted(host);
     const escapedUser = escapeDoubleQuoted(username);
     const escapedToken = escapeDoubleQuoted(token);
     // $HOME (not `~`) -- `~` is only tilde-expanded by the shell in an UNQUOTED
     // leading position; every use below is inside double quotes (needed for
-    // the other interpolated values), which suppresses that expansion. That
-    // silently stored the literal string "~/.fleet-git-credential-..." as the
-    // git config value -- git does not expand `~` itself when reading config,
-    // so it tried to exec a helper literally named
-    // `git-credential-~/.fleet-git-credential-...` ("not a git command").
-    // $HOME expands correctly even inside double quotes, so this actually
-    // resolves to an absolute path both when creating the file and when
-    // storing the git config value.
-    const credFile = label ? `$HOME/.fleet-git-credential-${escapeDoubleQuoted(label)}` : '$HOME/.fleet-git-credential';
-    // scope_url is passed through escapeDoubleQuoted and embedded inside a double-quoted git config arg — safe against injection.
-    const credUrl = scopeUrl ? escapeDoubleQuoted(scopeUrl) : `https://${escapedHost}`;
-    return `printf '#!/bin/sh\\necho "protocol=https"\\necho "host=${escapedHost}"\\necho "username=${escapedUser}"\\necho "password=${escapedToken}"\\n' > "${credFile}" && chmod 600 "${credFile}" && chmod +x "${credFile}" && git config --global --replace-all "credential.${credUrl}.helper" "" && git config --global --add "credential.${credUrl}.helper" "${credFile}"`;
+    // the other interpolated values), which suppresses that expansion.
+    // The file is per member AND label and is registered nowhere in git
+    // config: git finds it through gitCredentialEnvPrefix() at dispatch time.
+    const credFile = `$HOME/${gitCredentialHelperStem(label, memberId)}`;
+    return `printf '#!/bin/sh\\necho "protocol=https"\\necho "host=${escapedHost}"\\necho "username=${escapedUser}"\\necho "password=${escapedToken}"\\n' > "${credFile}" && chmod 600 "${credFile}" && chmod +x "${credFile}"`;
   }
 
   gitCredentialHelperRemoveLegacyFile(): string {
@@ -302,23 +349,54 @@ export class LinuxCommands implements OsCommands {
     return `rm -f "$HOME/.fleet-git-credential"`;
   }
 
-  gitCredentialHelperRead(label?: string): { command: string; path: string } {
+  gitCredentialHelperRead(label?: string, memberId?: string): { command: string; path: string } {
     // Same $HOME-not-`~` reasoning as gitCredentialHelperWrite above: the path
     // is resolved by the member's own shell from $HOME, never by a caller
-    // supplying an expansion of its own, and the label is escaped for the
-    // double-quoted context it lands in.
-    const credFile = label ? `$HOME/.fleet-git-credential-${escapeDoubleQuoted(label)}` : '$HOME/.fleet-git-credential';
+    // supplying an expansion of its own.
+    const credFile = `$HOME/${gitCredentialHelperStem(label, memberId)}`;
     // The helper is an executable script that prints
     // "protocol=/host=/username=/password=" when run with no arguments.
     return { command: `"${credFile}"`, path: credFile };
   }
 
-  gitCredentialHelperRemove(host: string, label?: string, scopeUrl?: string): string {
-    const escapedHost = escapeDoubleQuoted(host);
-    const credFile = label ? `$HOME/.fleet-git-credential-${escapeDoubleQuoted(label)}` : '$HOME/.fleet-git-credential';
-    // scope_url is passed through escapeDoubleQuoted and embedded inside a double-quoted git config arg — safe against injection.
-    const credUrl = scopeUrl ? escapeDoubleQuoted(scopeUrl) : `https://${escapedHost}`;
-    return `rm -f "${credFile}" && git config --global --unset-all "credential.${credUrl}.helper" 2>/dev/null || true`;
+  gitCredentialHelperRemove(_host: string, label?: string, _scopeUrl?: string, memberId?: string): string {
+    return `rm -f "$HOME/${gitCredentialHelperStem(label, memberId)}"`;
+  }
+
+  gitCredentialHelperRemoveLegacyGlobal(host: string, label?: string, scopeUrl?: string): string {
+    const stem = gitCredentialHelperStem(label);
+    const key = escapeShellArg(`credential.${scopeUrl ?? `https://${host}`}.helper`);
+    // The legacy release stored the expanded "$HOME/<stem>" as the value.
+    return `rm -f "$HOME/${stem}"; ` + posixLegacyHelperUnset(key, `"$HOME/${stem}"`);
+  }
+
+  /**
+   * Shell command (no quotes of its own, run inside $(...)) printing the member
+   * home for helper paths. git.exe needs the Windows form on Git Bash.
+   */
+  protected gitHelperHomeCommand(): string {
+    return `printf '%s' "$HOME"`;
+  }
+
+  /** Extension of the helper file ('.bat' where git.exe runs it natively). */
+  protected gitHelperSuffix(): string {
+    return '';
+  }
+
+  gitCredentialEnvPrefix(helpers: GitCredentialHelperRegistration[], memberId: string): string {
+    const groups = groupGitCredentialHelpers(helpers, memberId);
+    if (groups.length === 0) return '';
+    // _fleet_gh is the member home, single-quote-escaped twice (see
+    // gitHelperParamWord). The words sit in the member shell's double quotes
+    // so ${_fleet_gh} expands; inside them '\'' is literal text.
+    const words: string[] = [];
+    for (const g of groups) {
+      words.push(`'credential.${g.scopeUrl}.helper='`);
+      for (const stem of g.stems) {
+        words.push(gitHelperParamWord(g.scopeUrl, '${_fleet_gh}', `${stem}${this.gitHelperSuffix()}`));
+      }
+    }
+    return `_fleet_gh=$(${this.gitHelperHomeCommand()} | ${SQ_ESCAPE_AWK} | ${SQ_ESCAPE_AWK}); export GIT_CONFIG_PARAMETERS="${words.join(' ')}"; `;
   }
 
   ghAuthLogin(token: string, hostname = 'github.com'): string {
@@ -343,6 +421,31 @@ export class LinuxCommands implements OsCommands {
       'chmod 600 ~/.ssh/authorized_keys',
       `echo ${escaped} >> ~/.ssh/authorized_keys`,
     ];
+  }
+
+  /**
+   * POSIX filter for one authorized_keys file held in shell variable `$_fleet_ak`:
+   * grep -vF (literal match, portable to BSD grep -- no `sed -i`) into a temp
+   * file in the same directory. grep exits 1 when every line was removed,
+   * which is still success; 2 is a real error and leaves the file untouched.
+   * `install` is how the filtered copy replaces the original.
+   */
+  protected filterAuthorizedKeysPosix(keyMatch: string, install: string): string {
+    const key = escapeShellArg(keyMatch);
+    return `if [ -f "$_fleet_ak" ]; then `
+      + `_fleet_tmp="$_fleet_ak.fleet-tmp.$$"; `
+      + `grep -vF -- ${key} "$_fleet_ak" > "$_fleet_tmp"; _fleet_rc=$?; `
+      + `if [ "$_fleet_rc" -gt 1 ]; then rm -f "$_fleet_tmp"; exit "$_fleet_rc"; fi; `
+      + `${install} || { rm -f "$_fleet_tmp"; exit 1; }; `
+      + `fi`;
+  }
+
+  removeSSHPublicKey(keyMatch: string, memberHome: string): string {
+    assertAuthorizedKeyMatch(keyMatch);
+    const home = memberHome.replace(/\/+$/, '');
+    const akFile = escapeShellArg(`${home}/.ssh/authorized_keys`);
+    return `_fleet_ak=${akFile}; `
+      + this.filterAuthorizedKeysPosix(keyMatch, 'chmod 600 "$_fleet_tmp" && mv -f "$_fleet_tmp" "$_fleet_ak"');
   }
 
   // --- Local exec ---

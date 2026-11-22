@@ -1,0 +1,14 @@
+{
+  "tool": "kb_capabilities",
+  "case": "happy",
+  "kind": "happy",
+  "request": {},
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"contract\":\"v1\",\"routes\":[\"capture\",\"query\",\"promote\",\"context\",\"prime\",\"invalidate\",\"feedback\",\"list\",\"demote\",\"withdraw\"],\"branch_aware\":false,\"query_filters\":[\"files\",\"symbols\"]}"
+      }
+    ]
+  }
+}

@@ -162,6 +162,13 @@ const KB_RESPONSE_BODIES = {
     entries_updated: z.number(),
     entries_skipped: z.number(),
     entries_rejected: z.number(),
+    // Captures that failed for any reason other than a basis rejection (e.g.
+    // a remote KB server that is down): attempted, not stored, logged.
+    entries_failed: z.number(),
+    // Present only when nothing landed (captured + updated + skipped is 0)
+    // and entries_failed > 0: the first such failure's message (bounded), so
+    // a harvest whose every capture failed says why.
+    first_error: z.string().optional(),
   }),
   kb_promote: z.object({
     id: z.string(),
@@ -210,6 +217,32 @@ const KB_RESPONSE_BODIES = {
     // E-KB-MAINTAINER-REQUIRED, so no field here reports the trust check.
     bible_source: z.string().optional(),
     worktree_ignored: z.boolean().optional(),
+    // Present exactly under an http project KB: the KB server is the source
+    // of truth, the bible is neither read nor imported, every count is 0.
+    bible_skipped: z.literal(true).optional(),
+    reason: z.string().optional(),
+    // What the bible's "withdrawn" tombstones did. They are applied (SQLite)
+    // or replayed in one POST /api/kb/withdraw (http) ONLY when the bible was
+    // read at refs/remotes/<remote>/<base> (any configured remote) and its
+    // provenance.branch is <base>, where <base> is the request's base_branch
+    // (else the branch refs/remotes/<remote>/HEAD names); from any other
+    // source their ids are listed in deferred and nothing is lowered (warning
+    // says why when the ref belongs to no configured remote -- naming the
+    // expected ref -- or the base branch could not be established). sent counts tombstones applied or sent; already is a row that
+    // was already below CONFIRMED; unsupported lists ids a KB server without
+    // the withdraw route could not apply, with warning (E-KB-HTTP-UNSUPPORTED
+    // naming the route). OPTIONAL so fixtures recorded before withdrawals
+    // existed still validate; the handler always emits it.
+    withdrawals: z.object({
+      sent: z.number(),
+      withdrawn: z.array(z.string()),
+      repromoted: z.array(z.string()),
+      already: z.array(z.string()),
+      not_found: z.array(z.string()),
+      unsupported: z.array(z.string()),
+      deferred: z.array(z.string()),
+      warning: z.string().optional(),
+    }).optional(),
   }),
   kb_resolve_contradiction: z.object({
     winnerId: z.string(),
@@ -250,26 +283,60 @@ const KB_RESPONSE_BODIES = {
   // present, possibly empty); backfilled counts existing bible entries that
   // gained source_file_hashes from this KB's stored basis (legacy backfill);
   // committed is true only when a local commit of the bible path was made
-  // (never pushed).
+  // (never pushed). Under the http KB provider the call is skipped, not
+  // failed: bible_skipped is the literal true, reason says why, and with no
+  // withdrawals or restore_ids nothing was written or committed (every list
+  // empty, committed false; entry_count is the size of the existing parseable
+  // bible, else 0).
   // demoted names the ids admitted from demoted_ids: removed from entries and
   // tombstoned in the bible's demotions array. OPTIONAL so bibles/fixtures
   // recorded before tombstones existed still validate; the handler always emits
   // it. entry_count counts ENTRIES only -- a tombstone is not an entry.
+  // withdrawn names the ids admitted from withdrawals (removed from entries,
+  // tombstoned with reason "withdrawn"; the local row is not changed) and
+  // restored the restore_ids whose branch-added tombstone was removed; both
+  // OPTIONAL for fixtures recorded before they existed, always emitted by the
+  // handler. A withdrawal that does not qualify is skipped with reason
+  // not_withdrawable. An ids merge of an id the current file carries a
+  // withdrawn tombstone for (and this call does not restore) is skipped with
+  // reason withdrawn_tombstone. A demoted_ids id the bible at baseCommit does
+  // not carry (or an unreadable/unresolvable base) is skipped with reason
+  // not_in_base_bible. A demoted_ids id the current file carries a withdrawn
+  // tombstone for is skipped with reason withdrawn_tombstone and the tombstone
+  // kept: a demoted tombstone never replaces a withdrawn one (the every-call
+  // demotion rule passes over it too), so a later ids re-promotion cannot clear
+  // the withdrawal. An ids merge of an id the current file carries a demoted
+  // tombstone for is skipped with reason demoted_tombstone (tombstone kept)
+  // unless the local trust time is strictly after the tombstone's at; an id the
+  // file holds in both entries and demotions loses its entry on every call and
+  // is reported in removed with reason tombstoned. base_bible_error (optional string) names why the bible at
+  // baseCommit could not be read (baseCommit does not resolve, or its bible does
+  // not parse) when a rule needed it (demotion gate or restore); absent when the
+  // base was read fine or never needed -- the call still fails closed. Under the
+  // http provider bible_skipped stays true for the
+  // entry merge, but withdrawals/restores still write the tombstones, so
+  // committed may be true there.
   kb_bible_commit: z.object({
     path: z.string(),
     merged: z.array(z.string()),
     demoted: z.array(z.string()).optional(),
+    withdrawn: z.array(z.string()).optional(),
+    restored: z.array(z.string()).optional(),
     skipped: z.array(z.object({
       id: z.string(),
-      reason: z.enum(['not_confirmed_or_unknown', 'no_source_files', 'basis_mismatch', 'not_demoted_or_unknown']),
+      reason: z.enum(['not_confirmed_or_unknown', 'no_source_files', 'basis_mismatch', 'not_demoted_or_unknown', 'not_withdrawable',
+        'withdrawn_tombstone', 'demoted_tombstone', 'not_in_base_bible']),
     })),
     removed: z.array(z.object({
       id: z.string(),
-      reason: z.enum(['superseded', 'invalidated']),
+      reason: z.enum(['superseded', 'invalidated', 'tombstoned']),
     })),
     entry_count: z.number(),
     backfilled: z.number(),
     committed: z.boolean(),
+    bible_skipped: z.literal(true).optional(),
+    reason: z.string().optional(),
+    base_bible_error: z.string().optional(),
   }),
   // F-9: kb_stats spreads ProviderStats (whose supported/reason/coverage are
   // only present for a provider that cannot compute stats at all) and adds
@@ -287,22 +354,28 @@ const KB_RESPONSE_BODIES = {
     coverage: z.unknown().optional(),
     bible: z.unknown(),
   }),
-  // Applied form: the entry's resulting state (sqlite, or the remote HTTP KB
-  // server's answer, returned as is). Queued form: a remote HTTP KB was
-  // unreachable, so the feedback waits in the offline queue -- no state is
-  // reported and no confidence is invented (spec.md section 2.2).
-  kb_feedback: z.union([
-    z.object({
-      id: z.string(),
-      stale: z.boolean(),
-      flagged_for_review: z.boolean(),
-      confidence: z.string(),
-    }),
-    z.object({
-      id: z.string(),
-      queued: z.literal(true),
-    }),
-  ]),
+  // The entry's resulting state (sqlite, or the remote HTTP KB server's
+  // answer, returned as is). A remote HTTP KB that cannot be reached is a
+  // thrown E-KB-HTTP-UNREACHABLE (the feedback is queued first), never a
+  // response (spec.md section 2.2).
+  kb_feedback: z.object({
+    id: z.string(),
+    stale: z.boolean(),
+    flagged_for_review: z.boolean(),
+    confidence: z.string(),
+  }),
+  // The GET /api/kb/capabilities body (spec.md section 2.9.1). Under an http
+  // KB provider it is the server's body passed through unchanged, so route
+  // names this client does not call and extra top-level fields are kept:
+  // routes items are plain strings and the object is open (passthrough).
+  // Under SQLite it is the local implementation's answer, the same object
+  // the sample kb-server answers.
+  kb_capabilities: z.object({
+    contract: z.string(),
+    routes: z.array(z.string()),
+    branch_aware: z.boolean(),
+    query_filters: z.array(z.string()).optional(),
+  }).passthrough(),
 };
 
 const CODE_TOOLS = [

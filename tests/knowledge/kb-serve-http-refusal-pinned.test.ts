@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { startKbServer, KbServerHttpProviderRefusedError } from '../../src/commands/kb-server.js';
 import { encryptPassword } from '../../src/utils/crypto.js';
 import { FLEET_DIR } from '../../src/paths.js';
-import { resetKbProviders } from '../../src/services/knowledge/kb-providers.js';
+import { resetKbProviders, getProjectSlug } from '../../src/services/knowledge/kb-providers.js';
 
 // my-beads-db-0cd.20: pins the my-beads-db-0cd.15 decision (fail fast, never
 // self-proxy) so a future change to kb-server.ts or its callers cannot
@@ -221,7 +221,7 @@ describe('kb serve with a stock KB config still starts and serves as today (my-b
       const queryResult = await new Promise<{ status: number }>((resolve, reject) => {
         http.get(
           `http://127.0.0.1:${port}/api/kb/query?query=test`,
-          { headers: { Authorization: `Bearer ${token}` } },
+          { headers: { Authorization: `Bearer ${token}`, 'X-KB-Project': getProjectSlug() } },
           (res) => { res.resume(); resolve({ status: res.statusCode! }); },
         ).on('error', reject);
       });
@@ -343,7 +343,7 @@ describe('kb serve refusal: remedy text, no listener leak, and the --db escape h
         const queryResult = await new Promise<{ status: number; body: any }>((resolve, reject) => {
           http.get(
             `http://127.0.0.1:${port}/api/kb/query?query=test`,
-            { headers: { Authorization: `Bearer ${token}` } },
+            { headers: { Authorization: `Bearer ${token}`, 'X-KB-Project': getProjectSlug() } },
             (res) => {
               let body = '';
               res.on('data', (c) => { body += c; });

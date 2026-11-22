@@ -71,7 +71,9 @@ test('mock sprint: the Re-Review site refuses a below-goal reopen id, with the s
                         closedIds.push(id);
                     }
                 }
-                return { content: [{ text: JSON.stringify({ status: 'VERIFY', closedIds, notes: 'Closed A; left B blocked.' }) }] };
+                // Claims B closed too (the read-back disproves it): B keeps the ordinary
+                // left-open retry instead of the VERIFY-no-change set-aside.
+                return { content: [{ text: JSON.stringify({ status: 'VERIFY', closedIds: ids, notes: 'Closed A; left B blocked.' }) }] };
             },
             // Call 1 is cycle 1's ordinary in-loop review (APPROVED, so the
             // Develop loop ends). Call 2 is cycle 2's RE-REVIEW: it names the

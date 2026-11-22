@@ -1,3 +1,5 @@
+import type { CitedFilter } from './cited-filter.js';
+
 // D6 (T3.1): 'user-directive' is the highest-trust entry type -- a standing
 // instruction/correction the user gave during a sprint. It is captured at
 // confidence='CONFIRMED' (the SOLE exemption from the D1 clamp, stamped by the
@@ -106,7 +108,10 @@ export type KBEntryInput = Omit<KBEntry, 'id' | 'stale' | 'created_at' | 'supers
 // can set it. importMode grants the SOLE clamp exemption (bible confidence is
 // preserved for non-directive types) and suppresses provenance normalization so
 // source='import' survives; preferredId lets kb_import preserve a bible entry's
-// id on the pure 'add' path (exact re-import idempotency).
+// id (exact re-import idempotency). Under importMode it is kept on EVERY AUDN
+// path -- added, linked and flagged rows are stored under it, and a
+// deduplicated entry records a bible_id_aliases row to the local row that
+// absorbed it -- so a later tombstone for the bible id reaches this clone.
 export interface CaptureOpts {
   importMode?: boolean;
   preferredId?: string;
@@ -192,6 +197,11 @@ export interface QueryOptions {
   exclude_disputed?: boolean;
   // MEMBER own-scope tag filter (see EntryTrustFilter.owner_tag). Internal only.
   owner_tag?: string;
+  // kb_query cited filter (request fields files / symbols, cited-filter.ts): a
+  // HARD filter -- only entries whose source_files cite one of files (exactly
+  // or under a given directory) or whose symbols name one of symbols. Ranking
+  // inside the kept set is unchanged. Absent or empty = no filter.
+  cited?: CitedFilter;
   l1_only?: boolean;
   limit?: number;
   ids?: string[];
@@ -323,7 +333,8 @@ export interface MemoryProvider {
   init(): Promise<void>;
   capture(input: KBEntryInput): Promise<{ id: string; audn_decision: AudnDecision }>;
   query(opts: QueryOptions): Promise<KBResult>;
-  context(files: string[], confidence?: Confidence[], excludeDisputed?: boolean): Promise<FileContextResult[]>;
+  // ownerTag (MEMBER own-scope): only summaries from entries carrying that tag.
+  context(files: string[], confidence?: Confidence[], excludeDisputed?: boolean, ownerTag?: string): Promise<FileContextResult[]>;
   invalidate(files: string[]): Promise<{ invalidated: number }>;
   // Id-level DISCARD: sets superseded_at (and stale) so the entry drops from every
   // read path; the row is kept. ownerTag restricts the call to entries carrying

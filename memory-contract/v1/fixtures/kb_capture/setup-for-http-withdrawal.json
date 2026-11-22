@@ -1,0 +1,27 @@
+{
+  "tool": "kb_capture",
+  "case": "setup-for-http-withdrawal",
+  "kind": "happy",
+  "request": {
+    "type": "knowledge",
+    "title": "Widget is exported for the withdrawal fixture",
+    "summary": "src/widget.ts exports widget; set up for the http withdrawal fixtures.",
+    "content": "widget in src/widget.ts is exported. Captured as a synthetic fixture for withdrawals over http.",
+    "source_files": [
+      "src/widget.ts"
+    ],
+    "symbols": [
+      "widgetWithdrawalFixture"
+    ],
+    "role": "doer"
+  },
+  "response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"id\":\"8c52c52e-7a2c-41aa-9ded-75728e08f7e0\",\"audn_decision\":\"add\",\"confidence_clamped\":false}"
+      }
+    ]
+  },
+  "session": "HTTP_A"
+}

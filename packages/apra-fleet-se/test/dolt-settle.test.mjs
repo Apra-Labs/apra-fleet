@@ -54,11 +54,14 @@ test('resolveDoltAsset: known platform/arch combos resolve to the pinned v2.2.0 
 
     const macArm = resolveDoltAsset('darwin', 'arm64');
     check(macArm.url.endsWith('dolt-darwin-arm64.tar.gz'), 'darwin/arm64 asset URL');
+
+    const linuxArm = resolveDoltAsset('linux', 'arm64');
+    check(linuxArm.url.endsWith('dolt-linux-arm64.tar.gz'), 'linux/arm64 asset URL');
+    check(linuxArm.archiveType === 'tar.gz', 'linux/arm64 archive type');
 });
 
 test('resolveDoltAsset: unsupported platform/arch throws rather than silently no-op', () => {
     assert.throws(() => resolveDoltAsset('win32', 'arm64'), /unsupported platform\/arch/i);
-    assert.throws(() => resolveDoltAsset('linux', 'arm64'), /unsupported platform\/arch/i);
     assert.throws(() => resolveDoltAsset('freebsd', 'x64'), /unsupported platform\/arch/i);
 });
 
@@ -243,8 +246,8 @@ function makeInstallFixture({ initialVersion = null, installOk = true, installLo
             installed = DOLT_VERSION.replace(/^v/, '');
             return { ok: true, output: '', error: null };
         }
-        if (/Stop-Process|pkill/.test(cmd)) {
-            return { ok: true, output: '', error: null };
+        if (/KILLED:/.test(cmd)) {
+            return { ok: true, output: 'KILLED:4321', error: null };
         }
         return { ok: true, output: '', error: null };
     };
@@ -270,7 +273,7 @@ test('ensurePinnedDolt: locked file (in-use) triggers kill-then-retry, succeeds 
     const { command, calls } = makeInstallFixture({ initialVersion: '1.86.3', installLockedThenOk: true });
     const result = await ensurePinnedDolt({ command, member: 'm1', platform: 'win32' });
     assert.equal(result.pinned, true);
-    check(calls.some((c) => /Stop-Process/.test(c)), 'a locked-file install failure must trigger a kill attempt before falling back');
+    check(calls.some((c) => /KILLED:/.test(c)), 'a locked-file install failure must trigger a kill attempt before falling back');
 });
 
 test('ensurePinnedDolt: hard install failure (not a lock) throws DoltBinaryUnavailableError, never silently proceeds', async () => {
@@ -691,7 +694,7 @@ test('installPinnedDolt (via ensurePinnedDolt): golden win32 byte-identity acros
     const psShellResults = {};
     for (const shell of ['pwsh7', 'powershell5', '']) {
         const { command, calls } = makeShellMatrixInstallFixture();
-        const result = await ensurePinnedDolt({ command, member: `m-${shell || 'none'}`, platform: 'win32', shell });
+        const result = await ensurePinnedDolt({ command, member: 'm-golden', platform: 'win32', shell });
         assert.equal(result.pinned, true);
         const installCall = calls.find((c) => /Invoke-WebRequest/.test(c));
         check(installCall, `shell=${shell}: an install command must have been dispatched`);
@@ -702,7 +705,7 @@ test('installPinnedDolt (via ensurePinnedDolt): golden win32 byte-identity acros
     assert.equal(psShellResults.powershell5, psShellResults.none, 'powershell5 install command must be byte-identical to the no-shell-recorded (historical) install command');
 
     const { command: gbCommand, calls: gbCalls } = makeShellMatrixInstallFixture();
-    await ensurePinnedDolt({ command: gbCommand, member: 'm-gitbash', platform: 'win32', shell: 'gitbash' });
+    await ensurePinnedDolt({ command: gbCommand, member: 'm-golden', platform: 'win32', shell: 'gitbash' });
     const gbInstallCall = gbCalls.find((c) => decodeIfWrapped(c).wrapped && /Invoke-WebRequest/.test(decodeIfWrapped(c).text));
     check(gbInstallCall, 'gitbash: a wrapped install command must have been dispatched');
     checkGitbashWrap(gbInstallCall, 'installPinnedDolt');
@@ -729,6 +732,7 @@ test('killProcessAtPath (via ensurePinnedDolt locked-file retry): golden win32 b
                 installed = DOLT_VERSION.replace(/^v/, '');
                 return { ok: true, output: '', error: null };
             }
+            if (/KILLED:/.test(text)) return { ok: true, output: 'KILLED:4321', error: null };
             return { ok: true, output: '', error: null };
         };
         return { command, calls };
@@ -737,9 +741,9 @@ test('killProcessAtPath (via ensurePinnedDolt locked-file retry): golden win32 b
     const psShellResults = {};
     for (const shell of ['pwsh7', 'powershell5', '']) {
         const { command, calls } = makeLockedFixture();
-        const result = await ensurePinnedDolt({ command, member: `m-${shell || 'none'}`, platform: 'win32', shell });
+        const result = await ensurePinnedDolt({ command, member: 'm-golden', platform: 'win32', shell });
         assert.equal(result.pinned, true);
-        const killCall = calls.find((c) => /Stop-Process/.test(c) && /Get-Process/.test(c));
+        const killCall = calls.find((c) => /KILLED:/.test(c));
         check(killCall, `shell=${shell}: a kill command must have been dispatched for a locked-file retry`);
         check(!/-EncodedCommand/i.test(killCall), `shell=${shell}: a PowerShell-shell member must receive the raw kill script text, unwrapped`);
         psShellResults[shell || 'none'] = killCall;
@@ -748,8 +752,8 @@ test('killProcessAtPath (via ensurePinnedDolt locked-file retry): golden win32 b
     assert.equal(psShellResults.powershell5, psShellResults.none, 'powershell5 kill command must be byte-identical to the no-shell-recorded (historical) kill command');
 
     const { command: gbCommand, calls: gbCalls } = makeLockedFixture();
-    await ensurePinnedDolt({ command: gbCommand, member: 'm-gitbash', platform: 'win32', shell: 'gitbash' });
-    const gbKillCall = gbCalls.find((c) => decodeIfWrapped(c).wrapped && /Stop-Process/.test(decodeIfWrapped(c).text) && /Get-Process/.test(decodeIfWrapped(c).text));
+    await ensurePinnedDolt({ command: gbCommand, member: 'm-golden', platform: 'win32', shell: 'gitbash' });
+    const gbKillCall = gbCalls.find((c) => decodeIfWrapped(c).wrapped && /KILLED:/.test(decodeIfWrapped(c).text));
     check(gbKillCall, 'gitbash: a wrapped kill command must have been dispatched');
     checkGitbashWrap(gbKillCall, 'killProcessAtPath');
     const decoded = decodeIfWrapped(gbKillCall).text;
@@ -765,7 +769,7 @@ test('spawnEphemeralServer: golden win32 byte-identity across pwsh7/powershell5/
         let captured = null;
         const command = async (cmd) => { captured = cmd; return { ok: true, output: 'PID:5150' }; };
         const result = await spawnEphemeralServer({
-            command, member: `m-${shell || 'none'}`, platform: 'win32', doltPath: psDoltPath,
+            command, member: 'm-golden', platform: 'win32', doltPath: psDoltPath,
             dataDir: 'C:\\data', host: '127.0.0.1', port: 13302, shell,
         });
         assert.equal(result.pid, 5150);
@@ -778,7 +782,7 @@ test('spawnEphemeralServer: golden win32 byte-identity across pwsh7/powershell5/
     let gbCaptured = null;
     const gbCommand = async (cmd) => { gbCaptured = cmd; return { ok: true, output: 'PID:5150' }; };
     await spawnEphemeralServer({
-        command: gbCommand, member: 'm-gitbash', platform: 'win32', doltPath: psDoltPath,
+        command: gbCommand, member: 'm-golden', platform: 'win32', doltPath: psDoltPath,
         dataDir: 'C:\\data', host: '127.0.0.1', port: 13302, shell: 'gitbash',
     });
     checkGitbashWrap(gbCaptured, 'spawnEphemeralServer');
@@ -826,7 +830,7 @@ test('killServerAndVerify (via settleDoltConflicts teardown): golden win32 byte-
     const psShellResults = {};
     for (const shell of ['pwsh7', 'powershell5', '']) {
         const { command, findKillCall } = makeMinimalTeardownFixture();
-        const result = await settleDoltConflicts(`m-${shell || 'none'}`, { command, platform: 'win32', shell });
+        const result = await settleDoltConflicts('m-golden', { command, platform: 'win32', shell });
         assert.equal(result.ok, true);
         const killCall = findKillCall();
         check(killCall, `shell=${shell}: a kill/verify command must have been dispatched during teardown`);
@@ -840,7 +844,7 @@ test('killServerAndVerify (via settleDoltConflicts teardown): golden win32 byte-
 
 test('killServerAndVerify (via settleDoltConflicts teardown): a gitbash target dispatches a bash-invocable -EncodedCommand wrap, byte-identical PowerShell payload inside', async () => {
     const { command, findKillCall } = makeMinimalTeardownFixture();
-    const result = await settleDoltConflicts('m-gitbash', { command, platform: 'win32', shell: 'gitbash' });
+    const result = await settleDoltConflicts('m-golden', { command, platform: 'win32', shell: 'gitbash' });
     assert.equal(result.ok, true);
     const killCall = findKillCall();
     check(killCall, 'a kill/verify command must have been dispatched during teardown for a gitbash member');
@@ -849,7 +853,7 @@ test('killServerAndVerify (via settleDoltConflicts teardown): a gitbash target d
     // Compare against the plain-PowerShell golden form to prove the wrapped
     // payload is the SAME script, only invoked differently.
     const { command: psCommand, findKillCall: psFindKillCall } = makeMinimalTeardownFixture();
-    await settleDoltConflicts('m-plain', { command: psCommand, platform: 'win32', shell: '' });
+    await settleDoltConflicts('m-golden', { command: psCommand, platform: 'win32', shell: '' });
     const psKillCall = psFindKillCall();
 
     const decoded = decodeIfWrapped(killCall).text;

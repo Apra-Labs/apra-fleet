@@ -25,7 +25,7 @@
         "baseCommit": {
           "type": "string",
           "minLength": 1,
-          "description": "The base commit the entries were verified against. Written to provenance.commit. Omitted: the export folder HEAD commit."
+          "description": "The base commit the entries were verified against. Recorded as a Verified-Against trailer on the auto-commit, not in the file (a per-file commit line would make every two bible-changing branches conflict). Omitted: the export folder HEAD commit."
         },
         "repo_path": {
           "description": "REMOVED -- do not pass. A call carrying it fails with E-SCOPE-KEY-REMOVED; the KB is always the calling session's own."

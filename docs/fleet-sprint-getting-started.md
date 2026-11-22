@@ -251,7 +251,8 @@ apra-fleet start      # npm install registers no OS service: start the server
 Alternatively, download the standalone installer for your platform from
 [GitHub Releases](https://github.com/Apra-Labs/apra-fleet/releases)
 (`apra-fleet-installer-darwin-arm64`, `apra-fleet-installer-darwin-x64`,
-`apra-fleet-installer-linux-x64`, `apra-fleet-installer-win-x64.exe`; per-OS
+`apra-fleet-installer-linux-x64`, `apra-fleet-installer-linux-arm64`,
+`apra-fleet-installer-win-x64.exe`; per-OS
 download commands in [docs/install.md](install.md#quick-install)) and run it --
 installation is the default action, and it registers and starts a user-level
 service, with the `apra-fleet` binary in `~/.apra-fleet/bin` (not added to
@@ -402,7 +403,8 @@ POST http://127.0.0.1:8787/api/sprints
   "maxCycles": 5,                     // optional
   "budget":  25,                      // optional: USD ceiling for the run
   "requirementsFile": "docs/checkout-v2-requirements.md",  // optional, see Section 5
-  "phases":  {"regression": "skip"}   // optional: skip the regression pass this once
+  "phases":  {"regression": "skip"},  // optional: skip the regression pass this once
+  "kbDemotionLoop": "off"             // optional: turn the reviewer KB demotion loop off ("on" is the default)
 }
 ```
 
@@ -426,6 +428,12 @@ so point-and-click and API launches can never diverge.
 > again), a relaunch is refused with a 409 until you either fix the cause or pass
 > an explicit override flag. The system prefers telling you "this will fail again"
 > over silently burning another run.
+
+> **A launch takes over in-scope `in_progress` beads.** Any bead in the sprint's
+> issue scope that is `in_progress` with no unmet blockers, claimed before the
+> launch, is reset to `open` with its assignee cleared and dispatched to this
+> sprint -- even if a person or a CLI-launched sprint is working on it. Leave such
+> beads out of the issue scope, or wait until they are closed, before launching.
 
 ---
 
@@ -591,3 +599,28 @@ dashboard and API are reachable only from the same machine. Binding another
 interface requires passing an explicit host option; it is never implied.
 Clients on the same machine, including `localhost` URLs, still connect
 normally.
+
+## Supervisor and engine process hygiene
+
+**Final exit line.** The supervisor's log tee is asynchronous, so a process
+that died used to leave no trace of why. The supervisor now appends exactly
+one synchronous final line to its log, with the cause and exit code, on every
+exit path: SIGINT, SIGTERM, SIGHUP, SIGBREAK (Windows Ctrl+Break or console
+close), an uncaught exception or unhandled rejection, `POST /api/shutdown`,
+and the forced-exit timeout. Signal handlers are persistent, so a second
+Ctrl+C does not kill immediately; the forced-exit timeout is the backstop.
+On POSIX a detached launch (`nohup`) logs and survives SIGHUP; a foreground
+launch is not detached, and the skill says so. On Windows the final SIGHUP
+line is written synchronously and the supervisor stops.
+
+**Sprint lock.** Each (branch, members) pair has a machine-local pidfile lock
+(directory overridable with `APRA_FLEET_SPRINT_LOCK_DIR`; test sandboxes set
+it). The first line is always a bare pid. On a conflict the engine inspects
+the live pid's command line. Only a real engine counts: the fleet-sprint
+`bin/cli.mjs` entry, `runner.js`, or `apra-fleet workflow fleet-sprint` (not
+the fleet server, the supervisor, or any other `cli.mjs`). An engine whose
+`--branch`/`-b` matches (case-insensitive, as the lock file is keyed) raises
+`SprintLockHeldError`; any other process, or an engine for another branch,
+means the pid was recycled and the lock is reclaimed with a log line. An
+unreadable command line, or an engine command line with no `--branch`, fails
+closed and the error names the lock path so the operator can decide.

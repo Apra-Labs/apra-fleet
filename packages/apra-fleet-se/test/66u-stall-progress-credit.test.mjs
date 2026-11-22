@@ -44,17 +44,28 @@ const check = (cond, msg) => assert.ok(cond, msg);
 // agent() dispatch, never through the cache-invalidating command() wrapper).
 //
 // Scenario (a) reproduces the real incident shape end-to-end: a single-child
-// epic whose child closes in Cycle 1, becomes verify-eligible in Cycle 2, and
-// is deliberately NOT closed by the mocked Integ Test dispatch until its
-// THIRD dispatch (Cycle 4) -- exactly the cycle at which the pre-fix code's
-// staleCycles would already have reached the stall limit, since closedCount
-// never saw the closure and verifyEverIds (monotone) had already credited
-// its one-time high-water bump back in Cycle 2. Asserts the sprint completes
-// cleanly instead of falsely aborting.
+// epic whose child closes and makes it verify-eligible, and which is
+// deliberately NOT closed by the mocked Integ Test dispatch until its THIRD
+// dispatch -- exactly the cycle at which the pre-fix code's staleCycles would
+// already have reached the stall limit, since closedCount never saw the
+// closure and verifyEverIds (monotone) had already credited its one-time
+// high-water bump on the first verify cycle. The two withheld dispatches are
+// infra dispatch failures (dispatch and resume both die with no verdict):
+// they make no progress, and they neither count toward nor reset the
+// needs-external-evidence carry-over (fleet-sprint/verify-carry-over.mjs,
+// NEEDS_EXTERNAL_EVIDENCE_CYCLE_LIMIT 2). That keeps the bead dispatched a
+// third time, and keeps a pre-fix run (closure invisible, so the closing
+// pass reads as inconclusive) from tripping the carry-over, whose progress
+// credit would otherwise mask the false stall. Asserts the sprint completes
+// cleanly instead of falsely aborting; it fails with StalledSprintError when
+// bdListScoped's scope drops a childful target's own id again.
 //
-// Scenario (b) covers acceptance criterion 2 directly: a genuine verifier
-// failure (routed beads dispatched repeatedly, never closed) still stalls,
-// and the abort message names the verifier condition.
+// Scenario (b) covers a genuine "the verifier never closes it" shape (routed
+// beads dispatched repeatedly, never closed, no gap bug). It used to stall
+// with SPRINT_STALLED naming the verifier; it is now the
+// needs-external-evidence carry-over: dispatched to verify at most the
+// limit, then the run goes on to Final Review with the verdict forced FAIL
+// and the bead named, still open. Deliberate policy change.
 //
 // Scenario (c) covers acceptance criterion 3, previously dropped for being
 // too fragile under title-substring prompt matching: a sprint that stalls for
@@ -92,6 +103,7 @@ const approvingReviewerHandler = async () => ({
 test('mock sprint: a same-cycle Integ Test closure of a childful verify-routed target (the sprint epic itself) is credited to that cycle\'s progress score, avoiding a false stall', async () => {
     await withScenarioMarkers('66u.3 (a): verify-close credited, no false stall', async () => {
         let epicVerifyDispatchCount = 0;
+        let infraFailedDispatches = 0;
         const stalled = await runDevelopLoopScenario('66u3a', {
             members: ['local'],
             taskSpecs: [{ title: 'Task: closes normally' }],
@@ -102,28 +114,28 @@ test('mock sprint: a same-cycle Integ Test closure of a childful verify-routed t
             integHandler: async ({ opts, tempDir, epicBead }) => {
                 const verifyIds = parseVerifyIds(opts.prompt);
                 if (verifyIds.includes(epicBead.id)) {
-                    epicVerifyDispatchCount++;
+                    // A resume restates the scope; count each cycle's
+                    // dispatch once.
+                    const isResume = opts.prompt.startsWith('Continue the integration test run');
+                    if (!isResume) epicVerifyDispatchCount++;
                     // Deliberately withhold the real closure for the first
-                    // two dispatches -- simulates verification genuinely
-                    // taking multiple cycles -- then close on the third,
-                    // the exact cycle the pre-fix code's stall net would
-                    // already have tripped on (see header comment).
-                    if (epicVerifyDispatchCount >= 3) {
-                        await runCmd(`bd close ${epicBead.id} --reason "Verified"`, tempDir);
+                    // two dispatches -- both lost to an infra fault -- then
+                    // close on the third, the exact cycle the pre-fix code's
+                    // stall net would already have tripped on (see header
+                    // comment).
+                    if (epicVerifyDispatchCount <= 2) {
+                        infraFailedDispatches++;
                         return {
-                            content: [{
-                                text: JSON.stringify({
-                                    featuresClosed: 0, issuesCreated: 0, passed: true, bugsFiled: [],
-                                    summary: `Verified and closed ${epicBead.id} on dispatch ${epicVerifyDispatchCount}.`,
-                                })
-                            }]
+                            content: [{ text: 'command killed after inactivity timeout (no output)' }],
+                            structuredContent: { isError: true, reason: 'dispatch_failed' },
                         };
                     }
+                    await runCmd(`bd close ${epicBead.id} --reason "Verified"`, tempDir);
                     return {
                         content: [{
                             text: JSON.stringify({
                                 featuresClosed: 0, issuesCreated: 0, passed: true, bugsFiled: [],
-                                summary: `Verification of ${epicBead.id} still in progress (dispatch ${epicVerifyDispatchCount}).`,
+                                summary: `Verified and closed ${epicBead.id} on dispatch ${epicVerifyDispatchCount}.`,
                             })
                         }]
                     };
@@ -141,13 +153,19 @@ test('mock sprint: a same-cycle Integ Test closure of a childful verify-routed t
             `Expected the sprint to complete cleanly (the epic's own verify-closure, even withheld across two prior dispatches, must be credited so staleCycles never reaches the limit), got: ${stalled.error ? stalled.error.constructor.name + ': ' + stalled.error.message : 'none'}`
         );
         check(epicVerifyDispatchCount >= 3, `Expected the epic to have been dispatched to verify at least 3 times (scenario setup check), got ${epicVerifyDispatchCount}`);
+        check(infraFailedDispatches >= 2, `Expected the first two verify dispatches to fail on infra (scenario setup check), got ${infraFailedDispatches}`);
+        check(
+            stalled.logs.some((m) => m.includes('Integration tests INCONCLUSIVE this cycle')),
+            'Expected the infra-failed verify dispatches to be recorded INCONCLUSIVE (scenario setup check)'
+        );
         const epic = stalled.finalBeadsById.get(stalled.epicBeadId);
         check(epic && epic.status === 'closed', `Expected the epic (childful verify-routed target) to be closed in final bd state, got status=${epic ? epic.status : 'MISSING'}`);
     });
 });
 
-test('mock sprint: verify-routed beads dispatched repeatedly with zero closures triggers a real stall whose message correctly blames the verifier', async () => {
-    await withScenarioMarkers('66u.3 (b): genuine verifier failure -> stall names the verifier', async () => {
+test('mock sprint: verify-routed beads dispatched repeatedly with zero closures and no gap bug are carried over as needs-external-evidence (FAIL), not stalled', async () => {
+    await withScenarioMarkers('66u.3 (b): genuine verifier failure -> needs-external-evidence carry-over', async () => {
+        let epicVerifyDispatchCount = 0;
         const stalled = await runDevelopLoopScenario('66u3b', {
             members: ['local'],
             taskSpecs: [{ title: 'Task: closes normally' }],
@@ -158,18 +176,27 @@ test('mock sprint: verify-routed beads dispatched repeatedly with zero closures 
             // The verifier NEVER closes the routed target, every cycle it is
             // named -- a genuine "verifier is failing" shape, not a
             // bookkeeping gap.
-            integHandler: async () => ({
-                content: [{
-                    text: JSON.stringify({ featuresClosed: 0, issuesCreated: 0, passed: true, bugsFiled: [], summary: 'Verified but did not close anything (simulated verifier failure).' })
-                }]
-            }),
+            integHandler: async ({ opts, epicBead }) => {
+                if (parseVerifyIds(opts.prompt).includes(epicBead.id)) epicVerifyDispatchCount++;
+                return {
+                    content: [{
+                        text: JSON.stringify({ featuresClosed: 0, issuesCreated: 0, passed: true, bugsFiled: [], summary: 'Verified but did not close anything (simulated verifier failure).' })
+                    }]
+                };
+            },
         });
 
-        check(stalled.error instanceof StalledSprintError, `Expected a StalledSprintError, got: ${stalled.error ? stalled.error.constructor.name + ': ' + stalled.error.message : 'no error'}`);
+        check(!(stalled.error instanceof StalledSprintError), `Expected no StalledSprintError, got: ${stalled.error ? stalled.error.constructor.name + ': ' + stalled.error.message : 'no error'}`);
+        check(!stalled.error, `Expected the run to finish, got: ${stalled.error ? stalled.error.constructor.name + ': ' + stalled.error.message : 'none'}`);
+        check(epicVerifyDispatchCount === 2, `Expected the epic dispatched to verify exactly the carry-over limit (2) times, got ${epicVerifyDispatchCount}`);
+        check(stalled.result && stalled.result.verdict === 'FAIL', `Expected verdict FAIL, got ${stalled.result && stalled.result.verdict}`);
+        const carried = (stalled.result && stalled.result.verifyCarryOver) || [];
         check(
-            /the verifier may be failing/.test(stalled.error.message),
-            `Expected the abort message to name the verifier condition (it genuinely never closed anything it was asked to verify), got: ${stalled.error.message}`
+            carried.some((e) => e.id === stalled.epicBeadId && e.kind === 'needs-external-evidence'),
+            `Expected the epic carried over as needs-external-evidence, got ${JSON.stringify(carried)}`
         );
+        const epic = stalled.finalBeadsById.get(stalled.epicBeadId);
+        check(epic && epic.status !== 'closed', 'Expected the carried-over epic to stay open');
     });
 });
 

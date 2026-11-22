@@ -4,32 +4,26 @@ import path from 'node:path';
 import { removeAgent as removeFromRegistry, getAllAgents, getKeysDir } from '../services/registry.js';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
-import { wrapPowerShellEncoded } from '../os/windows.js';
-import { escapeShellArgInner, escapeSedBasicRegex, escapePowerShellArgInner } from '../utils/shell-escape.js';
+import { getMemberHomeDir } from '../services/member-home.js';
+import { authorizedKeyMatch } from '../os/ssh-key-match.js';
 import { getProvider } from '../providers/index.js';
-import { getAgentOS, getAgentShell } from '../utils/agent-helpers.js';
+import { getAgentOS, getAgentShell, isPosixShellMember } from '../utils/agent-helpers.js';
+import { FLEET_ENV_MARKER } from '../os/os-commands.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { removeKnownHost } from '../services/known-hosts.js';
 import { writeStatusline, readMemberStatus } from '../services/statusline.js';
 import { cancelCredentialCleanup } from '../services/credential-cleanup.js';
+import { listVcsCredentials } from '../services/vcs-credential-record.js';
+import { authorizedKeysOwner, memberSharingHostUser } from '../services/member-host-user.js';
+import { revokeVcsCredential, describeLegacyGlobalKey } from '../services/vcs-credential-revoke.js';
 import { getStallDetector } from '../services/stall/index.js';
 import { removeAgyProject } from '../services/agy-project.js';
-import { githubProvider } from '../services/vcs/github.js';
-import { bitbucketProvider } from '../services/vcs/bitbucket.js';
-import { azureDevOpsProvider } from '../services/vcs/azure-devops.js';
 import type { Agent } from '../types.js';
-import type { VcsProviderService } from '../services/vcs/types.js';
 import { logLine } from '../utils/log-helpers.js';
 import { removeMemberFromOwnInstall, getMemberFleetMcpDeps } from '../services/member-fleet-install.js';
 import { invalidatePreflightCache } from '../services/preflight-check.js';
 import { removeComposedMemberConfig } from './compose-permissions.js';
 import { removeLocalSessionMcpConfig } from '../services/session-mcp-config.js';
-
-const vcsProviders: Record<string, VcsProviderService> = {
-  github: githubProvider,
-  bitbucket: bitbucketProvider,
-  'azure-devops': azureDevOpsProvider,
-};
 
 export const removeMemberSchema = z.object({
   ...memberIdentifier,
@@ -49,6 +43,26 @@ function isFleetManagedKey(keyPath: string): boolean {
     : resolved.startsWith(keysDir);
 }
 
+function sameKeyPath(a: string, b: string): boolean {
+  const ra = path.resolve(a);
+  const rb = path.resolve(b);
+  return process.platform === 'win32' ? ra.toLowerCase() === rb.toLowerCase() : ra === rb;
+}
+
+// Another registered member that authenticates with the same key file into the
+// same authorized_keys (same host and same user). Revoking the key would lock
+// that member out, so the caller must leave it authorized.
+function memberSharingAuthorizedKey(agent: Agent): Agent | undefined {
+  if (!agent.keyPath) return undefined;
+  const mine = authorizedKeysOwner(agent);
+  return getAllAgents().find(a => {
+    if (a.id === agent.id || !a.keyPath || !sameKeyPath(a.keyPath, agent.keyPath!)) return false;
+    const theirs = authorizedKeysOwner(a);
+    return theirs.host === mine.host && theirs.user === mine.user;
+  });
+}
+
+
 export async function removeMember(input: RemoveMemberInput): Promise<string> {
   const agentOrError = resolveMember(input.member_id, input.member_name);
   if (typeof agentOrError === 'string') return agentOrError;
@@ -62,6 +76,7 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
 
   const strategy = getStrategy(agent);
   const warnings: string[] = [];
+  const notes: string[] = [];
 
   // Cancel any pending credential cleanup timer
   cancelCredentialCleanup(agent.id);
@@ -149,59 +164,115 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
         };
         const provider = getProvider(agent.llmProvider);
 
-        // Remove credentials files for any provider that uses them
+        // Credentials live in the member user's home and are shared by every
+        // member running as that user on that host: leave them all in place
+        // when another registered member still uses them.
+        const hostUserSharer = memberSharingHostUser(agent);
         const credentialFiles = provider.oauthCredentialFiles() ?? [];
-        for (const file of credentialFiles) {
-          await strategy.execCommand(cmds.credentialFileRemove(file.remotePath), 10000).catch(() => {});
+        const authVars = [...new Set([provider.authEnvVar, ...(provider.authEnvVarNames?.() ?? [])].filter(Boolean))];
+        if (hostUserSharer) {
+          const owner = authorizedKeysOwner(agent);
+          const left: string[] = [];
+          if (credentialFiles.length > 0) left.push(`LLM login files (${credentialFiles.map(f => f.remotePath).join(', ')})`);
+          if (authVars.length > 0) left.push(`auth env vars in shell profiles / user environment (${authVars.join(', ')})`);
+          for (const vcs of listVcsCredentials(agent).filter(e => !e.memberScoped)) {
+            left.push(`the shared (legacy) ${vcs.provider} git credential helper${vcs.label ? ` (label ${vcs.label})` : ''}`);
+          }
+          notes.push(`Credentials were left in place on ${owner.host} for user ${owner.user} because member "${hostUserSharer.friendlyName}" (${hostUserSharer.id}) runs as the same user on the same host and still uses them: ${left.length > 0 ? left.join('; ') : 'nothing credential-related was configured'}`);
         }
 
-        // Remove the provider's auth env vars (every credential kind) from shell profiles
-        const authVars = new Set([provider.authEnvVar, ...(provider.authEnvVarNames?.() ?? [])].filter(Boolean));
-        for (const envVar of authVars) {
+        // Only LLM credentials provision_llm_auth recorded delivering are
+        // removed. With no record (registered by an older release, or never
+        // provisioned by the fleet) the files/vars may be the owner's own CLI
+        // login: nothing is removed and the result lists what was left.
+        const delivered = agent.llmAuthDelivered;
+        if (!hostUserSharer && !delivered) {
+          const left: string[] = [];
+          if (credentialFiles.length > 0) left.push(`LLM login files (${credentialFiles.map(f => f.remotePath).join(', ')})`);
+          if (authVars.length > 0) left.push(`auth env vars (${authVars.join(', ')})`);
+          if (left.length > 0) {
+            notes.push(`No record that apra-fleet delivered LLM credentials to this member (registered by an older release, or never provisioned by provision_llm_auth), so none were removed -- left in place, if present: ${left.join('; ')}`);
+          }
+        }
+        const removeFiles = hostUserSharer ? [] : (delivered?.files ?? []);
+        const unsetVars = hostUserSharer ? [] : (delivered?.envVars ?? []);
+
+        // Remove the credential files the fleet delivered
+        for (const file of removeFiles) {
+          await strategy.execCommand(cmds.credentialFileRemove(file), 10000).catch(() => {});
+        }
+
+        // Remove the auth env vars the fleet delivered. On a POSIX profile
+        // only fleet-marked lines are removed: a line the owner wrote by hand
+        // (or one an older release wrote unmarked) stays, and the result says
+        // so. A Windows User env var carries no marker: the record is the gate.
+        for (const envVar of unsetVars) {
           for (const cmd of cmds.unsetEnv(envVar)) {
             await strategy.execCommand(cmd, 10000).catch(() => {});
           }
         }
+        if (unsetVars.length > 0 && isPosixShellMember(agent)) {
+          notes.push(`Only fleet-marked export lines (# ${FLEET_ENV_MARKER}) for ${unsetVars.join(', ')} were removed from the member's shell profiles; an unmarked export line for these names (written by hand, or by an older apra-fleet release) may remain -- check the profiles and remove it by hand if it is no longer wanted`);
+        }
 
-        // VCS auth revoke: remove git credential helper if a VCS provider is configured.
+        // VCS auth revoke: remove every git credential helper the member holds.
         // Must pass the SAME label/scopeUrl persisted at provision time (see
         // credential-cleanup.ts) -- omitting them targets the unlabeled/
         // default-host credential-helper file/config-key pair instead of the
         // one actually deployed, leaving the real token file orphaned,
         // unrevoked, on a machine that is being decommissioned.
-        if (agent.vcsProvider) {
-          const vcsService = vcsProviders[agent.vcsProvider];
-          if (vcsService) {
-            await vcsService.revoke(agent, cmds, exec, agent.vcsCredentialLabel, agent.vcsCredentialScopeUrl).catch(() => {});
-          }
+        // Every recorded label is revoked, each with the provider that
+        // deployed it (src/services/vcs-credential-record.ts). The member's
+        // own per-member helpers are removed even when a host+user sharer
+        // exists -- they are nobody else's. A LEGACY entry (the shared
+        // per-OS-user file and global git config key) is skipped when a sharer
+        // exists (src/services/vcs-credential-revoke.ts).
+        for (const vcs of listVcsCredentials(agent)) {
+          const revoked = await revokeVcsCredential(agent, vcs, cmds, exec).catch(() => null);
+          const notice = revoked && !revoked.legacyLeftForSharer ? describeLegacyGlobalKey(revoked) : '';
+          if (notice) logLine('remove_member', notice, agent);
         }
 
         // SSH key removal: remove fleet public key from remote authorized_keys
-        // (fleet-generated keys only -- a user-supplied key stays authorized)
-        if (agent.keyPath && isFleetManagedKey(agent.keyPath)) {
+        // (fleet-generated keys only -- a user-supplied key stays authorized).
+        // A key another member still uses on the same host and user stays
+        // authorized too: revoking it would lock that member out.
+        const keySharer = agent.keyPath && isFleetManagedKey(agent.keyPath)
+          ? memberSharingAuthorizedKey(agent)
+          : undefined;
+        if (keySharer) {
+          const owner = authorizedKeysOwner(agent);
+          notes.push(`The fleet SSH key stays in authorized_keys on ${owner.host} for user ${owner.user || '(unknown)'} because member "${keySharer.friendlyName}" (${keySharer.id}) on the same host and user still uses it`);
+        } else if (agent.keyPath && isFleetManagedKey(agent.keyPath)) {
           const pubKeyPath = `${agent.keyPath}.pub`;
-          try {
-            const pubKey = fs.readFileSync(pubKeyPath, 'utf-8').trim();
-            // Use the key type + base64 portion to match (ignore trailing comment)
-            const parts = pubKey.split(/\s+/);
-            const keyMatch = parts.slice(0, 2).join(' ');
-            const isWindows = getAgentOS(agent) === 'windows';
-            const removeKeyCmd = isWindows
-              ? wrapPowerShellEncoded(`$akFile = "$env:USERPROFILE\\.ssh\\authorized_keys"; if (Test-Path $akFile) { $escaped = [regex]::Escape('${escapePowerShellArgInner(keyMatch)}'); (Get-Content $akFile) | Where-Object { $_ -notmatch $escaped } | Set-Content $akFile }`)
-              // Escape for a /-delimited sed BRE, then for the single-quoted shell
-              // argument (key_path is caller-supplied, so the .pub content is not
-              // trusted). A well-formed key still matches the same line (types
-              // with a `.`, e.g. sk-/cert keys, now carry `\.` in the pattern).
-              : `sed -i '/${escapeShellArgInner(escapeSedBasicRegex(keyMatch))}/d' ~/.ssh/authorized_keys`;
-            try {
-              const removeKeyResult = await strategy.execCommand(removeKeyCmd, 10000);
-              if (removeKeyResult.code !== 0) {
+          let pubKey: string | undefined;
+          try { pubKey = fs.readFileSync(pubKeyPath, 'utf-8'); } catch { /* pub key file not found -- skip */ }
+          // Match on type + base64 (trailing comment ignored). An empty,
+          // truncated or type-only .pub would match every line (or every key
+          // of that type): such a key is never revoked, nothing is sent.
+          const keyMatch = pubKey === undefined ? null : authorizedKeyMatch(pubKey);
+          if (pubKey !== undefined && !keyMatch) {
+            warnings.push(`The fleet public key file ${pubKeyPath} is not a valid SSH public key -- the fleet key was NOT removed from authorized_keys on the member (authorized_keys was left untouched)`);
+          } else if (keyMatch) {
+            // The member's home is resolved here, never left to ~ or a home
+            // env var in the member's shell. Unknown home -> no command at all.
+            const memberHome = await getMemberHomeDir(agent);
+            if (!memberHome) {
+              warnings.push('Could not resolve the member\'s home directory -- the fleet public key was NOT removed from authorized_keys on the member');
+            } else {
+              // keyMatch is untrusted (key_path is caller-supplied); each OS
+              // builder re-validates it, escapes it and matches it literally.
+              try {
+                const removeKeyCmd = cmds.removeSSHPublicKey(keyMatch, memberHome);
+                const removeKeyResult = await strategy.execCommand(removeKeyCmd, 10000);
+                if (removeKeyResult.code !== 0) {
+                  warnings.push('Could not clear fleet public key from authorized_keys on the member');
+                }
+              } catch {
                 warnings.push('Could not clear fleet public key from authorized_keys on the member');
               }
-            } catch {
-              warnings.push('Could not clear fleet public key from authorized_keys on the member');
             }
-          } catch { /* pub key file not found — skip */ }
+          }
         }
       } else {
         warnings.push('Member was offline — could not clear auth credentials');
@@ -236,6 +307,12 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
   if (removed) {
     logLine('remove_member', `id=${agent.id} name=${agent.friendlyName}`, agent);
     let result = `✅ Member "${agent.friendlyName}" (${agent.id}) has been removed.\n\nTo refresh the member list in your UI, run /mcp and select Reconnect.`;
+    if (notes.length > 0) {
+      result += `\n\nNotes:\n`;
+      for (const n of notes) {
+        result += `  - ${n}\n`;
+      }
+    }
     if (warnings.length > 0) {
       result += `\n\n⚠️ Warnings:\n`;
       for (const w of warnings) {

@@ -134,6 +134,25 @@ describe('KB tool profile seen by a real MCP client', { timeout: 60000 }, () => 
     expect(await maintainerMember()).toEqual(maintainerBaseline);
   });
 
+  // kb_capabilities is a kb_ tool: full serves it, developer does not, a
+  // custom list naming it does, and member sessions get it whatever the
+  // profile (base member allowlist).
+  it('kb_capabilities: listed by full and a custom list naming it, not by developer; members get it under every profile', async () => {
+    writeConfig({ provider: 'sqlite', tool_profile: 'full' });
+    expect(await fullSession()).toContain('kb_capabilities');
+    expect(await plainMember()).toContain('kb_capabilities');
+
+    writeConfig({ provider: 'sqlite', tool_profile: 'developer' });
+    expect(await fullSession()).not.toContain('kb_capabilities');
+    expect(await plainMember()).toContain('kb_capabilities');
+    expect(await maintainerMember()).toContain('kb_capabilities');
+
+    writeConfig({ provider: 'sqlite', tool_profile: 'custom', tool_profile_tools: ['kb_capabilities'] });
+    expect((await fullSession()).filter(n => n.startsWith('kb_'))).toEqual(['kb_capabilities']);
+    expect(await plainMember()).toContain('kb_capabilities');
+    expect(await maintainerMember()).toContain('kb_capabilities');
+  });
+
   it('custom with an unknown name: kb_setup over MCP fails naming it and the config is unchanged', async () => {
     // developer hides kb_setup; a custom profile that keeps it lets the client reach it.
     writeConfig({ provider: 'sqlite', tool_profile: 'custom', tool_profile_tools: ['kb_setup'] });

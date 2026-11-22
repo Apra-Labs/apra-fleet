@@ -29,6 +29,126 @@ own tag, so a member cannot promote or discard another member's entries.
 `kb_feedback` is rejected in a member session with
 `E-MEMBER-VIEW-READ-ONLY`, since the view is a read-only projection.
 
+### `own_scope`: the opt-in escape hatch from the bible view
+
+A plain CONFIRMED read in a MEMBER session is answered from the checkout
+bible view above, and every row of that view is stamped `tags: []` on import
+-- so a read filtered by `tag: member:<uuid>` can never match anything there,
+no matter how it is phrased. `own_scope: true` on `kb_query` is the fix: it
+routes the read to the PER-REPO DATABASE instead of the bible view, with the
+caller's own `ownerTag` applied server-side. The final review's
+demotion-candidate read (below) uses it for the maintainer's own CONFIRMED rows
+that are not in the bible yet, alongside a plain (file-filtered) read of the
+bible view for every other CONFIRMED entry.
+`own_scope` only changes which store answers a CONFIRMED read in a MEMBER
+session; it does not add a new write capability.
+
+## Reviewer demotions (merge-carried withdrawals, final review only)
+
+The engine, not the reviewer, records a demotion -- the reviewer only names
+which offered id to demote (or hold) and why, exactly like
+`kb_promotions`/`kb_discards`. No `kb_demote` is ever issued by a sprint: a
+demotion is a withdrawn tombstone in the sprint branch's bible, so it takes
+effect for any clone only once that branch merges and the merged base bible
+is imported (`kb_import`).
+
+1. **Offer (final review only).** A round review is offered no demotion
+   candidates. Before the FINAL review dispatch, `demotionCandidates(member)`
+   first checks the maintainer's own session (a local member too: it is
+   served by the separately running local apra-fleet server, which can be
+   an older build): its tools/list must name `kb_capabilities` (it ships
+   with `kb_bible_commit`'s `withdrawals`/`restore_ids`), and that tool's
+   `routes` must include `withdraw` (always true for a SQLite KB; for an
+   http KB, only when the server serves the route). If either check fails,
+   nothing is offered and a WARN names the maintainer and what is missing --
+   never a fallback to `kb_demote`. Otherwise it reads every
+   CONFIRMED entry citing a file changed on the sprint branch -- not only the
+   maintainer's own: the checkout bible view filtered by `files`, merged with
+   the maintainer's own CONFIRMED rows (`own_scope: true`) that are not in the
+   bible yet. Both reads are wide (`include_stale: true`,
+   `exclude_disputed: false`, up to 500 rows); eligibility (not superseded,
+   not a user-directive) and relevance (the entry's `source_files` overlap the
+   sprint's changed files) are filtered BEFORE the survivors are capped to the
+   prompt-sized offer limit. The offered id set is recorded per repository and
+   reset at the start of every call, so a failed read never leaves a stale
+   offer.
+2. **Judge (final verdict).** An offered entry is demoted if and only if its
+   claim is false at the sprint branch HEAD -- including when the sprint
+   itself made it false. Every offered id belongs in exactly one of
+   `kb_demotions: [{id, reason, evidence_files}]` and `kb_holds: [id]`; an id
+   in both, or in neither, is recorded as no-verdict and left as it is (the
+   engine never stalls or re-dispatches for it). An id is accepted only if it
+   was in the final review's own demotion offer, never the promotion offer.
+   An id named in more than one of `kb_promotions`, `kb_discards` and
+   `kb_demotions` is refused in every list it appears in. `kb_demotions` from
+   a round review (which is offered nothing) are logged and dropped.
+3. **Record and publish atomically.** An accepted demotion is queued as a
+   `kb_bible_commit` withdrawal `{id, note, evidence_files}` (the note is the
+   reviewer's reason) and a hold as a `restore_ids` entry; both are sent in
+   the SAME pull/commit/push cycle as that round's confirmed `ids` -- never a
+   separate pass. The maintainer's local row is not changed. A push failure
+   resets and retries with the same load, exactly like a promotion-only
+   round. A withdrawal or restore leaves the queue after a successful call,
+   skipped ones included (`not_withdrawable` cannot change by retrying).
+   Only the tool's own answer counts: a withdrawal is reported as withdrawn
+   only when the answer's `withdrawn` list names it, and a restore only when
+   its `restored` list does. An answer with no `withdrawn` list (an older
+   apra-fleet that drops the unknown key) admitted nothing: a WARN names the
+   maintainer, and the PR body lists those ids as "Demotion not recorded"
+   (still CONFIRMED after merge).
+4. **Relaunch: a hold can restore an earlier withdrawal.** The checkout bible
+   view no longer holds an entry this branch withdrew, so the final review is
+   also offered every withdrawn tombstone the sprint branch's committed bible
+   carries and the base branch's does not (read with `git show` on the
+   maintainer), first and marked `withdrawn_on_this_branch`. Holding it sends
+   it as `restore_ids`, which lifts that branch-added tombstone and re-adds the
+   base entry.
+5. **Off switch.** The loop is ON by default. A sprint launched with
+   `kb_demotion_loop: "off"` (CLI: `--kb-demotion-loop off`; supervisor launch
+   API: `"kbDemotionLoop": "off"` in the `POST /api/sprints` body) offers the
+   final reviewer no demotion candidates and drops any `kb_demotions` or
+   `kb_holds` returned, so no withdrawal is recorded. The engine logs that the
+   loop is disabled and by which setting. Any value other than `on` or `off`
+   is rejected at launch with an error naming the value (a 400 from the
+   supervisor API); it never falls back silently.
+6. **FAIL and abort.** A FAIL verdict seals CONFIRMATIONS only: they are not
+   committed, but the final review's withdrawals and restores still are,
+   because they are merge-gated (a FAIL branch that never merges carries them
+   nowhere). An aborted sprint seals everything. Pending items that never
+   reach a pushed bible commit are listed in a WARN at the end of the sprint.
+   An abort AFTER the final review (a failed harvest or PR creation) can leave
+   withdrawals already pushed on the branch; the [ABORTED] PR body carries
+   the same "KB changes on merge" section as a PASS/FAIL body.
+   **What the section reports.** At publish and at abort the engine reads, on
+   each repository's maintainer, the withdrawn tombstones the sprint branch's
+   bible adds over the base's (the same `git show` read as item 4), whatever
+   this run offered. Every such tombstone this run did not restore is listed
+   under "Merging withdraws"; one with no verdict this run is labelled
+   "carried from an earlier run, not re-checked" (never "still CONFIRMED"), so
+   the section appears even when this run offered nothing (loop off, a
+   support gap, an abort before the final review, more tombstones than the
+   offer cap). The read is the maintainer's checkout, so a held carried id
+   whose restore was committed there but never pushed (push rejected, reset
+   unsafe) is still listed, labelled "restore not in a pushed bible commit".
+   A branch bible that could not be read (or a maintainer not on
+   the sprint branch) is a "Branch tombstones could not be read" line, never
+   silence. No-verdict ids are never dropped: past 40 ids, or when the body
+   budget is short, the rest is "+K more (run log)".
+7. **Knowledge blocks.** An id the final review withdrew is excluded from
+   every later dispatch's knowledge block in the same sprint (the harvest
+   included), whether or not the bible commit has been pushed yet.
+8. **Guard robustness.** Every site that cannot compute a diff or read a
+   bible (a failing command, an unreadable file) logs the member and the
+   command and degrades to offering less, never to a failed review. The
+   candidate read runs inside the same busy/in-flight bracket as other
+   maintainer operations, so a dispatch cannot start mid-read.
+9. **Over an http KB provider.** `kb_bible_commit` skips the entry merge
+   (`bible_skipped`) and the engine drops its confirmation queue for the
+   repository, but the tool still writes and commits the withdrawn tombstones
+   and restores, which the engine pushes like any bible commit. After the
+   branch merges, `kb_import` replays the withdrawals to the KB server
+   through its withdraw route.
+
 ## One kb_maintainer per repository (writes)
 
 Every sprint KB write for a repository is routed to a single member, the
@@ -89,8 +209,15 @@ bible export. It merges at entry level, not by regenerating the bible:
   there, so the two tools can never disagree on a mixed set of ids. The engine
   logs each skip with its reason and drops the id from its queue.
 - An unreadable existing bible is never overwritten.
-- Provenance records the sprint's target base branch and base commit given by
-  the caller, never the working folder's HEAD (usually a feature branch).
+- Bible provenance records only the sprint's target base branch, given by the
+  caller, never the working folder's HEAD (usually a feature branch). The base
+  commit the entries were verified against is not stored in the bible: it goes
+  into a `Verified-Against` trailer of the local commit message. A per-commit
+  value in the file would change on every writer and make any two
+  bible-changing branches conflict on merge. Older readers only read
+  `provenance.branch`, so the format is safe in both directions; the
+  validator (`scripts/check-kb-canonical.mjs`, part of `npm test` and CI)
+  still accepts the legacy `commit` and `entry_count` keys.
 - The commit is local, scoped to the bible file, with the `pm-kb` identity. It
   never pushes. `kb_export` gained the same `baseBranch`/`baseCommit` inputs.
 

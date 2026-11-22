@@ -16,9 +16,10 @@
  *  deliver: (1) the value is staged in an owner-only file and piped into
  *           `apra-fleet secret --set NAME --persist --expires-at <time> -y`,
  *           which removes the file in the same command; it is never on a command
- *           line. (2) `apra-fleet kb-setup --remote <url> --token-ref NAME`
- *           points the member's KB at it if it does not already, and checks it
- *           with one KB call.
+ *           line. (2) `apra-fleet kb-setup --remote <url> --token-ref NAME
+ *           --project-dir <workFolder>` points the member's KB at it if it does
+ *           not already, and checks it with one KB call for the work folder's
+ *           project (the SSH command runs in the login folder, not there).
  * A step fails with a KbStepError reason only: no member output reaches a result.
  */
 import type { Agent, SSHExecResult } from '../types.js';
@@ -149,9 +150,14 @@ export function buildPushSecretCommand(binPath: string, name: string, expiresAt:
   });
 }
 
-/** `kb-setup --remote <url> --token-ref NAME [--check | --keep]` on the member. Exported for tests. */
-export function buildKbSetupCommand(binPath: string, remote: string, name: string, targetOs: TargetOS, shell: ReturnType<typeof getAgentShell>, flag?: '--check' | '--keep'): string {
-  const args = ['kb-setup', '--remote', remote, '--token-ref', name, ...(flag ? [flag] : [])];
+/**
+ * `kb-setup --remote <url> --token-ref NAME [--check | --keep] [--project-dir <dir>]`
+ * on the member. `projectDir` is the member's work folder as registered (an
+ * absolute path), quoted as an argument: no cd and no shell expansion. Exported
+ * for tests.
+ */
+export function buildKbSetupCommand(binPath: string, remote: string, name: string, targetOs: TargetOS, shell: ReturnType<typeof getAgentShell>, flag?: '--check' | '--keep', projectDir?: string): string {
+  const args = ['kb-setup', '--remote', remote, '--token-ref', name, ...(flag ? [flag] : []), ...(projectDir ? ['--project-dir', projectDir] : [])];
   return memberCommandFor(targetOs, shell, {
     posix: `${posixQuote(binPath)} ${args.map(posixQuote).join(' ')} 2>&1`,
     powershell: `$ErrorActionPreference = 'Continue'; & ${psQuote(binPath)} ${args.map(psQuote).join(' ')} 2>&1 | ForEach-Object { "$_" }; exit $LASTEXITCODE`,
@@ -271,7 +277,7 @@ export async function deliverKb(member: Agent, remote: string, secret: string, v
   let setup: SSHExecResult;
   try {
     // --keep: the write itself refuses a config changed since the check in prepare.
-    setup = await d.exec(member, buildKbSetupCommand(binPath, remote, secret, targetOs, shell, opts.keepMemberKb ? '--keep' : undefined), MEMBER_CLI_TIMEOUT_MS);
+    setup = await d.exec(member, buildKbSetupCommand(binPath, remote, secret, targetOs, shell, opts.keepMemberKb ? '--keep' : undefined, member.workFolder), MEMBER_CLI_TIMEOUT_MS);
   } catch {
     throw new KbStepError('kb-setup-failed');
   }
@@ -280,8 +286,8 @@ export async function deliverKb(member: Agent, remote: string, secret: string, v
   if (opts.keepMemberKb && result && result.error === 'kept' && typeof result.check === 'string' && KEEP_REFUSALS[result.check]) {
     throw new KbStepError(KEEP_REFUSALS[result.check]);
   }
-  // A build that knows --check but not --keep answers with its usage line.
-  if (opts.keepMemberKb && result && result.error === 'usage') throw new KbStepError('install-too-old');
+  // A build that does not know --keep or --project-dir answers with its usage line.
+  if (result && result.error === 'usage') throw new KbStepError('install-too-old');
   const verification = result?.verification;
   if (setup.code !== 0 || !result || typeof verification !== 'string') throw new KbStepError('kb-setup-failed');
   const change = result.kbSetup === 'written' && typeof result.previous === 'string' ? CHANGE_OF_PREVIOUS[result.previous] : undefined;

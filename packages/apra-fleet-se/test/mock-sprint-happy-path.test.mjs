@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { checkHarvesterContract, runOnce, runDevelopLoopScenario, withScenarioMarkers, REQUIRED_AGENT_TYPES, uniqueMockBranch, mockCmdResult, isSpawnFailure } from './helpers/mock-sprint-harness.mjs';
+import { checkHarvesterContract, runOnce, runDevelopLoopScenario, withScenarioMarkers, REQUIRED_AGENT_TYPES, uniqueMockBranch, mockCmdResult, isSpawnFailure, isVcsPayloadStagingCommand, withStagedBody } from './helpers/mock-sprint-harness.mjs';
 
 const check = (cond, msg) => assert.ok(cond, msg);
 
@@ -162,7 +162,9 @@ test('mock sprint: happy path is deterministic across two independent runs', asy
         // push; they are verification, not part of the publish sequence this
         // tail pins, so they are skipped here.
         const isLandedCheckRead = (c) => typeof c === 'string' && (c === 'git rev-parse HEAD' || /^git (ls-remote|fetch|rev-list --count) /.test(c));
-        const publishTail = run1.commandLog.filter((c) => !isLandedCheckRead(c));
+        // The request-body staging bookkeeping (git-exclude + delete of the
+        // staged body) wraps the PR call; it is not part of the pinned tail.
+        const publishTail = run1.commandLog.filter((c) => !isLandedCheckRead(c) && !isVcsPayloadStagingCommand(c));
         const pushIdx = publishTail.length - 3;
         const originUrlIdx = publishTail.length - 2;
         const prIdx = publishTail.length - 1;
@@ -188,7 +190,7 @@ test('mock sprint: happy path is deterministic across two independent runs', asy
             `Expected NO credential-token read to be dispatched by the orchestrator (the vcs_credential_exec handoff reads it server-side), got: ${JSON.stringify(run1.commandLog.filter((c) => typeof c === 'string' && c.startsWith('$HOME/.fleet-git-credential-')))}`
         );
         check(
-            publishTail[prIdx] && publishTail[prIdx].startsWith('curl -sS -X POST') && publishTail[prIdx].includes('/pulls') && publishTail[prIdx].includes('"base":"main"') && publishTail[prIdx].includes(`"head":"${RUN1_BRANCH}"`),
+            publishTail[prIdx] && publishTail[prIdx].startsWith('curl -sS -X POST') && publishTail[prIdx].includes('/pulls') && withStagedBody(publishTail[prIdx]).includes('"base":"main"') && withStagedBody(publishTail[prIdx]).includes(`"head":"${RUN1_BRANCH}"`),
             `Expected last commandLog entry to be the VCSModule PR-raise (not merge) command, got: ${JSON.stringify(publishTail[prIdx])}`
         );
         // apra-fleet-eft.8.x (syncMemberBefore/G-pull) legitimately issues
@@ -404,10 +406,10 @@ test('mock sprint: happy path is deterministic across two independent runs', asy
         // entry doubles as the PASS-verdict PR-text tripwire.
         // apra-fleet-tfx.8.4: the PR is now raised via VCSModule's REST
         // `curl ... /pulls` command, whose title/body are JSON string fields
-        // inside the `-d '{...}'` payload, not `gh pr create`'s `--title`/
-        // `--body` flags -- match the new JSON shape.
+        // in the staged `--data-binary @<path>` body, not `gh pr create`'s
+        // `--title`/`--body` flags -- match the new JSON shape.
         check(
-            publishTail[prIdx] && /"title":"[^"]*PASS[^"]*"/.test(publishTail[prIdx]) && /## Sprint verdict: PASS/.test(publishTail[prIdx]),
+            publishTail[prIdx] && /"title":"[^"]*PASS[^"]*"/.test(withStagedBody(publishTail[prIdx])) && /## Sprint verdict: PASS/.test(withStagedBody(publishTail[prIdx])),
             `Expected the PR title AND body to include the PASS verdict, got: ${publishTail[prIdx]}`
         );
 

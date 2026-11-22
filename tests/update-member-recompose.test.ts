@@ -193,7 +193,8 @@ describe('update_member re-composes permissions after a member install/upgrade',
     });
     const a = remoteMember();
     const first = await updateMember({ member_id: a.id, fleet_install: 'auto' } as any);
-    expect(first).toContain('fleetMcp: unavailable (install-failed)');
+    expect(first).toMatchObject({ isError: true, structuredContent: { reason: 'install-failed' } });
+    expect((first as { text: string }).text).toContain('fleetMcp: unavailable (install-failed)');
     expect(mockCompose).not.toHaveBeenCalled();
     // `apra-fleet start` on the member, then the refresh member_detail recommends.
     w.autostartFails = false;
@@ -220,7 +221,8 @@ describe('update_member re-composes permissions after a member install/upgrade',
     __setMemberFleetMcpDeps(fakeDeps(w));
     const a = remoteMember();
     const first = await updateMember({ member_id: a.id, fleet_install: 'auto' } as any);
-    expect(first).toContain('fleetMcp: unavailable (install-failed)');
+    expect(first).toMatchObject({ isError: true, structuredContent: { reason: 'install-failed' } });
+    expect((first as { text: string }).text).toContain('fleetMcp: unavailable (install-failed)');
     expect(mockCompose).not.toHaveBeenCalled();
     // `apra-fleet start` on the member: the server now answers.
     w.autostartFails = false;

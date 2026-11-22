@@ -719,6 +719,7 @@ async function deliverConfigFile(
 const COMPOSE_OWNED_FLEET_MCP_REASONS = new Set([
   'member-config-unreadable',
   'member-config-unparseable',
+  'member-config-changed',
   'opencode-config-tracked',
   'opencode-config-unparseable',
   'mcp-entry-missing',
@@ -729,6 +730,7 @@ function memberConfigWhy(reason: string): string {
   if (reason.endsWith('-tracked')) return 'tracked by git';
   if (reason.endsWith('-unparseable')) return 'not strict JSON';
   if (reason.endsWith('-unreadable')) return 'unreadable';
+  if (reason.endsWith('-changed')) return 'being changed by another writer';
   return reason;
 }
 

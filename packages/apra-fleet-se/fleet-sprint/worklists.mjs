@@ -13,7 +13,7 @@
 // <-> worklists.mjs cycle is safe because every use is inside a function
 // body, never at module-evaluation time.
 import { normalizeTierToken, DEFAULT_CONTEXT_CEILING } from './runner.js';
-import { laneOf } from './beads-scope.mjs';
+import { containerIdsOf, lowerOrderLaneMates } from './beads-scope.mjs';
 
 /**
  * Validates a streak-assignment agent() result against the set of currently
@@ -155,21 +155,14 @@ export function groupStreaksFromLaneMetadata(currentReady) {
 export function holdBackByLaneOrder(ready, scopeBeads) {
     const list = Array.isArray(ready) ? ready : [];
     const kept = new Set(list.map((b) => String(b.id)));
-    const openLaned = [];
-    const seen = new Set();
+    const byId = new Map();
     for (const b of [...(Array.isArray(scopeBeads) ? scopeBeads : []), ...list]) {
-        if (!b || seen.has(String(b.id))) continue;
-        seen.add(String(b.id));
-        if (b.status !== 'closed' && laneOf(b)) openLaned.push(b);
+        if (b && b.id !== undefined && b.id !== null && !byId.has(String(b.id))) byId.set(String(b.id), b);
     }
-    const lowerOpenMates = (bead) => {
-        const lane = laneOf(bead);
-        if (!lane) return [];
-        return openLaned
-            .filter((m) => String(m.id) !== String(bead.id))
-            .filter((m) => { const ml = laneOf(m); return ml.streak === lane.streak && ml.order < lane.order; })
-            .map((m) => String(m.id));
-    };
+    // A container (the parent of another in-scope bead) never holds a bead:
+    // it can only close after its children (lowerOrderLaneMates).
+    const containerIds = containerIdsOf(byId);
+    const lowerOpenMates = (bead) => lowerOrderLaneMates(bead, byId, { containerIds });
     const heldOn = new Map();
     let changed = true;
     while (changed) {

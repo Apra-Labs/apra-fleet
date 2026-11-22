@@ -267,6 +267,35 @@ export async function memberFileExists(
   return r.code === 0;
 }
 
+/** Printed by memberFilePresenceCommand when the file exists. */
+export const MEMBER_FILE_PRESENT_MARKER = 'FLEET_MEMBER_FILE_PRESENT';
+
+/**
+ * Presence probe that answers with a POSITIVE marker on stdout (never by exit
+ * code alone): a regular file at `absPath` prints MEMBER_FILE_PRESENT_MARKER,
+ * a missing path (or a directory) prints nothing. Built on the same
+ * `test -f` / `Test-Path -PathType Leaf` tests as memberFileExists. A channel
+ * that loses or fakes the exit code therefore can never make a missing file
+ * look present, or the reverse. Resolved, quoted paths only (no expansion).
+ */
+export function memberFilePresenceCommand(absPath: string, posix: boolean): string {
+  if (posix) return `if ${memberFileExistsPosixCommand(absPath)}; then printf '%s' '${MEMBER_FILE_PRESENT_MARKER}'; fi`;
+  const p = escapePowerShellArgInner(absPath.replace(/\//g, '\\'));
+  return `if (Test-Path -LiteralPath '${p}' -PathType Leaf) { [Console]::Out.Write('${MEMBER_FILE_PRESENT_MARKER}') }`;
+}
+
+/**
+ * Tells an EXISTING empty file from a MISSING one after a read came back
+ * empty (both read as ''). True when the probe printed the presence marker,
+ * and also when the probe itself failed (non-zero exit): the safe answer for a
+ * caller about to replace the file is "it exists", which makes it refuse.
+ */
+export async function memberFilePresent(exec: MemberExecFn, absPath: string, posix: boolean): Promise<boolean> {
+  const r = await exec(memberFilePresenceCommand(absPath, posix), FS_OP_TIMEOUT_MS);
+  if (typeof r.code === 'number' && r.code !== 0) return true;
+  return (r.stdout ?? '').includes(MEMBER_FILE_PRESENT_MARKER);
+}
+
 /**
  * True when git tracks `relPath` in the member work folder
  * (`git ls-files --error-unmatch`). Not a repo / git missing / untracked all
@@ -331,10 +360,28 @@ export async function resolveClaudeProjectKey(
 /** Reads and parses a member-side JSON file. Returns {} for a missing/empty
  *  file; THROWS a typed MemberConfigError for an unreadable file or a non-empty
  *  file that is not a JSON object, so a caller can never clobber a file it
- *  could not understand. */
-export async function readMemberJson(exec: MemberExecFn, absPath: string, posix: boolean): Promise<Record<string, unknown>> {
+ *  could not understand.
+ *
+ *  `opts.missingOnly`: only a MISSING file reads as {}. An empty read is
+ *  followed by a presence probe (memberFilePresent); an EXISTING empty (or
+ *  whitespace-only) file throws MemberConfigNotJsonError. For a writer whose
+ *  target another program rewrites concurrently (Claude Code's .claude.json),
+ *  where an empty read can be a torn write in progress and replacing it with
+ *  only the fleet keys would drop everything else. Off by default: the other
+ *  callers either only read, or own the file outright. */
+export async function readMemberJson(
+  exec: MemberExecFn,
+  absPath: string,
+  posix: boolean,
+  opts: { missingOnly?: boolean } = {},
+): Promise<Record<string, unknown>> {
   const raw = (await readMemberFile(exec, absPath, posix)).trim();
-  if (!raw) return {};
+  if (!raw) {
+    if (opts.missingOnly && await memberFilePresent(exec, absPath, posix)) {
+      throw new MemberConfigNotJsonError(absPath, 'exists but is empty (possibly caught mid-write)');
+    }
+    return {};
+  }
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
