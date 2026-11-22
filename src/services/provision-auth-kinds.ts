@@ -47,7 +47,7 @@ const HANDLER_FAILURES = {
   'member-kb-local-store': 'the member KB config uses its local store; keep_member_kb leaves it as it is, so nothing was minted or pushed',
   'member-kb-unreadable': 'the member KB config could not be read; keep_member_kb leaves it as it is, so nothing was minted or pushed',
   'member-kb-other-token': 'the member KB config names this remote with its own token source; keep_member_kb leaves it as it is, so nothing was minted or pushed',
-  'kb-setup-failed': 'the secret was stored on the member and stays there, but setting up the member KB to use it failed; run apra-fleet kb-setup --remote <url> --token-ref <secret> on the member to see why',
+  'kb-setup-failed': 'the secret was stored on the member and stays there, but setting up the member KB to use it failed; run apra-fleet kb-setup --remote <url> --token-ref <secret> --project-dir <work folder> on the member to see why',
 } as const;
 
 export type ProvisionHandlerFailure = keyof typeof HANDLER_FAILURES;
@@ -259,6 +259,12 @@ async function resolveValue(name: string, source: SecretSource): Promise<{ value
   }
 }
 
+/** The fixed text of a handler failure, with the member's work folder filled in where it names one. */
+function failureText(reason: ProvisionHandlerFailure, member: Agent): string {
+  const text: string = HANDLER_FAILURES[reason];
+  return reason === 'kb-setup-failed' && member.workFolder ? text.replace('<work folder>', `"${member.workFolder}"`) : text;
+}
+
 /** Runs a handler step. Only a known reason survives a failure, with its fixed text. */
 async function handlerStep<T>(step: () => T | Promise<T>, kind: string, name: string, member: Agent): Promise<T> {
   try {
@@ -266,7 +272,7 @@ async function handlerStep<T>(step: () => T | Promise<T>, kind: string, name: st
   } catch (err) {
     const known = err instanceof ProvisionHandlerError && Object.hasOwn(HANDLER_FAILURES, err.reason);
     const reason: ProvisionHandlerFailure = known ? err.reason : 'delivery-failed';
-    throw new ProvisionAuthError(reason, `${HANDLER_FAILURES[reason]} (kind "${kind}", secret "${name}", member "${member.friendlyName}")`);
+    throw new ProvisionAuthError(reason, `${failureText(reason, member)} (kind "${kind}", secret "${name}", member "${member.friendlyName}")`);
   }
 }
 

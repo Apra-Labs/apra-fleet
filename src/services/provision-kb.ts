@@ -33,8 +33,12 @@ import { memberCommandFor, memberBinPath, probeMemberFleetVersion, probeMemberIn
 import { removeMemberSecretFile, writeMemberSecretFile } from './member-secret-env.js';
 import { kbConfigMatch } from './knowledge/kb-config.js';
 
-/** The first member install with `secret --set --expires-at` and `kb-setup`. */
-export const KB_AUTH_MIN_MEMBER_VERSION = '0.4.5';
+/**
+ * The first member install with `secret --set --expires-at` and `kb-setup` with
+ * `--keep` and `--project-dir` (0.4.5 has neither flag). A dev build reports
+ * v<core>_<hash>; the hash is ignored, so a 0.4.6 dev build passes.
+ */
+export const KB_AUTH_MIN_MEMBER_VERSION = '0.4.6';
 
 const PROBE_TIMEOUT_MS = 15_000;
 const MEMBER_CLI_TIMEOUT_MS = 60_000;
