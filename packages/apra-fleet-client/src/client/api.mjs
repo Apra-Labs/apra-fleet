@@ -144,6 +144,12 @@
  *   present as an EXTRA field on a typed failure (max_turns_exhausted, auth, server,
  *   overloaded, ...) or a non-strict Claude failure whose turn carried refusals: the typed
  *   reason wins.
+ * @property {'cheap'|'standard'|'premium'|null} [resolved_tier] - The tier keyword requested
+ *   ('standard' when `model` was omitted), or null when the caller passed a literal model id.
+ *   Present on every result that got as far as model resolution (success and later failures).
+ * @property {string} [resolved_model] - The concrete model string actually passed to the
+ *   provider. Differs from the requested tier's model when the member's tiers forced a
+ *   fallback, so a downgrade is visible to the caller.
  * @property {PermissionDenied} [permissionWarning] - Present on a SUCCESSFUL dispatch whose
  *   session refused tool calls without failing it: a healable:false refusal (never grant it),
  *   or any Claude refusal when `fail_on_permission_denial` was not set. A logged warning.

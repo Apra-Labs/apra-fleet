@@ -128,6 +128,12 @@ export interface ExecutePromptStructured {
    *  failure that ran out of budget during setup (cloud start, before the
    *  first attempt). Absent on every other result. */
   dispatched?: false;
+  /** Tier keyword requested (cheap|standard|premium; 'standard' when model omitted),
+   *  or null when the caller passed a literal model id. Present on every result
+   *  that got as far as model resolution. */
+  resolved_tier?: 'cheap' | 'standard' | 'premium' | null;
+  /** Concrete model string actually passed to the provider. */
+  resolved_model?: string;
   [key: string]: unknown;
 }
 
@@ -648,7 +654,27 @@ async function executePromptInteractive(
   }
 }
 
+/** Output-only: the tier keyword requested and the concrete model passed to the provider. */
+interface PromptResolution { resolved_tier?: 'cheap' | 'standard' | 'premium' | null; resolved_model?: string }
+
 export async function executePrompt(input: ExecutePromptInput, extra?: any): Promise<string | ExecutePromptResult> {
+  const resolution: PromptResolution = {};
+  const result = await executePromptCore(input, extra, resolution);
+  // Every result that got as far as model resolution carries both fields.
+  if (typeof result === 'object' && result !== null && resolution.resolved_model !== undefined) {
+    return {
+      ...result,
+      structuredContent: {
+        ...(result.structuredContent ?? {}),
+        resolved_tier: resolution.resolved_tier ?? null,
+        resolved_model: resolution.resolved_model,
+      },
+    };
+  }
+  return result;
+}
+
+async function executePromptCore(input: ExecutePromptInput, extra: any, resolution: PromptResolution): Promise<string | ExecutePromptResult> {
   // GitHub #563: max_total_s is measured from HERE, handler entry -- cloud
   // readiness, preflight and agent provisioning are all charged to it, since
   // the client's own deadline (max_total_s + a fixed grace) starts at the call.
@@ -1102,6 +1128,8 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   } else {
     resolvedModel = tiers[resolvedModel as keyof typeof tiers] ?? resolvedModel;
   }
+  resolution.resolved_tier = resolvedTier ?? null;
+  resolution.resolved_model = resolvedModel;
 
   const scope = new LogScope('execute_prompt', `[${resolvedModel}] resume=${input.resume} fork=${input.fork} timeout=${input.timeout_s ?? 300}s ${truncateForLog(maskSecrets(input.prompt), getLogPreviewChars())}`, agent);
 
