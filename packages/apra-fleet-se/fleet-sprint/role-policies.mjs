@@ -899,7 +899,11 @@ const reviewer = policy('reviewer', {
     agentType: 'reviewer',
     model: fixedTier('reviewer'),
     schema: 'reviewerVerdict',
-    resumeArg: roundSessionResume('reviewer'),
+    // Every review round starts a FRESH session (resume false): a cross-round
+    // resume carried 200k+ tokens of context into rounds 2-3. Prior-round
+    // findings reach the fresh session through the prompt instead. The
+    // max-turns resume below is an in-dispatch continuation, unaffected.
+    resumeArg: FRESH_SESSION_RESUME,
     bracket: bracketed(false, null),
     timeouts: budgets('DISPATCH_INACTIVITY_TIMEOUT_S', 'DISPATCH_TIMEOUT_S'),
     maxTurns: turns('BASE_REVIEWER_MAX_TURNS', 1, 500),
@@ -946,10 +950,6 @@ const reviewer = policy('reviewer', {
         // -- deliberately NOT listed) still propagates: that is a branch
         // integrity problem, not a blip.
         extraDispatchErrors: ['GitSyncError', 'DoltSyncError'],
-        // On FAILURE only. A failed round's session must not be resumed by the
-        // next round; a SUCCESSFUL round's must, which is exactly why this is
-        // a degrade step rather than a postResult one.
-        steps: ['clear-round-session'],
     }),
     postResult: ['reviewer-contract-guard', 'kb-apply'],
 });

@@ -34,7 +34,7 @@ const FULL_REVIEWER_PROMPT_MARKERS = [
     'The full sprint scope, from `bd list --json`:',
 ];
 
-test('mock sprint: round-resume -- reviewer/planner warm within-cycle resume, reset fresh across cycles', async () => {
+test('mock sprint: round-resume -- planner warm within-cycle resume, reviewer always fresh, reset fresh across cycles', async () => {
     await withScenarioMarkers('round-resume (warm within-cycle, fresh across cycles)', async () => {
         console.log('Running mock sprint scenario (round-resume: warm within-cycle, fresh across cycles)...');
 
@@ -159,8 +159,8 @@ test('mock sprint: round-resume -- reviewer/planner warm within-cycle resume, re
             `Expected reviewer round 1 (no prior round) to be fresh (resume=false), got resume=${JSON.stringify(reviewerDispatches[0].resume)}`
         );
         check(
-            reviewerDispatches[1].resume === 'sess-rev-c1r1',
-            `Expected reviewer round 2 (SAME cycle as round 1) to resume round 1's explicit session id 'sess-rev-c1r1', got resume=${JSON.stringify(reviewerDispatches[1].resume)}`
+            reviewerDispatches[1].resume === false,
+            `Expected reviewer round 2 (SAME cycle as round 1) to be FRESH (resume=false) -- reviewers never resume across rounds, got resume=${JSON.stringify(reviewerDispatches[1].resume)}`
         );
         check(
             reviewerDispatches[2].resume === false,
@@ -181,112 +181,6 @@ test('mock sprint: round-resume -- reviewer/planner warm within-cycle resume, re
         check(
             plannerDispatches[1].resume === false,
             `Expected the cycle-2 re-plan dispatch to be FRESH (resume=false), NOT cycle 1's recorded 'sess-plan-c1', got resume=${JSON.stringify(plannerDispatches[1].resume)}`
-        );
-    });
-});
-
-test('mock sprint: round-resume -- on session_not_found the engine never re-sends the delta prompt and the next round is fresh', async () => {
-    await withScenarioMarkers('round-resume (session_not_found -> full prompt, fresh next round)', async () => {
-        console.log('Running mock sprint scenario (round-resume: session_not_found handling)...');
-
-        const sc = await runDevelopLoopScenario('roundresumesnf', {
-            members: ['local'],
-            taskSpecs: [
-                { title: 'Task: RR-SNF target X' },
-            ],
-            // maxCycles=2: cycle 1's review round fails via session_not_found
-            // (never reopens X, since a dispatch failure is not a reviewer
-            // verdict), so cycle 1 cannot exit; cycle 2 has no ready beads
-            // (X already closed) and dispatches a fresh re-review that
-            // finally approves and lets the sprint complete.
-            maxCycles: 2,
-            reviewerHandler: async ({ opts, tempDir: td, epicBead, reviewRound: rRound }) => {
-                if (rRound === 1) {
-                    const list = JSON.parse((await runCmd(`bd list --parent ${epicBead.id} --all --json`, td)).stdout || '[]');
-                    const x = list.find((b) => b.title.startsWith('Task: RR-SNF target X'));
-                    return {
-                        content: [{
-                            text: JSON.stringify({
-                                verdict: 'CHANGES_NEEDED',
-                                notes: `${x.id} needs a small fix, please address.`,
-                                reopenIds: [x.id],
-                                newTasks: [],
-                            }),
-                        }],
-                        structuredContent: { sessionId: 'sess-r1' },
-                    };
-                }
-                // Rounds 2+ within cycle 1: the ONLY session ever recorded is
-                // 'sess-r1' (round 1's), so ANY dispatch that carries it
-                // explicitly (round 2's first attempt AND its same-round
-                // retry -- runner.js recomputes `resume` once per ROUND, not
-                // per attempt) is answered with a TERMINAL session_not_found,
-                // exactly like execute_prompt's real semantics for an
-                // explicit id that cannot be resumed (apra-fleet-eft.78.1).
-                if (opts.resume === 'sess-r1') {
-                    return {
-                        content: [{ text: 'session not found' }],
-                        structuredContent: { isError: true, reason: 'session_not_found', sessionId: 'sess-r1' },
-                    };
-                }
-                // The cycle-2 fresh re-review (resume must be false by now):
-                // approves and lets the sprint finish.
-                return {
-                    content: [{
-                        text: JSON.stringify({ verdict: 'APPROVED', notes: 'X looks good.', reopenIds: [], newTasks: [] }),
-                    }],
-                };
-            },
-        });
-
-        check(!sc.error, `session_not_found scenario should not error: ${sc.error ? sc.error.constructor.name + ': ' + sc.error.message : ''}`);
-        check(
-            sc.result && sc.result.status === 'success',
-            `Expected the sprint to still complete successfully after a session_not_found round degrades to CHANGES_NEEDED, got: ${JSON.stringify(sc.result)}`
-        );
-
-        const taskX = sc.tasks.find((t) => t.title.startsWith('Task: RR-SNF target X'));
-        check(sc.finalBeadsById.get(taskX.id)?.status === 'closed', `Expected X closed, got: ${JSON.stringify(sc.finalBeadsById.get(taskX.id))}`);
-
-        const reviewerDispatches = sc.dispatched.filter((d) => d.agent === 'reviewer' && d.label !== 'Final Review');
-        check(
-            reviewerDispatches.length === 4,
-            `Expected exactly 4 non-final reviewer dispatches (R1, R2 attempt 1, R2 attempt 2 (same-round retry), cycle-2 fresh re-review), got ${reviewerDispatches.length}: ` +
-            `${JSON.stringify(reviewerDispatches.map((d) => ({ resume: d.resume })))}`
-        );
-        check(reviewerDispatches[0].resume === false, `Expected round 1 to be fresh, got resume=${JSON.stringify(reviewerDispatches[0].resume)}`);
-        check(
-            reviewerDispatches[1].resume === 'sess-r1' && reviewerDispatches[2].resume === 'sess-r1',
-            `Expected BOTH the failing dispatch and its same-round retry to carry round 1's explicit session id 'sess-r1' (never silently dropped), got resume=${JSON.stringify([reviewerDispatches[1].resume, reviewerDispatches[2].resume])}`
-        );
-        check(
-            reviewerDispatches[3].resume === false,
-            `Expected the round AFTER the session_not_found failure to be a FRESH session (resume=false), not a resume of the now-dead 'sess-r1', got resume=${JSON.stringify(reviewerDispatches[3].resume)}`
-        );
-
-        // The core engine-level assertion: NOT ONE of these dispatches --
-        // including the two that failed with session_not_found and the
-        // fresh round that followed -- is ever the short "continue where you
-        // left off" delta/continuation prompt (dispatchReviewerResume's text,
-        // reserved for the max_turns_exhaustion in-dispatch-continuation
-        // case, orthogonal to round-resume). Every one of them is the full,
-        // self-contained buildReviewerPrompt() text.
-        for (const d of reviewerDispatches) {
-            check(
-                !d.prompt.includes(REVIEWER_CONTINUATION_TEXT),
-                `Reviewer dispatch (resume=${JSON.stringify(d.resume)}) must never be the delta/continuation prompt: ${d.prompt.slice(0, 120)}`
-            );
-            check(
-                FULL_REVIEWER_PROMPT_MARKERS.some((m) => d.prompt.includes(m)),
-                `Reviewer dispatch (resume=${JSON.stringify(d.resume)}) must be the full self-contained prompt: ${d.prompt.slice(0, 120)}`
-            );
-        }
-
-        // The dispatch-failure path logged the round as a degraded
-        // CHANGES_NEEDED rather than silently swallowing or crashing on it.
-        check(
-            sc.logs.some((l) => l.includes('Reviewer: agent dispatch failed') && l.includes('session_not_found')),
-            `Expected a logged 'Reviewer: agent dispatch failed' line naming session_not_found, logs: ${JSON.stringify(sc.logs.filter((l) => l.includes('Reviewer')))}`
         );
     });
 });

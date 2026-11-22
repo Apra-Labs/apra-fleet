@@ -149,9 +149,8 @@ export const EXECUTION_ENGINE_DISPATCHES = [
         watchdog: false,
         watchdogLabel: null,
         schema: 'reviewerVerdict',
-        // 'call-site': the engine passes through whatever the runner's
-        // per-round session lookup handed it (roundSessions.resumeArgFor).
-        resume: 'call-site',
+        // Every review round starts a fresh session (never a cross-round resume).
+        resume: false,
     },
     {
         role: 'reviewer',

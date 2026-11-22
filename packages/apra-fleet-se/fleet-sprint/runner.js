@@ -2585,7 +2585,6 @@ async function runSprintCycle(context) {
     function degradedReviewForReviewBase(err) {
         const reviewerPolicy = policyFor('reviewer');
         const d = reviewerPolicy.degrade;
-        roundSessions.clear(reviewerPolicy.ladder);
         log(
             `Reviewer: review diff base failed, degrading (${d.kind}) -- the reviewer was NOT dispatched this round ` +
             `and no fallback to the local '${validated.baseBranch}' branch was used: ${err.message}`
@@ -2606,6 +2605,10 @@ async function runSprintCycle(context) {
      * @param {{ beadIds: string[], acceptanceCriteriaJson: string }} opts
      * @returns {Promise<{ verdict: string, notes: string, reopenIds: string[], replanIds?: string[], newTasks: object[] }>}
      */
+    // The previous review round's verdict and the cycle it belongs to; only
+    // used when the next dispatch is in the same cycle.
+    let priorReviewFindings = null;
+
     async function dispatchReview({ beadIds, acceptanceCriteriaJson }) {
         const reviewerPool = getMembersForRole(ROLE_REVIEWER);
         // The diff range the reviewer is told to use: the fork point of the
@@ -2689,6 +2692,8 @@ async function runSprintCycle(context) {
                 goal: validated.goal,
                 kbCandidates,
                 kbBlock: reviewerKbBlock,
+                priorRoundFindings: priorReviewFindings && priorReviewFindings.cycle === cycle
+                    ? priorReviewFindings.verdict : undefined,
             }),
             // Restate the review scope: a resumed dispatch replaces the
             // delivered prompt artifact, so the scope must be repeated inline.
@@ -2708,18 +2713,13 @@ async function runSprintCycle(context) {
             // The reviewer pool head is a runner-local value; the policy names
             // it by binding and the engine resolves it from here.
             bindings: { 'reviewerPool[0]': reviewerPool[0] },
-            // Within THIS cycle's develop-review loop, resume the reviewer's own
-            // prior-round session by explicit session id so a re-review of the
-            // next round's fixes keeps the diff/context it already built. False
-            // on the first round of any cycle (roundSessions never resumes
-            // across cycles) and cleared on a failed round by the policy's
-            // 'clear-round-session' degrade step. The max_turns-exhaustion
-            // resume overrides this with the exhausted dispatch's OWN session
-            // id (`resume: "<sessionId>"`, never `resume: true`, which the
-            // server resolves to the member's last session, whichever role ran
-            // it) -- an in-dispatch continuation, not a cross-round one.
-            resumeArg: roundSessions.resumeArgFor('reviewer', cycle),
-            onSessionId: (id, meta) => roundSessions.record('reviewer', cycle, id, meta),
+            // Every review round is a FRESH session (the policy's resumeArg is
+            // fresh-session): resuming the prior round's session started rounds
+            // 2-3 at 200k+ tokens of context. The prior round's findings reach
+            // this fresh session through `priorRoundFindings` in the prompt.
+            // The max_turns-exhaustion resume still continues the exhausted
+            // dispatch's OWN session by explicit id (`resume: "<sessionId>"`,
+            // never `resume: true`) -- an in-dispatch continuation.
             onResultRejected: (reason) => new ReviewerContractViolationError(
                 `Reviewer returned CHANGES_NEEDED with empty reopenIds AND empty newTasks twice in a ` +
                 `row (cycle ${cycle}) -- a self-contradictory verdict with nothing for the ` +
@@ -2744,6 +2744,12 @@ async function runSprintCycle(context) {
         // (the per-round review and the scope-wide re-review); a round with
         // no confirmations makes no call. Never throws.
         if (typeof kbWork.commitRound === 'function') await kbWork.commitRound(`review C${cycle}`);
+        // Remember this round's verdict (a genuine one only -- a degraded
+        // dispatch-failure carries no findings) for the next round of THIS
+        // cycle's fresh reviewer prompt.
+        if (reviewOutcome.value && !reviewOutcome.value.dispatchFailed) {
+            priorReviewFindings = { cycle, verdict: reviewOutcome.value };
+        }
         return reviewOutcome.value;
     }
 
