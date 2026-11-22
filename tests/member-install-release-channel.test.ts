@@ -338,7 +338,18 @@ function toolDeps(installed: string | null, marker = true, download?: MemberFlee
   };
 }
 
-describe('update_member / register_member never fail on an install that cannot happen', () => {
+// update_member with an explicit fleet_install fails loudly (isError, reason in
+// text + structuredContent) when the install does not happen; register_member
+// still succeeds with the WARNING.
+type UpdateOut = Awaited<ReturnType<typeof updateMember>>;
+const failureOf = (out: UpdateOut) => {
+  expect(typeof out).toBe('object');
+  const f = out as Exclude<UpdateOut, string>;
+  expect(f.isError).toBe(true);
+  return f;
+};
+
+describe('an install that cannot happen: update_member fails loudly, register_member succeeds with a WARNING', () => {
   beforeEach(() => {
     backupAndResetRegistry();
     vi.clearAllMocks();
@@ -354,8 +365,11 @@ describe('update_member / register_member never fail on an install that cannot h
     const a = makeTestAgent({ os: 'linux', llmProvider: 'claude', workFolder: '/home/bella/repo', friendlyName: 'bella' });
     addAgent(a);
     __setMemberFleetMcpDeps(toolDeps(null));
-    const out = await updateMember({ member_id: a.id, fleet_install: 'auto' } as any);
-    expect(out).toContain('Member "bella" updated.');
+    const f = failureOf(await updateMember({ member_id: a.id, fleet_install: 'auto' } as any));
+    const out = f.text;
+    expect(f.structuredContent).toMatchObject({ error: 'fleet-install-not-done', fleet_install: 'auto', reason: 'no-matching-release', memberUpdated: true, memberId: a.id });
+    expect(out).toMatch(/^ERROR: fleet_install "auto" did not happen on member "bella": no-matching-release/);
+    expect(out).not.toContain('Member "bella" updated.');
     expect(out).toContain('fleetMcp: unavailable (no-matching-release)');
     expect(out).toContain('(see WARNING below)');
     expect(out).toContain('WARNING: apra-fleet on member "bella"');
@@ -368,8 +382,9 @@ describe('update_member / register_member never fail on an install that cannot h
     const a = makeTestAgent({ os: 'linux', llmProvider: 'claude', workFolder: '/home/bella/repo', friendlyName: 'bella' });
     addAgent(a);
     __setMemberFleetMcpDeps(toolDeps('v0.4.3'));
-    const out = await updateMember({ member_id: a.id, fleet_install: 'auto' } as any);
-    expect(out).toContain('Member "bella" updated.');
+    const f = failureOf(await updateMember({ member_id: a.id, fleet_install: 'auto' } as any));
+    const out = f.text;
+    expect(f.structuredContent).toMatchObject({ reason: 'no-matching-release', fleetMcp: { state: 'available', version: 'v0.4.3' } });
     expect(out).toContain('fleetMcp: available (apra-fleet v0.4.3)');
     expect(out).toContain("keeps its installed apra-fleet v0.4.3 instead of this orchestrator's build");
     expect(out).toContain('Reason: no-matching-release');
@@ -379,8 +394,9 @@ describe('update_member / register_member never fail on an install that cannot h
     const a = makeTestAgent({ os: 'linux', llmProvider: 'claude', workFolder: '/home/bella/repo', friendlyName: 'bella' });
     addAgent(a);
     __setMemberFleetMcpDeps(toolDeps('v0.4.3', false));
-    const out = await updateMember({ member_id: a.id, fleet_install: 'auto' } as any);
-    expect(out).toContain('Member "bella" updated.');
+    const f = failureOf(await updateMember({ member_id: a.id, fleet_install: 'auto' } as any));
+    const out = f.text;
+    expect(f.structuredContent).toMatchObject({ reason: 'full-install-running' });
     expect(out).toContain('WARNING: apra-fleet on member "bella"');
     expect(out).toContain('Reason: full-install-running');
     expect(out).toContain('follow the owner steps in the reason above');

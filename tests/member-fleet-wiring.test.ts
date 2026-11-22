@@ -533,6 +533,54 @@ describe('update_member fleet_install', () => {
       await server.close();
     }
   });
+
+  // Over MCP: a requested install whose installer upload fails is isError with
+  // the reason in text and structuredContent; an up-to-date member is not.
+  // Revert check: dropping the installNotDone return in updateMember (or the
+  // isError pass-through in wrapTool) fails the first case.
+  async function callUpdateOverMcp(args: Record<string, unknown>) {
+    const server = new McpServer({ name: 'um-test', version: '0.0.0' }, { capabilities: { logging: {} } });
+    await registerAllTools(server);
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverSide);
+    const client = new Client({ name: 'um-client', version: '0.0.0' }, { capabilities: {} });
+    await client.connect(clientSide);
+    try {
+      const r = await client.callTool({ name: 'update_member', arguments: args });
+      const text = ((r.content as Array<{ text?: string }>) ?? []).map(c => c.text ?? '').join('\n');
+      return { r, text };
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  }
+
+  it('a requested upgrade whose installer transfer fails is isError over MCP, reason in text and structuredContent', async () => {
+    const w = newWorld({ installed: 'v0.4.3' });
+    const d = withRealRecord(fakeDeps(w));
+    d.transfer = async (_a, localPaths) => ({ success: [], failed: localPaths.map(p => ({ path: path.basename(p), error: 'No such file' })) });
+    __setMemberFleetMcpDeps(d);
+    const a = remoteMember({ friendlyName: 'tf' });
+    const { r, text } = await callUpdateOverMcp({ member_id: a.id, fleet_install: 'auto', tags: ['x'] });
+    expect(r.isError).toBe(true);
+    expect(r.structuredContent).toMatchObject({ error: 'fleet-install-not-done', fleet_install: 'auto', reason: 'transfer-failed', memberUpdated: true, memberId: a.id });
+    expect(String((r.structuredContent as { detail?: string }).detail)).toContain('No such file');
+    expect(text).toMatch(/^ERROR: fleet_install "auto" did not happen on member "tf": transfer-failed -- .*No such file/m);
+    expect(text).not.toContain('Member "tf" updated.');
+    expect(installCmds(w)).toEqual([]);
+    // The other settings were saved.
+    expect(getAgent(a.id)!.tags).toEqual(['x']);
+  });
+
+  it('an up-to-date member (nothing to install) stays a success over MCP', async () => {
+    const w = newWorld();
+    __setMemberFleetMcpDeps(withRealRecord(fakeDeps(w)));
+    const a = remoteMember({ friendlyName: 'ok' });
+    const { r, text } = await callUpdateOverMcp({ member_id: a.id, fleet_install: 'auto' });
+    expect(r.isError).toBeFalsy();
+    expect(text).toContain('Member "ok" updated.');
+    expect(text).toContain('fleetMcp: available');
+  });
 });
 
 describe('member_detail fleetMcp fix lines name the update path', () => {
