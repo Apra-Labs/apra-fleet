@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "f9120840430d27924cc7797240f4660c5f35c226",
     "branch": "main",
-    "entry_count": 188
+    "entry_count": 191
   },
   "entries": [
     {
@@ -2214,6 +2214,29 @@
       "updated_at": "2026-09-25T22:26:33.791Z"
     },
     {
+      "id": "92bedcfe-94f0-41c8-837a-4e834da8427f",
+      "type": "learning",
+      "title": "Mock-sprint KB fakes: seed INFERRED entries inside the sprint and answer the bibleUnpushed git probe",
+      "summary": "promotionCandidates only offers INFERRED entries whose created_at is at or after the sprint start, so a fake KB entry seeded before runDevelopLoopScenario is never offered. A kb_bible_commit answering committed:false goes through bibleUnpushed (git status/log/diff), so a mock must answer those commands or the skip handling never runs.",
+      "symbols": [
+        "bibleUnpushed",
+        "bibleAttempt",
+        "promotionCandidates"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/git-sync.mjs",
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs",
+        "packages/apra-fleet-se/test/mock-sprint-kb-final-head-recheck.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-22T20:36:30.978Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/git-sync.mjs": "9c16cb8cc43e8fddcd847cf6fa7f0f7eb72d1bcc",
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "53cf003d0d7ad03d038208f83705879b991e082e",
+        "packages/apra-fleet-se/test/mock-sprint-kb-final-head-recheck.test.mjs": "310f907df46b9d3f661f9240ccfc4f6afcacc40e"
+      }
+    },
+    {
       "id": "93bbfb5a-0681-45d2-9024-ecf14c44a479",
       "type": "knowledge",
       "title": "boundChildEnv drops non-protected vars even when protected vars alone keep the block over the cap",
@@ -2614,6 +2637,30 @@
       }
     },
     {
+      "id": "aab21b69-5485-43fd-b9f3-9bf4fa0f62bb",
+      "type": "knowledge",
+      "title": "kb_promote stamps the basis at HEAD but keeps the old hash for dirty or untracked files",
+      "summary": "SqliteProvider.promote stamps source_file_hashes from the git blob at HEAD only for cited files whose work-tree content equals HEAD. A file with an uncommitted edit or no blob at HEAD keeps its previous basis hash and is reported in unstamped_files, so a capture against uncommitted work is admitted once committed.",
+      "symbols": [
+        "promote",
+        "headBasisFor",
+        "reviveAfterRestamp",
+        "describeBasisDrift"
+      ],
+      "source_files": [
+        "src/services/knowledge/sqlite-provider.ts",
+        "src/services/knowledge/bible-basis-filter.ts",
+        "tests/knowledge/kb-bible-commit.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-22T20:36:34.512Z",
+      "source_file_hashes": {
+        "src/services/knowledge/bible-basis-filter.ts": "a06bae05cb1825115cf8249b10257975abe6c674",
+        "src/services/knowledge/sqlite-provider.ts": "c8f57fb87eb24391e03c2806936b60bc937c159f",
+        "tests/knowledge/kb-bible-commit.test.ts": "7c0e78838b793e3591784074e8d3ca9f8e077840"
+      }
+    },
+    {
       "id": "af9ecaf3-fc46-44b2-bf75-456446e2fc99",
       "type": "learning",
       "title": "Detect an open sync bracket in a mock sprint through workflow._pauseGuard()",
@@ -2998,6 +3045,32 @@
         "src/cli/kb-profile.ts": "2ae2abf6f3c4a62e3ca10f3013fedcd43103bb24",
         "src/services/tool-registry.ts": "05e3d5e04b949b3bfefef7693c230e59da947f02",
         "tests/kb-tool-profile-e2e.test.ts": "949f75c916529d89cd7b80d5433042449935d31a"
+      }
+    },
+    {
+      "id": "cb356223-9df5-49ca-a74f-b179a35866e0",
+      "type": "knowledge",
+      "title": "basis_mismatch bible skips are re-verified by the next reviewer, not just retried",
+      "summary": "createKbWorkClient records each kb_bible_commit basis_mismatch skip in reverifyPending and offers it to the next reviewer as a reverify:true row (rendered by kbPromotionBlock as its own block). kb_promotions re-stamps via kb_promote; kb_discards drops via dropFromBible without kb_invalidate.",
+      "symbols": [
+        "createKbWorkClient",
+        "kbPromotionBlock",
+        "kbReverifyBlock",
+        "dropFromBible",
+        "recheckSprintBible",
+        "expireReverification"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/final-review.mjs",
+        "packages/apra-fleet-se/test/kb-bible-commit-round.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-22T20:36:27.365Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "53cf003d0d7ad03d038208f83705879b991e082e",
+        "packages/apra-fleet-se/fleet-sprint/phases/final-review.mjs": "0bd5f7d40437b1b66a5a858ec7ee17ad8812b88d",
+        "packages/apra-fleet-se/test/kb-bible-commit-round.test.mjs": "881577c75e5a5e556af3766271d7da9bb26e989b"
       }
     },
     {
