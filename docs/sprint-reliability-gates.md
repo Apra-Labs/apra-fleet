@@ -140,9 +140,13 @@ Design record for sprint-engine hardening around work that gets stranded mid-run
 - **Refusal resume on every role.** Every dispatched role row sets
   `retry.unmappableRefusalResume`; the resume happens at most once and only for a
   refused dispatch that reported a session id and whose row has a resume secondary.
-  The tool-less streak-assignment pass has the flag but no secondary, so an
-  unmappable refusal there still ends the run. See architecture.md for the
-  permission-refusal flow.
+  The tool-less streak-assignment pass has the flag but no secondary, so a refusal
+  there degrades to the fallback assignment (one bead per streak) instead of ending
+  the run. See architecture.md for the permission-refusal flow.
+- **Open-children hold is reported.** A parent stays verify-ineligible while any
+  child is open (deliberate). `classifyVerifySet` returns those entries with the
+  holding children (`heldBy`), and the Route log and Final Review notes name them so
+  a held parent is never silent.
 - **Review scope.** The reviewer's scope is the union of beads the engine verified
   as closed, minus beads whose publish was blocked or whose post-dispatch sync
   failed. A failed streak that still closed beads is therefore reviewed.
