@@ -12,7 +12,7 @@ import { AgentDispatchError } from '@apralabs/apra-fleet-workflow';
 import { dispatchRole, unmappableRefusalResumeNotice } from '../fleet-sprint/dispatch-role.mjs';
 import { MemberPermissionDeniedError } from '../fleet-sprint/errors.mjs';
 import { policyFor } from '../fleet-sprint/role-policies.mjs';
-import { createRecordingCtx, ROLE_CALL_OPTS, BINDINGS } from './helpers/dispatch-role-harness.mjs';
+import { createRecordingCtx, ROLE_CALL_OPTS, BINDINGS, withWaitNotice } from './helpers/dispatch-role-harness.mjs';
 
 const CHAINED = 'npm test > /tmp/t.log 2>&1 &';
 const REFUSED_SESSION = 'doer-session-refused';
@@ -98,7 +98,7 @@ test('the notice is delivered even when the caller prepare() does not place it',
     const out = await dispatchRole(ctx, 'doer', opts);
     assert.equal(out.ok, true);
     assert.ok(rec.dispatches[1].prompt.startsWith(unmappableRefusalResumeNotice([`Bash "${CHAINED}"`])), rec.dispatches[1].prompt);
-    assert.ok(rec.dispatches[1].prompt.endsWith('CALLER PROMPT'));
+    assert.ok(rec.dispatches[1].prompt.endsWith(withWaitNotice('CALLER PROMPT', rec.dispatches[1].options.timeout_s)));
 });
 
 test('a resume refused again fails with the unmappable remedy text, no compose_permissions or rerun advice', async () => {
@@ -137,7 +137,7 @@ test('a grant-mappable refusal is never resumed: the progressive heal re-runs th
     assert.equal(out.resumesIssued, 0);
     assert.equal(heals.length, 1);
     assert.equal(rec.dispatches.length, 2);
-    assert.equal(rec.dispatches[1].prompt, 'FULL DOER STREAK PROMPT', 'the healed re-run is the main dispatch, not a resume');
+    assert.equal(rec.dispatches[1].prompt, withWaitNotice('FULL DOER STREAK PROMPT', rec.dispatches[1].options.timeout_s), 'the healed re-run is the main dispatch, not a resume');
     assert.notEqual(rec.dispatches[1].options.resume, REFUSED_SESSION);
 });
 

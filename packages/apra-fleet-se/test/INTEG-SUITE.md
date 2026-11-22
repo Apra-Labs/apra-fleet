@@ -21,10 +21,11 @@ Procedure (all commands from the repo root):
    Returns immediately; starts (or resumes) one detached background run of
    all pending files. State persists in `integ-suite-status.json` at the
    repo root (gitignored -- never commit it).
-3. `node scripts/run-integ-suites.mjs --status --wait=45`
-   Repeat, narrating progress between every poll ("N/M files done, K in
-   flight"), at least once a minute. Exit 3 = poll again. Exit 2 mid-run =
-   infra crash: narrate it, then `--start` again to resume.
+3. `node scripts/run-integ-suites.mjs --status --wait=N`
+   N = the engine-stated wait limit from your dispatch prompt in seconds
+   (45 when none is stated). Repeat until done -- no extra checks between
+   polls. Exit 3 = poll again. Exit 2 mid-run = infra crash: report it,
+   then `--start` again to resume.
 4. Complete ONLY when `--status` prints `pass COMPLETE` and exits 0 (all
    pass) or 1 (failures). `pending > 0` is a partial pass -- resume or
    report as interrupted, never as done.

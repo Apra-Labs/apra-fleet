@@ -1,5 +1,6 @@
 import { EXECUTE_PROMPT_MAX_TURNS } from '@apralabs/apra-fleet-client';
 import { policyFor, PRE_DISPATCH_STEPS_IN_BRACKET } from './role-policies.mjs';
+import { receivesLongRunWait, longRunWaitNotice } from './long-run-wait.mjs';
 import {
     isNonRetryableDispatchError,
     isAuthDispatchError,
@@ -658,8 +659,18 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
             // sync and 'after' BEFORE its post-dispatch sync, so a caller
             // comparing the member's checkout across the window never sees a
             // tip moved by another lane's push being merged in or out.
+            // The engine-stated wait limit for long-running commands, derived
+            // from the SAME timeout_s this dispatch passes, so the role prompt
+            // and the inactivity watchdog cannot disagree (long-run-wait.mjs).
+            // APPENDED, never prepended: callers and the transport identify a
+            // prompt by its opening text.
+            let dispatchedPrompt = prepared.prompt ?? defaultPrompt;
+            if (receivesLongRunWait(dispatch.agentType) && typeof options.timeout_s === 'number' && typeof dispatchedPrompt === 'string') {
+                const notice = longRunWaitNotice(options.timeout_s);
+                if (notice) dispatchedPrompt = `${dispatchedPrompt}\n\n${notice}`;
+            }
             if (opts.onDispatchWindow) await opts.onDispatchWindow('before');
-            const inFlight = agent(prepared.prompt ?? defaultPrompt, {
+            const inFlight = agent(dispatchedPrompt, {
                 ...options,
                 member_name: member,
             });
