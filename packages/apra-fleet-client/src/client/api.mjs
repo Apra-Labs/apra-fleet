@@ -1554,6 +1554,8 @@ export class ApraFleet {
      * credential store. The secret value never passes through the caller.
      * A new name defaults to persist true, network_policy 'allow', members '*'.
      * On an existing secret only the value and the fields passed change.
+     * A field the user types on `apra-fleet secret --set` to answer it
+     * replaces the one passed here (docs/secret-variables.md).
      * @param {{ name: string, prompt: string, persist?: boolean,
      *           network_policy?: 'allow'|'deny', members?: string,
      *           ttl_seconds?: number }} options

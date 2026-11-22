@@ -1,6 +1,6 @@
 import net from 'node:net';
 import readline from 'node:readline';
-import { getSocketPath } from '../services/auth-socket.js';
+import { getSocketPath, type GivenSecretFields } from '../services/auth-socket.js';
 import { collectSecret } from '../utils/collect-secret.js';
 import {
   BoundSecretError,
@@ -365,6 +365,14 @@ export function parseExpiresAt(raw: string | undefined): string | null | { error
   return new Date(Date.parse(raw)).toISOString();
 }
 
+/** The flag a field of `given` came from. */
+function flagFor(field: string, given: GivenSecretFields): string {
+  if (field === 'network_policy') return `--${given.network_policy}`;
+  if (field === 'allowedMembers') return '--members';
+  if (field === 'expiresAt') return '--expires-at';
+  return '--persist';
+}
+
 function policyNote(name: string, policy: NetworkPolicy): string {
   return policy === 'allow'
     ? `  i Network policy: allow. Use 'apra-fleet secret --update ${name} --deny' to restrict.`
@@ -476,10 +484,15 @@ async function handleSet(args: string[]): Promise<void> {
   // the OOB delivery succeeded) still has a value to store instead of
   // silently persisting an empty string.
   let persistValue = secretValue;
-  // 'stored': the waiting tool stores the value itself, with the policy it was asked for.
-  const waitForServer = new Promise<'stored' | boolean>((resolve) => {
+  // Only what was typed: a waiting credential_store_set applies these over its own fields.
+  const given: GivenSecretFields = { ...(persist ? { persist: true } : {}), ...fields, ...(expiresAt !== undefined ? { expiresAt } : {}) };
+  // stored: the waiting tool stores the value itself; applied: which of `given` it used.
+  const waitForServer = new Promise<{ stored: true; applied?: string[] } | boolean>((resolve) => {
     const client = net.connect(sockPath, () => {
-      const msg = JSON.stringify({ type: 'auth', member_name: name, password: secretValue, persist: finalPersist }) + '\n';
+      const msg = JSON.stringify({
+        type: 'auth', member_name: name, password: secretValue, persist: finalPersist,
+        ...(Object.keys(given).length > 0 ? { given } : {}),
+      }) + '\n';
       secretValue = '';
       client.write(msg);
     });
@@ -495,7 +508,9 @@ async function handleSet(args: string[]): Promise<void> {
         const resp = JSON.parse(line);
         if (resp.ok) {
           console.error(`✓ Secret delivered for ${name}. You can close this window.`);
-          resolve(resp.stored === true ? 'stored' : true);
+          resolve(resp.stored === true
+            ? { stored: true, ...(Array.isArray(resp.applied) ? { applied: resp.applied } : {}) }
+            : true);
         } else {
           resolve(false);
         }
@@ -534,10 +549,13 @@ async function handleSet(args: string[]): Promise<void> {
       console.error(`✗ Failed to store secret: ${err.message}`);
       process.exit(1);
     }
-  } else if (delivered === 'stored') {
-    // A write here would race the waiting tool's own and could replace the
-    // policy it was asked for (deny, members) with this command's.
-    if (persist) {
+  } else if (typeof delivered === 'object') {
+    // The waiting tool stores it; a write here would race its own.
+    if (delivered.applied) {
+      if (delivered.applied.length > 0) {
+        console.error(`  Stored by the waiting request. From this command: ${delivered.applied.map((f) => flagFor(f, given)).join(', ')}; anything else as that request asked.`);
+      }
+    } else if (persist) {
       console.error(`  Not stored again by this command: the waiting request stores it with the policy and members it asked for. Change those with: apra-fleet secret --update ${name}`);
     }
   } else if (persist) {
