@@ -69,7 +69,9 @@ export async function monitorTask(input: MonitorTaskInput): Promise<string> {
 
   const pidCmd = isWindows
     ? wrapPowerShellEncoded(`$pidFile = "${winTaskDir}\\task.pid"; if (Test-Path $pidFile) { $p = (Get-Content $pidFile -Raw).Trim() } else { $p = $null }; if ($p -and (Get-Process -Id $p -ErrorAction SilentlyContinue)) { echo alive } else { echo dead }`)
-    : `cat ${taskDir}/task.pid 2>/dev/null | xargs -r kill -0 2>/dev/null && echo alive || echo dead`;
+    // Not `cat ... | xargs -r kill -0`: with no pid file xargs -r runs nothing
+    // and exits 0, which reported a task that never started as alive.
+    : `p=$(cat ${taskDir}/task.pid 2>/dev/null) && [ -n "$p" ] && kill -0 "$p" 2>/dev/null && echo alive || echo dead`;
 
   const logCmd = isWindows
     ? wrapPowerShellEncoded(`if (Test-Path "${winTaskDir}\\task.log") { Get-Content "${winTaskDir}\\task.log" -Tail 20 } else { echo '' }`)

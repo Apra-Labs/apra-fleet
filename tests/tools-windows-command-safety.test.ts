@@ -176,8 +176,10 @@ describe('monitor_task command safety', () => {
     const cmds = mockExecCommand.mock.calls.map((c) => c[0] as string);
 
     expect(cmds[0]).toBe("cat ~/.fleet-tasks/task-abcd1234/status.json 2>/dev/null || echo '{}'");
+    // The pid check is the one deliberate change: `| xargs -r kill -0` exited
+    // 0 with no pid file and so reported a never-started task as alive.
     expect(cmds[1]).toBe(
-      'cat ~/.fleet-tasks/task-abcd1234/task.pid 2>/dev/null | xargs -r kill -0 2>/dev/null && echo alive || echo dead',
+      'p=$(cat ~/.fleet-tasks/task-abcd1234/task.pid 2>/dev/null) && [ -n "$p" ] && kill -0 "$p" 2>/dev/null && echo alive || echo dead',
     );
     expect(cmds[2]).toBe(
       'nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d " "',
