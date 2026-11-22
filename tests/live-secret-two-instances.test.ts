@@ -101,7 +101,7 @@ describe('expired bound secret: the CLI refusal matches the server view', () => 
     server.credentialSet(r, 'held-session-value', false, 'allow', '*');
     bindFromCli(r); // the CLI cannot see the server's session store
 
-    expect(server.credentialResolve(r, 'beta')).toHaveProperty('expired');
+    expect(server.credentialResolve(r, 'alpha')).toHaveProperty('expired');
     expect(server.lookupServerSecret(r).status).toBe('expired');
     expect(() => cli.credentialUpdate(r, { network_policy: 'allow' })).toThrow(cli.BoundSecretError);
   });
