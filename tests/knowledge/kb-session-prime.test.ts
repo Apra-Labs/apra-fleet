@@ -557,6 +557,53 @@ describe('kb_session_prime canonical-bible cold-seed', () => {
     expect(parsed.top_entries.some((e: KBEntry & { via?: string }) => e.via)).toBe(false);
   });
 
+  // COMMITTED ONLY. The cold-seed's bible entries reach prompts as CONFIRMED,
+  // so it reads the bible committed at HEAD, never the work-tree file an agent
+  // sharing the folder can hand-edit.
+  //
+  // FALSIFICATION: reading <folder>/.fleet/kb-canonical.json from disk again in
+  // kb-session-prime.ts seeds the uncommitted entries (test 1) and the
+  // work-tree-only edit (test 2).
+  function writeWorkTreeBible(entries: unknown): void {
+    fs.mkdirSync(path.join(bibleTmpDir, '.fleet'), { recursive: true });
+    fs.writeFileSync(path.join(bibleTmpDir, '.fleet', 'kb-canonical.json'), JSON.stringify(entries), 'utf-8');
+  }
+
+  it('cold KB + an uncommitted work-tree bible: none of its entries are seeded, and the skip is logged with its reason', async () => {
+    mockPrime.mockResolvedValue(primedContext([entry('a')]));
+    writeWorkTreeBible([canonicalEntry('hand-made-1'), canonicalEntry('hand-made-2')]);
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+      const parsed = JSON.parse(await kbSessionPrime({}));
+
+      expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['a']);
+      expect(parsed.top_entries.some((e: KBEntry & { via?: string }) => e.via === 'canonical-bible')).toBe(false);
+      expect(mockTouch).not.toHaveBeenCalled();
+      const logged = errSpy.mock.calls.map(c => String(c[0])).join('\n');
+      expect(logged).toMatch(/kb_session_prime bible cold-seed skipped: .*no committed copy at HEAD/);
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
+  it('cold KB + a committed bible with an extra uncommitted work-tree edit: only the committed entries are seeded', async () => {
+    mockPrime.mockResolvedValue(primedContext([entry('a')]));
+    writeCanonicalFile([canonicalEntry('c1'), canonicalEntry('c2')]);
+    writeWorkTreeBible([canonicalEntry('c1'), canonicalEntry('c2'), canonicalEntry('hand-made-3')]);
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+      const parsed = JSON.parse(await kbSessionPrime({}));
+
+      expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['a', 'c1', 'c2']);
+      const logged = errSpy.mock.calls.map(c => String(c[0])).join('\n');
+      expect(logged).toMatch(/kb_session_prime bible cold-seed reads the .* committed at HEAD .*differs from it and is ignored/);
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
   it('malformed JSON: output identical to today', async () => {
     mockPrime.mockResolvedValue(primedContext([entry('a')]));
     writeCanonicalFile('{ this is not valid json');
