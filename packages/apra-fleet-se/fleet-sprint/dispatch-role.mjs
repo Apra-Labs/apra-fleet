@@ -654,6 +654,7 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
             // Remember what the main dispatch was priced at so every later
             // resume/re-dispatch of this role continues on the SAME tier.
             if (dispatch.model && dispatch.model.kind !== 'inherited' && resolvedTier !== undefined) pricedTier = resolvedTier;
+            let reportedModelId = null;
             const options = {
                 agentType: dispatch.agentType ?? undefined,
                 model: resolvedTier,
@@ -663,6 +664,9 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
                 schema: resolveSchema(ctx, dispatch.schema),
                 resume: resolveResumeArg(dispatch.resumeArg, localOpts),
                 onSessionId: opts.onSessionId,
+                // Reports the concrete model id the server ran this dispatch
+                // on (null when it reports none); logged once it settles.
+                onModelId: (id) => { reportedModelId = id; },
                 label: prepared.label ?? defaultLabel,
                 // Strict permission handling: a refused tool call fails the
                 // dispatch (permission_denied) so no role trusts a result made
@@ -695,9 +699,20 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
             // Raced against a client-side watchdog so a frozen-but-alive
             // member session can never leave this await silently hanging past
             // its budget -- needed in ADDITION to the server-side timeouts.
+            // One line per settled dispatch (first dispatch and every resume or
+            // re-dispatch): requested tier and the model id actually used, or the
+            // literal 'unknown' when the server reported none -- never omitted.
+            const logModel = (err) => {
+                const actual = reportedModelId || (err && err.details && typeof err.details.model === 'string' && err.details.model) || 'unknown';
+                ctx.log(
+                    `${roleLabel}: dispatch '${options.label ?? defaultLabel ?? roleLabel}' on member '${member}' -- ` +
+                    `requested tier ${resolvedTier ?? 'none'}, actual model ${actual}`
+                );
+            };
+            const loggedInFlight = inFlight.then((v) => { logModel(); return v; }, (e) => { logModel(e); throw e; });
             const settled = !dispatch.watchdog.armed
-                ? inFlight
-                : ctx.withDispatchWatchdog(inFlight, {
+                ? loggedInFlight
+                : ctx.withDispatchWatchdog(loggedInFlight, {
                     timeoutS: resolveBudget(ctx, dispatch.watchdog.timeoutS),
                     member,
                     label: resolveWatchdogLabel(dispatch.watchdog.label, localBindings),

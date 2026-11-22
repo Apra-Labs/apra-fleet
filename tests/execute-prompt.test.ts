@@ -370,6 +370,35 @@ describe('executePrompt', () => {
     expect(mockExecCommand.mock.calls[1][0]).not.toContain('"premium"');
   });
 
+  it('reports the resolved model id in structuredContent on success (premium tier -> opus)', async () => {
+    const member = makeTestAgent({ friendlyName: 'model-id-success-member' });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue({
+      stdout: JSON.stringify({ result: 'done', session_id: 'sess-mid' }),
+      stderr: '',
+      code: 0,
+    });
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5, model: 'premium' });
+    expect(result.structuredContent?.model).toBe('opus');
+  });
+
+  it('reports the resolved model id on a max_turns_exhausted typed failure', async () => {
+    const member = makeTestAgent({ friendlyName: 'model-id-max-turns-member' });
+    addAgent(member);
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify({ type: 'result', subtype: 'error_max_turns', terminal_reason: 'max_turns', result: 'stopped', session_id: 'sess-mid-mt' }),
+        stderr: '',
+        code: 1,
+      })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5, model: 'premium' });
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'max_turns_exhausted', sessionId: 'sess-mid-mt', model: 'opus' });
+  });
+
   it('reports usage via structuredContent when present in response', async () => {
     const member = makeTestAgent({ friendlyName: 'token-member' });
     addAgent(member);
@@ -2107,6 +2136,9 @@ describe('execute_prompt: usage-limit relay (apra-fleet-hzeb.2)', () => {
 
     expect(detectSpy).toHaveBeenCalled();
     expect(result.structuredContent).toMatchObject({ isError: true, reason: 'usage_limit', sessionId: 'sess-ul-1' });
+    // The resolved model id rides on a usage_limit failure too (default tier: standard).
+    expect(typeof result.structuredContent?.model).toBe('string');
+    expect(result.structuredContent?.model).not.toBe('standard');
     expect(result.structuredContent?.usageLimit).toBe(signal);
     expect(resultText(result)).toContain('usage limit');
     expect(resultText(result)).toContain(signal.resumeAt);

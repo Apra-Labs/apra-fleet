@@ -95,6 +95,12 @@ export interface ExecutePromptStructured {
   response?: string;
   usage?: StructuredUsage;
   sessionId?: string;
+  /** The concrete model id the dispatch ran on (the id handed to the provider
+   *  CLI after tier mapping). Present on every result produced once the model
+   *  was resolved -- success and typed failures (usage_limit,
+   *  max_turns_exhausted, ...); absent on results returned before that
+   *  (busy, reserved, preflight). */
+  model?: string;
   /** Present on an 'insufficient_context_headroom' rejection (apra-fleet-eft.81.1). */
   detail?: { demand: number; headroom: number; window: number };
   /** Present on a successful dispatch that fits but lands inside the session's
@@ -648,7 +654,24 @@ async function executePromptInteractive(
   }
 }
 
+/**
+ * The concrete model id a dispatch ran on (after tier mapping) is stamped onto
+ * every structuredContent produced once it was resolved -- success and typed
+ * failures alike -- so callers (the workflow layer, fleet-sprint) can see which
+ * model actually served a dispatch. Results returned before resolution (busy,
+ * reserved, preflight, ...) carry none: nothing was resolved.
+ */
 export async function executePrompt(input: ExecutePromptInput, extra?: any): Promise<string | ExecutePromptResult> {
+  const tap: { model?: string } = {};
+  const result = await executePromptImpl(input, extra, tap);
+  if (tap.model && result && typeof result === 'object' && result.structuredContent
+      && result.structuredContent.model === undefined) {
+    return { ...result, structuredContent: { ...result.structuredContent, model: tap.model } };
+  }
+  return result;
+}
+
+async function executePromptImpl(input: ExecutePromptInput, extra: any, tap: { model?: string }): Promise<string | ExecutePromptResult> {
   // GitHub #563: max_total_s is measured from HERE, handler entry -- cloud
   // readiness, preflight and agent provisioning are all charged to it, since
   // the client's own deadline (max_total_s + a fixed grace) starts at the call.
@@ -1102,6 +1125,7 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
   } else {
     resolvedModel = tiers[resolvedModel as keyof typeof tiers] ?? resolvedModel;
   }
+  tap.model = resolvedModel;
 
   const scope = new LogScope('execute_prompt', `[${resolvedModel}] resume=${input.resume} fork=${input.fork} timeout=${input.timeout_s ?? 300}s ${truncateForLog(maskSecrets(input.prompt), getLogPreviewChars())}`, agent);
 
