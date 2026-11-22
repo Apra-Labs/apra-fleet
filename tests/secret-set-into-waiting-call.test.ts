@@ -61,8 +61,10 @@ describe('secret --set into a waiting credential_store_set', () => {
     await untilPending(NAME);
     const out = await typed(['--set', NAME, '--persist', '--allow', '--members', '*', '--expires-at', LATER]);
     expect(out).toContain('From this command: --persist, --allow, --members, --expires-at;');
-    expect(await waiting).toContain(`${NAME} stored [persistent]`);
+    const result = await waiting;
     expect(stored()).toEqual(['persistent', 'allow', '*', LATER]);
+    expect(result).toContain(`${NAME} stored [persistent]`);
+    expect(result).toContain('secret --set --persist --allow --members --expires-at, which replaced what this call asked for: it has policy allow, members *.');
   });
 
   it('a flag left off the CLI keeps the waiting call\'s value, never a CLI default', async () => {

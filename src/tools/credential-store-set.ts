@@ -62,9 +62,14 @@ export async function credentialStoreSet(input: CredentialStoreSetInput): Promis
     ...(given.expiresAt !== undefined ? { expiresAt: given.expiresAt } : {}),
   });
   logLine('credential_store_set', `name=${input.name} persist=${meta.scope === 'persistent'}`);
-  const typed = Object.keys(given);
-  const typedNote = typed.length > 0
-    ? ` The user typed it with apra-fleet secret --set, whose explicit ${typed.join(', ')} replaced what this call asked for: policy ${meta.network_policy}, members ${Array.isArray(meta.allowedMembers) ? meta.allowedMembers.join(',') : meta.allowedMembers}.`
+  const flags = [
+    given.persist ? '--persist' : '',
+    given.network_policy ? `--${given.network_policy}` : '',
+    given.allowedMembers ? '--members' : '',
+    given.expiresAt !== undefined ? '--expires-at' : '',
+  ].filter(Boolean);
+  const typedNote = flags.length > 0
+    ? ` The user typed it with apra-fleet secret --set ${flags.join(' ')}, which replaced what this call asked for: it has policy ${meta.network_policy}, members ${Array.isArray(meta.allowedMembers) ? meta.allowedMembers.join(',') : meta.allowedMembers}.`
     : '';
   return `✓ ${meta.name} stored [${meta.scope}]. Use {{secret.${meta.name}}} in commands.${typedNote}`;
 }

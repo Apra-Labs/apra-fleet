@@ -126,7 +126,7 @@ reach an LLM prompt. Use `execute_command` instead.
 
 - Delivery vs. persistence: Running `apra-fleet secret --set NAME` without `--persist` delivers to a waiting OOB request but does NOT store in the vault. `{{secret.NAME}}` requires vault storage - use `--persist`.
 - `credential_store_set` **blocks** - when called, the tool opens an OOB terminal and waits synchronously for the user to enter the secret. It does not return a "Waiting..." intermediate status or require a second call. On success it returns `[OK] NAME stored [session/persistent]. Use {{secret.NAME}} in commands.`
-- A value typed with `apra-fleet secret --set NAME` while `credential_store_set` waits for NAME goes to that call, which stores it. Each of `--persist`, `--allow`/`--deny`, `--members` and `--expires-at` typed on that command replaces what the call asked for; anything not typed is as the call asked, and the command says which flags applied. `register_member` stores it with policy `deny`, taking only `--persist` from the command. A CLI older than this rule does not say which flags were typed: the call's values apply, and with `--persist` that CLI then stores the value again itself.
+- A value typed with `apra-fleet secret --set NAME` while `credential_store_set` waits for NAME goes to that call, which stores it. Each of `--persist`, `--allow`/`--deny`, `--members` and `--expires-at` typed on that command replaces what the call asked for; anything not typed is as the call asked, and the command says which flags applied. `register_member` stores it with policy `deny`, taking only `--persist` from the command. A CLI older than this rule does not say which flags were typed, so the call stores the value with its own fields; with `--persist`, that CLI then overwrites them with its own.
 - Failed resolution is always explicit - the tool returns an error and aborts. No silent pass-through of the token string.
 
 ## CI / Non-Interactive Usage
@@ -176,7 +176,7 @@ apra-fleet secret --live NAME --inline -          # the script on stdin
 apra-fleet secret --live NAME [--env 'VAR={{secret.R}}']... <script file> [args]
 ```
 
-- **Inline** is one line in the orchestrator's shell: bash, or PowerShell on Windows.
+- **Inline** is a script run in the orchestrator's shell: bash, or PowerShell on Windows.
   Write `{{secret.R}}` bare, never inside your own quotes. It is rewritten to an env
   var reference (`"$FLEET_SECRET_R"` or `${env:FLEET_SECRET_R}`), so the value is
   never on a command line and needs no escaping. A `-` in the name becomes `_`, and
