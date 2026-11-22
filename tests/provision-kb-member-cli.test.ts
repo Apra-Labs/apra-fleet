@@ -297,34 +297,71 @@ describe('kb-setup (real CLI)', () => {
     expect(lastJson(await cli(['kb-setup', '--remote', url, '--token-ref', NAME])).verification).toBe('unverified');
   });
 
-  it('against the real kb-server (--token-file): verified, then rejected once its token changes', async () => {
-    const tokenFile = path.join(sandbox, 'kb.token');
-    fs.writeFileSync(tokenFile, TOKEN);
+  /** fleet's own kb-server on a free port, started in `cwd` (its project is that folder's slug). */
+  async function startRealKb(cwd: string, tokenFile: string): Promise<{ url: string; stop: () => Promise<void> }> {
     const probe = net.createServer();
     await new Promise<void>((r) => probe.listen(0, '127.0.0.1', r));
     const port = (probe.address() as AddressInfo).port;
     await new Promise<void>((r) => probe.close(() => r()));
     const serverData = path.join(sandbox, 'kb-server-data');
-    fs.mkdirSync(serverData);
+    fs.mkdirSync(serverData, { recursive: true });
     const kb = spawn(process.execPath, [CLI, 'kb-server', '--port', String(port), '--token-file', tokenFile, '--db', path.join(sandbox, 'kb.sqlite')],
-      // cwd: the CLI's own folder, so both derive the same project slug (X-KB-Project).
-      { env: { ...process.env, APRA_FLEET_DATA_DIR: serverData }, cwd: sandbox, stdio: ['ignore', 'ignore', 'pipe'] });
+      { env: { ...process.env, APRA_FLEET_DATA_DIR: serverData }, cwd, stdio: ['ignore', 'ignore', 'pipe'] });
+    // Wait for the exit: on Windows a live process holds its cwd (in the sandbox) open.
+    const stop = async () => {
+      const exited = new Promise<void>((r) => { if (kb.exitCode !== null) r(); else kb.once('exit', () => r()); });
+      kb.kill();
+      await exited;
+    };
     try {
       await new Promise<void>((resolve, reject) => {
         kb.stderr!.on('data', (d) => { if (String(d).includes('listening')) resolve(); });
         kb.on('exit', (code) => reject(new Error(`kb-server exited ${code}`)));
       });
-      const url = `http://127.0.0.1:${port}`;
+    } catch (err) {
+      await stop();
+      throw err;
+    }
+    return { url: `http://127.0.0.1:${port}`, stop };
+  }
+
+  it('against the real kb-server (--token-file): verified, then rejected once its token changes', async () => {
+    const tokenFile = path.join(sandbox, 'kb.token');
+    fs.writeFileSync(tokenFile, TOKEN);
+    // Started in the CLI's own folder, so both derive the same project slug (X-KB-Project).
+    const kb = await startRealKb(sandbox, tokenFile);
+    try {
       await setSecret();
-      expect(lastJson(await cli(['kb-setup', '--remote', url, '--token-ref', NAME]))).toEqual({ kbSetup: 'written', previous: 'missing', verification: 'verified' });
+      expect(lastJson(await cli(['kb-setup', '--remote', kb.url, '--token-ref', NAME]))).toEqual({ kbSetup: 'written', previous: 'missing', verification: 'verified' });
       fs.writeFileSync(tokenFile, `${TOKEN}-rotated`);
       await new Promise((r) => setTimeout(r, 600));
-      expect(lastJson(await cli(['kb-setup', '--remote', url, '--token-ref', NAME]))).toEqual({ kbSetup: 'unchanged', verification: 'rejected' });
+      expect(lastJson(await cli(['kb-setup', '--remote', kb.url, '--token-ref', NAME]))).toEqual({ kbSetup: 'unchanged', verification: 'rejected' });
     } finally {
-      // Wait for the exit: on Windows a live process holds its cwd (the sandbox) open.
-      const exited = new Promise<void>((r) => { if (kb.exitCode !== null) r(); else kb.once('exit', () => r()); });
-      kb.kill();
-      await exited;
+      await kb.stop();
+    }
+  });
+
+  it('--project-dir: a kb-server serving a repo verifies a CLI run from another folder (as provision_kb_auth runs it over SSH)', async () => {
+    const tokenFile = path.join(sandbox, 'kb.token');
+    fs.writeFileSync(tokenFile, TOKEN);
+    const repo = path.join(sandbox, 'work-repo');
+    fs.mkdirSync(repo);
+    expect(spawnSync('git', ['init', '-q'], { cwd: repo }).status).toBe(0);
+    expect(spawnSync('git', ['remote', 'add', 'origin', 'https://example.test/org/kb-project.git'], { cwd: repo }).status).toBe(0);
+    const login = path.join(sandbox, 'login');
+    fs.mkdirSync(login);
+    const kb = await startRealKb(repo, tokenFile);
+    try {
+      await setSecret();
+      // From the login folder alone the server sees another project (409): not verified.
+      expect(lastJson(await cli(['kb-setup', '--remote', kb.url, '--token-ref', NAME], '', login))).toEqual({ kbSetup: 'written', previous: 'missing', verification: 'unverified' });
+      expect(lastJson(await cli(['kb-setup', '--remote', kb.url, '--token-ref', NAME, '--project-dir', repo], '', login))).toEqual({ kbSetup: 'unchanged', verification: 'verified' });
+      const missing = await cli(['kb-setup', '--remote', kb.url, '--token-ref', NAME, '--project-dir', path.join(sandbox, 'no-such-folder')], '', login);
+      expect(missing.code).toBe(1);
+      expect(lastJson(missing)).toEqual({ error: 'refused' });
+      expect(missing.stderr).toContain('--project-dir');
+    } finally {
+      await kb.stop();
     }
   });
 

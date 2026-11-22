@@ -701,8 +701,8 @@ every 30 minutes or less), so one failed run still leaves a valid token.
 **Policy.** The secret's own `deny` and `allowedMembers` apply on every KB call, as
 [Who can use a secret](secret-variables.md#who-can-use-a-secret-deny-and-allowedmembers)
 says. A refusal is `E-KB-HTTP-AUTH`, reason `policy-deny` or `member-not-allowed`,
-and no request is sent. A capture, invalidate or feedback refused this way is not queued: the
-caller gets the error, and retries once the policy allows it. `kb_setup` refuses a
+and no request is sent. Nothing is queued: the caller retries once the policy
+allows it. `kb_setup` refuses a
 `deny` secret.
 
 **Failure behaviour.** When the secret is missing, expired or unreadable, or
@@ -736,8 +736,8 @@ kb_setup with provider=http, remote=https://<host>, token={{secret.KB_TOKEN}}
 ```
 
 **Failure behaviour.** A failed run reaches the KB as `E-KB-HTTP-AUTH` (reason
-`live-secret-failed`). No request is sent, and captures, invalidates and feedback are queued
-offline exactly as for a static secret. On HTTP 401 from the KB server the rejected
+`live-secret-failed`). No request is sent and nothing is queued: the caller
+repeats the call once the script works. On HTTP 401 from the KB server the rejected
 token is dropped from the cache, a new one is minted and the request is retried
 once. A second 401 raises `E-KB-HTTP-AUTH` (reason `rejected`), drops that token too and
 starts a KB cool-down (10 s, doubling per consecutive rejected mint, up to 5 minutes):
@@ -797,8 +797,9 @@ orchestrator before anything is minted or sent.
      that name on the member before. The value is staged in an owner-only file over
      SFTP (`secret-file-unavailable` if SFTP is off, the connection drops, or the member home cannot be written), piped in and removed in the
      same command, never on a command line;
-  4. runs `apra-fleet kb-setup --remote <url> --token-ref NAME` on the member, which
-     points its KB at the secret unless it already does, and makes one KB call. It
+  4. runs `apra-fleet kb-setup --remote <url> --token-ref NAME --project-dir <work folder>`
+     on the member, which points its KB at the secret unless it already does, and
+     makes one KB call for the work folder's project (`X-KB-Project`). It
      refuses a missing, expired or `deny` secret as `kb_setup` does. Member sessions
      never get `kb_setup` itself. If it had to write the config, the result's
      `memberChange` says what was there before: none, the local store, another
@@ -1351,8 +1352,9 @@ kb_setup with provider='http', remote='<server-url>', token='<bearer-token>'
    host and read that host's config, so a member host without it keeps using
    SQLite. The tool encrypts the token into the fleet config at
    `~/.apra-fleet/data/knowledge/config.json`. On a member host the CLI form
-   `apra-fleet kb-setup --remote <url> --token-ref <name>` does the same with
-   a named secret (provision_kb_auth runs it for you).
+   `apra-fleet kb-setup --remote <url> --token-ref <name> [--project-dir <repo>]`
+   does the same with a named secret, and checks it for the project of
+   `--project-dir` (default: the current folder). provision_kb_auth runs it for you.
 
 3. The repo on that fleet install whose project the server serves now reads
    and writes its KB to the central server. To switch back to local SQLite, call `kb_setup` with

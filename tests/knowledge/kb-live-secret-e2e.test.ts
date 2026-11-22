@@ -31,11 +31,13 @@ import { makeTempDir } from './token-command-helpers.js';
 import {
   writeCountingHelper,
   startStubKbServer,
+  kbRouteRequests,
   helperRunOf,
   type CountingHelper,
   type StubKbServer,
 } from './kb-live-secret-fixture.js';
 
+const routes = () => kbRouteRequests(stub);
 const RUN = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 const NAME = `KB_LIVE_E2E_${RUN}`;
 const STATIC_NAME = `KB_STATIC_E2E_${RUN}`;
@@ -154,16 +156,16 @@ describe('KB tools with a credential-helper-backed named credential', () => {
     await capture('Sequential gear');
     await query();
     expect(helper.runs()).toEqual([{ credential: NAME }]);
-    expect(stub.requests.length).toBeGreaterThanOrEqual(3);
-    expect(stub.requests.every(r => r.authorized && helperRunOf(r.token, PREFIX) === 1)).toBe(true);
+    expect(routes().length).toBeGreaterThanOrEqual(3);
+    expect(routes().every(r => r.authorized && helperRunOf(r.token, PREFIX) === 1)).toBe(true);
   });
 
   it('10 concurrent KB tool calls run the helper once', async () => {
     helper.setControl({ delayMs: 400 });
     await Promise.all(Array.from({ length: 10 }, () => query()));
     expect(helper.runs()).toHaveLength(1);
-    expect(stub.requests.length).toBeGreaterThanOrEqual(10);
-    expect(stub.requests.every(r => r.authorized)).toBe(true);
+    expect(routes().length).toBeGreaterThanOrEqual(10);
+    expect(routes().every(r => r.authorized)).toBe(true);
   });
 
   it('a short-lived token is replaced before the request once past the refresh threshold; the server never sees an expired token', async () => {
@@ -173,10 +175,10 @@ describe('KB tools with a credential-helper-backed named credential', () => {
     await sleep(2_850);
     await query();
     expect(helper.runs()).toHaveLength(2);
-    const runsSeen = stub.requests.map(r => helperRunOf(r.token, PREFIX));
+    const runsSeen = routes().map(r => helperRunOf(r.token, PREFIX));
     expect(runsSeen[0]).toBe(1);
     expect(runsSeen[runsSeen.length - 1]).toBe(2);
-    for (const r of stub.requests) {
+    for (const r of routes()) {
       expect(r.atMs).toBeLessThan(helper.expiresAtOf(helperRunOf(r.token, PREFIX)));
     }
   });
@@ -195,15 +197,15 @@ describe('KB tools with a credential-helper-backed named credential', () => {
     stub.accept = (token) => helperRunOf(token, PREFIX) >= 2;
     await query();
     expect(helper.runs()).toHaveLength(2);
-    expect(stub.requests[0]).toMatchObject({ authorized: false });
-    expect(stub.requests.slice(1).every(r => r.authorized && helperRunOf(r.token, PREFIX) === 2)).toBe(true);
+    expect(routes()[0]).toMatchObject({ authorized: false });
+    expect(routes().slice(1).every(r => r.authorized && helperRunOf(r.token, PREFIX) === 2)).toBe(true);
   });
 
   it('a server that rejects every token: E-KB-HTTP-AUTH after exactly one re-run', async () => {
     stub.accept = () => false;
     await expectAuthError(query(), 'rejected');
     expect(helper.runs()).toHaveLength(2);
-    expect(stub.requests).toHaveLength(2);
+    expect(routes()).toHaveLength(2);
   });
 
   it('fleet_status shows the live secret name and last minted time', async () => {
@@ -222,8 +224,8 @@ describe('KB tools with a credential-helper-backed named credential', () => {
     await query();
     await capture('Static gear');
     expect(helper.runs()).toHaveLength(0);
-    expect(stub.requests.length).toBeGreaterThanOrEqual(2);
-    expect(stub.requests.every(r => r.authorized)).toBe(true);
+    expect(routes().length).toBeGreaterThanOrEqual(2);
+    expect(routes().every(r => r.authorized)).toBe(true);
     const { credential } = await status();
     expect(credential).toMatchObject({ kind: 'secret', secretName: STATIC_NAME, resolves: 'ok' });
   });

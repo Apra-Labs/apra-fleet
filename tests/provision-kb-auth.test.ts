@@ -341,6 +341,16 @@ describe('provision_kb_auth, remote member: kb-setup and verification', () => {
     expect(setups()[1].text).toContain(`'/home/u/.apra-fleet/bin/apra-fleet' 'kb-setup' '--remote' 'https://kb.example.test/a'\\''b;$(x)' '--token-ref' '${s.name}'`);
   });
 
+  it('kb-setup checks the token for the member work folder, passed as a quoted argument (the SSH command runs in the login folder)', async () => {
+    const s = live('projdir');
+    const writes = () => setups().filter((c) => !c.text.includes("'--check'"));
+    await provisionKbAuth({ member_id: addRemote({ os: 'windows', workFolder: "C:\\work\\it's repo" }).id, secret: s.name, remote: REMOTE });
+    expect(writes()[0].text).toContain(`'--project-dir' 'C:\\work\\it''s repo'`);
+    await provisionKbAuth({ member_id: addRemote({ os: 'linux', workFolder: "/srv/it's repo" }).id, secret: s.name, remote: REMOTE });
+    expect(writes()[1].text).toContain(`'--project-dir' '/srv/it'\\''s repo'`);
+    expect(setups().filter((c) => c.text.includes("'--check'")).every((c) => !c.text.includes('--project-dir'))).toBe(true);
+  });
+
   it('a kb-setup failure after the push fails the call and says the pushed secret stays on the member', async () => {
     const s = live('setupfail');
     const m = addRemote();

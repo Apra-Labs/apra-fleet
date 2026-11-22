@@ -201,7 +201,6 @@ function checkTokenRef(input: KbSetupInput, provider: 'sqlite' | 'http'): TokenR
 }
 
 /**
-/**
  * Throws, as kb_setup does, unless secret `name` can be an http KB token here: it
  * exists (or is a live secret), has not expired, and is not deny. For the
  * `apra-fleet kb-setup` CLI verb, which checks it before deciding whether to write.
