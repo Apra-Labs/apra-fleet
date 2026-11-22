@@ -66,6 +66,7 @@
 import { resolveMemberTarget } from './member-target.mjs';
 import { getSeCommands } from './se-os-commands.mjs';
 import { resultText } from './mcp-result.mjs';
+import { toolsOfAnswer } from './tools-list.mjs';
 
 /** Log prefix of every init line. */
 export const MEMBER_INIT_LOG_PREFIX = '[member-init]';
@@ -393,7 +394,7 @@ export function createMemberInitProbe(opts = {}) {
         rec.steps.push('tools');
         try {
             if (typeof listTools !== 'function') throw new Error('no member session channel');
-            const names = toolNamesOf(parseToolJson(await listTools(record)));
+            const names = toolNamesOf(toolsOfAnswer(await listTools(record)) || []);
             rec.kbTools = names.some((n) => n.startsWith('kb_'));
             rec.codeTools = names.some((n) => n.startsWith('code_'));
             if (!rec.kbTools || !rec.codeTools) {

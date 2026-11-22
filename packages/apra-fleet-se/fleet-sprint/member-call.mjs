@@ -70,6 +70,7 @@ import crypto from 'node:crypto';
 import { resolveMemberTarget } from './member-target.mjs';
 import { getSeCommands } from './se-os-commands.mjs';
 import { resultText } from './mcp-result.mjs';
+import { lastJsonValue } from './tools-list.mjs';
 
 /** Work-folder-relative directory (forward slashes: valid in bash, PowerShell, node) for delivered args files. */
 export const MEMBER_CALL_ARGS_DIR = '.apra-call';
@@ -166,30 +167,24 @@ function unwrapToolResult(result, tool) {
     return result;
 }
 
-/** Find the last parseable JSON object line in command output. */
-function lastJsonObject(text) {
-    const lines = String(text || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-    for (let i = lines.length - 1; i >= 0; i--) {
-        if (!lines[i].startsWith('{')) continue;
-        try { return JSON.parse(lines[i]); } catch { /* keep looking */ }
-    }
-    return null;
-}
-
 /**
  * Parse `apra-fleet call` output back into a typed result or throw a typed error.
  * Success prints the tool result JSON; failure prints {"error":{code,message}}.
+ * The JSON may be one line or pretty-printed over many, with log lines around
+ * it (lastJsonValue). `arrays` also accepts a bare JSON array (--list-tools).
+ * An unparseable answer throws E-REMOTE-PARSE carrying the raw output in
+ * details.raw.
  */
-function parseRemoteOutput(res, what) {
+function parseRemoteOutput(res, what, { arrays = false } = {}) {
     const text = resultText(res);
-    const parsed = lastJsonObject(text);
-    if (parsed && parsed.error && typeof parsed.error === 'object') {
+    const parsed = lastJsonValue(text, { arrays });
+    if (parsed && !Array.isArray(parsed) && parsed.error && typeof parsed.error === 'object') {
         throw new MemberCallError(parsed.error.code || 'E-REMOTE', parsed.error.message || text, { what });
     }
     if (res && res.isError) {
         throw new MemberCallError('E-REMOTE', text || `remote ${what} failed`, { what });
     }
-    if (!parsed) throw new MemberCallError('E-REMOTE-PARSE', `could not parse apra-fleet call output for ${what}: ${text}`, { what });
+    if (!parsed) throw new MemberCallError('E-REMOTE-PARSE', `could not parse apra-fleet call output for ${what}: ${text}`, { what, raw: text });
     return parsed;
 }
 
@@ -301,7 +296,7 @@ export function createMemberCall(deps = {}) {
         if (spec.listTools) {
             const command = buildRemoteCallCommand(target, { memberId, listTools: true });
             const res = await fleetApi.executeCommand({ member_id: memberId, command });
-            return parseRemoteOutput(res, what);
+            return parseRemoteOutput(res, what, { arrays: true });
         }
         if (spec.kbMaintainer === true && (await probeKbMaintainer(member, target)) === 'unsupported') {
             // Before any exclude / send_files / call: no args file is ever delivered.

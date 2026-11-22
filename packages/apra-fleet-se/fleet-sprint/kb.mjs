@@ -28,6 +28,7 @@ import { ROLES, wrapUntrustedBlock } from './contracts.mjs';
 import { toolErrorText } from './mcp-result.mjs';
 import { cleanQueryTerms } from './kb-hints.mjs';
 import { E_MEMBER_FLEET_TOO_OLD } from './member-call.mjs';
+import { readToolsList } from './tools-list.mjs';
 
 // Local, validated role constant -- mirrors runner.js's own roleConst()
 // pattern (kb.mjs does not import runner.js's private helper, to avoid a
@@ -1716,14 +1717,10 @@ export function createKbWorkClient(opts = {}) {
         if (key && withdrawalSupport.has(key)) return withdrawalSupport.get(key);
         const settle = (gap) => { if (key) withdrawalSupport.set(key, gap); return gap; };
         if (typeof listTools !== 'function') return 'its tools cannot be listed (no member session channel)';
-        let tools;
-        try {
-            const list = parseResult(await listTools(record));
-            tools = Array.isArray(list) ? list : (list && Array.isArray(list.tools) ? list.tools : null);
-        } catch (err) {
-            return `its tools could not be listed (${errText(err)})`;
-        }
-        if (!tools) return 'its tools/list answer was unreadable';
+        const read = await readToolsList(listTools, record, { log, prefix: '[kb-work]', memberName: member || (record && record.name) });
+        if (read.error) return `its tools could not be listed (${errText(read.error)})`;
+        if (!read.tools) return 'its tools/list answer was unreadable';
+        const tools = read.tools;
         if (!tools.some((t) => t && t.name === KB_CAPABILITIES_TOOL)) {
             return settle(`its apra-fleet server does not offer ${KB_CAPABILITIES_TOOL} (older version; upgrade apra-fleet on that member)`);
         }
@@ -2543,14 +2540,13 @@ export function createKbPrimingClient(opts = {}) {
      */
     async function importRefGap(target) {
         if (typeof opts.listTools !== 'function') return 'its tools cannot be listed (no member session channel)';
-        let tools;
-        try {
-            const list = parseResult(await opts.listTools(target));
-            tools = Array.isArray(list) ? list : (list && Array.isArray(list.tools) ? list.tools : null);
-        } catch (err) {
-            return `its tools could not be listed (${err && err.message ? err.message : String(err)})`;
-        }
-        if (!tools) return 'its tools/list answer was unreadable';
+        // Tolerant of every answer shape; an unparseable answer is retried
+        // once and then WARNed with the raw answer -- the caller WARNs the
+        // skip itself, so the import is never skipped silently.
+        const read = await readToolsList(opts.listTools, target, { log, prefix: '[kb-prime]', memberName: target && target.name });
+        if (read.error) return `its tools could not be listed (${read.error && read.error.message ? read.error.message : String(read.error)})`;
+        if (!read.tools) return 'its tools/list answer was unreadable';
+        const tools = read.tools;
         const imp = tools.find((t) => t && t.name === 'kb_import');
         const props = imp && imp.inputSchema && imp.inputSchema.properties;
         if (props && typeof props === 'object' && Object.prototype.hasOwnProperty.call(props, 'ref')) return null;
