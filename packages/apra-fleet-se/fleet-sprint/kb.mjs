@@ -371,7 +371,7 @@ export const KB_CAPABILITIES_TOOL = 'kb_capabilities';
  * Bumped together with the server's BIBLE_RULES_REVISION
  * (src/services/knowledge/bible-rules.ts).
  */
-export const REQUIRED_MAINTAINER_BIBLE_RULES = 1;
+export const REQUIRED_MAINTAINER_BIBLE_RULES = 2;
 
 /**
  * The fleet_build ({version, bible_rules}) out of a kb_capabilities answer,

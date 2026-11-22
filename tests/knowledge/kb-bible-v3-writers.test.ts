@@ -191,6 +191,8 @@ describe('kb_bible_commit writes bible v3', () => {
 
   it('refuses to write a bible holding a duplicate id and leaves the file untouched', async () => {
     writeV2Bible([OTHER, { ...OTHER, title: 'Same id, other title' }]);
+    // kb_bible_commit reads the bible committed at HEAD, so the corrupt one is committed.
+    git(tmpDir, ['commit', '-q', '-m', 'corrupt bible', '--', BIBLE_REL]);
     const id = await confirmed('Claim beside a corrupt bible', ['src/a.ts']);
     const before = fs.readFileSync(biblePath());
     const commits = commitCount();

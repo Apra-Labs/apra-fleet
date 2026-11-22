@@ -372,9 +372,13 @@ A MEMBER session is served an explicit tool list
   bible locally, import it, and reset the commit away with nothing ever
   pushed. The import is therefore gated on a trust anchor OUTSIDE the
   checkout: the hub-side per-repo KB records the git blob id of every bible
-  the maintainer side wrote or imported (`kb_bible_commit`, and `kb_import`
-  from a FULL session or the kb_maintainer session; a member session without
-  the grant never records). When the committed bible's blob id is not
+  the maintainer side committed or imported from a committed copy
+  (`kb_bible_commit`, for the blob it committed when HEAD holds exactly the
+  bytes it wrote -- no commit, nothing recorded; and `kb_import` from a FULL
+  session or the kb_maintainer session, for a `ref` read or for a file whose
+  bytes are the bible committed at HEAD -- a work-tree or explicit-path file
+  that differs from HEAD is imported but never recorded; a member session
+  without the grant never records). When the committed bible's blob id is not
   recorded the call fails with `E-KB-MAINTAINER-REQUIRED` (the message names
   the unrecorded blob id) and nothing is imported -- a refusal, not a clamp,
   so no row is written that could later shadow the genuine entry's id. The
@@ -402,8 +406,8 @@ A MEMBER session is served an explicit tool list
   remote-tracking ref is as fresh as the member's last fetch and lives in the
   member-writable `.git` (the grant is a routing guard, not a security
   boundary against a process on the member's host). FULL sessions and the
-  kb_maintainer session without `ref` are otherwise unchanged (they read the
-  named or work-tree file).
+  kb_maintainer session without `ref` read the named or work-tree file, and
+  record it as trusted only when it equals the bible committed at HEAD.
 - Under an http project KB, `kb_invalidate {ids}` (id-level discard) is refused
   with `E-KB-HTTP-UNSUPPORTED` (thrown): the http provider has no discard
   operation, and nothing is discarded, on the remote or in the local fallback
@@ -491,8 +495,15 @@ NOT in the file (section 2.8, merge-friendly layout).
   the bible path (identity `pm-kb`) and never pushes. Nothing merged and
   nothing removed, or an unchanged entry set, makes no write and no commit. Re-running with
   the same ids after resetting to a newer HEAD re-merges at entry level, so a
-  rejected push can be retried with no manual merge. An existing bible that
-  cannot be parsed is refused (thrown), never overwritten. Under a non-SQLite
+  rejected push can be retried with no manual merge. The existing bible is
+  the one COMMITTED at HEAD (`HEAD:./.fleet/kb-canonical.json`, bytes hashed
+  in-process against the blob id; no committed copy reads as an empty bible),
+  never the work-tree file: a work-tree bible that differs from HEAD is
+  ignored (logged as a warning naming the file) and overwritten when the call
+  writes, so an uncommitted hand edit never reaches the commit or the trust
+  record. Outside a git work tree the file on disk is the base (and nothing is
+  committed). An existing bible that cannot be parsed is refused (thrown),
+  never overwritten. Under a non-SQLite
   (http) project KB there is no local store to build a bible from, so the call
   is skipped before any KB read, write or git commit (the bible file itself may be read, leniently: an
   unparseable one is logged and counted as 0, never thrown over): it returns `bible_skipped:

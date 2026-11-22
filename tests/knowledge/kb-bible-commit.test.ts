@@ -175,7 +175,11 @@ describe('kb_bible_commit', () => {
 
   it('refuses to overwrite an unreadable bible', async () => {
     const a = await confirmed(provider, 'Alpha');
+    // The base is the bible committed at HEAD, so the unreadable one is committed.
+    fs.mkdirSync(path.join(clone, '.fleet'), { recursive: true });
     fs.writeFileSync(path.join(clone, BIBLE_REL), '{ not json');
+    git(clone, ['add', BIBLE_REL]);
+    git(clone, ['commit', '-q', '-m', 'unreadable bible']);
     await expect(kbBibleCommit({ ids: [a], baseBranch: 'main', baseCommit: 'c' }, { folder: clone }))
       .rejects.toThrow(/refusing to overwrite/);
     expect(fs.readFileSync(path.join(clone, BIBLE_REL), 'utf-8')).toBe('{ not json');

@@ -10,7 +10,7 @@ import { isSqliteProject } from '../services/knowledge/require-sqlite-project.js
 import {
   TOMBSTONE_DEMOTED, TOMBSTONE_WITHDRAWN, parseBibleDocument, standingAgainstTombstone, type BibleTombstone,
 } from '../services/knowledge/bible-import.js';
-import { bibleBytesBlobId, commitResolves, readCommittedBibleBlob } from '../services/knowledge/bible-blob-id.js';
+import { OWN_BIBLE_REL, bibleBytesBlobId, commitResolves, readCommittedBibleBlob } from '../services/knowledge/bible-blob-id.js';
 import { isRepoRelativePath } from '../services/knowledge/bible-basis-filter.js';
 import { memberLacksKbMaintainer } from '../services/knowledge/kb-maintainer-grant.js';
 import {
@@ -22,12 +22,14 @@ import {
   commitBiblePath,
   compareById,
   isGitRepo,
+  parseBibleDocumentText,
   readBibleDocument,
   requireLocalFolder,
   toCanonicalEntry,
   verifiedAgainstTrailer,
   withSourceFileHashes,
   type CanonicalBible,
+  type CanonicalBibleDocument,
   type CanonicalEntry,
 } from './kb-export.js';
 
@@ -66,9 +68,24 @@ import {
 // The commit is local, pathspec-scoped to the bible file, with the pm-kb
 // identity (shared with kb_export). It is NEVER pushed.
 //
+// BASE DOCUMENT = THE COMMITTED BIBLE. In a git work tree the existing bible
+// is read as committed at HEAD (git blob, bytes hash-verified in-process
+// against the blob id -- readCommittedBibleBlob), never from the work-tree
+// file: a doer sharing the maintainer folder could otherwise hand-edit
+// .fleet/kb-canonical.json before the call and have the edits merged,
+// committed and recorded as trusted without review. HEAD with no committed
+// bible (unborn HEAD, untracked file) is an empty bible. A work-tree file that
+// differs from HEAD is IGNORED (logged as a warning naming the file) and, when
+// this call writes, overwritten with the merged result -- it is never merged
+// over. A folder that is not a git work tree has no committed copy, so the
+// file on disk is the base there (and nothing is committed or trusted).
+//
 // Trust anchor: when called from a FULL or kb_maintainer session, the blob id
-// of every bible this writes is recorded in the per-repo KB DB, which is what
-// lets a member session without the grant import that bible (kb-import.ts).
+// of the bible this call COMMITS is recorded in the per-repo KB DB, which is
+// what lets a member session without the grant import that bible
+// (kb-import.ts). The id recorded is the blob now at HEAD, and only when it
+// equals the id of the exact bytes written (a clean filter that changed the
+// staged bytes records nothing). No commit made -> nothing new recorded.
 //
 // Withdrawals: a reviewer's judgement that a bible entry no longer holds,
 // carried by the branch as a tombstone {id, at, reason: "withdrawn", note,
@@ -267,7 +284,8 @@ export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor
 
   // No ids, no demotions and no bible entry that could be removed: nothing to
   // do, and the KB is not opened.
-  const existingDoc = readBibleDocument(outPath);
+  const base = await readCommitBaseDocument(repoPath, outPath);
+  const existingDoc = base.doc;
   const existingAtStart = existingDoc?.entries ?? null;
   if (requested.length === 0 && requestedDemotions.length === 0 && !hasTombstoneWork
     && (existingAtStart === null || existingAtStart.length === 0)) {
@@ -287,11 +305,11 @@ export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor
     // file is logged, never thrown over -- the skip is provider-wide.
     if (hasTombstoneWork) {
       return done(await commitTombstonesOnly(
-        repoPath, outPath, existingDoc, requestedWithdrawals.map(withdrawalTombstone), requestedRestores, input,
+        repoPath, outPath, base, requestedWithdrawals.map(withdrawalTombstone), requestedRestores, input,
       ));
     }
-    if (existingAtStart === null && fs.existsSync(outPath)) {
-      logWarn('kb_bible_commit', 'bible file is not readable, reporting entry_count 0 under the http KB provider: ' + outPath);
+    if (base.unreadable) {
+      logWarn('kb_bible_commit', 'bible file is not readable, reporting entry_count 0 under the http KB provider: ' + base.source);
     }
     return done({
       merged: [], demoted: [], skipped: [], removed: [], entry_count: existingAtStart?.length ?? 0, backfilled: 0, committed: false,
@@ -471,8 +489,8 @@ export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor
 
   // A bible file that exists but cannot be parsed must not be overwritten: its
   // entries are unknown, and writing over it would drop all of them.
-  if (existingDoc === null && fs.existsSync(outPath)) {
-    throw new Error('kb_bible_commit: existing bible is not a readable bible file, refusing to overwrite it: ' + outPath);
+  if (base.unreadable) {
+    throw new Error('kb_bible_commit: existing bible is not a readable bible file, refusing to overwrite it: ' + base.source);
   }
   const existing = existingDoc?.entries ?? null;
 
@@ -605,23 +623,68 @@ export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor
     committed = true;
   }
 
-  // kb_import trust anchor: record the blob id of the bible just written, so
+  // kb_import trust anchor: record the blob id of the bible just COMMITTED, so
   // a member session without the kb_maintainer grant may import it once it is
   // committed in (or pulled into) any checkout of this repository. Only the
   // maintainer side records: kb_bible_commit is served to every member
-  // session, and a session without the grant merges over whatever its own
-  // work-tree bible holds (possibly hand-edited), so its output must not
-  // become trusted. A FULL session and the kb_maintainer session record.
-  if (!memberLacksKbMaintainer(anchor)) {
-    // The id of the exact bytes written (LF, unfiltered), hashed in-process:
-    // never `git hash-object` on the path, which would re-read the file and
-    // run the checkout's member-configured clean filters.
-    project.recordTrustedBibleBlob(await bibleBytesBlobId(repoPath, written), 'kb_bible_commit');
+  // session, and a session without the grant must never mint trust. A FULL
+  // session and the kb_maintainer session record -- and only for exactly the
+  // bytes committed: the blob now at HEAD (read and hash-verified in-process),
+  // when it equals the in-process id of the bytes written (LF, unfiltered;
+  // never `git hash-object` on the path, which would re-read the file and run
+  // the checkout's member-configured clean filters). A clean filter that
+  // changed the staged bytes records nothing. No commit -> nothing recorded.
+  if (committed && !memberLacksKbMaintainer(anchor)) {
+    const writtenId = await bibleBytesBlobId(repoPath, written);
+    const head = await readCommittedBibleBlob(repoPath, 'HEAD');
+    if (head !== null && head.blobId === writtenId) {
+      project.recordTrustedBibleBlob(head.blobId, 'kb_bible_commit');
+    } else {
+      logWarn('kb_bible_commit', 'no trusted bible blob recorded: the bible committed at HEAD ('
+        + (head?.blobId ?? 'unreadable') + ') is not the bytes written (' + writtenId + '): ' + outPath);
+    }
   }
 
   return done({
     merged, demoted, skipped, removed, entry_count: entries.length, backfilled, committed, withdrawn, restored, ...baseErrorField,
   });
+}
+
+/** The bible this call merges over (see BASE DOCUMENT in the header). */
+interface CommitBaseDocument {
+  /** The parsed bible, or null when there is none (or it is unreadable). */
+  doc: CanonicalBibleDocument | null;
+  /** True when a bible exists at the source but does not parse: refuse to overwrite. */
+  unreadable: boolean;
+  /** Where the bible was read from, for messages (HEAD:<rel> or the file path). */
+  source: string;
+}
+
+/**
+ * The base document: in a git work tree, the bible as committed at HEAD
+ * (hash-verified; a missing committed copy is an empty bible), with a work-tree
+ * file that differs from it ignored and logged; outside a work tree, the file
+ * on disk. Throws BibleBlobIntegrityError when the object store returns bytes
+ * that do not hash to the HEAD blob id.
+ */
+async function readCommitBaseDocument(repoPath: string, outPath: string): Promise<CommitBaseDocument> {
+  if (!isGitRepo(repoPath)) {
+    const doc = readBibleDocument(outPath);
+    return { doc, unreadable: doc === null && fs.existsSync(outPath), source: outPath };
+  }
+  const source = 'HEAD:' + OWN_BIBLE_REL;
+  const committed = await readCommittedBibleBlob(repoPath, 'HEAD');
+  const doc = committed === null ? null : parseBibleDocumentText(committed.text);
+  let worktree: string | null = null;
+  try { worktree = fs.readFileSync(outPath, 'utf-8'); } catch { worktree = null; }
+  // Line endings are normalized for the comparison only (autocrlf checkouts).
+  const lf = (t: string) => t.replace(/\r\n/g, '\n');
+  if (worktree !== null && (committed === null || lf(worktree) !== lf(committed.text))) {
+    logWarn('kb_bible_commit', 'the work-tree bible differs from the bible committed at HEAD'
+      + (committed === null ? ' (HEAD has none)' : '') + '; ignoring the work-tree file and building from '
+      + source + ' -- it is overwritten if this call writes: ' + outPath);
+  }
+  return { doc, unreadable: committed !== null && doc === null, source };
 }
 
 /** The bible at baseCommit, reduced to what the restore and demotion rules need. */
@@ -747,14 +810,15 @@ function tombstonedEntryRemovals(
 async function commitTombstonesOnly(
   repoPath: string,
   outPath: string,
-  existingDoc: { entries: CanonicalEntry[]; demotions: BibleTombstone[] } | null,
+  base: CommitBaseDocument,
   withdrawals: BibleTombstone[],
   restoreIds: string[],
   input: KbBibleCommitInput,
 ): Promise<Omit<KbBibleCommitResult, 'path'>> {
-  if (existingDoc === null && fs.existsSync(outPath)) {
-    throw new Error('kb_bible_commit: existing bible is not a readable bible file, refusing to overwrite it: ' + outPath);
+  if (base.unreadable) {
+    throw new Error('kb_bible_commit: existing bible is not a readable bible file, refusing to overwrite it: ' + base.source);
   }
+  const existingDoc = base.doc;
   const existingEntries = existingDoc?.entries ?? [];
   const withdrawn = withdrawals.map(w => w.id);
   const withdrawnSet = new Set(withdrawn);

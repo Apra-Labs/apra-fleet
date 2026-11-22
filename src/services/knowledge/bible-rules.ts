@@ -13,8 +13,12 @@ import { serverVersion } from '../../version.js';
  * REQUIRED_MAINTAINER_BIBLE_RULES (packages/apra-fleet-se/fleet-sprint/kb.mjs)
  * with it -- tests/knowledge/kb-capabilities-tool.test.ts keeps the two equal.
  * A version string alone cannot order two builds of one core version.
+ *
+ * Revisions: 1 = tombstone kinds and the HEAD basis rule; 2 = kb_bible_commit
+ * builds from the bible committed at HEAD (never the work-tree file) and
+ * records only the blob it committed as trusted.
  */
-export const BIBLE_RULES_REVISION = 1;
+export const BIBLE_RULES_REVISION = 2;
 
 /**
  * This server's build identity, reported by kb_capabilities as `fleet_build`:

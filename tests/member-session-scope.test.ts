@@ -792,7 +792,7 @@ describe('kb_import trust anchor: a no-grant import needs a bible the maintainer
     expect(JSON.parse(accepted.text)).toMatchObject({ imported: 0, skipped: 1, bible_source: 'HEAD' });
   });
 
-  it('FULL session: an explicit-path import keeps bible confidence and records the bible', async () => {
+  it('FULL session: an explicit-path import keeps bible confidence but records only a bible committed at HEAD', async () => {
     fx.writeSrc('src/full.ts', 'export const full = 1;\n');
     commitWorkTree(fx.clone, 'basis for full');
     const body = v3([await carriedEntry(fx.clone, 'full-entry-0001', 'src/full.ts')]);
@@ -803,24 +803,34 @@ describe('kb_import trust anchor: a no-grant import needs a bible the maintainer
     const full = await connect(handle.port);
     // A FULL session's own folder is the server working folder: point it at the checkout.
     const cwd = vi.spyOn(process, 'cwd').mockReturnValue(fx.clone);
-    let r: { text: string; isError: boolean };
+    const fullImport = (args: Record<string, unknown>) => callText(full, 'kb_import', args);
     try {
-      r = await callText(full, 'kb_import', { path: outside, skip_sweep: true });
+      const r = await fullImport({ path: outside, skip_sweep: true });
+      expect(r.isError, r.text).toBe(false);
+      expect(JSON.parse(r.text)).toMatchObject({ imported: 1 });
+      expect(JSON.parse(r.text).bible_source).toBeUndefined();
+      expect(fx.row('full-entry-0001')?.confidence).toBe('CONFIRMED');
+      // The file is not the bible committed at HEAD (there is none): nothing is trusted.
+      expect(trustedBlobCount()).toBe(0);
+
+      // The same bytes committed only in the checkout are therefore refused for a no-grant session.
+      fx.writeSrc(BIBLE_REL, body);
+      commitWorkTree(fx.clone, 'bible from the reviewed file');
+      const plain = await connect(handle.port, { member: fx.memberId });
+      const refused = await callText(plain, 'kb_import', { skip_sweep: true });
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toMatch(/^E-KB-MAINTAINER-REQUIRED: .*never recorded/);
+
+      // A FULL import of the own bible, whose work-tree bytes are the committed ones, records it.
+      const own = await fullImport({ skip_sweep: true });
+      expect(own.isError, own.text).toBe(false);
+      expect(fx.provider.isTrustedBibleBlob(git(fx.clone, ['rev-parse', 'HEAD:./' + BIBLE_REL]))).toBe(true);
+      const p = await callText(plain, 'kb_import', { skip_sweep: true });
+      expect(p.isError, p.text).toBe(false);
+      expect(JSON.parse(p.text)).toMatchObject({ imported: 0, skipped: 1, bible_source: 'HEAD' });
     } finally {
       cwd.mockRestore();
     }
-    expect(r.isError, r.text).toBe(false);
-    expect(JSON.parse(r.text)).toMatchObject({ imported: 1 });
-    expect(JSON.parse(r.text).bible_source).toBeUndefined();
-    expect(fx.row('full-entry-0001')?.confidence).toBe('CONFIRMED');
-
-    // The same bytes committed as the checkout bible are now trusted for a no-grant session.
-    fx.writeSrc(BIBLE_REL, body);
-    commitWorkTree(fx.clone, 'bible from the reviewed file');
-    const plain = await connect(handle.port, { member: fx.memberId });
-    const p = await callText(plain, 'kb_import', { skip_sweep: true });
-    expect(p.isError, p.text).toBe(false);
-    expect(JSON.parse(p.text)).toMatchObject({ imported: 0, skipped: 1, bible_source: 'HEAD' });
   });
 
   // ID-TO-BYTES BINDING. The trusted id comes from the HEAD tree, but the

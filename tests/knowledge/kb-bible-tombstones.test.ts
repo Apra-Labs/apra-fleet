@@ -365,6 +365,9 @@ describe('bible demotion tombstones', () => {
 
     const garbage = '{ this is not valid json';
     fs.writeFileSync(biblePath(), garbage);
+    // The base is the bible committed at HEAD, so the garbage is committed.
+    git(clone, ['add', '.fleet/kb-canonical.json']);
+    git(clone, ['commit', '-q', '-m', 'unreadable bible']);
     const head = git(clone, ['rev-parse', 'HEAD']).trim();
 
     await expect(kbBibleCommit({ ids: [], demoted_ids: [id], ...BASE }, { folder: clone }))
