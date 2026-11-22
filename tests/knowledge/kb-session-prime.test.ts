@@ -5,14 +5,20 @@ import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 
-const mockExecFile = vi.hoisted(() => vi.fn());
+const { mockExecFile, realExecFile } = vi.hoisted(() => ({
+  mockExecFile: vi.fn(),
+  realExecFile: { fn: undefined as unknown as (...args: unknown[]) => unknown },
+}));
 
 // Only execFile (the async hasher) is mocked; execFileSync stays real so the
 // kb (self) git checks and makeSelfRepo() below run against real repos.
-vi.mock('node:child_process', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('node:child_process')>()),
-  execFile: mockExecFile,
-}));
+// setupGitSuccess fakes `git hash-object` only; every other async git call
+// (the cold-seed's read of the bible committed at HEAD) runs for real.
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  realExecFile.fn = actual.execFile as unknown as (...args: unknown[]) => unknown;
+  return { ...actual, execFile: mockExecFile };
+});
 
 import { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js';
 import type { KBEntryInput } from '../../src/services/knowledge/types.js';
@@ -25,6 +31,7 @@ function gitBlobHash(data: Buffer): string {
 
 function setupGitSuccess(): void {
   mockExecFile.mockImplementation((...allArgs: unknown[]) => {
+    if (!(allArgs[1] as string[]).includes('hash-object')) return realExecFile.fn(...allArgs);
     const cb = allArgs[allArgs.length - 1] as (err: Error | null, stdout: string, stderr: string) => void;
     const fileArgs = (allArgs[1] as string[]).slice(1);
     const hashes = fileArgs.map((f: string) => {
@@ -219,6 +226,13 @@ function makeSelfRepo(dir: string): string {
   execFileSync('git', ['init', '-q'], { cwd: dir });
   execFileSync('git', ['remote', 'add', 'origin', 'https://example.test/kb-session-prime-self.git'], { cwd: dir });
   return dir;
+}
+
+/** Commit <dir>/.fleet/kb-canonical.json: the cold-seed reads only the bible committed at HEAD. */
+function commitBible(dir: string): void {
+  execFileSync('git', ['add', '.fleet/kb-canonical.json'], { cwd: dir });
+  execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', '-c', 'commit.gpgsign=false',
+    'commit', '-q', '--no-verify', '-m', 'bible', '--', '.fleet/kb-canonical.json'], { cwd: dir });
 }
 
 describe('kb_session_prime graph-neighbor expansion', () => {
@@ -480,6 +494,7 @@ describe('kb_session_prime canonical-bible cold-seed', () => {
       typeof entries === 'string' ? entries : JSON.stringify(entries),
       'utf-8',
     );
+    commitBible(bibleTmpDir);
   }
 
   beforeEach(() => {
@@ -895,6 +910,7 @@ describe('kb_session_prime global-bible cold-seed (T3.5, F9c, D8)', () => {
       JSON.stringify([canonicalEntry('p1')]),
       'utf-8',
     );
+    commitBible(emptyCwdDir);
     writeGlobalBibleFile([canonicalEntry('g1')]);
 
     const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
@@ -967,6 +983,7 @@ describe('kb_session_prime global-bible cold-seed (T3.5, F9c, D8)', () => {
       JSON.stringify([canonicalEntry('shared')]),
       'utf-8',
     );
+    commitBible(emptyCwdDir);
     // Global bible carries the SAME id -- must not duplicate.
     writeGlobalBibleFile([canonicalEntry('shared'), canonicalEntry('g1')]);
 

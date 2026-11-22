@@ -289,7 +289,12 @@ retire CONFIRMED entries:
   per-repo KB database (table `trusted_bible_blobs`) records the git blob id
   of every COMMITTED bible the maintainer side writes or imports:
   `kb_bible_commit`, and `kb_import` from a FULL session or the kb_maintainer
-  session. A member session without the grant only reads that record.
+  session. A member session without the grant only reads that record. When
+  the blob id of the committed bible is not recorded, the import fails with
+  `E-KB-MAINTAINER-REQUIRED` naming the unrecorded blob, and nothing is
+  imported. It refuses rather than clamping CONFIRMED entries to a lower tier,
+  because a clamped row would occupy its id and the import's id-exists skip
+  would then keep the genuine CONFIRMED entry out later.
 - The maintainer's work tree is never a source of trust. A doer sharing the
   maintainer folder can hand-edit `.fleet/kb-canonical.json`, so:
   `kb_bible_commit` builds the new bible from the bible committed at `HEAD`
@@ -301,12 +306,11 @@ retire CONFIRMED entries:
   records the file it reads only when its bytes are the bible committed at
   `HEAD` (it records that `HEAD` blob); a work-tree or explicit-`path` file
   that differs from `HEAD` is still imported at bible confidence by that
-  grant session, but never recorded as trusted. When the blob id of the
-  committed bible is not recorded, the import fails with
-  `E-KB-MAINTAINER-REQUIRED` naming the unrecorded blob, and nothing is
-  imported. It refuses rather than clamping CONFIRMED entries to a lower tier,
-  because a clamped row would occupy its id and the import's id-exists skip
-  would then keep the genuine CONFIRMED entry out later.
+  grant session, but never recorded as trusted. `kb_session_prime`'s
+  cold-seed (bible entries reach prompts as CONFIRMED on a cold KB) reads the
+  bible committed at `HEAD` too (hash-verified): a work-tree file that differs
+  is ignored (logged), and with no committed copy, or a failed verification,
+  nothing is seeded (logged with the reason).
 - The object store is member-writable too: a replace ref
   (`git replace <trusted> <forged>`), an overwritten loose object, an
   alternates entry or a crafted pack can make git return other bytes for a
