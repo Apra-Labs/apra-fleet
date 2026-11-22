@@ -279,6 +279,9 @@ session's own repo, including linked worktrees and custom `core.hooksPath`)
 and registers the knowledge bible merge driver in that clone (local merges of
 `.fleet/kb-canonical.json` resolve by entry id; see
 [packages/apra-fleet-se/docs/kb-canonical-merge.md](packages/apra-fleet-se/docs/kb-canonical-merge.md));
+the driver runs through a POSIX `sh` guard, so if its recorded binary path has
+moved the merge falls back to `git merge-file` with a message naming `kb_setup`,
+and re-running `kb_setup` re-registers a stale driver (reporting `repairedFrom`);
 it does not scope the config. On a shared fleet server, treat
 `kb_setup --remote` as a change for all of its users.
 
