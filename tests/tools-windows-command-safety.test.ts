@@ -144,7 +144,9 @@ describe('monitor_task command safety', () => {
 
     await monitorTask({ member_id: member.id, task_id: 'task-abcd1234' });
 
-    expect(mockExecCommand).toHaveBeenCalledTimes(4);
+    // status, pid, gpu, log -- plus the task-dir probe monitor_task runs when
+    // there is no status.json and no live pid (the empty mock output).
+    expect(mockExecCommand).toHaveBeenCalledTimes(5);
     const cmds = mockExecCommand.mock.calls.map((c) => c[0] as string);
 
     for (const raw of cmds) {
@@ -158,7 +160,7 @@ describe('monitor_task command safety', () => {
     }
 
     // status/pid/log commands must reference a concrete $env:USERPROFILE-rooted task dir
-    const statusAndPidAndLog = cmds.slice(0, 2).concat(cmds.slice(3, 4)).map(decodeIfEncoded);
+    const statusAndPidAndLog = cmds.slice(0, 2).concat(cmds.slice(3, 5)).map(decodeIfEncoded);
     for (const decoded of statusAndPidAndLog) {
       expect(decoded).toContain('$env:USERPROFILE\\.fleet-tasks\\task-abcd1234');
     }
@@ -170,7 +172,7 @@ describe('monitor_task command safety', () => {
 
     await monitorTask({ member_id: member.id, task_id: 'task-abcd1234' });
 
-    expect(mockExecCommand).toHaveBeenCalledTimes(4);
+    expect(mockExecCommand).toHaveBeenCalledTimes(5);
     const cmds = mockExecCommand.mock.calls.map((c) => c[0] as string);
 
     expect(cmds[0]).toBe("cat ~/.fleet-tasks/task-abcd1234/status.json 2>/dev/null || echo '{}'");
@@ -181,6 +183,9 @@ describe('monitor_task command safety', () => {
       'nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d " "',
     );
     expect(cmds[3]).toBe("tail -20 ~/.fleet-tasks/task-abcd1234/task.log 2>/dev/null || echo ''");
+    // No status.json and a dead pid: the task-dir probe that tells a
+    // never-started task apart from an unreadable one.
+    expect(cmds[4]).toBe('if [ -d ~/.fleet-tasks/task-abcd1234 ]; then echo present; else echo missing; fi');
   });
 
   it('item 3: Windows with a nonexistent task dir returns the normal empty-status result -- no throw, not a bogus "alive"', async () => {
@@ -197,8 +202,11 @@ describe('monitor_task command safety', () => {
     })()).resolves.not.toThrow();
 
     const parsed = JSON.parse(result!);
+    // The empty stub also answers the task-dir probe with nothing, so the
+    // state is genuinely undetermined: unknown, but always with a reason.
     expect(parsed.status).toBe('unknown');
     expect(parsed.pidAlive).toBe(false);
+    expect(typeof parsed.reason).toBe('string');
   });
 });
 

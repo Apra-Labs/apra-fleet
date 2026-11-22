@@ -20,6 +20,10 @@ export const monitorTaskSchema = z.object({
 
 export type MonitorTaskInput = z.infer<typeof monitorTaskSchema>;
 
+function errMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 export async function monitorTask(input: MonitorTaskInput): Promise<string> {
   const agentOrError = resolveMember(input.member_id, input.member_name);
   if (typeof agentOrError === 'string') return agentOrError;
@@ -95,6 +99,37 @@ export async function monitorTask(input: MonitorTaskInput): Promise<string> {
     ? pidResult.value.stdout.trim() === 'alive'
     : false;
 
+  // No status.json and no live pid: tell "the task never started" apart from
+  // "could not read the task state" with one extra probe of the task dir
+  // (only on this path, so a normal poll runs the same three commands).
+  // A task that never started reports launch_failed with a reason -- never
+  // status unknown with every field null.
+  let derivedStatus: string | undefined;
+  let reason: string | undefined;
+  if (statusData.status === undefined && !pidAlive) {
+    if (statusResult.status === 'rejected') {
+      reason = `Could not read the task status on the member: ${errMessage(statusResult.reason)}`;
+    } else {
+      const dirCmd = isWindows
+        ? wrapPowerShellEncoded(`if (Test-Path "${winTaskDir}") { echo present } else { echo missing }`)
+        : `if [ -d ${taskDir} ]; then echo present; else echo missing; fi`;
+      try {
+        const probe = (await strategy.execCommand(dirCmd, 10000)).stdout.trim();
+        if (probe === 'missing') {
+          derivedStatus = 'launch_failed';
+          reason = `The task never started: its task directory (${isWindows ? winTaskDir : taskDir}) does not exist on the member. The launch failed or the task id is wrong.`;
+        } else if (probe === 'present') {
+          derivedStatus = 'launch_failed';
+          reason = 'The task never started: its task directory exists but the task wrapper never wrote status.json or task.pid.';
+        } else {
+          reason = `Could not determine whether the task started (unexpected probe output: ${JSON.stringify(probe.slice(0, 200))}).`;
+        }
+      } catch (err) {
+        reason = `Could not read the task directory on the member: ${errMessage(err)}`;
+      }
+    }
+  }
+
   let gpuUtilization: number | undefined;
   if (agent.cloud && gpuResult.status === 'fulfilled') {
     gpuUtilization = parseGpuUtilization(gpuResult.value.stdout);
@@ -110,7 +145,7 @@ export async function monitorTask(input: MonitorTaskInput): Promise<string> {
     rawLogTail,
   );
 
-  const taskStatus = String(statusData.status ?? 'unknown');
+  const taskStatus = String(statusData.status ?? derivedStatus ?? 'unknown');
   const isCompleted = taskStatus === 'completed' || taskStatus === 'failed';
 
   // auto_stop: stop cloud instance if task is done
@@ -132,6 +167,7 @@ export async function monitorTask(input: MonitorTaskInput): Promise<string> {
     started: statusData.started ?? null,
     updated: statusData.updated ?? null,
     pidAlive,
+    ...(reason !== undefined ? { reason } : {}),
     ...(gpuUtilization !== undefined ? { gpuUtilization } : {}),
     logTail: logTail || null,
     ...(autoStopped ? { autoStopped: true } : {}),

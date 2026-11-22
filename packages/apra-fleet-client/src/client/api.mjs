@@ -215,7 +215,10 @@
  *   (WMI provider host / session 0), independent of the SSH session's job object, since a plain
  *   background launch dies with the SSH channel there. darwin gets an advisory warning (the
  *   wrapper script is designed for Linux) but is not blocked. Matches
- *   src/tools/execute-command.ts's long_running branch exactly.
+ *   src/tools/execute-command.ts's long_running branch exactly. The call returns the
+ *   `Task launched: task_id=...` text only after the task wrapper started on the member;
+ *   otherwise it is a failure with `structuredContent.reason: 'launch_failed'` and no task_id.
+ *   Poll the task with the monitor_task tool (result shape: {@link MonitorTaskResult}).
  * @property {number} [max_retries] - Max crash retries (long_running only)
  * @property {string} [member_id] - UUID of the member
  * @property {string} [member_name] - Friendly name of the member
@@ -260,11 +263,31 @@
  * @property {boolean} [isError] - true when the command did not run to an exit code.
  * @property {string} [reason] - Present with isError: 'timeout' (inactivity timeout) |
  *   'max_total_time' (hard total-time cap) | 'transport_error' (connection/channel failure) |
- *   'cloud_start_failed' | 'preflight_offline' | 'preflight_auth_expired' |
- *   'preflight_auth_missing'.
+ *   'launch_failed' (long_running only: the launch exited nonzero or the task wrapper
+ *   never started on the member) | 'cloud_start_failed' | 'preflight_offline' |
+ *   'preflight_auth_expired' | 'preflight_auth_missing'.
  * @property {'secret_delivery_unavailable'} [storedEnvNotDelivered] - Present when the
  *   command ran WITHOUT the member's stored credential env vars because no
  *   owner-only file channel exists to deliver them (SFTP disabled, relay member).
+ */
+
+/**
+ * Parsed JSON text returned by the monitor_task tool for a long_running task.
+ * Mirrors src/tools/monitor-task.ts.
+ * @typedef {Object} MonitorTaskResult
+ * @property {string} taskId - The task id passed in.
+ * @property {'running'|'completed'|'failed'|'launch_failed'|'unknown'} status - The wrapper's
+ *   status.json status; 'launch_failed' when the task directory or wrapper never appeared on the
+ *   member (the task never started); 'unknown' when the task state could not be read.
+ * @property {number|null} exitCode - Final exit code, or null while running / never started.
+ * @property {number} retries - Crash retries used so far.
+ * @property {string|null} started - ISO start time, or null.
+ * @property {string|null} updated - ISO time of the last status update, or null.
+ * @property {boolean} pidAlive - Whether the task process is alive.
+ * @property {string} [reason] - Present with status 'launch_failed' or 'unknown': why.
+ * @property {number} [gpuUtilization] - Cloud members only.
+ * @property {string|null} logTail - Last lines of task.log (credential values redacted).
+ * @property {boolean} [autoStopped] - Set when auto_stop stopped the cloud instance.
  */
 
 /**

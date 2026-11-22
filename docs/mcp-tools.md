@@ -388,6 +388,10 @@ Runs a shell command directly on a member without spinning up Claude. Use for qu
 
 **Output:** Exit code followed by stdout (and stderr prefixed with `[stderr]` if present).
 
+**`long_running` launch:** the call returns `Task launched: task_id=...` only after the task wrapper has started on the member (its `task.pid` exists, or its `status.json` already reports a finished task). A launch that exits nonzero, fails `Win32_Process.Create`, or whose wrapper does not start within the launch's bounded wait returns `Failed to launch task on ...` with `structuredContent.isError: true` and `reason: "launch_failed"` (credential values redacted), never a `task_id`. `monitor_task` on a task id whose directory or wrapper never appeared reports `status: "launch_failed"` with a `reason`; when the task state cannot be read it reports `status: "unknown"` with a `reason`.
+
+A local Windows Git Bash member receives any command longer than 4KB through an owner-only temp file that bash sources, not as one `bash -c` argument (Git Bash corrupts single arguments above about 8KB). The file is deleted when the command ends.
+
 **Security warning:** This tool executes **raw shell commands** on the target machine with full privileges of the user.
 
 **When to use `execute_command` vs `execute_prompt`:**
