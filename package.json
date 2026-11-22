@@ -28,6 +28,7 @@
   "files": [
     "dist/",
     "!dist/**/*.map",
+    "!dist/**/*.d.ts",
     "hooks/",
     "scripts/fleet-statusline.sh",
     "scripts/agy-transcript-reader.js",
