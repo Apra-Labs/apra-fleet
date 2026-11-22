@@ -203,7 +203,7 @@ export async function registerAllTools(baseServer: McpServer, scope: ToolScope =
   // { text, structuredContent } to give programmatic callers (e.g.
   // FleetWorkflow.command()) a machine-readable channel alongside the
   // human/LLM-facing text -- see ExecuteCommandResult in tools/execute-command.ts.
-  function wrapTool(toolName: string, handler: (input: any, extra?: any) => Promise<string | { text: string; structuredContent?: Record<string, unknown> }>) {
+  function wrapTool(toolName: string, handler: (input: any, extra?: any) => Promise<string | { text: string; structuredContent?: Record<string, unknown>; isError?: boolean }>) {
     return async (input: any, extra?: any) => {
       // Per-member kb_/code_ call counts (session_stats). Counted on entry, so
       // a call that fails still counts as a call. Engine-origin and FULL
@@ -244,6 +244,9 @@ export async function registerAllTools(baseServer: McpServer, scope: ToolScope =
       }
       const result = typeof raw === 'string' ? raw : raw.text;
       const structuredContent = typeof raw === 'string' ? undefined : raw.structuredContent;
+      // A handler may report a failure without throwing (update_member: a
+      // requested fleet_install that did not happen, other settings saved).
+      const isError = typeof raw !== 'string' && raw.isError === true;
       const isJson = isJsonResponse(result);
       const preamble = getOnboardingPreamble(toolName, isJson);
       const suffix = isJson ? null : getOnboardingNudge(toolName, input, result);
@@ -259,7 +262,7 @@ export async function registerAllTools(baseServer: McpServer, scope: ToolScope =
       if (suffix) {
         content.push({ type: 'text' as const, text: `<apra-fleet-display>\n${suffix}\n</apra-fleet-display>`, annotations: { audience: ['user'], priority: 0.8 } });
       }
-      return structuredContent ? { content, structuredContent } : { content };
+      return { content, ...(structuredContent ? { structuredContent } : {}), ...(isError ? { isError: true } : {}) };
     };
   }
 
