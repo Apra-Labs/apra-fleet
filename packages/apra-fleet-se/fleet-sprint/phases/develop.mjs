@@ -347,20 +347,32 @@ export async function runDevelopPhase({
             log(`Doer streak [${streakIds.join(', ')}] reported liveEvidenceIds the engine ignores: ${ignored.join(', ')}.`);
         }
         if (accepted.length === 0) return [];
+        // A failed label write is logged and that bead is left out of the
+        // returned ids, so it falls back to the ordinary BLOCKED handling.
+        const labelled = [];
         await gitSync.withOpenSyncBracket(async () => {
             for (const id of accepted) {
-                await command(`bd update ${id} --add-label ${LIVE_EVIDENCE_LABEL}`, { member_name: backlogMember, silent: true });
+                try {
+                    await command(`bd update ${id} --add-label ${LIVE_EVIDENCE_LABEL}`, { member_name: backlogMember, silent: true });
+                    labelled.push(id);
+                } catch (err) {
+                    log(
+                        `Doer live-evidence C${cycle} R${devRounds}: could not label bead ${id} ${LIVE_EVIDENCE_LABEL} ` +
+                        `(streak [${streakIds.join(', ')}]): ${err && err.message ? err.message : err} -- handled as an ordinary BLOCKED bead instead.`
+                    );
+                }
             }
         });
+        if (labelled.length === 0) return [];
         // The engine just mutated beads in its own clone: D-push so every
         // member sees the marker.
         await gitSync.syncBeadsAfter(backlogMember, { pushBeads: true });
         log(
-            `Doer live-evidence C${cycle} R${devRounds}: bead(s) [${accepted.join(', ')}] need live integration evidence ` +
+            `Doer live-evidence C${cycle} R${devRounds}: bead(s) [${labelled.join(', ')}] need live integration evidence ` +
             `(reported by the doer of streak [${streakIds.join(', ')}]) -- labelled ${LIVE_EVIDENCE_LABEL} and routed to ` +
             'the Integration Test phase as verify target(s); not set aside as doer-BLOCKED and never dispatched to a doer again.'
         );
-        return accepted;
+        return labelled;
     };
 
     // Records a doer NEEDS-DECISION report (../decisions.mjs): the named
@@ -1113,6 +1125,10 @@ export async function runDevelopPhase({
             : (report && report.status === NEEDS_DECISION ? 'needs-decision' : 'left-open');
         if (unclosedIds.length > 0) {
             log(`Doer streak [${actualBeadIds.join(', ')}] reported status '${report ? report.status : 'unknown'}' but bead(s) still open: ${unclosedIds.join(', ')} -- treating streak as FAILED.`);
+        }
+        if (report && report.status !== 'BLOCKED'
+            && Array.isArray(report.liveEvidenceIds) && report.liveEvidenceIds.length > 0) {
+            log(`Doer streak [${actualBeadIds.join(', ')}] named liveEvidenceIds [${report.liveEvidenceIds.join(', ')}] with status '${report.status}' -- ignored; they are honoured only on a BLOCKED report.`);
         }
         if (leftOpenReason === 'blocked' && unclosedIds.length > 0) {
             await recordDoerBlocked({ report, unclosedIds, streakIds: actualBeadIds, doerMember });
