@@ -190,7 +190,9 @@ describe('scenario 3: a full install without the opt-in', () => {
     const w = world({});
     __setMemberFleetMcpDeps(deps(w));
     const out = await updateMember({ member_id: a.id, fleet_install: 'auto' } as never);
-    expect(out).toContain('unavailable (full-install-running)');
+    // A requested install that did not happen fails the call loudly.
+    expect(out).toMatchObject({ isError: true, structuredContent: { reason: 'full-install-running' } });
+    expect((out as { text: string }).text).toContain('unavailable (full-install-running)');
     expect(mutating(w)).toEqual([]);
   });
 });

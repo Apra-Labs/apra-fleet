@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import type { Client, SFTPWrapper } from 'ssh2';
 import type { Agent } from '../types.js';
 import { openPooledChannel } from './ssh.js';
-import { resolveRemotePath } from '../utils/platform.js';
+import { resolveRemotePath, toSftpPath } from '../utils/platform.js';
 
 /**
  * Inactivity budget for one SFTP operation (session open, mkdir, writeFile,
@@ -228,9 +228,10 @@ export async function uploadViaSFTP(
   abortSignal?: AbortSignal
 ): Promise<{ success: string[]; failed: { path: string; error: string }[] }> {
   return withSftpSession(agent, abortSignal, async (s) => {
-    const remoteBase = destinationPath
+    // toSftpPath: a Git Bash member's /c/... path is not valid over SFTP.
+    const remoteBase = toSftpPath(destinationPath
       ? resolveRemotePath(agent.workFolder, destinationPath)
-      : agent.workFolder.replace(/\\/g, '/');
+      : agent.workFolder.replace(/\\/g, '/'), agent.os);
 
     await sftpMkdirRecursive(s, remoteBase);
 
@@ -265,7 +266,7 @@ export async function uploadContentToHome(
   baseDir: string
 ): Promise<{ success: string[]; failed: { path: string; error: string }[] }> {
   return withSftpSession(agent, undefined, async (s) => {
-    const base = baseDir.replace(/\\/g, '/').replace(/\/$/, '');
+    const base = toSftpPath(baseDir.replace(/\\/g, '/').replace(/\/$/, ''), agent.os);
     const success: string[] = [];
     const failed: { path: string; error: string }[] = [];
 
@@ -341,7 +342,8 @@ export async function writeSecretFileInHome(agent: Agent, fileName: string, cont
 
 /** Best-effort removal of a file written by writeSecretFileInHome. */
 export async function removeSecretFile(agent: Agent, shellPath: string): Promise<void> {
-  const sftpPath = /^[A-Za-z]:/.test(shellPath) ? `/${shellPath}` : shellPath;
+  const native = toSftpPath(shellPath, agent.os);
+  const sftpPath = /^[A-Za-z]:/.test(native) ? `/${native}` : native;
   await withSftpSession(agent, undefined, (s) => s.guard('unlink', sftpPath, () => new Promise<void>((resolve) => {
     s.sftp.unlink(sftpPath, () => resolve());
   }))).catch(() => { /* best-effort */ });
@@ -361,7 +363,7 @@ export async function downloadViaSFTP(
 
     for (const remotePath of remotePaths) {
       if (abortSignal?.aborted) throw new Error('Aborted by client');
-      const resolvedRemote = resolveRemotePath(agent.workFolder, remotePath);
+      const resolvedRemote = toSftpPath(resolveRemotePath(agent.workFolder, remotePath), agent.os);
       const fileName = path.posix.basename(resolvedRemote);
       const localPath = path.join(localDestination, fileName);
       try {

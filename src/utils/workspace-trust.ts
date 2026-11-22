@@ -9,6 +9,7 @@ import { getProvider } from '../providers/index.js';
 import { writeMemberSecretFile, removeMemberSecretFile } from '../services/member-secret-env.js';
 import type { WorkspaceTrustTransport, MemberSecretFileChannel } from '../providers/provider.js';
 import { getAgentShell } from './agent-helpers.js';
+import { toSftpPath } from './platform.js';
 import { logLine, logWarn } from './log-helpers.js';
 
 /**
@@ -72,13 +73,11 @@ export function workspaceTrustTransportFor(agent: Agent, strat: AgentStrategy): 
  * A gitbash Windows member's probed home is an MSYS path (/c/Users/name). The
  * SFTP server on that host is Win32-OpenSSH, which does NOT understand MSYS
  * paths -- it would treat it as an absolute path and create C:\c\Users\name.
- * Rewrite the drive prefix to the Windows form (C:/Users/name) before handing
- * it to transferFiles; every other spelling passes through unchanged.
+ * The shared rewrite is toSftpPath, which the SFTP layer itself applies to
+ * every transfer; this is the home-path view of it.
  */
 export function sftpHomePath(home: string, agentOs: Agent['os']): string {
-  if (agentOs !== 'windows') return home;
-  const m = home.match(/^\/([A-Za-z])\/(.*)$/);
-  return m ? `${m[1].toUpperCase()}:/${m[2]}` : home;
+  return toSftpPath(home, agentOs);
 }
 
 /**
