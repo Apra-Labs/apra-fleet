@@ -203,3 +203,79 @@ describe('full install on a fleet member host', () => {
     expect(files.has(`${HOME}/.apra-fleet/data/member-install.json`)).toBe(true);
   });
 });
+
+/** Every path the install wrote, created, copied to or removed (mocked fs). */
+function touchedPaths(): string[] {
+  const m = vi.mocked(fs);
+  return [
+    ...m.writeFileSync.mock.calls.map(c => c[0]),
+    ...m.appendFileSync.mock.calls.map(c => c[0]),
+    ...m.mkdirSync.mock.calls.map(c => c[0]),
+    ...m.copyFileSync.mock.calls.map(c => c[1]),
+    ...m.renameSync.mock.calls.map(c => c[1]),
+    ...m.rmSync.mock.calls.map(c => c[0]),
+    ...m.chmodSync.mock.calls.map(c => c[0]),
+  ].map(p => key(p));
+}
+
+describe('deploy on a member host keeps a member install of the deployed build', () => {
+  it('member install -> deploy.md member path -> wrong full path refused; nothing outside the sandbox', async () => {
+    // 1. Member install with an explicit port into the sandbox (no server yet).
+    serverUp = false;
+    await runInstall(['--llm', 'claude', '--member', '--workflows', 'none', '--transport', 'http', '--port', '7611']);
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(hasMarker()).toBe(true);
+    expect(marker().port).toBe(7611);
+
+    // The marker an older build left behind; its server is now running.
+    files.set(`${DATA_DIR}/member-install.json`, JSON.stringify({ ...marker(), version: '0.0.1' }));
+    serverUp = true;
+
+    // 2. The production deploy deploy.md prescribes for a marker host.
+    await runInstall(memberForceArgs);
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(process.exitCode ?? 0).toBe(0);
+    expect(hasMarker()).toBe(true);
+    expect(marker().version).toBe(serverVersion);
+    expect(marker().port).toBe(7611);
+
+    // 3. The wrong path: a plain full install --force on the same host.
+    serverUp = true;
+    kills = [];
+    errorSpy.mockClear();
+    const before = files.get(`${DATA_DIR}/member-install.json`);
+    await expect(runInstall(['--force'])).rejects.toThrow('exit');
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    const err = errText();
+    expect(err).toContain(MEMBER_HOST_FULL_INSTALL_CODE);
+    expect(err).toContain('fleet_install: "auto"');
+    expect(err).toMatch(/install --member[^\n]*--force/);
+    expect(files.get(`${DATA_DIR}/member-install.json`)).toBe(before);
+    expect(kills).toEqual([]);
+
+    // 4. Nothing was written outside the sandbox: this test's sandbox root, or
+    // the per-run temp data dir tests/setup.ts provides (paths that modules
+    // resolve at load time, e.g. the service notice, land there).
+    const runDataDir = key(savedEnv.APRA_FLEET_DATA_DIR!);
+    expect(runDataDir).toContain('apra-fleet-test-data');
+    const touched = touchedPaths();
+    expect(touched.length).toBeGreaterThan(0);
+    const outside = touched.filter(p => !p.startsWith(`${SANDBOX}/`) && p !== runDataDir && !p.startsWith(`${runDataDir}/`));
+    expect(outside).toEqual([]);
+    const realHome = savedEnv.HOME ? key(savedEnv.HOME) : null;
+    if (realHome) expect(touched.filter(p => p.startsWith(`${realHome}/`) && !p.startsWith(`${runDataDir}/`))).toEqual([]);
+  });
+
+  it('deploy.md Deploy pins member-install.json detection and install --member --force', async () => {
+    const realFs = await vi.importActual<typeof import('node:fs')>('node:fs');
+    const md = realFs.readFileSync(path.resolve(__dirname, '..', 'deploy.md'), 'utf8');
+    const start = md.indexOf('\n## Deploy\n');
+    expect(start).toBeGreaterThanOrEqual(0);
+    const end = md.indexOf('\n## ', start + 1);
+    const deploy = md.slice(start, end < 0 ? undefined : end);
+    expect(deploy).toMatch(/test -f [^\n]*member-install\.json/);
+    expect(deploy).toMatch(/Test-Path[^\n]*member-install\.json/);
+    expect(deploy).toMatch(/deploy-install\.mjs -- --member\b/);
+    expect(deploy).toContain('install --member --force');
+  });
+});
