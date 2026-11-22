@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "f9120840430d27924cc7797240f4660c5f35c226",
     "branch": "main",
-    "entry_count": 186
+    "entry_count": 187
   },
   "entries": [
     {
@@ -561,6 +561,32 @@
         "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs": "4276b8301bf882b9709e295893904595f2bff86c",
         "packages/apra-fleet-se/fleet-sprint/vcs-providers/bitbucket.mjs": "e812ec5afad19e11b2739690991035342855fe02",
         "packages/apra-fleet-se/fleet-sprint/vcs-providers/index.mjs": "b90e97ee49cdba5ded5877d17d88351984fe409b"
+      }
+    },
+    {
+      "id": "2818267b-eebb-4cad-9b78-e5a21b64ea40",
+      "type": "knowledge",
+      "title": "Supervisor beads-view runs the bd/dolt pin check before any D-pull",
+      "summary": "createBeadsView().runCheck calls verifyPinnedToolVersions on the backlog member before doltPullBefore. A pass is cached per member name; a failure is never cached, records lastError, and makes freshForLaunch reject so POST /api/sprints answers 503.",
+      "symbols": [
+        "createBeadsView",
+        "verifyPinnedToolVersions",
+        "answerVersionProbe",
+        "withPinnedVersions"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/src/supervisor/beads-view.mjs",
+        "packages/apra-fleet-se/fleet-sprint/beads-identity-check.mjs",
+        "packages/apra-fleet-se/test/helpers/pinned-tool-versions.mjs",
+        "packages/apra-fleet-se/test/supervisor-beads-view-pin.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-22T20:31:21.611Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/beads-identity-check.mjs": "f8b1f1ffeb17dfb08bec6b3bc6d14fd7a409ae42",
+        "packages/apra-fleet-se/src/supervisor/beads-view.mjs": "bfabab0f881e28a3c1f918121a76e90f77621d0c",
+        "packages/apra-fleet-se/test/helpers/pinned-tool-versions.mjs": "8d7d75b00e124ec0c93b20d3b50662ebfb8257b3",
+        "packages/apra-fleet-se/test/supervisor-beads-view-pin.test.mjs": "253e291fd062a79e3d86be9de2c69eaa530c0106"
       }
     },
     {
