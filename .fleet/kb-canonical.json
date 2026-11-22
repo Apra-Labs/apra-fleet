@@ -1,7 +1,9 @@
 {
   "version": 3,
   "provenance": {
-    "branch": "main"
+    "commit": "fdd28500257f50b0fdf05135bee9f23ce7d61947",
+    "branch": "main",
+    "entry_count": 186
   },
   "entries": [
     {
@@ -172,6 +174,31 @@
       "source_file_hashes": {
         "packages/apra-fleet-se/fleet-sprint/decision-wait.mjs": "100e5775d8b1a6da9cba507c8260925595ec6add",
         "packages/apra-fleet-se/fleet-sprint/runner.js": "cfb66d795c72d41ff513e67cb077e9b8e3c5a9f1"
+      }
+    },
+    {
+      "id": "1011a100-4e86-47c6-ba1f-dfa758016206",
+      "type": "knowledge",
+      "title": "Local Git Bash commands over 4KB are sourced from an owner-only temp file",
+      "summary": "LocalStrategy.execCommand writes a Git Bash command longer than GITBASH_INLINE_COMMAND_MAX_BYTES (4096 bytes) to a 0600 file in privateSecretDir and spawns `. '<file>'`. Sourcing keeps child.pid as the bash running the command, so tree-kill and FLEET_PID still work. The file is removed in a finally.",
+      "symbols": [
+        "GITBASH_INLINE_COMMAND_MAX_BYTES",
+        "writeLocalCommandFile",
+        "gitBashSourceCommand",
+        "removeLocalCommandFile",
+        "LocalStrategy.execCommand"
+      ],
+      "source_files": [
+        "src/services/strategy.ts",
+        "tests/strategy-gitbash-command-file.test.ts",
+        "tests/strategy-gitbash-local-exec.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-22T21:16:59.649Z",
+      "source_file_hashes": {
+        "src/services/strategy.ts": "18aa53258b9ddc2bdba5db5a443023e98d147736",
+        "tests/strategy-gitbash-command-file.test.ts": "2e381898233cefdeb8d7c4cea3c14d1de7d06853",
+        "tests/strategy-gitbash-local-exec.test.ts": "67599c6a13a36a11347e345fcdcb4da7dccf7cf7"
       }
     },
     {
@@ -360,6 +387,28 @@
         "packages/apra-fleet-se/fleet-sprint/explicit-id-create-guard.mjs": "2f23987c7b2c75f47feff528258ba0a2a8455ced",
         "packages/apra-fleet-se/test/dispatch-safety-guard.test.mjs": "cbdca634f5c5dc0f8f640f114761fa3ab117992e",
         "packages/apra-fleet-se/test/sprint-state.test.mjs": "bd1629a4797d638aac29a21828f67918cae4fdf7"
+      }
+    },
+    {
+      "id": "1aee4ff3-3dd4-4052-b233-7edf14b63ed0",
+      "type": "knowledge",
+      "title": "long_running launch success requires exit 0 plus the FLEET_TASK_READY line",
+      "summary": "execute_command long_running treats a launch as successful only when launchSucceeded() sees exit code 0 AND a FLEET_TASK_READY line. Both launch scripts print it only after task.pid exists, or after status.json shows the task already finished. Anything else is a launch_failed failure.",
+      "symbols": [
+        "launchSucceeded",
+        "TASK_READY_MARKER",
+        "launchReadyPollMs",
+        "executeCommand"
+      ],
+      "source_files": [
+        "src/tools/execute-command.ts",
+        "tests/execute-command-long-running-launch.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-22T21:16:59.864Z",
+      "source_file_hashes": {
+        "src/tools/execute-command.ts": "4b76beccc9e844b5aada825d1c854c01a2cca743",
+        "tests/execute-command-long-running-launch.test.ts": "cafff616331eb40eccdfee4c459ee36ba418bf88"
       }
     },
     {
@@ -3245,6 +3294,25 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:11.365Z"
+    },
+    {
+      "id": "e19d301e-f47d-498b-af86-5125b119256f",
+      "type": "learning",
+      "title": "cat pidfile | xargs -r kill -0 reports alive when the pid file is missing",
+      "summary": "With no pid file, xargs -r runs nothing and exits 0, so `cat task.pid | xargs -r kill -0 && echo alive` reported a never-started task as alive. monitor_task now uses p=$(cat ...) && [ -n \"$p\" ] && kill -0 \"$p\".",
+      "symbols": [
+        "monitorTask"
+      ],
+      "source_files": [
+        "src/tools/monitor-task.ts",
+        "tests/tools-windows-command-safety.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-22T21:16:59.748Z",
+      "source_file_hashes": {
+        "src/tools/monitor-task.ts": "82838c7be72c0388309d1e06680cf894afd35952",
+        "tests/tools-windows-command-safety.test.ts": "1b319eac186b644d0041adfa2d7ae9878b857733"
+      }
     },
     {
       "id": "e3e977ba-8ff5-4b21-a405-a0d01f2281a4",
