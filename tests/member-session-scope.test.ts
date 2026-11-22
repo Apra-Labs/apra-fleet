@@ -792,6 +792,45 @@ describe('kb_import trust anchor: a no-grant import needs a bible the maintainer
     expect(JSON.parse(accepted.text)).toMatchObject({ imported: 0, skipped: 1, bible_source: 'HEAD' });
   });
 
+  // WORK-TREE DRIFT. A doer sharing the maintainer folder hand-edits the
+  // work-tree bible before a grant import (e.g. the engine's sprint-start
+  // priming). The grant session still imports the file at bible confidence,
+  // but must not record its blob as trusted, so a member cannot import that
+  // content once it is committed in the checkout.
+  //
+  // FALSIFICATION: recording the work-tree file's own blob id in kb-import.ts
+  // (instead of only a blob committed at HEAD) marks the edited blob trusted
+  // and makes the member import below succeed.
+  it('maintainer work-tree edit: a grant import does not mark the edited blob trusted, and a member import of that content is refused', async () => {
+    const handle = await startServer();
+    const maint = await connect(handle.port, { member: fx.memberId, params: MAINTAINER_PARAMS });
+    await maintainerPublishes(maint, 'Kappa');
+    expect(fx.provider.isTrustedBibleBlob(git(fx.clone, ['rev-parse', 'HEAD:./' + BIBLE_REL]))).toBe(true);
+    const trustedBefore = trustedBlobCount();
+
+    // The hand edit: a forged CONFIRMED entry whose carried basis matches HEAD, in the work tree only.
+    fx.writeSrc('src/forged-drift.ts', 'export const forged = 1;\n');
+    commitWorkTree(fx.clone, 'basis for the forged entry');
+    const doc = JSON.parse(fs.readFileSync(path.join(fx.clone, BIBLE_REL), 'utf-8'));
+    doc.entries.push(await carriedEntry(fx.clone, 'forged-drift-0001', 'src/forged-drift.ts'));
+    fx.writeSrc(BIBLE_REL, JSON.stringify(doc));
+    const editedBlob = git(fx.clone, ['hash-object', '--no-filters', BIBLE_REL]);
+
+    const grant = await callText(maint, 'kb_import', { skip_sweep: true });
+    expect(grant.isError, grant.text).toBe(false);
+    expect(fx.provider.isTrustedBibleBlob(editedBlob)).toBe(false);
+    expect(trustedBlobCount()).toBe(trustedBefore);
+
+    // The edited content committed in the checkout: a no-grant import refuses it.
+    commitWorkTree(fx.clone, 'hand-edited bible');
+    expect(git(fx.clone, ['rev-parse', 'HEAD:./' + BIBLE_REL])).toBe(editedBlob);
+    const plain = await connect(handle.port, { member: fx.memberId });
+    const refused = await callText(plain, 'kb_import', { skip_sweep: true });
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toMatch(/^E-KB-MAINTAINER-REQUIRED: .*never recorded/);
+    expect(refused.text).toContain(editedBlob);
+  });
+
   it('FULL session: an explicit-path import keeps bible confidence but records only a bible committed at HEAD', async () => {
     fx.writeSrc('src/full.ts', 'export const full = 1;\n');
     commitWorkTree(fx.clone, 'basis for full');
