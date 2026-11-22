@@ -211,8 +211,12 @@ const runtimeMember = (binding) => ({ kind: 'runtime', binding });
 
 const fixedTier = (key) => ({ kind: 'fixed', key });
 const perBeadTier = (binding) => ({ kind: 'per-bead', binding });
-/** The resume of an already-priced dispatch passes no tier of its own. */
+/** The resume of an already-priced dispatch continues on that dispatch's tier. */
 const INHERITED_TIER = { kind: 'inherited' };
+// 'inherited' is resolved by the engine against the MAIN dispatch's tier (the
+// tier it was actually priced at), never to 'no tier': a missing model on
+// execute_prompt runs on the server default. A row with no tier at all would
+// need model null, and none exists.
 
 /** A turn budget of `base` (a runner constant), optionally doubled. */
 const turns = (base, multiplier, value) => ({

@@ -181,14 +181,24 @@ export function resolveMember(ctx, member, bindings = {}) {
  * The model tier a dispatch is priced at, resolved from `policy.model`:
  *   'fixed'     -- ctx.fixedRoleTier[model.key]
  *   'per-bead'  -- bindings[model.binding] (the doer's declared tier)
- *   'inherited' -- undefined: a resume of an already-priced dispatch passes
- *                  no tier of its own.
+ *   'inherited' -- the tier of the dispatch this one continues: `inheritedTier`
+ *                  (what the main dispatch was actually priced at) when the
+ *                  caller has one, else the main policy's model resolved
+ *                  against the same bindings (`mainModel`). Never silently
+ *                  undefined when the original had a tier: an execute_prompt
+ *                  call with no model runs on the server default.
  */
-export function resolveModelTier(ctx, model, bindings = {}) {
+export function resolveModelTier(ctx, model, bindings = {}, inherit = {}) {
     if (!model) return undefined;
     if (model.kind === 'fixed') return ctx.fixedRoleTier[model.key];
     if (model.kind === 'per-bead') return bindings[model.binding];
-    if (model.kind === 'inherited') return undefined;
+    if (model.kind === 'inherited') {
+        if (inherit.inheritedTier !== undefined) return inherit.inheritedTier;
+        if (inherit.mainModel && inherit.mainModel.kind !== 'inherited') {
+            return resolveModelTier(ctx, inherit.mainModel, bindings);
+        }
+        return undefined;
+    }
     throw new Error(`dispatch-role: unresolvable model kind ${JSON.stringify(model.kind)}.`);
 }
 
@@ -616,6 +626,8 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
     // narrows, and its prompt, its label and the tier it is priced at all
     // follow. Resolving options before the bracket opened would dispatch the
     // pre-claim scope.
+    // The tier the main dispatch of this role was priced at (see runDispatch).
+    let pricedTier;
     const runDispatch = (dispatch, defaultPrompt, defaultLabel, attemptOpts, extra = {}) => {
         const invoke = async () => {
             // In-bracket pre-dispatch steps, then the caller's own preparation.
@@ -636,9 +648,15 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
                 ...(prepared.resumeArg !== undefined ? { resumeArg: prepared.resumeArg } : {}),
                 resumeSessionId: extra.resumeSessionId || null,
             };
+            const resolvedTier = resolveModelTier(ctx, dispatch.model, localBindings, {
+                inheritedTier: pricedTier, mainModel: policy.model,
+            });
+            // Remember what the main dispatch was priced at so every later
+            // resume/re-dispatch of this role continues on the SAME tier.
+            if (dispatch.model && dispatch.model.kind !== 'inherited' && resolvedTier !== undefined) pricedTier = resolvedTier;
             const options = {
                 agentType: dispatch.agentType ?? undefined,
-                model: resolveModelTier(ctx, dispatch.model, localBindings),
+                model: resolvedTier,
                 timeout_s: resolveBudget(ctx, dispatch.timeouts.timeoutS),
                 max_total_s: resolveBudget(ctx, dispatch.timeouts.maxTotalS),
                 max_turns: resolveMaxTurns(dispatch.maxTurns, localBindings),
@@ -1208,7 +1226,7 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
                     roleLabel,
                     signal: usageLimitOf(err),
                     sessionId: failedSessionId,
-                    tier: resolveModelTier(ctx, policy.model, bindings),
+                    tier: pricedTier !== undefined ? pricedTier : resolveModelTier(ctx, policy.model, bindings),
                 });
                 if (outcome && outcome.resumed) {
                     // The member is usable again: re-dispatch this role without

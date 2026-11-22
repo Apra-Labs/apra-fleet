@@ -110,9 +110,9 @@ export const EXECUTION_ENGINE_DISPATCHES = [
         memberRole: null,
         memberBinding: 'doerMember',
         agentType: 'doer',
-        // Deliberately null: the tier was already resolved and priced on the
-        // main dispatch this resume continues.
-        modelTier: null,
+        // The resume continues on the tier the main dispatch was priced at;
+        // sending none would run it on the server's default model.
+        modelTier: BINDING_VALUES.doerModel,
         // A RUNTIME budget, not a constant: the escalating ladder computes it
         // per resume attempt (BASE * 2^n). This pin is the FIRST resume, whose
         // budget is the base doubled; the escalation itself is pinned in the
