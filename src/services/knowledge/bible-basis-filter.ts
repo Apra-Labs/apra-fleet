@@ -134,6 +134,56 @@ export async function partitionProjectBibleCandidates<T extends BibleCandidate>(
   return { qualifying, rejected };
 }
 
+/**
+ * One cited (or basis) file behind a basis_mismatch:
+ *  - changed: its basis hash differs from its content at HEAD;
+ *  - absent: no blob at HEAD (deleted, never committed), or a path that is not
+ *    repo-relative and so cannot be read at HEAD;
+ *  - no_basis: cited, but the stored basis has no hash for it (or there is no
+ *    stored basis at all).
+ */
+export interface BasisFileDrift {
+  path: string;
+  reason: 'changed' | 'absent' | 'no_basis';
+}
+
+/**
+ * For each entry, the files that make classifyBibleDisqualification fail on
+ * its basis (the union of cited files and basis keys, cited files first, each
+ * once), read at repoPath's HEAD exactly as the predicate reads them. A file
+ * that agrees with HEAD is not listed. Throws KbHeadHashError outside a git
+ * work tree.
+ */
+export async function describeBasisDrift<T extends BibleCandidate>(
+  entries: T[],
+  basisById: Map<string, Record<string, string> | null>,
+  repoPath: string,
+): Promise<Map<string, BasisFileDrift[]>> {
+  const out = new Map<string, BasisFileDrift[]>();
+  if (entries.length === 0) return out;
+  const fileSet = new Set<string>();
+  const filesOf = (e: T): string[] => {
+    const basis = basisById.get(e.id);
+    const all = [...(Array.isArray(e.source_files) ? e.source_files : []), ...(basis ? Object.keys(basis) : [])];
+    return [...new Set(all)];
+  };
+  for (const e of entries) for (const f of filesOf(e)) if (isRepoRelativePath(f)) fileSet.add(f);
+  const current = await computeHeadFileHashBatch([...fileSet], { cwd: repoPath });
+  for (const e of entries) {
+    const basis = basisById.get(e.id) ?? null;
+    const drift: BasisFileDrift[] = [];
+    for (const f of filesOf(e)) {
+      const stored = basis && Object.prototype.hasOwnProperty.call(basis, f) ? basis[f] : undefined;
+      if (stored === undefined || typeof stored !== 'string') { drift.push({ path: f, reason: 'no_basis' }); continue; }
+      const cur = isRepoRelativePath(f) ? current[f] : null;
+      if (!cur) drift.push({ path: f, reason: 'absent' });
+      else if (cur.hash !== stored) drift.push({ path: f, reason: 'changed' });
+    }
+    out.set(e.id, drift);
+  }
+  return out;
+}
+
 /** The minimal committed-bible entry shape the hash-drift check reads. */
 export interface BibleHashEntry {
   id: string;

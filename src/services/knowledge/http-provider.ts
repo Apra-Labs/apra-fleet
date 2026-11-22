@@ -18,6 +18,8 @@ import type {
   ProviderStats,
   DiscardResult,
   RetireOptions,
+  PromoteResult,
+  PromoteUnstampedFile,
 } from './types.js';
 
 import { DEFAULT_REQUEST_TIMEOUT_MS } from './kb-config.js';
@@ -1034,7 +1036,7 @@ export class HttpKbProvider implements MemoryProvider {
     id: string,
     reason?: string,
     opts?: { ownerTag?: string },
-  ): Promise<{ id: string; confidence_before: Confidence; confidence_after: Confidence }> {
+  ): Promise<PromoteResult> {
     const body: { id: string; reason?: string } = { id };
     if (reason !== undefined) body.reason = reason;
     let result: Record<string, unknown>;
@@ -1064,11 +1066,31 @@ export class HttpKbProvider implements MemoryProvider {
         + `previous_confidence/new_confidence: ${JSON.stringify(result)}`,
       );
     }
-    return {
+    // Basis re-stamp at HEAD: passed through when the server reports it. A
+    // reply with no basis_stamped at all comes from a server that does not
+    // re-stamp (or cannot say so), which is stated explicitly, never silently.
+    const out: PromoteResult = {
       id: typeof result.id === 'string' ? result.id : id,
       confidence_before: before as Confidence,
       confidence_after: after as Confidence,
     };
+    if (typeof result.basis_stamped === 'boolean') out.basis_stamped = result.basis_stamped;
+    if (typeof result.rebased === 'boolean') out.rebased = result.rebased;
+    if (Array.isArray(result.previous_basis_files_changed)
+      && result.previous_basis_files_changed.every(f => typeof f === 'string')) {
+      out.previous_basis_files_changed = result.previous_basis_files_changed as string[];
+    }
+    if (Array.isArray(result.unstamped_files)) {
+      const files = (result.unstamped_files as unknown[]).filter((f): f is PromoteUnstampedFile =>
+        !!f && typeof f === 'object' && typeof (f as PromoteUnstampedFile).path === 'string'
+        && ((f as PromoteUnstampedFile).reason === 'absent_at_head' || (f as PromoteUnstampedFile).reason === 'uncommitted_edit'));
+      out.unstamped_files = files;
+    }
+    if (out.basis_stamped === undefined) {
+      out.basis_stamp_unsupported = 'E-KB-HTTP-UNSUPPORTED: re-stamping the source-file basis at HEAD is not supported by the KB server at '
+        + this.displayUrl + ' (its promote reply carries no basis_stamped); the confidence change was applied, the stored basis was not re-based.';
+    }
+    return out;
   }
 
   /**

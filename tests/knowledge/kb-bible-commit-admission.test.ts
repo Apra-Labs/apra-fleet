@@ -121,7 +121,7 @@ describe('kb_bible_commit admission (shared basis predicate)', () => {
     const r = JSON.parse(await kbBibleCommit({ ids: [ok, drift], ...BASE }, { folder: clone }));
 
     expect(r.merged).toEqual([ok]);
-    expect(r.skipped).toEqual([{ id: drift, reason: 'basis_mismatch' }]);
+    expect(r.skipped).toEqual([{ id: drift, reason: 'basis_mismatch', changed_files: [{ path: 'src/b.ts', reason: 'changed' }] }]);
     expect(bibleIds()).toEqual([ok]);
   });
 
@@ -156,7 +156,7 @@ describe('kb_bible_commit admission (shared basis predicate)', () => {
     expect(r.merged).toEqual([]);
     expect(r.skipped).toEqual([
       { id: noFiles, reason: 'no_source_files' },
-      { id: emptyBasis, reason: 'basis_mismatch' },
+      { id: emptyBasis, reason: 'basis_mismatch', changed_files: [{ path: 'src/b.ts', reason: 'no_basis' }] },
     ]);
     expect(r.committed).toBe(false);
   });
@@ -183,7 +183,7 @@ describe('kb_bible_commit admission (shared basis predicate)', () => {
 
     expect(second.merged).toEqual([]);
     expect(second.skipped).toEqual([
-      { id: drift, reason: 'basis_mismatch' },
+      { id: drift, reason: 'basis_mismatch', changed_files: [{ path: 'src/a.ts', reason: 'changed' }] },
       { id: noFiles, reason: 'no_source_files' },
     ]);
     expect(second.committed).toBe(false);

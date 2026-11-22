@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getKbProviders } from '../services/knowledge/kb-providers.js';
 import { resolveKbAnchor, type KbAnchor } from '../services/knowledge/kb-self.js';
-import { filterProjectBibleCandidates, hasCarriedBasis, selectLegacyBibleBackfill } from '../services/knowledge/bible-basis-filter.js';
+import { describeBasisDrift, filterProjectBibleCandidates, hasCarriedBasis, selectLegacyBibleBackfill, type BasisFileDrift } from '../services/knowledge/bible-basis-filter.js';
 import { logWarn } from '../utils/log-helpers.js';
 import { isSqliteProject } from '../services/knowledge/require-sqlite-project.js';
 import {
@@ -207,6 +207,13 @@ export type KbBibleCommitSkipReason =
 export interface KbBibleCommitSkip {
   id: string;
   reason: KbBibleCommitSkipReason;
+  /**
+   * basis_mismatch only: the cited (or basis) files behind the mismatch, each
+   * changed (basis hash differs from HEAD), absent (no blob at HEAD) or
+   * no_basis (cited but no stored hash). A re-verification through kb_promote
+   * re-stamps the basis at HEAD.
+   */
+  changed_files?: BasisFileDrift[];
 }
 
 /**
@@ -363,6 +370,11 @@ export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor
   const demotedInFile = new Map<string, BibleTombstone>();
   for (const d of existingDoc?.demotions ?? []) if (d.reason === TOMBSTONE_DEMOTED) demotedInFile.set(d.id, d);
 
+  // Per-file detail for the basis_mismatch skips (CONFIRMED, cites files, not
+  // qualifying): which files changed, are absent at HEAD, or lack a basis.
+  const basisDrift = await describeBasisDrift(
+    requestedConfirmed.filter(e => !qualifyingIds.has(e.id) && !noSourceIds.has(e.id)), bases, repoPath);
+
   const merged: string[] = [];
   const skipped: KbBibleCommitSkip[] = [];
   for (const id of requested) {
@@ -381,8 +393,10 @@ export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor
       skipped.push({ id, reason: 'no_source_files' });
     } else if (confirmedIds.has(id)) {
       // An id already in the bible keeps its existing entry: the merge never drops entries.
-      logWarn('kb_bible_commit', 'skipping ' + id + ': basis_mismatch (cited files at HEAD changed or absent, or basis absent)');
-      skipped.push({ id, reason: 'basis_mismatch' });
+      const changedFiles = basisDrift.get(id) ?? [];
+      logWarn('kb_bible_commit', 'skipping ' + id + ': basis_mismatch (cited files at HEAD changed or absent, or basis absent): '
+        + (changedFiles.length > 0 ? changedFiles.map(f => f.path + ' ' + f.reason).join(', ') : 'no per-file detail'));
+      skipped.push({ id, reason: 'basis_mismatch', changed_files: changedFiles });
     } else skipped.push({ id, reason: 'not_confirmed_or_unknown' });
   }
   const mergedSet = new Set(merged);

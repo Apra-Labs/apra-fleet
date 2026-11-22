@@ -133,7 +133,7 @@ describe('bible admission on a real maintainer work tree: dirty edits never flip
     commit('src/a.ts', 'change a');
     const r2 = JSON.parse(await kbBibleCommit({ ids: [id], ...base() }, { folder: clone }));
     expect(r2.merged).toEqual([]);
-    expect(r2.skipped).toEqual([{ id, reason: 'basis_mismatch' }]);
+    expect(r2.skipped).toEqual([{ id, reason: 'basis_mismatch', changed_files: [{ path: 'src/a.ts', reason: 'changed' }] }]);
     expect(fs.existsSync(biblePath())).toBe(false);
     await kbExport({}, { folder: clone });
     expect(bibleIds()).toEqual([]);
@@ -154,7 +154,7 @@ describe('bible admission on a real maintainer work tree: dirty edits never flip
     const second = JSON.parse(await kbBibleCommit({ ids: [drift, noFiles], ...base() }, { folder: clone }));
     expect(second.merged).toEqual([]);
     expect(second.skipped).toEqual([
-      { id: drift, reason: 'basis_mismatch' },
+      { id: drift, reason: 'basis_mismatch', changed_files: [{ path: 'src/a.ts', reason: 'changed' }] },
       { id: noFiles, reason: 'no_source_files' },
     ]);
     expect(second.committed).toBe(false);

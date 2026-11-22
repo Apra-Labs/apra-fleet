@@ -854,6 +854,34 @@
  */
 
 /**
+ * @typedef {Object} KbPromoteOptions
+ * @property {string} id - ID of the KB entry to promote.
+ * @property {string} [reason] - The evidence checked for this promotion; appended to the
+ *   entry content as the audit trail (the server refuses a promotion without a non-trivial
+ *   reason). Promoting an already-CONFIRMED entry is an explicit re-verification: a basis
+ *   that drifted from HEAD is re-stamped at HEAD and reported as rebased.
+ */
+
+/**
+ * @typedef {Object} KbPromoteResult
+ * @property {string} id - The promoted entry.
+ * @property {string} previous_confidence - Tier before the call.
+ * @property {string} new_confidence - Tier after the call (unchanged for an already-CONFIRMED entry).
+ * @property {boolean} [basis_stamped] - True when the source-file basis was (re)written from
+ *   the cited files at the repo HEAD commit; false outside a git work tree, when no cited file
+ *   could be stamped, or for a CONFIRMED entry whose basis already matched HEAD.
+ * @property {boolean} [rebased] - Only for an already-CONFIRMED entry: true when its drifted
+ *   basis was re-stamped at HEAD, false when it already matched.
+ * @property {string[]} [previous_basis_files_changed] - Stamped files whose stored basis was
+ *   missing or differed from HEAD before the call.
+ * @property {{path: string, reason: string}[]} [unstamped_files] - Cited files NOT stamped,
+ *   keeping their previous basis hash: reason absent_at_head (no blob at HEAD) or
+ *   uncommitted_edit (the work tree differs from HEAD).
+ * @property {string} [basis_stamp_unsupported] - Remote (http) KB only: an
+ *   E-KB-HTTP-UNSUPPORTED message when the KB server's reply carries no basis_stamped.
+ */
+
+/**
  * @typedef {Object} KbDemoteOptions
  * @property {string} id - ID of the KB entry to demote.
  * @property {string} reason - Why trust is being withdrawn -- at least 20 characters
@@ -959,14 +987,17 @@
  * @property {string[]} withdrawn - Ids admitted from `withdrawals`: removed from entries and
  *   tombstoned "withdrawn"; the local entry is not changed.
  * @property {string[]} restored - Ids from `restore_ids` whose branch-added tombstone was removed.
- * @property {{id: string, reason: string}[]} skipped - Ids not merged, demoted or withdrawn, with
+ * @property {{id: string, reason: string, changed_files?: {path: string, reason: string}[]}[]} skipped - Ids not merged, demoted or withdrawn, with
  *   reason not_confirmed_or_unknown, no_source_files, basis_mismatch, not_demoted_or_unknown,
  *   not_withdrawable, withdrawn_tombstone (an `ids` id the bible file carries a withdrawn
  *   tombstone for, not restored by the same call, or a demoted_ids id with a withdrawn
  *   tombstone in the file -- a demoted tombstone never replaces a withdrawn one; the
  *   tombstone is kept) or not_in_base_bible (a demoted_ids id the bible at baseCommit does
  *   not carry), or demoted_tombstone (an `ids` id the file carries a demoted tombstone for whose
- *   trust time is not after the tombstone; the tombstone is kept).
+ *   trust time is not after the tombstone; the tombstone is kept). A basis_mismatch item
+ *   carries changed_files: each cited or basis file behind it with reason changed (differs
+ *   at HEAD), absent (no blob at HEAD) or no_basis (no stored hash); re-verify the entry with
+ *   kbPromote to re-stamp its basis at HEAD.
  * @property {{id: string, reason: string}[]} removed - Entries removed because the KB holds them
  *   superseded or invalidated, or (reason tombstoned) because the file also carries a
  *   tombstone for the id (the tombstone wins).
@@ -1534,7 +1565,8 @@ export class ApraFleet {
      * backfill; only that field changes, nothing is dropped); a backfill alone
      * makes a commit. Each skipped item is
      * {id, reason} with reason not_confirmed_or_unknown, no_source_files (a
-     * CONFIRMED id citing no source file), basis_mismatch or
+     * CONFIRMED id citing no source file), basis_mismatch (with changed_files:
+     * [{path, reason: changed|absent|no_basis}]) or
      * not_demoted_or_unknown (a demoted_ids id). Each removed item is {id, reason}
      * with reason superseded or invalidated. A member session without the
      * kb_maintainer grant cannot retire a CONFIRMED entry through the kb_* tools:
@@ -1578,6 +1610,24 @@ export class ApraFleet {
     async kbQuery(options) {
         assertNoRemovedKbScopeKeys('kb_query', options);
         return this.mcpClient.callTool('kb_query', options);
+    }
+
+    /**
+     * Raise a KB entry one tier (UNVERIFIED -> INFERRED -> CONFIRMED), appending
+     * the reason as the audit trail. In a git work tree the entry's source-file
+     * basis is stamped from the cited files at HEAD (a file absent at HEAD or
+     * with an uncommitted edit keeps its previous hash, listed in
+     * unstamped_files); on an already-CONFIRMED
+     * entry a basis that drifted from HEAD is re-stamped (rebased: true), so a
+     * following kbBibleCommit admits it. Result JSON: KbPromoteResult; extract
+     * with parseToolJson(). A member session is served kb_promote only with the
+     * kb_maintainer grant. The removed scope keys (repo_path, repo,
+     * repo_remote_url) are refused with E-SCOPE-KEY-REMOVED before anything is sent.
+     * @param {KbPromoteOptions} options
+     */
+    async kbPromote(options) {
+        assertNoRemovedKbScopeKeys('kb_promote', options);
+        return this.mcpClient.callTool('kb_promote', options);
     }
 
     /**

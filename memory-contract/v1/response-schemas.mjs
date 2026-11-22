@@ -170,10 +170,29 @@ const KB_RESPONSE_BODIES = {
     // a harvest whose every capture failed says why.
     first_error: z.string().optional(),
   }),
+  // kb_promote also reports the source-file basis it stamped from the cited
+  // files at HEAD (all OPTIONAL: fixtures recorded before the stamp existed,
+  // and non-git anchors, carry none of them). basis_stamped: the basis was
+  // (re)written from HEAD. rebased: only for an already-CONFIRMED entry, true
+  // when its drifted basis was re-stamped. previous_basis_files_changed: cited
+  // files whose stored basis was missing or differed from HEAD.
+  // unstamped_files: cited files not stamped (absent_at_head, or
+  // uncommitted_edit when the work tree differs from HEAD); they keep their
+  // previous basis hash. basis_stamp_unsupported: http KB only, the
+  // E-KB-HTTP-UNSUPPORTED message when the server reply carries no
+  // basis_stamped.
   kb_promote: z.object({
     id: z.string(),
     previous_confidence: z.string(),
     new_confidence: z.string(),
+    basis_stamped: z.boolean().optional(),
+    rebased: z.boolean().optional(),
+    previous_basis_files_changed: z.array(z.string()).optional(),
+    unstamped_files: z.array(z.object({
+      path: z.string(),
+      reason: z.enum(['absent_at_head', 'uncommitted_edit']),
+    })).optional(),
+    basis_stamp_unsupported: z.string().optional(),
   }),
   // Same three fields as kb_promote, and deliberately so: kb_demote is the
   // inverse operation on the same axis, so a consumer reading a confidence
@@ -326,6 +345,13 @@ const KB_RESPONSE_BODIES = {
       id: z.string(),
       reason: z.enum(['not_confirmed_or_unknown', 'no_source_files', 'basis_mismatch', 'not_demoted_or_unknown', 'not_withdrawable',
         'withdrawn_tombstone', 'demoted_tombstone', 'not_in_base_bible']),
+      // basis_mismatch only (OPTIONAL for fixtures recorded before it existed):
+      // each cited or basis file behind the mismatch, changed at HEAD, absent
+      // at HEAD, or with no stored hash.
+      changed_files: z.array(z.object({
+        path: z.string(),
+        reason: z.enum(['changed', 'absent', 'no_basis']),
+      })).optional(),
     })),
     removed: z.array(z.object({
       id: z.string(),
