@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "f9120840430d27924cc7797240f4660c5f35c226",
     "branch": "main",
-    "entry_count": 185
+    "entry_count": 186
   },
   "entries": [
     {
@@ -1506,6 +1506,32 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:13.782Z"
+    },
+    {
+      "id": "6661ea32-4c35-45a5-8417-1709843a27c0",
+      "type": "knowledge",
+      "title": "Sprint-start bd/dolt version pin runs before any beads setup or pull",
+      "summary": "verifyBeadsIdentity(checkToolVersions:true) runs verifyPinnedToolVersions on every member first. A bd or dolt off the pinned major.minor throws VERSION_MISMATCH. The engine bd pin lives in tool-version-pin.mjs and is drift-guarded in dolt-settle.test.mjs.",
+      "symbols": [
+        "verifyPinnedToolVersions",
+        "verifyBeadsIdentity",
+        "checkPinnedVersion",
+        "synthesizeToolVersion"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/tool-version-pin.mjs",
+        "packages/apra-fleet-se/fleet-sprint/beads-identity-check.mjs",
+        "packages/apra-fleet-se/test/helpers/bd-replay.mjs",
+        "packages/apra-fleet-se/test/dolt-settle.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-22T16:04:34.540Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/beads-identity-check.mjs": "f8b1f1ffeb17dfb08bec6b3bc6d14fd7a409ae42",
+        "packages/apra-fleet-se/fleet-sprint/tool-version-pin.mjs": "5e756676359f457073c8974124878094ed0386ca",
+        "packages/apra-fleet-se/test/dolt-settle.test.mjs": "a911f0db73f45288c545254a572794396df8f857",
+        "packages/apra-fleet-se/test/helpers/bd-replay.mjs": "e15d0477a990d22fbc809b43e75a983bf6057680"
+      }
     },
     {
       "id": "668bc632-0c2b-49b8-956b-9da60709ff36",
