@@ -122,7 +122,8 @@ beforeEach(() => {
   staged = [];
   removedStaged = [];
   answers = {
-    version: '0.4.5',
+    // A dev build, as build-sea stamps it: the _hash suffix does not count against the floor.
+    version: 'v0.4.6_abc1234',
     marker: 0,
     push: { code: 0, stdout: 'Secret stored\n', stderr: '' },
     kbSetup: { code: 0, stdout: '{"kbSetup":"written","previous":"missing","verification":"verified"}\n', stderr: '' },
@@ -310,6 +311,17 @@ describe('provision_kb_auth, remote member: the install', () => {
     expect(pushes()).toHaveLength(0);
   });
 
+  it('a 0.4.5 install, which has no kb-setup --keep or --project-dir, is refused before any mint or push', async () => {
+    const s = live('old045');
+    const m = addRemote();
+    answers.version = '0.4.5';
+    const err = await refused(provisionKbAuth({ member_id: m.id, secret: s.name, remote: REMOTE }));
+    expect(err.structuredContent.reason).toBe('install-too-old');
+    expect(s.runs()).toBe(0);
+    expect(staged).toHaveLength(0);
+    expect(pushes()).toHaveLength(0);
+  });
+
   it('a full install (no member-install marker) is refused, before any mint or push', async () => {
     const s = live('full');
     const m = addRemote();
@@ -348,16 +360,22 @@ describe('provision_kb_auth, remote member: kb-setup and verification', () => {
     expect(writes()[0].text).toContain(`'--project-dir' 'C:\\work\\it''s repo'`);
     await provisionKbAuth({ member_id: addRemote({ os: 'linux', workFolder: "/srv/it's repo" }).id, secret: s.name, remote: REMOTE });
     expect(writes()[1].text).toContain(`'--project-dir' '/srv/it'\\''s repo'`);
-    expect(setups().filter((c) => c.text.includes("'--check'")).every((c) => !c.text.includes('--project-dir'))).toBe(true);
+    // keep_member_kb runs a --check first; it reads only the config, so it carries no --project-dir.
+    await provisionKbAuth({ member_id: addRemote({ os: 'linux', workFolder: '/srv/repo' }).id, secret: s.name, remote: REMOTE, keep_member_kb: true });
+    const checks = setups().filter((c) => c.text.includes("'--check'"));
+    expect(checks).toHaveLength(1);
+    expect(checks[0].text).not.toContain('--project-dir');
+    expect(writes()[2].text).toContain(`'--project-dir' '/srv/repo'`);
   });
 
   it('a kb-setup failure after the push fails the call and says the pushed secret stays on the member', async () => {
     const s = live('setupfail');
-    const m = addRemote();
+    const m = addRemote({ workFolder: '/srv/my repo' });
     answers.kbSetup = { code: 1, stdout: '{"error":"refused"}\n', stderr: 'Error: kb_setup: token refers to secret ... deny' };
     const err = await refused(provisionKbAuth({ member_id: m.id, secret: s.name, remote: REMOTE }));
     expect(err.structuredContent.reason).toBe('kb-setup-failed');
     expect(err.message).toContain('stored on the member and stays there');
+    expect(err.message).toContain('kb-setup --remote <url> --token-ref <secret> --project-dir "/srv/my repo" on the member');
     expect(err.message).not.toContain('deny');
     expect(pushes()).toHaveLength(1);
   });
@@ -525,6 +543,15 @@ describe('provision_kb_auth: review fixes', () => {
     answers.kbSetup = { code: 1, stdout: "Error: unknown option 'kb-setup'\n", stderr: '' };
     const err = await refused(provisionKbAuth({ member_id: m.id, secret: s.name, remote: REMOTE }));
     expect(err.structuredContent.reason).toBe('install-too-old');
+  });
+
+  it('a build that does not know kb-setup --project-dir answers with its usage line and is reported as too old, also without keep_member_kb', async () => {
+    const s = live('noprojdir');
+    const m = addRemote();
+    answers.kbSetup = { code: 1, stdout: '{"error":"usage"}\n', stderr: '' };
+    const err = await refused(provisionKbAuth({ member_id: m.id, secret: s.name, remote: REMOTE }));
+    expect(err.structuredContent.reason).toBe('install-too-old');
+    expect(setups().filter((c) => c.text.includes("'--check'"))).toHaveLength(0);
   });
 
   it('a kb-setup failure carries the expiry of the copy left on the member', async () => {

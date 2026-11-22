@@ -777,11 +777,13 @@ orchestrator before anything is minted or sent.
 - **Relay member:** refused (`relay-unsupported`) before anything is minted: a relay
   has no way to receive a file without a command line.
 - **Remote member:** it runs its own fleet server, reached over SSH. The call
-  1. needs a member install of apra-fleet 0.4.5 or later (`install-too-old` or
-     `not-member-install` otherwise, naming the `update_member` remedy). A 0.4.5
-     build from before this tool passes that check and is refused one step later,
-     when it does not know `--expires-at`: the token has been minted by then, but
-     nothing is stored on the member;
+  1. needs a member install of apra-fleet 0.4.6 or later (`install-too-old` or
+     `not-member-install` otherwise, naming the `update_member` remedy); a dev
+     build's `_<hash>` suffix is ignored. A 0.4.6 build from before this tool
+     passes that check and is refused later, when it does not know
+     `--expires-at` (nothing stored on the member) or kb-setup's `--keep` /
+     `--project-dir` (the pushed secret stays, unused); the token has been
+     minted by then;
      with `keep_member_kb=true`, it also runs `apra-fleet kb-setup ... --check`
      (writes nothing) and refuses a member whose KB config names another remote,
      names this remote with its own token source, uses its local store or cannot
