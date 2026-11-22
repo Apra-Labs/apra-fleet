@@ -774,9 +774,15 @@
  *   Each entry is checked against the NEVER_AUTO_GRANT denylist, which is
  *   wildcard-matched (not exact-matched) against a normalized form of the
  *   request: sudo/su/doas, `bash -c`/`sh -c`/eval, env/printenv, nc/nmap,
- *   `chmod 777`, any catch-all such as `Bash(*)`, and any payload containing a
- *   shell-chaining metacharacter (| ; && backtick $() are rejected outright,
- *   for every caller.
+ *   `chmod 777`, process-killing commands (kill, pkill, killall, taskkill,
+ *   tskill, Stop-Process, wmic process delete/terminate -- Bash or PowerShell
+ *   form, any case, path or .exe), any catch-all such as `Bash(*)`, and any
+ *   payload containing a shell-chaining metacharacter (| ; && backtick $() are
+ *   rejected outright, for every caller. A refused process-kill grant's text
+ *   says so. Every composed config also carries deny rules for
+ *   process-killing commands; they reduce the risk of a role killing
+ *   processes it did not start but cannot rule it out while other
+ *   interpreters (e.g. `Bash(bash:*)`) are allowed.
  * @property {string} [grant_reason] - Reason for the grant (stored in ledger)
  * @property {boolean} [dry_run] - Compose only: return the allow list the role/tags
  *   (plus detected stacks, plus the ledger when project_folder is given) would deliver, as

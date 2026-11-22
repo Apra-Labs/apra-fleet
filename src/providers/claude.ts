@@ -10,6 +10,7 @@ import type { MemberShell } from '../os/os-commands.js';
 import { wrapPowerShellEncoded } from '../os/windows.js';
 import { isPosixShell } from '../utils/agent-helpers.js';
 import { transformAgentForClaude } from '../cli/agent-transform.js';
+import { claudeProcessKillDenyRules } from '../services/process-kill-rules.js';
 import {
   claudeMemberDenyRules,
   joinMemberPath,
@@ -661,9 +662,11 @@ export class ClaudeProvider implements ProviderAdapter {
   // The member's apra-fleet MCP entry is NOT written here: it lives in Claude's
   // LOCAL scope (~/.claude.json projects[<repo root of workFolder>].mcpServers), written by
   // syncMemberMcpEntry. This file only carries the client-side deny rules for
-  // every registered fleet tool outside the member allowlist.
+  // every registered fleet tool outside the member allowlist, plus the
+  // process-killing commands (claudeProcessKillDenyRules) -- the latter reduce,
+  // but cannot rule out, a role killing processes it did not start.
   composePermissionConfig(_role: 'doer' | 'reviewer', allow: string[] = []): Array<Record<string, unknown> | string> {
-    return [{ permissions: { allow, deny: claudeMemberDenyRules() }, skillOverrides: { pm: 'off', fleet: 'off' } }];
+    return [{ permissions: { allow, deny: [...claudeMemberDenyRules(), ...claudeProcessKillDenyRules()] }, skillOverrides: { pm: 'off', fleet: 'off' } }];
   }
 
   async syncMemberMcpEntry(ctx: MemberMcpSyncContext): Promise<MemberMcpSyncResult> {

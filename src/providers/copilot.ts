@@ -6,6 +6,7 @@ import { escapeDoubleQuoted } from '../os/os-commands.js';
 import type { MemberShell } from '../os/os-commands.js';
 import { logWarn } from '../utils/log-helpers.js';
 import { transformAgentForClaude } from '../cli/agent-transform.js';
+import { claudeProcessKillDenyRules } from '../services/process-kill-rules.js';
 
 // Known exception: Copilot CLI cannot take a caller-supplied session ID.
 // It uses --continue (no ID); session discovery relies on the mtime-scan fallback
@@ -195,9 +196,13 @@ export class CopilotProvider implements ProviderAdapter {
   }
 
   composePermissionConfig(role: 'doer' | 'reviewer', allow: string[] = []): Array<Record<string, unknown> | string> {
+    // Process-killing commands are denied for every role, in the same
+    // Claude-form rules this file's allow list carries. They reduce, but
+    // cannot rule out, a role killing processes it did not start.
+    const killDeny = claudeProcessKillDenyRules();
     if (role === 'doer') {
       const config: Record<string, unknown> = { 'allow-all-tools': true };
-      if (allow.length > 0) config.tools = { allow };
+      config.tools = allow.length > 0 ? { allow, deny: killDeny } : { deny: killDeny };
       return [config];
     }
     // reviewer: read + feedback only
@@ -208,7 +213,7 @@ export class CopilotProvider implements ProviderAdapter {
       'allow-all-tools': false,
       tools: {
         allow: reviewerAllow,
-        deny: ['write_file', 'edit_file', 'run_command'],
+        deny: ['write_file', 'edit_file', 'run_command', ...killDeny],
       },
     }];
   }

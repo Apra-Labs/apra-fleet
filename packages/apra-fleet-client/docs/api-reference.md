@@ -870,9 +870,15 @@ Provide at least one of `role` or `tags`; `tags` containing
 `grant` entry is checked against the `NEVER_AUTO_GRANT` denylist, which is
 wildcard-matched (not exact-matched) against a normalized form of the
 request: `sudo`/`su`/`doas`, `bash -c`/`sh -c`/`eval`, `env`/`printenv`,
-`nc`/`nmap`, `chmod 777`, any catch-all such as `Bash(*)`, and any payload
-containing a shell-chaining metacharacter (`|`, `;`, `&&`, backtick, `$()`)
--- rejected outright, for every caller.
+`nc`/`nmap`, `chmod 777`, process-killing commands (`kill`, `pkill`,
+`killall`, `taskkill`, `tskill`, `Stop-Process`, `wmic process`
+delete/terminate -- Bash or PowerShell form, any case, path or `.exe`), any
+catch-all such as `Bash(*)`, and any payload containing a shell-chaining
+metacharacter (`|`, `;`, `&&`, backtick, `$()`) -- rejected outright, for
+every caller. Every composed config also carries deny rules for
+process-killing commands; they reduce the risk of a role killing processes it
+did not start, but cannot rule it out while other interpreters (e.g.
+`Bash(bash:*)`) are allowed.
 
 Every compose (proactive or `grant`) also wires the member's per-folder
 `apra-fleet` MCP entry, whose URL ends in `?member=<member uuid>`: claude

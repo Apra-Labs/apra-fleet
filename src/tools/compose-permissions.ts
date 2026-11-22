@@ -28,6 +28,8 @@ import {
   removeGitExcluded,
   writeMemberJson,
 } from '../services/member-config-io.js';
+import { agyCommandRules } from '../providers/agy.js';
+import { agyProcessKillDenyRules, claudeProcessKillDenyRules, isProcessKillGrant } from '../services/process-kill-rules.js';
 import type { ProviderAdapter } from '../providers/provider.js';
 import type { Agent } from '../types.js';
 import type { MemberShell } from '../os/os-commands.js';
@@ -39,7 +41,7 @@ import { getProviderInstallConfig, INSTALLABLE_LLM_PROVIDERS, readInstallConfig 
 
 export const composePermissionsSchema = z.object({
   ...memberIdentifier,
-  role: z.enum(['doer', 'reviewer']).optional().describe('Role determines base profile (doer = broad build/test, reviewer = read + feedback + test). The hard-rejected NEVER_AUTO_GRANT patterns are wildcard-matched (not exact-matched) against a normalized form of each request and cover sudo/su/doas, `bash -c`/`sh -c`/eval, env/printenv, nc/nmap, `chmod 777`, any catch-all such as Bash(*), and any payload containing a shell-chaining metacharacter (| ; && backtick $(). Provide at least one of role or tags.'),
+  role: z.enum(['doer', 'reviewer']).optional().describe('Role determines base profile (doer = broad build/test, reviewer = read + feedback + test). The hard-rejected NEVER_AUTO_GRANT patterns are wildcard-matched (not exact-matched) against a normalized form of each request and cover sudo/su/doas, `bash -c`/`sh -c`/eval, env/printenv, nc/nmap, `chmod 777`, process-killing commands (kill, pkill, killall, taskkill, tskill, Stop-Process, wmic process delete/terminate; Bash or PowerShell form, any case, path or .exe), any catch-all such as Bash(*), and any payload containing a shell-chaining metacharacter (| ; && backtick $(). Every composed config also carries deny rules for process-killing commands; they reduce the risk of a role killing processes it did not start but cannot rule it out while other interpreters (e.g. Bash(bash:*)) are allowed. Provide at least one of role or tags.'),
   tags: z.array(z.string()).optional().describe('Member tags. Include "doer" or "reviewer" to set the primary mode (default doer); other tags (e.g. "gpu", "devops") load tag-<name>.json profiles and merge additively. When both role and tags are given, tags wins.'),
   project_folder: z.string().optional().describe('Local project folder containing permissions.json ledger. Omit to skip ledger merge.'),
   grant: z.array(z.string()).optional().describe('Reactive mode: additional permissions to grant (e.g. ["Bash(docker:*)", "Bash(docker-compose:*)"]). Appended to current permissions and re-delivered.'),
@@ -160,11 +162,15 @@ export function normalizePermission(permission: string): string {
 
 /**
  * True when the requested permission must never be granted without explicit
- * user escalation. Three independent rules, any of which rejects:
+ * user escalation. Four independent rules, any of which rejects:
  *  1. catch-all: a payload that is nothing but wildcards/whitespace -- e.g.
  *     `Bash(*)` -- which is not "a wider grant", it is unrestricted execution.
  *  2. shell chaining: the payload contains |, ;, &&, a backtick, or $( .
  *  3. pattern match against NEVER_AUTO_GRANT_PATTERNS.
+ *  4. a process-killing command (isProcessKillGrant): kill, pkill, killall,
+ *     taskkill, tskill, Stop-Process, wmic process delete/terminate. A local
+ *     member shares its host with the fleet server and other sprints, so a
+ *     kill by name there takes them down.
  */
 export function isNeverAutoGrant(permission: string): boolean {
   const normalized = normalizePermission(permission);
@@ -178,7 +184,17 @@ export function isNeverAutoGrant(permission: string): boolean {
   if (SHELL_CHAINING_METACHARS.some(meta => payload.includes(meta))) return true;
 
   // 3. Explicit deny patterns (wildcard-aware).
-  return NEVER_AUTO_GRANT_PATTERNS.some(pattern => matchesDenyPattern(pattern, normalized));
+  if (NEVER_AUTO_GRANT_PATTERNS.some(pattern => matchesDenyPattern(pattern, normalized))) return true;
+
+  // 4. Process-killing commands (token-anchored, case-insensitive).
+  return isProcessKillGrant(permission);
+}
+
+/** Drops process-killing grants from a composed allow list: a profile, stack
+ *  or ledger entry written before they were refused must never re-grant one
+ *  (the composed deny rules cover them as well). */
+function withoutProcessKillGrants(allow: Iterable<string>): string[] {
+  return [...allow].filter(p => !isProcessKillGrant(p));
 }
 
 interface Ledger {
@@ -366,7 +382,7 @@ function compose(profilesDir: string, role: string, stacks: string[], ledger: Le
     perms.add(entry.permission);
   }
 
-  return [...perms];
+  return withoutProcessKillGrants(perms);
 }
 
 /** Determine the primary permission mode from tags and/or role.
@@ -417,7 +433,7 @@ function composeFromTags(profilesDir: string, mode: 'doer' | 'reviewer', tags: s
     perms.add(entry.permission);
   }
 
-  return [...perms];
+  return withoutProcessKillGrants(perms);
 }
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
@@ -466,13 +482,23 @@ export function deepMergeUnion(target: Record<string, unknown>, source: Record<s
   return result;
 }
 
-/** A deny rule fleet derives for the member's own apra-fleet server (claude's
- *  mcp__apra-fleet__<tool>, agy's mcp(apra-fleet/<tool>)). Only these may be
- *  dropped from an existing deny list, and only when compose no longer derives
- *  them (the tool joined the member allowlist) -- they are fleet's to retire. */
+/** The process-kill deny rules compose writes, in every provider form. */
+const FLEET_PROCESS_KILL_DENY_RULES = new Set<string>([
+  ...claudeProcessKillDenyRules(),
+  ...agyProcessKillDenyRules(agyCommandRules),
+]);
+
+/** A deny rule fleet derives: one for the member's own apra-fleet server
+ *  (claude's mcp__apra-fleet__<tool>, agy's mcp(apra-fleet/<tool>)), or one of
+ *  the exact process-kill deny rules compose writes. Only these may be dropped
+ *  from an existing deny list, and only when compose no longer derives them --
+ *  they are fleet's to retire. Any other rule, including a user's own variant
+ *  such as `Bash(kill -9:*)`, is never dropped. */
 function isFleetDerivedDenyRule(rule: unknown): boolean {
   return typeof rule === 'string'
-    && (rule.startsWith(`mcp__${MEMBER_MCP_SERVER_NAME}__`) || rule.startsWith(`mcp(${MEMBER_MCP_SERVER_NAME}/`));
+    && (rule.startsWith(`mcp__${MEMBER_MCP_SERVER_NAME}__`)
+      || rule.startsWith(`mcp(${MEMBER_MCP_SERVER_NAME}/`)
+      || FLEET_PROCESS_KILL_DENY_RULES.has(rule));
 }
 
 /** Union of an existing deny list and the one compose derives: every existing
@@ -1067,7 +1093,11 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
   if (input.grant?.length) {
     const blocked = input.grant.filter(p => isNeverAutoGrant(p));
     if (blocked.length) {
-      return `❌ Cannot auto-grant dangerous permissions: ${blocked.join(', ')}. Escalate to user.`;
+      const kills = blocked.filter(p => isProcessKillGrant(p));
+      const killNote = kills.length
+        ? ` ${kills.join(', ')} ${kills.length === 1 ? 'is a process-killing command' : 'are process-killing commands'}: a member may share its host with the fleet server and other sprints, so a role must only stop processes it started, by the pid it recorded. The composed config also denies these commands; that reduces the risk but cannot rule it out while other interpreters are allowed.`
+        : '';
+      return `❌ Cannot auto-grant dangerous permissions: ${blocked.join(', ')}. Escalate to user.${killNote}`;
     }
   }
 
@@ -1120,7 +1150,7 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
       const current = await readClaudeSettingsLocal(agent, strategy, agentShell);
       const existingAllow = new Set<string>(current?.permissions?.allow ?? []);
       for (const p of expanded) existingAllow.add(p);
-      allow = [...existingAllow];
+      allow = withoutProcessKillGrants(existingAllow);
     } else {
       // Non-Claude: include the role's base profile so reactive grants never strip
       // baseline developer or reviewer permissions.
@@ -1128,7 +1158,7 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
       const base = loadProfile(profilesDir, baseName);
       const basePerms = new Set<string>(base?.permissions?.allow ?? []);
       for (const p of expanded) basePerms.add(p);
-      allow = [...basePerms];
+      allow = withoutProcessKillGrants(basePerms);
     }
 
     let deliveryWarnings: string[] = [];
