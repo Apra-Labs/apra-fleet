@@ -1,7 +1,9 @@
 {
   "version": 3,
   "provenance": {
-    "branch": "main"
+    "commit": "fdd28500257f50b0fdf05135bee9f23ce7d61947",
+    "branch": "main",
+    "entry_count": 185
   },
   "entries": [
     {
@@ -2391,6 +2393,32 @@
       }
     },
     {
+      "id": "a6233f92-cd94-427c-aaaa-62a0d70f49b2",
+      "type": "knowledge",
+      "title": "Engine appends a wait-limit block to doer/reviewer/runner prompts, so prompt pins must use withWaitNotice",
+      "summary": "dispatchRole appends longRunWaitNotice(options.timeout_s) to the dispatched prompt for the agentTypes in LONG_RUN_WAIT_AGENT_TYPES. Any test that pins an exact dispatched prompt for those personas must compare against withWaitNotice(prompt, timeout_s) from the dispatch-role harness.",
+      "symbols": [
+        "resolveLongRunWaitS",
+        "longRunWaitNotice",
+        "receivesLongRunWait",
+        "withWaitNotice"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/long-run-wait.mjs",
+        "packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs",
+        "packages/apra-fleet-se/test/helpers/dispatch-role-harness.mjs",
+        "packages/apra-fleet-se/test/long-run-wait-budget.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-22T22:47:08.174Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs": "af573e36024e3a3f381e5473d93f58471d857005",
+        "packages/apra-fleet-se/fleet-sprint/long-run-wait.mjs": "ab8a3f05d1642fb141fc5b3c8d258f9191d0b563",
+        "packages/apra-fleet-se/test/helpers/dispatch-role-harness.mjs": "47eca02a3f2f92916b0931bed8fe8670249f51cf",
+        "packages/apra-fleet-se/test/long-run-wait-budget.test.mjs": "f64f48ed680bd36a2299021af8362d7169ddddd2"
+      }
+    },
+    {
       "id": "a67295f1-33ca-4960-93a0-da0275505905",
       "type": "knowledge",
       "title": "VCS provider builders key the curl binary on os and the quoting dialect on shell",
@@ -2482,6 +2510,29 @@
         "packages/apra-fleet-se/fleet-sprint/member-provisioning.mjs": "0dffb028188c744e0bcc172691eb9fc79bfb354b",
         "scripts/check-ascii-only.mjs": "41b4a29f5da8bab14176874fe7ae5e973f7e2d56",
         "tests/ascii-only-gate.test.ts": "c039aafa21aff35c2f4d50769bb8f72c91be7674"
+      }
+    },
+    {
+      "id": "ab1c6975-2c9a-4641-ac8d-ac660bd1fee3",
+      "type": "knowledge",
+      "title": "Resume dispatches reuse the tier recorded from the main dispatch (pricedTier)",
+      "summary": "dispatchRole records the tier its main dispatch was sent at in a per-call closure variable, pricedTier. Every 'inherited' secondary (max-turns resume, usage-limit resume or fresh fallback, unmappable-refusal resume, semantic repair) and the onUsageLimit tier use it, so a resume never omits the model.",
+      "symbols": [
+        "resolveModelTier",
+        "dispatchRole",
+        "runDispatch"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs",
+        "packages/apra-fleet-se/fleet-sprint/role-policies.mjs",
+        "packages/apra-fleet-se/test/dispatch-role-resume-tier-and-model-log.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-22T22:47:09.008Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs": "af573e36024e3a3f381e5473d93f58471d857005",
+        "packages/apra-fleet-se/fleet-sprint/role-policies.mjs": "3e626a85e9cc0a5c6cc130746699a5c18bcc4468",
+        "packages/apra-fleet-se/test/dispatch-role-resume-tier-and-model-log.test.mjs": "b4a4e743ef617c3762802b698d85c3d7a9b8cc1d"
       }
     },
     {
