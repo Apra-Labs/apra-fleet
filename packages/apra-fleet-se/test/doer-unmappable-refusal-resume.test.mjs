@@ -14,7 +14,7 @@ import { AgentDispatchError } from '@apralabs/apra-fleet-workflow';
 import { dispatchRole, unmappableRefusalResumeNotice } from '../fleet-sprint/dispatch-role.mjs';
 import { MemberPermissionDeniedError } from '../fleet-sprint/errors.mjs';
 import { policyFor, ROLE_NAMES } from '../fleet-sprint/role-policies.mjs';
-import { createRecordingCtx, ROLE_CALL_OPTS, BINDINGS } from './helpers/dispatch-role-harness.mjs';
+import { createRecordingCtx, ROLE_CALL_OPTS, BINDINGS, streakValidate } from './helpers/dispatch-role-harness.mjs';
 
 const CHAINED = 'npm test > /tmp/t.log 2>&1 &';
 const REFUSED_SESSION = 'doer-session-refused';
@@ -61,13 +61,10 @@ const noProgressHeal = (ctx) => {
     return calls;
 };
 
-// streak-assignment is a tool-less, schema-only JSON pass over a bead list
-// handed to it in the prompt (agentType null, kbInjection 'none'): it issues no
-// shell calls, so it can never be refused one, and its only secondary is a
-// semantic-repair re-ask, not a same-session resume. The flag is set for
-// uniformity (an unmappable refusal there still fails loudly, below); it is
-// pinned here, with that reason, as the one role without a resume secondary.
-const NO_RESUME_SECONDARY = Object.freeze({ 'streak-assignment': 'tool-less JSON pass; cannot issue shell calls' });
+// streak-assignment has no same-session resume secondary (only a semantic-repair
+// re-ask), and nothing withholds its tools. An unmappable refusal there ends
+// through its fallback-value degrade (one bead per streak), tested below.
+const NO_RESUME_SECONDARY = Object.freeze({ 'streak-assignment': 'no resume secondary; degrades to the fallback grouping' });
 
 test('policy: every role row resumes once after an unmappable refusal', () => {
     for (const role of ROLE_NAMES) {
@@ -199,9 +196,16 @@ for (const { role, member, opts } of NON_DOER) {
     });
 }
 
-test('streak-assignment (tool-less JSON pass, no resume secondary) still fails loudly on an unmappable refusal', async () => {
+test('streak-assignment (no resume secondary, fallback-value degrade) falls back to one-bead-per-streak on an unmappable refusal', async () => {
     const { ctx, rec } = createRecordingCtx({ responses: [refused(UNMAPPABLE), { streaks: [['bead-1']] }], members: { 'streak-assignment': 'dev' } });
-    noProgressHeal(ctx);
-    await assert.rejects(dispatchRole(ctx, 'streak-assignment', { bindings: BINDINGS, ...ROLE_CALL_OPTS['streak-assignment'] }), MemberPermissionDeniedError);
-    assert.equal(rec.dispatches.length, 1);
+    const heals = noProgressHeal(ctx);
+    const out = await dispatchRole(ctx, 'streak-assignment', { bindings: BINDINGS, ...ROLE_CALL_OPTS['streak-assignment'], validate: streakValidate });
+    assert.equal(out.ok, false);
+    assert.equal(out.degraded, true);
+    assert.equal(out.value, null, 'no value is fabricated');
+    assert.equal(rec.dispatches.length, 1, 'no resume, no re-ask');
+    assert.equal(heals.every((h) => !h.grants), true, 'no grant is composed on this path');
+    assert.equal(out.validation.usedFallback, true, JSON.stringify(out.validation));
+    assert.deepEqual(out.validation.streaks, [['bead-1'], ['bead-2']], 'one bead per streak');
+    assert.ok(rec.logs.some((l) => /Streak Assignment: unmappable refusal on member '[^']+'.*Bash.*deterministic fallback/s.test(l)), JSON.stringify(rec.logs));
 });

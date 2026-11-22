@@ -1162,6 +1162,21 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
                         `${roleLabel}: cannot resume after the unmappable refusal -- ` +
                         (refusedSessionId ? 'the role has no same-session resume.' : 'the refused dispatch reported no session id.')
                     );
+                    // A ladder whose degrade is a fallback-value (a deterministic
+                    // fallback the caller already owns) ends through that degrade
+                    // rather than ending the sprint: the refused reply is never
+                    // used and no value is fabricated here (value stays null; the
+                    // caller's validate step maps null to its fallback). Any other
+                    // degrade kind keeps failing loudly below.
+                    if (policy.degrade.kind === 'fallback-value') {
+                        ctx.log(
+                            `${roleLabel}: unmappable refusal on member '${member}' -- no permission grant can allow ` +
+                            `${(healError.actions || []).join(', ') || 'unknown actions'}; the role cannot be resumed, so ` +
+                            'its reply is NOT used and the deterministic fallback value is used instead; the run continues.'
+                        );
+                        degradedValue = null;
+                        break;
+                    }
                 }
                 if (healError) throw healError;
                 permissionHealRedispatch = true;
