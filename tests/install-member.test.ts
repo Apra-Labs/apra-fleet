@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
-import { execSync } from 'node:child_process';
+import { execSync, execFileSync } from 'node:child_process';
 import { runInstall, _setSeaOverride, _setManifestOverride, MEMBER_INSTALL_NEXT_STEP, resolveMemberInstallPort } from '../src/cli/install.js';
 import { _setPortHolderProbeOverride, PORT_HELD_BY_OTHER_USER_CODE } from '../src/services/port-holder.js';
 
@@ -94,6 +94,8 @@ beforeEach(() => {
   vi.spyOn(console, 'log').mockImplementation(() => {});
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   vi.spyOn(console, 'error').mockImplementation(() => {});
+  // The Beads step checks bd --version against the pin; answer with a pinned bd.
+  vi.mocked(execFileSync).mockImplementation(((cmd: string) => (String(cmd).endsWith('bd') ? 'bd version 1.3.0 (test)\n' : '')) as any);
   process.exitCode = undefined;
   mockPortInUse.mockResolvedValue(false);
   _setPortHolderProbeOverride(null);

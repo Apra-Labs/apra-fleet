@@ -28,7 +28,9 @@ import { transformAgentForOpenCode, transformAgentForAgy, transformAgentForClaud
 import { FLEET_DIR } from '../paths.js';
 import { extractWorkflowSubsystemAssets } from './workflow-assets.js';
 import { downloadAndExtractDolt, verifyDolt } from './dolt-install.js';
-import { installBeads, type BeadsInstallDeps } from './beads-install.js';
+import { installBeads, type BeadsInstallDeps, type BeadsInstallResult } from './beads-install.js';
+import { DOLT_VERSION } from './dolt-install.js';
+import { checkPinnedVersion } from './version-pin.js';
 import {
   classifyRunningServer, relevantServerPids, getInstallDataDir, memberForceMayStop, fullInstallRefusalText, selfInvocationLines,
   writeMemberInstallMarker, clearMemberInstallMarker, recordFullInstallPort, FORCE_STOP_FULL_INSTALL_FLAG,
@@ -88,6 +90,24 @@ function beadsStepDeps(): BeadsInstallDeps {
     copyFileSync: (src, dest) => fs.copyFileSync(src, dest),
     chmodSync: (p, mode) => fs.chmodSync(p, mode),
   };
+}
+
+/** This host's name for the [!] lines; never throws. */
+function installHostName(): string {
+  try {
+    const h = typeof os.hostname === 'function' ? os.hostname() : '';
+    return h || 'this host';
+  } catch {
+    return 'this host';
+  }
+}
+
+/** The [!] lines for a bd whose major.minor differs from the pin (also the final stderr line). */
+export function beadsMismatchLines(r: Extract<BeadsInstallResult, { state: 'version-mismatch' }>, host: string): string[] {
+  return [
+    `Beads (bd) version mismatch on ${host}: found ${r.found} (${r.where}), expected ${r.expected} (pinned major.minor).${r.reason ? ` ${r.reason}.` : ''}`,
+    `Fix: ${r.fix}`,
+  ];
 }
 
 function doltStepEnabled(): boolean {
@@ -2230,33 +2250,56 @@ ${manualStopHint(pidsAfterStop)}
   // Mirrors the Beads install step immediately below: already-installed check
   // first, download+extract+verify otherwise. NON-FATAL, same as Beads -- a
   // missing/broken dolt must never fail "apra-fleet install".
+  // Version pin: an existing BIN_DIR dolt whose major.minor differs from
+  // DOLT_VERSION is replaced with the pinned download (BIN_DIR is fleet-owned)
+  // and re-verified; a replacement that fails or still mismatches is reported
+  // loudly with found/expected/fix, never as a silent skip.
   const doltStep = serviceStep ? totalSteps - 3 : totalSteps - 2;
   console.log(`  [${doltStep}/${totalSteps}] Installing Dolt CLI...`);
   let doltVersion = 'not available';
   if (doltStepEnabled()) {
+    const doltBinaryName = process.platform === 'win32' ? 'dolt.exe' : 'dolt';
+    const doltPath = path.join(BIN_DIR, doltBinaryName);
+    const doltFix = `re-run the install with network access so the pinned dolt ${DOLT_VERSION} is downloaded into ${BIN_DIR} (or remove ${doltPath} first)`;
+    let staleDolt: string | null = null;
     try {
-      const doltBinaryName = process.platform === 'win32' ? 'dolt.exe' : 'dolt';
-      const doltPath = path.join(BIN_DIR, doltBinaryName);
       let installed = false;
       // Check if already installed
       if (fs.existsSync(doltPath)) {
         try {
           const result = await doltStepDeps.verifyDolt(doltPath);
-          doltVersion = result.version;
-          installed = true;
+          const check = checkPinnedVersion(result.version, DOLT_VERSION);
+          if (check.ok) {
+            doltVersion = result.version;
+            installed = true;
+          } else {
+            staleDolt = check.found;
+            console.log(`  - ${doltPath} reports dolt ${check.found}, expected ${check.expected}.x -- replacing it with the pinned download`);
+          }
         } catch {
           // existing binary is broken/unusable -- fall through and (re)download
         }
       }
       if (!installed) {
-        // not installed (or broken) -- download and verify it
+        // not installed (or broken, or the wrong version) -- download and verify it
         const extractedPath = await doltStepDeps.downloadAndExtractDolt(BIN_DIR);
         const result = await doltStepDeps.verifyDolt(extractedPath);
+        const check = checkPinnedVersion(result.version, DOLT_VERSION);
+        if (!check.ok) throw new Error(`the downloaded dolt reports ${check.found}, expected ${check.expected}`);
         doltVersion = result.version;
       }
     } catch (err) {
-      // non-fatal: warn but don't fail the install
-      console.warn(`  Dolt install skipped -- ${(err as Error).message}`);
+      const why = (err as Error).message;
+      if (staleDolt) {
+        // A wrong-version dolt is left in BIN_DIR: say so loudly, never "skipped".
+        const expected = DOLT_VERSION.replace(/^v/, '');
+        console.warn(`  [!] Dolt version mismatch on ${installHostName()}: found ${staleDolt} at ${doltPath}, expected ${expected} (pinned major.minor); replacing it failed: ${why}`);
+        console.warn(`  [!] Fix: ${doltFix}`);
+        doltVersion = `MISMATCH -- found ${staleDolt}, expected ${expected}. Fix: ${doltFix}`;
+      } else {
+        // non-fatal: warn but don't fail the install
+        console.warn(`  Dolt install skipped -- ${why}`);
+      }
     }
   }
 
@@ -2276,6 +2319,11 @@ ${manualStopHint(pidsAfterStop)}
     console.warn(`  [!] Beads (bd) NOT installed: ${beadsResult.reason}`);
     console.warn(`  [!] Fix: ${beadsResult.fix}`);
     console.warn('  - Beads install skipped - sprint work on this machine needs bd and will fail until it is installed');
+  } else if (beadsResult.state === 'version-mismatch') {
+    // LOUD and fatal for the exit code (set after every other step finishes):
+    // a bd of another major.minor can migrate the shared beads database one
+    // way and lock out every other clone.
+    for (const line of beadsMismatchLines(beadsResult, installHostName())) console.warn(`  [!] ${line}`);
   }
 
   // --- KB + code intelligence setup step ---
@@ -2494,7 +2542,9 @@ ${restartHint}
   }
   const beadsVersion = beadsResult.state === 'missing'
     ? `not available -- ${beadsResult.reason}. Fix: ${beadsResult.fix}`
-    : `${beadsResult.version}${beadsResult.location === 'bin-dir' ? ` (${beadsResult.binPath})` : ''}`;
+    : beadsResult.state === 'version-mismatch'
+      ? `MISMATCH -- found ${beadsResult.found} (${beadsResult.where}), expected ${beadsResult.expected}. Fix: ${beadsResult.fix}`
+      : `${beadsResult.version}${beadsResult.location === 'bin-dir' ? ` (${beadsResult.binPath})` : ''}`;
 
   const clientName = llm === 'claude' ? 'Claude Code' : paths.name;
   // A member install touched no user-scope settings or MCP registration, so it
@@ -2526,6 +2576,14 @@ Apra Fleet ${serverVersion} installed successfully for ${paths.name}.
 
 ${instructions}${forceNote}${accessNote}
 `);
+
+  if (beadsResult.state === 'version-mismatch') {
+    // Last line on stderr, so a caller that keeps only the output tail (the
+    // member fleet_install path) still names the mismatch. The fleet install
+    // itself is complete; only the exit code reports the bd problem.
+    console.error(`[!] ${beadsMismatchLines(beadsResult, installHostName()).join(' ')}`);
+    process.exitCode = 1;
+  }
 
   if (llm === 'claude' && installPm) {
     console.log('  /auto-sprint BD-1              (native workflow, current branch)');

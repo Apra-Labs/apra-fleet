@@ -6,6 +6,8 @@
 import { describe, it, expect } from 'vitest';
 import path from 'node:path';
 import { installBeads, BEADS_NPM_PACKAGE, describeExecFailure, type BeadsInstallDeps } from '../src/cli/beads-install.js';
+import { BEADS_VERSION } from '../src/cli/beads-pin.js';
+import { parseVersionLine, checkPinnedVersion } from '../src/cli/version-pin.js';
 import {
   probeMemberFleetMcp,
   buildBeadsProbe,
@@ -32,6 +34,12 @@ interface FakeWorld {
   calls: string[];
   copies: Array<[string, string]>;
   chmods: string[];
+  /** What the PATH bd prints for --version. */
+  pathOut: string;
+  /** What the BIN_DIR bd prints for --version (until it is replaced). */
+  binOut: string;
+  /** What the npm-installed native bd prints (copied into BIN_DIR). */
+  nativeOut: string;
 }
 
 function eacces(): Error {
@@ -41,17 +49,20 @@ function eacces(): Error {
 }
 
 function fake(over: Partial<FakeWorld> = {}): { world: FakeWorld; deps: BeadsInstallDeps } {
-  const world: FakeWorld = { onPath: false, globalNpm: 'eacces', userNpm: 'ok', files: new Set(), calls: [], copies: [], chmods: [], ...over };
+  const world: FakeWorld = {
+    onPath: false, globalNpm: 'eacces', userNpm: 'ok', files: new Set(), calls: [], copies: [], chmods: [],
+    pathOut: 'bd version 1.3.0 (system)\n', binOut: 'bd version 1.3.0 (fleet)\n', nativeOut: 'bd version 1.3.0 (fleet)\n', ...over,
+  };
   const deps: BeadsInstallDeps = {
     platform: 'linux',
     exec: (cmd, args) => {
       world.calls.push([cmd, ...args].join(' '));
       if (cmd === 'bd') {
-        if (world.onPath) return 'bd version 1.3.0 (system)\n';
+        if (world.onPath) return world.pathOut;
         throw new Error('bd: command not found');
       }
       if (cmd === BD) {
-        if (world.files.has(BD)) return 'bd version 1.3.0 (fleet)\n';
+        if (world.files.has(BD)) return world.binOut;
         throw Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' });
       }
       if (cmd === 'npm' && args.includes('-g')) {
@@ -71,7 +82,7 @@ function fake(over: Partial<FakeWorld> = {}): { world: FakeWorld; deps: BeadsIns
     existsSync: p => world.files.has(p),
     mkdirSync: () => {},
     rmSync: () => {},
-    copyFileSync: (src, dest) => { world.copies.push([src, dest]); world.files.add(dest); },
+    copyFileSync: (src, dest) => { world.copies.push([src, dest]); world.files.add(dest); if (dest === BD) world.binOut = world.nativeOut; },
     chmodSync: p => { world.chmods.push(p); },
   };
   return { world, deps };
@@ -161,6 +172,75 @@ describe('installBeads', () => {
 
   it('describeExecFailure names EACCES as a non-writable global prefix', () => {
     expect(describeExecFailure(eacces())).toMatch(/^permission denied writing \/usr\/local\/lib\/node_modules\/@beads/);
+  });
+});
+
+describe('installBeads: bd major.minor pin', () => {
+  it('bd 1.3.x on PATH (patch differs from the pin) -> present', () => {
+    const { world, deps } = fake({ onPath: true, pathOut: 'bd version 1.3.7 (abc)\n' });
+    expect(installBeads(BIN, deps)).toEqual({ state: 'present', version: 'bd version 1.3.7 (abc)', location: 'path' });
+    expect(world.calls).toEqual(['bd --version']);
+  });
+
+  it('bd 1.4.0 on PATH -> version-mismatch naming found, expected, PATH and the fix; nothing installed or touched', () => {
+    const { world, deps } = fake({ onPath: true, pathOut: 'bd version 1.4.0 (newer)\n', globalNpm: 'ok' });
+    const r = installBeads(BIN, deps);
+    expect(r).toMatchObject({ state: 'version-mismatch', found: '1.4.0', expected: BEADS_VERSION, location: 'path', where: 'PATH' });
+    if (r.state !== 'version-mismatch') return;
+    expect(r.fix).toContain(BEADS_NPM_PACKAGE);
+    expect(r.fix).toContain('remove the other bd from PATH');
+    expect(r.fix).toContain('re-run the install');
+    expect(world.calls).toEqual(['bd --version']);
+    expect(world.copies).toEqual([]);
+  });
+
+  it('bd 1.2.x on PATH -> version-mismatch (the minimum matters too)', () => {
+    const { deps } = fake({ onPath: true, pathOut: 'bd version 1.2.9\n' });
+    expect(installBeads(BIN, deps)).toMatchObject({ state: 'version-mismatch', found: '1.2.9', expected: BEADS_VERSION });
+  });
+
+  it('unparseable --version output -> mismatch, never a pass', () => {
+    const garbled = fake({ onPath: true, pathOut: 'bd: development build\n' });
+    expect(installBeads(BIN, garbled.deps)).toMatchObject({ state: 'version-mismatch', location: 'path' });
+    const silent = fake({ onPath: true, pathOut: '' });
+    expect(installBeads(BIN, silent.deps)).toMatchObject({ state: 'version-mismatch', found: 'no version output' });
+  });
+
+  it('BIN_DIR-only mismatched bd (nothing on PATH): replaced by the pinned user-level install and re-verified, without npm -g', () => {
+    const { world, deps } = fake({ binOut: 'bd version 1.4.0\n', globalNpm: 'ok' });
+    world.files.add(BD);
+    const r = installBeads(BIN, deps);
+    expect(r).toEqual({ state: 'installed', version: 'bd version 1.3.0 (fleet)', location: 'bin-dir', binPath: BD });
+    expect(world.calls.some(c => c.includes(' -g '))).toBe(false);
+    expect(world.copies).toEqual([[NATIVE, BD]]);
+    expect(world.calls[world.calls.length - 1]).toBe(`${BD} --version`);
+  });
+
+  it('BIN_DIR-only mismatched bd whose replacement fails -> version-mismatch naming the BIN_DIR path and the failure', () => {
+    const { world, deps } = fake({ binOut: 'bd version 1.2.0\n', userNpm: 'fail' });
+    world.files.add(BD);
+    const r = installBeads(BIN, deps);
+    expect(r).toMatchObject({ state: 'version-mismatch', found: '1.2.0', expected: BEADS_VERSION, location: 'bin-dir', where: BD, binPath: BD });
+    if (r.state !== 'version-mismatch') return;
+    expect(r.reason).toContain('replacing it with the pinned bd failed');
+    expect(r.fix).toContain(BD);
+  });
+
+  it('the pinned install itself reporting another version is a mismatch, not installed', () => {
+    const { deps } = fake({ nativeOut: 'bd version 1.4.1\n' });
+    expect(installBeads(BIN, deps)).toMatchObject({ state: 'version-mismatch', found: '1.4.1', location: 'bin-dir' });
+  });
+});
+
+describe('version-pin helpers', () => {
+  it('parses bd and dolt version lines and compares major.minor', () => {
+    expect(parseVersionLine('bd version 1.3.0 (abc)')).toBe('1.3.0');
+    expect(parseVersionLine('dolt version 2.2.0')).toBe('2.2.0');
+    expect(parseVersionLine('nothing here')).toBeNull();
+    expect(checkPinnedVersion('dolt version 2.2.4', 'v2.2.0')).toEqual({ ok: true, found: '2.2.4', expected: '2.2.0' });
+    expect(checkPinnedVersion('dolt version 2.1.0', 'v2.2.0').ok).toBe(false);
+    expect(checkPinnedVersion('bd version 1.4.0', '1.3.0').ok).toBe(false);
+    expect(checkPinnedVersion('', '1.3.0').ok).toBe(false);
   });
 });
 

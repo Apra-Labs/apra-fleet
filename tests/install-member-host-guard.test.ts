@@ -15,7 +15,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execSync } from 'node:child_process';
+import { execSync, execFileSync } from 'node:child_process';
 import { runInstall, _setSeaOverride, _setManifestOverride } from '../src/cli/install.js';
 import { getServiceManager } from '../src/services/service-manager/index.js';
 import {
@@ -117,6 +117,8 @@ beforeEach(() => {
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
   exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit'); });
+  // The Beads step checks bd --version against the pin; answer with a pinned bd.
+  vi.mocked(execFileSync).mockImplementation(((cmd: string) => (String(cmd).endsWith('bd') ? 'bd version 1.3.0 (test)\n' : '')) as any);
   process.exitCode = undefined;
 });
 
