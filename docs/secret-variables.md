@@ -201,13 +201,15 @@ arguments starting with `-`.
 - An unknown option before the path is an error, and so is an `--env` value not of the
   form `VAR={{secret.R}}`.
 - `--inline` takes one script and no script path (`inline-extra-args`).
-- On Windows the shell can change double quotes and a trailing backslash before
-  apra-fleet sees them (Windows PowerShell 5.1 drops the double quotes inside an
-  argument without a trace). So there an `--inline` script must hold neither: one that
-  does is refused (`inline-quotes`). Use single quotes, doubled inside a PowerShell
-  single-quoted string, as in the samples.
+- On Windows an `--inline` script that arrives holding a double quote or ending with a
+  backslash is refused (`inline-quotes`). The check sees only what arrives: Windows
+  PowerShell 5.1 drops the quotes around a quoted word with no space in it, so that
+  script is not refused and runs changed. On Windows, never put `"` in an `--inline`
+  argument: use single quotes (doubled inside a PowerShell single-quoted string, as in
+  the samples), `--inline -` or a script file.
 - `--inline -` reads the script from stdin instead, on every OS, with the same rules
-  otherwise. Nothing changes it on the way, so it may hold any quotes:
+  otherwise. Quotes reach it unchanged. Windows PowerShell 5.1 pipes text as ASCII, so
+  there keep the script ASCII: other characters arrive as `?`. For example:
   `Get-Content C:\kb\mint.txt -Raw | apra-fleet secret --live KB_TOKEN --inline -`,
   or `apra-fleet secret --live KB_TOKEN --inline - < mint.txt` in bash.
 

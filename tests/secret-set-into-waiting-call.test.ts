@@ -67,6 +67,14 @@ describe('secret --set into a waiting credential_store_set', () => {
     expect(result).toContain('secret --set --persist --allow --members --expires-at, which replaced what this call asked for: it has policy allow, members *.');
   });
 
+  it('--deny and --expires-at none typed on the CLI replace an allow and a ttl from the waiting call', async () => {
+    const waiting = credentialStoreSet({ name: NAME, prompt: 'value', persist: true, network_policy: 'allow', ttl_seconds: 3600 });
+    await untilPending(NAME);
+    await typed(['--set', NAME, '--persist', '--deny', '--expires-at', 'none']);
+    await waiting;
+    expect(stored()).toEqual(['persistent', 'deny', '*', undefined]);
+  });
+
   it('a flag left off the CLI keeps the waiting call\'s value, never a CLI default', async () => {
     const tier = credentialStoreSet({ name: NAME, prompt: 'value', persist: true, network_policy: 'deny', members: 'alpha' });
     await untilPending(NAME);

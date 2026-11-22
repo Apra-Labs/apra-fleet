@@ -213,6 +213,22 @@ describe('secret --live grammar, through the real CLI', () => {
     expect(records().none).toBeUndefined();
   });
 
+  it('--inline - drops a leading BOM', () => {
+    const script = WIN
+      ? `$env:BOUND = {{secret.R}}; & "${process.execPath}" "${reporter}"`
+      : `BOUND={{secret.R}} "${process.execPath}" "${reporter}"`;
+    const r = cli(['--live', 'bom', '--inline', '-'], `${String.fromCharCode(0xfeff)}${script}\n`);
+    expectRegisteredAndReported('bom', r, []);
+    expect(records().bom.inline).toBe(script);
+  });
+
+  it('--inline - runs a multi-line script whole', () => {
+    const script = WIN
+      ? `$env:BOUND = {{secret.R}}\n& "${process.execPath}" "${reporter}" two`
+      : `export BOUND={{secret.R}}\n"${process.execPath}" "${reporter}" two`;
+    expectRegisteredAndReported('lines', cli(['--live', 'lines', '--inline', '-'], script), ['two']);
+  });
+
   it.runIf(WIN)('Windows PowerShell 5.1, direct and through an npm-shaped shim: single quotes register, a trailing backslash is refused, --inline - keeps double quotes', () => {
     const ok = writeScript('ok.js', `process.stdout.write(JSON.stringify({token:${JSON.stringify(TOKEN)},expires_at:new Date(Date.now()+3600000).toISOString()}))`);
     const ps1 = path.join(sandbox, 'register.ps1');

@@ -71,5 +71,5 @@ export async function credentialStoreSet(input: CredentialStoreSetInput): Promis
   const typedNote = flags.length > 0
     ? ` The user typed it with apra-fleet secret --set ${flags.join(' ')}, which replaced what this call asked for: it has policy ${meta.network_policy}, members ${Array.isArray(meta.allowedMembers) ? meta.allowedMembers.join(',') : meta.allowedMembers}.`
     : '';
-  return `✓ ${meta.name} stored [${meta.scope}]. Use {{secret.${meta.name}}} in commands.${typedNote}`;
+  return `[OK] ${meta.name} stored [${meta.scope}]. Use {{secret.${meta.name}}} in commands.${typedNote}`;
 }
