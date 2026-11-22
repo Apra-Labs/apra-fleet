@@ -441,6 +441,9 @@ export const GUARDED_MODULES = [
     // Operator notification for a pending decision: no command() or agent()
     // site (sends through the injected fleet client), zero baseline.
     'decision-notify.mjs',
+    // Tier policy presets and resolution (pure): no command() or agent()
+    // site, no I/O; runner.js reads the resolved tiers.
+    'tier-policy.mjs',
     // The per-member sprint-init probe: kb_*/code_* calls through the injected
     // memberCall, member_detail on the orchestrator session, and ONE
     // member-bound command channel (fleetApi.executeCommand, command strings

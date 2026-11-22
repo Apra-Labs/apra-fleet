@@ -27,17 +27,13 @@
 // primitive through `ctx` by design (see dispatch-role.mjs's header), so this
 // harness supplies recording implementations of exactly those primitives and
 // runs the engine's OWN control flow unmodified. The values it feeds in are
-// the real ones wherever a real one exists: FIXED_ROLE_TIER is read out of
-// runner.js's own source rather than re-typed here, and the schemas are the
+// the real ones wherever a real one exists: FIXED_ROLE_TIER is runner.js's own
+// exported constant rather than re-typed here, and the schemas are the
 // real contracts.mjs objects.
 
 import { EXECUTE_PROMPT_MAX_TURNS } from '@apralabs/apra-fleet-client';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { AgentOutputError, AgentDispatchError, FleetTransportError, CancelledError, BudgetExceededError } from '@apralabs/apra-fleet-workflow';
 
-import { objectLiteralFor, objectEntries } from './dispatch-pin-scanner.mjs';
 import {
     planReviewerVerdict,
     streakAssignment,
@@ -49,15 +45,12 @@ import {
     regressionReport,
     harvesterReport,
 } from '../../fleet-sprint/contracts.mjs';
-import { isNoMutationDispatchFailure } from '../../fleet-sprint/runner.js';
+import { isNoMutationDispatchFailure, FIXED_ROLE_TIER as RUNNER_FIXED_ROLE_TIER } from '../../fleet-sprint/runner.js';
 import { PostDispatchSyncError, GitSyncError, DoltSyncError, GitDivergedError } from '../../fleet-sprint/errors.mjs';
 import { ROLE_POLICIES } from '../../fleet-sprint/role-policies.mjs';
 import { dispatchRole, TURN_BASES } from '../../fleet-sprint/dispatch-role.mjs';
 
 export { TURN_BASES };
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const FLEET_SPRINT_DIR = path.join(__dirname, '..', '..', 'fleet-sprint');
 
 // The engine's timed backoff sleeps exist for production busy-lock
 // resilience only; the documented hermetic-mock flag makes the ladder run its
@@ -66,17 +59,13 @@ const FLEET_SPRINT_DIR = path.join(__dirname, '..', '..', 'fleet-sprint');
 process.env.APRA_FLEET_MOCK_INSTANT_RETRY_BACKOFF = '1';
 
 /**
- * FIXED_ROLE_TIER, read out of runner.js's REAL source rather than re-typed
- * as a duplicate literal -- so a pin asserting "the planner dispatches at
- * FIXED_ROLE_TIER.planner" is still tied to the runner constant, exactly as
- * the pre-migration textual pin was.
+ * FIXED_ROLE_TIER, imported from runner.js's REAL exported constant rather
+ * than re-typed as a duplicate literal -- so a pin asserting "the planner
+ * dispatches at FIXED_ROLE_TIER.planner" is still tied to the runner
+ * constant. runner.js derives that constant from tier-policy.mjs's quality
+ * preset, so it is no longer a source literal the scanner could read.
  */
-export const FIXED_ROLE_TIER = Object.freeze(Object.fromEntries(
-    [...objectEntries(objectLiteralFor(
-        fs.readFileSync(path.join(FLEET_SPRINT_DIR, 'runner.js'), 'utf8'),
-        'FIXED_ROLE_TIER',
-    ))].map(([k, v]) => [k, v.replace(/^['"]|['"]$/g, '')]),
-));
+export const FIXED_ROLE_TIER = RUNNER_FIXED_ROLE_TIER;
 
 /**
  * A stand-in numeric value for the symbolic budget name role-policies.mjs

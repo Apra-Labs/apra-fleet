@@ -335,6 +335,7 @@ import {
     integCanRun, integBlockCause, findVerifyBlockedBeads, partitionByGoal, buildVerifyBlockDiagnosis,
 } from './verify-block.mjs';
 import { formatRedBuildIntegSkipReason, redBuildIntegSkipEntry } from './red-build-integ-gate.mjs';
+import { resolveTierPolicy, fixedRoleTierTable } from './tier-policy.mjs';
 // The dispatch-outcome classification surface: isTerminalSprintFailure,
 // isNoMutationDispatchFailure and withDispatchWatchdog. Extracted out of
 // runner.js (apra-fleet-3swo.6.15); imported only to be re-exported below,
@@ -862,6 +863,9 @@ const ROLE_REVIEWER = roleConst('reviewer');
 //   integ-test-runner  -> 'standard' (mostly mechanical: follow integ-test-playbook.md)
 //   regression-test-runner -> 'standard' (mostly mechanical: follow regression-test-playbook.md)
 //   harvester          -> 'standard' (docs synthesis, not code-critical)
+//   streakAssignment   -> 'cheap'    (this runner's own "group these ready bead ids" call: a small,
+//                                     fully-specified classification task; it borrows the planner
+//                                     MEMBER for routing convenience, not the planner tier)
 // These tier keywords ('cheap' | 'standard' | 'premium') are resolved to a
 // concrete model PER MEMBER, server-side, by execute-prompt.ts's
 // resolveModelForTier() (via each member's registered model_tiers). That is
@@ -871,21 +875,12 @@ const ROLE_REVIEWER = roleConst('reviewer');
 // it means nothing. Real per-member cost lookup (rather than a tier-band
 // estimate) is available via the get_member_model_pricing MCP tool; see
 // pricing.mjs.
-const FIXED_ROLE_TIER = {
-    planner: 'premium',
-    'plan-reviewer': 'premium',
-    reviewer: 'premium',
-    deployer: 'standard',
-    'integ-test-runner': 'standard',
-    'regression-test-runner': 'standard',
-    harvester: 'standard',
-    // Streak Assignment is this runner's own ad-hoc "group these ready bead
-    // ids" call (no vendored persona): a small, fully-specified classification
-    // task with no exploration or judgment beyond what the prompt already
-    // states, so it gets 'cheap' even though it borrows the planner MEMBER for
-    // routing convenience.
-    streakAssignment: 'cheap',
-};
+// The table itself now lives in ./tier-policy.mjs: the quality preset is the
+// policy that reproduces exactly the tiers listed above, so the runner derives
+// its fixed-role table from it (no runtime change). Exported for the test
+// harness, which pins dispatches against this resolved value.
+const FIXED_ROLE_TIER = fixedRoleTierTable(resolveTierPolicy('quality'));
+export { FIXED_ROLE_TIER };
 
 export const meta = { name: 'fleet-sprint-runner' };
 
