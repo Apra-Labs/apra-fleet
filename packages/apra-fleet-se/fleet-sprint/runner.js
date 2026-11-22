@@ -246,6 +246,8 @@ import { pathsFromText, isPriorityTierToken } from './kb-hints.mjs';
 // written-down version of that contract.
 import {
     createBeadsScope, classifyVerifySet, hasLiveEvidenceMarker, LIVE_EVIDENCE_LABEL,
+    // Parents held out of verify only by below-goal/out-of-scope open children.
+    belowGoalVerifyHolds, formatVerifyHolds,
     // apra-fleet-3swo.6.13: parseBdJson/goalPriorityMax/partitionByGoalMembership
     // moved here from runner.js; imported back and re-exported (facade region
     // below) so no importer of runner.js is edited by the move.
@@ -3694,8 +3696,16 @@ async function runSprintCycle(context) {
         // sprint progress (see the stall-detector high-water-mark change
         // below), which is the actual fix for tonight's false-stall bug.
         const routeBeads = await fetchAllBeadsShared();
-        const { verifyIds: verifySetThisCycle } = classifyVerifySet(routeBeads, targetIssues);
+        const { verifyIds: verifySetThisCycle, ineligible: routeIneligible } = classifyVerifySet(routeBeads, targetIssues);
         for (const id of verifySetThisCycle) verifyEverIds.add(id);
+        // Rule 4 (any open child holds a parent out of verify) is kept, but a
+        // hold made ONLY by below-goal or out-of-scope children never blocks
+        // the exit gate, so name it here or the parent ends the run silently
+        // unverified.
+        const routeVerifyHolds = belowGoalVerifyHolds(routeIneligible, goalMax);
+        if (routeVerifyHolds.length > 0) {
+            log(`Route C${cycle}: ${routeVerifyHolds.length} parent(s) held out of verify only by open child(ren) below goal ${validated.goal} or out of scope: ${formatVerifyHolds(routeVerifyHolds)}`);
+        }
         // A verify-routed bead deferred by anyone since the last Route can
         // never be dispatched again: record it from the same snapshot (no
         // extra bd call) so the exit gate stops waiting on it.
@@ -4726,6 +4736,7 @@ async function runSprintCycle(context) {
         deployFailures, integFailures, rejectedNewTasks, verifyEverIds,
         lastDeployFailure,
         bdListScoped, decomposedParentIds, goalMax, NOT_DONE_STATUSES,
+        fetchAllBeadsShared,
         reclaimCappedIds: orphanClaims.cappedIds(),
         verifyBlockDiagnosis,
         carryOverExit,
