@@ -172,6 +172,7 @@ From the CLI, on the orchestrator:
 
 ```bash
 apra-fleet secret --live NAME --inline '<script with {{secret.R}}>'
+apra-fleet secret --live NAME --inline -          # the script on stdin
 apra-fleet secret --live NAME [--env 'VAR={{secret.R}}']... <script file> [args]
 ```
 
@@ -199,12 +200,16 @@ arguments starting with `-`.
   it: `'--'`.
 - An unknown option before the path is an error, and so is an `--env` value not of the
   form `VAR={{secret.R}}`.
-- `--inline` takes one script and no script path. Windows PowerShell 5.1 removes the
-  double quotes inside an inline script before apra-fleet sees it. A script split by
-  that fails with `inline-extra-args`; one changed without a split (`$x = "abc"` arriving
-  as `$x = abc`) fails with `inline-quotes-changed`, found by checking the command's own
-  command line on Windows. If that line cannot be read the result is `inline-unverified`.
-  Each saves nothing: use doubled single quotes, as in the examples, or a script file.
+- `--inline` takes one script and no script path (`inline-extra-args`).
+- On Windows the shell can change double quotes and a trailing backslash before
+  apra-fleet sees them (Windows PowerShell 5.1 drops the double quotes inside an
+  argument without a trace). So there an `--inline` script must hold neither: one that
+  does is refused (`inline-quotes`). Use single quotes, doubled inside a PowerShell
+  single-quoted string, as in the samples.
+- `--inline -` reads the script from stdin instead, on every OS, with the same rules
+  otherwise. Nothing changes it on the way, so it may hold any quotes:
+  `Get-Content C:\kb\mint.txt -Raw | apra-fleet secret --live KB_TOKEN --inline -`,
+  or `apra-fleet secret --live KB_TOKEN --inline - < mint.txt` in bash.
 
 ### Script types per OS
 
@@ -347,9 +352,6 @@ apra-fleet secret --live KB_TOKEN --inline 'az account get-access-token --resour
 ```powershell
 apra-fleet secret --live KB_TOKEN --inline '$t = (az account get-access-token --resource api://kb-app --query ''{t:accessToken,e:expires_on}'' -o json | Out-String) | ConvertFrom-Json; @{ token = $t.t; expires_at = [DateTimeOffset]::FromUnixTimeSeconds([long]$t.e).ToString(''o'') } | ConvertTo-Json -Compress'
 ```
-
-Typed in PowerShell, use doubled single quotes inside the script as shown:
-Windows PowerShell strips double quotes from an argument it hands to a program.
 
 **Sample: OAuth client credentials with a bound secret, bash (Linux, macOS).** The
 `{{secret.sp_secret}}` is bare, and reaches curl on stdin.

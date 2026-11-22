@@ -259,7 +259,10 @@ describe('secret --live (real CLI)', () => {
         ? `$v={{secret.sp-secret}}; if ($v -ne '${SECRET_CANARY}') { exit 9 }; & ${node} -e '${js.replace(/"/g, '\\"')}' ok`
         : `v={{secret.sp-secret}}; [ "$v" = '${SECRET_CANARY}' ] || exit 9; ${node} -e '${js}' ok`;
       // The canary in this script text is only there to compare with the delivered value.
-      const r = cli(['--live', 'inl', '--inline', inline]);
+      // Windows refuses double quotes in an --inline argument, so there it goes on stdin.
+      const r = process.platform === 'win32'
+        ? cli(['--live', 'inl', '--inline', '-'], inline)
+        : cli(['--live', 'inl', '--inline', inline]);
       expect(r.stderr).toBe('');
       expect(r.status).toBe(0);
       expect(r.stdout).toMatch(OK_LINE);
@@ -340,7 +343,7 @@ describe('secret --live (real CLI)', () => {
 
     it('refuses text that looks like a known token in the script or args, without echoing it', () => {
       const pat = `ghp_${'a1B2'.repeat(10)}`;
-      const inline = cli(['--live', 'L', '--inline', `curl -H "Authorization: token ${pat}" https://x`]);
+      const inline = cli(['--live', 'L', '--inline', `curl -H 'Authorization: token ${pat}' https://x`]);
       expect(inline.status).toBe(1);
       expect(inline.stderr).toContain('cleartext-token');
       expect(inline.stderr).not.toContain(pat);

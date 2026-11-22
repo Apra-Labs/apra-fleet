@@ -20,11 +20,10 @@ import {
 import { mintLiveSecret } from '../services/live-secret-cache.js';
 import { LiveSecretError } from '../services/live-secret-runner.js';
 import { hasMemberInstallMarker } from './install-guard.js';
-import { inlineScriptChanged, readOwnCommandLine } from './inline-quote-check.js';
 
 const NAME_REGEX = /^[a-zA-Z0-9_-]{1,64}$/;
 
-const LIVE_USAGE_INLINE = "  apra-fleet secret --live <name> --inline '<script with {{secret.R}}>'";
+const LIVE_USAGE_INLINE = "  apra-fleet secret --live <name> --inline '<script with {{secret.R}}>'|-";
 const LIVE_USAGE_FILE = "  apra-fleet secret --live <name> [--env 'VAR={{secret.R}}']... <script file> [args]";
 
 export async function runSecret(args: string[]): Promise<void> {
@@ -68,21 +67,28 @@ export async function runSecret(args: string[]): Promise<void> {
 }
 
 /** Text for an inline script that arrived as more than one argument. Fixed: the arguments may hold a value. */
-const INLINE_EXTRA_ARGS = 'FAILED: inline-extra-args: --inline takes one script and cannot be combined with a script path. If you did not add more arguments, your shell removed double quotes from the inline script and split it (Windows PowerShell 5.1 does): use doubled single quotes inside the script, or a script file.';
+const INLINE_EXTRA_ARGS = 'FAILED: inline-extra-args: --inline takes one script and cannot be combined with a script path. If you did not add more arguments, your shell removed double quotes from the inline script and split it (Windows PowerShell 5.1 does): use single quotes inside the script, a script file, or --inline - with the script on stdin.';
 
 /**
- * Windows: refuse an inline script the shell changed on its way in (double
- * quotes removed, as Windows PowerShell 5.1 does), seen in this process's raw
- * command line. A raw line that cannot be read or matched is refused too: the
- * change would otherwise go unseen. Fixed texts: the script may hold a value.
+ * Windows shells can change an argument's double quotes and a trailing
+ * backslash before a program sees them (Windows PowerShell 5.1 drops or adds
+ * quotes), and argv cannot show it. So on Windows an `--inline` script given as
+ * an argument may hold neither. Fixed text: the script may hold a value.
  */
-export function inlineQuoteFailure(script: string, raw: string | null): string | null {
-  const changed = raw === null ? 'unknown' : inlineScriptChanged(raw, script);
-  if (changed === false) return null;
-  if (changed === true) {
-    return 'FAILED: inline-quotes-changed: your shell removed double quotes from the inline script before apra-fleet received it (Windows PowerShell 5.1 does), so it would run changed. Nothing was saved. Use doubled single quotes inside the script, or a script file.';
-  }
-  return 'FAILED: inline-unverified: on Windows the inline script is checked against this command\'s own command line, for double quotes the shell removed, and that line could not be read. Nothing was saved. Use a script file.';
+export function inlineArgFailure(script: string, platform: NodeJS.Platform): string | null {
+  if (platform !== 'win32' || !(script.includes('"') || script.endsWith('\\'))) return null;
+  return 'FAILED: inline-quotes: on Windows an --inline script cannot hold a double quote or end with a backslash, because the shell can change them on the way in. Nothing was saved. Use single quotes inside the script, a script file, or --inline - with the script on stdin.';
+}
+
+const INLINE_STDIN_EMPTY = 'FAILED: inline-stdin: --inline - reads the script from stdin, and none arrived. Pipe it in or redirect a file. Nothing was saved.';
+
+/** The script given as `--inline -`: stdin without a BOM or its final line break, or null when there is none. */
+async function readInlineStdin(): Promise<string | null> {
+  if (process.stdin.isTTY) return null;
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
+  const script = Buffer.concat(chunks).toString('utf8').replace(/^\uFEFF/, '').replace(/\r?\n$/, '');
+  return script.trim() ? script : null;
 }
 
 /**
@@ -141,10 +147,20 @@ async function handleLive(args: string[]): Promise<void> {
     console.error('  Name must match [a-zA-Z0-9_-]{1,64}');
     process.exit(1);
   }
-  const quoteFailure = 'inline' in spec && process.platform === 'win32' ? inlineQuoteFailure(spec.inline, readOwnCommandLine()) : null;
-  if (quoteFailure) {
-    console.error(quoteFailure);
-    process.exit(1);
+  if ('inline' in spec && spec.inline === '-') {
+    const script = await readInlineStdin();
+    if (script === null) {
+      console.error(INLINE_STDIN_EMPTY);
+      process.exit(1);
+      return;
+    }
+    spec.inline = script;
+  } else if ('inline' in spec) {
+    const failure = inlineArgFailure(spec.inline, process.platform);
+    if (failure) {
+      console.error(failure);
+      process.exit(1);
+    }
   }
   try {
     const record = prepareLiveSecret(name, spec);

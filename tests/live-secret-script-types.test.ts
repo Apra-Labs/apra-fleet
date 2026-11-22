@@ -20,8 +20,7 @@ import {
   type ScriptLaunchers,
 } from '../src/services/live-secret-runner.js';
 import { isWslLauncherBash, resolveGitBashExecutable } from '../src/os/windows-executable.js';
-import { inlineScriptChanged } from '../src/cli/inline-quote-check.js';
-import { inlineQuoteFailure } from '../src/cli/secret.js';
+import { inlineArgFailure } from '../src/cli/secret.js';
 
 const WIN = process.platform === 'win32';
 const CLI = path.resolve(__dirname, '..', 'dist', 'index.js');
@@ -182,49 +181,65 @@ describe('secret --live grammar, through the real CLI', () => {
     expect(records().split).toBeUndefined();
   });
 
-  // Raw command lines recorded from Windows PowerShell 5.1 running node with --inline '<script>'.
-  it.each([
-    ['$x = "abc"; Write-Output $x', '"node.exe" i.js --inline "$x = "abc"; Write-Output $x"', '$x = abc; Write-Output $x', true],
-    ["x=\"a\"", '"node.exe" i.js --inline x="a"', 'x=a', true],
-    ["$t = (az --query ''{t:a}'')", `"node.exe" i.js --inline "$t = (az --query '{t:a}')"`, "$t = (az --query '{t:a}')", false],
-    ['say \\"hi\\"', '"node.exe" i.js --inline "say \\"hi\\""', 'say "hi"', false],
-    ['abc', '"node.exe" i.js --inline abc', 'abc', false],
-  ])('the raw command line shows whether the shell changed %s', (_typed, raw, argv, changed) => {
-    expect(inlineScriptChanged(raw, argv)).toBe(changed);
-    const failure = inlineQuoteFailure(argv, raw);
-    if (changed) expect(failure).toMatch(/^FAILED: inline-quotes-changed: /);
-    else expect(failure).toBeNull();
+  it('on Windows an --inline argument with a double quote or a trailing backslash is refused; elsewhere it is not', () => {
+    expect(inlineArgFailure('$x = "abc"; Write-Output $x', 'win32')).toMatch(/^FAILED: inline-quotes: /);
+    expect(inlineArgFailure('Get-ChildItem C:\\Program Files\\', 'win32')).toMatch(/^FAILED: inline-quotes: /);
+    expect(inlineArgFailure("$x = 'abc'; Write-Output $x", 'win32')).toBeNull();
+    expect(inlineArgFailure('x="a" y\\', 'linux')).toBeNull();
   });
 
-  it('a raw command line that cannot be read or does not hold the script is refused, not trusted', () => {
-    expect(inlineQuoteFailure('abc', null)).toMatch(/^FAILED: inline-unverified: /);
-    expect(inlineQuoteFailure('abc', '"node.exe" i.js --inline other')).toMatch(/^FAILED: inline-unverified: /);
+  it.runIf(WIN)('the refusal runs before anything else, saves nothing and does not echo the script', () => {
+    for (const script of [`node "${reporter}"`, `node ${reporter} C:\\dir\\`]) {
+      const r = cli(['--live', 'quoted', '--inline', script]);
+      expect(r.status).toBe(1);
+      expect(r.stdout).toBe('');
+      expect(r.stderr).toMatch(/^FAILED: inline-quotes: /);
+      expect(r.stderr).not.toContain(reporter);
+    }
+    expect(fs.existsSync(report)).toBe(false);
+    expect(records().quoted).toBeUndefined();
   });
 
-  it.runIf(WIN)('Windows PowerShell 5.1: an inline script whose double quotes it removed is refused and saves nothing; doubled single quotes register', () => {
+  it('--inline - reads the script from stdin: double quotes kept, placeholders rewritten, nothing echoed', () => {
+    const script = WIN
+      ? `$env:BOUND = {{secret.R}}; & "${process.execPath}" "${reporter}" "a b"`
+      : `BOUND={{secret.R}} "${process.execPath}" "${reporter}" "a b"`;
+    const r = cli(['--live', 'piped', '--inline', '-'], `${script}\r\n`);
+    expectRegisteredAndReported('piped', r, ['a b']);
+    expect(records().piped.inline).toBe(script);
+    const empty = cli(['--live', 'none', '--inline', '-'], '\n');
+    expect(empty.status).toBe(1);
+    expect(empty.stderr).toMatch(/^FAILED: inline-stdin: /);
+    expect(records().none).toBeUndefined();
+  });
+
+  it.runIf(WIN)('Windows PowerShell 5.1, direct and through an npm-shaped shim: single quotes register, a trailing backslash is refused, --inline - keeps double quotes', () => {
     const ok = writeScript('ok.js', `process.stdout.write(JSON.stringify({token:${JSON.stringify(TOKEN)},expires_at:new Date(Date.now()+3600000).toISOString()}))`);
     const ps1 = path.join(sandbox, 'register.ps1');
     const node = process.execPath.replace(/'/g, "''");
     const cliPath = CLI.replace(/'/g, "''");
     const okPath = ok.replace(/'/g, "''");
-    // A second hop as npm's PowerShell shim makes it: & node <cli> $args.
+    // The shape of npm's PowerShell shim: & node <cli> $args, with pipeline input passed on.
     const shim = path.join(sandbox, 'apra-fleet.ps1');
-    fs.writeFileSync(shim, `& '${node}' '${cliPath}' $args`);
+    fs.writeFileSync(shim, [
+      `if ($MyInvocation.ExpectingInput) { $input | & '${node}' '${cliPath}' $args }`,
+      `else { & '${node}' '${cliPath}' $args }`,
+    ].join('\r\n'));
     const shimPath = shim.replace(/'/g, "''");
     fs.writeFileSync(ps1, [
-      `& '${node}' '${cliPath}' secret --live changed --inline '$x = "abc"; node ''${okPath}'''`,
-      `& '${shimPath}' secret --live shimmed --inline '$x = "abc"; node ''${okPath}'''`,
-      `& '${node}' '${cliPath}' secret --live kept --inline 'node ''${okPath}'''`,
+      `& '${node}' '${cliPath}' secret --live direct --inline 'node ''${okPath}'''`,
+      `& '${shimPath}' secret --live shimmed --inline 'node ''${okPath}'''`,
+      // 5.1 hands this over as "...C:\\x y\\" and the program reads a quote at the end.
+      `& '${shimPath}' secret --live trailing --inline 'node ''${okPath}'' C:\\x y\\'`,
+      `'& "${node}" "${okPath}"' | & '${shimPath}' secret --live piped --inline -`,
     ].join('\r\n'));
     const r = spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ps1], {
       env: { ...process.env, APRA_FLEET_DATA_DIR: dataDir }, encoding: 'utf-8', timeout: 90_000,
     });
-    expect(r.stderr.match(/^FAILED: inline-quotes-changed: /gm)).toHaveLength(2);
-    expect(r.stderr).not.toContain('abc');
-    expect(r.stdout).toMatch(/^OK: expires /m);
-    expect(records().changed).toBeUndefined();
-    expect(records().shimmed).toBeUndefined();
-    expect(records().kept).toBeDefined();
+    expect(r.stderr.match(/^FAILED: inline-quotes: /gm)).toHaveLength(1);
+    expect(r.stdout.match(/^OK: expires /gm)).toHaveLength(3);
+    expect(Object.keys(records()).sort()).toEqual(['R', 'direct', 'piped', 'shimmed']);
+    expect(records().piped.inline).toBe(`& "${process.execPath}" "${ok}"`);
   }, 90_000);
 
   it('--inline cannot be combined with a script path, with or without --', () => {
