@@ -272,7 +272,7 @@ export async function verifyPinnedToolVersions({ command, members, log = () => {
         const bdCheck = bd.error !== null
             ? { ok: false, found: `'${TOOL_VERSION_PROBES.bd}' failed: ${summarizeRaw(bd.error)}`, expected: majorMinor(BEADS_VERSION) }
             : checkPinnedVersion(bd.output, BEADS_VERSION);
-        if (!bdCheck.ok) offenders.push({ member, tool: 'bd', found: bdCheck.found, expected: bdCheck.expected });
+        if (!bdCheck.ok) offenders.push({ member, tool: 'bd', found: bdCheck.found, expected: bdCheck.expected, ...(bd.error !== null ? { notRunnable: true } : {}) });
 
         const dolt = await run(TOOL_VERSION_PROBES.dolt, member);
         let doltFound = null;
@@ -291,7 +291,9 @@ export async function verifyPinnedToolVersions({ command, members, log = () => {
         found[member] = { bd: bdCheck.found, dolt: doltFound };
     }
     if (offenders.length) {
-        const lines = offenders.map((o) => `member '${o.member}': ${o.tool} ${o.found}, expected ${o.tool} ${o.expected}.x`);
+        const lines = offenders.map((o) => o.notRunnable
+            ? `member '${o.member}': ${o.tool} not runnable (${o.found}), expected ${o.tool} ${o.expected}.x`
+            : `member '${o.member}': ${o.tool} ${o.found}, expected ${o.tool} ${o.expected}.x`);
         const memberCount = new Set(offenders.map((o) => o.member)).size;
         throw new BeadsIdentityError(
             `Beads preflight failed: ${memberCount === 1 ? 'a member runs' : `${memberCount} members run`} a bd or dolt outside the pinned version -- ` +

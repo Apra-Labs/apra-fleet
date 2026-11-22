@@ -111,7 +111,7 @@ describe('install: bd version pin', () => {
     await runInstall([]);
     expect(process.exitCode).toBe(1);
     const w = warns();
-    expect(w).toContain('[!] Beads (bd) version mismatch on pin-test-host');
+    expect(w).toContain('[!] E-BD-VERSION-MISMATCH Beads (bd) version mismatch on pin-test-host');
     expect(w).toContain('found 1.4.0 (PATH)');
     expect(w).toContain(`expected ${BEADS_VERSION}`);
     expect(w).toContain(`[!] Fix: install the pinned ${BEADS_PACKAGE}`);

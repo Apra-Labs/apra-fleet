@@ -5,7 +5,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import path from 'node:path';
-import { installBeads, BEADS_NPM_PACKAGE, describeExecFailure, type BeadsInstallDeps } from '../src/cli/beads-install.js';
+import { installBeads, bdPinWarning, BEADS_NPM_PACKAGE, describeExecFailure, type BeadsInstallDeps } from '../src/cli/beads-install.js';
 import { BEADS_VERSION } from '../src/cli/beads-pin.js';
 import { parseVersionLine, checkPinnedVersion } from '../src/cli/version-pin.js';
 import {
@@ -315,5 +315,20 @@ describe('fleet-side bd status on a remote member', () => {
     const ps = decodePowerShellEncodedCommand(buildBeadsProbe('C:\\Users\\k\\.apra-fleet\\bin\\bd.exe', 'windows', 'powershell5' as any));
     expect(ps).toContain("Test-Path -LiteralPath 'C:\\Users\\k\\.apra-fleet\\bin\\bd.exe'");
     expect(ps).not.toContain('$env:USERPROFILE');
+  });
+});
+
+describe('bdPinWarning (apra-fleet status)', () => {
+  const run = (out: string | Error) => bdPinWarning(() => { if (out instanceof Error) throw out; return out; }, 'status-host');
+  it('names the code, found, expected and fix for a bd off the pin', () => {
+    const w = run('bd version 1.0.4 (old)\n')!;
+    expect(w).toContain('E-BD-VERSION-MISMATCH');
+    expect(w).toContain('found 1.0.4 (PATH)');
+    expect(w).toContain(`expected ${BEADS_VERSION}`);
+    expect(w).toContain(`Fix: install the pinned ${BEADS_NPM_PACKAGE}`);
+  });
+  it('is silent for a pinned bd and for a bd that cannot run', () => {
+    expect(run(`bd version ${BEADS_VERSION}.2 (ok)\n`)).toBeNull();
+    expect(run(new Error('ENOENT'))).toBeNull();
   });
 });

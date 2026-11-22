@@ -265,7 +265,7 @@ describe('runUpdate (T6)', () => {
 
     expect(spawn).toHaveBeenCalledWith(
       expect.anything(),
-      ['install', '--member', '--force', '--llm', 'gemini', '--workflows', 'none', '--transport', 'http'],
+      ['install', '--llm', 'gemini', '--member', '--workflows', 'none', '--transport', 'http', '--force'],
       expect.anything()
     );
     expect(console.log).toHaveBeenCalledWith(expect.stringContaining('fleet member host'));

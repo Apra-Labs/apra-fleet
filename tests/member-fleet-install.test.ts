@@ -32,6 +32,8 @@ interface FakeMember {
   /** Version the installer leaves behind when it runs. */
   installsVersion: string;
   installerExit?: number;
+  /** Extra installer stderr on a successful (exit 0) install. */
+  installerStderr?: string;
   /** The member-install marker exists (default true: a fleet member install). */
   marker?: boolean;
   execLog: string[];
@@ -65,7 +67,7 @@ function fakeDeps(member: FakeMember, opts: {
       if (text.includes(' install') || text.includes("'install'")) {
         const code = member.installerExit ?? 0;
         if (code === 0) member.version = member.installsVersion;
-        return { stdout: 'installed', stderr: code ? 'boom' : '', code };
+        return { stdout: 'installed', stderr: code ? 'boom' : (member.installerStderr ?? ''), code };
       }
       return { stdout: '', stderr: `unexpected command: ${text}`, code: 127 };
     },
@@ -91,6 +93,35 @@ function newMember(over: Partial<FakeMember> = {}): FakeMember {
 }
 
 const LINUX_X64: MemberPlatform = { os: 'linux', arch: 'x64' };
+
+describe('bd version mismatch on the member', () => {
+  const warning = "[!] E-BD-VERSION-MISMATCH Beads (bd) version mismatch on bella: found 1.0.4 (PATH), expected 1.3 (pinned major.minor). Fix: install the pinned bd, then re-run the install";
+
+  it('an installer that completed (exit 0) with only the bd mismatch is available, carrying the warning and fix', async () => {
+    const m = newMember({ installerStderr: warning + '\n' });
+    const agent = makeTestAgent({ os: 'linux', llmProvider: 'claude' });
+    const r = await ensureMemberFleetInstall(agent, fakeDeps(m, { orchestrator: LINUX_X64, executable: '/opt/fleet/apra-fleet' }));
+    expect(r).toMatchObject({ state: 'available', installed: true, version: ORCH_VERSION });
+    expect((r as { bdVersionWarning?: string }).bdVersionWarning).toContain('E-BD-VERSION-MISMATCH');
+    expect((r as { bdVersionWarning?: string }).bdVersionWarning).toContain('Fix: install the pinned bd');
+    expect((r as { bdVersionWarning?: string }).bdVersionWarning).not.toMatch(/^[!]/);
+  });
+
+  it('a clean install carries no bd warning', async () => {
+    const m = newMember();
+    const agent = makeTestAgent({ os: 'linux', llmProvider: 'claude' });
+    const r = await ensureMemberFleetInstall(agent, fakeDeps(m, { orchestrator: LINUX_X64, executable: '/opt/fleet/apra-fleet' }));
+    expect(r).toMatchObject({ state: 'available' });
+    expect((r as { bdVersionWarning?: string }).bdVersionWarning).toBeUndefined();
+  });
+
+  it('a real installer failure is still install-failed', async () => {
+    const m = newMember({ installerExit: 1 });
+    const agent = makeTestAgent({ os: 'linux', llmProvider: 'claude' });
+    const r = await ensureMemberFleetInstall(agent, fakeDeps(m, { orchestrator: LINUX_X64, executable: '/opt/fleet/apra-fleet' }));
+    expect(r).toMatchObject({ state: 'unavailable', reason: 'install-failed' });
+  });
+});
 
 describe('install source choice', () => {
   it('same OS/arch copies the orchestrator executable', async () => {

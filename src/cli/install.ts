@@ -28,7 +28,7 @@ import { transformAgentForOpenCode, transformAgentForAgy, transformAgentForClaud
 import { FLEET_DIR } from '../paths.js';
 import { extractWorkflowSubsystemAssets } from './workflow-assets.js';
 import { downloadAndExtractDolt, verifyDolt } from './dolt-install.js';
-import { installBeads, type BeadsInstallDeps, type BeadsInstallResult } from './beads-install.js';
+import { installBeads, beadsMismatchLines, type BeadsInstallDeps, type BeadsInstallResult } from './beads-install.js';
 import { DOLT_VERSION } from './dolt-install.js';
 import { checkPinnedVersion } from './version-pin.js';
 import {
@@ -102,13 +102,7 @@ function installHostName(): string {
   }
 }
 
-/** The [!] lines for a bd whose major.minor differs from the pin (also the final stderr line). */
-export function beadsMismatchLines(r: Extract<BeadsInstallResult, { state: 'version-mismatch' }>, host: string): string[] {
-  return [
-    `Beads (bd) version mismatch on ${host}: found ${r.found} (${r.where}), expected ${r.expected} (pinned major.minor).${r.reason ? ` ${r.reason}.` : ''}`,
-    `Fix: ${r.fix}`,
-  ];
-}
+export { beadsMismatchLines };
 
 function doltStepEnabled(): boolean {
   if (process.env.NODE_ENV !== 'test') return true;
@@ -2320,9 +2314,9 @@ ${manualStopHint(pidsAfterStop)}
     console.warn(`  [!] Fix: ${beadsResult.fix}`);
     console.warn('  - Beads install skipped - sprint work on this machine needs bd and will fail until it is installed');
   } else if (beadsResult.state === 'version-mismatch') {
-    // LOUD and fatal for the exit code (set after every other step finishes):
-    // a bd of another major.minor can migrate the shared beads database one
-    // way and lock out every other clone.
+    // LOUD (a bd of another major.minor can migrate the shared beads database
+    // one way and lock out every other clone). A full install then exits 1
+    // (set after every other step finishes); a member install completes.
     for (const line of beadsMismatchLines(beadsResult, installHostName())) console.warn(`  [!] ${line}`);
   }
 
@@ -2579,10 +2573,13 @@ ${instructions}${forceNote}${accessNote}
 
   if (beadsResult.state === 'version-mismatch') {
     // Last line on stderr, so a caller that keeps only the output tail (the
-    // member fleet_install path) still names the mismatch. The fleet install
-    // itself is complete; only the exit code reports the bd problem.
+    // member fleet_install path) still names the mismatch. The install itself
+    // is complete. A member install exits 0 so the member keeps its fleet
+    // tools (the orchestrator reads the code above and reports the mismatch
+    // and fix); a full install exits 1. The sprint-start and supervisor checks
+    // still stop sprints on an off-pin bd, and 'apra-fleet status' warns.
     console.error(`[!] ${beadsMismatchLines(beadsResult, installHostName()).join(' ')}`);
-    process.exitCode = 1;
+    if (!memberMode) process.exitCode = 1;
   }
 
   if (llm === 'claude' && installPm) {

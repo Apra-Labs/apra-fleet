@@ -147,7 +147,7 @@ describe('full install on a fleet member host', () => {
     const err = errText();
     expect(err).toContain(MEMBER_HOST_FULL_INSTALL_CODE);
     expect(err).toContain('fleet member host');
-    expect(err).toContain(`${DATA_DIR}/member-install.json`);
+    expect(err).toContain(memberInstallMarkerPath());
     expect(err).toContain('0.0.1');
     expect(err).toContain('7611');
     expect(err).toContain('update_member');
@@ -155,7 +155,7 @@ describe('full install on a fleet member host', () => {
     expect(err).toMatch(/install --member[^\n]*--force/);
     expect(err).toContain(CONVERT_MEMBER_HOST_FLAG);
     // Marker byte-identical, running server not signalled, no service touched.
-    expect(files.get(`${DATA_DIR}/member-install.json`)).toBe(original);
+    expect(files.get(key(memberInstallMarkerPath()))).toBe(original);
     expect(kills).toEqual([]);
     const svc = await getServiceManager();
     expect(svc.stop).not.toHaveBeenCalled();

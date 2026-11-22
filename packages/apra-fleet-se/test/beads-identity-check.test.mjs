@@ -949,6 +949,18 @@ describe('verifyBeadsIdentity: bd/dolt version pin (checkToolVersions)', () => {
         );
     });
 
+    test('a bd that cannot run (not a missing bd) is reported as not runnable, not as a version mismatch', async () => {
+        const { command } = fakeCommand({ orch: memberAnswers(), m1: memberAnswers({ bd: { fail: 'bash: /usr/local/bin/bd: Segmentation fault' } }) });
+        await assert.rejects(
+            verifyBeadsIdentity({ command, backlogMember: 'orch', members: ['m1'], expected: EXPECTED, checkToolVersions: true }),
+            (err) => {
+                assert.match(err.message, /member 'm1': bd not runnable \(/);
+                assert.doesNotMatch(err.message, /member 'm1': bd 'bd --version' failed/);
+                return true;
+            },
+        );
+    });
+
     test('a setupMembers-only member is version-checked too', async () => {
         const { command } = fakeCommand({ orch: memberAnswers(), m1: memberAnswers(), m9: memberAnswers({ bd: 'bd version 1.4.0' }) });
         await assert.rejects(

@@ -1,4 +1,6 @@
 import fs from 'node:fs';
+import os from 'node:os';
+import { execFileSync } from 'node:child_process';
 import http from 'node:http';
 import { checkRunningInstance, describePreviousServer } from '../services/singleton.js';
 import { getServiceManager } from '../services/service-manager/index.js';
@@ -10,6 +12,7 @@ import { showPendingServiceNotice } from '../services/service-notice.js';
 import { checkClaudeUserScopeRegistration, claudeUserConfigPath, type ClaudeRegistrationState } from '../services/claude-local-scope-mcp.js';
 import { memberAccessSecretPath, readMemberAccessSecret } from '../services/member-access-secret.js';
 import { readInstallConfig } from './config.js';
+import { bdPinWarning } from './beads-install.js';
 import { DEFAULT_PORT } from '../paths.js';
 import { readSupervisorLiveness, formatSupervisorLine } from './supervisor-liveness.js';
 
@@ -96,6 +99,13 @@ function claudeRegistrationWarning(): string | null {
   return problem ? `  Warning:  claude user config ${file} ${problem} -- run 'apra-fleet install --force' to restore it.` : null;
 }
 
+/** Warning for a PATH bd off the pinned major.minor, or null. */
+function bdWarning(): string | null {
+  try {
+    return bdPinWarning((cmd, args, opts) => execFileSync(cmd, args, { stdio: 'pipe', encoding: 'utf-8', shell: opts.shell, windowsHide: true, timeout: 5000 }) as unknown as string, os.hostname() || 'this host');
+  } catch { return null; }
+}
+
 export async function runStatus(_args: string[]): Promise<void> {
   // Guidance a detached install (apra-fleet update) could not show.
   showPendingServiceNotice();
@@ -109,7 +119,7 @@ export async function runStatus(_args: string[]): Promise<void> {
   const serviceLabel = formatServiceLabel(svcStatus)
     + (svcStatus.notice ? '\n' + svcStatus.notice.split('\n').map(l => `            ${l}`).join('\n') : '');
 
-  const registrationWarning = claudeRegistrationWarning();
+  const registrationWarning = [claudeRegistrationWarning(), bdWarning()].filter(Boolean).join('\n');
   const supervisorLine = formatSupervisorLine(readSupervisorLiveness());
 
   if (instance.state === 'unresponsive') {

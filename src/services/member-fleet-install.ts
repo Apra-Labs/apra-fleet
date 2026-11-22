@@ -37,6 +37,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { BD_VERSION_MISMATCH_CODE } from '../cli/beads-install.js';
 import type { Agent, FleetMcpStatus, LlmProvider, SSHExecResult } from '../types.js';
 import type { TargetOS } from '../providers/provider.js';
 import { getStrategy } from './strategy.js';
@@ -160,6 +161,10 @@ export type MemberFleetInstallResult =
       /** Set when no release carried the exact build and the signed stable
        *  release of the same core was installed instead. */
       sameCoreFallback?: SameCoreFallback;
+      /** The install completed but the bd on the member's PATH is off the
+       *  pinned major.minor (E-BD-VERSION-MISMATCH): the installer's mismatch
+       *  line with found/expected/fix. The member keeps its fleet tools. */
+      bdVersionWarning?: string;
     }
   | {
       state: 'unavailable';
@@ -438,6 +443,17 @@ export function chooseInstallSource(
       `member platform ${member.os}/${member.arch} differs from this orchestrator ` +
       `(${orchestrator.os}/${orchestrator.arch}) and no apra-fleet release asset exists for it`,
   };
+}
+
+/**
+ * The installer's bd version-mismatch text (code, found/expected, Fix) from its
+ * output, or undefined. A member install that completed but found a bd off the
+ * pin still exits 0 (the member keeps its tools); the mismatch rides here.
+ */
+export function extractBdVersionWarning(output: string): string | undefined {
+  const lines = output.split(/\r?\n/).map(l => l.trim()).filter(l => l.includes(BD_VERSION_MISMATCH_CODE));
+  if (!lines.length) return undefined;
+  return lines[lines.length - 1].replace(/^\[!\]\s*/, '');
 }
 
 /** The member-mode install command line arguments (exported for tests). */
@@ -1074,6 +1090,7 @@ async function replaceFullInstall(
   const stamp = replaceBackupStamp(deps.now ? deps.now() : new Date());
   const plan = buildReplaceFullInstallPlan({ home, targetOs, shell, provider, installerPath, stamp });
   let supervisorMoved = false;
+  let bdVersionWarning: string | undefined;
   const failedAt = (name: ReplaceStepName | 'verify', why: string): MemberFleetInstallResult => {
     const label = name === 'verify' ? 'the version check after step 5' : REPLACE_STEP_LABEL[name];
     const detail = name === 'backup'
@@ -1091,6 +1108,7 @@ async function replaceFullInstall(
     if (r.code !== 0) {
       return failedAt(step.name, `exited ${r.code}: ${(r.stderr.trim() || r.stdout.trim()).slice(-400)}`);
     }
+    if (step.name === 'install') bdVersionWarning = extractBdVersionWarning(r.stdout + '\n' + r.stderr);
     if (step.name === 'supervisor' && r.stdout.includes(SUPERVISOR_MOVED_SENTINEL)) supervisorMoved = true;
   }
 
@@ -1108,6 +1126,7 @@ async function replaceFullInstall(
     state: 'available', version: after.version, installed: true, source: source.kind, binPath,
     replaced: { previousVersion, removed, backupPath: plan.backupDir },
     ...(sameCoreFallback ? { sameCoreFallback } : {}),
+    ...(bdVersionWarning ? { bdVersionWarning } : {}),
   };
 }
 
@@ -1485,6 +1504,7 @@ async function ensureOnce(agent: Agent, deps: MemberFleetInstallDeps, force: boo
 
   let localPath: string;
   let downloaded = false;
+  let bdVersionWarning: string | undefined;
   let sameCoreFallback: SameCoreFallback | undefined;
   if (source.kind === 'orchestrator-executable') {
     localPath = source.localPath;
@@ -1530,6 +1550,7 @@ async function ensureOnce(agent: Agent, deps: MemberFleetInstallDeps, force: boo
       }
       return { state: 'unavailable', reason: 'install-failed', detail: `installer exited ${run.code}: ${tail}`, version: priorVersion };
     }
+    bdVersionWarning = extractBdVersionWarning(run.stdout + '\n' + run.stderr);
   } finally {
     if (downloaded) deps.removeLocal(localPath);
   }
@@ -1544,7 +1565,7 @@ async function ensureOnce(agent: Agent, deps: MemberFleetInstallDeps, force: boo
       version: priorVersion,
     };
   }
-  return { state: 'available', version: after.version, installed: true, source: source.kind, binPath, ...(sameCoreFallback ? { sameCoreFallback } : {}) };
+  return { state: 'available', version: after.version, installed: true, source: source.kind, binPath, ...(sameCoreFallback ? { sameCoreFallback } : {}), ...(bdVersionWarning ? { bdVersionWarning } : {}) };
 }
 
 // ---------------------------------------------------------------------------
@@ -2168,6 +2189,7 @@ async function probeRemote(
   let manualInstall: string | undefined;
   // The signed same-core stable release installed instead of the exact build.
   let sameCoreFallback: SameCoreFallback | undefined;
+  let bdVersionWarning: string | undefined;
   if (install) {
     const r = await ensureMemberFleetInstall(agent, deps, { force: forceInstall, replaceFull });
     if (r.state === 'available') {
@@ -2175,6 +2197,7 @@ async function probeRemote(
       if (r.installed) { ctx.installedNow = true; installedNow = true; }
       replaced = r.replaced;
       sameCoreFallback = r.sameCoreFallback;
+      bdVersionWarning = r.bdVersionWarning;
     }
     // Fail closed -- with the install's OWN reason and detail, never a later
     // step's error (apra-fleet-b4g.73) -- when the installer ran or was
@@ -2216,7 +2239,8 @@ async function probeRemote(
   // note about it ride on every later outcome, like a failed upgrade.
   let portFields: Partial<FleetMcpStatus> = {};
   let portNote: string | undefined;
-  const notes = (): string[] => [replaceNote, upgradeNote, portNote].filter((n): n is string => !!n);
+  const bdNote = bdVersionWarning ? `the member's fleet tools are installed, but its bd is off the pin: ${bdVersionWarning}` : undefined;
+  const notes = (): string[] => [replaceNote, upgradeNote, portNote, bdNote].filter((n): n is string => !!n);
   // Every later outcome keeps a failed upgrade visible: a later step's error
   // must never hide it, and an available status still names it.
   const fail: Unavailable = (reason, detail) => {
@@ -2327,6 +2351,7 @@ async function probeRemote(
     ...(manualInstall ? { manualInstall } : {}),
     ...(replaced ? { replacedFullInstall: replaced } : {}),
     ...(sameCoreFallback ? { sameCoreFallback } : {}),
+    ...(bdVersionWarning ? { bdVersionWarning } : {}),
     ...(finalNotes.length ? { detail: finalNotes.join('. ') } : {}),
     ...portFields,
   };

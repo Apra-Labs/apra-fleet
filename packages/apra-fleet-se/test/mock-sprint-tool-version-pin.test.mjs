@@ -17,13 +17,14 @@ import { BEADS_VERSION, DOLT_VERSION } from '../fleet-sprint/tool-version-pin.mj
 // `bdVersion` / `doltVersion` answer. No real bd remote is touched.
 // =============================================================================
 
+const escapeRe = (t) => String(t).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const check = (cond, msg) => assert.ok(cond, msg);
 const PIN_MM = BEADS_VERSION.split('.').slice(0, 2).join('.');
 const PIN_DOLT = DOLT_VERSION.replace(/^v/, '');
 
 // Every beads set-up or sync command that must never reach a member once a
 // version mismatch is known.
-const SETUP_OR_SYNC = /^(?:\S+=\S+\s+)*bd (?:bootstrap|config set|dolt remote|dolt pull|dolt push)\b/;
+const SETUP_OR_SYNC = /^(?:[^\s=]+=\S+\s+)*bd (?:bootstrap|config set|dolt remote|dolt pull|dolt push)\b/;
 
 const approvedReviewer = async () => ({
     content: [{ text: JSON.stringify({ verdict: 'APPROVED', notes: 'Approved.', reopenIds: [], newTasks: [] }) }],
@@ -38,7 +39,7 @@ function assertStoppedAtPreflight(r, { member, found }) {
     check(r.error instanceof BeadsIdentityError, `expected a BeadsIdentityError abort, got: ${r.error && (r.error.constructor.name + ': ' + r.error.message)}`);
     check(r.error.reason === BEADS_IDENTITY_FAILURE_REASONS.VERSION_MISMATCH, `expected VERSION_MISMATCH, got ${r.error.reason}: ${r.error.message}`);
     check(r.error.member === member, `expected the offending member '${member}', got '${r.error.member}'`);
-    const line = new RegExp(`member '${member}': bd ${found.replace(/\./g, '\\.')}, expected bd ${PIN_MM.replace(/\./g, '\\.')}\\.x`);
+    const line = new RegExp(`member '${escapeRe(member)}': bd ${escapeRe(found)}, expected bd ${escapeRe(PIN_MM)}\\.x`);
     check(line.test(r.error.message), `expected member/found/expected in the message, got: ${r.error.message}`);
     check(/To fix: install the pinned bd/.test(r.error.message) && /relaunch/.test(r.error.message), `expected the fix in the message, got: ${r.error.message}`);
     // The failure is published on the terminal sprint record.

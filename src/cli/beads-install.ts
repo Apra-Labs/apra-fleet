@@ -189,3 +189,32 @@ export function installBeads(binDir: string, deps: BeadsInstallDeps): BeadsInsta
     try { deps.rmSync(staging); } catch { /* best effort */ }
   }
 }
+
+/**
+ * Stable code on every bd version-mismatch line (and on the installer's last
+ * stderr line), so a caller that keeps only the output tail -- the member
+ * fleet_install path -- can tell "installed, but bd is off the pin" from a
+ * failed install without parsing prose.
+ */
+export const BD_VERSION_MISMATCH_CODE = 'E-BD-VERSION-MISMATCH';
+
+/** The [!] lines for a bd whose major.minor differs from the pin (also the final stderr line). */
+export function beadsMismatchLines(r: Extract<BeadsInstallResult, { state: 'version-mismatch' }>, host: string): string[] {
+  return [
+    `${BD_VERSION_MISMATCH_CODE} Beads (bd) version mismatch on ${host}: found ${r.found} (${r.where}), expected ${r.expected} (pinned major.minor).${r.reason ? ` ${r.reason}.` : ''}`,
+    `Fix: ${r.fix}`,
+  ];
+}
+
+/**
+ * One status Warning line when the bd on PATH runs but is off the pin; null
+ * when it matches or cannot run (a missing bd is a separate, existing report).
+ */
+export function bdPinWarning(exec: BeadsInstallDeps['exec'], host: string): string | null {
+  let out: string | null;
+  try { out = firstLine(exec('bd', ['--version'], { shell: true })); } catch { return null; }
+  const check = checkPinnedVersion(out, BEADS_VERSION);
+  if (check.ok) return null;
+  const lines = beadsMismatchLines(mismatch(check, 'path', '') as Extract<BeadsInstallResult, { state: 'version-mismatch' }>, host);
+  return `  Warning:  ${lines.join(' ')}`;
+}

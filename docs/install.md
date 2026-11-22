@@ -370,7 +370,14 @@ path, its recorded version and port, and the supported upgrade paths:
 - or on the host: `apra-fleet install --member --force` (keeps the marker and
   the recorded port; the marker is rewritten with the new version).
 
-`apra-fleet update` on a member host does the latter for you. To convert a
+`apra-fleet update` from 0.4.6 on a member host does the latter for you. A 0.4.5 member
+host cannot: its `update` runs a full install, which the new guard refuses (detached, so
+it only shows in `apra-fleet status`; nothing is upgraded and the old install keeps
+running). Upgrade 0.4.5 member hosts with `update_member fleet_install auto` or
+`apra-fleet install --member --force`. A bd on PATH outside the pinned major.minor does
+not fail a member install: it completes, the output, the `update_member` result and
+`apra-fleet status` carry `E-BD-VERSION-MISMATCH` with the fix command, and sprints refuse
+that member until bd is fixed (a full install still exits 1). To convert a
 member host to a full install on purpose, add `--convert-member-host`; the
 install then removes the marker and says so. The check is per data dir: a full
 install into a different `APRA_FLEET_DATA_DIR` (a sandbox or clean-prefix

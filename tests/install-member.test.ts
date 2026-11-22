@@ -108,6 +108,19 @@ afterEach(() => {
 });
 
 describe('install --member', () => {
+  it('an off-pin bd on PATH does not fail a member install: exit 0, and the last stderr line carries the code, found, expected and fix', async () => {
+    vi.mocked(execFileSync).mockImplementation(((cmd: string) => (String(cmd).endsWith('bd') ? 'bd version 1.0.4 (old)\n' : '')) as any);
+    await runInstall(['--transport', 'http', '--member']);
+    // A non-zero exit would make the orchestrator report install-failed and strip the member's fleet tools.
+    expect(process.exitCode ?? 0).toBe(0);
+    const lastErr = vi.mocked(console.error).mock.calls.at(-1)?.join(' ') ?? '';
+    expect(lastErr).toContain('E-BD-VERSION-MISMATCH');
+    expect(lastErr).toContain('found 1.0.4 (PATH)');
+    expect(lastErr).toContain('expected 1.3');
+    expect(lastErr).toContain('Fix: install the pinned');
+    expect(vi.mocked(console.log).mock.calls.flat().join('\n')).toContain('installed successfully');
+  });
+
   it('installs no skills and no workflows', async () => {
     await runInstall(['--transport', 'http', '--member']);
     const w = writtenPaths();

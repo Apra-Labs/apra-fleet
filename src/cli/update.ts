@@ -10,6 +10,8 @@ import { isSea, isNpmGlobalInstall, fleetSeGuardEnabled, currentFleetSeProbes } 
 import { selfInvocationLines, hasMemberInstallMarker } from './install-guard.js';
 import { detectRunningFleetSe, fleetSeRefusalText, IGNORE_RUNNING_SPRINTS_FLAG } from './fleet-se-guard.js';
 import { showPendingServiceNotice } from '../services/service-notice.js';
+import { memberInstallArgs } from '../services/member-fleet-install.js';
+import type { LlmProvider } from '../types.js';
 
 /** Release installer published by ci.yml for each `process.platform/process.arch`. */
 export const INSTALLER_ASSETS: Record<string, string> = {
@@ -143,7 +145,7 @@ export async function runUpdate(): Promise<void> {
     // (E-MEMBER-HOST-FULL-INSTALL) -- invisibly, since it runs detached.
     const memberHost = hasMemberInstallMarker();
     const args = memberHost
-      ? ['install', '--member', '--force', '--llm', targetLlm, '--workflows', 'none', '--transport', 'http']
+      ? memberInstallArgs(targetLlm as LlmProvider)
       : ['install', '--force', '--llm', targetLlm, '--skill', targetSkill, '--workflows', targetWorkflowsMode];
     if (memberHost) console.log('This host is a fleet member host: updating it with install --member --force.');
     // The detached installer refuses while fleet-sprint work is running, but
