@@ -3632,6 +3632,42 @@ the full list of required command prefixes and diff it against
 underlying operation itself is unsafe or needs a workaround -- add the
 missing prefix and re-trigger.
 
+**A role was refused `kill`, `taskkill` or `Stop-Process` (or a grant for one was refused)**
+
+That is deliberate. A **local** member runs on the same host as the fleet
+server, the fleet supervisor and every other sprint engine dispatched there.
+Remote members can share a host as well. A broad kill on that host (by process
+name, or of pids taken from a process listing) takes all of them down,
+including unrelated sprints. This has happened: a doer that hit process-launch
+failures under load ran `taskkill /F` on every `node` process and killed three
+running sprints.
+
+What fleet does about it:
+
+- `compose_permissions` never grants a process-killing command (`kill`,
+  `pkill`, `killall`, `taskkill`, `tskill`, `Stop-Process`, `wmic process`
+  delete/terminate). It refuses such a `grant` and strips any from the
+  composed allow list. The dev profile no longer allows `Bash(kill:*)` or
+  `Bash(pkill:*)`.
+- Every composed config carries deny rules for those commands: claude
+  `permissions.deny`, agy `permissionGrants.deny` and copilot `tools.deny`.
+- The fleet-sprint engine never asks for such a grant. A permission heal
+  whose only refused calls are kills stops with `process_kill_refused`,
+  without spending a heal or re-dispatching. A kill grant listed in
+  deploy.md's Permissions section is dropped, with a log line, and the other
+  grants still go through.
+- The doer, deployer, integ-test-runner and regression-test-runner prompts
+  forbid terminating processes the run did not start. On resource exhaustion
+  the role must stop and report rather than clean up.
+
+These layers reduce the risk; they cannot rule it out. A member that is
+allowed other interpreters (`Bash(bash:*)`, `Bash(node:*)`, PowerShell) can
+still run a kill indirectly. A deploy or test step that must stop what it
+started should record the pid itself (for example in a pidfile written by the
+target's own scripts) and stop only that pid. If that is not enough
+isolation, register the member as a remote member on a host that runs no
+fleet server and no other sprints.
+
 ## Timeouts
 
 A dispatch can end in two distinct ways:
