@@ -1,7 +1,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
 import { classifyVerifySet, buildPlannerPrompt, buildFinalVerdictPrompt, buildReviewerPrompt, parseBdJson } from '../fleet-sprint/runner.js';
-import { LIVE_EVIDENCE_LABEL, createBeadsScope } from '../fleet-sprint/beads-scope.mjs';
+import { LIVE_EVIDENCE_LABEL, createBeadsScope, belowGoalVerifyHolds, formatVerifyHolds } from '../fleet-sprint/beads-scope.mjs';
 import { buildIntegVerifyClause } from '../fleet-sprint/phases/integ-test.mjs';
 import { extractVerifyIds } from './helpers/verify-clause.mjs';
 
@@ -352,6 +352,86 @@ describe('classifyVerifySet -- live-evidence verification leaves', () => {
         const { verifyIds, leafVerifyIds } = classifyVerifySet(beads, ['root']);
         assert.deepStrictEqual(verifyIds, ['root.1']);
         assert.deepStrictEqual(leafVerifyIds, [], 'a childful marked bead is an all-children-closed parent, not a leaf');
+    });
+});
+
+// Rule 4 is kept (any open child holds a parent out of verify), but the hold
+// is recorded: a parent with at least one closed child and at least one open
+// child gets an ineligible entry naming each open child and its priority, and
+// belowGoalVerifyHolds() picks out the holds made only by below-goal or
+// out-of-scope children (the ones that never block the exit gate).
+describe('classifyVerifySet -- open-children holds are recorded', () => {
+    const epicShape = (hygienePriority) => [
+        bead('root', { issue_type: 'epic', priority: 1 }),
+        bead('root.1', { parent: 'root', issue_type: 'feature', priority: 1 }),
+        bead('root.1.1', { parent: 'root.1', status: 'closed', priority: 1 }),
+        bead('root.1.2', { parent: 'root.1', status: 'closed', priority: 2 }),
+        bead('root.1.3', { parent: 'root.1', priority: hygienePriority }),
+    ];
+
+    test('an epic held only by a below-goal open child is not verify-routed; the hold names the child and its priority', () => {
+        const { verifyIds, leafVerifyIds, ineligible } = classifyVerifySet(epicShape(3), ['root']);
+        assert.deepStrictEqual(verifyIds, []);
+        assert.deepStrictEqual(leafVerifyIds, []);
+        const entry = ineligible.find((e) => e.id === 'root.1');
+        assert.ok(entry, `expected an ineligible entry for root.1: ${JSON.stringify(ineligible)}`);
+        assert.equal(entry.kind, 'open-children');
+        assert.match(entry.reason, /root\.1\.3 \(P3\)/);
+        assert.ok(!/root\.1\.1|root\.1\.2/.test(entry.reason), `closed children are not named: ${entry.reason}`);
+        assert.deepStrictEqual(entry.heldBy, [{ id: 'root.1.3', priority: 3, status: 'open', inScope: true }]);
+        // root has one open child (root.1) and no closed one: nothing recorded.
+        assert.ok(!ineligible.some((e) => e.id === 'root'), JSON.stringify(ineligible));
+
+        assert.deepStrictEqual(belowGoalVerifyHolds(ineligible, 'P2'), [{ id: 'root.1', heldBy: entry.heldBy }]);
+        assert.equal(formatVerifyHolds(belowGoalVerifyHolds(ineligible, 'P2')), 'root.1 (held by root.1.3 (P3))');
+    });
+
+    test('an at-goal open child is recorded but is not a below-goal hold', () => {
+        const { verifyIds, ineligible } = classifyVerifySet(epicShape(2), ['root']);
+        assert.deepStrictEqual(verifyIds, []);
+        const entry = ineligible.find((e) => e.id === 'root.1');
+        assert.match(entry.reason, /root\.1\.3 \(P2\)/);
+        assert.deepStrictEqual(belowGoalVerifyHolds(ineligible, 'P2'), []);
+        // The same child is below goal for a P1-only sprint.
+        assert.deepStrictEqual(belowGoalVerifyHolds(ineligible, 'P1').map((h) => h.id), ['root.1']);
+    });
+
+    test('a child with no priority counts as at goal; a mix with one at-goal child is not a below-goal hold', () => {
+        const noPriority = epicShape(undefined);
+        delete noPriority[4].priority;
+        const r1 = classifyVerifySet(noPriority, ['root']);
+        assert.match(r1.ineligible.find((e) => e.id === 'root.1').reason, /root\.1\.3 \(P\?\)/);
+        assert.deepStrictEqual(belowGoalVerifyHolds(r1.ineligible, 'P2'), []);
+
+        const mixed = [...epicShape(3), bead('root.1.4', { parent: 'root.1', priority: 1 })];
+        const r2 = classifyVerifySet(mixed, ['root']);
+        assert.match(r2.ineligible.find((e) => e.id === 'root.1').reason, /root\.1\.3 \(P3\), root\.1\.4 \(P1\)/);
+        assert.deepStrictEqual(belowGoalVerifyHolds(r2.ineligible, 'P2'), []);
+    });
+
+    test('closing the holding child makes the epic verify-routed again', () => {
+        const beads = epicShape(3);
+        beads[4].status = 'closed';
+        const { verifyIds, ineligible } = classifyVerifySet(beads, ['root']);
+        assert.deepStrictEqual(verifyIds, ['root.1']);
+        assert.deepStrictEqual(belowGoalVerifyHolds(ineligible, 'P2'), []);
+    });
+
+    test('the marked-leaf gap path is unchanged: a marked leaf that gains an open gap bug is not verify-routed', () => {
+        const beads = [
+            bead('root', { issue_type: 'epic', priority: 1 }),
+            bead('root.1', { parent: 'root', labels: [LIVE_EVIDENCE_LABEL], priority: 1 }),
+        ];
+        assert.deepStrictEqual(classifyVerifySet(beads, ['root']).verifyIds, ['root.1']);
+        // Integ files a below-goal gap bug under the marked leaf.
+        beads.push(bead('root.1.1', { parent: 'root.1', issue_type: 'bug', priority: 3 }));
+        const after = classifyVerifySet(beads, ['root']);
+        assert.deepStrictEqual(after.verifyIds, [], 'an open gap bug, whatever its priority, holds the bead out of verify');
+        assert.deepStrictEqual(after.leafVerifyIds, []);
+    });
+
+    test('belowGoalVerifyHolds rejects a malformed goal', () => {
+        assert.throws(() => belowGoalVerifyHolds([], 'high'), TypeError);
     });
 });
 
