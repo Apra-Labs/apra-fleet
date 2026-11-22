@@ -218,7 +218,18 @@ export class LinuxCommands implements OsCommands {
       const pipefailGuard = '(set -o pipefail) 2>/dev/null && set -o pipefail; ';
       innerCmd = `${pipefailGuard}${innerCmd} | tee "${durableOutputPath(opts.inv)}"`;
     }
-    return pidWrapUnix(innerCmd);
+    return this.pidWrap(innerCmd);
+  }
+
+  /**
+   * The FLEET_PID wrapper both emit paths use (wrapPidCapture and
+   * buildAgentPromptCommand). A hook so a subclass whose shell reports a
+   * different pid namespace than its kill path needs (WindowsGitBashCommands:
+   * MSYS `$!` vs a Windows pid for taskkill) can swap the emitted pid.
+   * linux/macOS output is exactly pidWrapUnix's, unchanged.
+   */
+  protected pidWrap(command: string): string {
+    return pidWrapUnix(command);
   }
 
   // --- Filesystem ---
@@ -468,7 +479,7 @@ export class LinuxCommands implements OsCommands {
   }
 
   wrapPidCapture(command: string): string {
-    return pidWrapUnix(command);
+    return this.pidWrap(command);
   }
 
   // --- Git ---
