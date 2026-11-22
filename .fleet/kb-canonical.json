@@ -1,7 +1,9 @@
 {
   "version": 3,
   "provenance": {
-    "branch": "main"
+    "commit": "f9120840430d27924cc7797240f4660c5f35c226",
+    "branch": "main",
+    "entry_count": 188
   },
   "entries": [
     {
@@ -559,6 +561,35 @@
         "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs": "4276b8301bf882b9709e295893904595f2bff86c",
         "packages/apra-fleet-se/fleet-sprint/vcs-providers/bitbucket.mjs": "e812ec5afad19e11b2739690991035342855fe02",
         "packages/apra-fleet-se/fleet-sprint/vcs-providers/index.mjs": "b90e97ee49cdba5ded5877d17d88351984fe409b"
+      }
+    },
+    {
+      "id": "29487f1f-2037-47f2-b8e0-a66db49ba41e",
+      "type": "knowledge",
+      "title": "kb_bible_commit builds from the bible committed at HEAD and trusts only the blob it committed",
+      "summary": "In a git work tree, kbBibleCommit reads its base bible from HEAD via readCommittedBibleBlob (hash-checked; none committed = empty bible), never the work-tree file. A differing work-tree bible is ignored (logged) and overwritten on write. It records a trusted blob only after a commit, and only when HEAD's blob equals the id of the bytes written.",
+      "symbols": [
+        "kbBibleCommit",
+        "readCommitBaseDocument",
+        "committedOwnBibleMatching",
+        "parseBibleDocumentText",
+        "BIBLE_RULES_REVISION"
+      ],
+      "source_files": [
+        "src/tools/kb-bible-commit.ts",
+        "src/tools/kb-import.ts",
+        "src/tools/kb-export.ts",
+        "src/services/knowledge/bible-rules.ts",
+        "tests/knowledge/kb-bible-commit-worktree-drift.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-22T15:32:12.109Z",
+      "source_file_hashes": {
+        "src/services/knowledge/bible-rules.ts": "6be475869f42004dae5c10598680d0d9f20fcfc4",
+        "src/tools/kb-bible-commit.ts": "633a55886ba9cb46f6b5babb97925ebf7caf057d",
+        "src/tools/kb-export.ts": "c6a6f23af469cc8969864b46bdb8f8ac637de6b7",
+        "src/tools/kb-import.ts": "ea4858060b85621ef8d18eb7fb31c34d678a73a7",
+        "tests/knowledge/kb-bible-commit-worktree-drift.test.ts": "f12fe59c582f5253ae6df30d78a584007951cc0f"
       }
     },
     {
@@ -2136,6 +2167,30 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-30T23:07:12.100Z"
+    },
+    {
+      "id": "91012fab-e16a-43d9-8233-aec2bd5090f8",
+      "type": "knowledge",
+      "title": "kb_session_prime cold-seed reads only the bible committed at HEAD",
+      "summary": "The project-bible cold-seed in kbSessionPrime gets its text from committedColdSeedBible: readCommittedBibleBlob(repoRoot, 'HEAD'), hash-checked. No committed copy or a failed verification seeds nothing (logWarn names the reason). A work-tree file that differs from HEAD is ignored and the committed copy is seeded.",
+      "symbols": [
+        "committedColdSeedBible",
+        "kbSessionPrime",
+        "readCommittedBibleBlob",
+        "buildView"
+      ],
+      "source_files": [
+        "src/tools/kb-session-prime.ts",
+        "tests/knowledge/kb-session-prime.test.ts",
+        "src/services/knowledge/member-bible-view.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-22T15:32:08.449Z",
+      "source_file_hashes": {
+        "src/services/knowledge/member-bible-view.ts": "dcc07c3ed11bccf65f2472d7a3e913fe879f51a6",
+        "src/tools/kb-session-prime.ts": "42304d0bf9c0e9fbc4bdf4997cd4beaa98708326",
+        "tests/knowledge/kb-session-prime.test.ts": "fe05ca2b1fbbdbc27bb524328646ed433aaef35c"
+      }
     },
     {
       "id": "919a3f50-dcb3-4ee9-91d1-767fd503a3b8",
