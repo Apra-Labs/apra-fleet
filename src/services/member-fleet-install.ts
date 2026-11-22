@@ -37,7 +37,9 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { BD_VERSION_MISMATCH_CODE } from '../cli/beads-install.js';
+import { BD_VERSION_MISMATCH_CODE, beadsMismatchFix } from '../cli/beads-install.js';
+import { BEADS_VERSION } from '../cli/beads-pin.js';
+import { checkPinnedVersion, parseVersionLine } from '../cli/version-pin.js';
 import type { Agent, FleetMcpStatus, LlmProvider, SSHExecResult } from '../types.js';
 import type { TargetOS } from '../providers/provider.js';
 import { getStrategy } from './strategy.js';
@@ -2056,6 +2058,17 @@ export async function probeMemberBeads(
     }
     if (r.stdout.includes(EXEC_FAILED_SENTINEL)) {
       return { state: 'broken', detail: 'bd is present on the member but bd --version failed', fix: BEADS_MISSING_FIX };
+    }
+    // A bd that runs but is off the pinned major.minor: recorded here so it shows in
+    // member_detail and the register/update lines and survives a no-install refresh.
+    // An unparseable answer is not flagged (no false alarm).
+    const check = checkPinnedVersion(r.stdout, BEADS_VERSION);
+    if (!check.ok && parseVersionLine(r.stdout)) {
+      return {
+        state: 'version-mismatch',
+        detail: `${BD_VERSION_MISMATCH_CODE} bd ${check.found} on the member, expected ${check.expected} (pinned major.minor); the member keeps its fleet tools but sprints refuse it`,
+        fix: beadsMismatchFix('path'),
+      };
     }
     return null;
   } catch {

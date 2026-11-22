@@ -157,8 +157,9 @@ export interface FleetMcpStatus {
   /** Present only when the beads CLI (bd) is NOT usable on a remote member
    *  (neither on its PATH nor in <home>/.apra-fleet/bin): sprint roles there
    *  cannot run bd. Independent of `state` (the KB/code tools may still work);
-   *  absent when bd works or could not be probed. */
-  beads?: { state: 'missing' | 'broken'; detail: string; fix: string };
+   *  absent when bd works or could not be probed. 'version-mismatch': bd runs but
+   *  is off the pinned major.minor (E-BD-VERSION-MISMATCH); sprints refuse the member. */
+  beads?: { state: 'missing' | 'broken' | 'version-mismatch'; detail: string; fix: string };
   /** Remote members: the port the member's MCP URL uses, as resolved by this
    *  probe from the member's own install. Absent when the probe did not get
    *  that far (the previously recorded port is kept then). */
