@@ -4,7 +4,7 @@
 //
 // Every tool call goes through wrapTool (src/services/tool-registry.ts), which
 // records each thrown error here and rethrows it unchanged. An entry carries
-// only {at, member, source, tool, code, reason}: never the call's arguments
+// only {at, member, source, origin, tool, code, reason}: never the call's arguments
 // and never the error's message text, which can quote either.
 //
 // Bounds: at most MAX_ERROR_ENTRIES entries, none older than MAX_ERROR_AGE_MS;
@@ -13,12 +13,20 @@
 /** Where an entry came from. Only tool calls today. */
 export type ErrorSource = 'tool-call';
 
+/**
+ * Who made the call: `engine` for a session the engine opened as the member
+ * (origin=engine: `apra-fleet call` and fleet-sprint's member calls),
+ * `session` for any other session.
+ */
+export type ErrorOrigin = 'engine' | 'session';
+
 export interface ErrorEntry {
   /** ISO 8601 time the error was recorded (this server's clock). */
   at: string;
   /** Member uuid of the calling session; null for a non-member session. */
   member: string | null;
   source: ErrorSource;
+  origin: ErrorOrigin;
   tool: string;
   /** The error's typed E-* code, or E-UNTYPED for anything else thrown. */
   code: string;
@@ -65,11 +73,11 @@ function prune(now: number): void {
 }
 
 /** Record one failed tool call. Never throws. */
-export function recordToolError(member: string | undefined | null, tool: string, err: unknown): void {
+export function recordToolError(member: string | undefined | null, tool: string, err: unknown, origin: ErrorOrigin = 'session'): void {
   try {
     const now = clock();
     const { code, reason } = classifyError(err);
-    entries.push({ atMs: now, member: member ?? null, source: 'tool-call', tool, code, reason });
+    entries.push({ atMs: now, member: member ?? null, source: 'tool-call', origin, tool, code, reason });
     prune(now);
   } catch {
     // The registry must never change what the tool call returns or throws.
@@ -81,6 +89,7 @@ export interface ErrorQuery {
   sinceSeconds: number;
   code?: string;
   tool?: string;
+  origin?: ErrorOrigin;
   limit?: number;
 }
 
@@ -101,7 +110,8 @@ export function queryErrorEntries(q: ErrorQuery): ErrorQueryResult {
   const matched = entries.filter(e =>
     e.member === q.member && e.atMs >= from
     && (q.code === undefined || e.code === q.code)
-    && (q.tool === undefined || e.tool === q.tool));
+    && (q.tool === undefined || e.tool === q.tool)
+    && (q.origin === undefined || e.origin === q.origin));
   const limit = q.limit ?? DEFAULT_ERROR_QUERY_LIMIT;
   const kept = matched.length > limit ? matched.slice(matched.length - limit) : matched;
   return {

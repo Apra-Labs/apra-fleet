@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { liveRefreshAt } from '../services/live-secret-cache.js';
 import { provisionAuthForKind, ProvisionAuthError, type ProvisionKindFailure, type ProvisionKindResult } from '../services/provision-auth-kinds.js';
 
 export const provisionKbAuthSchema = z.object({
@@ -6,6 +7,7 @@ export const provisionKbAuthSchema = z.object({
   member_name: z.string().optional().describe('Friendly name of the member (alternative to member_id)'),
   secret: z.string().min(1).describe('Name of a static or live secret on this fleet server (the orchestrator) that holds or mints the KB token. Its network_policy must not be deny, and it must be shared with the member. Never a value or a {{secret.NAME}} placeholder: just NAME.'),
   remote: z.string().describe('The KB server URL, http(s), as the member reaches it. For a local member it must be the remote the orchestrator KB config already names.'),
+  keep_member_kb: z.boolean().optional().describe('Remote member only: leave a member KB config that names another remote, names this remote with its own token source, uses its local store or cannot be read as it is, refused (member-kb-other-remote, member-kb-other-token, member-kb-local-store, member-kb-unreadable) before anything is minted or pushed. A member with no KB config, or one already naming this remote and secret, is provisioned as usual. Default false: the member KB is pointed at this remote.'),
   reason: z.enum(['rejected']).optional().describe('Pass "rejected" when the KB server refused the token this secret last gave out (E-KB-HTTP-AUTH reason rejected): a cached live token is dropped and a new one minted first, so the refused one is not pushed again.'),
 });
 
@@ -48,5 +50,19 @@ export async function provisionKbAuth(input: ProvisionKbAuthInput): Promise<{ te
   const text = `${ok ? '[OK]' : '[WARN]'} KB token from secret "${result.secret}" provisioned to member "${result.member.name}"; ` +
     `expires ${result.expiresAt ?? 'never'}; verification ${verified}` +
     (result.memberChange ? `; ${result.memberChange.detail}` : '');
-  return { text, structuredContent: { ok, ...result } };
+  return { text, structuredContent: { ok, ...result, refreshAt: refreshAtFor(result.expiresAt, Date.now()) } };
+}
+
+/**
+ * When a caller keeping the member's copy fresh should push again: expiresAt
+ * minus T, with T from config.json liveSecrets.* and the lifetime counted from
+ * now. A live token is minted no later than now, so this is never earlier than
+ * the cache's own refresh time, and a push at it gets a new token. Null when the
+ * token has no expiry. Exported for tests.
+ */
+export function refreshAtFor(expiresAt: string | null, nowMs: number): string | null {
+  if (!expiresAt) return null;
+  const expiresAtMs = Date.parse(expiresAt);
+  if (!Number.isFinite(expiresAtMs)) return null;
+  return new Date(liveRefreshAt(nowMs, expiresAtMs)).toISOString();
 }

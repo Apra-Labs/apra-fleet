@@ -7,6 +7,7 @@ export const queryErrorsSchema = z.object({
   since_seconds: z.number().int().positive().describe('Window: errors recorded in the last this many seconds, by this server\'s clock.'),
   code: z.string().optional().describe('Only entries with this code, e.g. E-KB-HTTP-AUTH.'),
   tool: z.string().optional().describe('Only entries for this tool name.'),
+  origin: z.enum(['engine', 'session']).optional().describe('Only entries from this origin: engine (a session the engine opened as the member, e.g. apra-fleet call) or session (any other). Default: both.'),
   limit: z.number().int().min(1).max(MAX_ERROR_ENTRIES).optional().describe(`Most recent entries to return (default ${DEFAULT_ERROR_QUERY_LIMIT}).`),
 });
 
@@ -42,6 +43,7 @@ export async function queryErrors(input: QueryErrorsInput): Promise<string> {
     sinceSeconds: input.since_seconds,
     code: input.code,
     tool: input.tool,
+    origin: input.origin,
     limit: input.limit,
   });
   const result: QueryErrorsResult = { member: input.member, since_seconds: input.since_seconds, total, entries };

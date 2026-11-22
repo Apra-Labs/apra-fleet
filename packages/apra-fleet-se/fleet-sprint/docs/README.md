@@ -149,6 +149,10 @@ resumed sprint's resync step still runs real git commands against every
 - If a member's LLM session is stale or unauthenticated (dispatch fails with
   `empty_response`, or "member CLI likely died"), re-run `provision_llm_auth`
   for that member before retrying.
+- An HTTP KB whose token comes from a fleet secret needs nothing by hand: the
+  engine keeps each member's KB token fresh around its dispatches
+  (`[kb-auth]` log lines). What it does is described under "Keeping it fresh
+  during a sprint" in `docs/knowledge-layer.md` of the apra-fleet repo.
 
 ## How to make one bead represent a whole set (epics / manifest beads)
 

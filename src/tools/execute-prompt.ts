@@ -131,8 +131,8 @@ export interface ExecutePromptStructured {
   /** FYI, set when a dispatch ran: every error the member's fleet server
    *  recorded for this member in the last sinceSeconds seconds (this call's
    *  elapsed time plus a few seconds of slack) -- the dispatched agent's tool
-   *  calls, but also the engine's own calls as that member and any concurrent
-   *  session of it. available:false, with detail, when
+   *  calls and any concurrent session of it, but not the engine's own calls
+   *  as that member (origin engine). available:false, with detail, when
    *  they could not be read (e.g. an older member install without
    *  query_errors) -- never an empty list then. No action is taken on them. */
   toolErrors?: ToolErrorsReport;

@@ -8,6 +8,9 @@
 //   `apra-fleet call --member <uuid> query_errors` with the member install's
 //   binary (the same one fleet verifies the member session with).
 //
+// Only origin `session` entries are read: the engine's own calls made as the
+// member (origin=engine) are not tool errors of the dispatch.
+//
 // The window is relative ("the last N seconds"), so clock differences between
 // the orchestrator and the member do not matter. Any failure -- no verified
 // install, an older install without query_errors, a timeout -- is reported as
@@ -61,7 +64,7 @@ export function buildQueryErrorsCommand(
 ): string {
   if (!UUID_RE.test(memberId)) throw new Error(`unsafe member id '${memberId}'`);
   if (!Number.isInteger(sinceSeconds) || sinceSeconds < 1) throw new Error(`invalid since_seconds ${sinceSeconds}`);
-  const argsJson = JSON.stringify({ member: memberId, since_seconds: sinceSeconds });
+  const argsJson = JSON.stringify({ member: memberId, since_seconds: sinceSeconds, origin: 'session' });
   const callArgs = ['call', '--member', memberId, 'query_errors', '--args-file', argsPath, '--rm-args-file'];
   return memberCommandFor(targetOs, shell, {
     posix: `printf '%s' ${posixQuote(argsJson)} > ${posixQuote(argsPath)} && ${posixQuote(binPath)} ${callArgs.map(posixQuote).join(' ')}`,
@@ -126,7 +129,7 @@ export async function queryMemberToolErrors(
   const unavailable = (detail: string): ToolErrorsReport => ({ available: false, sinceSeconds, detail: clip(detail) });
   try {
     if (agent.agentType === 'local') {
-      const { entries, total } = queryErrorEntries({ member: agent.id, sinceSeconds });
+      const { entries, total } = queryErrorEntries({ member: agent.id, sinceSeconds, origin: 'session' });
       return { available: true, sinceSeconds, total, entries };
     }
     if (agent.fleetMcp?.state !== 'available') {

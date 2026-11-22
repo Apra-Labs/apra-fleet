@@ -349,6 +349,11 @@ function buildRepairPrompt(errorsText, initialPrompt) {
  *   can resume the same role's session across rounds via `resume: <id>`. Never fires when the
  *   provider returns no session id (a capability signal, not a provider-name check); a throwing
  *   callback is caught and never breaks the dispatch. (apra-fleet-eft.78.3)
+ * @property {(toolErrors: object, meta: { member?: string, agent?: string }) => void} [onToolErrors]
+ *   Optional best-effort callback invoked with execute_prompt's structuredContent.toolErrors
+ *   (the member's tool-call errors during the dispatch; see ToolErrorsReport in
+ *   apra-fleet-client) for every dispatch attempt that carries it, failed ones included,
+ *   before the result is classified. Not sent to the server. A throwing callback is caught.
  * @property {number} [timeoutMs] - Client-side McpClient.request() timeout override (ms),
  *   passed through to ApraFleet.executePrompt. Not sent to the server. When omitted, a
  *   default is derived from timeout_s/max_total_s (see deriveTimeoutMs in
@@ -1273,6 +1278,18 @@ export class FleetWorkflow extends EventEmitter {
                 // fall back to result.usage directly for older servers that
                 // predate this field.
                 const structured = result && result.structuredContent;
+                // execute_prompt's toolErrors (the member's tool-call errors
+                // during this dispatch), handed to the caller on success and
+                // on a failed dispatch alike, before either is classified.
+                // Best-effort like onSessionId: a throwing callback never
+                // breaks the dispatch.
+                if (structured && structured.toolErrors && typeof opts.onToolErrors === 'function') {
+                    try {
+                        opts.onToolErrors(structured.toolErrors, { member: opts.member_name || opts.member_id, agent: opts.agentType });
+                    } catch (cbErr) {
+                        console.error(`[Agent onToolErrors] callback threw (non-fatal): ${cbErr && cbErr.message ? cbErr.message : cbErr}`);
+                    }
+                }
                 const reportedUsage = (structured && structured.usage) || result.usage;
                 // A successful dispatch whose session refused tool calls that
                 // must never be granted (Claude auto mode: classifier or deny

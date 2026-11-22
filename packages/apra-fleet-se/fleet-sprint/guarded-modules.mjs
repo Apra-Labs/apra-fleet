@@ -79,6 +79,10 @@ export const GUARDED_MODULES = [
     // (the diff-file listing is a runner.js-supplied callback), no direct command().
     'kb-hints.mjs',
     'kb-injection.mjs',
+    // KB token keeping around a dispatch: fleet tool calls through an injected
+    // callTool and the runner's agent primitive passed in as `run`; no
+    // command() or agent() site of its own.
+    'kb-auth-keeper.mjs',
     // Pure lower-quality banner derivation; no command() site.
     'lower-quality.mjs',
     'beads-scope.mjs',
