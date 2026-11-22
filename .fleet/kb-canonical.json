@@ -1,9 +1,7 @@
 {
   "version": 3,
   "provenance": {
-    "commit": "f9120840430d27924cc7797240f4660c5f35c226",
-    "branch": "main",
-    "entry_count": 192
+    "branch": "main"
   },
   "entries": [
     {
@@ -270,28 +268,6 @@
         "src/tools/provision-auth.ts": "55bb55640ef12665731fe62bcc1e9955b30dcd40",
         "src/tools/remove-member.ts": "357c8affb4ec811ba312f93517d44159887ddde4",
         "src/types.ts": "e327603cb283f59b871b552ec31d54e4bc828dd1"
-      }
-    },
-    {
-      "id": "17ea9d97-764e-4772-b21c-86971774e7fa",
-      "type": "learning",
-      "title": "expireReverification can drop a re-verify CONFIRM whose kb_promote is still queued",
-      "summary": "At final review, expireReverification runs after kb-apply and before commitRound. If the reviewer's re-verify promote is still queued (maintainer busy or G-pull failed), the id is dropped with a WARN and may get a withdrawal queued, even though commitRound later merges it.",
-      "symbols": [
-        "expireReverification",
-        "dropFromBible",
-        "flushRepo",
-        "createKbWorkClient"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/fleet-sprint/kb.mjs",
-        "packages/apra-fleet-se/fleet-sprint/phases/final-review.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-11-22T20:54:07.757Z",
-      "source_file_hashes": {
-        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "53cf003d0d7ad03d038208f83705879b991e082e",
-        "packages/apra-fleet-se/fleet-sprint/phases/final-review.mjs": "0bd5f7d40437b1b66a5a858ec7ee17ad8812b88d"
       }
     },
     {
@@ -608,7 +584,7 @@
       "updated_at": "2026-11-22T15:32:12.109Z",
       "source_file_hashes": {
         "src/services/knowledge/bible-rules.ts": "6be475869f42004dae5c10598680d0d9f20fcfc4",
-        "src/tools/kb-bible-commit.ts": "633a55886ba9cb46f6b5babb97925ebf7caf057d",
+        "src/tools/kb-bible-commit.ts": "a65c27f1551df51f6891d36c7d04ed72d6803d36",
         "src/tools/kb-export.ts": "c6a6f23af469cc8969864b46bdb8f8ac637de6b7",
         "src/tools/kb-import.ts": "ea4858060b85621ef8d18eb7fb31c34d678a73a7",
         "tests/knowledge/kb-bible-commit-worktree-drift.test.ts": "f12fe59c582f5253ae6df30d78a584007951cc0f"
@@ -727,9 +703,9 @@
       "confidence": "CONFIRMED",
       "updated_at": "2026-11-22T10:49:16.367Z",
       "source_file_hashes": {
-        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "e47c1aa8928ae7ccf50b92706f09221d1a64dd3c",
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "41f6e273087e48bc4a34fbbe77b3cbfb59ac66e9",
         "packages/apra-fleet-se/test/helpers/kb-maintainer-fakes.mjs": "9d6fd51813a107db9ef86f14bd3698a5b3a548e8",
-        "src/services/knowledge/bible-rules.ts": "39dae17911d329499f18206ece69d74239992687",
+        "src/services/knowledge/bible-rules.ts": "6be475869f42004dae5c10598680d0d9f20fcfc4",
         "src/tools/kb-capabilities.ts": "8d4680b17b5894d503df0ae1b5c0724181dc586f",
         "tests/knowledge/kb-capabilities-tool.test.ts": "fc9167f427872ee36e10da00cd4bd26edaa18c2d"
       }
@@ -2254,7 +2230,7 @@
       "updated_at": "2026-11-22T20:36:30.978Z",
       "source_file_hashes": {
         "packages/apra-fleet-se/fleet-sprint/git-sync.mjs": "9c16cb8cc43e8fddcd847cf6fa7f0f7eb72d1bcc",
-        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "53cf003d0d7ad03d038208f83705879b991e082e",
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "41f6e273087e48bc4a34fbbe77b3cbfb59ac66e9",
         "packages/apra-fleet-se/test/mock-sprint-kb-final-head-recheck.test.mjs": "310f907df46b9d3f661f9240ccfc4f6afcacc40e"
       }
     },
@@ -3090,9 +3066,9 @@
       "confidence": "CONFIRMED",
       "updated_at": "2026-11-22T20:36:27.365Z",
       "source_file_hashes": {
-        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "53cf003d0d7ad03d038208f83705879b991e082e",
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "41f6e273087e48bc4a34fbbe77b3cbfb59ac66e9",
         "packages/apra-fleet-se/fleet-sprint/phases/final-review.mjs": "0bd5f7d40437b1b66a5a858ec7ee17ad8812b88d",
-        "packages/apra-fleet-se/test/kb-bible-commit-round.test.mjs": "881577c75e5a5e556af3766271d7da9bb26e989b"
+        "packages/apra-fleet-se/test/kb-bible-commit-round.test.mjs": "58fa49455f60d0f2c72910a2552ff7333e708528"
       }
     },
     {
