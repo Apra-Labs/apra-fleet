@@ -376,6 +376,46 @@ install then removes the marker and says so. The check is per data dir: a full
 install into a different `APRA_FLEET_DATA_DIR` (a sandbox or clean-prefix
 install) is not affected.
 
+## Deploying onto a member host
+
+A deploy playbook must not run a plain full install on a member host. The
+deploy step detects the host type with `node scripts/deploy-install.mjs
+--member-host-check`, takes the member path (`install --member --force`) when
+the marker is present, and verifies with `--verify-member-host`: the marker
+version must equal the first line of `--version`, and `/health` on the marker's
+port must answer. Both helpers run on POSIX and Windows behind the one
+`deploy-install.mjs*` permission prefix, so no broad shell permission is needed.
+
+## bd and dolt version pin
+
+The installer pins the beads tools (`bd`, `dolt`) to a `major.minor`, defined in
+`src/cli/beads-pin.ts`. Comparison is equality on major.minor only; output the
+installer cannot parse counts as a mismatch.
+
+- A `bd` found on PATH that is off the pin is reported as `version-mismatch` and
+  never modified (it is not ours). A stale `bd` in the fleet `BIN_DIR` is
+  replaced and re-verified.
+- A `dolt` in `BIN_DIR` of the wrong version is replaced; if that fails it is
+  reported loudly rather than skipped.
+- An install with an off-pin `bd` exits 1, and the last stderr line carries the
+  found version, the expected version and the fix. (The same check exists in the
+  apra-pm installer.)
+
+The same pin is enforced at run time, so a drifted tool cannot corrupt a shared
+beads database:
+
+- The sprint engine verifies the pin on the backlog member and every member
+  (including set-up members) before any set-up or pull, when the runner enables
+  `checkToolVersions`. It names every offending member and fails with
+  `VERSION_MISMATCH`; a missing `bd` stays `MISSING_TOOL`. The engine's copy of
+  the pin is drift-guarded by a test against `beads-pin.ts`, so the two cannot
+  diverge silently.
+- The supervisor's beads view runs the same verification before any pull. A pass
+  is cached per member for the supervisor's lifetime; a failure is never cached,
+  records the error and makes a sprint launch return 503. Consequence: a `bd`
+  upgraded on the backlog member after the first pass is not re-checked before
+  later pulls; the sprint-start check still catches it at launch.
+
 ## Replace a full install on a member
 
 A fleet member machine needs a **member install only** (`apra-fleet install
