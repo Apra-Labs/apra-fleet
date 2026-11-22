@@ -41,6 +41,12 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           if git diff --name-only "$BASE_SHA"...HEAD | grep -qx 'CHANGELOG.md'; then
+            # A feature branch that merged main carries main's CHANGELOG.md; that is not an edit.
+            git fetch -q --no-tags origin main
+            if [ "$(git rev-parse HEAD:CHANGELOG.md)" = "$(git rev-parse FETCH_HEAD:CHANGELOG.md)" ]; then
+              echo "CHANGELOG.md matches main: change came from a main sync"
+              exit 0
+            fi
             case "$PR_TITLE" in
               'docs(changelog)'*) echo "CHANGELOG.md change allowed: release cut PR" ;;
               *) echo "::error::CHANGELOG.md is edited only by the release cut, in a PR titled 'docs(changelog): X.Y.Z' (docs/release-playbook.md step 2). Remove the CHANGELOG.md change from this PR."; exit 1 ;;
