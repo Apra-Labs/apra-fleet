@@ -56,6 +56,7 @@ import {
 import { BeadsIdentityError, BEADS_IDENTITY_FAILURE_REASONS, VCS_FAILURE_KINDS } from './errors.mjs';
 import { syncBefore as doltSyncBefore } from './dolt-sync.mjs';
 import { classifyFailure, commandBinary } from './vcs-module.mjs';
+import { BEADS_PACKAGE, BEADS_VERSION, DOLT_VERSION, TOOL_VERSION_PROBES, checkPinnedVersion, majorMinor } from './tool-version-pin.mjs';
 
 // Short: three cheap local reads per member. A member that cannot answer
 // `bd where` inside a minute is not a member this sprint should mutate.
@@ -211,6 +212,102 @@ export function assertBdPresent(member, probed) {
             { reason: BEADS_IDENTITY_FAILURE_REASONS.MISSING_TOOL, member, details: { tool: 'bd', probe: f.probe, error: f.error } }
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Tool version pin (bd, dolt) on every beads-touching member.
+//
+// A member whose bd is a newer minor than the pin migrates the shared beads
+// remote one way on its first `bd bootstrap` / `bd dolt pull` -- and those
+// still exit 0 on the older clones it locks out, so no exit-code check ever
+// notices. A bd older than the pinned minor silently overwrites on a
+// duplicate `bd create --id`. So before ANY beads mutation on ANY member
+// (the set-up below, the first D-pull), every member answers `bd --version`
+// (and `dolt version`), and anything outside the pinned major.minor -- newer,
+// older or unreadable -- stops the sprint naming every offending member.
+//
+// bd missing stays the MISSING_TOOL failure (assertBdPresent). A dolt that is
+// absent is not fatal here: ensurePinnedDolt installs the pinned dolt on
+// demand at settle time; it is logged once per member. A dolt probe that
+// failed for another reason is logged too (the settle-time pin check still
+// applies). Read-only probes, failSoft + silent, member named on each.
+// ---------------------------------------------------------------------------
+
+const VERSION_LABEL = 'tool-version';
+
+export const TOOL_VERSION_FIX =
+    `install the pinned bd (${BEADS_PACKAGE}) on each member named above -- re-run that member's fleet install ` +
+    `(update_member fleet_install auto), or 'npm install -g ${BEADS_PACKAGE}' in that member's shell -- ` +
+    `and make sure 'dolt version' there reports ${DOLT_VERSION.replace(/^v/, '')} or dolt is absent (the sprint installs the pinned dolt on demand), then relaunch`;
+
+/**
+ * Probes `bd --version` and `dolt version` on every given member and throws
+ * BeadsIdentityError (VERSION_MISMATCH) listing EVERY member outside the
+ * pinned major.minor. A member whose bd is missing throws the existing
+ * MISSING_TOOL failure instead (never double-reported as a mismatch).
+ *
+ * @param {{ command: Function, members: string[], log?: Function, timeoutS?: number }} opts
+ * @returns {Promise<Record<string, { bd: string, dolt: string|null }>>} per-member found versions
+ */
+export async function verifyPinnedToolVersions({ command, members, log = () => {}, timeoutS = BEADS_IDENTITY_PROBE_TIMEOUT_S }) {
+    if (typeof command !== 'function') {
+        throw new TypeError('verifyPinnedToolVersions({ command }): command must be a function');
+    }
+    const list = (Array.isArray(members) ? members : []).filter((m, i, arr) => typeof m === 'string' && m && arr.indexOf(m) === i);
+    const run = async (cmd, member) => {
+        let res;
+        try {
+            res = await command(cmd, { member_name: member, silent: true, failSoft: true, label: VERSION_LABEL, timeout_s: timeoutS });
+        } catch (err) {
+            res = { ok: false, output: '', error: err && err.message ? err.message : String(err) };
+        }
+        return { output: outputOf(res), error: failureOf(res) };
+    };
+    const offenders = [];
+    const found = {};
+    for (const member of list) {
+        const bd = await run(TOOL_VERSION_PROBES.bd, member);
+        // A missing bd is the existing MISSING_TOOL failure, not a mismatch.
+        if (bd.error !== null) assertBdPresent(member, { failures: [{ probe: TOOL_VERSION_PROBES.bd, key: 'bdVersion', error: bd.error }] });
+        const bdCheck = bd.error !== null
+            ? { ok: false, found: `'${TOOL_VERSION_PROBES.bd}' failed: ${summarizeRaw(bd.error)}`, expected: majorMinor(BEADS_VERSION) }
+            : checkPinnedVersion(bd.output, BEADS_VERSION);
+        if (!bdCheck.ok) offenders.push({ member, tool: 'bd', found: bdCheck.found, expected: bdCheck.expected });
+
+        const dolt = await run(TOOL_VERSION_PROBES.dolt, member);
+        let doltFound = null;
+        if (dolt.error !== null) {
+            const c = classifyFailure(dolt.error, { tool: 'dolt' });
+            if (c.kind === VCS_FAILURE_KINDS.MISSING_TOOL) {
+                log(`[beads-identity] member '${member}' has no dolt on PATH; the sprint installs the pinned dolt ${DOLT_VERSION} there on demand when it needs one.`);
+            } else {
+                log(`${BEADS_IDENTITY_WARNING_PREFIX}member '${member}' could not report its dolt version ('${TOOL_VERSION_PROBES.dolt}' -> ${summarizeRaw(dolt.error)}); not compared, the settle-time pin check still applies.`);
+            }
+        } else {
+            const doltCheck = checkPinnedVersion(dolt.output, DOLT_VERSION);
+            doltFound = doltCheck.found;
+            if (!doltCheck.ok) offenders.push({ member, tool: 'dolt', found: doltCheck.found, expected: doltCheck.expected });
+        }
+        found[member] = { bd: bdCheck.found, dolt: doltFound };
+    }
+    if (offenders.length) {
+        const lines = offenders.map((o) => `member '${o.member}': ${o.tool} ${o.found}, expected ${o.tool} ${o.expected}.x`);
+        const memberCount = new Set(offenders.map((o) => o.member)).size;
+        throw new BeadsIdentityError(
+            `Beads preflight failed: ${memberCount === 1 ? 'a member runs' : `${memberCount} members run`} a bd or dolt outside the pinned version -- ` +
+            `${lines.join('; ')}. A bd of another minor version migrates (or mis-writes) the shared beads data for every other clone, ` +
+            `so the sprint stops before any beads set-up, pull or dispatch on any member. To fix: ${TOOL_VERSION_FIX}.`,
+            {
+                reason: BEADS_IDENTITY_FAILURE_REASONS.VERSION_MISMATCH,
+                member: offenders[0].member,
+                details: { offenders, pins: { bd: BEADS_VERSION, dolt: DOLT_VERSION } },
+            }
+        );
+    }
+    for (const member of list) {
+        log(`[beads-identity] tool versions ok: ${member} bd ${found[member].bd}${found[member].dolt ? `, dolt ${found[member].dolt}` : ', dolt absent'}`);
+    }
+    return found;
 }
 
 // ---------------------------------------------------------------------------
@@ -662,8 +759,11 @@ function assertMatches(member, expected, actual, cmp) {
  *   setupMembers?: string[], ensureVcsAuth?: (member: string) => Promise<void>,
  *   memberShell?: (member: string) => Promise<object>,
  *   onAuthFailure?: Function, pullBeads?: Function,
- *   setupTimeoutS?: number,
+ *   setupTimeoutS?: number, checkToolVersions?: boolean,
  * }} opts
+ *   `checkToolVersions` first runs verifyPinnedToolVersions on every member
+ *   (backlog, members and setupMembers) and throws VERSION_MISMATCH before
+ *   any identity probe or set-up; the runner always sets it.
  *   `setupMembers` names the beads-reading members the preflight may set
  *   up (omitted: every member); `ensureVcsAuth` refreshes a member's VCS
  *   credential before its set-up; `memberShell` resolves the member's
@@ -676,13 +776,26 @@ function assertMatches(member, expected, actual, cmp) {
  *   `unresolved: string[]` (the compared fields it could not report). A
  *   member with no beads database at all has NO entry -- only a warning.
  */
-export async function verifyBeadsIdentity({ command, log = () => {}, publishState, backlogMember, members, expected = null, prober, timeoutS, setupMembers, memberShell, ensureVcsAuth, onAuthFailure, pullBeads, setupTimeoutS }) {
+export async function verifyBeadsIdentity({ command, log = () => {}, publishState, backlogMember, members, expected = null, prober, timeoutS, setupMembers, memberShell, ensureVcsAuth, onAuthFailure, pullBeads, setupTimeoutS, checkToolVersions = false }) {
     if (typeof backlogMember !== 'string' || !backlogMember) {
         throw new TypeError('verifyBeadsIdentity: backlogMember must be a non-empty string');
     }
     const p = prober || createBeadsIdentityProber({ command, timeoutS });
     const ordered = [backlogMember, ...(Array.isArray(members) ? members : [])]
         .filter((m, i, arr) => typeof m === 'string' && m && arr.indexOf(m) === i);
+
+    // The bd/dolt version pin, on EVERY beads-touching member, before any
+    // identity probe can lead to a set-up (bootstrap / pull) on any of them.
+    // The runner always enables it; it is opt-in here only so unit tests of
+    // the identity logic keep their exact probe sequence.
+    if (checkToolVersions) {
+        await verifyPinnedToolVersions({
+            command,
+            log,
+            timeoutS,
+            members: [...ordered, ...(Array.isArray(setupMembers) ? setupMembers : [])],
+        });
+    }
 
     const warnings = [];
     const warn = (text) => {

@@ -66,7 +66,8 @@ const FULL_DB_SHAPE_RE = /^bd\s+list\b(?=.*(?:^|\s)--all(?:\s|$))(?=.*(?:^|\s)--
 // dep/dolt pull/etc -- an unrecognized subcommand is conservatively assumed
 // to mutate) does invalidate it. Non-`bd` commands (git, node probes) never
 // touch beads state and are ignored entirely.
-const BD_READ_ONLY_RE = /^bd\s+(list|show|ready|config)\b/i;
+// `bd --version` is the sprint-start version pin probe (read-only).
+const BD_READ_ONLY_RE = /^bd\s+(list|show|ready|config|--version)\b/i;
 
 /**
  * Given `entries` (an ordered array of { phase, command }, as produced by

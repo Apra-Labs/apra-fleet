@@ -2026,6 +2026,9 @@ async function runSprintCycle(context) {
         expected: validated.expectBeads ?? null,
         prober: beadsIdentityProber,
         setupMembers: beadsSetupMembers,
+        // bd/dolt version pin on every member above, before any set-up or
+        // D-pull: a newer-minor bd would migrate the shared beads remote.
+        checkToolVersions: true,
         ensureVcsAuth: ensureVcsAuthFresh,
         // The set-up's beads pull goes through DoltSync with the same
         // reactive VCS-auth self-heal every D-pull bracket gets.

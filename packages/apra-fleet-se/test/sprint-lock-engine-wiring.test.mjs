@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { FleetWorkflow } from '@apralabs/apra-fleet-workflow';
 import { WorkflowEngine } from '@apralabs/apra-fleet-workflow/engine';
 import { acquireSprintLock, SprintLockHeldError } from '../fleet-sprint/sprint-lock.mjs';
+import { synthesizeToolVersion } from './helpers/bd-replay.mjs';
 
 // apra-fleet-eft.75.2: proves the REAL wiring in runner.js's main() -- not
 // just the standalone pidfile module (see sprint-lock.test.mjs) -- actually
@@ -58,6 +59,10 @@ function buildGatedFleetApi({ onFirstCommand } = {}) {
             if (/^bd where --json$/.test(opts.command)) {
                 return mockCmdResult(0, JSON.stringify({ database_path: '/spy/.beads/dolt', path: '/spy/.beads', prefix: 'bd', schema_version: 1 }));
             }
+            // The sprint-start bd/dolt version pin probes: answer with the
+            // engine's own pins so the check passes.
+            const toolVersion = synthesizeToolVersion(opts.command);
+            if (toolVersion) return mockCmdResult(0, toolVersion.stdout);
             if (/^bd list --all --limit 0 --json$/.test(opts.command)) {
                 // Target must be visible (TARGET_NOT_VISIBLE is unconditional).
                 return mockCmdResult(0, JSON.stringify([
