@@ -852,7 +852,12 @@ body passed through as sent (unknown route names and extra fields kept; a
 server that does not serve the route yields the default set (`capture`,
 `query`, `promote`, `context`, `prime`, `invalidate`, `feedback`, `list` --
 no `demote` or `withdraw`). Over a local SQLite KB it is the set the sample
-kb-server answers. Extract with `parseToolJson()`.
+kb-server answers. Both answers also carry fleet's own
+`fleet_build: {version: string, bible_rules: number}` -- the build of the
+fleet server answering (not of the KB server) and the revision of the bible
+format and `kb_bible_commit` rules it implements; a caller about to run
+`kb_bible_commit` on a member refuses a missing or lower `bible_rules` than it
+requires. Extract with `parseToolJson()`.
 
 #### `composePermissions(options: ComposePermissionsOptions)`
 

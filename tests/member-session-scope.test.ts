@@ -52,6 +52,7 @@ import { computeHeadFileHashBatch } from '../src/services/knowledge/file-hash.js
 import type { KBEntryInput } from '../src/services/knowledge/types.js';
 import { commitWorkTree } from './helpers/commit-work-tree.js';
 import { KB_SERVER_CAPABILITIES } from '../src/commands/kb-server.js';
+import { fleetBuild } from '../src/services/knowledge/bible-rules.js';
 
 const RECONNECT = { maxRetries: 0, maxReconnectionDelay: 100, initialReconnectionDelay: 100, reconnectionDelayGrowFactor: 1 };
 
@@ -1180,7 +1181,8 @@ describe('kb_capture supersedes needs the kb_maintainer grant to retire a CONFIR
 // tests (the plain session neither lists nor can call it).
 describe('kb_capabilities in member sessions', KB_GIT_SUITE, () => {
   const fx = useKbMemberRepo();
-  const expected = JSON.parse(JSON.stringify(KB_SERVER_CAPABILITIES));
+  // Every answer also carries the answering fleet server's own build.
+  const expected = { ...JSON.parse(JSON.stringify(KB_SERVER_CAPABILITIES)), fleet_build: fleetBuild() };
 
   it('a member session without the kb_maintainer grant lists and calls kb_capabilities', async () => {
     const handle = await startServer();

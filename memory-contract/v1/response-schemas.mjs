@@ -375,6 +375,12 @@ const KB_RESPONSE_BODIES = {
     routes: z.array(z.string()),
     branch_aware: z.boolean(),
     query_filters: z.array(z.string()).optional(),
+    // The answering fleet server's build (section 2.2): its version string
+    // and the bible rules revision it implements.
+    fleet_build: z.object({
+      version: z.string(),
+      bible_rules: z.number().int(),
+    }).passthrough().optional(),
   }).passthrough(),
 };
 

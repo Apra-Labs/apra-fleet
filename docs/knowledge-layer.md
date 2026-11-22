@@ -1367,6 +1367,16 @@ trying them.
   `demote` and `withdraw`. The sample kb-server imports this same constant, so
   the local answer and the reference server answer cannot drift apart.
 - **Any other provider**: a loud error, never a guessed answer.
+- **`fleet_build`**: both answers also carry `{version, bible_rules}` -- the
+  answering fleet server's own version string and the integer revision of the
+  bible format and `kb_bible_commit` rules it implements
+  (`BIBLE_RULES_REVISION`, `src/services/knowledge/bible-rules.ts`). The
+  sprint engine reads it on a repository's kb_maintainer before every bible
+  commit and refuses (WARN, ids stay queued) a revision below
+  `REQUIRED_MAINTAINER_BIBLE_RULES` or a missing/unreadable one, because the
+  commit runs in that member's installed server, which can be older than the
+  sprint's source. Member-init logs each maintainer's build. Bump both
+  constants together with every bible-format or tombstone-rule change.
 - **Errors** follow the route-gating rules: a 404/501 or empty body means the
   default capability set; a partly typed body is `E-KB-HTTP-UNSUPPORTED`; a
   5xx/429 is `E-KB-HTTP-UNREACHABLE`.

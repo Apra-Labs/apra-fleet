@@ -112,7 +112,7 @@ mutates anything and never bumps `use_count`.
 
 - Under an http KB provider it sends `GET /api/kb/capabilities` (same auth,
   `X-KB-Project` and `X-Repository*` headers as every route, on every call)
-  and returns the server's body UNCHANGED: route names fleet does not call
+  and returns the server's body UNCHANGED (plus `fleet_build`, below): route names fleet does not call
   and extra fields are kept, unlike the normalized view fleet keeps for route
   gating. The one exception: a `query_filters` that is not an array of
   strings is dropped (the server honours no filter, section 2.9.1), so the
@@ -135,6 +135,15 @@ mutates anything and never bumps `use_count`.
 - The tool's presence is itself a feature signal: a caller that finds
   `kb_capabilities` in the tool list talks to a fleet server new enough to
   report what its KB serves, without probing individual routes.
+- Both answers also carry fleet's own `fleet_build` field,
+  `{version, bible_rules}`: the build of the fleet server answering (not of
+  the KB server). `version` is the server's version string; `bible_rules` is
+  an integer revision of the bible format and `kb_bible_commit` rules that
+  build implements, raised with every such change. Under an http KB provider
+  it is added to the server's body (overwriting a field of that name). A
+  caller about to run `kb_bible_commit` on a member compares `bible_rules`
+  with the revision it requires and refuses a lower or missing one, since a
+  version string cannot order two builds of one core version.
 
 ### 2.3 `CodeIntelligenceProvider` interface methods (`methods.json` ids C-1..C-9)
 

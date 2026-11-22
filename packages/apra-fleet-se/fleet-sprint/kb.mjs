@@ -27,7 +27,7 @@
 import { ROLES, wrapUntrustedBlock } from './contracts.mjs';
 import { toolErrorText } from './mcp-result.mjs';
 import { cleanQueryTerms } from './kb-hints.mjs';
-import { E_MEMBER_FLEET_TOO_OLD } from './member-call.mjs';
+import { E_MEMBER_FLEET_TOO_OLD, memberFleetUpgradeFix } from './member-call.mjs';
 import { readToolsList } from './tools-list.mjs';
 
 // Local, validated role constant -- mirrors runner.js's own roleConst()
@@ -359,6 +359,34 @@ export function buildBibleDemotionCandidateQuery(files) {
  * maintainer's project KB serves.
  */
 export const KB_CAPABILITIES_TOOL = 'kb_capabilities';
+
+/**
+ * The minimum bible rules revision a kb_maintainer's fleet server must report
+ * (kb_capabilities `fleet_build.bible_rules`) before the engine runs
+ * kb_bible_commit there. kb_bible_commit runs in the maintainer's INSTALLED
+ * server, which can be older than the sprint's source; an older build writes
+ * bibles (tombstones) the newer rules forbid, and its version string alone
+ * cannot order two builds of one core version. A lower or missing revision,
+ * or an unreadable answer, keeps the bible queue and WARNs (fail closed).
+ * Bumped together with the server's BIBLE_RULES_REVISION
+ * (src/services/knowledge/bible-rules.ts).
+ */
+export const REQUIRED_MAINTAINER_BIBLE_RULES = 1;
+
+/**
+ * The fleet_build ({version, bible_rules}) out of a kb_capabilities answer,
+ * or null when it carries no readable one.
+ */
+export function fleetBuildOf(caps) {
+    const b = caps && typeof caps === 'object' ? caps.fleet_build : null;
+    if (!b || typeof b !== 'object' || !Number.isInteger(b.bible_rules)) return null;
+    return { version: typeof b.version === 'string' && b.version ? b.version : 'unknown', bibleRules: b.bible_rules };
+}
+
+/** One phrase naming a build for a log line. */
+export function describeFleetBuild(build) {
+    return build ? `${build.version} (bible_rules ${build.bibleRules})` : 'unreadable';
+}
 
 /** The first 8 characters of a KB id, for log lines. */
 const kbId8 = (id) => String(id).slice(0, 8);
@@ -1273,6 +1301,15 @@ export function createKbWorkClient(opts = {}) {
             log(`[kb-work] WARN: maintainer '${maintainer}' is mid-dispatch -- ${load} for ${repo} stay queued for the next round's bible commit`);
             return { committed: 0, pending: totalPending() };
         }
+        // The bible commit runs in the maintainer's INSTALLED fleet server:
+        // refuse a build older than this engine requires (fail closed on an
+        // unreadable one) before any G-pull or kb_bible_commit.
+        const buildGap = await maintainerBuildGap(target.record, repo);
+        if (buildGap) {
+            const seen = buildGap.build ? describeFleetBuild(buildGap.build) : `unreadable -- the build could not be read (${buildGap.why}), treated as too old`;
+            log(`[kb-work] WARNING: bible commit for ${repo} refused on maintainer '${maintainer}': its fleet server build is ${seen}; required build: bible_rules >= ${REQUIRED_MAINTAINER_BIBLE_RULES} -- ${load} stay queued for the next round. Fix: ${memberFleetUpgradeFix(maintainer)}`);
+            return { committed: 0, pending: totalPending() };
+        }
         let release;
         inFlight.set(maintainer, new Promise((r) => { release = r; }));
         try {
@@ -1690,6 +1727,35 @@ export function createKbWorkClient(opts = {}) {
             }
         }
         return (base || out.carried.length > 0 || out.unreadable.length > 0) ? out : null;
+    }
+
+    /** JSON [member id, repo] -> the maintainer build once it passed the bible-commit gate (cached for the sprint). */
+    const maintainerBuildOk = new Map();
+
+    /**
+     * The bible-commit build gate: null when `record`'s fleet server reports a
+     * bible_rules revision at or above REQUIRED_MAINTAINER_BIBLE_RULES,
+     * otherwise { build, why } for the WARN (build null when it could not be
+     * read). Read through kb_capabilities on the maintainer's own session.
+     * Only a pass is cached: a too-old or unreadable build is re-read at the
+     * next round, so an upgrade mid-sprint lets the queue drain.
+     */
+    async function maintainerBuildGap(record, repo) {
+        const key = record && record.id ? JSON.stringify([record.id, repo || '']) : null;
+        if (key && maintainerBuildOk.has(key)) return null;
+        let caps;
+        try {
+            const res = await memberCall(record, KB_CAPABILITIES_TOOL, {}, KB_MAINTAINER_CALL);
+            if (isToolError(res)) return { build: null, why: `${KB_CAPABILITIES_TOOL} failed: ${toolErrorText(res)}` };
+            caps = parseResult(res);
+        } catch (err) {
+            return { build: null, why: `${KB_CAPABILITIES_TOOL} failed: ${errText(err)}` };
+        }
+        const build = fleetBuildOf(caps);
+        if (!build) return { build: null, why: `${KB_CAPABILITIES_TOOL} reported no fleet_build (a server older than the build gate)` };
+        if (build.bibleRules < REQUIRED_MAINTAINER_BIBLE_RULES) return { build, why: 'its bible rules are older than required' };
+        if (key) maintainerBuildOk.set(key, build);
+        return null;
     }
 
     /** JSON [member id, repo] -> definite withdrawal-support answer: null (supported) or the gap (cached for the sprint). */

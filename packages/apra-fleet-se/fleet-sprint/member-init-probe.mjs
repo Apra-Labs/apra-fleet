@@ -55,6 +55,13 @@
 // Never gating: it does not change verified nor the first gating problem.
 // Local members are never probed for the CLI flag.
 //
+// MAINTAINER BUILD (non-gating, after every member is probed): for each
+// repository's kb_maintainer, one line logs the build its fleet server
+// reports (kb_capabilities fleet_build, read on the maintainer's own member
+// session) against the bible rules revision the engine's bible commit
+// requires; a lower or unreadable build is a WARN naming the upgrade action.
+// The bible-commit gate itself lives in kb.mjs (commitRepo).
+//
 // TRANSPORT RULE: every kb_* / code_* call goes through the injected
 // memberCall (a member-scoped session). The orchestrator's callTool is used
 // ONLY for member_detail; this module never calls a kb_* or code_* tool on it.
@@ -67,6 +74,8 @@ import { resolveMemberTarget } from './member-target.mjs';
 import { getSeCommands } from './se-os-commands.mjs';
 import { resultText } from './mcp-result.mjs';
 import { toolsOfAnswer } from './tools-list.mjs';
+import { REQUIRED_MAINTAINER_BIBLE_RULES, KB_CAPABILITIES_TOOL, fleetBuildOf, describeFleetBuild } from './kb.mjs';
+import { memberFleetUpgradeFix } from './member-call.mjs';
 
 /** Log prefix of every init line. */
 export const MEMBER_INIT_LOG_PREFIX = '[member-init]';
@@ -155,6 +164,7 @@ export function fixFor(reason) {
  * @property {string[]} warnings        non-gating one-line WARNs (e.g. a work tree carrying a previously injected gitnexus block)
  * @property {string|null} repo         normalized repository of the member's work folder
  * @property {string|null} maintainer   kb_maintainer of that repository (from the sprint-setup selection)
+ * @property {{version: string, bibleRules: number}|null} [maintainerBuild]  that maintainer's fleet server build (kb_capabilities fleet_build), null when unreadable; absent when not read
  * @property {string|null} reason       machine-readable; null when verified
  * @property {string|null} fix          one human-readable line; null when verified
  * @property {MemberInitProblem[]} problems  every recorded step failure, in step order
@@ -506,6 +516,9 @@ export function createMemberInitProbe(opts = {}) {
         return setCode(CODE_INDEX_STATES.FAILED, verdict.reason || 'code-index-failed', verdict.detail);
     }
 
+    /** member name -> the maintainer selection read once by recordMaintainer (reused, never re-read). */
+    const selections = new Map();
+
     function recordMaintainer(name, rec) {
         try {
             const sel = maintainers();
@@ -513,7 +526,44 @@ export function createMemberInitProbe(opts = {}) {
             if (typeof sel.repoOf === 'function') rec.repo = sel.repoOf(name) || null;
             const m = typeof sel.maintainerForMember === 'function' ? sel.maintainerForMember(name) : null;
             rec.maintainer = m && m.member ? m.member : null;
+            if (m) selections.set(name, m);
         } catch { /* informational only */ }
+    }
+
+    /**
+     * One line per repository kb_maintainer: the fleet server build it reports
+     * (kb_capabilities on its own member session) and whether that build meets
+     * the bible-commit requirement. Each record of that repository gets the
+     * build as maintainerBuild. Never throws, never gates.
+     */
+    async function logMaintainerBuilds(records) {
+        if (typeof memberCall !== 'function') return;
+        const seen = new Map();
+        for (const rec of records) {
+            const m = selections.get(rec.member);
+            if (!m || !m.record || !m.record.id) continue;
+            const repo = rec.repo || 'unknown repository';
+            const key = JSON.stringify([m.record.id, repo]);
+            if (seen.has(key)) { rec.maintainerBuild = seen.get(key); continue; }
+            let build = null;
+            let why = null;
+            try {
+                const res = await memberCall(m.record, KB_CAPABILITIES_TOOL, {});
+                if (res && res.isError) why = resultText(res) || `${KB_CAPABILITIES_TOOL} returned an error`;
+                else build = fleetBuildOf(parseToolJson(res));
+                if (!build && !why) why = `${KB_CAPABILITIES_TOOL} reported no fleet_build (a server older than the bible-commit build gate)`;
+            } catch (err) {
+                why = errText(err);
+            }
+            seen.set(key, build);
+            rec.maintainerBuild = build;
+            const who = `kb_maintainer '${m.member || m.record.name || m.record.id}' of ${repo}`;
+            const need = `bible commits need bible_rules >= ${REQUIRED_MAINTAINER_BIBLE_RULES}`;
+            const fix = memberFleetUpgradeFix(m.member || m.record.name || m.record.id);
+            if (!build) log(`${MEMBER_INIT_LOG_PREFIX} WARN ${who}: fleet server build could not be read (${String(why).slice(0, 200)}); ${need}, so its bible commits will be refused; fix: ${fix}`);
+            else if (build.bibleRules < REQUIRED_MAINTAINER_BIBLE_RULES) log(`${MEMBER_INIT_LOG_PREFIX} WARN ${who}: fleet server build ${describeFleetBuild(build)} is older than required (${need}), so its bible commits will be refused; fix: ${fix}`);
+            else log(`${MEMBER_INIT_LOG_PREFIX} ${who}: fleet server build ${describeFleetBuild(build)} (${need})`);
+        }
     }
 
     /** Provider overrides: never verified regardless of what the session lists. */
@@ -623,6 +673,7 @@ export function createMemberInitProbe(opts = {}) {
                 out.push(rec);
                 try { log(formatMemberInitLine(rec)); } catch { /* logging never blocks */ }
             }
+            try { await logMaintainerBuilds(out); } catch { /* informational only */ }
             return out;
         },
     };

@@ -846,6 +846,11 @@
  * @property {boolean} branch_aware - Whether the KB is branch aware.
  * @property {string[]} [query_filters] - Optional kb_query filters the KB honours
  *   (files, symbols); absent when the server does not list any.
+ * @property {{version: string, bible_rules: number}} [fleet_build] - The answering
+ *   fleet server's own build (not the KB server's): its version string and the
+ *   integer revision of the bible format / kb_bible_commit rules it implements.
+ *   Added on both providers by servers that report it; a caller about to run
+ *   kb_bible_commit refuses a missing or lower bible_rules than it requires.
  */
 
 /**
