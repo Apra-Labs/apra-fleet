@@ -95,12 +95,34 @@ function shQuote(arg: string): string {
   return `'${normalized.replace(/'/g, `'\\''`)}'`;
 }
 
-/** The merge.<name>.driver value: the absolute CLI argv, resolved in JS, then git's placeholders. */
+/** What the registered driver prints on stderr when its command cannot start. */
+export const BIBLE_MERGE_DRIVER_STALE_MESSAGE =
+  'apra-fleet kb merge-driver: the registered driver command cannot start (apra-fleet moved or was reinstalled); '
+  + 'left a line merge with conflict markers in the bible -- resolve it by hand, then re-run kb_setup to repair the driver';
+
+/**
+ * The merge.<name>.driver value: the absolute CLI argv, resolved in JS, then
+ * git's placeholders (git substitutes %O/%A/%B/%P already sh-quoted).
+ *
+ * The command is guarded so a stale registration can never leave the bible
+ * silently as ours: when any recorded path is gone, or sh cannot start the
+ * command (exit 126/127), the driver falls back to git's own 3-way line merge
+ * (git merge-file, conflict markers with both sides), prints a message naming
+ * kb_setup as the repair and exits 1, so git reports a conflict. A driver
+ * that ran keeps its own exit code (0 merged, 1 genuine conflict).
+ * Only POSIX sh is used (git for Windows runs drivers through its bundled sh);
+ * every path is resolved in JS and single-quoted, nothing is expanded by sh.
+ */
 export function buildBibleMergeDriverCommand(command: string[]): string {
   if (command.length === 0 || !command.every((a) => path.isAbsolute(a))) {
     throw new Error('bible merge driver command must be absolute paths');
   }
-  return `${command.map(shQuote).join(' ')} kb merge-driver %O %A %B %P`;
+  const quoted = command.map(shQuote);
+  const present = quoted.map((q) => `[ -f ${q} ]`).join(' && ');
+  const run = `${quoted.join(' ')} kb merge-driver %O %A %B %P`;
+  const fallback = `echo ${shQuote(BIBLE_MERGE_DRIVER_STALE_MESSAGE)} >&2; git merge-file -L ours -L base -L theirs %A %O %B; exit 1`;
+  return `if ${present}; then ${run}; rc=$?; else rc=127; fi; `
+    + `if [ $rc -eq 126 ] || [ $rc -eq 127 ]; then ${fallback}; fi; exit $rc`;
 }
 
 export type BibleMergeDriverInstallResult =
