@@ -126,8 +126,25 @@ export function buildBibleMergeDriverCommand(command: string[]): string {
 }
 
 export type BibleMergeDriverInstallResult =
-  | { installed: true; attributesPath: string }
+  /**
+   * repairedFrom: the previously registered merge.<name>.driver value when it
+   * differed from the current one (a stale path after apra-fleet moved or was
+   * reinstalled, or an older command form) and was replaced; absent when the
+   * driver was newly registered or the registration was already current.
+   */
+  | { installed: true; attributesPath: string; repairedFrom?: string }
   | { installed: false; reason: string };
+
+/** The currently registered merge.<name>.driver value, or null when none is set. */
+function registeredDriver(repoPath: string): string | null {
+  try {
+    const value = git(repoPath, ['config', '--local', '--get', `merge.${BIBLE_MERGE_DRIVER_NAME}.driver`]);
+    return value === '' ? null : value;
+  } catch {
+    // git config --get exits 1 when the key is unset.
+    return null;
+  }
+}
 
 function git(repoPath: string, args: string[]): string {
   return execFileSync(gitExecutable(), args, {
@@ -139,13 +156,16 @@ function git(repoPath: string, args: string[]): string {
  * Register the bible merge driver in the clone at repoPath: local git config
  * merge.<name>.{name,driver} and the attribute line in the clone's
  * info/attributes (untracked, so nothing is added to the repository). Both are
- * idempotent. Never throws: a failure is returned as a reason.
+ * idempotent. A registered driver that differs from the current install's
+ * command (its recorded paths moved or were reinstalled) is re-registered and
+ * reported as repairedFrom. Never throws: a failure is returned as a reason.
  */
 export function installBibleMergeDriver(repoPath: string, command?: string[]): BibleMergeDriverInstallResult {
   try {
     const driver = buildBibleMergeDriverCommand(command ?? resolveKbInvalidateCommand());
+    const previous = registeredDriver(repoPath);
     git(repoPath, ['config', '--local', `merge.${BIBLE_MERGE_DRIVER_NAME}.name`, 'apra-fleet knowledge bible merge (id-keyed, tombstone-aware)']);
-    git(repoPath, ['config', '--local', `merge.${BIBLE_MERGE_DRIVER_NAME}.driver`, driver]);
+    if (previous !== driver) git(repoPath, ['config', '--local', `merge.${BIBLE_MERGE_DRIVER_NAME}.driver`, driver]);
     const rel = git(repoPath, ['rev-parse', '--git-path', 'info/attributes']).split(/\r?\n/)[0];
     const attributesPath = path.isAbsolute(rel) ? rel : path.join(repoPath, rel);
     const existing = fs.existsSync(attributesPath) ? fs.readFileSync(attributesPath, 'utf8') : '';
@@ -154,7 +174,9 @@ export function installBibleMergeDriver(repoPath: string, command?: string[]): B
       const sep = existing === '' || existing.endsWith('\n') ? '' : '\n';
       fs.writeFileSync(attributesPath, existing + sep + BIBLE_ATTRIBUTES_LINE + '\n');
     }
-    return { installed: true, attributesPath };
+    return previous !== null && previous !== driver
+      ? { installed: true, attributesPath, repairedFrom: previous }
+      : { installed: true, attributesPath };
   } catch (err) {
     return { installed: false, reason: err instanceof Error ? err.message : String(err) };
   }

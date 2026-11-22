@@ -824,7 +824,11 @@ git config `merge.apra-fleet-kb-bible.driver` and a line in the clone's
 `info/attributes`), so a local merge or rebase of two branches that both
 changed `.fleet/kb-canonical.json` merges it by entry id, tombstone-aware. The
 step reports `Registered the knowledge bible merge driver ...` or `Skipped
-bible merge driver: <reason>`. Rules and the hosted-merge fallback:
+bible merge driver: <reason>`. The driver records absolute paths; when a
+re-run finds a registered driver command that differs from the current
+install's (apra-fleet moved or was reinstalled), it re-registers it and the
+step reports `Repaired the knowledge bible merge driver ...; previous driver
+command: <old>`. A re-run with a current registration changes nothing. Rules and the hosted-merge fallback:
 `packages/apra-fleet-se/docs/kb-canonical-merge.md`.
 
 ### 5. KB tool profiles (which kb_* tools interactive sessions see)

@@ -122,7 +122,10 @@ A local `git merge`, `git rebase` or `git cherry-pick` of two bible-changing
 branches then resolves the bible by id. On a genuine conflict the driver prints
 the conflicting ids, leaves git's own line merge with conflict markers in the
 file and exits 1, so git reports the conflict as usual. Re-run kb_setup after
-moving or reinstalling apra-fleet: the driver records an absolute path. The
+moving or reinstalling apra-fleet: the driver records an absolute path, and a
+re-run replaces a registration that differs from the current install's (its
+step reports `Repaired the knowledge bible merge driver` with the previous
+command). The
 registered command is guarded: when a recorded path is gone or sh cannot start
 it (exit 126/127), it falls back to git's own 3-way line merge
 (`git merge-file`, conflict markers with both sides), prints a message naming
