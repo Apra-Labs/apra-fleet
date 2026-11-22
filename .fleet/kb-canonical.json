@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "0b13b1ccc8993e056c90ef347492ea9208ebabe2",
     "branch": "main",
-    "entry_count": 170
+    "entry_count": 171
   },
   "entries": [
     {
@@ -2524,6 +2524,34 @@
         "packages/apra-fleet-se/fleet-sprint/phases/develop.mjs": "44925dff3bcf127bdd594bfd28c1eb12b749a5b5",
         "packages/apra-fleet-se/fleet-sprint/phases/review.mjs": "31f45bc59b6e32ddb5a032ad3766c032ea42870f",
         "packages/apra-fleet-se/test/mock-sprint-permission-denied-review-gap.test.mjs": "19d24cdfe587f8b98f3eb7e59debf836169805fc"
+      }
+    },
+    {
+      "id": "bbf7c355-39f9-48a9-9ff8-74e7821b61f8",
+      "type": "knowledge",
+      "title": "Verify holds by below-goal open children are reported, not relaxed",
+      "summary": "classifyVerifySet keeps rule 4 (any open child holds a parent out of verify) but records an open-children ineligible entry with heldBy; belowGoalVerifyHolds selects holds made only by below-goal or out-of-scope children, which the Route log and Final Review notes report.",
+      "symbols": [
+        "classifyVerifySet",
+        "belowGoalVerifyHolds",
+        "formatVerifyHolds",
+        "runFinalReviewPhase"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/beads-scope.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/fleet-sprint/phases/final-review.mjs",
+        "packages/apra-fleet-se/test/jfo-verify-set-classifier.test.mjs",
+        "packages/apra-fleet-se/test/mock-sprint-verify-hold-below-goal.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-22T10:31:17.696Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/beads-scope.mjs": "142c823ae2f5ee7b0674f6dd595798bfee63763a",
+        "packages/apra-fleet-se/fleet-sprint/phases/final-review.mjs": "890540014fb10f9307e265085d39b0299967bf2f",
+        "packages/apra-fleet-se/fleet-sprint/runner.js": "04482d3f4f1a355fc89648c6eed3d147123e4bc5",
+        "packages/apra-fleet-se/test/jfo-verify-set-classifier.test.mjs": "2460b0c37b1d343432c75f357fd3d7ca063c8d35",
+        "packages/apra-fleet-se/test/mock-sprint-verify-hold-below-goal.test.mjs": "1751d6e72463ff79b93c08e56d09c1883ac43e73"
       }
     },
     {
