@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "f9120840430d27924cc7797240f4660c5f35c226",
     "branch": "main",
-    "entry_count": 191
+    "entry_count": 192
   },
   "entries": [
     {
@@ -270,6 +270,28 @@
         "src/tools/provision-auth.ts": "55bb55640ef12665731fe62bcc1e9955b30dcd40",
         "src/tools/remove-member.ts": "357c8affb4ec811ba312f93517d44159887ddde4",
         "src/types.ts": "e327603cb283f59b871b552ec31d54e4bc828dd1"
+      }
+    },
+    {
+      "id": "17ea9d97-764e-4772-b21c-86971774e7fa",
+      "type": "learning",
+      "title": "expireReverification can drop a re-verify CONFIRM whose kb_promote is still queued",
+      "summary": "At final review, expireReverification runs after kb-apply and before commitRound. If the reviewer's re-verify promote is still queued (maintainer busy or G-pull failed), the id is dropped with a WARN and may get a withdrawal queued, even though commitRound later merges it.",
+      "symbols": [
+        "expireReverification",
+        "dropFromBible",
+        "flushRepo",
+        "createKbWorkClient"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/final-review.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-22T20:54:07.757Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "53cf003d0d7ad03d038208f83705879b991e082e",
+        "packages/apra-fleet-se/fleet-sprint/phases/final-review.mjs": "0bd5f7d40437b1b66a5a858ec7ee17ad8812b88d"
       }
     },
     {
