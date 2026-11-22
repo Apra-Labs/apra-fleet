@@ -212,6 +212,14 @@ directly.
    confirm is not wrong: leave it INFERRED. Never list the same id in both
    `kb_promotions` and `kb_discards` -- the orchestrator refuses both.
    `kb_discards: []` is a valid, common answer.
+   **Re-verification candidates.** A **KNOWLEDGE BANK -- re-verification candidates**
+   block may follow the promotion candidates. Its entries are already CONFIRMED, but a
+   file each cites changed after it was confirmed (listed in `changed_files`), so it
+   cannot be published as it is. Check each claim against those files at the sprint
+   branch HEAD: if it still holds, return it in `kb_promotions` (its basis is re-recorded
+   and it is published); if it does not, return it in `kb_discards` -- for these entries
+   a discard only keeps the entry out of the bible, it is not deleted or demoted. Same
+   evidence bar as above for both.
 6. **Demote or hold** (final verdict only). A per-round review is offered no demotion
    candidates; any `kb_demotions` it returns are logged and dropped. At the final verdict,
    read the **KNOWLEDGE BANK -- demotion candidates** block in your dispatch prompt (if

@@ -263,8 +263,10 @@ export async function runFinalReviewPhase({
     // bible on) the reviewer's repository kb_maintainer, whose KB every write
     // is routed to.
     const finalKbCandidates = await kbWork.promotionCandidates(getMemberForRole('reviewer'));
-    if (finalKbCandidates.length > 0) {
-        log(`[kb-work] offering ${finalKbCandidates.length} INFERRED entr(ies) to the final reviewer for promotion.`);
+    // Re-verification rows (reverify: true) are logged by kbWork itself.
+    const finalKbInferredCount = finalKbCandidates.filter((e) => !(e && e.reverify === true)).length;
+    if (finalKbInferredCount > 0) {
+        log(`[kb-work] offering ${finalKbInferredCount} INFERRED entr(ies) to the final reviewer for promotion.`);
     }
     // The CONFIRMED entries the final reviewer may demote back to INFERRED.
     // buildFinalVerdictPrompt has always accepted and rendered kbDemoteCandidates,
@@ -446,6 +448,11 @@ export async function runFinalReviewPhase({
     // first (the commit itself applies them before committing); any that
     // remain (an unreachable maintainer) are reported with a WARN, never
     // dropped silently.
+    // The final review is the sprint's last review: an entry still awaiting
+    // re-verification now has no reviewer left to confirm it, so it is
+    // dropped (loudly, retrievably) -- and withdrawn from the branch bible
+    // when this sprint had committed it -- before the bible commit below.
+    if (typeof kbWork.expireReverification === 'function') kbWork.expireReverification('final review');
     if (finalVerdictResult && finalVerdictResult.verdict === 'FAIL') {
         if (typeof kbWork.seal === 'function') kbWork.seal('final review verdict FAIL', { confirmationsOnly: true });
         if (typeof kbWork.commitRound === 'function') await kbWork.commitRound('final review');

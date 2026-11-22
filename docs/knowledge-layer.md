@@ -494,7 +494,17 @@ The SQLite database is one developer's private, warm working memory. The
 - A folder that is not a git work tree fails with `E-BIBLE-BASIS-NOT-GIT`. An
   entry citing no files is skipped as `no_source_files` (distinct from
   `basis_mismatch`); the engine keeps `basis_mismatch` ids queued for a
-  bounded number of rounds because a transient mismatch can clear.
+  bounded number of rounds because a transient mismatch can clear, and offers
+  each one to the next reviewer as a re-verification candidate naming the
+  changed cited files: a CONFIRM re-promotes it (kb_promote re-stamps the
+  basis at HEAD) and the next bible commit merges it; a refusal, or no verdict
+  by the end of the retries (the final review at the latest), drops it with a
+  WARN naming the id, the changed files and how to retrieve it. A dropped
+  entry stays CONFIRMED in the maintainer's KB and is listed in the sprint
+  analysis. Before the final review the engine also re-sends every id this
+  sprint's bible commits merged, so an entry a later code commit drifted is
+  re-verified the same way (or withdrawn from the branch bible) and the PR
+  head carries no drifted sprint entry.
 - With `scope='global'` it exports the GLOBAL KB to
   `.fleet/kb-canonical-global.json` (committed in the platform repo so the
   installer can distribute team-wide conventions).

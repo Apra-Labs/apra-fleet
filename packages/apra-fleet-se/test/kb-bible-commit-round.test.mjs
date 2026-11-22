@@ -309,7 +309,7 @@ describe('commitRound: the review-round bible commit on the kb_maintainer', () =
         assert.deepEqual(out, { committed: 0, pending: 1 });
         assert.deepEqual(client.pendingConfirmations(), ['e1']);
         assert.ok(logs.some((l) => /^\[kb-work\] WARN: bible commit for .* failed at publication check \(git failed in the test\) -- 1 confirmation\(s\) stay queued/.test(l)), logs.join('\n'));
-        assert.deepEqual(client.unpublishedBible(), { repos: [{ repo: REPO, count: 1 }], sealedReason: null });
+        assert.deepEqual(client.unpublishedBible(), { repos: [{ repo: REPO, count: 1 }], sealedReason: null, dropped: [] });
     });
 
     test('committed:false with no publication check wired keeps the ids queued with a WARN -- never assumed published', async () => {

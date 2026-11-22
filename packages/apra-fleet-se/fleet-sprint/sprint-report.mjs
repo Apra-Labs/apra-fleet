@@ -254,16 +254,33 @@ function setAsideSectionLines(setAside) {
  */
 function kbBibleLines(unpublished) {
     const repos = unpublished && Array.isArray(unpublished.repos) ? unpublished.repos.filter((r) => r && r.count > 0) : [];
-    if (repos.length === 0) return [];
-    return [
-        '',
-        '## KB bible',
-        '',
-        'WARNING: bible not published -- these KB confirmations are not in a pushed bible commit on the sprint branch'
-        + ' as of this analysis (the harvest round retries once more after it is written):',
-        ...repos.map((r) => `- ${r.repo}: ${r.count} unpublished confirmation(s).`),
-        ...(unpublished.sealedReason ? [`Bible commits were sealed: ${unpublished.sealedReason}.`] : []),
-    ];
+    const dropped = unpublished && Array.isArray(unpublished.dropped) ? unpublished.dropped.filter((d) => d && typeof d.id === 'string') : [];
+    if (repos.length === 0 && dropped.length === 0) return [];
+    const lines = ['', '## KB bible', ''];
+    if (repos.length > 0) {
+        lines.push(
+            'WARNING: bible not published -- these KB confirmations are not in a pushed bible commit on the sprint branch'
+            + ' as of this analysis (the harvest round retries once more after it is written):',
+            ...repos.map((r) => `- ${r.repo}: ${r.count} unpublished confirmation(s).`),
+            ...(unpublished.sealedReason ? [`Bible commits were sealed: ${unpublished.sealedReason}.`] : []),
+        );
+    }
+    if (dropped.length > 0) {
+        if (repos.length > 0) lines.push('');
+        lines.push(
+            'Dropped from the bible -- these CONFIRMED entries cite files that changed after they were confirmed and were'
+            + ' not re-verified, so they are not published. Each entry is still CONFIRMED in its maintainer\'s local KB'
+            + ' (not deleted or demoted); re-verify it and promote it again to publish it:',
+            ...dropped.map((d) => {
+                const files = Array.isArray(d.changed_files) && d.changed_files.length > 0
+                    ? d.changed_files.map((f) => `${f.path} (${f.reason})`).join(', ')
+                    : 'none named';
+                return `- ${d.repo}: ${d.id} on maintainer '${d.maintainer}' -- ${d.why}; changed files: ${files}`
+                    + `${d.withdrawn ? '; withdrawn from the branch bible' : ''}.`;
+            }),
+        );
+    }
+    return lines;
 }
 
 /**
