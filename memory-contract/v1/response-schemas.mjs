@@ -340,7 +340,8 @@ const KB_RESPONSE_BODIES = {
   }),
   // F-9: kb_stats spreads ProviderStats (whose supported/reason/coverage are
   // only present for a provider that cannot compute stats at all) and adds
-  // bible. Nested aggregates have no zod shape anywhere to cite, so they stay
+  // bible ({present, entries, drift, not_exportable:{count, reasons}, hash_drifted:{count, ids, unhashed}}
+  // or {computable:false, reason}; drift counts only export-qualifying entries). Nested aggregates have no zod shape anywhere to cite, so they stay
   // z.unknown() rather than a guessed structure.
   kb_stats: z.object({
     supported: z.boolean().optional(),
