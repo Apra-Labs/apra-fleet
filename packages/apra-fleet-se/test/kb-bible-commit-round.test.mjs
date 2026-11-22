@@ -1,7 +1,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { createKbWorkClient, KB_BIBLE_SKIP_RETRY_ROUNDS } from '../fleet-sprint/kb.mjs';
-import { selfMaintainer, currentServerKbWork } from './helpers/kb-maintainer-fakes.mjs';
+import { createKbWorkClient, KB_BIBLE_SKIP_RETRY_ROUNDS, REQUIRED_MAINTAINER_BIBLE_RULES } from '../fleet-sprint/kb.mjs';
+import { selfMaintainer, currentServerKbWork, currentServerListTools, kbCapabilitiesResult, ALL_KB_ROUTES, CURRENT_FLEET_BUILD } from './helpers/kb-maintainer-fakes.mjs';
 import { createSyncBrackets, createGitSync } from '../fleet-sprint/git-sync.mjs';
 import { syncMemberBefore, syncMemberAfter, syncMemberAfterOrdered, isNoMutationDispatchFailure } from '../fleet-sprint/runner.js';
 
@@ -1054,4 +1054,109 @@ describe('commitRound: a maintainer whose kb_bible_commit is skipped (http KB pr
         assert.deepEqual(out, { committed: 0, pending: 0 });
         assert.equal(events.slice(mark).filter((e) => e.ev === 'kb_bible_commit').length, 0);
     });
+});
+
+// =============================================================================
+// The maintainer build gate: kb_bible_commit runs in the maintainer's
+// INSTALLED fleet server, which can be older than the sprint's source. Before
+// any bible commit the engine reads that server's fleet_build through
+// kb_capabilities; a bible_rules revision below REQUIRED_MAINTAINER_BIBLE_RULES,
+// or an unreadable build, refuses the commit with a WARN and keeps the queue.
+// =============================================================================
+
+describe('commitRound: the maintainer build gate', () => {
+    /** A maintainer whose kb_capabilities answer is `capabilities()` (a value, or a throw). */
+    function gateHarness(capabilities) {
+        const events = [];
+        const logs = [];
+        const memberCall = async (member, tool, args) => {
+            if (tool === 'kb_query') return { l1_results: offeredEntries.map((id) => ({ id })) };
+            events.push({ ev: tool, member: member.name, args });
+            if (tool === 'kb_capabilities') return capabilities();
+            if (tool === 'kb_bible_commit') {
+                return { content: [{ text: JSON.stringify({ path: '.fleet/kb-canonical.json', merged: args.ids, skipped: [], entry_count: args.ids.length, committed: true }) }] };
+            }
+            if (tool === 'kb_promote') return { id: args.id, previous_confidence: 'INFERRED', new_confidence: 'CONFIRMED' };
+            return {};
+        };
+        const client = createKbWorkClient({
+            memberCall,
+            listTools: currentServerListTools,
+            maintainers: selfMaintainer(MAINT, ['maint', 'reviewer-1']),
+            gPull: async (m) => { events.push({ ev: 'G-pull', member: m }); },
+            gPush: async (m) => { events.push({ ev: 'G-push', member: m }); },
+            abortRebase: async () => false,
+            bibleBase: async () => BASE,
+            bibleUnpushed: async () => ({ unpushed: false }),
+            log: (m) => logs.push(m),
+        });
+        const commits = () => events.filter((e) => e.ev === 'kb_bible_commit');
+        const gateWarns = () => logs.filter((l) => /WARN/.test(l) && /bible commit for .* refused on maintainer/.test(l));
+        return { client, events, logs, commits, gateWarns };
+    }
+    const capsWith = (fleetBuild) => kbCapabilitiesResult(ALL_KB_ROUTES, fleetBuild);
+    const OLD_BUILD = { version: 'v0.4.5_0ld0ld', bible_rules: REQUIRED_MAINTAINER_BIBLE_RULES - 1 };
+
+    test('an older maintainer build: no kb_bible_commit, a WARN naming the member, its build and the required build; the ids stay queued', async () => {
+        let caps = capsWith(OLD_BUILD);
+        const h = gateHarness(() => caps);
+        await confirm(h.client, ['e1', 'e2']);
+
+        const out = await h.client.commitRound('review C1');
+
+        assert.equal(h.commits().length, 0, 'memberCall never receives kb_bible_commit');
+        assert.ok(!h.events.some((e) => e.ev === 'G-pull' && h.events.indexOf(e) > h.events.findIndex((x) => x.ev === 'kb_capabilities')), 'no G-pull after the refusal');
+        assert.deepEqual(out, { committed: 0, pending: 2 });
+        assert.deepEqual(h.client.pendingConfirmations(), ['e1', 'e2'], 'the queue is retained');
+        const [warn] = h.gateWarns();
+        assert.ok(warn, h.logs.join('\n'));
+        assert.match(warn, /maintainer 'maint'/);
+        assert.ok(warn.includes(`v0.4.5_0ld0ld (bible_rules ${REQUIRED_MAINTAINER_BIBLE_RULES - 1})`), warn);
+        assert.ok(warn.includes(`required build: bible_rules >= ${REQUIRED_MAINTAINER_BIBLE_RULES}`), warn);
+        assert.match(warn, /update_member with fleet_install auto for member 'maint'/);
+
+        // The queue drains once the maintainer is upgraded (a refusal is not cached).
+        caps = capsWith(CURRENT_FLEET_BUILD);
+        assert.deepEqual(await h.client.commitRound('review C2'), { committed: 2, pending: 0 });
+        assert.equal(h.commits().length, 1);
+        assert.deepEqual(h.commits()[0].args.ids, ['e1', 'e2']);
+    });
+
+    test('a current build: kb_bible_commit is called as before, between G-pull and G-push', async () => {
+        const h = gateHarness(() => capsWith(CURRENT_FLEET_BUILD));
+        await confirm(h.client, ['e1']);
+
+        assert.deepEqual(await h.client.commitRound('review C1'), { committed: 1, pending: 0 });
+        const tail = h.events.slice(h.events.map((e) => e.ev).lastIndexOf('kb_promote') + 1).map((e) => e.ev);
+        assert.deepEqual(tail, ['kb_capabilities', 'G-pull', 'kb_bible_commit', 'G-push']);
+        assert.deepEqual(h.gateWarns(), []);
+    });
+
+    test('a newer build passes the gate too', async () => {
+        const h = gateHarness(() => capsWith({ version: 'v9.9.9', bible_rules: REQUIRED_MAINTAINER_BIBLE_RULES + 5 }));
+        await confirm(h.client, ['e1']);
+        assert.deepEqual(await h.client.commitRound('review C1'), { committed: 1, pending: 0 });
+        assert.equal(h.commits().length, 1);
+    });
+
+    for (const [label, caps] of [
+        ['no fleet_build in the answer (an older server)', () => capsWith(null)],
+        ['a non-integer bible_rules', () => capsWith({ version: 'v1', bible_rules: 'latest' })],
+        ['kb_capabilities throws (the tool is missing)', () => { throw new Error('unknown tool kb_capabilities'); }],
+        ['kb_capabilities answers an error result', () => ({ isError: true, content: [{ type: 'text', text: 'boom' }] })],
+    ]) {
+        test(`an unreadable build fails closed with a WARN: ${label}`, async () => {
+            const h = gateHarness(caps);
+            await confirm(h.client, ['e1']);
+
+            assert.deepEqual(await h.client.commitRound('review C1'), { committed: 0, pending: 1 });
+            assert.equal(h.commits().length, 0);
+            assert.deepEqual(h.client.pendingConfirmations(), ['e1']);
+            const [warn] = h.gateWarns();
+            assert.ok(warn, h.logs.join('\n'));
+            assert.match(warn, /the build could not be read/);
+            assert.match(warn, /treated as too old/);
+            assert.match(warn, /maintainer 'maint'/);
+        });
+    }
 });
