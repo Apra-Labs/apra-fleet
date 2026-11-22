@@ -97,22 +97,11 @@ const LINUX_X64: MemberPlatform = { os: 'linux', arch: 'x64' };
 describe('bd version mismatch on the member', () => {
   const warning = "[!] E-BD-VERSION-MISMATCH Beads (bd) version mismatch on bella: found 1.0.4 (PATH), expected 1.3 (pinned major.minor). Fix: install the pinned bd, then re-run the install";
 
-  it('an installer that completed (exit 0) with only the bd mismatch is available, carrying the warning and fix', async () => {
+  it('an installer that completed (exit 0) with only the bd mismatch is available, not install-failed', async () => {
     const m = newMember({ installerStderr: warning + '\n' });
     const agent = makeTestAgent({ os: 'linux', llmProvider: 'claude' });
     const r = await ensureMemberFleetInstall(agent, fakeDeps(m, { orchestrator: LINUX_X64, executable: '/opt/fleet/apra-fleet' }));
     expect(r).toMatchObject({ state: 'available', installed: true, version: ORCH_VERSION });
-    expect((r as { bdVersionWarning?: string }).bdVersionWarning).toContain('E-BD-VERSION-MISMATCH');
-    expect((r as { bdVersionWarning?: string }).bdVersionWarning).toContain('Fix: install the pinned bd');
-    expect((r as { bdVersionWarning?: string }).bdVersionWarning).not.toMatch(/^[!]/);
-  });
-
-  it('a clean install carries no bd warning', async () => {
-    const m = newMember();
-    const agent = makeTestAgent({ os: 'linux', llmProvider: 'claude' });
-    const r = await ensureMemberFleetInstall(agent, fakeDeps(m, { orchestrator: LINUX_X64, executable: '/opt/fleet/apra-fleet' }));
-    expect(r).toMatchObject({ state: 'available' });
-    expect((r as { bdVersionWarning?: string }).bdVersionWarning).toBeUndefined();
   });
 
   it('a real installer failure is still install-failed', async () => {

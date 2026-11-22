@@ -186,8 +186,6 @@ export interface FleetMcpStatus {
    *  older core. `why` says what was tried. register_member / update_member
    *  print it as a NOTICE. */
   sameCoreFallback?: { tag: string; wantedBuild: string; why: string };
-  /** The member install completed but the member bd is off the pinned major.minor (E-BD-VERSION-MISMATCH line with found/expected/fix). */
-  bdVersionWarning?: string;
 }
 
 export interface GitHubAppConfig {

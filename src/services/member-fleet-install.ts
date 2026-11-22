@@ -163,10 +163,6 @@ export type MemberFleetInstallResult =
       /** Set when no release carried the exact build and the signed stable
        *  release of the same core was installed instead. */
       sameCoreFallback?: SameCoreFallback;
-      /** The install completed but the bd on the member's PATH is off the
-       *  pinned major.minor (E-BD-VERSION-MISMATCH): the installer's mismatch
-       *  line with found/expected/fix. The member keeps its fleet tools. */
-      bdVersionWarning?: string;
     }
   | {
       state: 'unavailable';
@@ -445,17 +441,6 @@ export function chooseInstallSource(
       `member platform ${member.os}/${member.arch} differs from this orchestrator ` +
       `(${orchestrator.os}/${orchestrator.arch}) and no apra-fleet release asset exists for it`,
   };
-}
-
-/**
- * The installer's bd version-mismatch text (code, found/expected, Fix) from its
- * output, or undefined. A member install that completed but found a bd off the
- * pin still exits 0 (the member keeps its tools); the mismatch rides here.
- */
-export function extractBdVersionWarning(output: string): string | undefined {
-  const lines = output.split(/\r?\n/).map(l => l.trim()).filter(l => l.includes(BD_VERSION_MISMATCH_CODE));
-  if (!lines.length) return undefined;
-  return lines[lines.length - 1].replace(/^\[!\]\s*/, '');
 }
 
 /** The member-mode install command line arguments (exported for tests). */
@@ -1092,7 +1077,6 @@ async function replaceFullInstall(
   const stamp = replaceBackupStamp(deps.now ? deps.now() : new Date());
   const plan = buildReplaceFullInstallPlan({ home, targetOs, shell, provider, installerPath, stamp });
   let supervisorMoved = false;
-  let bdVersionWarning: string | undefined;
   const failedAt = (name: ReplaceStepName | 'verify', why: string): MemberFleetInstallResult => {
     const label = name === 'verify' ? 'the version check after step 5' : REPLACE_STEP_LABEL[name];
     const detail = name === 'backup'
@@ -1110,7 +1094,6 @@ async function replaceFullInstall(
     if (r.code !== 0) {
       return failedAt(step.name, `exited ${r.code}: ${(r.stderr.trim() || r.stdout.trim()).slice(-400)}`);
     }
-    if (step.name === 'install') bdVersionWarning = extractBdVersionWarning(r.stdout + '\n' + r.stderr);
     if (step.name === 'supervisor' && r.stdout.includes(SUPERVISOR_MOVED_SENTINEL)) supervisorMoved = true;
   }
 
@@ -1128,7 +1111,6 @@ async function replaceFullInstall(
     state: 'available', version: after.version, installed: true, source: source.kind, binPath,
     replaced: { previousVersion, removed, backupPath: plan.backupDir },
     ...(sameCoreFallback ? { sameCoreFallback } : {}),
-    ...(bdVersionWarning ? { bdVersionWarning } : {}),
   };
 }
 
@@ -1506,7 +1488,6 @@ async function ensureOnce(agent: Agent, deps: MemberFleetInstallDeps, force: boo
 
   let localPath: string;
   let downloaded = false;
-  let bdVersionWarning: string | undefined;
   let sameCoreFallback: SameCoreFallback | undefined;
   if (source.kind === 'orchestrator-executable') {
     localPath = source.localPath;
@@ -1552,7 +1533,6 @@ async function ensureOnce(agent: Agent, deps: MemberFleetInstallDeps, force: boo
       }
       return { state: 'unavailable', reason: 'install-failed', detail: `installer exited ${run.code}: ${tail}`, version: priorVersion };
     }
-    bdVersionWarning = extractBdVersionWarning(run.stdout + '\n' + run.stderr);
   } finally {
     if (downloaded) deps.removeLocal(localPath);
   }
@@ -1567,7 +1547,7 @@ async function ensureOnce(agent: Agent, deps: MemberFleetInstallDeps, force: boo
       version: priorVersion,
     };
   }
-  return { state: 'available', version: after.version, installed: true, source: source.kind, binPath, ...(sameCoreFallback ? { sameCoreFallback } : {}), ...(bdVersionWarning ? { bdVersionWarning } : {}) };
+  return { state: 'available', version: after.version, installed: true, source: source.kind, binPath, ...(sameCoreFallback ? { sameCoreFallback } : {}) };
 }
 
 // ---------------------------------------------------------------------------
@@ -2020,16 +2000,19 @@ export function memberBeadsPath(home: string, targetOs: TargetOS, shell: MemberS
  * member command resolves it in (BIN_DIR is appended to PATH). Tagged like
  * buildFleetVersionProbe: always exits 0, outcome in stdout.
  */
+/** Printed before the version when the bd that answered is the fleet bin dir copy. */
+export const BD_IN_BIN_DIR_TAG = '__APRA_FLEET_BD_IN_BIN_DIR__';
+
 export function buildBeadsProbe(bdPath: string, targetOs: TargetOS, shell: MemberShell): string {
   const p = posixQuote(bdPath);
   const ps = psQuote(bdPath);
   return memberCommandFor(targetOs, shell, {
     posix:
       `if command -v bd >/dev/null 2>&1; then bd --version 2>/dev/null || printf '%s\\n' '${EXEC_FAILED_SENTINEL}'; ` +
-      `elif [ -x ${p} ]; then ${p} --version 2>/dev/null || printf '%s\\n' '${EXEC_FAILED_SENTINEL}'; ` +
+      `elif [ -x ${p} ]; then printf '%s\\n' '${BD_IN_BIN_DIR_TAG}'; ${p} --version 2>/dev/null || printf '%s\\n' '${EXEC_FAILED_SENTINEL}'; ` +
       `else printf '%s\\n' '${NO_INSTALL_SENTINEL}'; fi`,
     powershell:
-      `if (Get-Command bd -ErrorAction SilentlyContinue) { $bd = 'bd' } elseif (Test-Path -LiteralPath ${ps}) { $bd = ${ps} } else { $bd = $null }; ` +
+      `if (Get-Command bd -ErrorAction SilentlyContinue) { $bd = 'bd' } elseif (Test-Path -LiteralPath ${ps}) { $bd = ${ps}; [Console]::Out.Write('${BD_IN_BIN_DIR_TAG}' + [Environment]::NewLine) } else { $bd = $null }; ` +
       `if ($bd) { try { $out = & $bd --version; if ($LASTEXITCODE -ne 0) { [Console]::Out.Write('${EXEC_FAILED_SENTINEL}') } ` +
       `else { [Console]::Out.Write(($out | Out-String)) } } catch { [Console]::Out.Write('${EXEC_FAILED_SENTINEL}') } } ` +
       `else { [Console]::Out.Write('${NO_INSTALL_SENTINEL}') }; exit 0`,
@@ -2067,7 +2050,7 @@ export async function probeMemberBeads(
       return {
         state: 'version-mismatch',
         detail: `${BD_VERSION_MISMATCH_CODE} bd ${check.found} on the member, expected ${check.expected} (pinned major.minor); the member keeps its fleet tools but sprints refuse it`,
-        fix: beadsMismatchFix('path'),
+        fix: r.stdout.includes(BD_IN_BIN_DIR_TAG) ? beadsMismatchFix('bin-dir', bdPath) : beadsMismatchFix('path'),
       };
     }
     return null;
@@ -2202,7 +2185,6 @@ async function probeRemote(
   let manualInstall: string | undefined;
   // The signed same-core stable release installed instead of the exact build.
   let sameCoreFallback: SameCoreFallback | undefined;
-  let bdVersionWarning: string | undefined;
   if (install) {
     const r = await ensureMemberFleetInstall(agent, deps, { force: forceInstall, replaceFull });
     if (r.state === 'available') {
@@ -2210,7 +2192,6 @@ async function probeRemote(
       if (r.installed) { ctx.installedNow = true; installedNow = true; }
       replaced = r.replaced;
       sameCoreFallback = r.sameCoreFallback;
-      bdVersionWarning = r.bdVersionWarning;
     }
     // Fail closed -- with the install's OWN reason and detail, never a later
     // step's error (apra-fleet-b4g.73) -- when the installer ran or was
@@ -2252,8 +2233,7 @@ async function probeRemote(
   // note about it ride on every later outcome, like a failed upgrade.
   let portFields: Partial<FleetMcpStatus> = {};
   let portNote: string | undefined;
-  const bdNote = bdVersionWarning ? `the member's fleet tools are installed, but its bd is off the pin: ${bdVersionWarning}` : undefined;
-  const notes = (): string[] => [replaceNote, upgradeNote, portNote, bdNote].filter((n): n is string => !!n);
+  const notes = (): string[] => [replaceNote, upgradeNote, portNote].filter((n): n is string => !!n);
   // Every later outcome keeps a failed upgrade visible: a later step's error
   // must never hide it, and an available status still names it.
   const fail: Unavailable = (reason, detail) => {
@@ -2364,7 +2344,6 @@ async function probeRemote(
     ...(manualInstall ? { manualInstall } : {}),
     ...(replaced ? { replacedFullInstall: replaced } : {}),
     ...(sameCoreFallback ? { sameCoreFallback } : {}),
-    ...(bdVersionWarning ? { bdVersionWarning } : {}),
     ...(finalNotes.length ? { detail: finalNotes.join('. ') } : {}),
     ...portFields,
   };

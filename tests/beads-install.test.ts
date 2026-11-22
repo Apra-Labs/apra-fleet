@@ -261,7 +261,7 @@ describe('member PATH: the fleet bin dir is appended for dispatch and execute_co
 describe('fleet-side bd status on a remote member', () => {
   const HOME = '/home/kbrmember';
 
-  function mcpDeps(bd: 'path' | 'bin-dir' | 'missing' | 'broken', log: string[], recorded: FleetMcpStatus[]): MemberFleetMcpDeps {
+  function mcpDeps(bd: 'path' | 'bin-dir' | 'missing' | 'broken' | 'bin-dir-old', log: string[], recorded: FleetMcpStatus[]): MemberFleetMcpDeps {
     const ok = (stdout: string): SSHExecResult => ({ stdout, stderr: '', code: 0 });
     return {
       exec: async (_a, command) => {
@@ -270,6 +270,7 @@ describe('fleet-side bd status on a remote member', () => {
         if (c.includes('command -v bd') || c.includes('Get-Command bd')) {
           if (bd === 'missing') return ok(`${NO_INSTALL_SENTINEL}\n`);
           if (bd === 'broken') return ok('__APRA_FLEET_EXEC_FAILED__\n');
+          if (bd === 'bin-dir-old') return ok('__APRA_FLEET_BD_IN_BIN_DIR__\nbd version 1.0.4\n');
           return ok('bd version 1.3.0\n');
         }
         // Everything else: the member has no apra-fleet (status is unavailable,
@@ -301,6 +302,13 @@ describe('fleet-side bd status on a remote member', () => {
     const s = await probeMemberFleetMcp(makeTestAgent({ os: 'linux', llmProvider: 'claude' }), mcpDeps('path', [], []), { install: false });
     expect(s.beads).toBeUndefined();
     expect(beadsStatusNote(s)).toBe('');
+  });
+
+  it('an off-pin bd in the fleet bin dir: the fix names that path, not the PATH fix', async () => {
+    const s = await probeMemberFleetMcp(makeTestAgent({ os: 'linux', llmProvider: 'claude' }), mcpDeps('bin-dir-old', [], []), { install: false });
+    expect(s.beads).toMatchObject({ state: 'version-mismatch' });
+    expect(s.beads!.fix).toContain(HOME + '/.apra-fleet/bin/bd');
+    expect(s.beads!.fix).not.toContain('remove the other bd from PATH');
   });
 
   it('bd present but failing: recorded as broken', async () => {
