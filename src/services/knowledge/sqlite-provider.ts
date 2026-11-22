@@ -348,6 +348,24 @@ export class SqliteProvider implements MemoryProvider {
       );
     `);
 
+    // kb_import id aliases: a bible entry AUDN deduplicated against an
+    // existing local row (audn_decision 'none') is stored under no row of its
+    // own, so its bible id is unknown locally. The alias records which local
+    // row absorbed it, and applyTombstoneToRow resolves a tombstone for that
+    // bible id through it -- otherwise a merged withdrawal or demotion of the
+    // bible id answers not_found on exactly the clones that already held the
+    // fact. Linked ('update') and flagged imports need no alias: capture()
+    // stores them under the bible id itself. A real row with the bible id
+    // always wins over an alias. Created idempotently; existing DBs start
+    // empty (a re-import of the same bible records the missing aliases).
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS bible_id_aliases (
+        bible_id TEXT PRIMARY KEY,
+        local_id TEXT NOT NULL,
+        recorded_at TEXT NOT NULL
+      );
+    `);
+
     // Keyword index (kb-keyword-index.ts): created on open and rebuilt from
     // entries when its version is missing (a KB from before it existed) or
     // older. Runs last, after every column migration above.
@@ -1015,25 +1033,38 @@ export class SqliteProvider implements MemoryProvider {
     now: string,
     sourceFileHashes: Record<string, string>,
     localBasisOnly = false,
-    keepConfirmed = false
+    keepConfirmed = false,
+    importId?: string
   ): CaptureResult | null {
     const decision = makeAudnDecision(input, candidates, newContent);
     if (!decision) return null;
 
+    // importId (kb_import only: importMode plus preferredId, and the id is
+    // still free) is the bible entry's id. It is KEPT on every AUDN path, so a
+    // later tombstone for that bible id reaches this clone's row: linked and
+    // flagged entries are stored under it, and a deduplicated one records an
+    // alias to the local row that absorbed it. Minting a fresh id here made a
+    // merged withdrawal answer not_found on every clone where AUDN had
+    // matched the entry. The alias means a tombstone for the bible id also
+    // demotes/withdraws the absorbing local row (see applyTombstoneToRow).
     if (decision.decision === 'none') {
+      if (importId !== undefined && importId !== decision.matchedId) {
+        db.prepare('INSERT OR IGNORE INTO bible_id_aliases (bible_id, local_id, recorded_at) VALUES (?, ?, ?)')
+          .run(importId, decision.matchedId, now);
+      }
       return { id: decision.matchedId, audn_decision: 'none' };
     }
 
     if (decision.decision === 'flagged') {
       db.prepare('UPDATE entries SET flagged_for_review = 1 WHERE id = ?').run(decision.matchedId);
-      const newId = randomUUID();
+      const newId = importId ?? randomUUID();
       this.insertEntry(db, newId, { ...input, ...decision.newEntryOverrides }, newContent, now, sourceFileHashes, localBasisOnly);
       this.wireLinks(db, newId, input);
       return { id: newId, audn_decision: 'flagged' };
     }
 
     if (decision.decision === 'update') {
-      const newId = randomUUID();
+      const newId = importId ?? randomUUID();
 
       // keepConfirmed (a member session without the kb_maintainer grant): a
       // CONFIRMED target is never retired by supersedes -- retiring it would
@@ -1263,18 +1294,32 @@ export class SqliteProvider implements MemoryProvider {
     // CONFIRMED entry). Skip AUDN and keep the bible id.
     const verbatim = opts?.verbatim === true && opts.importMode === true && opts.preferredId !== undefined;
     const candidates = verbatim ? [] : this.findAudnCandidates(db, input);
+    // The bible id survives every AUDN path under import mode (see
+    // evaluateAudn). Only a FREE id is used: kb_import checks hasEntry()
+    // before calling capture, and this re-check means an AUDN path never
+    // resolves an id collision by overwriting an existing row -- it falls back
+    // to a fresh id there.
+    const importId = opts?.importMode === true && opts.preferredId !== undefined && !this.hasEntry(opts.preferredId)
+      ? opts.preferredId
+      : undefined;
     if (candidates.length > 0) {
-      const result = this.evaluateAudn(db, input, candidates, content, now, sourceFileHashes, localBasisOnly, opts?.keepConfirmed === true);
-      if (result) return result;
+      const result = this.evaluateAudn(db, input, candidates, content, now, sourceFileHashes, localBasisOnly, opts?.keepConfirmed === true, importId);
+      if (result) {
+        // A linked or flagged import is a new row like an 'add': it keeps the
+        // updated_at the bible carried as its trust time, so the one
+        // re-promotion rule judges it the same way.
+        if (importId !== undefined && result.id === importId && opts?.carriedUpdatedAt !== undefined) {
+          db.prepare('UPDATE entries SET bible_updated_at = ? WHERE id = ?').run(opts.carriedUpdatedAt, importId);
+        }
+        return result;
+      }
     }
 
     // T2.1 (F4, D3, LOW-2): on the pure 'add' path, kb_import preserves the
     // bible entry's id (opts.preferredId) so a re-import dedupes EXACTLY via the
     // id-skip gate (kb_import checks hasEntry() before ever calling capture, so
-    // the id is guaranteed free here). AUDN's update/flagged branches above
-    // always mint a fresh randomUUID -- an id collision with different content is
-    // resolved by AUDN under a new id, never by overwriting the preserved id.
-    const id = opts?.preferredId ?? randomUUID();
+    // the id is guaranteed free here).
+    const id = importId ?? opts?.preferredId ?? randomUUID();
     this.insertEntry(db, id, input, content, now, sourceFileHashes, localBasisOnly);
     if (opts?.importMode === true && opts.carriedUpdatedAt !== undefined) {
       db.prepare('UPDATE entries SET bible_updated_at = ? WHERE id = ?').run(opts.carriedUpdatedAt, id);
@@ -2164,10 +2209,21 @@ export class SqliteProvider implements MemoryProvider {
     id: string, tombstoneAt: string, noteReason: string, evidence: string[],
   ): BibleWithdrawalOutcome {
     const db = this.getDb();
-    const row = db.prepare('SELECT * FROM entries WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    let row = db.prepare('SELECT * FROM entries WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    // A bible id kb_import deduplicated into an existing local row resolves
+    // through its alias (bible_id_aliases), so the tombstone reaches the row
+    // that holds the fact here. A real row with the id always wins.
+    // Side effect: the local row itself is demoted/withdrawn; if that row is
+    // also a bible entry, the next kb_bible_commit tombstones it too
+    // (docs/knowledge-layer.md, "Bible id aliases").
+    if (!row) {
+      const alias = db.prepare('SELECT local_id FROM bible_id_aliases WHERE bible_id = ?').get(id) as { local_id: string } | undefined;
+      if (alias) row = db.prepare('SELECT * FROM entries WHERE id = ?').get(alias.local_id) as Record<string, unknown> | undefined;
+    }
     // NEVER CREATE.
     if (!row) return 'not_found';
     const entry = this.rowToEntry(row);
+    const rowId = entry.id;
 
     if (entry.superseded_at) return 'not_found';
     if (entry.confidence !== 'CONFIRMED') return 'not_confirmed';
@@ -2188,7 +2244,7 @@ export class SqliteProvider implements MemoryProvider {
       demotedAt,
       JSON.stringify(this.demoteBasisHashes(entry.source_files)),
       newContent,
-      id,
+      rowId,
     );
     return 'withdrawn';
   }

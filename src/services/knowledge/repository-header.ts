@@ -12,7 +12,7 @@
 //
 // All values come ONLY from fleet's resolved anchor, never from tool input.
 
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import path from 'node:path';
 import { gitExecutable } from '../../os/git-executable.js';
 
@@ -35,13 +35,23 @@ const HOSTNAME = /^(?:[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?|\[[0-9a-f:.]+\])$/;
 export interface RepositoryIdentity {
   /** Normalised origin remote, `host/path` (see normaliseRepositoryRemote). */
   remote: string;
-  /** HEAD sha of the local folder; undefined when unknown. Must not throw. */
-  commitOf?: () => string | undefined;
+  /**
+   * HEAD sha of the local folder; undefined when unknown. Must not throw. May
+   * return a promise (only a reader's very first read does); the provider awaits it.
+   */
+  commitOf?: () => string | undefined | Promise<string | undefined>;
   /**
    * Checked-out branch of the local folder, percent-encoded; undefined when
-   * unknown or HEAD is detached. Must not throw.
+   * unknown or HEAD is detached. Must not throw. May return a promise like commitOf.
    */
-  branchOf?: () => string | undefined;
+  branchOf?: () => string | undefined | Promise<string | undefined>;
+  /**
+   * The raw origin URL now configured in the local folder when its normalised
+   * form differs from `remote`, else undefined. Never blocks and never throws:
+   * it returns the last value read and refreshes in the background once the
+   * TTL has expired, so a change shows within about one TTL.
+   */
+  originChange?: () => string | undefined;
 }
 
 /**
@@ -117,10 +127,16 @@ export function isValidRepositoryValue(value: string): boolean {
   return slash > 0 && (at < 0 || slash < at);
 }
 
-function percentEncode(value: string): string {
+// escapePercent: also encode a literal '%' as %25. Needed where the value is a
+// free-form name (the branch), else 'a%C3%A9' and 'a' + U+00E9 encode alike and
+// a server cannot decode reliably. NOT used for X-Repository: a remote URL is
+// already percent-encoded by git/the host (`my%20repo`), the receiving server
+// canonicalises that form, and re-escaping would turn it into `my%2520repo` and
+// break the match with the server's own key.
+function percentEncode(value: string, escapePercent = false): string {
   let out = '';
   for (const ch of value) {
-    out += /^[!-~]$/.test(ch)
+    out += /^[!-~]$/.test(ch) && !(escapePercent && ch === '%')
       ? ch
       : Array.from(Buffer.from(ch, 'utf8'), b => `%${b.toString(16).toUpperCase().padStart(2, '0')}`).join('');
   }
@@ -163,17 +179,54 @@ function canonicaliseAzure(value: string): string {
   return value;
 }
 
-function gitOut(folder: string, args: string[]): string | undefined {
+/**
+ * Run git in `folder` without blocking the event loop (execFile, never the
+ * sync variants: this runs on the KB HTTP request path). Undefined on any
+ * failure or after the 3 s timeout.
+ */
+function gitOut(folder: string, args: string[]): Promise<string | undefined> {
   // Same ceiling as resolveProjectSlug / kb-self: the folder itself must be the
   // repository, never a checkout it merely sits inside.
   const env = { ...process.env, GIT_CEILING_DIRECTORIES: path.dirname(folder) };
-  try {
-    return execFileSync(gitExecutable(), args, {
-      cwd: folder, env, encoding: 'utf-8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true,
-    }).trim();
-  } catch {
-    return undefined;
-  }
+  return new Promise(resolve => {
+    try {
+      execFile(gitExecutable(), args, {
+        cwd: folder, env, encoding: 'utf-8', timeout: 3000, windowsHide: true,
+      }, (err, stdout) => resolve(err ? undefined : String(stdout).trim()));
+    } catch {
+      resolve(undefined);
+    }
+  });
+}
+
+/**
+ * A stale-while-revalidate reader around an async `read`. The first call
+ * returns the in-flight promise (the only time a caller waits, bounded by the
+ * read's own timeout); later calls return the last value immediately and, once
+ * `ttlMs` has passed, start at most one background refresh. Concurrent calls
+ * share one in-flight read. A failed read yields undefined (never throws).
+ * `seed` pre-fills the cache so even the first call returns at once.
+ */
+function staleWhileRevalidate<T>(
+  read: () => Promise<T | undefined>,
+  ttlMs: number,
+  seed?: { value: T | undefined },
+): () => T | undefined | Promise<T | undefined> {
+  let cached: { value: T | undefined; at: number } | undefined = seed ? { value: seed.value, at: Date.now() } : undefined;
+  let inflight: Promise<T | undefined> | undefined;
+  const refresh = (): Promise<T | undefined> => {
+    inflight ??= read().catch(() => undefined).then(value => {
+      cached = { value, at: Date.now() };
+      inflight = undefined;
+      return value;
+    });
+    return inflight;
+  };
+  return () => {
+    if (!cached) return refresh();
+    if (Date.now() - cached.at >= ttlMs) void refresh();
+    return cached.value;
+  };
 }
 
 /** A full SHA-1 or SHA-256 commit id, lowercase. */
@@ -183,19 +236,17 @@ export const COMMIT_SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 export const HEAD_COMMIT_TTL_MS = 5000;
 
 /**
- * A reader for the HEAD sha of a local folder, cached for `ttlMs` so it is not
- * re-read on every request. Returns undefined (never throws) when the folder
- * is not a git repository or HEAD cannot be resolved (unborn branch).
+ * A reader for the HEAD sha of a local folder, stale-while-revalidate (see
+ * staleWhileRevalidate): after the TTL a call still gets the last value at
+ * once and one background git read refreshes it. Resolves/returns undefined
+ * (never throws) when the folder is not a git repository or HEAD cannot be
+ * resolved (unborn branch), or git fails or times out.
  */
-export function headCommitReader(folder: string, ttlMs = HEAD_COMMIT_TTL_MS): () => string | undefined {
-  let cached: { value: string | undefined; at: number } | undefined;
-  return () => {
-    const now = Date.now();
-    if (cached && now - cached.at < ttlMs) return cached.value;
-    const sha = gitOut(folder, ['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'])?.toLowerCase();
-    cached = { value: sha && COMMIT_SHA.test(sha) ? sha : undefined, at: now };
-    return cached.value;
-  };
+export function headCommitReader(folder: string, ttlMs = HEAD_COMMIT_TTL_MS): () => string | undefined | Promise<string | undefined> {
+  return staleWhileRevalidate(async () => {
+    const sha = (await gitOut(folder, ['rev-parse', '--verify', '--quiet', 'HEAD^{commit}']))?.toLowerCase();
+    return sha && COMMIT_SHA.test(sha) ? sha : undefined;
+  }, ttlMs);
 }
 
 const BRANCH_REF_PREFIX = 'refs/heads/';
@@ -209,34 +260,31 @@ export function isValidBranchValue(value: string): boolean {
 }
 
 /**
- * The header value for a branch name: characters outside printable ASCII
- * (non-ASCII, control, space) percent-encoded as UTF-8. Undefined when the
+ * The header value for a branch name: '%' and characters outside printable
+ * ASCII (non-ASCII, control, space) percent-encoded as UTF-8, so the value
+ * decodes unambiguously. Undefined when the
  * result is empty or longer than MAX_BRANCH_LENGTH.
  */
 export function branchHeaderValue(branch: string): string | undefined {
-  const value = percentEncode(branch);
+  const value = percentEncode(branch, true);
   return isValidBranchValue(value) ? value : undefined;
 }
 
 /**
  * A reader for the checked-out branch of a local folder (`git symbolic-ref
- * --quiet HEAD`, with `refs/heads/` stripped), cached for `ttlMs` like
- * headCommitReader so a branch switch shows within one TTL. `--short` is not
+ * --quiet HEAD`, with `refs/heads/` stripped), stale-while-revalidate like
+ * headCommitReader, so a branch switch shows within about one TTL. `--short` is not
  * used: it prints `heads/x` when a tag `x` also exists. Returns the header value
  * (see branchHeaderValue), or undefined (never throws) on a detached HEAD, a HEAD
  * not under refs/heads/, a folder that is not a git repository, a git failure or
  * timeout, or an invalid value.
  */
-export function headBranchReader(folder: string, ttlMs = HEAD_COMMIT_TTL_MS): () => string | undefined {
-  let cached: { value: string | undefined; at: number } | undefined;
-  return () => {
-    const now = Date.now();
-    if (cached && now - cached.at < ttlMs) return cached.value;
-    const ref = gitOut(folder, ['symbolic-ref', '--quiet', 'HEAD']);
+export function headBranchReader(folder: string, ttlMs = HEAD_COMMIT_TTL_MS): () => string | undefined | Promise<string | undefined> {
+  return staleWhileRevalidate(async () => {
+    const ref = await gitOut(folder, ['symbolic-ref', '--quiet', 'HEAD']);
     const branch = ref?.startsWith(BRANCH_REF_PREFIX) ? ref.slice(BRANCH_REF_PREFIX.length) : undefined;
-    cached = { value: branch ? branchHeaderValue(branch) : undefined, at: now };
-    return cached.value;
-  };
+    return branch ? branchHeaderValue(branch) : undefined;
+  }, ttlMs);
 }
 
 /**
@@ -246,12 +294,29 @@ export function headBranchReader(folder: string, ttlMs = HEAD_COMMIT_TTL_MS): ()
  * cannot run there). Otherwise the identity is the local folder's origin
  * remote, the commit is its HEAD and the branch its checked-out branch.
  */
-export function resolveRepositoryIdentity(folder: string, remoteUrl?: string): RepositoryIdentity | undefined {
+export async function resolveRepositoryIdentity(
+  folder: string, remoteUrl?: string, ttlMs = HEAD_COMMIT_TTL_MS,
+): Promise<RepositoryIdentity | undefined> {
   if (remoteUrl && remoteUrl.trim()) {
     const remote = normaliseRepositoryRemote(remoteUrl);
     return remote ? { remote } : undefined;
   }
-  const origin = gitOut(folder, ['remote', 'get-url', 'origin']);
+  const origin = await gitOut(folder, ['remote', 'get-url', 'origin']);
   const remote = origin ? normaliseRepositoryRemote(origin) : undefined;
-  return remote ? { remote, commitOf: headCommitReader(folder), branchOf: headBranchReader(folder) } : undefined;
+  if (!remote) return undefined;
+  // The origin is re-read on the same TTL as HEAD, seeded with the value just
+  // read so it never waits. A change is not applied to this identity (X-Repository
+  // stays what X-KB-Project, derived from the same origin, says): it is reported
+  // through originChange and the caller re-selects the provider.
+  const readOrigin = staleWhileRevalidate(() => gitOut(folder, ['remote', 'get-url', 'origin']), ttlMs, { value: origin });
+  return {
+    remote,
+    commitOf: headCommitReader(folder, ttlMs),
+    branchOf: headBranchReader(folder, ttlMs),
+    originChange: () => {
+      const url = readOrigin();
+      const next = typeof url === 'string' ? normaliseRepositoryRemote(url) : undefined;
+      return next !== undefined && next !== remote ? (url as string) : undefined;
+    },
+  };
 }

@@ -359,7 +359,7 @@
  * @typedef {Object} UpdateMemberOptions
  * @property {string} [member_id] - UUID of the member
  * @property {string} [member_name] - Friendly name of the member
- * @property {"auto" | "skip" | "replace-full"} [fleet_install] - "auto": for a remote member, install/upgrade the member's own apra-fleet when missing or older (build-aware), self-register, write its per-folder apra-fleet MCP entry and verify, even when nothing else changed; an install/upgrade that ran (or an install that only now became available) also adds the member apra-fleet tool rules to a claude member's permission allow-list through compose_permissions grant mode, keeping its role and grants (a NOTICE says so; a failure is a WARNING); a full install without the member-install marker is never touched. "replace-full": "auto" plus an explicit opt-in to replace such a full install with a member install (backup of data and fleet.key, uninstall, member install, self-register). "skip": never install. Omit: install only on a provider change. A requested install/upgrade that cannot happen never fails the update: the result adds a WARNING (consequence, exact reason, OS-correct manual install steps; also fleetMcp.manualInstall). Unknown input keys are rejected by the server.
+ * @property {"auto" | "skip" | "replace-full"} [fleet_install] - "auto": for a remote member, install/upgrade the member's own apra-fleet when missing or older (build-aware), self-register, write its per-folder apra-fleet MCP entry and verify, even when nothing else changed; an install/upgrade that ran (or an install that only now became available) also adds the member apra-fleet tool rules to a claude member's permission allow-list through compose_permissions grant mode, keeping its role and grants (a NOTICE says so; a failure is a WARNING); a full install without the member-install marker is never touched. "replace-full": "auto" plus an explicit opt-in to replace such a full install with a member install (backup of data and fleet.key, uninstall, member install, self-register). "skip": never install. Omit: install only on a provider change. An install/upgrade/replace requested with "auto" or "replace-full" that does not happen fails the call: the MCP result has isError true, its text starts with an ERROR line naming the reason (plus a WARNING with consequence and OS-correct manual install steps; also fleetMcp.manualInstall) and structuredContent is {error: "fleet-install-not-done", fleet_install, reason, detail?, memberUpdated: true, memberId, fleetMcp?}; the other settings were saved. Nothing to install (up to date) is a success; an install implied by a provider change that does not happen stays a WARNING. Unknown input keys are rejected by the server.
  * @property {string} [friendly_name] - New friendly name
  * @property {string} [work_folder] - New working directory. For non-local (remote/relay) members, must be a fully-qualified/absolute path -- "~" and relative paths are rejected. A folder may hold at most one LLM member and one LLM-less (llm_provider none) member.
  * @property {string} [host] - New host
@@ -406,7 +406,7 @@
  * @property {number} [port] - Remote members: the port of the member's own apra-fleet install, resolved from its member-install marker; the member MCP URL (per-folder entry and per-session config) uses it
  * @property {"marker" | "default"} [portSource] - Where port came from: the member-install marker, or the built-in default because the install recorded no port (detail says so)
  * @property {{previousVersion: string, removed: string[], backupPath: string}} [replacedFullInstall] - Set by the probe that replaced a full install with a member install (fleet_install "replace-full"): replaced version, what was removed or moved, and the timestamped backup directory on the member
- * @property {string} [manualInstall] - Set when a requested apra-fleet install/upgrade on the member did not happen (any install reason, e.g. no-matching-release, checksum-unavailable, download-failed): OS-correct manual steps to install the orchestrator build on the member by hand (anonymous release download URL, SHA-256 check, member-mode install, then update_member); register_member/update_member print them in a WARNING and still succeed
+ * @property {string} [manualInstall] - Set when a requested apra-fleet install/upgrade on the member did not happen (any install reason, e.g. no-matching-release, checksum-unavailable, download-failed): OS-correct manual steps to install the orchestrator build on the member by hand (anonymous release download URL, SHA-256 check, member-mode install, then update_member); register_member prints them in a WARNING and still succeeds; update_member also fails the call (isError) when fleet_install "auto"/"replace-full" was requested
  * @property {{tag: string, wantedBuild: string, why: string}} [sameCoreFallback] - Set when no release carries the orchestrator's exact build and the member had no apra-fleet or an older core, so the signed stable release of the same core (tag) was installed instead of wantedBuild; register_member/update_member print a NOTICE
  */
 
@@ -436,6 +436,10 @@
  * @property {string} folder - Working directory on the target machine
  * @property {string} [repo_remote_url] - Origin URL of the git repo in `folder`, when known
  * @property {string} [vcsProvider] - VCS provider configured for this member
+ * @property {Array<{label: string, provider: string, scopeUrl: string|null, expiresAt: string|null,
+ *   memberScoped: boolean}>} [vcsCredentials] - Every VCS credential label the member holds (never
+ *   the token). memberScoped: the helper is the member's own per-member file
+ *   (`.fleet-git-credential-<label>.<member id>` in the member home), not the shared legacy one.
  * @property {"read" | "push" | "push+pr" | "admin" | "issues" | "full"} [gitAccess] - Git access level
  *   this member's VCS credentials are minted at (register_member/update_member's git_access). Absent
  *   when the member was registered without an explicit level. Consumers that need to know whether a
@@ -606,15 +610,32 @@
  */
 
 /**
+ * @typedef {Object} LegacyGlobalHelperOutcome
+ * @property {string} scopeUrl - Scope whose global key `credential.<scopeUrl>.helper` was looked at.
+ * @property {"removed" | "not_present" | "kept_for_member" | "failed"} outcome - "removed": fleet's
+ *   legacy value was removed, so git run outside fleet dispatches no longer gets the fleet token
+ *   for that scope. "not_present": no fleet value on the key; nothing changed. "kept_for_member":
+ *   left because another member runs as the same host user; fleet no longer refreshes it.
+ *   "failed": the cleanup failed or its result could not be confirmed; check the key.
+ * @property {number} removedValues - Fleet's own values removed from the key.
+ * @property {number} keptValues - Values fleet did not write (counted, never echoed); always kept.
+ * @property {string|null} keptForMember - Member the legacy helper was kept for, else null.
+ * @property {string|null} notice - The warning line also shown in the text, or null.
+ *
+ * Mirrors src/tools/provision-vcs-auth.ts's LegacyGlobalHelperOutcome.
+ */
+
+/**
  * @typedef {Object} ProvisionVcsAuthStructured
  * @property {boolean} ok - True when the credential was actually deployed onto the member.
  * @property {"ok" | "deployed_unverified" | "deployed_verification_skipped" |
  *   "member_not_found" | "member_offline" | "secret_variable_not_found" |
  *   "secret_variable_denied" | "secret_variable_expired" | "oob_cancelled" |
  *   "credential_missing" | "credential_assembly_unsupported" | "credential_assembly_failed" |
- *   "deploy_threw" | "deploy_failed"} reason - Machine-readable outcome code. Branch on this,
- *   never on the text. "credential_missing": non_interactive was set and the secret field is
- *   absent (message names it; nothing was prompted).
+ *   "deploy_threw" | "deploy_failed" | "scope_url_invalid"} reason - Machine-readable outcome
+ *   code. Branch on this, never on the text. "credential_missing": non_interactive was set and
+ *   the secret field is absent (message names it; nothing was prompted). "scope_url_invalid":
+ *   scope_url is not a plain scheme://host[:port][/path] URL; nothing was deployed.
  * @property {string} provider - The VCS provider requested.
  * @property {string} credentialLabel - Credential label the helper was deployed under
  *   (defaults to the provider name).
@@ -633,6 +654,9 @@
  *   key is dropped, never passed through). Providers additionally mask the token value here to
  *   its first four characters plus asterisks, so this never carries the plaintext token.
  * @property {string|null} expiryWarning - Near-expiry warning text when one applies, else null.
+ * @property {LegacyGlobalHelperOutcome|null} legacyGlobalHelper - Upgrade migration of a legacy
+ *   helper this label held (an older release registered it in the per-OS-user global git
+ *   config), or null when there was none. See LegacyGlobalHelperOutcome.
  * @property {string|null} memberId - Registry id of the resolved member, or null.
  * @property {string|null} memberName - Friendly name of the resolved member, or null.
  * @property {string|null} message - Human-readable cause of a non-ok outcome (e.g. "No repos
@@ -655,6 +679,7 @@
  *   field (api_token / pat / token) returns ok=false with reason "credential_missing" naming the
  *   field. Required non-secret fields are validated before any prompt in both modes. Default false.
  * @property {string} [scope_url] - Git credential scope URL (e.g. "https://github.com/my-org").
+ *   Must be a plain scheme://host[:port][/path] URL, else reason "scope_url_invalid".
  *   Defaults to "https://<host>". For an Azure DevOps repo on the legacy host, pass
  *   "https://ORG.visualstudio.com" so the PAT is bound to the host the member pushes to.
  * @property {"github-app" | "pat"} [github_mode] - GitHub auth mode: github-app (mint via
@@ -666,6 +691,10 @@
  *   docs/api-reference.md for every level). GitHub App access
  *   level override
  * @property {string[]} [repos] - GitHub App repository list override
+ * @property {boolean} [gh_login] - GitHub only: also log the gh CLI in with the new token. gh
+ *   keeps ONE login per OS user, so this replaces the token every other process of that user
+ *   runs gh with. Default: only for label "github" on a remote member no other registered
+ *   member shares; otherwise skipped and metadata.ghCliAuth says why. true: always; false: never.
  * @property {string} [email] - OPTIONAL Bitbucket account email. Ignored for authentication
  *   (git uses the fixed token username x-bitbucket-api-token-auth, REST uses a Bearer token);
  *   kept only as metadata if given.
@@ -742,7 +771,9 @@
  * @property {string} [baseBranch] - The target base branch (the branch the entries merge
  *   into), written to provenance.branch. Omitted: the export folder HEAD branch.
  * @property {string} [baseCommit] - The base commit the entries were verified against,
- *   written to provenance.commit. Omitted: the export folder HEAD commit.
+ *   recorded as a Verified-Against trailer on the auto-commit (never in the file, so two
+ *   branches that each add entries merge without a text conflict). Omitted: the export
+ *   folder HEAD commit.
  */
 
 /**
@@ -766,7 +797,7 @@
  *   or backfill makes no commit.
  * @property {string} baseBranch - The target base branch, written to provenance.branch.
  * @property {string} baseCommit - The base commit the entries were verified against,
- *   written to provenance.commit.
+ *   recorded as a Verified-Against trailer on the local commit (never in the file).
  * @property {string[]} [demoted_ids] - Ids demoted this round (kb_demote). An id whose
  *   local row carries a demoted_at and is now below CONFIRMED is REMOVED from entries and
  *   recorded as an explicit tombstone {id, at, reason} in the bible's optional top-level
@@ -867,8 +898,10 @@
  * One entry of the bible file (.fleet/kb-canonical.json) kb_export and
  * kb_bible_commit write and kb_import reads -- bible format v3, described by
  * memory-contract/v1/bible/kb-canonical.schema.json. The file itself is
- * {version: 3, provenance: {commit, branch, entry_count}, entries: KbBibleEntry[]};
- * readers also accept v2 (same envelope, no hashes) and v1 (a bare entry array).
+ * {version: 3, provenance: {branch}, entries: KbBibleEntry[], demotions?}; a bible
+ * written before the merge-friendly layout also carries provenance.commit and
+ * provenance.entry_count, which readers ignore (the count is entries.length).
+ * Readers also accept v2 (same envelope, no hashes) and v1 (a bare entry array).
  * @typedef {Object} KbBibleEntry
  * @property {string} id - Entry id (unique within the bible; writers refuse a duplicate id).
  * @property {string} type - Content type (knowledge, learning, runbook, context-cache, user-directive).
@@ -1348,6 +1381,8 @@ export class ApraFleet {
      * removes the composed permission/MCP config written for the old
      * provider/folder and re-composes for the member as updated (see
      * docs/api-reference.md).
+     * The MCP result has `isError: true` (and the reason in its text and
+     * structuredContent) when a requested `fleet_install` did not happen.
      * @param {UpdateMemberOptions} options
      */
     async updateMember(options) {
@@ -1465,7 +1500,8 @@ export class ApraFleet {
     /**
      * Export the calling session's CONFIRMED KB entries to the canonical bible
      * file and auto-commit it locally (never pushed). Pass baseBranch/baseCommit
-     * to record the target base branch and base commit in provenance. Writes
+     * to record the target base branch (provenance.branch) and base commit (a
+     * Verified-Against trailer on the auto-commit, never in the file). Writes
      * bible format v3: each added project entry is a KbBibleEntry carrying its
      * source_file_hashes basis; a bible holding a duplicate id is refused.
      * Result JSON: {exported, path, scope, committed}; extract with parseToolJson().
@@ -1483,9 +1519,9 @@ export class ApraFleet {
      * (existing entries kept unless this KB holds them as superseded or
      * invalidated -- those are removed, also when ids is empty; each merged
      * entry is a v3 KbBibleEntry carrying its source_file_hashes basis; a bible
-     * holding a duplicate id is refused), write baseBranch/baseCommit
-     * provenance, and make a local commit scoped to the bible path whose message
-     * lists each removal. Never pushes; re-running with the
+     * holding a duplicate id is refused), write baseBranch to provenance.branch,
+     * and make a local commit scoped to the bible path whose message lists each
+     * removal and carries baseCommit as a Verified-Against trailer. Never pushes; re-running with the
      * same ids after resetting to a newer HEAD re-merges, so a rejected push can
      * be retried. Result JSON: {path, merged, demoted, skipped, removed,
      * entry_count, backfilled, committed}; extract with parseToolJson(). backfilled counts the

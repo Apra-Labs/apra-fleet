@@ -54,8 +54,8 @@
     },
     "provenance": {
       "type": "object",
-      "description": "commit: the base commit the entries were verified against (null when unknown). branch: the target base branch the entries merge into. entry_count: the number of entries in the file.",
-      "required": ["commit", "branch", "entry_count"],
+      "description": "branch: the target base branch the entries merge into (null when unknown); the only provenance key current writers emit. commit and entry_count are LEGACY keys: bibles written before the merge-friendly format carry them (commit: the base commit the entries were verified against; entry_count: the number of entries), readers accept and ignore them, and writers no longer emit them because each is a line two bible-changing branches rewrite differently, so every such pair of branches text-conflicted. The entry count is entries.length; the verified base commit is a Verified-Against trailer on the git commit that wrote the file. See spec.md section 2.8.",
+      "required": ["branch"],
       "properties": {
         "commit": { "type": ["string", "null"] },
         "branch": { "type": ["string", "null"] },

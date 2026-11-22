@@ -89,11 +89,14 @@ async function getJsonWithTimeout(url: string): Promise<unknown> {
   }
 }
 
+/** The supervisor's data dir: FLEET_SE_DATA_DIR (resolved) or ~/.apra-fleet-se. */
+export function resolveSupervisorDataDir(): string {
+  return process.env.FLEET_SE_DATA_DIR ? path.resolve(process.env.FLEET_SE_DATA_DIR) : path.join(os.homedir(), '.apra-fleet-se');
+}
+
 export const realFleetSeProbes: FleetSeProbes = {
   lockDir: () => process.env.APRA_FLEET_SPRINT_LOCK_DIR || path.join(os.tmpdir(), 'apra-fleet-sprint-locks'),
-  supervisorLogPath: () => path.join(
-    process.env.FLEET_SE_DATA_DIR ? path.resolve(process.env.FLEET_SE_DATA_DIR) : path.join(os.homedir(), '.apra-fleet-se'),
-    'logs', 'supervisor.log'),
+  supervisorLogPath: () => path.join(resolveSupervisorDataDir(), 'logs', 'supervisor.log'),
   readDir: dir => fs.readdirSync(dir),
   readFile: file => fs.readFileSync(file, 'utf8'),
   isPidAlive,

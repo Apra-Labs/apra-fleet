@@ -119,6 +119,13 @@ Compose edits files the user may own, so it never destroys them:
   "unreadable" (existence is tested first, and the read's exit code is kept).
   An unreadable `~/.claude.json` raises `MemberConfigUnreadableError` and trust
   seeding never replaces it, so a permission problem cannot turn into data loss.
+  The replace is a compare-and-swap against a fingerprint taken before the
+  re-read; when another writer keeps changing the file it gives up after a few
+  attempts with `E-MEMBER-CONFIG-CHANGED` (typed reason
+  `member-config-changed`), leaving the file as that writer left it. The staged
+  copy always lives in the destination's own directory, so the landing is a
+  same-directory rename. On the operator machine every `~/.claude.json` writer
+  goes through `updateClaudeConfigFile`, the same compare-and-swap.
 
 ## Member-side install
 
@@ -173,12 +180,15 @@ called with `fleet_install: "auto"`), at least as new as the orchestrator, insta
   release's published `SHA256SUMS` before use; a timeout, a checksum mismatch
   or an unavailable checksum is a typed, recoverable `fleetMcp` reason and
   nothing unverified is installed.
-- A requested install/upgrade that does not happen never fails
-  register_member/update_member: the result carries a WARNING with the
+- A requested install/upgrade that does not happen carries a WARNING with the
   consequence (no KB/code tools from the member's own apra-fleet, or its
   installed build kept), the exact reason, and OS-correct manual steps
   (`fleetMcp.manualInstall`: anonymous download, SHA-256 check, member-mode
   install, then `update_member {member_id, fleet_install: "auto"}`).
+  register_member still succeeds. update_member with an explicit
+  `fleet_install` `"auto"`/`"replace-full"` fails the call (`isError`, an
+  `ERROR:` first line, `structuredContent.reason`) after saving its other
+  settings; nothing to install (up to date) is a success.
 - A member install (`install --member`) with `--force` stops only a server a
   previous member install left behind; a running full-install server it did not
   start is refused with `E-FULL-INSTALL-RUNNING`. The fleet never overrides that

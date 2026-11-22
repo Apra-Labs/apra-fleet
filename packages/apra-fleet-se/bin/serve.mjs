@@ -22,7 +22,9 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { createSupervisor, DEFAULT_SERVICE_PORT, DEFAULT_SERVICE_HOST, SUPERVISOR_ALLOWED_HOSTS_ENV, readJsonBody, sendJson } from '../src/supervisor/server.mjs';
-import { createLedger } from '../src/supervisor/ledger.mjs';
+import { createLedger, defaultDataDir as defaultSupervisorDataDir } from '../src/supervisor/ledger.mjs';
+import { detachSupervisor } from '../src/supervisor/detach.mjs';
+import { createHeartbeat, resolveHeartbeatIntervalMs } from '../src/supervisor/heartbeat.mjs';
 import { createHistory, HISTORY_EVENTS } from '../src/supervisor/history.mjs';
 import { createSpawner } from '../src/supervisor/spawner.mjs';
 import { createReconciler, registerReservationRoutes, killPid } from '../src/supervisor/reconcile.mjs';
@@ -86,11 +88,21 @@ Options:
                             logs a WARNING and reports beads as unknown until
                             GET /api/health?refresh=1 finds one. A path that
                             does not exist is an error.
+      --detach              Respawn the supervisor as a detached background process
+                            (survives this terminal closing), wait until its
+                            /api/health answers with the child's pid, print the
+                            pid/port and exit 0. On timeout, a port already taken
+                            by another process, or an early child exit it kills
+                            the child it started, prints the reason and the log
+                            path (<dataDir>/logs/supervisor-launch.log) and exits
+                            non-zero. All other options are passed through.
   -h, --help                Show this help message.
 
 Environment:
   FLEET_SE_DATA_DIR                 Service data dir (ledger/history/logs and
                                     child-id-allocator.json).
+  FLEET_SE_HEARTBEAT_INTERVAL_MS    Interval (ms) between supervisor.json liveness
+                                    writes in the data dir. Default: 15000.
   FLEET_SE_SWEEP_OWNER_DATA_DIR     Scope the dolt-orphan-sweep to ephemeral
                                     dolt sql-servers whose --data-dir is under
                                     this path, so an isolated supervisor
@@ -199,6 +211,7 @@ export function parseServeArgs(argv) {
                 host: { type: 'string' },
                 'allowed-host': { type: 'string', multiple: true },
                 'beads-dir': { type: 'string' },
+                detach: { type: 'boolean' },
                 help: { type: 'boolean', short: 'h' },
             },
             strict: true,
@@ -246,6 +259,21 @@ export async function serveMain(argv = process.argv.slice(2), deps = {}) {
     // unaffected). This is the supervisor's own equivalent of spawner.mjs's
     // per-sprint-child raw log; a dashboard link to GET /supervisor/log is
     // registered further down, once `supervisor` exists.
+    // --detach: this process is only the launcher; the real supervisor is the
+    // detached child (same entry point, flag removed).
+    if (values.detach) {
+        const detachPort = values.port !== undefined ? Number(values.port) : DEFAULT_SERVICE_PORT;
+        if (!Number.isInteger(detachPort) || detachPort < 1 || detachPort > 65535) {
+            console.error(`Error: --port must be a valid TCP port number, got "${values.port}".`);
+            return { exitCode: 1 };
+        }
+        const { exitCode } = await detachSupervisor({
+            argv, scriptPath: fileURLToPath(import.meta.url), dataDir: defaultSupervisorDataDir(),
+            port: detachPort, host: values.host,
+        });
+        return { exitCode };
+    }
+
     const selfLog = installSelfLogTee();
     process.once('exit', () => selfLog.stop());
     // Final synchronous exit line (cause + exit code) on every observable exit
@@ -658,6 +686,19 @@ export async function serveMain(argv = process.argv.slice(2), deps = {}) {
 
     await supervisor.start();
 
+    // Liveness record <dataDir>/supervisor.json (src/supervisor/heartbeat.mjs):
+    // started once the port is bound, final record (stoppedAt) written last,
+    // after shutdownRequested below.
+    const heartbeat = createHeartbeat({
+        dataDir: defaultSupervisorDataDir(),
+        port: supervisor.port,
+        beadsDir: discovered ? discovered.beadsDir : null,
+        version: readServeVersion(),
+        intervalMs: resolveHeartbeatIntervalMs(),
+        log: (m) => console.error(m),
+    });
+    heartbeat.start();
+
     // Restart reconciliation (eft.5.4) + re-adoption (eft.4.5): the ledger
     // seam has now loaded from disk. Start the history log, then PID-probe
     // every reloaded entry -- dead children release both axes and are marked
@@ -676,11 +717,20 @@ export async function serveMain(argv = process.argv.slice(2), deps = {}) {
     // Keep the process alive until an explicit shutdown resolves. Awaiting this
     // is what makes `fleet-se serve` "always-on" -- nothing else drives exit.
     await supervisor.shutdownRequested;
+    heartbeat.stop();
     try { beadsView.stop(); } catch (err) { console.error('[supervisor] beadsView stop failed:', err); }
     try { if (typeof backlogMember.stop === 'function') backlogMember.stop(); } catch (err) { console.error('[supervisor] backlogMember stop failed:', err); }
     const hung = supervisor.hungSeams;
     console.log(`[supervisor] exiting (code 0)${hung.length ? `; seams that did not stop in time: ${hung.join(', ')}` : ''}`);
     return { exitCode: 0 };
+}
+
+function readServeVersion() {
+    try {
+        return JSON.parse(fs.readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8')).version ?? null;
+    } catch {
+        return null;
+    }
 }
 
 function isMainModule() {

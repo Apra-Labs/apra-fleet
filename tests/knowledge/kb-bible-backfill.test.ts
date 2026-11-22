@@ -161,7 +161,8 @@ describe('kb_bible_commit legacy backfill', () => {
     const bible = readBible();
     expect(bible.version).toBe(BIBLE_FORMAT_VERSION);
     expect(bible.entries.map((e: { id: string }) => e.id).sort()).toEqual(legacy.map(e => e.id as string).sort());
-    expect(bible.provenance.entry_count).toBe(legacy.length);
+    expect(bible.entries).toHaveLength(legacy.length);
+    expect(bible.provenance.entry_count).toBeUndefined();
     const withHashes = bible.entries.filter((e: Record<string, unknown>) => e.source_file_hashes).map((e: { id: string }) => e.id).sort();
     expect(withHashes).toEqual([k1, k2].sort());
     const bases = provider.getSourceFileBases([k1, k2]);

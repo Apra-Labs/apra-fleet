@@ -76,8 +76,8 @@ function makeGitbashInstallFixture({ initialVersion = null, installLockedThenOk 
             installed = DOLT_VERSION.replace(/^v/, '');
             return { ok: true, output: '', error: null };
         }
-        if (/Stop-Process/.test(decoded)) {
-            return { ok: true, output: '', error: null };
+        if (/KILLED:/.test(decoded)) {
+            return { ok: true, output: 'KILLED:4321', error: null };
         }
         return { ok: true, output: '', error: null };
     };
@@ -111,7 +111,7 @@ test('ensurePinnedDolt: windows+gitbash locked-file retry wraps killProcessAtPat
     const result = await ensurePinnedDolt({ command, member: 'winbash3', platform: 'win32', shell: 'gitbash' });
     assert.equal(result.pinned, true);
 
-    const killCalls = calls.filter((c) => decodeEncodedCommand(c) && /Stop-Process/.test(decodeEncodedCommand(c)));
+    const killCalls = calls.filter((c) => decodeEncodedCommand(c) && /KILLED:/.test(decodeEncodedCommand(c)));
     check(killCalls.length > 0, 'a locked-file install failure must still trigger a kill attempt for a gitbash member');
     for (const c of killCalls) {
         check(/^powershell -NoProfile -EncodedCommand [A-Za-z0-9+/=]+$/.test(c), `kill command must be a bash-invocable -EncodedCommand wrapper, got: ${c}`);

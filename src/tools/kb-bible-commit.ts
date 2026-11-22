@@ -18,12 +18,14 @@ import {
   assertNoDuplicateBibleIds,
   BIBLE_FORMAT_VERSION,
   bibleContentChanged,
+  bibleProvenance,
   commitBiblePath,
   compareById,
   isGitRepo,
   readBibleDocument,
   requireLocalFolder,
   toCanonicalEntry,
+  verifiedAgainstTrailer,
   withSourceFileHashes,
   type CanonicalBible,
   type CanonicalEntry,
@@ -145,7 +147,7 @@ export const kbBibleCommitSchema = z.object({
   baseBranch: z.string().min(1)
     .describe('The sprint\'s target base branch (the branch the work merges into). Written to provenance.branch.'),
   baseCommit: z.string().min(1)
-    .describe('The base commit the entries were verified against. Written to provenance.commit.'),
+    .describe('The base commit the entries were verified against. Recorded as a Verified-Against trailer on the local commit, not in the file (a per-file commit line would make every two bible-changing branches conflict); also the commit whose bible the demotion and restore rules read.'),
   // Removed pre-redesign scope keys: declared only so a caller still passing one
   // is refused with E-SCOPE-KEY-REMOVED instead of silently re-scoped.
   ...KB_REMOVED_SCOPE_KEYS_SHAPE,
@@ -576,12 +578,10 @@ export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor
 
   const bible: CanonicalBible = {
     version: BIBLE_FORMAT_VERSION,
-    provenance: {
-      commit: input.baseCommit,
-      branch: input.baseBranch,
-      // Entries only -- a tombstone is not an entry.
-      entry_count: entries.length,
-    },
+    // Branch only: baseCommit goes into the commit message trailer, and the
+    // entry count is entries.length -- both were lines every bible-changing
+    // branch rewrote differently, so two such branches always conflicted.
+    provenance: bibleProvenance(input.baseBranch),
     entries,
     // Omitted entirely when there are none, so a bible that never saw a
     // demotion stays byte-identical to one written before the field existed.
@@ -595,7 +595,7 @@ export async function kbBibleCommit(input: KbBibleCommitInput, anchor?: KbAnchor
   if (isGitRepo(repoPath) && bibleContentChanged(repoPath, outPath)) {
     const message = bibleCommitMessage(
       merged.length, removed, entries.length, backfilled, demoted.length, withdrawn.length, restored.length,
-    );
+    ) + verifiedAgainstTrailer(input.baseCommit);
     try {
       commitBiblePath(repoPath, outPath, message);
     } catch (err) {
@@ -795,7 +795,7 @@ async function commitTombstonesOnly(
 
   const bible: CanonicalBible = {
     version: BIBLE_FORMAT_VERSION,
-    provenance: { commit: input.baseCommit, branch: input.baseBranch, entry_count: entries.length },
+    provenance: bibleProvenance(input.baseBranch),
     entries,
     ...(demotions.length > 0 ? { demotions } : {}),
   };
@@ -804,7 +804,8 @@ async function commitTombstonesOnly(
 
   let committed = false;
   if (isGitRepo(repoPath) && bibleContentChanged(repoPath, outPath)) {
-    const message = bibleCommitMessage(0, removed, entries.length, 0, 0, withdrawn.length, restored.length);
+    const message = bibleCommitMessage(0, removed, entries.length, 0, 0, withdrawn.length, restored.length)
+      + verifiedAgainstTrailer(input.baseCommit);
     try {
       commitBiblePath(repoPath, outPath, message);
     } catch (err) {

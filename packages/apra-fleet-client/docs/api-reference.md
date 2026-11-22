@@ -517,7 +517,7 @@ error naming the key (the member is not updated) -- they are no longer silently 
 |---|---|---|
 | `member_id` | `string?` | UUID of the member. |
 | `member_name` | `string?` | Friendly name of the member. |
-| `fleet_install` | `"auto" \| "skip" \| "replace-full"?` | `"auto"`: for a remote member, probe it and install/upgrade its own apra-fleet when missing or older than the orchestrator (build-aware: same-core different builds upgrade, newer cores never downgrade), self-register, write its per-folder apra-fleet MCP entry and verify (for a claude member the entry is only the fallback of the per-session `--mcp-config`, so neither its write nor its check gates `fleetMcp`), even when nothing else changed; an install/upgrade that ran (or an install that only now became available) also adds the member apra-fleet tool rules to a claude member's permission allow-list through `compose_permissions` grant mode, keeping its role and grants (a `NOTICE` says so; a failure is a `WARNING`); the result includes the `fleetMcp` line (then `member_detail` with `refresh: true`); a full install (no member-install marker) is never touched. `"replace-full"`: everything `"auto"` does, plus an explicit opt-in to replace such a full install with a member install (back up data and fleet.key to a timestamped dir, uninstall with the installed binary, stop the linux fleet-supervisor unit, move data aside, member install, self-register); refused with no destructive command when the marker probe fails; `fleetMcp.replacedFullInstall` reports it. `"skip"`: no install. Omitted: install only on a provider change. A requested install/upgrade that cannot happen (no release for the orchestrator build, checksum or download failure, unsupported platform, full install present, ...) never fails the update: the result adds a `WARNING` naming the consequence (no KB/code tools from the member's own apra-fleet, or its installed build kept), the exact reason and OS-correct manual install steps (also `fleetMcp.manualInstall`). |
+| `fleet_install` | `"auto" \| "skip" \| "replace-full"?` | `"auto"`: for a remote member, probe it and install/upgrade its own apra-fleet when missing or older than the orchestrator (build-aware: same-core different builds upgrade, newer cores never downgrade), self-register, write its per-folder apra-fleet MCP entry and verify (for a claude member the entry is only the fallback of the per-session `--mcp-config`, so neither its write nor its check gates `fleetMcp`), even when nothing else changed; an install/upgrade that ran (or an install that only now became available) also adds the member apra-fleet tool rules to a claude member's permission allow-list through `compose_permissions` grant mode, keeping its role and grants (a `NOTICE` says so; a failure is a `WARNING`); the result includes the `fleetMcp` line (then `member_detail` with `refresh: true`); a full install (no member-install marker) is never touched. `"replace-full"`: everything `"auto"` does, plus an explicit opt-in to replace such a full install with a member install (back up data and fleet.key to a timestamped dir, uninstall with the installed binary, stop the linux fleet-supervisor unit, move data aside, member install, self-register); refused with no destructive command when the marker probe fails; `fleetMcp.replacedFullInstall` reports it. `"skip"`: no install. Omitted: install only on a provider change. An install/upgrade/replace requested with `"auto"` or `"replace-full"` that does not happen (no release for the orchestrator build, checksum, download or transfer failure, unsupported platform, full install present, ...) fails the call after saving the other settings: `isError: true`, the text starts with an `ERROR:` line naming the reason and keeps the `WARNING` naming the consequence (no KB/code tools from the member's own apra-fleet, or its installed build kept), the exact reason and OS-correct manual install steps (also `fleetMcp.manualInstall`); `structuredContent` is `{error: "fleet-install-not-done", fleet_install, reason, detail?, memberUpdated: true, memberId, fleetMcp?}`. Nothing to install (up to date) is a success; an install implied by a provider change that does not happen stays a `WARNING`. |
 | `friendly_name` | `string?` | New friendly name. |
 | `work_folder` | `string?` | New working directory. For non-local (remote/relay) members, must be a fully-qualified/absolute path (e.g. `/home/bella/repo` or `C:\Users\bella\repo`) -- tilde and relative paths are rejected. A folder may hold at most one LLM member and one LLM-less (llm_provider none) member. A real change removes what `compose_permissions` wrote in the OLD folder (per-folder `apra-fleet` MCP entry, permission keys, `.git/info/exclude` lines) and re-runs `compose_permissions`, so the new folder gets its `?member=<uuid>` entry at once. |
 | `host` | `string?` | New host (remote members only). |
@@ -703,18 +703,20 @@ message naming the route.
 Calls `kb_export` -- exports the calling session's CONFIRMED KB entries to the
 canonical bible file and auto-commits it locally (never pushed). Options:
 `scope?` (`"project" | "global"`), `baseBranch?`, `baseCommit?`. When given,
-`baseBranch` (the target base branch the entries merge into) and `baseCommit`
-are written to the bible's `provenance.branch` / `provenance.commit`; when
-omitted they default to the export folder's HEAD branch and commit. Result
+`baseBranch` (the target base branch the entries merge into) is written to the
+bible's `provenance.branch` and `baseCommit` to a `Verified-Against` trailer on
+the auto-commit (never into the file: a per-file commit or entry count would be
+a line two bible-changing branches both rewrite, so they would text-conflict);
+when omitted they default to the export folder's HEAD branch and commit. Result
 JSON (via `parseToolJson`): `{exported, path, scope, committed}`.
 
 #### `kbBibleCommit(options: KbBibleCommitOptions)`
 
 Calls `kb_bible_commit` -- merges exactly `ids` into the bible at entry level
 (only the given ids are added or replaced; every existing entry is kept unless
-the KB holds it as superseded or invalidated), writes `baseBranch` /
-`baseCommit` into provenance, and makes a local commit scoped to the bible
-path. It never pushes. Every bible entry the KB holds as superseded or
+the KB holds it as superseded or invalidated), writes `baseBranch` to
+`provenance.branch`, and makes a local commit scoped to the bible path carrying
+`baseCommit` as a `Verified-Against` trailer. It never pushes. Every bible entry the KB holds as superseded or
 invalidated is removed at each call (also with an empty `ids`) and listed in
 `removed` as `{id, reason}` (reason `superseded` or `invalidated`) and in the
 commit message; an entry unknown to the KB, or CONFIRMED and current, is never
@@ -756,7 +758,8 @@ id's local trust time is strictly after the tombstone `at` (a real re-promotion,
 which clears it); otherwise the id is skipped with reason `demoted_tombstone` and
 the tombstone kept. An id found in both entries and demotions loses its entry on
 every call (the tombstone wins) and is listed in `removed` with reason
-`tombstoned`. `provenance.entry_count` counts entries only.
+`tombstoned`. The result's `entry_count` counts entries only; the file itself
+carries no entry count (it is `entries.length`).
 
 Optional `withdrawals` (`[{id, note, evidence_files}]`; `note` at least 20
 characters after whitespace is collapsed, at least one repo-relative evidence

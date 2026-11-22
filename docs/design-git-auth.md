@@ -200,6 +200,78 @@ git config --global credential.helper ~/.fleet-git-credential`);
 }
 ```
 
+> As implemented, the helper is NOT registered in the global (or any) git config:
+> several members can run as one OS user on one host, and a global entry was shared
+> and overwritten by each of them. `provision_vcs_auth` writes one helper file per
+> member AND label (`.fleet-git-credential-<label>.<member id>` in the member home)
+> and records it on the member (`vcsCredentials`). Every fleet dispatch to the member
+> (execute_command, execute_prompt, vcs_credential_exec) prepends a statement that
+> sets `GIT_CONFIG_PARAMETERS` for that one command, registering exactly that
+> member's helpers per scope URL, so every git it starts -- in the clone, a worktree,
+> or bd/dolt's own cache repository -- finds them. See `src/services/vcs-git-env.ts`.
+>
+> The `gh` CLI is different: it keeps one login per OS user, so a GitHub deploy
+> runs `gh auth login` only for label `github` on a remote member no other
+> registered member shares, unless the caller passes `gh_login: true` (or never,
+> with `false`). A local member's gh login is the operator's own and is left
+> alone by default. A different access level or repo set is provisioned under
+> its own label and used per call through `vcs_credential_exec`, which changes
+> no host-wide identity. See `ghLoginDecision` in `src/services/vcs/github.ts`.
+>
+> Consequence: because nothing is in git config, a git command run on a member
+> host OUTSIDE a fleet dispatch (an interactive shell, cron, another tool) gets no
+> fleet credential. Run it through `execute_command` or `vcs_credential_exec`.
+> Each helper value is `!'<home>/<file>'` with the home expanded by the member
+> shell and single-quote-escaped for both the helper shell and
+> `GIT_CONFIG_PARAMETERS`, so a home holding an apostrophe or a space works.
+> A legacy entry (deployed by an older release, still in the member's record) is
+> registered too, from its shared legacy file, on a scope that also has a
+> member-scoped helper: the prefix resets that scope's global list, which would
+> otherwise hide it. Order is the provider-named label first, either kind.
+
+#### Upgrading from 0.4.5 or older
+
+Releases up to 0.4.5 registered the helper in the per-OS-user global git config
+(`credential.<scope>.helper` = `""` then `<home>/.fleet-git-credential-<label>[.bat]`),
+so plain git anywhere on that user got the fleet token. After the upgrade:
+
+- Fleet dispatches keep working; nothing to do.
+- The first re-provision of each such label (a sprint preflight does this
+  automatically) removes from that global key ONLY fleet's own value, and the
+  empty `""` entry when no other value is left. Any other value on the key (for
+  example `!gh auth git-credential`) and every other key stay as they are. When
+  another registered member runs as the same host user, nothing is removed:
+  the key is kept for that member, but fleet no longer refreshes the file it
+  points at, so a GitHub App token in it expires within about an hour.
+- `provision_vcs_auth` says which happened: a `[WARN] Upgrade:` line and
+  `structuredContent.legacyGlobalHelper.outcome` (`removed`, `kept_for_member`,
+  `not_present`, `failed`). `revoke_vcs_auth` prints the same line;
+  `remove_member` and the expiry cleanup log it.
+- gh: a local member, and a member sharing its host user, no longer logs gh in by
+  default (`metadata.ghCliAuth` says so); pass `gh_login: true` to opt in.
+
+To keep host git (your shell, cron, hooks) using a member's fleet token, register
+that member's own helper file in the global config yourself. Fleet rewrites the
+file in place on every re-provision, so token refreshes reach it; it never
+touches this entry. POSIX (Linux, macOS):
+
+```bash
+git config --global --add credential.https://github.com.helper \
+  '!'"'$HOME/.fleet-git-credential-github.<member id>'"
+```
+
+Windows (PowerShell; Git Bash is the same with `$(cygpath -m "$HOME")`):
+
+```powershell
+git config --global --add credential.https://github.com.helper `
+  ("!'" + ($env:USERPROFILE -replace '\\','/') + "/.fleet-git-credential-github.<member id>.bat'")
+```
+
+Use the member's id (`member_detail`), the credential's scope URL and label. If
+the home path contains an apostrophe, write it as `'\''` inside the quotes.
+`revoke_vcs_auth` and `remove_member` delete that file; then remove the entry
+too (`git config --global --edit`).
+
 ### Backend: Azure DevOps
 
 Use an **Azure AD App Registration** (Service Principal):
@@ -246,6 +318,15 @@ Member startup / first git operation
         v
   Member deregistered? Token expires naturally (1hr max)
 ```
+
+Each provision schedules a cleanup timer for its label at the token expiry.
+Timers live in the fleet server process that provisioned, while the member
+registry is shared on disk by every server process on the host. A timer
+therefore revokes only when the label's record still holds the expiry it was
+scheduled for: after a re-provision from another process the record carries
+the newer token's expiry and the stale timer leaves that token in place
+(`src/services/credential-cleanup.ts`). Re-provisioning never revokes the
+replaced token at GitHub; it stays valid until it expires.
 
 ### MCP Tool Interface
 

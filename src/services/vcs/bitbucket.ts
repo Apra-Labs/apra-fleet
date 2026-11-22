@@ -114,12 +114,12 @@ export const bitbucketProvider: VcsProviderService = {
     promptFor: (memberName) => `Enter Bitbucket API token for ${memberName}`,
   },
 
-  async deploy(_agent, cmds, exec, credentials, label?, scopeUrl?) {
+  async deploy(agent, cmds, exec, credentials, label?, scopeUrl?) {
     const creds = credentials as BitbucketCredentials;
     // Always the fixed token username. A member provisioned by 0.4.4 carries
     // username=<email> in this same helper file; the write below replaces the
     // whole file, so a re-provision upgrades it, and nothing reads the old line.
-    await exec(cmds.gitCredentialHelperWrite(HOST, BITBUCKET_TOKEN_USERNAME, creds.api_token, label, scopeUrl));
+    await exec(cmds.gitCredentialHelperWrite(HOST, BITBUCKET_TOKEN_USERNAME, creds.api_token, label, scopeUrl, agent.id));
     return {
       success: true,
       message: 'Bitbucket credentials deployed',
@@ -130,8 +130,8 @@ export const bitbucketProvider: VcsProviderService = {
     };
   },
 
-  async revoke(_agent, cmds, exec, label?, scopeUrl?) {
-    await exec(cmds.gitCredentialHelperRemove(HOST, label, scopeUrl));
+  async revoke(agent, cmds, exec, label?, scopeUrl?) {
+    await exec(cmds.gitCredentialHelperRemove(HOST, label, scopeUrl, agent.id));
     return { success: true, message: 'Bitbucket credentials revoked' };
   },
 

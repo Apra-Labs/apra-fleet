@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi, afterAll, inject } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -8,6 +8,30 @@ import { kbImport } from '../../src/tools/kb-import.js';
 import { kbExport } from '../../src/tools/kb-export.js';
 import * as kbProvidersModule from '../../src/services/knowledge/kb-providers.js';
 import { FLEET_DIR } from '../../src/paths.js';
+import { releaseFileDataDir, fileDataDirViolations } from '../helpers/file-kb-data-dir.js';
+import { FLEET_DIR as ISOLATED_FLEET_DIR } from '../../src/paths.js';
+import { KB_CONFIG_PATH as ISOLATED_KB_CONFIG_PATH } from '../../src/services/knowledge/kb-config.js';
+
+// This file's OWN fleet data dir, claimed before any src module loads
+// (src/paths.ts fixes FLEET_DIR at import). The per-run data dir tests/setup.ts
+// provides is shared by every file of the run, and so is the KB config file
+// in it (<data dir>/knowledge/config.json), which this file writes and the
+// code under test reads.
+const fileDataDir = await vi.hoisted(async () =>
+  (await import('../helpers/file-kb-data-dir.js')).claimFileDataDir('kb-bible-truncation-commit'));
+afterAll(() => releaseFileDataDir(fileDataDir));
+
+// ISOLATION GUARD: fails if this suite reads the run-shared data dir again --
+// the hoisted claim removed, moved below the imports (FLEET_DIR is then fixed
+// to the shared dir), or the dir not unique to this file.
+describe('isolation guard', () => {
+  it('this suite reads its own fleet data dir and KB config file, not the run-shared ones', () => {
+    expect(fileDataDirViolations({
+      label: 'kb-bible-truncation-commit', claimed: fileDataDir, fleetDir: ISOLATED_FLEET_DIR,
+      kbConfigPath: ISOLATED_KB_CONFIG_PATH, runSharedDir: inject('APRA_FLEET_TEST_DATA_DIR'),
+    })).toEqual([]);
+  });
+});
 
 /**
  * apra-fleet-ong: kb_export silently truncated the COMMITTED team bible when
@@ -230,12 +254,12 @@ describe('apra-fleet-ong: global-scope shrink guard', () => {
     expect(git(repoDir, ['log', '--format=%an|%s'])).not.toContain('pm-kb');
 
     // The truncation is on disk and dirty -- a human can see and reject it --
-    // and legible in the diff via the v2 entry_count.
+    // and legible in the diff (the removed entry blocks).
     const status = git(repoDir, ['status', '--porcelain', '--', GLOBAL_BIBLE_REL]).trim();
     expect(status).toContain(GLOBAL_BIBLE_REL);
     const written = JSON.parse(fs.readFileSync(path.join(repoDir, GLOBAL_BIBLE_REL), 'utf-8'));
     expect(written.version).toBe(3);
-    expect(written.provenance.entry_count).toBe(2);
+    expect(written.entries).toHaveLength(2);
     expect(written.entries.map((e: { id: string }) => e.id)).toEqual(['aaa-present-1', 'bbb-present-2']);
   });
 
@@ -250,6 +274,6 @@ describe('apra-fleet-ong: global-scope shrink guard', () => {
     // Recorded honestly: opting in re-arms the original failure for the global
     // file. If a guard is ever wanted there, THIS is the assertion that must flip.
     expect(result.committed).toBe(true);
-    expect(globalBibleAtHead()).toHaveProperty('provenance.entry_count', 2);
+    expect(globalBibleAtHead()).toHaveProperty('entries.length', 2);
   });
 });

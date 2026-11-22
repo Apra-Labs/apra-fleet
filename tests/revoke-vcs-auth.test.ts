@@ -37,7 +37,7 @@ describe('revokeVcsAuth', () => {
     mockTestConnection.mockResolvedValue({ ok: false, latencyMs: 0, error: 'Timeout' });
 
     const result = await revokeVcsAuth({ member_id: member.id, provider: 'bitbucket' });
-    expect(result).toContain('❌');
+    expect(result).toContain('[FAIL]');
     expect(result).toContain('offline');
   });
 
@@ -49,12 +49,16 @@ describe('revokeVcsAuth', () => {
       mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
       const result = await revokeVcsAuth({ member_id: member.id, provider });
-      expect(result).toContain('✅');
+      expect(result).toContain('[OK]');
       expect(result).toContain('revoked');
 
-      const cmd = mockExecCommand.mock.calls[0][0];
-      expect(cmd).toContain('fleet-git-credential');
-      expect(cmd).toContain('credential.https://');
+      // No record for this label: the member's own per-member file, then the
+      // shared legacy file and its global key (no host+user sharer here).
+      const sent = mockExecCommand.mock.calls.map(c => String(c[0]));
+      expect(sent[0]).toContain(`fleet-git-credential-${provider}.${member.id}`);
+      expect(sent[0]).not.toContain('git config');
+      expect(sent[1]).toContain(`fleet-git-credential-${provider}`);
+      expect(sent[1]).toContain('credential.https://');
     });
   }
 
@@ -65,7 +69,7 @@ describe('revokeVcsAuth', () => {
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
     const result = await revokeVcsAuth({ member_id: member.id, provider: 'github', label: 'work-gh' });
-    expect(result).toContain('✅');
+    expect(result).toContain('[OK]');
 
     const cmd = mockExecCommand.mock.calls[0][0];
     expect(cmd).toContain('fleet-git-credential-work-gh');
@@ -79,7 +83,7 @@ describe('revokeVcsAuth', () => {
     mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
 
     const result = await revokeVcsAuth({ member_id: member.id, provider: 'bitbucket' });
-    expect(result).toContain('✅');
+    expect(result).toContain('[OK]');
 
     const cmd = mockExecCommand.mock.calls[0][0];
     expect(cmd).toContain('fleet-git-credential-bitbucket');
@@ -92,7 +96,7 @@ describe('revokeVcsAuth', () => {
     mockExecCommand.mockRejectedValue(new Error('SSH channel closed'));
 
     const result = await revokeVcsAuth({ member_id: member.id, provider: 'github' });
-    expect(result).toContain('❌');
+    expect(result).toContain('[FAIL]');
     expect(result).toContain('SSH channel closed');
   });
 });

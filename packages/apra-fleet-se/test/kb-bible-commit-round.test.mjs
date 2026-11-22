@@ -1,7 +1,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { createKbWorkClient, KB_BIBLE_SKIP_RETRY_ROUNDS } from '../fleet-sprint/kb.mjs';
-import { selfMaintainer } from './helpers/kb-maintainer-fakes.mjs';
+import { selfMaintainer, currentServerKbWork } from './helpers/kb-maintainer-fakes.mjs';
 import { createSyncBrackets, createGitSync } from '../fleet-sprint/git-sync.mjs';
 import { syncMemberBefore, syncMemberAfter, syncMemberAfterOrdered, isNoMutationDispatchFailure } from '../fleet-sprint/runner.js';
 
@@ -44,7 +44,7 @@ function harness({ pushFailures = 0, committed = true, unpushed = false, skipped
         if (tool === 'kb_promote') return { id: args.id, previous_confidence: 'INFERRED', new_confidence: 'CONFIRMED' };
         return {};
     };
-    const client = createKbWorkClient({
+    const client = currentServerKbWork(createKbWorkClient, {
         memberCall,
         maintainers: selfMaintainer(MAINT, ['maint', 'reviewer-1']),
         gPull: async (m, opts = {}) => { events.push({ ev: opts.resetToRemoteTip ? 'G-pull(reset)' : 'G-pull', member: m }); },
@@ -315,7 +315,7 @@ describe('commitRound: the review-round bible commit on the kb_maintainer', () =
     test('committed:false with no publication check wired keeps the ids queued with a WARN -- never assumed published', async () => {
         const logs = [];
         const events = [];
-        const client = createKbWorkClient({
+        const client = currentServerKbWork(createKbWorkClient, {
             memberCall: async (m, tool, args) => {
                 if (tool === 'kb_query') return { l1_results: offeredEntries.map((id) => ({ id })) };
                 events.push(tool);
@@ -353,7 +353,7 @@ describe('commitRound: the review-round bible commit on the kb_maintainer', () =
     test('an unresolvable base keeps the ids queued and makes no kb_bible_commit call', async () => {
         const logs = [];
         const events = [];
-        const client = createKbWorkClient({
+        const client = currentServerKbWork(createKbWorkClient, {
             memberCall: async (m, tool, args) => {
                 if (tool === 'kb_query') return { l1_results: offeredEntries.map((id) => ({ id })) };
                 events.push(tool);
@@ -378,40 +378,41 @@ describe('commitRound: the review-round bible commit on the kb_maintainer', () =
 });
 
 // =============================================================================
-// demoted_ids: a round's successful kb_demote()s travel in the SAME
-// kb_bible_commit call as that round's confirmed ids (never a second call),
-// including through the G-push retry path above. See
-// kb-demotion-apply.test.mjs for the demotion-execution lane itself (apply()
-// routing, evidence_files, a failing kb_demote, the ping-pong guard); this
-// block only covers the bible-commit INTEGRATION this file already exercises
-// for promotions.
+// The final review's verdicts in the bible commit: a demotion is a
+// kb_bible_commit `withdrawals` entry and a hold a `restore_ids` entry, sent
+// in the SAME call as the round's confirmed ids (never a second call),
+// including through the G-push retry path. No kb_demote is ever issued. A
+// FAIL verdict seals confirmations only (withdrawals and restores are
+// merge-gated, so they still commit); an abort seals everything.
 // =============================================================================
 
-describe('commitRound: demoted_ids travels with ids in one kb_bible_commit call', () => {
-    /** Like harness() above, plus demotionCandidates' own_scope kb_query branch. */
-    function harnessWithDemotions({ pushFailures = 0, httpSkip = false, ownScopeUnsupported = false } = {}) {
+describe('commitRound: withdrawals and restores travel with ids in one kb_bible_commit call', () => {
+    const files = ['x.js'];
+    /** Like harness() above, plus the final review's demotion offer and a kb_bible_commit that answers withdrawn/restored. */
+    function harnessWithVerdicts({ pushFailures = 0, httpSkip = false, httpCommitted = true, skipWithdrawals = [] } = {}) {
         const events = [];
         const logs = [];
         let offeredDemote = [];
         let pushesLeftToFail = pushFailures;
         const memberCall = async (member, tool, args) => {
             if (tool === 'kb_query') {
-                if (args.own_scope && ownScopeUnsupported) {
-                    events.push({ ev: 'kb_query(own_scope)', member: member.name, args });
-                    return { isError: true, content: [{ type: 'text', text: 'E-KB-HTTP-UNSUPPORTED: kb_query own_scope in a MEMBER session (the KB server does not list the demote route in GET /api/kb/capabilities) is not supported by the http KB provider; nothing was read.' }] };
-                }
-                return args.own_scope ? { l1_results: offeredDemote } : { l1_results: offeredEntries.map((id) => ({ id })) };
+                if (Array.isArray(args.files)) return { l1_results: offeredDemote };
+                if (args.own_scope) return { l1_results: [] };
+                return { l1_results: offeredEntries.map((id) => ({ id })) };
             }
             events.push({ ev: tool, member: member.name, args });
-            if (tool === 'kb_bible_commit' && httpSkip) return { content: [{ text: JSON.stringify(HTTP_SKIP_RESULT) }] };
             if (tool === 'kb_bible_commit') {
+                const withdrawn = (args.withdrawals || []).map((w) => w.id).filter((id) => !skipWithdrawals.includes(id));
+                const restored = [...(args.restore_ids || [])];
+                const skipped = (args.withdrawals || []).filter((w) => skipWithdrawals.includes(w.id)).map((w) => ({ id: w.id, reason: 'not_withdrawable' }));
+                if (httpSkip) {
+                    return { content: [{ text: JSON.stringify({ ...HTTP_SKIP_RESULT, withdrawn, restored, committed: (withdrawn.length + restored.length > 0) && httpCommitted }) }] };
+                }
                 return {
                     content: [{
                         text: JSON.stringify({
                             path: '.fleet/kb-canonical.json',
-                            merged: args.ids || [],
-                            demoted: args.demoted_ids || [],
-                            skipped: [],
+                            merged: args.ids || [], demoted: [], withdrawn, restored, skipped,
                             entry_count: (args.ids || []).length,
                             committed: true,
                         }),
@@ -421,7 +422,7 @@ describe('commitRound: demoted_ids travels with ids in one kb_bible_commit call'
             if (tool === 'kb_promote') return { id: args.id, previous_confidence: 'INFERRED', new_confidence: 'CONFIRMED' };
             return {};
         };
-        const client = createKbWorkClient({
+        const client = currentServerKbWork(createKbWorkClient, {
             memberCall,
             maintainers: selfMaintainer(MAINT, ['maint', 'reviewer-1']),
             gPull: async (m, opts = {}) => { events.push({ ev: opts.resetToRemoteTip ? 'G-pull(reset)' : 'G-pull', member: m }); },
@@ -431,70 +432,47 @@ describe('commitRound: demoted_ids travels with ids in one kb_bible_commit call'
             },
             abortRebase: async (m) => { events.push({ ev: 'rebase--abort', member: m }); return false; },
             bibleBase: async () => BASE,
-            roundChangedFiles: async () => ['x.js'],
+            bibleUnpushed: async () => ({ unpushed: false }),
+            sprintChangedFiles: async () => files,
             log: (m) => logs.push(m),
         });
-        const confirmAndDemote = async ({ promote = [], demote = [] }) => {
+        /** Confirm `promote`, then run the final review: offer demote+hold, demote `demote`, hold `hold`. */
+        const finalReview = async ({ promote = [], demote = [], hold = [] }) => {
             await confirm(client, promote);
-            offeredDemote = demote.map((id) => ({ id, type: 'knowledge', confidence: 'CONFIRMED', source_files: ['x.js'] }));
+            offeredDemote = [...demote, ...hold].map((id) => ({ id, type: 'knowledge', confidence: 'CONFIRMED', source_files: files }));
             await client.demotionCandidates('reviewer-1');
             offeredDemote = [];
-            await client.apply('reviewer', 'reviewer-1', { kb_demotions: demote.map((id) => ({ id, reason: REASON, evidence_files: ['src/a.ts'] })) });
+            await client.apply('reviewer', 'reviewer-1', {
+                kb_demotions: demote.map((id) => ({ id, reason: REASON, evidence_files: ['src/a.ts'] })),
+                kb_holds: hold,
+            });
         };
-        return { client, events, logs, confirmAndDemote };
+        return { client, events, logs, finalReview };
     }
 
-    test('a skipped bible commit (http KB provider) drops the demotion queue too: no later call, nothing reported pending', async () => {
-        const { client, events, logs, confirmAndDemote } = harnessWithDemotions({ httpSkip: true });
-        await confirmAndDemote({ promote: ['e1'], demote: ['d1'] });
+    test('one kb_bible_commit call carries ids, withdrawals and restore_ids; no kb_demote is ever called', async () => {
+        const { client, events, finalReview } = harnessWithVerdicts();
+        await finalReview({ promote: ['e1'], demote: ['d1'], hold: ['h1'] });
 
-        const out = await client.commitRound('review C1');
+        const out = await client.commitRound('final review');
 
-        assert.deepEqual(out, { committed: 0, pending: 0 });
-        const skipLine = logs.find((l) => l.includes('kb_bible_commit skipped') && l.includes(HTTP_SKIP_REASON));
-        assert.ok(skipLine, logs.join('\n'));
-        assert.match(skipLine, /1 confirmation\(s\) and 1 demotion\(s\) dropped/);
-        const mark = events.length;
-        const second = await client.commitRound('review C2');
-        assert.deepEqual(second, { committed: 0, pending: 0 });
-        assert.equal(events.slice(mark).filter((e) => e.ev === 'kb_bible_commit').length, 0);
-        const before = logs.length;
-        client.warnPending();
-        assert.ok(!logs.slice(before).some((l) => /demotion\(s\)/.test(l)), logs.slice(before).join('\n'));
-    });
-
-    test('a KB server without the demote route: the own_scope read is refused, so the reviewer is offered nothing and no kb_demote is sent', async () => {
-        const { client, events, logs } = harnessWithDemotions({ ownScopeUnsupported: true });
-
-        const offered = await client.demotionCandidates('reviewer-1');
-
-        assert.deepEqual(offered, []);
-        assert.equal(events.filter((e) => e.ev === 'kb_query(own_scope)').length, 1);
-        assert.ok(logs.some((l) => /does not serve demote: offering no demotion candidates/.test(l)), logs.join('\n'));
-        const out = await client.apply('reviewer', 'reviewer-1', { kb_demotions: [{ id: 'd1', reason: REASON, evidence_files: ['src/a.ts'] }] });
-        assert.equal(out.demoted, 0);
-        assert.equal(events.filter((e) => e.ev === 'kb_demote').length, 0);
-    });
-
-    test('a round that both confirms and demotes produces exactly one kb_bible_commit call carrying both lists', async () => {
-        const { client, events, confirmAndDemote } = harnessWithDemotions();
-        await confirmAndDemote({ promote: ['e1'], demote: ['d1'] });
-
-        const out = await client.commitRound();
-
+        assert.equal(events.filter((e) => e.ev === 'kb_demote').length, 0, 'a demotion must never be a kb_demote call');
         const commits = events.filter((e) => e.ev === 'kb_bible_commit');
         assert.equal(commits.length, 1);
         assert.deepEqual(commits[0].args.ids, ['e1']);
-        assert.deepEqual(commits[0].args.demoted_ids, ['d1']);
-        assert.deepEqual(out, { committed: 2, pending: 0 });
+        assert.deepEqual(commits[0].args.withdrawals, [{ id: 'd1', note: REASON, evidence_files: ['src/a.ts'] }]);
+        assert.deepEqual(commits[0].args.restore_ids, ['h1']);
+        assert.equal(commits[0].args.demoted_ids, undefined, 'demoted_ids is never sent');
+        assert.deepEqual(out, { committed: 3, pending: 0 });
+        assert.deepEqual(client.pendingWithdrawals(), []);
     });
 
-    test('a rejected G-push is retried with BOTH ids and demoted_ids, the same as the promotion-only retry path', async () => {
-        const { client, events, logs, confirmAndDemote } = harnessWithDemotions({ pushFailures: 1 });
-        await confirmAndDemote({ promote: ['e1'], demote: ['d1'] });
+    test('a rejected G-push is retried with the same ids, withdrawals and restore_ids', async () => {
+        const { client, events, logs, finalReview } = harnessWithVerdicts({ pushFailures: 1 });
+        await finalReview({ promote: ['e1'], demote: ['d1'], hold: ['h1'] });
         const before = events.length;
 
-        const out = await client.commitRound();
+        const out = await client.commitRound('final review');
 
         assert.deepEqual(events.slice(before).map((e) => e.ev), [
             'G-pull', 'kb_bible_commit', 'G-push',
@@ -504,10 +482,103 @@ describe('commitRound: demoted_ids travels with ids in one kb_bible_commit call'
         assert.equal(commits.length, 2);
         for (const c of commits) {
             assert.deepEqual(c.args.ids, ['e1']);
-            assert.deepEqual(c.args.demoted_ids, ['d1']);
+            assert.deepEqual(c.args.withdrawals.map((w) => w.id), ['d1']);
+            assert.deepEqual(c.args.restore_ids, ['h1']);
         }
-        assert.deepEqual(out, { committed: 2, pending: 0 });
+        assert.deepEqual(out, { committed: 3, pending: 0 });
         assert.ok(logs.some((l) => /retrying once/.test(l)));
+    });
+
+    test('a withdrawal the tool skips (not_withdrawable) leaves the queue at once and is logged', async () => {
+        const { client, logs, finalReview } = harnessWithVerdicts({ skipWithdrawals: ['d1'] });
+        await finalReview({ demote: ['d1'] });
+
+        const out = await client.commitRound('final review');
+
+        assert.deepEqual(out, { committed: 0, pending: 0 });
+        assert.ok(logs.some((l) => /cannot succeed on a retry.*d1 \(not_withdrawable\)/.test(l)), logs.join('\n'));
+        assert.deepEqual(client.withdrawnIds(), [], 'a withdrawal the tool did not admit withdrew nothing');
+    });
+
+    test('a FAIL verdict seals confirmations only: withdrawals and restores still commit, the confirmations do not', async () => {
+        const { client, events, logs, finalReview } = harnessWithVerdicts();
+        await finalReview({ promote: ['e1'], demote: ['d1'], hold: ['h1'] });
+
+        client.seal('final review verdict FAIL', { confirmationsOnly: true });
+        const out = await client.commitRound('final review');
+
+        const commits = events.filter((e) => e.ev === 'kb_bible_commit');
+        assert.equal(commits.length, 1, 'the merge-gated withdrawals and restores must still be committed');
+        assert.deepEqual(commits[0].args.ids, [], 'a FAIL sprint commits no confirmation');
+        assert.deepEqual(commits[0].args.withdrawals.map((w) => w.id), ['d1']);
+        assert.deepEqual(commits[0].args.restore_ids, ['h1']);
+        assert.ok(events.some((e) => e.ev === 'G-push'), 'the withdrawal commit is published on the sprint branch');
+        assert.deepEqual(out, { committed: 2, pending: 1 });
+        assert.deepEqual(client.pendingConfirmations(), ['e1'], 'the sealed confirmation stays unpublished');
+        assert.ok(logs.some((l) => /bible confirmations sealed \(final review verdict FAIL\)/.test(l)), logs.join('\n'));
+    });
+
+    test('a FAIL verdict with only confirmations pending makes no kb_bible_commit call at all', async () => {
+        const { client, events, finalReview } = harnessWithVerdicts();
+        await finalReview({ promote: ['e1'] });
+        client.seal('final review verdict FAIL', { confirmationsOnly: true });
+        const before = events.length;
+
+        const out = await client.commitRound('final review');
+
+        assert.deepEqual(events.slice(before), []);
+        assert.deepEqual(out, { committed: 0, pending: 1 });
+    });
+
+    test('an abort seals everything: neither confirmations nor withdrawals nor restores are committed', async () => {
+        const { client, events, finalReview } = harnessWithVerdicts();
+        await finalReview({ promote: ['e1'], demote: ['d1'], hold: ['h1'] });
+        client.seal('sprint aborted: stall');
+        const before = events.length;
+
+        const out = await client.commitRound('final review');
+
+        assert.deepEqual(events.slice(before), [], 'no G-pull, no kb_bible_commit, no G-push after an abort');
+        assert.deepEqual(out, { committed: 0, pending: 3 });
+        assert.deepEqual(client.pendingWithdrawals(), [{ repo: REPO, withdrawals: [{ id: 'd1', note: REASON, evidence_files: ['src/a.ts'] }], restores: ['h1'] }]);
+    });
+
+    test('an abort after a FAIL seal still seals everything', async () => {
+        const { client, events, finalReview } = harnessWithVerdicts();
+        await finalReview({ demote: ['d1'] });
+        client.seal('final review verdict FAIL', { confirmationsOnly: true });
+        client.seal('sprint aborted: fatal');
+        const before = events.length;
+
+        await client.commitRound('final review');
+
+        assert.deepEqual(events.slice(before), []);
+    });
+
+    test('http KB provider: the entry merge is skipped but the withdrawals and restores are NOT dropped -- their tombstone commit is pushed', async () => {
+        const { client, events, logs, finalReview } = harnessWithVerdicts({ httpSkip: true });
+        await finalReview({ promote: ['e1'], demote: ['d1'], hold: ['h1'] });
+
+        const out = await client.commitRound('final review');
+
+        const skipLine = logs.find((l) => l.includes('kb_bible_commit skipped the entry merge') && l.includes(HTTP_SKIP_REASON));
+        assert.ok(skipLine, logs.join('\n'));
+        assert.match(skipLine, /1 confirmation\(s\) dropped from the bible queue; 1 withdrawal\(s\) and 1 restore\(s\) \(restored: h1\) committed and pushed/);
+        assert.ok(events.some((e) => e.ev === 'G-push'), 'the tombstone commit must be published');
+        assert.deepEqual(out, { committed: 2, pending: 0 });
+        assert.deepEqual(client.pendingConfirmations(), []);
+        assert.deepEqual(client.pendingWithdrawals(), []);
+        assert.deepEqual(client.withdrawnIds(), ['d1'], 'the withdrawn id stays excluded from later knowledge');
+    });
+
+    test('http KB provider with confirmations only: one skip line and no push (unchanged)', async () => {
+        const { client, events, finalReview } = harnessWithVerdicts({ httpSkip: true });
+        await finalReview({ promote: ['e1'] });
+
+        const out = await client.commitRound('final review');
+
+        assert.deepEqual(out, { committed: 0, pending: 0 });
+        assert.ok(!events.some((e) => e.ev === 'G-push'));
     });
 });
 
@@ -559,7 +630,7 @@ function guardHarness({ branchAnswers, pushFailures = 0 }) {
         syncMemberBefore, syncMemberAfter, syncMemberAfterOrdered, isNoMutationDispatchFailure,
     });
     const toolCalls = [];
-    const client = createKbWorkClient({
+    const client = currentServerKbWork(createKbWorkClient, {
         memberCall: async (member, tool, args) => {
             if (tool === 'kb_query') return { l1_results: offeredEntries.map((id) => ({ id })) };
             toolCalls.push(tool);
@@ -632,7 +703,7 @@ describe('commitRound: removal-only bible commits (a discard applied, nothing co
 
     test('the removal-only call carries the kb_maintainer grant', async () => {
         const grants = [];
-        const client = createKbWorkClient({
+        const client = currentServerKbWork(createKbWorkClient, {
             memberCall: async (member, tool, args, callOpts) => {
                 if (tool === 'kb_query') return { l1_results: offeredEntries.map((id) => ({ id })) };
                 if (tool === 'kb_bible_commit') {
@@ -688,7 +759,7 @@ describe('commitRound: removal-only bible commits (a discard applied, nothing co
 
     test('a discard that the maintainer reports not found retires nothing: no bible call', async () => {
         const events = [];
-        const client = createKbWorkClient({
+        const client = currentServerKbWork(createKbWorkClient, {
             memberCall: async (member, tool, args) => {
                 if (tool === 'kb_query') return { l1_results: offeredEntries.map((id) => ({ id })) };
                 events.push(tool);
@@ -737,7 +808,7 @@ describe('commitRound: removal-only bible commits (a discard applied, nothing co
         {
             const logs = [];
             const tools = [];
-            const client = createKbWorkClient({
+            const client = currentServerKbWork(createKbWorkClient, {
                 memberCall: async (member, tool) => { if (tool === 'kb_query') return { l1_results: offeredEntries.map((id) => ({ id })) }; tools.push(tool); return {}; },
                 maintainers: selfMaintainer(MAINT, ['maint', 'reviewer-1']),
                 log: (m) => logs.push(m),
@@ -753,7 +824,7 @@ describe('commitRound: removal-only bible commits (a discard applied, nothing co
         const logs = [];
         const tools = [];
         let branch = 'other';
-        const client = createKbWorkClient({
+        const client = currentServerKbWork(createKbWorkClient, {
             memberCall: async (member, tool) => {
                 if (tool === 'kb_query') return { l1_results: offeredEntries.map((id) => ({ id })) };
                 tools.push(tool);
@@ -963,7 +1034,7 @@ describe('commitRound: a maintainer whose kb_bible_commit is skipped (http KB pr
         assert.deepEqual(out, { committed: 0, pending: 0 });
         const skipLines = logs.filter((l) => l.includes('kb_bible_commit skipped') && l.includes(HTTP_SKIP_REASON));
         assert.equal(skipLines.length, 1, logs.join('\n'));
-        assert.match(skipLines[0], /2 confirmation\(s\) and 0 demotion\(s\) dropped/);
+        assert.match(skipLines[0], /2 confirmation\(s\) dropped from the bible queue\.$/);
         assert.ok(!logs.some((l) => /failed at kb_bible_commit|publication check/.test(l)), logs.join('\n'));
         const kinds = events.map((e) => e.ev);
         assert.ok(!kinds.includes('G-push'), kinds.join(','));

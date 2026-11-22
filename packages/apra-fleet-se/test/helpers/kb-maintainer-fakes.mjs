@@ -30,3 +30,45 @@ export function selfMaintainer(record, members = [record.name]) {
     for (const m of members) repoOf[m] = 'example.com/org/repo';
     return fakeMaintainerSelector({ repoOf, maintainerOf: { 'example.com/org/repo': record } });
 }
+
+/**
+ * A tools/list answer from a CURRENT apra-fleet server: it offers
+ * kb_capabilities (the engine's version gate for merge-carried withdrawals)
+ * and its kb_import advertises `ref`. The engine feature-detects every
+ * maintainer, a local one included, through this.
+ */
+export const currentServerListTools = async () => ({
+    tools: [
+        { name: 'kb_capabilities', inputSchema: { properties: {} } },
+        { name: 'kb_bible_commit', inputSchema: { properties: { ids: {}, withdrawals: {}, restore_ids: {} } } },
+        { name: 'kb_import', inputSchema: { properties: { path: {}, ref: {}, skip_sweep: {} } } },
+    ],
+});
+
+/** Every contract route: what kb_capabilities answers for a local SQLite KB. */
+export const ALL_KB_ROUTES = Object.freeze(['capture', 'query', 'promote', 'context', 'prime', 'invalidate', 'feedback', 'list', 'demote', 'withdraw']);
+
+/** A kb_capabilities answer (a tool result) listing `routes`. */
+export function kbCapabilitiesResult(routes = ALL_KB_ROUTES) {
+    return { content: [{ type: 'text', text: JSON.stringify({ contract: 'v1', routes: [...routes], branch_aware: false }) }] };
+}
+
+/**
+ * Wraps a fake memberCall so a kb_capabilities call answers `routes` (default:
+ * every route, as a local SQLite KB does) and every other call goes to
+ * `memberCall` unchanged -- the capabilities read is not recorded by it.
+ */
+export function withKbCapabilities(memberCall, routes = ALL_KB_ROUTES) {
+    return async (member, name, ...rest) => (name === 'kb_capabilities' ? kbCapabilitiesResult(routes) : memberCall(member, name, ...rest));
+}
+
+/**
+ * `create(opts)` (createKbWorkClient) with every maintainer on a CURRENT
+ * apra-fleet server whose KB serves every route: listTools defaults to
+ * currentServerListTools (an explicit opts.listTools wins) and memberCall
+ * answers kb_capabilities (withKbCapabilities).
+ */
+export function currentServerKbWork(create, opts = {}) {
+    const memberCall = typeof opts.memberCall === 'function' ? withKbCapabilities(opts.memberCall) : opts.memberCall;
+    return create({ listTools: currentServerListTools, ...opts, memberCall });
+}

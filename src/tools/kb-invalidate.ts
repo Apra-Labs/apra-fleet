@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import { KB_REMOVED_SCOPE_KEYS_SHAPE } from '../services/knowledge/kb-removed-scope-keys.js';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { isSea } from '../cli/install.js';
 import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { getSelfKbProviders, memberOwnerTag, type KbAnchor } from '../services/knowledge/kb-self.js';
@@ -23,13 +25,51 @@ export type KbInvalidateInput = z.infer<typeof kbInvalidateSchema>;
 // Identifies a post-commit hook fleet wrote; kb_setup only rewrites files carrying it.
 export const KB_HOOK_MARKER = '# apra-fleet KB invalidation hook';
 
-export const KB_POST_COMMIT_HOOK = `#!/bin/sh
+// POSIX sh single-quoting: safe for any path, including spaces and quotes.
+// On Windows the path uses forward slashes, which git for Windows' sh accepts
+// (backslashes would be eaten as escapes), so the hook works there too.
+function shQuote(arg: string): string {
+  const normalized = process.platform === 'win32' ? arg.replace(/\\/g, '/') : arg;
+  return `'${normalized.replace(/'/g, `'\\''`)}'`;
+}
+
+let _commandOverride: string[] | null = null;
+/** Test seam (mirrors install.ts _setSeaOverride): pin the hook's invalidate command. */
+export function _setKbInvalidateCommandOverride(argv: string[] | null): void { _commandOverride = argv; }
+
+/**
+ * The absolute argv that runs the apra-fleet CLI of THIS install: the compiled
+ * binary for a SEA build, else the running node plus the sibling dist entry
+ * point. Resolved in JavaScript at install time (never shell expansion), so the
+ * hook works from any repo. Throws when the entry point does not exist (e.g.
+ * running from TypeScript sources), rather than emitting a hook that cannot run.
+ */
+export function resolveKbInvalidateCommand(): string[] {
+  if (_commandOverride) return _commandOverride;
+  if (isSea()) return [process.execPath];
+  const entry = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'index.js');
+  if (!fs.existsSync(entry)) {
+    throw new Error(`apra-fleet CLI entry point ${entry} does not exist (build first: npm run build)`);
+  }
+  return [process.execPath, entry];
+}
+
+/** The post-commit hook text invoking `<command> kb invalidate <file>`; a failure is reported on stderr. */
+export function buildKbPostCommitHook(command: string[]): string {
+  if (command.length === 0 || !command.every((a) => path.isAbsolute(a))) {
+    throw new Error('KB hook command must be absolute paths');
+  }
+  const cmd = command.map(shQuote).join(' ');
+  return `#!/bin/sh
 ${KB_HOOK_MARKER}
-# Marks context-cache entries stale for files changed in the last commit
-git diff-tree --no-commit-id -r --name-only HEAD | while IFS= read -r f; do
-  [ -n "$f" ] && node dist/index.js kb invalidate "$f" 2>/dev/null || true
+# Marks context-cache entries stale for files changed in the last commit.
+# post-commit cannot block a commit; a failure is reported on stderr.
+git diff-tree --root --no-commit-id -r --name-only HEAD | while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  ${cmd} kb invalidate "$f" >/dev/null || echo "apra-fleet: KB invalidation failed for $f (command: ${cmd.replace(/["$`\\]/g, '\\$&')})" >&2
 done
 `;
+}
 
 export type KbHookInstallResult =
   | { installed: true; hookPath: string }
@@ -102,8 +142,15 @@ export function installKbPostCommitHook(repoPath: string): KbHookInstallResult {
   if (!hookIsOursOrAbsent(hookPath)) {
     return { installed: false, reason: `existing post-commit at ${hookPath} is not ours` };
   }
+  let hook: string;
+  try {
+    hook = buildKbPostCommitHook(resolveKbInvalidateCommand());
+  } catch (err) {
+    return { installed: false, reason: `cannot build a working hook: ${err instanceof Error ? err.message : String(err)}` };
+  }
   fs.mkdirSync(hookDir, { recursive: true });
-  fs.writeFileSync(hookPath, KB_POST_COMMIT_HOOK, { mode: 0o755 });
+  fs.writeFileSync(hookPath, hook, { mode: 0o755 });
+  fs.chmodSync(hookPath, 0o755);
   return { installed: true, hookPath };
 }
 

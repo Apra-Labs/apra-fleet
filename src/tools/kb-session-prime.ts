@@ -56,6 +56,7 @@ interface CanonicalBibleEntry {
 //   - legacy: a bare JSON array of entries
 //   - v2 (what kb_export has written since KB-TRUST PHASE 3a):
 //     { version: 2, provenance: {commit, branch, entry_count}, entries: [...] }
+//     (v3 and current writers: provenance {branch} only; provenance is not read here)
 // Accepting only the bare array silently killed the cold-start fallback for
 // every bible the current exporter produces (apra-fleet's own bible holds 17
 // CONFIRMED entries prime could not read). Anything else -- a non-array

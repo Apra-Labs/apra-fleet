@@ -95,7 +95,7 @@ test('identical-content passthrough: re-exported entries do not look like change
     assert.strictEqual(result.summary.addedByTheirs, 0);
     assert.strictEqual(result.summary.removedByOurs, 0);
     assert.strictEqual(result.summary.removedByTheirs, 0);
-    assert.deepStrictEqual(titlesOf(result), ['A', 'B', 'C']);
+    assert.deepStrictEqual(titlesOf(result).sort(), ['A', 'B', 'C']);
 });
 
 test('pure addition by ours only is kept', () => {
@@ -107,7 +107,7 @@ test('pure addition by ours only is kept', () => {
     assert.deepStrictEqual(result.conflicts, []);
     assert.strictEqual(result.summary.addedByOurs, 1);
     assert.strictEqual(result.summary.addedByTheirs, 0);
-    assert.deepStrictEqual(titlesOf(result), ['A', 'Ours new']);
+    assert.deepStrictEqual(titlesOf(result).sort(), ['A', 'Ours new']);
 });
 
 test('pure addition by theirs only is kept', () => {
@@ -118,7 +118,7 @@ test('pure addition by theirs only is kept', () => {
     const result = mergeKbCanonical(base, ours, theirs);
     assert.strictEqual(result.summary.addedByOurs, 0);
     assert.strictEqual(result.summary.addedByTheirs, 1);
-    assert.deepStrictEqual(titlesOf(result), ['A', 'Theirs new']);
+    assert.deepStrictEqual(titlesOf(result).sort(), ['A', 'Theirs new']);
 });
 
 test('both sides add the same id: de-duplicated to one entry', () => {
@@ -129,7 +129,7 @@ test('both sides add the same id: de-duplicated to one entry', () => {
 
     const result = mergeKbCanonical(base, ours, theirs);
     assert.deepStrictEqual(result.conflicts, []);
-    assert.deepStrictEqual(titlesOf(result), ['A', 'Both discovered this']);
+    assert.deepStrictEqual(titlesOf(result).sort(), ['A', 'Both discovered this']);
     assert.strictEqual(result.summary.addedByOurs, 1);
     assert.strictEqual(result.summary.addedByTheirs, 0);
     assert.strictEqual(result.summary.addedByBothDeduplicated, 1);
@@ -228,14 +228,15 @@ test('genuine conflict: same id changed differently by both sides is reported, n
     assert.match(report, /theirs says Y/);
 });
 
-test('merged document carries a corrected entry_count and a base-first order', () => {
-    const base = doc([entry('A'), entry('B')]);
-    const ours = doc(base.entries.map((e) => reexport(e)).concat(entry('O1')));
-    const theirs = doc(base.entries.map((e) => reexport(e)).concat(entry('T1')));
+test('merged document drops the legacy commit/entry_count provenance and sorts entries by id', () => {
+    const base = doc([entry('A', { id: 'm' }), entry('B', { id: 'c' })]);
+    const ours = doc(base.entries.map((e) => reexport(e)).concat(entry('O1', { id: 'z' })));
+    const theirs = doc(base.entries.map((e) => reexport(e)).concat(entry('T1', { id: 'a' })));
 
     const result = mergeKbCanonical(base, ours, theirs);
-    assert.deepStrictEqual(titlesOf(result), ['A', 'B', 'O1', 'T1']);
-    assert.strictEqual(result.merged.provenance.entry_count, 4);
+    assert.deepStrictEqual(titlesOf(result), ['T1', 'B', 'A', 'O1']);
+    assert.strictEqual(result.merged.entries.length, 4);
+    assert.deepStrictEqual(result.merged.provenance, { branch: 'b' });
     assert.strictEqual(result.merged.version, 2);
 });
 
@@ -265,7 +266,7 @@ test('a same-id title change on one side merges as ONE updated entry, not delete
     const result = mergeKbCanonical(base, ours, theirs);
     assert.deepStrictEqual(result.conflicts, []);
     assert.strictEqual(result.merged.entries.length, 2);
-    assert.deepStrictEqual(titlesOf(result), ['Corrected title', 'Other']);
+    assert.deepStrictEqual(titlesOf(result).sort(), ['Corrected title', 'Other']);
     assert.strictEqual(result.merged.entries[0].id, renamed.id);
     assert.strictEqual(result.summary.changedByOurs, 1);
     assert.strictEqual(result.summary.addedByOurs, 0);
@@ -378,7 +379,8 @@ test('CLI exits 0 and writes the merged file on a clean merge', () => {
 
         const merged = JSON.parse(fs.readFileSync(out, 'utf8'));
         assert.deepStrictEqual(merged.entries.map((e) => e.title), ['A', 'O1', 'T1']);
-        assert.strictEqual(merged.provenance.entry_count, 3);
+        assert.strictEqual(merged.entries.length, 3);
+        assert.strictEqual(merged.provenance.entry_count, undefined);
     });
 });
 
