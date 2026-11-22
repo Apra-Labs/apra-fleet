@@ -135,4 +135,13 @@ describe('deploy-install member-host helpers', () => {
     const defPort = await verifyMemberHost({ ...base, readFile: () => JSON.stringify({ version: '1.2.3' }), binaryVersion: () => '1.2.3', health: async (p: number) => p === 7523 });
     expect(defPort.ok).toBe(true);
   });
+
+  it('verify parses the real three-line --version output', async () => {
+    const real = 'apra-fleet v0.4.6_6b7c08\n  Mode: dev (x)\n  Binary: /home/u/.apra-fleet/bin/apra-fleet\n';
+    const base = { env: {}, home: '/h', platform: 'linux', health: async () => true };
+    const okRes = await verifyMemberHost({ ...base, readFile: () => JSON.stringify({ version: 'v0.4.6_6b7c08', port: 7523 }), binaryVersion: () => real.trim() });
+    expect(okRes.ok).toBe(true);
+    const bad = await verifyMemberHost({ ...base, readFile: () => JSON.stringify({ version: 'v0.4.7', port: 7523 }), binaryVersion: () => real.trim() });
+    expect(bad.ok).toBe(false);
+  });
 });

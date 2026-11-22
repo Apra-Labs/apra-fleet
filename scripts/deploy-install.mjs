@@ -77,7 +77,10 @@ export async function verifyMemberHost({
   try { marker = JSON.parse(readFile(markerFile)); } catch {
     return { ok: false, lines: [`FAIL: member-install.json missing or unreadable at ${markerFile}`] };
   }
-  const installed = binaryVersion(installedBinaryPath(platform, home));
+  const rawVersion = binaryVersion(installedBinaryPath(platform, home));
+  // `--version` prints 3 lines: "apra-fleet <ver>", "  Mode: ...", "  Binary: ...".
+  const installed = rawVersion === null ? null
+    : (String(rawVersion).split(/\r?\n/)[0] ?? '').trim().replace(/^apra-fleet\s+/i, '').trim();
   const port = Number.isInteger(marker?.port) ? marker.port : 7523;
   let ok = true;
   if (installed === null) { ok = false; lines.push('FAIL: installed apra-fleet --version did not run'); }
