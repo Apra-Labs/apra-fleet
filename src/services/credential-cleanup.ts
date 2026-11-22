@@ -1,11 +1,10 @@
 import { getAllAgents } from './registry.js';
+import { listVcsCredentials, forgetVcsCredential } from './vcs-credential-record.js';
+import { revokeVcsCredential, describeLegacyGlobalKey } from './vcs-credential-revoke.js';
+import { logWarn } from '../utils/log-helpers.js';
 import { getStrategy } from './strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getAgentOS, getAgentShell } from '../utils/agent-helpers.js';
-import { githubProvider } from './vcs/github.js';
-import { bitbucketProvider } from './vcs/bitbucket.js';
-import { azureDevOpsProvider } from './vcs/azure-devops.js';
-import type { VcsProviderService } from './vcs/types.js';
 
 // apra-fleet-5co8.5.1: setTimeout's delay is a signed 32-bit int internally;
 // Node (and browsers) SILENTLY CLAMP an overflowing delay to ~1ms rather than
@@ -20,14 +19,20 @@ const MAX_TIMEOUT_MS = 2 ** 31 - 1; // ~24.8 days
 
 const cleanupTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
-const providers: Record<string, VcsProviderService> = {
-  github: githubProvider,
-  bitbucket: bitbucketProvider,
-  'azure-devops': azureDevOpsProvider,
-};
 
-export function scheduleCredentialCleanup(agentId: string, expiresAt?: string): void {
-  cancelCredentialCleanup(agentId);
+/** Timer key: one cleanup timer per member AND label (labels and member ids never contain '|'). */
+export function cleanupTimerKey(agentId: string, label: string | undefined): string {
+  return `${agentId}|${label ?? ''}`;
+}
+
+/**
+ * Schedule the auto-revoke of ONE label's credential on one member. Only that
+ * label's previous timer is replaced: the other labels of the same member keep
+ * theirs (a member can hold several labels at once -- see
+ * src/services/vcs-credential-record.ts).
+ */
+export function scheduleCredentialCleanup(agentId: string, label: string | undefined, expiresAt?: string): void {
+  cancelCredentialCleanup(agentId, label);
 
   // No known real expiry: do NOT fall back to a blind default-TTL
   // self-destruct (a prior version used a hardcoded 55-minute
@@ -61,15 +66,26 @@ export function scheduleCredentialCleanup(agentId: string, expiresAt?: string): 
   }
   const delayMs = Math.max(0, untilExpiry);
 
+  const key = cleanupTimerKey(agentId, label);
   const timer = setTimeout(async () => {
-    cleanupTimers.delete(agentId);
+    cleanupTimers.delete(key);
     try {
-      const agents = getAllAgents();
-      const agent = agents.find(a => a.id === agentId);
-      if (!agent?.vcsProvider) return;
-
-      const service = providers[agent.vcsProvider];
-      if (!service) return;
+      const agent = getAllAgents().find(a => a.id === agentId);
+      if (!agent) return;
+      // Revoke the SAME label/scopeUrl/provider this label's deploy recorded
+      // (provision-vcs-auth.ts) -- never another label's, and never an
+      // unlabeled/default-host guess that could unset a different, still-valid
+      // credential's git-config entry and/or delete the wrong on-disk file.
+      const entry = listVcsCredentials(agent).find(e => e.label === label);
+      if (!entry) return;
+      // Only the credential this timer was scheduled for may be revoked. The
+      // registry is shared on disk by every fleet server process on the host
+      // (each agent session can run its own), and timers are per process: when
+      // another process re-provisioned this label since, the record now holds
+      // a newer, still-valid token with a later expiry, and revoking here
+      // would delete it from under every reader long before it expires. The
+      // process that re-provisioned it scheduled its own timer.
+      if (entry.expiresAt !== expiresAt) return;
 
       const strategy = getStrategy(agent);
       const conn = await strategy.testConnection();
@@ -81,23 +97,31 @@ export function scheduleCredentialCleanup(agentId: string, expiresAt?: string): 
         return result.stdout;
       };
 
-      // Revoke the SAME label/scopeUrl this deploy actually used (persisted
-      // by provision-vcs-auth.ts at deploy time) -- not an unlabeled/
-      // default-host guess, which can unset a different, still-valid
-      // credential's git-config entry and/or delete the wrong on-disk file.
-      await service.revoke(agent, cmds, exec, agent.vcsCredentialLabel, agent.vcsCredentialScopeUrl);
-    } catch { /* silent — best-effort cleanup */ }
+      const result = await revokeVcsCredential(agent, entry, cmds, exec);
+      const notice = describeLegacyGlobalKey(result);
+      if (notice) logWarn('credential_cleanup', notice, agent);
+      if (result.success) forgetVcsCredential(agentId, entry.label);
+    } catch { /* silent -- best-effort cleanup */ }
   }, delayMs);
 
   if (timer.unref) timer.unref();
-  cleanupTimers.set(agentId, timer);
+  cleanupTimers.set(key, timer);
 }
 
-export function cancelCredentialCleanup(agentId: string): void {
-  const timer = cleanupTimers.get(agentId);
-  if (timer !== undefined) {
-    clearTimeout(timer);
-    cleanupTimers.delete(agentId);
+/**
+ * Cancel the cleanup timer of one label of a member, or -- with no label
+ * argument -- every cleanup timer of that member (remove_member).
+ */
+export function cancelCredentialCleanup(agentId: string, ...label: [string | undefined] | []): void {
+  const keys = label.length > 0
+    ? [cleanupTimerKey(agentId, label[0])]
+    : [...cleanupTimers.keys()].filter(k => k.startsWith(`${agentId}|`));
+  for (const key of keys) {
+    const timer = cleanupTimers.get(key);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      cleanupTimers.delete(key);
+    }
   }
 }
 

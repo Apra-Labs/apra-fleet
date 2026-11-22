@@ -1,4 +1,4 @@
-import { describe, it, expect, afterAll } from 'vitest';
+import { describe, it, expect, afterAll, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -7,6 +7,8 @@ import {
   normaliseRepositoryRemote,
   isValidRepositoryValue,
   headCommitReader,
+  branchHeaderValue,
+  isValidBranchValue,
   resolveRepositoryIdentity,
 } from '../../src/services/knowledge/repository-header.js';
 
@@ -163,50 +165,96 @@ describe('isValidRepositoryValue (mirrors the receiving server)', () => {
 });
 
 describe('headCommitReader / resolveRepositoryIdentity', () => {
-  it('reads the HEAD sha of a local repo and caches it for the TTL', () => {
+  it('reads the HEAD sha of a local repo; after the TTL it serves the stale sha and refreshes in the background', async () => {
     const dir = makeDir();
     git(dir, ['init', '-q', '.']);
     git(dir, ['commit', '-q', '--allow-empty', '-m', 'one']);
     const first = git(dir, ['rev-parse', 'HEAD']);
 
     const read = headCommitReader(dir, 60_000);
-    expect(read()).toBe(first);
+    expect(await read()).toBe(first);
 
     git(dir, ['commit', '-q', '--allow-empty', '-m', 'two']);
-    // Still inside the TTL: the cached sha, git is not re-run.
+    const second = git(dir, ['rev-parse', 'HEAD']);
+    // Still inside the TTL: the cached sha, returned synchronously, git is not re-run.
     expect(read()).toBe(first);
-    // A zero TTL re-reads every call.
-    expect(headCommitReader(dir, 0)()).toBe(git(dir, ['rev-parse', 'HEAD']));
+
+    // A zero TTL: the call returns the stale sha at once and refreshes behind it.
+    const stale = headCommitReader(dir, 0);
+    expect(await stale()).toBe(second);
+    git(dir, ['commit', '-q', '--allow-empty', '-m', 'three']);
+    const third = git(dir, ['rev-parse', 'HEAD']);
+    expect(stale()).toBe(second);
+    await vi.waitFor(() => expect(stale()).toBe(third));
   });
 
-  it('returns undefined, never throws, for an unborn HEAD or a non-repo folder', () => {
+  it('returns undefined, never throws, for an unborn HEAD or a non-repo folder', async () => {
     const unborn = makeDir();
     git(unborn, ['init', '-q', '.']);
-    expect(headCommitReader(unborn, 0)()).toBeUndefined();
-    expect(headCommitReader(makeDir(), 0)()).toBeUndefined();
-    expect(headCommitReader(path.join(makeDir(), 'missing'), 0)()).toBeUndefined();
+    expect(await headCommitReader(unborn, 0)()).toBeUndefined();
+    expect(await headCommitReader(makeDir(), 0)()).toBeUndefined();
+    expect(await headCommitReader(path.join(makeDir(), 'missing'), 0)()).toBeUndefined();
   });
 
-  it('a local folder: remote from its origin, commit from its HEAD', () => {
+  it('a local folder: remote from its origin, commit from its HEAD', async () => {
     const dir = makeDir();
     git(dir, ['init', '-q', '.']);
     git(dir, ['remote', 'add', 'origin', `https://user:${FAKE_SECRET}@github.com/o/local-repo.git`]);
     git(dir, ['commit', '-q', '--allow-empty', '-m', 'one']);
 
-    const identity = resolveRepositoryIdentity(dir);
+    const identity = await resolveRepositoryIdentity(dir);
     expect(identity?.remote).toBe('github.com/o/local-repo');
-    expect(identity?.commitOf?.()).toBe(git(dir, ['rev-parse', 'HEAD']));
+    expect(await identity?.commitOf?.()).toBe(git(dir, ['rev-parse', 'HEAD']));
   });
 
-  it('a remote member (remoteUrl given): the remote only, no commit reader', () => {
-    const identity = resolveRepositoryIdentity('/on/another/host', 'git@github.com:o/remote-repo.git');
+  it('a remote member (remoteUrl given): the remote only, no commit reader', async () => {
+    const identity = await resolveRepositoryIdentity('/on/another/host', 'git@github.com:o/remote-repo.git');
     expect(identity).toEqual({ remote: 'github.com/o/remote-repo' });
   });
 
-  it('no anchor remote: no identity', () => {
+  it('no anchor remote: no identity', async () => {
     const dir = makeDir();
     git(dir, ['init', '-q', '.']);
-    expect(resolveRepositoryIdentity(dir)).toBeUndefined();
-    expect(resolveRepositoryIdentity(makeDir())).toBeUndefined();
+    expect(await resolveRepositoryIdentity(dir)).toBeUndefined();
+    expect(await resolveRepositoryIdentity(makeDir())).toBeUndefined();
+  });
+
+  it('originChange reports a changed origin after the TTL, without blocking', async () => {
+    const dir = makeDir();
+    git(dir, ['init', '-q', '.']);
+    git(dir, ['remote', 'add', 'origin', 'https://github.com/o/one.git']);
+    const identity = await resolveRepositoryIdentity(dir, undefined, 0);
+    expect(identity?.originChange?.()).toBeUndefined();
+    git(dir, ['remote', 'set-url', 'origin', 'https://github.com/o/two.git']);
+    // The first call after the change returns the old value and starts a refresh.
+    identity?.originChange?.();
+    await vi.waitFor(() => expect(identity?.originChange?.()).toBe('https://github.com/o/two.git'));
+  });
+
+  it('shares one in-flight git call between concurrent reads', async () => {
+    const dir = makeDir();
+    git(dir, ['init', '-q', '.']);
+    git(dir, ['commit', '-q', '--allow-empty', '-m', 'one']);
+    const read = headCommitReader(dir, 60_000);
+    const [a, b, c] = await Promise.all([read(), read(), read()]);
+    expect(a).toBe(b);
+    expect(b).toBe(c);
+    expect(a).toBe(git(dir, ['rev-parse', 'HEAD']));
+  });
+});
+
+describe('branchHeaderValue escapes percent', () => {
+  it('a branch literally named a%C3%A9 differs from a + e-acute', () => {
+    const literal = branchHeaderValue('a%C3%A9');
+    const accented = branchHeaderValue('a\u00e9');
+    expect(literal).toBe('a%25C3%25A9');
+    expect(accented).toBe('a%C3%A9');
+    expect(literal).not.toBe(accented);
+    expect(isValidBranchValue(literal!)).toBe(true);
+  });
+
+  it('X-Repository keeps an already percent-encoded path as is (the server canonicalises that form)', () => {
+    expect(normaliseRepositoryRemote('https://dev.azure.com/org/My%20Project/_git/r'))
+      .toBe('dev.azure.com/org/My%20Project/_git/r');
   });
 });

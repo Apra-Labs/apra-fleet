@@ -9,6 +9,35 @@ export type { ProviderAdapter };
 export const GIT_LS_REMOTE_OK_MARKER = 'FLEET_GIT_LS_REMOTE_OK';
 
 /**
+ * Trailing comment on every shell-profile export line the fleet writes
+ * (POSIX profiles: linux, macOS, Windows Git Bash). It tells a fleet-written
+ * `export NAME=...` line apart from one the machine's owner wrote by hand.
+ */
+export const FLEET_ENV_MARKER = 'apra-fleet-managed';
+
+export interface UnsetEnvOptions {
+  /**
+   * Remove EVERY `export NAME=` profile line, marked or not. Only for an
+   * explicit act of delivering/replacing that variable (provision_llm_auth).
+   * Default (false): remove only the lines the fleet marked as its own.
+   */
+  all?: boolean;
+}
+
+/**
+ * The sed address+command unsetEnv uses on POSIX profiles. POSIX bracket
+ * classes only (no \s, \+, \?) so GNU sed and BSD sed accept the same text.
+ * The marker is not anchored with `$`: a profile an editor turned CRLF would
+ * otherwise never match.
+ */
+export function unsetEnvSedExpr(name: string, opts?: UnsetEnvOptions): string {
+  if (!/^[A-Z_][A-Z0-9_]*$/i.test(name)) throw new Error('Invalid env var name: ' + name);
+  return opts?.all
+    ? `/export ${name}=/d`
+    : `/^[[:space:]]*export ${name}=.*# ${FLEET_ENV_MARKER}/d`;
+}
+
+/**
  * apra-fleet-lmtg.2: fork descriptor threaded through buildAgentPromptCommand
  * so both POSIX and Windows builders can emit a provider's fork invocation
  * (source-seeded, new-session-id output) instead of the ordinary
@@ -94,11 +123,55 @@ export interface OsCommands {
    */
   persistEnvFileContent(name: string, value: string): string;
   persistEnvFromFile(name: string, filePath: string): string;
-  unsetEnv(name: string): string[];
+  /**
+   * Commands that remove a persisted env var. POSIX shells: by default only
+   * the profile lines carrying FLEET_ENV_MARKER (a hand-written export of the
+   * same NAME is left in place); `{ all: true }` removes every
+   * `export NAME=` line. Windows PowerShell persists to a User env var, which
+   * cannot carry a marker -- `all` has no effect there and the caller must
+   * decide (from its own delivery record) whether to unset at all.
+   */
+  unsetEnv(name: string, opts?: UnsetEnvOptions): string[];
 
   // --- Git credential helper ---
-  gitCredentialHelperWrite(host: string, username: string, token: string, label?: string, scopeUrl?: string): string;
-  gitCredentialHelperRemove(host: string, label?: string, scopeUrl?: string): string;
+  //
+  // The helper FILE is per member AND label (gitCredentialHelperStem) and is
+  // never registered in any git config file: no --global, no --local. A
+  // per-OS-user (global) registration was shared by every member running as
+  // that user and was overwritten by each provision; a clone-local one is
+  // invisible to git processes that run in another repository (e.g. bd/dolt
+  // pushing through its own bare cache repo). Git finds the helper through
+  // gitCredentialEnvPrefix(), which every fleet dispatch to the member
+  // prepends (src/services/vcs-git-env.ts).
+  /** Write the helper file for (label, memberId). File only -- touches no git config. */
+  gitCredentialHelperWrite(host: string, username: string, token: string, label?: string, scopeUrl?: string, memberId?: string): string;
+  /** Delete the helper file for (label, memberId). File only -- touches no git config. */
+  gitCredentialHelperRemove(host: string, label?: string, scopeUrl?: string, memberId?: string): string;
+  /**
+   * Remove a LEGACY helper registered by releases that wrote the per-OS-user
+   * global git config: the shared `.fleet-git-credential-<label>` file and, on
+   * its `credential.<scope>.helper` key in the global config, ONLY the values
+   * fleet itself wrote -- the exact legacy file path (as that release stored
+   * it), then the empty reset entry when no non-empty value is left. Any other
+   * value (an operator's `!gh auth git-credential`, another tool's helper) is
+   * never removed. Only for a legacy entry the member's own record names, and
+   * only when no other member runs as the same user on the same host.
+   *
+   * Always exits 0 and prints one line `FLEET_LEGACY_HELPER removed=<n>
+   * kept=<n> reset_removed=<0|1>` (or `FLEET_LEGACY_HELPER failed=1`), parsed
+   * by parseLegacyHelperReport(). Values are counted, never echoed: an
+   * operator helper can be an inline script carrying a secret.
+   */
+  gitCredentialHelperRemoveLegacyGlobal(host: string, label?: string, scopeUrl?: string): string;
+  /**
+   * A statement to prepend to a member command (it ends with its own
+   * separator) that makes every git process the command starts use exactly the
+   * given fleet helpers for their scopes, through the GIT_CONFIG_PARAMETERS
+   * environment variable (the form `git -c` itself uses). Per scope an empty
+   * value first resets the inherited helper list, then the helpers follow in
+   * the given order -- git uses the first that answers. '' for no helpers.
+   */
+  gitCredentialEnvPrefix(helpers: GitCredentialHelperRegistration[], memberId: string): string;
   /**
    * Runs the credential helper gitCredentialHelperWrite() deployed, so its
    * `password=<token>` line reaches stdout (apra-fleet-3swo.7.3). `path` is the
@@ -109,7 +182,7 @@ export interface OsCommands {
    * It must never be handed to a caller-visible dispatch -- that stdout
    * round-trip is exactly what the server-side credential handoff replaces.
    */
-  gitCredentialHelperRead(label?: string): { command: string; path: string };
+  gitCredentialHelperRead(label?: string, memberId?: string): { command: string; path: string };
 
   /** Delete ONLY the pre-label, single-file credential helper
    *  (`.fleet-git-credential`, no label suffix) left behind by installs that
@@ -213,4 +286,109 @@ export interface OsCommands {
   // --- Agent provisioning ---
   /** List "<sha256>  ./<relpath>" for every file under a home-relative dir (recursive). Empty output if dir is missing/empty. */
   hashFilesRecursive(dir: string): string;
+}
+// --- Git credential helper naming / registration (shared by every OS) ---
+
+/** One fleet helper to register for a credential scope URL. */
+export interface GitCredentialHelperRegistration {
+  scopeUrl: string;
+  label: string;
+  /**
+   * The legacy per-OS-user file `.fleet-git-credential-<label>` (no member
+   * id) an older release wrote, still recorded on the member. Registered only
+   * on a scope that also has a member-scoped helper: there the prefix resets
+   * the global list, which would otherwise hide it.
+   */
+  legacy?: boolean;
+}
+
+/** Parsed `FLEET_LEGACY_HELPER` line of gitCredentialHelperRemoveLegacyGlobal(). */
+export interface LegacyHelperReport {
+  /** Fleet's own legacy values removed from the global key. */
+  removed: number;
+  /** Non-empty values left on the key (not fleet's; never removed). */
+  kept: number;
+  /** The empty reset entry was removed too (no non-empty value was left). */
+  resetRemoved: boolean;
+  /** git refused the value-scoped removal; the key was left as it was. */
+  failed: boolean;
+}
+
+export function parseLegacyHelperReport(output: string): LegacyHelperReport | null {
+  const line = String(output ?? '').split(/\r?\n/).reverse().find(l => l.startsWith('FLEET_LEGACY_HELPER '));
+  if (!line) return null;
+  if (/\bfailed=1\b/.test(line)) return { removed: 0, kept: 0, resetRemoved: false, failed: true };
+  const num = (k: string) => { const m = line.match(new RegExp(`\\b${k}=(\\d+)`)); return m ? Number(m[1]) : 0; };
+  return { removed: num('removed'), kept: num('kept'), resetRemoved: num('reset_removed') === 1, failed: false };
+}
+
+const HELPER_LABEL_RE = /^[A-Za-z0-9_-]{1,64}$/;
+const HELPER_MEMBER_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+
+/**
+ * File name (no directory, no extension) of the helper deployed for one member
+ * and label: `.fleet-git-credential-<label>.<memberId>`. Labels never contain
+ * '.', so the name is unambiguous. Without a member id it is the legacy
+ * per-OS-user name `.fleet-git-credential-<label>` (or `.fleet-git-credential`
+ * with no label either), which several members running as one user shared.
+ */
+export function gitCredentialHelperStem(label?: string, memberId?: string): string {
+  if (label !== undefined && !HELPER_LABEL_RE.test(label)) {
+    throw new Error(`Refusing to build a credential helper path for unsafe VCS credential label '${label}' (allowed: letters, digits, '_', '-').`);
+  }
+  if (memberId !== undefined && !HELPER_MEMBER_ID_RE.test(memberId)) {
+    throw new Error(`Refusing to build a credential helper path for unsafe member id '${memberId}' (allowed: letters, digits, '_', '-').`);
+  }
+  const base = label ? `.fleet-git-credential-${label}` : '.fleet-git-credential';
+  return memberId ? `${base}.${memberId}` : base;
+}
+
+/**
+ * A credential scope URL must survive three quoting layers in
+ * gitCredentialEnvPrefix (the member shell's double quotes, the single quotes
+ * of GIT_CONFIG_PARAMETERS and git's own `key=value` split), so anything but a
+ * plain scheme://host[:port][/path] is refused rather than escaped.
+ */
+export const SAFE_GIT_CREDENTIAL_SCOPE_RE = /^[A-Za-z][A-Za-z0-9+.-]*:\/\/[A-Za-z0-9._~:/@%+,;!*()[\]-]+$/;
+
+export function isSafeGitCredentialScope(scopeUrl: string): boolean {
+  return SAFE_GIT_CREDENTIAL_SCOPE_RE.test(scopeUrl);
+}
+
+/**
+ * Group helpers by scope URL, keeping the given order of scopes and of the
+ * helpers inside each scope, and validate every scope and label. `stems` are
+ * the helper file names (no directory, no extension) in that order: the
+ * member's own file, or the legacy per-OS-user file for a `legacy` entry.
+ */
+export function groupGitCredentialHelpers(helpers: GitCredentialHelperRegistration[], memberId: string): Array<{ scopeUrl: string; stems: string[] }> {
+  gitCredentialHelperStem(undefined, memberId);
+  const groups: Array<{ scopeUrl: string; stems: string[] }> = [];
+  for (const h of helpers) {
+    if (!isSafeGitCredentialScope(h.scopeUrl)) {
+      throw new Error(`Refusing to register a git credential helper for unsafe scope URL '${h.scopeUrl}' (expected scheme://host[:port][/path] with no quotes, spaces, '$', '=' or backslashes).`);
+    }
+    const stem = gitCredentialHelperStem(h.label, h.legacy ? undefined : memberId);
+    let g = groups.find(x => x.scopeUrl === h.scopeUrl);
+    if (!g) { g = { scopeUrl: h.scopeUrl, stems: [] }; groups.push(g); }
+    if (!g.stems.includes(stem)) g.stems.push(stem);
+  }
+  return groups;
+}
+
+/**
+ * Helper values in GIT_CONFIG_PARAMETERS are `!'<path>'`: git runs a `!`
+ * value through the shell, so the quoted path may hold spaces (a plain value
+ * is split on them), and a value starting with a quote is not an absolute
+ * path, so it needs the `!`. The member home is expanded at run time and
+ * single-quote-escaped TWICE (' -> '\'') -- once for that helper shell, once
+ * for GIT_CONFIG_PARAMETERS' own single-quoted words -- so a home holding an
+ * apostrophe or a space works. The rest of each word is a validated scope
+ * and file name that needs no escaping.
+ *
+ * Returns one GIT_CONFIG_PARAMETERS word for a helper at `<home>/<file>`,
+ * given `home2` (the twice-escaped home, as the member shell expands it).
+ */
+export function gitHelperParamWord(scopeUrl: string, home2: string, file: string): string {
+  return `'credential.${scopeUrl}.helper=!'\\''${home2}/${file}'\\'''`;
 }

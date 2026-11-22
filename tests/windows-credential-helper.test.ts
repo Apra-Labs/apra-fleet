@@ -9,11 +9,11 @@ describe('Windows gitCredentialHelperWrite', () => {
     // Must not use PowerShell here-string syntax (= @' ... '@)
     expect(cmd).not.toMatch(/= @'/);
     expect(cmd).not.toContain("\n'@");
-    // Must still contain the credential data and git config
+    // Must still contain the credential data (registration is env-based, not git config)
     expect(cmd).toContain('github.com');
     expect(cmd).toContain('x-access-token');
     expect(cmd).toContain('ghu_test123');
-    expect(cmd).toContain('credential.https://github.com.helper');
+    expect(cmd).not.toContain('git config');
     expect(cmd).toContain('fleet-git-credential');
     expect(cmd).toContain('Set-Content');
   });
@@ -42,7 +42,7 @@ describe('Windows gitCredentialHelperWrite', () => {
 
   it('uses -join to build multi-line bat content', () => {
     const cmd = windows.gitCredentialHelperWrite('github.com', 'x-access-token', 'ghs_abc');
-    // The -join operator with `r`n creates proper CRLF line endings
+    // The -join operator with a CR LF separator creates proper CRLF line endings
     expect(cmd).toContain('-join');
     expect(cmd).toContain('@echo off');
     expect(cmd).toContain('echo protocol=https');

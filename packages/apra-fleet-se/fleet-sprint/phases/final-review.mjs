@@ -477,18 +477,23 @@ export async function runFinalReviewPhase({
     // fabricated by the engine and carries no KB fields at all, so there is
     // nothing to apply.
 
-    // Commit the final review round's confirmations to the bible on each
-    // repository's kb_maintainer (G-pull, kb_bible_commit, G-push) -- unless
-    // the verdict is FAIL: a FAIL sprint commits nothing further to the bible
-    // and its queued confirmations are not flushed. A degraded FAIL counts
-    // too: the engine fabricated it, so no reviewer stood behind it.
+    // Commit the final review round's confirmations, withdrawals and
+    // restores to the bible on each repository's kb_maintainer (G-pull,
+    // kb_bible_commit, G-push). A FAIL verdict -- a degraded FAIL included:
+    // the engine fabricated it, so no reviewer stood behind it -- seals the
+    // CONFIRMATIONS only: they are not committed and not flushed. The final
+    // review's withdrawals and restores still commit, because they are
+    // merge-gated (a demotion is recorded on the sprint branch and takes
+    // effect only if that branch merges). An aborted sprint seals everything
+    // (runner.js).
     //
     // Writes still queued behind a busy maintainer get one last attempt
     // first (the commit itself applies them before committing); any that
     // remain (an unreachable maintainer) are reported with a WARN, never
     // dropped silently.
     if (finalVerdictResult && finalVerdictResult.verdict === 'FAIL') {
-        if (typeof kbWork.seal === 'function') kbWork.seal('final review verdict FAIL');
+        if (typeof kbWork.seal === 'function') kbWork.seal('final review verdict FAIL', { confirmationsOnly: true });
+        if (typeof kbWork.commitRound === 'function') await kbWork.commitRound('final review');
     } else if (typeof kbWork.commitRound === 'function') {
         await kbWork.commitRound('final review');
     } else if (typeof kbWork.flushAll === 'function') {

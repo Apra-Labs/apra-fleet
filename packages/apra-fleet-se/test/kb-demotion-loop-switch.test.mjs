@@ -5,7 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { createKbWorkClient } from '../fleet-sprint/kb.mjs';
 import { validateArgs } from '../fleet-sprint/sprint-args.mjs';
-import { selfMaintainer } from './helpers/kb-maintainer-fakes.mjs';
+import { selfMaintainer, currentServerKbWork } from './helpers/kb-maintainer-fakes.mjs';
 import { buildRunnerArgs } from '../bin/cli.mjs';
 import { buildSprintArgv, createSpawner } from '../src/supervisor/spawner.mjs';
 import { createSprintController, ApiError } from '../src/supervisor/api.mjs';
@@ -31,13 +31,13 @@ function build(extra = {}) {
         if (tool === 'kb_query') return { l1_results: args.own_scope ? [ROW] : [] };
         return {};
     };
-    const client = createKbWorkClient({
+    const client = currentServerKbWork(createKbWorkClient, {
         memberCall,
         maintainers: selfMaintainer(MAINT, ['maint', 'reviewer-1']),
         gPull: async () => {},
         gPush: async () => {},
         bibleBase: async () => ({ baseBranch: 'main', baseCommit: 'a'.repeat(40) }),
-        roundChangedFiles: async () => [CHANGED_FILE],
+        sprintChangedFiles: async () => [CHANGED_FILE],
         log: (m) => logs.push(m),
         ...extra,
     });
@@ -48,23 +48,24 @@ const demoteOutput = { kb_demotions: [{ id: 'kb-ok', reason: REASON, evidence_fi
 
 describe('kb_demotion_loop switch: createKbWorkClient', () => {
     for (const [label, extra] of [['absent', {}], ["'on'", { demotionLoop: 'on' }]]) {
-        test(`setting ${label}: candidates are offered and the demotion is applied`, async () => {
+        test(`setting ${label}: candidates are offered and the demotion is queued as a withdrawal`, async () => {
             const { client, events } = build(extra);
             const offered = await client.demotionCandidates('reviewer-1');
             assert.deepEqual(offered.map((e) => e.id), ['kb-ok']);
             const out = await client.apply('reviewer', 'reviewer-1', demoteOutput);
             assert.equal(out.demoted, 1);
-            assert.equal(events.filter((e) => e.ev === 'kb_demote').length, 1);
+            assert.deepEqual(client.pendingWithdrawals()[0].withdrawals.map((w) => w.id), ['kb-ok']);
+            assert.equal(events.filter((e) => e.ev === 'kb_demote').length, 0, 'a demotion is never a kb_demote call');
         });
     }
 
-    test("setting 'off': no candidates, no kb_query read, no kb_demote, and the log names the setting", async () => {
+    test("setting 'off': no candidates, no kb_query read, no withdrawal, and the log names the setting", async () => {
         const { client, events, logs } = build({ demotionLoop: 'off' });
         const offered = await client.demotionCandidates('reviewer-1');
         assert.deepEqual(offered, []);
         const out = await client.apply('reviewer', 'reviewer-1', demoteOutput);
         assert.equal(out.demoted, 0);
-        assert.equal(events.filter((e) => e.ev === 'kb_demote').length, 0);
+        assert.deepEqual(client.pendingWithdrawals(), []);
         assert.equal(events.filter((e) => e.ev === 'kb_query').length, 0);
         assert.ok(logs.some((l) => l.includes('demotion loop is disabled') && l.includes('kb_demotion_loop')), JSON.stringify(logs));
     });

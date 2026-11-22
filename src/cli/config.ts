@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { randomBytes } from 'node:crypto';
 import os from 'node:os';
 import { parse, stringify } from 'smol-toml';
 import type { LlmProvider } from '../types.js';
@@ -185,51 +186,135 @@ export function writeOwnerOnlyFile(file: string, content: string): void {
 }
 
 /**
+ * Upper bound, in ms, of the rename retries of the atomic owner-only writers:
+ * a Windows antivirus scan or indexer can hold a just-written file for a
+ * second or more, so a few seconds of backoff absorbs that, still bounded.
+ */
+export const RENAME_RETRY_BUDGET_MS = 4000;
+
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * The file changed between the caller's read and the replace (or appeared /
+ * disappeared): the replace was refused and the file left as the other writer
+ * left it. Thrown only by a writer given an `expected` precondition.
+ */
+export class FileChangedError extends Error {
+  constructor(public readonly filePath: string) {
+    super(`${filePath} was changed by another writer since it was read; the replace was refused`);
+    this.name = 'FileChangedError';
+  }
+}
+
+/**
+ * The current bytes of `file`, or null when it does not exist (existsSync
+ * first, then a read; a file removed in between also reads as null).
+ */
+export function readFileBytesOrNull(file: string): Buffer | null {
+  if (!fs.existsSync(file)) return null;
+  try {
+    const data: unknown = fs.readFileSync(file);
+    return Buffer.isBuffer(data) ? data : Buffer.from(String(data ?? ''), 'utf-8');
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw err;
+  }
+}
+
+/** Throws FileChangedError unless `target` holds exactly `expected` (null = absent). */
+function assertUnchanged(target: string, expected: Buffer | null | undefined): void {
+  if (expected === undefined) return;
+  const now = readFileBytesOrNull(target);
+  if (expected === null ? now !== null : (now === null || !now.equals(expected))) throw new FileChangedError(target);
+}
+
+/**
+ * Writes `content` to an owner-only (`mode`) temp file next to `target` and
+ * renames it over `target`; the live file is never opened for writing. A
+ * failed rename (e.g. EBUSY/EPERM while another process holds the file on
+ * Windows) is retried with exponential backoff (25 ms doubling, at most 1 s
+ * per wait) for up to RENAME_RETRY_BUDGET_MS. Then the temp file is removed
+ * and the error names the target, the attempts and the elapsed time; the
+ * target is left byte-identical. With `expected` set (the bytes the caller
+ * read; null = the file did not exist) the target is compared right before
+ * every rename attempt, and a mismatch removes the temp file and throws
+ * FileChangedError (compare-and-swap; the remaining window is the rename
+ * call itself).
+ */
+function replaceByRename(target: string, content: string, mode: number, expected?: Buffer | null): void {
+  const tmp = path.join(path.dirname(target), `.${path.basename(target)}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`);
+  try {
+    fs.writeFileSync(tmp, content, { mode, flag: 'wx' });
+    fs.chmodSync(tmp, mode);
+    const start = Date.now();
+    for (let attempt = 1; ; attempt++) {
+      assertUnchanged(target, expected);
+      try { fs.renameSync(tmp, target); return; } catch (err: unknown) {
+        const elapsed = Date.now() - start;
+        const wait = Math.min(25 * 2 ** (attempt - 1), 1000);
+        if (elapsed + wait > RENAME_RETRY_BUDGET_MS) {
+          throw new Error(`could not replace ${target} after ${attempt} attempts over ${elapsed} ms: ${err instanceof Error ? err.message : String(err)}; it was left unchanged`);
+        }
+        sleepSync(wait);
+      }
+    }
+  } catch (err) {
+    try { fs.unlinkSync(tmp); } catch { /* not created / already moved */ }
+    throw err;
+  }
+}
+
+/**
  * writeOwnerOnlyFile for a file another process saves concurrently (Claude
  * Code's ~/.claude.json): the content goes to an owner-only temp file in the
  * same directory, then replaces the target by rename, so a crash or a racing
- * save never leaves it truncated. When the rename fails (e.g. the target is
- * briefly locked on Windows) it falls back to the in-place owner-only write.
- * A symlinked file keeps its link: the temp file is placed next to, and
- * renamed over, the link's real target. On POSIX a file owned by another uid
- * (e.g. install run under sudo) is written in place, since a rename would
- * hand it to the current user. The temp file takes the existing file's
- * owner permission bits (never group/other).
+ * save never leaves it truncated. The live file is never written in place:
+ * when the rename keeps failing (e.g. the target held open on Windows) the
+ * bounded retries of replaceByRename run out and this throws naming the file,
+ * which is left byte-identical. A symlinked file keeps its link: the temp
+ * file is placed next to, and renamed over, the link's real target. The temp
+ * file takes the existing file's owner permission bits (never group/other).
+ *
+ * One deliberate exception, POSIX only: a file owned by ANOTHER uid (e.g.
+ * install run under sudo against the invoking user's config) is written in
+ * place, because a rename would hand the file to the current user. That case
+ * cannot be atomic; it is kept so a sudo install still updates the user's
+ * config instead of failing (the `expected` check still runs first).
+ *
+ * `opts.expected` makes the replace a compare-and-swap: the bytes the caller
+ * read (null = the file did not exist); when the file no longer holds them
+ * this throws FileChangedError and writes nothing (see
+ * updateClaudeConfigFile for the re-read loop).
  */
-export function writeOwnerOnlyFileAtomic(file: string, content: string): void {
+export function writeOwnerOnlyFileAtomic(file: string, content: string, opts: { expected?: Buffer | null } = {}): void {
   let target = file;
   try { const real = fs.realpathSync(file); if (typeof real === 'string' && real) target = real; } catch { /* missing: write at `file` */ }
   let st: fs.Stats | undefined;
   try { st = fs.statSync(target); } catch { /* new file */ }
   const getuid = (process as { getuid?: () => number }).getuid;
   if (st && typeof getuid === 'function' && typeof st.uid === 'number' && st.uid !== getuid()) {
+    assertUnchanged(target, opts.expected);
     writeOwnerOnlyFile(target, content);
     return;
   }
   const mode = st && typeof st.mode === 'number' && (st.mode & 0o700) ? (st.mode & 0o700) | 0o600 : 0o600;
-  const tmp = path.join(path.dirname(target), `.${path.basename(target)}.${process.pid}.${Date.now()}.tmp`);
-  try {
-    fs.writeFileSync(tmp, content, { mode, flag: 'wx' });
-    fs.chmodSync(tmp, mode);
-    fs.renameSync(tmp, target);
-    return;
-  } catch {
-    try { fs.unlinkSync(tmp); } catch { /* not created / already moved */ }
-  }
-  writeOwnerOnlyFile(target, content);
+  replaceByRename(target, content, mode, opts.expected);
 }
 
 /**
  * Strict sibling of writeOwnerOnlyFileAtomic for a file whose loss is
  * unrecoverable (registry.json): the content goes to an owner-only (0600)
  * temp file in the same directory and replaces the target by rename, and the
- * live file is NEVER opened for writing. A transient rename failure (e.g. a
- * brief Windows lock) is retried a few times; on final failure the temp file
- * is removed and the error is thrown, leaving the target byte-identical.
- * Unlike writeOwnerOnlyFileAtomic there is no in-place fallback, including
- * for an existing file owned by another uid (POSIX): that throws a clear
- * error instead, since a rename would hand the file to the current user and
- * an in-place write is exactly what this helper exists to avoid.
+ * live file is NEVER opened for writing. A transient rename failure (e.g. an
+ * antivirus scan holding the file on Windows) is retried with backoff for a
+ * bounded few seconds (replaceByRename); on final failure the temp file is
+ * removed and the error names the attempts and the elapsed time, leaving the
+ * target byte-identical. Unlike writeOwnerOnlyFileAtomic there is no in-place
+ * write even for an existing file owned by another uid (POSIX): that throws a
+ * clear error instead, since a rename would hand the file to the current user
+ * and an in-place write is exactly what this helper exists to avoid.
  * A symlinked target keeps its link (temp file placed next to the real file).
  */
 export function writeOwnerOnlyFileAtomicStrict(file: string, content: string): void {
@@ -241,21 +326,7 @@ export function writeOwnerOnlyFileAtomicStrict(file: string, content: string): v
   if (st && typeof getuid === 'function' && typeof st.uid === 'number' && st.uid !== getuid()) {
     throw new Error(`${target} is owned by another user (uid ${st.uid}); refusing to replace or rewrite it in place`);
   }
-  const tmp = path.join(path.dirname(target), `.${path.basename(target)}.${process.pid}.${Date.now()}.tmp`);
-  try {
-    fs.writeFileSync(tmp, content, { mode: 0o600, flag: 'wx' });
-    fs.chmodSync(tmp, 0o600);
-    const attempts = 5;
-    for (let i = 1; ; i++) {
-      try { fs.renameSync(tmp, target); return; } catch (err: unknown) {
-        if (i >= attempts) throw new Error(`could not replace ${target} after ${attempts} attempts: ${err instanceof Error ? err.message : String(err)}`);
-        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25 * i);
-      }
-    }
-  } catch (err) {
-    try { fs.unlinkSync(tmp); } catch { /* not created / already moved */ }
-    throw err;
-  }
+  replaceByRename(target, content, 0o600);
 }
 
 export function writeConfig(paths: ProviderInstallConfig, config: any, opts: { ownerOnly?: boolean } = {}): void {

@@ -5,6 +5,8 @@ import { getAgentOS, getAgentShell, isPosixShell } from '../utils/agent-helpers.
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { escapeShellArg, escapePowerShellArg, escapeShellArgInner, escapePowerShellArgInner } from '../utils/shell-escape.js';
 import { logLine } from '../utils/log-helpers.js';
+import { listVcsCredentials } from '../services/vcs-credential-record.js';
+import { vcsGitEnvPrefix } from '../services/vcs-git-env.js';
 import type { Agent } from '../types.js';
 
 /**
@@ -262,7 +264,11 @@ export async function vcsCredentialExec(input: VcsCredentialExecInput): Promise<
   // caller proceed credential-less.
   let read: { command: string; path: string };
   try {
-    read = cmds.gitCredentialHelperRead(input.label);
+    // The member's own per-member helper when the record says it has one;
+    // otherwise (a legacy entry, or a label never recorded) the shared
+    // per-OS-user file an older release wrote.
+    const recorded = listVcsCredentials(agent).find(e => e.label === input.label);
+    read = cmds.gitCredentialHelperRead(input.label, recorded?.memberScoped ? agent.id : undefined);
   } catch (err: any) {
     return execResult(
       `[FAIL] Cannot read a VCS credential on "${agent.friendlyName}" (os=${agentOs} shell=${agentShell ?? 'default'}): ${err.message}`,
@@ -357,7 +363,7 @@ export async function vcsCredentialExec(input: VcsCredentialExecInput): Promise<
     // execCommand kills the remote process tree explicitly and the caller
     // gets "Command timed out ..." (reason dispatch_failed) -- a git push or
     // clone is never left running, or cut mid-operation, unreported.
-    const res = await strategy.execCommand(cmds.wrapPidCapture(finalCommand), (input.timeout_s ?? 120) * 1000);
+    const res = await strategy.execCommand(vcsGitEnvPrefix(agent, cmds) + cmds.wrapPidCapture(finalCommand), (input.timeout_s ?? 120) * 1000);
     code = res.code;
     stdout = res.stdout ?? '';
     stderr = res.stderr ?? '';

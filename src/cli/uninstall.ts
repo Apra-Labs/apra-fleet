@@ -333,9 +333,20 @@ interface RemovalFailure {
   error: unknown;
 }
 
-/** Same Windows path (case-insensitive, separators normalised): execPath's case can differ from a readdir join. */
-function sameWin32Path(a: string, b: string): boolean {
-  return path.win32.normalize(a).toLowerCase() === path.win32.normalize(b).toLowerCase();
+/**
+ * Same Windows path (case-insensitive, separators normalised): execPath's case
+ * can differ from a readdir join, and either side can be an 8.3 short name
+ * (C:\PROGRA~1\...) of the other. An existing path is first resolved with
+ * fs.realpathSync.native (GetFinalPathNameByHandle, which expands short
+ * names); a path that cannot be resolved is compared as given.
+ */
+export function sameWin32Path(a: string, b: string): boolean {
+  const canonical = (p: string): string => {
+    let r = p;
+    try { const real = fs.realpathSync.native(p); if (typeof real === 'string' && real) r = real; } catch { /* missing / unresolvable: lexical */ }
+    return path.win32.normalize(r).toLowerCase();
+  };
+  return canonical(a) === canonical(b);
 }
 
 function errCode(e: unknown): string | undefined {

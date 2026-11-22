@@ -1029,3 +1029,59 @@ describe('createWorkflowsPermissionPreflightCallback', () => {
         }
     });
 });
+
+// The freshness cache keys on repo scope as well as expiry: a still-fresh
+// credential whose deployed scope (provision_vcs_auth
+// structuredContent.metadata.repos) does not include the sprint repo gets a
+// 403 on the next push, so it must be re-provisioned, not skipped.
+describe('createVcsAuthPreflightCallback: scope-aware freshness cache', () => {
+    const provisionedWithScope = (expiresAt, repos) => ({
+        content: [{ text: 'Provisioned VCS credential.' }],
+        structuredContent: { ok: true, reason: 'ok', expiresAt, metadata: repos === null ? { expiresAt } : { expiresAt, repos } },
+    });
+
+    function scopedCallTool(scopes) {
+        const calls = [];
+        const queue = [...scopes];
+        const callTool = async (name, args) => {
+            if (name === 'member_detail') return MEMBER_DETAIL_GITHUB;
+            calls.push({ name, args });
+            const repos = queue.length > 1 ? queue.shift() : queue[0];
+            return provisionedWithScope(farFutureExpiry(), repos);
+        };
+        return { callTool, calls };
+    }
+
+    test('a cached-fresh credential whose scope does not include the sprint repo is re-provisioned, not skipped', async () => {
+        const { callTool, calls } = scopedCallTool(['acme/other, acme/third', 'acme/widgets']);
+        const logs = [];
+        const ensureVcsAuthFresh = createVcsAuthPreflightCallback({ callTool, command: remoteCommand, log: (m) => logs.push(m) });
+
+        await ensureVcsAuthFresh('fleet-mac');
+        await ensureVcsAuthFresh('fleet-mac');
+        assert.equal(calls.length, 2, `a fresh credential that does not cover acme/widgets must be re-provisioned, got ${calls.length} call(s)`);
+        assert.ok(logs.some((l) => /does not cover repo 'acme\/widgets'/.test(l) && /acme\/other, acme\/third/.test(l)), `expected a scope-mismatch log, got: ${JSON.stringify(logs)}`);
+        assert.ok(!logs.some((l) => /skipped for member 'fleet-mac': cached credential fresh/.test(l)), 'a scope mismatch must never be logged as a fresh skip');
+
+        // The re-provision recorded a covering scope: the next call skips.
+        await ensureVcsAuthFresh('fleet-mac');
+        assert.equal(calls.length, 2);
+    });
+
+    test('a cached-fresh credential whose scope includes the sprint repo (case-insensitive) still skips', async () => {
+        const { callTool, calls } = scopedCallTool(['Acme/Other, ACME/Widgets']);
+        const ensureVcsAuthFresh = createVcsAuthPreflightCallback({ callTool, command: remoteCommand });
+        await ensureVcsAuthFresh('fleet-mac');
+        await ensureVcsAuthFresh('fleet-mac');
+        await ensureVcsAuthFresh('fleet-mac');
+        assert.equal(calls.length, 1);
+    });
+
+    test('a cached-fresh credential with no recorded scope (provider-wide) still skips', async () => {
+        const { callTool, calls } = scopedCallTool([null]);
+        const ensureVcsAuthFresh = createVcsAuthPreflightCallback({ callTool, command: remoteCommand });
+        await ensureVcsAuthFresh('fleet-mac');
+        await ensureVcsAuthFresh('fleet-mac');
+        assert.equal(calls.length, 1);
+    });
+});

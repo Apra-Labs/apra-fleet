@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi, inject } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -7,6 +7,30 @@ import { kbSetup } from '../../src/tools/kb-setup.js';
 import { runKbProfile, parseKbProfileArgs } from '../../src/cli/kb-profile.js';
 import { FLEET_DIR } from '../../src/paths.js';
 import { isolateGitConfig } from './isolate-git-config.js';
+import { releaseFileDataDir, fileDataDirViolations } from '../helpers/file-kb-data-dir.js';
+import { FLEET_DIR as ISOLATED_FLEET_DIR } from '../../src/paths.js';
+import { KB_CONFIG_PATH as ISOLATED_KB_CONFIG_PATH } from '../../src/services/knowledge/kb-config.js';
+
+// This file's OWN fleet data dir, claimed before any src module loads
+// (src/paths.ts fixes FLEET_DIR at import). The per-run data dir tests/setup.ts
+// provides is shared by every file of the run, and so is the KB config file
+// in it (<data dir>/knowledge/config.json), which this file writes and the
+// code under test reads.
+const fileDataDir = await vi.hoisted(async () =>
+  (await import('../helpers/file-kb-data-dir.js')).claimFileDataDir('kb-setup-tool-profile'));
+afterAll(() => releaseFileDataDir(fileDataDir));
+
+// ISOLATION GUARD: fails if this suite reads the run-shared data dir again --
+// the hoisted claim removed, moved below the imports (FLEET_DIR is then fixed
+// to the shared dir), or the dir not unique to this file.
+describe('isolation guard', () => {
+  it('this suite reads its own fleet data dir and KB config file, not the run-shared ones', () => {
+    expect(fileDataDirViolations({
+      label: 'kb-setup-tool-profile', claimed: fileDataDir, fleetDir: ISOLATED_FLEET_DIR,
+      kbConfigPath: ISOLATED_KB_CONFIG_PATH, runSharedDir: inject('APRA_FLEET_TEST_DATA_DIR'),
+    })).toEqual([]);
+  });
+});
 
 // Setting the KB tool profile (GitHub #759) through kb_setup and the
 // `apra-fleet kb profile` verb. FLEET_DIR is shared by the run: every test
@@ -77,6 +101,28 @@ describe('kb_setup tool_profile', () => {
     expect(fs.existsSync(path.join(tmpDir, '.git', 'hooks', 'post-commit'))).toBe(false);
   });
 
+  it('a profile-only call installs no hook and leaves the provider unconfigured', async () => {
+    const hookPath = path.join(tmpDir, '.git', 'hooks', 'post-commit');
+    fs.rmSync(hookPath, { force: true });
+    const result = JSON.parse(await kbSetup({ tool_profile: 'developer' }, { folder: tmpDir }));
+    expect(result.success).toBe(true);
+    expect(fs.existsSync(hookPath)).toBe(false);
+    expect(result.steps.some((s: string) => /git hook/i.test(s))).toBe(false);
+    expect(readConfig()).toEqual({ tool_profile: 'developer' });
+  });
+
+  it('a profile-only call keeps an existing provider unchanged', async () => {
+    writeConfig({ provider: 'http', url: 'https://kb.example.test' });
+    await kbSetup({ tool_profile: 'custom', tool_profile_tools: ['kb_query'] }, { folder: tmpDir });
+    expect(readConfig()).toMatchObject({ provider: 'http', url: 'https://kb.example.test' });
+  });
+
+  it('a call that also sets a provider still installs the hook', async () => {
+    const result = JSON.parse(await kbSetup({ tool_profile: 'full', provider: 'sqlite' }, { folder: tmpDir }));
+    expect(fs.existsSync(path.join(tmpDir, '.git', 'hooks', 'post-commit'))).toBe(true);
+    expect(result.steps).toContain('Installed git post-commit hook for KB invalidation');
+  });
+
   it('refuses tool_profile_tools without tool_profile custom', async () => {
     await expect(kbSetup({ tool_profile: 'developer', tool_profile_tools: ['kb_query'] }, { folder: tmpDir }))
       .rejects.toThrow(/only valid with tool_profile "custom"/);
@@ -137,6 +183,8 @@ describe('apra-fleet kb profile', () => {
       ['malformed JSON', TRAILING_COMMA],
       ['an empty file', ''],
       ['a JSON array', '[]'],
+      ['JSON null', 'null'],
+      ['a JSON string', '"full"'],
     ] as const) {
       it(`${name}: setting a profile exits 1, says to fix it by hand and leaves the file as it was`, () => {
         fs.mkdirSync(path.dirname(configPath), { recursive: true });
@@ -150,6 +198,17 @@ describe('apra-fleet kb profile', () => {
         expect(text).toMatch(/by hand/);
       });
     }
+
+    it.each(['[]', 'null', '"full"', '42'])('printing the profile on non-object config %s exits 1 with the reason kb_setup gives', async (content) => {
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+      fs.writeFileSync(configPath, content);
+      const { io, err } = captureIo();
+      expect(runKbProfile([], io)).toBe(1);
+      expect(err.join('\n')).toContain('is not a JSON object');
+      const setupErr = await kbSetup({ tool_profile: 'full' }, { folder: tmpDir }).then(() => null, (e: Error) => e);
+      expect(setupErr?.message).toContain('is not a JSON object');
+      expect(fs.readFileSync(configPath, 'utf-8')).toBe(content);
+    });
 
     it('printing the profile on malformed JSON advises the hand fix, not a command that rewrites the file', () => {
       fs.mkdirSync(path.dirname(configPath), { recursive: true });

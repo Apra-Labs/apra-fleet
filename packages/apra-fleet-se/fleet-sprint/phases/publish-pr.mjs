@@ -69,7 +69,7 @@ import { CommandError } from '@apralabs/apra-fleet-workflow';
 import { ApraFleet } from '@apralabs/apra-fleet-client';
 import { capabilities as vcsCapabilities } from '../vcs-module.mjs';
 import { raiseVcsPrForMember } from '../vcs-auth.mjs';
-import { buildSprintPrBody, buildSprintPrTitle } from '../pr-body.mjs';
+import { buildSprintPrBody, buildSprintPrTitle, buildKbChangesSection } from '../pr-body.mjs';
 import { DoltSync } from '../dolt-sync.mjs';
 
 /** Reason recorded when beads changes still have not reached the shared remote
@@ -173,6 +173,9 @@ export async function runPublishPrPhase({
     // Reads the pending beads-sync degradations at the terminal (DoltSync.flush
     // shape: { published, degradations }). Injectable for tests.
     flushBeadsSync = () => DoltSync.flush(),
+    // kbWork.kbChangesOnMerge() -- the final review's demotion outcome plus
+    // the withdrawn tombstones the branch carries, or null.
+    kbChanges = null,
 }) {
     phase(`Publish PR C${finalCycleLabel}`);
     // The branch push is the LAST step of a sprint that has already done all of
@@ -344,6 +347,7 @@ export async function runPublishPrPhase({
         // with a pointer to them. The latest build is kept so the full notes
         // can always be written to the run log as well.
         let lastBody = null;
+        const kbChangesSection = buildKbChangesSection(kbChanges);
         const buildBody = (previousBody = '', limits = {}) => (lastBody = buildSprintPrBody({
             verdict: finalVerdictLabel,
             goal: validated.goal,
@@ -364,6 +368,7 @@ export async function runPublishPrPhase({
             setAside,
             waited,
             costAnalysis,
+            sections: kbChangesSection ? [kbChangesSection] : [],
             previousBody,
             ...(limits.descriptionMaxLength ? { maxLength: limits.descriptionMaxLength } : {}),
             ...(limits.commentMaxLength ? { commentMaxLength: limits.commentMaxLength } : {}),

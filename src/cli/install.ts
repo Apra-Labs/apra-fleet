@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import { getOrCreateMemberAccessSecret, MEMBER_SECRET_HEADER, readMemberAccessSecret } from '../services/member-access-secret.js';
-import { claudeUserConfigPath, refreshClaudeLocalScopeEntries } from '../services/claude-local-scope-mcp.js';
+import { claudeUserConfigPath, refreshClaudeLocalScopeEntries, updateClaudeConfigFile, pruneLeakedTestProjectKeys } from '../services/claude-local-scope-mcp.js';
 import path from 'node:path';
 import os from 'node:os';
 import { execSync, execFileSync } from 'node:child_process';
@@ -18,7 +18,6 @@ import {
   readConfig,
   readInstallConfig,
   writeOwnerOnlyFile,
-  writeOwnerOnlyFileAtomic,
   writeConfig,
   writeInstallConfig,
   PROVIDER_STANDARD_MODELS,
@@ -917,19 +916,41 @@ export { claudeUserConfigPath } from '../services/claude-local-scope-mcp.js';
  */
 export function registerClaudeHttpMcp(url: string, headers: Record<string, string>): void {
   const file = claudeUserConfigPath();
-  let settings: any = {};
-  if (fs.existsSync(file)) {
-    const refuse = (what: string) => new Error(`${file} is ${what}; it was left untouched. Close Claude Code, fix or remove the file, then re-run 'apra-fleet install'`);
-    const raw = fs.readFileSync(file, 'utf-8').trim();
-    if (!raw) throw refuse('empty (not valid JSON)');
-    try { settings = JSON.parse(raw); } catch {
-      throw refuse('not valid JSON');
+  // Compare-and-swap: the entry is re-applied onto a fresh read whenever
+  // Claude Code (or another writer) saved the file in between.
+  updateClaudeConfigFile(file, (content) => {
+    let settings: any = {};
+    if (content !== null) {
+      const refuse = (what: string) => new Error(`${file} is ${what}; it was left untouched. Close Claude Code, fix or remove the file, then re-run 'apra-fleet install'`);
+      const raw = content.trim();
+      if (!raw) throw refuse('empty (not valid JSON)');
+      try { settings = JSON.parse(raw); } catch {
+        throw refuse('not valid JSON');
+      }
+      if (typeof settings !== 'object' || settings === null || Array.isArray(settings)) throw refuse('not a JSON object (not valid JSON for a claude config)');
     }
-    if (typeof settings !== 'object' || settings === null || Array.isArray(settings)) throw refuse('not a JSON object (not valid JSON for a claude config)');
+    settings.mcpServers = settings.mcpServers || {};
+    settings.mcpServers['apra-fleet'] = { type: 'http', url, headers };
+    return JSON.stringify(settings, null, 2) + '\n';
+  });
+}
+
+/**
+ * Install/upgrade step: removes the claude config project keys older
+ * apra-fleet test runs leaked into it (pruneLeakedTestProjectKeys), reporting
+ * the count through `log`. Never throws: a failure is reported as a warning
+ * and the install carries on. Returns the number removed.
+ */
+export function pruneLeakedClaudeTestProjects(log: (msg: string) => void = console.log): number {
+  const file = claudeUserConfigPath();
+  try {
+    const removed = pruneLeakedTestProjectKeys(file);
+    if (removed > 0) log(`    claude: removed ${removed} leaked apra-fleet test project entr${removed === 1 ? 'y' : 'ies'} from ${file}`);
+    return removed;
+  } catch (err) {
+    log(`    [!] could not prune leaked apra-fleet test project entries from ${file}: ${err instanceof Error ? err.message : String(err)}`);
+    return 0;
   }
-  settings.mcpServers = settings.mcpServers || {};
-  settings.mcpServers['apra-fleet'] = { type: 'http', url, headers };
-  writeOwnerOnlyFileAtomic(file, JSON.stringify(settings, null, 2) + '\n');
 }
 
 /** Write the http (url + access-secret header) apra-fleet registration for one provider. */
@@ -1846,6 +1867,11 @@ ${manualStopHint(pidsAfterStop)}
   // or a rewritten registration needs them restarted (reported at the end).
   // stdio registrations are not gated by the secret.
   let registrationChanged = !secretExisted && transport === 'http';
+
+  // Older test runs leaked work-folder project keys into this user's claude
+  // config (thousands on a dev host); every install/upgrade removes exactly
+  // those. Runs in member mode too: it only ever removes leaked test keys.
+  pruneLeakedClaudeTestProjects();
 
   if (memberMode) {
     // The per-folder member entry is written by compose_permissions; a member

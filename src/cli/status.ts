@@ -11,6 +11,7 @@ import { checkClaudeUserScopeRegistration, claudeUserConfigPath, type ClaudeRegi
 import { memberAccessSecretPath, readMemberAccessSecret } from '../services/member-access-secret.js';
 import { readInstallConfig } from './config.js';
 import { DEFAULT_PORT } from '../paths.js';
+import { readSupervisorLiveness, formatSupervisorLine } from './supervisor-liveness.js';
 
 function versionCore(v: string | undefined): string | null {
   // Capped like the client's versionCore: v comes from a server's /health reply.
@@ -109,6 +110,7 @@ export async function runStatus(_args: string[]): Promise<void> {
     + (svcStatus.notice ? '\n' + svcStatus.notice.split('\n').map(l => `            ${l}`).join('\n') : '');
 
   const registrationWarning = claudeRegistrationWarning();
+  const supervisorLine = formatSupervisorLine(readSupervisorLiveness());
 
   if (instance.state === 'unresponsive') {
     console.log('apra-fleet status');
@@ -118,6 +120,7 @@ export async function runStatus(_args: string[]): Promise<void> {
     console.log(`  URL:      ${instance.url}`);
     console.log(`  Service:  ${serviceLabel}`);
     console.log('  The server process is alive but not answering /health. Run "apra-fleet stop" to stop it.');
+    console.log(supervisorLine);
     if (registrationWarning) console.log(registrationWarning);
     return;
   }
@@ -127,6 +130,7 @@ export async function runStatus(_args: string[]): Promise<void> {
     console.log('apra-fleet status');
     console.log(`  State:    ${marker ? `stopped (${describeStoppedMarker(marker)})` : 'stopped'}`);
     console.log(`  Service:  ${serviceLabel}`);
+    console.log(supervisorLine);
     if (registrationWarning) console.log(registrationWarning);
     return;
   }
@@ -151,5 +155,6 @@ export async function runStatus(_args: string[]): Promise<void> {
   if (runningCore && ownCore && runningCore !== ownCore) {
     console.log(`  Warning:  the running server is ${health!.version} but this apra-fleet is ${serverVersion} -- stop it ('apra-fleet stop'), then run 'apra-fleet install' and 'apra-fleet start'.`);
   }
+  console.log(supervisorLine);
   if (registrationWarning) console.log(registrationWarning);
 }

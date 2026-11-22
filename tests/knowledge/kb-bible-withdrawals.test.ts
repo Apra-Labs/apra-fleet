@@ -32,7 +32,7 @@ const DEMOTE_REASON = 'the cited behaviour did not hold on the case checked this
 interface Tombstone { id: string; at: string; reason: string; note?: string; evidence_files?: string[] }
 interface BibleFile {
   version?: number;
-  provenance?: { commit: string | null; branch: string | null; entry_count: number };
+  provenance?: { commit?: string | null; branch: string | null; entry_count?: number };
   entries: Array<{ id: string } & Record<string, unknown>>;
   demotions?: Tombstone[];
 }
@@ -150,7 +150,7 @@ describe('kb_bible_commit withdrawals (sqlite)', () => {
     expect(r.committed).toBe(true);
     const onDisk = readBible();
     expect(onDisk.entries.map(e => e.id)).toEqual([keep]);
-    expect(onDisk.provenance?.entry_count).toBe(1);
+    expect(onDisk.provenance?.entry_count).toBeUndefined();
     expect(onDisk.demotions).toHaveLength(1);
     const t = onDisk.demotions![0];
     expect(t).toEqual({ id, at: t.at, reason: 'withdrawn', note: NOTE_COLLAPSED, evidence_files: EVIDENCE });

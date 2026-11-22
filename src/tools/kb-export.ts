@@ -41,15 +41,17 @@ import { gitExecutable } from '../os/git-executable.js';
 // auto-commit behavior (T2.3) applies to the global file too.
 // Provenance names the TARGET BASE branch: the branch the bible's entries will
 // merge into, not the (typically feature) branch the export ran on. baseBranch
-// and baseCommit let the caller say so explicitly; when omitted, provenance
-// falls back to the export folder's own HEAD branch and commit (unchanged).
+// and baseCommit let the caller say so explicitly; when omitted, they fall
+// back to the export folder's own HEAD branch and commit. The branch is
+// written to provenance.branch; the commit is recorded in the git commit that
+// writes the file (a Verified-Against trailer), never in the file itself.
 export const kbExportSchema = z.object({
   scope: z.enum(['project', 'global']).optional()
     .describe('project (default, unchanged): export the project KB to .fleet/kb-canonical.json. global: export the GLOBAL KB to .fleet/kb-canonical-global.json in the calling session\'s own repo (in practice the apra-fleet platform repo, committed there so the installer can distribute it -- D8).'),
   baseBranch: z.string().min(1).optional()
     .describe('The target base branch (the branch the entries merge into). Written to provenance.branch. Omitted: the export folder HEAD branch.'),
   baseCommit: z.string().min(1).optional()
-    .describe('The base commit the entries were verified against. Written to provenance.commit. Omitted: the export folder HEAD commit.'),
+    .describe('The base commit the entries were verified against. Recorded as a Verified-Against trailer on the auto-commit, not in the file (a per-file commit line would make every two bible-changing branches conflict). Omitted: the export folder HEAD commit.'),
   // Removed pre-redesign scope keys: declared only so a caller still passing one
   // is refused with E-SCOPE-KEY-REMOVED instead of silently re-scoped.
   ...KB_REMOVED_SCOPE_KEYS_SHAPE,
@@ -86,16 +88,16 @@ export const BIBLE_FORMAT_VERSION = 3 as const;
  */
 export interface CanonicalBible {
   version: typeof BIBLE_FORMAT_VERSION;
-  provenance: {
-    /** 40-char HEAD sha, or null when the repo has no commits or git is absent. */
-    commit: string | null;
-    branch: string | null;
-    /**
-     * ENTRIES ONLY. A tombstone is not an entry, so recording a demotion never
-     * moves this number -- it still names how many entries the file carries.
-     */
-    entry_count: number;
-  };
+  /**
+   * MERGE-FRIENDLY: only the target base branch is written. Two branches that
+   * merge into the same base write the same value, so this line never makes a
+   * text conflict. A bible written before this change also carries `commit`
+   * and `entry_count`; readers ignore both (the entry count is entries.length,
+   * the verified commit is recorded in the git commit that wrote the file).
+   * They are no longer written because two branches that each add an entry
+   * rewrite both lines differently and conflict on every plain git merge.
+   */
+  provenance: BibleProvenance;
   entries: CanonicalEntry[];
   /**
    * OPTIONAL tombstones {id, at, reason}, sorted by id. v3 only. Absent when the
@@ -103,6 +105,28 @@ export interface CanonicalBible {
    * bible written before it existed) keeps working unchanged.
    */
   demotions?: BibleTombstone[];
+}
+
+/**
+ * The provenance block as written today: the target base branch only (null
+ * when unknown). Legacy keys a reader may still meet (`commit`,
+ * `entry_count`) are read-tolerated, never written -- see CanonicalBible.
+ */
+export interface BibleProvenance {
+  branch: string | null;
+}
+
+/** The provenance block a bible is written with. One place, so every writer agrees. */
+export function bibleProvenance(branch: string | null): BibleProvenance {
+  return { branch };
+}
+
+/**
+ * The git trailer naming the base commit a bible's entries were verified
+ * against, appended to the commit that writes the file. Empty when unknown.
+ */
+export function verifiedAgainstTrailer(commit: string | null | undefined): string {
+  return typeof commit === 'string' && commit.length > 0 ? '\n\nVerified-Against: ' + commit : '';
 }
 
 /** Entries AND tombstones of a bible already on disk. */
@@ -428,6 +452,7 @@ function maybeAutoCommitBible(
   entryCount: number,
   scope: 'project' | 'global' = 'project',
   previousEntryCount: number | null = null,
+  verifiedCommit: string | null = null,
 ): boolean {
   const mode = autoCommitMode();
   if (mode === 'off') return false;
@@ -447,7 +472,8 @@ function maybeAutoCommitBible(
     if (!bibleContentChanged(repoPath, outPath)) return false;
 
     const scopeLabel = scope === 'global' ? 'global knowledge bible' : 'knowledge bible';
-    const message = 'chore(kb): update ' + scopeLabel + ' -- ' + entryCount + ' confirmed entries';
+    const message = 'chore(kb): update ' + scopeLabel + ' -- ' + entryCount + ' confirmed entries'
+      + verifiedAgainstTrailer(verifiedCommit);
     commitBiblePath(repoPath, outPath, message);
     return true;
   } catch (err) {
@@ -554,12 +580,9 @@ async function exportProjectBible(
   const nextDemotions = Array.from(tombstones.values()).sort(compareById);
   const bible = {
     version: BIBLE_FORMAT_VERSION,
-    provenance: {
-      commit: input.baseCommit ?? resolveHeadCommit(repoPath),
-      branch: input.baseBranch ?? resolveBranch(repoPath),
-      // Entries only: the tombstones below are deliberately not counted.
-      entry_count: merged.length,
-    },
+    // Branch only: a per-file commit or entry count would be a line every
+    // branch rewrites differently, so two exports would always conflict.
+    provenance: bibleProvenance(input.baseBranch ?? resolveBranch(repoPath)),
     entries: merged,
     // Omitted entirely when there are none, so a bible that never saw a
     // demotion is byte-identical to one written before the field existed.
@@ -570,7 +593,9 @@ async function exportProjectBible(
   const previousEntryCount = bibleEntryCount(outPath);
   fs.writeFileSync(outPath, asciiSafeStringify(bible) + '\n', 'utf-8');
 
-  const committed = maybeAutoCommitBible(repoPath, outPath, merged.length, 'project', previousEntryCount);
+  const committed = maybeAutoCommitBible(
+    repoPath, outPath, merged.length, 'project', previousEntryCount, input.baseCommit ?? resolveHeadCommit(repoPath),
+  );
   return JSON.stringify({ exported: merged.length, path: outPath, scope: 'project', committed });
 }
 
@@ -606,26 +631,19 @@ export async function kbExport(input: KbExportInput, anchor?: KbAnchor): Promise
     fs.mkdirSync(fleetDir, { recursive: true });
   }
 
-  // KB-TRUST PHASE 3a: the bible records the commit it was exported from, so a
-  // later audit can date its entries against the tree they were verified on.
-  // Before this, a bible harvested from other repositories was indistinguishable
-  // from a real one.
+  // KB-TRUST PHASE 3a: an audit must be able to date the entries against the
+  // tree they were verified on. That commit is recorded as a Verified-Against
+  // trailer on the auto-commit that writes the file, NOT inside the file: a
+  // per-file commit (or entry count) is one line every bible-changing branch
+  // rewrites differently, so two such branches would always text-conflict.
+  // The entry count is entries.length; truncation shows in the diff itself.
   //
   // THE COMMIT, NOT A TIMESTAMP. Entries are sorted by id above "so re-exports
   // produce meaningful diffs"; an exported_at timestamp would defeat exactly
-  // that, producing a diff on every export even when no entry changed and
-  // turning the git history into noise. A commit sha changes only when the tree
-  // the entries were verified against changes, which is the signal worth
-  // recording. entry_count is derivable but cheap, and makes truncation visible
-  // in a diff -- precisely the failure mode of apra-fleet-ong.
+  // that, producing a diff on every export even when no entry changed.
   //
-  // ENTRIES-UNCHANGED IS A NO-OP. Auto-committing the bible moves HEAD, so
-  // re-reading HEAD on the next export would record a DIFFERENT commit, rewrite
-  // the file, and commit again -- an export that never converges and produces
-  // exactly the git-history noise recording a commit (rather than a timestamp)
-  // exists to avoid. When the entry set is unchanged the file is left exactly as
-  // it is, which also keeps the recorded commit honest: it names the tree those
-  // entries were last verified against, not the commit that stored them.
+  // ENTRIES-UNCHANGED IS A NO-OP. When the entry set is unchanged the file is
+  // left exactly as it is: no rewrite, no commit.
   assertNoDuplicateBibleIds(canonical, 'kb_export');
   const nextEntriesJson = asciiSafeStringify(canonical);
   if (entriesUnchanged(outPath, nextEntriesJson)) {
@@ -634,11 +652,7 @@ export async function kbExport(input: KbExportInput, anchor?: KbAnchor): Promise
 
   const bible: CanonicalBible = {
     version: BIBLE_FORMAT_VERSION,
-    provenance: {
-      commit: input.baseCommit ?? resolveHeadCommit(repoPath),
-      branch: input.baseBranch ?? resolveBranch(repoPath),
-      entry_count: canonical.length,
-    },
+    provenance: bibleProvenance(input.baseBranch ?? resolveBranch(repoPath)),
     entries: canonical,
   };
   // Read the OUTGOING count before the write below destroys it -- the shrink
@@ -646,7 +660,9 @@ export async function kbExport(input: KbExportInput, anchor?: KbAnchor): Promise
   const previousEntryCount = bibleEntryCount(outPath);
   fs.writeFileSync(outPath, asciiSafeStringify(bible) + '\n', 'utf-8');
 
-  const committed = maybeAutoCommitBible(repoPath, outPath, canonical.length, scope, previousEntryCount);
+  const committed = maybeAutoCommitBible(
+    repoPath, outPath, canonical.length, scope, previousEntryCount, input.baseCommit ?? resolveHeadCommit(repoPath),
+  );
 
   return JSON.stringify({ exported: canonical.length, path: outPath, scope, committed });
 }

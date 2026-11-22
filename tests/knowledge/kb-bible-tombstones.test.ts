@@ -52,7 +52,7 @@ const DEMOTE_EVIDENCE = ['README.md'];
 interface Tombstone { id: string; at: string; reason: string }
 interface BibleFile {
   version?: number;
-  provenance?: { commit: string | null; branch: string | null; entry_count: number };
+  provenance?: { commit?: string | null; branch: string | null; entry_count?: number };
   entries: { id: string }[];
   demotions?: Tombstone[];
 }
@@ -168,7 +168,8 @@ describe('bible demotion tombstones', () => {
     // exactly like one written before the field existed.
     expect(onDisk.demotions).toBeUndefined();
     expect(Object.prototype.hasOwnProperty.call(onDisk, 'demotions')).toBe(false);
-    expect(onDisk.provenance!.entry_count).toBe(1);
+    // No per-file entry count: it would be a line two branches both rewrite.
+    expect(onDisk.provenance!.entry_count).toBeUndefined();
   });
 
   it('scenario 2: after kb_demote, demoted_ids removes the entry and records {id, at, reason} from the LOCAL row', async () => {
@@ -190,8 +191,8 @@ describe('bible demotion tombstones', () => {
     const onDisk = readBibleFile();
     expect(onDisk.entries.map(e => e.id)).toEqual([other]);
     expect(onDisk.demotions).toEqual([{ id, at: localDemotedAt, reason: 'demoted' }]);
-    // entry_count counts ENTRIES only -- a tombstone is not an entry.
-    expect(onDisk.provenance!.entry_count).toBe(1);
+    // The result's entry_count counts ENTRIES only -- a tombstone is not an entry.
+    expect(onDisk.provenance!.entry_count).toBeUndefined();
     expect(r.entry_count).toBe(1);
   });
 

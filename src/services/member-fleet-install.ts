@@ -1576,6 +1576,9 @@ export type FleetMcpUnavailableReason =
   | 'member-config-unreadable'
   /** A member config file compose must edit is not strict JSON; compose wrote nothing to it. */
   | 'member-config-unparseable'
+  /** Another writer (e.g. a running Claude Code) kept changing the member config file between
+   *  compose's re-read and its replace; compose's write was abandoned and the file left as is. */
+  | 'member-config-changed'
   /** The work folder's opencode.json is tracked by git; compose left it untouched. */
   | 'opencode-config-tracked'
   /** The work folder's opencode.json is not strict JSON (e.g. JSONC); compose left it untouched. */
@@ -1621,6 +1624,7 @@ export const FLEET_MCP_FIX: Record<FleetMcpUnavailableReason | FleetMcpProviderR
   'provider-unsupported': 'This LLM provider has no MCP entry fleet configures; its roles get injected knowledge only.',
   'member-config-unreadable': 'Fix permissions on the member config file named in the detail, then re-run compose_permissions.',
   'member-config-unparseable': 'Make the member config file named in the detail strict JSON, then re-run compose_permissions.',
+  'member-config-changed': 'Another process kept rewriting the member config file named in the detail; re-run compose_permissions once it is idle (e.g. no Claude Code session saving it).',
   'opencode-config-tracked': 'Untrack opencode.json from git (add it to .gitignore), then re-run compose_permissions.',
   'opencode-config-unparseable': 'Make the work folder opencode.json strict JSON (no comments), then re-run compose_permissions.',
   'member-session-failed': 'Check the member apra-fleet server is running (apra-fleet status / start on the member), then member_detail with refresh:true.',

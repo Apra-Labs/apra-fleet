@@ -24,6 +24,8 @@ When a source schema changes:
 
 **This rule is scoped to `schemas/` and `bindings/` only -- it does NOT extend to `fixtures/`.** See the `fixtures/` note under "Structure" (item 5) below: the recorded corpus is not byte-reproducible, so no regenerate-and-diff drift guard is, or should ever be, pointed at it.
 
+**Count baselines and fixtures.** `tests/memory-contract-drift-guard.test.ts` also holds floor counts for `taxonomy.json` and `methods.json` (they may grow, never drop). Like the byte-for-byte check above, these guards apply to `taxonomy.json`/`methods.json`/`schemas/`/`bindings/` only; the `fixtures/` corpus is exempt from every count and drift check.
+
 ## Version Bump Policy
 
 The v1 contract evolves according to these rules:

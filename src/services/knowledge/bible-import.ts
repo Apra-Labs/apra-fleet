@@ -298,7 +298,10 @@ export function excludeTombstonedEntries(entries: unknown[], demotions: BibleTom
  * The bible has THREE on-disk shapes and must accept all of them.
  *   v1 (legacy): a bare JSON array of entries.
  *   v2:          { version, provenance: {commit, branch, entry_count}, entries }
- *   v3:          the v2 envelope; entries may carry source_file_hashes.
+ *   v3:          the v2 envelope; entries may carry source_file_hashes. Current
+ *                writers emit provenance {branch} only (commit and entry_count
+ *                made every two bible-changing branches text-conflict); only
+ *                provenance.branch is read, so both provenance shapes parse.
  * Selection is on Array.isArray (v2 and v3 share the envelope). The reader
  * must never lag the writer.
  */
@@ -529,6 +532,13 @@ export async function importBibleEntries(
     // basis hashed from this clone: it can go stale when code drifts, but the
     // bible predicate never sees it, so the entry is not re-exported until it
     // is recaptured.
+    //
+    // The bible id is KEPT whatever AUDN decides (preferredId under importMode):
+    // an added, linked or flagged entry is stored under it, and a deduplicated
+    // one records an alias to the local row that absorbed it. The tombstone
+    // pass below, applyBibleWithdrawals and the KB server's withdraw route all
+    // look tombstones up by bible id, so this is what lets a later withdrawal
+    // or demotion reach this clone's row instead of answering not_found.
     let audn_decision: AudnDecision;
     try {
       ({ audn_decision } = await provider.capture(kbInput, {

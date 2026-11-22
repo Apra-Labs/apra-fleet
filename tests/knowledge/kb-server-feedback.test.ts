@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi, inject } from 'vitest';
 import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -12,6 +12,30 @@ import { HttpKbProvider } from '../../src/services/knowledge/http-provider.js';
 import { encryptPassword } from '../../src/utils/crypto.js';
 import { FLEET_DIR } from '../../src/paths.js';
 import { kbFeedback } from '../../src/tools/kb-feedback.js';
+import { releaseFileDataDir, fileDataDirViolations } from '../helpers/file-kb-data-dir.js';
+import { FLEET_DIR as ISOLATED_FLEET_DIR } from '../../src/paths.js';
+import { KB_CONFIG_PATH as ISOLATED_KB_CONFIG_PATH } from '../../src/services/knowledge/kb-config.js';
+
+// This file's OWN fleet data dir, claimed before any src module loads
+// (src/paths.ts fixes FLEET_DIR at import). The per-run data dir tests/setup.ts
+// provides is shared by every file of the run, and so is the KB config file
+// in it (<data dir>/knowledge/config.json), which this file writes and the
+// code under test reads.
+const fileDataDir = await vi.hoisted(async () =>
+  (await import('../helpers/file-kb-data-dir.js')).claimFileDataDir('kb-server-feedback'));
+afterAll(() => releaseFileDataDir(fileDataDir));
+
+// ISOLATION GUARD: fails if this suite reads the run-shared data dir again --
+// the hoisted claim removed, moved below the imports (FLEET_DIR is then fixed
+// to the shared dir), or the dir not unique to this file.
+describe('isolation guard', () => {
+  it('this suite reads its own fleet data dir and KB config file, not the run-shared ones', () => {
+    expect(fileDataDirViolations({
+      label: 'kb-server-feedback', claimed: fileDataDir, fleetDir: ISOLATED_FLEET_DIR,
+      kbConfigPath: ISOLATED_KB_CONFIG_PATH, runSharedDir: inject('APRA_FLEET_TEST_DATA_DIR'),
+    })).toEqual([]);
+  });
+});
 
 // POST /api/kb/feedback on the bundled kb-server: a REAL startKbServer
 // instance serving a real sqlite file, driven by the real kbFeedback tool
@@ -63,6 +87,25 @@ function call(method: string, urlPath: string, body?: unknown): Promise<{ status
     });
     req.on('error', reject);
     if (data) req.write(data);
+    req.end();
+  });
+}
+
+// Sends `raw` as the request body byte-for-byte (no JSON.stringify), so a
+// malformed JSON body can reach the server.
+function callRaw(method: string, urlPath: string, raw: string): Promise<{ status: number; body: any }> {
+  return new Promise((resolve, reject) => {
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json', 'X-KB-Project': getProjectSlug(folder),
+      'Content-Length': Buffer.byteLength(raw).toString(),
+    };
+    const req = http.request({ hostname: '127.0.0.1', port, path: urlPath, method, headers, agent: false }, res => {
+      let text = '';
+      res.on('data', (c: Buffer) => { text += c.toString(); });
+      res.on('end', () => resolve({ status: res.statusCode!, body: text ? JSON.parse(text) : undefined }));
+    });
+    req.on('error', reject);
+    req.write(raw);
     req.end();
   });
 }
@@ -158,5 +201,14 @@ describe('kb-server POST /api/kb/feedback', () => {
     const res = await call('POST', '/api/kb/feedback', { id: 'x' });
     expect(res.status).toBe(400);
     expect(res.body.code).toBe('BAD_REQUEST');
+  });
+
+  // A body that is not JSON is the caller's fault on every JSON route: the
+  // server's outer catch maps the SyntaxError to 400 BAD_REQUEST, never to
+  // 500 INTERNAL_ERROR.
+  it.each(['/api/kb/feedback', '/api/kb/capture'])('a malformed JSON body to POST %s is a 400 BAD_REQUEST, not a 500', async route => {
+    const res = await callRaw('POST', route, '{"id": "x", "reason": ');
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: 'Request body is not valid JSON', code: 'BAD_REQUEST' });
   });
 });

@@ -201,12 +201,14 @@ Unregisters a fleet member and cleans up its connection.
 **What it does:**
 
 1. Looks up the member.
-2. **Best-effort auth cleanup** -- tests connectivity to the member, and if reachable: removes the provider's credential file (e.g. `~/.claude/.credentials.json` for Claude) if the provider supports OAuth copy, and removes the provider's auth env var (e.g. `ANTHROPIC_API_KEY` for Claude, `OPENAI_API_KEY` for Codex) from shell profiles (`~/.bashrc`, `~/.profile`, `~/.zshrc` on Unix; registry key on Windows). If the member is offline, a warning is returned but the removal still proceeds.
+2. **Best-effort auth cleanup (remote members only)** -- a local member shares the operator machine, so nothing is removed from it. For a remote member that is reachable, only what the fleet itself delivered is removed: the credential files and auth env vars that `provision_auth` recorded on the member (`llmAuthDelivered`), and every git credential helper the member holds. A member with no delivery record (registered by an older release, or never provisioned) keeps its LLM credentials and the result says so. On POSIX the auth env var is removed only from profile lines carrying the `# apra-fleet-managed` marker (a hand-written export stays and the result says so); on Windows the User environment variable has no marker, so the delivery record is the gate. If another registered member runs as the same host and user, nothing host-wide is removed (see below). If the member is offline, a warning is returned but the removal still proceeds.
 3. **Best-effort agy project cleanup (agy only)** -- deletes the member's agy project file on its machine unless another member shares the same `agyProjectId`; failures are returned as warnings.
 4. **SSH key revocation (remote members, fleet-generated keys only)** -- if the member was registered with a key the fleet generated (`setup_ssh_key`, stored in the fleet keys dir), that key's line is removed from the member user's `authorized_keys` and, on a Windows administrator account, from `ProgramData\ssh\administrators_authorized_keys`. The key is left authorized when another registered member on the same host and the same username still uses it; the result says which member. A user-supplied `key_path` (a key the fleet did not generate) is never removed from `authorized_keys`. If the fleet `.pub` file is not a complete ssh-rsa (2048+ bits), ssh-ed25519, ecdsa or sk- public key (empty, truncated, type only, a certificate), nothing is sent and `authorized_keys` is left untouched; the result warns.
 5. Calls `strategy.close()` -- for remote members, this closes the pooled SSH connection. For local members, this is a no-op.
 6. Deletes the local key pair of a fleet-generated key only when no other registered member uses it; a user-supplied key file is never deleted.
 7. Removes the member from the registry file.
+
+**Shared host and user:** several members can run as one OS user on one host, so credentials on the host belong to all of them. When another registered member runs as the same host and user, `remove_member` issues no credential-file removal, no env-var unset and no legacy VCS revoke, and the result names the member that shares the host.
 
 **Output:** Confirmation message with member name and ID. Includes notes (e.g. a shared key left authorized, and why) and warnings if something could not be cleared (e.g. member was offline).
 
@@ -467,6 +469,41 @@ which case it returns `ok: false`, reason `credential_missing`, with the
 field named in `structuredContent.message`. With no terminal available, the
 fallback text tells the operator to store the value as a named secret
 (`apra-fleet secret --set NAME --persist`) and pass `{{secret.NAME}}`.
+
+**GitHub `gh` CLI login (`gh_login`):** the git credential helper is per member
+and per label, but the `gh` CLI keeps ONE login per OS user. Logging gh in
+replaces the token every other process of that user runs gh with -- the
+operator's own sessions on a local member, and every other member registered
+on the same host user -- and a token minted for another access level or repo
+set would silently narrow what they can do. So by default (`gh_login`
+omitted) gh is logged in only for label `github` on a remote member that no
+other registered member shares; in every other case the login is skipped and
+`metadata.ghCliAuth` (also shown in the text result) says why. Pass
+`gh_login: true` to refresh the host gh login on purpose, `false` to never
+touch it. To use a different access level or repo set without changing
+anyone's gh or git identity, provision it under its own `label` (for example
+`github-issues` with `git_access: "issues"`) and use that token per call
+through `vcs_credential_exec` with the same `label`.
+
+**Upgrade from 0.4.5 or older:** the helper is no longer registered in the
+global git config; fleet dispatches get it through `GIT_CONFIG_PARAMETERS`.
+The first re-provision of a label an older release deployed removes from the
+global key `credential.<scope>.helper` ONLY the values fleet wrote (its legacy
+helper path, then the empty reset entry if nothing else is left) -- never an
+operator's or another tool's helper -- unless another member runs as the same
+host user, in which case nothing is removed. `structuredContent.legacyGlobalHelper`
+(`outcome`: `removed`, `not_present`, `kept_for_member`, `failed`) and a
+`[WARN] Upgrade:` line in the text say what happened. After `removed`, git run
+OUTSIDE fleet dispatches no longer gets the fleet token; to keep that, see
+[design-git-auth.md](design-git-auth.md) "Upgrading from 0.4.5 or older".
+`revoke_vcs_auth`, `remove_member` and the expiry cleanup apply the same
+value-scoped removal to a legacy entry.
+
+Re-provisioning a label never revokes the token it replaces at GitHub: the
+old token stays valid until it expires, and the expiry cleanup only removes
+the helper when the record still holds the credential it was scheduled for (a
+re-provision from another fleet server process on the same host moves the
+expiry, so the earlier process's cleanup leaves the newer token in place).
 
 **Bitbucket parameters** (`provider: "bitbucket"`):
 

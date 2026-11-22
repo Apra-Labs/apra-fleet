@@ -11,3 +11,8 @@
 *.zip binary
 *.exe binary
 *.node binary
+
+# Knowledge bible: merged by entry id through the apra-fleet merge driver that
+# kb_setup registers in a clone (git config merge.apra-fleet-kb-bible.driver).
+# A clone without it falls back to git's line merge.
+.fleet/kb-canonical.json merge=apra-fleet-kb-bible

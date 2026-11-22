@@ -12,6 +12,7 @@ import { getAgentOS, getAgentShell, touchAgent, getStoredPid, isPosixShellMember
 import { updateAgent } from '../services/registry.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { isRetryable, authErrorAdvice, workspaceNotTrustedAdvice, type PromptErrorCategory } from '../utils/prompt-errors.js';
+import { vcsGitEnvPrefix } from '../services/vcs-git-env.js';
 import { stageAuthEnv, removeMemberSecretFile, SecretDeliveryError, type StagedAuthEnv } from '../services/member-secret-env.js';
 import { writeStatusline } from '../services/statusline.js';
 import { getModelOverride } from '../services/user-config.js';
@@ -400,6 +401,19 @@ export function resolveModelForTier(agent: Agent, tier: string, provider: Provid
  * shared with member_detail (the fleet-sprint engine's only source for it).
  */
 export { knownRepoRemoteUrl };
+
+/**
+ * KB anchor for the fire-and-forget auto-harvest. A LOCAL member's folder is on
+ * this host, so the anchor is the folder alone -- exactly what an interactive
+ * kb_* call on that folder resolves (resolveSelfAnchor -> validateSelfFolder).
+ * Adding the registration URL there would change the HTTP provider key and
+ * X-Repository, giving the same folder a second provider. Only a REMOTE
+ * member's folder lives on another host and needs knownRepoRemoteUrl().
+ */
+export function autoHarvestAnchor(agent: Agent, folder: string): { folder: string; remoteUrl?: string } {
+  if (agent.agentType === 'local') return { folder };
+  return { folder, remoteUrl: knownRepoRemoteUrl(agent) };
+}
 
 /**
  * The sprint id this server process dispatches on behalf of, or undefined when
@@ -1679,7 +1693,9 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       staged = await stageAuthEnv(agent);
       if (staged.path) stagedEnvPaths.push(staged.path);
     }
-    return strategy.execCommand(staged.prefix + cmd, attemptTimeoutMs, attemptMaxTotalMs, onPidCaptured, dispatchSignal);
+    // The member's git credential helpers reach every git the LLM session
+    // starts through the dispatch environment (src/services/vcs-git-env.ts).
+    return strategy.execCommand(vcsGitEnvPrefix(agent) + staged.prefix + cmd, attemptTimeoutMs, attemptMaxTotalMs, onPidCaptured, dispatchSignal);
   };
   const isMaxTotalKill = (err: unknown): boolean => {
     const msg = (err as { message?: unknown })?.message;
@@ -2278,6 +2294,9 @@ session: ${parsed.sessionId}`;
       // harvest into a KB slug that does not match the repo's real local-clone
       // slug, which is worse than today's honest 'default' degradation. When no
       // genuine URL is known, behaviour is unchanged from before this fix.
+      // The URL is forwarded for REMOTE members only (autoHarvestAnchor): a
+      // LOCAL member's folder is anchored by folder alone, like an interactive
+      // kb_* call, so both resolve the same provider key and X-Repository.
       // KB-TRUST PHASE 1 (apra-fleet-4wz.8): report the harvest counters. This is
       // the highest-volume KB writer and its result was previously discarded
       // entirely, so entries_rejected -- the fail-closed signal -- was invisible
@@ -2292,7 +2311,7 @@ session: ${parsed.sessionId}`;
           kbHarvest({
             session_transcript: parsed.result,
             session_id: parsed.sessionId,
-          }, { folder: resolvedWorkFolder, remoteUrl: knownRepoRemoteUrl(agent) })
+          }, autoHarvestAnchor(agent, resolvedWorkFolder))
         )
         .then((raw: string) => {
           try {

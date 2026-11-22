@@ -12,7 +12,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { MEMBER_SECRET_HEADER } from './member-access-secret.js';
-import { writeOwnerOnlyFileAtomic } from '../cli/config.js';
+import { writeOwnerOnlyFileAtomic, FileChangedError, readFileBytesOrNull } from '../cli/config.js';
 
 /** The claude user-scope config file: $CLAUDE_CONFIG_DIR/.claude.json when set, else ~/.claude.json. */
 export function claudeUserConfigPath(): string {
@@ -21,6 +21,85 @@ export function claudeUserConfigPath(): string {
 }
 
 const isRecord = (v: unknown): v is Record<string, any> => !!v && typeof v === 'object' && !Array.isArray(v);
+
+/** Read-merge-replace cycles tried before a changed-file refusal is final. */
+export const CLAUDE_CONFIG_CAS_ATTEMPTS = 5;
+
+/**
+ * Compare-and-swap update of a local claude config file, which other
+ * processes (Claude Code, a concurrent install, a same-user member's compose)
+ * save on their own: reads the current bytes, lets `compute` derive the new
+ * content from them (null = nothing to write), and replaces the file only
+ * while it still holds exactly the bytes read (writeOwnerOnlyFileAtomic
+ * `expected`). A save by someone else in between makes the replace refuse;
+ * the cycle re-reads and `compute` re-applies only the caller's delta, up to
+ * CLAUDE_CONFIG_CAS_ATTEMPTS times, then this throws naming the file, which
+ * is left as the other writer left it. Returns whether it wrote.
+ */
+export function updateClaudeConfigFile(file: string, compute: (raw: string | null) => string | null): boolean {
+  for (let attempt = 1; ; attempt++) {
+    const before = readFileBytesOrNull(file);
+    const next = compute(before === null ? null : before.toString('utf-8'));
+    if (next === null) return false;
+    try {
+      writeOwnerOnlyFileAtomic(file, next, { expected: before });
+      return true;
+    } catch (err: unknown) {
+      if (!(err instanceof FileChangedError)) throw err;
+      if (attempt >= CLAUDE_CONFIG_CAS_ATTEMPTS) {
+        throw new Error(`${file} was changed by another writer between apra-fleet's read and its replace on ${attempt} attempts in a row; it was left as the other writer left it. Retry once the other writer (e.g. a running Claude Code) is idle`);
+      }
+    }
+  }
+}
+
+/** mkdtemp prefixes of test work folders that older register-member tests leaked into real claude configs. */
+export const LEAKED_TEST_PROJECT_PREFIXES = ['apra-fleet-regmember-compose-', 'apra-fleet-bootstrap-gate-'] as const;
+
+/**
+ * Removes the projects[] keys of a claude config that older apra-fleet test
+ * runs leaked into it: a key whose path lies under the OS temp dir (`tmpDirs`,
+ * default os.tmpdir(), each also in its resolved real form, e.g. macOS
+ * /private/var or a Windows long name) and whose last path segment starts
+ * with one of LEAKED_TEST_PROJECT_PREFIXES. Separators are normalised (claude
+ * keys use forward slashes on Windows too) and the comparison is
+ * case-insensitive on Windows. Nothing else is touched; idempotent; a
+ * missing, empty or unparseable file is left alone. Writes through
+ * updateClaudeConfigFile (compare-and-swap). Returns the number removed.
+ */
+export function pruneLeakedTestProjectKeys(configFile: string, tmpDirs?: string[]): number {
+  const win = process.platform === 'win32';
+  const norm = (p: string) => {
+    const s = p.replace(/\\/g, '/').replace(/\/+$/, '');
+    return win ? s.toLowerCase() : s;
+  };
+  const roots = new Set<string>();
+  for (const d of tmpDirs ?? [os.tmpdir()]) {
+    if (!d) continue;
+    roots.add(norm(d));
+    try { roots.add(norm(fs.realpathSync.native(d))); } catch { /* missing: lexical only */ }
+  }
+  const leaked = (key: string): boolean => {
+    const k = key.replace(/\\/g, '/').replace(/\/+$/, '');
+    const base = k.slice(k.lastIndexOf('/') + 1);
+    if (!LEAKED_TEST_PROJECT_PREFIXES.some(p => base.startsWith(p))) return false;
+    const nk = win ? k.toLowerCase() : k;
+    return [...roots].some(r => r !== '' && nk.startsWith(`${r}/`));
+  };
+  let removed = 0;
+  updateClaudeConfigFile(configFile, (raw) => {
+    removed = 0;
+    if (raw === null || !raw.trim()) return null;
+    let json: unknown;
+    try { json = JSON.parse(raw); } catch { return null; }
+    if (!isRecord(json) || !isRecord(json.projects)) return null;
+    for (const key of Object.keys(json.projects)) {
+      if (leaked(key)) { delete json.projects[key]; removed++; }
+    }
+    return removed ? JSON.stringify(json, null, 2) + '\n' : null;
+  });
+  return removed;
+}
 
 /**
  * True when `url` is exactly this install's no-member /mcp endpoint
@@ -48,17 +127,28 @@ export function isThisInstallMcpUrl(url: unknown, fleetUrl: string): boolean {
  * the file exists but is not valid JSON.
  */
 export function refreshClaudeLocalScopeEntries(configFile: string, fleetUrl: string, headers: Record<string, string>): string[] {
-  if (!fs.existsSync(configFile)) return [];
-  const raw = String(fs.readFileSync(configFile, 'utf-8') ?? '').trim();
-  if (!raw) return [];
-  let json: any;
-  try { json = JSON.parse(raw); } catch {
-    throw new Error(`${configFile} is not valid JSON; fix or remove it, then re-run 'apra-fleet install'`);
-  }
-  if (!isRecord(json) || !isRecord(json.projects)) return [];
+  let rewritten: string[] = [];
+  // Compare-and-swap: a save by Claude Code (or another writer) between this
+  // read and the replace is kept; the rewrite is re-applied onto it.
+  updateClaudeConfigFile(configFile, (content) => {
+    rewritten = [];
+    const raw = (content ?? '').trim();
+    if (!raw) return null;
+    let json: any;
+    try { json = JSON.parse(raw); } catch {
+      throw new Error(`${configFile} is not valid JSON; fix or remove it, then re-run 'apra-fleet install'`);
+    }
+    if (!isRecord(json) || !isRecord(json.projects)) return null;
+    rewriteLocalScopeEntries(json, fleetUrl, headers, rewritten);
+    return rewritten.length ? JSON.stringify(json, null, 2) + '\n' : null;
+  });
+  return rewritten;
+}
+
+/** The in-memory half of refreshClaudeLocalScopeEntries: rewrites `json.projects` entries, collecting their keys. */
+function rewriteLocalScopeEntries(json: Record<string, any>, fleetUrl: string, headers: Record<string, string>, rewritten: string[]): void {
   const want = MEMBER_SECRET_HEADER.toLowerCase();
-  const rewritten: string[] = [];
-  for (const [project, p] of Object.entries(json.projects)) {
+  for (const [project, p] of Object.entries(json.projects as Record<string, unknown>)) {
     if (!isRecord(p) || !isRecord(p.mcpServers)) continue;
     for (const [name, e] of Object.entries(p.mcpServers)) {
       if (!isRecord(e) || !isThisInstallMcpUrl(e.url, fleetUrl)) continue;
@@ -71,8 +161,6 @@ export function refreshClaudeLocalScopeEntries(configFile: string, fleetUrl: str
       rewritten.push(project);
     }
   }
-  if (rewritten.length) writeOwnerOnlyFileAtomic(configFile, JSON.stringify(json, null, 2) + '\n');
-  return rewritten;
 }
 
 /** Outcome of checkClaudeUserScopeRegistration. */

@@ -442,14 +442,16 @@ and records `kb_setup` and `kb_export` in `FULL_A`.
 
 ### 2.6 Bible provenance (target base branch) and entry-level commits
 
-The bible (`.fleet/kb-canonical.json`, format v3, section 2.8) records `provenance.branch` and
-`provenance.commit`. `provenance.branch` is the TARGET BASE branch -- the
-branch the bible's entries merge into -- and `provenance.commit` the base
-commit those entries were verified against. Neither is the HEAD of the
-working folder, which is typically a feature branch.
+The bible (`.fleet/kb-canonical.json`, format v3, section 2.8) records
+`provenance.branch`: the TARGET BASE branch -- the branch the bible's entries
+merge into, not the HEAD of the working folder, which is typically a feature
+branch. The base commit those entries were verified against is recorded as a
+`Verified-Against: <commit>` trailer on the git commit that writes the file,
+NOT in the file (section 2.8, merge-friendly layout).
 
-- `kb_export` accepts optional `baseBranch` and `baseCommit` and writes them
-  into provenance. When omitted, provenance falls back to the export folder's
+- `kb_export` accepts optional `baseBranch` and `baseCommit`: `baseBranch` is
+  written to `provenance.branch`, `baseCommit` to the Verified-Against trailer
+  of its auto-commit. When omitted, they fall back to the export folder's
   HEAD branch and commit (the pre-existing behaviour). It regenerates the whole
   bible from the KB. Its project-scope admission is the basis rule described
   for `kb_bible_commit` below (cited files compared at HEAD); a folder that is
@@ -499,13 +501,22 @@ The v3 envelope also carries an OPTIONAL top-level `demotions` array of
 envelope or a legacy bare array. It is absent when the bible holds none, so a
 reader that does not know the field -- and every bible written before it
 existed -- keeps working. Readers keep tombstones whose `reason` they do not
-know. `provenance.entry_count` counts ENTRIES only: a tombstone is not an
+know. The response's `entry_count` counts ENTRIES only: a tombstone is not an
 entry. Tombstones are never compacted: one stays until a re-promotion clears it.
 
 A demotion is NEVER inferred from an entry being absent from the bible. A clone
 legitimately holds CONFIRMED rows that were never exported (local-only
 promotions, `basis_mismatch` refusals), and those must not be demoted by an
 import, so withdrawal of trust is only ever carried by an explicit tombstone.
+
+BIBLE IDS SURVIVE IMPORT. A tombstone names a bible id, so `kb_import` keeps
+that id whatever its duplicate/refinement/contradiction routing decides: an
+added, linked or flagged entry is stored under the bible id, and an entry
+skipped as a duplicate of an existing local row records an alias from the
+bible id to that row. A tombstone for the bible id -- applied by `kb_import` or
+by the KB server's withdraw route -- resolves through the alias to the row that
+holds the fact (a row that itself carries the id always wins), and is judged
+there by the rules below.
 
 ONE RE-PROMOTION RULE governs both directions. A row's bible trust time is when
 its trust dates from as a bible records it: its `promoted_at` when it was
@@ -732,7 +743,23 @@ The bible file is described by `bible/kb-canonical.schema.json`; example files
 for every accepted shape live in `bible/examples/`.
 
 - Format v3 (written by `kb_export` and `kb_bible_commit`) is the envelope
-  `{version: 3, provenance: {commit, branch, entry_count}, entries: [...]}`.
+  `{version: 3, provenance: {branch}, entries: [...]}` plus the optional
+  `demotions` array. A bible written before the merge-friendly layout below
+  also carries `provenance.commit` and `provenance.entry_count`; readers accept
+  and ignore both, and writers no longer emit them.
+- MERGE-FRIENDLY LAYOUT. Two branches that each add different entries or
+  tombstones must merge with a plain git text merge, without a conflict, so
+  the file has no single line that every bible-changing branch rewrites:
+  no per-file commit (it is the `Verified-Against` trailer of the git commit
+  that writes the file) and no entry count (it is `entries.length`). The
+  remaining envelope lines (`version`, `provenance.branch`) are identical for
+  every branch that targets the same base. Entries and tombstones are each
+  sorted by id, one multi-line block per item, in the exporter's fixed
+  serialization (2-space JSON, non-ASCII escaped, trailing newline), so an
+  addition is a block inserted between two unchanged neighbours. Two
+  additions that land in the SAME gap (adjacent ids with no existing item
+  between them, or both appended after the last item) still text-conflict;
+  that residual case is resolved by the id-keyed merge tool, not by hand.
   Each entry has the stable field set `{id, type, title, summary, symbols,
   source_files, confidence, updated_at}` plus, in v3, an optional
   `source_file_hashes`: a map from repo-relative path to file hash. A writer

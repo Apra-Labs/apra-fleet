@@ -108,7 +108,10 @@ export type KBEntryInput = Omit<KBEntry, 'id' | 'stale' | 'created_at' | 'supers
 // can set it. importMode grants the SOLE clamp exemption (bible confidence is
 // preserved for non-directive types) and suppresses provenance normalization so
 // source='import' survives; preferredId lets kb_import preserve a bible entry's
-// id on the pure 'add' path (exact re-import idempotency).
+// id (exact re-import idempotency). Under importMode it is kept on EVERY AUDN
+// path -- added, linked and flagged rows are stored under it, and a
+// deduplicated entry records a bible_id_aliases row to the local row that
+// absorbed it -- so a later tombstone for the bible id reaches this clone.
 export interface CaptureOpts {
   importMode?: boolean;
   preferredId?: string;
