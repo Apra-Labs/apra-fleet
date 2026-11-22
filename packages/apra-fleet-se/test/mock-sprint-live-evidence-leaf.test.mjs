@@ -18,6 +18,9 @@
 //       liveEvidenceIds [L]. L gets the marker, is not set aside as plain
 //       doer-BLOCKED, and the next Integration Test phase names it as a
 //       verify target.
+//   (e) like (c) on a two-bead streak, but the label write fails. The bead
+//       is set aside as doer-BLOCKED with a reason naming the failed label
+//       write, and is never re-dispatched to a doer.
 //
 // Reverts that make these fail:
 //   - reverting the classifyVerifySet marker change (fleet-sprint/
@@ -35,7 +38,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
+import { runDevelopLoopScenario, withScenarioMarkers, mockCmdResult } from './helpers/mock-sprint-harness.mjs';
 import { extractVerifyIds } from './helpers/verify-clause.mjs';
 import { StalledSprintError } from '../fleet-sprint/errors.mjs';
 import { LIVE_EVIDENCE_LABEL } from '../fleet-sprint/beads-scope.mjs';
@@ -64,6 +67,14 @@ const LIVE = 'Task: verify the change on a live deployment';
 const EXTERNAL_REASON = 'the live evidence needs a host the sprint members do not have';
 
 const idOf = (tasks, title) => tasks.find((t) => t.title === title).id;
+const setAsideEntries = (logs) => {
+    const out = {};
+    for (const m of logs) {
+        if (!m.includes('Doer BLOCKED set-aside')) continue;
+        Object.assign(out, JSON.parse(m.slice(m.indexOf('Entries: ') + 'Entries: '.length)));
+    }
+    return out;
+};
 
 test('(a) a marked live-evidence leaf is never dispatched to a doer, is named by Integration Test, and closes there; no stall', async () => {
     resetSyncMemo();
@@ -262,5 +273,56 @@ test('(d) without integ-test-playbook.md / deploy.md a live-evidence leaf is car
         assert.deepEqual(run.result.verifyCarryOver.map((e) => [e.id, e.kind]), [[liveId, 'needs-external-evidence']]);
         assert.ok(run.result.notes.includes(liveId) && run.result.notes.includes('cannot run in this run (no-playbook)'), run.result.notes);
         assert.notEqual(run.finalBeadsById.get(liveId).status, 'closed');
+    });
+});
+
+test('(e) a failed live-evidence label write on a two-bead streak sets the bead aside, never re-dispatches it', async () => {
+    resetSyncMemo();
+    await withScenarioMarkers('live-evidence label write fails', async () => {
+        let liveId = null;
+        let normalId = null;
+        const doerAssigned = [];
+        const run = await runDevelopLoopScenario('live-leaf-labelfail', {
+            members: ['local'],
+            taskSpecs: [{ title: NORMAL, priority: 'P1' }, { title: LIVE, priority: 'P1' }],
+            maxCycles: 4,
+            beforeSprint: async ({ tempDir, runCmd, tasks }) => {
+                liveId = idOf(tasks, LIVE);
+                normalId = idOf(tasks, NORMAL);
+                // One lane, so both beads go to the same doer dispatch.
+                await runCmd(`bd update ${normalId} --set-metadata streak=lane-x --set-metadata streakOrder=1`, tempDir);
+                await runCmd(`bd update ${liveId} --set-metadata streak=lane-x --set-metadata streakOrder=2`, tempDir);
+            },
+            onCommand: async ({ command }) => {
+                if (liveId && command.includes(`bd update ${liveId} --add-label ${LIVE_EVIDENCE_LABEL}`)) {
+                    return mockCmdResult(1, '', 'mock: bd label write failed');
+                }
+                return undefined;
+            },
+            doerHandler: async ({ opts, runCmd: rc, tempDir: td }) => {
+                const ids = assignedIds(opts.prompt);
+                doerAssigned.push(...ids);
+                const closable = ids.filter((id) => id !== liveId);
+                for (const id of closable) await rc(`bd close ${id} --reason "Done"`, td);
+                if (ids.includes(liveId)) {
+                    return report({
+                        status: 'BLOCKED', closedIds: closable, liveEvidenceIds: [liveId],
+                        notes: 'Acceptance needs integration-phase evidence from a live deployment.',
+                    });
+                }
+                return report({ status: 'VERIFY', closedIds: closable, notes: 'Closed.' });
+            },
+            reviewerHandler: approve,
+            finalReviewHandler: rubberStampPass,
+        });
+
+        assert.ok(run.logs.some((l) => l.includes('could not label bead') && l.includes(liveId)), 'the label-write failure is logged');
+        assert.equal(doerAssigned.filter((id) => id === liveId).length, 1, `the bead reaches a doer exactly once: ${JSON.stringify(doerAssigned)}`);
+        assert.ok(doerAssigned.includes(normalId), 'the lane-mate is worked in the same dispatch');
+        const entries = setAsideEntries(run.logs);
+        assert.ok(entries[liveId], `the bead is set aside: ${JSON.stringify(entries)}`);
+        assert.equal(entries[liveId].kind, 'blocked');
+        assert.ok(/label failed/.test(entries[liveId].reason) && entries[liveId].reason.includes(LIVE_EVIDENCE_LABEL), entries[liveId].reason);
+        assert.notEqual(run.finalBeadsById.get(liveId).status, 'closed', 'the set-aside bead stays open');
     });
 });

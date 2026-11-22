@@ -212,37 +212,41 @@ export async function runDevelopPhase({
     // existing left-open retry applies.
     //
     // Beads the report names in `liveEvidenceIds` are handled first and are
-    // never set aside: see applyLiveEvidenceMarker below.
+    // never set aside: see applyLiveEvidenceMarker below. A named bead whose
+    // marker label write failed is set aside here, ahead of the blockedIds
+    // ladder, so it is never re-dispatched to a doer that would only report
+    // it live again.
     const recordDoerBlocked = async ({ report, unclosedIds, streakIds, doerMember }) => {
-        const liveIds = await applyLiveEvidenceMarker({ report, unclosedIds, streakIds });
+        const { labelled: liveIds, failed: labelFailed } = await applyLiveEvidenceMarker({ report, unclosedIds, streakIds });
+        const labelFailedById = new Map(labelFailed.map((f) => [f.id, f.error]));
         const hasField = Array.isArray(report.blockedIds);
-        const reported = hasField ? report.blockedIds.map(String).filter((id) => !liveIds.includes(id)) : [];
-        let blockedIds;
+        const reported = hasField
+            ? report.blockedIds.map(String).filter((id) => !liveIds.includes(id) && !labelFailedById.has(id))
+            : [];
+        let blockedIds = [];
         if (liveIds.length > 0 && unclosedIds.every((id) => liveIds.includes(id))) {
-            return;
+            blockedIds = [];
         } else if (hasField && reported.length === 0) {
             log(
                 `Doer streak [${streakIds.join(', ')}] reported BLOCKED with an empty blockedIds -- no bead was left open ` +
                 'because of the block, so nothing is set aside; the open beads stay eligible for the next round.'
             );
-            return;
         } else if (reported.length > 0) {
             blockedIds = reported.filter((id) => unclosedIds.includes(id));
             const ignored = reported.filter((id) => !unclosedIds.includes(id));
             if (ignored.length > 0) {
                 log(`Doer streak [${streakIds.join(', ')}] reported blockedIds not open in this streak (ignored): ${ignored.join(', ')}.`);
             }
-        } else if (streakIds.length === 1 && unclosedIds.length === 1 && liveIds.length === 0) {
+        } else if (streakIds.length === 1 && unclosedIds.length === 1 && liveIds.length === 0 && labelFailed.length === 0) {
             blockedIds = [...unclosedIds];
-        } else {
+        } else if (labelFailed.length === 0) {
             log(
                 `Doer streak [${streakIds.join(', ')}] reported BLOCKED with ${unclosedIds.length} bead(s) still open ` +
                 'and no blockedIds naming which -- cannot tell blocked from not reached, so nothing is set aside; ' +
                 'the open beads stay eligible for the next round.'
             );
-            return;
         }
-        if (blockedIds.length === 0) return;
+        if (blockedIds.length === 0 && labelFailed.length === 0) return;
         const where = { cycle, round: devRounds };
         // The doer's own notes are carried verbatim (whitespace-collapsed,
         // never shortened) so the stall report says what to fix; they are
@@ -270,11 +274,21 @@ export async function runDevelopPhase({
             scopeBeads = (await bdListScoped('')).map((b) => (b && closedNow.has(b.id) ? { ...b, status: 'closed' } : b));
             if (typeof fetchAllBeadsShared === 'function') allBeads = await fetchAllBeadsShared();
         }
-        const decision = classifyBlockedReport({
-            blockedIds, scopeBeads, allBeads, doctorBlockedIds, waitingIds,
-        });
+        const decision = blockedIds.length > 0
+            ? classifyBlockedReport({ blockedIds, scopeBeads, allBeads, doctorBlockedIds, waitingIds })
+            : { wait: [], setAside: [] };
         const fresh = [];
         const waitedNow = [];
+        for (const [id, error] of labelFailedById) {
+            if (doctorBlockedIds.has(id)) continue;
+            doctorBlockedIds.set(id, {
+                kind: 'blocked', blockedBy: id,
+                reason: `${doerReason} -- the doer reported it needs live integration evidence, but writing the ` +
+                    `${LIVE_EVIDENCE_LABEL} label failed (${error}); fix the bd write and label it so the Integration Test phase verifies it`,
+                ...where,
+            });
+            fresh.push(id);
+        }
         for (const w of decision.wait) {
             waitingIds.set(w.id, { on: [...w.on], ...where });
             waitedNow.push(w.id);
@@ -327,9 +341,10 @@ export async function runDevelopPhase({
     // (classifyVerifySet) and readyLeafBeads() never offers it to a doer
     // again. A run without integ-test-playbook.md or deploy.md carries it over
     // with a typed reason at Cycle Evaluation. Any other named id is ignored
-    // with a log line. Returns the ids that got the marker.
+    // with a log line. Returns { labelled, failed }: the ids that got the
+    // marker, and { id, error } for each whose label write failed.
     const applyLiveEvidenceMarker = async ({ report, unclosedIds, streakIds }) => {
-        if (!Array.isArray(report.liveEvidenceIds) || report.liveEvidenceIds.length === 0) return [];
+        if (!Array.isArray(report.liveEvidenceIds) || report.liveEvidenceIds.length === 0) return { labelled: [], failed: [] };
         const named = [...new Set(report.liveEvidenceIds.map(String))];
         let scopeIds = null;
         if (typeof bdListScoped === 'function') {
@@ -346,24 +361,26 @@ export async function runDevelopPhase({
         if (ignored.length > 0) {
             log(`Doer streak [${streakIds.join(', ')}] reported liveEvidenceIds the engine ignores: ${ignored.join(', ')}.`);
         }
-        if (accepted.length === 0) return [];
-        // A failed label write is logged and that bead is left out of the
-        // returned ids, so it falls back to the ordinary BLOCKED handling.
+        if (accepted.length === 0) return { labelled: [], failed: [] };
+        // A failed label write is logged and returned in `failed`; the
+        // caller sets that bead aside (it must not go back to a doer).
         const labelled = [];
+        const failed = [];
         await gitSync.withOpenSyncBracket(async () => {
             for (const id of accepted) {
                 try {
                     await command(`bd update ${id} --add-label ${LIVE_EVIDENCE_LABEL}`, { member_name: backlogMember, silent: true });
                     labelled.push(id);
                 } catch (err) {
+                    failed.push({ id, error: err && err.message ? err.message : String(err) });
                     log(
                         `Doer live-evidence C${cycle} R${devRounds}: could not label bead ${id} ${LIVE_EVIDENCE_LABEL} ` +
-                        `(streak [${streakIds.join(', ')}]): ${err && err.message ? err.message : err} -- handled as an ordinary BLOCKED bead instead.`
+                        `(streak [${streakIds.join(', ')}]): ${err && err.message ? err.message : err} -- set aside as doer-BLOCKED instead.`
                     );
                 }
             }
         });
-        if (labelled.length === 0) return [];
+        if (labelled.length === 0) return { labelled, failed };
         // The engine just mutated beads in its own clone: D-push so every
         // member sees the marker.
         await gitSync.syncBeadsAfter(backlogMember, { pushBeads: true });
@@ -372,7 +389,7 @@ export async function runDevelopPhase({
             `(reported by the doer of streak [${streakIds.join(', ')}]) -- labelled ${LIVE_EVIDENCE_LABEL} and routed to ` +
             'the Integration Test phase as verify target(s); not set aside as doer-BLOCKED and never dispatched to a doer again.'
         );
-        return labelled;
+        return { labelled, failed };
     };
 
     // Records a doer NEEDS-DECISION report (../decisions.mjs): the named
