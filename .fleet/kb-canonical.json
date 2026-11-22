@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "f9120840430d27924cc7797240f4660c5f35c226",
     "branch": "main",
-    "entry_count": 184
+    "entry_count": 185
   },
   "entries": [
     {
@@ -1815,6 +1815,31 @@
       "source_file_hashes": {
         "src/services/knowledge/bible-import.ts": "a717226586d21e5c2496b21c0ea3e212bde4ca10",
         "tests/knowledge/kb-bible-tombstone-entry-exclusive.test.ts": "d08879c5dfb4bdf961496bffd90f6c0576312da8"
+      }
+    },
+    {
+      "id": "7c9156bf-0ba9-44c3-809c-61331ceb2a01",
+      "type": "learning",
+      "title": "Installer tests that auto-mock execFileSync must stub a pinned bd --version",
+      "summary": "runInstall's Beads step now treats empty or unparseable bd --version output as a version mismatch and sets process.exitCode = 1. Tests that vi.mock('node:child_process') without stubbing execFileSync get undefined output and so a non-zero exit code.",
+      "symbols": [
+        "installBeads",
+        "checkPinnedVersion",
+        "runInstall"
+      ],
+      "source_files": [
+        "src/cli/beads-install.ts",
+        "src/cli/version-pin.ts",
+        "src/cli/install.ts",
+        "tests/install-member.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-22T11:37:09.354Z",
+      "source_file_hashes": {
+        "src/cli/beads-install.ts": "2a3f2ea8a415128e5dc9c0bef4820e13f0e26c37",
+        "src/cli/install.ts": "74ac06d11f1b78ae7fca7c4bd955d023f97b6274",
+        "src/cli/version-pin.ts": "1fb033830e4b47148f10b8aacb466ebf91dfbddd",
+        "tests/install-member.test.ts": "b738bc2fb58d663376b51c17d05f1a7cb3e82365"
       }
     },
     {
