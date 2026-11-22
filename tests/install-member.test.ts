@@ -167,6 +167,10 @@ describe('install --member', () => {
   it('install step labels are sequential: no duplicate or skipped numbers', async () => {
     for (const args of [['--member'], ['--skill', 'none']]) {
       vi.mocked(console.log).mockClear();
+      // Each run starts on a host with no member install: the full install in
+      // the second iteration would otherwise (correctly) refuse on the marker
+      // the first iteration's member install left behind.
+      for (const k of [...files.keys()]) if (k.endsWith('/member-install.json')) files.delete(k);
       await runInstall(['--transport', 'http', ...args]);
       const out = vi.mocked(console.log).mock.calls.flat().join('\n');
       const labels = [...out.matchAll(/^\s*\[(\d+)\/(\d+)\]/gm)].map(m => [Number(m[1]), Number(m[2])]);

@@ -32,6 +32,7 @@ import { installBeads, type BeadsInstallDeps } from './beads-install.js';
 import {
   classifyRunningServer, relevantServerPids, getInstallDataDir, memberForceMayStop, fullInstallRefusalText, selfInvocationLines,
   writeMemberInstallMarker, clearMemberInstallMarker, recordFullInstallPort, FORCE_STOP_FULL_INSTALL_FLAG,
+  CONVERT_MEMBER_HOST_FLAG, MEMBER_HOST_FULL_INSTALL_CODE, readMemberInstallMarker, memberHostRefusalText,
 } from './install-guard.js';
 import { detectRunningFleetSe, fleetSeRefusalText, fleetSeRerunArgs, realFleetSeProbes, IGNORE_RUNNING_SPRINTS_FLAG, type FleetSeProbes } from './fleet-se-guard.js';
 import { writeServiceNotice, appendServiceNotice, clearServiceNoticeContaining, SERVICE_NOTICE_PATH } from '../services/service-notice.js';
@@ -1385,6 +1386,10 @@ Options:
   --force-stop-full-install
                           With --member --force: also stop a running server that was not started
                           by a member install (e.g. a full install on a shared machine).
+  --convert-member-host   Without --member: install a full install over a fleet member host (one
+                          whose data dir holds member-install.json), removing the member install.
+                          Without it a full install there refuses (E-MEMBER-HOST-FULL-INSTALL);
+                          upgrade a member host with install --member --force instead.
   --port <n>              With --member: the port this member install's server listens on
                           (default: APRA_FLEET_PORT, else the port a previous member install
                           recorded, else 7523). Recorded in the member-install marker; use a
@@ -1506,7 +1511,7 @@ Options:
   }
 
   const knownFlagPrefixes = ['--llm=', '--skill=', '--transport=', '--workflows=', '--port='];
-  const knownFlagExact = new Set(['--member', '--llm', '--skill', '--no-skill', '--workflows', '--force', FORCE_STOP_FULL_INSTALL_FLAG, IGNORE_RUNNING_SPRINTS_FLAG, '--transport', '--port', '--help', '-h']);
+  const knownFlagExact = new Set(['--member', '--llm', '--skill', '--no-skill', '--workflows', '--force', FORCE_STOP_FULL_INSTALL_FLAG, CONVERT_MEMBER_HOST_FLAG, IGNORE_RUNNING_SPRINTS_FLAG, '--transport', '--port', '--help', '-h']);
   for (const a of args) {
     if (knownFlagExact.has(a)) continue;
     if (knownFlagPrefixes.some(p => a.startsWith(p))) continue;
@@ -1528,6 +1533,25 @@ Options:
     process.exit(1);
   }
   const memberPort = memberPortChoice.port;
+
+  // Member-host guard: a full install clears the member-install marker, which
+  // silently turns a fleet member host into a full install. Refuse before
+  // anything is stopped or written unless the conversion is explicit. Scoped to
+  // the targeted data dir, so an isolated APRA_FLEET_DATA_DIR is unaffected.
+  const convertMemberHost = args.includes(CONVERT_MEMBER_HOST_FLAG);
+  const memberMarker = memberMode ? null : readMemberInstallMarker();
+  if (memberMarker && !convertMemberHost) {
+    const rerunArgs = ['install', '--member', ...args.filter(a => a !== '--member' && a !== '--force'
+      && a !== CONVERT_MEMBER_HOST_FLAG && a !== IGNORE_RUNNING_SPRINTS_FLAG), '--force'];
+    const text = memberHostRefusalText(memberMarker, selfInvocationLines({
+      platform: process.platform, execPath: process.execPath, scriptPath: process.argv[1], sea: isSea(), args: rerunArgs,
+    }));
+    console.error(text);
+    // apra-fleet update runs install detached with no console: persist it.
+    writeServiceNotice(text.trim(), undefined, new Date(), Boolean(process.stderr.isTTY));
+    process.exit(1);
+    return;
+  }
 
   const installFleet = skillMode === 'fleet' || skillMode === 'pm' || skillMode === 'all';
   const installPm = skillMode === 'pm' || skillMode === 'all';
@@ -1578,6 +1602,7 @@ Options:
   // obsolete and must not be shown after this install succeeds. All OSes --
   // only the Windows service manager clears notices on registration.
   clearServiceNoticeContaining('E-FLEET-SE-RUNNING');
+  clearServiceNoticeContaining(MEMBER_HOST_FULL_INSTALL_CODE);
 
   const serviceStep = isSea() && transport === 'http';
   // A member install exists to leave an auto-starting server behind. With no
@@ -2461,7 +2486,12 @@ ${restartHint}
   }
 
   // --- Done ---
-  if (!memberMode) clearMemberInstallMarker();
+  if (!memberMode) {
+    clearMemberInstallMarker();
+    if (memberMarker) {
+      console.log(`\n  Converted this fleet member host to a full install (${CONVERT_MEMBER_HOST_FLAG}): removed the member-install marker ${memberMarker.path}.`);
+    }
+  }
   const beadsVersion = beadsResult.state === 'missing'
     ? `not available -- ${beadsResult.reason}. Fix: ${beadsResult.fix}`
     : `${beadsResult.version}${beadsResult.location === 'bin-dir' ? ` (${beadsResult.binPath})` : ''}`;

@@ -356,6 +356,26 @@ If the fleet server is running, uninstall aborts and tells you to re-run with
 tree, and ends with a "Kept (intentionally)" list (`data/`, `fleet.key`, user workflows).
 Full detail: [docs/features/uninstall.md](features/uninstall.md).
 
+## Upgrade a member host (a full install refuses there)
+
+A host whose data dir (`APRA_FLEET_DATA_DIR`, else `<home>/.apra-fleet/data`)
+holds `member-install.json` is a fleet member host. A full install (no
+`--member`) ends by removing that marker, after which the fleet treats every
+member sharing that data dir as `full-install-running` and they lose their
+KB/code tools. So a full install there refuses before stopping or writing
+anything, exits non-zero and prints `E-MEMBER-HOST-FULL-INSTALL` with the marker
+path, its recorded version and port, and the supported upgrade paths:
+
+- from the orchestrator: `update_member {member_id, fleet_install: "auto"}`;
+- or on the host: `apra-fleet install --member --force` (keeps the marker and
+  the recorded port; the marker is rewritten with the new version).
+
+`apra-fleet update` on a member host does the latter for you. To convert a
+member host to a full install on purpose, add `--convert-member-host`; the
+install then removes the marker and says so. The check is per data dir: a full
+install into a different `APRA_FLEET_DATA_DIR` (a sandbox or clean-prefix
+install) is not affected.
+
 ## Replace a full install on a member
 
 A fleet member machine needs a **member install only** (`apra-fleet install
