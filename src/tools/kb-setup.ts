@@ -191,10 +191,10 @@ function checkTokenRef(input: KbSetupInput, provider: 'sqlite' | 'http'): TokenR
     if (found.status === 'missing') {
       throw new Error(`kb_setup: token refers to secret "${name}", which does not exist. ${fix}`);
     }
+    refuseDeny(found.meta.network_policy);
     if (found.status === 'expired') {
       throw new Error(`kb_setup: token refers to secret "${name}", which has expired. Re-set it with: apra-fleet secret --set ${name} --persist -y`);
     }
-    refuseDeny(found.meta.network_policy);
   }
   return { name, legacy };
 }

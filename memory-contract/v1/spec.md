@@ -615,8 +615,8 @@ registers it again), and the identical request then succeeds. It is still
 way, and the provider has already done its one retry (re-read the secret, send
 once more) before raising it.
 
-The secret's own policy applies on every provider call, before any request and
-before a live secret's script runs: `network_policy` deny refuses every caller
+The secret's own policy applies on every provider call, before any request, before
+its expiry is checked and before a live secret's script runs: `network_policy` deny refuses every caller
 (reason `policy-deny`), and `allowedMembers` refuses a member session it does not
 name (reason `member-not-allowed`), matched by the friendly name that fleet server
 has registered for the session's member id. A session with no member identity has
@@ -643,7 +643,8 @@ When the named credential is a live secret (a script the server runs to mint
 the token), the same code is raised, with the same queueing, when the script
 fails or is inside its retry backoff after a failure (reason
 `live-secret-failed`; no request is sent), and when the server answers 401
-again after one retry with a freshly minted token (reason `rejected`). Neither
+again after one retry with a freshly minted token, or a KB call comes inside the
+cool-down that second rejection starts, with no request and no mint (reason `rejected`). Neither
 the token nor the script's output appears in the message.
 
 ### 3.4 Silent refusals are named but not projectable

@@ -208,7 +208,7 @@ export async function registerMember(input: RegisterMemberInput, opts: RegisterM
         continue;
       }
       // Credential not found — auto-create via OOB
-      const oob = await collectOobApiKey(name, 'register_member', { askPersist: true });
+      const oob = await collectOobApiKey(name, 'register_member', { askPersist: true, storesSecret: true });
       if ('fallback' in oob) return oob.fallback ?? 'Error: OOB operation cancelled.';
       if (!oob.password) return `❌ No credential received for "${name}". Member was NOT registered.`;
       const plaintext = decryptPassword(oob.password);

@@ -43,7 +43,7 @@ export async function credentialStoreSet(input: CredentialStoreSetInput): Promis
   if (input.persist === false && hasPersistentRecord(input.name)) {
     return `[FAIL] '${input.name}' is persistent, so it cannot have a session value. Omit persist to change its value. If you really want a session value, delete it first with credential_store_delete.`;
   }
-  const result = await collectOobApiKey(input.name, 'credential_store_set', { prompt: input.prompt });
+  const result = await collectOobApiKey(input.name, 'credential_store_set', { prompt: input.prompt, storesSecret: true, takesGiven: true });
 
   if (result.fallback) return result.fallback;
   if (!result.password) return `❌ No secret received for ${input.name}. Please try again.`;
@@ -52,12 +52,24 @@ export async function credentialStoreSet(input: CredentialStoreSetInput): Promis
   const allowedMembers: string[] | '*' | undefined = input.members === undefined || input.members === '*'
     ? input.members as '*' | undefined
     : input.members.split(',').map(s => s.trim()).filter(Boolean);
+  // A field typed explicitly on `apra-fleet secret --set` replaces this call's; the rest are this call's.
+  const given = result.given ?? {};
   const meta = credentialSetValue(input.name, plaintext, {
-    persist: input.persist,
-    network_policy: input.network_policy,
-    allowedMembers,
+    persist: given.persist ?? input.persist,
+    network_policy: given.network_policy ?? input.network_policy,
+    allowedMembers: given.allowedMembers ?? allowedMembers,
     ttl_seconds: input.ttl_seconds,
+    ...(given.expiresAt !== undefined ? { expiresAt: given.expiresAt } : {}),
   });
   logLine('credential_store_set', `name=${input.name} persist=${meta.scope === 'persistent'}`);
-  return `✓ ${meta.name} stored [${meta.scope}]. Use {{secret.${meta.name}}} in commands.`;
+  const flags = [
+    given.persist ? '--persist' : '',
+    given.network_policy ? `--${given.network_policy}` : '',
+    given.allowedMembers ? '--members' : '',
+    given.expiresAt !== undefined ? '--expires-at' : '',
+  ].filter(Boolean);
+  const typedNote = flags.length > 0
+    ? ` The user typed it with apra-fleet secret --set ${flags.join(' ')}, which replaced what this call asked for: it has policy ${meta.network_policy}, members ${Array.isArray(meta.allowedMembers) ? meta.allowedMembers.join(',') : meta.allowedMembers}.`
+    : '';
+  return `[OK] ${meta.name} stored [${meta.scope}]. Use {{secret.${meta.name}}} in commands.${typedNote}`;
 }

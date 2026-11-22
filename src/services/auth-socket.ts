@@ -12,6 +12,7 @@ import { escapeShellArg, escapeAppleScriptString, quoteWindowsArgv } from '../ut
 import { OOB_TIMEOUT_MS } from '../utils/oob-timeout.js';
 import { launchAuthWeb } from './auth-web.js';
 import { fleetEvents } from './event-bus.js';
+import type { CredentialSetFields } from './credential-store.js';
 
 const SOCKET_PATH = path.join(FLEET_DIR, 'auth.sock');
 const PENDING_TTL_MS = 10 * 60 * 1000; // 10 minutes
@@ -22,6 +23,28 @@ interface PendingAuth {
   createdAt: number;
   spawned_pid?: number;
   persist?: boolean;
+  /** The waiting tool stores the value as a secret under this name itself, with the policy it was asked for. */
+  storesSecret?: boolean;
+  /** The waiting tool applies the fields typed explicitly on `secret --set` over its own. */
+  takesGiven?: boolean;
+  given?: GivenSecretFields;
+}
+
+/** The fields a `secret --set` user typed explicitly: each one replaces what the waiting call asked for. */
+export type GivenSecretFields = Pick<CredentialSetFields, 'network_policy' | 'allowedMembers' | 'expiresAt'> & { persist?: true };
+
+/** The well-formed fields of a socket message's `given`; anything else is dropped. */
+export function givenSecretFields(raw: unknown): GivenSecretFields {
+  const out: GivenSecretFields = {};
+  if (!raw || typeof raw !== 'object') return out;
+  const r = raw as Record<string, unknown>;
+  if (r.persist === true) out.persist = true;
+  if (r.network_policy === 'allow' || r.network_policy === 'deny') out.network_policy = r.network_policy;
+  if (r.allowedMembers === '*' || (Array.isArray(r.allowedMembers) && r.allowedMembers.every((m) => typeof m === 'string'))) {
+    out.allowedMembers = r.allowedMembers as string[] | '*';
+  }
+  if (r.expiresAt === null || (typeof r.expiresAt === 'string' && !Number.isNaN(Date.parse(r.expiresAt)))) out.expiresAt = r.expiresAt;
+  return out;
 }
 
 interface PasswordWaiter {
@@ -102,7 +125,7 @@ export async function ensureAuthSocket(): Promise<void> {
         try {
           const msg = JSON.parse(line);
           if (msg.type === 'auth' && msg.member_name && msg.password) {
-            const res = submitPassword(msg.member_name, msg.password, msg.persist);
+            const res = submitPassword(msg.member_name, msg.password, msg.persist, msg.given);
             // Best-effort: JS strings are immutable; original may persist in V8 heap until GC
             (msg as any).password = '';
             conn.write(JSON.stringify({ type: 'ack', ...res }) + '\n');
@@ -145,7 +168,7 @@ export async function ensureAuthSocket(): Promise<void> {
   return tryListen(maxRetries);
 }
 
-export function createPendingAuth(memberName: string): void {
+export function createPendingAuth(memberName: string, storesSecret = false, takesGiven = false): void {
   // Clean expired entries
   const now = Date.now();
   for (const [name, entry] of pendingRequests) {
@@ -153,7 +176,7 @@ export function createPendingAuth(memberName: string): void {
       pendingRequests.delete(name);
     }
   }
-  pendingRequests.set(memberName, { createdAt: now });
+  pendingRequests.set(memberName, { createdAt: now, ...(storesSecret ? { storesSecret } : {}), ...(takesGiven ? { takesGiven } : {}) });
 }
 
 export function getPendingPassword(memberName: string): string | null {
@@ -174,14 +197,24 @@ export function getPendingPassword(memberName: string): string | null {
  * Deliver a plaintext credential to a pending auth request: encrypt it
  * immediately, store it on the pending entry, and resolve any waiting tool
  * handler. Shared by the socket handler (CLI entry) and the browser fallback
- * (local web UI entry) so both delivery paths behave identically.
+ * (local web UI entry) so both delivery paths behave identically. `stored`
+ * tells a `secret --set` CLI that the waiting tool stores the value itself, so
+ * the CLI must not write it again. `applied` lists the CLI's explicit fields
+ * that tool applies over its own; without it, none are.
  */
-export function submitPassword(memberName: string, plaintext: string, persist?: boolean): { ok: boolean; error?: string } {
+export function submitPassword(
+  memberName: string,
+  plaintext: string,
+  persist?: boolean,
+  given?: unknown,
+): { ok: boolean; error?: string; stored?: true; applied?: Array<keyof GivenSecretFields> } {
   const pending = pendingRequests.get(memberName);
   if (!pending) return { ok: false, error: `No pending auth for ${memberName}` };
   // Encrypt immediately; plaintext is never stored or logged.
   pending.encryptedPassword = encryptPassword(plaintext);
   if (persist !== undefined) pending.persist = !!persist;
+  // An older CLI sends no `given`: then nothing it sent replaces the waiting call's fields.
+  if (pending.takesGiven && given !== undefined) pending.given = givenSecretFields(given);
   // Kill the spawned terminal process if one was launched.
   if (pending.spawned_pid) {
     killProcess(pending.spawned_pid);
@@ -194,7 +227,10 @@ export function submitPassword(memberName: string, plaintext: string, persist?: 
     waiter.resolve(pending.encryptedPassword);
     fleetEvents.emit('credential:stored', { name: memberName });
   }
-  return { ok: true };
+  if (!pending.storesSecret) return { ok: true };
+  return pending.given
+    ? { ok: true, stored: true, applied: Object.keys(pending.given) as Array<keyof GivenSecretFields> }
+    : { ok: true, stored: true };
 }
 
 /**
@@ -310,8 +346,8 @@ async function collectOobInput(
   mode: 'password' | 'api-key',
   memberName: string,
   toolName: string,
-  _opts?: { waitTimeoutMs?: number; launchFn?: OobLaunchFn; prompt?: string; additionalArgs?: string[] },
-): Promise<{ password?: string; fallback?: string; persist?: boolean }> {
+  _opts?: { waitTimeoutMs?: number; launchFn?: OobLaunchFn; prompt?: string; additionalArgs?: string[]; storesSecret?: boolean; takesGiven?: boolean },
+): Promise<{ password?: string; fallback?: string; persist?: boolean; given?: GivenSecretFields }> {
   const launch = _opts?.launchFn ?? launchAuthTerminal;
   const waitTimeoutMs = _opts?.waitTimeoutMs;
 
@@ -336,7 +372,7 @@ async function collectOobInput(
   }
 
   await ensureAuthSocket();
-  createPendingAuth(memberName);
+  createPendingAuth(memberName, _opts?.storesSecret, _opts?.takesGiven);
 
   // Tear-down for the local browser UI if it ends up being the active
   // collector; called on every exit path. A holder object (rather than a bare
@@ -390,10 +426,10 @@ async function collectOobInput(
           passwordPromise,
           new Promise<never>((_, reject) => setTimeout(() => reject(new Error('cancelled')), 500)),
         ]);
-        const persist = pendingRequests.get(memberName)?.persist;
+        const { persist, given } = pendingRequests.get(memberName) ?? {};
         pendingRequests.delete(memberName);
         webUi.close?.();
-        return { password: pw, persist };
+        return { password: pw, persist, ...(given ? { given } : {}) };
       } catch {
         const waiter = passwordWaiters.get(memberName);
         if (waiter) { clearTimeout(waiter.timer); passwordWaiters.delete(memberName); }
@@ -418,10 +454,10 @@ async function collectOobInput(
       return raceResult;
     }
 
-    const persist = pendingRequests.get(memberName)?.persist;
+    const { persist, given } = pendingRequests.get(memberName) ?? {};
     pendingRequests.delete(memberName);
     webUi.close?.();
-    return { password: raceResult as string, persist };
+    return { password: raceResult as string, persist, ...(given ? { given } : {}) };
   } catch (err: any) {
     // Clean up the pending request if the user cancelled.
     const waiter = passwordWaiters.get(memberName);
@@ -460,8 +496,8 @@ export async function collectOobPassword(
 export async function collectOobApiKey(
   memberName: string,
   toolName: string,
-  _opts?: { waitTimeoutMs?: number; launchFn?: OobLaunchFn; prompt?: string; askPersist?: boolean },
-): Promise<{ password?: string; fallback?: string; persist?: boolean }> {
+  _opts?: { waitTimeoutMs?: number; launchFn?: OobLaunchFn; prompt?: string; askPersist?: boolean; storesSecret?: boolean; takesGiven?: boolean },
+): Promise<{ password?: string; fallback?: string; persist?: boolean; given?: GivenSecretFields }> {
   const additionalArgs = _opts?.askPersist ? ['--ask-persist'] : [];
   return collectOobInput('api-key', memberName, toolName, { ...(_opts ?? {}), additionalArgs });
 }

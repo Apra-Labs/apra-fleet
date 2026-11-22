@@ -461,8 +461,8 @@ describe('an unbound secret behaves as on main', () => {
     credentialSet(r, 'old-value', true, 'deny', ['alpha'], -1);
     credentialSet(r, 'session-value', false, 'allow', '*');
 
-    expect(credentialResolve(r, 'beta')).toHaveProperty('expired');
-    expect(credentialResolve(r, 'beta')).toBeNull();
+    expect(credentialResolve(r, 'alpha')).toHaveProperty('expired');
+    expect(credentialResolve(r, 'alpha')).toBeNull();
     expect(credentialList().some((c) => c.name === r)).toBe(false);
   });
 

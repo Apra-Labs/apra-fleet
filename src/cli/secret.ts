@@ -1,6 +1,6 @@
 import net from 'node:net';
 import readline from 'node:readline';
-import { getSocketPath } from '../services/auth-socket.js';
+import { getSocketPath, type GivenSecretFields } from '../services/auth-socket.js';
 import { collectSecret } from '../utils/collect-secret.js';
 import {
   BoundSecretError,
@@ -23,7 +23,7 @@ import { hasMemberInstallMarker } from './install-guard.js';
 
 const NAME_REGEX = /^[a-zA-Z0-9_-]{1,64}$/;
 
-const LIVE_USAGE_INLINE = "  apra-fleet secret --live <name> --inline '<script with {{secret.R}}>'";
+const LIVE_USAGE_INLINE = "  apra-fleet secret --live <name> --inline '<script with {{secret.R}}>'|-";
 const LIVE_USAGE_FILE = "  apra-fleet secret --live <name> [--env 'VAR={{secret.R}}']... <script file> [args]";
 
 export async function runSecret(args: string[]): Promise<void> {
@@ -67,7 +67,29 @@ export async function runSecret(args: string[]): Promise<void> {
 }
 
 /** Text for an inline script that arrived as more than one argument. Fixed: the arguments may hold a value. */
-const INLINE_EXTRA_ARGS = 'FAILED: inline-extra-args: --inline takes one script and cannot be combined with a script path. If you did not add more arguments, Windows PowerShell 5.1 stripped the double quotes of your inline script and split it: avoid double quotes in inline scripts there, or use a script file.';
+const INLINE_EXTRA_ARGS = 'FAILED: inline-extra-args: --inline takes one script and cannot be combined with a script path. If you did not add more arguments, your shell removed double quotes from the inline script and split it (Windows PowerShell 5.1 does): use single quotes inside the script, a script file, or --inline - with the script on stdin.';
+
+/**
+ * Windows shells can change an argument's double quotes and a trailing
+ * backslash before a program sees them (Windows PowerShell 5.1 drops or adds
+ * quotes), and argv cannot show it. So on Windows an `--inline` script given as
+ * an argument may hold neither. Fixed text: the script may hold a value.
+ */
+export function inlineArgFailure(script: string, platform: NodeJS.Platform): string | null {
+  if (platform !== 'win32' || !(script.includes('"') || script.endsWith('\\'))) return null;
+  return 'FAILED: inline-quotes: on Windows an --inline script cannot hold a double quote or end with a backslash, because the shell can change them on the way in. Nothing was saved. Use single quotes inside the script, a script file, or --inline - with the script on stdin.';
+}
+
+const INLINE_STDIN_EMPTY = 'FAILED: inline-stdin: --inline - reads the script from stdin, and none arrived. Pipe it in or redirect a file. Nothing was saved.';
+
+/** The script given as `--inline -`: stdin without a BOM or its final line break, or null when there is none. */
+async function readInlineStdin(): Promise<string | null> {
+  if (process.stdin.isTTY) return null;
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
+  const script = Buffer.concat(chunks).toString('utf8').replace(/^\uFEFF/, '').replace(/\r?\n$/, '');
+  return script.trim() ? script : null;
+}
 
 /**
  * The script form of `--live`, or a usage failure. Options come first; parsing
@@ -124,6 +146,21 @@ async function handleLive(args: string[]): Promise<void> {
     console.error(`x Invalid credential name: ${name}`);
     console.error('  Name must match [a-zA-Z0-9_-]{1,64}');
     process.exit(1);
+  }
+  if ('inline' in spec && spec.inline === '-') {
+    const script = await readInlineStdin();
+    if (script === null) {
+      console.error(INLINE_STDIN_EMPTY);
+      process.exit(1);
+      return;
+    }
+    spec.inline = script;
+  } else if ('inline' in spec) {
+    const failure = inlineArgFailure(spec.inline, process.platform);
+    if (failure) {
+      console.error(failure);
+      process.exit(1);
+    }
   }
   try {
     const record = prepareLiveSecret(name, spec);
@@ -328,6 +365,14 @@ export function parseExpiresAt(raw: string | undefined): string | null | { error
   return new Date(Date.parse(raw)).toISOString();
 }
 
+/** The flag a field of `given` came from. */
+function flagFor(field: string, given: GivenSecretFields): string {
+  if (field === 'network_policy') return `--${given.network_policy}`;
+  if (field === 'allowedMembers') return '--members';
+  if (field === 'expiresAt') return '--expires-at';
+  return '--persist';
+}
+
 function policyNote(name: string, policy: NetworkPolicy): string {
   return policy === 'allow'
     ? `  i Network policy: allow. Use 'apra-fleet secret --update ${name} --deny' to restrict.`
@@ -439,9 +484,15 @@ async function handleSet(args: string[]): Promise<void> {
   // the OOB delivery succeeded) still has a value to store instead of
   // silently persisting an empty string.
   let persistValue = secretValue;
-  const waitForServer = new Promise<boolean>((resolve) => {
+  // Only what was typed: a waiting credential_store_set applies these over its own fields.
+  const given: GivenSecretFields = { ...(persist ? { persist: true } : {}), ...fields, ...(expiresAt !== undefined ? { expiresAt } : {}) };
+  // stored: the waiting tool stores the value itself; applied: which of `given` it used.
+  const waitForServer = new Promise<{ stored: true; applied?: string[] } | boolean>((resolve) => {
     const client = net.connect(sockPath, () => {
-      const msg = JSON.stringify({ type: 'auth', member_name: name, password: secretValue, persist: finalPersist }) + '\n';
+      const msg = JSON.stringify({
+        type: 'auth', member_name: name, password: secretValue, persist: finalPersist,
+        ...(Object.keys(given).length > 0 ? { given } : {}),
+      }) + '\n';
       secretValue = '';
       client.write(msg);
     });
@@ -457,7 +508,9 @@ async function handleSet(args: string[]): Promise<void> {
         const resp = JSON.parse(line);
         if (resp.ok) {
           console.error(`✓ Secret delivered for ${name}. You can close this window.`);
-          resolve(true);
+          resolve(resp.stored === true
+            ? { stored: true, ...(Array.isArray(resp.applied) ? { applied: resp.applied } : {}) }
+            : true);
         } else {
           resolve(false);
         }
@@ -495,6 +548,15 @@ async function handleSet(args: string[]): Promise<void> {
     } catch (err: any) {
       console.error(`✗ Failed to store secret: ${err.message}`);
       process.exit(1);
+    }
+  } else if (typeof delivered === 'object') {
+    // The waiting tool stores it; a write here would race its own.
+    if (delivered.applied) {
+      if (delivered.applied.length > 0) {
+        console.error(`  Stored by the waiting request. From this command: ${delivered.applied.map((f) => flagFor(f, given)).join(', ')}; anything else as that request asked.`);
+      }
+    } else if (persist) {
+      console.error(`  Not stored again by this command: the waiting request stores it with the policy and members it asked for. Change those with: apra-fleet secret --update ${name}`);
     }
   } else if (persist) {
     // OOB delivery + persist: store the secret

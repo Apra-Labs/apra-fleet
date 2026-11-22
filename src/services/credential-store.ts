@@ -654,6 +654,12 @@ export function credentialResolve(
   if (persistent) {
     const allowedMembers = persistent.allowedMembers ?? '*';
 
+    // Scoping before the TTL: a member it is not shared with is told so, expired or not
+    // ('*' as callingMember is a fleet-operator bypass)
+    if (callingMember !== undefined && callingMember !== '*' && allowedMembers !== '*' && !allowedMembers.includes(callingMember)) {
+      return { denied: `Credential '${name}' is not accessible to member '${callingMember}'. Allowed: ${allowedMembers.join(', ')}` };
+    }
+
     // TTL check
     if (persistent.expiresAt && Date.now() > new Date(persistent.expiresAt).getTime()) {
       const consumers = consumersOf(file, name);
@@ -664,11 +670,6 @@ export function credentialResolve(
       saveCredentialFile(file);
       sessionStore.delete(name);
       return { expired: `Credential '${name}' has expired. Re-set with credential_store_set.` };
-    }
-
-    // Scoping check ('*' as callingMember is a fleet-operator bypass)
-    if (callingMember !== undefined && callingMember !== '*' && allowedMembers !== '*' && !allowedMembers.includes(callingMember)) {
-      return { denied: `Credential '${name}' is not accessible to member '${callingMember}'. Allowed: ${allowedMembers.join(', ')}` };
     }
 
     return {
@@ -688,15 +689,15 @@ export function credentialResolve(
   if (session) {
     const allowedMembers = session.allowedMembers;
 
+    // Scoping before the TTL, as for a persistent record
+    if (callingMember !== undefined && callingMember !== '*' && allowedMembers !== '*' && !allowedMembers.includes(callingMember)) {
+      return { denied: `Credential '${name}' is not accessible to member '${callingMember}'. Allowed: ${allowedMembers.join(', ')}` };
+    }
+
     // TTL check
     if (session.expiresAt && Date.now() > new Date(session.expiresAt).getTime()) {
       sessionStore.delete(name);
       return { expired: `Credential '${name}' has expired. Re-set with credential_store_set.` };
-    }
-
-    // Scoping check ('*' as callingMember is a fleet-operator bypass)
-    if (callingMember !== undefined && callingMember !== '*' && allowedMembers !== '*' && !allowedMembers.includes(callingMember)) {
-      return { denied: `Credential '${name}' is not accessible to member '${callingMember}'. Allowed: ${allowedMembers.join(', ')}` };
     }
 
     return {

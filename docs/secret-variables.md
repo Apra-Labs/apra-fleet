@@ -126,6 +126,7 @@ reach an LLM prompt. Use `execute_command` instead.
 
 - Delivery vs. persistence: Running `apra-fleet secret --set NAME` without `--persist` delivers to a waiting OOB request but does NOT store in the vault. `{{secret.NAME}}` requires vault storage - use `--persist`.
 - `credential_store_set` **blocks** - when called, the tool opens an OOB terminal and waits synchronously for the user to enter the secret. It does not return a "Waiting..." intermediate status or require a second call. On success it returns `[OK] NAME stored [session/persistent]. Use {{secret.NAME}} in commands.`
+- A value typed with `apra-fleet secret --set NAME` while `credential_store_set` waits for NAME goes to that call, which stores it. Each of `--persist`, `--allow`/`--deny`, `--members` and `--expires-at` typed on that command replaces what the call asked for; anything not typed is as the call asked, and the command says which flags applied. `register_member` stores it with policy `deny`, taking only `--persist` from the command. A CLI older than this rule does not say which flags were typed, so the call stores the value with its own fields; with `--persist`, that CLI then overwrites them with its own.
 - Failed resolution is always explicit - the tool returns an error and aborts. No silent pass-through of the token string.
 
 ## CI / Non-Interactive Usage
@@ -171,10 +172,11 @@ From the CLI, on the orchestrator:
 
 ```bash
 apra-fleet secret --live NAME --inline '<script with {{secret.R}}>'
+apra-fleet secret --live NAME --inline -          # the script on stdin
 apra-fleet secret --live NAME [--env 'VAR={{secret.R}}']... <script file> [args]
 ```
 
-- **Inline** is one line in the orchestrator's shell: bash, or PowerShell on Windows.
+- **Inline** is a script run in the orchestrator's shell: bash, or PowerShell on Windows.
   Write `{{secret.R}}` bare, never inside your own quotes. It is rewritten to an env
   var reference (`"$FLEET_SECRET_R"` or `${env:FLEET_SECRET_R}`), so the value is
   never on a command line and needs no escaping. A `-` in the name becomes `_`, and
@@ -198,10 +200,18 @@ arguments starting with `-`.
   it: `'--'`.
 - An unknown option before the path is an error, and so is an `--env` value not of the
   form `VAR={{secret.R}}`.
-- `--inline` takes one script and no script path. On Windows PowerShell 5.1 a double
-  quote inside an inline script is stripped and the script split. That fails with
-  `inline-extra-args` and saves nothing: use doubled single quotes, as in the examples,
-  or a script file.
+- `--inline` takes one script and no script path (`inline-extra-args`).
+- On Windows an `--inline` script that arrives holding a double quote or ending with a
+  backslash is refused (`inline-quotes`). The check sees only what arrives: Windows
+  PowerShell 5.1 drops the quotes around a quoted word with no space in it, so that
+  script is not refused and runs changed. On Windows, never put `"` in an `--inline`
+  argument: use single quotes (doubled inside a PowerShell single-quoted string, as in
+  the samples), `--inline -` or a script file.
+- `--inline -` reads the script from stdin instead, on every OS, with the same rules
+  otherwise. Quotes reach it unchanged. Windows PowerShell 5.1 pipes text as ASCII, so
+  there keep the script ASCII: other characters arrive as `?`. For example:
+  `Get-Content C:\kb\mint.txt -Raw | apra-fleet secret --live KB_TOKEN --inline -`,
+  or `apra-fleet secret --live KB_TOKEN --inline - < mint.txt` in bash.
 
 ### Script types per OS
 
@@ -344,9 +354,6 @@ apra-fleet secret --live KB_TOKEN --inline 'az account get-access-token --resour
 ```powershell
 apra-fleet secret --live KB_TOKEN --inline '$t = (az account get-access-token --resource api://kb-app --query ''{t:accessToken,e:expires_on}'' -o json | Out-String) | ConvertFrom-Json; @{ token = $t.t; expires_at = [DateTimeOffset]::FromUnixTimeSeconds([long]$t.e).ToString(''o'') } | ConvertTo-Json -Compress'
 ```
-
-Typed in PowerShell, use doubled single quotes inside the script as shown:
-Windows PowerShell strips double quotes from an argument it hands to a program.
 
 **Sample: OAuth client credentials with a bound secret, bash (Linux, macOS).** The
 `{{secret.sp_secret}}` is bare, and reaches curl on stdin.

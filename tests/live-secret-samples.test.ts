@@ -20,6 +20,7 @@ import {
   type LiveSecretSpec,
 } from '../src/services/credential-store.js';
 import { mintLiveSecret } from '../src/services/live-secret-cache.js';
+import { inlineArgFailure } from '../src/cli/secret.js';
 import { findExecutableOnPath } from '../src/utils/find-on-path.js';
 import { windowsSystemTool } from '../src/os/windows-executable.js';
 
@@ -393,9 +394,10 @@ describe('the samples are present and carry no value', () => {
     }
   });
 
-  it('the Windows inline samples hold no double quote, which Windows PowerShell 5.1 strips', () => {
+  it('the Windows inline samples hold no double quote, which Windows PowerShell 5.1 strips, so Windows does not refuse them', () => {
     for (const name of ['az-powershell', 'oauth-inline-powershell']) {
       expect(sample(name)).not.toContain('"');
+      expect(inlineArgFailure(inlineOf(name).replace(/''/g, "'"), 'win32')).toBeNull();
     }
   });
 });
