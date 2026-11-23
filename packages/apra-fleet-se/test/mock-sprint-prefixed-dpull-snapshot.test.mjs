@@ -29,12 +29,15 @@ import {
 } from './helpers/mock-sprint-harness.mjs';
 import { invalidateSyncRemoteCache, clearLastSyncedTip, clearTipProbeFailures } from '../fleet-sprint/dolt-sync.mjs';
 import { clearMemberOsCache } from '../fleet-sprint/runner.js';
+import { logicalBdCommand } from '../fleet-sprint/bd-sync-command.mjs';
 
 const BACKLOG_MEMBER = 'local';
 const INTEG_MEMBER = 'integ';
 const SYNC_REMOTE = 'git+https://example.invalid/org/beads.git';
 const LS_REMOTE_RE = / ls-remote https:\/\/example\.invalid\/org\/beads\.git refs\/dolt\/data$/;
-const PREFIX_RE = /^GOMAXPROCS=1 /;
+// The gitbash prefix bdSyncCommandFor builds: the non-interactive git env,
+// then the Windows GOMAXPROCS bound.
+const PREFIX_RE = /^GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never GOMAXPROCS=1 /;
 
 const exit0 = (stdout = '') => ({
     content: [{ type: 'text', text: `Exit code: 0\n${stdout}` }],
@@ -66,7 +69,7 @@ test('a gitbash backlog member: after Integ Test closes a verify bead and files 
         // One shared Dolt remote. The integ member's writes are queued and
         // land in the shared bd DB only when the BACKLOG member D-pulls.
         const onCommand = async ({ command, member_name: member }) => {
-            const logical = command.replace(PREFIX_RE, '');
+            const logical = logicalBdCommand(command);
             if (/^bd config get sync\.remote/.test(logical)) return exit0(JSON.stringify({ key: 'sync.remote', value: SYNC_REMOTE }));
             if (LS_REMOTE_RE.test(command)) return exit0(`${state.tip}\trefs/dolt/data\n`);
             if (logical === 'bd dolt pull') {
