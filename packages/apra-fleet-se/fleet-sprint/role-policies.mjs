@@ -121,8 +121,16 @@ export const KB_INJECTION_KINDS = Object.freeze(['wrapper', 'prompt-builder', 'n
  *                 ONLY by a policy that sets `classifiesSyncFailures`.
  *   'unknown'  -- anything else, recognised ONLY by a policy that sets
  *                 `classifiesUnrecognisedErrors` (the regression catch-all).
+ *   'credential' -- a sync-bracket error a policy names in
+ *                 `extraDispatchErrors` that the sync layer classified as a
+ *                 VCS CREDENTIAL failure (errors.mjs isDoltCredentialFailure).
+ *                 Never degraded and never in any `degrade.classes`: a
+ *                 credential the member cannot present is an infrastructure
+ *                 fault no retry fixes, and a value fabricated over it would
+ *                 read as a role outcome. The engine logs it as a typed line
+ *                 naming the class and the remedy, then rethrows.
  */
-export const ERROR_CLASSES = Object.freeze(['schema', 'dispatch', 'infra', 'sync', 'unknown']);
+export const ERROR_CLASSES = Object.freeze(['schema', 'dispatch', 'infra', 'sync', 'unknown', 'credential']);
 
 /**
  * Steps the engine runs on the DEGRADE path -- i.e. once per attempt that
@@ -944,7 +952,10 @@ const reviewer = policy('reviewer', {
         // transient infrastructure reasons as the dispatch, so it degrades
         // identically. A REAL divergence (GitDivergedError / DoltDivergedError
         // -- deliberately NOT listed) still propagates: that is a branch
-        // integrity problem, not a blip.
+        // integrity problem, not a blip. So does a DoltSyncError the sync
+        // layer classified as a VCS CREDENTIAL failure: the engine files it
+        // under the 'credential' class, logs it with its remedy and rethrows
+        // it, never fabricating a verdict over it.
         extraDispatchErrors: ['GitSyncError', 'DoltSyncError'],
         // On FAILURE only. A failed round's session must not be resumed by the
         // next round; a SUCCESSFUL round's must, which is exactly why this is

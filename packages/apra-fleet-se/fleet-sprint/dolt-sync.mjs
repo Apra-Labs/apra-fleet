@@ -85,7 +85,7 @@
  * ASCII only.
  */
 
-import { DoltDivergedError, DoltSyncError, DoltWindowsSpawnLimitError, DoltLockHeldError, UnpublishedSchemaMigrationsError } from './errors.mjs';
+import { DoltDivergedError, DoltSyncError, DoltWindowsSpawnLimitError, DoltLockHeldError, UnpublishedSchemaMigrationsError, DOLT_CREDENTIAL_REMEDY } from './errors.mjs';
 import { bdSyncCommandFor, normalizeMemberTarget, UNRESOLVED_MEMBER_TARGET } from './bd-sync-command.mjs';
 import { buildLockHolderProbe, parseLockHolderProbe, describeLockProcess } from './beads-lock-probe.mjs';
 import { classifyFailure, toDoltVerdict, commandBinary } from './vcs-module.mjs';
@@ -1788,7 +1788,7 @@ export async function doltPullBefore(member, opts = {}) {
             // one; the remedy is re-provisioning this member's VCS auth, which
             // the bounded one-shot onAuthFailure self-heal above already tried.
             throw new DoltSyncError(
-                `[Dolt] D-pull for member '${member}' failed on VCS CREDENTIALS, not a data divergence -- re-provision the member's VCS auth (provision_vcs_auth) and retry. Raw: ${pull.error}`,
+                `[Dolt] D-pull for member '${member}' failed on VCS CREDENTIALS, not a data divergence -- ${DOLT_CREDENTIAL_REMEDY} Raw: ${pull.error}`,
                 { member, doltOutput: pull.error, details: { kind: 'auth', operation: 'pull' } },
             );
         }
@@ -2223,7 +2223,7 @@ export async function doltPushAfter(member, opts = {}) {
             // false -- nothing had diverged. It is now its own terminal class,
             // reached only after the bounded one-shot auth self-heal above.
             throw new DoltSyncError(
-                `[Dolt] D-push for member '${member}' failed on VCS CREDENTIALS, not a data divergence -- re-provision the member's VCS auth (provision_vcs_auth) and retry. Raw: ${push.error}`,
+                `[Dolt] D-push for member '${member}' failed on VCS CREDENTIALS, not a data divergence -- ${DOLT_CREDENTIAL_REMEDY} Raw: ${push.error}`,
                 { member, doltOutput: push.error, details: { kind: 'auth', operation: 'push' } },
             );
         }
@@ -2294,7 +2294,7 @@ export async function doltPushAfter(member, opts = {}) {
         // evidence that the credentials were refreshed, a stale credential is
         // still the best explanation and this stays an auth terminal.
         throw new DoltSyncError(
-            `[Dolt] D-push re-push after reconcile for member '${member}' failed on VCS CREDENTIALS, not a data divergence -- re-provision the member's VCS auth (provision_vcs_auth) and retry. Raw: ${push.error}`,
+            `[Dolt] D-push re-push after reconcile for member '${member}' failed on VCS CREDENTIALS, not a data divergence -- ${DOLT_CREDENTIAL_REMEDY} Raw: ${push.error}`,
             { member, doltOutput: push.error, details: { kind: 'auth', operation: 'push-reconcile-repush' } },
         );
     }

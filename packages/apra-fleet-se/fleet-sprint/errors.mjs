@@ -367,6 +367,45 @@ export class DoltSyncError extends WorkflowError {
     }
 }
 
+/**
+ * The failure class a Dolt sync that ended on a VCS CREDENTIAL failure is
+ * logged under. Infrastructure, not a review outcome: the remote refused (or
+ * could not ask for) the member's git credential, so no read of the shared
+ * beads state happened at all.
+ */
+export const DOLT_CREDENTIAL_FAILURE_CLASS = 'dolt-sync-credentials';
+
+/**
+ * The remedy every credential-class Dolt sync failure names. Works for a
+ * local member (which has no fleet-provisioned credential to re-mint) and a
+ * remote member alike: bd's git runs with terminal prompts and credential
+ * manager dialogs disabled, so the credential must answer without prompting.
+ */
+export const DOLT_CREDENTIAL_REMEDY =
+    'Remedy: on that member, configure a git credential for the beads Dolt remote that answers without prompting '
+    + '(a stored credential or credential helper -- bd runs git with terminal prompts and credential manager dialogs disabled), '
+    + 'or, for a remote member, re-provision its VCS auth with provision_vcs_auth; then re-run.';
+
+/**
+ * True when `err` (or an error on its `cause` chain) is a DoltSyncError the
+ * sync layer classified as a VCS credential failure (`details.kind === 'auth'`
+ * -- including a non-interactive prompt refusal such as "terminal prompts
+ * disabled" or "could not read Username"). A divergence is never one: it is a
+ * different class (DoltDivergedError), and a non-credential sync failure
+ * carries no 'auth' kind.
+ *
+ * @param {unknown} err
+ * @returns {boolean}
+ */
+export function isDoltCredentialFailure(err) {
+    const seen = new Set();
+    for (let e = err; e && typeof e === 'object' && !seen.has(e); e = e.cause) {
+        seen.add(e);
+        if (e instanceof DoltSyncError && e.details && e.details.kind === 'auth') return true;
+    }
+    return false;
+}
+
 /** Stable error code of DoltWindowsSpawnLimitError. */
 export const DOLT_WINDOWS_SPAWN_LIMIT_CODE = 'DOLT_WINDOWS_SPAWN_LIMIT';
 

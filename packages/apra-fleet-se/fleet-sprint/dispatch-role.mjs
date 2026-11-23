@@ -12,6 +12,9 @@ import {
     isPermissionDeniedDispatchError,
     permissionDeniedOf,
     MemberPermissionDeniedError,
+    isDoltCredentialFailure,
+    DOLT_CREDENTIAL_FAILURE_CLASS,
+    DOLT_CREDENTIAL_REMEDY,
 } from './errors.mjs';
 import { AgentOutputError, AgentDispatchError, FleetTransportError, WorkflowError } from '@apralabs/apra-fleet-workflow';
 
@@ -400,6 +403,11 @@ function errorClassNames(err) {
  *   'unknown'  -- `degrade.classifiesUnrecognisedErrors` (the regression
  *                 catch-all): even an unrecognised class gets a degrade path
  *                 rather than aborting an informational phase.
+ *   'credential' -- an `extraDispatchErrors` sync error the sync layer
+ *                 classified as a VCS credential failure
+ *                 (isDoltCredentialFailure). Never degraded: the ladder logs
+ *                 it as a typed infrastructure line with its remedy and
+ *                 rethrows it.
  *
  * Called with no policy it behaves exactly as the two-class version did.
  *
@@ -419,7 +427,12 @@ export function classifyLadderError(err, policy) {
     if (err instanceof AgentDispatchError || err instanceof FleetTransportError) return 'dispatch';
     if (degrade && degrade.extraDispatchErrors.length > 0) {
         const names = errorClassNames(err);
-        if (degrade.extraDispatchErrors.some((name) => names.includes(name))) return 'dispatch';
+        if (degrade.extraDispatchErrors.some((name) => names.includes(name))) {
+            // A sync-bracket error whose cause is a VCS credential the member
+            // could not present is not a blip to degrade over: it is its own
+            // class, which the ladder logs and rethrows (never fabricated).
+            return isDoltCredentialFailure(err) ? 'credential' : 'dispatch';
+        }
     }
     if (degrade && degrade.classifiesSyncFailures
         && (isPostDispatchSyncFailure(err) || err instanceof WorkflowError)) {
@@ -1291,6 +1304,19 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
             }
 
             const errorClass = classifyLadderError(err, policy);
+            if (errorClass === 'credential') {
+                // Typed infrastructure failure: the sync around the dispatch
+                // could not authenticate to the beads remote. No value is
+                // synthesized for it (a fabricated verdict would read as a
+                // role outcome) and no further attempt is spent (the sync
+                // layer's own bounded credential self-heal already ran).
+                ctx.log(
+                    `${roleLabel}: [${DOLT_CREDENTIAL_FAILURE_CLASS}] INFRASTRUCTURE FAILURE -- the beads sync around this ` +
+                    `dispatch failed on VCS CREDENTIALS for member '${member}'. No verdict is synthesized for it and it is ` +
+                    `not retried. ${DOLT_CREDENTIAL_REMEDY} Cause: ${err.message}`
+                );
+                throw err;
+            }
             // An unrecognised error class still propagates rather than being
             // degraded silently -- except under a degrade that declares
             // otherwise, and except under 'fatal', whose whole contract is to
