@@ -1,7 +1,9 @@
 {
   "version": 3,
   "provenance": {
-    "branch": "main"
+    "commit": "56ef5cf2d4e382d96760e6982ccf15452746fa07",
+    "branch": "main",
+    "entry_count": 184
   },
   "entries": [
     {
@@ -3179,6 +3181,32 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:53.820Z"
+    },
+    {
+      "id": "e056ec8a-d82f-4cd1-ba03-a891ce012cf8",
+      "type": "knowledge",
+      "title": "runner.js FIXED_ROLE_TIER is derived from tier-policy.mjs quality preset and exported for test pins",
+      "summary": "FIXED_ROLE_TIER in fleet-sprint/runner.js is no longer an object literal: it is fixedRoleTierTable(resolveTierPolicy('quality')) from tier-policy.mjs, exported. Test pins must import it, not scan runner.js source with objectLiteralFor.",
+      "symbols": [
+        "FIXED_ROLE_TIER",
+        "fixedRoleTierTable",
+        "resolveTierPolicy",
+        "roleTier"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/tier-policy.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/test/helpers/dispatch-role-harness.mjs",
+        "packages/apra-fleet-se/test/planning-role-dispatch-pins.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-23T01:31:50.655Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/runner.js": "852051113b13ac6ae19ad1a1ce60a660c99a3c7d",
+        "packages/apra-fleet-se/fleet-sprint/tier-policy.mjs": "4aa97491b005c9bc128b00f0c9ded48ba2fea4ed",
+        "packages/apra-fleet-se/test/helpers/dispatch-role-harness.mjs": "bdc5c2d09123cb30d364e417e75a1580c6c595fd",
+        "packages/apra-fleet-se/test/planning-role-dispatch-pins.test.mjs": "8464f035e95b7aefef1b49928a91dc0e2855ba1f"
+      }
     },
     {
       "id": "e078ec0e-b747-4274-a82b-4155c342928b",
