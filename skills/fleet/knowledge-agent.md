@@ -35,6 +35,18 @@ kb_capture
   a design trade-off, or resolving a subtle bug.
 - Do NOT run after routine code edits -- only when the WHY is non-obvious.
 
+### Ship it with the change that found it
+
+A finding made while working on a branch or PR belongs to that branch:
+
+1. `kb_capture` it, citing the files it is about.
+2. Verify it against the branch head, then `kb_promote` it to CONFIRMED.
+3. `kb_bible_commit` it on that same branch (`baseBranch` = the PR's target,
+   `baseCommit` = the commit you verified against), and push with the change.
+
+The merge then delivers the fix and the knowledge together. Do not park it for
+a later PR or hand it to another session to commit.
+
 ---
 
 ## Phase 3 (Harvest)
