@@ -71,37 +71,25 @@ See also the upgrade notes in `supervisor-setup-guide.md` ("Upgrade notes: the r
 
 ## Authentication: `none` and `trusted-front`
 
-Design: `supervisor-auth.md`. Source: `src/supervisor/auth.mjs` (verifier, caller
-classification, route policy), applied by `server.mjs`'s dispatcher before the request guard
-above and before any handler.
+How it works, the full route policy, the assertion format, configuration and deployment:
+[supervisor-auth.md](supervisor-auth.md). Source: `src/supervisor/auth.mjs` (verifier, caller
+classification, `ROUTE_POLICY`), applied by `server.mjs`'s dispatcher before the request guard
+above and before any handler. In short:
 
-- **`none` (default)** -- every caller is the local operator (`local`, all roles), exactly as
-  before. `X-Fleet-Identity` and `X-Forwarded-Prefix` are ignored entirely.
-- **`trusted-front`** (`--auth trusted-front` or `FLEET_SUPERVISOR_AUTH=trusted-front`, with
-  `--front-jwks <path>` / `FLEET_SUPERVISOR_FRONT_JWKS` and `--front-issuer <iss>` /
-  `FLEET_SUPERVISOR_FRONT_ISSUER`; `--front-audience` / `FLEET_SUPERVISOR_FRONT_AUDIENCE`
-  defaults to `fleet-supervisor`). The supervisor refuses to start unless bound to loopback and
-  unless the JWKS path and issuer are set; the error names the missing setting. Then:
-  - a request carrying `X-Fleet-Identity` (an ES256 compact JWS signed by the front) must
-    verify, else `401 {"error":"unauthenticated"}` -- always that exact body, whatever failed;
-  - an unsigned request from a loopback address is the local operator, with full access (sprint
-    children, local scripts and skills keep working without tokens);
-  - an unsigned request from any other address is `401`.
-- **Route policy** (verified callers only): every route has a minimum role (`viewer` <
-  `operator` < `admin`) or is local-only. Too low a role is `403
-  {"error":"forbidden","requiredRole":"<role>"}`; a local-only route (`/api/dolt-push-mutex*`,
-  `/api/child-id-allocator*`) or a route not in the table is `403 {"error":"forbidden"}`. The
-  table is in `supervisor-auth.md` ("Roles and route policy") and `ROUTE_POLICY` in `auth.mjs`.
+- **`none` (default)**: every caller is the local operator (`local`, all roles), exactly as
+  before. `X-Fleet-Identity` and `X-Forwarded-Prefix` are ignored.
+- **`trusted-front`** (`--auth trusted-front` / `FLEET_SUPERVISOR_AUTH`, plus the front's JWKS
+  file and issuer; see "Configuration reference" in `supervisor-auth.md`): a request carrying
+  `X-Fleet-Identity` must hold a valid ES256 assertion signed by the front, else `401`; an
+  unsigned request from a loopback address is the local operator; an unsigned request from any
+  other address is `401`.
+- **Route policy** (verified callers only): each route needs `viewer`, `operator` or `admin`
+  (cumulative), or is local-only; a route not in the table is refused.
 - **Request guard for verified callers**: the Host, Origin, `Sec-Fetch-Site` and token checks
-  describe the browser-to-front hop and are skipped; the JSON content-type rule still applies.
-  Unsigned requests are guarded exactly as described above.
-- **`X-Forwarded-Prefix`**: honoured only with a verified assertion and only if it matches
-  `^(/[A-Za-z0-9._~-]+)+$` (no `.`/`..` segments); then the dashboard, live and history pages
-  render every root-absolute URL under that prefix.
-- **Audit**: `launchedBy` / `stoppedBy` (`{ sub, name }`, `local` in `none` mode) on ledger
-  reservations and on force-release / auto-release history events; one
-  `[audit] <METHOD> "<path>" sub="<sub>" status=<code>` supervisor log line per mutating request
-  that carried an assertion.
+  are skipped (the front checked that hop); the JSON content-type rule still applies. Unsigned
+  requests are guarded exactly as described above.
+- **Audit**: `launchedBy` / `stoppedBy` on reservations and release history events, and one
+  `[audit]` log line per mutating request that carried an assertion.
 
 ### GET /api/whoami
 
