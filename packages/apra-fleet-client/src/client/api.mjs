@@ -175,6 +175,14 @@
  *   the provider parsed one, so the SAME session can be resumed by explicit id later instead of
  *   losing context to a fresh one. The server also records it as a known session. Absent when
  *   the provider supplied none.
+ * @property {string} [model] - The model id the dispatch ran on: the id the provider reported when it
+ *   named one (Claude: the model keys of the result's per-model usage), else the id handed to the
+ *   provider CLI after tier mapping (see `modelSource`). Present on success and on typed failures ('usage_limit',
+ *   'max_turns_exhausted', ...) produced once the model was resolved; absent on results returned
+ *   before that (busy, reserved, preflight) and from older servers.
+ *   `packages/apra-fleet-workflow` forwards it via `onModelId` and `AgentDispatchError.details.model`.
+ * @property {'reported'|'resolved'} [modelSource] - Whether `model` was named by the provider
+ *   ('reported') or is only the resolved id/alias the server handed to the CLI ('resolved').
  * @property {ExecutePromptUsage} [usage]
  */
 
@@ -434,7 +442,7 @@
  * @property {boolean} [unverified] - KB/code tools could not be verified (e.g. agy)
  * @property {string} [fleetInstalledAt] - ISO 8601 time this fleet's own install run last succeeded on the member; carried across later probes; absent when the fleet never installed it (a refusal or observation-only probe never sets it)
  * @property {{reason: string, detail?: string}} [installFailure] - A requested apra-fleet upgrade that failed before the member was touched while the older install stayed in use; present on available and unavailable statuses, also named in detail
- * @property {{state: "missing" | "broken", detail: string, fix: string}} [beads] - Present only when the beads CLI (bd) is not usable on a remote member (not on its PATH nor in <home>/.apra-fleet/bin); independent of state; absent when bd works or could not be probed
+ * @property {{state: "missing" | "broken" | "version-mismatch", detail: string, fix: string}} [beads] - Present only when the beads CLI (bd) is not usable on a remote member, or runs but is off the pinned major.minor (state "version-mismatch", E-BD-VERSION-MISMATCH); "missing" means neither on its PATH nor in <home>/.apra-fleet/bin; independent of state; absent when bd works or could not be probed
  * @property {number} [port] - Remote members: the port of the member's own apra-fleet install, resolved from its member-install marker; the member MCP URL (per-folder entry and per-session config) uses it
  * @property {"marker" | "default"} [portSource] - Where port came from: the member-install marker, or the built-in default because the install recorded no port (detail says so)
  * @property {{previousVersion: string, removed: string[], backupPath: string}} [replacedFullInstall] - Set by the probe that replaced a full install with a member install (fleet_install "replace-full"): replaced version, what was removed or moved, and the timestamped backup directory on the member

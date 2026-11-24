@@ -203,7 +203,7 @@ for every option.
   <img src="assets/marketing/fleet-stack-light.svg" alt="apra-fleet layered architecture stack: dependencies from OS primitives up to autonomous engineering orchestrators" width="100%">
 </picture>
 
-**Component Docs:** [fleet-sprint](packages/apra-fleet-se/fleet-sprint/docs/README.md) | [auto-sprint.js](packages/apra-fleet-se/apra-pm/docs/sprint-workflow.md) | [apra-fleet-client](packages/apra-fleet-client/docs/overview.md) | [apra-pm](packages/apra-fleet-se/apra-pm/README.md) | [apra-fleet-mcp](docs/mcp-tools.md) | [Agent Roles](packages/apra-fleet-se/docs/role-contracts.md) | [Sprint reliability gates](docs/sprint-reliability-gates.md)
+**Component Docs:** [fleet-sprint](packages/apra-fleet-se/fleet-sprint/docs/README.md) | [auto-sprint.js](packages/apra-fleet-se/apra-pm/docs/sprint-workflow.md) | [apra-fleet-client](packages/apra-fleet-client/docs/overview.md) | [apra-pm](packages/apra-fleet-se/apra-pm/README.md) | [apra-fleet-mcp](docs/mcp-tools.md) | [Agent Roles](packages/apra-fleet-se/docs/role-contracts.md) | [Sprint reliability gates](docs/sprint-reliability-gates.md) | [Dispatch spend design](docs/fleet-sprint-dispatch-spend-design.md)
 
 ### Fleet Dispatch Topology
 
@@ -1484,6 +1484,73 @@ If the fleet server is running, uninstall aborts and tells you to re-run with
 (systemd user unit, launchd agent, or Windows scheduled task) that runs the installed
 tree, and ends with a "Kept (intentionally)" list (`data/`, `fleet.key`, user workflows).
 Full detail: [docs/features/uninstall.md](features/uninstall.md).
+
+## Upgrade a member host (a full install refuses there)
+
+A host whose data dir (`APRA_FLEET_DATA_DIR`, else `<home>/.apra-fleet/data`)
+holds `member-install.json` is a fleet member host. A full install (no
+`--member`) ends by removing that marker, after which the fleet treats every
+member sharing that data dir as `full-install-running` and they lose their
+KB/code tools. So a full install there refuses before stopping or writing
+anything, exits non-zero and prints `E-MEMBER-HOST-FULL-INSTALL` with the marker
+path, its recorded version and port, and the supported upgrade paths:
+
+- from the orchestrator: `update_member {member_id, fleet_install: "auto"}`;
+- or on the host: `apra-fleet install --member --force` (keeps the marker and
+  the recorded port; the marker is rewritten with the new version).
+
+`apra-fleet update` from 0.4.6 on a member host does the latter for you. A 0.4.5 member
+host cannot: its `update` runs a full install, which the new guard refuses (detached, so
+it only shows in `apra-fleet status`; nothing is upgraded and the old install keeps
+running). Upgrade 0.4.5 member hosts with `update_member fleet_install auto` or
+`apra-fleet install --member --force`. A bd on PATH outside the pinned major.minor does
+not fail a member install: it completes, the output, the `update_member` result and
+`apra-fleet status` carry `E-BD-VERSION-MISMATCH` with the fix command, and sprints refuse
+that member until bd is fixed (a full install still exits 1). To convert a
+member host to a full install on purpose, add `--convert-member-host`; the
+install then removes the marker and says so. The check is per data dir: a full
+install into a different `APRA_FLEET_DATA_DIR` (a sandbox or clean-prefix
+install) is not affected.
+
+## Deploying onto a member host
+
+A deploy playbook must not run a plain full install on a member host. The
+deploy step detects the host type with `node scripts/deploy-install.mjs
+--member-host-check`, takes the member path (`install --member --force`) when
+the marker is present, and verifies with `--verify-member-host`: the marker
+version must equal the first line of `--version`, and `/health` on the marker's
+port must answer. Both helpers run on POSIX and Windows behind the one
+`deploy-install.mjs*` permission prefix, so no broad shell permission is needed.
+
+## bd and dolt version pin
+
+The installer pins the beads tools (`bd`, `dolt`) to a `major.minor`, defined in
+`src/cli/beads-pin.ts`. Comparison is equality on major.minor only; output the
+installer cannot parse counts as a mismatch.
+
+- A `bd` found on PATH that is off the pin is reported as `version-mismatch` and
+  never modified (it is not ours). A stale `bd` in the fleet `BIN_DIR` is
+  replaced and re-verified.
+- A `dolt` in `BIN_DIR` of the wrong version is replaced; if that fails it is
+  reported loudly rather than skipped.
+- An install with an off-pin `bd` exits 1, and the last stderr line carries the
+  found version, the expected version and the fix. (The same check exists in the
+  apra-pm installer.)
+
+The same pin is enforced at run time, so a drifted tool cannot corrupt a shared
+beads database:
+
+- The sprint engine verifies the pin on the backlog member and every member
+  (including set-up members) before any set-up or pull, when the runner enables
+  `checkToolVersions`. It names every offending member and fails with
+  `VERSION_MISMATCH`; a missing `bd` stays `MISSING_TOOL`. The engine's copy of
+  the pin is drift-guarded by a test against `beads-pin.ts`, so the two cannot
+  diverge silently.
+- The supervisor's beads view runs the same verification before any pull. A pass
+  is cached per member for the supervisor's lifetime; a failure is never cached,
+  records the error and makes a sprint launch return 503. Consequence: a `bd`
+  upgraded on the backlog member after the first pass is not re-checked before
+  later pulls; the sprint-start check still catches it at launch.
 
 ## Replace a full install on a member
 

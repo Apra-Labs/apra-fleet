@@ -447,6 +447,33 @@ export class ClaudeProvider implements ProviderAdapter {
         .join('');
     };
 
+    // The model the provider says ran: the per-model usage keys of the result
+    // event (when several models were used, the one with the most tokens),
+    // else the model carried on an assistant message.
+    const modelOf = (obj: any): string | undefined => {
+      const mu = obj?.modelUsage;
+      if (mu && typeof mu === 'object' && !Array.isArray(mu)) {
+        // Weight by cost when every entry reports it; otherwise by ALL token
+        // kinds (a short dispatch can be mostly cache reads, which uncached
+        // input+output alone would hide, letting a side model win).
+        const entries = Object.entries<any>(mu).filter(([id]) => id);
+        const useCost = entries.length > 0 && entries.every(([, u]) => typeof u?.costUSD === 'number');
+        let best: string | undefined;
+        let bestScore = -1;
+        for (const [id, u] of entries) {
+          const score = useCost
+            ? u.costUSD
+            : (Number(u?.inputTokens) || 0) + (Number(u?.outputTokens) || 0)
+              + (Number(u?.cacheReadInputTokens) || 0) + (Number(u?.cacheCreationInputTokens) || 0);
+          if (score > bestScore) { best = id; bestScore = score; }
+        }
+        if (best) return best;
+      }
+      const m = obj?.type === 'assistant' ? obj?.message?.model : undefined;
+      return typeof m === 'string' && m ? m : undefined;
+    };
+    let assistantModel: string | undefined;
+
     const fromEvent = (obj: any, assistantFallback: string, maxTurnsSeen: boolean): ParsedResponse | null => {
       if (obj.type !== 'result') return null;
       // Normalize terminalReason to 'max_turns' whenever the transcript carried
@@ -465,6 +492,7 @@ export class ClaudeProvider implements ProviderAdapter {
         raw,
         usage: extractUsage(obj.usage),
         sessionCostUsd: extractCost(obj.total_cost_usd),
+        reportedModel: modelOf(obj) ?? assistantModel,
         subtype: obj.subtype,
         terminalReason: obj.terminal_reason ?? (maxTurns ? 'max_turns' : undefined),
         apiErrorStatus: extractApiErrorStatus(obj),
@@ -479,6 +507,7 @@ export class ClaudeProvider implements ProviderAdapter {
         let maxTurnsSeen = false;
         for (const obj of parsed) {
           assistantText += assistantTextOf(obj);
+          assistantModel = modelOf(obj) ?? assistantModel;
           maxTurnsSeen = maxTurnsSeen || isMaxTurnsSignal(obj);
           const r = fromEvent(obj, assistantText, maxTurnsSeen);
           if (r) return r;
@@ -493,6 +522,7 @@ export class ClaudeProvider implements ProviderAdapter {
           raw,
           usage: extractUsage(parsed.usage),
           sessionCostUsd: extractCost(parsed.total_cost_usd),
+          reportedModel: modelOf(parsed),
           subtype: parsed.subtype,
           terminalReason: parsed.terminal_reason ?? (maxTurns ? 'max_turns' : undefined),
           apiErrorStatus: extractApiErrorStatus(parsed),
@@ -509,6 +539,7 @@ export class ClaudeProvider implements ProviderAdapter {
       try {
         const obj = JSON.parse(trimmed);
         assistantText += assistantTextOf(obj);
+        assistantModel = modelOf(obj) ?? assistantModel;
         maxTurnsSeen = maxTurnsSeen || isMaxTurnsSignal(obj);
         const r = fromEvent(obj, assistantText, maxTurnsSeen);
         if (r) return r;

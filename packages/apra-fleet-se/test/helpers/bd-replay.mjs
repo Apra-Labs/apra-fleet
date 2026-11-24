@@ -6,6 +6,7 @@ import { exec } from 'child_process';
 import { createHash } from 'crypto';
 import { dropBeadsWorkspaceEnv } from '../../../../scripts/test-sandbox.mjs';
 import { logicalBdCommand } from '../../fleet-sprint/bd-sync-command.mjs';
+import { BEADS_VERSION, DOLT_VERSION } from '../../fleet-sprint/tool-version-pin.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -144,6 +145,25 @@ export function synthesizeBdWhere(cmd, cwd) {
         return { err: null, stdout: JSON.stringify(body, null, 2) + '\n', stderr: '' };
     }
     return { err: null, stdout: `${beadsDir}\n  prefix: mock\n`, stderr: '' };
+}
+
+// The sprint-start tool version pin (verifyPinnedToolVersions in
+// fleet-sprint/beads-identity-check.mjs) asks every member `bd --version` and
+// `dolt version` before any beads mutation. Like `bd where` it is pure
+// infrastructure with nothing scenario-specific in it, so the mocked
+// (replay/record) modes answer it with the engine's own pins instead of
+// requiring (or drifting) a recorded response -- and `dolt version`, which is
+// not a bd command, never reaches whatever dolt the test machine happens to
+// have. Real mode runs the real binaries. A scenario that needs a member on
+// another version overrides it through the mock-sprint harness's
+// `beadsIdentity` option (keys bdVersion / doltVersion).
+const isBdVersionCommand = (cmd) => /^\s*bd\s+--version\s*$/.test(cmd);
+const isDoltVersionCommand = (cmd) => /^\s*dolt\s+version\s*$/.test(cmd);
+
+export function synthesizeToolVersion(cmd) {
+    if (isBdVersionCommand(cmd)) return { err: null, stdout: `bd version ${BEADS_VERSION} (mock)\n`, stderr: '' };
+    if (isDoltVersionCommand(cmd)) return { err: null, stdout: `dolt version ${DOLT_VERSION.replace(/^v/, '')}\n`, stderr: '' };
+    return null;
 }
 
 // The sprint-start memory sweep (fleet-sprint/beads-memory-hygiene.mjs)
@@ -730,8 +750,12 @@ export function runCmd(wire, cwd) {
     // A non-bd command is passed through untouched.
     const logical = logicalBdCommand(wire);
     const cmd = isBdCommand(logical) ? logical : wire;
-    if (!isBdCommand(cmd)) return execCmd(cmd, cwd);
     const mode = bdMode();
+    if (mode !== 'real') {
+        const versionAnswer = synthesizeToolVersion(cmd);
+        if (versionAnswer) return Promise.resolve(versionAnswer);
+    }
+    if (!isBdCommand(cmd)) return execCmd(cmd, cwd);
     if (mode === 'real') {
         // Hydrate each fixture's dolt clone once, then serve repeat D-pull/
         // D-push brackets -- and the stable sync.remote pre-gate probe every

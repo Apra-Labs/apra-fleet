@@ -335,7 +335,7 @@ async function cmdStatus(files) {
     process.exit(s.failed.length > 0 ? 1 : 0);
   }
   if (s.live) {
-    console.log('[integ-suites] run is LIVE -- poll again with --status --wait=45');
+    console.log('[integ-suites] run is LIVE -- poll again with --status --wait=<your stated wait limit>');
     process.exit(3);
   }
   // Not live, pending > 0: crashed mid-run (or new files appeared after a
@@ -359,7 +359,7 @@ function cmdStart(files) {
   checkStale(files, status);
   checkPinned(status);
   if (isLive(status)) {
-    console.log(`[integ-suites] a run is already live (supervisor pid=${status.run.pid}) -- poll it with --status --wait=45 instead.`);
+    console.log(`[integ-suites] a run is already live (supervisor pid=${status.run.pid}) -- poll it with --status --wait=<your stated wait limit> instead.`);
     process.exit(3);
   }
   const pending = files.filter((f) => !status.results[f]);
@@ -391,7 +391,7 @@ function cmdStart(files) {
 
   console.log(
     `[integ-suites] started detached run: supervisor pid=${child.pid}, ${pending.length} file(s) pending ` +
-    `(concurrency=${TEST_CONCURRENCY}). Poll with: node scripts/run-integ-suites.mjs --status --wait=45`
+    `(concurrency=${TEST_CONCURRENCY}). Poll with: node scripts/run-integ-suites.mjs --status --wait=<your stated wait limit>`
   );
   console.log(`[integ-suites] supervisor log: ${logFile}`);
 }

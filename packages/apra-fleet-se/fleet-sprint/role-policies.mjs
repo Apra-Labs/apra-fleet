@@ -139,9 +139,11 @@ export const ERROR_CLASSES = Object.freeze(['schema', 'dispatch', 'infra', 'sync
  * distinction is load-bearing: the per-round reviewer must drop its round
  * session when a round FAILS, and must NOT drop it when the round succeeds.
  *
- *   'clear-round-session' -- do not let a failed round's session be resumed
+ * No step is registered today: reviewers start a fresh session every round,
+ * so a failed round leaves nothing to clear. The vocabulary stays so a future
+ * degrade-only step has a place to be declared.
  */
-export const DEGRADE_STEPS = Object.freeze(['clear-round-session']);
+export const DEGRADE_STEPS = Object.freeze([]);
 
 /** How a failed ladder degrades once its attempts are spent. */
 export const DEGRADE_KINDS = Object.freeze([
@@ -192,7 +194,6 @@ export const PRE_DISPATCH_STEPS_IN_BRACKET = Object.freeze(['claim-beads-batched
  *   'verify-streak-closed'     -- confirm which beads really closed
  *   'kb-apply'                 -- apply the report's KB work
  *   'reviewer-contract-guard'  -- reject a self-contradictory reviewer verdict
- *   'clear-round-session'      -- do not let a failed round's session be resumed
  *   'select-streaks-validate'  -- validate the returned grouping before trusting it
  */
 export const POST_RESULT_STEPS = Object.freeze([
@@ -200,7 +201,6 @@ export const POST_RESULT_STEPS = Object.freeze([
     'verify-streak-closed',
     'kb-apply',
     'reviewer-contract-guard',
-    'clear-round-session',
     'select-streaks-validate',
 ]);
 
@@ -219,8 +219,12 @@ const runtimeMember = (binding) => ({ kind: 'runtime', binding });
 
 const fixedTier = (key) => ({ kind: 'fixed', key });
 const perBeadTier = (binding) => ({ kind: 'per-bead', binding });
-/** The resume of an already-priced dispatch passes no tier of its own. */
+/** The resume of an already-priced dispatch continues on that dispatch's tier. */
 const INHERITED_TIER = { kind: 'inherited' };
+// 'inherited' is resolved by the engine against the MAIN dispatch's tier (the
+// tier it was actually priced at), never to 'no tier': a missing model on
+// execute_prompt runs on the server default. A row with no tier at all would
+// need model null, and none exists.
 
 /** A turn budget of `base` (a runner constant), optionally doubled. */
 const turns = (base, multiplier, value) => ({
@@ -907,7 +911,11 @@ const reviewer = policy('reviewer', {
     agentType: 'reviewer',
     model: fixedTier('reviewer'),
     schema: 'reviewerVerdict',
-    resumeArg: roundSessionResume('reviewer'),
+    // Every review round starts a FRESH session (resume false): a cross-round
+    // resume carried 200k+ tokens of context into rounds 2-3. Prior-round
+    // findings reach the fresh session through the prompt instead. The
+    // max-turns resume below is an in-dispatch continuation, unaffected.
+    resumeArg: FRESH_SESSION_RESUME,
     bracket: bracketed(false, null),
     timeouts: budgets('DISPATCH_INACTIVITY_TIMEOUT_S', 'DISPATCH_TIMEOUT_S'),
     maxTurns: turns('BASE_REVIEWER_MAX_TURNS', 1, 500),
@@ -957,10 +965,6 @@ const reviewer = policy('reviewer', {
         // under the 'credential' class, logs it with its remedy and rethrows
         // it, never fabricating a verdict over it.
         extraDispatchErrors: ['GitSyncError', 'DoltSyncError'],
-        // On FAILURE only. A failed round's session must not be resumed by the
-        // next round; a SUCCESSFUL round's must, which is exactly why this is
-        // a degrade step rather than a postResult one.
-        steps: ['clear-round-session'],
     }),
     postResult: ['reviewer-contract-guard', 'kb-apply'],
 });

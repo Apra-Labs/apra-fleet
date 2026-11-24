@@ -53,8 +53,19 @@ import { isNoMutationDispatchFailure } from '../../fleet-sprint/runner.js';
 import { PostDispatchSyncError, GitSyncError, DoltSyncError, GitDivergedError } from '../../fleet-sprint/errors.mjs';
 import { ROLE_POLICIES } from '../../fleet-sprint/role-policies.mjs';
 import { dispatchRole, TURN_BASES } from '../../fleet-sprint/dispatch-role.mjs';
+import { longRunWaitNotice } from '../../fleet-sprint/long-run-wait.mjs';
 
 export { TURN_BASES };
+
+/**
+ * The prompt the engine actually dispatches for a persona told the
+ * engine-stated wait limit (doer, reviewer, integ/regression runners): the
+ * caller's prompt unchanged, then the wait-limit block derived from that
+ * dispatch's own timeout_s.
+ */
+export function withWaitNotice(prompt, timeoutS) {
+    return `${prompt}\n\n${longRunWaitNotice(timeoutS)}`;
+}
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FLEET_SPRINT_DIR = path.join(__dirname, '..', '..', 'fleet-sprint');

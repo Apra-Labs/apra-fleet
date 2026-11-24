@@ -84,6 +84,11 @@ export const GUARDED_MODULES = [
     'kb-injection.mjs',
     // Pure lower-quality banner derivation; no command() site.
     'lower-quality.mjs',
+    // Pure engine-stated wait limit for long-running commands (derived from
+    // a dispatch's timeout_s); no command() site.
+    'long-run-wait.mjs',
+    // Pure reported-model log-line helper; no command() or agent() site.
+    'model-log.mjs',
     'beads-scope.mjs',
     // Pure parent-link ledger (record/diff of in-scope parent-child edges);
     // beads-scope.mjs issues its restore commands, no command() here.
@@ -415,12 +420,15 @@ export const GUARDED_MODULES = [
     'process-kill-rules.mjs',
     // The beads identity contract (pure parse/compare helpers, no command()
     // or agent() site -- zero baseline) and the precondition that runs its
-    // three read-only probes: beads-identity-check.mjs carries TWO
-    // member_name-bearing command() call sites (the probe loop and the
-    // member beads set-up runner; its beads pull goes through DoltSync),
-    // which is exactly what dispatch-safety-guard must keep scanning.
+    // three read-only probes: beads-identity-check.mjs carries THREE
+    // member_name-bearing command() call sites (the probe loop, the bd/dolt
+    // version pin probes and the member beads set-up runner; its beads pull
+    // goes through DoltSync), which is exactly what dispatch-safety-guard
+    // must keep scanning. tool-version-pin.mjs is the engine's bd/dolt pin
+    // (pure constants + version parsing, no command() or agent() site).
     'beads-identity.mjs',
     'beads-identity-check.mjs',
+    'tool-version-pin.mjs',
     // The sprint-start token-usage memory sweep: TWO member_name-bearing
     // command() sites (the memory list and the per-key forget), no agent(),
     // and its push goes through an injected bracketed callback.

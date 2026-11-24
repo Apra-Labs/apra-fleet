@@ -251,18 +251,22 @@ Then move to the next assigned bead id.
 
 ## Waiting on long-running commands
 
-If Step 2.5 kicks off something that runs beyond a minute or two, do not block on it in
-a single silent Bash call (no shell-level sleep/until loops): a long silent stretch
-looks like a hang to the dispatch layer's inactivity watchdog and your turn can be
-killed mid-work. Instead:
-- Background the command (or poll it in short, bounded checks), then keep actively
-  checking it with real tool calls -- re-read its output, or a Monitor-style wait -- at
-  least once a minute until it finishes. Backgrounding without follow-up checks is the
-  exact failure this section exists to prevent.
-- Between checks, say explicitly that it is still running before checking again.
-- If your tool infrastructure force-backgrounds a foreground command, treat it as if
-  you backgrounded it yourself: keep checking with real tool calls. Do not chain short
-  sleeps to route around the sleep-block.
+Your dispatch prompt states an engine-stated wait limit and the inactivity budget it
+was derived from. A session silent for the whole inactivity budget is treated as hung
+and stopped; a single wait up to the stated limit is safely inside it.
+
+If Step 2.5 kicks off something that may outlast the wait limit:
+- Background the command, then check it with ONE tool call that blocks for up to the
+  stated wait limit (a blocking wait on the job, or a read of its output with a wait).
+  Repeat until it finishes. Backgrounding without follow-up checks is the exact failure
+  this section exists to prevent.
+- Do not poll in a tight loop: no repeated short checks (line counts, tail of a log)
+  seconds apart, and no extra turns between checks. Each check is a full model turn, so
+  use the full stated limit per check. If no limit is stated, wait no longer than a few
+  minutes per check.
+- Never block a single call beyond the stated limit, and do not chain short sleeps or
+  shell loops to route around a sleep block. If your tool infrastructure
+  force-backgrounds a foreground command, treat it as if you backgrounded it yourself.
 - Report the Step 2.5 result only once the command has finished. Never end your turn
   while it is still running -- a backgrounded job with no reported outcome is not a
   completed step.
