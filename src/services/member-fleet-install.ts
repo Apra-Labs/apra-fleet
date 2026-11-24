@@ -927,10 +927,13 @@ export function replaceBackupStamp(d: Date): string {
  * The member-bound command sequence of the opt-in replacement (pure; exported
  * for tests). Every path is resolved here from the probed home and quoted for
  * the member's shell; PowerShell is wrapped via -EncodedCommand. Steps:
- *   supervisor-check -- the installed binary's `status`: a running fleet-sprint
- *                 supervisor on the member refuses the replacement before
- *                 anything is stopped (fleet-se-running); its stop and restart
- *                 depend on how the owner started it, so they stay manual;
+ *   supervisor-check -- the STAGED binary's read-only `fleet-se-check`, which runs
+ *                 the install guard's own detection (supervisor /api/health on the
+ *                 default and logged ports, live sprint locks), so it sees
+ *                 supervisors too old to write a heartbeat. A running supervisor
+ *                 or sprint refuses the replacement before anything is stopped
+ *                 (fleet-se-running); its stop and restart depend on how the
+ *                 owner started it, so they stay manual;
  *   stop       -- the installed binary's own `stop`, then `status` must not report
  *                 the server running (a live server makes the backup torn and
  *                 the install guard refuse); failing either is a typed
@@ -976,7 +979,7 @@ export function buildReplaceFullInstallPlan(opts: {
   const cmd = (posixForm: string, psForm: string) => memberCommandFor(targetOs, shell, { posix: posixForm, powershell: psForm });
 
   const steps: ReplaceFullInstallPlan['steps'] = [
-    { name: 'supervisor-check', command: cmd(`${q(bin)} status`, `& ${q(bin)} status`) },
+    { name: 'supervisor-check', command: buildInstallCommandFor(installerPath, ['fleet-se-check'], targetOs, shell) },
     { name: 'stop', command: cmd(`${q(bin)} stop`, `& ${q(bin)} stop`) },
     { name: 'stop-check', command: cmd(`${q(bin)} status`, `& ${q(bin)} status`) },
     {
@@ -1053,9 +1056,17 @@ export function buildReplaceFullInstallPlan(opts: {
   return { backupDir, dataAside, steps, rollbackFor };
 }
 
+/** Run `<binary> <args>` on the member (chmod +x first on POSIX). */
+function buildInstallCommandFor(binary: string, args: string[], targetOs: TargetOS, shell: MemberShell): string {
+  return memberCommandFor(targetOs, shell, {
+    posix: `chmod +x ${posixQuote(binary)} && ${posixQuote(binary)} ${args.map(posixQuote).join(' ')}`,
+    powershell: `& ${psQuote(binary)} ${args.map(psQuote).join(' ')}`,
+  });
+}
+
 /** The manual graceful stop of the supervisor named by a status line (port when it shows one, else the default). */
 function supervisorStopHint(statusLine: string): string {
-  const port = /port (\d{1,5})/.exec(statusLine)?.[1] ?? '8787';
+  const port = /port[ =](\d{1,5})/.exec(statusLine)?.[1] ?? '8787';
   return `curl -X POST http://localhost:${port}/api/shutdown -H "Content-Type: application/json" -d "{}"`;
 }
 
@@ -1135,7 +1146,7 @@ async function replaceFullInstall(
     if (name === 'supervisor-check') {
       return {
         state: 'unavailable', reason: 'fleet-se-running', version: previousVersion,
-        detail: `replacing the full install was refused at ${label}: ${why}. Nothing was stopped, removed or backed up. Stop the supervisor (and any sprint it runs) on the member, then run update_member {member_id, fleet_install: "replace-full"} again, and restart the supervisor afterwards: ${supervisorStopHint(why)}`,
+        detail: `replacing the full install was refused at ${label}: ${why}. Nothing was stopped, removed or backed up. Stop its sprints and the supervisor on the member, then run update_member {member_id, fleet_install: "replace-full"} again, and restart the supervisor afterwards: ${supervisorStopHint(why)}${targetOs === 'linux' ? '. If it is the fleet-supervisor user unit, systemctl --user stop fleet-supervisor stops it (step 3 of this replacement cannot be reached while it is up)' : ''}`,
       };
     }
     if (name === 'stop' || name === 'stop-check') {
@@ -1146,7 +1157,7 @@ async function replaceFullInstall(
     }
     const detail = name === 'backup'
       ? `replacing the full install failed at ${label}: ${why}. Nothing was removed and the apra-fleet ${previousVersion} full install is intact, but its server was stopped in step 0; bring it back with: ${plan.rollbackFor[name].join('; ')}`
-      : `replacing the full install failed at ${label}: ${why}. The backup is at ${plan.backupDir}. To roll back (reinstalls apra-fleet ${previousVersion} from the backup copy of its binary, not the newly staged installer), run on the member: ${plan.rollbackFor[name].join('; ')}`;
+      : `replacing the full install failed at ${label}: ${why}. The backup is at ${plan.backupDir}. To roll back (reinstalls apra-fleet ${previousVersion} from the backup copy of its binary, not the newly staged installer), run on the member: ${plan.rollbackFor[name].join('; ')}. If the reinstall is refused with E-FLEET-SE-RUNNING, a fleet-sprint supervisor was started meanwhile: stop its sprints, then it (${supervisorStopHint('')}), and rerun the reinstall`;
     return { state: 'unavailable', reason: 'replace-failed', detail, version: previousVersion };
   };
   for (const step of plan.steps) {
@@ -1162,9 +1173,11 @@ async function replaceFullInstall(
       if (step.name === 'supervisor-check') continue;
       return failedAt(step.name, `exited ${r.code}: ${(r.stderr.trim() || r.stdout.trim()).slice(-400)}`);
     }
-    if (step.name === 'supervisor-check' && /Supervisor:\s+UP\b/i.test(r.stdout)) {
-      const line = r.stdout.split(/\r?\n/).find(l => /Supervisor:\s+UP\b/i.test(l))!.trim();
-      return failedAt(step.name, `a fleet-sprint supervisor is running on the member (${line})`);
+    if (step.name === 'supervisor-check') {
+      const found = r.stdout.split(/\r?\n/).map(l => l.trim()).filter(l => /^FLEET_SE (supervisor|sprint) /.test(l));
+      if (found.length > 0) {
+        return failedAt(step.name, `fleet-sprint work is running on the member (${found.join('; ')})`);
+      }
     }
     if (step.name === 'stop-check' && !/State:\s+stopped/i.test(r.stdout)) {
       return failedAt(step.name, `the server is not reported stopped after stop (status said: ${r.stdout.trim().slice(-200) || '<empty>'})`);

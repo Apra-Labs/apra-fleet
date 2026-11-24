@@ -1513,8 +1513,10 @@ and `<provider>` with the member's LLM provider (`claude`, `agy`, `codex`,
 downloaded from the release page) for this OS/arch, normally
 `<home>/.apra-fleet/staging/apra-fleet` (`apra-fleet.exe` on Windows).
 
--1. Check for a running fleet-sprint supervisor. `apra-fleet status` prints a
-   `Supervisor:` line; if it says `UP`, stop its sprints, then stop it, and
+Pre-check (before the numbered steps). Look for a running fleet-sprint
+   supervisor or sprint with the STAGED binary (the installed one may be too old
+   to say): `'<staged>' fleet-se-check` prints `FLEET_SE supervisor ...` or
+   `FLEET_SE sprint ...` lines when something runs. If it does, stop its sprints, then stop it, and
    restart it after the replacement (it is not restarted for you; a running
    supervisor also makes every install, including a rollback, refuse with
    `E-FLEET-SE-RUNNING`):

@@ -47,6 +47,7 @@ type Step = 'supervisor-check' | 'stop' | 'stop-check' | 'backup' | 'uninstall' 
 
 /** Classify a decoded member command as one of the replacement's destructive steps. */
 function stepOf(c: string): Step | null {
+  if (/' 'fleet-se-check'/.test(c)) return 'supervisor-check';
   if (/apra-fleet(\.exe)?' stop(;|$| )/.test(c)) return 'stop';
   if (/apra-fleet(\.exe)?' status(;|$| )/.test(c)) return 'stop-check';
   if (c.includes('.apra-fleet-replace-backup-') && c.includes('fleet.key') && !c.includes('uninstall')) return 'backup';
@@ -58,7 +59,6 @@ function stepOf(c: string): Step | null {
 }
 
 function harness(p: Platform, opts: { marker?: MarkerMode; failStep?: Step; serverStaysUp?: boolean; supervisorLine?: string } = {}) {
-  let statusCalls = 0;
   const log: string[] = [];
   const events: string[] = [];
   const w = { installed: OLD as string | null, marker: opts.marker ?? 'absent' as MarkerMode };
@@ -67,13 +67,12 @@ function harness(p: Platform, opts: { marker?: MarkerMode; failStep?: Step; serv
     exec: async (_a, raw) => {
       const c = decodePowerShellEncodedCommand(raw);
       log.push(c);
-      let step = stepOf(c);
-      // The first `status` is the advisory supervisor check; the second verifies the stop.
-      if (step === 'stop-check' && statusCalls++ === 0) step = 'supervisor-check';
+      const step = stepOf(c);
       if (step) {
         events.push(step);
         if (step === opts.failStep) return { stdout: '', stderr: `${step} broke`, code: 1 };
-        if (step === 'supervisor-check') return ok(`apra-fleet status\n  State:    running\n${opts.supervisorLine ?? '  Supervisor: not running (never started; no x)'}\n`);
+        // The installed (old) binary's status never carries a Supervisor line; the staged fleet-se-check does the detecting.
+        if (step === 'supervisor-check') return ok('FLEET_SE_CHECK ok\n' + (opts.supervisorLine ?? ''));
         if (step === 'stop-check') return ok(opts.serverStaysUp ? 'apra-fleet status\n  State:    running\n' : 'apra-fleet status\n  State:    stopped\n');
         if (step === 'uninstall') w.installed = null;
         if (step === 'install') { w.installed = ORCH; w.marker = 'present'; return ok('installed'); }
@@ -382,7 +381,7 @@ describe('7e9x: POSIX member commands reach the shell encoded, with the full arg
       expect(posixWords(decodeEnvelope(byName['stop-check']))).toEqual([bin, 'status']);
       const exe = p.os === 'windows' ? 'apra-fleet.exe' : 'apra-fleet';
       expect(lastSimple(decodeEnvelope(byName.uninstall))).toEqual([`${p.home}/.apra-fleet-replace-backup-${STAMP}/${exe}`, 'uninstall', '--force', '--yes']);
-      expect(posixWords(decodeEnvelope(byName['supervisor-check']))).toEqual([bin, 'status']);
+      expect(lastSimple(decodeEnvelope(byName['supervisor-check']))).toEqual([`${p.home}/.apra-fleet/staging/${p.os === 'windows' ? 'apra-fleet.exe' : 'apra-fleet'}`, 'fleet-se-check']);
       expect(lastSimple(decodeEnvelope(byName.install)).slice(0, 4)).toEqual([`${p.home}/.apra-fleet/staging/${p.os === 'windows' ? 'apra-fleet.exe' : 'apra-fleet'}`, 'install', '--llm', 'claude']);
       expect(lastSimple(decodeEnvelope(byName.install))).toContain('--member');
     });
@@ -581,7 +580,7 @@ describe('d05q: step 2 uninstalls with the BACKUP copy of the binary', () => {
 });
 
 describe('9hyz: a running fleet-sprint supervisor on the member refuses before anything is stopped', () => {
-  const UP = '  Supervisor: UP (pid 16028, port 8788, last heartbeat 3s ago)';
+  const UP = 'FLEET_SE supervisor pid=16028 port=8788\n';
   for (const p of [LINUX, WINDOWS, GITBASH]) {
     it(`${p.shell ?? p.os}: Supervisor UP -> typed fleet-se-running, no stop/backup/uninstall, names the port and the shutdown call`, async () => {
       const h = harness(p, { supervisorLine: UP });
@@ -596,11 +595,32 @@ describe('9hyz: a running fleet-sprint supervisor on the member refuses before a
     });
   }
 
-  it('supervisor not running (or DOWN) -> proceeds; a status that cannot run is advisory', async () => {
-    for (const line of ['  Supervisor: DOWN (pid 1; pid is no longer running)', '  Supervisor: stopped cleanly at x']) {
+  it('nothing running (or the check errored) -> proceeds', async () => {
+    for (const line of ['', 'FLEET_SE_CHECK error probe broke\n']) {
       const h = harness(LINUX, { supervisorLine: line });
       const r = await ensureMemberFleetInstall(agentFor(LINUX), h.deps, { replaceFull: true });
       expect(r).toMatchObject({ state: 'available', installed: true });
     }
+  });
+});
+
+describe('re-judge 2: the supervisor check uses the staged binary and sees what the installed status cannot', () => {
+  it('installed status shows no Supervisor line but one is up: refuses before stop, with a sprint line too', async () => {
+    const h = harness(LINUX, { supervisorLine: 'FLEET_SE supervisor pid=7 port=8788\nFLEET_SE sprint pid=9 id=s1\n' });
+    const r = await ensureMemberFleetInstall(agentFor(LINUX), h.deps, { replaceFull: true });
+    expect(r).toMatchObject({ state: 'unavailable', reason: 'fleet-se-running' });
+    expect(h.events.filter(e => !e.startsWith('transfer:'))).toEqual(['supervisor-check']);
+    const detail = (r as { detail: string }).detail;
+    expect(detail).toContain('FLEET_SE sprint pid=9 id=s1');
+    expect(detail).toContain('systemctl --user stop fleet-supervisor');
+    expect(h.log.find(c => stepOf(c) === 'supervisor-check')).toContain(`'${LINUX.home}/.apra-fleet/staging/apra-fleet' 'fleet-se-check'`);
+  });
+
+  it('a rollback hint from step 2 on names the supervisor stop', async () => {
+    const h = harness(LINUX, { failStep: 'install' });
+    const r = await ensureMemberFleetInstall(agentFor(LINUX), h.deps, { replaceFull: true });
+    const detail = (r as { detail: string }).detail;
+    expect(detail).toContain('E-FLEET-SE-RUNNING');
+    expect(detail).toContain('/api/shutdown -H "Content-Type: application/json"');
   });
 });
