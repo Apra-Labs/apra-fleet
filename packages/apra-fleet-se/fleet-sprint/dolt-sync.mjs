@@ -893,7 +893,7 @@ export const DOLT_LOCK_OWN_COMMAND_SLACK_S = 60;
  * @returns {string|null}
  */
 export function syncSubcommandOf(cmd) {
-    const m = /dolt[ 	]+(pull|push)/.exec(String(cmd == null ? '' : cmd));
+    const m = /dolt\s+(pull|push)/.exec(String(cmd == null ? '' : cmd));
     return m ? `dolt ${m[1]}` : null;
 }
 
