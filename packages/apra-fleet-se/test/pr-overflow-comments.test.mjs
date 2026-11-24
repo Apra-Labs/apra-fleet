@@ -152,7 +152,7 @@ describe('publishPrOverflowComments (scripted provider)', () => {
         const res = await publishWith(store, first, { existing: false, logs });
         assert.equal(res.ok, false);
         assert.match(res.error, /could not post reviewer-notes overflow comment 1 of \d+ on PR https:\/\/example\.invalid\/pr\/42/);
-        assert.ok(logs.some((l) => /^\[T\]: WARNING: could not post reviewer-notes overflow comment 1 of/.test(l) && l.includes('full notes are in this run log')), logs.join('\n'));
+        assert.ok(logs.some((l) => /^\[T\]: WARNING: could not post reviewer-notes overflow comment 1 of/.test(l) && l.includes('full text is in this run log')), logs.join('\n'));
     });
 
     test('a failed list on a relaunch posts nothing (no blind duplicates) and reports the failure', async () => {
@@ -246,7 +246,7 @@ describe('list-comments pagination', () => {
 describe('partial failure pointer', () => {
     test('names how many comments were posted; a total failure keeps the could-not-be-posted wording', () => {
         const partial = overflowFailedPointer(900, 1, 3);
-        assert.match(partial, /^Reviewer notes continued: 900 characters did not fit this description; 1 of 3 overflow comment\(s\) were posted and 2 could not be /);
+        assert.match(partial, /^Sprint text continued: 900 characters did not fit this description; 1 of 3 overflow comment\(s\) were posted and 2 could not be /);
         assert.ok(bodyHasOverflowPointer(partial));
         assert.equal(overflowFailedPointer(900, 0, 3), overflowFailedPointer(900));
         assert.match(overflowFailedPointer(900), /could not be posted as PR comments/);

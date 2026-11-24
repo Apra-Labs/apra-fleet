@@ -807,7 +807,7 @@ function buildBitbucketListCommentsCommand(params) {
     const coords = assertRepoCoords(params, 'list-comments');
     const safeToken = assertToken(token);
     const prId = assertPullRequestId(params, 'list-comments');
-    const fields = ['next', 'values.id', 'values.content.raw', 'values.deleted', 'values.inline'].join(',');
+    const fields = ['next', 'values.id', 'values.content.raw', 'values.deleted', 'values.inline', 'values.links.html.href'].join(',');
     const commentsBase = `${repoApiBase(coords)}/pullrequests/${prId}/comments`;
     const isOwnPage = (u) => typeof u === 'string' && u.startsWith(`${commentsBase}?`) && !/[\s'"`\\]/.test(u);
     const url = isOwnPage(params.page_url)
@@ -820,13 +820,14 @@ function buildBitbucketListCommentsCommand(params) {
         logSafeCommand: bitbucketCommentCurl('GET', url, REDACTED, os, shell, null),
         interpret: { successStatusRange: [200, 299] },
         nextPage: (respBody) => (respBody && isOwnPage(respBody.next) ? { page_url: respBody.next } : null),
-        /** 2xx body ({ values: [...] }) -> [{ id, body, ref: { id } }]. */
+        /** 2xx body ({ values: [...] }) -> [{ id, body, ref: { id }, webUrl? }] (webUrl: links.html.href). */
         mapResponse: (respBody) => (respBody && Array.isArray(respBody.values) ? respBody.values : [])
             .filter((c) => c && Number.isInteger(c.id) && c.deleted !== true && !c.inline)
             .map((c) => ({
                 id: String(c.id),
                 body: c.content && typeof c.content.raw === 'string' ? c.content.raw : '',
                 ref: { id: c.id },
+                ...(c.links && c.links.html && typeof c.links.html.href === 'string' ? { webUrl: c.links.html.href } : {}),
             })),
     };
 }
@@ -1014,6 +1015,17 @@ export const BitbucketVCS = Object.freeze({
     // justifies more -- overflow costs extra comments, never text.
     descriptionMaxLength: 3500,
     commentMaxLength: 3500,
+    // A pullrequest_comment object (create/update response, list item)
+    // carries its browser link at links.html.href; without it the PR page's
+    // #comment-<id> anchor is the same link.
+    commentWebUrl: ({ response, ref, prUrl }) => {
+        const r = response && typeof response === 'object' ? response : {};
+        const href = r.links && r.links.html && r.links.html.href;
+        if (typeof href === 'string') return href;
+        if (typeof r.webUrl === 'string') return r.webUrl;
+        const id = String((ref && ref.id) ?? r.id ?? '');
+        return prUrl && /^\d+$/.test(id) ? `${prUrl}#comment-${id}` : null;
+    },
     pullRequestResponse,
 });
 

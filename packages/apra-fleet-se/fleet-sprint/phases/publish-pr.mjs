@@ -435,6 +435,12 @@ export async function runPublishPrPhase({
             if (lastBody && lastBody.overflow) {
                 log(`[Publish PR] reviewer notes are ${lastBody.notes.length} characters; ${lastBody.overflow.length} did not fit the PR description and continue in ${lastBody.comments.length} PR comment(s)${lastBody.notPosted ? ` (${lastBody.notPosted} characters past the comment ceiling are not posted)` : ''}. Full reviewer notes:\n${lastBody.notes}`);
             }
+            // Sections that did not fit the description go to the PR comments
+            // whole; the run log keeps them in full too, for when the comments
+            // cannot be posted.
+            if (lastBody && lastBody.overflowSections && lastBody.overflowSections.length) {
+                log(`[Publish PR] section(s) that did not fit the PR description continue in the PR comments: ${lastBody.overflowSections.map((s) => s.heading).join(', ')}. Full overflow text (${lastBody.overflowText.length} characters):\n${lastBody.overflowText}`);
+            }
             if (!prResult.ok) {
                 if (prResult.credentialAbsent) {
                     // No PR credential is deployed at all for a provider whose

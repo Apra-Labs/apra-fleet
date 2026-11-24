@@ -1140,6 +1140,16 @@ export const AzureDevOpsVCS = Object.freeze({
     // overflow costs extra comments, never text.
     descriptionMaxLength: 3500,
     commentMaxLength: 3500,
+    // The REST thread/comment objects carry no browser link (only API
+    // _links), so the link is built from the PR's web URL and the THREAD id:
+    // the PR page opens a thread with ?_a=overview&discussionId=<threadId>.
+    // The create response is the new thread (its id is the thread id); an
+    // update response is the comment, so the thread id comes from `ref`.
+    commentWebUrl: ({ response, ref, prUrl }) => {
+        if (!prUrl || /[?#]/.test(prUrl)) return null;
+        const threadId = String((ref && ref.threadId) ?? (response && typeof response === 'object' && Array.isArray(response.comments) ? response.id : '') ?? '');
+        return /^\d+$/.test(threadId) ? `${prUrl}?_a=overview&discussionId=${threadId}` : null;
+    },
 });
 
 export default AzureDevOpsVCS;

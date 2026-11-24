@@ -202,6 +202,14 @@
  *                                         //   classification-only provider
  *                                         //   (generic-git, dolt) has no PR
  *                                         //   text and declares neither.
+ *     commentWebUrl: ({ response, ref, prUrl }) => string|null  // OPTIONAL;
+ *                                         //   the browser link of one PR
+ *                                         //   comment, from the comment
+ *                                         //   create/update response or a
+ *                                         //   list-comments item (`response`),
+ *                                         //   its `ref`, and the PR's web
+ *                                         //   URL; null when unknown. The
+ *                                         //   overflow pointer links to it.
  *     httpFailureHint: (statusOrCtx) => string|{ hint, remedy }  // OPTIONAL;
  *                                         //   REST failure explanation.
  *                                         //   Called with a bare status
@@ -496,6 +504,9 @@ export function registerVcsProvider(impl) {
     // registration, not inside a sprint preflight that never throws.
     if (impl.httpFailureHint != null && typeof impl.httpFailureHint !== 'function') {
         throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a non-function httpFailureHint.`);
+    }
+    if (impl.commentWebUrl != null && typeof impl.commentWebUrl !== 'function') {
+        throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a non-function commentWebUrl.`);
     }
     if (impl.credentialProbe != null) {
         const probe = impl.credentialProbe;

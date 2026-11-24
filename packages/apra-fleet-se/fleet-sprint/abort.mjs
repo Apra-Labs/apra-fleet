@@ -649,6 +649,11 @@ export async function finalizeAbort({ error, branch, baseBranch, member, command
     if (lastAbortBody && lastAbortBody.overflow) {
         log(`finalizeAbort: [Publish Abort PR] abort details are ${lastAbortBody.notes.length} characters; ${lastAbortBody.overflow.length} did not fit the PR description and continue in ${lastAbortBody.comments.length} PR comment(s)${lastAbortBody.notPosted ? ` (${lastAbortBody.notPosted} characters past the comment ceiling are not posted)` : ''}. Full abort details:\n${lastAbortBody.notes}`);
     }
+    // Sections that did not fit the description go to the PR comments whole;
+    // the run log keeps them in full too, for when the comments cannot be posted.
+    if (lastAbortBody && lastAbortBody.overflowSections && lastAbortBody.overflowSections.length) {
+        log(`finalizeAbort: [Publish Abort PR] section(s) that did not fit the PR description continue in the PR comments: ${lastAbortBody.overflowSections.map((s) => s.heading).join(', ')}. Full overflow text (${lastAbortBody.overflowText.length} characters):\n${lastAbortBody.overflowText}`);
+    }
 
     if (!prResult.ok) {
         if (prResult.credentialAbsent) {

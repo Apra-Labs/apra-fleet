@@ -861,11 +861,14 @@ function isPrAuthFailure(status, errorText) {
  * `updateExisting(old, limits)` receives the same limits as its second
  * argument; either may answer a string or a { body } object. A pr-body.mjs
  * buildSprintPrBody answer ({ body, comments, failedBody, ... }) also has its
- * reviewer-notes overflow posted as engine-marked PR comments once the PR is
- * created or updated (upserted on a relaunch, see ./pr-overflow-comments.mjs);
- * the result then carries `overflow` ({ ok, posted, updated, unchanged,
- * removed, error }). An overflow failure never fails the call: it is logged
- * as a WARNING and the description is rewritten to point at the run log.
+ * overflow (notes continuation and every section that did not fit) posted as
+ * engine-marked PR comments once the PR is created or updated (upserted on a
+ * relaunch, see ./pr-overflow-comments.mjs), then the description is updated
+ * a second time so its pointer line links to those comments
+ * (linkedBodyFor); the result then carries `overflow` ({ ok, posted,
+ * updated, unchanged, removed, error, urls, linked }). An overflow failure
+ * never fails the call: it is logged as a WARNING and the description is
+ * rewritten to point at the run log.
  * @param {{ fleetApi: object, command: Function, member: string, base: string, head: string, title: string, body?: string|Function, log?: Function, logPrefix: string, updateExisting?: Function }} opts
  * @returns {Promise<{ ok: boolean, alreadyExists: boolean, prUrl: string|null, error: string|null, authFailure: boolean, updated?: boolean, updateError?: string|null }>}
  */
@@ -1148,7 +1151,7 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
         let res;
         try {
             res = await publishPrOverflowComments({
-                comments, prId, prLabel: label, existing, run: runUpdatePathCall, coords, payloadPath, log, logPrefix,
+                comments, prId, prLabel: label, prUrl: prUrl || null, existing, run: runUpdatePathCall, coords, payloadPath, log, logPrefix,
             });
         } catch (err) {
             const error = (err && err.message) ? err.message : String(err);
@@ -1158,7 +1161,19 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
         if (res.ok) {
             if (comments.length) log(`${logPrefix}: reviewer-notes overflow on PR ${label}: ${comments.length} comment(s) (${res.posted || 0} posted, ${res.updated || 0} updated, ${res.unchanged || 0} unchanged)${res.removed ? `, ${res.removed} earlier comment(s) removed` : ''}.`);
             else if (res.removed) log(`${logPrefix}: removed ${res.removed} earlier reviewer-notes overflow comment(s) from PR ${label} (this run's notes fit the description).`);
-            return res;
+            // Second description update: now that the comments' links are
+            // known, the pointer line links to them. A failure only leaves
+            // the plain "continues in N PR comment(s) below" pointer.
+            const linkedBody = comments.length && typeof parts.linkedBodyFor === 'function' ? parts.linkedBodyFor(res.urls || []) : null;
+            if (linkedBody) {
+                const linked = await runUpdatePathCall(() => buildUpdatePrCommand({
+                    ...coords(), pull_request_id: prId, payload_path: payloadPath(), title: prTitle, body: linkedBody,
+                }), 'update-pull-request');
+                if (!linked.ok) log(`${logPrefix}: WARNING: could not add the overflow comment links to the description of PR ${label}: ${linked.error} -- it still says the text continues in the PR comments.`);
+                return { ...res, linked: linked.ok };
+            }
+            if (comments.length) log(`${logPrefix}: WARNING: the provider gave no link for the overflow comment(s) on PR ${label}; the description says they are below without linking them.`);
+            return { ...res, linked: false };
         }
         // A partial failure (some comments did reach the PR) names how many.
         const onPr = (res.posted || 0) + (res.updated || 0) + (res.unchanged || 0);

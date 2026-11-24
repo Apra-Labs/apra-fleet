@@ -49,30 +49,70 @@ export const OVERFLOW_MAX_COMMENTS = 20;
  *  cannot be deleted; a later run reuses it before posting a new one. */
 export const OVERFLOW_SUPERSEDED_COMMENT = `<!-- ${OVERFLOW_COMMENT_MARKER} superseded -->\n*(superseded by a later sprint run)*`;
 
-const OVERFLOW_CHUNK_RE = /^<!-- fleet-sprint:pr-overflow v1 (\d+)\/(\d+) -->\r?\n\*\*Reviewer notes, continued \(\d+ of \d+\)\*\*\r?\n([\s\S]*)$/;
+// The visible header line was "Reviewer notes, continued" before other
+// sections could overflow too; both read back so a relaunch still upserts an
+// earlier run's comments.
+const OVERFLOW_CHUNK_RE = /^<!-- fleet-sprint:pr-overflow v1 (\d+)\/(\d+) -->\r?\n\*\*(?:Reviewer notes|Sprint text), continued \(\d+ of \d+\)\*\*\r?\n([\s\S]*)$/;
 const OVERFLOW_SUPERSEDED_RE = /^<!-- fleet-sprint:pr-overflow v1 superseded -->/;
 
 /** The engine-written header of overflow comment `index` of `total`. */
 function overflowCommentHeader(index, total) {
-    return `<!-- ${OVERFLOW_COMMENT_MARKER} ${index}/${total} -->\n**Reviewer notes, continued (${index} of ${total})**\n`;
+    return `<!-- ${OVERFLOW_COMMENT_MARKER} ${index}/${total} -->\n**Sprint text, continued (${index} of ${total})**\n`;
 }
 
-/** The description's closing pointer line when the overflow is posted. */
+const POINTER_LEAD = 'Sprint text that did not fit this description continues in';
+
+/** The description's closing pointer line when the overflow is posted and
+ *  the comments' links are not known (yet). */
 export function overflowPointer(count) {
-    return `Reviewer notes continued in ${count} comment(s) below.`;
+    return `${POINTER_LEAD} ${count} PR comment(s) below.`;
 }
+
+/**
+ * The description's closing pointer line with a markdown link to each
+ * overflow comment (`urls`, one per comment, in order); when that is longer
+ * than `max`, a link to the first comment plus the count. null when a needed
+ * link is missing or even the short form is longer than `max`.
+ * @param {Array<string|null>} urls
+ * @param {number} [max]
+ * @returns {string|null}
+ */
+export function overflowLinkedPointer(urls, max = Infinity) {
+    const list = Array.isArray(urls) ? urls : [];
+    const n = list.length;
+    if (n === 0 || !list[0]) return null;
+    if (list.every(Boolean)) {
+        const all = `${POINTER_LEAD} ${n} PR comment(s): ${list.map((u, i) => `[comment ${i + 1}](${u})`).join(', ')}.`;
+        if (all.length <= max) return all;
+    }
+    const short = n === 1
+        ? `${POINTER_LEAD} [a PR comment](${list[0]}).`
+        : `${POINTER_LEAD} ${n} PR comment(s), starting at [comment 1 of ${n}](${list[0]}).`;
+    return short.length <= max ? short : null;
+}
+
+/** What a section that did not fit the description shows there, under its
+ *  heading; the section itself is in the overflow comments. */
+export const OVERFLOW_SECTION_STUB = '*(in the PR comments named at the end)*';
+
+/** Characters the description keeps free for the pointer line whenever
+ *  anything overflows, so the linked form (written once the comment links
+ *  are known) still fits the provider limit. */
+export const OVERFLOW_POINTER_RESERVE = 260;
 
 /** The description's closing pointer line when the overflow could not be
  *  posted as PR comments; with `posted` of `total` comments already on the
  *  PR (a partial failure) it says how many were posted. */
 export function overflowFailedPointer(chars, posted = 0, total = 0) {
     if (posted > 0 && total > posted) {
-        return `Reviewer notes continued: ${chars} characters did not fit this description; ${posted} of ${total} overflow comment(s) were posted and ${total - posted} could not be -- the rest of the notes are in the sprint run log.`;
+        return `Sprint text continued: ${chars} characters did not fit this description; ${posted} of ${total} overflow comment(s) were posted and ${total - posted} could not be -- the rest is in the sprint run log.`;
     }
-    return `Reviewer notes continued: ${chars} characters did not fit this description and could not be posted as PR comments -- the full notes are in the sprint run log.`;
+    return `Sprint text continued: ${chars} characters did not fit this description and could not be posted as PR comments -- the full text is in the sprint run log.`;
 }
 
-const OVERFLOW_POINTER_RE = /^Reviewer notes continued(?: in \d+ comment\(s\) below\.|: \d+ characters did not fit)/m;
+// Current pointer forms plus the "Reviewer notes continued ..." ones earlier
+// runs wrote, so a relaunch still knows to clean their comments up.
+const OVERFLOW_POINTER_RE = /^(?:Reviewer notes continued(?: in \d+ comment\(s\) below\.|: \d+ characters did not fit)|Sprint text that did not fit this description continues in |Sprint text continued: \d+ characters did not fit)/m;
 
 /** Whether `body` (a PR description) carries an overflow pointer line, i.e.
  *  the run that wrote it posted (or tried to post) overflow comments. */
@@ -437,6 +477,10 @@ function inline(text) {
  *  stub (a heading plus a truncation marker carries no information). */
 export const SECTION_MIN_LENGTH = 40;
 
+/** Ends the Merge assessment section when only its first lines fit the
+ *  description; the whole assessment is in the overflow comments. */
+export const MERGE_ASSESSMENT_CONTINUED_MARKER = '*[... the full merge assessment is in the PR comments named at the end ...]*';
+
 /** Upper bound on the Merge assessment section before the whole-body budget
  *  is even considered, and on each of its fields. */
 export const MERGE_ASSESSMENT_MAX_LENGTH = 1500;
@@ -699,20 +743,28 @@ function clipInline(text, max) {
  * Renders a final verdict's merge_assessment as the body of the Merge
  * assessment section (no heading), sanitized and capped at
  * MERGE_ASSESSMENT_MAX_LENGTH. '' when `assessment` is not an object.
+ * With `uncapped` neither the field caps nor the section cap apply: the
+ * form an overflow PR comment carries, so nothing is lost there. With
+ * `sectionCap: false` only the field caps apply: the PR body's own budget
+ * decides whether the section fits (and moves it to the overflow comments
+ * whole when it does not), so it is never truncated to fit.
  * @param {unknown} assessment
+ * @param {string[]} [incomplete]
+ * @param {{ uncapped?: boolean, sectionCap?: boolean }} [opts]
  * @returns {string}
  */
-export function renderMergeAssessment(assessment, incomplete = []) {
+export function renderMergeAssessment(assessment, incomplete = [], { uncapped = false, sectionCap = true } = {}) {
+    const cap = (text) => (uncapped || !sectionCap ? text : clipSectionText(text, MERGE_ASSESSMENT_MAX_LENGTH));
     const missing = Array.isArray(incomplete) ? incomplete.filter((f) => typeof f === 'string' && f) : [];
     const note = missing.length > 0
         ? `_assessment incomplete: ${inline(missing.join(', '))}_`
         : '';
     const isObj = assessment && typeof assessment === 'object' && !Array.isArray(assessment);
-    if (!isObj) return note ? clipSectionText(note, MERGE_ASSESSMENT_MAX_LENGTH) : '';
+    if (!isObj) return note ? cap(note) : '';
     const rec = PR_MERGE_RECOMMENDATIONS.includes(assessment.recommendation) ? assessment.recommendation : null;
     const field = (k) => {
         const v = assessment[k];
-        const s = typeof v === 'string' ? clipInline(v, MERGE_ASSESSMENT_FIELD_MAX_LENGTH) : '';
+        const s = typeof v === 'string' ? (uncapped ? inline(v) : clipInline(v, MERGE_ASSESSMENT_FIELD_MAX_LENGTH)) : '';
         return s || '(not given)';
     };
     // A complete assessment renders exactly as before. An incomplete one
@@ -730,7 +782,7 @@ export function renderMergeAssessment(assessment, incomplete = []) {
             ...Object.entries(MERGE_ASSESSMENT_LABELS).filter(([k]) => given(k)).map(([k, label]) => `- **${label}:** ${field(k)}`),
             note,
         ];
-    return clipSectionText(lines.join('\n'), MERGE_ASSESSMENT_MAX_LENGTH);
+    return cap(lines.join('\n'));
 }
 
 /**
@@ -785,9 +837,10 @@ export function normalizeRecommendationForVerdict(verdictResult) {
  * assessment, reviewer notes, set-aside, waited, details, cost, and any
  * caller-registered `sections`) draws on one budget -- `maxLength` -- through
  * fitSectionsToBudget, by priority; the verdict header, human-review line and
- * run-history marker block are the fixed frame and are never clipped. The
- * reviewer notes are never truncated away: the part that does not fit is
- * returned as `overflow`.
+ * run-history marker block are the fixed frame and are never clipped. Nothing
+ * is truncated away: the part of the reviewer notes that does not fit is
+ * returned as `overflow`, and any other section that does not fit in full
+ * moves whole to the overflow comments.
  *
  * @param {object} opts
  * @param {'PASS'|'FAIL'|'ABORTED'} opts.verdict
@@ -831,19 +884,26 @@ export function normalizeRecommendationForVerdict(verdictResult) {
  *   entries
  * @param {number} [opts.commentMaxLength] the same provider's PR comment
  *   limit (commentMaxLength); the overflow is split into comments within it
- * @returns {{ body: string, overflow: string, notes: string, comments: string[],
+ * @returns {{ body: string, overflow: string, overflowText: string,
+ *   overflowSections: Array<{ id: string, heading: string }>, notes: string, comments: string[],
  *   notPosted: number, failedBody: string|null, failedBodyFor: (posted: number) => string|null,
- *   previousHadOverflow: boolean }}
+ *   linkedBodyFor: (urls: Array<string|null>) => string|null, previousHadOverflow: boolean }}
  *   `body` is the whole description (the fleet block among the text outside
  *   it; <= maxLength whenever the frame fits the block budget); `notes` the full sanitized
  *   notes; `overflow` the part of `notes` the description could not carry
  *   ('' when it all fits) -- the section in `body` holds exactly
  *   notes.slice(0, notes.length - overflow.length), so nothing is ever
- *   silently dropped. `comments` is the overflow as ordered PR comment bodies
- *   (buildOverflowComments; `notPosted` characters past its ceiling), and
- *   `body` then ends with "Reviewer notes continued in N comment(s) below.";
- *   `failedBody` is the same description pointing at the run log instead,
- *   for when the comments cannot be posted (null with no overflow).
+ *   silently dropped. Every other section that does not fit the description
+ *   in full is never truncated either: it shows OVERFLOW_SECTION_STUB under
+ *   its heading and is carried whole (`overflowSections` names them).
+ *   `overflowText` is everything the comments carry: the notes overflow
+ *   first, then each such section under its heading. `comments` is
+ *   overflowText as ordered PR comment bodies (buildOverflowComments;
+ *   `notPosted` characters past its ceiling), and `body` then ends with the
+ *   plain pointer (overflowPointer); `linkedBodyFor(urls)` is the same
+ *   description whose pointer links to the posted comments, sent once their
+ *   links are known; `failedBody` points at the run log instead, for when
+ *   the comments cannot be posted (null with no overflow).
  *   `previousHadOverflow` says whether `previousBody` pointed at overflow
  *   comments (so a relaunch knows to clean them up).
  */
@@ -950,37 +1010,93 @@ export function buildSprintPrBody({
         return r.text;
     };
     const notesOmitted = '*[... reviewer notes continue past the description limit -- see the end of this description ...]*';
-    const fit = () => fitSectionsToBudget({
-        maxLength: blockMax,
-        render,
-        sections: [
-            { id: 'merge-assessment', priority: SECTION_PRIORITY.mergeAssessment, text: renderMergeAssessment(mergeAssessment, mergeAssessmentIncomplete) },
-            {
-                id: 'notes',
-                priority: SECTION_PRIORITY.notes,
-                // Always present: no notes renders a placeholder, never an empty section.
-                text: cleanNotes || '*No notes were provided.*',
-                // `available` is maxLength minus the body with the notes empty.
-                // The notes take every character the budget leaves them; what
-                // does not fit is NOT truncated away but returned as overflow.
-                fit: (text, available) => (cleanNotes ? (notesWithin(available) || notesOmitted) : text),
-                hardClip: (_text, max) => (cleanNotes ? notesWithin(max) : ''),
-                omitted: cleanNotes ? notesOmitted : undefined,
-            },
-            ...extras.map((e) => ({ id: e.id, priority: e.priority, text: e.text, fit: e.fit, hardClip: e.hardClip, omitted: e.omitted })),
-            { id: 'set-aside', priority: SECTION_PRIORITY.setAside, text: formatSetAsideItems(setAside).map((d) => `- ${inline(d)}`).join('\n') },
-            { id: 'waited', priority: SECTION_PRIORITY.waited, text: waitedLine ? inline(waitedLine) : '' },
-            { id: 'details', priority: SECTION_PRIORITY.details, text: (details || []).filter(Boolean).map((d) => `- ${inline(d)}`).join('\n') },
-            { id: 'cost', priority: SECTION_PRIORITY.cost, text: sanitizePrMarkdown(costAnalysis) },
-            {
-                id: 'previous-runs',
-                priority: SECTION_PRIORITY.previousRuns,
-                text: previous.map((e) => `- ${codeSpan(e.run)} (${e.date}): ${e.verdict}`).join('\n'),
-                // All or nothing: the hidden block keeps the history anyway.
-                hardClip: () => '',
-            },
-        ],
+    const costText = sanitizePrMarkdown(costAnalysis);
+    const maFull = renderMergeAssessment(mergeAssessment, mergeAssessmentIncomplete, { uncapped: true });
+    const maFieldCapped = renderMergeAssessment(mergeAssessment, mergeAssessmentIncomplete, { sectionCap: false });
+    // Set before fitting: whether the whole description fits with every
+    // section in full, in which case nothing is capped.
+    let everythingFits = false;
+    const fitMergeAssessment = (available) => {
+        const max = everythingFits ? available : Math.min(available, MERGE_ASSESSMENT_MAX_LENGTH);
+        if (maFull.length <= max) return maFull;
+        if (maFieldCapped.length <= max) return maFieldCapped;
+        const marker = `\n\n${MERGE_ASSESSMENT_CONTINUED_MARKER}`;
+        const room = max - marker.length;
+        if (room < SECTION_MIN_LENGTH) return '';
+        let cut = maFieldCapped.slice(0, room);
+        const nl = cut.lastIndexOf('\n');
+        if (nl > 0) cut = cut.slice(0, nl);
+        return `${cut.replace(/\s+$/, '')}${marker}`;
+    };
+    const costFenceOf = (c) => '`'.repeat(Math.max(3, ...(c.match(/`+/g) || []).map((r) => r.length + 1)));
+    const notesSection = {
+        id: 'notes',
+        priority: SECTION_PRIORITY.notes,
+        // Always present: no notes renders a placeholder, never an empty section.
+        text: cleanNotes || '*No notes were provided.*',
+        // `available` is maxLength minus the body with the notes empty.
+        // The notes take every character the budget leaves them; what
+        // does not fit is NOT truncated away but returned as overflow.
+        fit: (text, available) => (cleanNotes ? (notesWithin(available) || notesOmitted) : text),
+        hardClip: (_text, max) => (cleanNotes ? notesWithin(max) : ''),
+        omitted: cleanNotes ? notesOmitted : undefined,
+    };
+    // Every other variable section. `order` is where it sits in the
+    // description (and so in the overflow comments); `comment` is the text an
+    // overflow comment carries when the section does not fit the description
+    // in full -- the whole section, never a truncated one.
+    const others = [
+        {
+            id: 'merge-assessment', priority: SECTION_PRIORITY.mergeAssessment, heading: 'Merge assessment', order: 0,
+            text: maFull,
+            fullText: maFull,
+            // In full when it fits (and within MERGE_ASSESSMENT_MAX_LENGTH, so
+            // it never crowds out the rest); otherwise the field-capped form,
+            // cut at a line with a marker, while the overflow comments carry
+            // it whole.
+            fit: (_text, available) => fitMergeAssessment(available),
+            hardClip: (_text, max) => fitMergeAssessment(max),
+        },
+        ...extras.map((e) => ({
+            id: e.id, priority: e.priority, heading: e.heading, order: e.placement === 'after-merge-assessment' ? 1 : 3,
+            text: e.text, fit: e.fit, hardClip: e.hardClip, omitted: e.omitted,
+        })),
+        { id: 'set-aside', priority: SECTION_PRIORITY.setAside, heading: 'Set aside this run', order: 4, text: formatSetAsideItems(setAside).map((d) => `- ${inline(d)}`).join('\n') },
+        { id: 'waited', priority: SECTION_PRIORITY.waited, heading: 'Waited this run', order: 5, text: waitedLine ? inline(waitedLine) : '' },
+        { id: 'details', priority: SECTION_PRIORITY.details, heading: 'Details', order: 6, text: (details || []).filter(Boolean).map((d) => `- ${inline(d)}`).join('\n') },
+        {
+            id: 'cost', priority: SECTION_PRIORITY.cost, heading: 'Cost', order: 7, text: costText,
+            comment: costText ? `${costFenceOf(costText)}\n${costText}\n${costFenceOf(costText)}` : '',
+        },
+        {
+            id: 'previous-runs',
+            priority: SECTION_PRIORITY.previousRuns,
+            heading: 'Previous runs',
+            order: 8,
+            text: previous.map((e) => `- ${codeSpan(e.run)} (${e.date}): ${e.verdict}`).join('\n'),
+            // All or nothing in the description.
+            hardClip: () => '',
+        },
+    ].map((s, index) => {
+        // The form a section takes with no budget limit: a section with its
+        // own fit hook may render its full text differently from `text`.
+        const full = s.fullText ?? (s.text && s.fit ? s.fit(s.text, Number.POSITIVE_INFINITY) : s.text);
+        return { ...s, index, full, comment: s.comment || full };
     });
+    // Sections that do not fit the description in full: each is replaced by a
+    // one-line stub there and carried whole by the overflow comments.
+    const moved = new Set();
+    // The waited line renders with no heading, so its stub names it.
+    const stubFor = (s) => (s.id === 'waited' ? `${s.heading}: ${OVERFLOW_SECTION_STUB}` : OVERFLOW_SECTION_STUB);
+    const sectionsNow = () => {
+        const list = others.map((s) => (moved.has(s.id)
+            ? { id: s.id, priority: s.priority, text: stubFor(s), hardClip: () => '' }
+            : s));
+        // List order matters for priority ties: merge assessment, notes,
+        // extras, then the engine tail.
+        return [list[0], notesSection, ...list.slice(1)];
+    };
+    const fit = () => fitSectionsToBudget({ maxLength: blockMax, render, sections: sectionsNow() });
     // Last resort when the frame alone is over the budget: drop the oldest
     // hidden history entries (the current run always stays).
     const fitBlock = () => {
@@ -991,26 +1107,73 @@ export function buildSprintPrBody({
         }
         return r;
     };
+    // A section with its own fit hook may answer a shorter form of itself
+    // (e.g. ids only): that form stays in the description and the full one
+    // also goes to the overflow comments. Any other section that does not fit
+    // in full is moved.
+    const abridged = (s, t) => Boolean(s.fit && t[s.id] && t[s.id] !== s.full);
+    // Fits, then moves the highest-priority section that did not fit in full
+    // to the overflow, one at a time (moving one frees room for the rest),
+    // until every section left in the description is whole or abridged.
+    let texts;
+    const settle = () => {
+        for (;;) {
+            ({ texts } = fitBlock());
+            const next = others
+                .filter((s) => s.text && !moved.has(s.id) && texts[s.id] !== s.full && !abridged(s, texts))
+                .sort((a, b) => (b.priority - a.priority) || (a.index - b.index))[0];
+            if (!next) return;
+            moved.add(next.id);
+        }
+    };
     const overflowOf = (t) => cleanNotes.slice(cleanNotes ? (notesUsed.get(t.notes) ?? 0) : 0);
-    let { texts } = fitBlock();
-    let overflow = overflowOf(texts);
+    everythingFits = render({
+        ...Object.fromEntries(others.map((s) => [s.id, s.full])),
+        notes: notesSection.text,
+    }).length <= blockMax;
+    settle();
+    // The room the pointer line may take: the linked form, or the longest
+    // run-log form.
+    const pointerReserve = Math.max(OVERFLOW_POINTER_RESERVE, overflowFailedPointer(9999999, 9999, 99999).length);
+    if (overflowOf(texts) || moved.size || others.some((s) => abridged(s, texts))) {
+        // Re-fit with the pointer room reserved, so whichever pointer the
+        // description ends up with still fits maxLength.
+        pointer = 'x'.repeat(pointerReserve);
+        settle();
+    }
+    const overflow = overflowOf(texts);
+    const movedSections = others
+        .filter((s) => moved.has(s.id) || abridged(s, texts))
+        .sort((a, b) => (a.order - b.order) || (a.index - b.index));
+    // The overflow comments carry the notes' continuation first (it follows
+    // the description's notes prefix directly), then each moved section whole
+    // under its own heading (an abridged one: its full form, marked so).
+    const overflowText = [
+        overflow,
+        ...movedSections.map((s) => `### ${s.heading}${moved.has(s.id) ? '' : ' (in full)'}\n\n${s.comment}`),
+    ].filter(Boolean).join('\n\n');
     let comments = [];
     let notPosted = 0;
     let failedBody = null;
-    if (overflow) {
-        // Re-fit with the longest pointer line reserved, so whichever pointer
-        // the description ends up with still fits maxLength.
-        pointer = overflowFailedPointer(cleanNotes.length, 9999, 99999);
-        ({ texts } = fitBlock());
-        overflow = overflowOf(texts);
-        ({ comments, notPosted } = buildOverflowComments(overflow, { commentMaxLength: commentMaxLength || PR_DESCRIPTION_MAX_LENGTH }));
-        pointer = overflowFailedPointer(overflow.length);
+    pointer = '';
+    if (overflowText) {
+        ({ comments, notPosted } = buildOverflowComments(overflowText, { commentMaxLength: commentMaxLength || PR_DESCRIPTION_MAX_LENGTH }));
+        pointer = overflowFailedPointer(overflowText.length);
         failedBody = describe(texts);
         if (comments.length) pointer = overflowPointer(comments.length);
     }
+    const body = describe(texts);
+    // Renders the description with `p` as the pointer line.
+    const withPointer = (p) => {
+        const kept = pointer;
+        pointer = p;
+        try { return describe(texts); } finally { pointer = kept; }
+    };
     return {
-        body: describe(texts),
+        body,
         overflow,
+        overflowText,
+        overflowSections: movedSections.map((s) => ({ id: s.id, heading: s.heading })),
         notes: cleanNotes,
         comments,
         notPosted,
@@ -1019,9 +1182,17 @@ export function buildSprintPrBody({
         // onto the PR (a partial failure); the plain failedBody when none did.
         failedBodyFor: (posted) => {
             if (!failedBody || !(posted > 0) || posted >= comments.length) return failedBody;
-            const kept = pointer;
-            pointer = overflowFailedPointer(overflow.length, posted, comments.length);
-            try { return describe(texts); } finally { pointer = kept; }
+            return withPointer(overflowFailedPointer(overflowText.length, posted, comments.length));
+        },
+        // The description whose pointer line links to the posted comments
+        // (`urls`, one per comment, in order); null when there are no
+        // comments or the links cannot be rendered within the limit.
+        linkedBodyFor: (urls) => {
+            if (!comments.length || !Array.isArray(urls) || urls.length !== comments.length) return null;
+            const p = overflowLinkedPointer(urls, pointerReserve);
+            if (!p) return null;
+            const linked = withPointer(p);
+            return linked.length <= Math.max(maxLength, body.length) ? linked : null;
         },
         previousHadOverflow: bodyHasOverflowPointer(placement.own),
     };
