@@ -702,6 +702,99 @@ export function resolveVcsAuthProviderForHost(host) {
     return null;
 }
 
+// -----------------------------------------------------------------------------
+// Provider-neutral PR response rule.
+//
+// A 2xx status alone does not prove a PR REST call did what it was asked to:
+// a server (or a proxy in front of it) can answer an unauthenticated request
+// with a 2xx HTML sign-in page -- e.g. HTTP 203 Non-Authoritative Information
+// carrying a login form -- so "status in successStatusRange" read as "PR
+// created" even though nothing was created. The rule below applies to every
+// provider alike (never one copy per descriptor): a 2xx whose body is an HTML
+// page or a sign-in page is an AUTH failure, and a 2xx whose body cannot be
+// read as the expected JSON (no PR id/URL for a create, non-JSON text for a
+// find/get/update) is a typed unexpected-response failure.
+// -----------------------------------------------------------------------------
+
+/** Typed reason for a 2xx PR response whose body is a sign-in/HTML page. */
+export const PR_RESPONSE_SIGN_IN = 'pr-response-sign-in';
+/** Typed reason for a 2xx PR response whose body maps to no PR (or is not JSON). */
+export const PR_RESPONSE_UNMAPPED = 'pr-response-unmapped';
+
+const HTML_START_RE = /^(?:<\?xml[^>]*>\s*)?(?:<!--[\s\S]*?-->\s*)*<(?:!doctype\s+html|html[\s>])/i;
+const SIGN_IN_MARKER_RE = /\bsign[\s-]?in\b|\bsignin\b|\blog[\s-]?in\b|login\.microsoftonline\.com|_signin|id="?loginform|\bauthenticate to continue\b/i;
+
+/**
+ * Whether a response body is an HTML page or a sign-in page.
+ * @param {string} bodyText
+ * @returns {{ html: boolean, signIn: boolean }}
+ */
+export function classifyPrResponseBody(bodyText) {
+    const text = String(bodyText ?? '').trim();
+    const html = HTML_START_RE.test(text);
+    const signIn = html || (text !== '' && SIGN_IN_MARKER_RE.test(text) && !/^[[{]/.test(text));
+    return { html, signIn };
+}
+
+// Token-shaped text: provider token prefixes, JWTs, Authorization schemes,
+// key=value credentials, and any long opaque run of token alphabet.
+const TOKEN_SHAPED_RES = [
+    /\b(?:Bearer|Basic|token)\s+[A-Za-z0-9._~+/=-]{8,}/gi,
+    /\b(?:access_token|refresh_token|id_token|token|password|passwd|pwd|secret|api[_-]?key|sig|code)=([^&\s"'<>]+)/gi,
+    /\b(?:gh[pousr]_|github_pat_|glpat-|ATBB|ATATT|ATCTT|xox[abprs]-)[A-Za-z0-9_=-]{6,}/g,
+    /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}(?:\.[A-Za-z0-9_-]*)?/g,
+    /[A-Za-z0-9_+=-]{32,}/g,
+];
+
+/**
+ * A short, log-safe excerpt of a response body: whitespace collapsed,
+ * non-ASCII/control characters replaced, URL userinfo redacted (through the
+ * caller's `redactUrl`, so the one URL-redaction rule is reused), every
+ * token-shaped run replaced with `***`, then cut to `max` characters.
+ * @param {string} bodyText
+ * @param {{ max?: number, redactUrl?: (s: string) => string }} [opts]
+ * @returns {string}
+ */
+export function prResponseExcerpt(bodyText, { max = 200, redactUrl } = {}) {
+    let text = String(bodyText ?? '');
+    if (typeof redactUrl === 'function') text = redactUrl(text);
+    text = text.replace(/[^\x20-\x7e]+/g, ' ').replace(/\s+/g, ' ').trim();
+    for (const re of TOKEN_SHAPED_RES) {
+        text = text.replace(re, (m, value) => (typeof value === 'string' ? m.slice(0, m.length - value.length) + '***' : '***'));
+    }
+    const limit = Math.max(0, Math.min(200, Number(max) || 0));
+    return text.length > limit ? `${text.slice(0, Math.max(0, limit - 3))}...` : text;
+}
+
+/**
+ * The typed failure for a 2xx PR response that did not do what it was asked:
+ * `{ authFailure, reason, message, excerpt }`. `what` names the call
+ * (e.g. 'create-pull-request'); the message carries the status and the
+ * log-safe body excerpt, never the raw body.
+ * @param {{ status: number|null, bodyText: string, what: string, redactUrl?: (s: string) => string }} ctx
+ * @returns {{ authFailure: boolean, reason: string, message: string, excerpt: string }}
+ */
+export function unmappedPrResponseFailure({ status, bodyText, what, redactUrl }) {
+    const { html, signIn } = classifyPrResponseBody(bodyText);
+    const excerpt = prResponseExcerpt(bodyText, { redactUrl });
+    const shown = excerpt ? `: ${excerpt}` : ' (empty body)';
+    const statusText = `HTTP ${status ?? '(unknown)'}`;
+    if (signIn) {
+        return {
+            authFailure: true,
+            reason: PR_RESPONSE_SIGN_IN,
+            message: `${what} answered ${statusText} with ${html ? 'an HTML' : 'a'} sign-in page instead of a pull request -- the request was not authenticated, so nothing was done (${PR_RESPONSE_SIGN_IN})${shown}`,
+            excerpt,
+        };
+    }
+    return {
+        authFailure: false,
+        reason: PR_RESPONSE_UNMAPPED,
+        message: `${what} answered ${statusText} but the response does not identify a pull request, so it cannot be treated as done (${PR_RESPONSE_UNMAPPED})${shown}`,
+        excerpt,
+    };
+}
+
 for (const impl of BUILT_IN_PROVIDERS) registerVcsProvider(impl);
 
 export { GenericGitVCS, GitHubVCS, DoltVCS, BitbucketVCS, AzureDevOpsVCS };

@@ -16,6 +16,7 @@ import { resolveMemberTarget } from './member-target.mjs';
 import { resultText } from './mcp-result.mjs';
 import { resolveVcsPayloadDir, memberPayloadPath, execVcsWithPayload } from './vcs-payload.mjs';
 import { publishPrOverflowComments } from './pr-overflow-comments.mjs';
+import { classifyPrResponseBody, unmappedPrResponseFailure } from './vcs-providers/index.mjs';
 
 /**
  * Best-effort, GENERIC extraction of an "owner/repo" string from a git remote
@@ -1006,7 +1007,19 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
             }
             const parsed = parseVcsCurlOutput(h.stdout);
             const [lo, hi] = b.interpret.successStatusRange;
-            if (parsed.status !== null && parsed.status >= lo && parsed.status <= hi) return { ok: true, built: b, body: parsed.body };
+            if (parsed.status !== null && parsed.status >= lo && parsed.status <= hi) {
+                // Provider-neutral rule (vcs-providers/index.mjs): a 2xx whose
+                // body is an HTML/sign-in page, or non-JSON text, is not a
+                // result -- a find must not read it as "no open PRs", an
+                // update must not read it as done. An EMPTY body (204) is fine.
+                const bodyRaw = String(parsed.bodyText || '').trim();
+                if (bodyRaw && (parsed.body === null || classifyPrResponseBody(bodyRaw).html)) {
+                    const bad = unmappedPrResponseFailure({ status: parsed.status, bodyText: bodyRaw, what, redactUrl: redactUrlUserinfo });
+                    log(`${logPrefix}: ${bad.message}`);
+                    return { ok: false, error: bad.message, authFailure: bad.authFailure, reason: bad.reason };
+                }
+                return { ok: true, built: b, body: parsed.body };
+            }
             // Bitbucket nests its error text at error.message.
             const msg = (parsed.body && typeof parsed.body.message === 'string') ? parsed.body.message
                 : (parsed.body && parsed.body.error && typeof parsed.body.error.message === 'string') ? parsed.body.error.message
@@ -1259,7 +1272,18 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
             const mapped = (impl && impl.pullRequestResponse && typeof impl.pullRequestResponse.map === 'function')
                 ? impl.pullRequestResponse.map(respBody, repoRef ? { repoRef } : { repo })
                 : { id: null, url: null };
-            if (mapped.url) log(`${logPrefix}: opened PR URL for member '${member}': ${mapped.url}`);
+            // Provider-neutral rule (vcs-providers/index.mjs): a 2xx that
+            // maps to no PR id/URL did not create a PR -- e.g. an HTTP 203
+            // HTML sign-in page for an unauthenticated request. A sign-in
+            // page is an auth failure; anything else is a typed
+            // unexpected-response failure. Never ok:true with prUrl null.
+            const hasId = mapped && mapped.id !== null && mapped.id !== undefined && mapped.id !== '';
+            if (!hasId || !mapped.url) {
+                const bad = unmappedPrResponseFailure({ status, bodyText, what: 'create-pull-request', redactUrl: redactUrlUserinfo });
+                log(`${logPrefix}: PR creation for member '${member}' did not open a PR: ${bad.message}`);
+                return { ok: false, alreadyExists: false, prUrl: null, error: bad.message, authFailure: bad.authFailure, reason: bad.reason };
+            }
+            log(`${logPrefix}: opened PR URL for member '${member}': ${mapped.url}`);
             const overflow = await publishOverflow({ prId: mapped.id, prUrl: mapped.url, parts: createParts, existing: false, prTitle: title });
             return { ok: true, alreadyExists: false, prUrl: mapped.url, error: null, authFailure: false, ...(overflow ? { overflow } : {}) };
         }

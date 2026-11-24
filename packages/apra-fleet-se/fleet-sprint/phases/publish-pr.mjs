@@ -69,6 +69,7 @@ import { CommandError } from '@apralabs/apra-fleet-workflow';
 import { ApraFleet } from '@apralabs/apra-fleet-client';
 import { capabilities as vcsCapabilities } from '../vcs-module.mjs';
 import { raiseVcsPrForMember } from '../vcs-auth.mjs';
+import { PR_RESPONSE_UNMAPPED } from '../vcs-providers/index.mjs';
 import { buildSprintPrBody, buildSprintPrTitle, buildKbChangesSection, sprintPrTitleFor } from '../pr-body.mjs';
 import { DoltSync } from '../dolt-sync.mjs';
 
@@ -454,6 +455,12 @@ export async function runPublishPrPhase({
                     // the PR itself is skipped.
                     log(`[Publish PR Skipped] could not raise a PR for branch '${validated.branch}' -> '${validated.baseBranch}' (branch is pushed) due to an unrecoverable VCS auth failure: ${prResult.error}`);
                     prSkipped = { reason: 'auth-failure', message: 'PR not opened: VCS auth failure' };
+                } else if (prResult.reason === PR_RESPONSE_UNMAPPED) {
+                    // The provider answered 2xx but the response identifies
+                    // no pull request (see vcs-providers/index.mjs): nothing
+                    // to point at, so report the skip, not a created PR.
+                    log(`[Publish PR Skipped] could not confirm a PR for branch '${validated.branch}' -> '${validated.baseBranch}' (branch is pushed): ${prResult.error}`);
+                    prSkipped = { reason: PR_RESPONSE_UNMAPPED, message: 'PR not opened: unexpected PR response' };
                 } else {
                     throw new CommandError(
                         `[Publish PR Failed] VCSModule create-pull-request failed for branch '${validated.branch}' -> '${validated.baseBranch}': ${prResult.error}`,
