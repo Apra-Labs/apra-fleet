@@ -50,9 +50,24 @@ writes durable documentation and the sprint analysis, an optional
 once-per-sprint regression pass runs your regression playbook, and the engine
 pushes the branch and **opens a pull request** whose title and body state the
 verdict plainly, with a cost breakdown. If the branch already has an open PR
-(a relaunch), every sprint end rewrites that PR's title and body to the latest
-verdict and keeps earlier runs in a short run history. It never merges the PR --
-that is always a human decision.
+(a relaunch, or a PR a human opened), the sprint updates it instead of opening
+a second one, on GitHub, Bitbucket and Azure DevOps alike, and changes only
+what fleet owns:
+
+- Fleet owns only its engine-marked block of the description (between the
+  hidden `<!-- fleet-sprint:pr-block v1 -->` and
+  `<!-- /fleet-sprint:pr-block v1 -->` markers). Each sprint end replaces that
+  block with the latest verdict and a short run history of earlier runs; text
+  outside it is kept exactly as written, and a human-written description with
+  no block keeps all its text with the block appended below it.
+- A title fleet wrote is updated to the latest verdict; a human-written title
+  is never changed. An aborted run's `[ABORTED]` status goes into the block.
+- Fleet text that does not fit the provider's description limit (small on
+  Bitbucket and Azure DevOps) is posted as engine-marked PR comments that the
+  block links to; nothing is truncated away, and a relaunch updates those
+  comments in place.
+
+It never merges the PR -- that is always a human decision.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="../assets/marketing/fleet-sprint-pipeline-dark.svg">

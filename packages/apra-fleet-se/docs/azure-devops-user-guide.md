@@ -96,8 +96,29 @@ Harvest and **Publish PR**. For an Azure DevOps repo, Publish PR:
 3. Reports back the PR's URL and ID.
 
 If a pull request from that branch to that base already exists, fleet-sprint
-treats it as success rather than erroring (idempotent -- safe to re-run a
-sprint that already opened a PR).
+does not open a second one or fail: it updates the existing PR, and changes
+only what fleet owns on it:
+
+- **The description.** Fleet owns only its engine-marked block, between the
+  hidden `<!-- fleet-sprint:pr-block v1 -->` and
+  `<!-- /fleet-sprint:pr-block v1 -->` markers. Each run replaces that block
+  in place; every character outside it -- text you or a reviewer wrote above
+  or below it -- is kept exactly as it was. A description with no block (a PR
+  a human opened) keeps all its text, and the block is appended below it.
+- **The title.** A title fleet wrote (`fleet-sprint [<VERDICT>]: <branch>`)
+  is updated to the new verdict; a human-written title is never changed.
+- **An aborted run.** The `[ABORTED]` status, what the run closed, what is
+  still open or deferred, and the last reviewer verdict go into the block --
+  never into a human-written title or text.
+- **Text that does not fit.** Azure DevOps descriptions are limited (fleet
+  sends at most 3500 characters, minus your own text outside the block).
+  Whatever fleet text does not fit -- reviewer notes past the limit, or a
+  whole section -- is posted as engine-marked PR comments, and the block ends
+  with a link to them. On a re-run those comments are updated in place, not
+  duplicated. If the comments cannot be posted, the block says so and points
+  at the sprint run log, which always has the full text.
+
+Re-running a sprint on a branch that already has a PR is therefore safe.
 
 Publish PR (and the `[ABORTED]` PR an aborted sprint raises) uses the PAT
 already deployed on the member and never re-provisions it: a PAT cannot be
