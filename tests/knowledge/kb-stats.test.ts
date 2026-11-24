@@ -352,8 +352,10 @@ describe('kb_stats tool: export-qualifying drift and hash drift (real git repo)'
 
   afterEach(() => {
     vi.restoreAllMocks();
-    // the outer afterEach closes `provider` (the replacement instance)
-    fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+    // Nested afterEach runs before the outer one, so close the provider here:
+    // Windows cannot unlink an open kb.sqlite. The outer close is a no-op then.
+    provider.close();
+    fs.rmSync(root, { recursive: true, force: true });
   });
 
   async function setupCommittedThenNonExportable(): Promise<{ good: string }> {
