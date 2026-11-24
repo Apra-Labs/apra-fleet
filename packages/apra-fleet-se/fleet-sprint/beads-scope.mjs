@@ -30,7 +30,8 @@
 //       view. This is the dominant invalidation in practice -- a snapshot
 //       almost never survives more than one phase step.
 //   (b) EVERY beads-mutating command issued through the wrapCommand() wrapper.
-//       `bd list|show|ready|config` are known reads (BD_READ_ONLY_RE) and keep
+//       `bd list|show|ready|config` and the sprint-start `bd --version` pin
+//       probe are known reads (BD_READ_ONLY_RE) and keep
 //       the snapshot; update/create/close/note/dep/dolt-pull and ANY
 //       unrecognized `bd` subcommand are conservatively treated as mutations
 //       and drop it. The failure mode is a redundant full fetch, never
@@ -92,7 +93,7 @@ import {
  * treated as a mutation. Mirrored (deliberately, as an independent copy) by
  * full-db-fetch-guard.mjs, which judges the same rule from a command log.
  */
-export const BD_READ_ONLY_RE = /^bd\s+(list|show|ready|config)\b/i;
+export const BD_READ_ONLY_RE = /^bd\s+(list|show|ready|config|--version)\b/i;
 
 /**
  * True iff `cmdStr` is a `bd` command that must invalidate the shared full-DB

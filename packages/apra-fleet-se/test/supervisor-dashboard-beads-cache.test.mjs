@@ -26,7 +26,7 @@ import { createBacklog } from '../src/supervisor/backlog.mjs';
 import { createBeadsBackedViews } from '../bin/serve.mjs';
 import { createLedger } from '../src/supervisor/ledger.mjs';
 import { clearLastSyncedTip, clearTipProbeFailures, invalidateSyncRemoteCache } from '../fleet-sprint/dolt-sync.mjs';
-
+import { answerVersionProbe } from './helpers/pinned-tool-versions.mjs';
 const SHA_A = 'a'.repeat(40);
 const QUIET = { log() {}, warn() {}, error() {} };
 const T0 = Date.parse('2026-10-01T00:00:00Z');
@@ -52,6 +52,8 @@ const OPEN_ROWS = ALL_ROWS.filter((r) => r.status !== 'closed');
 
 function fakeCommand(state) {
     return async (cmd) => {
+        const probe = answerVersionProbe(cmd);
+        if (probe) return probe;
         if (cmd.startsWith('bd config get sync.remote')) return { ok: true, output: JSON.stringify({ key: 'sync.remote', value: 'git+https://example.test/o/b.git' }) };
         if (cmd.includes(' ls-remote ')) return { ok: true, output: `${SHA_A}\trefs/dolt/data\n` };
         if (cmd === 'bd dolt pull') { state.pulls += 1; return { ok: true, output: '' }; }

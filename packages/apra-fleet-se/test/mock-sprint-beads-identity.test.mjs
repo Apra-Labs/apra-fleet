@@ -51,12 +51,16 @@ test('mock sprint: all members share one beads identity -> sprint proceeds and l
         check(okLines[1].startsWith('beads ok: m2 beads: '), `second member line: ${okLines[1]}`);
         // No --expect-beads: the expectation is taken from the orchestrator.
         check(r.logs.some((l) => l.includes("taking the expectation from the backlog member 'orch'")), 'expected the orchestrator-derived expectation log line');
-        // The probes run first, orchestrator first, and precede every mutating bd command.
-        const first = r.commandLogDetailed.slice(0, 6);
-        check(first[0].command === 'bd where --json' && first[0].member === 'orch', `expected the orchestrator's bd where first, got ${JSON.stringify(first[0])}`);
-        check(first[3].command === 'bd where --json' && first[3].member === 'm2', `expected m2's bd where fourth, got ${JSON.stringify(first[3])}`);
+        // The probes run first -- the bd/dolt version pin on every member,
+        // then the identity probes, orchestrator first -- and precede every
+        // mutating bd command.
+        const first = r.commandLogDetailed.slice(0, 10);
+        check(first[0].command === 'bd --version' && first[0].member === 'orch' && first[2].command === 'bd --version' && first[2].member === 'm2',
+            `expected the version pin probes first, got ${JSON.stringify(first.slice(0, 4))}`);
+        check(first[4].command === 'bd where --json' && first[4].member === 'orch', `expected the orchestrator's bd where after the version probes, got ${JSON.stringify(first[4])}`);
+        check(first[7].command === 'bd where --json' && first[7].member === 'm2', `expected m2's bd where eighth, got ${JSON.stringify(first[7])}`);
         const firstMutating = r.commandLog.findIndex((c) => MUTATING_BD.test(c));
-        check(firstMutating === -1 || firstMutating >= 6, `a mutating bd command preceded the identity probes: ${JSON.stringify(r.commandLog.slice(0, 8))}`);
+        check(firstMutating === -1 || firstMutating >= 10, `a mutating bd command preceded the identity probes: ${JSON.stringify(r.commandLog.slice(0, 12))}`);
         // Published on sprint state under its own namespace, for the viewer.
         const published = r.states.find((s) => s.namespace === 'beadsIdentity' || (s.payload && s.payload.namespace === 'beadsIdentity'));
         check(published, `expected a beadsIdentity state publish, got namespaces: ${JSON.stringify(r.states.map((s) => s.namespace || (s.payload && s.payload.namespace)))}`);

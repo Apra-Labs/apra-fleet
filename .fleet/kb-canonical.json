@@ -1,9 +1,7 @@
 {
   "version": 3,
   "provenance": {
-    "commit": "fdd28500257f50b0fdf05135bee9f23ce7d61947",
-    "branch": "main",
-    "entry_count": 188
+    "branch": "main"
   },
   "entries": [
     {
@@ -591,6 +589,32 @@
       }
     },
     {
+      "id": "2818267b-eebb-4cad-9b78-e5a21b64ea40",
+      "type": "knowledge",
+      "title": "Supervisor beads-view runs the bd/dolt pin check before any D-pull",
+      "summary": "createBeadsView().runCheck calls verifyPinnedToolVersions on the backlog member before doltPullBefore. A pass is cached per member name; a failure is never cached, records lastError, and makes freshForLaunch reject so POST /api/sprints answers 503.",
+      "symbols": [
+        "createBeadsView",
+        "verifyPinnedToolVersions",
+        "answerVersionProbe",
+        "withPinnedVersions"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/src/supervisor/beads-view.mjs",
+        "packages/apra-fleet-se/fleet-sprint/beads-identity-check.mjs",
+        "packages/apra-fleet-se/test/helpers/pinned-tool-versions.mjs",
+        "packages/apra-fleet-se/test/supervisor-beads-view-pin.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-22T20:31:21.611Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/beads-identity-check.mjs": "f8b1f1ffeb17dfb08bec6b3bc6d14fd7a409ae42",
+        "packages/apra-fleet-se/src/supervisor/beads-view.mjs": "bfabab0f881e28a3c1f918121a76e90f77621d0c",
+        "packages/apra-fleet-se/test/helpers/pinned-tool-versions.mjs": "8d7d75b00e124ec0c93b20d3b50662ebfb8257b3",
+        "packages/apra-fleet-se/test/supervisor-beads-view-pin.test.mjs": "253e291fd062a79e3d86be9de2c69eaa530c0106"
+      }
+    },
+    {
       "id": "2b244307-8635-4406-904f-6a2290d54490",
       "type": "learning",
       "title": "check-generic-boundary tokenizer treats slash-star inside a template literal as a comment",
@@ -1164,6 +1188,34 @@
       "updated_at": "2026-09-25T22:26:30.213Z"
     },
     {
+      "id": "4e5fa491-46ca-4621-bc56-d79b89364f94",
+      "type": "knowledge",
+      "title": "Full install refuses on a member host: E-MEMBER-HOST-FULL-INSTALL guard",
+      "summary": "runInstall refuses a full (non --member) install when the targeted data dir holds member-install.json, before any destructive step; --convert-member-host overrides and clears the marker. apra-fleet update switches to install --member --force on a marker host.",
+      "symbols": [
+        "readMemberInstallMarker",
+        "memberHostRefusalText",
+        "CONVERT_MEMBER_HOST_FLAG",
+        "MEMBER_HOST_FULL_INSTALL_CODE",
+        "runInstall",
+        "runUpdate"
+      ],
+      "source_files": [
+        "src/cli/install-guard.ts",
+        "src/cli/install.ts",
+        "src/cli/update.ts",
+        "tests/install-member-host-guard.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-22T10:31:22.583Z",
+      "source_file_hashes": {
+        "src/cli/install-guard.ts": "84d340da90ce8c3d5729b323e093d8feb4d922c6",
+        "src/cli/install.ts": "178687848782b1b1afbdb171bb3f374bd0250cf3",
+        "src/cli/update.ts": "5994f872c18576277ec9cd2af5fd60c0db1dfd4b",
+        "tests/install-member-host-guard.test.ts": "ccaac22fe855219149c1099f322c02376ece8828"
+      }
+    },
+    {
       "id": "4f62e71d-0544-49f1-863f-6bbc503604ac",
       "type": "knowledge",
       "title": "Exec-level rolling timeout is per-provider via ProviderAdapter.execTimeoutSource()",
@@ -1529,6 +1581,32 @@
       "updated_at": "2026-09-29T06:13:13.782Z"
     },
     {
+      "id": "6661ea32-4c35-45a5-8417-1709843a27c0",
+      "type": "knowledge",
+      "title": "Sprint-start bd/dolt version pin runs before any beads setup or pull",
+      "summary": "verifyBeadsIdentity(checkToolVersions:true) runs verifyPinnedToolVersions on every member first. A bd or dolt off the pinned major.minor throws VERSION_MISMATCH. The engine bd pin lives in tool-version-pin.mjs and is drift-guarded in dolt-settle.test.mjs.",
+      "symbols": [
+        "verifyPinnedToolVersions",
+        "verifyBeadsIdentity",
+        "checkPinnedVersion",
+        "synthesizeToolVersion"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/tool-version-pin.mjs",
+        "packages/apra-fleet-se/fleet-sprint/beads-identity-check.mjs",
+        "packages/apra-fleet-se/test/helpers/bd-replay.mjs",
+        "packages/apra-fleet-se/test/dolt-settle.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-22T16:04:34.540Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/beads-identity-check.mjs": "f8b1f1ffeb17dfb08bec6b3bc6d14fd7a409ae42",
+        "packages/apra-fleet-se/fleet-sprint/tool-version-pin.mjs": "5e756676359f457073c8974124878094ed0386ca",
+        "packages/apra-fleet-se/test/dolt-settle.test.mjs": "a911f0db73f45288c545254a572794396df8f857",
+        "packages/apra-fleet-se/test/helpers/bd-replay.mjs": "e15d0477a990d22fbc809b43e75a983bf6057680"
+      }
+    },
+    {
       "id": "668bc632-0c2b-49b8-956b-9da60709ff36",
       "type": "knowledge",
       "title": "Doer-BLOCKED beads are set aside for the run via sprintState.doctorBlockedIds",
@@ -1859,6 +1937,31 @@
       "source_file_hashes": {
         "src/services/knowledge/bible-import.ts": "a717226586d21e5c2496b21c0ea3e212bde4ca10",
         "tests/knowledge/kb-bible-tombstone-entry-exclusive.test.ts": "d08879c5dfb4bdf961496bffd90f6c0576312da8"
+      }
+    },
+    {
+      "id": "7c9156bf-0ba9-44c3-809c-61331ceb2a01",
+      "type": "learning",
+      "title": "Installer tests that auto-mock execFileSync must stub a pinned bd --version",
+      "summary": "runInstall's Beads step now treats empty or unparseable bd --version output as a version mismatch and sets process.exitCode = 1. Tests that vi.mock('node:child_process') without stubbing execFileSync get undefined output and so a non-zero exit code.",
+      "symbols": [
+        "installBeads",
+        "checkPinnedVersion",
+        "runInstall"
+      ],
+      "source_files": [
+        "src/cli/beads-install.ts",
+        "src/cli/version-pin.ts",
+        "src/cli/install.ts",
+        "tests/install-member.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-22T11:37:09.354Z",
+      "source_file_hashes": {
+        "src/cli/beads-install.ts": "2a3f2ea8a415128e5dc9c0bef4820e13f0e26c37",
+        "src/cli/install.ts": "74ac06d11f1b78ae7fca7c4bd955d023f97b6274",
+        "src/cli/version-pin.ts": "1fb033830e4b47148f10b8aacb466ebf91dfbddd",
+        "tests/install-member.test.ts": "b738bc2fb58d663376b51c17d05f1a7cb3e82365"
       }
     },
     {
