@@ -109,6 +109,12 @@ on this list -- flags evolve and this skill can drift.
    - BEADS_SETUP_FAILED: a member mapped to a beads-reading role had no beads
      database (or no `sync.remote`), and setting it up from the expected
      beads remote failed. Matching members are left untouched.
+   - VERSION_MISMATCH: a member's `bd --version` (or an installed `dolt
+     version`) is outside the engine's pinned major.minor, or unreadable.
+     Checked on every member before any beads set-up or pull; every
+     offending member is named with the found and expected version. Fix:
+     install the pinned bd on each named member (re-run the member fleet
+     install, or `npm install -g` the pinned bd package), then relaunch.
    Any other probe failure (including no beads database on a member used
    only for deployer/ci-watcher) is only a `[beads-identity] WARNING:` line (naming
    the member, field, probe, error and the fix): that field is not compared
