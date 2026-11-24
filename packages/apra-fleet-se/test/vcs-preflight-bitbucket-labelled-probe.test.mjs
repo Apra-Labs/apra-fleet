@@ -205,13 +205,33 @@ describe('remote member: one provision, then the REST re-probe decides', () => {
     });
 });
 
-describe('other providers are unchanged', () => {
-    test('a local Azure DevOps member is probed with git ls-remote only: no REST probe, no username read', async () => {
-        const h = makeHarness({ record: { type: 'local', os: 'linux', shell: '', vcsProvider: 'azure-devops' } });
+describe('Azure DevOps member: the same two channels, no username judgement', () => {
+    const ADO = { type: 'local', os: 'linux', shell: '', vcsProvider: 'azure-devops' };
+    const ADO_REMOTE = 'https://dev.azure.com/example-org/Example%20Project/_git/example-repo';
+    const ADO_REPO_200 = rest(200, { body: '{"id":"1f2e","name":"example-repo"}' });
+
+    test('a working PAT: labelled git probe and the REST repository GET pass; no username read, no ERROR', async () => {
+        const h = makeHarness({ record: ADO, remote: ADO_REMOTE, restQueue: [ADO_REPO_200], store: ['azdevops_pat'] });
         await h.ensure('ado-local');
-        assert.equal(h.tools.filter((t) => t.name === 'vcs_credential_exec').length, 0);
+        const execs = h.tools.filter((t) => t.name === 'vcs_credential_exec');
+        assert.equal(execs.length, 1);
+        assert.equal(execs[0].args.label, 'azure-devops');
+        assert.match(execs[0].args.command, /\/_apis\/git\/repositories\/example-repo\?api-version=7\.1'$/);
+        assert.ok(h.commands.some((c) => c.includes('ls-remote origin HEAD') && c.includes('.fleet-git-credential-azure-devops')), h.commands.join('\n'));
         assert.ok(!h.commands.some((c) => c.includes('username=')), h.commands.join('\n'));
-        assert.equal(errorsOf(h.logs).length, 0);
+        assert.equal(errorsOf(h.logs).length, 0, h.logs.join('\n'));
+    });
+
+    test('an HTTP 203 HTML sign-in answer is a failed probe naming the PAT secret, not a success', async () => {
+        const signIn = rest(203, { body: '<!DOCTYPE html><html><head><title>Sign In</title></head><body>Sign in to your account</body></html>' });
+        const h = makeHarness({ record: ADO, remote: ADO_REMOTE, restQueue: [signIn], store: ['azdevops_pat'] });
+        await h.ensure('ado-local');
+        const errors = errorsOf(h.logs);
+        assert.equal(errors.length, 1, h.logs.join('\n'));
+        assert.match(errors[0], /HTTP 203: the answer is an HTML sign-in page/);
+        assert.match(errors[0], /PAT secret azdevops_pat/);
+        assert.match(errors[0], /org_url=https:\/\/dev\.azure\.com\/example-org/);
+        assert.match(errors[0], /No PR will be opened this sprint/);
     });
 });
 

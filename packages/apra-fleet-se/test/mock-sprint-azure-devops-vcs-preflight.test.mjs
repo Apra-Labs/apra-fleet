@@ -201,7 +201,9 @@ test("mock sprint: a member whose Azure DevOps PAT secret is absent from the cre
         // provisioned push+pr and degraded on the missing secret; that
         // provision call could rewrite the member's -- on a local member,
         // the operator's own -- credential.)
-        const publishPrLogs = scenario.logs.filter((l) => /Publish PR/i.test(l));
+        // Lines the Publish PR phase itself logged (the preflight ERROR also
+        // names Publish PR, as the consequence of a failed PR channel).
+        const publishPrLogs = scenario.logs.filter((l) => /^\[Publish PR\]/.test(l));
         check(
             publishPrLogs.some((l) => /nothing to re-provision for member 'local'/.test(l) && /without calling provision_vcs_auth/.test(l)),
             `expected Publish PR to skip provisioning and use the deployed credential, got logs: ${JSON.stringify(publishPrLogs)}`,

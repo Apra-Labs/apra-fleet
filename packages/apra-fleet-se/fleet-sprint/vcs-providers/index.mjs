@@ -247,11 +247,12 @@
  *                                         //   pass; "No PR" is predicted only
  *                                         //   when the PR channel fails. A
  *                                         //   status inside
- *                                         //   interpret.successStatusRange can
- *                                         //   still be refused by an optional
- *                                         //   interpret.refusal(parsed) ->
- *                                         //   string|null (e.g. an HTML sign-in
- *                                         //   page). expectedUsername is the
+ *                                         //   interpret.successStatusRange
+ *                                         //   whose body is an HTML sign-in
+ *                                         //   page is still a refusal
+ *                                         //   (classifyPrResponseBody below,
+ *                                         //   shared by every provider).
+ *                                         //   expectedUsername is the
  *                                         //   PREFERRED helper username= line
  *                                         //   (read member-side, token line
  *                                         //   never printed): a different one

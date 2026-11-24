@@ -1854,14 +1854,21 @@ export function createVcsAuthPreflightCallback(opts = {}) {
             } else {
                 const parsed = parseVcsCurlOutput(handoff.stdout);
                 const [lo, hi] = built.interpret.successStatusRange;
-                const refusal = typeof built.interpret.refusal === 'function' ? built.interpret.refusal(parsed) : null;
+                // The provider-neutral PR response rule (vcs-providers/index.mjs
+                // classifyPrResponseBody): a 2xx HTML or sign-in page (e.g. an
+                // HTTP 203 login form answering a bad PAT) is a refusal, never
+                // a working credential.
+                const inRange = parsed.status !== null && parsed.status >= lo && parsed.status <= hi;
+                const signInPage = inRange && classifyPrResponseBody(parsed.bodyText).signIn;
                 if (!(typeof handoff.exitCode !== 'number' || handoff.exitCode === 0) || parsed.status === null) {
                     reasons.push(`the REST credential probe (${built.logSafeCommand}) did not complete (exit ${handoff.exitCode ?? 'unknown'}${handoff.stderr ? `: ${String(handoff.stderr).trim().slice(0, 200)}` : ''})`);
-                } else if (parsed.status < lo || parsed.status > hi || refusal) {
+                } else if (!inRange || signInPage) {
                     const out = typeof plan.impl.httpFailureHint === 'function'
                         ? plan.impl.httpFailureHint({ status: parsed.status, body: parsed.body, headers: parsed.headers, ...remedyCtx })
                         : '';
-                    const hint = refusal || (typeof out === 'string' ? out : (out && out.hint) || '');
+                    const hint = signInPage
+                        ? 'the answer is an HTML sign-in page, not the API response (the credential was not accepted)'
+                        : (typeof out === 'string' ? out : (out && out.hint) || '');
                     if (out && typeof out === 'object' && out.remedy) remedy = out.remedy;
                     reasons.push(`the '${label}' fleet credential Publish PR uses was refused by the REST probe with HTTP ${parsed.status}${hint ? `: ${hint}` : ''}`);
                 }
@@ -1919,7 +1926,14 @@ export function createVcsAuthPreflightCallback(opts = {}) {
             return { ok: git.ok, failed: git.ok ? [] : ['git'], reasons: git.ok ? [] : [git.reason], remedy: null, prFailed: false, warn: null };
         }
         if (storeNames === undefined) storeNames = await listCredentialStoreNames(fleetApi);
-        const remoteRes = await command('git remote get-url origin', { member_name: member, silent: true, failSoft: true });
+        let remoteRes;
+        try {
+            remoteRes = await command('git remote get-url origin', { member_name: member, silent: true, failSoft: true });
+        } catch {
+            // An aborted dispatch reads as an unreadable origin: the PR
+            // channel reports it, and a remote member's provision names it.
+            remoteRes = null;
+        }
         const remoteUrl = remoteRes && remoteRes.ok ? String(remoteRes.output || '').trim() : '';
         const repoRef = remoteUrl && typeof plan.impl.parseRepoRef === 'function' ? plan.impl.parseRepoRef(remoteUrl) : null;
         const remedyCtx = { availableSecrets: storeNames, memberName: member, repoRef, local: plan.local, secretName: azdevopsPatSecretName };

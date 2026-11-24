@@ -1002,6 +1002,88 @@ const authRemedy = Object.freeze({
     hint: AUTH_REMEDY_HINT,
 });
 
+// ---------------------------------------------------------------------------
+// Preflight credential probe (PR channel)
+// ---------------------------------------------------------------------------
+//
+// Without it the preflight only ran git ls-remote for an Azure DevOps member,
+// so a missing PAT secret, a PAT with the wrong scope or one minted for
+// another organization surfaced hours later at Publish PR. The VCS preflight
+// (vcs-auth.mjs createVcsAuthPreflightCallback) now GETs the repository with
+// the same labelled credential Publish PR reads, at Sprint Setup.
+
+/**
+ * Build the preflight's REST credential probe: GET
+ * {org}/{project}/_apis/git/repositories/{repo}?api-version=7.1 -- the
+ * cheapest call that needs a PAT valid for this organization with Code
+ * (read) access to this repository. Same `-u :<token>` basic auth and
+ * `-w` status trailer as the PR builders; the caller passes the
+ * {{vcs_token_inline}} placeholder and dispatches through
+ * vcs_credential_exec. A 2xx HTML sign-in page (HTTP 203) is judged a
+ * refusal by the preflight's shared sign-in rule, never a success.
+ * @param {{ repoRef?: object, org?: string, project?: string, repo?: string, token: string, os?: string, shell?: string }} params
+ * @returns {{ provider: string, action: string, command: string, logSafeCommand: string, interpret: { successStatusRange: [number, number] } }}
+ */
+function buildAzureDevOpsCredentialProbeCommand(params) {
+    const { token, os, shell } = params || {};
+    const coords = assertRepoCoords(params, 'credential-probe');
+    const safeToken = assertToken(token);
+    const url = `${repoApiBase(coords)}?api-version=${API_VERSION}`;
+    const buildCurl = (authToken) => [
+        `${curlBinary(os)} -sS -X GET`,
+        `-u ${shQuote(`:${authToken}`, os, shell)}`,
+        `-H ${shQuote('Accept: application/json', os, shell)}`,
+        `-w ${shQuote('\n%{http_code}', os, shell)}`,
+        shQuote(url, os, shell),
+    ].join(' ');
+    return {
+        provider: 'azure-devops',
+        action: 'credential-probe',
+        command: buildCurl(safeToken),
+        logSafeCommand: buildCurl(REDACTED),
+        interpret: { successStatusRange: [200, 299] },
+    };
+}
+
+/**
+ * The member-specific fix for a failed Azure DevOps credential probe, naming
+ * the PAT secret (ctx.secretName -- the sprint's configured Azure DevOps PAT
+ * secret -- or the default azdevops_pat) and the organization the member's
+ * origin points at. ASCII only; the PAT appears only as the
+ * {{secret.NAME}} placeholder.
+ * @param {{ availableSecrets?: string[]|null, memberName?: string, repoRef?: { org?: string }|null, local?: boolean, secretName?: string }} [ctx]
+ * @returns {string}
+ */
+function credentialRemedy(ctx = {}) {
+    const name = (typeof ctx.secretName === 'string' && ctx.secretName.trim()) ? ctx.secretName.trim() : DEFAULT_PAT_SECRET;
+    const member = ctx.memberName || 'MEMBER';
+    const org = ctx.repoRef && typeof ctx.repoRef.org === 'string' && ctx.repoRef.org.trim() ? ctx.repoRef.org.trim() : 'ORG';
+    const line = `provision_vcs_auth member_name=${member} provider=azure-devops org_url=https://dev.azure.com/${org} pat={{secret.${name}}}`;
+    const localNote = ctx.local === true
+        ? ' (this member is LOCAL, so the sprint never runs it for you: run it by hand)'
+        : '';
+    const scopes = `The PAT must be minted for organization '${org}' with Code (Read & write) and Pull Request Threads (Read & write) scopes`;
+    const stored = Array.isArray(ctx.availableSecrets) && ctx.availableSecrets.includes(name);
+    if (stored) {
+        return `Fix: re-provision member '${member}' from the stored PAT secret ${name}: ${line}${localNote}. `
+            + `${scopes}; if the refused credential IS that stored entry, create a new PAT at https://dev.azure.com/${org}/_settings/tokens `
+            + `and update the ${name} entry (credential_store_set name=${name}) before re-provisioning.`;
+    }
+    const why = Array.isArray(ctx.availableSecrets)
+        ? `the credential store has no PAT secret named ${name}`
+        : `the credential store could not be read to look for the PAT secret ${name}`;
+    return `Fix: ${why}; create a PAT at https://dev.azure.com/${org}/_settings/tokens, store it with credential_store_set name=${name}, `
+        + `then run ${line}${localNote}. ${scopes}.`;
+}
+
+/** The OPTIONAL `credentialProbe` descriptor field (see ./index.mjs). No
+ *  expectedUsername: an Azure DevOps helper's username line is not judged
+ *  (the PAT is the password; the username is ignored by the service). */
+const credentialProbe = Object.freeze({
+    build: buildAzureDevOpsCredentialProbeCommand,
+    remedy: credentialRemedy,
+});
+
 export const AzureDevOpsVCS = Object.freeze({
     name: 'azure-devops',
     extends: 'generic-git',
@@ -1033,6 +1115,9 @@ export const AzureDevOpsVCS = Object.freeze({
     pullRequestResponse,
     // apra-fleet-5co8.4.2: PATs are never re-minted server-side -- see above.
     authRemedy,
+    // Preflight judges the labelled PAT on the git channel AND with a REST
+    // repository GET (PR channel) -- see credentialProbe above.
+    credentialProbe,
     // apra-fleet-lzfv.2: the REST builders. capabilitiesForHost() above now
     // reports canOpenPullRequest:true (apra-fleet-lzfv.5) -- the publish path
     // can dispatch them. Any action not listed here still fails closed with
