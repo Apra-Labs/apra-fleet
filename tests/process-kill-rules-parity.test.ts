@@ -22,7 +22,8 @@ const SAMPLES = [
   'Bash(wmic:*)', 'Bash(wmic process list brief)', 'Bash(kil*)',
   'Bash(node scripts/kill-port.mjs:*)', 'Bash(npm run test:*)', 'Bash(git:*)', 'Read', 'Bash(skill-check:*)',
   'Bash(npm run kill:*)', 'Bash(git log --grep kill:*)', 'Bash(docker kill:*)', 'Bash(sudo kill -9 1)',
-  'Bash(bash -c "kill 1")', 'Bash(env FOO=1 pkill node)',
+  'Bash(bash -c "kill 1")', 'Bash(FOO=1 kill:*)', 'Bash(LANG=C pkill:*)', 'Bash(* kill:*)', 'Bash(builtin kill:*)',
+  'Bash(watch kill 1)', 'Bash(busybox kill 1)', 'Bash(parallel kill ::: 1)', 'Bash(env FOO=1 pkill node)',
 ];
 
 const FALSE_POSITIVES = [
@@ -31,7 +32,7 @@ const FALSE_POSITIVES = [
 ];
 const KILLS = [
   'kill -9 1', 'cd x; kill 1', 'ps aux | xargs kill -9', 'a && taskkill /F /IM node.exe', 'sh -c "pkill node"',
-  'powershell -NoProfile -Command "Stop-Process -Id 1"', 'cmd /c taskkill /F /PID 1', '$(kill 1)', 'sudo -n kill 1',
+  'powershell -NoProfile -Command "Stop-Process -Id 1"', 'cmd /c taskkill /F /PID 1', '$(kill 1)', 'FOO=1 kill 1', 'LANG=C pkill node', 'if x; then kill 1; fi', 'for p in 1; do kill $p; done', '! kill 1', 'builtin kill 1', 'a || kill 1; true', 'sudo -n kill 1',
 ];
 
 describe('process-kill rules: server and engine parity', () => {
@@ -53,6 +54,13 @@ describe('process-kill rules: server and engine parity', () => {
     for (const line of KILLS) {
       expect(payloadKillsProcesses(line), line).toBe(true);
       expect(engine.payloadKillsProcesses(line), line).toBe(true);
+    }
+  });
+
+  it('refuses grants that hide a kill behind an assignment, wildcard or builtin launcher', () => {
+    for (const g of ['Bash(FOO=1 kill:*)', 'Bash(LANG=C pkill:*)', 'Bash(* kill:*)', 'Bash(builtin kill:*)', 'Bash(watch kill 1)', 'Bash(busybox kill 1)', 'Bash(parallel kill ::: 1)']) {
+      expect(isProcessKillGrant(g), g).toBe(true);
+      expect(engine.isProcessKillGrant(g), g).toBe(true);
     }
   });
 

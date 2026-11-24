@@ -62,6 +62,7 @@ function wmicCanKill(args: string[]): boolean {
 /** Words after which the next word is itself a command to run. */
 const LAUNCHERS = new Set([
   'xargs', 'sudo', 'doas', 'env', 'nohup', 'timeout', 'time', 'command', 'exec', 'nice', 'setsid', 'stdbuf',
+  'builtin', 'watch', 'busybox', 'parallel', 'then', 'do', 'else', '!',
   'cmd', 'start', 'call', 'sh', 'bash', 'zsh', 'dash', 'ksh', 'powershell', 'pwsh',
 ]);
 
@@ -124,6 +125,10 @@ export function payloadKillsProcesses(payload: string, depth = 0): boolean {
         continue;
       }
       shellFlag = false;
+      // Leading NAME=value assignments precede the command word (`FOO=1 kill 1`).
+      if (state === 'cmd' && !quoted && /^[A-Za-z_][A-Za-z0-9_]*=/.test(text)) continue;
+      // A leading wildcard word can stand for a launcher (`Bash(* kill:*)`).
+      if (state === 'cmd' && !quoted && text === '*') { state = 'launcher'; continue; }
       if (state === 'launcher' && !quoted && isLauncherOption(text)) {
         shellFlag = SHELL_COMMAND_FLAG.test(text);
         continue;
