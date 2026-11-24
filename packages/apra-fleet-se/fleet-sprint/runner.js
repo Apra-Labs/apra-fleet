@@ -168,7 +168,7 @@ import { runDevelopPhase } from './phases/develop.mjs';
 // stayed here.
 import { runReviewPhase, runReviewCatchUpPhase } from './phases/review.mjs';
 import { runDeployPhase, latestDeployFailure, formatDeployFailureReason, formatDeploySetAsideNotes, DEPLOY_RETRY_CYCLE_LIMIT } from './phases/deploy.mjs';
-import { collectSetAsideEntries, evaluateSetAsideStall, formatSetAsideStallMessage, stuckBehindSetAside, collectWaitEntries, closedWorkThisRun, buildSetAsideCarryOver, buildPlanRejectedCarryOver, formatCarryOverNotes } from './set-aside.mjs';
+import { collectSetAsideEntries, evaluateSetAsideStall, formatSetAsideStallMessage, stuckBehindSetAside, collectWaitEntries, closedWorkThisRun, stallSettlementSummary, buildSetAsideCarryOver, buildPlanRejectedCarryOver, formatCarryOverNotes } from './set-aside.mjs';
 import { NEEDS_EXTERNAL_EVIDENCE_CYCLE_LIMIT, recordInconclusiveVerifyCycle, stillOpenVerifyIdsForExit, syncDeferredVerifyIds, buildVerifyCarryOver, formatVerifyCarryOverNotes } from './verify-carry-over.mjs';
 // apra-fleet-3swo.6.8: the next two phase() boundaries -- the per-cycle Integ
 // Test and the Re-Review that Cycle Evaluation dispatches when the goal-
@@ -4491,9 +4491,20 @@ async function runSprintCycle(context) {
             const openAtGoalIds = openAtGoal.map((b) => b.id);
             const blockerIds = [...new Set([...openAtGoalIds, ...setAsideOpenIds])];
             const setAsideOnlyIds = setAsideOpenIds.filter((id) => !openAtGoalIds.includes(id));
-            const blockerSuffix = (openAtGoalIds.length > 0
-                ? ` Still open at/above goal priority ${goalMax}: [${openAtGoalIds.join(', ')}].`
-                : ' No beads remain open at/above goal priority -- the stall is in closing out the sprint, not in the work itself.') +
+            // "The stall is in closing out the sprint, not in the work itself"
+            // only when nothing at goal is open OR deferred, no bead was
+            // reopened by a reviewer and then closed again, and the last
+            // Review/Re-Review did not ask for changes; otherwise those are
+            // named (stallSettlementSummary).
+            const deferredAtGoalOpenIds = [...deferredEverIds].filter((id) => !closedIdsNow.has(id));
+            const reopenedThenClosedIds = [...reopenCounts.keys()].filter((id) => closedIdsNow.has(id)).sort();
+            const lastReview = sprintState.lastReview && typeof sprintState.lastReview === 'object' ? sprintState.lastReview : null;
+            const closedThisRunIds = closedWorkThisRun({ workedOnIds: workedOnBeadIds, verifyEverIds, closedIds: closedIdsNow });
+            const closedTitleById = new Map(closedBeadsNow.filter((b) => b && typeof b.title === 'string').map((b) => [b.id, b.title]));
+            const settlement = stallSettlementSummary({
+                openAtGoalIds, goalMax, deferredAtGoalIds: deferredAtGoalOpenIds, reopenedThenClosedIds, lastReview,
+            });
+            const blockerSuffix = settlement.suffix +
                 (setAsideOnlyIds.length > 0 ? ` Also set aside for this run (doer-BLOCKED or a dependent of one): [${setAsideOnlyIds.join(', ')}].` : '');
             const deferredStallIds = [...deferredEverIds];
             const deferredStallSuffix = deferredStallIds.length > 0
@@ -4530,7 +4541,17 @@ async function runSprintCycle(context) {
                 `[${closedCountHistory.join(', ')}] (high-water mark on progress score: ${highWaterClosedCount}).` +
                 blockerSuffix + deferredStallSuffix + thrashSuffix + verifySuffix +
                 ` Aborting rather than burning the remaining cycles.`,
-                { staleCycles, closedCountHistory, highWaterClosedCount, blockerIds, deferredIds: deferredStallIds, thrashIds, reopenCounts: Object.fromEntries(reopenCounts), verifyEverIds: [...verifyEverIds], cycle, setAside: collectSetAsideEntries(sprintState), waited: collectWaitEntries(sprintState) }
+                {
+                    staleCycles, closedCountHistory, highWaterClosedCount, blockerIds, deferredIds: deferredStallIds, thrashIds, reopenCounts: Object.fromEntries(reopenCounts), verifyEverIds: [...verifyEverIds], cycle, setAside: collectSetAsideEntries(sprintState), waited: collectWaitEntries(sprintState),
+                    // For the [ABORTED] PR body: the work closed this run, what is
+                    // still open or deferred at goal, and the last review.
+                    closedThisRun: closedThisRunIds.map((id) => (closedTitleById.has(id) ? { id, title: closedTitleById.get(id) } : { id })),
+                    openAtGoalIds,
+                    deferredAtGoal: deferredAtGoalOpenIds,
+                    reopenedThenClosed: reopenedThenClosedIds,
+                    lastReview: lastReview ? { verdict: lastReview.verdict, notes: lastReview.notes ?? '', site: lastReview.site, cycle: lastReview.cycle } : null,
+                    closingOut: settlement.closingOut,
+                }
             );
         }
 
