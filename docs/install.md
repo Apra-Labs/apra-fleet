@@ -389,18 +389,34 @@ and `<provider>` with the member's LLM provider (`claude`, `agy`, `codex`,
 downloaded from the release page) for this OS/arch, normally
 `<home>/.apra-fleet/staging/apra-fleet` (`apra-fleet.exe` on Windows).
 
-a. Back up the data directory AND the signing key, which lives outside `data/`:
+0. Stop the server with the INSTALLED binary and check that it is down (a live
+   server makes the backup torn). `status` must show `State:    stopped`:
+
+   ```bash
+   '<home>/.apra-fleet/bin/apra-fleet' stop
+   '<home>/.apra-fleet/bin/apra-fleet' status
+   ```
+
+   ```powershell
+   & '<home>\.apra-fleet\bin\apra-fleet.exe' stop
+   & '<home>\.apra-fleet\bin\apra-fleet.exe' status
+   ```
+
+a. Back up the data directory, the signing key (which lives outside `data/`) AND
+   the old binary (step b deletes it; a rollback reinstalls from this copy):
 
    ```bash
    # posix (Linux, macOS)
    cp -R '<home>/.apra-fleet/data' '<home>/.apra-fleet-data.full-install.bak'
    cp '<home>/.apra-fleet/fleet.key' '<home>/.apra-fleet-data.full-install.bak/'
+   cp '<home>/.apra-fleet/bin/apra-fleet' '<home>/.apra-fleet-data.full-install.bak/'
    ```
 
    ```powershell
    # Windows (PowerShell)
    Copy-Item -Recurse -LiteralPath '<home>\.apra-fleet\data' -Destination '<home>\.apra-fleet-data.full-install.bak'
    Copy-Item -LiteralPath '<home>\.apra-fleet\fleet.key' -Destination '<home>\.apra-fleet-data.full-install.bak\'
+   Copy-Item -LiteralPath '<home>\.apra-fleet\bin\apra-fleet.exe' -Destination '<home>\.apra-fleet-data.full-install.bak\'
    ```
 
 b. Uninstall with the INSTALLED binary (old full installs have it). This stops
@@ -466,7 +482,10 @@ f. On the orchestrator, for every member on that Unix user run `update_member`
 Run `apra-fleet uninstall --force --yes` for the member install, restore the
 backed-up data directory (`<home>/.apra-fleet-data.full-install.bak` back to
 `<home>/.apra-fleet/data`, plus `fleet.key` to `<home>/.apra-fleet/fleet.key`),
-and re-run the old full installer.
+then reinstall the PREVIOUS version from the binary copy in the backup:
+`'<home>/.apra-fleet-data.full-install.bak/apra-fleet' install --llm <provider> --force`
+(`apra-fleet.exe` on Windows). If the failure came before step b, just run
+`'<home>/.apra-fleet/bin/apra-fleet' start`.
 
 ### Evidence
 

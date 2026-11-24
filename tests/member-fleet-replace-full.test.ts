@@ -243,7 +243,7 @@ describe('replace-full: a failure after the uninstall names the step and the rol
       expect(plan.rollbackFor[step].join(' ')).not.toContain('Remove-Item');
       expect(plan.rollbackFor[step].join(' ')).not.toContain('Copy-Item -Recurse');
     }
-    expect(plan.rollbackFor.backup).toEqual([]);
+    expect(plan.rollbackFor.backup).toEqual([`& '${WINDOWS.home}\\.apra-fleet\\bin\\apra-fleet.exe' start`]);
   });
 
   it('a backup failure stops before the uninstall and says nothing was removed (no rollback needed)', async () => {
@@ -324,7 +324,7 @@ describe('replace-full: same-core stable fallback', () => {
 // ---------------------------------------------------------------------------
 
 const GITBASH: Platform = { os: 'windows', home: '/c/Users/bella', sep: '/', shell: 'gitbash', arch: 'x64' };
-const ENVELOPE = /^eval "\$\(echo ([A-Za-z0-9+/=]+) \| base64 -d\)"$/;
+const ENVELOPE = /^s=\$\(echo ([A-Za-z0-9+/=]+) \| base64 -d\) && eval "\$s"$/;
 
 /** Minimal POSIX word splitter for the plain command lines the builders emit
  *  (single-quoted or bare words; stops at the first && or ;). */
@@ -509,7 +509,7 @@ describe('ne0q: step 0 stops the member server and verifies it is down before th
     const r = await ensureMemberFleetInstall(agentFor(MACOS), h.deps, { replaceFull: true });
     expect(r).toMatchObject({ state: 'unavailable', reason: 'stop-failed' });
     expect(h.events.filter(e => !e.startsWith('transfer:'))).toEqual(['stop', 'stop-check']);
-    expect((r as { detail: string }).detail).toContain('still running after stop');
+    expect((r as { detail: string }).detail).toContain('not reported stopped after stop');
   });
 
   it('windows PowerShell: stop failure is the same typed refusal', async () => {
@@ -517,5 +517,38 @@ describe('ne0q: step 0 stops the member server and verifies it is down before th
     const r = await ensureMemberFleetInstall(agentFor(WINDOWS), h.deps, { replaceFull: true });
     expect(r).toMatchObject({ state: 'unavailable', reason: 'stop-failed' });
     expect(h.events.filter(e => !e.startsWith('transfer:'))).toEqual(['stop']);
+  });
+});
+
+describe('judge fixes on #848', () => {
+  it('a backup failure after step 0 restarts the server: rollback and detail name start', async () => {
+    const h = harness(LINUX, { failStep: 'backup' });
+    const r = await ensureMemberFleetInstall(agentFor(LINUX), h.deps, { replaceFull: true });
+    expect(r).toMatchObject({ state: 'unavailable', reason: 'replace-failed' });
+    const detail = (r as { detail: string }).detail;
+    expect(detail).toContain(`'${LINUX.home}/.apra-fleet/bin/apra-fleet' start`);
+    expect(detail).toContain('server was stopped in step 0');
+    expect(detail).not.toContain('is unchanged');
+    expect(posixPlan(LINUX).rollbackFor.backup).toEqual([`'${LINUX.home}/.apra-fleet/bin/apra-fleet' start`]);
+  });
+
+  for (const status of ['  State:    unresponsive\n', '', 'some unknown format\n']) {
+    it(`status output ${JSON.stringify(status)} is not "stopped": typed stop-failed before the backup`, async () => {
+      const h = harness(LINUX);
+      const exec = h.deps.exec;
+      h.deps.exec = async (a, raw, t) => (stepOf(decodePowerShellEncodedCommand(raw)) === 'stop-check' ? { stdout: status, stderr: '', code: 0 } : exec(a, raw, t));
+      const r = await ensureMemberFleetInstall(agentFor(LINUX), h.deps, { replaceFull: true });
+      expect(r).toMatchObject({ state: 'unavailable', reason: 'stop-failed' });
+      expect(h.events.filter(e => !e.startsWith('transfer:'))).toEqual(['stop']);
+    });
+  }
+
+  it('the envelope fails (127) when base64 is missing, instead of evaluating an empty script', () => {
+    if (process.platform === 'win32' && !GIT_BASH) return;
+    const sh = process.platform === 'win32' ? GIT_BASH! : '/bin/sh';
+    const cmd = posixPlan(LINUX).steps[0].command;
+    // base64 is not on PATH (sh itself is invoked by absolute path / builtin only).
+    const r = spawnSync(sh, ['-c', cmd], { env: { PATH: '/nonexistent' }, encoding: 'utf8' });
+    expect(r.status).not.toBe(0);
   });
 });

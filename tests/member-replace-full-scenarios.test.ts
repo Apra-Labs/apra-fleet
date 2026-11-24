@@ -68,6 +68,7 @@ function deps(w: World): MemberFleetMcpDeps {
       if (REPLACE_MARKERS.some(m => c.includes(m))) {
         if (c.includes('uninstall --force --yes')) w.installed = null;
         if (c.includes('systemctl')) return ok('__APRA_FLEET_SUPERVISOR_MOVED__\n');
+        if (c.includes("' status")) return ok('  State:    stopped\n');
         return ok('');
       }
       if (c.includes('member-install.json')) {

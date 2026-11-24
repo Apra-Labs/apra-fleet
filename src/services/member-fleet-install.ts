@@ -220,11 +220,13 @@ export function memberJoin(targetOs: TargetOS, shell: MemberShell, ...parts: str
  * with a quote and carries no user quotes, `$` or backticks, so neither sshd's
  * command-line quoting on a Windows Git Bash member nor an intermediate
  * cmd/bash layer can touch the payload (a quote-led command lost every argv
- * entry there and ran the bare binary). `eval` keeps the script's exit code.
+ * entry there and ran the bare binary). `eval` keeps the script's exit code, and
+ * the `&&` makes a missing or failing `base64` fail the command (127) instead of
+ * evaluating an empty script and reporting success.
  * `base64 -d` is already relied on for every POSIX member by execute_command.
  */
 export function wrapPosixEncoded(script: string): string {
-  return `eval "$(echo ${Buffer.from(script, 'utf8').toString('base64')} | base64 -d)"`;
+  return `s=$(echo ${Buffer.from(script, 'utf8').toString('base64')} | base64 -d) && eval "$s"`;
 }
 
 /** Pick the POSIX or PowerShell form of a member-bound command. Both are
@@ -1029,7 +1031,7 @@ export function buildReplaceFullInstallPlan(opts: {
   const rollbackFor: ReplaceFullInstallPlan['rollbackFor'] = {
     stop: [restart],
     'stop-check': [restart],
-    backup: [],
+    backup: [restart],
     uninstall: dataInPlace,
     supervisor: dataInPlace,
     'move-data': dataInPlace,
@@ -1118,7 +1120,7 @@ async function replaceFullInstall(
       };
     }
     const detail = name === 'backup'
-      ? `replacing the full install failed at ${label}: ${why}. Nothing was removed; the apra-fleet ${previousVersion} full install is unchanged`
+      ? `replacing the full install failed at ${label}: ${why}. Nothing was removed and the apra-fleet ${previousVersion} full install is intact, but its server was stopped in step 0; bring it back with: ${plan.rollbackFor[name].join('; ')}`
       : `replacing the full install failed at ${label}: ${why}. The backup is at ${plan.backupDir}. To roll back (reinstalls apra-fleet ${previousVersion} from the backup copy of its binary, not the newly staged installer), run on the member: ${plan.rollbackFor[name].join('; ')}`;
     return { state: 'unavailable', reason: 'replace-failed', detail, version: previousVersion };
   };
@@ -1132,8 +1134,8 @@ async function replaceFullInstall(
     if (r.code !== 0) {
       return failedAt(step.name, `exited ${r.code}: ${(r.stderr.trim() || r.stdout.trim()).slice(-400)}`);
     }
-    if (step.name === 'stop-check' && /State:\s+running/i.test(r.stdout)) {
-      return failedAt(step.name, `the server is still running after stop (${r.stdout.trim().slice(-200)})`);
+    if (step.name === 'stop-check' && !/State:\s+stopped/i.test(r.stdout)) {
+      return failedAt(step.name, `the server is not reported stopped after stop (status said: ${r.stdout.trim().slice(-200) || '<empty>'})`);
     }
     if (step.name === 'supervisor' && r.stdout.includes(SUPERVISOR_MOVED_SENTINEL)) supervisorMoved = true;
   }
