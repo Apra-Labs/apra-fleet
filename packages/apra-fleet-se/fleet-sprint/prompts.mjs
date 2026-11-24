@@ -64,7 +64,7 @@ export function premiumCapLine(premiumCapPct, role) {
     if (!isCapPct(premiumCapPct)) return null;
     const rule =
         `PREMIUM CAP -- this sprint's tier policy allows at most ${premiumCapPct}% of the counted task beads ` +
-        '(rounded down; escalated beads and [test] beads riding an implementation lane are not counted) to ' +
+        '(rounded up; escalated beads and [test] beads riding an implementation lane are not counted) to ' +
         'carry model tier premium.';
     if (role === 'plan-reviewer') {
         return `${rule} Count the premium task beads in scope; when they exceed the cap, return CHANGES_NEEDED ` +
@@ -89,7 +89,7 @@ export function premiumCapReplanClause(r) {
     if (!validCapReplan(r)) return null;
     return 'PREMIUM-CAP REPLAN -- this is a NARROW, targeted re-planning pass, not a full sprint plan. ' +
         `This sprint's tier policy caps premium-tier task beads at ${r.capPct}% of the counted task beads, rounded ` +
-        `down: at most ${r.allowed} of ${r.total}. The approved plan marks ${r.premiumIds.length} task bead(s) premium: ` +
+        `up: at most ${r.allowed} of ${r.total}. The approved plan marks ${r.premiumIds.length} task bead(s) premium: ` +
         `${r.premiumIds.join(', ')}. Move at least ${r.mustMove} of them to a lower tier: for each bead you lower, ` +
         'update its model metadata in place (`bd update <id> --set-metadata model=standard`). Keep premium only ' +
         'where the work genuinely needs it. A bead that is premium only because it is too large may instead be ' +

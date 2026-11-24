@@ -22,10 +22,10 @@
 //   (the planner-set model metadata; '-tier' spellings normalize the same).
 //
 // ROUNDING (premiumAllowance)
-//   allowed = floor(premiumCapPct x total / 100), computed in integers. The
-//   plan is OVER the cap when premium > allowed. Rounding DOWN means a small
-//   plan may hold no premium bead at all (cap 20% of 4 tasks allows 0): the
-//   cap is a ceiling the plan must not exceed, never one it may round past.
+//   allowed = ceil(premiumCapPct x total / 100), computed in integers. The
+//   plan is OVER the cap when premium > allowed. Rounding UP means any
+//   non-zero cap lets a small plan hold at least one premium bead (cap 20% of
+//   4 tasks allows 1); a cap of 0 still allows none.
 //
 // THE GATE (runPremiumCapGate)
 //   quality (premiumCapPct null): a no-op -- no count, no log line.
@@ -54,13 +54,13 @@ const UNCOUNTED_STATUSES = new Set(['deferred', 'tombstone']);
 const TEST_TITLE_RE = /^\s*\[test\]/i;
 
 /**
- * floor(capPct x total / 100) in integer arithmetic.
+ * ceil(capPct x total / 100) in integer arithmetic.
  * @param {number} capPct integer 0..100
  * @param {number} total counted task beads
  * @returns {number}
  */
 export function premiumAllowance(capPct, total) {
-    return Math.floor((capPct * total) / 100);
+    return Math.floor((capPct * total + 99) / 100);
 }
 
 function meta(bead) {
@@ -136,7 +136,7 @@ export function capPctToFit(count) {
 export function describePremiumCount(count) {
     const ids = count.premiumIds.length > 0 ? count.premiumIds.join(', ') : 'none';
     return `${count.premiumIds.length} of ${count.total} counted task bead(s) premium [${ids}]; ` +
-        `cap ${count.capPct}% allows ${count.allowed} (floor(${count.capPct}% x ${count.total}))`;
+        `cap ${count.capPct}% allows ${count.allowed} (ceil(${count.capPct}% x ${count.total}))`;
 }
 
 /**

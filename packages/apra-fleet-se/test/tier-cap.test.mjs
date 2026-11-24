@@ -45,7 +45,7 @@ test('count: 10 tasks with 3 premium are over a 20% cap and name exactly those 3
 });
 
 test('count: escalated beads and [test] beads riding an impl lane are excluded; a lone [test] bead is counted', () => {
-    const beads = tenTasks(2);
+    const beads = tenTasks(3);
     // Escalated: premium because the engine escalated it, not the planner.
     beads.push(task('esc', 'premium', { metadata: { tierEscalatedFrom: 'standard' } }));
     // Impl + riding [test] on the same streak, both premium.
@@ -56,10 +56,11 @@ test('count: escalated beads and [test] beads riding an impl lane are excluded; 
     const c = countPremiumCap(beads, 20);
     assert.deepEqual(c.excludedEscalated, ['esc']);
     assert.deepEqual(c.excludedRidingTests, ['ride']);
-    assert.deepEqual(c.premiumIds, ['impl', 't0', 't1']);
+    assert.deepEqual(c.premiumIds, ['impl', 't0', 't1', 't2']);
     assert.equal(c.total, 12, '10 + impl + lone');
-    assert.equal(c.allowed, 2);
+    assert.equal(c.allowed, 3, 'ceil(20% x 12)');
     assert.equal(c.over, true);
+    assert.equal(c.mustMove, 1);
 });
 
 test('count: closed tasks count (the count persists across re-plans); containers, non-task, deferred and decision beads do not', () => {
@@ -78,16 +79,32 @@ test('count: closed tasks count (the count persists across re-plans); containers
     assert.equal(c.total, 3, 'closedP, open1, child');
 });
 
-test('count: -tier spellings normalize; rounding is floor and stated in integers', () => {
+test('count: -tier spellings normalize; a 4-task plan with 1 premium bead is within a 20% cap', () => {
     const c = countPremiumCap([task('a', 'premium-tier'), task('b', 'standard'), task('c', 'standard'), task('d', 'standard')], 20);
     assert.deepEqual(c.premiumIds, ['a']);
-    assert.equal(c.allowed, 0, 'floor(20% x 4) = 0: a small plan may hold no premium bead');
+    assert.equal(c.allowed, 1, 'ceil(20% x 4) = 1: a small plan may hold one premium bead');
+    assert.equal(c.over, false);
+    assert.equal(c.mustMove, 0);
+});
+
+test('count: 4 tasks with 2 premium are over a 20% cap and must move 1', () => {
+    const c = countPremiumCap([task('a', 'premium'), task('b', 'premium'), task('c', 'standard'), task('d', 'standard')], 20);
+    assert.equal(c.allowed, 1);
     assert.equal(c.over, true);
-    assert.equal(premiumAllowance(20, 10), 2);
-    assert.equal(premiumAllowance(20, 14), 2);
-    assert.equal(premiumAllowance(20, 15), 3);
-    assert.equal(premiumAllowance(10, 9), 0);
+    assert.equal(c.mustMove, 1);
+});
+
+test('allowance: ceil(pct x total / 100) in integers', () => {
+    assert.equal(premiumAllowance(20, 4), 1);
+    assert.equal(premiumAllowance(20, 5), 1);
+    assert.equal(premiumAllowance(20, 6), 2);
+    assert.equal(premiumAllowance(0, 10), 0);
     assert.equal(premiumAllowance(0, 50), 0);
+    assert.equal(premiumAllowance(20, 0), 0);
+    assert.equal(premiumAllowance(20, 10), 2);
+    assert.equal(premiumAllowance(20, 14), 3);
+    assert.equal(premiumAllowance(20, 15), 3);
+    assert.equal(premiumAllowance(10, 9), 1);
     assert.equal(premiumAllowance(100, 7), 7);
 });
 
@@ -105,8 +122,8 @@ test('decision: names every premium bead, the cap and the three fixes', () => {
     assert.ok(d.question.includes('cap 20%'), d.question);
     assert.deepEqual(d.options.map((o) => o.id), ['a', 'b', 'c']);
     assert.match(d.options[0].text, /^Accept/);
-    assert.ok(d.options[1].text.includes('tierOverrides {"premiumCapPct": 30}'), d.options[1].text);
-    assert.equal(capPctToFit(c), 30);
+    assert.ok(d.options[1].text.includes('tierOverrides {"premiumCapPct": 21}'), d.options[1].text);
+    assert.equal(capPctToFit(c), 21);
     assert.match(d.options[2].text, /--set-metadata model=standard/);
     assert.ok(d.recommendation.length > 0);
 });
@@ -221,6 +238,7 @@ test('prompts: planner and plan-reviewer carry the cap percentage under balanced
     const r = buildPlanReviewerPrompt({ ...baseReviewer, premiumCapPct: q });
     assert.ok(!/PREMIUM.CAP/.test(p) && !/premium cap/i.test(p), 'no cap text in the quality planner prompt');
     assert.ok(!/PREMIUM.CAP/.test(r) && !/premium cap/i.test(r), 'no cap text in the quality plan-reviewer prompt');
+    assert.ok(buildPlannerPrompt({ ...basePlanner, premiumCapPct: 20 }).includes('rounded up'), 'cap line says rounded up');
     assert.equal(p, buildPlannerPrompt(basePlanner), 'quality planner prompt is byte-identical to a no-policy prompt');
     assert.equal(r, buildPlanReviewerPrompt(baseReviewer), 'quality plan-reviewer prompt is byte-identical to a no-policy prompt');
 });
@@ -232,6 +250,7 @@ test('prompts: the premium-cap re-plan names the premium beads and how many must
     assert.ok(p.includes('t0, t1, t2'));
     assert.ok(p.includes('Move at least 1 of them to a lower tier'));
     assert.ok(p.includes('at most 2 of 10'));
+    assert.ok(p.includes('rounded up') && !p.includes('rounded down'), 'replan clause says rounded up');
     assert.ok(!p.includes('DEFECTIVE ACCEPTANCE CRITERIA'));
     const r = buildPlanReviewerPrompt({ ...baseReviewer, replanScope: ['t0', 't1', 't2'], premiumCapPct: 20, premiumCapReplan });
     assert.ok(r.includes('PREMIUM-CAP REPLAN REVIEW'));
