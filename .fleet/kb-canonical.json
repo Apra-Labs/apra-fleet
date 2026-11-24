@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "962e202f8b5910fdecf6f82a46102a798f5cc4f2",
     "branch": "main",
-    "entry_count": 205
+    "entry_count": 206
   },
   "entries": [
     {
@@ -635,6 +635,37 @@
         "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs": "4276b8301bf882b9709e295893904595f2bff86c",
         "packages/apra-fleet-se/fleet-sprint/vcs-providers/bitbucket.mjs": "e812ec5afad19e11b2739690991035342855fe02",
         "packages/apra-fleet-se/fleet-sprint/vcs-providers/index.mjs": "b90e97ee49cdba5ded5877d17d88351984fe409b"
+      }
+    },
+    {
+      "id": "26d29e21-540c-409c-b1f0-68734ecc7c47",
+      "type": "knowledge",
+      "title": "VCS preflight judges a credential per channel by function, not by username",
+      "summary": "createVcsAuthPreflightCallback probes a credentialProbe provider (Bitbucket, Azure DevOps) on two channels: git ls-remote through ONLY the labelled fleet helper, and the provider REST probe via vcs_credential_exec. No-PR is predicted only when the REST channel fails; a username other than expectedUsername is one WARN.",
+      "symbols": [
+        "createVcsAuthPreflightCallback",
+        "judgeCredential",
+        "checkGitChannel",
+        "checkPrChannel",
+        "gitLsRemoteLabelledProbe",
+        "memberHomeProbe",
+        "credentialProbe"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs",
+        "packages/apra-fleet-se/fleet-sprint/se-posix.mjs",
+        "packages/apra-fleet-se/fleet-sprint/se-windows.mjs",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/azure-devops.mjs",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/bitbucket.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-24T13:47:14.191Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/se-posix.mjs": "3b0407042969cd9dfddf1b23e8f028c0ee8d8372",
+        "packages/apra-fleet-se/fleet-sprint/se-windows.mjs": "6b272877e84518facef106420b4316360f892781",
+        "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs": "2ee3357322ce103d1563d40b0a55ed266c208c64",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/azure-devops.mjs": "b717fd79466efb0438a3ebf809d498c90a1f07c3",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/bitbucket.mjs": "5e5ab465d517312b1c5962cbf6a1f4c004afc5f5"
       }
     },
     {
