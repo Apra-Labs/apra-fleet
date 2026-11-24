@@ -1112,6 +1112,10 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
                 pr = { ...pr, title: full.title || pr.title, body: full.body };
             }
             const next = { ...(updateExisting({ title: pr.title, body: pr.body }, textLimits) || {}) };
+            // The title is changed only when updateExisting returns one (it
+            // keeps a human-written title); otherwise the PR's own title is
+            // sent back unchanged, since every update builder sends a title.
+            const nextTitle = next.title || pr.title || title;
             const nextParts = bodyParts(next.body);
             if (next.body !== undefined) next.body = bodyText(next.body);
             let warned = false;
@@ -1120,7 +1124,7 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
                     ...coords(),
                     pull_request_id: pr.id,
                     payload_path: payloadPath(),
-                    title: next.title || title,
+                    title: nextTitle,
                     body: next.body !== undefined ? next.body : body,
                 });
                 if (b.descriptionTruncated && !warned) {
@@ -1130,7 +1134,7 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
                 return b;
             }, 'update-pull-request');
             if (!upd.ok) return { updated: false, updateError: upd.error, prUrl: pr.url };
-            const overflow = await publishOverflow({ prId: pr.id, prUrl: pr.url, parts: nextParts, existing: true, prTitle: next.title || title });
+            const overflow = await publishOverflow({ prId: pr.id, prUrl: pr.url, parts: nextParts, existing: true, prTitle: nextTitle });
             return { updated: true, updateError: null, prUrl: pr.url, ...(overflow ? { overflow } : {}) };
         } catch (err) {
             return { updated: false, updateError: (err && err.message) ? err.message : String(err), prUrl: null };

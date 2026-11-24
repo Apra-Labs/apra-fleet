@@ -314,10 +314,101 @@ export function parseRunHistory(body) {
 }
 
 /** `fleet-sprint [<VERDICT>]: <branch>`. PRs opened before the rename carry the
- *  older `Auto-sprint [<VERDICT>]: <branch>` form; nothing in-repo matches on the
- *  title (an existing PR is found by head branch), so both forms coexist safely. */
+ *  older `Auto-sprint [<VERDICT>]: <branch>` form; an existing PR is found by
+ *  head branch, and isFleetPrTitle() recognises both forms as fleet-written. */
 export function buildSprintPrTitle({ verdict, branch }) {
     return `fleet-sprint [${verdict}]: ${branch}`;
+}
+
+const FLEET_TITLE_RE = /^(?:fleet-sprint|Auto-sprint) \[[A-Z]+\]: /;
+
+/** Whether `title` is one fleet wrote (the `fleet-sprint [<VERDICT>]: ` prefix,
+ *  or the older `Auto-sprint [<VERDICT>]: ` one). */
+export function isFleetPrTitle(title) {
+    return FLEET_TITLE_RE.test(String(title ?? ''));
+}
+
+/**
+ * The title an update of an existing PR sends: `fleetTitle` when the PR's
+ * current title is fleet-written (or empty), otherwise the current title
+ * unchanged -- fleet never writes any title, [ABORTED] included, over a
+ * human-written one (the verdict is in the description's fleet block).
+ * @param {unknown} existingTitle
+ * @param {string} fleetTitle
+ * @returns {string}
+ */
+export function sprintPrTitleFor(existingTitle, fleetTitle) {
+    const current = String(existingTitle ?? '');
+    return !current.trim() || isFleetPrTitle(current) ? fleetTitle : current;
+}
+
+// ---------------------------------------------------------------------------
+// The fleet block
+// ---------------------------------------------------------------------------
+//
+// Fleet owns only the part of a PR description between PR_BLOCK_START and
+// PR_BLOCK_END (verdict header, merge assessment, notes, sections, run
+// history). On an update the new block replaces the old one in place and the
+// text outside it is kept byte-for-byte. A description with no block is
+// either:
+//   - empty, or an older fleet layout written before the markers existed
+//     (verdict header + run-history block, or the plain-text "Automated
+//     sprint ..." body before that): fully fleet-owned, replaced whole;
+//   - anything else (a human-written PR): every character is kept and the
+//     block is APPENDED after it, separated by a blank line.
+
+/** Versioned token of the fleet block markers. */
+export const PR_BLOCK_MARKER = 'fleet-sprint:pr-block v1';
+/** Opening line of the fleet block. */
+export const PR_BLOCK_START = `<!-- ${PR_BLOCK_MARKER} -->`;
+/** Closing line of the fleet block. */
+export const PR_BLOCK_END = `<!-- /${PR_BLOCK_MARKER} -->`;
+
+const LEGACY_FLEET_BODY_RE = /^\s*## Sprint verdict: [A-Z]+\r?\n/;
+const RUN_HISTORY_OPEN_RE = /<!-- fleet-sprint:run-history v1\r?\n/;
+// The plain-text body fleet wrote before the markdown format ("Automated
+// sprint (goal: ...)." / "Automated sprint ABORTED.").
+const PRE_FORMAT_FLEET_BODY_RE = /^Automated sprint\b/;
+
+/**
+ * Finds the fleet block in `body`: { before, block, after } (the three
+ * concatenate back to `body`), or null when it carries no complete block.
+ * The last opening marker that is followed by a closing one is taken, so a
+ * stray opening marker left above the block never captures human text.
+ * @param {unknown} body
+ */
+export function locateFleetBlock(body) {
+    const text = String(body ?? '');
+    let from = text.length;
+    while (from >= 0) {
+        const s = text.lastIndexOf(PR_BLOCK_START, from);
+        if (s < 0) return null;
+        const e = text.indexOf(PR_BLOCK_END, s + PR_BLOCK_START.length);
+        if (e >= 0) {
+            const end = e + PR_BLOCK_END.length;
+            return { before: text.slice(0, s), block: text.slice(s, end), after: text.slice(end) };
+        }
+        from = s - 1;
+    }
+    return null;
+}
+
+/**
+ * How a new fleet block goes into `previousBody`: { before, after, own }.
+ * The new description is before + block + after; `own` is the earlier
+ * fleet-owned text (run history and overflow pointer are read from it).
+ * @param {unknown} previousBody
+ */
+export function fleetBlockPlacement(previousBody) {
+    const prev = String(previousBody ?? '');
+    const loc = locateFleetBlock(prev);
+    if (loc) return { before: loc.before, after: loc.after, own: loc.block };
+    if (!prev.trim() || (LEGACY_FLEET_BODY_RE.test(prev) && RUN_HISTORY_OPEN_RE.test(prev)) || PRE_FORMAT_FLEET_BODY_RE.test(prev)) {
+        return { before: '', after: '', own: prev };
+    }
+    // A human-written description: kept whole, the block appended below it.
+    const sep = prev.endsWith('\n\n') ? '' : (prev.endsWith('\n') ? '\n' : '\n\n');
+    return { before: prev + sep, after: '', own: '' };
 }
 
 /** Markdown inline code span. Only ever applied to engine-validated tokens
@@ -360,6 +451,7 @@ export const SECTION_PRIORITY = Object.freeze({
     waited: 95,
     details: 95,
     cost: 90,
+    previousRuns: 85,
     notes: 80,
     extra: 50,
 });
@@ -708,17 +800,26 @@ export function normalizeMergeAssessment(raw) {
  *   collectWaitEntries), rendered as one "Waited this run" line after the
  *   set-aside section; omitted when empty
  * @param {string} [opts.costAnalysis] engine-computed cost block, rendered in a fenced Cost section
- * @param {string} [opts.previousBody] the existing PR's body, for history carry-forward
+ * @param {string} [opts.previousBody] the existing PR's body. Fleet owns only
+ *   its marked block (PR_BLOCK_START..PR_BLOCK_END, see fleetBlockPlacement):
+ *   the new block replaces the old one in place, text outside it is kept
+ *   byte-for-byte, and a human-written body with no block keeps all its text
+ *   with the block appended. Run history is carried forward from the old
+ *   block.
  * @param {number} [opts.maxLength] the description limit of the provider the
  *   PR is raised on (its descriptor's descriptionMaxLength, see
  *   vcs-module.mjs getProviderTextLimits); PR_DESCRIPTION_MAX_LENGTH when
- *   omitted
+ *   omitted. The fleet block's budget is this limit minus the length of the
+ *   text outside the block; under a budget smaller than the frame the
+ *   visible "Previous runs" list goes first, then the oldest hidden history
+ *   entries
  * @param {number} [opts.commentMaxLength] the same provider's PR comment
  *   limit (commentMaxLength); the overflow is split into comments within it
  * @returns {{ body: string, overflow: string, notes: string, comments: string[],
  *   notPosted: number, failedBody: string|null, failedBodyFor: (posted: number) => string|null,
  *   previousHadOverflow: boolean }}
- *   `body` is the description (<= maxLength); `notes` the full sanitized
+ *   `body` is the whole description (the fleet block among the text outside
+ *   it; <= maxLength whenever the frame fits the block budget); `notes` the full sanitized
  *   notes; `overflow` the part of `notes` the description could not carry
  *   ('' when it all fits) -- the section in `body` holds exactly
  *   notes.slice(0, notes.length - overflow.length), so nothing is ever
@@ -739,12 +840,19 @@ export function buildSprintPrBody({
     const v = VERDICTS.has(verdict) ? verdict : 'FAIL';
     const run = normalizeRunId(runId);
     const stamp = runStamp(now);
+    // Fleet writes only its own block; text outside it is kept byte-for-byte
+    // and its length comes off the description budget.
+    const placement = fleetBlockPlacement(previousBody);
+    const blockMax = Math.max(0, maxLength - placement.before.length - placement.after.length);
     const history = [{ run, date: stamp, verdict: v }];
-    for (const e of parseRunHistory(previousBody)) {
+    for (const e of parseRunHistory(placement.own)) {
         if (history.length >= RUN_HISTORY_MAX_ENTRIES) break;
         history.push(e);
     }
     const previous = history.slice(1);
+    // Hidden history entries written; only lowered when even the frame does
+    // not fit the budget (a long description outside the fleet block).
+    let historyKeep = history.length;
 
     const headTop = [
         `## Sprint verdict: ${v}`,
@@ -758,17 +866,17 @@ export function buildSprintPrBody({
     // The overflow pointer line, when set, is the description's last visible
     // line, just above the hidden run-history block.
     let pointer = '';
-    const footer = () => [
+    const footer = (previousRuns) => [
         '---',
         '',
         HUMAN_REVIEW_LINE,
-        previous.length ? '\n### Previous runs\n' : null,
-        previous.length ? previous.map((e) => `- ${codeSpan(e.run)} (${e.date}): ${e.verdict}`).join('\n') : null,
+        previousRuns ? '\n### Previous runs\n' : null,
+        previousRuns || null,
         pointer ? '' : null,
         pointer || null,
         '',
         `<!-- ${RUN_HISTORY_MARKER}`,
-        JSON.stringify(history),
+        JSON.stringify(history.slice(0, historyKeep)),
         '-->',
     ].filter((l) => l !== null);
 
@@ -805,12 +913,15 @@ export function buildSprintPrBody({
             t.details || null,
             t.details ? '' : null,
             cost ? `### Cost\n\n${costFence}\n${cost}\n${costFence}\n` : null,
-            ...footer(),
+            ...footer(t['previous-runs']),
         ].filter((l) => l !== null).join('\n');
         // Blank lines around the notes keep them their own block: notes ending
         // in a paragraph directly above '---' would otherwise turn into a heading.
-        return `${head.join('\n')}\n${t.notes}${extraBlocks}\n${tail}`;
+        return `${PR_BLOCK_START}\n${head.join('\n')}\n${t.notes}${extraBlocks}\n${tail}\n${PR_BLOCK_END}`;
     };
+    // The whole description: the fleet block in its place among the text
+    // outside it.
+    const describe = (t) => `${placement.before}${render(t)}${placement.after}`;
 
     const cleanNotes = sanitizePrMarkdown(notes);
     const waitedLine = formatWaitedLine(waited);
@@ -824,7 +935,7 @@ export function buildSprintPrBody({
     };
     const notesOmitted = '*[... reviewer notes continue past the description limit -- see the end of this description ...]*';
     const fit = () => fitSectionsToBudget({
-        maxLength,
+        maxLength: blockMax,
         render,
         sections: [
             { id: 'merge-assessment', priority: SECTION_PRIORITY.mergeAssessment, text: renderMergeAssessment(mergeAssessment, mergeAssessmentIncomplete) },
@@ -845,10 +956,27 @@ export function buildSprintPrBody({
             { id: 'waited', priority: SECTION_PRIORITY.waited, text: waitedLine ? inline(waitedLine) : '' },
             { id: 'details', priority: SECTION_PRIORITY.details, text: (details || []).filter(Boolean).map((d) => `- ${inline(d)}`).join('\n') },
             { id: 'cost', priority: SECTION_PRIORITY.cost, text: sanitizePrMarkdown(costAnalysis) },
+            {
+                id: 'previous-runs',
+                priority: SECTION_PRIORITY.previousRuns,
+                text: previous.map((e) => `- ${codeSpan(e.run)} (${e.date}): ${e.verdict}`).join('\n'),
+                // All or nothing: the hidden block keeps the history anyway.
+                hardClip: () => '',
+            },
         ],
     });
+    // Last resort when the frame alone is over the budget: drop the oldest
+    // hidden history entries (the current run always stays).
+    const fitBlock = () => {
+        let r = fit();
+        while (r.body.length > blockMax && historyKeep > 1) {
+            historyKeep--;
+            r = fit();
+        }
+        return r;
+    };
     const overflowOf = (t) => cleanNotes.slice(cleanNotes ? (notesUsed.get(t.notes) ?? 0) : 0);
-    let { texts } = fit();
+    let { texts } = fitBlock();
     let overflow = overflowOf(texts);
     let comments = [];
     let notPosted = 0;
@@ -857,15 +985,15 @@ export function buildSprintPrBody({
         // Re-fit with the longest pointer line reserved, so whichever pointer
         // the description ends up with still fits maxLength.
         pointer = overflowFailedPointer(cleanNotes.length, 9999, 99999);
-        ({ texts } = fit());
+        ({ texts } = fitBlock());
         overflow = overflowOf(texts);
         ({ comments, notPosted } = buildOverflowComments(overflow, { commentMaxLength: commentMaxLength || PR_DESCRIPTION_MAX_LENGTH }));
         pointer = overflowFailedPointer(overflow.length);
-        failedBody = render(texts);
+        failedBody = describe(texts);
         if (comments.length) pointer = overflowPointer(comments.length);
     }
     return {
-        body: render(texts),
+        body: describe(texts),
         overflow,
         notes: cleanNotes,
         comments,
@@ -877,8 +1005,8 @@ export function buildSprintPrBody({
             if (!failedBody || !(posted > 0) || posted >= comments.length) return failedBody;
             const kept = pointer;
             pointer = overflowFailedPointer(overflow.length, posted, comments.length);
-            try { return render(texts); } finally { pointer = kept; }
+            try { return describe(texts); } finally { pointer = kept; }
         },
-        previousHadOverflow: bodyHasOverflowPointer(previousBody),
+        previousHadOverflow: bodyHasOverflowPointer(placement.own),
     };
 }

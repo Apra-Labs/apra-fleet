@@ -32,7 +32,7 @@ import {
 import { ApraFleet } from '@apralabs/apra-fleet-client';
 import { resolveProvider, capabilities as vcsCapabilities } from './vcs-module.mjs';
 import { raiseVcsPrForMember, PR_SKIPPED_NO_MCP_CLIENT } from './vcs-auth.mjs';
-import { buildSprintPrBody, buildKbChangesSection } from './pr-body.mjs';
+import { buildSprintPrBody, buildKbChangesSection, sprintPrTitleFor } from './pr-body.mjs';
 import {
     findDoltDivergedCause, runGitStep, sanitizePrText, stageCommandBodyMemberSide, SAFE_TEXT_RE,
 } from './runner.js';
@@ -641,7 +641,10 @@ export async function finalizeAbort({ error, branch, baseBranch, member, command
         // by shelling out to `member`, which may be backlogMember and
         // have no git checkout of its own to read a remote from.
         remoteUrlOverride: originUrl,
-        updateExisting: ({ body: oldBody }, limits) => ({ title: prTitle, body: buildAbortBody(oldBody, limits) }),
+        // Only fleet's own block of the description is rewritten, and the
+        // [ABORTED] title only replaces a fleet-written title -- never a human
+        // one; the abort status is in the block.
+        updateExisting: ({ title: oldTitle, body: oldBody }, limits) => ({ title: sprintPrTitleFor(oldTitle, prTitle), body: buildAbortBody(oldBody, limits) }),
     });
     if (lastAbortBody && lastAbortBody.overflow) {
         log(`finalizeAbort: [Publish Abort PR] abort details are ${lastAbortBody.notes.length} characters; ${lastAbortBody.overflow.length} did not fit the PR description and continue in ${lastAbortBody.comments.length} PR comment(s)${lastAbortBody.notPosted ? ` (${lastAbortBody.notPosted} characters past the comment ceiling are not posted)` : ''}. Full abort details:\n${lastAbortBody.notes}`);

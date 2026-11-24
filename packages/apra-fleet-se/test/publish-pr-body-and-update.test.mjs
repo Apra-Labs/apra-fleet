@@ -55,6 +55,7 @@ const NOTES = [
 const NOW = new Date('2026-10-01T09:30:00Z');
 
 const EXPECTED_BODY = [
+    '<!-- fleet-sprint:pr-block v1 -->',
     '## Sprint verdict: PASS',
     '',
     '- **Goal:** Ship the widget store',
@@ -86,6 +87,7 @@ const EXPECTED_BODY = [
     '<!-- fleet-sprint:run-history v1',
     '[{"run":"run-2","date":"2026-10-01T09:30Z","verdict":"PASS"}]',
     '-->',
+    '<!-- /fleet-sprint:pr-block v1 -->',
 ].join('\n');
 
 function sampleBody(extra = {}) {
@@ -179,7 +181,7 @@ describe('sprint PR body (markdown)', () => {
             maxLength: 3500,
         });
         const b = parts.body;
-        assert.ok(b.startsWith('## Sprint verdict: FAIL'), b.slice(0, 80));
+        assert.ok(b.startsWith('<!-- fleet-sprint:pr-block v1 -->\n## Sprint verdict: FAIL'), b.slice(0, 80));
         const iv = b.indexOf('## Sprint verdict');
         const ia = b.indexOf('### Merge assessment');
         const in_ = b.indexOf('### Reviewer notes');
@@ -219,7 +221,7 @@ describe('run history marker round-trip', () => {
             { run: 'run-1', date: '2026-09-22T08:00Z', verdict: 'ABORTED' },
         ]);
         assert.ok(run3.includes('### Previous runs\n\n- `run-2` (2026-09-23T08:00Z): FAIL\n- `run-1` (2026-09-22T08:00Z): ABORTED'));
-        assert.ok(run3.startsWith('## Sprint verdict: PASS'));
+        assert.ok(run3.startsWith('<!-- fleet-sprint:pr-block v1 -->\n## Sprint verdict: PASS'));
     });
 
     test('an old body WITHOUT the marker (pre-format PR) is rewritten cleanly with a fresh history', () => {
@@ -391,7 +393,8 @@ const ASSESSMENT = Object.freeze({
 
 /** The exact run-history marker block a body built at NOW for `run` ends with. */
 function markerBlock(run, verdict = 'PASS') {
-    return `<!-- ${RUN_HISTORY_MARKER}\n${JSON.stringify([{ run, date: '2026-10-01T09:30Z', verdict }])}\n-->`;
+    // The run-history block, then the fleet block's closing marker.
+    return `<!-- ${RUN_HISTORY_MARKER}\n${JSON.stringify([{ run, date: '2026-10-01T09:30Z', verdict }])}\n-->\n<!-- /fleet-sprint:pr-block v1 -->`;
 }
 
 describe('sprint PR body: Merge assessment section', () => {
@@ -612,11 +615,11 @@ describe('Publish PR: a relaunch rewrites the existing PR for the new verdict', 
         const { logs } = await publish({ gh, verdict: 'PASS', notes: 'All good.\n- verified', runId: 'run-2', member: 'pub-fail-pass' });
         assert.deepEqual(gh.calls, ['POST', 'POST', 'GET', 'PATCH']);
         assert.equal(gh.pr.title, 'fleet-sprint [PASS]: feat/x');
-        assert.ok(gh.pr.body.startsWith('## Sprint verdict: PASS'));
+        assert.ok(gh.pr.body.startsWith('<!-- fleet-sprint:pr-block v1 -->\n## Sprint verdict: PASS'));
         assert.ok(gh.pr.body.includes('All good.\n- verified'));
         assert.ok(!gh.pr.body.includes('bead 1 open'), 'the old run\'s notes are replaced, not appended');
         assert.deepEqual(parseRunHistory(gh.pr.body).map((e) => `${e.run}:${e.verdict}`), ['run-2:PASS', 'run-1:FAIL']);
-        assert.ok(logs.some((m) => m.includes('already exists') && m.includes('updated its title and body') && m.includes('(PASS)')), JSON.stringify(logs));
+        assert.ok(logs.some((m) => m.includes('already exists') && m.includes('updated its fleet block') && m.includes('(PASS)')), JSON.stringify(logs));
     });
 
     test('the Harvest cost block reaches the created PR body', async () => {
@@ -630,7 +633,7 @@ describe('Publish PR: a relaunch rewrites the existing PR for the new verdict', 
         await publish({ gh, verdict: 'PASS', notes: 'fine', runId: 'run-a', member: 'pub-pass-fail' });
         await publish({ gh, verdict: 'FAIL', notes: 'regressed', runId: 'run-b', member: 'pub-pass-fail' });
         assert.equal(gh.pr.title, 'fleet-sprint [FAIL]: feat/x');
-        assert.ok(gh.pr.body.startsWith('## Sprint verdict: FAIL'));
+        assert.ok(gh.pr.body.startsWith('<!-- fleet-sprint:pr-block v1 -->\n## Sprint verdict: FAIL'));
         assert.deepEqual(parseRunHistory(gh.pr.body).map((e) => e.verdict), ['FAIL', 'PASS']);
     });
 
@@ -690,7 +693,7 @@ describe('finalizeAbort: an abort on a branch with an existing PR rewrites it as
         assert.equal(result.reason, 'already-exists');
         assert.deepEqual(gh.calls, ['POST', 'POST', 'GET', 'PATCH']);
         assert.equal(gh.pr.title, 'fleet-sprint [ABORTED]: feat/x');
-        assert.ok(gh.pr.body.startsWith('## Sprint verdict: ABORTED'));
+        assert.ok(gh.pr.body.startsWith('<!-- fleet-sprint:pr-block v1 -->\n## Sprint verdict: ABORTED'));
         assert.ok(gh.pr.body.includes('### Abort details') && gh.pr.body.includes('- Error code: SPRINT_PLAN_REJECTED'));
         assert.deepEqual(parseRunHistory(gh.pr.body).map((e) => `${e.run}:${e.verdict}`), ['run-abort:ABORTED', 'run-ok:PASS']);
         assert.ok(logs.some((m) => m.includes('updated the existing PR') && m.includes('(ABORTED)')), JSON.stringify(logs));

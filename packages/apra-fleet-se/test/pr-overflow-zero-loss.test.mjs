@@ -235,7 +235,7 @@ describe('zero reviewer-note loss per provider with a 20k-character final review
             const body = fake.pr.body;
 
             assert.ok(body.length <= descriptionMaxLength, `${provider}: description ${body.length} > ${descriptionMaxLength}`);
-            assert.ok(body.startsWith('## Sprint verdict: PASS'), 'the description starts with the verdict');
+            assert.ok(body.startsWith('<!-- fleet-sprint:pr-block v1 -->\n## Sprint verdict: PASS'), 'the description starts with the verdict');
             assert.ok(body.indexOf('### Merge assessment') < body.indexOf('### Reviewer notes'), 'merge assessment before the notes');
             assert.deepEqual(parseRunHistory(body).map((e) => e.run), ['run-1'], 'run-history marker block intact');
             assert.ok(body.trimEnd().endsWith('-->'), 'the hidden marker block closes the body');
@@ -347,7 +347,7 @@ describe('the abort PR path uses the same overflow behaviour', () => {
         });
         assert.equal(result.reason, 'aborted-pr-created', JSON.stringify(result));
         const body = fake.pr.body;
-        assert.ok(body.startsWith('## Sprint verdict: ABORTED'));
+        assert.ok(body.startsWith('<!-- fleet-sprint:pr-block v1 -->\n## Sprint verdict: ABORTED'));
         assert.ok(body.length <= getProviderTextLimits('azure-devops').descriptionMaxLength);
         const comments = fake.overflowComments();
         assert.ok(comments.length >= 1, 'abort details overflow into comments');
@@ -371,7 +371,7 @@ describe('github: a final review past the 60000-character description limit', ()
         const body = fake.pr.body;
 
         assert.ok(body.length <= descriptionMaxLength, `description ${body.length} > ${descriptionMaxLength}`);
-        assert.ok(body.startsWith('## Sprint verdict: PASS'), 'the description starts with the verdict');
+        assert.ok(body.startsWith('<!-- fleet-sprint:pr-block v1 -->\n## Sprint verdict: PASS'), 'the description starts with the verdict');
         const ma = body.indexOf('### Merge assessment');
         assert.ok(ma > 0 && ma < body.indexOf('### Reviewer notes'), 'merge assessment right after the verdict, before the notes');
         assert.deepEqual(parseRunHistory(body).map((e) => e.run), ['run-1'], 'run-history marker block intact');

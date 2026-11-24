@@ -256,7 +256,7 @@ test('finalizeAbort (Azure DevOps): an existing PR is found and rewritten to the
     check(!!patched && /\/pullrequests\/777\?api-version=7\.1$/.test(patched.url), `Expected a PATCH of PR 777, got: ${JSON.stringify(patched)}`);
     check(patched.payload.title === `fleet-sprint [ABORTED]: ${branch}`, `Expected the ABORTED title, got: ${patched.payload.title}`);
     check(
-        patched.payload.description.startsWith('## Sprint verdict: ABORTED')
+        patched.payload.description.startsWith('<!-- fleet-sprint:pr-block v1 -->\n## Sprint verdict: ABORTED')
             && patched.payload.description.includes('- `run-earlier` (2026-09-30T08:00Z): PASS'),
         `Expected the rewritten description with the earlier run carried forward, got: ${patched.payload.description}`,
     );

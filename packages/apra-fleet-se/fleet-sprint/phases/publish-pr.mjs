@@ -69,7 +69,7 @@ import { CommandError } from '@apralabs/apra-fleet-workflow';
 import { ApraFleet } from '@apralabs/apra-fleet-client';
 import { capabilities as vcsCapabilities } from '../vcs-module.mjs';
 import { raiseVcsPrForMember } from '../vcs-auth.mjs';
-import { buildSprintPrBody, buildSprintPrTitle, buildKbChangesSection } from '../pr-body.mjs';
+import { buildSprintPrBody, buildSprintPrTitle, buildKbChangesSection, sprintPrTitleFor } from '../pr-body.mjs';
 import { DoltSync } from '../dolt-sync.mjs';
 
 /** Reason recorded when beads changes still have not reached the shared remote
@@ -427,7 +427,9 @@ export async function runPublishPrPhase({
                 // A relaunch on a branch that already has a PR rewrites that
                 // PR's title and body for THIS run's verdict, carrying the
                 // earlier runs forward from the old body's history block.
-                updateExisting: ({ body: oldBody }, limits) => ({ title: prTitle, body: buildBody(oldBody, limits) }),
+                // Fleet rewrites only its own block of the description, and the
+                // title only when fleet wrote it (a human title is kept).
+                updateExisting: ({ title: oldTitle, body: oldBody }, limits) => ({ title: sprintPrTitleFor(oldTitle, prTitle), body: buildBody(oldBody, limits) }),
             });
             if (lastBody && lastBody.overflow) {
                 log(`[Publish PR] reviewer notes are ${lastBody.notes.length} characters; ${lastBody.overflow.length} did not fit the PR description and continue in ${lastBody.comments.length} PR comment(s)${lastBody.notPosted ? ` (${lastBody.notPosted} characters past the comment ceiling are not posted)` : ''}. Full reviewer notes:\n${lastBody.notes}`);
@@ -460,7 +462,7 @@ export async function runPublishPrPhase({
                 }
             } else if (prResult.alreadyExists) {
                 if (prResult.updated) {
-                    log(`Publish PR: a PR for branch '${validated.branch}' already exists -- updated its title and body to this run's verdict (${finalVerdictLabel})${prResult.prUrl ? `: ${prResult.prUrl}` : ''}.`);
+                    log(`Publish PR: a PR for branch '${validated.branch}' already exists -- updated its fleet block (and its title, when fleet wrote it) to this run's verdict (${finalVerdictLabel})${prResult.prUrl ? `: ${prResult.prUrl}` : ''}.`);
                 } else {
                     log(`[Publish PR] WARNING: a PR for branch '${validated.branch}' already exists but could NOT be updated to this run's verdict (${finalVerdictLabel}) -- its title/body may still show an earlier run's verdict; update it by hand. Cause: ${prResult.updateError || '(unknown)'}`);
                 }

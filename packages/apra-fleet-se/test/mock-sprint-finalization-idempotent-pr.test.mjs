@@ -70,7 +70,7 @@ test('mock sprint: re-running finalization against the same branch is idempotent
     // the title carries this run's verdict and the body's run history keeps
     // run1 as a previous run.
     check(
-        idemPrRun2.logs.some((m) => m.includes('already exists') && m.includes('updated its title and body')),
+        idemPrRun2.logs.some((m) => m.includes('already exists') && m.includes('updated its fleet block')),
         `Expected a logged message noting the existing PR was updated to this run's verdict, logs: ${JSON.stringify(idemPrRun2.logs)}`
     );
     check(

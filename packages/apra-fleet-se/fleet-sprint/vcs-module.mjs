@@ -108,8 +108,9 @@ export function buildCreatePrCommand(params) {
 
 /**
  * Shortens `body` to at most `max` characters WITHOUT cutting the hidden
- * HTML comment block it ends with (the sprint PR body's run-history marker
- * block, which the next run parses back): the text before that block is
+ * HTML comment blocks it ends with (the sprint PR body's run-history marker
+ * block, which the next run parses back, and the fleet block's closing
+ * marker after it -- consecutive trailing blocks are one tail): the text before that block is
  * shortened instead. A body that does not end with such a block is cut to
  * its first `max` characters. Throws an ERROR when the trailing block alone
  * does not fit -- an assertion, never a cut through the block. Pure.
@@ -124,7 +125,17 @@ export function capDescriptionPreservingHiddenTail(body, max) {
     const open = trimmed.endsWith('-->') ? trimmed.lastIndexOf('<!--') : -1;
     if (open < 0) return text.slice(0, max);
     const lineStart = text.lastIndexOf('\n', open);
-    const tailStart = lineStart >= 0 ? lineStart : open;
+    let tailStart = lineStart >= 0 ? lineStart : open;
+    // A run of hidden blocks at the end (the sprint body's run-history block
+    // followed by the fleet block's closing marker) is one tail.
+    for (;;) {
+        const head = text.slice(0, tailStart).replace(/\s+$/, '');
+        if (!head.endsWith('-->')) break;
+        const prevOpen = head.lastIndexOf('<!--');
+        if (prevOpen < 0) break;
+        const prevLine = text.lastIndexOf('\n', prevOpen);
+        tailStart = prevLine >= 0 ? prevLine : prevOpen;
+    }
     const tail = text.slice(tailStart);
     if (tail.length > max) {
         throw new Error(`ERROR: VCSModule: the PR description's trailing hidden block is ${tail.length} characters, over the ${max}-character description limit on its own -- refusing to cut it.`);
