@@ -213,6 +213,60 @@ start/stop/restart/auto-start-on-login procedures, and `docs/supervisor-api.md`
 in this folder for the API's operational semantics -- both are fully generic,
 nothing there is apra-fleet-specific either.
 
+### Optional: remote users through an authenticating front (`trusted-front`)
+
+By default (`--auth none`) the supervisor has no user identity: anything that
+can reach its port is the local operator. To let remote users in, run an
+authenticating front on the same machine (any process that follows the front
+contract in `supervisor-auth.md`: it signs users in, maps them to the roles
+`viewer` / `operator` / `admin`, and signs every request it forwards) and
+start the supervisor in `trusted-front` mode, bound to loopback:
+
+```bash
+node ~/.apra-fleet/workflows/fleet-sprint/bin/serve.mjs \
+  --auth trusted-front \
+  --front-jwks /path/to/front-public.jwks.json \
+  --front-issuer https://front.example.com \
+  --front-audience fleet-supervisor
+```
+```powershell
+node "$HOME\.apra-fleet\workflows\fleet-sprint\bin\serve.mjs" --auth trusted-front `
+  --front-jwks "C:\path\to\front-public.jwks.json" --front-issuer https://front.example.com
+```
+
+The same settings can come from `FLEET_SUPERVISOR_AUTH`,
+`FLEET_SUPERVISOR_FRONT_JWKS`, `FLEET_SUPERVISOR_FRONT_ISSUER` and
+`FLEET_SUPERVISOR_FRONT_AUDIENCE` (flags win). The JWKS file holds the
+front's PUBLIC EC P-256 key(s) only, for example:
+
+```json
+{ "keys": [ { "kty": "EC", "crv": "P-256", "kid": "front-key-1", "alg": "ES256", "use": "sig", "x": "<base64url>", "y": "<base64url>" } ] }
+```
+
+To rotate, add the new key to the file, switch the front to it, then remove
+the old one; the supervisor re-reads the file when it changes, no restart
+needed. While the file is missing or unparseable every signed request is
+refused (`401`); unsigned loopback callers are unaffected.
+
+The supervisor refuses to start in this mode with `--host` set to anything
+but a loopback address, or without the JWKS path or the issuer; the error
+names the missing setting. Sprint children, local scripts and the fleet skills
+keep reaching it over loopback with no token. Check the wiring with:
+
+```bash
+curl -s http://127.0.0.1:8787/api/whoami    # local caller: {"sub":"local",...,"roles":["admin"],"mode":"trusted-front"}
+```
+
+Through the front, `GET /api/whoami` shows the signed-in user and roles, and
+the dashboard header says "Signed in as ...". Roles: `viewer` sees the
+dashboard, live views and history; `operator` also launches, stops, pauses and
+resumes sprints, answers decisions, reads raw logs and sees the backlog;
+`admin` also force-releases reservations (the dashboard's Stop/Restart buttons)
+and shuts the supervisor down. Every mutating request through the front is
+logged as `[audit] <METHOD> "<path>" sub="<user>" status=<code>`, and
+launches/stops record `launchedBy`/`stoppedBy` on the sprint's records. See
+`supervisor-auth.md` for the full design and the front contract.
+
 ## Step 5 -- Launch your first sprint
 
 ```bash

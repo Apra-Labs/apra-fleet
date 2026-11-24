@@ -114,6 +114,14 @@ export const LEDGER_FILENAME = 'reservations.json';
  *                                                         the last successful bd sync,
  *                                                         or null if never synced.
  */
+/** An audit actor: `{ sub, name }` (docs/supervisor-auth.md). */
+const ACTOR_SCHEMA = Object.freeze({
+    type: 'object',
+    required: ['sub'],
+    additionalProperties: false,
+    properties: { sub: { type: 'string' }, name: { type: ['string', 'null'] } },
+});
+
 export const LEDGER_SCHEMA = Object.freeze({
     $id: 'apra-fleet-se/supervisor-reservation-ledger@1',
     type: 'object',
@@ -151,6 +159,11 @@ export const LEDGER_SCHEMA = Object.freeze({
                     exitedAt: { type: ['string', 'null'] },
                     // apra-fleet-ou7.1: same optional/null-defaulted convention.
                     logPath: { type: ['string', 'null'] },
+                    // docs/supervisor-auth.md audit: who launched / asked to
+                    // stop this sprint. Optional and absent (not null) on
+                    // entries that predate the fields.
+                    launchedBy: ACTOR_SCHEMA,
+                    stoppedBy: ACTOR_SCHEMA,
                 },
             },
         },
@@ -257,7 +270,31 @@ function normalizeReservation(input, now) {
     // predating this field, same convention as above.
     const beads = normalizeBeadsSummary(input.beads);
 
-    return { members, issueRoots, childPid, reservedAt, branch, base, goal, exitCode, signal, exitedAt, logPath, beads };
+    // docs/supervisor-auth.md audit fields: only present when recorded, so an
+    // entry (and every reader's view of it) without them is unchanged.
+    const launchedBy = normalizeActor(input.launchedBy, 'launchedBy');
+    const stoppedBy = normalizeActor(input.stoppedBy, 'stoppedBy');
+
+    return {
+        members, issueRoots, childPid, reservedAt, branch, base, goal, exitCode, signal, exitedAt, logPath, beads,
+        ...(launchedBy ? { launchedBy } : {}),
+        ...(stoppedBy ? { stoppedBy } : {}),
+    };
+}
+
+/**
+ * An audit actor `{ sub, name }`, or null when absent.
+ * @param {unknown} v
+ * @param {string} label
+ * @returns {{ sub: string, name: string|null }|null}
+ */
+export function normalizeActor(v, label = 'actor') {
+    if (v === undefined || v === null) return null;
+    if (typeof v !== 'object' || Array.isArray(v) || typeof v.sub !== 'string' || v.sub.length === 0) {
+        throw new TypeError(`${label} must be an object with a non-empty string sub`);
+    }
+    if (v.name !== undefined && v.name !== null && typeof v.name !== 'string') throw new TypeError(`${label}.name must be a string or null`);
+    return { sub: v.sub, name: v.name ?? null };
 }
 
 /** @param {unknown} v @returns {{ dir: string, prefix: string, syncRemote: string, repoRemote: string }|null} */
@@ -288,6 +325,8 @@ function cloneReservation(r) {
         logPath: r.logPath ?? null,
         exitedAt: r.exitedAt ?? null,
         beads: r.beads ? { ...r.beads } : null,
+        ...(r.launchedBy ? { launchedBy: { ...r.launchedBy } } : {}),
+        ...(r.stoppedBy ? { stoppedBy: { ...r.stoppedBy } } : {}),
     };
 }
 
@@ -568,6 +607,31 @@ export function createLedger(deps = {}) {
                 r.exitCode = info.exitCode === undefined ? null : info.exitCode;
                 r.signal = info.signal === undefined ? null : info.signal;
                 r.exitedAt = typeof info.at === 'string' ? info.at : now();
+                updated = r;
+            });
+            return cloneReservation(updated);
+        },
+
+        /**
+         * Record who asked a live sprint to stop (docs/supervisor-auth.md
+         * audit) on its still-held reservation. Does not release it.
+         * @param {string} sprintId
+         * @param {{ sub: string, name?: string|null }} actor
+         * @returns {Promise<Reservation>}
+         */
+        async recordStop(sprintId, actor) {
+            if (typeof sprintId !== 'string' || sprintId.length === 0) {
+                throw new TypeError('recordStop() requires a non-empty sprintId');
+            }
+            const stoppedBy = normalizeActor(actor, 'stoppedBy');
+            if (!stoppedBy) throw new TypeError('recordStop() requires an actor');
+            let updated;
+            await transact((draft) => {
+                const r = draft.get(sprintId);
+                if (!r) {
+                    throw new Error(`cannot record stop: sprint ${sprintId} holds no reservation`);
+                }
+                r.stoppedBy = stoppedBy;
                 updated = r;
             });
             return cloneReservation(updated);

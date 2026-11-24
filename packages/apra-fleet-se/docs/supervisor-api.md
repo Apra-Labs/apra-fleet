@@ -69,6 +69,52 @@ so the child sees it as a same-host, Origin-less call.
 
 See also the upgrade notes in `supervisor-setup-guide.md` ("Upgrade notes: the request guard").
 
+## Authentication: `none` and `trusted-front`
+
+Design: `supervisor-auth.md`. Source: `src/supervisor/auth.mjs` (verifier, caller
+classification, route policy), applied by `server.mjs`'s dispatcher before the request guard
+above and before any handler.
+
+- **`none` (default)** -- every caller is the local operator (`local`, all roles), exactly as
+  before. `X-Fleet-Identity` and `X-Forwarded-Prefix` are ignored entirely.
+- **`trusted-front`** (`--auth trusted-front` or `FLEET_SUPERVISOR_AUTH=trusted-front`, with
+  `--front-jwks <path>` / `FLEET_SUPERVISOR_FRONT_JWKS` and `--front-issuer <iss>` /
+  `FLEET_SUPERVISOR_FRONT_ISSUER`; `--front-audience` / `FLEET_SUPERVISOR_FRONT_AUDIENCE`
+  defaults to `fleet-supervisor`). The supervisor refuses to start unless bound to loopback and
+  unless the JWKS path and issuer are set; the error names the missing setting. Then:
+  - a request carrying `X-Fleet-Identity` (an ES256 compact JWS signed by the front) must
+    verify, else `401 {"error":"unauthenticated"}` -- always that exact body, whatever failed;
+  - an unsigned request from a loopback address is the local operator, with full access (sprint
+    children, local scripts and skills keep working without tokens);
+  - an unsigned request from any other address is `401`.
+- **Route policy** (verified callers only): every route has a minimum role (`viewer` <
+  `operator` < `admin`) or is local-only. Too low a role is `403
+  {"error":"forbidden","requiredRole":"<role>"}`; a local-only route (`/api/dolt-push-mutex*`,
+  `/api/child-id-allocator*`) or a route not in the table is `403 {"error":"forbidden"}`. The
+  table is in `supervisor-auth.md` ("Roles and route policy") and `ROUTE_POLICY` in `auth.mjs`.
+- **Request guard for verified callers**: the Host, Origin, `Sec-Fetch-Site` and token checks
+  describe the browser-to-front hop and are skipped; the JSON content-type rule still applies.
+  Unsigned requests are guarded exactly as described above.
+- **`X-Forwarded-Prefix`**: honoured only with a verified assertion and only if it matches
+  `^(/[A-Za-z0-9._~-]+)+$` (no `.`/`..` segments); then the dashboard, live and history pages
+  render every root-absolute URL under that prefix.
+- **Audit**: `launchedBy` / `stoppedBy` (`{ sub, name }`, `local` in `none` mode) on ledger
+  reservations and on force-release / auto-release history events; one
+  `[audit] <METHOD> "<path>" sub="<sub>" status=<code>` supervisor log line per mutating request
+  that carried an assertion.
+
+### GET /api/whoami
+
+Returns the caller as the supervisor sees it:
+
+```json
+{ "sub": "local", "name": "local", "email": null, "roles": ["admin"], "mode": "none" }
+```
+
+In `trusted-front` mode a verified caller gets its own `sub`, `name`, `email` and known
+`roles` (possibly empty) and `mode: "trusted-front"`; any verified identity may call it, even
+one with no role. Unsigned loopback callers get the local operator as above.
+
 ## POST /api/sprints: the full precondition order
 
 `launch()` in `api.mjs` runs these checks strictly in order; any failure
@@ -495,10 +541,16 @@ answer `503`, and a background retry flips it to `ready`.
   Sent with `Connection: close` once the body ends (or at once if it runs
   more than another cap's worth past the cap); the connection is closed after
   the answer, so stop writing the body once the response arrives.
+- **401** -- `trusted-front` mode only: an `X-Fleet-Identity` assertion that
+  does not verify, or an unsigned request from a non-loopback address. Body is
+  always exactly `{"error":"unauthenticated"}` (see "Authentication" above).
 - **403** -- a mutating request refused as cross-site (foreign `Origin` or
   `Sec-Fetch-Site`) without a valid token, or carrying an invalid token (see
   "Mutating requests" above), or any request whose `Host` header names a host
-  the supervisor does not answer to (DNS-rebinding defence).
+  the supervisor does not answer to (DNS-rebinding defence). In
+  `trusted-front` mode also a verified caller whose role is too low
+  (`{"error":"forbidden","requiredRole":"<role>"}`) or who called a local-only
+  or unlisted route (`{"error":"forbidden"}`).
 - **415** -- a mutating request without `Content-Type: application/json`.
 - **404** -- "no such live/known thing": unknown sprint id (`GET
   /api/sprints/:id`, `POST /api/sprints/:id/stop`, force-release), no live

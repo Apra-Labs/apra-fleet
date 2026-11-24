@@ -38,9 +38,13 @@
 // lifecycle itself owns: POST /api/shutdown and GET /api/health.
 // =============================================================================
 
+import fs from 'node:fs';
 import http from 'node:http';
 import { toBeadsSummary } from './beads-identity.mjs';
 import { checkMutatingRequest, checkRequestHost, parseAllowedHosts } from '@apralabs/apra-fleet-workflow/viewer/request-guard';
+import {
+    AUTH_MODE_NONE, AUTH_MODE_TRUSTED_FRONT, LOCAL_IDENTITY, actorOf, authorizeRoute, createAuthenticator, parseJwks, validateAuthConfig,
+} from './auth.mjs';
 
 /**
  * Environment variable holding the optional supervisor API token. When set
@@ -236,6 +240,11 @@ export function sendJson(res, status, payload) {
  * `allowedHosts`: extra Host header names admitted besides loopback names, IP
  * literals and `host` itself (DNS-rebinding defence). Defaults to
  * process.env[SUPERVISOR_ALLOWED_HOSTS_ENV].
+ *
+ * `auth`: caller authentication, `{ mode: 'none'|'trusted-front', jwksPath,
+ * issuer, audience }` (auth.mjs, docs/supervisor-auth.md). Omitted -> `none`,
+ * the pre-existing behaviour. bin/serve.mjs resolves it from flags and env.
+ * Every handler's ctx carries `auth: { mode, asserted, identity, actor, base }`.
  * @returns {{
  *   route(method: string, path: string, handler: Function): void,
  *   start(): Promise<{ port: number }>,
@@ -268,6 +277,29 @@ export function createSupervisor(deps = {}) {
         const st = backlogMember.get();
         return { status: st.status, name: st.member ? st.member.name : null, reason: st.reason ?? null };
     };
+
+    // Caller authentication (docs/supervisor-auth.md). `none` (the default
+    // when no auth config is passed) treats every caller as the local
+    // operator and ignores identity/prefix headers; `trusted-front` verifies
+    // the front's signed assertion. A bad config is reported by start(),
+    // which refuses to bind.
+    const authConfig = deps.auth && typeof deps.auth === 'object' ? deps.auth : { mode: AUTH_MODE_NONE };
+    const authenticator = createAuthenticator({ ...authConfig, mode: authConfig.mode ?? AUTH_MODE_NONE, logger });
+    const authMode = authenticator.mode;
+    const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+    // A request the front forwarded was already admitted by the front: its
+    // Host is the loopback address the front connects to and the browser's
+    // Origin / Sec-Fetch-* were stripped. The request guard still applies its
+    // content-type rule to it, but not the Host/Origin/token rules, which
+    // describe the browser-to-front hop rather than this one.
+    const FORWARDED_GUARD_DROP = new Set(['host', 'origin', 'referer', 'sec-fetch-site', 'sec-fetch-mode', 'sec-fetch-dest', 'sec-fetch-user', 'authorization', 'x-fleet-token']);
+    const forwardedGuardView = (req) => ({
+        method: req.method,
+        headers: Object.fromEntries(Object.entries(req.headers || {}).filter(([k]) => !FORWARDED_GUARD_DROP.has(k))),
+    });
+    // One audit line per mutating request that carried an assertion; the
+    // token itself is never logged.
+    const auditLine = (method, path, sub, status) => log(`[audit] ${method} ${JSON.stringify(path)} sub=${JSON.stringify(sub)} status=${status}`);
 
     // Module seams -- inert stubs unless a real collaborator was injected.
     const seams = {
@@ -359,6 +391,21 @@ export function createSupervisor(deps = {}) {
         const path = url.pathname;
 
         try {
+            // Authentication first (a no-op in `none` mode): a request with an
+            // X-Fleet-Identity header must verify, an unsigned one must come
+            // from loopback. The 401 body is constant.
+            const authn = authenticator.authenticate(req);
+            const mutating = !SAFE_METHODS.has(method);
+            if (!authn.ok) {
+                if (authn.asserted && mutating) auditLine(method, path, null, 401);
+                if (typeof req.resume === 'function') req.resume();
+                sendJson(res, authn.status, authn.body);
+                return;
+            }
+            const asserted = authn.asserted;
+            if (asserted && mutating) {
+                res.once('close', () => auditLine(method, path, authn.identity.sub, res.statusCode));
+            }
             // Cross-site request forgery guard: every mutating (non-GET/HEAD/
             // OPTIONS) request must be JSON and same-origin (or carry the
             // configured token) BEFORE any route handler runs -- one check here
@@ -370,15 +417,28 @@ export function createSupervisor(deps = {}) {
             // DNS-rebound page controls both Origin and Host, so an origin
             // comparison alone admits it, and it could also read GET routes.
             const guardOpts = { token: apiToken, bindHost: host, allowedHosts, allowedHostsHint: `start the supervisor with --allowed-host <name> or set ${SUPERVISOR_ALLOWED_HOSTS_ENV}=<name>` };
-            const refused = checkRequestHost(req, guardOpts) || checkMutatingRequest(req, guardOpts);
+            const guardReq = asserted ? forwardedGuardView(req) : req;
+            const refused = checkRequestHost(guardReq, guardOpts) || checkMutatingRequest(guardReq, guardOpts);
             if (refused) {
                 if (typeof req.resume === 'function') req.resume();
                 sendJson(res, refused.status, { error: refused.error });
                 return;
             }
+            // Route policy (auth.mjs ROUTE_POLICY) for asserted callers only;
+            // the local operator keeps full access. Enforced before any
+            // handler runs; an unlisted route is denied.
+            if (asserted) {
+                const denied = authorizeRoute(authn.identity, method, path);
+                if (denied) {
+                    if (typeof req.resume === 'function') req.resume();
+                    sendJson(res, denied.status, denied.body);
+                    return;
+                }
+            }
+            const auth = { mode: authMode, asserted, identity: authn.identity, actor: actorOf(authn.identity), base: authn.base };
             const handler = routes.get(routeKey(method, path));
             if (handler) {
-                await handler(req, res, { url, params: {} });
+                await handler(req, res, { url, params: {}, auth });
                 return;
             }
             const matched = matchPattern(method, path);
@@ -386,7 +446,7 @@ export function createSupervisor(deps = {}) {
                 sendJson(res, 404, { error: `no route for ${method} ${path}` });
                 return;
             }
-            await matched.handler(req, res, { url, params: matched.params });
+            await matched.handler(req, res, { url, params: matched.params, auth });
         } catch (err) {
             if (err instanceof RequestBodyError) {
                 // Client error, not a supervisor fault: no stack, no 500.
@@ -451,6 +511,14 @@ export function createSupervisor(deps = {}) {
             ...(beadsRefreshError !== undefined ? { beadsRefreshError } : {}),
             ...(backlogMember ? { backlogMember: backlogMemberSummary() } : {}),
         });
+    });
+
+    // GET /api/whoami -- the caller's identity and roles as the supervisor
+    // sees them (docs/supervisor-auth.md "Audit"). The local operator in
+    // `none` mode and for unsigned loopback callers.
+    route('GET', '/api/whoami', async (req, res, ctx) => {
+        const id = (ctx && ctx.auth && ctx.auth.identity) || LOCAL_IDENTITY;
+        sendJson(res, 200, { sub: id.sub, name: id.name ?? null, email: id.email ?? null, roles: [...(id.roles ?? [])], mode: authMode });
     });
 
     // POST /api/shutdown -- the ONLY clean, in-band way to stop the supervisor.
@@ -540,6 +608,19 @@ export function createSupervisor(deps = {}) {
      * @returns {Promise<{ port: number }>}
      */
     async function start() {
+        // Refuse to start on an unusable auth config (trusted-front off
+        // loopback, or without its JWKS path / issuer) before anything runs.
+        validateAuthConfig(authConfig, host);
+        if (authMode === AUTH_MODE_TRUSTED_FRONT) {
+            log(`[supervisor] auth: ${AUTH_MODE_TRUSTED_FRONT} (issuer ${JSON.stringify(authConfig.issuer)}, audience ${JSON.stringify(authConfig.audience || 'fleet-supervisor')}, JWKS ${JSON.stringify(authConfig.jwksPath)})`);
+            try {
+                if (parseJwks(fs.readFileSync(authConfig.jwksPath, 'utf8')).size === 0) {
+                    logError(`[supervisor] WARNING: front JWKS file '${authConfig.jwksPath}' holds no EC P-256 key; every signed request will be refused until it does`);
+                }
+            } catch (err) {
+                logError(`[supervisor] WARNING: front JWKS file '${authConfig.jwksPath}' cannot be loaded (${err && err.code ? err.code : (err && err.message) || 'error'}); every signed request will be refused until it can`);
+            }
+        }
         // Start seams first so the API never serves before its collaborators
         // are ready. Stubs are no-ops.
         for (const seam of [seams.ledger, seams.spawner, seams.watchdog, seams.dashboard, seams.doltMutex, seams.idAllocator, seams.doltOrphanSweep]) {
