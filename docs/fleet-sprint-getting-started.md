@@ -283,22 +283,33 @@ GitHub repo, opening the PR needs a GitHub App configured on the fleet
 with only a PAT the sprint pushes the branch but logs `[Publish PR Skipped]
 ... GitHub App not configured` and opens no PR.
 
-For a Bitbucket member, the sprint's VCS preflight checks the exact credential
-Publish PR will use -- the fleet's `bitbucket`-labelled git credential helper --
-and not only `git ls-remote` (which another helper on the host, such as a
-system credential manager, can answer for a broken fleet helper). It runs a
-REST call (`GET .../pullrequests?pagelen=1`) with that credential and checks
-that the helper's username line is `x-bitbucket-api-token-auth`. A failure is
-reported once, at preflight time, as an `ERROR vcs_credential_probe_failed`
-line that names the cause (for an HTTP refusal: the credential type and the
-required/granted scopes Bitbucket reported) and the exact
-`provision_vcs_auth member_name=... provider=bitbucket workspace=...
-api_token={{secret.bitbucket_api_token}}` command to fix it. A remote member gets
-one automatic re-provision followed by a re-probe. A local member is never
-re-provisioned automatically, because that rewrites the host's global
-bitbucket.org git credential helper. Run the command yourself. The sprint keeps
-going without stopping at launch: no PR is opened, and the final status reports
-the skipped PR.
+For a Bitbucket or Azure DevOps member, the sprint's VCS preflight judges the
+exact credential the sprint will use -- the fleet-written, provider-labelled git
+credential helper -- by whether it works, on two channels:
+
+- **git channel**: `git ls-remote origin HEAD` through *only* that labelled
+  helper (the host's helper chain is reset, so a system credential manager or a
+  global store cannot answer for a broken fleet helper), non-interactive.
+- **PR channel**: a REST call with that same credential through
+  `vcs_credential_exec` (Bitbucket: `GET .../pullrequests?pagelen=1`; Azure
+  DevOps: `GET .../_apis/git/repositories/<repo>`).
+
+A failure is reported once, at preflight time, as an
+`ERROR vcs_credential_probe_failed` line that names the failed channel and the
+cause (for an HTTP refusal: what the provider reported, e.g. the Bitbucket
+credential type and required/granted scopes, or the Azure DevOps PAT secret
+name) and the exact `provision_vcs_auth ...` command to fix it. "No PR will be
+opened" is predicted only when the PR channel fails. A helper username other
+than the provider's preferred one (for example the account login a helper
+written by an earlier `provision_vcs_auth` carries, where Bitbucket now uses
+`x-bitbucket-api-token-auth`) is one `WARN` line -- the credential works;
+re-provision to normalise it -- never an error. A remote member gets one
+automatic re-provision followed by a re-probe. A local member is never
+re-provisioned automatically, so the host operator's own credential is never
+touched: run the command yourself (it writes a fleet-owned per-member helper
+that only fleet dispatches use). The sprint keeps going without stopping at
+launch; when the PR channel failed, no PR is opened and the final status
+reports the skipped PR.
 
 ### 2.5 Scale sideways: one member per sprint, several sprints at once
 

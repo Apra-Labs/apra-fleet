@@ -92,8 +92,10 @@ async function replayIncident(tag, { store = ['bitbucket_api_token'] } = {}) {
         };
     };
     const onCommand = async ({ command }) => {
-        if (command.includes('git ls-remote origin')) {
-            // Another host helper answers: git works.
+        if (command === `printf '%s' "$HOME"`) return mockCmdResult(0, '/home/dev', '');
+        if (command.includes('ls-remote origin HEAD')) {
+            // The labelled git probe: the masked fleet helper answers git too
+            // (the REST channel is what refuses it).
             state.memberCommands.push(command);
             return mockCmdResult(0, '0123456789abcdef0123456789abcdef01234567\tHEAD\n', '');
         }
@@ -152,7 +154,8 @@ describe('incident replay through the real sprint cycle', () => {
             assert.match(line, /required: pullrequest; granted: repository:write/);
             assert.match(line, /username line is the unresolved placeholder literal \{\{secret\.e2e_bb_user\}\}, not x-bitbucket-api-token-auth/);
             assert.ok(line.includes('provision_vcs_auth member_name=local provider=bitbucket workspace=acme api_token={{secret.bitbucket_api_token}}'), line);
-            assert.match(line, /rewrites the host's global bitbucket\.org git credential helper/);
+            assert.match(line, /this member is LOCAL, so the sprint never runs it for you/);
+            assert.match(line, /failed the PR \(REST API\) channel check/);
             assert.match(line, /No PR will be opened this sprint/);
             assert.ok([...line].every((ch) => ch.charCodeAt(0) < 128), 'ASCII only');
 
@@ -170,7 +173,7 @@ describe('incident replay through the real sprint cycle', () => {
             const probeExecs = state.execs.filter((e) => /pullrequests\?pagelen=1/.test(e.command));
             assert.equal(probeExecs.length, 1, 'the labelled credential is REST-probed once per run');
             assert.equal(probeExecs[0].label, 'bitbucket');
-            assert.equal(state.memberCommands.filter((c) => c.includes('git ls-remote origin')).length, 1);
+            assert.equal(state.memberCommands.filter((c) => c.includes('ls-remote origin HEAD') && c.includes('credential.helper=!')).length, 1);
             assert.equal(state.memberCommands.filter(isUsernameRead).length, 1);
 
             // Publish PR still meets the recorded 403, and its text reports the

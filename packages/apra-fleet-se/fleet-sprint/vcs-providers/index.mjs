@@ -233,26 +233,38 @@
  *       remedy?: (ctx) => string          //   === false). With it, the VCS
  *     }                                   //   preflight (vcs-auth.mjs
  *                                         //   createVcsAuthPreflightCallback)
- *                                         //   runs git ls-remote AND `build`'s
- *                                         //   REST command through
- *                                         //   vcs_credential_exec with the
- *                                         //   provider label (params: repoRef,
- *                                         //   token = the {{vcs_token_inline}}
- *                                         //   placeholder, os, shell) -- the
- *                                         //   exact credential Publish PR
- *                                         //   reads -- and, when
- *                                         //   expectedUsername is set, checks
- *                                         //   the helper's username= line
+ *                                         //   judges two channels by function:
+ *                                         //   git -- ls-remote origin through
+ *                                         //   ONLY the provider-labelled fleet
+ *                                         //   helper (host helper chain reset);
+ *                                         //   PR -- `build`'s REST command
+ *                                         //   through vcs_credential_exec with
+ *                                         //   the provider label (params:
+ *                                         //   repoRef, token = the
+ *                                         //   {{vcs_token_inline}} placeholder,
+ *                                         //   os, shell), the exact credential
+ *                                         //   Publish PR reads. ok only if both
+ *                                         //   pass; "No PR" is predicted only
+ *                                         //   when the PR channel fails. A
+ *                                         //   status inside
+ *                                         //   interpret.successStatusRange can
+ *                                         //   still be refused by an optional
+ *                                         //   interpret.refusal(parsed) ->
+ *                                         //   string|null (e.g. an HTML sign-in
+ *                                         //   page). expectedUsername is the
+ *                                         //   PREFERRED helper username= line
  *                                         //   (read member-side, token line
- *                                         //   never printed). ok only if all
- *                                         //   pass. A REST refusal is worded
- *                                         //   via httpFailureHint(ctx);
+ *                                         //   never printed): a different one
+ *                                         //   is one WARN, never a failure. A
+ *                                         //   REST refusal is worded via
+ *                                         //   httpFailureHint(ctx);
  *                                         //   `remedy(ctx)` (ctx:
  *                                         //   availableSecrets, memberName,
- *                                         //   repoRef, local) words the fix
- *                                         //   for every other failure. Omit it
- *                                         //   and the preflight probes with
- *                                         //   git ls-remote only, as before.
+ *                                         //   repoRef, local, secretName) words
+ *                                         //   the fix for every other failure.
+ *                                         //   Omit it and the preflight probes
+ *                                         //   with host-chain git ls-remote
+ *                                         //   only, as before.
  *     findBeforeCreate: boolean,          // OPTIONAL; create is not an upsert.
  *                                         //   raiseVcsPrForMember runs
  *                                         //   find-pull-request first and

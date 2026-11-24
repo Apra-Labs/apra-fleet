@@ -1666,24 +1666,39 @@ export function createVcsAuthPreflightCallback(opts = {}) {
     // next push, so such an entry is never treated as fresh.
     /** @type {Map<string, { repo: string|null, scopeRepos: string[]|null }>} */
     const knownScope = new Map();
-    // apra-fleet-d1pk.3: PROBE-FIRST branch for members whose credential the
-    // fleet cannot mint (provider authRemedy.serverSideReMintable === false,
-    // e.g. Bitbucket API tokens, Azure DevOps PATs). Provisioning such a
-    // member just redeploys a stored secret -- and on a LOCAL member it
-    // rewrites the host's own git credential helper -- so the preflight first
-    // asks whether the credential ALREADY in place works (a non-interactive
-    // `git ls-remote origin HEAD`, see getSeCommands().gitLsRemoteProbe()),
-    // and decides once per member per run:
-    //   'ok'     -- probe passed, or a remote member was provisioned after a
-    //               failed probe: never probe or provision again this run.
-    //   'failed' -- one typed ERROR line naming the provider remedy was
-    //               logged; never re-probed, re-provisioned or re-logged.
+    // apra-fleet-d1pk.3 / apra-fleet-3ubz: PROBE-FIRST branch for members
+    // whose credential the fleet cannot mint (provider
+    // authRemedy.serverSideReMintable === false, e.g. Bitbucket API tokens,
+    // Azure DevOps PATs). Provisioning such a member just redeploys a stored
+    // secret (and a LOCAL member is never provisioned: see below), so the
+    // preflight first asks whether the credential ALREADY in place works, and
+    // judges it by FUNCTION, per channel, never by the shape of a username:
+    //   git channel -- a non-interactive `git ls-remote origin HEAD`; for a
+    //                  credentialProbe provider through ONLY the
+    //                  fleet-labelled helper (getSeCommands()
+    //                  .gitLsRemoteLabelledProbe), so a host credential
+    //                  manager cannot answer for a dead fleet helper;
+    //   PR channel  -- the provider's REST probe through vcs_credential_exec
+    //                  (credentialProbe providers only).
+    // Decided once per member per run, the verdict recording which channels
+    // failed:
+    //   'ok'     -- every channel passed, or a remote member was provisioned
+    //               after a failed probe and passed the re-probe: never probe
+    //               or provision again this run.
+    //   'failed' -- one typed ERROR line naming the failed channel(s) and the
+    //               remedy was logged ("No PR will be opened" only when the PR
+    //               channel failed); never re-probed, re-provisioned or
+    //               re-logged.
+    // The "provision_vcs_auth skipped" line for a decided member is logged
+    // once per run per member, not once per dispatch.
     // A GitHub-App (server-side re-mintable) member never enters this branch
     // and keeps the expiry-based refresh below exactly as before.
     /** @type {Map<string, { probe: boolean, provider?: string, impl?: object, local?: boolean, target?: { os: string, shell: string } }>} */
     const plans = new Map();
-    /** @type {Map<string, 'ok'|'failed'>} */
+    /** @type {Map<string, { verdict: 'ok'|'failed', failed: Array<'git'|'pr'>, skipLogged: boolean }>} */
     const probeVerdicts = new Map();
+    /** @type {Set<string>} members whose username WARN was logged this run. */
+    const usernameWarned = new Set();
 
     async function planFor(member) {
         if (plans.has(member)) return plans.get(member);
@@ -1717,46 +1732,107 @@ export function createVcsAuthPreflightCallback(opts = {}) {
 
     // `remedy` (when given) replaces the provider's generic authRemedy.hint:
     // a credentialProbe provider words its own member-specific fix.
-    // `noPr` appends the consequence for the labelled PR credential.
-    function logProbeFailure(member, plan, why, { remedy = null, noPr = false } = {}) {
+    // `failed` names the channels that failed ('git', 'pr'); `noPr` appends
+    // the Publish PR consequence, and is set ONLY when the PR (REST) channel
+    // failed -- a git-only failure says nothing about the PR credential.
+    function logProbeFailure(member, plan, why, { remedy = null, noPr = false, failed = ['git'] } = {}) {
         const where = plan.local ? 'local member' : 'member';
+        const label = vcsCredentialLabelForProvider(plan.provider);
+        const channels = failed.map((c) => (c === 'pr' ? 'PR (REST API) channel' : 'git channel')).join(' and ');
         const consequence = noPr
-            ? ` No PR will be opened this sprint for member '${member}': Publish PR reads this same '${vcsCredentialLabelForProvider(plan.provider)}' credential (the sprint continues and the skipped PR is reported in its final status).`
+            ? ` No PR will be opened this sprint for member '${member}': Publish PR reads this same '${label}' credential (the sprint continues and the skipped PR is reported in its final status).`
             : '';
-        const line = `[Sync] preflight: ERROR ${VCS_CREDENTIAL_PROBE_FAILED}: ${where} '${member}' (provider '${plan.provider}') cannot reach its origin with the credential already in place: ${why}. ${remedy || plan.impl.authRemedy.hint}${consequence}`;
+        const line = `[Sync] preflight: ERROR ${VCS_CREDENTIAL_PROBE_FAILED}: ${where} '${member}' (provider '${plan.provider}') failed the ${channels} check of its existing '${label}' credential: ${why}. ${remedy || plan.impl.authRemedy.hint}${consequence}`;
         // ASCII only, whatever git or the member shell printed.
         log(line.replace(/[^\x20-\x7e]+/g, ' '));
     }
 
-    // The provider's credentialProbe (see vcs-providers/index.mjs) checks the
-    // credential Publish PR will actually read -- the provider-labelled
-    // fleet helper -- instead of trusting git ls-remote, which goes through
-    // the host's whole credential helper chain where ANOTHER helper (a
-    // system credential manager, a global store) can answer for a broken
-    // fleet helper. Two checks, both on that labelled credential:
-    //   1. the provider's REST probe through vcs_credential_exec with the
-    //      provider label and the {{vcs_token_inline}} placeholder -- the
-    //      same server-side handoff as the PR path, so the token never
-    //      reaches this process;
-    //   2. the helper's username= line (read member-side, filtered there so
-    //      the token line never leaves the member) against the provider's
-    //      expectedUsername; an unresolved {{...}} placeholder literal is
-    //      named as such, any other value is NOT printed.
+    function lastLines(res, fallback) {
+        return String((res && (res.error || res.output)) || fallback).trim().split(/\r?\n/).filter(Boolean).slice(-2).join(' / ').slice(0, 300);
+    }
+
+    // The member id of the fleet-labelled helper for `label`: set when the
+    // record says the helper is member-scoped (the member's own per-member
+    // file), undefined for the shared legacy file. Read fresh: a provision
+    // earlier in this run may have just replaced a legacy helper.
+    async function labelledHelperMemberId(member, label) {
+        try {
+            const rec = await readMemberRecord(member, fleetApi);
+            const entry = rec && Array.isArray(rec.vcsCredentials) ? rec.vcsCredentials.find((e) => e && e.label === label) : null;
+            if (entry && entry.memberScoped === true && typeof rec.id === 'string') return rec.id;
+        } catch {
+            // No record: the shared legacy helper path.
+        }
+        return undefined;
+    }
+
+    /** @type {Map<string, string>} member -> home directory (successful reads only). */
+    const memberHomes = new Map();
+    async function readMemberHome(member, se) {
+        if (memberHomes.has(member)) return memberHomes.get(member);
+        let res;
+        try {
+            res = await command(se.memberHomeProbe(), { member_name: member, silent: true, failSoft: true });
+        } catch (err) {
+            res = { ok: false, error: err && err.message ? err.message : String(err) };
+        }
+        if (!res || !res.ok) throw new Error(`the member home directory could not be read (${lastLines(res, 'no output')})`);
+        const home = String(res.output || '').replace(/[\r\n]+$/, '');
+        memberHomes.set(member, home);
+        return home;
+    }
+
+    // GIT channel. For a credentialProbe provider: `git ls-remote origin
+    // HEAD` through ONLY the fleet-labelled helper (helper list reset), with
+    // its path resolved here from the member home, so a host credential
+    // manager or global store cannot answer for a dead fleet helper. Any
+    // other provider keeps the host-chain probe (gitLsRemoteProbe).
+    // Returns { ok, reason, descriptor }. Never throws.
+    async function checkGitChannel(member, plan, labelled) {
+        const se = getSeCommands(plan.target);
+        if (!labelled) {
+            let res;
+            try {
+                res = await command(se.gitLsRemoteProbe(), { member_name: member, silent: true, failSoft: true });
+            } catch (err) {
+                res = { ok: false, error: err && err.message ? err.message : String(err) };
+            }
+            return res && res.ok ? { ok: true, reason: '' } : { ok: false, reason: lastLines(res, 'git ls-remote origin failed') };
+        }
+        const label = vcsCredentialLabelForProvider(plan.provider);
+        const helperMemberId = await labelledHelperMemberId(member, label);
+        let built;
+        try {
+            built = se.gitLsRemoteLabelledProbe(label, helperMemberId, await readMemberHome(member, se));
+        } catch (err) {
+            return { ok: false, reason: `the git probe through only the fleet-written '${label}' helper could not be built: ${err && err.message ? err.message : String(err)}` };
+        }
+        let res;
+        try {
+            res = await command(built.command, { member_name: member, silent: true, failSoft: true });
+        } catch (err) {
+            res = { ok: false, error: err && err.message ? err.message : String(err) };
+        }
+        if (res && res.ok) return { ok: true, reason: '', descriptor: built.descriptor };
+        return {
+            ok: false,
+            reason: `git ls-remote origin through only the fleet-written '${label}' helper (${built.descriptor}) failed: ${lastLines(res, 'git ls-remote origin failed')}`,
+            descriptor: built.descriptor,
+        };
+    }
+
+    // PR channel: the provider's credentialProbe REST probe (see
+    // vcs-providers/index.mjs) through vcs_credential_exec with the provider
+    // label and the {{vcs_token_inline}} placeholder -- the same server-side
+    // handoff and the same labelled credential as the Publish PR path, so the
+    // token never reaches this process.
     // Returns { ok, reasons: string[], remedy: string|null }. Never throws.
-    let storeNames;
-    async function checkLabelledCredential(member, plan) {
+    async function checkPrChannel(member, plan, remedyCtx, remoteUrl) {
         const probe = plan.impl.credentialProbe;
         const label = vcsCredentialLabelForProvider(plan.provider);
+        const { repoRef } = remedyCtx;
         const reasons = [];
         let remedy = null;
-        if (storeNames === undefined) storeNames = await listCredentialStoreNames(fleetApi);
-        const availableSecrets = storeNames;
-
-        const remoteRes = await command('git remote get-url origin', { member_name: member, silent: true, failSoft: true });
-        const remoteUrl = remoteRes && remoteRes.ok ? String(remoteRes.output || '').trim() : '';
-        const repoRef = remoteUrl && typeof plan.impl.parseRepoRef === 'function' ? plan.impl.parseRepoRef(remoteUrl) : null;
-        const remedyCtx = { availableSecrets, memberName: member, repoRef, local: plan.local };
-
         if (!repoRef) {
             // The raw origin may embed a credential (https://user:TOKEN@host/...,
             // which git prints verbatim): quote it with the userinfo masked.
@@ -1774,124 +1850,163 @@ export function createVcsAuthPreflightCallback(opts = {}) {
                 handoff = { ok: false, reason: 'dispatch_failed', stderr: err && err.message ? err.message : String(err) };
             }
             if (!handoff.ok) {
-                reasons.push(`the '${label}' fleet credential helper could not be used for the REST probe (vcs_credential_exec reason: ${handoff.reason || 'unknown'})`);
+                reasons.push(`the fleet-written '${label}' credential helper could not be used for the REST probe (vcs_credential_exec reason: ${handoff.reason || 'unknown'})`);
             } else {
                 const parsed = parseVcsCurlOutput(handoff.stdout);
                 const [lo, hi] = built.interpret.successStatusRange;
+                const refusal = typeof built.interpret.refusal === 'function' ? built.interpret.refusal(parsed) : null;
                 if (!(typeof handoff.exitCode !== 'number' || handoff.exitCode === 0) || parsed.status === null) {
                     reasons.push(`the REST credential probe (${built.logSafeCommand}) did not complete (exit ${handoff.exitCode ?? 'unknown'}${handoff.stderr ? `: ${String(handoff.stderr).trim().slice(0, 200)}` : ''})`);
-                } else if (parsed.status < lo || parsed.status > hi) {
+                } else if (parsed.status < lo || parsed.status > hi || refusal) {
                     const out = typeof plan.impl.httpFailureHint === 'function'
                         ? plan.impl.httpFailureHint({ status: parsed.status, body: parsed.body, headers: parsed.headers, ...remedyCtx })
                         : '';
-                    const hint = typeof out === 'string' ? out : (out && out.hint) || '';
+                    const hint = refusal || (typeof out === 'string' ? out : (out && out.hint) || '');
                     if (out && typeof out === 'object' && out.remedy) remedy = out.remedy;
                     reasons.push(`the '${label}' fleet credential Publish PR uses was refused by the REST probe with HTTP ${parsed.status}${hint ? `: ${hint}` : ''}`);
                 }
             }
         }
-
-        if (typeof probe.expectedUsername === 'string') {
-            // A member-scoped helper is the member's own per-member file. The
-            // record is read fresh: a provision earlier in this run may have
-            // just replaced a shared legacy helper with one.
-            let helperMemberId;
-            try {
-                const rec = await readMemberRecord(member, fleetApi);
-                const entry = rec && Array.isArray(rec.vcsCredentials) ? rec.vcsCredentials.find((e) => e && e.label === label) : null;
-                if (entry && entry.memberScoped === true && typeof rec.id === 'string') helperMemberId = rec.id;
-            } catch {
-                // No record: read the shared legacy helper path.
-            }
-            const read = getSeCommands(plan.target).readCredentialHelperUsername(label, helperMemberId);
-            let userRes;
-            try {
-                userRes = await command(read.command, { member_name: member, silent: true, failSoft: true });
-            } catch (err) {
-                userRes = { ok: false, output: '' };
-            }
-            // Only the username= line is ever looked at, even if a broken
-            // member-side filter let more through.
-            const m = /^username=(.*)$/m.exec(String((userRes && userRes.output) || ''));
-            const username = m ? m[1].trim() : '';
-            if (!m) {
-                reasons.push(`the '${label}' fleet credential helper (${read.descriptor}) printed no username= line (missing helper, or written without a username)`);
-            } else if (username !== probe.expectedUsername) {
-                reasons.push(/^\{\{\s*[A-Za-z]+\.[A-Za-z0-9_.-]+\s*\}\}$/.test(username)
-                    ? `the '${label}' fleet credential helper's username line is the unresolved placeholder literal ${username}, not ${probe.expectedUsername} (it was written without placeholder resolution)`
-                    : `the '${label}' fleet credential helper's username line is not ${probe.expectedUsername} (it was written by something other than provision_vcs_auth for this provider)`);
-            }
-        }
-
-        if (!remedy && reasons.length && typeof probe.remedy === 'function') remedy = probe.remedy(remedyCtx);
         return { ok: reasons.length === 0, reasons, remedy };
     }
 
+    // The labelled helper's username= line (read member-side, filtered there
+    // so the token line never leaves the member) against the provider's
+    // preferred expectedUsername. NEVER a verdict on its own: a credential is
+    // judged by whether its channels work. Returns null when the line is the
+    // preferred value, else { kind: 'differs'|'placeholder'|'missing', text }.
+    // Any value other than an unresolved {{...}} placeholder is NOT printed.
+    async function checkHelperUsername(member, plan) {
+        const probe = plan.impl.credentialProbe;
+        if (typeof probe.expectedUsername !== 'string') return null;
+        const label = vcsCredentialLabelForProvider(plan.provider);
+        const helperMemberId = await labelledHelperMemberId(member, label);
+        const read = getSeCommands(plan.target).readCredentialHelperUsername(label, helperMemberId);
+        let userRes;
+        try {
+            userRes = await command(read.command, { member_name: member, silent: true, failSoft: true });
+        } catch {
+            userRes = { ok: false, output: '' };
+        }
+        // Only the username= line is ever looked at, even if a broken
+        // member-side filter let more through.
+        const m = /^username=(.*)$/m.exec(String((userRes && userRes.output) || ''));
+        const username = m ? m[1].trim() : '';
+        if (!m) {
+            return { kind: 'missing', text: `the fleet-written '${label}' credential helper (${read.descriptor}) printed no username= line (missing helper, or written without a username)` };
+        }
+        if (username === probe.expectedUsername) return null;
+        if (/^\{\{\s*[A-Za-z]+\.[A-Za-z0-9_.-]+\s*\}\}$/.test(username)) {
+            return { kind: 'placeholder', text: `the fleet-written '${label}' credential helper's username line is the unresolved placeholder literal ${username}, not ${probe.expectedUsername} (it was written without placeholder resolution)` };
+        }
+        return { kind: 'differs', text: `the fleet-written '${label}' credential helper (${read.descriptor}) has a username line other than ${probe.expectedUsername} (written by an earlier provision_vcs_auth)` };
+    }
+
+    // Judge the member's existing credential per channel. Returns
+    // { ok, failed: Array<'git'|'pr'>, reasons, remedy, prFailed, warn }.
+    // `warn` is the one username WARN text (or null): a username other than
+    // the provider's preferred value is never an ERROR, never part of
+    // reasons and never a failed verdict; an unresolved placeholder or a
+    // missing username line joins the reasons only when a channel actually
+    // failed (it is then the likely cause), and is a WARN otherwise.
+    // Never throws.
+    let storeNames;
+    async function judgeCredential(member, plan) {
+        const probe = plan.impl.credentialProbe;
+        const labelled = !!(probe && typeof probe.build === 'function');
+        const git = await checkGitChannel(member, plan, labelled);
+        if (!labelled) {
+            return { ok: git.ok, failed: git.ok ? [] : ['git'], reasons: git.ok ? [] : [git.reason], remedy: null, prFailed: false, warn: null };
+        }
+        if (storeNames === undefined) storeNames = await listCredentialStoreNames(fleetApi);
+        const remoteRes = await command('git remote get-url origin', { member_name: member, silent: true, failSoft: true });
+        const remoteUrl = remoteRes && remoteRes.ok ? String(remoteRes.output || '').trim() : '';
+        const repoRef = remoteUrl && typeof plan.impl.parseRepoRef === 'function' ? plan.impl.parseRepoRef(remoteUrl) : null;
+        const remedyCtx = { availableSecrets: storeNames, memberName: member, repoRef, local: plan.local, secretName: azdevopsPatSecretName };
+        const pr = await checkPrChannel(member, plan, remedyCtx, remoteUrl);
+        const user = await checkHelperUsername(member, plan);
+        const failed = [...(git.ok ? [] : ['git']), ...(pr.ok ? [] : ['pr'])];
+        const reasons = [...(git.ok ? [] : [git.reason]), ...pr.reasons];
+        let warn = null;
+        if (user) {
+            if (failed.length && user.kind !== 'differs') reasons.push(user.text);
+            else warn = user.text;
+        }
+        let remedy = pr.remedy;
+        if (!remedy && failed.length && typeof probe.remedy === 'function') remedy = probe.remedy(remedyCtx);
+        return { ok: failed.length === 0, failed, reasons, remedy, prFailed: !pr.ok, warn };
+    }
+
+    function logUsernameWarn(member, plan, warn) {
+        if (!warn || usernameWarned.has(member)) return;
+        usernameWarned.add(member);
+        const line = `[Sync] preflight: WARN member '${member}' (provider '${plan.provider}'): ${warn}. The credential works, so nothing is changed; re-provision this member with provision_vcs_auth to normalise it.`;
+        log(line.replace(/[^\x20-\x7e]+/g, ' '));
+    }
+
     async function probeFirst(member, plan) {
-        const verdict = probeVerdicts.get(member);
-        if (verdict) {
-            log(verdict === 'ok'
-                ? `[Sync] preflight: provision_vcs_auth skipped for member '${member}': its '${plan.provider}' credential already passed this run's probe.`
-                : `[Sync] preflight: provision_vcs_auth skipped for member '${member}': its '${plan.provider}' credential probe already failed this run (reported once above).`);
+        const cached = probeVerdicts.get(member);
+        if (cached) {
+            // Once per run per member: later dispatches stay silent.
+            if (!cached.skipLogged) {
+                cached.skipLogged = true;
+                log(cached.verdict === 'ok'
+                    ? `[Sync] preflight: provision_vcs_auth skipped for member '${member}' for the rest of this run: its '${plan.provider}' credential already passed this run's probe.`
+                    : `[Sync] preflight: provision_vcs_auth skipped for member '${member}' for the rest of this run: its '${plan.provider}' credential probe already failed this run (${cached.failed.join(' and ')} channel, reported once above).`);
+            }
             return;
         }
         const restProbe = !!(plan.impl.credentialProbe && typeof plan.impl.credentialProbe.build === 'function');
-        const restNote = restProbe ? `, plus a REST probe of the '${vcsCredentialLabelForProvider(plan.provider)}' credential Publish PR uses` : '';
-        log(`[Sync] preflight: probing member '${member}''s existing '${plan.provider}' credential (git ls-remote origin, non-interactive${restNote}) instead of provisioning.`);
-        let res;
-        try {
-            res = await command(getSeCommands(plan.target).gitLsRemoteProbe(), { member_name: member, silent: true, failSoft: true });
-        } catch (err) {
-            res = { ok: false, error: err && err.message ? err.message : String(err) };
-        }
-        const gitOk = !!(res && res.ok);
-        const detail = gitOk ? '' : String((res && (res.error || res.output)) || 'git ls-remote origin failed').trim().split(/\r?\n/).filter(Boolean).slice(-2).join(' / ').slice(0, 300);
-        // Both must pass for a credentialProbe provider: ls-remote alone can
-        // be answered by another host helper while the labelled one is dead.
-        const cred = restProbe ? await checkLabelledCredential(member, plan) : { ok: true, reasons: [], remedy: null };
-        if (gitOk && cred.ok) {
-            probeVerdicts.set(member, 'ok');
+        const label = vcsCredentialLabelForProvider(plan.provider);
+        log(restProbe
+            ? `[Sync] preflight: probing member '${member}''s existing '${label}' credential (git channel: git ls-remote origin through only the fleet-written '${label}' helper, non-interactive; PR channel: a REST probe through the same credential Publish PR uses) instead of provisioning.`
+            : `[Sync] preflight: probing member '${member}''s existing '${plan.provider}' credential (git ls-remote origin, non-interactive) instead of provisioning.`);
+        const first = await judgeCredential(member, plan);
+        logUsernameWarn(member, plan, first.warn);
+        if (first.ok) {
+            probeVerdicts.set(member, { verdict: 'ok', failed: [], skipLogged: false });
             log(`[Sync] preflight: member '${member}''s existing '${plan.provider}' credential works; provision_vcs_auth skipped for this run.`);
             return;
         }
-        const why = [gitOk ? '' : (restProbe ? `git ls-remote origin failed: ${detail}` : detail), ...cred.reasons].filter(Boolean).join('; ');
+        const why = first.reasons.join('; ');
         if (plan.local) {
             // Never provision a LOCAL non-re-mintable member: it would
-            // rewrite the host operator's own credential helper.
+            // overwrite the host operator's own credential.
             //
             // DECISION (documented in docs/fleet-sprint-getting-started.md):
-            // a failed labelled-credential probe on a local member does NOT
-            // stop the sprint. It is reported once, here, at preflight time
-            // with the exact by-hand fix; the sprint keeps going, Publish PR
-            // skips the PR (its credential is this same dead one) and the
-            // final status surfaces the skipped PR. Stopping the launch would
-            // throw away a whole sprint over a PR that the operator can open
-            // by hand after fixing the helper.
-            probeVerdicts.set(member, 'failed');
-            logProbeFailure(member, plan, `${why}; not provisioning a local member, which would overwrite the host's own credential`, { remedy: cred.remedy, noPr: !cred.ok });
+            // a failed credential probe on a local member does NOT stop the
+            // sprint. It is reported once, here, at preflight time with the
+            // exact by-hand fix; the sprint keeps going. Only when the PR
+            // channel failed does Publish PR skip the PR (its credential is
+            // this same dead one) and the final status surface it. Stopping
+            // the launch would throw away a whole sprint over a PR that the
+            // operator can open by hand after fixing the helper.
+            probeVerdicts.set(member, { verdict: 'failed', failed: first.failed, skipLogged: false });
+            logProbeFailure(member, plan, `${why}; not provisioning a local member, which would overwrite the host's own credential`, { remedy: first.remedy, noPr: first.prFailed, failed: first.failed });
             return;
         }
         // A remote member gets exactly ONE non-interactive provision attempt;
-        // for a credentialProbe provider the labelled credential is re-probed
-        // after it and that re-probe decides the verdict.
+        // for a credentialProbe provider both channels are re-judged after it
+        // and that re-judgement decides the verdict.
         try {
             const { expiresAt, repo, scopeRepos } = await provisionVcsAuthForMember({ fleetApi, command, member, log, logPrefix: '[Sync] preflight', azdevopsPatSecretName, refuseLocalNonReMintable: true });
             knownGoodUntil.set(member, expiresAt);
             knownScope.set(member, { repo: repo || null, scopeRepos: scopeRepos || null });
         } catch (err) {
-            probeVerdicts.set(member, 'failed');
-            logProbeFailure(member, plan, `${why}; provision_vcs_auth also failed: ${err.message}`, { remedy: cred.remedy, noPr: !cred.ok });
+            probeVerdicts.set(member, { verdict: 'failed', failed: first.failed, skipLogged: false });
+            logProbeFailure(member, plan, `${why}; provision_vcs_auth also failed: ${err.message}`, { remedy: first.remedy, noPr: first.prFailed, failed: first.failed });
             return;
         }
         if (restProbe) {
-            const again = await checkLabelledCredential(member, plan);
+            const again = await judgeCredential(member, plan);
+            logUsernameWarn(member, plan, again.warn);
             if (!again.ok) {
-                probeVerdicts.set(member, 'failed');
-                logProbeFailure(member, plan, `${why}; provision_vcs_auth ran once, but the re-probe still fails: ${again.reasons.join('; ')}`, { remedy: again.remedy, noPr: true });
+                probeVerdicts.set(member, { verdict: 'failed', failed: again.failed, skipLogged: false });
+                logProbeFailure(member, plan, `${why}; provision_vcs_auth ran once, but the re-probe still fails: ${again.reasons.join('; ')}`, { remedy: again.remedy, noPr: again.prFailed, failed: again.failed });
                 return;
             }
         }
-        probeVerdicts.set(member, 'ok');
+        probeVerdicts.set(member, { verdict: 'ok', failed: [], skipLogged: false });
         log(`[Sync] preflight: provision_vcs_auth succeeded for member '${member}' after its credential probe failed.`);
     }
 

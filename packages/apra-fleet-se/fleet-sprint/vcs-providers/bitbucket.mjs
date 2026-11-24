@@ -220,11 +220,13 @@ const DEFAULT_API_TOKEN_SECRET = 'bitbucket_api_token';
  *  their own. Names the ONLY fix: deploy the credential out of band, because
  *  the fleet cannot assemble one. No secret VALUE appears here or anywhere
  *  else -- the token is always a credential-store name or a placeholder. */
-/** The fixed git username provision_vcs_auth writes into a Bitbucket
- *  helper (src/services/vcs/bitbucket.ts BITBUCKET_TOKEN_USERNAME). Any
- *  other username line means the helper was written by something else (an
- *  older fleet, a hand edit, an unresolved placeholder) and git over HTTPS
- *  with an API token will not authenticate with it. */
+/** The git username provision_vcs_auth writes into a Bitbucket helper today
+ *  (src/services/vcs/bitbucket.ts BITBUCKET_TOKEN_USERNAME): the provider's
+ *  PREFERRED value, not a validity rule. A helper written by an earlier
+ *  provision_vcs_auth carries the account login instead and still works with
+ *  an API token, so the VCS preflight judges the credential by whether its
+ *  git and REST channels work and reports a different username as one WARN
+ *  (re-provision to normalise), never as a failure. */
 const TOKEN_USERNAME = 'x-bitbucket-api-token-auth';
 
 /** The four scopes an Atlassian API token needs for everything the sprint
@@ -255,18 +257,16 @@ const AUTH_REMEDY_DETAIL =
     + 'API token the same way. Two cautions: (1) a member holds ONE VCS '
     + 'credential, so provisioning Bitbucket on a backlog member already '
     + 'provisioned for another provider (e.g. GitHub) replaces that credential '
-    + '-- use a backlog member dedicated to Bitbucket; (2) on a LOCAL member '
-    + 'provision_vcs_auth rewrites the host\'s own global bitbucket.org git '
-    + 'credential helper, which can break the operator\'s HTTPS git -- provision '
-    + 'a non-local member, or keep the local member on SSH (Atlassian is moving '
+    + '-- use a backlog member dedicated to Bitbucket; (2) the sprint never '
+    + 'provisions a LOCAL member (the host operator\'s own credential stays '
+    + 'untouched); provision_vcs_auth writes a fleet-owned per-member helper '
+    + 'that only fleet dispatches use, so run it by hand for a local member, '
+    + 'or keep the local member on SSH (Atlassian is moving '
     + 'git-over-SSH to ssh.bitbucket.org: use '
-    + 'git@ssh.bitbucket.org:WORKSPACE/REPO.git for SSH remotes). A LOCAL member '
-    + 'provisioned by fleet 0.4.4 still has a helper with the old account-login '
-    + 'username; the sprint never re-provisions a local member, so it fails its '
-    + 'credential probe until it is re-provisioned by hand, once: '
-    + 'provision_vcs_auth member_name=MEMBER provider=bitbucket workspace=WORKSPACE '
-    + `api_token={{secret.${DEFAULT_API_TOKEN_SECRET}}} (this rewrites the host's `
-    + 'global bitbucket.org helper to the fixed username x-bitbucket-api-token-auth). '
+    + 'git@ssh.bitbucket.org:WORKSPACE/REPO.git for SSH remotes). A helper written by '
+    + 'an earlier provision_vcs_auth may carry the account login as its username; '
+    + 'it still works, so the preflight only warns -- re-provision once to '
+    + 'normalise it to x-bitbucket-api-token-auth. '
     + 'Without a deployed '
     + 'credential the sprint still completes: no PR is opened and target '
     + 'issues are closed directly on PASS.';
@@ -284,7 +284,7 @@ const AUTH_REMEDY_HINT = 'Fix: store an Atlassian API token with '
  *     member from it (exact provision_vcs_auth line). Never tells the
  *     operator to create a new token: the token they need is already stored,
  *     and the deployed helper is what is wrong (e.g. a repository access
- *     token or a stale username written by something other than the fleet).
+ *     token, or a helper that no longer authenticates).
  *   - no such entry (or the store could not be read) -> store a token, then
  *     the same provision line, followed by the long creation guidance.
  * `local` true/false/undefined words the host-helper caution for a local,
@@ -301,10 +301,8 @@ function credentialRemedy(ctx = {}) {
     const workspace = workspaceFromCtx(ctx) || 'WORKSPACE';
     const line = provisionCommandLine(member, workspace);
     const helperNote = ctx.local === true
-        ? ' (this member is LOCAL: that command rewrites the host\'s global bitbucket.org git credential helper)'
-        : ctx.local === false
-            ? ''
-            : ' (on a LOCAL member that command rewrites the host\'s global bitbucket.org git credential helper)';
+        ? ' (this member is LOCAL, so the sprint never runs it for you: run it by hand; it writes the fleet-owned per-member helper only fleet dispatches use and leaves the host\'s own git credential untouched)'
+        : '';
     const stored = Array.isArray(ctx.availableSecrets) && ctx.availableSecrets.includes(DEFAULT_API_TOKEN_SECRET);
     if (stored) {
         return `Fix: re-provision member '${member}' from the stored ${DEFAULT_API_TOKEN_SECRET}: ${line}${helperNote}. `
@@ -906,9 +904,11 @@ function buildBitbucketCredentialProbeCommand(params) {
 }
 
 /** The OPTIONAL `credentialProbe` descriptor field (see ./index.mjs): what
- *  the VCS preflight checks on the labelled credential, beyond git ls-remote.
+ *  the VCS preflight checks on the labelled credential (PR channel), next to
+ *  git ls-remote through only that labelled helper (git channel).
  *    build             the REST probe command builder above
- *    expectedUsername  the only username= line a fleet-deployed helper has
+ *    expectedUsername  the PREFERRED username= line; a different one is one
+ *                      WARN, never a failure
  *    remedy(ctx)       the member-specific fix, worded by credential store
  *                      contents (credentialRemedy above) */
 const credentialProbe = Object.freeze({

@@ -64,7 +64,9 @@ function makeHarness({ record, restQueue = [REST_200], lsRemote = { ok: true, ou
     const command = async (cmd) => {
         commands.push(cmd);
         if (cmd === 'git remote get-url origin') return { ok: true, output: remote, error: null };
-        if (cmd.includes('git ls-remote origin')) return lsRemote;
+        // The member home the labelled git probe's helper path is built from.
+        if (cmd === `printf '%s' "$HOME"`) return { ok: true, output: '/home/dev', error: null };
+        if (cmd.includes('ls-remote origin HEAD')) return lsRemote;
         if (cmd.includes("grep '^username='")) {
             // A member-side filter that let the token line through as well:
             // the orchestrator must still read ONLY the username= line.
@@ -121,21 +123,25 @@ describe('labelled credential REST probe (local member)', () => {
         assert.ok(h.logs.some((l) => /credential works; provision_vcs_auth skipped/.test(l)), h.logs.join('\n'));
     });
 
-    test('the local ERROR line gives the exact provision command, names the host helper rewrite and says no PR this sprint', async () => {
+    test('the local ERROR line gives the exact provision command, says the local member is never provisioned for you and no PR this sprint', async () => {
         const h = makeHarness({ record: LOCAL, restQueue: [REST_403_REPO_TOKEN] });
         await h.ensure('bb-local');
         const line = errorsOf(h.logs)[0];
         assert.ok(line.includes('provision_vcs_auth member_name=bb-local provider=bitbucket workspace=acme api_token={{secret.bitbucket_api_token}}'), line);
-        assert.match(line, /rewrites the host's global bitbucket\.org git credential helper/);
+        assert.match(line, /this member is LOCAL, so the sprint never runs it for you/);
+        assert.match(line, /leaves the host's own git credential untouched/);
+        assert.match(line, /failed the PR \(REST API\) channel check/);
         assert.match(line, /No PR will be opened this sprint/);
         assert.ok(!/create/i.test(line.slice(line.indexOf('Fix: '))), 'token stored: never told to create one');
         assert.ok([...line].every((ch) => ch.charCodeAt(0) < 128), line);
     });
 });
 
-describe('labelled helper username line', () => {
-    test('an unresolved {{secret.*}} username is a probe failure naming the placeholder; the token line is never printed', async () => {
-        const h = makeHarness({ record: LOCAL, usernameOutput: 'username={{secret.e2e_bb_user}}' });
+describe('labelled helper username line (judged by function, never by shape)', () => {
+    const warnsOf = (logs) => logs.filter((l) => /preflight: WARN /.test(l));
+
+    test('an unresolved {{secret.*}} username joins the ERROR when a channel fails; the token line is never printed', async () => {
+        const h = makeHarness({ record: LOCAL, restQueue: [REST_403_REPO_TOKEN], usernameOutput: 'username={{secret.e2e_bb_user}}' });
         await h.ensure('bb-local');
         const errors = errorsOf(h.logs);
         assert.equal(errors.length, 1, h.logs.join('\n'));
@@ -143,20 +149,36 @@ describe('labelled helper username line', () => {
         assertNoSentinel(h.logs);
     });
 
-    test('any other username is a failure that does NOT print the value', async () => {
-        const h = makeHarness({ record: LOCAL, usernameOutput: 'username=someone@example.com' });
+    test('an unresolved placeholder username on a working credential is one WARN, not an ERROR', async () => {
+        const h = makeHarness({ record: LOCAL, usernameOutput: 'username={{secret.e2e_bb_user}}' });
         await h.ensure('bb-local');
-        const line = errorsOf(h.logs)[0];
-        assert.ok(line, h.logs.join('\n'));
-        assert.match(line, /username line is not x-bitbucket-api-token-auth/);
-        assert.ok(!line.includes('someone@example.com'), line);
+        assert.equal(errorsOf(h.logs).length, 0, h.logs.join('\n'));
+        assert.equal(warnsOf(h.logs).length, 1, h.logs.join('\n'));
         assertNoSentinel(h.logs);
     });
 
-    test('no username= line at all is a failure', async () => {
-        const h = makeHarness({ record: LOCAL, usernameOutput: '' });
+    test('any other username on a working credential is one WARN that does NOT print the value', async () => {
+        const h = makeHarness({ record: LOCAL, usernameOutput: 'username=someone@example.com' });
         await h.ensure('bb-local');
-        assert.match(errorsOf(h.logs)[0] || '', /printed no username= line/);
+        await h.ensure('bb-local');
+        assert.equal(errorsOf(h.logs).length, 0, h.logs.join('\n'));
+        const warns = warnsOf(h.logs);
+        assert.equal(warns.length, 1, h.logs.join('\n'));
+        assert.match(warns[0], /username line other than x-bitbucket-api-token-auth \(written by an earlier provision_vcs_auth\)/);
+        assert.match(warns[0], /re-provision/);
+        assert.ok(!warns[0].includes('someone@example.com'), warns[0]);
+        assert.ok(!h.logs.some((l) => /No PR will be opened/.test(l)), h.logs.join('\n'));
+        assertNoSentinel(h.logs);
+    });
+
+    test('no username= line is named in the ERROR only when a channel fails', async () => {
+        const failing = makeHarness({ record: LOCAL, usernameOutput: '', lsRemote: { ok: false, output: '', error: 'fatal: Authentication failed' } });
+        await failing.ensure('bb-local');
+        assert.match(errorsOf(failing.logs)[0] || '', /printed no username= line/);
+        const working = makeHarness({ record: LOCAL, usernameOutput: '' });
+        await working.ensure('bb-local');
+        assert.equal(errorsOf(working.logs).length, 0, working.logs.join('\n'));
+        assert.equal(warnsOf(working.logs).length, 1, working.logs.join('\n'));
     });
 });
 
