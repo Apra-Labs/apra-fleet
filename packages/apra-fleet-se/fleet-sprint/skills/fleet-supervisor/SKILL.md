@@ -377,6 +377,8 @@ Field names, exactly as the API expects them:
 | `budget` | no | USD cap. |
 | `phases` | no | `{"regression": "skip"}` skips the regression pass (`"run"` is the default). Any other key or value is a 400. |
 | `kbDemotionLoop` | no | `"on"` (default) or `"off"`: the reviewer KB demotion loop switch, forwarded as `--kb-demotion-loop`. Any other value is a 400. |
+| `tierPolicy` | no | `"balanced"` (default), `"economy"` or `"quality"`: the model-tier policy preset; `quality` restores the previous behaviour. Any other value is a 400. See docs/fleet-sprint-tier-policy.md. |
+| `tierOverrides` | no | `{ "premiumCapPct": <integer 0..100 or null> }`: overrides the preset's premium cap. Any other key is a 400. See docs/fleet-sprint-tier-policy.md. |
 | `overrideRelaunchGate` | no | bool. See below. |
 
 Response has `sprintId`, `pid`, `port` (its own dashboard), `logPath`, and

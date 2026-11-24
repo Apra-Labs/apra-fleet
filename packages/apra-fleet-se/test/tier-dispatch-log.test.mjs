@@ -94,6 +94,23 @@ test('a result with no resolved_tier for a tier request logs a WARN', async () =
     assert.equal(store[0].tier.mismatch, 'no-resolved-tier');
 });
 
+test('a dispatch that threw logs a failed marker and is not a tier mismatch', async () => {
+    const lines = [];
+    const store = [];
+    const accounting = createDispatchAccounting({ log: (m) => lines.push(m), store });
+    await assert.rejects(
+        accounting.around(
+            { memberName: 'doer-3', role: 'doer', requestedTier: 'premium', resolved: () => null },
+            async () => { throw new Error('transport closed'); },
+        ),
+        /transport closed/,
+    );
+    assert.equal(lines.filter((l) => l.includes('[tier] WARN')).length, 0, JSON.stringify(lines));
+    assert.ok(lines.some((l) => l.startsWith('[tier] dispatch') && l.includes('dispatch failed, no result')), JSON.stringify(lines));
+    assert.equal(store[0].tier.mismatch, null);
+    assert.equal(tierCounts(store).mismatches, 0);
+});
+
 test('an escalated redo logs the escalation from -> to', async () => {
     const { ctx, lines } = bridgedCtx({ resolved: { resolved_tier: 'premium', resolved_model: 'model-p-1' } });
     await dispatchRole(ctx, 'doer', doerOpts({

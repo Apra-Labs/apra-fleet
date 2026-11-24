@@ -1265,10 +1265,11 @@ async function runSprintCycle(context) {
     // sources (titles of the beads under review) are read from it.
     let kbBeadIndex = new Map();
     const kbBeadTitles = (ids) => (Array.isArray(ids) ? ids : []).map((id) => kbBeadIndex.get(id)?.title).filter((t) => typeof t === 'string' && t);
-    const agent = async (prompt, callOpts = {}) => {
+    const agent = async (prompt, opts = {}) => {
         // tier_context is engine-internal (bead ids, tierReason, escalations
         // for the tier log line); it never reaches the workflow agent.
-        const { tier_context: tierContext, ...opts } = callOpts;
+        const { tier_context: tierContext, ...optsRest } = opts;
+        opts = optsRest;
         let finalPrompt = prompt;
         if (opts.agentType && !KB_SELF_INJECTING_ROLES.has(opts.agentType) && opts.member_name) {
             // Only promise the kb_captures channel to a persona whose returned

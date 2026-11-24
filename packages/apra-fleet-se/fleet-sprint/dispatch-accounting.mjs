@@ -195,7 +195,7 @@ export function createDispatchAccounting(deps = {}) {
      * A WARN follows when the resolved tier differs from the requested one, or
      * a tier was requested and the result carries none -- never silent.
      */
-    function tierRecord({ index, memberName, role, requestedTier, tierContext, resolved }) {
+    function tierRecord({ index, memberName, role, requestedTier, tierContext, resolved, failed = false }) {
         const ctx = tierContext && typeof tierContext === 'object' ? tierContext : {};
         const requested = typeof requestedTier === 'string' && requestedTier ? requestedTier : null;
         const resolvedTier = resolved && typeof resolved.resolved_tier === 'string' ? resolved.resolved_tier : null;
@@ -209,7 +209,11 @@ export function createDispatchAccounting(deps = {}) {
         // the request is not a tier request.
         const tierRequested = requested === 'cheap' || requested === 'standard' || requested === 'premium';
         let mismatch = null;
-        if (tierRequested && resolvedTier === null) mismatch = 'no-resolved-tier';
+        // A dispatch that threw never produced a result, so a missing
+        // resolved_tier is expected there and is not a mismatch.
+        const dispatchFailed = failed === true && resolvedTier === null;
+        if (dispatchFailed) mismatch = null;
+        else if (tierRequested && resolvedTier === null) mismatch = 'no-resolved-tier';
         else if (tierRequested && resolvedTier !== requested) mismatch = 'tier-differs';
         const who = memberName ? String(memberName) : '(unknown member)';
         const parts = [
@@ -220,12 +224,14 @@ export function createDispatchAccounting(deps = {}) {
             `resolved_tier=${resolvedTier || '-'}`,
             `resolved_model=${resolvedModel || '-'}`,
         ];
+        if (dispatchFailed) parts.push('dispatch failed, no result');
         const reasonEntries = Object.entries(tierReasons).filter(([, v]) => v);
         if (reasonEntries.length) parts.push(`tierReason=${reasonEntries.map(([k, v]) => `${k}:${String(v).replace(/\s+/g, ' ').trim()}`).join('; ')}`);
         if (escalations.length) parts.push(`escalation=${escalations.map((e) => `${e.id ? `${e.id} ` : ''}${e.from}->${e.to}`).join(', ')}`);
         log(`[tier] dispatch ${index}: ${parts.join(' ')}`);
         if (mismatch) {
-            log(`[tier] WARN: dispatch ${index} to member '${who}' requested tier '${requested}' but ${resolvedTier === null ? 'the result carries no resolved_tier' : `it resolved to '${resolvedTier}'`} (requested=${requested}, resolved=${resolvedTier || 'none'}).`);
+            const got = resolvedTier === null ? 'the result carries no resolved_tier' : "it resolved to '" + resolvedTier + "'";
+            log(`[tier] WARN: dispatch ${index} to member '${who}' requested tier '${requested}' but ${got} (requested=${requested}, resolved=${resolvedTier || 'none'}).`);
         }
         return { requested, resolved: resolvedTier, resolvedModel, beadIds, tierReasons, escalations, mismatch };
     }
@@ -257,8 +263,12 @@ export function createDispatchAccounting(deps = {}) {
             else if (typeof memberCall !== 'function') skipReason = 'no member session available to read session_stats';
             else if (!record || !(record.id || record.member_id)) skipReason = `no member record for '${memberName}'`;
             const before = skipReason ? null : await readSnapshot(record, memberName, 'before');
+            let threw = false;
             try {
                 return await fn();
+            } catch (err) {
+                threw = true;
+                throw err;
             } finally {
                 const after = skipReason ? null : await readSnapshot(record, memberName, 'after');
                 const delta = skipReason
@@ -272,6 +282,7 @@ export function createDispatchAccounting(deps = {}) {
                 const tier = tierRecord({
                     index, memberName, role, requestedTier, tierContext,
                     resolved: typeof resolved === 'function' ? resolved() : null,
+                    failed: threw,
                 });
                 store.push({
                     index,
