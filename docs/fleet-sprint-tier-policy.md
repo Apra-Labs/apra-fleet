@@ -33,7 +33,7 @@ the streak-assignment call is cheap. `quality` reproduces the behaviour
 sprints had before tier policies existed.
 
 `tierOverrides.premiumCapPct` replaces the preset's cap. The cap allows
-`floor(premiumCapPct x counted task beads / 100)` premium task beads. Over the
+`ceil(premiumCapPct x counted task beads / 100)` premium task beads. Over the
 cap the engine runs up to two scoped re-plans, then raises an operator
 decision before Develop.
 
