@@ -2088,6 +2088,28 @@
       }
     },
     {
+      "id": "8313d623-f215-45d8-86d0-ec5683c9e197",
+      "type": "knowledge",
+      "title": "New fleet-sprint *.mjs/*.js files must be registered in GUARDED_MODULES or the apra-fleet-se suite fails",
+      "summary": "Every *.mjs/*.js file under packages/apra-fleet-se/fleet-sprint/ (recursive) must be listed in GUARDED_MODULES or GUARD_REGISTRATION_EXEMPT in fleet-sprint/guarded-modules.mjs. guarded-modules-coverage.test.mjs enforces this. A miss makes CI's \"Run tests\" exit 1 while every vitest and node --test summary still shows 0 failures; the only visible signal is the line \"> apra-fleet-se suite FAILED (exit 1)\".",
+      "symbols": [
+        "GUARDED_MODULES",
+        "GUARD_REGISTRATION_EXEMPT"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/guarded-modules.mjs",
+        "packages/apra-fleet-se/test/guarded-modules-coverage.test.mjs",
+        "scripts/run-all-tests.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-24T05:27:24.844Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/guarded-modules.mjs": "ae8196037fb6f6f8aa4cdd5ccda223db77234665",
+        "packages/apra-fleet-se/test/guarded-modules-coverage.test.mjs": "b806d85d05b5263567892ce97f1487a644a385b8",
+        "scripts/run-all-tests.mjs": "bfa7ff7a8eba998363f061237c9934491ce0e637"
+      }
+    },
+    {
       "id": "83649bac-ac24-4a92-9bff-c8af8737d32d",
       "type": "knowledge",
       "title": "kb_import withdrawn-tombstone gate: base from base_branch or remote HEAD, any configured remote",
