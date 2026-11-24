@@ -891,7 +891,6 @@ const defaultLockProbeTimer = {
  * @returns {Promise<{ foreignHolders: object[] }>}
  */
 async function probeLockHolders({ command, member, target, label, log, attemptStartedAt, now }) {
-    const elapsedS = Math.max(0, Math.round((now() - attemptStartedAt) / 1000));
     let res;
     try {
         res = await command(buildLockHolderProbe(target), {
@@ -902,6 +901,10 @@ async function probeLockHolders({ command, member, target, label, log, attemptSt
         if (err && err.name === 'CancelledError') throw err;
         res = { ok: false, output: '', error: (err && err.message) || String(err) };
     }
+    // Sampled AFTER the probe ran: the holder's age is read during the probe, so
+    // an own process can never be older than this reading (the earlier sample
+    // made a slow own pull look foreign by the probe's latency).
+    const elapsedS = Math.max(0, Math.round((now() - attemptStartedAt) / 1000));
     if (!res || !res.ok) {
         log(`[Dolt] ${label} has produced no result after ${elapsedS}s on member '${member}'; the beads lock-holder probe failed (${(res && res.error) || 'no result'}), so the holders are unknown. Still waiting.`);
         return { foreignHolders: [] };

@@ -205,6 +205,47 @@ describe('lock-holder watchdog on a silent D-pull', () => {
         m.release(); // let the abandoned command end
     });
 
+    // The probe takes time on the member; the fake clock advances while it runs
+    // (7s, as in the incident). The elapsed time must be read AFTER the probe.
+    function slowProbeMember(target, probeOutput, clockRef) {
+        const m = silentMember({ target, probeOutput });
+        const probe = buildLockHolderProbe(target);
+        const inner = m.command;
+        return { ...m, command: async (cmd, opts) => { if (cmd === probe) clockRef.advance(7_000); return inner(cmd, opts); } };
+    }
+
+    test('own pull whose age runs ahead of the pre-probe clock by the probe latency keeps waiting', async () => {
+        const target = { os: 'linux', shell: '' };
+        const c = { t: 0, advance(ms) { this.t += ms; } };
+        const timer = fakeTimer();
+        const m = slowProbeMember(target, 'HOLDER\t2404425\t01:09\t.beads/embeddeddolt.gate.lock\tbd dolt pull\n', c);
+        const pull = doltPullBefore('m1', { command: m.command, remoteTipFingerprint: false, memberTarget: target, now: () => c.t, lockProbeTimer: timer, log: () => {} }).then((r) => r, (e) => e);
+        await flush();
+        c.t = 61_000;
+        timer.timers[0].fn();
+        await flush();
+        m.release();
+        const result = await pull;
+        assert.ok(!(result instanceof Error), 'own pull must not fail: ' + (result && result.message));
+        assert.strictEqual(m.syncCalls().length, 1);
+    });
+
+    test('a foreign pull older than attempt + 5s (measured after the probe) still fails loudly', async () => {
+        const target = { os: 'linux', shell: '' };
+        const c = { t: 0, advance(ms) { this.t += ms; } };
+        const timer = fakeTimer();
+        // attempt is 68s after the probe; holder is 80s old.
+        const m = slowProbeMember(target, 'HOLDER\t31337\t01:20\t.beads/embeddeddolt.gate.lock\tbd dolt pull\n', c);
+        const pull = doltPullBefore('m1', { command: m.command, remoteTipFingerprint: false, memberTarget: target, now: () => c.t, lockProbeTimer: timer }).then(() => null, (e) => e);
+        await flush();
+        c.t = 61_000;
+        timer.timers[0].fn();
+        const err = await pull;
+        assert.ok(err instanceof DoltLockHeldError, 'got ' + (err && err.name));
+        assert.match(err.message, /pid 31337/);
+        m.release();
+    });
+
     test('a member where holders cannot be listed says so explicitly and keeps waiting', async () => {
         const target = { os: 'windows', shell: '' };
         let clock = 0;
