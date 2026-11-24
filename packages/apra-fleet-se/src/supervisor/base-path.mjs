@@ -76,5 +76,7 @@ export function prefixPageHtml(html, base) {
  */
 export function prefixLocation(location, base) {
     if (!base || typeof location !== 'string') return location;
-    return location.startsWith('/') && !location.startsWith('//') ? base + location : location;
+    // Only a same-origin path ('/x'). Leave '//host' and '/\host' alone: browsers treat both as
+    // protocol-relative URLs to another host, so they must never be re-rooted into a local path.
+    return /^\/(?![/\\])/.test(location) ? base + location : location;
 }

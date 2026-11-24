@@ -220,7 +220,12 @@ describe('forwarded prefix through a trusted-front supervisor', () => {
             const r = await get(port, '/', signed(bad));
             assert.equal(r.status, 200, bad);
             assert.ok(r.body.includes('href="/sprints/sprint-1/live"'), `prefix ${bad} must be ignored`);
-            assert.ok(!r.body.includes('evil.example.com'), bad);
+            // Stronger than looking for the host name: no URL attribute in the page may point off
+            // the origin (a scheme, or a protocol-relative '//' or '/\' start).
+            const offOrigin = [...r.body.matchAll(/\b(?:href|src|action)="([^"]*)"/g)]
+                .map((m) => m[1])
+                .filter((u) => /^(?:[a-z][a-z0-9+.-]*:|\/[/\\])/i.test(u));
+            assert.deepEqual(offOrigin, [], `prefix ${bad} produced off-origin URLs`);
         }
         const live = await get(port, '/sprints/sprint-1/live', { 'x-forwarded-prefix': BASE });
         assert.ok(live.body.includes("new EventSource('/sprints/sprint-1/live/events')"));
@@ -243,5 +248,17 @@ describe('forwarded prefix through a trusted-front supervisor', () => {
             await sup.stop('test');
             await new Promise((r) => spy.close(r));
         }
+    });
+});
+
+describe('prefixLocation keeps off-origin redirects untouched', () => {
+    test('re-roots only same-origin paths', async () => {
+        const { prefixLocation } = await import('../src/supervisor/base-path.mjs');
+        assert.equal(prefixLocation('/sprints/x', '/fleet'), '/fleet/sprints/x');
+        assert.equal(prefixLocation('/', '/fleet'), '/fleet/');
+        for (const off of ['//evil.example.com/x', '/' + String.fromCharCode(92) + 'evil.example.com/x', 'https://evil.example.com/x', 'relative']) {
+            assert.equal(prefixLocation(off, '/fleet'), off, off);
+        }
+        assert.equal(prefixLocation('/x', ''), '/x');
     });
 });
