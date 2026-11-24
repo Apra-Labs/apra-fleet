@@ -43,7 +43,7 @@ interface FakeMember {
 }
 
 function decoded(cmd: string): string {
-  return cmd.includes('-EncodedCommand') ? decodePowerShellEncodedCommand(cmd) : cmd;
+  return decodePowerShellEncodedCommand(cmd);
 }
 
 function fakeDeps(member: FakeMember, opts: {

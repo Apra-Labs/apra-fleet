@@ -197,6 +197,10 @@ ${m.KB_SERVER_USAGE}`);
   import('./cli/restart.js')
     .then(m => m.runRestart(process.argv.slice(3)))
     .catch(err => { logError('cli', `Restart failed: ${err.message}`); process.exit(1); });
+} else if (arg === 'fleet-se-check') {
+  import('./cli/fleet-se-check.js')
+    .then(m => m.runFleetSeCheck())
+    .catch(err => { logError('cli', `fleet-se-check failed: ${err.message}`); process.exit(1); });
 } else if (arg === 'status') {
   import('./cli/status.js')
     .then(m => m.runStatus(process.argv.slice(3)))
