@@ -452,6 +452,36 @@ export class DoltLockHeldError extends DoltSyncError {
     }
 }
 
+/** The failure kind DoltPushRaceError carries in details.kind. */
+export const DOLT_PUSH_RACE_KIND = 'remote-race';
+
+/**
+ * A D-push that kept losing the race to other writers on the shared remote:
+ * every push was rejected non-fast-forward, every reconcile pull in between
+ * merged cleanly, the bounded reconcile loop ran out of cycles, and the
+ * deterministic settle (when wired) did not recover it. Its message names the
+ * race; details.kind is 'remote-race' and details.attempts the number of
+ * reconcile cycles run.
+ *
+ * A DoltDivergedError subtype on purpose: a push that stays rejected after
+ * clean pulls cannot be told apart from a wedged clone, so every existing
+ * divergence handler (BEADS_SYNC_CONFLICT terminal reason, conflict-dump
+ * capture, degraded 'diverged' outcome) still applies, and it keeps the
+ * DOLT_DIVERGED code those handlers key on. A caller that wants the finer
+ * reason reads `kind` / details.kind.
+ */
+export class DoltPushRaceError extends DoltDivergedError {
+    /**
+     * @param {string} message
+     * @param {{ member?: string|null, doltOutput?: string|null, operation?: string|null, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(message, opts = {}) {
+        super(message, { ...opts, details: { kind: DOLT_PUSH_RACE_KIND, ...opts.details } });
+        this.name = 'DoltPushRaceError';
+        this.kind = DOLT_PUSH_RACE_KIND;
+    }
+}
+
 /**
  * Thrown by preflightBeadsHealthGate() when the backlog member's beads clone
  * holds local schema migrations bd auto-applied but never published (the

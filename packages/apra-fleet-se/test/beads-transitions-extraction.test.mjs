@@ -423,6 +423,9 @@ describe('apra-fleet-3swo.4.7: the engine routes ALL THREE sites through the sha
         'Reviewer reopenIds': 'fleet-sprint/phases/review.mjs',
         'Final Review reopenIds': 'fleet-sprint/phases/final-review.mjs',
         'Re-review reopenIds': 'fleet-sprint/phases/re-review.mjs',
+        // The catch-up review's no-review-possible fallback (reopen instead
+        // of passing an unreviewed close to Final Review).
+        'Catch-up review reopen': 'fleet-sprint/phases/review.mjs',
     };
     // Counted on `applyGuardedReopens({` -- the call-with-options-object shape
     // -- so prose mentions of `applyGuardedReopens()` in the surrounding
@@ -451,12 +454,12 @@ describe('apra-fleet-3swo.4.7: the engine routes ALL THREE sites through the sha
             }
         }
         assert.equal(
-            SOURCES.reduce((n, f) => n + countGuardCalls(f.src), 0), 3,
-            'exactly three call sites across runner.js + phases/review.mjs + phases/re-review.mjs + phases/final-review.mjs: per-round reviewer, Final Review, Re-Review'
+            SOURCES.reduce((n, f) => n + countGuardCalls(f.src), 0), 4,
+            'exactly four call sites across runner.js + phases/review.mjs + phases/re-review.mjs + phases/final-review.mjs: per-round reviewer, catch-up fallback, Final Review, Re-Review'
         );
         // The split itself, so the total above cannot be satisfied by three
         // sites all landing back in one file.
-        assert.equal(countGuardCalls(REVIEW_PHASE_SRC), 1, 'phases/review.mjs owns exactly the per-round reviewer site');
+        assert.equal(countGuardCalls(REVIEW_PHASE_SRC), 2, 'phases/review.mjs owns exactly the per-round reviewer site and the catch-up fallback site');
         assert.equal(countGuardCalls(RE_REVIEW_PHASE_SRC), 1, 'phases/re-review.mjs owns exactly the Re-Review site');
         assert.equal(countGuardCalls(FINAL_REVIEW_PHASE_SRC), 1, 'phases/final-review.mjs owns exactly the Final Review site');
         assert.equal(countGuardCalls(RUNNER_SRC), 0, 'runner.js owns NONE of the three sites after apra-fleet-3swo.6.6 -- a nonzero count here means a phase slice left a copy behind or a reopen loop was re-inlined');
