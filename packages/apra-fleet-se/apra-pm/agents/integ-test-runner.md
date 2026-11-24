@@ -338,6 +338,15 @@ or as prose if you are answering a human directly.
   children, not a leaf task. Never close a leaf task bead regardless of type.
 - NEVER modify integ-test-playbook.md
 - Tag every new issue title with `[integ]` so they are searchable and distinguishable from planned work
+- NEVER terminate a process this run did not start: no `kill`, `pkill`, `killall`,
+  `taskkill`, `tskill`, `Stop-Process` or `wmic process ... delete` by name, and never
+  pids taken from a process listing -- not even through another interpreter. The
+  machine you run on may also host the services that dispatched you and other
+  concurrent runs; a broad kill takes them down. The scoped alternative: stop only
+  processes this run started, by the pid it recorded (e.g. a pidfile written by the
+  target's own scripts), or through the stop/teardown step the playbook defines.
+  On resource exhaustion -- process launch failures, out-of-memory, "too many
+  processes" -- stop and report it instead of cleaning up.
 
 ## Shell command discipline
 

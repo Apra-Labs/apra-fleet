@@ -1,7 +1,9 @@
 // A Windows member's `bd dolt pull`/`bd dolt push` runs bd with a bounded
 // GOMAXPROCS (bd's embedded Dolt otherwise starts one git.exe per remote chunk
 // at once and Windows refuses the burst with ERROR_NOT_ENOUGH_MEMORY), built
-// in JS per member shell; linux/macOS strings stay byte-identical. A sync that
+// in JS per member shell. Every resolved member (linux, macOS, Windows) also
+// carries the non-interactive git credential environment (GIT_TERMINAL_PROMPT=0,
+// GCM_INTERACTIVE=never) in its shell's dialect. A sync that
 // still ends on the Windows process-creation limit after its retry budget
 // raises a typed error, not a generic sync failure. No Windows host needed.
 import { test, describe, beforeEach, afterEach } from 'node:test';
@@ -20,20 +22,28 @@ import {
 import { DoltWindowsSpawnLimitError, DoltSyncError, DOLT_WINDOWS_SPAWN_LIMIT_CODE } from '../fleet-sprint/errors.mjs';
 import { stderrText } from './helpers/vcs-stderr-corpus.mjs';
 
+// Exact prefixes per member shell dialect.
+const POSIX = 'GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never ';
+const GITBASH = 'GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never GOMAXPROCS=1 ';
+const PWSH = "$env:GIT_TERMINAL_PROMPT='0'; $env:GCM_INTERACTIVE='never'; $env:GOMAXPROCS='1'; ";
+
 // Exact strings per member OS/shell.
 const EXPECTED = [
-    { name: 'linux', target: { os: 'linux', shell: '' }, pull: 'bd dolt pull', push: 'bd dolt push' },
-    { name: 'macOS', target: { os: 'darwin', shell: '' }, pull: 'bd dolt pull', push: 'bd dolt push' },
-    { name: 'Windows PowerShell (no shell recorded)', target: { os: 'windows', shell: '' }, pull: "$env:GOMAXPROCS='1'; bd dolt pull", push: "$env:GOMAXPROCS='1'; bd dolt push" },
-    { name: 'Windows PowerShell 5', target: { os: 'windows', shell: 'powershell5' }, pull: "$env:GOMAXPROCS='1'; bd dolt pull", push: "$env:GOMAXPROCS='1'; bd dolt push" },
-    { name: 'Windows pwsh 7', target: { os: 'windows', shell: 'pwsh7' }, pull: "$env:GOMAXPROCS='1'; bd dolt pull", push: "$env:GOMAXPROCS='1'; bd dolt push" },
-    { name: 'Windows Git Bash', target: { os: 'windows', shell: 'gitbash' }, pull: 'GOMAXPROCS=1 bd dolt pull', push: 'GOMAXPROCS=1 bd dolt push' },
+    { name: 'linux', target: { os: 'linux', shell: '' }, pull: `${POSIX}bd dolt pull`, push: `${POSIX}bd dolt push` },
+    { name: 'macOS', target: { os: 'darwin', shell: '' }, pull: `${POSIX}bd dolt pull`, push: `${POSIX}bd dolt push` },
+    { name: 'Windows PowerShell (no shell recorded)', target: { os: 'windows', shell: '' }, pull: `${PWSH}bd dolt pull`, push: `${PWSH}bd dolt push` },
+    { name: 'Windows PowerShell 5', target: { os: 'windows', shell: 'powershell5' }, pull: `${PWSH}bd dolt pull`, push: `${PWSH}bd dolt push` },
+    { name: 'Windows pwsh 7', target: { os: 'windows', shell: 'pwsh7' }, pull: `${PWSH}bd dolt pull`, push: `${PWSH}bd dolt push` },
+    { name: 'Windows Git Bash', target: { os: 'windows', shell: 'gitbash' }, pull: `${GITBASH}bd dolt pull`, push: `${GITBASH}bd dolt push` },
 ];
 
-/** A `$` anywhere other than the PowerShell GOMAXPROCS assignment would be a shell expansion. */
+/**
+ * A `$` anywhere other than a leading PowerShell `$env:NAME='value';`
+ * ASSIGNMENT would be a shell expansion (reading a variable).
+ */
 function assertNoShellExpansion(cmd) {
-    const withoutAssignment = cmd.replace(/^\$env:GOMAXPROCS='\d+'; /, '');
-    assert.doesNotMatch(withoutAssignment, /\$|`|%[A-Za-z_]+%/, `member-bound command must not read a variable: ${cmd}`);
+    const withoutAssignments = cmd.replace(/^(?:\$env:[A-Za-z_][A-Za-z0-9_]*='[^'$`]*'; )+/, '');
+    assert.doesNotMatch(withoutAssignments, /\$|`|%[A-Za-z_]+%/, `member-bound command must not read a variable: ${cmd}`);
 }
 
 const SYNC_REMOTE = 'git+https://example.com/org/repo.git';
@@ -81,8 +91,8 @@ describe('bdSyncCommandFor: exact command strings per member OS/shell', () => {
         });
     }
 
-    test('a Node platform string (win32) is a Windows member; an unresolved member is POSIX', () => {
-        assert.strictEqual(bdSyncCommandFor('bd dolt push', { os: 'win32', shell: '' }), "$env:GOMAXPROCS='1'; bd dolt push");
+    test('a Node platform string (win32) is a Windows member; an unresolved member stays bare', () => {
+        assert.strictEqual(bdSyncCommandFor('bd dolt push', { os: 'win32', shell: '' }), `${PWSH}bd dolt push`);
         assert.strictEqual(bdSyncCommandFor('bd dolt push', null), 'bd dolt push');
         assert.strictEqual(bdSyncCommandFor('bd dolt push', { os: '', shell: '' }), 'bd dolt push');
         assert.strictEqual(WINDOWS_BD_GOMAXPROCS, '1');
@@ -108,11 +118,11 @@ describe('D-pull / D-push issue the per-OS strings', () => {
         setMemberTargetResolver(async (member) => { looked.push(member); return { os: 'windows', shell: 'gitbash' }; });
         const rec = recordingCommand();
         await doltPullBefore('win-gb', { command: rec.command, remoteTipFingerprint: false });
-        assert.deepStrictEqual(rec.syncCalls(), ['GOMAXPROCS=1 bd dolt pull']);
+        assert.deepStrictEqual(rec.syncCalls(), [`${GITBASH}bd dolt pull`]);
         assert.deepStrictEqual(looked, ['win-gb']);
     });
 
-    test('with neither, or a resolver that throws, the strings are the unchanged POSIX ones', async () => {
+    test('with neither, or a resolver that throws, the OS is unknown and the strings stay bare', async () => {
         const plain = recordingCommand();
         await doltPullBefore('m1', { command: plain.command, remoteTipFingerprint: false });
         assert.deepStrictEqual(plain.syncCalls(), ['bd dolt pull']);
@@ -154,7 +164,7 @@ describe('Windows spawn-limit exhaustion is a typed error', () => {
         assert.ok(err.message.includes(WINDOWS_SPAWN_LIMIT_REMEDY), 'the message carries the remedy');
         assert.strictEqual(err.details.cause, 'windows-spawn-limit');
         assert.ok(rec.syncCalls().length > 1, 'the transient spawn-outage retries still ran');
-        for (const cmd of rec.syncCalls()) assert.strictEqual(cmd, "$env:GOMAXPROCS='1'; bd dolt pull");
+        for (const cmd of rec.syncCalls()) assert.strictEqual(cmd, `${PWSH}bd dolt pull`);
     });
 
     test('an ordinary exhausted transient failure stays a generic DoltSyncError', async () => {
@@ -223,7 +233,7 @@ describe('Windows spawn limit: typed terminal and kept transient retry (push and
         assert.match(err.message, /^\[Dolt\] D-push for member 'win-m' failed: Windows refused/);
         assert.ok(err.message.includes(WINDOWS_SPAWN_LIMIT_REMEDY));
         assert.ok(rec.syncCalls().length > 1, 'retried before giving up');
-        for (const cmd of rec.syncCalls()) assert.strictEqual(cmd, 'GOMAXPROCS=1 bd dolt push');
+        for (const cmd of rec.syncCalls()) assert.strictEqual(cmd, `${GITBASH}bd dolt push`);
     });
 
     test('the spawn limit once, then success: the D-pull and D-push both succeed (transient retry kept)', async () => {
@@ -241,7 +251,7 @@ describe('Windows spawn limit: typed terminal and kept transient retry (push and
             assert.strictEqual(result.ok, true, `${op} must succeed after one spawn-limit failure`);
             assert.strictEqual(attempts, 2, `${op}: exactly one retry`);
             assert.strictEqual(sleeps.length, 1, `${op}: one backoff between the attempts`);
-            assert.deepStrictEqual(rec.syncCalls(), [`$env:GOMAXPROCS='1'; bd dolt ${op}`, `$env:GOMAXPROCS='1'; bd dolt ${op}`]);
+            assert.deepStrictEqual(rec.syncCalls(), [`${PWSH}bd dolt ${op}`, `${PWSH}bd dolt ${op}`]);
         }
     });
 });

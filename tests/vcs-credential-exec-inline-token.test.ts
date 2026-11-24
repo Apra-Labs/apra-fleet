@@ -26,6 +26,7 @@ import {
   VCS_TOKEN_INLINE_PLACEHOLDER,
 } from '../src/tools/vcs-credential-exec.js';
 import type { SSHExecResult } from '../src/types.js';
+import { pidWrapGitBash } from '../src/os/windows-gitbash.js';
 
 const { mockExecCommand } = vi.hoisted(() => ({
   mockExecCommand: vi.fn<(cmd: string, timeout?: number) => Promise<SSHExecResult>>(),
@@ -71,6 +72,9 @@ function dispatchedCommand(): string {
   const wrapped = call[0] as string;
   const posix = /^\{ ([\s\S]*); \} & _fleet_pid=\$!; printf 'FLEET_PID:%s\\n' "\$_fleet_pid"; wait "\$_fleet_pid"; exit \$\?$/.exec(wrapped);
   if (posix) return posix[1];
+  // Git Bash member: same subshell, but the marker carries the Windows pid.
+  const gb = /^\{ ([\s\S]*); \} & _fleet_pid=\$!; /.exec(wrapped);
+  if (gb && pidWrapGitBash(gb[1]) === wrapped) return gb[1];
   const psh = /^Write-Output "FLEET_PID:\$pid"; ([\s\S]*)$/.exec(wrapped);
   if (psh) return psh[1];
   throw new Error(`dispatched command is not under the FLEET_PID wrapper: ${wrapped}`);

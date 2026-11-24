@@ -5,6 +5,7 @@ import { fileURLToPath } from 'url';
 import { exec } from 'child_process';
 import { createHash } from 'crypto';
 import { dropBeadsWorkspaceEnv } from '../../../../scripts/test-sandbox.mjs';
+import { logicalBdCommand } from '../../fleet-sprint/bd-sync-command.mjs';
 import { BEADS_VERSION, DOLT_VERSION } from '../../fleet-sprint/tool-version-pin.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -788,7 +789,16 @@ function replayBd(cmd, cwd) {
 // entry point
 // ---------------------------------------------------------------------------
 
-export function runCmd(cmd, cwd) {
+export function runCmd(wire, cwd) {
+    // The engine issues bd sync commands with a leading environment-assignment
+    // prefix (bd-sync-command.mjs: the non-interactive git credential env, and
+    // GOMAXPROCS on Windows). That prefix is shell syntax for the MEMBER's
+    // shell, not this host's, and it carries no per-scenario meaning -- so
+    // every matcher, cache key and recording below sees the LOGICAL bd
+    // command, keeping the committed recordings free of wire-format drift.
+    // A non-bd command is passed through untouched.
+    const logical = logicalBdCommand(wire);
+    const cmd = isBdCommand(logical) ? logical : wire;
     const mode = bdMode();
     if (mode !== 'real') {
         const versionAnswer = synthesizeToolVersion(cmd);

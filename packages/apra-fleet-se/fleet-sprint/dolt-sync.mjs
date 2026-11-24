@@ -85,8 +85,8 @@
  * ASCII only.
  */
 
-import { DoltDivergedError, DoltSyncError, DoltWindowsSpawnLimitError, DoltLockHeldError, DoltPushRaceError, UnpublishedSchemaMigrationsError } from './errors.mjs';
-import { bdSyncCommandFor, normalizeMemberTarget, POSIX_MEMBER_TARGET } from './bd-sync-command.mjs';
+import { DoltDivergedError, DoltSyncError, DoltWindowsSpawnLimitError, DoltLockHeldError, DoltPushRaceError, UnpublishedSchemaMigrationsError, DOLT_CREDENTIAL_REMEDY } from './errors.mjs';
+import { bdSyncCommandFor, normalizeMemberTarget, UNRESOLVED_MEMBER_TARGET } from './bd-sync-command.mjs';
 import { buildLockHolderProbe, parseLockHolderProbe, describeLockProcess } from './beads-lock-probe.mjs';
 import { classifyFailure, toDoltVerdict, commandBinary } from './vcs-module.mjs';
 import { buildSettleCallback } from './dolt-settle.mjs';
@@ -717,9 +717,10 @@ export function doltRaceJitterDelayMs(cycle, baseMs = DOLT_BACKOFF_BASE_MS, rand
 // Member OS/shell for the bd sync command string
 // ---------------------------------------------------------------------------
 //
-// A Windows member runs every `bd dolt pull`/`bd dolt push` with a bounded
-// GOMAXPROCS (see bd-sync-command.mjs for why and for the exact strings), so
-// runDoltStep needs the member's { os, shell }. Two sources, in order:
+// Every `bd dolt pull`/`bd dolt push` carries the non-interactive git
+// credential environment, and a Windows member's also a bounded GOMAXPROCS
+// (see bd-sync-command.mjs for why and for the exact strings), written in the
+// member's shell dialect -- so runDoltStep needs the member's { os, shell }. Two sources, in order:
 //   1. `opts.memberTarget` on the call -- an { os, shell } object or a
 //      `(member) => { os, shell }` function (tests, and any caller that has
 //      already resolved the member);
@@ -727,8 +728,8 @@ export function doltRaceJitterDelayMs(cycle, baseMs = DOLT_BACKOFF_BASE_MS, rand
 //      setMemberTargetResolver() -- the runner wires the cached
 //      member_detail-backed resolveMemberTarget there, so no extra
 //      member_detail round trip happens per sync once a member is resolved.
-// With neither, or when resolution fails, the member is treated as POSIX and
-// the command strings stay byte-identical to the pre-existing ones.
+// With neither, or when resolution fails, the member's OS is unknown and its
+// commands stay bare (the only form every shell runs).
 
 /** @type {((member: string) => Promise<{ os: string, shell: string }>|{ os: string, shell: string })|null} */
 let memberTargetResolver = null;
@@ -745,7 +746,8 @@ export function setMemberTargetResolver(resolver) {
 
 /**
  * Resolve `member`'s { os, shell } for command construction. Never throws: a
- * failed lookup is logged and degrades to POSIX (the unchanged strings).
+ * failed lookup is logged and degrades to UNRESOLVED_MEMBER_TARGET, whose
+ * commands stay bare.
  *
  * @param {string} member
  * @param {object|Function|undefined} memberTarget
@@ -754,14 +756,14 @@ export function setMemberTargetResolver(resolver) {
  */
 async function resolveDoltMemberTarget(member, memberTarget, log) {
     const source = (memberTarget !== undefined && memberTarget !== null) ? memberTarget : memberTargetResolver;
-    if (!source) return POSIX_MEMBER_TARGET;
+    if (!source) return UNRESOLVED_MEMBER_TARGET;
     try {
         const target = typeof source === 'function' ? await source(member) : source;
         const normalized = normalizeMemberTarget(target);
-        return normalized.os ? normalized : POSIX_MEMBER_TARGET;
+        return normalized.os ? normalized : UNRESOLVED_MEMBER_TARGET;
     } catch (err) {
-        log(`[Dolt] could not resolve the OS/shell of member '${member}' (${(err && err.message) || err}); building its bd sync commands for a POSIX shell.`);
-        return POSIX_MEMBER_TARGET;
+        log(`[Dolt] could not resolve the OS/shell of member '${member}' (${(err && err.message) || err}); issuing its bd sync commands bare, without the non-interactive credential environment.`);
+        return UNRESOLVED_MEMBER_TARGET;
     }
 }
 
@@ -982,8 +984,9 @@ async function awaitSyncAttempt({ pending, command, member, target, label, log, 
  */
 async function runDoltStep({ command, member, cmd, label, log, maxTransientRetries, onAuthFailure, sleep = defaultSleep, backoffBaseMs = DOLT_BACKOFF_BASE_MS, timeoutS = DOLT_STEP_TIMEOUT_S, spawnOutageBudgetMs = DOLT_SPAWN_OUTAGE_BUDGET_MS, now = Date.now, memberTarget, lockProbeAfterMs = DOLT_LOCK_PROBE_AFTER_MS, lockProbeTimer, onAbandonedAttempt, expectedFailureKinds }) {
     // `cmd` stays the LOGICAL command (classification, commandBinary, labels);
-    // `issued` is the member-bound string, which on a Windows member bounds
-    // GOMAXPROCS for bd (resolved once per step, not per attempt). The same
+    // `issued` is the member-bound string, which carries the non-interactive
+    // git credential environment (and, on a Windows member, a bounded
+    // GOMAXPROCS) -- resolved once per step, not per attempt. The same
     // target builds the lock-holder probe.
     const target = await resolveDoltMemberTarget(member, memberTarget, log);
     const issued = bdSyncCommandFor(cmd, target);
@@ -1826,7 +1829,7 @@ export async function doltPullBefore(member, opts = {}) {
             // one; the remedy is re-provisioning this member's VCS auth, which
             // the bounded one-shot onAuthFailure self-heal above already tried.
             throw new DoltSyncError(
-                `[Dolt] D-pull for member '${member}' failed on VCS CREDENTIALS, not a data divergence -- re-provision the member's VCS auth (provision_vcs_auth) and retry. Raw: ${pull.error}`,
+                `[Dolt] D-pull for member '${member}' failed on VCS CREDENTIALS, not a data divergence -- ${DOLT_CREDENTIAL_REMEDY} Raw: ${pull.error}`,
                 { member, doltOutput: pull.error, details: { kind: 'auth', operation: 'pull' } },
             );
         }
@@ -2273,7 +2276,7 @@ export async function doltPushAfter(member, opts = {}) {
             // false -- nothing had diverged. It is now its own terminal class,
             // reached only after the bounded one-shot auth self-heal above.
             throw new DoltSyncError(
-                `[Dolt] D-push for member '${member}' failed on VCS CREDENTIALS, not a data divergence -- re-provision the member's VCS auth (provision_vcs_auth) and retry. Raw: ${push.error}`,
+                `[Dolt] D-push for member '${member}' failed on VCS CREDENTIALS, not a data divergence -- ${DOLT_CREDENTIAL_REMEDY} Raw: ${push.error}`,
                 { member, doltOutput: push.error, details: { kind: 'auth', operation: 'push' } },
             );
         }
@@ -2372,7 +2375,7 @@ export async function doltPushAfter(member, opts = {}) {
         // evidence that the credentials were refreshed, a stale credential is
         // still the best explanation and this stays an auth terminal.
         throw new DoltSyncError(
-            `[Dolt] D-push re-push after reconcile for member '${member}' failed on VCS CREDENTIALS, not a data divergence -- re-provision the member's VCS auth (provision_vcs_auth) and retry. Raw: ${push.error}`,
+            `[Dolt] D-push re-push after reconcile for member '${member}' failed on VCS CREDENTIALS, not a data divergence -- ${DOLT_CREDENTIAL_REMEDY} Raw: ${push.error}`,
             { member, doltOutput: push.error, details: { kind: 'auth', operation: 'push-reconcile-repush' } },
         );
     }

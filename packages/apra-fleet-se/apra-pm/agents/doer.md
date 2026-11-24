@@ -357,6 +357,16 @@ or as prose if you are answering a human directly.
   is NOT a skip -- close with a blocked reason per Branch and secrets rules.
 - Tests for the changed area must pass before each commit (Step 2.5)
 - No PLAN.md, no progress.json -- beads is the only work tracker
+- NEVER terminate a process you did not start: no `kill`, `pkill`, `killall`,
+  `taskkill`, `tskill`, `Stop-Process` or `wmic process ... delete`, and not the same
+  command through another interpreter either. The machine you run on may also host the
+  services that dispatched you and other concurrent runs; a kill by name, or of pids
+  taken from a process listing, takes them down with yours. On resource exhaustion --
+  process launch failures, out-of-memory, "too many processes", a host too loaded to
+  start your tests -- stop and report it (BLOCKED, quoting the error) instead of
+  cleaning up. A process you started yourself (e.g. a backgrounded server) is stopped
+  through the target's own stop script or pidfile helper, or its stop/teardown step --
+  never by a raw `kill` (the permission config denies it).
 - If the target repo replays `bd` from recorded fixtures in its tests, record any NEW
   bd-shelling test's fixture at authoring time and commit it with the test -- do not
   defer it. Follow the fixture directory's own README for the record command.

@@ -164,11 +164,13 @@ describe('monitor-task.ts: status/pid/log command strings shell matrix', () => {
 
     // status, pid, log -- the GPU call is skipped entirely for a non-cloud
     // agent (execute-command's gpuResult branch resolves without calling
-    // strategy.execCommand).
-    expect(mockExecCommand1).toHaveBeenCalledTimes(3);
-    const [statusCmd, pidCmd, logCmd] = mockExecCommand1.mock.calls.map((c) => c[0] as string);
+    // strategy.execCommand). The empty mock output means no status.json and
+    // a dead pid, so monitor_task runs its fourth task-dir probe to tell a
+    // never-started task apart from an unreadable one.
+    expect(mockExecCommand1).toHaveBeenCalledTimes(4);
+    const [statusCmd, pidCmd, logCmd, dirCmd] = mockExecCommand1.mock.calls.map((c) => c[0] as string);
 
-    for (const cmd of [statusCmd, pidCmd, logCmd]) {
+    for (const cmd of [statusCmd, pidCmd, logCmd, dirCmd]) {
       if (isPosixRow(shell)) {
         // Confirmed shell-agnostic (apra-fleet-7dir.5.2): even a gitbash
         // member gets the wrapPowerShellEncoded-wrapped form -- no literal,

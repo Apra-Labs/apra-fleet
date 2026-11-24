@@ -1,5 +1,5 @@
 <!-- llm-context: Design notes for a cluster of dispatch/orchestration reliability fixes -- self-heal-and-retry coverage at git-operation boundaries, permission-scope vs auth-expiry git failure classification, missing-remote-ref sync handling, watchdog tick reentrancy, the doer VERIFY-only-next-action contract, the undici/Node toolchain pin, and the CLI overwrite-install stop/confirm sequence. Read alongside architecture.md's "Terminal-Signal and Dead-Session Detection Invariants", stall-detector-resilience.md, runner-error-classification.md, design-git-auth.md, and install.md, which cover the rest of the same reliability cluster. -->
-<!-- keywords: self-heal, retry, watchdog, reentrancy, VERIFY, doer contract, undici, toolchain pin, finalizeAbort, git auth, permission-scope, workflows permission, missing remote ref, publish blocked, install --force, ETXTBSY, poll, escalation -->
+<!-- keywords: winpid, FLEET_PID, FLEET_TASK_READY, launch_failed, GIT_TERMINAL_PROMPT, process_kill_refused, self-heal, retry, watchdog, reentrancy, VERIFY, doer contract, undici, toolchain pin, finalizeAbort, git auth, permission-scope, workflows permission, missing remote ref, publish blocked, install --force, ETXTBSY, poll, escalation -->
 <!-- see-also: architecture.md, stall-detector-resilience.md, runner-error-classification.md, design-git-auth.md, install.md -->
 
 # Dispatch and orchestration reliability hardening
@@ -418,3 +418,96 @@ duration of the drain window at that call site, not to remove the unref
 globally -- removing it globally would reintroduce the risk of this timer
 alone holding the process open long after every real handle it is draining
 has already gone away.
+
+## Git Bash members: the kill target must be the Windows pid, not the MSYS pid
+
+A Git Bash (MSYS) shell reports two different pids for the same process: the
+MSYS pid (what `$$` and `wait` see) and the Windows pid (what `taskkill` and
+the OS process table see). They are unrelated numbers. The `FLEET_PID:<pid>`
+marker that a wrapped command prints is what the timeout path later hands to
+the kill command, so on a Git Bash member it must carry the Windows pid. An
+MSYS pid in the marker either kills nothing or, worse, kills an unrelated
+process that happens to own that number.
+
+How it is built:
+
+- `LinuxCommands.pidWrap(cmd)` is the single protected hook both marker
+  emitters go through (the generic pid-capture wrapper and the agent-prompt
+  command builder). Linux and macOS return the unchanged POSIX wrapper, so
+  their output is byte-identical to before.
+- `WindowsGitBashCommands` overrides the hook with `pidWrapGitBash`, which
+  reads the Windows pid from `/proc/<msys-pid>/winpid` with the `read`
+  builtin and prints that as the marker. `wait` keeps using the MSYS pid.
+- **No silent fallback.** If `winpid` cannot be read, no marker is printed at
+  all. The kill path returns early when there is no marker, so a timeout
+  skips the kill rather than aim it at the wrong pid. A missed kill is
+  recoverable; a kill of an unrelated process is not.
+- The marker regex and `killPid` are unchanged; only the number placed in the
+  marker changed.
+
+The Windows pid is the root of the command's process tree, which is what a
+tree kill (`taskkill /T`) needs; the MSYS pid matched no process in that tree
+when checked live.
+
+## Oversized Git Bash commands are delivered through a file, never argv
+
+A Windows command line has a hard length limit. A local Git Bash member that
+is handed a long command (a large prompt, an inlined script) would otherwise
+fail or truncate at the OS boundary. Commands over 4 KB are written to an
+owner-only temporary file and executed with `. <file>` (source), not `bash
+<file>`: sourcing keeps the same bash process, so the pid the marker and the
+kill logic refer to is unchanged. The file is removed in a `finally` on every
+exit path, including timeout and error.
+
+## A `long_running` launch succeeds only when the task demonstrably started
+
+`execute_command` with `long_running` launches a detached task wrapper. A
+launch is reported successful only on exit 0 plus a `FLEET_TASK_READY` line,
+and the wrapper prints that line only after `task.pid` exists (or
+`status.json` shows the task already finished), polled for a bounded time.
+Anything else returns the typed failure `launch_failed` and never a task id.
+`monitor_task` mirrors this: a task directory or wrapper that never appeared
+reports `launch_failed` with a reason instead of "running". The liveness probe
+must not be a pipeline like `cat task.pid | xargs -r kill -0`: with a missing
+file `xargs -r` runs nothing and exits 0, which reads as "alive".
+
+## Roles never kill processes they did not start
+
+On a shared host, a role that runs `taskkill /F /IM node.exe` or `pkill node`
+under load kills every other run's processes. This is enforced by the product,
+not by prompt wording alone:
+
+- One matcher (`process-kill-rules`) recognises kill commands by token,
+  case-insensitively, ignoring directory paths and a `.exe` suffix, so
+  `C:\Windows\System32\TASKKILL.EXE` is caught the same as `kill`.
+- `compose_permissions` refuses such a grant, filters them out of composed
+  allow lists (so a stale ledger entry cannot re-grant one), and writes deny
+  rules for every provider that supports them.
+- The fleet-sprint engine carries its own copy of the matcher (the engine is
+  a separate package and cannot import the server module). A parity test keeps
+  the two copies identical; change both together.
+- The engine's grant path, permission heal and deploy-grant provisioner all
+  refuse kill grants. A heal whose refused calls are only kills stops with
+  `process_kill_refused` instead of burning a heal and re-dispatching.
+
+Known consequence: a blanket `Bash(kill:*)` deny also blocks `kill -0 <pid>`
+liveness checks and a role stopping a process it started itself. A target
+repo that needs that must provide its own script for stopping a recorded pid.
+
+## Dolt sync must never wait on a credential prompt
+
+`bd dolt pull` / `bd dolt push` run unattended on members. If the remote
+needs credentials the member does not have, git or the credential manager
+would otherwise block on a terminal prompt nobody can answer, hanging the
+dispatch. Sync commands therefore carry `GIT_TERMINAL_PROMPT=0` and
+`GCM_INTERACTIVE=never`, expressed in the member's own shell dialect: a
+`NAME=value` prefix on POSIX and Git Bash, `$env:` assignments on PowerShell,
+with no shell expansion. A member whose OS cannot be resolved gets the bare
+command rather than a guessed dialect.
+
+Failure handling is part of the design: git's prompt-refusal text must reach
+the auth classifier (the generic "remote unreachable" classifier must not
+swallow it), and it classifies as a distinct `credential` class. The engine
+logs the remedy and rethrows; it never synthesizes a reviewer or planner
+verdict out of a credential failure, because a verdict made without reading
+the tracker is fabricated.

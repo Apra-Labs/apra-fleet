@@ -25,6 +25,8 @@
  *  - no artifact leaks outside the sandbox.
  */
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach, afterAll } from 'vitest';
+import { claudeProcessKillDenyRules, agyProcessKillDenyRules } from '../src/services/process-kill-rules.js';
+import { agyCommandRules } from '../src/providers/agy.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -193,7 +195,7 @@ function assertClaudeConfigured(wf: string, member: Agent): void {
   expect(member.agentType).toBe('local');
   expect(cfgs.claudeJson.projects[wf].mcpServers['apra-fleet']).toBeUndefined();
   expect(cfgs.claudeJson.projects[wf].mcpServers.deepwiki).toEqual(DEEPWIKI);
-  expect(cfgs.claudeSettings.permissions.deny).toEqual(COMPLEMENT.map(t => `mcp__apra-fleet__${t}`));
+  expect(cfgs.claudeSettings.permissions.deny).toEqual([...COMPLEMENT.map(t => `mcp__apra-fleet__${t}`), ...claudeProcessKillDenyRules()]);
   expect(excludeLines(wf)).toContain('/.claude/settings.local.json');
 }
 
@@ -223,7 +225,7 @@ function assertOpencodeAbsent(wf: string): void {
 
 function assertAgyConfigured(member?: Agent): void {
   const grants = readJson(paths.agyProject()).permissionGrants.permissionGrants;
-  expect(grants.deny).toEqual(COMPLEMENT.map(t => `mcp(apra-fleet/${t})`));
+  expect(grants.deny).toEqual([...COMPLEMENT.map(t => `mcp(apra-fleet/${t})`), ...agyProcessKillDenyRules(agyCommandRules)]);
   if (member) {
     expect(readJson(paths.agyMcp())).toEqual({
       mcpServers: {

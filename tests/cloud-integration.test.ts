@@ -127,6 +127,8 @@ describe('Cloud lifecycle: long_running execute_command', () => {
     const { executeCommand } = await import('../src/tools/execute-command.js');
     const member = makeCloudAgent();
     addAgent(member);
+    // The launch script prints the readiness marker once the wrapper started.
+    mockExecCommand.mockResolvedValue({ stdout: 'TASK_PID:4242\nFLEET_TASK_READY\n', stderr: '', code: 0 });
 
     const result = await executeCommand({
       member_id: member.id,
