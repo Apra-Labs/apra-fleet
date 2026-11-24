@@ -384,6 +384,21 @@ function buildProvisionArgs(ctx) {
         };
     }
 
+    // The PR path (Publish PR, [ABORTED] PR) asks for push+pr just before its
+    // REST call. A PAT has no just-in-time scope axis to widen and the fleet
+    // cannot mint one, so re-provisioning there only re-deploys the same PAT
+    // -- and every provision_vcs_auth call can rewrite this member's helper
+    // and run the server's legacy-credential migration (which, on a local
+    // member, is the operator's own credential). Keep the credential already
+    // deployed and go straight to the pull-request call (same answer
+    // bitbucket.mjs gives).
+    if (base.git_access === 'push+pr') {
+        return {
+            skip: true,
+            note: `member '${base.member_name}' is on Azure DevOps, whose PAT has no just-in-time scope axis to widen and cannot be minted by the fleet; keeping the credential already deployed for organization '${org}' and going straight to the pull-request call`,
+        };
+    }
+
     const name = (typeof secretName === 'string' && secretName.trim()) ? secretName.trim() : DEFAULT_PAT_SECRET;
     if (Array.isArray(availableSecrets) && !availableSecrets.includes(name)) {
         return {

@@ -192,34 +192,23 @@ test("mock sprint: a member whose Azure DevOps PAT secret is absent from the cre
             `expected the preflight's swallowed failure log to name 'credential_store_set name=azdevops_pat', got logs: ${JSON.stringify(scenario.logs.filter((l) => /preflight/i.test(l)))}`,
         );
 
-        // apra-fleet-5co8.15: the Publish PR phase reaches the same missing
-        // secret (dev.azure.com's canOpenPullRequest is now true), and must
-        // surface the Azure DevOps provider's own authRemedy guidance
-        // (vcs-providers/azure-devops.mjs's AUTH_REMEDY_HINT, naming the
-        // missing secret and the operator action) rather than aborting the
-        // sprint with the raw provision_vcs_auth failure text (already
-        // covered by the `!scenario.error` assertion above -- that raw text
-        // legitimately still appears in the preflight's OWN swallowed log
-        // checked just above, which is a different, non-aborting code path).
+        // The Publish PR phase no longer re-provisions an Azure DevOps member
+        // at all: a PAT cannot be minted by the fleet, so the PR path uses
+        // the credential already deployed on the member (provisionSkipped)
+        // and never consults the hub-side credential store. A missing store
+        // entry therefore cannot block the PR -- here the mock member still
+        // holds a deployed credential, so the PR opens. (Earlier this phase
+        // provisioned push+pr and degraded on the missing secret; that
+        // provision call could rewrite the member's -- on a local member,
+        // the operator's own -- credential.)
         const publishPrLogs = scenario.logs.filter((l) => /Publish PR/i.test(l));
         check(
-            publishPrLogs.some((l) => /\[Publish PR Skipped\]/.test(l) && /PATs cannot be re-minted server-side/.test(l) && /credential_store_set/.test(l)),
-            `expected a Publish PR log to carry the Azure DevOps provider's authRemedy guidance, got logs: ${JSON.stringify(publishPrLogs)}`,
+            publishPrLogs.some((l) => /nothing to re-provision for member 'local'/.test(l) && /without calling provision_vcs_auth/.test(l)),
+            `expected Publish PR to skip provisioning and use the deployed credential, got logs: ${JSON.stringify(publishPrLogs)}`,
         );
-
-        // apra-fleet-5co8.19 originally required the Publish PR log to carry
-        // the provider's authRemedy guidance ONLY. GitHub issue #502 showed
-        // why that hides the real problem: an unreadable remote, a missing
-        // credential-store entry and a dead PAT all printed the identical
-        // "PATs cannot be re-minted" paragraph, and the operator could not
-        // tell which one to fix. The contract is now: the ACTUAL cause first
-        // (here the missing secret), then the remedy hint -- both in the
-        // same [Publish PR Skipped] line, still without aborting the sprint.
         check(
-            publishPrLogs.some((l) => /\[Publish PR Skipped\]/.test(l)
-                && /the credential store has no entry named 'azdevops_pat'/.test(l)
-                && /PATs cannot be re-minted server-side/.test(l)),
-            `expected the Publish PR Skipped log to lead with the actual provisioning cause before the remedy hint, got logs: ${JSON.stringify(publishPrLogs)}`,
+            !publishPrLogs.some((l) => /credential store has no entry named 'azdevops_pat'/.test(l)),
+            `the PR path must not consult the credential store for an Azure DevOps PAT, got logs: ${JSON.stringify(publishPrLogs)}`,
         );
     });
 });

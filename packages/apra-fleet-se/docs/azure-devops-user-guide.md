@@ -99,6 +99,15 @@ If a pull request from that branch to that base already exists, fleet-sprint
 treats it as success rather than erroring (idempotent -- safe to re-run a
 sprint that already opened a PR).
 
+Publish PR (and the `[ABORTED]` PR an aborted sprint raises) uses the PAT
+already deployed on the member and never re-provisions it: a PAT cannot be
+minted by the fleet, so there is nothing to widen. It writes no host-scope
+credential and leaves every other credential on the member -- including your
+own `dev.azure.com` credential on a local member -- untouched. If no PAT is
+deployed, or Azure DevOps answers with a sign-in page instead of a pull
+request, the PR is reported as skipped with the reason; deploy or refresh the
+PAT with `provision_vcs_auth` and re-run.
+
 ## Troubleshooting
 
 If something fails, `auth-azdevops.md`'s own Troubleshooting table covers

@@ -457,7 +457,18 @@ async function provisionVcsAuthForMember({ fleetApi, command, member, log = () =
     // later resolveProvider() would throw VCS_NO_REGISTERED_PROVIDER. And a
     // skipped provision means the credential exists only if an operator
     // deployed it, so its absence is an operator fix, not an internal fault.
-    if (provisionArgs === null) {
+    // Backstop for the PR path, provider-neutral: a provider whose credential
+    // the fleet cannot mint (authRemedy.serverSideReMintable === false) has
+    // nothing to widen at push+pr, and a provision_vcs_auth call would only
+    // rewrite the member's helper and run the server's legacy-credential
+    // migration -- on a local member that is the operator's own credential,
+    // possibly under another label or at host scope. Never dispatch it from
+    // the PR path, even when the provider's own hook did not answer skip.
+    const prPathNonMintable = gitAccess === 'push+pr' && (() => {
+        const impl = getVcsProvider(provider);
+        return !!(impl && impl.authRemedy && impl.authRemedy.serverSideReMintable === false);
+    })();
+    if (provisionArgs === null || prPathNonMintable) {
         log(`${logPrefix}: provider '${provider}' has nothing to re-provision for member '${member}'; continuing on its already-deployed credential without calling provision_vcs_auth.`);
         return { expiresAt: null, repo: derivedRepo, provider, provisionSkipped: true };
     }
