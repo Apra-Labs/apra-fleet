@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "962e202f8b5910fdecf6f82a46102a798f5cc4f2",
     "branch": "main",
-    "entry_count": 206
+    "entry_count": 207
   },
   "entries": [
     {
@@ -3249,6 +3249,29 @@
         "src/os/macos.ts": "52541862d1075aed3a8b1a70311debb7ae9d98fd",
         "src/os/os-commands.ts": "af50c1624ea6e08e2b3597fa3235487376343097",
         "src/os/windows.ts": "4e30fc426292eec7f636c70a854ae9a2f00be248"
+      }
+    },
+    {
+      "id": "bd2d257d-a830-4df1-a66e-0f499050aa94",
+      "type": "knowledge",
+      "title": "git -c credential.helper= resets URL-scoped helpers too, so the labelled probe is host-chain-free",
+      "summary": "The labelled git probe passes -c credential.helper= and then only the fleet helper. git keeps one helper list built from credential.helper and matching credential.<url>.helper keys in config-read order, so the empty value also drops URL-scoped helpers from system/global config and the dispatch GIT_CONFIG_PARAMETERS.",
+      "symbols": [
+        "gitLsRemoteLabelledProbe",
+        "memberHomeProbe",
+        "gitHelperHome"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/se-posix.mjs",
+        "packages/apra-fleet-se/fleet-sprint/se-windows.mjs",
+        "packages/apra-fleet-se/test/vcs-preflight-credential-by-function.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-24T14:13:50.956Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/se-posix.mjs": "3b0407042969cd9dfddf1b23e8f028c0ee8d8372",
+        "packages/apra-fleet-se/fleet-sprint/se-windows.mjs": "6b272877e84518facef106420b4316360f892781",
+        "packages/apra-fleet-se/test/vcs-preflight-credential-by-function.test.mjs": "3dca7d49e81f9f198125665adced44dc65f3999a"
       }
     },
     {
