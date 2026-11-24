@@ -19,6 +19,7 @@ import {
     clearTipProbeFailures,
     setMemberTargetResolver,
     DOLT_LOCK_PROBE_AFTER_MS,
+    isForeignLockHolder,
 } from '../fleet-sprint/dolt-sync.mjs';
 import { DoltLockHeldError, DoltSyncError, DOLT_BEADS_LOCK_HELD_CODE } from '../fleet-sprint/errors.mjs';
 import { bdSyncCommandFor } from '../fleet-sprint/bd-sync-command.mjs';
@@ -203,6 +204,46 @@ describe('lock-holder watchdog on a silent D-pull', () => {
         assert.ok(clock < 600_000, 'failed within the bound, long before the inactivity timeout');
         assert.strictEqual(m.syncCalls().length, 1, 'a lock-held failure is not retried');
         m.release(); // let the abandoned command end
+    });
+
+    test('own slow pull: a same-command holder a few seconds older than the attempt clock keeps waiting and completes', async () => {
+        const target = { os: 'linux', shell: '' };
+        let clock = 0;
+        const timer = fakeTimer();
+        const logs = [];
+        // Observed shape: holder age 69s against a 61s attempt clock.
+        const m = silentMember({ target, probeOutput: 'HOLDER\t2404425\t01:09\t.beads/embeddeddolt/beads/.dolt/noms/LOCK\t/usr/lib/node_modules/@beads/bd/bin/bd dolt pull\n' });
+        const pull = doltPullBefore('m1', { command: m.command, remoteTipFingerprint: false, memberTarget: target, now: () => clock, lockProbeTimer: timer, log: (l) => logs.push(l) }).then((r) => r, (e) => e);
+        await flush();
+        clock = 61_000;
+        timer.timers[0].fn();
+        await flush();
+        assert.ok(logs.some((l) => /still waiting/.test(l)), `logs: ${logs.join('\n')}`);
+        m.release();
+        const result = await pull;
+        assert.ok(!(result instanceof Error), `own pull must not fail: ${result && result.message}`);
+        assert.strictEqual(m.syncCalls().length, 1, 'no retry needed');
+    });
+
+    test('a foreign same-command holder far older than the attempt still fails loudly', async () => {
+        const target = { os: 'linux', shell: '' };
+        let clock = 0;
+        const timer = fakeTimer();
+        const m = silentMember({ target, probeOutput: 'HOLDER\t31337\t12:00\t.beads/embeddeddolt.gate.lock\tbd dolt pull\n' });
+        const pull = doltPullBefore('m1', { command: m.command, remoteTipFingerprint: false, memberTarget: target, now: () => clock, lockProbeTimer: timer }).then(() => null, (e) => e);
+        await flush();
+        clock = 61_000;
+        timer.timers[0].fn();
+        const err = await pull;
+        assert.ok(err instanceof DoltLockHeldError, `got ${err && err.name}`);
+        assert.match(err.message, /pid 31337/);
+        m.release();
+    });
+
+    test('isForeignLockHolder: own-command allowance applies only to the same sync subcommand', () => {
+        assert.strictEqual(isForeignLockHolder({ ageS: 80, commandLine: 'claude --resume x' }, 61, 'dolt pull'), true);
+        assert.strictEqual(isForeignLockHolder({ ageS: 80, commandLine: 'bd dolt pull' }, 61, 'dolt pull'), false);
+        assert.strictEqual(isForeignLockHolder({ ageS: null, commandLine: 'bd dolt pull' }, 61, 'dolt pull'), false);
     });
 
     test('a member where holders cannot be listed says so explicitly and keeps waiting', async () => {
