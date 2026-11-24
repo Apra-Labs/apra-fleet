@@ -125,7 +125,11 @@ export type FleetInstallUnavailableReason =
   | 'replace-failed'
   /** replace-full refused before any destructive change: the member's server
    *  could not be stopped, or still reported running after `stop`. */
-  | 'stop-failed';
+  | 'stop-failed'
+  /** replace-full refused before anything changed: a fleet-sprint supervisor
+   *  is running on the member (an install over it would refuse mid-way, and a
+   *  rollback could be refused by E-FLEET-SE-RUNNING). */
+  | 'fleet-se-running';
 
 /** What the probe observed about the member's current install. */
 export type MemberFleetProbe =
@@ -901,7 +905,7 @@ export interface ReplacedFullInstall {
   backupPath: string;
 }
 
-export type ReplaceStepName = 'stop' | 'stop-check' | 'backup' | 'uninstall' | 'supervisor' | 'move-data' | 'install';
+export type ReplaceStepName = 'supervisor-check' | 'stop' | 'stop-check' | 'backup' | 'uninstall' | 'supervisor' | 'move-data' | 'install';
 
 export interface ReplaceFullInstallPlan {
   backupDir: string;
@@ -923,13 +927,19 @@ export function replaceBackupStamp(d: Date): string {
  * The member-bound command sequence of the opt-in replacement (pure; exported
  * for tests). Every path is resolved here from the probed home and quoted for
  * the member's shell; PowerShell is wrapped via -EncodedCommand. Steps:
+ *   supervisor-check -- the installed binary's `status`: a running fleet-sprint
+ *                 supervisor on the member refuses the replacement before
+ *                 anything is stopped (fleet-se-running); its stop and restart
+ *                 depend on how the owner started it, so they stay manual;
  *   stop       -- the installed binary's own `stop`, then `status` must not report
  *                 the server running (a live server makes the backup torn and
  *                 the install guard refuse); failing either is a typed
  *                 stop-failed refusal before any destructive change;
  *   backup     -- copy data/, fleet.key (outside data/) and the OLD binary into a
  *                 timestamped dir (the rollback reinstalls from that binary);
- *   uninstall  -- the INSTALLED binary's own uninstall --force --yes;
+ *   uninstall  -- the uninstall of the BACKUP copy of the installed binary
+ *                 (a running exe cannot delete itself on Windows, and the
+ *                 backup keeps the old version's uninstall semantics);
  *   supervisor -- linux: stop/disable the fleet-supervisor user unit when its
  *                 unit file exists, move the file into the backup, daemon-reload
  *                 (uninstall leaves it running);
@@ -966,6 +976,7 @@ export function buildReplaceFullInstallPlan(opts: {
   const cmd = (posixForm: string, psForm: string) => memberCommandFor(targetOs, shell, { posix: posixForm, powershell: psForm });
 
   const steps: ReplaceFullInstallPlan['steps'] = [
+    { name: 'supervisor-check', command: cmd(`${q(bin)} status`, `& ${q(bin)} status`) },
     { name: 'stop', command: cmd(`${q(bin)} stop`, `& ${q(bin)} stop`) },
     { name: 'stop-check', command: cmd(`${q(bin)} status`, `& ${q(bin)} status`) },
     {
@@ -978,8 +989,8 @@ export function buildReplaceFullInstallPlan(opts: {
     {
       name: 'uninstall',
       command: cmd(
-        `${q(bin)} uninstall --force --yes`,
-        `& ${q(bin)} uninstall --force --yes`,
+        `chmod +x ${q(backupBin)} && ${q(backupBin)} uninstall --force --yes`,
+        `& ${q(backupBin)} uninstall --force --yes`,
       ),
     },
   ];
@@ -1029,6 +1040,7 @@ export function buildReplaceFullInstallPlan(opts: {
     reinstall,
   ];
   const rollbackFor: ReplaceFullInstallPlan['rollbackFor'] = {
+    'supervisor-check': [],
     stop: [restart],
     'stop-check': [restart],
     backup: [restart],
@@ -1041,11 +1053,18 @@ export function buildReplaceFullInstallPlan(opts: {
   return { backupDir, dataAside, steps, rollbackFor };
 }
 
+/** The manual graceful stop of the supervisor named by a status line (port when it shows one, else the default). */
+function supervisorStopHint(statusLine: string): string {
+  const port = /port (\d{1,5})/.exec(statusLine)?.[1] ?? '8787';
+  return `curl -X POST http://localhost:${port}/api/shutdown -H "Content-Type: application/json" -d "{}"`;
+}
+
 const REPLACE_STEP_LABEL: Record<ReplaceStepName, string> = {
+  'supervisor-check': 'step 0 (check for a running fleet-sprint supervisor)',
   stop: 'step 0 (stop the member server)',
   'stop-check': 'step 0 (verify the member server is down)',
   backup: 'step 1 (back up data and fleet.key)',
-  uninstall: 'step 2 (uninstall with the installed binary)',
+  uninstall: 'step 2 (uninstall with the backup copy of the installed binary)',
   supervisor: 'step 3 (stop and disable the fleet-supervisor user unit)',
   'move-data': 'step 4 (move data aside)',
   install: 'step 5 (run the current installer in member mode)',
@@ -1113,6 +1132,12 @@ async function replaceFullInstall(
   const binForHint = memberBinPath(home, targetOs, shell);
   const failedAt = (name: ReplaceStepName | 'verify', why: string): MemberFleetInstallResult => {
     const label = name === 'verify' ? 'the version check after step 5' : REPLACE_STEP_LABEL[name];
+    if (name === 'supervisor-check') {
+      return {
+        state: 'unavailable', reason: 'fleet-se-running', version: previousVersion,
+        detail: `replacing the full install was refused at ${label}: ${why}. Nothing was stopped, removed or backed up. Stop the supervisor (and any sprint it runs) on the member, then run update_member {member_id, fleet_install: "replace-full"} again, and restart the supervisor afterwards: ${supervisorStopHint(why)}`,
+      };
+    }
     if (name === 'stop' || name === 'stop-check') {
       return {
         state: 'unavailable', reason: 'stop-failed', version: previousVersion,
@@ -1129,10 +1154,17 @@ async function replaceFullInstall(
     try {
       r = await deps.exec(agent, step.command, step.name === 'install' || step.name === 'uninstall' ? INSTALL_TIMEOUT_MS : MEMBER_CALL_TIMEOUT_MS);
     } catch (err: unknown) {
+      // The supervisor check is advisory: a status that cannot run is caught by step 0's own check.
+      if (step.name === 'supervisor-check') continue;
       return failedAt(step.name, err instanceof Error ? err.message : String(err));
     }
     if (r.code !== 0) {
+      if (step.name === 'supervisor-check') continue;
       return failedAt(step.name, `exited ${r.code}: ${(r.stderr.trim() || r.stdout.trim()).slice(-400)}`);
+    }
+    if (step.name === 'supervisor-check' && /Supervisor:\s+UP\b/i.test(r.stdout)) {
+      const line = r.stdout.split(/\r?\n/).find(l => /Supervisor:\s+UP\b/i.test(l))!.trim();
+      return failedAt(step.name, `a fleet-sprint supervisor is running on the member (${line})`);
     }
     if (step.name === 'stop-check' && !/State:\s+stopped/i.test(r.stdout)) {
       return failedAt(step.name, `the server is not reported stopped after stop (status said: ${r.stdout.trim().slice(-200) || '<empty>'})`);
@@ -1346,7 +1378,7 @@ export function buildManualInstallSteps(opts: {
 }): string {
   const { home, targetOs, shell, provider, arch, orchestratorVersion, reason } = opts;
   const finish = 'then on the orchestrator run update_member {member_id, fleet_install: "auto"} so the fleet self-registers the member into that install and verifies it';
-  if (reason === 'full-install-running' || reason === 'replace-failed' || reason === 'stop-failed') {
+  if (reason === 'full-install-running' || reason === 'replace-failed' || reason === 'stop-failed' || reason === 'fleet-se-running') {
     return `follow the owner steps in the reason above, ${finish}.`;
   }
   if (!home || reason === 'home-unresolved' || reason === 'probe-failed') {
@@ -1659,6 +1691,7 @@ export const FLEET_MCP_FIX: Record<FleetMcpUnavailableReason | FleetMcpProviderR
   'full-install-running': 'The member apra-fleet install has no member-install marker (a full install, or a member install older than the marker), so the fleet leaves it alone; its owner replaces it with a member install using the steps in the detail (back up data and fleet.key, uninstall with the installed binary, run the staged current installer with install --member), then update_member {member_id, fleet_install: "auto"} -- or opts in to the fleet doing it with update_member {member_id, fleet_install: "replace-full"}.',
   'transfer-failed': 'Check file transfer to the member works (disk space, permissions), then run update_member with fleet_install "auto".',
   'install-failed': 'Run the apra-fleet installer on the member by hand and read its error, then member_detail with refresh:true.',
+  'fleet-se-running': 'A fleet-sprint supervisor is running on the member, so the full install was left untouched; stop its sprints, then the supervisor (POST /api/shutdown with Content-Type application/json and body {}), run update_member {member_id, fleet_install: "replace-full"} again, then restart the supervisor.',
   'stop-failed': 'The member apra-fleet server could not be stopped, so the full install was left untouched; stop it on the member with the installed binary (stop, then status), then run update_member {member_id, fleet_install: "replace-full"} again.',
   'replace-failed': 'The full-install replacement stopped at the step named in the detail; run the rollback commands in the detail (if listed; they restore the consistent data copy, the backup only as a last resort), fix the cause, then run update_member {member_id, fleet_install: "replace-full"} again.',
   'install-unverified': 'Run update_member {member_id, fleet_install: "auto"} to upgrade apra-fleet on the member to the orchestrator version, then member_detail with refresh:true.',
@@ -2152,7 +2185,7 @@ type Unavailable = (reason: FleetMcpUnavailableReason, detail?: string, extra?: 
  * older install there is intact and stays in use (reported, never silent).
  */
 const INSTALL_FAIL_CLOSED: ReadonlySet<string> = new Set([
-  'install-failed', 'install-unverified', 'full-install-running', 'probe-failed', 'home-unresolved', 'replace-failed', 'stop-failed',
+  'install-failed', 'install-unverified', 'full-install-running', 'probe-failed', 'home-unresolved', 'replace-failed', 'stop-failed', 'fleet-se-running',
 ]);
 
 /** One line naming a failed upgrade and the older install still in use. */
