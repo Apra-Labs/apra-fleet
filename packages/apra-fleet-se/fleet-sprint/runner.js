@@ -4550,7 +4550,6 @@ async function runSprintCycle(context) {
                     deferredAtGoal: deferredAtGoalOpenIds,
                     reopenedThenClosed: reopenedThenClosedIds,
                     lastReview: lastReview ? { verdict: lastReview.verdict, notes: lastReview.notes ?? '', site: lastReview.site, cycle: lastReview.cycle } : null,
-                    closingOut: settlement.closingOut,
                 }
             );
         }

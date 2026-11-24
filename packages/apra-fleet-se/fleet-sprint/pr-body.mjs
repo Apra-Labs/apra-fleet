@@ -496,6 +496,10 @@ export const SECTION_PRIORITY = Object.freeze({
     details: 95,
     cost: 90,
     previousRuns: 85,
+    // [ABORTED] PR sections on the run's work (abort.mjs buildAbortWorkSections).
+    abortStillOpen: 94,
+    abortClosedWork: 93,
+    abortLastReview: 92,
     notes: 80,
     extra: 50,
 });
