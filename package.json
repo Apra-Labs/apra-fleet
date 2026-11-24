@@ -28,6 +28,7 @@
   "files": [
     "dist/",
     "!dist/**/*.map",
+    "!dist/**/*.d.ts",
     "hooks/",
     "scripts/fleet-statusline.sh",
     "scripts/agy-transcript-reader.js",
@@ -36,6 +37,8 @@
     "packages/apra-fleet-se/workflow.json",
     "packages/apra-fleet-se/package.json",
     "packages/apra-fleet-se/fleet-sprint/",
+    "!packages/apra-fleet-se/fleet-sprint/docs/",
+    "packages/apra-fleet-se/fleet-sprint/docs/dolt-manual-recovery-verified.md",
     "packages/apra-fleet-se/bin/",
     "packages/apra-fleet-se/src/",
     "packages/apra-fleet-se/apra-pm/agents/",

@@ -216,6 +216,33 @@
       "updated_at": "2026-09-29T06:13:11.978Z"
     },
     {
+      "id": "11cd07b1-c5e7-49b7-bf68-c3fefa04dd48",
+      "type": "knowledge",
+      "title": "Catch-up review runs inside Final Review, reusing its fresh closed read",
+      "summary": "Beads dispatched this sprint (workedOnBeadIds) that are closed but never entered a review round's scope (sprintState.reviewedScopeIds) are reviewed by runReviewCatchUpPhase, called from runFinalReviewPhase via runner.js's injected reviewCatchUp closure after Final Review's D-pull and closed-list read.",
+      "symbols": [
+        "runReviewCatchUpPhase",
+        "catchUpReviewBeadIds",
+        "recordReviewedScope",
+        "runFinalReviewPhase",
+        "runReviewPhase"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/phases/review.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/final-review.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/fleet-sprint/sprint-state.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-21T13:36:05.890Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/phases/final-review.mjs": "e70920c26e7edd36052cdd54bf9b72075eaee0d0",
+        "packages/apra-fleet-se/fleet-sprint/phases/review.mjs": "c84599f610d6f134dcf441b63c19d7f661c5d00e",
+        "packages/apra-fleet-se/fleet-sprint/runner.js": "649ddff8beeae34ae8ec748e408945666bc3a841",
+        "packages/apra-fleet-se/fleet-sprint/sprint-state.mjs": "31020c44b66ade3fb3a8db96dc849c208e6df5e5"
+      }
+    },
+    {
       "id": "17b581e1-3760-4947-b4fa-b7793874384a",
       "type": "knowledge",
       "title": "GOMAXPROCS=1 default for bd/dolt on Windows members lives in go-concurrency.ts",
@@ -612,6 +639,28 @@
         "src/services/knowledge/kb-providers.ts": "76f6c911e3b643cec1ef43bf85f5824f25b4fdce",
         "src/tools/check-status.ts": "628e81e903e65081d280760877203d0f112dfb63",
         "tests/knowledge/kb-http-named-secret.test.ts": "4a3e7eb40893711458782d0ce4e50ef180c050cd"
+      }
+    },
+    {
+      "id": "2d234fbf-4c1d-481b-87be-2675426c92a6",
+      "type": "knowledge",
+      "title": "BEADS_SYNC_CONFLICT terminal keys on instanceof DoltDivergedError, not error code",
+      "summary": "fatal-diagnostics.mjs findDoltDivergedCause walks the cause chain with instanceof DoltDivergedError (depth 5), and resolveTerminalReason maps any hit to BEADS_SYNC_CONFLICT. No production code compares err.code to 'DOLT_DIVERGED'; only tests assert that code.",
+      "symbols": [
+        "findDoltDivergedCause",
+        "resolveTerminalReason",
+        "DoltDivergedError",
+        "DoltPushRaceError"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/fatal-diagnostics.mjs",
+        "packages/apra-fleet-se/fleet-sprint/errors.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-21T13:36:07.120Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/errors.mjs": "44f817adf58a559e825b22a85f68e49276e3d04a",
+        "packages/apra-fleet-se/fleet-sprint/fatal-diagnostics.mjs": "22de2445e0a64427b585d8bccafc3d4e8275e24b"
       }
     },
     {
@@ -1747,6 +1796,29 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-01T22:08:20.217Z"
+    },
+    {
+      "id": "7a472225-bd40-4d5a-bf96-eaa206296220",
+      "type": "learning",
+      "title": "Mock-sprint D-pushes are no-remote skips unless onCommand answers sync.remote",
+      "summary": "In runDevelopLoopScenario the member clone has no bd-level sync.remote, so every DoltSync D-push is a benign pre-gate no-remote skip and issues no 'bd dolt push'. A test that needs real D-push behaviour must answer 'bd config get sync.remote', ls-remote, pull, vc status and diff in onCommand.",
+      "symbols": [
+        "doltPushAfter",
+        "isMemberSyncRemoteConfigured",
+        "runDevelopLoopScenario"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/mock-sprint-terminal-beads-sync.test.mjs",
+        "packages/apra-fleet-se/test/mock-sprint-dpush-false-success.test.mjs",
+        "packages/apra-fleet-se/fleet-sprint/dolt-sync.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-21T13:36:07.791Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/dolt-sync.mjs": "efc0be11d2c5c92fbb918fc3b68b70260016e518",
+        "packages/apra-fleet-se/test/mock-sprint-dpush-false-success.test.mjs": "522c10a3783d9ce5eea3d7af25466606aa3ef8ee",
+        "packages/apra-fleet-se/test/mock-sprint-terminal-beads-sync.test.mjs": "ca1b67a87f518f57818cec3e8306c0fc1e9cc6d5"
+      }
     },
     {
       "id": "7a7649d6-fd51-4e47-b898-384499d53c54",
