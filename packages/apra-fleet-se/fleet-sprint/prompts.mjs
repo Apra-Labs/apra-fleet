@@ -14,6 +14,7 @@
 // inside a function body, never at module-evaluation time.
 import { wrapUntrustedBlock, MERGE_RECOMMENDATIONS } from './contracts.mjs';
 import { formatStalenessBlock } from './parent-notes-staleness.mjs';
+import { LIVE_EVIDENCE_LABEL } from './beads-scope.mjs';
 import { buildRejectedNewTaskResurfaceLines, kbKnowledgeBlock, kbPromotionBlock, kbDemotionBlock } from './runner.js';
 
 /**
@@ -153,7 +154,8 @@ export function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requireme
     if (Array.isArray(verifyExcluded) && verifyExcluded.length > 0) {
         lines.push(
             `VERIFY-ROUTE EXCLUSION -- these bead(s) are implementation-complete (every child ` +
-            `closed) and are routed to integration-test verification this cycle, not planning: ` +
+            `closed, or a childless bead labelled ${LIVE_EVIDENCE_LABEL} that only needs live ` +
+            `evidence) and are routed to integration-test verification this cycle, not planning: ` +
             `${verifyExcluded.join(', ')}. Do NOT create tasks for them, do NOT re-decompose them, ` +
             `do NOT treat them as unplanned or unaddressed work, and do NOT let plan-review gates ` +
             `bind over them -- they are out of scope for this planning pass entirely. Only the ` +
@@ -257,7 +259,8 @@ export function buildPlanReviewerPrompt({ targetIssues, goal, priorRoundVerdicts
     if (Array.isArray(verifyExcluded) && verifyExcluded.length > 0) {
         lines.push(
             `VERIFY-ROUTE EXCLUSION -- these bead(s) are implementation-complete (every child ` +
-            `closed) and routed to integration-test verification this cycle: ${verifyExcluded.join(', ')}. ` +
+            `closed, or a childless bead labelled ${LIVE_EVIDENCE_LABEL} that only needs live ` +
+            `evidence) and routed to integration-test verification this cycle: ${verifyExcluded.join(', ')}. ` +
             `Do not withhold approval on the grounds that they are undecomposed, uncovered, or ` +
             `missing model metadata -- they are out of scope for this plan review entirely.`
         );

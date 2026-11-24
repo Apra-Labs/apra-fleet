@@ -190,6 +190,105 @@ test('verify-block: a below-goal-priority T only warns -- the sprint is not stop
     });
 });
 
+// -----------------------------------------------------------------------------
+// Inherited (feature -> feature) edge. DAG: under the sprint epic, feature A
+// with one already-closed child A1 (A is verify-routed) and feature B with two
+// open child tasks B1, B2 that carry NO blocks edge of their own; the only
+// edge is `bd dep add B A`. B's children are held off the ready list through
+// their parent, so only an ancestor-walking detector sees them as blocked.
+//
+// Reverting the ancestor walk in fleet-sprint/verify-block.mjs
+// findVerifyBlockedBeads (checking only each bead's own dependencies, e.g.
+// stopping the `.parent` while-loop before its first step) -- or reverting the
+// runner.js mid-run call site to closed-id stubs, which carry no parent links
+// or ancestor edges -- fails the deploy-fail scenario: B1/B2 are never counted
+// as verify-blocked, no "Verify-block deadlock" line is logged and the cycle
+// loop does not take the early exit. Observed against real bd with the walk
+// reverted: the run throws "Sprint stalled: 2 consecutive cycle(s) made no
+// new high-water-mark progress ..." (StalledSprintError) and the first
+// assertion fails; in replay mode the extra cycles also surface as
+// "[bd-replay] Recording drift".
+// -----------------------------------------------------------------------------
+const FA_TITLE = 'Feature: A implementation-complete feature';
+const FB_TITLE = 'Feature: B depends on feature A';
+
+const buildFeatureShape = (ids) => async ({ tempDir, tasks }) => {
+    ids.a = tasks[0].id;
+    ids.b = tasks[1].id;
+    const mk = async (title) => {
+        const created = await runCmd(`bd create "${title}" -d "Child task." --silent`, tempDir);
+        const id = String(created.stdout || '').trim();
+        assert.ok(id, `child create must return an id: ${JSON.stringify(created)}`);
+        return id;
+    };
+    ids.a1 = await mk('Task: A1 child of A');
+    await runCmd(`bd update ${ids.a1} --parent ${ids.a}`, tempDir);
+    await runCmd(`bd close ${ids.a1}`, tempDir);
+    ids.b1 = await mk('Task: B1 child of B');
+    await runCmd(`bd update ${ids.b1} --parent ${ids.b}`, tempDir);
+    ids.b2 = await mk('Task: B2 child of B');
+    await runCmd(`bd update ${ids.b2} --parent ${ids.b}`, tempDir);
+    await runCmd(`bd dep add ${ids.b} ${ids.a}`, tempDir);
+};
+
+test('verify-block: feature B blocked by verify-routed feature A, deploy fails -> inherited-edge exit, verdict FAIL', async () => {
+    await withScenarioMarkers('verifyblockfeaturedeployfail', async () => {
+        const ids = {};
+        let deployCalls = 0;
+        const run = await runDevelopLoopScenario('verifyblockfeaturedeployfail', {
+            members: ['local'],
+            taskSpecs: [{ title: FA_TITLE }, { title: FB_TITLE }],
+            maxCycles: 3,
+            withRunbooks: true,
+            beforeSprint: buildFeatureShape(ids),
+            doerHandler: closeAssignedDoer,
+            reviewerHandler: approvingReviewer,
+            deployHandler: async () => {
+                deployCalls++;
+                return { content: [{ text: JSON.stringify({ deployed: false, notes: 'sandbox port 4200 unreachable' }) }] };
+            },
+            finalReviewHandler: rubberStampPass,
+        });
+        const stallLogs = JSON.stringify(run.logs.filter((l) => /Cycle|deadlock|stall/i.test(l)));
+        assert.ok(!run.error, `the sprint finishes (FAIL), it does not throw: ${run.error && run.error.message}`);
+        assert.ok(!run.logs.some((l) => /SPRINT_STALLED|Sprint stalled/.test(l)), `no stall: ${stallLogs}`);
+        const exitLine = run.logs.find((l) => /^Cycle \d+: Verify-block deadlock/.test(l) && /Exiting cycle loop/.test(l));
+        assert.ok(exitLine, `expected the verify-block exit, logs: ${stallLogs}`);
+        assert.equal(run.result.verdict, 'FAIL', `never PASS: ${JSON.stringify(run.result)}`);
+        const notes = run.result.notes;
+        assert.match(notes, /Verify-block deadlock/);
+        assert.match(notes, /fix the failing deploy/);
+        assert.ok(notes.includes('sandbox port 4200 unreachable'), `the deploy notes reach the diagnosis: ${notes}`);
+        assert.ok(notes.includes(ids.b1) && notes.includes(ids.b2), `the diagnosis names B's children: ${notes}`);
+        assert.ok(notes.includes(ids.a), `the diagnosis names the verify-routed blocker A: ${notes}`);
+        assert.ok(notes.includes(`bd dep remove ${ids.b} ${ids.a}`), `the hint names the edge carrier B: ${notes}`);
+        assert.ok(!notes.includes(`bd dep remove ${ids.b1} `), `the hint must not name a leaf: ${notes}`);
+        assert.equal(deployCalls, 1, 'one cycle, one deploy: the loop does not grind on');
+        assert.equal(run.dispatched.filter((d) => d.agent === 'integ-test-runner').length, 0);
+        assert.notEqual(run.finalBeadsById.get(ids.b1).status, 'closed', 'B1 was never dispatchable');
+    });
+});
+
+test('verify-block: control -- the same feature -> feature DAG with a successful deploy takes no early exit', async () => {
+    await withScenarioMarkers('verifyblockfeaturecontrol', async () => {
+        const ids = {};
+        const run = await runDevelopLoopScenario('verifyblockfeaturecontrol', {
+            members: ['local'],
+            taskSpecs: [{ title: FA_TITLE }, { title: FB_TITLE }],
+            maxCycles: 4,
+            withRunbooks: true,
+            beforeSprint: buildFeatureShape(ids),
+            doerHandler: closeAssignedDoer,
+            reviewerHandler: approvingReviewer,
+        });
+        assert.ok(!run.error, `scenario must not throw: ${run.error && run.error.message}`);
+        assert.ok(!run.logs.some((l) => /Verify-block deadlock/.test(l)), 'no deadlock diagnosis when integ can run');
+        assert.equal(run.finalBeadsById.get(ids.a).status, 'closed', 'integ verifies and closes A');
+        assert.equal(run.finalBeadsById.get(ids.b1).status, 'closed', 'B1 becomes ready once A closes, and closes');
+        assert.equal(run.finalBeadsById.get(ids.b2).status, 'closed', 'B2 becomes ready once A closes, and closes');
+    });
+});
+
 test('verify-block helpers: integCanRun, goal partition by Pn token, blocked-shape detection', async () => {
     const { integCanRun, integBlockCause, partitionByGoal, findVerifyBlockedBeads } = await import('../fleet-sprint/verify-block.mjs');
     assert.equal(integCanRun({ hasPlaybook: true, hasDeploy: true }), true, 'deploy not attempted yet');

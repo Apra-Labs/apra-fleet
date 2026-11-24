@@ -1,6 +1,9 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
-import { classifyVerifySet, buildPlannerPrompt, buildFinalVerdictPrompt, buildReviewerPrompt } from '../fleet-sprint/runner.js';
+import { classifyVerifySet, buildPlannerPrompt, buildFinalVerdictPrompt, buildReviewerPrompt, parseBdJson } from '../fleet-sprint/runner.js';
+import { LIVE_EVIDENCE_LABEL, createBeadsScope, belowGoalVerifyHolds, formatVerifyHolds } from '../fleet-sprint/beads-scope.mjs';
+import { buildIntegVerifyClause } from '../fleet-sprint/phases/integ-test.mjs';
+import { extractVerifyIds } from './helpers/verify-clause.mjs';
 
 // Unit tests for apra-fleet-jfo's classifyVerifySet(): the phase-routing
 // initial slice that classifies "all children closed" beads into the
@@ -262,5 +265,218 @@ describe('buildReviewerPrompt beadIds contract (regression for the Re-Review emp
         });
         assert.match(prompt, /bead id\(s\): apra-fleet-6a7, apra-fleet-y8q\./);
         assert.doesNotMatch(prompt, /bead id\(s\): \./);
+    });
+});
+
+// Verification-only leaves: a childless bead carrying the live-evidence
+// marker label is a verify target (never doer work); the same bead without
+// the label is not; an unmet prerequisite makes it ineligible with the reason
+// recorded. readyLeafBeads() never returns it, and the integ verify clause
+// names it with leaf-accurate wording.
+describe('classifyVerifySet -- live-evidence verification leaves', () => {
+    test('a childless in-scope open bead with the marker and no unmet blocker is in verifyIds and leafVerifyIds', () => {
+        const beads = [
+            bead('root', { issue_type: 'epic' }),
+            bead('root.1', { parent: 'root', labels: [LIVE_EVIDENCE_LABEL] }),
+        ];
+        const { verifyIds, leafVerifyIds, ineligible } = classifyVerifySet(beads, ['root']);
+        assert.deepStrictEqual(verifyIds, ['root.1']);
+        assert.deepStrictEqual(leafVerifyIds, ['root.1']);
+        assert.deepStrictEqual(ineligible, []);
+    });
+
+    test('the same bead without the marker is not a verify target', () => {
+        const beads = [
+            bead('root', { issue_type: 'epic' }),
+            bead('root.1', { parent: 'root', labels: ['area:engine'] }),
+        ];
+        const { verifyIds, leafVerifyIds, ineligible } = classifyVerifySet(beads, ['root']);
+        assert.deepStrictEqual(verifyIds, []);
+        assert.deepStrictEqual(leafVerifyIds, []);
+        assert.deepStrictEqual(ineligible, []);
+    });
+
+    test('an unmet blocks dependency makes a marked leaf ineligible with the reason recorded', () => {
+        const beads = [
+            bead('root', { issue_type: 'epic' }),
+            bead('root.1', { parent: 'root' }),
+            bead('root.2', {
+                parent: 'root',
+                labels: [LIVE_EVIDENCE_LABEL],
+                dependencies: [{ issue_id: 'root.2', depends_on_id: 'root.1', type: 'blocks' }],
+            }),
+        ];
+        const { verifyIds, ineligible } = classifyVerifySet(beads, ['root']);
+        assert.deepStrictEqual(verifyIds, []);
+        assert.strictEqual(ineligible.length, 1);
+        assert.strictEqual(ineligible[0].id, 'root.2');
+        assert.match(ineligible[0].reason, /unmet prerequisite\(s\): root\.1/);
+    });
+
+    test('an open out-of-scope blocker and an open lower-order lane-mate also make it ineligible', () => {
+        const outside = [
+            bead('root', { issue_type: 'epic' }),
+            bead('elsewhere'),
+            bead('root.2', {
+                parent: 'root',
+                labels: [LIVE_EVIDENCE_LABEL],
+                dependencies: [{ issue_id: 'root.2', depends_on_id: 'elsewhere', type: 'blocks' }],
+            }),
+        ];
+        const r1 = classifyVerifySet(outside, ['root']);
+        assert.deepStrictEqual(r1.verifyIds, []);
+        assert.match(r1.ineligible[0].reason, /elsewhere/);
+
+        const laned = [
+            bead('root', { issue_type: 'epic' }),
+            bead('root.1', { parent: 'root', metadata: { streak: 'lane', streakOrder: 1 } }),
+            bead('root.2', { parent: 'root', labels: [LIVE_EVIDENCE_LABEL], metadata: { streak: 'lane', streakOrder: 2 } }),
+        ];
+        const r2 = classifyVerifySet(laned, ['root']);
+        assert.deepStrictEqual(r2.verifyIds, []);
+        assert.match(r2.ineligible[0].reason, /root\.1/);
+
+        // Once the lane-mate closes, the leaf becomes a verify target.
+        laned[1].status = 'closed';
+        assert.deepStrictEqual(classifyVerifySet(laned, ['root']).verifyIds, ['root.2']);
+    });
+
+    test('a marked bead with an open child (a gap bug) is not verify-routed: it goes back to development', () => {
+        const beads = [
+            bead('root', { issue_type: 'epic' }),
+            bead('root.1', { parent: 'root', labels: [LIVE_EVIDENCE_LABEL] }),
+            bead('root.1.1', { parent: 'root.1', issue_type: 'bug' }),
+        ];
+        assert.deepStrictEqual(classifyVerifySet(beads, ['root']).verifyIds, []);
+        beads[2].status = 'closed';
+        const { verifyIds, leafVerifyIds } = classifyVerifySet(beads, ['root']);
+        assert.deepStrictEqual(verifyIds, ['root.1']);
+        assert.deepStrictEqual(leafVerifyIds, [], 'a childful marked bead is an all-children-closed parent, not a leaf');
+    });
+});
+
+// Rule 4 is kept (any open child holds a parent out of verify), but the hold
+// is recorded: a parent with at least one closed child and at least one open
+// child gets an ineligible entry naming each open child and its priority, and
+// belowGoalVerifyHolds() picks out the holds made only by below-goal or
+// out-of-scope children (the ones that never block the exit gate).
+describe('classifyVerifySet -- open-children holds are recorded', () => {
+    const epicShape = (hygienePriority) => [
+        bead('root', { issue_type: 'epic', priority: 1 }),
+        bead('root.1', { parent: 'root', issue_type: 'feature', priority: 1 }),
+        bead('root.1.1', { parent: 'root.1', status: 'closed', priority: 1 }),
+        bead('root.1.2', { parent: 'root.1', status: 'closed', priority: 2 }),
+        bead('root.1.3', { parent: 'root.1', priority: hygienePriority }),
+    ];
+
+    test('an epic held only by a below-goal open child is not verify-routed; the hold names the child and its priority', () => {
+        const { verifyIds, leafVerifyIds, ineligible } = classifyVerifySet(epicShape(3), ['root']);
+        assert.deepStrictEqual(verifyIds, []);
+        assert.deepStrictEqual(leafVerifyIds, []);
+        const entry = ineligible.find((e) => e.id === 'root.1');
+        assert.ok(entry, `expected an ineligible entry for root.1: ${JSON.stringify(ineligible)}`);
+        assert.equal(entry.kind, 'open-children');
+        assert.match(entry.reason, /root\.1\.3 \(P3\)/);
+        assert.ok(!/root\.1\.1|root\.1\.2/.test(entry.reason), `closed children are not named: ${entry.reason}`);
+        assert.deepStrictEqual(entry.heldBy, [{ id: 'root.1.3', priority: 3, status: 'open', inScope: true }]);
+        // root has one open child (root.1) and no closed one: nothing recorded.
+        assert.ok(!ineligible.some((e) => e.id === 'root'), JSON.stringify(ineligible));
+
+        assert.deepStrictEqual(belowGoalVerifyHolds(ineligible, 'P2'), [{ id: 'root.1', heldBy: entry.heldBy }]);
+        assert.equal(formatVerifyHolds(belowGoalVerifyHolds(ineligible, 'P2')), 'root.1 (held by root.1.3 (P3))');
+    });
+
+    test('an at-goal open child is recorded but is not a below-goal hold', () => {
+        const { verifyIds, ineligible } = classifyVerifySet(epicShape(2), ['root']);
+        assert.deepStrictEqual(verifyIds, []);
+        const entry = ineligible.find((e) => e.id === 'root.1');
+        assert.match(entry.reason, /root\.1\.3 \(P2\)/);
+        assert.deepStrictEqual(belowGoalVerifyHolds(ineligible, 'P2'), []);
+        // The same child is below goal for a P1-only sprint.
+        assert.deepStrictEqual(belowGoalVerifyHolds(ineligible, 'P1').map((h) => h.id), ['root.1']);
+    });
+
+    test('a child with no priority counts as at goal; a mix with one at-goal child is not a below-goal hold', () => {
+        const noPriority = epicShape(undefined);
+        delete noPriority[4].priority;
+        const r1 = classifyVerifySet(noPriority, ['root']);
+        assert.match(r1.ineligible.find((e) => e.id === 'root.1').reason, /root\.1\.3 \(P\?\)/);
+        assert.deepStrictEqual(belowGoalVerifyHolds(r1.ineligible, 'P2'), []);
+
+        const mixed = [...epicShape(3), bead('root.1.4', { parent: 'root.1', priority: 1 })];
+        const r2 = classifyVerifySet(mixed, ['root']);
+        assert.match(r2.ineligible.find((e) => e.id === 'root.1').reason, /root\.1\.3 \(P3\), root\.1\.4 \(P1\)/);
+        assert.deepStrictEqual(belowGoalVerifyHolds(r2.ineligible, 'P2'), []);
+    });
+
+    test('closing the holding child makes the epic verify-routed again', () => {
+        const beads = epicShape(3);
+        beads[4].status = 'closed';
+        const { verifyIds, ineligible } = classifyVerifySet(beads, ['root']);
+        assert.deepStrictEqual(verifyIds, ['root.1']);
+        assert.deepStrictEqual(belowGoalVerifyHolds(ineligible, 'P2'), []);
+    });
+
+    test('the marked-leaf gap path is unchanged: a marked leaf that gains an open gap bug is not verify-routed', () => {
+        const beads = [
+            bead('root', { issue_type: 'epic', priority: 1 }),
+            bead('root.1', { parent: 'root', labels: [LIVE_EVIDENCE_LABEL], priority: 1 }),
+        ];
+        assert.deepStrictEqual(classifyVerifySet(beads, ['root']).verifyIds, ['root.1']);
+        // Integ files a below-goal gap bug under the marked leaf.
+        beads.push(bead('root.1.1', { parent: 'root.1', issue_type: 'bug', priority: 3 }));
+        const after = classifyVerifySet(beads, ['root']);
+        assert.deepStrictEqual(after.verifyIds, [], 'an open gap bug, whatever its priority, holds the bead out of verify');
+        assert.deepStrictEqual(after.leafVerifyIds, []);
+    });
+
+    test('belowGoalVerifyHolds rejects a malformed goal', () => {
+        assert.throws(() => belowGoalVerifyHolds([], 'high'), TypeError);
+    });
+});
+
+describe('readyLeafBeads never returns a live-evidence verification leaf', () => {
+    test('a ready marked leaf is excluded from the Develop ready set; an unmarked sibling is kept', async () => {
+        const table = [
+            { id: 'root', status: 'open', issue_type: 'epic' },
+            { id: 'root.1', parent: 'root', status: 'open', issue_type: 'task', labels: [] },
+            { id: 'root.2', parent: 'root', status: 'open', issue_type: 'task', labels: [LIVE_EVIDENCE_LABEL] },
+        ];
+        const scope = createBeadsScope({ targetIssues: ['root'], parseBdJson, getBacklogMember: () => 'm' });
+        scope.wrapCommand(async (cmd) => {
+            if (/^bd list --all/.test(cmd)) return JSON.stringify(table);
+            if (/^bd list --ready/.test(cmd)) {
+                const parents = new Set(table.filter((b) => b.parent).map((b) => b.parent));
+                return JSON.stringify(table.filter((b) => b.status === 'open' && !parents.has(b.id)));
+            }
+            return '';
+        });
+        const ready = (await scope.readyLeafBeads()).map((b) => b.id);
+        assert.deepStrictEqual(ready, ['root.1']);
+        assert.deepStrictEqual([...await scope.liveEvidenceLeafIds()], ['root.2']);
+    });
+});
+
+describe('buildIntegVerifyClause', () => {
+    test('with no verification leaf the clause keeps the all-children-closed wording', () => {
+        const clause = buildIntegVerifyClause({ verifyIds: ['p1'], leafVerifyIds: [], fallbackParentId: 'root' });
+        assert.match(clause, /these bead\(s\) have ALL their children closed and await verification-closure: p1\. For each,/);
+        assert.doesNotMatch(clause, new RegExp(LIVE_EVIDENCE_LABEL));
+        assert.deepStrictEqual(extractVerifyIds(clause), ['p1']);
+    });
+
+    test('a marked leaf target is named, without claiming it has closed children, and the gap path is stated', () => {
+        const clause = buildIntegVerifyClause({ verifyIds: ['p1', 'root.2'], leafVerifyIds: ['root.2'], fallbackParentId: 'root' });
+        assert.deepStrictEqual(extractVerifyIds(clause), ['p1', 'root.2']);
+        assert.doesNotMatch(clause, /these bead\(s\) have ALL their children closed/);
+        assert.ok(clause.includes(`Of these, root.2 is a childless verification-only bead labelled ${LIVE_EVIDENCE_LABEL}`));
+        assert.match(clause, /the others \(p1\) have ALL their children closed/);
+        assert.match(clause, /makes it a parent with an open child, which deliberately routes it back to development/);
+        assert.match(clause, /leave it open with a note saying what evidence is missing and file no bug/);
+        assert.match(clause, /^[\x20-\x7E]*$/, 'ASCII only');
+    });
+
+    test('nothing to verify -> empty clause', () => {
+        assert.strictEqual(buildIntegVerifyClause({ verifyIds: [], fallbackParentId: 'root' }), '');
     });
 });

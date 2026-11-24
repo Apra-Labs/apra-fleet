@@ -191,6 +191,15 @@ For each feature create two classes of tasks:
   (architecture, docs, UX judgment).
 - Priority: same as its feature
 
+**Verification-only tasks**: when a task's acceptance can only be met by live evidence
+from the integration-test runner against the deployed build (there is nothing to
+implement or commit), keep it childless and give it the label `needs-live-evidence`
+(`bd create ... --labels needs-live-evidence`). The engine routes a labelled childless
+task straight to the integration-test runner once its prerequisites are closed and never
+hands it to a doer; without the label a doer must refuse it and the sprint cannot finish
+it. Do not use the label on a task that also needs code changes -- split those into an
+implementation task plus the labelled verification task.
+
 **No CI-status criteria in the plan**: never write an acceptance criterion that
 depends on a CI run ("CI is green", "the CI workflow passes on every OS") on any
 task, feature or bug you create. Doers and reviewers do not trigger, wait for, or
@@ -325,6 +334,13 @@ Wire dependencies (semantics: `bd dep add A B` means A is blocked by B -- B must
   is done, add `bd dep add <B-task> <A-last-task>` for EVERY task in lane B against the
   LAST (highest `streakOrder`) task of lane A. Wiring only B's first task would let B's
   later tasks become ready out of order.
+- A dependency on work another feature produces targets the PRODUCING TASK (the last task
+  of the lane that produces it), never the feature itself: never add a `blocks` edge onto
+  a sibling feature or onto any other bead that has children. Why: a feature whose
+  children are all closed is not closed by a doer -- it waits for the Integration Test
+  phase to verify and close it. A `blocks` edge onto that feature therefore starves every
+  dependent (and every child of a dependent) whenever that phase cannot run, for example
+  after a failed deploy, even though the work they need is already done.
 - Sibling tasks in different lanes with no enabling relationship get no edge.
 
 ## Step 4 -- Validate your own DAG
@@ -371,6 +387,9 @@ Also check each open feature:
 - Is there NO `blocks` edge between two tasks that share a `streak` id?
 - Does every cross-lane `blocks` edge target the upstream lane's LAST task and originate
   from EVERY task of the downstream lane?
+- Is there NO `blocks` edge whose target (the depends-on side) is a feature or any other
+  bead with children? A cross-feature dependency must target the producing task instead
+  -- retarget any such edge (`bd dep remove`, then `bd dep add` onto the producing task).
 - Expected review rounds (= longest chain of lanes joined by `blocks` edges): state the
   number in your `notes`. If it exceeds 3 for one sprint goal, re-examine whether the
   chain can be shortened by merging lanes.
