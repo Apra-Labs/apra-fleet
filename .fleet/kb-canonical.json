@@ -1,7 +1,9 @@
 {
   "version": 3,
   "provenance": {
-    "branch": "main"
+    "commit": "962e202f8b5910fdecf6f82a46102a798f5cc4f2",
+    "branch": "main",
+    "entry_count": 204
   },
   "entries": [
     {
@@ -749,6 +751,30 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:28.685Z"
+    },
+    {
+      "id": "2da1e3b1-1bc5-4295-a415-3f6673a45c6c",
+      "type": "knowledge",
+      "title": "Azure DevOps PR list truncates descriptions; update path reads the PR by id",
+      "summary": "The ADO find-pull-request list returns descriptions cut to 400 chars, so raiseVcsPrForMember's updateExistingPr reads the full PR through the optional get-pull-request builder (declared only by azure-devops) and skips the update with a WARNING if that read fails.",
+      "symbols": [
+        "buildGetPrCommand",
+        "providerImplementsAction",
+        "buildAzureDevOpsGetPrCommand",
+        "raiseVcsPrForMember"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs",
+        "packages/apra-fleet-se/fleet-sprint/vcs-module.mjs",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/azure-devops.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-24T12:05:11.883Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs": "e4acddd11d3df49f9ee65f38d3b21400c1596eb6",
+        "packages/apra-fleet-se/fleet-sprint/vcs-module.mjs": "c11e6f3738685e445bf417b8ce5d666c8d20af9a",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/azure-devops.mjs": "326f0ec8365a4a90aaf676b2baf838dd3fea9edb"
+      }
     },
     {
       "id": "2e85c726-b08e-4d07-991d-28a387e4a507",
