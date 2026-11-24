@@ -79,7 +79,13 @@ const PID_LINE = /^FLEET_PID:\d+\r?\n/m;
  * may come first -- production parsers match /^FLEET_PID/m the same way),
  * then return stdout without it and without CRs.
  */
-function body(r: RunResult): string {
+function body(r: RunResult, kind?: MemberKind): string {
+  // Git Bash reports the Windows pid read from /proc/<msys-pid>/winpid, which
+  // only exists under MSYS: elsewhere it prints NO marker (never the MSYS pid).
+  if (kind?.overrides.shell === 'gitbash' && process.platform !== 'win32') {
+    expect(r.stdout).not.toMatch(/FLEET_PID:/);
+    return r.stdout.replace(/\r/g, '');
+  }
   expect(r.stdout).toMatch(PID_LINE);
   return r.stdout.replace(PID_LINE, '').replace(/\r/g, '');
 }
@@ -189,7 +195,7 @@ describe.skipIf(!bash.path)('execute_command POSIX wrapper executed in a real sh
           it.skipIf(skip)(c.name, async () => {
             const wrapped = await wrapperFor(kind, c.command);
             const r = run(sh.path, wrapped);
-            const out = body(r);
+            const out = body(r, kind);
             if (c.expectStdout !== undefined) expect(out).toBe(c.expectStdout);
             expectExit(r, c.expectCode);
             c.check?.(r, workDir);
@@ -201,7 +207,7 @@ describe.skipIf(!bash.path)('execute_command POSIX wrapper executed in a real sh
           const wrapped = await wrapperFor(kind, 'true & pwd');
           const r = run(sh.path, wrapped);
           expect(r.status).toBe(0);
-          expect(body(r)).toBe(expected.replace(/\r/g, ''));
+          expect(body(r, kind)).toBe(expected.replace(/\r/g, ''));
         });
 
         it('a failed cd blocks every line of a multi-line command', async () => {
@@ -209,7 +215,7 @@ describe.skipIf(!bash.path)('execute_command POSIX wrapper executed in a real sh
           const missing = shellPath(path.join(tmpRoot, 'does-not-exist'));
           const wrapped = await wrapperFor(kind, `echo L1\ntouch "${marker}"\necho L3`, missing);
           const r = run(sh.path, wrapped);
-          expect(body(r)).toBe('');
+          expect(body(r, kind)).toBe('');
           expect(r.status).not.toBe(0);
           expect(fs.existsSync(marker.replace(/\//g, path.sep))).toBe(false);
         });
