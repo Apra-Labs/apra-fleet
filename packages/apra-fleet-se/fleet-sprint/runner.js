@@ -4129,6 +4129,7 @@ async function runSprintCycle(context) {
                 verifyDoerStreakClosed,
                 normalizeTierToken,
                 kbQueryTerms,
+                tierPolicy,
             });
             for (const o of streakOutcomes) {
                 for (const id of (o.beadIds || [])) workedOnBeadIds.add(id);

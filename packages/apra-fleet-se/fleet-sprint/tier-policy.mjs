@@ -169,6 +169,19 @@ export function holdTierPolicy(context, resolved) {
     return (context.tierPolicy ??= resolved);
 }
 
+/**
+ * Whether the engine runs exactly as before tier policies existed: true for
+ * the quality preset, and for a caller that holds no policy at all (a direct
+ * phase-module caller). Every tier-policy behaviour change outside the fixed
+ * role table (single-tier lanes, escalation) is gated on this being false.
+ *
+ * @param {ReturnType<typeof resolveTierPolicy>|null|undefined} policy
+ * @returns {boolean}
+ */
+export function reproducesPrePolicyTiers(policy) {
+    return !policy || policy.name === 'quality';
+}
+
 /** One-line description of a resolved policy for the startup log. */
 export function describeTierPolicy(policy, overrides) {
     const cap = policy.premiumCapPct === null ? 'none' : `${policy.premiumCapPct}%`;

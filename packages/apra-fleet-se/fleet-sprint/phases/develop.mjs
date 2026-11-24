@@ -61,7 +61,9 @@ import { buildStreakAssignmentPrompt, buildDoerPrompt } from '../prompts.mjs';
 import {
     selectStreaks, groupStreaksFromLaneMetadata, streakRequiredTier,
     resolveWorklistTierPolicy, hasContextHeadroomForResume, assignDoerWorklists,
+    splitLanesByTier, laneTier, formatLaneSplitLog, MODEL_WEIGHT,
 } from '../worklists.mjs';
+import { reproducesPrePolicyTiers } from '../tier-policy.mjs';
 import { isPostDispatchSyncFailure, MemberPermissionDeniedError, PERMISSION_DENIED_DISPATCH_REASON } from '../errors.mjs';
 import { isPermissionScopePostDispatchSyncFailure } from '../dispatch-failure.mjs';
 import { policyFor } from '../role-policies.mjs';
@@ -124,8 +126,19 @@ export async function runDevelopPhase({
     verifyDoerStreakClosed,
     normalizeTierToken,
     kbQueryTerms,
+    // The run's resolved tier policy (tier-policy.mjs, held on the run
+    // context). Absent or quality: today's doer pricing (first-bead pick,
+    // required-tier max in packed rounds). balanced/economy: single-tier lanes
+    // (see the split below) and the lane's own tier.
+    tierPolicy = null,
 }) {
     phase(`Develop C${cycle} R${devRounds}`);
+    const singleTierLanes = !reproducesPrePolicyTiers(tierPolicy);
+    // A bead's tier for lane splitting and doer pricing: its declared model.
+    const beadTier = (b) => {
+        const tier = normalizeTierToken(b && b.metadata && b.metadata.model);
+        return typeof tier === 'string' && MODEL_WEIGHT[tier] ? tier : null;
+    };
 
     // --- Permission-scope publish-blocked carry-over (apra-fleet-2wdc.4) ---
     // A permission-scope post-dispatch sync failure (runStreakTurn's
@@ -472,6 +485,17 @@ export async function runDevelopPhase({
         log(`Streak Assignment: using one-bead-per-streak fallback (${reason}).`);
     }
     } // end LLM-fallback branch (no lane metadata)
+    // --- Single-tier lanes (balanced/economy) ---------------------------
+    // A lane whose implementation beads declare different tiers is split
+    // into single-tier sub-lanes (worklists.mjs splitLanesByTier): no doer
+    // dispatch ever runs a cheap bead at a premium lane-mate's tier. [test]
+    // and untiered beads ride the tier of the implementation bead before
+    // them. quality keeps mixed lanes and today's pricing.
+    if (singleTierLanes) {
+        const split = splitLanesByTier(streaks, { tierOf: beadTier });
+        for (const entry of split.splits) log(formatLaneSplitLog(entry));
+        streaks = split.streaks;
+    }
     // Title lookup for the assignedBeadIds sort below. Doer dispatches
     // run in `parallel`, so the order their outcomes are recorded in is
     // completion order -- correctly non-deterministic. The Review
@@ -522,6 +546,7 @@ export async function runDevelopPhase({
     const worklistPacking = assignDoerWorklists(streaks, doerPool.length, {
         effortBudget: validated.worklistEffortBudget,
         tierHomogeneous,
+        ...(singleTierLanes ? { streakTier: (s) => laneTier(s, beadTier) } : {}),
     });
     if (worklistPacking.packed) {
         const fmtStreak = (s) => `(${s.map((b) => b.id).join(', ')})`;
@@ -763,16 +788,21 @@ export async function runDevelopPhase({
                 // not a verified actual.
                 const streakModels = [...new Set(actualBeadIds.map((id) => modelByBeadId.get(id)).filter(Boolean))];
                 let doerModel = streakModels[0];
-                // In a PACKED worklist round a streak must never dispatch
-                // below its REQUIRED tier (the max of its beads' declared
-                // models) -- override the first-bead pick with that tier.
-                // The non-packed (streaks <= doers) path keeps the
-                // first-bead behavior.
-                if (packed) {
+                if (singleTierLanes) {
+                    // balanced/economy: the lane is single-tier (split
+                    // above), so the dispatch runs at the lane's tier -- no
+                    // first-bead pick and no rounding up to the max.
+                    doerModel = laneTier(streak, beadTier) || undefined;
+                } else if (packed) {
+                    // quality: in a PACKED worklist round a streak must never
+                    // dispatch below its REQUIRED tier (the max of its beads'
+                    // declared models) -- override the first-bead pick with
+                    // that tier. The non-packed (streaks <= doers) path keeps
+                    // the first-bead behavior.
                     const requiredTier = streakRequiredTier(streak);
                     if (requiredTier) doerModel = requiredTier;
                 }
-                if (streakModels.length > 1) {
+                if (!singleTierLanes && streakModels.length > 1) {
                     log(`Doer streak ${streakScope()} spans beads with different declared models (${streakModels.join(', ')}) -- pricing this dispatch as '${doerModel}'.`);
                 }
 
