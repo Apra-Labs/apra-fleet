@@ -62,7 +62,7 @@ function wmicCanKill(args: string[]): boolean {
 /** Words after which the next word is itself a command to run. */
 const LAUNCHERS = new Set([
   'xargs', 'sudo', 'doas', 'env', 'nohup', 'timeout', 'time', 'command', 'exec', 'nice', 'setsid', 'stdbuf',
-  'builtin', 'watch', 'busybox', 'parallel', 'then', 'do', 'else', '!',
+  'builtin', 'watch', 'busybox', 'parallel', 'then', 'do', 'else', 'elif', '!',
   'cmd', 'start', 'call', 'sh', 'bash', 'zsh', 'dash', 'ksh', 'powershell', 'pwsh',
 ]);
 
@@ -110,14 +110,11 @@ export function payloadKillsProcesses(payload: string, depth = 0): boolean {
     const driveLetter = off >= 1 && /[A-Za-z]/.test(str[off - 1]!) && (off === 1 || /\s/.test(str[off - 2]!));
     return driveLetter && /[\\/]/.test(str[off + 1] ?? '') ? ':' : ' ';
   });
-  let firstWord = true;
   for (const words of segmentWords(spaced)) {
     let state: 'cmd' | 'launcher' | 'args' = 'cmd';
     let shellFlag = false;
     for (let i = 0; i < words.length; i++) {
       const { text, quoted } = words[i]!;
-      const isFirst = firstWord;
-      firstWord = false;
       if (state === 'args') continue;
       if (shellFlag && quoted) {
         shellFlag = false;
@@ -126,9 +123,11 @@ export function payloadKillsProcesses(payload: string, depth = 0): boolean {
       }
       shellFlag = false;
       // Leading NAME=value assignments precede the command word (`FOO=1 kill 1`).
-      if (state === 'cmd' && !quoted && /^[A-Za-z_][A-Za-z0-9_]*=/.test(text)) continue;
-      // A leading wildcard word can stand for a launcher (`Bash(* kill:*)`).
-      if (state === 'cmd' && !quoted && text === '*') { state = 'launcher'; continue; }
+      if (state === 'cmd' && !quoted && /^[A-Za-z_][A-Za-z0-9_]*=/.test(text)) {
+        // `FOO="1"` splits into `FOO=` plus a quoted value word: skip the value too.
+        if (text.endsWith('=') && words[i + 1]?.quoted) i++;
+        continue;
+      }
       if (state === 'launcher' && !quoted && isLauncherOption(text)) {
         shellFlag = SHELL_COMMAND_FLAG.test(text);
         continue;
@@ -140,8 +139,9 @@ export function payloadKillsProcesses(payload: string, depth = 0): boolean {
         break;
       }
       if (KILL_TOKENS.has(name)) return true;
-      if (isFirst && wildcard && name && [...KILL_TOKENS, 'wmic'].some((k) => k.startsWith(name))) return true;
-      state = LAUNCHERS.has(name) ? 'launcher' : 'args';
+      if (wildcard && name && [...KILL_TOKENS, 'wmic'].some((k) => k.startsWith(name))) return true;
+      // A glob word (`*`, `x*`, `?`) can stand for a launcher (`Bash(* kill:*)`).
+      state = LAUNCHERS.has(name) || (!quoted && /[*?[]/.test(text)) ? 'launcher' : 'args';
     }
   }
   return false;

@@ -28,11 +28,11 @@ const SAMPLES = [
 
 const FALSE_POSITIVES = [
   'git commit -m "fix kill race"', 'grep -rn kill src', 'gh issue list --search "kill"', 'bd create "kill stale"',
-  'echo kill', 'tmux kill-session -t x', 'node scripts/kill-port.mjs 1',
+  'echo kill', 'tmux kill-session -t x', 'node scripts/kill-port.mjs 1', 'FOO="1" npm test', 'ls *.log', 'rm -f *.tmp', 'FOO=1 BAR="x" git status',
 ];
 const KILLS = [
   'kill -9 1', 'cd x; kill 1', 'ps aux | xargs kill -9', 'a && taskkill /F /IM node.exe', 'sh -c "pkill node"',
-  'powershell -NoProfile -Command "Stop-Process -Id 1"', 'cmd /c taskkill /F /PID 1', '$(kill 1)', 'FOO=1 kill 1', 'LANG=C pkill node', 'if x; then kill 1; fi', 'for p in 1; do kill $p; done', '! kill 1', 'builtin kill 1', 'a || kill 1; true', 'sudo -n kill 1',
+  'powershell -NoProfile -Command "Stop-Process -Id 1"', 'cmd /c taskkill /F /PID 1', '$(kill 1)', 'FOO="1" kill 1', "FOO='x' kill 1", '** kill 1', 'x* kill 1', 'elif kill 1', 'FOO=1 kill 1', 'LANG=C pkill node', 'if x; then kill 1; fi', 'for p in 1; do kill $p; done', '! kill 1', 'builtin kill 1', 'a || kill 1; true', 'sudo -n kill 1',
 ];
 
 describe('process-kill rules: server and engine parity', () => {
@@ -58,7 +58,7 @@ describe('process-kill rules: server and engine parity', () => {
   });
 
   it('refuses grants that hide a kill behind an assignment, wildcard or builtin launcher', () => {
-    for (const g of ['Bash(FOO=1 kill:*)', 'Bash(LANG=C pkill:*)', 'Bash(* kill:*)', 'Bash(builtin kill:*)', 'Bash(watch kill 1)', 'Bash(busybox kill 1)', 'Bash(parallel kill ::: 1)']) {
+    for (const g of ['Bash(FOO="1" kill:*)', "Bash(FOO='x' kill:*)", 'Bash(** kill:*)', 'Bash(x* kill:*)', 'Bash(? kill:*)', 'Bash(elif kill 1)', 'Bash(FOO=1 kil*)', 'Bash(pki*:*)', 'Bash(FOO=1 kill:*)', 'Bash(LANG=C pkill:*)', 'Bash(* kill:*)', 'Bash(builtin kill:*)', 'Bash(watch kill 1)', 'Bash(busybox kill 1)', 'Bash(parallel kill ::: 1)']) {
       expect(isProcessKillGrant(g), g).toBe(true);
       expect(engine.isProcessKillGrant(g), g).toBe(true);
     }
