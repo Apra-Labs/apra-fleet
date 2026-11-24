@@ -93,6 +93,11 @@ It is not a toy. It builds apra-fleet itself:
   notified once by message and email, and your answer on the dashboard or
   via `bd human respond` resumes it
   ([details](docs/fleet-sprint-set-aside.md))
+- Will not report a clean PASS with work still open: the final review fails
+  the verdict when beads at or above goal priority remain open, catches up
+  review of beads that closed after the last review round, and surfaces any
+  beads-sync failure in the PR body
+  ([details](docs/fleet-sprint-final-review-gates.md))
 
 A fleet that has run in production:
 
