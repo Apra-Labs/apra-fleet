@@ -377,6 +377,8 @@ Field names, exactly as the API expects them:
 | `budget` | no | USD cap. |
 | `phases` | no | `{"regression": "skip"}` skips the regression pass (`"run"` is the default). Any other key or value is a 400. |
 | `kbDemotionLoop` | no | `"on"` (default) or `"off"`: the reviewer KB demotion loop switch, forwarded as `--kb-demotion-loop`. Any other value is a 400. |
+| `tierPolicy` | no | `"balanced"` (default), `"economy"` or `"quality"`: the model-tier policy preset; `quality` restores the previous engine tiers (the planner and plan-reviewer tier rules apply under every preset). Any other value is a 400. See docs/fleet-sprint-tier-policy.md. |
+| `tierOverrides` | no | Object. A fixed-role key (`planner`, `re-planner`, `plan-reviewer`, `reviewer-round`, `final-review`, `deployer`, `integ-test-runner`, `regression-test-runner`, `harvester`, `streakAssignment`) pins that role's tier; `doerDefault` (tier of an untiered doer dispatch) and `doerCeiling` (escalation stops there) take a tier; `premiumCapPct` (integer 0..100 or null) replaces the premium cap. Any other key or value is a 400. See docs/fleet-sprint-tier-policy.md. |
 | `overrideRelaunchGate` | no | bool. See below. |
 
 Response has `sprintId`, `pid`, `port` (its own dashboard), `logPath`, and

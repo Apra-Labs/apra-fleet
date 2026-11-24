@@ -341,6 +341,11 @@ function buildRepairPrompt(errorsText, initialPrompt) {
  *   explicitly sends `resume: false` unless the caller sets this option, so that
  *   workflow-authored prompts are self-contained by default and don't silently inherit
  *   state from a prior session. (F10 / apra-fleet-unw.3)
+ * @property {(resolved: { resolved_tier: string|null, resolved_model: string|null }) => void} [onResolvedTier]
+ *   Optional best-effort callback invoked with the tier and concrete model execute_prompt
+ *   reported it resolved (structuredContent.resolved_tier / resolved_model), once per
+ *   dispatch attempt that returned a result. Values are null when the result carries none.
+ *   A throwing callback is logged and ignored. Pricing uses resolved_tier when present.
  * @property {(sessionId: string, meta: { member?: string, agent?: string, usage?: object }) => void} [onSessionId]
  *   Optional best-effort callback invoked with the resumable session id that execute_prompt
  *   promoted into structuredContent.sessionId (apra-fleet-eft.78.1), on a non-error dispatch
@@ -1312,7 +1317,23 @@ export class FleetWorkflow extends EventEmitter {
                 const hasRealUsage = !!(reportedUsage && typeof reportedUsage.total_tokens === 'number');
                 result.usage = hasRealUsage ? reportedUsage : null;
 
-                const cost = hasRealUsage ? await this._resolveCost(opts, result.usage, budget) : null;
+                // resolved_tier / resolved_model: what execute_prompt actually ran
+                // (present on a result that reached model resolution, success or
+                // failure). Report them to the caller's best-effort hook, and
+                // price at the resolved tier when one is present.
+                const resolvedTier = structured && typeof structured.resolved_tier === 'string' ? structured.resolved_tier : null;
+                if (typeof opts.onResolvedTier === 'function') {
+                    try {
+                        opts.onResolvedTier({
+                            resolved_tier: resolvedTier,
+                            resolved_model: structured && typeof structured.resolved_model === 'string' ? structured.resolved_model : null,
+                        });
+                    } catch (cbErr) {
+                        console.error(`[Agent onResolvedTier] callback threw (non-fatal): ${cbErr && cbErr.message ? cbErr.message : cbErr}`);
+                    }
+                }
+                const pricingOpts = resolvedTier ? { ...opts, model: resolvedTier } : opts;
+                const cost = hasRealUsage ? await this._resolveCost(pricingOpts, result.usage, budget) : null;
                 if (cost !== null) {
                     budget._spent += cost;
                 }

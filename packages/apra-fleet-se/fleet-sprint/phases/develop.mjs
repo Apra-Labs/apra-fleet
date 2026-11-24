@@ -61,7 +61,12 @@ import { buildStreakAssignmentPrompt, buildDoerPrompt } from '../prompts.mjs';
 import {
     selectStreaks, groupStreaksFromLaneMetadata, streakRequiredTier,
     resolveWorklistTierPolicy, hasContextHeadroomForResume, assignDoerWorklists,
+    splitLanesByTier, laneTier, formatLaneSplitLog,
 } from '../worklists.mjs';
+import { reproducesPrePolicyTiers } from '../tier-policy.mjs';
+import {
+    effectiveBeadTier, beadWasEscalated, isVerifyFailureOutcome, applyEscalations, ESCALATION_REASONS,
+} from '../tier-escalation.mjs';
 import { isPostDispatchSyncFailure, MemberPermissionDeniedError, PERMISSION_DENIED_DISPATCH_REASON } from '../errors.mjs';
 import { isPermissionScopePostDispatchSyncFailure } from '../dispatch-failure.mjs';
 import { policyFor } from '../role-policies.mjs';
@@ -124,8 +129,22 @@ export async function runDevelopPhase({
     verifyDoerStreakClosed,
     normalizeTierToken,
     kbQueryTerms,
+    // The run's resolved tier policy (tier-policy.mjs, held on the run
+    // context). Absent or quality: today's doer pricing (first-bead pick,
+    // required-tier max in packed rounds). balanced/economy: single-tier lanes
+    // (see the split below) and the lane's own tier.
+    tierPolicy = null,
 }) {
     phase(`Develop C${cycle} R${devRounds}`);
+    const singleTierLanes = !reproducesPrePolicyTiers(tierPolicy);
+    // One-step tier escalations held for the run (../tier-escalation.mjs).
+    const escalations = sprintState.tierEscalations || (sprintState.tierEscalations = new Map());
+    // A bead's tier for lane splitting and doer pricing: its escalated tier
+    // when it was escalated, else its declared model. An escalated bead
+    // anchors its own sub-lane, so it runs at its escalated tier alone when
+    // its lane-mates were not escalated.
+    const beadTier = (b) => effectiveBeadTier(b, escalations);
+    const escalatedBead = (b) => beadWasEscalated(b, escalations);
 
     // --- Permission-scope publish-blocked carry-over (apra-fleet-2wdc.4) ---
     // A permission-scope post-dispatch sync failure (runStreakTurn's
@@ -554,6 +573,21 @@ export async function runDevelopPhase({
         log(`Streak Assignment: using one-bead-per-streak fallback (${reason}).`);
     }
     } // end LLM-fallback branch (no lane metadata)
+    // --- Single-tier lanes (balanced/economy) ---------------------------
+    // A lane whose implementation beads declare different tiers is split
+    // into consecutive single-tier segments in lane order (worklists.mjs
+    // splitLanesByTier): no doer dispatch ever runs a cheap bead at a
+    // premium lane-mate's tier. [test] and untiered beads ride the tier of
+    // the implementation bead before them. Only the first segment runs this
+    // round; the rest of the lane is held and re-forms next round, so the
+    // segments run strictly in order, never beside each other and never past
+    // a segment that left a bead open (an escalated bead's successors wait
+    // for its redo). quality keeps mixed lanes and today's pricing.
+    if (singleTierLanes) {
+        const split = splitLanesByTier(streaks, { tierOf: beadTier, pinned: escalatedBead });
+        for (const entry of split.splits) log(formatLaneSplitLog(entry));
+        streaks = split.streaks;
+    }
     // Title lookup for the assignedBeadIds sort below. Doer dispatches
     // run in `parallel`, so the order their outcomes are recorded in is
     // completion order -- correctly non-deterministic. The Review
@@ -604,6 +638,7 @@ export async function runDevelopPhase({
     const worklistPacking = assignDoerWorklists(streaks, doerPool.length, {
         effortBudget: validated.worklistEffortBudget,
         tierHomogeneous,
+        ...(singleTierLanes ? { streakTier: (s) => laneTier(s, beadTier, escalatedBead) } : {}),
     });
     if (worklistPacking.packed) {
         const fmtStreak = (s) => `(${s.map((b) => b.id).join(', ')})`;
@@ -712,6 +747,26 @@ export async function runDevelopPhase({
                 } else {
                     snapshotAfter = await readBranchSnapshot(doerMember);
                 }
+            },
+            // Bead ids, each premium bead's tierReason and any escalation, for
+            // the per-dispatch tier log line (read lazily: the claim narrows
+            // actualBeadIds inside the dispatch bracket).
+            tierContext: () => {
+                const claimed = new Set(actualBeadIds.map(String));
+                const beads = streak.filter((b) => claimed.has(String(b.id)));
+                const tierReasons = {};
+                const escalationList = [];
+                for (const b of beads) {
+                    const reason = b.metadata && b.metadata.tierReason;
+                    if (reason && beadTier(b) === 'premium') tierReasons[b.id] = reason;
+                    if (escalatedBead(b)) {
+                        const held = escalations.get(String(b.id));
+                        const from = (held && held.from) || (b.metadata && b.metadata.tierEscalatedFrom);
+                        const to = beadTier(b);
+                        if (from && to) escalationList.push({ id: b.id, from, to });
+                    }
+                }
+                return { beadIds: [...claimed], tierReasons, escalations: escalationList };
             },
             onSessionId: (id, meta) => {
                 if (!worklistCtx) return;
@@ -845,16 +900,26 @@ export async function runDevelopPhase({
                 // not a verified actual.
                 const streakModels = [...new Set(actualBeadIds.map((id) => modelByBeadId.get(id)).filter(Boolean))];
                 let doerModel = streakModels[0];
-                // In a PACKED worklist round a streak must never dispatch
-                // below its REQUIRED tier (the max of its beads' declared
-                // models) -- override the first-bead pick with that tier.
-                // The non-packed (streaks <= doers) path keeps the
-                // first-bead behavior.
-                if (packed) {
+                if (singleTierLanes) {
+                    // balanced/economy: the lane is single-tier (split
+                    // above), so the dispatch runs at the lane's tier -- no
+                    // first-bead pick and no rounding up to the max. A lane
+                    // naming no tier at all (e.g. a literal provider model
+                    // id) passes its declared model through unchanged.
+                    doerModel = laneTier(streak, beadTier, escalatedBead) || streakModels[0];
+                } else if (packed) {
+                    // quality: in a PACKED worklist round a streak must never
+                    // dispatch below its REQUIRED tier (the max of its beads'
+                    // declared models) -- override the first-bead pick with
+                    // that tier. The non-packed (streaks <= doers) path keeps
+                    // the first-bead behavior.
                     const requiredTier = streakRequiredTier(streak);
                     if (requiredTier) doerModel = requiredTier;
                 }
-                if (streakModels.length > 1) {
+                // tierOverrides.doerDefault: the tier of a dispatch whose beads
+                // declare none (unset in every preset: the member default).
+                if (!doerModel && tierPolicy && tierPolicy.doerDefault) doerModel = tierPolicy.doerDefault;
+                if (!singleTierLanes && streakModels.length > 1) {
                     log(`Doer streak ${streakScope()} spans beads with different declared models (${streakModels.join(', ')}) -- pricing this dispatch as '${doerModel}'.`);
                 }
 
@@ -1259,6 +1324,29 @@ export async function runDevelopPhase({
     }, { continueOnError: true });
 
     log(`Develop C${cycle} R${devRounds} streak outcomes: ${JSON.stringify(streakOutcomes.map((o) => ({ beadIds: o.beadIds, outcome: o.outcome })))}`);
+
+    // One-step tier escalation on a verify failure (../tier-escalation.mjs):
+    // a bead a doer session ran on and returned from with the bead still open
+    // (failureReason 'left-open', no dispatch error) is redone one tier up.
+    // Usage-limit stops and every infra/dispatch/sync failure carry a
+    // dispatch error and never escalate. balanced/economy only. Only the
+    // FIRST still-open bead of the streak (in streak order) is the one the
+    // doer failed on; a later open bead may simply not have been reached (a
+    // doer stops its lane once a bead stays open), so it does not escalate.
+    const verifyFailedIds = new Set(streakOutcomes
+        .filter(isVerifyFailureOutcome)
+        .map((o) => (o.beadIds || []).find((id) => (o.unclosedIds || []).includes(id)))
+        .filter((id) => id !== undefined)
+        .map(String));
+    if (singleTierLanes && verifyFailedIds.size > 0) {
+        const applied = await gitSync.withOpenSyncBracket(() => applyEscalations({
+            beads: currentReady.filter((b) => verifyFailedIds.has(String(b.id))),
+            policy: tierPolicy, escalations, reason: ESCALATION_REASONS.VERIFY_FAILURE,
+            command, member: backlogMember, log,
+        }));
+        // The engine just wrote bead metadata in its own clone: D-push.
+        if (applied.length > 0) await gitSync.syncBeadsAfter(backlogMember, { pushBeads: true });
+    }
 
     // The two values the Review phase (still inline in runner.js, in this same
     // round loop iteration) reads out of this round -- see the return shape in

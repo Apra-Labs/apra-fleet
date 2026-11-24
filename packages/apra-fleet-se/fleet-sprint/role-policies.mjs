@@ -751,7 +751,9 @@ const scopedReplanPlanner = policy('scoped-replan-planner', {
     ladderAnchor: "label: 'Scoped Replan Plan (interactive)'",
     member: roleMember('planner'),
     agentType: 'planner',
-    model: fixedTier('planner'),
+    // Its own tier key, so tierOverrides can pin the re-planner apart from
+    // the planner (every preset gives it the planner's tier).
+    model: fixedTier('re-planner'),
     schema: null,
     // A scoped re-plan is a fresh, single-purpose instruction: it carries the
     // reviewer's scope in its own prompt and must not inherit the interactive

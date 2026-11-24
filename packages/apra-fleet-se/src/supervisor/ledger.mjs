@@ -142,6 +142,9 @@ export const LEDGER_SCHEMA = Object.freeze({
                     branch: { type: ['string', 'null'] },
                     base: { type: ['string', 'null'] },
                     goal: { type: ['string', 'null'] },
+                    // Launch tier policy (preset name + raw overrides); optional, null for legacy entries.
+                    tierPolicy: { type: ['string', 'null'] },
+                    tierOverrides: { type: ['object', 'null'] },
                     // apra-fleet-k7b.3: optional (not in `required`) so a
                     // ledger file persisted before this field existed still
                     // loads -- normalizeReservation() below defaults every
@@ -222,6 +225,11 @@ function normalizeReservation(input, now) {
     const branch = toNullableString(input.branch, 'branch');
     const base = toNullableString(input.base, 'base');
     const goal = toNullableString(input.goal, 'goal');
+    const tierPolicy = toNullableString(input.tierPolicy, 'tierPolicy');
+    let tierOverrides = input.tierOverrides ?? null;
+    if (tierOverrides !== null && (typeof tierOverrides !== 'object' || Array.isArray(tierOverrides))) {
+        throw new TypeError('tierOverrides must be an object or null');
+    }
 
     // apra-fleet-k7b.3: exitCode/signal/exitedAt default to null (unknown --
     // the child hasn't exited, or this reservation predates the field/was
@@ -257,7 +265,7 @@ function normalizeReservation(input, now) {
     // predating this field, same convention as above.
     const beads = normalizeBeadsSummary(input.beads);
 
-    return { members, issueRoots, childPid, reservedAt, branch, base, goal, exitCode, signal, exitedAt, logPath, beads };
+    return { members, issueRoots, childPid, reservedAt, branch, base, goal, tierPolicy, tierOverrides, exitCode, signal, exitedAt, logPath, beads };
 }
 
 /** @param {unknown} v @returns {{ dir: string, prefix: string, syncRemote: string, repoRemote: string }|null} */
@@ -283,6 +291,8 @@ function cloneReservation(r) {
         branch: r.branch ?? null,
         base: r.base ?? null,
         goal: r.goal ?? null,
+        tierPolicy: r.tierPolicy ?? null,
+        tierOverrides: r.tierOverrides ? { ...r.tierOverrides } : null,
         exitCode: r.exitCode ?? null,
         signal: r.signal ?? null,
         logPath: r.logPath ?? null,

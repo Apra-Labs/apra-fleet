@@ -21,7 +21,7 @@ import {
     formatSiteLocations,
 } from './helpers/dispatch-pin-scanner.mjs';
 import { planReviewerVerdict, streakAssignment } from '../fleet-sprint/contracts.mjs';
-import { KB_SELF_INJECTING_ROLES } from '../fleet-sprint/runner.js';
+import { KB_SELF_INJECTING_ROLES, FIXED_ROLE_TIER as RUNNER_FIXED_ROLE_TIER } from '../fleet-sprint/runner.js';
 // PLANNING_ENGINE_DISPATCHES, not the shared ENGINE_DISPATCHES union: this
 // file pins the PLANNING side. Once the execution-side migration
 // (apra-fleet-3swo.5.7) starts adding its own engine-served dispatches to the
@@ -454,12 +454,11 @@ describe('planning-role dispatch: cross-cutting invariants', () => {
                 'Streak Assignment must use its own fixed tier, not the planner tier.'
             );
         }
-        const tiers = objectEntries(objectLiteralFor(SRC, 'FIXED_ROLE_TIER'));
-        assert.strictEqual(tiers.get('planner'), "'premium'", 'The planner role dispatches at the premium tier.');
-        assert.strictEqual(tiers.get('plan-reviewer'), "'premium'", 'The plan-reviewer role dispatches at the premium tier.');
+        assert.strictEqual(RUNNER_FIXED_ROLE_TIER.planner, 'premium', 'The planner role dispatches at the premium tier.');
+        assert.strictEqual(RUNNER_FIXED_ROLE_TIER['plan-reviewer'], 'premium', 'The plan-reviewer role dispatches at the premium tier.');
         assert.strictEqual(
-            tiers.get('streakAssignment'),
-            "'cheap'",
+            RUNNER_FIXED_ROLE_TIER.streakAssignment,
+            'cheap',
             'Streak Assignment is a small fully-specified classification call and dispatches at the cheap tier.'
         );
     });
