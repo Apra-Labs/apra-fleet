@@ -272,9 +272,9 @@ function declaredTier(bead) {
     return typeof tier === 'string' && MODEL_WEIGHT[tier] ? tier : null;
 }
 
-function laneAnchors(streak, tierOf) {
+function laneAnchors(streak, tierOf, pinned) {
     const tiered = (streak || []).filter((b) => tierOf(b));
-    const impl = tiered.filter((b) => !isTestBead(b));
+    const impl = tiered.filter((b) => !isTestBead(b) || (pinned && pinned(b)));
     return impl.length > 0 ? impl : tiered;
 }
 
@@ -284,10 +284,12 @@ function laneAnchors(streak, tierOf) {
  * shares one tier; null when no bead of the lane names a tier.
  * @param {Array<object>} streak
  * @param {(bead: object) => string|null} [tierOf]
+ * @param {((bead: object) => boolean)|null} [pinned] beads that anchor even
+ *   when they are [test] beads (an escalated bead runs at its own tier)
  * @returns {'cheap'|'standard'|'premium'|null}
  */
-export function laneTier(streak, tierOf = declaredTier) {
-    const anchors = laneAnchors(streak, tierOf);
+export function laneTier(streak, tierOf = declaredTier, pinned = null) {
+    const anchors = laneAnchors(streak, tierOf, pinned);
     return anchors.length > 0 ? tierOf(anchors[0]) : null;
 }
 
@@ -300,15 +302,17 @@ export function laneTier(streak, tierOf = declaredTier) {
  *
  * Pure: no I/O.
  * @param {Array<Array<object>>} streaks ordered lanes (arrays of bead objects)
- * @param {{ tierOf?: (bead: object) => string|null }} [opts]
+ * @param {{ tierOf?: (bead: object) => string|null, pinned?: (bead: object) => boolean }} [opts]
+ *   pinned: beads that anchor even when they are [test] beads
  * @returns {{ streaks: Array<Array<object>>, splits: Array<{ lane: string, tiers: Array<{ tier: string, ids: string[] }> }> }}
  */
 export function splitLanesByTier(streaks, opts = {}) {
     const tierOf = typeof opts.tierOf === 'function' ? opts.tierOf : declaredTier;
+    const pinned = typeof opts.pinned === 'function' ? opts.pinned : null;
     const out = [];
     const splits = [];
     for (const streak of Array.isArray(streaks) ? streaks : []) {
-        const anchors = new Set(laneAnchors(streak, tierOf));
+        const anchors = new Set(laneAnchors(streak, tierOf, pinned));
         const anchorTiers = new Set([...anchors].map((b) => tierOf(b)));
         if (anchorTiers.size <= 1) {
             out.push(streak);

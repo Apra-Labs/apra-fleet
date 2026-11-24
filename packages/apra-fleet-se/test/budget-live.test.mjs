@@ -315,12 +315,13 @@ describe('apra-fleet-unw2.8 (N10): live budget accounting', () => {
             assert.ok(doerDispatch, 'Expected a doer dispatch to have happened.');
             assert.strictEqual(doerDispatch.model, 'cheap', `Doer dispatch should be priced against the bead's declared metadata tier ('cheap'), got '${doerDispatch.model}'.`);
 
-            // Sanity: the fixed reviewer-class roles used their documented
-            // default tier ('premium', apra-fleet-dv5.1), independent of
-            // the bead's own tier.
+            // Sanity: the reviewer round is priced by the run's tier policy
+            // (balanced by default, tier-policy.mjs): a round holding only a
+            // cheap, never-escalated bead reviews at 'standard', independent
+            // of the bead's own tier. The final review stays 'premium'.
             const reviewerDispatch = dispatched.find((d) => d.agent === 'reviewer');
             assert.ok(reviewerDispatch, 'Expected a reviewer dispatch to have happened.');
-            assert.strictEqual(reviewerDispatch.model, 'premium', `Reviewer dispatch should use the fixed role tier ('premium'), got '${reviewerDispatch.model}'.`);
+            assert.strictEqual(reviewerDispatch.model, 'standard', `The balanced reviewer round with no premium or escalated bead should be 'standard', got '${reviewerDispatch.model}'.`);
 
             const finalBeads = JSON.parse((await runCmd('bd list --all --json', tempDir)).stdout || '[]');
             const task = finalBeads.find((b) => b.id === taskId);

@@ -448,6 +448,10 @@ export const GUARDED_MODULES = [
     // decision write is an injected runner.js seam -- no command() or agent()
     // site of its own.
     'tier-cap.mjs',
+    // One-step tier escalation: the decision is pure; its one command() site
+    // (the tierEscalatedFrom bead write) is member_name-bearing and runs
+    // inside the caller's gitSync bracket, which D-pushes.
+    'tier-escalation.mjs',
     // The per-member sprint-init probe: kb_*/code_* calls through the injected
     // memberCall, member_detail on the orchestrator session, and ONE
     // member-bound command channel (fleetApi.executeCommand, command strings

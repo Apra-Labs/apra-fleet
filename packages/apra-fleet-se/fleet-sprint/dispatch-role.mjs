@@ -178,14 +178,16 @@ export function resolveMember(ctx, member, bindings = {}) {
 
 /**
  * The model tier a dispatch is priced at, resolved from `policy.model`:
- *   'fixed'     -- ctx.fixedRoleTier[model.key]
+ *   'fixed'     -- ctx.fixedRoleTier[model.key], unless the caller passes a
+ *                  per-dispatch tier as bindings.fixedTier (the per-round
+ *                  reviewer, whose tier depends on the round's beads)
  *   'per-bead'  -- bindings[model.binding] (the doer's declared tier)
  *   'inherited' -- undefined: a resume of an already-priced dispatch passes
  *                  no tier of its own.
  */
 export function resolveModelTier(ctx, model, bindings = {}) {
     if (!model) return undefined;
-    if (model.kind === 'fixed') return ctx.fixedRoleTier[model.key];
+    if (model.kind === 'fixed') return bindings.fixedTier ?? ctx.fixedRoleTier[model.key];
     if (model.kind === 'per-bead') return bindings[model.binding];
     if (model.kind === 'inherited') return undefined;
     throw new Error(`dispatch-role: unresolvable model kind ${JSON.stringify(model.kind)}.`);

@@ -335,7 +335,8 @@ import {
     integCanRun, integBlockCause, findVerifyBlockedBeads, partitionByGoal, buildVerifyBlockDiagnosis,
 } from './verify-block.mjs';
 import { formatRedBuildIntegSkipReason, redBuildIntegSkipEntry } from './red-build-integ-gate.mjs';
-import { resolveTierPolicy, fixedRoleTierTable, holdTierPolicy, describeTierPolicy } from './tier-policy.mjs';
+import { resolveTierPolicy, fixedRoleTierTable, roleTierTable, holdTierPolicy, describeTierPolicy } from './tier-policy.mjs';
+import { holdTierEscalations } from './tier-escalation.mjs';
 // The premium-cap gate (after plan approval, before Develop) and the
 // decision it raises when two scoped re-plans leave the plan over the cap.
 import { runPremiumCapGate } from './tier-cap.mjs';
@@ -1402,6 +1403,9 @@ async function runSprintCycle(context) {
         callTool: (args && typeof args.callTool === 'function') ? args.callTool : undefined,
         log,
     });
+    // One-step tier escalations (tier-escalation.mjs), held on the run
+    // context like the tier policy so a resume never escalates a bead twice.
+    sprintState.tierEscalations = holdTierEscalations(context);
 
     // Every `bd dolt pull`/`bd dolt push` DoltSync issues is built per member
     // OS/shell (a Windows member runs bd with a bounded GOMAXPROCS). Install
@@ -2226,7 +2230,10 @@ async function runSprintCycle(context) {
         onUsageLimit,
         // The one bounded heal for a 'permission_denied' dispatch.
         onPermissionDenied,
-        fixedRoleTier: FIXED_ROLE_TIER,
+        // The run's fixed-role tiers, from its resolved tier policy (quality
+        // reproduces FIXED_ROLE_TIER exactly). The per-round reviewer passes
+        // its round tier per dispatch (dispatchReview's roundTier).
+        fixedRoleTier: roleTierTable(tierPolicy),
         budgets: {
             DISPATCH_TIMEOUT_S,
             DISPATCH_INACTIVITY_TIMEOUT_S,
@@ -2609,7 +2616,10 @@ async function runSprintCycle(context) {
      * @param {{ beadIds: string[], acceptanceCriteriaJson: string }} opts
      * @returns {Promise<{ verdict: string, notes: string, reopenIds: string[], replanIds?: string[], newTasks: object[] }>}
      */
-    async function dispatchReview({ beadIds, acceptanceCriteriaJson }) {
+    // roundTier: the per-round review's tier (tier-policy.mjs roleTier
+    // 'reviewer-round'); absent = the dispatch context's 'reviewer' tier, the
+    // final review's (a scope-wide re-review).
+    async function dispatchReview({ beadIds, acceptanceCriteriaJson, roundTier }) {
         const reviewerPool = getMembersForRole(ROLE_REVIEWER);
         // The diff range the reviewer is told to use: the fork point of the
         // sprint branch from a freshly fetched origin/<base>, computed on the
@@ -2710,7 +2720,7 @@ async function runSprintCycle(context) {
             resumeLabel: `Review (resume, max_turns=${secondaryMaxTurns('reviewer')})`,
             // The reviewer pool head is a runner-local value; the policy names
             // it by binding and the engine resolves it from here.
-            bindings: { 'reviewerPool[0]': reviewerPool[0] },
+            bindings: { 'reviewerPool[0]': reviewerPool[0], ...(roundTier ? { fixedTier: roundTier } : {}) },
             // Within THIS cycle's develop-review loop, resume the reviewer's own
             // prior-round session by explicit session id so a re-review of the
             // next round's fixes keeps the diff/context it already built. False
@@ -4166,6 +4176,7 @@ async function runSprintCycle(context) {
                 childIdAllocator, sprintMutexId,
                 computeChildFloor, createChildBeadWithAllocatedId,
                 trackRejectedNewTaskForResurfacing, clearResubmittedNewTask,
+                tierPolicy,
             }));
 
             await updateDashboard();

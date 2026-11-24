@@ -212,6 +212,26 @@ export function roleTier(policy, role, context = {}) {
 }
 
 /**
+ * The per-run FIXED_ROLE_TIER-shaped table for any policy (the dispatch
+ * context's fixedRoleTier). Its one 'reviewer' key is the final review's tier;
+ * a per-round review whose tier varies by round (reviewerRound 'by-round')
+ * passes its round tier, roleTier(policy, 'reviewer-round', ...), with the
+ * dispatch instead. For quality it equals fixedRoleTierTable(policy).
+ */
+export function roleTierTable(policy) {
+    return Object.freeze({
+        planner: roleTier(policy, 'planner'),
+        'plan-reviewer': roleTier(policy, 'plan-reviewer'),
+        reviewer: roleTier(policy, 'final-review'),
+        deployer: roleTier(policy, 'deployer'),
+        'integ-test-runner': roleTier(policy, 'integ-test-runner'),
+        'regression-test-runner': roleTier(policy, 'regression-test-runner'),
+        harvester: roleTier(policy, 'harvester'),
+        streakAssignment: roleTier(policy, 'streakAssignment'),
+    });
+}
+
+/**
  * The runner's FIXED_ROLE_TIER-shaped table (keyed by the role-policy model
  * keys: one 'reviewer' key covers both the reviewer round and the final
  * review) for a policy whose reviewer tier does not vary by round. Used by
