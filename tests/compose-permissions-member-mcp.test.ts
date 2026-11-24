@@ -149,7 +149,7 @@ describe.skipIf(process.platform === 'win32')('compose_permissions -- per-folder
     // Deny rules are exactly the complement of the member allowlist.
     expect(settings.permissions.deny).toEqual([...MEMBER_DENIED_TOOLS.map(t => `mcp__apra-fleet__${t}`), ...claudeProcessKillDenyRules()]);
     expect(new Set(settings.permissions.deny.map((r: string) => r.replace('mcp__apra-fleet__', '')))).toEqual(
-      new Set(['register_member', 'execute_prompt', 'remove_member', ...MEMBER_DENIED_TOOLS]),
+      new Set(['register_member', 'execute_prompt', 'remove_member', ...MEMBER_DENIED_TOOLS, ...claudeProcessKillDenyRules()]),
     );
     for (const allowed of MEMBER_ALLOWED_TOOLS) expect(settings.permissions.deny).not.toContain(`mcp__apra-fleet__${allowed}`);
     expect(JSON.stringify(settings.permissions.deny)).not.toContain('deepwiki');

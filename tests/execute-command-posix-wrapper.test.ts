@@ -294,7 +294,7 @@ describe.skipIf(!bash.path)('secret substitution survives the eval payload byte-
       expect(captured[0]).not.toContain('auth-ok');
       const r = run(bash.path!, captured[0]);
       expect(r.status).toBe(0);
-      expect(body(r)).toBe(`[${secret}]<${secret}><auth-ok>`);
+      expect(body(r, kind)).toBe(`[${secret}]<${secret}><auth-ok>`);
     });
   }
 });
