@@ -5,21 +5,40 @@
 // round of every cycle.
 //
 // WHAT IS COUNTED (countPremiumCap)
-//   Every in-scope task bead of ANY status except deferred/tombstone (open AND
-//   closed, so the count persists across re-plans and cycles -- it is never
-//   just the beads a re-plan created). Not counted, in either the premium
-//   count or the total:
+//   The in-scope task beads THIS RUN plans: every one except deferred/
+//   tombstone beads and beads that were already closed when the run started
+//   (the run baseline, see below). Open beads AND beads closed during this
+//   run both count, so the count is cumulative across this run's re-plans
+//   and cycles -- it is never just the beads a re-plan created -- while work
+//   finished by an earlier run (an epic relaunched after an upgrade) never
+//   counts against this run's cap. Not counted, in either the premium count
+//   or the total:
 //     - non-task beads and decomposed containers (a bead some in-scope bead
 //       names as its parent) -- they are never dispatched to a doer;
-//     - escalated beads: metadata.tierEscalatedFrom is set (the escalation
-//       records the tier it escalated from). Their premium tier is the
-//       engine's escalation, not the planner's choice. Absent = not escalated;
 //     - [test] beads riding an impl lane: a bead whose title starts with
 //       "[test]" and whose metadata.streak is also the streak of a non-[test]
 //       task bead. It runs inside that impl lane at the lane's tier, so it is
 //       not a tier choice of its own.
+//   Escalated beads (metadata.tierEscalatedFrom set) stay in the TOTAL but
+//   are never premium in the count: their premium tier is the engine's
+//   escalation, not the planner's choice, and an escalation must neither use
+//   up the allowance nor shrink it (so it can never trigger a re-plan).
 //   A bead is premium when normalizeTierToken(metadata.model) === 'premium'
 //   (the planner-set model metadata; '-tier' spellings normalize the same).
+//
+// RUN BASELINE (holdPremiumCapBaseline)
+//   The ids of the in-scope beads already closed when the run's first gate
+//   reads the scope -- after the first plan, before the first Develop round,
+//   so before this run's doers closed anything. Held on the run context like
+//   the tier policy, so a runner resume keeps the original baseline. A bead
+//   in the baseline that this run reopens counts again.
+//
+// WHAT A RE-PLAN MAY MOVE
+//   Only the OPEN premium beads (openPremiumIds): a closed bead's tier can no
+//   longer change what runs, so the re-plan prompt and the operator decision
+//   never ask for one to be lowered. A plan over the cap only through
+//   premium beads closed in this run (nothing open left to move) is logged
+//   and Develop proceeds -- a re-plan could not fix it.
 //
 // ROUNDING (premiumAllowance)
 //   allowed = ceil(premiumCapPct x total / 100), computed in integers. The
@@ -78,19 +97,40 @@ export function isEscalated(bead) {
 }
 
 /**
+ * The run's premium-cap baseline (see this file's header), held on the run
+ * context: { closedIds: Set<string>|null } -- null until the first gate
+ * call records it.
+ * @param {object} context the run context
+ */
+export function holdPremiumCapBaseline(context) {
+    return (context.premiumCapBaseline ??= { closedIds: null });
+}
+
+/**
  * Counts the premium task beads of a scope (see this file's header).
  *
  * @param {Array<object>} scopeBeads every in-scope bead, any status
  * @param {number|null} capPct the policy's premiumCapPct; null = no cap
- * @returns {{ capPct: number|null, total: number, premiumIds: string[], allowed: number|null,
- *   over: boolean, mustMove: number, excludedEscalated: string[], excludedRidingTests: string[] }}
+ * @param {{ closedAtStart?: Set<string>|null }} [opts] the run baseline:
+ *   beads in it that are still closed are not counted
+ * @returns {{ capPct: number|null, total: number, premiumIds: string[], openPremiumIds: string[],
+ *   allowed: number|null, over: boolean, mustMove: number, excludedEscalated: string[],
+ *   excludedRidingTests: string[], excludedClosedAtStart: string[] }}
+ *   excludedEscalated: escalated beads (counted in total, never premium)
  */
-export function countPremiumCap(scopeBeads, capPct) {
+export function countPremiumCap(scopeBeads, capPct, opts = {}) {
+    const closedAtStart = opts && opts.closedAtStart instanceof Set ? opts.closedAtStart : null;
     const beads = (Array.isArray(scopeBeads) ? scopeBeads : []).filter((b) => b && b.id !== undefined && b.id !== null);
     const parentIds = new Set(beads.map((b) => b.parent).filter(Boolean).map(String));
-    const tasks = beads.filter((b) => (!b.issue_type || b.issue_type === 'task')
-        && !parentIds.has(String(b.id))
-        && !UNCOUNTED_STATUSES.has(b.status));
+    const excludedClosedAtStart = [];
+    const tasks = beads.filter((b) => {
+        if (!((!b.issue_type || b.issue_type === 'task') && !parentIds.has(String(b.id)) && !UNCOUNTED_STATUSES.has(b.status))) return false;
+        if (closedAtStart && b.status === 'closed' && closedAtStart.has(String(b.id))) {
+            excludedClosedAtStart.push(String(b.id));
+            return false;
+        }
+        return true;
+    });
     const implStreaks = new Set(tasks
         .filter((b) => !isTestTitle(b) && meta(b).streak !== undefined && meta(b).streak !== null && String(meta(b).streak) !== '')
         .map((b) => String(meta(b).streak)));
@@ -98,25 +138,26 @@ export function countPremiumCap(scopeBeads, capPct) {
     const excludedRidingTests = [];
     const counted = [];
     for (const b of tasks) {
-        if (isEscalated(b)) { excludedEscalated.push(String(b.id)); continue; }
         const streak = meta(b).streak;
         if (isTestTitle(b) && streak !== undefined && streak !== null && implStreaks.has(String(streak))) {
             excludedRidingTests.push(String(b.id));
             continue;
         }
         counted.push(b);
+        // An escalated bead stays in the total but is never the planner's premium.
+        if (isEscalated(b)) excludedEscalated.push(String(b.id));
     }
-    const premiumIds = counted
-        .filter((b) => normalizeTierToken(meta(b).model) === 'premium')
-        .map((b) => String(b.id))
-        .sort();
+    const premium = counted.filter((b) => !isEscalated(b) && normalizeTierToken(meta(b).model) === 'premium');
+    const premiumIds = premium.map((b) => String(b.id)).sort();
+    const openPremiumIds = premium.filter((b) => b.status !== 'closed').map((b) => String(b.id)).sort();
     const total = counted.length;
+    const rest = { excludedEscalated, excludedRidingTests, excludedClosedAtStart: excludedClosedAtStart.sort() };
     if (capPct === null || capPct === undefined) {
-        return { capPct: null, total, premiumIds, allowed: null, over: false, mustMove: 0, excludedEscalated, excludedRidingTests };
+        return { capPct: null, total, premiumIds, openPremiumIds, allowed: null, over: false, mustMove: 0, ...rest };
     }
     const allowed = premiumAllowance(capPct, total);
     const over = premiumIds.length > allowed;
-    return { capPct, total, premiumIds, allowed, over, mustMove: over ? premiumIds.length - allowed : 0, excludedEscalated, excludedRidingTests };
+    return { capPct, total, premiumIds, openPremiumIds, allowed, over, mustMove: over ? premiumIds.length - allowed : 0, ...rest };
 }
 
 /**
@@ -135,8 +176,15 @@ export function capPctToFit(count) {
 /** One-line description of a count, naming the premium beads. */
 export function describePremiumCount(count) {
     const ids = count.premiumIds.length > 0 ? count.premiumIds.join(', ') : 'none';
-    return `${count.premiumIds.length} of ${count.total} counted task bead(s) premium [${ids}]; ` +
+    const open = count.openPremiumIds || count.premiumIds;
+    const closedNote = open.length < count.premiumIds.length ? ` (${open.length} still open)` : '';
+    return `${count.premiumIds.length} of ${count.total} counted task bead(s) premium [${ids}]${closedNote}; ` +
         `cap ${count.capPct}% allows ${count.allowed} (ceil(${count.capPct}% x ${count.total}))`;
+}
+
+/** The premium beads a re-plan or the operator can still lower: the open ones. */
+function movableIds(count) {
+    return count.openPremiumIds || count.premiumIds;
 }
 
 /**
@@ -149,17 +197,18 @@ export function describePremiumCount(count) {
  */
 export function buildPremiumCapDecision(count, { replans }) {
     const fitPct = capPctToFit(count);
+    const movable = movableIds(count);
     return {
-        beadId: count.premiumIds[0],
+        beadId: movable[0],
         question:
             `The plan is over its premium-tier cap after ${replans} scoped re-plan(s): ${describePremiumCount(count)}, ` +
-            `so at least ${count.mustMove} of the premium bead(s) [${count.premiumIds.join(', ')}] must move to a lower ` +
+            `so at least ${count.mustMove} of the open premium bead(s) [${movable.join(', ')}] must move to a lower ` +
             'tier to fit. The engine never changes a bead\'s model tier itself. Develop does not start until this is answered. ' +
             'How should the sprint proceed?',
         options: [
             {
                 id: 'a',
-                text: `Accept: run the plan as it is, with all ${count.premiumIds.length} premium bead(s) at the premium tier, ` +
+                text: `Accept: run the plan as it is, with all ${movable.length} open premium bead(s) at the premium tier, ` +
                     'over the cap for this run.',
             },
             {
@@ -169,7 +218,7 @@ export function buildPremiumCapDecision(count, { replans }) {
             },
             {
                 id: 'c',
-                text: `Re-plan by hand: lower at least ${count.mustMove} of [${count.premiumIds.join(', ')}] to standard ` +
+                text: `Re-plan by hand: lower at least ${count.mustMove} of [${movable.join(', ')}] to standard ` +
                     '(bd update <id> --set-metadata model=standard), then answer; the gate recounts before Develop.',
             },
         ],
@@ -183,6 +232,8 @@ export function buildPremiumCapDecision(count, { replans }) {
  * @param {object} opts
  * @param {{ name: string, premiumCapPct: number|null }} opts.policy the run's held tier policy
  * @param {object} opts.sprintState holds premiumCap = { replans, decisionRaised, decisionId }
+ * @param {{ closedIds: Set<string>|null }} [opts.baseline] the run baseline
+ *   (holdPremiumCapBaseline); recorded from the first scope read when null
  * @param {number} opts.cycle
  * @param {() => Promise<Array<object>>} opts.listScope every in-scope bead, any status, fresh
  * @param {(req: { count: object, attempt: number, maxReplans: number }) => Promise<unknown>} opts.replan
@@ -191,18 +242,38 @@ export function buildPremiumCapDecision(count, { replans }) {
  * @param {(req: { record: object|null, count: object }) => Promise<unknown>} [opts.awaitDecision]
  *   holds Develop until the decision is answered
  * @param {(line: string) => void} [opts.log]
- * @returns {Promise<{ status: 'no-cap'|'within'|'already-raised'|'decision', count: object|null, replans: number }>}
+ * @returns {Promise<{ status: 'no-cap'|'within'|'closed-only'|'already-raised'|'decision', count: object|null, replans: number }>}
  */
-export async function runPremiumCapGate({ policy, sprintState, cycle, listScope, replan, raiseDecision, awaitDecision = null, log = () => {} }) {
+export async function runPremiumCapGate({ policy, sprintState, cycle, listScope, replan, raiseDecision, awaitDecision = null, baseline = null, log = () => {} }) {
     const capPct = policy ? policy.premiumCapPct : null;
     if (capPct === null || capPct === undefined) return { status: 'no-cap', count: null, replans: 0 };
     const state = (sprintState.premiumCap ??= { replans: 0, decisionRaised: false, decisionId: null });
     const prefix = `[tier-cap] C${cycle} premium-cap gate (${policy.name})`;
+    const runBaseline = baseline || (sprintState.premiumCapBaseline ??= { closedIds: null });
 
-    let count = countPremiumCap(await listScope(), capPct);
+    const readCount = async () => {
+        const scope = await listScope();
+        if (runBaseline.closedIds === null) {
+            runBaseline.closedIds = new Set((Array.isArray(scope) ? scope : [])
+                .filter((b) => b && b.status === 'closed' && b.id !== undefined && b.id !== null)
+                .map((b) => String(b.id)));
+            if (runBaseline.closedIds.size > 0) {
+                log(`${prefix}: run baseline -- ${runBaseline.closedIds.size} in-scope bead(s) were already closed when this run ` +
+                    'started; they are not counted against this run\'s cap.');
+            }
+        }
+        return countPremiumCap(scope, capPct, { closedAtStart: runBaseline.closedIds });
+    };
+
+    let count = await readCount();
     if (!count.over) {
         log(`${prefix}: ${describePremiumCount(count)} -- within cap.`);
         return { status: 'within', count, replans: state.replans };
+    }
+    if (movableIds(count).length === 0) {
+        log(`${prefix}: ${describePremiumCount(count)} -- over cap by ${count.mustMove}, but only through premium bead(s) ` +
+            'this run already closed; no open premium bead is left to move, so no re-plan can fix it. Develop proceeds.');
+        return { status: 'closed-only', count, replans: state.replans };
     }
     if (state.decisionRaised) {
         log(`${prefix}: ${describePremiumCount(count)} -- over cap by ${count.mustMove}, but this run already raised ` +
@@ -210,21 +281,26 @@ export async function runPremiumCapGate({ policy, sprintState, cycle, listScope,
             'proceeding to Develop with the operator\'s answer (or, while it is unanswered, with the premium bead(s) set aside).');
         return { status: 'already-raised', count, replans: state.replans };
     }
-    while (count.over && state.replans < MAX_PREMIUM_CAP_REPLANS) {
+    while (count.over && movableIds(count).length > 0 && state.replans < MAX_PREMIUM_CAP_REPLANS) {
         state.replans += 1;
         log(`${prefix}: ${describePremiumCount(count)} -- over cap by ${count.mustMove}. Fix: scoped re-plan ` +
             `${state.replans} of ${MAX_PREMIUM_CAP_REPLANS} asking the planner to move at least ${count.mustMove} of ` +
-            `[${count.premiumIds.join(', ')}] to a lower tier.`);
+            `the open premium bead(s) [${movableIds(count).join(', ')}] to a lower tier.`);
         await replan({ count, attempt: state.replans, maxReplans: MAX_PREMIUM_CAP_REPLANS });
-        count = countPremiumCap(await listScope(), capPct);
+        count = await readCount();
         if (!count.over) {
             log(`${prefix}: after scoped re-plan ${state.replans}: ${describePremiumCount(count)} -- within cap; Develop starts.`);
             return { status: 'within', count, replans: state.replans };
         }
     }
+    if (movableIds(count).length === 0) {
+        log(`${prefix}: ${describePremiumCount(count)} -- over cap by ${count.mustMove}, but only through premium bead(s) ` +
+            'this run already closed; no open premium bead is left to move. Develop proceeds.');
+        return { status: 'closed-only', count, replans: state.replans };
+    }
     const decision = buildPremiumCapDecision(count, { replans: state.replans });
     log(`${prefix}: still over cap after ${state.replans} scoped re-plan(s): ${describePremiumCount(count)} -- over by ` +
-        `${count.mustMove}. Raising an operator decision naming [${count.premiumIds.join(', ')}]; fixes: accept, raise the ` +
+        `${count.mustMove}. Raising an operator decision naming [${movableIds(count).join(', ')}]; fixes: accept, raise the ` +
         `cap via tierOverrides {"premiumCapPct": ${capPctToFit(count)}}, or lower at least ${count.mustMove} of them to standard. ` +
         'Develop waits for the answer.');
     const record = await raiseDecision({ count, decision });

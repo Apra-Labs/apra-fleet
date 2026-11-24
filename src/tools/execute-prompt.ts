@@ -143,9 +143,11 @@ export interface ExecutePromptStructured {
    *  failure that ran out of budget during setup (cloud start, before the
    *  first attempt). Absent on every other result. */
   dispatched?: false;
-  /** Tier keyword requested (cheap|standard|premium; 'standard' when model omitted),
-   *  or null when the caller passed a literal model id. Present on every result
-   *  that got as far as model resolution. */
+  /** The tier that actually ran (cheap|standard|premium): the member's model_tiers
+   *  key that supplied resolved_model. Equals the requested tier keyword ('standard'
+   *  when model omitted) unless the member lacks that tier and fell back to another,
+   *  in which case it names the fallback tier. null when the caller passed a literal
+   *  model id. Present on every result that got as far as model resolution. */
   resolved_tier?: 'cheap' | 'standard' | 'premium' | null;
   /** Concrete model string actually passed to the provider. */
   resolved_model?: string;
@@ -399,13 +401,35 @@ async function deletePromptFile(agent: Agent, strategy: AgentStrategy, promptFil
   }
 }
 
-export function resolveModelForTier(agent: Agent, tier: string, provider: ProviderAdapter): string {
+type ModelTier = 'cheap' | 'standard' | 'premium';
+const MODEL_TIERS: readonly ModelTier[] = ['cheap', 'standard', 'premium'];
+
+/**
+ * The model a tier request resolves to on a member, and the tier that model
+ * actually belongs to. A member whose model_tiers lacks the requested tier
+ * falls back to standard, then cheap, then its first configured model; `tier`
+ * then names the fallback (null when that first model sits under a key that
+ * is not a tier name), so a caller can see the request was not honoured.
+ */
+export function resolveTierForMember(agent: Agent, tier: string, provider: ProviderAdapter): { tier: ModelTier | null; model: string } {
   const memberTiers = agent.modelTiers;
   if (memberTiers) {
     const t = tier as keyof typeof memberTiers;
-    return memberTiers[t] ?? memberTiers.standard ?? memberTiers.cheap ?? Object.values(memberTiers).filter(Boolean)[0] as string;
+    if (memberTiers[t]) return { tier: tier as ModelTier, model: memberTiers[t] as string };
+    if (memberTiers.standard) return { tier: 'standard', model: memberTiers.standard };
+    if (memberTiers.cheap) return { tier: 'cheap', model: memberTiers.cheap };
+    const first = Object.entries(memberTiers).find(([, v]) => Boolean(v));
+    const key = first ? first[0] : null;
+    return {
+      tier: key && (MODEL_TIERS as readonly string[]).includes(key) ? key as ModelTier : null,
+      model: (first ? first[1] : undefined) as string,
+    };
   }
-  return provider.modelForTier(tier as 'cheap' | 'standard' | 'premium');
+  return { tier: tier as ModelTier, model: provider.modelForTier(tier as ModelTier) };
+}
+
+export function resolveModelForTier(agent: Agent, tier: string, provider: ProviderAdapter): string {
+  return resolveTierForMember(agent, tier, provider).model;
 }
 
 /**
@@ -678,15 +702,16 @@ async function executePromptInteractive(
   }
 }
 
-/** Output-only: the tier keyword requested and the concrete model passed to the provider. */
+/** Output-only: the tier that actually ran and the concrete model passed to the provider. */
 interface PromptResolution { resolved_tier?: 'cheap' | 'standard' | 'premium' | null; resolved_model?: string }
 
 /**
  * The concrete model id a dispatch ran on (after tier mapping) is stamped onto
  * every structuredContent produced once it was resolved -- success and typed
  * failures alike -- so callers can see which model actually served a dispatch.
- * resolved_tier/resolved_model report the tier requested and the model passed
- * to the provider. Results returned before resolution carry none.
+ * resolved_tier/resolved_model report the tier that actually ran (after any
+ * model_tiers fallback) and the model passed to the provider. Results returned
+ * before resolution carry none.
  */
 export async function executePrompt(input: ExecutePromptInput, extra?: any): Promise<string | ExecutePromptResult> {
   const resolution: PromptResolution = {};
@@ -1174,21 +1199,29 @@ async function executePromptImpl(input: ExecutePromptInput, extra: any, tap: { m
 
   const tiers = provider.modelTiers();
   let resolvedModel = input.model || 'standard';
+  // resolvedTier is the tier that actually runs: with member model_tiers, the
+  // key that supplied the model (a fallback names the fallback tier, never the
+  // request), so the caller can see and price a downgrade.
   let resolvedTier: 'cheap' | 'standard' | 'premium' | undefined;
+  const fromMemberTiers = (tier: ModelTier): string => {
+    const r = resolveTierForMember(agent, tier, provider);
+    resolvedTier = r.tier ?? undefined;
+    return r.model;
+  };
   if (resolvedModel === 'cheap') {
     resolvedTier = 'cheap';
     resolvedModel = agent.modelTiers
-      ? resolveModelForTier(agent, 'cheap', provider)
+      ? fromMemberTiers('cheap')
       : agent.modelCheap || getModelOverride(provider.name, 'cheap') || tiers.cheap;
   } else if (resolvedModel === 'standard') {
     resolvedTier = 'standard';
     resolvedModel = agent.modelTiers
-      ? resolveModelForTier(agent, 'standard', provider)
+      ? fromMemberTiers('standard')
       : agent.modelStandard || getModelOverride(provider.name, 'standard') || tiers.standard;
   } else if (resolvedModel === 'premium') {
     resolvedTier = 'premium';
     resolvedModel = agent.modelTiers
-      ? resolveModelForTier(agent, 'premium', provider)
+      ? fromMemberTiers('premium')
       : agent.modelPremium || getModelOverride(provider.name, 'premium') || tiers.premium;
   } else {
     resolvedModel = tiers[resolvedModel as keyof typeof tiers] ?? resolvedModel;

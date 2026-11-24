@@ -13,22 +13,32 @@
 //            reviewer-round rule as balanced.
 //   quality  -- no cap, no escalation, and every fixed role requests exactly
 //            the tier the engine requested before tier policies existed
-//            (planner, plan-reviewer, every reviewer round and the final
-//            review premium; deployer, integ-test-runner,
+//            (planner, re-planner, plan-reviewer, every reviewer round and
+//            the final review premium; deployer, integ-test-runner,
 //            regression-test-runner and harvester standard; streak
-//            assignment cheap). quality is the rollback preset: choosing it
-//            reproduces the pre-policy engine. No deviation from that rule is
-//            taken here.
+//            assignment cheap). quality is the engine rollback preset:
+//            choosing it reproduces the pre-policy engine tiers. The
+//            planner and plan-reviewer prompt rules for tiers (tierReason,
+//            single-tier lanes) apply under every preset, quality included.
 //
-// In every preset the plan-reviewer and the final review are premium,
+// In every preset (unless tierOverrides pins them) the plan-reviewer and the final review are premium,
 // deployer/integ-test-runner/regression-test-runner/harvester are standard
 // and streak assignment is cheap.
 //
-// OVERRIDES
+// OVERRIDES (tierOverrides)
 //   resolveTierPolicy(preset, overrides) accepts only the keys in
-//   OVERRIDE_KEYS. premiumCapPct is an integer 0..100 or null (no cap).
-//   Anything else throws an [Arg Contract] error naming the field and the
-//   allowed values.
+//   OVERRIDE_KEYS; anything else throws an [Arg Contract] error naming the
+//   field and the allowed values (the launch API turns it into a 400).
+//   - a fixed-role key (FIXED_ROLES): cheap | standard | premium. It pins
+//     that role's tier. Pinning reviewer-round makes every per-round review
+//     run at that tier, whatever the round's beads.
+//   - doerDefault: cheap | standard | premium -- the tier a doer dispatch
+//     requests when none of its beads declares a tier (presets: unset, which
+//     leaves the tier to the member's default, standard).
+//   - doerCeiling: cheap | standard | premium -- escalation never raises a
+//     bead above it (presets: premium). It does not lower a tier the planner
+//     declared.
+//   - premiumCapPct: an integer 0..100, or null for no cap.
 // =============================================================================
 
 export const TIERS = Object.freeze(['cheap', 'standard', 'premium']);
@@ -44,6 +54,7 @@ export const DEFAULT_TIER_POLICY = 'balanced';
  */
 export const FIXED_ROLES = Object.freeze([
     'planner',
+    're-planner',
     'plan-reviewer',
     'reviewer-round',
     'final-review',
@@ -65,7 +76,9 @@ const SHARED_ROLE_TIERS = {
 };
 
 function freezePreset(p) {
-    return Object.freeze({ ...p, roleTiers: Object.freeze({ ...p.roleTiers }) });
+    // The re-planner runs at the planner's tier unless overridden.
+    const roleTiers = { 're-planner': p.roleTiers.planner, ...p.roleTiers };
+    return Object.freeze({ doerDefault: null, doerCeiling: 'premium', ...p, roleTiers: Object.freeze(roleTiers) });
 }
 
 /**
@@ -98,7 +111,7 @@ export const PRESETS = Object.freeze({
 });
 
 /** The override keys resolveTierPolicy() accepts. */
-export const OVERRIDE_KEYS = Object.freeze(['premiumCapPct']);
+export const OVERRIDE_KEYS = Object.freeze([...FIXED_ROLES, 'doerDefault', 'doerCeiling', 'premiumCapPct']);
 
 function argContract(field, allowed, got) {
     let shown;
@@ -111,9 +124,10 @@ function argContract(field, allowed, got) {
  * preset undefined/null means DEFAULT_TIER_POLICY.
  *
  * @param {string} [preset]
- * @param {{premiumCapPct?: number|null}} [overrides]
+ * @param {Record<string, string|number|null>} [overrides] keys from OVERRIDE_KEYS
  * @returns {Readonly<{name: string, premiumCapPct: number|null, escalation: boolean,
- *   reviewerRound: 'fixed'|'by-round', roleTiers: Readonly<Record<string,string>>}>}
+ *   reviewerRound: 'fixed'|'by-round', roleTiers: Readonly<Record<string,string>>,
+ *   doerDefault: string|null, doerCeiling: string}>}
  */
 export function resolveTierPolicy(preset, overrides) {
     const name = preset === undefined || preset === null ? DEFAULT_TIER_POLICY : preset;
@@ -131,6 +145,22 @@ export function resolveTierPolicy(preset, overrides) {
         }
     }
     const resolved = { ...base };
+    const roleTiers = { ...base.roleTiers };
+    for (const role of FIXED_ROLES) {
+        if (!Object.prototype.hasOwnProperty.call(overrides, role)) continue;
+        const v = overrides[role];
+        if (!TIERS.includes(v)) throw argContract(`tierOverrides.${role}`, TIERS.join(' | '), v);
+        roleTiers[role] = v;
+        // A pinned reviewer round runs at that tier for every round.
+        if (role === 'reviewer-round') resolved.reviewerRound = 'fixed';
+    }
+    resolved.roleTiers = Object.freeze(roleTiers);
+    for (const key of ['doerDefault', 'doerCeiling']) {
+        if (!Object.prototype.hasOwnProperty.call(overrides, key)) continue;
+        const v = overrides[key];
+        if (!TIERS.includes(v)) throw argContract(`tierOverrides.${key}`, TIERS.join(' | '), v);
+        resolved[key] = v;
+    }
     if (Object.prototype.hasOwnProperty.call(overrides, 'premiumCapPct')) {
         const v = overrides.premiumCapPct;
         if (v !== null && !(Number.isInteger(v) && v >= 0 && v <= 100)) {
@@ -221,6 +251,7 @@ export function roleTier(policy, role, context = {}) {
 export function roleTierTable(policy) {
     return Object.freeze({
         planner: roleTier(policy, 'planner'),
+        're-planner': roleTier(policy, 're-planner'),
         'plan-reviewer': roleTier(policy, 'plan-reviewer'),
         reviewer: roleTier(policy, 'final-review'),
         deployer: roleTier(policy, 'deployer'),
@@ -241,14 +272,5 @@ export function fixedRoleTierTable(policy) {
     if (policy.reviewerRound !== 'fixed' || roleTier(policy, 'reviewer-round') !== roleTier(policy, 'final-review')) {
         throw new Error(`[Arg Contract] Invalid policy: fixedRoleTierTable needs one reviewer tier for every round; ${policy.name} varies it.`);
     }
-    return Object.freeze({
-        planner: roleTier(policy, 'planner'),
-        'plan-reviewer': roleTier(policy, 'plan-reviewer'),
-        reviewer: roleTier(policy, 'final-review'),
-        deployer: roleTier(policy, 'deployer'),
-        'integ-test-runner': roleTier(policy, 'integ-test-runner'),
-        'regression-test-runner': roleTier(policy, 'regression-test-runner'),
-        harvester: roleTier(policy, 'harvester'),
-        streakAssignment: roleTier(policy, 'streakAssignment'),
-    });
+    return roleTierTable(policy);
 }

@@ -35,6 +35,7 @@ import { reproducesPrePolicyTiers } from './tier-policy.mjs';
 
 /** The tier one step up; premium stays premium. */
 const NEXT_TIER = Object.freeze({ cheap: 'standard', standard: 'premium', premium: 'premium' });
+const TIER_RANK = Object.freeze({ cheap: 0, standard: 1, premium: 2 });
 
 export const ESCALATION_REASONS = Object.freeze({
     REOPEN: 'reviewer reopen',
@@ -132,7 +133,13 @@ export function planEscalations({ beads, policy, escalations, reason }) {
             continue;
         }
         if (from === 'premium') {
-            skipped.push({ id, why: 'already premium -- premium stays premium' });
+            skipped.push({ id, why: 'already premium -- premium stays premium (tier.escalation_at_ceiling)' });
+            continue;
+        }
+        // tierOverrides.doerCeiling: escalation never raises a bead above it.
+        const ceiling = tierToken(policy.doerCeiling) || 'premium';
+        if (TIER_RANK[NEXT_TIER[from]] > TIER_RANK[ceiling]) {
+            skipped.push({ id, why: `already at the doer ceiling ${ceiling} -- not raised to ${NEXT_TIER[from]} (tier.escalation_at_ceiling)` });
             continue;
         }
         escalate.push({ id, from, to: NEXT_TIER[from], reason });

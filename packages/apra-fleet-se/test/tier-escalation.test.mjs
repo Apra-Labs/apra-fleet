@@ -94,6 +94,21 @@ test('unit: one step up, premium stays premium, and only once per bead', () => {
     assert.equal(effectiveBeadTier(bead('a', 'cheap'), escalations), 'standard');
 });
 
+test('unit: tierOverrides.doerCeiling stops escalation at the ceiling (tier.escalation_at_ceiling); cheap still rises to it', () => {
+    const policy = resolveTierPolicy('balanced', { doerCeiling: 'standard' });
+    const out = planEscalations({
+        beads: [bead('s', 'standard'), bead('c', 'cheap'), bead('p', 'premium')],
+        policy, escalations: new Map(), reason: ESCALATION_REASONS.REOPEN,
+    });
+    assert.deepEqual(out.escalate, [{ id: 'c', from: 'cheap', to: 'standard', reason: ESCALATION_REASONS.REOPEN }]);
+    const s = out.skipped.find((x) => x.id === 's');
+    assert.ok(s && s.why.includes('doer ceiling standard') && s.why.includes('tier.escalation_at_ceiling'), JSON.stringify(out.skipped));
+    assert.ok(out.skipped.some((x) => x.id === 'p' && x.why.includes('tier.escalation_at_ceiling')));
+    // A cheap ceiling stops every escalation.
+    const none = planEscalations({ beads: [bead('c', 'cheap')], policy: resolveTierPolicy('balanced', { doerCeiling: 'cheap' }), escalations: new Map(), reason: ESCALATION_REASONS.REOPEN });
+    assert.deepEqual(none.escalate, []);
+});
+
 test('unit: a runner resume does not escalate again -- the run context holds the escalations, and a bead carrying tierEscalatedFrom is never escalated twice', () => {
     const context = {};
     const held = holdTierEscalations(context);

@@ -341,7 +341,7 @@ import { resolveTierPolicy, fixedRoleTierTable, roleTierTable, holdTierPolicy, d
 import { holdTierEscalations } from './tier-escalation.mjs';
 // The premium-cap gate (after plan approval, before Develop) and the
 // decision it raises when two scoped re-plans leave the plan over the cap.
-import { runPremiumCapGate } from './tier-cap.mjs';
+import { runPremiumCapGate, holdPremiumCapBaseline } from './tier-cap.mjs';
 import { recordPendingDecision } from './decisions.mjs';
 // The dispatch-outcome classification surface: isTerminalSprintFailure,
 // isNoMutationDispatchFailure and withDispatchWatchdog. Extracted out of
@@ -3844,6 +3844,9 @@ async function runSprintCycle(context) {
             sprintState,
             cycle,
             log,
+            // Beads already closed when this run started never count; held on
+            // the run context so a resume keeps the original baseline.
+            baseline: holdPremiumCapBaseline(context),
             listScope: () => bdListScoped(''),
             replan: async ({ count, attempt, maxReplans }) => runReplanPhase({
                 phase, log, dispatchCtx,
@@ -3855,7 +3858,8 @@ async function runSprintCycle(context) {
                 command, sprintState, bdListScoped, extractContestedBeadIds,
                 tierPolicy,
                 premiumCap: {
-                    premiumIds: count.premiumIds, mustMove: count.mustMove, capPct: count.capPct,
+                    // Only the OPEN premium beads can still move to a lower tier.
+                    premiumIds: count.openPremiumIds, mustMove: count.mustMove, capPct: count.capPct,
                     allowed: count.allowed, total: count.total, attempt, maxReplans,
                 },
             }),
@@ -3868,7 +3872,7 @@ async function runSprintCycle(context) {
                 // Every premium bead waits on the same decision: set aside
                 // under its decisionId, so the answer releases them together.
                 if (record) {
-                    for (const id of count.premiumIds) {
+                    for (const id of count.openPremiumIds) {
                         if (sprintState.doctorBlockedIds.has(id)) continue;
                         sprintState.doctorBlockedIds.set(id, {
                             kind: 'dependent', blockedBy: record.beadId,

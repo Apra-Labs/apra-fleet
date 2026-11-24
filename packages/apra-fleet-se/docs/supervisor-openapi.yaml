@@ -396,11 +396,30 @@ paths:
                 tierOverrides:
                   description: >
                     Policy overrides, a JSON object or a JSON string of one.
-                    The only key is premiumCapPct (integer 0..100, or null for
-                    no cap). Unknown keys or bad values -> 400 (field
-                    tierOverrides) before any spawn. Forwarded as --tier-overrides.
+                    A fixed-role key (planner, re-planner, plan-reviewer,
+                    reviewer-round, final-review, deployer, integ-test-runner,
+                    regression-test-runner, harvester, streakAssignment) pins
+                    that role's tier; doerDefault is the tier of a doer
+                    dispatch whose beads declare none; doerCeiling caps
+                    escalation; premiumCapPct (integer 0..100, or null for no
+                    cap) replaces the preset's cap. Unknown keys or bad values
+                    -> 400 (field tierOverrides) before any spawn. Forwarded as
+                    --tier-overrides. See docs/fleet-sprint-tier-policy.md.
                   type: object
+                  additionalProperties: false
                   properties:
+                    planner: { type: string, enum: [cheap, standard, premium] }
+                    're-planner': { type: string, enum: [cheap, standard, premium] }
+                    'plan-reviewer': { type: string, enum: [cheap, standard, premium] }
+                    'reviewer-round': { type: string, enum: [cheap, standard, premium] }
+                    'final-review': { type: string, enum: [cheap, standard, premium] }
+                    deployer: { type: string, enum: [cheap, standard, premium] }
+                    'integ-test-runner': { type: string, enum: [cheap, standard, premium] }
+                    'regression-test-runner': { type: string, enum: [cheap, standard, premium] }
+                    harvester: { type: string, enum: [cheap, standard, premium] }
+                    streakAssignment: { type: string, enum: [cheap, standard, premium] }
+                    doerDefault: { type: string, enum: [cheap, standard, premium] }
+                    doerCeiling: { type: string, enum: [cheap, standard, premium] }
                     premiumCapPct:
                       type: integer
                       nullable: true

@@ -118,6 +118,17 @@ describe('tier policy launch: supervisor POST /api/sprints', () => {
         assert.equal(v.tierPolicy.premiumCapPct, 5);
     }));
 
+    test('per-role, doerDefault and doerCeiling overrides are accepted and reach the runner policy', () => withController(async ({ controller, captured }) => {
+        const tierOverrides = { planner: 'standard', 'reviewer-round': 'premium', doerDefault: 'cheap', doerCeiling: 'standard' };
+        await controller.launch({ ...LAUNCH, tierPolicy: 'balanced', tierOverrides });
+        const v = validateArgs({ ...BASE_ARGS, tier_policy: 'balanced', tier_overrides: flag(captured[0].args, '--tier-overrides') });
+        assert.equal(v.tierPolicy.roleTiers.planner, 'standard');
+        assert.equal(v.tierPolicy.roleTiers['reviewer-round'], 'premium');
+        assert.equal(v.tierPolicy.reviewerRound, 'fixed');
+        assert.equal(v.tierPolicy.doerDefault, 'cheap');
+        assert.equal(v.tierPolicy.doerCeiling, 'standard');
+    }));
+
     test('overrides given as a JSON string are accepted', () => withController(async ({ controller, captured }) => {
         await controller.launch({ ...LAUNCH, tierPolicy: 'quality', tierOverrides: '{"premiumCapPct":9}' });
         assert.equal(flag(captured[0].args, '--tier-overrides'), '{"premiumCapPct":9}');
@@ -127,6 +138,8 @@ describe('tier policy launch: supervisor POST /api/sprints', () => {
         ['preset fast', { tierPolicy: 'fast' }, 'tierPolicy'],
         ['cap 150', { tierOverrides: { premiumCapPct: 150 } }, 'tierOverrides'],
         ['unknown key', { tierOverrides: { bogus: 1 } }, 'tierOverrides'],
+        ['bad role tier', { tierOverrides: { planner: 'opus' } }, 'tierOverrides'],
+        ['bad doerCeiling', { tierOverrides: { doerCeiling: 'max' } }, 'tierOverrides'],
         ['bad JSON string', { tierOverrides: '{nope' }, 'tierOverrides'],
     ]) {
         test(`${label}: 400 naming ${field}, no child spawned`, () => withController(async ({ controller, captured }) => {

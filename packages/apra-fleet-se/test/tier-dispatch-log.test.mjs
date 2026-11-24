@@ -120,6 +120,31 @@ test('an escalated redo logs the escalation from -> to', async () => {
     }));
     const line = lines.find((l) => l.startsWith('[tier] dispatch'));
     assert.match(line, /escalation=bead-1 standard->premium/);
+    assert.equal(lines.filter((l) => l.includes('tier.escalation_unavailable')).length, 0);
+});
+
+test('an escalated redo the member resolved below its escalated tier logs tier.escalation_unavailable and counts it', async () => {
+    // execute_prompt reports the fallback tier that actually ran (no premium model on the member).
+    const { ctx, lines, store } = bridgedCtx({ resolved: { resolved_tier: 'standard', resolved_model: 'model-s-1' } });
+    await dispatchRole(ctx, 'doer', doerOpts({
+        beadIds: ['bead-1'],
+        tierReasons: {},
+        escalations: [{ id: 'bead-1', from: 'standard', to: 'premium' }],
+    }));
+    const unavailable = lines.filter((l) => l.includes('[tier] WARN tier.escalation_unavailable'));
+    assert.equal(unavailable.length, 1, JSON.stringify(lines));
+    assert.match(unavailable[0], /bead-1/);
+    assert.match(unavailable[0], /member:doer-3/);
+    assert.match(unavailable[0], /ran it at 'standard' \(model-s-1\)/);
+    assert.equal(store[0].tier.mismatch, 'tier-differs');
+    assert.equal(store[0].tier.escalationUnavailable, true);
+    assert.equal(tierCounts(store).escalationUnavailable, 1);
+    assert.match(formatTierSummary(store).join('\n'), /tier\.escalation_unavailable\): 1/);
+    // A plain (non-escalated) downgrade is a mismatch WARN only.
+    const plain = bridgedCtx({ resolved: { resolved_tier: 'standard', resolved_model: 'model-s-1' } });
+    await dispatchRole(plain.ctx, 'doer', doerOpts(CONTEXT()));
+    assert.equal(plain.lines.filter((l) => l.includes('tier.escalation_unavailable')).length, 0);
+    assert.equal(plain.store[0].tier.escalationUnavailable, false);
 });
 
 test('a non-doer dispatch with no tier context still emits the line', async () => {
@@ -170,7 +195,8 @@ test('runner.js strips tier_context and wires onResolvedTier into the accounting
 test('tier-policy doc names balanced as default and tierPolicy quality as rollback; CHANGELOG.md untouched', () => {
     const doc = readFileSync(join(REPO_ROOT, 'docs/fleet-sprint-tier-policy.md'), 'utf8');
     assert.match(doc, /default preset is `balanced`/);
-    assert.match(doc, /launch with tierPolicy:\s+quality to restore the previous behaviour/);
+    assert.match(doc, /launch with tierPolicy:\s+quality to restore the previous engine tiers/);
+    assert.match(doc, /tier rules apply under every policy/);
     assert.equal(/[^\x00-\x7F]/.test(doc), false, 'doc must be ASCII only');
     assert.ok(existsSync(join(REPO_ROOT, 'CHANGELOG.md')));
     // Unchanged versus HEAD: neither modified nor staged by this change. (A

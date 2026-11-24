@@ -6,7 +6,10 @@ import {
     DEFAULT_TIER_POLICY,
     resolveTierPolicy,
     roleTier,
+    roleTierTable,
+    OVERRIDE_KEYS,
 } from '../fleet-sprint/tier-policy.mjs';
+import { policyFor } from '../fleet-sprint/role-policies.mjs';
 
 // The tiers the engine requested for each fixed role before tier policies
 // existed: runner.js's FIXED_ROLE_TIER literal at the base commit, re-typed
@@ -136,5 +139,75 @@ describe('resolveTierPolicy validation', () => {
     test('an override does not mutate the preset', () => {
         resolveTierPolicy('balanced', { premiumCapPct: 3 });
         assert.strictEqual(PRESETS.balanced.premiumCapPct, 20);
+    });
+});
+
+describe('tierOverrides: per-role tiers, doerDefault, doerCeiling and premiumCapPct', () => {
+    test('OVERRIDE_KEYS are every fixed role plus doerDefault, doerCeiling and premiumCapPct', () => {
+        assert.deepStrictEqual([...OVERRIDE_KEYS].sort(), [
+            'deployer', 'doerCeiling', 'doerDefault', 'final-review', 'harvester', 'integ-test-runner',
+            'plan-reviewer', 'planner', 'premiumCapPct', 're-planner', 'regression-test-runner',
+            'reviewer-round', 'streakAssignment',
+        ]);
+    });
+
+    test('a role override pins that role and leaves the others at the preset tier', () => {
+        const p = resolveTierPolicy('balanced', { planner: 'standard', harvester: 'cheap', 'final-review': 'standard' });
+        assert.strictEqual(roleTier(p, 'planner'), 'standard');
+        assert.strictEqual(roleTier(p, 'harvester'), 'cheap');
+        assert.strictEqual(roleTier(p, 'final-review'), 'standard');
+        assert.strictEqual(roleTier(p, 're-planner'), 'premium', 'the re-planner keeps its own key');
+        assert.strictEqual(roleTier(p, 'plan-reviewer'), 'premium');
+        const t = roleTierTable(p);
+        assert.strictEqual(t.planner, 'standard');
+        assert.strictEqual(t['re-planner'], 'premium');
+        assert.strictEqual(t.reviewer, 'standard', 'the final review reads the reviewer key');
+        assert.strictEqual(PRESETS.balanced.roleTiers.planner, 'premium', 'the preset is not mutated');
+    });
+
+    test('the re-planner has its own key: it follows the planner in every preset and can be pinned apart from it', () => {
+        for (const name of ['balanced', 'economy', 'quality']) {
+            const p = resolveTierPolicy(name);
+            assert.strictEqual(roleTier(p, 're-planner'), roleTier(p, 'planner'), name);
+        }
+        const p = resolveTierPolicy('economy', { 're-planner': 'premium' });
+        assert.strictEqual(roleTier(p, 'planner'), 'standard');
+        assert.strictEqual(roleTierTable(p)['re-planner'], 'premium');
+        assert.strictEqual(policyFor('scoped-replan-planner').model.key, 're-planner');
+    });
+
+    test('a pinned reviewer-round runs at that tier for every round, premium beads or not', () => {
+        const p = resolveTierPolicy('balanced', { 'reviewer-round': 'standard' });
+        assert.strictEqual(roleTier(p, 'reviewer-round', { hasPremiumOrEscalated: true }), 'standard');
+        const q = resolveTierPolicy('balanced', { 'reviewer-round': 'premium' });
+        assert.strictEqual(roleTier(q, 'reviewer-round', { hasPremiumOrEscalated: false }), 'premium');
+    });
+
+    test('doerDefault and doerCeiling: presets leave doerDefault unset and the ceiling at premium; overrides set them', () => {
+        for (const name of ['balanced', 'economy', 'quality']) {
+            assert.strictEqual(resolveTierPolicy(name).doerDefault, null);
+            assert.strictEqual(resolveTierPolicy(name).doerCeiling, 'premium');
+        }
+        const p = resolveTierPolicy('balanced', { doerDefault: 'cheap', doerCeiling: 'standard' });
+        assert.strictEqual(p.doerDefault, 'cheap');
+        assert.strictEqual(p.doerCeiling, 'standard');
+    });
+
+    for (const [key, bad] of [['planner', 'opus'], ['re-planner', 5], ['reviewer-round', null], ['doerDefault', 'high'], ['doerCeiling', '']]) {
+        test(`rejects ${key}=${JSON.stringify(bad)}, naming tierOverrides.${key} and the allowed tiers`, () => {
+            assert.throws(() => resolveTierPolicy('balanced', { [key]: bad }), (err) => {
+                assert.match(err.message, /^\[Arg Contract\]/);
+                assert.ok(err.message.includes(`tierOverrides.${key}`), err.message);
+                assert.ok(err.message.includes('cheap | standard | premium'), err.message);
+                return true;
+            });
+        });
+    }
+
+    test('an unknown key error lists every allowed key', () => {
+        assert.throws(() => resolveTierPolicy('balanced', { reviewer: 'standard' }), (err) => {
+            for (const k of OVERRIDE_KEYS) assert.ok(err.message.includes(k), `names ${k}: ${err.message}`);
+            return true;
+        });
     });
 });

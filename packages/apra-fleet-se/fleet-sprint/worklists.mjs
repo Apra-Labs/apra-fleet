@@ -248,7 +248,8 @@ export function streakRequiredTier(streak) {
 // Under a tier policy other than quality, a doer dispatch runs at ONE tier:
 // the tier of its lane's implementation beads. A lane whose ready beads
 // declare different tiers is a planning slip; the engine splits it into
-// single-tier sub-lanes instead of rounding the whole lane up to its most
+// consecutive single-tier segments, run strictly in lane order across rounds
+// (splitLanesByTier), instead of rounding the whole lane up to its most
 // expensive bead (quality keeps that older behaviour, see develop.mjs).
 //
 // ANCHORS AND RIDERS. A lane's anchors are its tiered beads whose title does
@@ -294,22 +295,35 @@ export function laneTier(streak, tierOf = declaredTier, pinned = null) {
 }
 
 /**
- * Splits every lane whose anchors declare different tiers into single-tier
- * sub-lanes, in place in the streak list: the sub-lanes of a lane replace it,
- * ordered by their first bead, and each keeps the lane's bead order. Riders
- * join the sub-lane of the anchor preceding them (see above). Lanes that are
- * already single-tier are returned unchanged.
+ * Splits every lane whose anchors declare different tiers into CONSECUTIVE
+ * single-tier segments, cut only at tier boundaries in lane (streakOrder)
+ * order -- never regrouped by tier. Riders join the segment of the anchor
+ * preceding them (see above). Lane [A std, B prem, C std, T test] becomes
+ * the segments [A] [B] [C, T].
+ *
+ * The segments of one lane must run strictly in order, as one doer session
+ * would run the lane: a later segment never runs before or beside an earlier
+ * one, and never after an earlier one left a bead open. So only the HEAD
+ * segment of a split lane runs this round; the rest of the lane is held
+ * (`held`) and re-forms from the still-ready beads next round, where its next
+ * segment is the head. A split can never cross a `blocks` edge: every bead of
+ * a ready lane is ready, so none blocks another, and the segments run in lane
+ * order anyway -- which is why no lane is ever rounded up to one tier.
  *
  * Pure: no I/O.
  * @param {Array<Array<object>>} streaks ordered lanes (arrays of bead objects)
  * @param {{ tierOf?: (bead: object) => string|null, pinned?: (bead: object) => boolean }} [opts]
  *   pinned: beads that anchor even when they are [test] beads
- * @returns {{ streaks: Array<Array<object>>, splits: Array<{ lane: string, tiers: Array<{ tier: string, ids: string[] }> }> }}
+ * @returns {{ streaks: Array<Array<object>>, held: Array<Array<object>>,
+ *   splits: Array<{ lane: string, segments: Array<{ tier: string, ids: string[] }>, heldIds: string[] }> }}
+ *   streaks: what runs this round (unsplit lanes, and each split lane's head
+ *   segment, in the input lane order); held: the held tail of each split lane
  */
 export function splitLanesByTier(streaks, opts = {}) {
     const tierOf = typeof opts.tierOf === 'function' ? opts.tierOf : declaredTier;
     const pinned = typeof opts.pinned === 'function' ? opts.pinned : null;
     const out = [];
+    const held = [];
     const splits = [];
     for (const streak of Array.isArray(streaks) ? streaks : []) {
         const anchors = new Set(laneAnchors(streak, tierOf, pinned));
@@ -319,33 +333,38 @@ export function splitLanesByTier(streaks, opts = {}) {
             continue;
         }
         const firstAnchorTier = tierOf(streak.find((b) => anchors.has(b)));
-        const byTier = new Map();
+        const segments = [];
         let current = null;
         for (const bead of streak) {
             if (anchors.has(bead)) current = tierOf(bead);
             const tier = current || firstAnchorTier;
-            if (!byTier.has(tier)) byTier.set(tier, []);
-            byTier.get(tier).push(bead);
+            const last = segments[segments.length - 1];
+            if (last && last.tier === tier) last.beads.push(bead);
+            else segments.push({ tier, beads: [bead] });
         }
-        const subLanes = [...byTier.entries()]
-            .sort((x, y) => streak.indexOf(x[1][0]) - streak.indexOf(y[1][0]));
-        for (const [, beads] of subLanes) out.push(beads);
+        out.push(segments[0].beads);
+        const tail = segments.slice(1).flatMap((seg) => seg.beads);
+        held.push(tail);
         const first = streak[0];
         const laneId = first && first.metadata && typeof first.metadata.streak === 'string' && first.metadata.streak.trim()
             ? first.metadata.streak
             : `[${streak.map((b) => b.id).join(', ')}]`;
         splits.push({
             lane: laneId,
-            tiers: subLanes.map(([tier, beads]) => ({ tier, ids: beads.map((b) => String(b.id)) })),
+            segments: segments.map((seg) => ({ tier: seg.tier, ids: seg.beads.map((b) => String(b.id)) })),
+            heldIds: tail.map((b) => String(b.id)),
         });
     }
-    return { streaks: out, splits };
+    return { streaks: out, held, splits };
 }
 
-/** The one log line for a lane splitLanesByTier split. */
+/** The one log line for a lane splitLanesByTier split (event tier.split). */
 export function formatLaneSplitLog(split) {
-    return `[tier-lanes] lane '${split.lane}' mixes tiers -- split into single-tier doer dispatches: ` +
-        split.tiers.map((t) => `${t.tier} [${t.ids.join(', ')}]`).join('; ') +
+    const [head, ...rest] = split.segments;
+    return `[tier-lanes] tier.split: lane '${split.lane}' mixes tiers -- split in lane order into single-tier segments ` +
+        split.segments.map((t) => `${t.tier} [${t.ids.join(', ')}]`).join(' -> ') +
+        `; this round runs only the first segment, ${head.tier} [${head.ids.join(', ')}]` +
+        (rest.length > 0 ? `, and holds [${split.heldIds.join(', ')}] for a later round so the lane keeps its order` : '') +
         ' (the plan should have been single-tier per lane).';
 }
 

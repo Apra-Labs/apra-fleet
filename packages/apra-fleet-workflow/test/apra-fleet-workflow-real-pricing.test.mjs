@@ -140,3 +140,39 @@ describe('apra-fleet-dv5.6: real per-member pricing preferred over tier-band fal
         assert.strictEqual(summary.fallback, 1);
     });
 });
+
+describe('pricing at the tier execute_prompt actually ran (resolved_tier)', () => {
+    const PRICING = {
+        cheap: null,
+        standard: { model: 'std-model', promptPrice: 10, completionPrice: 20 },
+        premium: { model: 'prem-model', promptPrice: 100, completionPrice: 200 },
+    };
+
+    test('premium requested, member fell back to standard: the dispatch is priced at standard and onResolvedTier sees it', async () => {
+        const wf = new FleetWorkflow(createMockFleetApi({
+            executePromptImpl: async () => ({
+                content: [{ text: 'ok' }],
+                usage: USAGE,
+                structuredContent: { resolved_tier: 'standard', resolved_model: 'std-model' },
+            }),
+            getMemberModelPricingImpl: async () => jsonToolResult({ member_id: KNOWN_MEMBER, pricing: PRICING }),
+        }));
+        let endMeta;
+        wf.on('activity:end', (meta) => { if (meta.type === 'agent') endMeta = meta; });
+        const seen = [];
+        await wf.agent('hello', { member_name: KNOWN_MEMBER, model: 'premium', onResolvedTier: (r) => seen.push(r) });
+        // Standard rate: 1000/1e6 * 10 + 500/1e6 * 20 = 0.01 + 0.01 = 0.02 (premium would be 0.2).
+        assert.strictEqual(endMeta.cost, 0.02);
+        assert.deepStrictEqual(seen, [{ resolved_tier: 'standard', resolved_model: 'std-model' }]);
+    });
+
+    test('a result with no resolved_tier is priced at the requested tier', async () => {
+        const wf = new FleetWorkflow(createMockFleetApi({
+            getMemberModelPricingImpl: async () => jsonToolResult({ member_id: KNOWN_MEMBER, pricing: PRICING }),
+        }));
+        let endMeta;
+        wf.on('activity:end', (meta) => { if (meta.type === 'agent') endMeta = meta; });
+        await wf.agent('hello', { member_name: KNOWN_MEMBER, model: 'premium' });
+        assert.strictEqual(endMeta.cost, 0.2);
+    });
+});

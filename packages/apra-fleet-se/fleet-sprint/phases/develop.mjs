@@ -575,10 +575,14 @@ export async function runDevelopPhase({
     } // end LLM-fallback branch (no lane metadata)
     // --- Single-tier lanes (balanced/economy) ---------------------------
     // A lane whose implementation beads declare different tiers is split
-    // into single-tier sub-lanes (worklists.mjs splitLanesByTier): no doer
-    // dispatch ever runs a cheap bead at a premium lane-mate's tier. [test]
-    // and untiered beads ride the tier of the implementation bead before
-    // them. quality keeps mixed lanes and today's pricing.
+    // into consecutive single-tier segments in lane order (worklists.mjs
+    // splitLanesByTier): no doer dispatch ever runs a cheap bead at a
+    // premium lane-mate's tier. [test] and untiered beads ride the tier of
+    // the implementation bead before them. Only the first segment runs this
+    // round; the rest of the lane is held and re-forms next round, so the
+    // segments run strictly in order, never beside each other and never past
+    // a segment that left a bead open (an escalated bead's successors wait
+    // for its redo). quality keeps mixed lanes and today's pricing.
     if (singleTierLanes) {
         const split = splitLanesByTier(streaks, { tierOf: beadTier, pinned: escalatedBead });
         for (const entry of split.splits) log(formatLaneSplitLog(entry));
@@ -912,6 +916,9 @@ export async function runDevelopPhase({
                     const requiredTier = streakRequiredTier(streak);
                     if (requiredTier) doerModel = requiredTier;
                 }
+                // tierOverrides.doerDefault: the tier of a dispatch whose beads
+                // declare none (unset in every preset: the member default).
+                if (!doerModel && tierPolicy && tierPolicy.doerDefault) doerModel = tierPolicy.doerDefault;
                 if (!singleTierLanes && streakModels.length > 1) {
                     log(`Doer streak ${streakScope()} spans beads with different declared models (${streakModels.join(', ')}) -- pricing this dispatch as '${doerModel}'.`);
                 }

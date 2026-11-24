@@ -1,6 +1,7 @@
 /**
- * execute_prompt reports the tier it was asked for and the concrete model it
- * dispatched with (resolved_tier / resolved_model in structuredContent).
+ * execute_prompt reports the tier that actually ran and the concrete model it
+ * dispatched with (resolved_tier / resolved_model in structuredContent). A
+ * member lacking the requested tier reports the fallback tier, not the request.
  */
 import fs from 'node:fs';
 import os from 'node:os';
@@ -84,10 +85,16 @@ describe('execute_prompt -- resolved_tier / resolved_model', () => {
     expect(r.structuredContent?.resolved_model).toBe('my-literal-model-9');
   });
 
-  it('member without premium tier: tier stays premium, model is the standard fallback', async () => {
+  it('member without premium tier: resolved_tier is the standard fallback that ran, not the request', async () => {
     const r = await run({ cheap: 'm-cheap', standard: 'm-std' }, 'premium');
-    expect(r.structuredContent?.resolved_tier).toBe('premium');
+    expect(r.structuredContent?.resolved_tier).toBe('standard');
     expect(r.structuredContent?.resolved_model).toBe('m-std');
+  });
+
+  it('member with only a cheap model: a premium request reports resolved_tier cheap', async () => {
+    const r = await run({ cheap: 'm-cheap' }, 'premium');
+    expect(r.structuredContent?.resolved_tier).toBe('cheap');
+    expect(r.structuredContent?.resolved_model).toBe('m-cheap');
   });
 
   it('failure after resolution still carries both fields', async () => {
