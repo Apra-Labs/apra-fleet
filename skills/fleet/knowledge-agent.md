@@ -48,8 +48,9 @@ The merge then delivers the fix and the knowledge together. Do not park it for
 a later PR or hand it to another session to commit.
 
 **During the merge.** The bible (`.fleet/kb-canonical.json`) merges like any
-tracked file. `kb_setup` registers a git merge driver for it (`.gitattributes`:
-`merge=apra-fleet-kb-bible`) that merges at entry level and keeps tombstones.
+tracked file. `kb_setup` registers a git merge driver for it in each clone
+(local git config plus the clone's untracked `info/attributes`) that merges at
+entry level and keeps tombstones.
 The driver runs only in a local clone that has it registered, not in a hosting
 provider's web merge. So if the PR conflicts on the bible, merge the base into
 the branch locally (the driver resolves it), push, then merge the PR.
