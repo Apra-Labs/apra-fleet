@@ -413,6 +413,36 @@ export class DoltLockHeldError extends DoltSyncError {
     }
 }
 
+/** The failure kind DoltPushRaceError carries in details.kind. */
+export const DOLT_PUSH_RACE_KIND = 'remote-race';
+
+/**
+ * A D-push that kept losing the race to other writers on the shared remote:
+ * every push was rejected non-fast-forward, every reconcile pull in between
+ * merged cleanly, the bounded reconcile loop ran out of cycles, and the
+ * deterministic settle (when wired) did not recover it. Its message names the
+ * race; details.kind is 'remote-race' and details.attempts the number of
+ * reconcile cycles run.
+ *
+ * A DoltDivergedError subtype on purpose: a push that stays rejected after
+ * clean pulls cannot be told apart from a wedged clone, so every existing
+ * divergence handler (BEADS_SYNC_CONFLICT terminal reason, conflict-dump
+ * capture, degraded 'diverged' outcome) still applies, and it keeps the
+ * DOLT_DIVERGED code those handlers key on. A caller that wants the finer
+ * reason reads `kind` / details.kind.
+ */
+export class DoltPushRaceError extends DoltDivergedError {
+    /**
+     * @param {string} message
+     * @param {{ member?: string|null, doltOutput?: string|null, operation?: string|null, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(message, opts = {}) {
+        super(message, { ...opts, details: { kind: DOLT_PUSH_RACE_KIND, ...opts.details } });
+        this.name = 'DoltPushRaceError';
+        this.kind = DOLT_PUSH_RACE_KIND;
+    }
+}
+
 /**
  * Thrown by preflightBeadsHealthGate() when the backlog member's beads clone
  * holds local schema migrations bd auto-applied but never published (the
@@ -1004,6 +1034,12 @@ export const BEADS_IDENTITY_FAILURE_REASONS = Object.freeze({
     // expected beads remote -- dispatching would hand the role a database
     // that does not hold the sprint's issues, so refuse up front.
     BEADS_SETUP_FAILED: 'BEADS_SETUP_FAILED',
+    // A beads-touching member runs a bd (or dolt) outside the engine's pinned
+    // major.minor, or one whose version cannot be read. A newer bd migrates
+    // the shared beads remote one way on its first bootstrap/pull, locking
+    // out every older clone, so refuse before any beads mutation on any
+    // member.
+    VERSION_MISMATCH: 'VERSION_MISMATCH',
 });
 
 /**
@@ -1016,7 +1052,9 @@ export const BEADS_IDENTITY_FAILURE_REASONS = Object.freeze({
  * installed or not on PATH (reason MISSING_TOOL), so every later bd command
  * there would fail too, or (reason BEADS_SETUP_FAILED) when a beads-reading
  * member had no database / no sync.remote and setting it up from the
- * expected remote failed. Any other probe that fails or cannot be parsed is a
+ * expected remote failed, or (reason VERSION_MISMATCH) when a member's bd or
+ * dolt is outside the engine's pinned major.minor (checked on every member
+ * before any of the above). Any other probe that fails or cannot be parsed is a
  * logged warning, never this error.
  *
  * A WorkflowError so main()'s terminal record names the reason, but

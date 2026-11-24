@@ -328,6 +328,41 @@ export function applyCarryOverVerdictGate(verdictResult, carryOver) {
 }
 
 /**
+ * Forces the sprint verdict to FAIL while any at/above-goal bead is still open
+ * or any verify-routed bead is unclosed at Final Review, whatever the reviewer
+ * returned (PASS, INCOMPLETE or none). The blocking ids go at the top of the
+ * verdict notes with their class; the reviewer's own notes follow. Ids a
+ * sibling gate already forced and named (alreadyNamedIds) are not listed
+ * again, but still count as blocking. Deferred beads are not passed in.
+ *
+ * Pure: no I/O.
+ * @param {object|null} verdictResult
+ * @param {{ openAtGoalIds?: string[], unclosedVerifyIds?: string[], alreadyNamedIds?: Iterable<string> }} [opts]
+ * @returns {object|null}
+ */
+export function applyOpenWorkVerdictGate(verdictResult, { openAtGoalIds = [], unclosedVerifyIds = [], alreadyNamedIds = [] } = {}) {
+    const open = [...new Set((openAtGoalIds || []).map(String))];
+    const verify = [...new Set((unclosedVerifyIds || []).map(String))];
+    if (open.length === 0 && verify.length === 0) return verdictResult;
+    const named = new Set([...(alreadyNamedIds || [])].map(String));
+    const lines = [];
+    const openNew = open.filter((id) => !named.has(id));
+    const verifyNew = verify.filter((id) => !named.has(id) && !open.includes(id));
+    if (openNew.length > 0) lines.push(`Open at/above the sprint goal at Final Review: ${openNew.join(', ')}.`);
+    if (verifyNew.length > 0) lines.push(`Verify-routed and not closed at Final Review: ${verifyNew.join(', ')}.`);
+    const prior = verdictResult && typeof verdictResult.notes === 'string' ? verdictResult.notes : '';
+    const overridden = !verdictResult || verdictResult.verdict === 'PASS';
+    const head = lines.length > 0
+        ? lines.join(' ') + (overridden ? ' (Final Review returned PASS; the engine overrode it to FAIL.)' : '')
+        : '';
+    return {
+        ...(verdictResult || {}),
+        verdict: 'FAIL',
+        notes: head + (head && prior ? `\n\n${prior}` : prior),
+    };
+}
+
+/**
  * Why each in-scope bead "cannot close in this run" at the root of the stuck
  * accounting, id -> short reason naming why: set aside (doer BLOCKED, a
  * dependent of one, or awaiting an operator decision), publish blocked by a

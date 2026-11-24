@@ -77,6 +77,8 @@ interface World {
   probes: number;
   /** bd is absent on the member (neither on PATH nor in the fleet bin dir). */
   bdMissing?: boolean;
+  /** bd --version output on the member (default: the pinned bd). */
+  bdOut?: string;
 }
 
 function newWorld(over: Partial<World> = {}): World {
@@ -106,7 +108,7 @@ function fakeDeps(world: World, local?: () => Promise<MemberSession>, home = HOM
         if (world.register === 'folder-taken') return { stdout: '', stderr: 'E-FOLDER-TAKEN: folder registered to another member', code: 1 };
         return ok('registered');
       }
-      if (c.includes('command -v bd')) return ok(world.bdMissing ? `${NO_INSTALL_SENTINEL}\n` : 'bd version 1.3.0\n');
+      if (c.includes('command -v bd')) return ok(world.bdMissing ? `${NO_INSTALL_SENTINEL}\n` : (world.bdOut ?? 'bd version 1.3.0\n'));
       if (c.includes("'remove-member'")) return ok('removed');
       if (c.includes("'call'") && c.includes("'--list-tools'")) return ok(JSON.stringify({ tools: world.listTools.map(name => ({ name })) }));
       if (c.includes("'call'") && c.includes("'version'")) return ok(JSON.stringify({ content: [{ type: 'text', text: `apra-fleet ${world.installed}` }] }));
@@ -389,6 +391,24 @@ describe('member_detail refresh', () => {
     const again = JSON.parse(await memberDetail({ member_id: a.id, format: 'json', refresh: true }));
     expect(again.fleetMcp.beads).toBeUndefined();
     expect(getAgent(a.id)!.fleetMcp!.beads).toBeUndefined();
+  });
+
+  it('an off-pin bd is recorded as version-mismatch, shown in member_detail, named in update_member, and survives a no-install refresh', async () => {
+    const w = newWorld({ bdOut: 'bd version 1.0.4 (old)\n' });
+    __setMemberFleetMcpDeps(withRealRecord(fakeDeps(w)));
+    const a = remoteMember();
+    const r = JSON.parse(await memberDetail({ member_id: a.id, format: 'json', refresh: true }));
+    expect(r.fleetMcp).toMatchObject({ state: 'available', beads: { state: 'version-mismatch' } });
+    expect(r.fleetMcp.beads.detail).toContain('E-BD-VERSION-MISMATCH');
+    const text = await memberDetail({ member_id: a.id });
+    expect(text).toContain('bd=version-mismatch: E-BD-VERSION-MISMATCH');
+    expect(text).toContain('bd fix: ');
+    // A second refresh (no install) keeps it.
+    const again = JSON.parse(await memberDetail({ member_id: a.id, format: 'json', refresh: true }));
+    expect(again.fleetMcp.beads).toMatchObject({ state: 'version-mismatch' });
+    // update_member text names it.
+    const out = await updateMember({ member_id: a.id, llm_provider: 'opencode' } as any);
+    expect(out).toContain('E-BD-VERSION-MISMATCH');
   });
 
   it('without refresh returns the recorded status and never probes', async () => {

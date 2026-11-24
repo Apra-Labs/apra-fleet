@@ -132,7 +132,16 @@
  *   'max_total_time' (max_total_s, measured from the call including setup, ran out) |
  *   'secret_delivery_unavailable' (the member's stored credentials cannot be delivered
  *   without a command line -- relay member or SFTP disabled; deterministic, do not retry;
- *   no LLM call was made) | ...
+ *   no LLM call was made) |
+ *   'secret_in_prompt' (prompt contains a {{secret.NAME}} token; no LLM call) |
+ *   'invalid_arguments' (fork combined with session_id or a non-default resume, or neither
+ *   member_id nor member_name given; no LLM call) |
+ *   'substitution_failed' (substitutions key/placeholder validation failed; no LLM call) |
+ *   'provider_none' (member has llm_provider none; use execute_command; no LLM call) |
+ *   'agent_file_not_found' (the named `agent` file is missing on the member; no LLM call) |
+ *   'interactive_failed' (interactive-session delivery failed, the session died, or the wait
+ *   timed out; `dispatched:false` only when delivery itself failed) | ...
+ *   Early rejections that invoked no LLM carry `dispatched: false`.
  * @property {PermissionDenied} [permissionDenied] - Present when `reason === 'permission_denied'`:
  *   the member CLI refused tool calls (AGY headless mode auto-denies them and exits 0; Claude
  *   reports them in its result event's non-empty `permission_denials`). For Claude this needs the
@@ -402,7 +411,7 @@
  * @property {boolean} [unverified] - KB/code tools could not be verified (e.g. agy)
  * @property {string} [fleetInstalledAt] - ISO 8601 time this fleet's own install run last succeeded on the member; carried across later probes; absent when the fleet never installed it (a refusal or observation-only probe never sets it)
  * @property {{reason: string, detail?: string}} [installFailure] - A requested apra-fleet upgrade that failed before the member was touched while the older install stayed in use; present on available and unavailable statuses, also named in detail
- * @property {{state: "missing" | "broken", detail: string, fix: string}} [beads] - Present only when the beads CLI (bd) is not usable on a remote member (not on its PATH nor in <home>/.apra-fleet/bin); independent of state; absent when bd works or could not be probed
+ * @property {{state: "missing" | "broken" | "version-mismatch", detail: string, fix: string}} [beads] - Present only when the beads CLI (bd) is not usable on a remote member, or runs but is off the pinned major.minor (state "version-mismatch", E-BD-VERSION-MISMATCH); "missing" means neither on its PATH nor in <home>/.apra-fleet/bin; independent of state; absent when bd works or could not be probed
  * @property {number} [port] - Remote members: the port of the member's own apra-fleet install, resolved from its member-install marker; the member MCP URL (per-folder entry and per-session config) uses it
  * @property {"marker" | "default"} [portSource] - Where port came from: the member-install marker, or the built-in default because the install recorded no port (detail says so)
  * @property {{previousVersion: string, removed: string[], backupPath: string}} [replacedFullInstall] - Set by the probe that replaced a full install with a member install (fleet_install "replace-full"): replaced version, what was removed or moved, and the timestamped backup directory on the member

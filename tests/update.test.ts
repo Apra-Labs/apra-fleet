@@ -66,7 +66,9 @@ describe('runUpdate (T6)', () => {
     } as any);
 
     // Default fs behavior
-    vi.mocked(fs.existsSync).mockReturnValue(true);
+    // Every path exists except the member-install marker: by default this is
+    // not a fleet member host (see the member-host case below).
+    vi.mocked(fs.existsSync).mockImplementation((p: any) => !String(p).replace(/\\/g, '/').endsWith('/member-install.json'));
     vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({ llm: 'gemini', skill: 'pm' }));
     vi.mocked(fs.chmodSync).mockImplementation(() => {});
     vi.mocked(fs.renameSync).mockImplementation(() => undefined as any);
@@ -210,7 +212,6 @@ describe('runUpdate (T6)', () => {
   });
 
   it('invalid install-config.json -- uses defaults with warning', async () => {
-    vi.mocked(fs.existsSync).mockReturnValue(true);
     vi.mocked(fs.readFileSync).mockReturnValue('invalid json');
 
     vi.mocked(fetch).mockImplementation(async (url: any) => {
@@ -239,6 +240,35 @@ describe('runUpdate (T6)', () => {
       ['install', '--force', '--llm', 'claude', '--skill', 'all', '--workflows', 'all'],
       expect.anything()
     );
+    expect(process.exit).toHaveBeenCalledWith(0);
+  });
+
+  // A fleet member host (member-install marker in the data dir) must be updated
+  // with a member install: a full install there refuses, invisibly (detached).
+  it('fleet member host -- re-invokes the installer with install --member --force', async () => {
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(fetch).mockImplementation(async (url: any) => {
+      if (url.toString().includes('releases/latest')) {
+        return {
+          ok: true,
+          json: async () => ({
+            tag_name: 'v99.9.9',
+            assets: [{ name: `apra-fleet-installer-linux-x64`, browser_download_url: 'http://foo' }]
+          }),
+        } as any;
+      }
+      return { ok: true, body: { pipeTo: async () => {} } } as any;
+    });
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+
+    await runUpdate();
+
+    expect(spawn).toHaveBeenCalledWith(
+      expect.anything(),
+      ['install', '--llm', 'gemini', '--member', '--workflows', 'none', '--transport', 'http', '--force'],
+      expect.anything()
+    );
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining('fleet member host'));
     expect(process.exit).toHaveBeenCalledWith(0);
   });
 

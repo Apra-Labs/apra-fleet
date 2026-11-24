@@ -37,6 +37,9 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { BD_VERSION_MISMATCH_CODE, beadsMismatchFix } from '../cli/beads-install.js';
+import { BEADS_VERSION } from '../cli/beads-pin.js';
+import { checkPinnedVersion, parseVersionLine } from '../cli/version-pin.js';
 import type { Agent, FleetMcpStatus, LlmProvider, SSHExecResult } from '../types.js';
 import type { TargetOS } from '../providers/provider.js';
 import { getStrategy } from './strategy.js';
@@ -2090,16 +2093,19 @@ export function memberBeadsPath(home: string, targetOs: TargetOS, shell: MemberS
  * member command resolves it in (BIN_DIR is appended to PATH). Tagged like
  * buildFleetVersionProbe: always exits 0, outcome in stdout.
  */
+/** Printed before the version when the bd that answered is the fleet bin dir copy. */
+export const BD_IN_BIN_DIR_TAG = '__APRA_FLEET_BD_IN_BIN_DIR__';
+
 export function buildBeadsProbe(bdPath: string, targetOs: TargetOS, shell: MemberShell): string {
   const p = posixQuote(bdPath);
   const ps = psQuote(bdPath);
   return memberCommandFor(targetOs, shell, {
     posix:
       `if command -v bd >/dev/null 2>&1; then bd --version 2>/dev/null || printf '%s\\n' '${EXEC_FAILED_SENTINEL}'; ` +
-      `elif [ -x ${p} ]; then ${p} --version 2>/dev/null || printf '%s\\n' '${EXEC_FAILED_SENTINEL}'; ` +
+      `elif [ -x ${p} ]; then printf '%s\\n' '${BD_IN_BIN_DIR_TAG}'; ${p} --version 2>/dev/null || printf '%s\\n' '${EXEC_FAILED_SENTINEL}'; ` +
       `else printf '%s\\n' '${NO_INSTALL_SENTINEL}'; fi`,
     powershell:
-      `if (Get-Command bd -ErrorAction SilentlyContinue) { $bd = 'bd' } elseif (Test-Path -LiteralPath ${ps}) { $bd = ${ps} } else { $bd = $null }; ` +
+      `if (Get-Command bd -ErrorAction SilentlyContinue) { $bd = 'bd' } elseif (Test-Path -LiteralPath ${ps}) { $bd = ${ps}; [Console]::Out.Write('${BD_IN_BIN_DIR_TAG}' + [Environment]::NewLine) } else { $bd = $null }; ` +
       `if ($bd) { try { $out = & $bd --version; if ($LASTEXITCODE -ne 0) { [Console]::Out.Write('${EXEC_FAILED_SENTINEL}') } ` +
       `else { [Console]::Out.Write(($out | Out-String)) } } catch { [Console]::Out.Write('${EXEC_FAILED_SENTINEL}') } } ` +
       `else { [Console]::Out.Write('${NO_INSTALL_SENTINEL}') }; exit 0`,
@@ -2128,6 +2134,17 @@ export async function probeMemberBeads(
     }
     if (r.stdout.includes(EXEC_FAILED_SENTINEL)) {
       return { state: 'broken', detail: 'bd is present on the member but bd --version failed', fix: BEADS_MISSING_FIX };
+    }
+    // A bd that runs but is off the pinned major.minor: recorded here so it shows in
+    // member_detail and the register/update lines and survives a no-install refresh.
+    // An unparseable answer is not flagged (no false alarm).
+    const check = checkPinnedVersion(r.stdout, BEADS_VERSION);
+    if (!check.ok && parseVersionLine(r.stdout)) {
+      return {
+        state: 'version-mismatch',
+        detail: `${BD_VERSION_MISMATCH_CODE} bd ${check.found} on the member, expected ${check.expected} (pinned major.minor); the member keeps its fleet tools but sprints refuse it`,
+        fix: r.stdout.includes(BD_IN_BIN_DIR_TAG) ? beadsMismatchFix('bin-dir', bdPath) : beadsMismatchFix('path'),
+      };
     }
     return null;
   } catch {

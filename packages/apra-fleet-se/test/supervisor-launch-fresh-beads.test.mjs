@@ -22,7 +22,7 @@ import { createBeadsView } from '../src/supervisor/beads-view.mjs';
 import { createSprintController, ApiError } from '../src/supervisor/api.mjs';
 import { createLedger } from '../src/supervisor/ledger.mjs';
 import { clearLastSyncedTip, clearTipProbeFailures, invalidateSyncRemoteCache } from '../fleet-sprint/dolt-sync.mjs';
-
+import { answerVersionProbe } from './helpers/pinned-tool-versions.mjs';
 const MEMBER = 'backlog-proj';
 const SHA_A = 'a'.repeat(40);
 const QUIET = { log() {}, warn() {}, error() {} };
@@ -44,6 +44,8 @@ function fakeMember({ pullResults = [{ ok: true, output: '' }] } = {}) {
     const state = { tip: SHA_A, pulls: 0, inFlight: 0, maxInFlight: 0 };
     const queue = [...pullResults];
     async function command(cmd) {
+        const probe = answerVersionProbe(cmd);
+        if (probe) return probe;
         if (cmd.startsWith('bd config get sync.remote')) return { ok: true, output: JSON.stringify({ key: 'sync.remote', value: 'git+https://example.test/o/b.git' }) };
         if (cmd.includes(' ls-remote ')) return { ok: true, output: `${state.tip}\trefs/dolt/data\n` };
         if (cmd === 'bd dolt pull') {

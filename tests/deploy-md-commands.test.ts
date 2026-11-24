@@ -11,6 +11,9 @@ import {
   DeployInstallError,
   installArgs,
   memberAccessKeyPath,
+  memberMarkerPath,
+  memberHostCheck,
+  verifyMemberHost,
   // @ts-expect-error -- plain .mjs helper, no type declarations
 } from '../scripts/deploy-install.mjs';
 
@@ -101,9 +104,44 @@ describe('scripts/deploy-install.mjs', () => {
   });
 
   it('parses flags and passthrough args, rejects unknown ones', () => {
-    expect(parseArgs(['--launchagent', '--', '--llm', 'agy'])).toEqual({ launchagent: true, printPath: false, extra: ['--llm', 'agy'] });
-    expect(parseArgs(['--llm', 'agy'])).toEqual({ launchagent: false, printPath: false, extra: ['--llm', 'agy'] });
+    expect(parseArgs(['--launchagent', '--', '--llm', 'agy'])).toEqual({ launchagent: true, printPath: false, memberHostCheck: false, verifyMemberHost: false, extra: ['--llm', 'agy'] });
+    expect(parseArgs(['--llm', 'agy'])).toEqual({ launchagent: false, printPath: false, memberHostCheck: false, verifyMemberHost: false, extra: ['--llm', 'agy'] });
     expect(() => parseArgs(['--llm'])).toThrow(/requires a value/);
     expect(() => parseArgs(['--bogus'])).toThrow(/unknown argument/);
+  });
+});
+
+describe('deploy-install member-host helpers', () => {
+  it('resolves the marker from APRA_FLEET_DATA_DIR else home', () => {
+    expect(memberMarkerPath({ APRA_FLEET_DATA_DIR: '/d' }, '/h')).toBe(path.join('/d', 'member-install.json'));
+    expect(memberMarkerPath({}, '/h')).toBe(path.join('/h', '.apra-fleet', 'data', 'member-install.json'));
+  });
+
+  it('detects MEMBER-HOST vs FULL-HOST by marker existence', () => {
+    expect(memberHostCheck(() => true, {}, '/h')).toBe('MEMBER-HOST');
+    expect(memberHostCheck(() => false, {}, '/h')).toBe('FULL-HOST');
+  });
+
+  it('verify passes on matching version and healthy port, fails otherwise', async () => {
+    const base = { env: {}, home: '/h', platform: 'linux', readFile: () => JSON.stringify({ version: '1.2.3', port: 7611 }) };
+    const okRes = await verifyMemberHost({ ...base, binaryVersion: () => 'v1.2.3', health: async (p: number) => p === 7611 });
+    expect(okRes.ok).toBe(true);
+    const badVer = await verifyMemberHost({ ...base, binaryVersion: () => '1.2.4', health: async () => true });
+    expect(badVer.ok).toBe(false);
+    const noHealth = await verifyMemberHost({ ...base, binaryVersion: () => '1.2.3', health: async () => false });
+    expect(noHealth.ok).toBe(false);
+    const noMarker = await verifyMemberHost({ ...base, readFile: () => { throw new Error('x'); }, binaryVersion: () => '1.2.3', health: async () => true });
+    expect(noMarker.ok).toBe(false);
+    const defPort = await verifyMemberHost({ ...base, readFile: () => JSON.stringify({ version: '1.2.3' }), binaryVersion: () => '1.2.3', health: async (p: number) => p === 7523 });
+    expect(defPort.ok).toBe(true);
+  });
+
+  it('verify parses the real three-line --version output', async () => {
+    const real = 'apra-fleet v0.4.6_6b7c08\n  Mode: dev (x)\n  Binary: /home/u/.apra-fleet/bin/apra-fleet\n';
+    const base = { env: {}, home: '/h', platform: 'linux', health: async () => true };
+    const okRes = await verifyMemberHost({ ...base, readFile: () => JSON.stringify({ version: 'v0.4.6_6b7c08', port: 7523 }), binaryVersion: () => real.trim() });
+    expect(okRes.ok).toBe(true);
+    const bad = await verifyMemberHost({ ...base, readFile: () => JSON.stringify({ version: 'v0.4.7', port: 7523 }), binaryVersion: () => real.trim() });
+    expect(bad.ok).toBe(false);
   });
 });

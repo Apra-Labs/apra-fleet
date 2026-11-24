@@ -43,6 +43,10 @@ Options:
   --force-stop-full-install
                           With --member --force: also stop a running server that was not started
                           by a member install (e.g. a full install on a shared machine).
+  --convert-member-host   Without --member: install a full install over a fleet member host (one
+                          whose data dir holds member-install.json), removing the member install.
+                          Without it a full install there refuses (E-MEMBER-HOST-FULL-INSTALL);
+                          upgrade a member host with install --member --force instead.
   --port <n>              With --member: the port this member install's server listens on
                           (default: APRA_FLEET_PORT, else the port a previous member install
                           recorded, else 7523). Recorded in the member-install marker; use a
