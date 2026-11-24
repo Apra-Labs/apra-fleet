@@ -1801,6 +1801,10 @@ const PLAN_REVIEW_SCHEMA = {
               "ready_work",
               "model_metadata",
               "lane_cohesion",
+              "tier_cap",
+              "tier_reason",
+              "tier_split",
+              "lane_tier",
               "other"
             ]
           },

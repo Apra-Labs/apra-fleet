@@ -25,6 +25,8 @@ Your dispatch prompt must supply:
   input for this round, not background color: see "No-goalpost-moving rule" below.
 - Beads set aside for a pending operator decision, if any (optional) -- see "Beads set
   aside for an operator decision" below.
+- A premium cap (optional) -- a `PREMIUM CAP` line giving the percentage of task beads
+  that may carry tier `premium` (criterion 14). No such line = no cap check.
 
 Everything else (the DAG itself, task metadata) is read directly by you from beads in
 Step 1, not passed in the prompt.
@@ -88,7 +90,8 @@ record the fallback. Never poll `code_status` in a loop waiting for the index.
 1. When the tools are present, call `kb_session_prime` with `hint_symbols`/`hint_modules`
    relevant to the features in the DAG under review.
 2. Any judgment that depends on KB coverage (e.g. whether a task touches unexplored code
-   and needs a stronger model tier) is made from the live result or the injected block,
+   and its description should tell the doer to read more source first) is made from the
+   live result or the injected block,
    never inferred from a tool failure. An entry recording that a module is harder than
    it looks is a task-sizing input.
 3. This role has no KB-capture channel: note a non-obvious, durable finding (a hidden
@@ -195,7 +198,9 @@ For each open feature and its tasks, run `bd show <id>` to read the full descrip
       and are never split across lanes.
     - **Within limits**: per lane, task count `<=` `laneMaxTasks` and `effort` (computed
       from the recorded `size` values, not your own estimate -- `effort = sum of size
-      points S=1/M=2/L=4 x max model weight in the lane, cheap=1/standard=10/premium=20`)
+      points S=1/M=2/L=4 x the lane's model weight, cheap=1/standard=10/premium=20`;
+      lanes are single-tier, so there is one weight -- a mixed-tier lane is criterion
+      14's finding, never resolved by taking a maximum)
       `<=` `laneMaxEffort`. These three numbers (defaults `laneMaxTasks=6`,
       `laneMaxEffort=200`, `laneTargetEffort=60`) are fixed for now -- no per-dispatch
       override channel exists yet. A lane over either cap is a finding unless it was split
@@ -229,6 +234,49 @@ For each open feature and its tasks, run `bd show <id>` to read the full descrip
     referencing "criterion 13" and naming the bead id and the offending criterion text;
     the fix is to replace it with what can be checked locally (build, lint, the tests a
     doer can run). Use `kind: "acceptance_criteria"` for this finding.
+14. **Model tier policy** (checked under every tier policy). The planner's tiers follow
+    `planner.md` Step 3: standard is the default; cheap only for mechanical work (rename,
+    move, config key, boilerplate, doc-only), never code logic; premium only when the
+    bead text shows at least one hard criterion:
+    - **H1 Contract change**: alters a contract other code or other systems depend on
+      (a persisted format or schema, a migration, a wire or API protocol, a public
+      CLI/tool schema), including keeping a published spec in step with the change.
+    - **H2 Concurrency or durability semantics**: ordering, locking,
+      retries/idempotency, crash recovery, or partial-failure handling.
+    - **H3 Security or trust boundary**: authn/authz, credential handling, sandboxing,
+      input reaching a shell, path or query.
+    - **H4 Open design**: an acceptance criterion needs a design choice the bead does
+      not settle -- two or more viable approaches with different external behaviour.
+    - **H5 Cross-cutting invariant**: the change must keep an invariant enforced in more
+      than one module, and the bead names that invariant.
+    - **H6 Diagnosis-first**: a bug whose root cause is not yet known (the bead says so).
+    File count, size `L`, low or absent KB coverage, and being a `[test]` bead never
+    justify premium by themselves (a `[test]` bead is standard unless it builds new test
+    infrastructure that meets H1-H3, or rides its impl lane at the impl tier). Each of
+    the following is a CHANGES_NEEDED finding referencing "criterion 14":
+    - **Premium cap exceeded** (`kind: "tier_cap"`): only when the dispatch prompt gives a
+      `PREMIUM CAP` percentage `pct`. Count the premium task beads in scope, excluding
+      beads with metadata `tierEscalatedFrom` set and `[test]` beads riding an impl
+      lane; the allowance is `ceil(pct x counted task beads / 100)`. Over it, add one
+      finding per premium bead, each naming its `tierReason`, and state in `notes` how
+      many premium beads must move to a lower tier (or be split) to meet the cap. No cap
+      line in the prompt = no cap check.
+    - **Missing or invalid tierReason** (`kind: "tier_reason"`): a premium bead with no
+      `tierReason` metadata, a value outside H1-H6, or a cited criterion its own text does
+      not support. Riding `[test]` beads are exempt. Name the criterion and quote the bead
+      text you checked.
+    - **Uncited hard signal** (`kind: "tier_reason"`): a standard (or cheap) bead whose
+      text shows an H1-H6 signal it does not cite -- name the criterion and the text, and
+      ask for the tier or the scope to change. Likewise a cheap bead that changes code
+      logic.
+    - **Separable non-hard work** (`kind: "tier_split"`): a premium bead whose description
+      also holds parts that do not meet H1-H6 and could stand as their own standard or
+      cheap bead -- name those parts and ask for the split. An unsplittable bead keeps
+      premium and is not a finding.
+    - **Mixed-tier lane** (`kind: "lane_tier"`): a lane whose work beads carry different
+      `model` tiers. One lane = one doer session at one tier; name the lane (`streak` id)
+      and each bead with its tier. `[test]` beads riding the lane at the impl tier are
+      exempt from this check.
 
 ## Step 3 -- Classify each task
 
@@ -259,9 +307,12 @@ Return your verdict:
   `id` is the bead, written exactly as it appears in `taskAssignments`. `kind` is a closed
   vocabulary naming the criterion that failed, one of `coverage`, `missing_test_task`,
   `acceptance_criteria`, `task_size`, `dependency_wiring`, `scope_creep`, `duplicate_work`,
-  `feasibility`, `ready_work`, `model_metadata`, `lane_cohesion`, `other` -- in the order of
-  the numbered criteria in Step 2, with `other` covering both criterion 12
-  (NOTES-vs-child contradiction) and any failure none of the listed kinds describes.
+  `feasibility`, `ready_work`, `model_metadata`, `lane_cohesion`, `tier_cap`,
+  `tier_reason`, `tier_split`, `lane_tier`, `other` -- in the order of the numbered
+  criteria in Step 2 (the four `tier_*`/`lane_tier` kinds are criterion 14: premium cap
+  exceeded, missing/invalid or uncited tierReason, separable non-hard work, mixed-tier
+  lane), with `other` covering both criterion 12 (NOTES-vs-child contradiction) and any
+  failure none of the listed kinds describes.
   `detail` is the human explanation for that bead.
 - `taskAssignments`: array with one entry per open task -- `{ id, bucket, model }`
 
@@ -269,7 +320,7 @@ Return your verdict:
 joined by `blocks` edges) so the orchestrator can see review cadence before development
 starts.
 
-**APPROVED** means all thirteen criteria in Step 2 pass.
+**APPROVED** means all fourteen criteria in Step 2 pass.
 
 **CHANGES_NEEDED** means one or more criteria fail. Notes must name the specific beads ID
 and what is wrong. Do not return CHANGES_NEEDED for minor style preferences -- but a plan
