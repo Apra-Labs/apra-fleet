@@ -87,7 +87,13 @@ export function toStructuredUsage(u: TokenUsage): StructuredUsage {
 
 export interface ExecutePromptStructured {
   isError?: boolean;
-  reason?: 'busy' | 'reserved' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'orphan_recovery_timeout' | 'workspace_not_trusted' | 'auth' | 'server' | 'overloaded' | 'insufficient_context_headroom' | 'budget_exhausted' | 'session_not_found' | 'fork_unsupported' | 'stalled' | 'agent_never_started' | 'max_total_time' | 'preflight_offline' | 'preflight_auth_missing' | 'preflight_auth_expired' | 'usage_limit' | 'permission_denied' | 'secret_delivery_unavailable';
+  reason?: 'busy' | 'reserved' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'orphan_recovery_timeout' | 'workspace_not_trusted' | 'auth' | 'server' | 'overloaded' | 'insufficient_context_headroom' | 'budget_exhausted' | 'session_not_found' | 'fork_unsupported' | 'stalled' | 'agent_never_started' | 'max_total_time' | 'preflight_offline' | 'preflight_auth_missing' | 'preflight_auth_expired' | 'usage_limit' | 'permission_denied' | 'secret_delivery_unavailable'
+    // Early rejections (no LLM invoked unless noted): secret token in prompt,
+    // invalid argument combinations (fork vs session_id/resume), bad
+    // substitutions, provider none, named agent file missing, and interactive-
+    // session delivery/timeout/death failures (interactive_failed: the prompt may
+    // have been delivered, so it carries no dispatched:false).
+    | 'secret_in_prompt' | 'invalid_arguments' | 'substitution_failed' | 'provider_none' | 'agent_file_not_found' | 'interactive_failed';
   // The LLM's actual reply text on success. Callers that dispatch execute_prompt
   // via an MCP client only ever see structuredContent (the content array is
   // dropped when structuredContent is also present) -- this field exists so the
@@ -612,7 +618,7 @@ async function executePromptInteractive(
   input: ExecutePromptInput,
   workspaceId: string,
   heuristicWarningSuffix: string,
-): Promise<string> {
+): Promise<string | ExecutePromptResult> {
   const timeoutS = input.timeout_s ?? 300;
   const scope = new LogScope('execute_prompt', `[interactive] timeout=${timeoutS}s ${truncateForLog(maskSecrets(input.prompt))}`, agent);
 
@@ -620,7 +626,10 @@ async function executePromptInteractive(
   const parsed = JSON.parse(sendResult);
   if (parsed.error) {
     scope.abort(`send failed: ${parsed.error}`);
-    return `[FAIL] Failed to deliver prompt to "${agent.friendlyName}" (interactive session): ${parsed.error}`;
+    return {
+      text: `[FAIL] Failed to deliver prompt to "${agent.friendlyName}" (interactive session): ${parsed.error}`,
+      structuredContent: { isError: true, reason: 'interactive_failed', dispatched: false },
+    };
   }
 
   try {
@@ -632,7 +641,10 @@ async function executePromptInteractive(
   } catch (err: any) {
     if (err instanceof InteractiveSessionDiedError) {
       scope.abort(err.message);
-      return `[ERROR] "${agent.friendlyName}"'s interactive claude process died while this dispatch was waiting for a response (${err.message}). The prompt was delivered but nothing will ever answer it -- re-launch the member (re-run register_member) before retrying.`;
+      return {
+        text: `[ERROR] "${agent.friendlyName}"'s interactive claude process died while this dispatch was waiting for a response (${err.message}). The prompt was delivered but nothing will ever answer it -- re-launch the member (re-run register_member) before retrying.`,
+        structuredContent: { isError: true, reason: 'interactive_failed' },
+      };
     }
     scope.abort(`interactive timeout: ${err.message}`);
     // apra-fleet-eft.74.2: self-heal on interactive-route timeout. A session
@@ -650,7 +662,10 @@ async function executePromptInteractive(
       sessionRegistry.unregister(workspaceId, agent.id);
       scope.info(`[interactive] timed-out session for "${agent.friendlyName}" has no verifiable live pid (pid=${timedOutPid ?? 'none'}) -- evicting so the next dispatch falls back to subprocess`);
     }
-    return `[FAIL] Timed out waiting for "${agent.friendlyName}" to respond (interactive session, ${timeoutS}s). The prompt was delivered; the member may still respond late, but this call has given up waiting.`;
+    return {
+      text: `[FAIL] Timed out waiting for "${agent.friendlyName}" to respond (interactive session, ${timeoutS}s). The prompt was delivered; the member may still respond late, but this call has given up waiting.`,
+      structuredContent: { isError: true, reason: 'interactive_failed' },
+    };
   }
 }
 
@@ -680,7 +695,10 @@ async function executePromptCore(input: ExecutePromptInput, extra: any, resoluti
   // the client's own deadline (max_total_s + a fixed grace) starts at the call.
   const handlerStartedAt = Date.now();
   if (hasSecretToken(input.prompt)) {
-    return 'error: execute_prompt prompt contains {{secret.NAME}} token. Secrets must never be passed to LLM prompts. Use execute_command with {{secret.NAME}} instead.';
+    return {
+      text: 'error: execute_prompt prompt contains {{secret.NAME}} token. Secrets must never be passed to LLM prompts. Use execute_command with {{secret.NAME}} instead.',
+      structuredContent: { isError: true, reason: 'secret_in_prompt', dispatched: false },
+    };
   }
 
   // apra-fleet-3swo.42: normalise `fork` ONCE, here, before any predicate is
@@ -713,17 +731,25 @@ async function executePromptCore(input: ExecutePromptInput, extra: any, resoluti
   const forkRequested = forkArg === true || typeof forkArg === 'string';
   if (forkRequested) {
     if (input.session_id !== undefined) {
-      return 'error: execute_prompt cannot set both "fork" and "session_id" -- session_id is resume shorthand, and fork branches a new session instead of resuming. Specify only one.';
+      return {
+        text: 'error: execute_prompt cannot set both "fork" and "session_id" -- session_id is resume shorthand, and fork branches a new session instead of resuming. Specify only one.',
+        structuredContent: { isError: true, reason: 'invalid_arguments', dispatched: false },
+      };
     }
     if (input.resume !== true) {
-      return 'error: execute_prompt cannot set both "fork" and a non-default "resume" -- fork branches a new session instead of resuming. Specify only one.';
+      return {
+        text: 'error: execute_prompt cannot set both "fork" and a non-default "resume" -- fork branches a new session instead of resuming. Specify only one.',
+        structuredContent: { isError: true, reason: 'invalid_arguments', dispatched: false },
+      };
     }
   }
 
   // Validate substitution keys before any I/O or member resolution.
   if (input.substitutions !== undefined) {
     const keyCheck = validateSubstitutionKeys('execute_prompt', input.substitutions);
-    if (!keyCheck.ok) return keyCheck.error;
+    if (!keyCheck.ok) {
+      return { text: keyCheck.error, structuredContent: { isError: true, reason: 'substitution_failed', dispatched: false } };
+    }
   }
 
   // Apply substitutions to the prompt string (or emit heuristic warning when omitted).
@@ -732,7 +758,9 @@ async function executePromptCore(input: ExecutePromptInput, extra: any, resoluti
 
   if (input.substitutions !== undefined) {
     const result = applySubstitutions('execute_prompt', [{ label: 'prompt', content: input.prompt }], input.substitutions);
-    if (!result.ok) return result.error;
+    if (!result.ok) {
+      return { text: result.error, structuredContent: { isError: true, reason: 'substitution_failed', dispatched: false } };
+    }
     renderedPrompt = result.outputs[0];
   } else {
     const warnResult = applySubstitutions('execute_prompt', [{ label: 'prompt', content: input.prompt }], undefined);
@@ -743,6 +771,16 @@ async function executePromptCore(input: ExecutePromptInput, extra: any, resoluti
 
   const promptFileName = `.fleet-task.md`;
 
+  // Neither member_id nor member_name: typed invalid_arguments. A member that
+  // is not found keeps its bare 'Member "x" not found.' text -- workflow
+  // clients map exactly that text to MemberNotFoundError, which a structured
+  // isError would turn into a generic AgentDispatchError.
+  if (!input.member_id && !input.member_name) {
+    return {
+      text: 'Error: provide either member_id (UUID) or member_name (friendly name).',
+      structuredContent: { isError: true, reason: 'invalid_arguments', dispatched: false },
+    };
+  }
   const agentOrError = resolveMember(input.member_id, input.member_name);
   if (typeof agentOrError === 'string') return agentOrError;
   let agent: Agent;
@@ -832,7 +870,10 @@ async function executePromptCore(input: ExecutePromptInput, extra: any, resoluti
   // state is entered, rather than relying on NoneProvider's methods to throw
   // deeper in either dispatch path.
   if (agent.llmProvider === 'none') {
-    return `[FAIL] "${agent.friendlyName}" has no LLM provider (llm_provider: "none") -- it is a plain command executor. Use execute_command instead.`;
+    return {
+      text: `[FAIL] "${agent.friendlyName}" has no LLM provider (llm_provider: "none") -- it is a plain command executor. Use execute_command instead.`,
+      structuredContent: { isError: true, reason: 'provider_none', dispatched: false },
+    };
   }
 
   // Claim the busy lock BEFORE the preflight await, not after (as it
@@ -1456,7 +1497,10 @@ async function executePromptCore(input: ExecutePromptInput, extra: any, resoluti
         inFlightAgents.delete(agent.id);
         stallDetector.remove(agent.id);
         writeStatusline(new Map([[agent.id, 'idle']]));
-        return `execute_prompt: agent "${input.agent}" not found.\n\nExpected at:\n  ${projPath.replace(/\\/g, '/')}\n  ${userPath.replace(/\\/g, '/')}`;
+        return {
+          text: `execute_prompt: agent "${input.agent}" not found.\n\nExpected at:\n  ${projPath.replace(/\\/g, '/')}\n  ${userPath.replace(/\\/g, '/')}`,
+          structuredContent: { isError: true, reason: 'agent_file_not_found', dispatched: false },
+        };
       }
     } else {
       // Canonical PM role agents (planner/doer/reviewer/plan-reviewer/...) are
@@ -1495,7 +1539,10 @@ async function executePromptCore(input: ExecutePromptInput, extra: any, resoluti
         inFlightAgents.delete(agent.id);
         stallDetector.remove(agent.id);
         writeStatusline(new Map([[agent.id, 'idle']]));
-        return `execute_prompt: agent "${input.agent}" not found on "${agent.friendlyName}".\n\nExpected at:\n  ${resolvedWorkFolder}/${dirs.project}\n  ~/${dirs.home}`;
+        return {
+          text: `execute_prompt: agent "${input.agent}" not found on "${agent.friendlyName}".\n\nExpected at:\n  ${resolvedWorkFolder}/${dirs.project}\n  ~/${dirs.home}`,
+          structuredContent: { isError: true, reason: 'agent_file_not_found', dispatched: false },
+        };
       }
     }
   }

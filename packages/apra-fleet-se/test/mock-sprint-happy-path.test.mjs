@@ -92,8 +92,10 @@ test('mock sprint: happy path is deterministic across two independent runs', asy
         // `git remote get-url origin`) precede even the beads-health gate,
         // so they are skipped here before locating the first REAL git
         // command (the branch-ensure fetch).
-        // Exactly three here: run1 is a single-member sprint.
-        const IDENTITY_PROBES = ['bd where --json', 'bd config get sync.remote --json', 'git remote get-url origin'];
+        // Exactly three here: run1 is a single-member sprint. The bd/dolt
+        // version pin probes (`bd --version`, `dolt version`) run before
+        // them, on every member, ahead of any beads set-up or pull.
+        const IDENTITY_PROBES = ['bd --version', 'dolt version', 'bd where --json', 'bd config get sync.remote --json', 'git remote get-url origin'];
         const identityEnd = IDENTITY_PROBES.length;
         assert.deepEqual(run1.commandLog.slice(0, identityEnd), IDENTITY_PROBES, `Expected the beads identity probes to open the commandLog, got: ${JSON.stringify(run1.commandLog.slice(0, 4))}`);
         // The backlog member's VCS-credential preflight (before its first

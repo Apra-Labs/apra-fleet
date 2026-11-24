@@ -22,6 +22,66 @@ const HOME = os.homedir();
 // This installer is plain build-free Node and cannot import the TS module directly.
 const BEADS_PACKAGE = '@beads/bd@1.3.0';
 
+// --- beads (bd) version check ----------------------------------------------
+// bd must match the pin's major.minor: bd 1.4.0 migrates the shared beads
+// database schema one way (locking every 1.3.x clone out), and bd older than
+// 1.3 silently overwrites on a duplicate 'bd create --id'. Unparseable
+// --version output is a mismatch, never a pass. Mirrors src/cli/version-pin.ts
+// (this installer cannot import TypeScript).
+
+/** major.minor of the first x.y.z in text, or null. */
+function bdMajorMinor(text) {
+  const m = /(\d+)\.(\d+)\.(\d+)/.exec(String(text ?? ''));
+  return m ? { full: `${m[1]}.${m[2]}.${m[3]}`, mm: `${Number(m[1])}.${Number(m[2])}` } : null;
+}
+
+/** Compare 'bd --version' output with the pinned package; pure. */
+function checkBeadsVersion(versionOutput, pkg = BEADS_PACKAGE) {
+  const expected = String(pkg).slice(String(pkg).lastIndexOf('@') + 1);
+  const found = bdMajorMinor(versionOutput);
+  const exp = bdMajorMinor(expected);
+  const raw = String(versionOutput ?? '').split(/\r?\n/).map(l => l.trim()).find(Boolean) ?? '';
+  return {
+    ok: Boolean(found && exp && found.mm === exp.mm),
+    found: found ? found.full : (raw ? `unparseable version output "${raw.slice(0, 80)}"` : 'no version output'),
+    expected,
+    fix: `install the pinned ${pkg} for this user (for example 'npm install -g ${pkg}' with a user-writable npm prefix), or remove the other bd from PATH, then re-run the install`,
+  };
+}
+
+/**
+ * The installer's beads step: auto-install bd when missing, then compare its
+ * major.minor with the pin. Returns the exit code (0 ok or bd missing after a
+ * failed auto-install -- the long-standing warning; 1 on a version mismatch).
+ */
+function checkBeads(deps = {}) {
+  const run = deps.spawnSync ?? spawnSync;
+  const log = deps.log ?? (m => console.log(m));
+  const error = deps.error ?? (m => console.error(m));
+  const host = deps.hostname ?? (() => os.hostname());
+  const pkg = deps.pkg ?? BEADS_PACKAGE;
+  const probe = () => run('bd', ['--version'], { encoding: 'utf-8', shell: true, windowsHide: true });
+  let bd = probe();
+  if (bd.error || bd.status !== 0) {
+    log('  beads (bd) not found -- installing via npm...');
+    const bdInstall = run('npm', ['install', '-g', pkg], { encoding: 'utf-8', shell: true, stdio: 'inherit', windowsHide: true });
+    if (bdInstall.error || bdInstall.status !== 0) {
+      error(`  [!] beads install failed. Run manually:  npm install -g ${pkg}`);
+      return 0;
+    }
+    bd = probe();
+  }
+  const out = String(bd.stdout ?? '').trim();
+  const check = checkBeadsVersion(out, pkg);
+  if (!check.ok) {
+    error(`  [!] beads (bd) version mismatch on ${host()}: found ${check.found}, expected ${check.expected} (pinned major.minor)`);
+    error(`  [!] Fix: ${check.fix}`);
+    return 1;
+  }
+  log(`  beads OK: ${out}`);
+  return 0;
+}
+
 // --- provider config -------------------------------------------------------
 // Each provider gets a config dir; the skill lands in <configDir>/skills/pm,
 // the agents in <configDir>/agents, and permissions merge into settings.json.
@@ -762,21 +822,10 @@ function main() {
     }
   }
 
-  // beads check -- install automatically if missing
+  // beads check -- install automatically if missing, then check the pin
   console.log('');
-  const bdCheck = spawnSync('bd', ['--version'], { encoding: 'utf-8', shell: true, windowsHide: true });
-  if (bdCheck.error || bdCheck.status !== 0) {
-    console.log('  beads (bd) not found -- installing via npm...');
-    const bdInstall = spawnSync('npm', ['install', '-g', BEADS_PACKAGE], { encoding: 'utf-8', shell: true, stdio: 'inherit', windowsHide: true });
-    if (bdInstall.error || bdInstall.status !== 0) {
-      console.error(`  [!] beads install failed. Run manually:  npm install -g ${BEADS_PACKAGE}`);
-    } else {
-      const bdRecheck = spawnSync('bd', ['--version'], { encoding: 'utf-8', shell: true, windowsHide: true });
-      console.log(`  beads OK: ${bdRecheck.stdout.trim()}`);
-    }
-  } else {
-    console.log(`  beads OK: ${bdCheck.stdout.trim()}`);
-  }
+  const beadsExit = checkBeads();
+  if (beadsExit !== 0) process.exitCode = beadsExit;
   console.log('');
   console.log('pm installed.');
   console.log('');
@@ -795,4 +844,4 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
   main();
 }
 
-export { claudeOnlyPermissions, requiredPermissions, mergePermissions, uninstall, providerConfig, argsSkillSrc, argsSkillDest, ARGS_SKILL_NAME, resolveAgentConditionals, copyDirResolved, transformAgentForAgy, transformAgentForOpenCode };
+export { checkBeads, checkBeadsVersion, claudeOnlyPermissions, requiredPermissions, mergePermissions, uninstall, providerConfig, argsSkillSrc, argsSkillDest, ARGS_SKILL_NAME, resolveAgentConditionals, copyDirResolved, transformAgentForAgy, transformAgentForOpenCode };

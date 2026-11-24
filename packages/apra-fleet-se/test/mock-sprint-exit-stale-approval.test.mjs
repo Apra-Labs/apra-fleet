@@ -82,9 +82,18 @@ test('mock sprint: a stale APPROVED verdict must not back a later cycle\'s exit 
             `Expected the stale-approval scenario to eventually succeed (backed by a fresh re-review), got: ${JSON.stringify(staleApproval.result)}`
         );
         const staleReviewCalls = staleApproval.dispatched.filter((d) => d.agent === 'reviewer' && d.label !== 'Final Review');
+        // B was dispatched in cycle 1 and closed out-of-band in cycle 2, never
+        // inside a review round's scope, so the catch-up review before Final
+        // Review covers it -- the third non-final reviewer dispatch.
         check(
-            staleReviewCalls.length === 2,
-            `Expected exactly 2 non-final reviewer dispatches -- cycle 1's real review AND cycle 2's fresh re-review (never relying on cycle 1's stale verdict) -- got ${staleReviewCalls.length}: ${JSON.stringify(staleReviewCalls.map((d) => d.prompt.slice(0, 80)))}`
+            staleReviewCalls.length === 3,
+            `Expected exactly 3 non-final reviewer dispatches -- cycle 1's real review, cycle 2's fresh re-review (never relying on cycle 1's stale verdict), and the catch-up review of B -- got ${staleReviewCalls.length}: ${JSON.stringify(staleReviewCalls.map((d) => d.prompt.slice(0, 80)))}`
+        );
+        const staleTaskBId = staleApproval.tasks.find((t) => t.title === 'Task: B stays blocked (stale-approval scenario)').id;
+        const catchUpScope = (staleReviewCalls[2].prompt.match(/Review the work just done for the following bead id\(s\):\s*(.+)\./) || [])[1];
+        check(
+            catchUpScope && catchUpScope.split(',').map((s) => s.trim()).join(',') === staleTaskBId,
+            `Expected the catch-up review to cover exactly B (${staleTaskBId}), got: ${catchUpScope}`
         );
         check(
             staleApproval.logs.some((m) => m.includes('no review ran THIS cycle') && m.includes('fresh re-review')),

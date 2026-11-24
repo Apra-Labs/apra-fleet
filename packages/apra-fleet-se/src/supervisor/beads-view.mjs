@@ -35,6 +35,7 @@
 // is no invalidate-on-mutation seam here.
 
 import { doltPullBefore as defaultDoltPullBefore, classifyDoltFailure } from '../../fleet-sprint/dolt-sync.mjs';
+import { verifyPinnedToolVersions as defaultVerifyPinnedToolVersions } from '../../fleet-sprint/beads-identity-check.mjs';
 import { bdListAllBeadsWithClosed } from './scope-overlap.mjs';
 
 /** refreshIfStale()'s default staleness bound. */
@@ -169,6 +170,7 @@ export function isBusyFailure(err) {
  *   repoRoot?: string|null,
  *   listAllBeads?: (opts: { cwd?: string }) => Promise<object[]>,
  *   doltPullBefore?: Function,
+ *   verifyPinnedToolVersions?: Function,
  *   now?: () => number,
  *   logger?: { log?: Function, warn?: Function, error?: Function },
  *   pullTimeoutS?: number,
@@ -186,6 +188,7 @@ export function createBeadsView(deps = {}) {
     const repoRoot = deps.repoRoot ?? null;
     const listAllBeads = deps.listAllBeads ?? bdListAllBeadsWithClosed;
     const pull = deps.doltPullBefore ?? defaultDoltPullBefore;
+    const verifyPins = deps.verifyPinnedToolVersions ?? defaultVerifyPinnedToolVersions;
     const now = deps.now ?? Date.now;
     const logger = deps.logger ?? console;
     const log = (...a) => (logger.log ?? (() => {}))(...a);
@@ -206,6 +209,9 @@ export function createBeadsView(deps = {}) {
     // (see runCheck): a skipped/failed list after a successful pull must be
     // retried even though the recorded remote tip no longer moves.
     let listPending = false;
+    // Backlog member whose bd/dolt pin check last PASSED. A failure is never
+    // cached: every later check re-probes, so fixing the member clears it.
+    let pinVerifiedMember = null;
 
     function snapshot() {
         return { rows, asOf, lastCheckedAt, lastError, lastSkip, refreshing: inFlight !== null };
@@ -236,6 +242,21 @@ export function createBeadsView(deps = {}) {
         const memberName = st.member && typeof st.member.name === 'string' ? st.member.name : null;
         if (st.status !== 'ready' || !memberName) {
             return recordError(`backlog member not ready (${st.reason || st.status || 'no backlog member'}); the beads clone cannot be pulled`);
+        }
+
+        // The same bd/dolt pin check the sprint-start preflight runs, BEFORE
+        // any pull: a bd of another minor can migrate the shared beads remote
+        // and lock out every older clone. A passing result is cached per member
+        // name only; a failure (mismatch, missing bd, probe that cannot run)
+        // records the error and issues no pull and no list.
+        if (pinVerifiedMember !== memberName) {
+            try {
+                await verifyPins({ command, members: [memberName], log, timeoutS: pullTimeoutS });
+                pinVerifiedMember = memberName;
+            } catch (err) {
+                pinVerifiedMember = null;
+                return recordError(`tool version check failed on backlog member '${memberName}', so no beads pull was made: ${err && err.message ? err.message : err}`);
+            }
         }
 
         // doltPullBefore records the new remote tip as soon as the pull

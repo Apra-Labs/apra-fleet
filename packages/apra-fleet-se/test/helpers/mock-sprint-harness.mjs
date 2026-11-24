@@ -1009,6 +1009,9 @@ const BEADS_IDENTITY_PROBE_KEYS = [
     ['where', /^bd where( --json)?$/],
     ['syncRemote', /^bd config get sync\.remote( --json)?$/],
     ['repoRemote', /^git remote get-url origin$/],
+    // The sprint-start tool version pin probes (same override map).
+    ['bdVersion', /^bd --version$/],
+    ['doltVersion', /^dolt version$/],
 ];
 
 /**
@@ -1181,7 +1184,9 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
         // `bd where` is synthesized from the shared tempDir by bd-replay.mjs,
         // sync.remote is unset, and origin is `originUrl` above -- so the
         // check passes. Shape: `{ [member]: { where?, syncRemote?,
-        // repoRemote? } }`, each value either the raw stdout to answer with or
+        // repoRemote?, bdVersion?, doltVersion? } }` (the last two answer the
+        // sprint-start `bd --version` / `dolt version` pin probes, which
+        // otherwise answer with the engine's pins), each value either the raw stdout to answer with or
         // `{ fail: '<stderr>' }` for a nonzero exit. Only the members/probes
         // named are intercepted; everything else keeps the default answer.
         beadsIdentity = null,
