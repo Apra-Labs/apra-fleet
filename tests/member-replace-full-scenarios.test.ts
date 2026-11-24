@@ -12,7 +12,7 @@
  *  4. a marker probe failure + the opt-in -> untouched (probe-failed).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { backupAndResetRegistry, restoreRegistry, makeTestAgent } from './test-helpers.js';
+import { backupAndResetRegistry, restoreRegistry, makeTestAgent, decodePowerShellEncodedCommand } from './test-helpers.js';
 import { addAgent, getAgent, recordFleetMcpStatus } from '../src/services/registry.js';
 import { updateMember } from '../src/tools/update-member.js';
 import {
@@ -51,7 +51,7 @@ interface World {
 }
 
 /** Commands only the replacement runs (never an upgrade or a refusal). */
-const REPLACE_MARKERS = ['.apra-fleet-replace-backup-', 'uninstall --force --yes', 'systemctl', 'data.replaced-'];
+const REPLACE_MARKERS = ["apra-fleet' stop", "apra-fleet.exe' stop", "apra-fleet' status", "apra-fleet.exe' status", '.apra-fleet-replace-backup-', 'uninstall --force --yes', 'systemctl', 'data.replaced-'];
 const replaceCmds = (w: World) => w.log.filter(c => REPLACE_MARKERS.some(m => c.includes(m)));
 const installRuns = (w: World) => w.log.filter(c => c.includes("'install' '--llm'"));
 const registerRuns = (w: World) => w.log.filter(c => c.includes("'register-member'"));
@@ -61,12 +61,14 @@ const mutating = (w: World) => [...replaceCmds(w), ...installRuns(w), ...registe
 function deps(w: World): MemberFleetMcpDeps {
   const ok = (stdout: string): SSHExecResult => ({ stdout, stderr: '', code: 0 });
   return {
-    exec: async (agent: Agent, c: string) => {
+    exec: async (agent: Agent, raw: string) => {
+      const c = decodePowerShellEncodedCommand(raw);
       w.log.push(c);
       if (c.includes('member-access.key')) return ok('');
       if (REPLACE_MARKERS.some(m => c.includes(m))) {
         if (c.includes('uninstall --force --yes')) w.installed = null;
         if (c.includes('systemctl')) return ok('__APRA_FLEET_SUPERVISOR_MOVED__\n');
+        if (c.includes("' status")) return ok('  State:    stopped\n');
         return ok('');
       }
       if (c.includes('member-install.json')) {
