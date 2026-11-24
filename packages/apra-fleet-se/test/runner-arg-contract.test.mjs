@@ -446,13 +446,13 @@ function buildSpyFleetApi(overrides = {}) {
             // engine's own pins so the check passes.
             const toolVersion = synthesizeToolVersion(opts.command);
             if (toolVersion) return mockCmdResult(0, toolVersion.stdout);
-            if (/^bd list --all --limit 0 --json$/.test(opts.command)) {
+            const byIdRead = /^bd list --all --limit 0 --json --id "([^"]+)"$/.exec(opts.command);
+            if (byIdRead || /^bd list --all --limit 0 --json --brief$/.test(opts.command)) {
                 // The target itself must be visible in the snapshot (the engine
                 // refuses TARGET_NOT_VISIBLE otherwise); scope still excludes it.
-                return mockCmdResult(0, JSON.stringify([
-                    ...JSON.parse(allBeadsJson),
-                    { id: 'bd-1', status: 'open', title: 'Target' },
-                ]));
+                // The snapshot's by-id text read is answered from the same rows.
+                const rows = [...JSON.parse(allBeadsJson), { id: 'bd-1', status: 'open', title: 'Target' }];
+                return mockCmdResult(0, JSON.stringify(byIdRead ? rows.filter((b) => byIdRead[1].split(',').includes(b.id)) : rows));
             }
             if (/^bd list .*--ready/.test(opts.command)) {
                 // The first TWO ready-list calls return one bead so the

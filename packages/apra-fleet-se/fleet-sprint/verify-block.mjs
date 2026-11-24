@@ -49,28 +49,69 @@ export function integBlockCause({ hasPlaybook, hasDeploy, deployAttempted = fals
  * not know counts as unmet and NOT verify-routed, so it never produces a
  * false diagnosis.
  *
+ * Inherited edges: a `blocks` edge on an ANCESTOR holds every descendant off
+ * the ready list too (a child of a blocked parent is never ready), so the
+ * unmet set is the union of the bead's own edges and the edges of every
+ * ancestor, walking `.parent` up the FULL chain known to `allBeads` (not
+ * stopped at the sprint target roots: an edge above the target holds the
+ * descendants just the same). The walk stops at an ancestor the snapshot
+ * does not know (its edges cannot be read) and is cycle-guarded. A
+ * non-verify unmet blocker anywhere on the chain disqualifies the bead.
+ * This is what catches a feature -> feature edge (`bd dep add B A`, A
+ * verify-routed): B's child tasks carry no edge of their own.
+ *
  * @param {object[]} candidateBeads the beads to check (the sprint scope)
- * @param {object[]} allBeads a full any-status snapshot for status lookup
+ * @param {object[]} allBeads a full any-status snapshot: status lookup, and
+ *   the parent links and dependencies of every ancestor
  * @param {string[]} verifyIds verify-routed bead ids
- * @returns {{ id: string, title: string, priority: number|null, blockerIds: string[] }[]}
+ * @param {{ closedIds?: Set<string>|string[] }} [opts] when given, the
+ *   authoritative closed set (a fresher read than the snapshot's statuses);
+ *   a blocker counts as met exactly when it is in this set
+ * @returns {{ id: string, title: string, priority: number|null, blockerIds: string[], edges: { from: string, to: string }[] }[]}
+ *   `edges` names each verify-routed unmet edge with the bead that actually
+ *   carries it (`from`: the bead itself or an ancestor)
  */
-export function findVerifyBlockedBeads(candidateBeads, allBeads, verifyIds) {
+export function findVerifyBlockedBeads(candidateBeads, allBeads, verifyIds, { closedIds = null } = {}) {
     const verify = new Set(verifyIds || []);
     if (verify.size === 0) return [];
-    const statusById = new Map((allBeads || []).map((b) => [b.id, b.status]));
+    const byId = new Map((allBeads || []).filter((b) => b && b.id !== undefined).map((b) => [b.id, b]));
+    const closedSet = closedIds ? new Set(closedIds) : null;
+    const isClosed = (id) => (closedSet ? closedSet.has(id) : (byId.get(id) || {}).status === 'closed');
+    const parentOf = (b) => {
+        const p = b && (b.parent !== undefined && b.parent !== null && b.parent !== ''
+            ? b.parent
+            : (byId.get(b.id) || {}).parent);
+        return p === undefined || p === null || p === '' ? null : p;
+    };
     const out = [];
     for (const bead of candidateBeads || []) {
         if (!bead || verify.has(bead.id) || !NOT_DONE.has(bead.status)) continue;
-        const unmet = (bead.dependencies || [])
-            .filter((d) => d && d.type === 'blocks')
-            .map((d) => d.depends_on_id)
-            .filter((depId) => statusById.get(depId) !== 'closed');
-        if (unmet.length === 0 || !unmet.every((depId) => verify.has(depId))) continue;
+        // The bead itself, then each ancestor the snapshot knows.
+        const chain = [bead];
+        const seen = new Set([bead.id]);
+        let parentId = parentOf(bead);
+        while (parentId !== null && !seen.has(parentId) && byId.has(parentId)) {
+            seen.add(parentId);
+            const ancestor = byId.get(parentId);
+            chain.push(ancestor);
+            parentId = parentOf(ancestor);
+        }
+        const edges = [];
+        for (const carrier of chain) {
+            for (const d of carrier.dependencies || []) {
+                if (!d || d.type !== 'blocks' || isClosed(d.depends_on_id)) continue;
+                edges.push({ from: carrier.id, to: d.depends_on_id });
+            }
+        }
+        if (edges.length === 0 || !edges.every((e) => verify.has(e.to))) continue;
+        const uniqueEdges = [...new Map(edges.map((e) => [`${e.from}\u0000${e.to}`, e])).values()]
+            .sort((a, b) => a.from.localeCompare(b.from) || a.to.localeCompare(b.to));
         out.push({
             id: bead.id,
             title: bead.title || '',
             priority: Number.isInteger(bead.priority) ? bead.priority : null,
-            blockerIds: [...new Set(unmet)].sort(),
+            blockerIds: [...new Set(edges.map((e) => e.to))].sort(),
+            edges: uniqueEdges,
         });
     }
     return out.sort((a, b) => a.id.localeCompare(b.id));
@@ -119,11 +160,21 @@ const CAUSE_TEXT = {
  */
 export function buildVerifyBlockDiagnosis({ blocked, cause, deployNotes = null }) {
     const text = CAUSE_TEXT[cause] || CAUSE_TEXT['no-playbook'];
+    // An edge inherited from an ancestor is named on the ancestor that carries
+    // it: that is the edge `bd dep remove` has to delete. A blocked entry with
+    // no `edges` (an older caller's shape) carries its own edges.
+    const edgesOf = (b) => (Array.isArray(b.edges) && b.edges.length > 0
+        ? b.edges
+        : b.blockerIds.map((to) => ({ from: b.id, to })));
+    const viaText = (b) => {
+        const carriers = [...new Set(edgesOf(b).map((e) => e.from).filter((from) => from !== b.id))];
+        return carriers.length > 0 ? ` (inherited from ancestor ${carriers.join(', ')})` : '';
+    };
     const list = blocked
-        .map((b) => `${b.id}${b.title ? ` (${b.title})` : ''} is blocked only by verify-routed bead(s) ${b.blockerIds.join(', ')}`)
+        .map((b) => `${b.id}${b.title ? ` (${b.title})` : ''} is blocked only by verify-routed bead(s) ${b.blockerIds.join(', ')}${viaText(b)}`)
         .join('; ');
-    const depRemovals = blocked
-        .flatMap((b) => b.blockerIds.map((blocker) => `bd dep remove ${b.id} ${blocker}`))
+    const depRemovals = [...new Set(blocked
+        .flatMap((b) => edgesOf(b).map((e) => `bd dep remove ${e.from} ${e.to}`)))]
         .join('; ');
     return (
         `Verify-block deadlock: ${blocked.length} bead(s) can never become ready -- every unmet blocker is a ` +

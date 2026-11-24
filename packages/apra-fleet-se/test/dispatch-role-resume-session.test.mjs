@@ -11,6 +11,7 @@ import {
     infraError,
     sessionNotFoundError,
     turnExhaustionError,
+    withWaitNotice,
 } from './helpers/dispatch-role-harness.mjs';
 
 // =============================================================================
@@ -27,7 +28,15 @@ import {
 
 const RESUMING_ROLES = Object.keys(ROLE_POLICIES).filter((role) => {
     const p = ROLE_POLICIES[role];
-    return p.kind === 'main' && p.secondary && p.secondary.kind === 'max-turns-resume';
+    return p.kind === 'main' && p.secondary && p.secondary.kind === 'max-turns-resume' && p.retry && p.retry.maxTurnsResume;
+});
+
+// Roles whose max-turns-resume secondary is resume-only: reached solely through
+// an unmappable refusal (retry.unmappableRefusalResume), never on turn exhaustion.
+const RESUME_ONLY_ROLES = Object.keys(ROLE_POLICIES).filter((role) => {
+    const p = ROLE_POLICIES[role];
+    return p.kind === 'main' && p.secondary && p.secondary.kind === 'max-turns-resume'
+        && !(p.retry && p.retry.maxTurnsResume);
 });
 
 function optsFor(role) {
@@ -52,6 +61,16 @@ describe('max-turns resume targets the exhausted session by explicit id', () => 
             assert.ok(!('session_id' in resume), `${role}: the resume must not also send session_id.`);
         });
     }
+
+    test('resume-only secondaries (scoped re-plan roles) are never reached on turn exhaustion', async () => {
+        assert.deepStrictEqual(RESUME_ONLY_ROLES.sort(), ['scoped-replan-plan-reviewer', 'scoped-replan-planner']);
+        for (const role of RESUME_ONLY_ROLES) {
+            assert.ok(ROLE_POLICIES[role].retry.unmappableRefusalResume, `${role}: reached through an unmappable refusal`);
+            const { ctx, rec } = createRecordingCtx({ responses: [turnExhaustionError('spent', 'sess-role-own-1')] });
+            await dispatchRole(ctx, role, optsFor(role)).catch(() => {});
+            assert.strictEqual(rec.dispatches.length, 1, `${role}: turn exhaustion must not resume`);
+        }
+    });
 
     test('a lost session is forgotten after a re-exhaustion: the next fallback log reports no session id, not the stale one', async () => {
         // exhaust(sess-a) -> resume sess-a -> session_not_found (fresh fallback
@@ -141,7 +160,7 @@ describe('usage-limit resume re-dispatch targets the failed session by explicit 
         assert.strictEqual(outcome.ok, true);
         assert.strictEqual(rec.dispatches.length, 3);
         assert.strictEqual(rec.dispatches[2].options.resume, false);
-        assert.strictEqual(rec.dispatches[2].prompt, ROLE_CALL_OPTS.reviewer.prompt);
+        assert.strictEqual(rec.dispatches[2].prompt, withWaitNotice(ROLE_CALL_OPTS.reviewer.prompt, rec.dispatches[2].options.timeout_s));
         assert.ok(rec.logs.some((m) => m.includes('session_not_found') && m.includes('FRESH session')), JSON.stringify(rec.logs));
     });
 });

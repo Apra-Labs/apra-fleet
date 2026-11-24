@@ -22,6 +22,7 @@ import { resolveGitBashPath } from '../src/os/windows-gitbash.js';
 import { GIT_BASH_MACHINE_CANDIDATES, GIT_BASH_USER_SUFFIX, gitBashUserCandidate } from '../src/os/git-bash-candidates.js';
 import { buildGitBashDiscoveryCommand } from '../src/services/shell-probe.js';
 import { decodePowerShellEncodedCommand } from './test-helpers.js';
+import { wrapPowerShellEncoded } from '../src/os/windows.js';
 
 describe.skipIf(process.platform !== 'win32')('LocalStrategy + gitbash shell (apra-fleet-7dir.4)', () => {
   let tmpDir: string;
@@ -85,6 +86,67 @@ describe.skipIf(process.platform !== 'win32')('LocalStrategy + gitbash shell (ap
       delete process.env.CLAUDE_SOURCE_METADATA;
     }
   }, 15000);
+});
+
+/**
+ * apra-fleet-0pvq.3: a local Git Bash member runs a command of any size
+ * intact. A single `bash -c` argv element above ~8KB used to be corrupted by
+ * the MSYS runtime (PowerShell then rejected its -EncodedCommand value, exit
+ * 127) and past ~29KB spawn() threw ENAMETOOLONG; LocalStrategy now delivers
+ * long commands through a sourced temp file.
+ *
+ * Note on the 40KB case: Windows caps one process command line at 32767
+ * characters, so no 40KB powershell.exe invocation can exist on any shell.
+ * The 40KB command therefore carries a >=16KB PowerShell -EncodedCommand
+ * payload PLUS a bash-literal payload in the same command string -- the
+ * whole 40KB string still reaches bash as one command.
+ */
+const hasGitBash = process.platform === 'win32' && (() => {
+  try { resolveGitBashPath(); return true; } catch { return false; }
+})();
+const gitBashSkipReason = hasGitBash ? '' : ' [SKIPPED: needs a Windows host with Git for Windows bash.exe]';
+
+describe.skipIf(!hasGitBash)(`LocalStrategy + gitbash: commands of any size run byte-exact${gitBashSkipReason}`, () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-test-0pvq-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  /** A deterministic payload with no quote characters. */
+  function payload(len: number, seed: string): string {
+    const unit = `${seed}abcXYZ0123456789-_.:`;
+    return unit.repeat(Math.ceil(len / unit.length)).slice(0, len);
+  }
+
+  it('a PowerShell -EncodedCommand payload of at least 16KB: exact output, exit 0', async () => {
+    const text = payload(6200, 'P');
+    const command = wrapPowerShellEncoded(`[Console]::Out.Write('${text}')`);
+    expect(command.length).toBeGreaterThanOrEqual(16 * 1024);
+
+    const member = makeTestLocalAgent({ workFolder: tmpDir, shell: 'gitbash' });
+    const result = await getStrategy(member).execCommand(command, 60_000);
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toBe(text);
+  }, 90_000);
+
+  it('a 40KB command (a 16KB PowerShell -EncodedCommand payload plus a bash payload): exact output, exit 0', async () => {
+    const psText = payload(6200, 'Q');
+    const bashText = payload(24 * 1024, 'B');
+    const command = `x='${bashText}'; ${wrapPowerShellEncoded(`[Console]::Out.Write('${psText}')`)}; printf '|%s' "$x"`;
+    expect(command.length).toBeGreaterThanOrEqual(40 * 1024);
+
+    const member = makeTestLocalAgent({ workFolder: tmpDir, shell: 'gitbash' });
+    const result = await getStrategy(member).execCommand(command, 60_000);
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toBe(`${psText}|${bashText}`);
+  }, 90_000);
 });
 
 /**

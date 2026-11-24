@@ -136,7 +136,13 @@ For each open feature and its tasks, run `bd show <id>` to read the full descrip
    lanes. A `blocks` edge between two tasks that share a `streak` id is ALWAYS a finding,
    regardless of task type -- it silently splits the lane into separate review rounds. A
    legitimate cross-lane edge must originate from every task of the downstream lane and
-   target the last (highest `streakOrder`) task of the upstream lane.
+   target the last (highest `streakOrder`) task of the upstream lane. A `blocks` edge whose
+   target (the depends-on side) is a feature or any other bead with children in scope is
+   ALWAYS a finding (`dependency_wiring`), whatever its origin: a feature whose children
+   are all closed waits for the Integration Test phase to close it, so the edge starves
+   every dependent whenever that phase cannot run (for example after a failed deploy).
+   Name the edge and the fix: retarget it onto the producing task (the last task of the
+   lane that produces the needed work).
 6. **No scope creep**: tasks address only the original sprint goals and open bugs/features
 7. **No duplicate work**: no two tasks do the same thing
 8. **Feasibility**: no task assumes something that has not been built yet

@@ -6,6 +6,7 @@ import {
   checkAgyGlobalSkillsWarning,
   checkAgyMemberSkills,
   AGY_ORCHESTRATOR_DENY_RULES,
+  agyCommandRules,
   AGY_ORCHESTRATOR_DENIED_TOOLS,
   AGY_MEMBER_ALLOWED_TOOLS,
   AgyProvider,
@@ -14,6 +15,7 @@ import {
   buildAgyNodeCommand,
 } from '../../src/providers/agy.js';
 import { MEMBER_ALLOWED_TOOLS, REGISTERED_TOOL_NAMES } from '../../src/services/member-tool-allowlist.js';
+import { agyProcessKillDenyRules } from '../../src/services/process-kill-rules.js';
 import { getStrategy } from '../../src/services/strategy.js';
 import { ClaudeProvider } from '../../src/providers/claude.js';
 import { CodexProvider } from '../../src/providers/codex.js';
@@ -83,7 +85,7 @@ describe('AGY Fix 519 - Unit Verification Suite', { timeout: 30000 }, () => {
       const cfg = configs[0] as Record<string, any>;
 
       const denyList: string[] = cfg.permissionGrants.permissionGrants.deny;
-      expect(denyList).toEqual(AGY_ORCHESTRATOR_DENY_RULES);
+      expect(denyList).toEqual([...AGY_ORCHESTRATOR_DENY_RULES, ...agyProcessKillDenyRules(agyCommandRules)]);
       expect(denyList).toContain('mcp(apra-fleet/remove_member)');
       // The retired apra-fleet-member alias is pruned, not denied.
       expect(denyList.some(r => r.startsWith('mcp(apra-fleet-member/'))).toBe(false);

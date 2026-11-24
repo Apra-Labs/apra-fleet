@@ -1,5 +1,7 @@
 import { EXECUTE_PROMPT_MAX_TURNS } from '@apralabs/apra-fleet-client';
+import { createModelReporter } from './model-log.mjs';
 import { policyFor, PRE_DISPATCH_STEPS_IN_BRACKET } from './role-policies.mjs';
+import { receivesLongRunWait, longRunWaitNotice } from './long-run-wait.mjs';
 import {
     isNonRetryableDispatchError,
     isAuthDispatchError,
@@ -12,6 +14,9 @@ import {
     isPermissionDeniedDispatchError,
     permissionDeniedOf,
     MemberPermissionDeniedError,
+    isDoltCredentialFailure,
+    DOLT_CREDENTIAL_FAILURE_CLASS,
+    DOLT_CREDENTIAL_REMEDY,
 } from './errors.mjs';
 import { AgentOutputError, AgentDispatchError, FleetTransportError, WorkflowError } from '@apralabs/apra-fleet-workflow';
 
@@ -180,14 +185,24 @@ export function resolveMember(ctx, member, bindings = {}) {
  * The model tier a dispatch is priced at, resolved from `policy.model`:
  *   'fixed'     -- ctx.fixedRoleTier[model.key]
  *   'per-bead'  -- bindings[model.binding] (the doer's declared tier)
- *   'inherited' -- undefined: a resume of an already-priced dispatch passes
- *                  no tier of its own.
+ *   'inherited' -- the tier of the dispatch this one continues: `inheritedTier`
+ *                  (what the main dispatch was actually priced at) when the
+ *                  caller has one, else the main policy's model resolved
+ *                  against the same bindings (`mainModel`). Never silently
+ *                  undefined when the original had a tier: an execute_prompt
+ *                  call with no model runs on the server default.
  */
-export function resolveModelTier(ctx, model, bindings = {}) {
+export function resolveModelTier(ctx, model, bindings = {}, inherit = {}) {
     if (!model) return undefined;
     if (model.kind === 'fixed') return ctx.fixedRoleTier[model.key];
     if (model.kind === 'per-bead') return bindings[model.binding];
-    if (model.kind === 'inherited') return undefined;
+    if (model.kind === 'inherited') {
+        if (inherit.inheritedTier !== undefined) return inherit.inheritedTier;
+        if (inherit.mainModel && inherit.mainModel.kind !== 'inherited') {
+            return resolveModelTier(ctx, inherit.mainModel, bindings);
+        }
+        return undefined;
+    }
     throw new Error(`dispatch-role: unresolvable model kind ${JSON.stringify(model.kind)}.`);
 }
 
@@ -400,6 +415,11 @@ function errorClassNames(err) {
  *   'unknown'  -- `degrade.classifiesUnrecognisedErrors` (the regression
  *                 catch-all): even an unrecognised class gets a degrade path
  *                 rather than aborting an informational phase.
+ *   'credential' -- an `extraDispatchErrors` sync error the sync layer
+ *                 classified as a VCS credential failure
+ *                 (isDoltCredentialFailure). Never degraded: the ladder logs
+ *                 it as a typed infrastructure line with its remedy and
+ *                 rethrows it.
  *
  * Called with no policy it behaves exactly as the two-class version did.
  *
@@ -419,7 +439,12 @@ export function classifyLadderError(err, policy) {
     if (err instanceof AgentDispatchError || err instanceof FleetTransportError) return 'dispatch';
     if (degrade && degrade.extraDispatchErrors.length > 0) {
         const names = errorClassNames(err);
-        if (degrade.extraDispatchErrors.some((name) => names.includes(name))) return 'dispatch';
+        if (degrade.extraDispatchErrors.some((name) => names.includes(name))) {
+            // A sync-bracket error whose cause is a VCS credential the member
+            // could not present is not a blip to degrade over: it is its own
+            // class, which the ladder logs and rethrows (never fabricated).
+            return isDoltCredentialFailure(err) ? 'credential' : 'dispatch';
+        }
     }
     if (degrade && degrade.classifiesSyncFailures
         && (isPostDispatchSyncFailure(err) || err instanceof WorkflowError)) {
@@ -509,8 +534,7 @@ function renderDegradeNote(policy, err, errorClass) {
 /**
  * The DEGRADE_STEPS a policy runs on each attempt that degrades (as opposed
  * to `postResult`, which runs only after a SUCCESSFUL attempt). The one step
- * today is the per-round reviewer's 'clear-round-session': a failed round's
- * session must not be resumed by the next round, and a successful one must.
+ * today: none is registered (reviewers start fresh every round).
  */
 async function runDegradeSteps(ctx, policy, err, errorClass) {
     for (const step of policy.degrade.steps) {
@@ -615,6 +639,8 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
     // narrows, and its prompt, its label and the tier it is priced at all
     // follow. Resolving options before the bracket opened would dispatch the
     // pre-claim scope.
+    // The tier the main dispatch of this role was priced at (see runDispatch).
+    let pricedTier;
     const runDispatch = (dispatch, defaultPrompt, defaultLabel, attemptOpts, extra = {}) => {
         const invoke = async () => {
             // In-bracket pre-dispatch steps, then the caller's own preparation.
@@ -635,15 +661,26 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
                 ...(prepared.resumeArg !== undefined ? { resumeArg: prepared.resumeArg } : {}),
                 resumeSessionId: extra.resumeSessionId || null,
             };
+            const resolvedTier = resolveModelTier(ctx, dispatch.model, localBindings, {
+                inheritedTier: pricedTier, mainModel: policy.model,
+            });
+            // Remember what the main dispatch was priced at so every later
+            // resume/re-dispatch of this role continues on the SAME tier.
+            if (dispatch.model && dispatch.model.kind !== 'inherited' && resolvedTier !== undefined) pricedTier = resolvedTier;
+            const modelReporter = createModelReporter();
             const options = {
                 agentType: dispatch.agentType ?? undefined,
-                model: resolveModelTier(ctx, dispatch.model, localBindings),
+                model: resolvedTier,
                 timeout_s: resolveBudget(ctx, dispatch.timeouts.timeoutS),
                 max_total_s: resolveBudget(ctx, dispatch.timeouts.maxTotalS),
                 max_turns: resolveMaxTurns(dispatch.maxTurns, localBindings),
                 schema: resolveSchema(ctx, dispatch.schema),
                 resume: resolveResumeArg(dispatch.resumeArg, localOpts),
                 onSessionId: opts.onSessionId,
+                // Reports the model id the server says served this dispatch
+                // (null when it reports none) and where it came from; logged
+                // once it settles.
+                onModelId: modelReporter.onModelId,
                 label: prepared.label ?? defaultLabel,
                 // Strict permission handling: a refused tool call fails the
                 // dispatch (permission_denied) so no role trusts a result made
@@ -658,17 +695,38 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
             // sync and 'after' BEFORE its post-dispatch sync, so a caller
             // comparing the member's checkout across the window never sees a
             // tip moved by another lane's push being merged in or out.
+            // The engine-stated wait limit for long-running commands, derived
+            // from the SAME timeout_s this dispatch passes, so the role prompt
+            // and the inactivity watchdog cannot disagree (long-run-wait.mjs).
+            // APPENDED, never prepended: callers and the transport identify a
+            // prompt by its opening text.
+            let dispatchedPrompt = prepared.prompt ?? defaultPrompt;
+            if (receivesLongRunWait(dispatch.agentType) && typeof options.timeout_s === 'number' && typeof dispatchedPrompt === 'string') {
+                const notice = longRunWaitNotice(options.timeout_s);
+                if (notice) dispatchedPrompt = `${dispatchedPrompt}\n\n${notice}`;
+            }
             if (opts.onDispatchWindow) await opts.onDispatchWindow('before');
-            const inFlight = agent(prepared.prompt ?? defaultPrompt, {
+            const inFlight = agent(dispatchedPrompt, {
                 ...options,
                 member_name: member,
             });
             // Raced against a client-side watchdog so a frozen-but-alive
             // member session can never leave this await silently hanging past
             // its budget -- needed in ADDITION to the server-side timeouts.
+            // One line per settled dispatch (first dispatch and every resume or
+            // re-dispatch): requested tier and the model id actually used (and
+            // whether the provider reported it or it is only the resolved
+            // alias), or 'unknown' when none was reported -- never omitted.
+            const logModel = (err) => {
+                ctx.log(
+                    `${roleLabel}: dispatch '${options.label ?? defaultLabel ?? roleLabel}' on member '${member}' -- ` +
+                    `requested tier ${resolvedTier ?? 'none'}, ${modelReporter.describe(err)}`
+                );
+            };
+            const loggedInFlight = inFlight.then((v) => { logModel(); return v; }, (e) => { logModel(e); throw e; });
             const settled = !dispatch.watchdog.armed
-                ? inFlight
-                : ctx.withDispatchWatchdog(inFlight, {
+                ? loggedInFlight
+                : ctx.withDispatchWatchdog(loggedInFlight, {
                     timeoutS: resolveBudget(ctx, dispatch.watchdog.timeoutS),
                     member,
                     label: resolveWatchdogLabel(dispatch.watchdog.label, localBindings),
@@ -1162,6 +1220,21 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
                         `${roleLabel}: cannot resume after the unmappable refusal -- ` +
                         (refusedSessionId ? 'the role has no same-session resume.' : 'the refused dispatch reported no session id.')
                     );
+                    // A ladder whose degrade is a fallback-value (a deterministic
+                    // fallback the caller already owns) ends through that degrade
+                    // rather than ending the sprint: the refused reply is never
+                    // used and no value is fabricated here (value stays null; the
+                    // caller's validate step maps null to its fallback). Any other
+                    // degrade kind keeps failing loudly below.
+                    if (policy.degrade.kind === 'fallback-value') {
+                        ctx.log(
+                            `${roleLabel}: unmappable refusal on member '${member}' -- no permission grant can allow ` +
+                            `${(healError.actions || []).join(', ') || 'unknown actions'}; the role cannot be resumed, so ` +
+                            'its reply is NOT used and the deterministic fallback value is used instead; the run continues.'
+                        );
+                        degradedValue = null;
+                        break;
+                    }
                 }
                 if (healError) throw healError;
                 permissionHealRedispatch = true;
@@ -1197,7 +1270,7 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
                     roleLabel,
                     signal: usageLimitOf(err),
                     sessionId: failedSessionId,
-                    tier: resolveModelTier(ctx, policy.model, bindings),
+                    tier: pricedTier !== undefined ? pricedTier : resolveModelTier(ctx, policy.model, bindings),
                 });
                 if (outcome && outcome.resumed) {
                     // The member is usable again: re-dispatch this role without
@@ -1291,6 +1364,19 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
             }
 
             const errorClass = classifyLadderError(err, policy);
+            if (errorClass === 'credential') {
+                // Typed infrastructure failure: the sync around the dispatch
+                // could not authenticate to the beads remote. No value is
+                // synthesized for it (a fabricated verdict would read as a
+                // role outcome) and no further attempt is spent (the sync
+                // layer's own bounded credential self-heal already ran).
+                ctx.log(
+                    `${roleLabel}: [${DOLT_CREDENTIAL_FAILURE_CLASS}] INFRASTRUCTURE FAILURE -- the beads sync around this ` +
+                    `dispatch failed on VCS CREDENTIALS for member '${member}'. No verdict is synthesized for it and it is ` +
+                    `not retried. ${DOLT_CREDENTIAL_REMEDY} Cause: ${err.message}`
+                );
+                throw err;
+            }
             // An unrecognised error class still propagates rather than being
             // degraded silently -- except under a degrade that declares
             // otherwise, and except under 'fatal', whose whole contract is to

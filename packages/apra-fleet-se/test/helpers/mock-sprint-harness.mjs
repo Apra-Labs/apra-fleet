@@ -1040,6 +1040,10 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
     const {
         planReviewerMode = 'reject-then-approve',
         doerHandler = null,
+        // Optional (opts) => result override for the Streak Assignment
+        // dispatch (the LLM fallback taken only when ready beads carry no lane
+        // metadata). Absent: the default one-bead-per-streak JSON reply.
+        streakAssignmentHandler = null,
         reviewerHandler = null,
         // apra-fleet-eft.28.2: optional (opts) => result override for the
         // Planner dispatch (the fresh, non-streak-assignment 'planner' call
@@ -1817,6 +1821,7 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
             // consumption" path is exercised, not the invalid-output
             // fallback.
             if (isStreakAssignment) {
+                if (streakAssignmentHandler) return streakAssignmentHandler({ opts, tempDir });
                 const idsMatch = opts.prompt.match(/Ready bead ids:\s*(.+)/);
                 const ids = idsMatch ? idsMatch[1].split(',').map((s) => s.trim()).filter(Boolean) : [];
                 return { content: [{ text: JSON.stringify({ streaks: ids.map((id) => [id]) }) }] };
@@ -2230,7 +2235,7 @@ export async function runRejectedPlanScenario(tag) {
  * doer/reviewer handler overrides.
  */
 export async function runDevelopLoopScenario(tag, {
-    members, taskSpecs, doerHandler, reviewerHandler, plannerHandler,
+    members, taskSpecs, doerHandler, reviewerHandler, plannerHandler, streakAssignmentHandler,
     // apra-fleet-eft.72.2: optional plan-reviewer override -- see
     // buildMockFleetApi's `planReviewerHandler` option comment above. When
     // provided, this scenario's plan phase is driven by the handler instead
@@ -2414,6 +2419,7 @@ export async function runDevelopLoopScenario(tag, {
             planReviewerMode: 'approve-immediately',
             addExtraTaskDuringPlan: false,
             doerHandler,
+            streakAssignmentHandler,
             reviewerHandler,
             plannerHandler,
             planReviewerHandler,

@@ -39,6 +39,7 @@
 import { CancelledError } from '@apralabs/apra-fleet-workflow';
 import { isUsageLimitDispatchError, usageLimitOf, UsageLimitWaitExhaustedError } from './errors.mjs';
 import { USAGE_LIMIT_BUDGET_DEFAULTS } from './role-policies.mjs';
+import { createModelReporter } from './model-log.mjs';
 
 // A minimal, target-agnostic probe. Its ONLY purpose is to observe whether the
 // member still trips the usage limit, so it is the shortest possible real
@@ -177,14 +178,20 @@ export function createUsageLimitPauseController({
                 // be read as a usage limit (isUsageLimitDispatchError matches
                 // only the usage_limit reason) nor abort the wait: any such
                 // outcome falls through to the inconclusive-probe handling below.
+                const probeModel = createModelReporter();
+                const logProbeModel = (err) => log(`${roleLabel}: usage-limit re-probe on member '${member}' -- requested tier ${tier ?? 'none'}, ${probeModel.describe(err)}`);
                 await agent(PROBE_PROMPT, {
                     member_name: member,
+                    onModelId: probeModel.onModelId,
                     ...(tier ? { model: tier } : {}),
                     max_turns: 1,
                     resume: false,
                     timeout_s: PROBE_TIMEOUT_S,
                     label: `usage-limit re-probe: ${member}`,
-                });
+                }).then(
+                    (v) => { logProbeModel(); return v; },
+                    (e) => { logProbeModel(e); throw e; },
+                );
                 // Probe succeeded -- the member is usable again.
                 return { resumed: true };
             } catch (probeErr) {

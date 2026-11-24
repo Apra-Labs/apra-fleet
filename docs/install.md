@@ -456,30 +456,59 @@ and `<provider>` with the member's LLM provider (`claude`, `agy`, `codex`,
 downloaded from the release page) for this OS/arch, normally
 `<home>/.apra-fleet/staging/apra-fleet` (`apra-fleet.exe` on Windows).
 
-a. Back up the data directory AND the signing key, which lives outside `data/`:
+Pre-check (before the numbered steps). Look for a running fleet-sprint
+   supervisor or sprint with the STAGED binary (the installed one may be too old
+   to say): `'<staged>' fleet-se-check` prints `FLEET_SE supervisor ...` or
+   `FLEET_SE sprint ...` lines when something runs. If it does, stop its sprints, then stop it, and
+   restart it after the replacement (it is not restarted for you; a running
+   supervisor also makes every install, including a rollback, refuse with
+   `E-FLEET-SE-RUNNING`):
+
+   ```bash
+   curl -X POST http://localhost:<port>/api/shutdown -H "Content-Type: application/json" -d "{}"
+   ```
+
+0. Stop the server with the INSTALLED binary and check that it is down (a live
+   server makes the backup torn). `status` must show `State:    stopped`:
+
+   ```bash
+   '<home>/.apra-fleet/bin/apra-fleet' stop
+   '<home>/.apra-fleet/bin/apra-fleet' status
+   ```
+
+   ```powershell
+   & '<home>\.apra-fleet\bin\apra-fleet.exe' stop
+   & '<home>\.apra-fleet\bin\apra-fleet.exe' status
+   ```
+
+a. Back up the data directory, the signing key (which lives outside `data/`) AND
+   the old binary (step b deletes it; a rollback reinstalls from this copy):
 
    ```bash
    # posix (Linux, macOS)
    cp -R '<home>/.apra-fleet/data' '<home>/.apra-fleet-data.full-install.bak'
    cp '<home>/.apra-fleet/fleet.key' '<home>/.apra-fleet-data.full-install.bak/'
+   cp '<home>/.apra-fleet/bin/apra-fleet' '<home>/.apra-fleet-data.full-install.bak/'
    ```
 
    ```powershell
    # Windows (PowerShell)
    Copy-Item -Recurse -LiteralPath '<home>\.apra-fleet\data' -Destination '<home>\.apra-fleet-data.full-install.bak'
    Copy-Item -LiteralPath '<home>\.apra-fleet\fleet.key' -Destination '<home>\.apra-fleet-data.full-install.bak\'
+   Copy-Item -LiteralPath '<home>\.apra-fleet\bin\apra-fleet.exe' -Destination '<home>\.apra-fleet-data.full-install.bak\'
    ```
 
-b. Uninstall with the INSTALLED binary (old full installs have it). This stops
-   the server and removes the service unit or scheduled task, the binary, hooks,
+b. Uninstall with the BACKUP copy of the old binary from step a, not the
+   installed one (Windows cannot delete a running exe, so the installed binary
+   cannot uninstall itself). This stops the server and removes the service unit or scheduled task, the binary, hooks,
    skills, agents and the user-scope MCP registration; it keeps `data/`:
 
    ```bash
-   '<home>/.apra-fleet/bin/apra-fleet' uninstall --force --yes
+   chmod +x '<home>/.apra-fleet-data.full-install.bak/apra-fleet' && '<home>/.apra-fleet-data.full-install.bak/apra-fleet' uninstall --force --yes
    ```
 
    ```powershell
-   & '<home>\.apra-fleet\bin\apra-fleet.exe' uninstall --force --yes
+   & '<home>\.apra-fleet-data.full-install.bak\apra-fleet.exe' uninstall --force --yes
    ```
 
 c. Move the old data aside (the backup from step a stays as the rollback copy):
@@ -533,7 +562,10 @@ f. On the orchestrator, for every member on that Unix user run `update_member`
 Run `apra-fleet uninstall --force --yes` for the member install, restore the
 backed-up data directory (`<home>/.apra-fleet-data.full-install.bak` back to
 `<home>/.apra-fleet/data`, plus `fleet.key` to `<home>/.apra-fleet/fleet.key`),
-and re-run the old full installer.
+then reinstall the PREVIOUS version from the binary copy in the backup:
+`'<home>/.apra-fleet-data.full-install.bak/apra-fleet' install --llm <provider> --force`
+(`apra-fleet.exe` on Windows). If the failure came before step b, just run
+`'<home>/.apra-fleet/bin/apra-fleet' start`.
 
 ### Evidence
 

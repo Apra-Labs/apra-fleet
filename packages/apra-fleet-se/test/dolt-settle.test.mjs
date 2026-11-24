@@ -447,8 +447,8 @@ function makeSettleFixture({
             return { ok: true, output: '', error: null };
         }
 
-        // Step 6: republish. Matched on the suffix: on a Windows member the
-        // string carries a GOMAXPROCS assignment ahead of bd.
+        // Step 6: republish. Matched on the suffix: the string carries the
+        // non-interactive git env (and GOMAXPROCS on Windows) ahead of bd.
         if (cmd.endsWith('bd dolt pull')) { state.syncCommands.push(cmd); return { ok: true, output: '', error: null }; }
         if (cmd.endsWith('bd dolt push')) {
             state.syncCommands.push(cmd);
@@ -474,8 +474,10 @@ test('settleDoltConflicts: resolves a single-row issues conflict end to end, tea
     check(state.merged, 'DOLT_MERGE must have been called');
     check(state.committed, 'DOLT_COMMIT must have been called');
     assert.deepEqual(state.resolvedTables, ['issues']);
-    // A Windows (PowerShell) member republishes with a bounded GOMAXPROCS.
-    assert.deepEqual(state.syncCommands, ["$env:GOMAXPROCS='1'; bd dolt pull", "$env:GOMAXPROCS='1'; bd dolt push"]);
+    // A Windows (PowerShell) member republishes with the non-interactive git
+    // env and a bounded GOMAXPROCS, as $env: assignments.
+    const pwsh = "$env:GIT_TERMINAL_PROMPT='0'; $env:GCM_INTERACTIVE='never'; $env:GOMAXPROCS='1'; ";
+    assert.deepEqual(state.syncCommands, [`${pwsh}bd dolt pull`, `${pwsh}bd dolt push`]);
 });
 
 test('settleDoltConflicts: resolves multiple conflicted tables with no allowlist (total, not gated)', async () => {

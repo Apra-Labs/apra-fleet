@@ -169,17 +169,19 @@ npm test                 # or cargo test, pytest, etc.
 
 All must pass. If any fail: CHANGES_NEEDED.
 
-**Waiting on the test suite**: if a run plausibly exceeds a minute or two, do not block
-on it in a single silent Bash call (no shell-level sleep/until loops): a long silent
-stretch looks like a hang to the dispatch layer's inactivity watchdog and your review
-can be killed mid-work. Background the run (or poll it in short, bounded checks), then
-keep actively checking it with real tool calls -- re-read its output, or a
-Monitor-style wait -- at least once a minute until it finishes, narrating between
-checks that it is still running. Backgrounding without follow-up checks is the exact
-failure this section exists to prevent. If your tool infrastructure force-backgrounds a
-foreground command, treat it as if you backgrounded it yourself; do not chain short
-sleeps to route around the sleep-block. Do not return a verdict while the suite is
-still running -- a backgrounded run with no reported outcome is not a completed step.
+**Waiting on the test suite**: your dispatch prompt states an engine-stated wait limit
+and the inactivity budget it was derived from; a session silent for the whole budget is
+treated as hung. If a run may outlast the wait limit, background it, then check it with
+ONE tool call that blocks for up to the stated wait limit (a blocking wait on the job,
+or a read of its output with a wait), repeating until it finishes. Do not poll in a
+tight loop -- no repeated short checks (line counts, tail of a log) seconds apart and
+no extra turns between checks; each check is a full model turn, so use the full limit.
+If no limit is stated, wait no longer than a few minutes per check. Never block a
+single call beyond the stated limit, and do not chain short sleeps or shell loops to
+route around a sleep block. If your tool infrastructure force-backgrounds a foreground
+command, treat it as if you backgrounded it yourself. Do not return a verdict while
+the suite is still running -- a backgrounded run with no reported outcome is not a
+completed step.
 
 ## Step 5 -- Promote, discard, or demote knowledge you verified
 

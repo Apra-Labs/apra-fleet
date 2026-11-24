@@ -103,6 +103,15 @@ Three rules, any of which rejects:
    (`Bash(curl *|sh)`).
 3. **Denied command patterns** - `sudo`, `su`, `doas`, `bash -c` / `sh -c`,
    `eval`, `env`, `printenv`, `nc`, `nmap`, `chmod 777`.
+4. **Process-killing commands** - `kill`, `pkill`, `killall`, `taskkill`
+   (including `//F //IM` forms), `tskill`, `Stop-Process`, and `wmic process`
+   delete/terminate, as `Bash(...)` or `PowerShell(...)`, in any case, with a
+   path or `.exe`, and anywhere in the command (`xargs kill`,
+   `powershell -Command Stop-Process`). A token that only contains the word
+   (`node scripts/kill-port.mjs`) is not refused. A local member shares its
+   host with the fleet server and other sprints, so a kill by name there takes
+   them down; a role must stop only processes it started, by the pid it
+   recorded.
 
 Escalate to the user for any of these. Note rule 3 is prefix-based, so an
 unrelated command that merely starts with a denied token (`ncdu`, `envsubst`)
@@ -112,6 +121,18 @@ operator can still add such a permission by hand.
 A denylist can never be complete: `Bash(make *)`, `Bash(npm run *)`,
 `Bash(node -e *)` all remain arbitrary execution in practice. The denylist is
 the unconditional floor that applies to every caller.
+
+### Deny rules for process-killing commands
+
+Every composed config (proactive or `grant`) also carries deny rules for the
+process-killing commands, in each provider's form: claude
+`permissions.deny` (`Bash(kill:*)`, `Bash(taskkill:*)`, ...), agy
+`permissionGrants.deny` (`command(kill)` plus its full-line regex), copilot
+`tools.deny`. A composed allow list never contains a process-killing grant,
+even one an older ledger or profile recorded. These deny rules are
+fleet-derived: a recompose may retire them, but never drops a deny rule you
+added yourself. They reduce the risk; they cannot make a kill impossible while
+other interpreters (`Bash(bash:*)`, `Bash(sh:*)`, `Bash(node:*)`) are allowed.
 
 ## settings.json vs settings.local.json (Claude)
 

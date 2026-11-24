@@ -291,7 +291,9 @@ describe('execute_prompt durable mirror + orphan-recovery coupling: shell matrix
       // gitbash: mirror ON, recovery attempted and succeeds.
       expect(structured.isError).toBeUndefined();
       expect(resultText(result)).toContain('the real answer');
-      expect(rec.cmds.some((c) => /^kill -0 /.test(c))).toBe(true);
+      // A Windows pid is probed with Get-Process whatever the shell (gitbash reports the winpid; kill -0 reads it as DEAD).
+      expect(rec.cmds.some((c) => /^kill -0 /.test(c))).toBe(false);
+      expect(rec.cmds.some((c) => /Get-Process -Id/.test(decodePowerShellEncodedCommand(c)))).toBe(true);
       expect(rec.cmds.some((c) => /^cat ".*\.fleet-out-.*\.json"/.test(c))).toBe(true);
       expect(rec.cmds.some((c) => c.includes('rm -f') && c.includes('.fleet-out-'))).toBe(true);
     } else {
