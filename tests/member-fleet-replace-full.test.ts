@@ -424,7 +424,7 @@ describe.skipIf(!GIT_BASH)('7e9x: a real Git Bash receives the full argv (Window
   /** The command line Windows sshd builds for a DefaultShell of bash.exe (model
    *  from the 7e9x diagnosis): a command that starts with a quote is passed
    *  through as-is, anything else is wrapped as -c "<command>". */
-  const sshdCommandLine = (cmd: string) => (/^["']/.test(cmd) ? `-c ${cmd}` : `-c "${cmd.replace(/"/g, '\\"')}"`);
+  const sshdCommandLine = (cmd: string) => (/^["']/.test(cmd) ? `-c ${cmd}` : `-c "${cmd.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`);
   const run = (cmd: string) => spawnSync(GIT_BASH!, [sshdCommandLine(cmd)], { windowsVerbatimArguments: true, argv0: 'bash.exe', encoding: 'utf8', input: '' });
 
   it('the built uninstall step prints ARGC=3 (uninstall --force --yes)', () => {
