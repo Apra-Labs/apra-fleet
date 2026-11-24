@@ -140,12 +140,39 @@ export const HYDRATE_ID_CHUNK = 100;
 
 /**
  * The full-text read for a set of in-scope ids: the same row shape as the
- * full-DB fetch, any status, limited to `ids`.
+ * full-DB fetch, any status, limited to `ids`. The id list is double-quoted:
+ * PowerShell parses a bare comma list as an array and hands bd a
+ * space-joined value, which matches no id (same rule as runner.js's
+ * NOT_DONE_STATUSES).
  * @param {string[]} ids
  * @returns {string}
  */
 export function scopeTextFetchCommand(ids) {
-    return `bd list --all --limit 0 --json --id ${ids.join(',')}`;
+    return `bd list --all --limit 0 --json --id "${ids.join(',')}"`;
+}
+
+/**
+ * A by-id text read returned fewer rows than it asked for. The ids came from
+ * the snapshot just read, so a short answer means the read itself is broken
+ * (shell quoting, bd behaviour), not that the beads are gone; continuing would
+ * silently serve in-scope rows with no text.
+ */
+export class BdScopeTextReadError extends Error {
+    /**
+     * @param {string} commandLabel
+     * @param {string[]} missingIds
+     */
+    constructor(commandLabel, missingIds) {
+        super(
+            `[bd Scope Text Read] '${commandLabel}' returned no row for ${missingIds.length} requested id(s): ` +
+            `${missingIds.slice(0, 10).join(', ')}${missingIds.length > 10 ? ', ...' : ''}. ` +
+            'The ids come from the snapshot just read, so the by-id read itself is failing on this member.'
+        );
+        this.name = 'BdScopeTextReadError';
+        this.code = 'BD_SCOPE_TEXT_READ_SHORT';
+        this.commandLabel = commandLabel;
+        this.missingIds = missingIds;
+    }
 }
 
 /**
@@ -1163,10 +1190,17 @@ export function createBeadsScope(opts = {}) {
         if (ids.length === 0) return beads;
         const textById = new Map();
         for (let i = 0; i < ids.length; i += HYDRATE_ID_CHUNK) {
-            const label = scopeTextFetchCommand(ids.slice(i, i + HYDRATE_ID_CHUNK));
+            const chunk = ids.slice(i, i + HYDRATE_ID_CHUNK);
+            const label = scopeTextFetchCommand(chunk);
             const rows = parseBdJson(await command(label, { member_name: getBacklogMember(), silent: true }), label);
             for (const row of (Array.isArray(rows) ? rows : [])) {
                 if (row && row.id !== undefined && row.id !== null) textById.set(String(row.id), row);
+            }
+            const missing = chunk.filter((id) => !textById.has(id));
+            if (missing.length > 0) {
+                const err = new BdScopeTextReadError(label, missing);
+                log(err.message);
+                throw err;
             }
         }
         return beads.map((b) => {

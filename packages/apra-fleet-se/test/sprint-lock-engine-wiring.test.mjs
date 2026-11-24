@@ -63,12 +63,12 @@ function buildGatedFleetApi({ onFirstCommand } = {}) {
             // engine's own pins so the check passes.
             const toolVersion = synthesizeToolVersion(opts.command);
             if (toolVersion) return mockCmdResult(0, toolVersion.stdout);
-            if (/^bd list --all --limit 0 --json --brief$/.test(opts.command)) {
-                // Target must be visible (TARGET_NOT_VISIBLE is unconditional).
-                return mockCmdResult(0, JSON.stringify([
-                    ...JSON.parse(ONE_BEAD_JSON),
-                    { id: 'bd-1', status: 'open', title: 'Target' },
-                ]));
+            const byIdRead = /^bd list --all --limit 0 --json --id "([^"]+)"$/.exec(opts.command);
+            if (byIdRead || /^bd list --all --limit 0 --json --brief$/.test(opts.command)) {
+                // Target must be visible (TARGET_NOT_VISIBLE is unconditional);
+                // the snapshot's by-id text read is answered from the same rows.
+                const rows = [...JSON.parse(ONE_BEAD_JSON), { id: 'bd-1', status: 'open', title: 'Target' }];
+                return mockCmdResult(0, JSON.stringify(byIdRead ? rows.filter((b) => byIdRead[1].split(',').includes(b.id)) : rows));
             }
             if (/^bd list .*--ready/.test(opts.command)) {
                 // apra-fleet-eft.6.7 (mirrored from runner-arg-contract.test.mjs's

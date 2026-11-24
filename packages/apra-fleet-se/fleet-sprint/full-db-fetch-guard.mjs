@@ -59,7 +59,7 @@ export const FULL_DB_FETCH_CMD = 'bd list --all --limit 0 --json --brief';
 // shape) is still caught by rule 2 above, not just an exact-string match.
 // A list narrowed by `--id` (the snapshot's in-scope text read) is scoped,
 // not a full-DB fetch.
-const FULL_DB_SHAPE_RE = /^bd\s+list\b(?=.*(?:^|\s)--all(?:\s|$))(?=.*(?:^|\s)--limit\s+0(?:\s|$))(?!.*(?:^|\s)--id(?:\s|=))/;
+const FULL_DB_SHAPE_RE = /^bd\s+list\b(?=.*(?:^|\s)--all(?:\s|$))(?=.*(?:^|\s)--limit\s+0(?:\s|$))(?!.*(?:^|\s)--id(?:\s|=|$))/;
 
 // Mirrors runner.js's own BD_READ_ONLY_RE (the `command`/`phase` wrapper at
 // the top of runSprintCycle): a `bd` command matching this shape is treated

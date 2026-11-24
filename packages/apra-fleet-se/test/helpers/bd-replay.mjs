@@ -702,12 +702,12 @@ function loadReplaySession(key) {
 // in-scope text back by `--id`) hold the full-text form of the same list.
 // When a scenario has no recording of the brief/by-id form, serve it as a
 // projection of the recorded full-text answer: `--brief` drops bd's
-// documented free-text fields from each row; `--id a,b` filters the rows of
+// documented free-text fields from each row; `--id "a,b"` filters the rows of
 // the last full list served this way to those ids. Only applies when the exact
 // command was never recorded; a re-record replaces it with real bd output.
 const BRIEF_OMITTED_FIELDS = ['description', 'design', 'acceptance_criteria', 'notes', 'payload', 'waiters'];
 const BRIEF_FLAG_RE = /\s--brief(?=\s|$)/;
-const ID_FILTER_RE = /^(bd list --all --limit 0 --json) --id (\S+)$/;
+const ID_FILTER_RE = /^(bd list --all --limit 0 --json) --id "([^"\s]+)"$/;
 
 function jsonListOut(rows) {
     return `${JSON.stringify(rows, null, 2)}\n`;

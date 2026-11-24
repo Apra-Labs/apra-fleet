@@ -1,9 +1,11 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
-import {
+import * as beadsScope from '../fleet-sprint/beads-scope.mjs';
+
+const {
     createBeadsScope, parseBdJson, BdOutputTruncatedError, FULL_DB_BRIEF_FETCH_CMD, BD_BRIEF_OMITTED_FIELDS,
-} from '../fleet-sprint/beads-scope.mjs';
+} = beadsScope;
 
 // A large beads database used to crash every sprint at its first scope read:
 // execute_command keeps only the head of an over-cap stdout and puts an
@@ -45,8 +47,13 @@ function makeCommand(beads, log) {
         log.push(cmd);
         if (!/^bd list /.test(cmd)) return '';
         let rows = beads;
-        const ids = /--id\s+(\S+)/.exec(cmd);
-        if (ids) rows = rows.filter((b) => ids[1].split(',').includes(b.id));
+        // PowerShell semantics: a double-quoted list reaches bd intact; a bare
+        // comma list is parsed as an array and arrives space-joined, matching
+        // no id at all.
+        const quoted = /--id\s+"([^"]+)"/.exec(cmd);
+        const bare = /--id\s+([^"\s]+)/.exec(cmd);
+        if (quoted) rows = rows.filter((b) => quoted[1].split(',').includes(b.id));
+        else if (bare) rows = bare[1].includes(',') ? [] : rows.filter((b) => b.id === bare[1]);
         const status = /--status=(\S+)/.exec(cmd);
         if (status) rows = rows.filter((b) => b.status === status[1]);
         if (/\s--brief(\s|$)/.test(cmd)) rows = rows.map(strip);
@@ -115,5 +122,40 @@ describe('bd JSON output cut by the execute_command size cap', () => {
         assert.equal(inScope.length, 251);
         assert.ok(inScope.filter((b) => b.id !== 'root').every((b) => /^d\d+$/.test(b.description)));
         assert.equal(log.filter((c) => / --id /.test(c)).length, 3);
+    });
+
+    test('the by-id read double-quotes its comma list so PowerShell hands bd one value', async () => {
+        const log = [];
+        const scope = createBeadsScope({ targetIssues: ['root'], parseBdJson, getBacklogMember: () => 'm' });
+        scope.wrapCommand(makeCommand(bigDb(), log));
+        await scope.fetchAllBeadsShared();
+        const byId = log.filter((c) => / --id /.test(c));
+        assert.equal(byId.length, 1);
+        assert.match(byId[0], / --id "[^"\s]+,[^"\s]+"$/);
+    });
+
+    test('a by-id read that returns fewer rows than requested fails loudly with a typed error', async () => {
+        assert.equal(typeof beadsScope.BdScopeTextReadError, 'function', 'BdScopeTextReadError must be exported');
+        const beads = bigDb();
+        const logLines = [];
+        const scope = createBeadsScope({ targetIssues: ['root'], parseBdJson, getBacklogMember: () => 'm', log: (l) => logLines.push(l) });
+        const inner = makeCommand(beads, []);
+        // The by-id read loses 'root.2' (as a broken shell or bd would).
+        scope.wrapCommand(async (cmd) => {
+            if (/ --id /.test(cmd)) {
+                const rows = JSON.parse(await inner(cmd)).filter((b) => b.id !== 'root.2');
+                return JSON.stringify(rows);
+            }
+            return inner(cmd);
+        });
+        await assert.rejects(
+            () => scope.fetchAllBeadsShared(),
+            (err) => {
+                assert.ok(err instanceof beadsScope.BdScopeTextReadError);
+                assert.equal(err.code, 'BD_SCOPE_TEXT_READ_SHORT');
+                assert.deepEqual(err.missingIds, ['root.2']);
+                return true;
+            },
+        );
     });
 });

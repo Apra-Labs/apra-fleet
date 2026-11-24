@@ -236,7 +236,7 @@ function buildScopeHarness({ targetIssues = ['root'], assignee = null, beads = [
     // exercise) so a "fresh read" is genuinely fresher than the snapshot.
     const rawCommand = async (cmdStr, opts) => {
         commandLog.push({ cmd: cmdStr, opts });
-        const ids = /--id\s+(\S+)/.exec(cmdStr);
+        const ids = /--id\s+"([^"]+)"/.exec(cmdStr);
         if (/^bd list --all/.test(cmdStr)) {
             return JSON.stringify(ids ? db.beads.filter((b) => ids[1].split(',').includes(b.id)) : db.beads);
         }
