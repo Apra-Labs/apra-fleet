@@ -748,6 +748,25 @@ export function discoverScope(allBeads, targetIssues) {
 }
 
 /**
+ * The bead label that marks a verification-only LEAF: a childless bead whose
+ * acceptance needs live evidence from the integration-test runner (a real
+ * deployed build), never more development. classifyVerifySet routes such a
+ * leaf to verify, readyLeafBeads() never hands it to a doer, and a doer that
+ * reports a bead as needing live evidence gets it applied (phases/develop.mjs).
+ */
+export const LIVE_EVIDENCE_LABEL = 'needs-live-evidence';
+
+/**
+ * Whether a bead row carries the live-evidence marker label.
+ *
+ * @param {object} bead - a bd list/show JSON row
+ * @returns {boolean}
+ */
+export function hasLiveEvidenceMarker(bead) {
+    return !!bead && Array.isArray(bead.labels) && bead.labels.includes(LIVE_EVIDENCE_LABEL);
+}
+
+/**
  * Classify beads whose every child is closed as ready for the `verify` route:
  * implementation-complete parents that must be excluded from
  * Plan/Develop/Review and verified against the live deployed product, never
@@ -765,34 +784,91 @@ export function discoverScope(allBeads, targetIssues) {
  *      one -- via discoverScope() above, the same rule bdListScoped uses.
  *   2. status is 'open' or 'in_progress' (not already closed/deferred).
  *   3. has at least one child. Childless beads are leaves -- they route
- *      through the normal Plan/Develop pipeline, never verify. A parent with
- *      NO children is never eligible, regardless of anything else.
+ *      through the normal Plan/Develop pipeline, never verify -- EXCEPT a
+ *      leaf carrying LIVE_EVIDENCE_LABEL (a verification-only leaf): it is
+ *      eligible when it has no unmet prerequisite (an open 'blocks'
+ *      dependency, in or out of scope, or an open lower-order lane-mate --
+ *      unmetPrerequisites()), and otherwise ineligible with the reason
+ *      recorded. Such a leaf is reported in `leafVerifyIds` too.
  *   4. EVERY child (any issue_type) has status 'closed', checked against the
  *      FULL unfiltered `allBeads` list, not a scope-filtered subset -- an
  *      out-of-scope open child must still block eligibility. Partial closure
- *      never qualifies.
+ *      never qualifies. KEPT deliberately even when every open child is
+ *      below the goal priority or unrelated: the integration-test runner
+ *      files gap bugs under a verify target with no priority floor
+ *      (buildIntegVerifyClause in phases/integ-test.mjs), so exempting
+ *      below-goal children would let a parent with an open gap bug be
+ *      verified again and break the gap-bug-routes-back-to-development
+ *      path. The hold is made observable instead: a parent with at least one
+ *      closed child and at least one open child gets an `ineligible` entry
+ *      ({ kind: 'open-children', heldBy: [{ id, priority, status, inScope }],
+ *      reason }) naming each open child and its priority, and
+ *      belowGoalVerifyHolds() picks out the holds made only by below-goal or
+ *      out-of-scope children for the Route log and the end-of-run summary.
  *   5. no unmet 'blocks' dependency: a parent whose blocker is still being
  *      implemented in this same run must not be verified against today's
  *      incomplete state.
  *
+ * A marked leaf that gets a gap bug filed under it becomes a parent with an
+ * open child, so rule 4 routes it back to development until that gap's work
+ * closes; it then returns to verify as an all-children-closed parent.
+ *
  * @param {Array<object>} allBeads - the FULL, unfiltered project bead list.
  * @param {string[]} targetIssues - the sprint's target issue root id(s).
- * @returns {{ verifyIds: string[], ineligible: Array<{id: string, reason: string}> }}
+ * @returns {{ verifyIds: string[], leafVerifyIds: string[], ineligible: Array<{id: string, reason: string, kind?: string, heldBy?: Array<object>}> }}
  */
 export function classifyVerifySet(allBeads, targetIssues) {
     const { byId, childrenOf, scopeIds } = discoverScope(allBeads, targetIssues);
 
     const verifyIds = [];
+    const leafVerifyIds = [];
     const ineligible = [];
+    let scopeBeads = null;
     for (const id of scopeIds) {
         const bead = byId.get(id);
         if (!bead) continue;
         if (bead.status !== 'open' && bead.status !== 'in_progress') continue;
 
         const kids = childrenOf.get(id) || [];
-        if (kids.length === 0) continue; // leaf -- normal pipeline, not eligible
+        if (kids.length === 0) {
+            // A plain leaf takes the normal pipeline; only a marked
+            // verification-only leaf is a verify target.
+            if (!hasLiveEvidenceMarker(bead)) continue;
+            if (!scopeBeads) scopeBeads = [...scopeIds].map((s) => byId.get(s)).filter(Boolean);
+            const { inScope, outOfScope } = unmetPrerequisites(bead, { scopeBeads, allBeads: byId });
+            const unmet = [...inScope, ...outOfScope];
+            if (unmet.length > 0) {
+                ineligible.push({ id, reason: `unmet prerequisite(s): ${unmet.join(', ')}` });
+                continue;
+            }
+            verifyIds.push(id);
+            leafVerifyIds.push(id);
+            continue;
+        }
 
-        if (!kids.every((k) => k.status === 'closed')) continue; // partial closure never qualifies
+        const openKids = kids.filter((k) => k.status !== 'closed');
+        if (openKids.length > 0) {
+            // Partial closure never qualifies (rule 4). A parent with at
+            // least one closed child is held out of verify by its open
+            // children: record that hold, naming each holding child and its
+            // priority, so Route and the end-of-run summary can say why the
+            // parent was not verified instead of leaving it silently open.
+            if (openKids.length < kids.length) {
+                const heldBy = openKids.map((k) => ({
+                    id: k.id,
+                    priority: Number.isFinite(k.priority) ? k.priority : null,
+                    status: k.status,
+                    inScope: scopeIds.has(k.id),
+                }));
+                ineligible.push({
+                    id,
+                    kind: 'open-children',
+                    heldBy,
+                    reason: `open child(ren) hold verify: ${heldBy.map(formatHeldChild).join(', ')}`,
+                });
+            }
+            continue;
+        }
 
         const unmetBlockerIds = (bead.dependencies || [])
             .filter((d) => d.type === 'blocks')
@@ -809,7 +885,49 @@ export function classifyVerifySet(allBeads, targetIssues) {
         verifyIds.push(id);
     }
 
-    return { verifyIds, ineligible };
+    return { verifyIds, leafVerifyIds, ineligible };
+}
+
+function formatHeldChild(c) {
+    return `${c.id} (${c.priority === null ? 'P?' : `P${c.priority}`})`;
+}
+
+/**
+ * From classifyVerifySet's `ineligible` list, the parents held out of verify
+ * ONLY by open children that are below the sprint goal priority or out of
+ * scope. Such a hold never blocks the exit gate (a decomposed parent is not
+ * counted in open-at-goal), so without naming it the run ends with the parent
+ * silently left open and unverified. A child with no priority counts as at
+ * goal, as partitionByGoal (verify-block.mjs) treats it; a parent with any
+ * at-goal in-scope open child is ordinary unfinished work and is not listed.
+ *
+ * @param {Array<object>} ineligible - classifyVerifySet(...).ineligible
+ * @param {string|number} goalMax - goalPriorityMax(goal) ('Pn') or n
+ * @returns {Array<{id: string, heldBy: Array<{id: string, priority: number|null, inScope: boolean}>}>}
+ */
+export function belowGoalVerifyHolds(ineligible, goalMax) {
+    const max = typeof goalMax === 'number' ? goalMax : Number(String(goalMax).replace(/^P/i, ''));
+    if (!Number.isFinite(max)) {
+        throw new TypeError(`belowGoalVerifyHolds: goalMax must be a 'Pn' priority token or a number; got ${JSON.stringify(goalMax)}`);
+    }
+    const holds = [];
+    for (const entry of ineligible || []) {
+        if (!entry || entry.kind !== 'open-children' || !Array.isArray(entry.heldBy) || entry.heldBy.length === 0) continue;
+        const onlyBelowGoalOrOutOfScope = entry.heldBy.every((c) => !c.inScope || (c.priority !== null && c.priority > max));
+        if (onlyBelowGoalOrOutOfScope) holds.push({ id: entry.id, heldBy: entry.heldBy });
+    }
+    return holds;
+}
+
+/**
+ * One-line rendering of belowGoalVerifyHolds() output:
+ * "<parent> (held by <child> (Pn)[, ...])[; ...]".
+ *
+ * @param {Array<{id: string, heldBy: Array<object>}>} holds
+ * @returns {string}
+ */
+export function formatVerifyHolds(holds) {
+    return (holds || []).map((h) => `${h.id} (held by ${h.heldBy.map((c) => `${formatHeldChild(c)}${c.inScope ? '' : ' out of scope'}`).join(', ')})`).join('; ');
 }
 
 /**
@@ -1079,15 +1197,28 @@ export function createBeadsScope(opts = {}) {
     }
 
     /**
+     * The scope-member ids that are childless verification-only leaves
+     * (LIVE_EVIDENCE_LABEL), any status, read from the snapshot (whose rows
+     * carry labels) rather than from a filtered query.
+     */
+    async function liveEvidenceLeafIds() {
+        const [allAnyStatus, parentIds] = await Promise.all([bdListScoped(''), decomposedParentIds()]);
+        return new Set(allAnyStatus.filter((b) => hasLiveEvidenceMarker(b) && !parentIds.has(b.id)).map((b) => b.id));
+    }
+
+    /**
      * This scope's ready beads minus any decomposed parent (see
-     * decomposedParentIds above). STRUCTURAL, not an issue_type check.
+     * decomposedParentIds above) and minus any verification-only leaf
+     * (liveEvidenceLeafIds above): only the integration-test runner closes
+     * one, so a doer never receives it. STRUCTURAL, not an issue_type check.
      */
     async function readyLeafBeads() {
-        const [ready, parentIds] = await Promise.all([
+        const [ready, parentIds, liveLeafIds] = await Promise.all([
             bdListScoped('--ready --json'),
             decomposedParentIds(),
+            liveEvidenceLeafIds(),
         ]);
-        return ready.filter((b) => !parentIds.has(b.id));
+        return ready.filter((b) => !parentIds.has(b.id) && !liveLeafIds.has(b.id));
     }
 
     return {
@@ -1098,6 +1229,7 @@ export function createBeadsScope(opts = {}) {
         fetchAllBeadsShared,
         bdListScoped,
         decomposedParentIds,
+        liveEvidenceLeafIds,
         readyLeafBeads,
         /** Every bead the run's link ledger records as a parent -- diagnostics/tests. */
         knownParentIds: () => parentLinks.knownParentIds(),

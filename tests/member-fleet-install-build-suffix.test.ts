@@ -5,7 +5,7 @@
  * core-only compare makes it fail.
  */
 import { describe, it, expect } from 'vitest';
-import { makeTestAgent } from './test-helpers.js';
+import { makeTestAgent, decodePowerShellEncodedCommand } from './test-helpers.js';
 import type { Agent, SSHExecResult } from '../src/types.js';
 import {
   ensureMemberFleetInstall,
@@ -27,7 +27,8 @@ function run(opts: {
   const f: Fake = { version: opts.member, installsVersion: opts.installsVersion ?? opts.orch, installs: 0, transfers: 0, downloads: [] };
   const ok = (stdout: string): SSHExecResult => ({ stdout, stderr: '', code: 0 });
   const deps: MemberFleetInstallDeps = {
-    exec: async (_a: Agent, command: string) => {
+    exec: async (_a: Agent, raw: string) => {
+      const command = decodePowerShellEncodedCommand(raw);
       if (command.includes('--version')) {
         return ok(f.version ? `apra-fleet ${f.version}\n  Mode:   sea\n` : `${NO_INSTALL_SENTINEL}\n`);
       }
