@@ -72,6 +72,14 @@ function buildMockCommand({ originUrl, credentialFiles, prResponder, findRespond
         if (findResponder && /^curl(?:\.exe)? -sS -X GET\b/.test(cmd) && /\/pullrequests\?searchCriteria\./.test(cmd)) {
             return ok(findResponder(cmd));
         }
+        // Read-by-id (the list truncates descriptions): answers with the
+        // matching entry of the scenario's own find response.
+        const getById = /^curl(?:\.exe)? -sS -X GET\b[\s\S]*\/pullrequests\/(\d+)\?api-version=/.exec(cmd);
+        if (findResponder && getById) {
+            const [found] = String(findResponder(cmd)).split('\n');
+            const pr = (JSON.parse(found).value || []).find((p) => String(p.pullRequestId) === getById[1]);
+            return ok(pr ? `${JSON.stringify(pr)}\n200` : `${JSON.stringify({ message: 'not found' })}\n404`);
+        }
         if (updateResponder && /^curl(?:\.exe)? -sS -X PATCH\b/.test(cmd) && /\/pullrequests\/\d+\?api-version=/.test(cmd)) {
             return ok(updateResponder(cmd));
         }

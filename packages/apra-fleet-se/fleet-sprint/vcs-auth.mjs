@@ -10,7 +10,7 @@
 // (provisionOutcome below), keeping the prose regexes only as a fallback for
 // a result with no structuredContent at all.
 import { ApraFleet } from '@apralabs/apra-fleet-client';
-import { buildCreatePrCommand, buildFindPrCommand, buildUpdatePrCommand, getProviderTextLimits, resolveProvider, capabilities as vcsCapabilities, parseProviderRepoRef, getVcsProvider, resolveVcsAuthProviderForHost, isAuthBackend, VCS_NO_REGISTERED_PROVIDER, DEFAULT_VCS_PROVIDER } from './vcs-module.mjs';
+import { buildCreatePrCommand, buildFindPrCommand, buildGetPrCommand, providerImplementsAction, buildUpdatePrCommand, getProviderTextLimits, resolveProvider, capabilities as vcsCapabilities, parseProviderRepoRef, getVcsProvider, resolveVcsAuthProviderForHost, isAuthBackend, VCS_NO_REGISTERED_PROVIDER, DEFAULT_VCS_PROVIDER } from './vcs-module.mjs';
 import { getSeCommands } from './se-os-commands.mjs';
 import { resolveMemberTarget } from './member-target.mjs';
 import { resultText } from './mcp-result.mjs';
@@ -1090,6 +1090,26 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
                     return { updated: false, updateError: `no open pull request found for '${head}' -> '${base}'`, prUrl: null };
                 }
                 pr = found.prs[0];
+            }
+            // A provider whose list response truncates the description
+            // (Azure DevOps: 400 chars) declares get-pull-request: read the
+            // full PR by id so the rebuild sees the whole earlier body (run
+            // history, overflow pointer). When that read fails, never rebuild
+            // from the truncated copy -- leave the PR as it is.
+            if (providerImplementsAction(provider, 'get-pull-request')) {
+                let got;
+                try {
+                    got = await runUpdatePathCall(() => buildGetPrCommand({ ...coords(), pull_request_id: pr.id }), 'get-pull-request');
+                } catch (err) {
+                    got = { ok: false, error: (err && err.message) ? err.message : String(err) };
+                }
+                const full = got.ok ? got.built.mapResponse(got.body) : null;
+                if (!full || full.id === null || full.id === undefined || typeof full.body !== 'string') {
+                    const why = got.ok ? 'the response is not a pull request' : got.error;
+                    log(`${logPrefix}: WARNING: could not read the full description of existing PR ${pr.url || `#${pr.id}`} (${why}); its body was NOT rewritten, so the PR is left as it was.`);
+                    return { updated: false, updateError: `could not read the full existing PR: ${why}`, prUrl: pr.url };
+                }
+                pr = { ...pr, title: full.title || pr.title, body: full.body };
             }
             const next = { ...(updateExisting({ title: pr.title, body: pr.body }, textLimits) || {}) };
             const nextParts = bodyParts(next.body);

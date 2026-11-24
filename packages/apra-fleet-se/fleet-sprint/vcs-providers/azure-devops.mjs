@@ -876,6 +876,42 @@ function buildAzureDevOpsFindPrCommand(params) {
 }
 
 /**
+ * Build the Azure DevOps REST "get one pull request by id" curl command.
+ * The find (list) endpoint truncates each PR's description to 400 chars, so
+ * the existing-PR update path reads the full title/description through this
+ * call before rebuilding the body (the run-history block and overflow
+ * pointer sit at the end of the description).
+ * GET .../pullrequests/{id}?api-version=7.1
+ * -- see https://learn.microsoft.com/rest/api/azure/devops/git/pull-requests/get-pull-request
+ */
+function buildAzureDevOpsGetPrCommand(params) {
+    const { pull_request_id: pullRequestId, token, os, shell } = params || {};
+    const coords = assertRepoCoords(params, 'get-pull-request');
+    const safeToken = assertToken(token);
+    const id = String(pullRequestId ?? '').trim();
+    if (!/^\d+$/.test(id)) throw new Error('ERROR: VCSModule: a numeric "pull_request_id" is required to build a get-pull-request command.');
+    const url = `${repoApiBase(coords)}/pullrequests/${id}?api-version=${API_VERSION}`;
+
+    const buildCurl = (authToken) => [
+        `${curlBinary(os)} -sS -X GET`,
+        `-u ${shQuote(`:${authToken}`, os, shell)}`,
+        `-H ${shQuote('Accept: application/json', os, shell)}`,
+        `-w ${shQuote('\n%{http_code}', os, shell)}`,
+        shQuote(url, os, shell),
+    ].join(' ');
+
+    return {
+        provider: 'azure-devops',
+        action: 'get-pull-request',
+        command: buildCurl(safeToken),
+        logSafeCommand: buildCurl(REDACTED),
+        interpret: { successStatusRange: [200, 299] },
+        /** 2xx body (one pull request) -> { id, title, body, url }. */
+        mapResponse: (respBody) => mapAzureDevOpsPull(respBody, coords),
+    };
+}
+
+/**
  * Build the Azure DevOps REST "update a pull request" curl command (title +
  * description).
  * PATCH .../pullrequests/{id}?api-version=7.1
@@ -990,6 +1026,9 @@ export const AzureDevOpsVCS = Object.freeze({
         'create-pull-request': buildAzureDevOpsCreatePrCommand,
         comment: buildAzureDevOpsCommentCommand,
         'find-pull-request': buildAzureDevOpsFindPrCommand,
+        // The list above truncates descriptions; the update path reads the
+        // full PR through this before rebuilding its body.
+        'get-pull-request': buildAzureDevOpsGetPrCommand,
         'update-pull-request': buildAzureDevOpsUpdatePrCommand,
         'list-comments': buildAzureDevOpsListCommentsCommand,
         'update-comment': buildAzureDevOpsUpdateCommentCommand,

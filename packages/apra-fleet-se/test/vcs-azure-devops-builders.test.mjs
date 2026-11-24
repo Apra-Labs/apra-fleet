@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildCreatePrCommand as rawBuildCreatePrCommand, buildCommentCommand as rawBuildCommentCommand, capabilities } from '../fleet-sprint/vcs-module.mjs';
+import { buildCreatePrCommand as rawBuildCreatePrCommand, buildCommentCommand as rawBuildCommentCommand, buildGetPrCommand, providerImplementsAction, capabilities } from '../fleet-sprint/vcs-module.mjs';
 import { withPayloadPath, stagedJson, posixDataBinaryArg, WINDOWS_PAYLOAD_PATH } from './helpers/vcs-payload-test.mjs';
 import * as shellHelpers from '../fleet-sprint/vcs-providers/shell-helpers.mjs';
 
@@ -110,6 +110,41 @@ test('azure-devops create-pull-request: exact Windows curl.exe command (the body
     const built = buildCreatePrCommand({ ...PR_PARAMS, os: 'windows' });
     assert.equal(built.command, WINDOWS_CREATE_PR);
     assert.deepEqual(stagedJson(built), CREATE_PR_BODY);
+});
+
+// get-pull-request: the list endpoint truncates descriptions to 400 chars, so
+// the existing-PR update path reads the full PR by id through this command.
+const GET_PR_PARAMS = Object.freeze({ provider: 'azure-devops', repoRef: REPO_REF, pull_request_id: 42, token: TOKEN });
+const GET_PR_TAIL = " -H 'Accept: application/json'"
+    + " -w '\n%{http_code}'"
+    + ` '${API_BASE}/pullrequests/42?api-version=7.1'`;
+
+test('azure-devops get-pull-request: exact POSIX curl command, token only in command, full PR mapped', () => {
+    const built = buildGetPrCommand({ ...GET_PR_PARAMS, os: 'linux' });
+    assert.equal(built.provider, 'azure-devops');
+    assert.equal(built.action, 'get-pull-request');
+    assert.equal(built.command, `curl -sS -X GET -u ':${TOKEN}'${GET_PR_TAIL}`);
+    assert.equal(built.logSafeCommand, `curl -sS -X GET -u ':${REDACTED}'${GET_PR_TAIL}`);
+    assert.deepEqual(built.interpret, { successStatusRange: [200, 299] });
+    const long = 'x'.repeat(3000);
+    assert.deepEqual(built.mapResponse({ pullRequestId: 42, title: 'T', description: long }), {
+        id: 42, title: 'T', body: long, url: 'https://dev.azure.com/apralabs/e2e-fleet-testing/_git/fleet-e2e-toy/pullrequest/42',
+    });
+});
+
+test('azure-devops get-pull-request: exact PowerShell (windows) curl.exe command', () => {
+    for (const shell of [undefined, 'powershell']) {
+        const built = buildGetPrCommand({ ...GET_PR_PARAMS, os: 'windows', ...(shell ? { shell } : {}) });
+        assert.equal(built.command, `curl.exe -sS -X GET -u ':${TOKEN}'${GET_PR_TAIL}`);
+        assert.equal(built.logSafeCommand, `curl.exe -sS -X GET -u ':${REDACTED}'${GET_PR_TAIL}`);
+    }
+});
+
+test('get-pull-request is declared only where the list response truncates the description', () => {
+    assert.equal(providerImplementsAction('azure-devops', 'get-pull-request'), true);
+    assert.equal(providerImplementsAction('github', 'get-pull-request'), false, 'GitHub list returns the full body');
+    assert.equal(providerImplementsAction('bitbucket', 'get-pull-request'), false, 'Bitbucket list asks for values.description explicitly');
+    assert.throws(() => buildGetPrCommand({ ...GET_PR_PARAMS, pull_request_id: 'abc', os: 'linux' }), /numeric "pull_request_id"/);
 });
 
 test('azure-devops create-pull-request: an omitted body emits NO description key at all', () => {

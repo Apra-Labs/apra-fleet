@@ -44,7 +44,7 @@ import {
 /**
  * Provider-dispatched command build step. `action` is one of
  * 'create-pull-request' | 'comment' | 'find-pull-request' |
- * 'update-pull-request' | 'list-comments' | 'update-comment' |
+ * 'get-pull-request' | 'update-pull-request' | 'list-comments' | 'update-comment' |
  * 'delete-comment'; `params.provider` selects the REST
  * dispatch. Pure and deterministic -- no network I/O, no filesystem access,
  * no randomness (beyond whatever caller-supplied fields it is handed).
@@ -157,6 +157,24 @@ function buildCappedBodyCommand(action, params) {
  */
 export function buildFindPrCommand(params) {
     return buildVcsCommand('find-pull-request', params);
+}
+
+/**
+ * Build a "read one PR by id" command (`params.pull_request_id`). OPTIONAL
+ * per provider: only a provider whose find (list) response does not carry
+ * the full description declares it (Azure DevOps truncates list
+ * descriptions; GitHub and Bitbucket list responses carry the full body).
+ * `mapResponse(body)` -> { id, title, body, url }. Check
+ * providerImplementsAction(provider, 'get-pull-request') before calling.
+ */
+export function buildGetPrCommand(params) {
+    return buildVcsCommand('get-pull-request', params);
+}
+
+/** Whether `provider`'s descriptor declares a builder for `action`. */
+export function providerImplementsAction(provider, action) {
+    const impl = getVcsProvider(provider);
+    return !!(impl && impl.builders && typeof impl.builders[action] === 'function');
 }
 
 /**
@@ -769,6 +787,8 @@ export function parseProviderRepoRef(remoteUrl) {
 export const VCSModule = {
     buildCreatePrCommand,
     buildFindPrCommand,
+    buildGetPrCommand,
+    providerImplementsAction,
     buildUpdatePrCommand,
     parseProviderRepoRef,
     buildCommentCommand,
