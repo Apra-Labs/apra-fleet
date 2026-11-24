@@ -284,6 +284,11 @@ export interface ParsedResponse {
    *  reported. Not per dispatch: execute_prompt turns it into the dispatch's
    *  usage.cost_usd. */
   sessionCostUsd?: number;
+  /** The model id the provider itself says served the dispatch (Claude: the
+   *  model keys of the result's per-model usage, else the final assistant
+   *  message's model), when reported. Distinct from the id/alias the server
+   *  handed to the CLI. */
+  reportedModel?: string;
   /** e.g. 'error_max_turns' -- the CLI result event's own subtype, when present. */
   subtype?: string;
   /** e.g. 'max_turns' -- the CLI result event's own terminal_reason, when present. */

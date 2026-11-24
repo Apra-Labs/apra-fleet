@@ -3,7 +3,7 @@ import { EXECUTE_PROMPT_MAX_TURNS } from '@apralabs/apra-fleet-client';
 import assert from 'node:assert/strict';
 import { AgentDispatchError } from '@apralabs/apra-fleet-workflow';
 import { dispatchRole } from '../fleet-sprint/dispatch-role.mjs';
-import { createRecordingCtx, ROLE_CALL_OPTS, turnExhaustionError } from './helpers/dispatch-role-harness.mjs';
+import { createRecordingCtx, ROLE_CALL_OPTS, turnExhaustionError, withWaitNotice } from './helpers/dispatch-role-harness.mjs';
 
 // =============================================================================
 // A doer's max-turns resume targets EXACTLY the failed doer session. On a member
@@ -45,7 +45,7 @@ test('case 1: a member shared with a reviewer (last successful session R) resume
     assert.equal(resume, DOER_SESSION, 'the resume names the failed doer session by its explicit id');
     assert.notEqual(resume, true, 'resume: true would reattach the member last successful session');
     assert.notEqual(resume, REVIEWER_SESSION);
-    assert.equal(rec.dispatches[1].prompt, 'CONTINUE FROM WHERE YOU LEFT OFF');
+    assert.equal(rec.dispatches[1].prompt, withWaitNotice('CONTINUE FROM WHERE YOU LEFT OFF', rec.dispatches[1].options.timeout_s));
     // The main dispatch never resumes anything.
     assert.notEqual(rec.dispatches[0].options.resume, true);
     for (const d of rec.dispatches) assert.notEqual(d.options.resume, true, 'no dispatch passes resume: true');
@@ -59,7 +59,7 @@ test('case 2: an envelope without a sessionId starts a FRESH session with the fu
     assert.equal(out.ok, true);
     assert.equal(rec.dispatches.length, 2);
     assert.equal(rec.dispatches[1].options.resume, false, 'no explicit id means no resume at all');
-    assert.equal(rec.dispatches[1].prompt, 'FULL DOER STREAK PROMPT', 'a fresh session gets the FULL prompt, not a delta');
+    assert.equal(rec.dispatches[1].prompt, withWaitNotice('FULL DOER STREAK PROMPT', rec.dispatches[1].options.timeout_s), 'a fresh session gets the FULL prompt, not a delta');
     assert.ok(
         rec.logs.some((m) => /FRESH session/.test(m) && /no session id/.test(m)),
         `expected a log line saying a fresh session was started and why, got: ${JSON.stringify(rec.logs)}`,
@@ -75,7 +75,7 @@ test('case 3: session_not_found on the resume falls back to a fresh full-prompt 
     assert.equal(rec.dispatches.length, 3, 'main + refused resume + fresh fallback');
     assert.equal(rec.dispatches[1].options.resume, DOER_SESSION);
     assert.equal(rec.dispatches[2].options.resume, false);
-    assert.equal(rec.dispatches[2].prompt, 'FULL DOER STREAK PROMPT');
+    assert.equal(rec.dispatches[2].prompt, withWaitNotice('FULL DOER STREAK PROMPT', rec.dispatches[2].options.timeout_s));
     assert.ok(rec.logs.some((m) => /FRESH session/.test(m) && /not found/.test(m)), `logs: ${JSON.stringify(rec.logs)}`);
 });
 

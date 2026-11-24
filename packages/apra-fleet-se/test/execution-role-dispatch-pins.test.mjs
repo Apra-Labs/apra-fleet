@@ -513,10 +513,6 @@ describe('execution-role dispatch: retry and degrade ladders', () => {
         //   GitSyncError / DoltSyncError degrade    -> degrade.extraDispatchErrors
         //   NO GitDivergedError / DoltDivergedError -> a real divergence really
         //                                              still propagates
-        //   roundSessions.clear('reviewer')         -> the 'clear-round-session'
-        //                                              DEGRADE step, which runs
-        //                                              on failure and NOT on
-        //                                              success
         //   `throw err;`                            -> an unrecognised class
         //                                              really propagates
         const p = policyFor('reviewer');
@@ -575,19 +571,7 @@ describe('execution-role dispatch: retry and degrade ladders', () => {
             'An unrecognised error class still propagates.'
         );
 
-        // A failed round drops its session; a SUCCESSFUL round keeps it.
-        const failedRound = createRecordingCtx({ responses: [transportError(), transportError()] });
-        await dispatchRole(failedRound.ctx, 'reviewer', opts);
-        assert.ok(
-            failedRound.rec.steps.some((e) => e.step === 'clear-round-session'),
-            'A failed round must not leave its session to be resumed by the next round.'
-        );
-        const goodRound = await driveEngineDispatch('reviewer', 'main');
-        assert.ok(
-            !goodRound.rec.steps.some((e) => e.step === 'clear-round-session'),
-            "A SUCCESSFUL round's session is exactly what the next round wants to resume -- that asymmetry is why this is a degrade step."
-        );
-        assert.deepStrictEqual(p.degrade.steps, ['clear-round-session']);
+        assert.deepStrictEqual(p.degrade.steps, []);
     });
 
     test('reviewer: a self-contradictory verdict is retried once on the SAME budget, then raised as its own error', async () => {

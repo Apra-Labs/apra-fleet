@@ -1117,7 +1117,6 @@ const STEP_EVIDENCE = {
     'verify-streak-closed': { scope: 'region', pattern: () => /verifyDoerStreakClosed\(\{/ },
     'invalidate-beads-cache': { scope: 'region', pattern: () => /invalidateAllBeadsCache\(\)/ },
     'reviewer-contract-guard': { scope: 'global', pattern: () => /isReviewerContractViolation\(verdict\)/ },
-    'clear-round-session': { scope: 'global', pattern: (p) => new RegExp(`roundSessions\\.clear\\('${p.member.role}'\\)`) },
     'select-streaks-validate': { scope: 'region', pattern: () => /selectStreaks\(streakCandidate/ },
     'kb-apply': {
         scope: 'global',
@@ -1658,10 +1657,11 @@ function expectedMember(ctx, member) {
 const ROLE_CALL_OPTS_BINDINGS = BINDINGS;
 
 /** What the engine must resolve a policy's `model` to. */
-function expectedModel(ctx, model) {
+function expectedModel(ctx, model, mainModel = null) {
     if (!model) return null;
     if (model.kind === 'fixed') return ctx.fixedRoleTier[model.key];
-    if (model.kind === 'inherited') return null;
+    // A resume continues on the tier its main dispatch was priced at.
+    if (model.kind === 'inherited') return mainModel ? expectedModel(ctx, mainModel) : null;
     return ROLE_CALL_OPTS_BINDINGS[model.binding] ?? null;
 }
 
@@ -1692,7 +1692,7 @@ describe('role policy table: migrated roles re-derived by running the engine', (
                 const o = dispatch.options;
 
                 assert.strictEqual(o.member_name, expectedMember(ctx, p.member), `${row.name}: member resolution.`);
-                assert.strictEqual(o.model ?? null, expectedModel(ctx, p.model), `${row.name}: model tier resolution.`);
+                assert.strictEqual(o.model ?? null, expectedModel(ctx, p.model, ROLE_POLICIES[role].model), `${row.name}: model tier resolution.`);
 
                 // The turn VALUE the row records must be the engine's own
                 // named base times the recorded multiplier -- the same proof

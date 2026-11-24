@@ -449,6 +449,104 @@ describe('agent(): permission_denied pass-through onto AgentDispatchError.detail
     });
 });
 
+// The concrete model id execute_prompt reports (structuredContent.model) is
+// forwarded via opts.onModelId (success and failure), onSessionId meta.model,
+// and AgentDispatchError.details.model.
+describe('agent(): model id forwarding (onModelId / details.model)', () => {
+    test('success with structuredContent.model calls onModelId and sets onSessionId meta.model', async () => {
+        const wf = new FleetWorkflow(createMockFleetApi({
+            executePromptImpl: async () => ({
+                content: [{ text: 'ok' }],
+                structuredContent: { sessionId: 'sess-m-1', model: 'opus' },
+                usage: { total_tokens: 5 },
+            }),
+        }));
+        const models = [];
+        const sessionMetas = [];
+        await wf.agent('hello', {
+            member_name: KNOWN_MEMBER,
+            onModelId: (m) => models.push(m),
+            onSessionId: (id, meta) => sessionMetas.push(meta),
+        });
+        assert.deepStrictEqual(models, ['opus']);
+        assert.strictEqual(sessionMetas.length, 1);
+        assert.strictEqual(sessionMetas[0].model, 'opus');
+    });
+
+    for (const reason of ['usage_limit', 'max_turns_exhausted']) {
+        test(`${reason} failure with model sets details.model and calls onModelId`, async () => {
+            const wf = new FleetWorkflow(createMockFleetApi({
+                executePromptImpl: async () => ({
+                    content: [{ text: 'failed' }],
+                    structuredContent: { isError: true, reason, model: 'sonnet' },
+                }),
+            }));
+            const models = [];
+            await assert.rejects(
+                () => wf.agent('hello', { member_name: KNOWN_MEMBER, onModelId: (m) => models.push(m) }),
+                (err) => {
+                    assert.ok(err instanceof AgentDispatchError);
+                    assert.strictEqual(err.details.reason, reason);
+                    assert.strictEqual(err.details.model, 'sonnet');
+                    return true;
+                }
+            );
+            assert.deepStrictEqual(models, ['sonnet']);
+        });
+    }
+
+    test('no model reported: onModelId(null), no details.model key, no meta.model', async () => {
+        const okWf = new FleetWorkflow(createMockFleetApi({
+            executePromptImpl: async () => ({
+                content: [{ text: 'ok' }],
+                structuredContent: { sessionId: 'sess-m-2' },
+                usage: { total_tokens: 5 },
+            }),
+        }));
+        const models = [];
+        const metas = [];
+        await okWf.agent('hello', {
+            member_name: KNOWN_MEMBER,
+            onModelId: (m) => models.push(m),
+            onSessionId: (id, meta) => metas.push(meta),
+        });
+        assert.deepStrictEqual(models, [null]);
+        assert.strictEqual('model' in metas[0], false);
+
+        const failWf = new FleetWorkflow(createMockFleetApi({
+            executePromptImpl: async () => ({
+                content: [{ text: 'failed' }],
+                structuredContent: { isError: true, reason: 'dispatch_failed' },
+            }),
+        }));
+        const failModels = [];
+        await assert.rejects(
+            () => failWf.agent('hello', { member_name: KNOWN_MEMBER, onModelId: (m) => failModels.push(m) }),
+            (err) => {
+                assert.ok(err instanceof AgentDispatchError);
+                assert.strictEqual('model' in err.details, false);
+                return true;
+            }
+        );
+        assert.deepStrictEqual(failModels, [null]);
+    });
+
+    test('an onModelId that throws does not break the dispatch', async () => {
+        const wf = new FleetWorkflow(createMockFleetApi({
+            executePromptImpl: async () => ({
+                content: [{ text: 'fine' }],
+                structuredContent: { model: 'opus' },
+                usage: { total_tokens: 5 },
+            }),
+        }));
+        const result = await wf.agent('hello', {
+            member_name: KNOWN_MEMBER,
+            onModelId: () => { throw new Error('boom'); },
+        });
+        assert.ok(result);
+    });
+});
+
 describe('F10: resume defaulting at the workflow layer', () => {
     test('agent() defaults resume:false in the payload sent to executePrompt', async () => {
         let capturedPayload;
