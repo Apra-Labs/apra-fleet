@@ -698,6 +698,51 @@ function loadReplaySession(key) {
     return { byCommand, total: entries.length, file };
 }
 
+// Recordings made before the engine read with `bd list ... --brief` (and read
+// in-scope text back by `--id`) hold the full-text form of the same list.
+// When a scenario has no recording of the brief/by-id form, serve it as a
+// projection of the recorded full-text answer: `--brief` drops bd's
+// documented free-text fields from each row; `--id a,b` filters the rows of
+// the last full list served this way to those ids. Only applies when the exact
+// command was never recorded; a re-record replaces it with real bd output.
+const BRIEF_OMITTED_FIELDS = ['description', 'design', 'acceptance_criteria', 'notes', 'payload', 'waiters'];
+const BRIEF_FLAG_RE = /\s--brief(?=\s|$)/;
+const ID_FILTER_RE = /^(bd list --all --limit 0 --json) --id (\S+)$/;
+
+function jsonListOut(rows) {
+    return `${JSON.stringify(rows, null, 2)}\n`;
+}
+
+function replayDerivedList(session, matchKey) {
+    if (BRIEF_FLAG_RE.test(matchKey) && /^bd\s+list\b/.test(matchKey)) {
+        const fullKey = matchKey.replace(BRIEF_FLAG_RE, '');
+        const queue = session.byCommand.get(fullKey);
+        if (!queue || queue.length === 0) return null;
+        const entry = queue.shift();
+        if (entry.exitCode !== 0) {
+            const err = new Error(entry.errMessage || `Command failed: ${matchKey}\n${entry.stderr}`);
+            err.code = entry.exitCode;
+            return { err, stdout: entry.stdout, stderr: entry.stderr };
+        }
+        const rows = JSON.parse(entry.stdout || '[]');
+        if (!session.lastFullList) session.lastFullList = new Map();
+        session.lastFullList.set(fullKey, rows);
+        const brief = rows.map((r) => {
+            const out = { ...r };
+            for (const f of BRIEF_OMITTED_FIELDS) delete out[f];
+            return out;
+        });
+        return { err: null, stdout: jsonListOut(brief), stderr: entry.stderr };
+    }
+    const byId = ID_FILTER_RE.exec(matchKey);
+    if (byId && session.lastFullList && session.lastFullList.has(byId[1])) {
+        const want = new Set(byId[2].split(','));
+        const rows = session.lastFullList.get(byId[1]).filter((r) => r && want.has(String(r.id)));
+        return { err: null, stdout: jsonListOut(rows), stderr: '' };
+    }
+    return null;
+}
+
 function replayBd(cmd, cwd) {
     const key = scenarioKeyFromCwd(cwd);
     let session = replaySessions.get(key);
@@ -708,6 +753,10 @@ function replayBd(cmd, cwd) {
 
     const matchKey = normalizeCommandForMatching(cmd);
     const queue = session.byCommand.get(matchKey);
+    if (!queue || queue.length === 0) {
+        const derived = replayDerivedList(session, matchKey);
+        if (derived) return Promise.resolve(derived);
+    }
     if (!queue || queue.length === 0) {
         const remaining = [...session.byCommand.entries()]
             .filter(([, q]) => q.length > 0)

@@ -3506,7 +3506,7 @@ async function runSprintCycle(context) {
         // Work this run already closed is never thrown away by a set-aside
         // stall: the set-aside beads become a carry-over instead.
         if (workedOnBeadIds.size > 0 || verifyEverIds.size > 0) {
-            const closedNow = closedIds || new Set((await bdListScoped('--status=closed --json')).map((b) => b.id));
+            const closedNow = closedIds || new Set((await bdListScoped('--status=closed --json --brief')).map((b) => b.id));
             const closedThisRun = closedWorkThisRun({ workedOnIds: workedOnBeadIds, verifyEverIds, closedIds: closedNow });
             if (closedThisRun.length > 0) {
                 return { carryOver: buildSetAsideCarryOver(stall, { where, cycle, closedIds: closedThisRun }) };
@@ -3540,7 +3540,7 @@ async function runSprintCycle(context) {
     // at/above-goal in-scope leaf bead is carried over instead.
     async function planRejectedCarryOver(err, { where, cycle }) {
         if (workedOnBeadIds.size === 0 && verifyEverIds.size === 0) return null;
-        const closedNow = new Set((await bdListScoped('--status=closed --json')).map((b) => b.id));
+        const closedNow = new Set((await bdListScoped('--status=closed --json --brief')).map((b) => b.id));
         const closedThisRun = closedWorkThisRun({ workedOnIds: workedOnBeadIds, verifyEverIds, closedIds: closedNow });
         if (closedThisRun.length === 0) return null;
         const details = (err && err.details) || {};
@@ -4339,7 +4339,7 @@ async function runSprintCycle(context) {
         // both benign no-ops there, so nothing invalidates it): the integ
         // runner's own `bd close` happens inside an agent() dispatch, never
         // through the cache-invalidating command() wrapper.
-        const closedBeadsNow = await bdListScoped('--status=closed --json');
+        const closedBeadsNow = await bdListScoped('--status=closed --json --brief');
         const closedIdsNow = new Set(closedBeadsNow.map((b) => b.id));
         const closedCount = closedBeadsNow.length;
         closedCountHistory.push(closedCount);
@@ -4608,7 +4608,7 @@ async function runSprintCycle(context) {
         // (./verify-carry-over.mjs).
         let stillOpenVerifyIds = [];
         if (verifyEverIds.size > 0) {
-            const closedIdsForExitCheck = new Set((await bdListScoped('--status=closed --json')).map((b) => b.id));
+            const closedIdsForExitCheck = new Set((await bdListScoped('--status=closed --json --brief')).map((b) => b.id));
             stillOpenVerifyIds = stillOpenVerifyIdsForExit({
                 verifyEverIds, closedIds: closedIdsForExitCheck,
                 needsEvidence: needsEvidenceVerifyIds, deferred: deferredVerifyIds,

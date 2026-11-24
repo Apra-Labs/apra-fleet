@@ -14,7 +14,7 @@
 //      now share it and the two copies cannot drift apart again.
 //
 //   2. The shared full-DB beads snapshot (createBeadsScope below): the single
-//      `bd list --all --limit 0 --json` fetch per phase, its in-flight
+//      `bd list --all --limit 0 --json --brief` fetch per phase (plus its by-id text read for the scope), its in-flight
 //      coalescing, and -- critically -- the choke points that invalidate it.
 //
 // -----------------------------------------------------------------------------
@@ -126,12 +126,69 @@ export function isBeadsMutatingCommand(cmdStr) {
 // classifyVerifySet, createBeadsScope's bdListScoped/fetchAllBeadsShared).
 // runner.js re-exports it unchanged so no importer is edited by the move.
 /**
+ * The one full-DB fetch (fetchAllBeadsShared). `--brief` drops the free-text
+ * fields (BD_BRIEF_OMITTED_FIELDS) from every row; the in-scope rows get them
+ * back from scopeTextFetchCommand().
+ */
+export const FULL_DB_BRIEF_FETCH_CMD = 'bd list --all --limit 0 --json --brief';
+
+/** The fields `bd list --brief` omits from each row (bd's documented list). */
+export const BD_BRIEF_OMITTED_FIELDS = Object.freeze(['description', 'design', 'acceptance_criteria', 'notes', 'payload', 'waiters']);
+
+/** Ids per in-scope text read, so one command line stays well under shell limits. */
+export const HYDRATE_ID_CHUNK = 100;
+
+/**
+ * The full-text read for a set of in-scope ids: the same row shape as the
+ * full-DB fetch, any status, limited to `ids`.
+ * @param {string[]} ids
+ * @returns {string}
+ */
+export function scopeTextFetchCommand(ids) {
+    return `bd list --all --limit 0 --json --id ${ids.join(',')}`;
+}
+
+/**
+ * The note execute_command puts in front of a command's stdout when the output
+ * passed its size cap: the head is kept, the rest went to a spill file on the
+ * fleet server host. Machine-readable output with this prefix is cut short and
+ * is never valid JSON.
+ */
+export const OUTPUT_TRUNCATED_RE = /^\s*\[OUTPUT TRUNCATED -- full stdout saved to ([^\]\r\n]*)\]/;
+
+/**
+ * A `bd ... --json` read whose output was cut by execute_command's output
+ * size cap. Thrown instead of a generic JSON parse error so the failure names
+ * its cause and the fix: the query returned more data than one command result
+ * may carry, so it has to be narrowed (a scope, a status filter, --brief).
+ */
+export class BdOutputTruncatedError extends Error {
+    /**
+     * @param {string} commandLabel - the `bd` command whose output was cut
+     * @param {string} spillPath - where the server saved the full output (on the fleet server host)
+     */
+    constructor(commandLabel, spillPath) {
+        super(
+            `[bd Output Truncated] '${commandLabel}' returned more output than one command result may carry, ` +
+            `so its JSON was cut short and cannot be parsed. The full output was saved on the fleet server host at ${spillPath}. ` +
+            'The beads database has outgrown this query: narrow it (scope it to ids or a parent, filter by status, or add --brief).'
+        );
+        this.name = 'BdOutputTruncatedError';
+        this.code = 'BD_OUTPUT_TRUNCATED';
+        this.commandLabel = commandLabel;
+        this.spillPath = spillPath;
+    }
+}
+
+/**
  * @param {string} raw - the raw text returned by `command()`
  * @param {string} commandLabel - the `bd` command that produced `raw`, for diagnostics
  * @returns {any}
  */
 export function parseBdJson(raw, commandLabel) {
     const text = raw === undefined || raw === null || raw === '' ? '[]' : raw;
+    const truncated = typeof text === 'string' ? OUTPUT_TRUNCATED_RE.exec(text) : null;
+    if (truncated) throw new BdOutputTruncatedError(commandLabel, truncated[1]);
     try {
         return JSON.parse(text);
     } catch (err) {
@@ -1073,10 +1130,11 @@ export function createBeadsScope(opts = {}) {
             throw new Error('beadsScope.fetchAllBeadsShared(): wrapCommand() must be installed before any beads read');
         }
         if (!allBeadsInFlight) {
-            const allLabel = 'bd list --all --limit 0 --json';
+            const allLabel = FULL_DB_BRIEF_FETCH_CMD;
             allBeadsInFlight = command(allLabel, { member_name: getBacklogMember(), silent: true })
                 .then((raw) => parseBdJson(raw, allLabel))
                 .then((beads) => restoreVanishedParentLinks(beads))
+                .then((beads) => hydrateScopeText(beads))
                 .then((beads) => {
                     parentLinks.observe(beads, scopeOf(beads).scopeIds);
                     allBeadsSnapshot = { beads };
@@ -1085,6 +1143,41 @@ export function createBeadsScope(opts = {}) {
                 .finally(() => { allBeadsInFlight = null; });
         }
         return allBeadsInFlight;
+    }
+
+    /**
+     * The full-DB fetch is `--brief` (no free text), so its size grows with
+     * the row count, not with every description ever written; an unscoped
+     * full-text dump outgrew execute_command's output cap on a large beads
+     * database. Readers of IN-SCOPE rows still need the free text (dashboard
+     * descriptions, file hints), so it is read back for the scope only, by
+     * id, in chunks that keep each command line short, and merged onto the
+     * brief rows. Structure (parent, status, labels, dependencies) always
+     * comes from the brief snapshot, so one consistent view drives scope.
+     */
+    async function hydrateScopeText(beads) {
+        // Snapshot row order (bd's own), not id order: ids are generated, so
+        // sorting them would make the command text vary run to run.
+        const { scopeIds } = scopeOf(beads);
+        const ids = beads.filter((b) => b && scopeIds.has(b.id)).map((b) => String(b.id));
+        if (ids.length === 0) return beads;
+        const textById = new Map();
+        for (let i = 0; i < ids.length; i += HYDRATE_ID_CHUNK) {
+            const label = scopeTextFetchCommand(ids.slice(i, i + HYDRATE_ID_CHUNK));
+            const rows = parseBdJson(await command(label, { member_name: getBacklogMember(), silent: true }), label);
+            for (const row of (Array.isArray(rows) ? rows : [])) {
+                if (row && row.id !== undefined && row.id !== null) textById.set(String(row.id), row);
+            }
+        }
+        return beads.map((b) => {
+            const full = b && textById.get(String(b.id));
+            if (!full) return b;
+            const merged = { ...b };
+            for (const field of BD_BRIEF_OMITTED_FIELDS) {
+                if (full[field] !== undefined) merged[field] = full[field];
+            }
+            return merged;
+        });
     }
 
     /**

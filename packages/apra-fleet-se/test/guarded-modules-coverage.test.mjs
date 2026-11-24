@@ -102,7 +102,7 @@ const CLEARED_FIXTURE = [
     '    // Every seeded violation cleared, one by one.',
     "    await command('git status --short', { member_name: member, timeout: 60 });",
     '    await doltPushAfter({ command, member });',
-    "    await command('bd list --all --limit 0 --json', { member_name: member });",
+    "    await command('bd list --all --limit 0 --json --brief', { member_name: member });",
     '    await command(`cat "${homeDir}/.fleet-git-credential-github"`, { member_name: member });',
     '}',
     '',

@@ -63,7 +63,7 @@ function buildGatedFleetApi({ onFirstCommand } = {}) {
             // engine's own pins so the check passes.
             const toolVersion = synthesizeToolVersion(opts.command);
             if (toolVersion) return mockCmdResult(0, toolVersion.stdout);
-            if (/^bd list --all --limit 0 --json$/.test(opts.command)) {
+            if (/^bd list --all --limit 0 --json --brief$/.test(opts.command)) {
                 // Target must be visible (TARGET_NOT_VISIBLE is unconditional).
                 return mockCmdResult(0, JSON.stringify([
                     ...JSON.parse(ONE_BEAD_JSON),
