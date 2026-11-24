@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "962e202f8b5910fdecf6f82a46102a798f5cc4f2",
     "branch": "main",
-    "entry_count": 209
+    "entry_count": 211
   },
   "entries": [
     {
@@ -2450,6 +2450,34 @@
       }
     },
     {
+      "id": "8ad25f1d-0612-4a49-b0e7-643d8a11ae42",
+      "type": "knowledge",
+      "title": "PR overflow comment links come from the provider commentWebUrl hook",
+      "summary": "publishPrOverflowComments returns urls[] through vcs-module commentWebUrlFor, which calls the provider descriptor's optional commentWebUrl hook. raiseVcsPrForMember then updates the description a second time with linkedBodyFor so the pointer is a markdown link.",
+      "symbols": [
+        "commentWebUrlFor",
+        "publishPrOverflowComments",
+        "overflowLinkedPointer",
+        "buildSprintPrBody"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/vcs-module.mjs",
+        "packages/apra-fleet-se/fleet-sprint/pr-overflow-comments.mjs",
+        "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs",
+        "packages/apra-fleet-se/fleet-sprint/pr-body.mjs",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/azure-devops.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-24T16:06:37.446Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/pr-body.mjs": "ce9b52af582306f14347fc53f90a01b10383f5e6",
+        "packages/apra-fleet-se/fleet-sprint/pr-overflow-comments.mjs": "75386a4e5512c924253d8c5506a4454f0c68e9fa",
+        "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs": "18f9fa85886c72eac46b1c6beaec5d829c17aeb8",
+        "packages/apra-fleet-se/fleet-sprint/vcs-module.mjs": "5fe9704d2b723282428edc1f33d89441a9204e67",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/azure-devops.mjs": "19d52e29492c28d46edea17c2857cc9879fa95e9"
+      }
+    },
+    {
       "id": "8be9cb68-4270-4a68-bd98-1f7e6ca74d47",
       "type": "learning",
       "title": "Root npm test can be narrowed to specific vitest files via APRA_TEST_SUITES_JSON",
@@ -3659,6 +3687,28 @@
         "src/services/vcs/types.ts": "64f8ad879942ce3fd098e910990d1fa3259298c5",
         "src/tools/provision-vcs-auth.ts": "39ca9fa23f8bf74428773eb3ee59deabd2ad20cf",
         "tests/provision-vcs-auth.test.ts": "aa71779179a2b17f9ba69174729562f3e2ee0e4b"
+      }
+    },
+    {
+      "id": "db7c99e1-623a-40a3-9faf-841dd8257a38",
+      "type": "knowledge",
+      "title": "StalledSprintError drops opts it does not destructure; extra fields must be listed",
+      "summary": "StalledSprintError's constructor builds details only from the opts keys it destructures, plus opts.details. Any other top-level key passed by a throw site is silently lost. The work fields for the abort PR are listed explicitly.",
+      "symbols": [
+        "StalledSprintError",
+        "buildAbortWorkSections"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/errors.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/fleet-sprint/abort.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-24T16:06:38.330Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/abort.mjs": "f9c0b15bce4cebff1f416d468983e294e982bd32",
+        "packages/apra-fleet-se/fleet-sprint/errors.mjs": "5df99a722cfebdff63500066036aaf4f1a8c663c",
+        "packages/apra-fleet-se/fleet-sprint/runner.js": "bb48d16606a292668a9a258cbc17ffe017e819d2"
       }
     },
     {
