@@ -135,16 +135,18 @@ polling too fast. Hold scope tight:
   signal, at most once; if still inconclusive, record it (Step 3) and move on.
 - **No sandbox rebuilds/resets, no full-suite pass** -- that lifecycle belongs to
   `regression-test-runner` (see Step 0b).
-- **Respect the poll cadence** -- about once every 2 minutes on long runs (Step 2);
-  faster polling spends turns for nothing.
+- **Use the engine-stated wait limit** on long runs (Step 2): one blocking check per
+  wait limit, never a tight polling loop -- faster polling spends turns for nothing.
 - **Keep bd interactions minimal** -- read what you need (`bd show`, `bd dep list`)
   once per feature; no repeated status scans.
 
 ## Step 1b -- Work the verify-set bead ids you were handed
 
 Your dispatch prompt may also name **verify-set bead ids** -- beads of ANY
-issue_type (bug, feature, task, epic) whose children are ALL closed, routed
-to you for verification-closure. They need live-evidence verification
+issue_type (bug, feature, task, epic) whose children are ALL closed, or
+childless verification-only beads labelled `needs-live-evidence` (nothing
+left to implement, only live evidence to collect), routed to you for
+verification-closure. They need live-evidence verification
 against the deployed build, which only this role may produce (doers must
 not manufacture integration evidence, reviewers may not close beads) -- so
 without you they sit open even though implementation is done.
@@ -165,7 +167,15 @@ For each verify-set bead id:
    gap with evidence, parented under **that bead specifically**
    (`--parent <id>`, i.e. the verify-set bead itself) -- **not** the sprint
    root. This is required: filing it under the wrong parent means the gap
-   never re-routes that bead back to development next cycle.
+   never re-routes that bead back to development next cycle. For a childless
+   `needs-live-evidence` bead this is deliberate too: the gap bug makes it a
+   parent with an open child, so it goes back to development and returns to
+   you once that gap's work closes.
+5. If you can neither confirm nor refute it on this deployment (the evidence
+   it needs cannot be produced here), leave it open with no bug filed and say
+   what evidence is missing in `verifySetLeftOpen`. After repeated
+   inconclusive passes the engine carries it over as needing external
+   evidence and names it in the sprint verdict.
 
 This is a distinct duty from Step 1-4's feature workflow -- work both lists
 if your prompt hands you both, and report both in your Step 4 output (see
@@ -198,18 +208,19 @@ For each open feature:
 3. Run the integration tests for this feature. The test tasks describe what to run.
 4. Observe the result carefully: which assertions passed, which failed, with what output
 
-**Waiting on a long-running test run**: never wait inside a single silent Bash call
-(no shell-level sleep/until loops) -- a long silent stretch looks like a hang to the
-dispatch layer's inactivity watchdog and your run can be killed mid-work. Background
-the run (or poll it in short, bounded checks) and keep actively checking it with real
-tool calls about every 2 minutes until it finishes, narrating between checks (e.g.
-"still running, N/M features done"). Do not poll much faster -- each check spends a
-turn; a blocking status call that waits ~90-120s per check is the right shape for a
-long suite. If your tool infrastructure force-backgrounds a foreground command, treat
-it as your own backgrounding and keep checking; do not chain short sleeps to route
-around the sleep-block. Never end your turn or report final results while a run is
-still in progress -- a backgrounded run with no reported outcome is not a completed
-step.
+**Waiting on a long-running test run**: your dispatch prompt states an engine-stated
+wait limit and the inactivity budget it was derived from; a session silent for the
+whole budget is treated as hung. If a run may outlast the wait limit, background it and
+check it with ONE tool call that blocks for up to the stated wait limit (a blocking
+wait on the job, or a read of its output with a wait), repeating until it finishes. Do
+not poll in a tight loop -- no repeated short checks (line counts, tail of a log)
+seconds apart and no extra turns between checks; each check is a full model turn, so
+use the full limit. If no limit is stated, wait no longer than a few minutes per check.
+Never block a single call beyond the stated limit, and do not chain short sleeps or
+shell loops to route around a sleep block. If your tool infrastructure
+force-backgrounds a foreground command, treat it as your own backgrounding. Never end
+your turn or report final results while a run is still in progress -- a backgrounded
+run with no reported outcome is not a completed step.
 
 ## Step 3 -- Record results
 

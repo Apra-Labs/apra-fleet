@@ -53,8 +53,19 @@ import { isNoMutationDispatchFailure } from '../../fleet-sprint/runner.js';
 import { PostDispatchSyncError, GitSyncError, DoltSyncError, GitDivergedError } from '../../fleet-sprint/errors.mjs';
 import { ROLE_POLICIES } from '../../fleet-sprint/role-policies.mjs';
 import { dispatchRole, TURN_BASES } from '../../fleet-sprint/dispatch-role.mjs';
+import { longRunWaitNotice } from '../../fleet-sprint/long-run-wait.mjs';
 
 export { TURN_BASES };
+
+/**
+ * The prompt the engine actually dispatches for a persona told the
+ * engine-stated wait limit (doer, reviewer, integ/regression runners): the
+ * caller's prompt unchanged, then the wait-limit block derived from that
+ * dispatch's own timeout_s.
+ */
+export function withWaitNotice(prompt, timeoutS) {
+    return `${prompt}\n\n${longRunWaitNotice(timeoutS)}`;
+}
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FLEET_SPRINT_DIR = path.join(__dirname, '..', '..', 'fleet-sprint');
@@ -149,6 +160,31 @@ export const FAILED_SESSION_ID = 'failed-session-1';
  */
 export function turnExhaustionError(message = 'max turns spent', sessionId = FAILED_SESSION_ID) {
     return new AgentDispatchError(message, { details: { reason: 'max_turns_exhausted', ...(sessionId ? { sessionId } : {}) } });
+}
+
+/**
+ * A refusal whose only refused call maps to no permission grant (a chained
+ * shell command): the one failure a ladder with retry.unmappableRefusalResume
+ * resumes in the same session, by the refused session's explicit id.
+ */
+export function unmappableRefusalError(sessionId = FAILED_SESSION_ID, target = 'npm test > /tmp/t.log 2>&1 &') {
+    return new AgentDispatchError(
+        '[Workflow Error] Agent dispatch failed (permission_denied): [FAIL] execute_prompt: permission denied',
+        {
+            details: {
+                reason: 'permission_denied',
+                member: 'dev',
+                permissionDenied: {
+                    actions: ['Bash'],
+                    denials: [{ action: 'Bash', target, suggestedGrants: [] }],
+                    suggestedGrants: [],
+                    hint: `claude refused Bash "${target}".`,
+                    signals: ['result_json'],
+                },
+                ...(sessionId ? { sessionId } : {}),
+            },
+        },
+    );
 }
 
 /** The server refused an explicit-id resume: that session is gone or unknown. */
@@ -579,11 +615,19 @@ export async function driveEngineDispatch(role, kind, options = {}) {
     }
     let { responses } = options;
     if (!responses) {
-        if (kind === 'max-turns-resume') responses = [turnExhaustionError()];
+        if (kind === 'max-turns-resume') {
+            // A ladder that never resumes on turn exhaustion (the scoped re-plan
+            // rows) reaches its resume-only secondary through an unmappable
+            // refusal instead.
+            responses = ROLE_POLICIES[role].retry.maxTurnsResume ? [turnExhaustionError()] : [unmappableRefusalError()];
+        }
         else if (kind === 'semantic-repair-re-ask') responses = [REJECTED_CANDIDATE, ACCEPTED_CANDIDATE];
         else responses = [];
     }
     const { ctx, rec } = createRecordingCtx({ responses, ...(options.ctx || {}) });
+    if (kind === 'max-turns-resume' && !ROLE_POLICIES[role].retry.maxTurnsResume && !ctx.onPermissionDenied) {
+        ctx.onPermissionDenied = async () => ({ healed: false, step: 'no_progress', composeRole: role, grants: [], rejectedGrants: [], reason: 'no grant maps to the refused call' });
+    }
     const outcome = await dispatchRole(ctx, role, opts);
     const index = kind === 'main' ? 0 : 1;
     return { ctx, rec, outcome, opts, dispatch: rec.dispatches[index] };

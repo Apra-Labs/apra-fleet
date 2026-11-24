@@ -2088,6 +2088,28 @@
       }
     },
     {
+      "id": "8313d623-f215-45d8-86d0-ec5683c9e197",
+      "type": "knowledge",
+      "title": "New fleet-sprint *.mjs/*.js files must be registered in GUARDED_MODULES or the apra-fleet-se suite fails",
+      "summary": "Every *.mjs/*.js file under packages/apra-fleet-se/fleet-sprint/ (recursive) must be listed in GUARDED_MODULES or GUARD_REGISTRATION_EXEMPT in fleet-sprint/guarded-modules.mjs. guarded-modules-coverage.test.mjs enforces this. A miss makes CI's \"Run tests\" exit 1 while every vitest and node --test summary still shows 0 failures; the only visible signal is the line \"> apra-fleet-se suite FAILED (exit 1)\".",
+      "symbols": [
+        "GUARDED_MODULES",
+        "GUARD_REGISTRATION_EXEMPT"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/guarded-modules.mjs",
+        "packages/apra-fleet-se/test/guarded-modules-coverage.test.mjs",
+        "scripts/run-all-tests.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-24T05:27:24.844Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/guarded-modules.mjs": "ae8196037fb6f6f8aa4cdd5ccda223db77234665",
+        "packages/apra-fleet-se/test/guarded-modules-coverage.test.mjs": "b806d85d05b5263567892ce97f1487a644a385b8",
+        "scripts/run-all-tests.mjs": "bfa7ff7a8eba998363f061237c9934491ce0e637"
+      }
+    },
+    {
       "id": "83649bac-ac24-4a92-9bff-c8af8737d32d",
       "type": "knowledge",
       "title": "kb_import withdrawn-tombstone gate: base from base_branch or remote HEAD, any configured remote",
@@ -2262,6 +2284,32 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-30T23:07:12.100Z"
+    },
+    {
+      "id": "90451c2d-0461-484c-90f5-89844873dd92",
+      "type": "knowledge",
+      "title": "Live-evidence leaf routing uses a label marker and verifyEverIds-gated exit filtering",
+      "summary": "A childless bead labelled needs-live-evidence is a verify target. readyLeafBeads excludes it, and Cycle Evaluation and Final Review drop it from open-at-goal only once it is in verifyEverIds.",
+      "symbols": [
+        "classifyVerifySet",
+        "readyLeafBeads",
+        "applyLiveEvidenceMarker",
+        "buildIntegVerifyClause"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/beads-scope.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/develop.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/fleet-sprint/phases/final-review.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-21T10:04:04.529Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/beads-scope.mjs": "a219e13c841b1f9c45a111687cb1484ddc086923",
+        "packages/apra-fleet-se/fleet-sprint/phases/develop.mjs": "e5edd33422f2e78aea2c502ca12c705be5587c18",
+        "packages/apra-fleet-se/fleet-sprint/phases/final-review.mjs": "a01b0f62989bdf097a758b2c307178983b7902c2",
+        "packages/apra-fleet-se/fleet-sprint/runner.js": "8f006a00b167c90dc5610845023295eaf3ec940c"
+      }
     },
     {
       "id": "919a3f50-dcb3-4ee9-91d1-767fd503a3b8",
@@ -2568,6 +2616,32 @@
       }
     },
     {
+      "id": "a6233f92-cd94-427c-aaaa-62a0d70f49b2",
+      "type": "knowledge",
+      "title": "Engine appends a wait-limit block to doer/reviewer/runner prompts, so prompt pins must use withWaitNotice",
+      "summary": "dispatchRole appends longRunWaitNotice(options.timeout_s) to the dispatched prompt for the agentTypes in LONG_RUN_WAIT_AGENT_TYPES. Any test that pins an exact dispatched prompt for those personas must compare against withWaitNotice(prompt, timeout_s) from the dispatch-role harness.",
+      "symbols": [
+        "resolveLongRunWaitS",
+        "longRunWaitNotice",
+        "receivesLongRunWait",
+        "withWaitNotice"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/long-run-wait.mjs",
+        "packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs",
+        "packages/apra-fleet-se/test/helpers/dispatch-role-harness.mjs",
+        "packages/apra-fleet-se/test/long-run-wait-budget.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-22T22:47:08.174Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs": "af573e36024e3a3f381e5473d93f58471d857005",
+        "packages/apra-fleet-se/fleet-sprint/long-run-wait.mjs": "ab8a3f05d1642fb141fc5b3c8d258f9191d0b563",
+        "packages/apra-fleet-se/test/helpers/dispatch-role-harness.mjs": "47eca02a3f2f92916b0931bed8fe8670249f51cf",
+        "packages/apra-fleet-se/test/long-run-wait-budget.test.mjs": "f64f48ed680bd36a2299021af8362d7169ddddd2"
+      }
+    },
+    {
       "id": "a67295f1-33ca-4960-93a0-da0275505905",
       "type": "knowledge",
       "title": "VCS provider builders key the curl binary on os and the quoting dialect on shell",
@@ -2659,6 +2733,29 @@
         "packages/apra-fleet-se/fleet-sprint/member-provisioning.mjs": "0dffb028188c744e0bcc172691eb9fc79bfb354b",
         "scripts/check-ascii-only.mjs": "41b4a29f5da8bab14176874fe7ae5e973f7e2d56",
         "tests/ascii-only-gate.test.ts": "c039aafa21aff35c2f4d50769bb8f72c91be7674"
+      }
+    },
+    {
+      "id": "ab1c6975-2c9a-4641-ac8d-ac660bd1fee3",
+      "type": "knowledge",
+      "title": "Resume dispatches reuse the tier recorded from the main dispatch (pricedTier)",
+      "summary": "dispatchRole records the tier its main dispatch was sent at in a per-call closure variable, pricedTier. Every 'inherited' secondary (max-turns resume, usage-limit resume or fresh fallback, unmappable-refusal resume, semantic repair) and the onUsageLimit tier use it, so a resume never omits the model.",
+      "symbols": [
+        "resolveModelTier",
+        "dispatchRole",
+        "runDispatch"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs",
+        "packages/apra-fleet-se/fleet-sprint/role-policies.mjs",
+        "packages/apra-fleet-se/test/dispatch-role-resume-tier-and-model-log.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-22T22:47:09.008Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs": "af573e36024e3a3f381e5473d93f58471d857005",
+        "packages/apra-fleet-se/fleet-sprint/role-policies.mjs": "3e626a85e9cc0a5c6cc130746699a5c18bcc4468",
+        "packages/apra-fleet-se/test/dispatch-role-resume-tier-and-model-log.test.mjs": "b4a4e743ef617c3762802b698d85c3d7a9b8cc1d"
       }
     },
     {
@@ -2874,6 +2971,34 @@
       }
     },
     {
+      "id": "bbf7c355-39f9-48a9-9ff8-74e7821b61f8",
+      "type": "knowledge",
+      "title": "Verify holds by below-goal open children are reported, not relaxed",
+      "summary": "classifyVerifySet keeps rule 4 (any open child holds a parent out of verify) but records an open-children ineligible entry with heldBy; belowGoalVerifyHolds selects holds made only by below-goal or out-of-scope children, which the Route log and Final Review notes report.",
+      "symbols": [
+        "classifyVerifySet",
+        "belowGoalVerifyHolds",
+        "formatVerifyHolds",
+        "runFinalReviewPhase"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/beads-scope.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/fleet-sprint/phases/final-review.mjs",
+        "packages/apra-fleet-se/test/jfo-verify-set-classifier.test.mjs",
+        "packages/apra-fleet-se/test/mock-sprint-verify-hold-below-goal.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-22T10:31:17.696Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/beads-scope.mjs": "142c823ae2f5ee7b0674f6dd595798bfee63763a",
+        "packages/apra-fleet-se/fleet-sprint/phases/final-review.mjs": "890540014fb10f9307e265085d39b0299967bf2f",
+        "packages/apra-fleet-se/fleet-sprint/runner.js": "04482d3f4f1a355fc89648c6eed3d147123e4bc5",
+        "packages/apra-fleet-se/test/jfo-verify-set-classifier.test.mjs": "2460b0c37b1d343432c75f357fd3d7ca063c8d35",
+        "packages/apra-fleet-se/test/mock-sprint-verify-hold-below-goal.test.mjs": "1751d6e72463ff79b93c08e56d09c1883ac43e73"
+      }
+    },
+    {
       "id": "bcd7c247-9534-4ba5-bc6a-997c94ca7bbd",
       "type": "knowledge",
       "title": "Windows local-member child env is bounded by boundChildEnv (deduped PATH, 32767-char cap)",
@@ -2937,6 +3062,31 @@
       "source_file_hashes": {
         "scripts/run-all-tests.mjs": "bfa7ff7a8eba998363f061237c9934491ce0e637",
         "tests/run-all-tests-suite-enumeration.test.ts": "6b869932251561145575443ff2d70652ba73b787"
+      }
+    },
+    {
+      "id": "c01db3c6-1f1b-443d-a855-5951b0bf8d3e",
+      "type": "knowledge",
+      "title": "Unmappable refusal on a fallback-value ladder degrades instead of throwing",
+      "summary": "In dispatchRole, an unmappable permission refusal that cannot be resumed ends the ladder through its degrade (value null, validate still runs) when policy.degrade.kind is fallback-value; every other degrade kind still throws MemberPermissionDeniedError.",
+      "symbols": [
+        "dispatchRole",
+        "selectStreaks",
+        "runDevelopPhase"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/develop.mjs",
+        "packages/apra-fleet-se/test/doer-unmappable-refusal-resume.test.mjs",
+        "packages/apra-fleet-se/test/mock-sprint-streak-assignment-unmappable-refusal.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-22T06:39:38.371Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs": "a4b179fe34332569bb0a670049afa774d5a7a328",
+        "packages/apra-fleet-se/fleet-sprint/phases/develop.mjs": "e5edd33422f2e78aea2c502ca12c705be5587c18",
+        "packages/apra-fleet-se/test/doer-unmappable-refusal-resume.test.mjs": "6c3d91d01959e925edc805f6556c2b757ec23957",
+        "packages/apra-fleet-se/test/mock-sprint-streak-assignment-unmappable-refusal.test.mjs": "859032511686cf3b34ee548fde5caa81ba8b5d4b"
       }
     },
     {

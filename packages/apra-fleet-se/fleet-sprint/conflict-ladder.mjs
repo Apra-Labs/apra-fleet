@@ -33,6 +33,8 @@
  * working-tree state, never inferred from a failing command's exit
  * code/message alone.
  */
+import { createModelReporter } from './model-log.mjs';
+
 const UNMERGED_STATUS_CODES = new Set(['DD', 'AU', 'UD', 'UA', 'DU', 'AA', 'UU']);
 
 /**
@@ -168,8 +170,11 @@ export async function dispatchConflictResolutionAgent({ agent, member, branch, u
     }
     log(`[Sync] Tier 2: dispatching a conflict-resolution runbook to member '${member}' for unmerged path(s) [${unmergedPaths.join(', ')}] -- the one documented ladder step above scripted ours/theirs.`);
     const prompt = buildConflictResolutionRunbookPrompt({ member, branch, unmergedPaths, remote });
+    const modelReporter = createModelReporter();
+    const logModel = (err) => log(`[Sync] Tier 2 conflict resolution on member '${member}' -- requested tier ${model ?? 'none'}, ${modelReporter.describe(err)}`);
     return agent(prompt, {
         member_name: member,
+        onModelId: modelReporter.onModelId,
         label: `Tier 2 conflict resolution [${unmergedPaths.join(', ')}]`,
         model,
         // EXPLICITLY a fresh session. The runbook above is entirely
@@ -194,5 +199,8 @@ export async function dispatchConflictResolutionAgent({ agent, member, branch, u
         fail_on_permission_denial: true,
         timeout_s: 1800,
         max_total_s: 1800,
-    });
+    }).then(
+        (v) => { logModel(); return v; },
+        (e) => { logModel(e); throw e; },
+    );
 }

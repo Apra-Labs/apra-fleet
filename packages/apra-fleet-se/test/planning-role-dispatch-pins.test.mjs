@@ -386,6 +386,7 @@ describe('planning-role dispatch: cross-cutting invariants', () => {
                 'planner (interactive)',
                 'planner (resume after max_turns exhaustion)',
                 'scoped replan planner',
+                'scoped replan planner (same-session resume after an unmappable refusal)',
                 'deployer (once)',
                 'deployer (resume after max_turns exhaustion)',
                 'integ test runner (once)',
@@ -835,9 +836,9 @@ describe('planning-role dispatch: returnable verdicts', () => {
         }
         assert.strictEqual(
             plannerLadders.length + engagedPlannerDispatches.length,
-            3,
-            'There are exactly three planner-persona planning dispatches: the interactive planner, its resume, and the ' +
-            'scoped replan planner.'
+            4,
+            'There are exactly four planner-persona planning dispatches: the interactive planner, its resume, the ' +
+            'scoped replan planner and its refusal resume.'
         );
     });
 });

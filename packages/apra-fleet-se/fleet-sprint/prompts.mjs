@@ -14,6 +14,7 @@
 // inside a function body, never at module-evaluation time.
 import { wrapUntrustedBlock, MERGE_RECOMMENDATIONS } from './contracts.mjs';
 import { formatStalenessBlock } from './parent-notes-staleness.mjs';
+import { LIVE_EVIDENCE_LABEL } from './beads-scope.mjs';
 import { buildRejectedNewTaskResurfaceLines, kbKnowledgeBlock, kbPromotionBlock, kbDemotionBlock } from './runner.js';
 
 /**
@@ -153,7 +154,8 @@ export function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requireme
     if (Array.isArray(verifyExcluded) && verifyExcluded.length > 0) {
         lines.push(
             `VERIFY-ROUTE EXCLUSION -- these bead(s) are implementation-complete (every child ` +
-            `closed) and are routed to integration-test verification this cycle, not planning: ` +
+            `closed, or a childless bead labelled ${LIVE_EVIDENCE_LABEL} that only needs live ` +
+            `evidence) and are routed to integration-test verification this cycle, not planning: ` +
             `${verifyExcluded.join(', ')}. Do NOT create tasks for them, do NOT re-decompose them, ` +
             `do NOT treat them as unplanned or unaddressed work, and do NOT let plan-review gates ` +
             `bind over them -- they are out of scope for this planning pass entirely. Only the ` +
@@ -257,7 +259,8 @@ export function buildPlanReviewerPrompt({ targetIssues, goal, priorRoundVerdicts
     if (Array.isArray(verifyExcluded) && verifyExcluded.length > 0) {
         lines.push(
             `VERIFY-ROUTE EXCLUSION -- these bead(s) are implementation-complete (every child ` +
-            `closed) and routed to integration-test verification this cycle: ${verifyExcluded.join(', ')}. ` +
+            `closed, or a childless bead labelled ${LIVE_EVIDENCE_LABEL} that only needs live ` +
+            `evidence) and routed to integration-test verification this cycle: ${verifyExcluded.join(', ')}. ` +
             `Do not withhold approval on the grounds that they are undecomposed, uncovered, or ` +
             `missing model metadata -- they are out of scope for this plan review entirely.`
         );
@@ -437,7 +440,39 @@ function reviewDiffRangeLine(range, baseBranch) {
         `do not diff against the local '${baseBranch}' branch or origin/${baseBranch} directly.`;
 }
 
-export function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranch, branch, mergeBaseSha, goal, kbCandidates, kbKnowledge, kbBlock }) {
+/** Character cap on the prior-round findings summary fed to a fresh reviewer. */
+export const PRIOR_REVIEW_FINDINGS_CAP = 3000;
+
+/**
+ * Bounded summary of the previous review round's verdict in this cycle, for a
+ * fresh reviewer session that has no memory of it. Empty when there is none.
+ * @param {{ verdict?: string, notes?: string, reopenIds?: string[], newTasks?: Array<{title?: string}> }|undefined} prior
+ * @returns {string[]}
+ */
+function priorReviewFindingsBlock(prior) {
+    if (!prior || typeof prior !== 'object') return [];
+    const reopen = Array.isArray(prior.reopenIds) ? prior.reopenIds : [];
+    const titles = (Array.isArray(prior.newTasks) ? prior.newTasks : [])
+        .map((t) => (t && typeof t.title === 'string' ? t.title : ''))
+        .filter(Boolean);
+    let summary = [
+        `verdict: ${prior.verdict ?? '(unknown)'}`,
+        `reopenIds: ${reopen.join(', ') || '(none)'}`,
+        `newTasks: ${titles.join(' | ') || '(none)'}`,
+        `notes: ${typeof prior.notes === 'string' ? prior.notes : ''}`,
+    ].join('\n');
+    if (summary.length > PRIOR_REVIEW_FINDINGS_CAP) {
+        summary = summary.slice(0, PRIOR_REVIEW_FINDINGS_CAP) + '\n[...truncated]';
+    }
+    return [
+        'This is a fresh review session; an earlier review round in this same cycle already ran. '
+        + 'Its findings are summarized below so you can check whether the follow-up work addressed them. '
+        + 'Still verify against the actual diff yourself.',
+        wrapUntrustedBlock('prior-round.review-findings', summary),
+    ];
+}
+
+export function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranch, branch, mergeBaseSha, goal, kbCandidates, kbKnowledge, kbBlock, priorRoundFindings }) {
     const range = reviewDiffRange(mergeBaseSha, branch);
     const ids = Array.isArray(beadIds) ? beadIds : [];
     const scopeWide = ids.length === 0;
@@ -457,6 +492,7 @@ export function buildReviewerPrompt({ beadIds, acceptanceCriteriaJson, baseBranc
             : 'Full task detail (including acceptance criteria), from `bd show --json`:',
         wrapUntrustedBlock(scopeCommand, acceptanceCriteriaJson),
         reviewDiffRangeLine(range, baseBranch),
+        ...priorReviewFindingsBlock(priorRoundFindings),
         // Without an explicit scope clause a reviewer can withhold APPROVED
         // over below-goal work the sprint deliberately defers, which starves
         // the completion gate (zero open goal beads AND an APPROVED verdict).
