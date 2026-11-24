@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "962e202f8b5910fdecf6f82a46102a798f5cc4f2",
     "branch": "main",
-    "entry_count": 207
+    "entry_count": 209
   },
   "entries": [
     {
@@ -50,6 +50,28 @@
         "packages/apra-fleet-se/fleet-sprint/fatal-diagnostics.mjs": "22de2445e0a64427b585d8bccafc3d4e8275e24b",
         "packages/apra-fleet-se/fleet-sprint/kb.mjs": "d34eb19cf8772e37109a45ab3a3546eef7477017",
         "packages/apra-fleet-se/fleet-sprint/runner.js": "b046204308612a6300f176700ed70407b59bcc2b"
+      }
+    },
+    {
+      "id": "099b211c-923b-44d6-8767-8c8c741dbc20",
+      "type": "knowledge",
+      "title": "Description cap keeps only the trailing hidden blocks and cuts text before them",
+      "summary": "capDescriptionPreservingHiddenTail treats the trailing run of HTML comment blocks as the tail and cuts everything before it. When the fleet block is appended after human text and the total is over the provider limit, the human text and the block's opening marker are what get cut.",
+      "symbols": [
+        "capDescriptionPreservingHiddenTail",
+        "fleetBlockPlacement",
+        "locateFleetBlock",
+        "buildSprintPrBody"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/vcs-module.mjs",
+        "packages/apra-fleet-se/fleet-sprint/pr-body.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-24T15:03:39.844Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/pr-body.mjs": "1f171a8d85043b5bc5d915e8d92b14621c7de315",
+        "packages/apra-fleet-se/fleet-sprint/vcs-module.mjs": "c11e6f3738685e445bf417b8ce5d666c8d20af9a"
       }
     },
     {
@@ -4437,6 +4459,30 @@
         "docs/knowledge-layer.md": "cf7a175e11afbbb6c67be06aea9c7d0864a8ed55",
         "src/cli/secret.ts": "01ea1129155b296006c2faf310c8686311b6b87c",
         "tests/knowledge/kb-named-credential-live-e2e.test.ts": "fc532dfe2a2ab4ef542f3ab66dbd9d146c08216b"
+      }
+    },
+    {
+      "id": "f8f19262-c997-4678-90a8-a905412e0986",
+      "type": "knowledge",
+      "title": "Sprint Setup refuses a repo/PR-member VCS provider mismatch before any dispatch",
+      "summary": "runner.js calls assertPrMemberProviderMatchesRepo (vcs-auth.mjs) before the beads readiness gate. It compares the backlog member's registered vcsProvider with the provider serving origin (read on the harvester member) and throws code vcs_provider_mismatch; an unregistered member or unreadable record/remote never refuses.",
+      "symbols": [
+        "assertPrMemberProviderMatchesRepo",
+        "VCS_PROVIDER_MISMATCH",
+        "provisionVcsAuthForMember",
+        "raiseVcsPrForMember"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/test/mock-sprint-provider-mismatch-setup.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-24T15:03:39.257Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/runner.js": "8119d866a8a0f82adf59be22a5bcc6f7215cde06",
+        "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs": "9ea67e9103717013fb023f972645802183ee47f9",
+        "packages/apra-fleet-se/test/mock-sprint-provider-mismatch-setup.test.mjs": "bea2d1792178ada8ac052ba163329ab03109c959"
       }
     },
     {
