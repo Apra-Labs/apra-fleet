@@ -87,6 +87,8 @@ export const GUARDED_MODULES = [
     // Pure engine-stated wait limit for long-running commands (derived from
     // a dispatch's timeout_s); no command() site.
     'long-run-wait.mjs',
+    // Pure reported-model log-line helper; no command() or agent() site.
+    'model-log.mjs',
     'beads-scope.mjs',
     // Pure parent-link ledger (record/diff of in-scope parent-child edges);
     // beads-scope.mjs issues its restore commands, no command() here.
