@@ -15,7 +15,7 @@ import { activeDecisionWaits, PAUSED_AWAITING_DECISION } from '../fleet-sprint/d
 // writes a bead's model metadata.
 //
 // Every scenario: five tasks, two of them premium (P1, P2). balanced allows
-// floor(20% x 5) = 1 premium bead, so the plan is over the cap by one.
+// ceil(20% x 5) = 1 premium bead, so the plan is over the cap by one.
 // =============================================================================
 
 const check = (cond, msg) => assert.ok(cond, msg);
