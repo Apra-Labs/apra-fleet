@@ -1,7 +1,9 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { verifyBeadsIdentity, createBeadsIdentityProber, BEADS_IDENTITY_PROBE_TIMEOUT_S, BEADS_IDENTITY_WARNING_PREFIX, BEADS_SETUP_COMMANDS, BEADS_SETUP_TIMEOUT_S, BEADS_READING_ROLES, BEADS_WORKSPACE_CONFIG_FILE, BEADS_LOCAL_CONFIG_FILE, BEADS_TREE_COMMANDS, beadsLocalSyncRemoteLine, setupMemberBeads } from '../fleet-sprint/beads-identity-check.mjs';
+import { verifyBeadsIdentity, createBeadsIdentityProber, BEADS_IDENTITY_PROBE_TIMEOUT_S, BEADS_IDENTITY_WARNING_PREFIX, BEADS_SETUP_COMMANDS, BEADS_SETUP_TIMEOUT_S, BEADS_READING_ROLES, BEADS_WORKSPACE_CONFIG_FILE, BEADS_LOCAL_CONFIG_FILE, BEADS_TREE_COMMANDS, beadsLocalSyncRemoteLine, setupMemberBeads, verifyPinnedToolVersions } from '../fleet-sprint/beads-identity-check.mjs';
+import { BEADS_VERSION, DOLT_VERSION, TOOL_VERSION_PROBES, checkPinnedVersion } from '../fleet-sprint/tool-version-pin.mjs';
 import { noteMemberCommand } from '../fleet-sprint/dolt-sync.mjs';
+import { isBeadsMutatingCommand } from '../fleet-sprint/beads-scope.mjs';
 import { BEADS_IDENTITY_PROBES } from '../fleet-sprint/beads-identity.mjs';
 import { BeadsIdentityError, BEADS_IDENTITY_FAILURE_REASONS } from '../fleet-sprint/errors.mjs';
 
@@ -276,8 +278,8 @@ describe('verifyBeadsIdentity', () => {
         });
     }
 
-    test('BEADS_IDENTITY_FAILURE_REASONS: only MISMATCH, a missing bd binary and a failed member beads set-up are fatal (no generic probe-failure reason)', () => {
-        assert.deepEqual(Object.keys(BEADS_IDENTITY_FAILURE_REASONS), ['MISMATCH', 'MISSING_TOOL', 'BEADS_SETUP_FAILED']);
+    test('BEADS_IDENTITY_FAILURE_REASONS: only MISMATCH, a missing bd binary, a failed member beads set-up and an off-pin bd/dolt are fatal (no generic probe-failure reason)', () => {
+        assert.deepEqual(Object.keys(BEADS_IDENTITY_FAILURE_REASONS), ['MISMATCH', 'MISSING_TOOL', 'BEADS_SETUP_FAILED', 'VERSION_MISMATCH']);
     });
 
     // GitHub #616: bd itself missing on a member is fatal at sprint start,
@@ -814,5 +816,194 @@ describe('verifyBeadsIdentity: member beads set-up -- pull routing, user changes
         const h = setupHarness(m1);
         await assert.rejects(verify(h), (err) => err.reason === BEADS_IDENTITY_FAILURE_REASONS.BEADS_SETUP_FAILED && /position in its git clone cannot be read/.test(err.message));
         assert.ok(!setupCalls(h.calls).includes(ENSURE_WS));
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Sprint-start tool version pin: bd (and an installed dolt) must be on the
+// engine's pinned major.minor on EVERY beads-touching member, checked before
+// any identity probe can lead to a set-up or pull.
+// ---------------------------------------------------------------------------
+
+const PIN_DOLT = DOLT_VERSION.replace(/^v/, '');
+const versionAnswers = ({ bd = `bd version ${BEADS_VERSION} (abc)`, dolt = `dolt version ${PIN_DOLT}` } = {}) => ({
+    [TOOL_VERSION_PROBES.bd]: bd,
+    [TOOL_VERSION_PROBES.dolt]: dolt,
+});
+const memberAnswers = (versions = {}, identity = {}) => ({ ...identityAnswers(identity), ...versionAnswers(versions) });
+const SYNC_OR_SETUP_RE = /^bd (?:bootstrap|config set|dolt (?:remote|pull|push))\b/;
+
+describe('verifyBeadsIdentity: bd/dolt version pin (checkToolVersions)', () => {
+    test('the engine bd pin is 1.3 and the dolt pin is dolt-settle\'s', () => {
+        assert.equal(checkPinnedVersion('bd version 1.3.7', BEADS_VERSION).ok, true);
+        assert.equal(checkPinnedVersion('dolt version 2.2.9', DOLT_VERSION).ok, true);
+    });
+
+    test('all members on bd 1.3.x and dolt 2.2.x: passes, one versions-ok log line per member, every probe names its member', async () => {
+        const { command, calls } = fakeCommand({
+            orch: memberAnswers(),
+            m1: memberAnswers({ bd: 'bd version 1.3.9 (dev)' }, { dir: '/m1/.beads' }),
+            m2: memberAnswers({ dolt: 'dolt version 2.2.4' }, { dir: '/m2/.beads' }),
+        });
+        const logs = [];
+        const res = await verifyBeadsIdentity({ command, log: (l) => logs.push(l), backlogMember: 'orch', members: ['m1', 'm2'], expected: EXPECTED, checkToolVersions: true });
+        assert.deepEqual(Object.keys(res.members), ['orch', 'm1', 'm2']);
+        assert.equal(logs.filter((l) => l.startsWith('[beads-identity] tool versions ok: ')).length, 3);
+        // Version probes come first, for every member, before any identity probe.
+        const firstIdentity = calls.findIndex((c) => c.cmd === BEADS_IDENTITY_PROBES.where);
+        assert.equal(calls.slice(0, firstIdentity).length, 6);
+        for (const c of calls.slice(0, firstIdentity)) {
+            assert.ok(Object.values(TOOL_VERSION_PROBES).includes(c.cmd), c.cmd);
+            assert.ok(c.opts.member_name);
+            assert.equal(c.opts.failSoft, true);
+            assert.equal(c.opts.silent, true);
+        }
+    });
+
+    test('one non-backlog member on bd 1.4.0: VERSION_MISMATCH naming the member, found 1.4.0, expected 1.3 and the fix', async () => {
+        const { command } = fakeCommand({ orch: memberAnswers(), m1: memberAnswers({ bd: 'bd version 1.4.0 (abc)' }) });
+        await assert.rejects(
+            verifyBeadsIdentity({ command, backlogMember: 'orch', members: ['m1'], expected: EXPECTED, checkToolVersions: true }),
+            (err) => {
+                assert.ok(err instanceof BeadsIdentityError);
+                assert.equal(err.reason, BEADS_IDENTITY_FAILURE_REASONS.VERSION_MISMATCH);
+                assert.equal(err.member, 'm1');
+                assert.match(err.message, /member 'm1': bd 1\.4\.0, expected bd 1\.3\.x/);
+                assert.match(err.message, /To fix: install the pinned bd \(@beads\/bd@1\.3\.0\)/);
+                assert.match(err.message, /npm install -g @beads\/bd@1\.3\.0/);
+                assert.match(err.message, /relaunch/);
+                assert.deepEqual(err.details.offenders, [{ member: 'm1', tool: 'bd', found: '1.4.0', expected: '1.3' }]);
+                return true;
+            },
+        );
+    });
+
+    test('bd 1.2.0 (older than the pin) fails the same way', async () => {
+        const { command } = fakeCommand({ orch: memberAnswers(), m1: memberAnswers({ bd: 'bd version 1.2.0' }) });
+        await assert.rejects(
+            verifyBeadsIdentity({ command, backlogMember: 'orch', members: ['m1'], expected: EXPECTED, checkToolVersions: true }),
+            (err) => err.reason === BEADS_IDENTITY_FAILURE_REASONS.VERSION_MISMATCH && /member 'm1': bd 1\.2\.0, expected bd 1\.3\.x/.test(err.message),
+        );
+    });
+
+    test('two offending members: both are named (not just the first)', async () => {
+        const { command, calls } = fakeCommand({
+            orch: memberAnswers({ bd: 'bd version 1.4.0' }),
+            m1: memberAnswers(),
+            m2: memberAnswers({ bd: 'bd version 1.2.3' }),
+        });
+        await assert.rejects(
+            verifyBeadsIdentity({ command, backlogMember: 'orch', members: ['m1', 'm2'], expected: EXPECTED, checkToolVersions: true }),
+            (err) => {
+                assert.equal(err.reason, BEADS_IDENTITY_FAILURE_REASONS.VERSION_MISMATCH);
+                assert.match(err.message, /2 members run/);
+                assert.match(err.message, /member 'orch': bd 1\.4\.0/);
+                assert.match(err.message, /member 'm2': bd 1\.2\.3/);
+                assert.deepEqual(err.details.offenders.map((o) => o.member), ['orch', 'm2']);
+                return true;
+            },
+        );
+        assert.ok(calls.some((c) => c.opts.member_name === 'm2'), 'every member is probed before failing');
+    });
+
+    test('unparseable bd --version output fails', async () => {
+        const { command } = fakeCommand({ orch: memberAnswers(), m1: memberAnswers({ bd: 'bd: something odd happened' }) });
+        await assert.rejects(
+            verifyBeadsIdentity({ command, backlogMember: 'orch', members: ['m1'], expected: EXPECTED, checkToolVersions: true }),
+            (err) => err.reason === BEADS_IDENTITY_FAILURE_REASONS.VERSION_MISMATCH && /member 'm1': bd unparseable version output/.test(err.message),
+        );
+    });
+
+    test('dolt 2.1.0 on a member fails, naming member, found and expected', async () => {
+        const { command } = fakeCommand({ orch: memberAnswers(), m1: memberAnswers({ dolt: 'dolt version 2.1.0' }) });
+        await assert.rejects(
+            verifyBeadsIdentity({ command, backlogMember: 'orch', members: ['m1'], expected: EXPECTED, checkToolVersions: true }),
+            (err) => {
+                assert.equal(err.reason, BEADS_IDENTITY_FAILURE_REASONS.VERSION_MISMATCH);
+                assert.match(err.message, /member 'm1': dolt 2\.1\.0, expected dolt 2\.2\.x/);
+                assert.deepEqual(err.details.offenders, [{ member: 'm1', tool: 'dolt', found: '2.1.0', expected: '2.2' }]);
+                return true;
+            },
+        );
+    });
+
+    test('dolt absent on a member: passes, logged once for that member', async () => {
+        const { command } = fakeCommand({ orch: memberAnswers(), m1: memberAnswers({ dolt: { fail: 'bash: line 1: dolt: command not found' } }) });
+        const logs = [];
+        await verifyBeadsIdentity({ command, log: (l) => logs.push(l), backlogMember: 'orch', members: ['m1'], expected: EXPECTED, checkToolVersions: true });
+        const absent = logs.filter((l) => /member 'm1' has no dolt on PATH/.test(l));
+        assert.equal(absent.length, 1, JSON.stringify(logs));
+        assert.ok(logs.some((l) => l === `[beads-identity] tool versions ok: m1 bd ${BEADS_VERSION}, dolt absent`), JSON.stringify(logs));
+    });
+
+    test('bd missing: the existing MISSING_TOOL error, not VERSION_MISMATCH', async () => {
+        const { command } = fakeCommand({ orch: memberAnswers(), m1: memberAnswers({ bd: { fail: 'bash: line 1: bd: command not found' } }) });
+        await assert.rejects(
+            verifyBeadsIdentity({ command, backlogMember: 'orch', members: ['m1'], expected: EXPECTED, checkToolVersions: true }),
+            (err) => {
+                assert.equal(err.reason, BEADS_IDENTITY_FAILURE_REASONS.MISSING_TOOL);
+                assert.equal(err.member, 'm1');
+                assert.match(err.message, /'bd' is not installed or not on PATH on member 'm1'/);
+                return true;
+            },
+        );
+    });
+
+    test('a bd that cannot run (not a missing bd) is reported as not runnable, not as a version mismatch', async () => {
+        const { command } = fakeCommand({ orch: memberAnswers(), m1: memberAnswers({ bd: { fail: 'bash: /usr/local/bin/bd: Segmentation fault' } }) });
+        await assert.rejects(
+            verifyBeadsIdentity({ command, backlogMember: 'orch', members: ['m1'], expected: EXPECTED, checkToolVersions: true }),
+            (err) => {
+                assert.match(err.message, /member 'm1': bd not runnable \(/);
+                assert.doesNotMatch(err.message, /member 'm1': bd 'bd --version' failed/);
+                return true;
+            },
+        );
+    });
+
+    test('a setupMembers-only member is version-checked too', async () => {
+        const { command } = fakeCommand({ orch: memberAnswers(), m1: memberAnswers(), m9: memberAnswers({ bd: 'bd version 1.4.0' }) });
+        await assert.rejects(
+            verifyBeadsIdentity({ command, backlogMember: 'orch', members: ['m1'], setupMembers: ['orch', 'm9'], expected: EXPECTED, checkToolVersions: true }),
+            (err) => err.reason === BEADS_IDENTITY_FAILURE_REASONS.VERSION_MISMATCH && err.member === 'm9',
+        );
+    });
+
+    test('on a bd version mismatch NO set-up or sync command is issued to any member -- the command log stops at the version probes', async () => {
+        // m1 has no beads database: without the version guard it would be
+        // bootstrapped from the expected remote.
+        const m1 = statefulMember({ handlers: { [TOOL_VERSION_PROBES.bd]: () => 'bd version 1.4.0 (abc)', [TOOL_VERSION_PROBES.dolt]: () => `dolt version ${PIN_DOLT}` } });
+        const h = setupHarness(m1);
+        const orchCommand = h.command;
+        const command = async (cmd, opts) => {
+            if (opts.member_name === 'orch' && Object.values(TOOL_VERSION_PROBES).includes(cmd)) {
+                h.calls.push({ cmd, opts });
+                return { ok: true, output: versionAnswers()[cmd], error: null };
+            }
+            return orchCommand(cmd, opts);
+        };
+        await assert.rejects(
+            verify({ ...h, command }, { checkToolVersions: true }),
+            (err) => err.reason === BEADS_IDENTITY_FAILURE_REASONS.VERSION_MISMATCH && err.member === 'm1',
+        );
+        const issued = h.calls.map((c) => c.cmd);
+        assert.deepEqual(issued, [TOOL_VERSION_PROBES.bd, TOOL_VERSION_PROBES.dolt, TOOL_VERSION_PROBES.bd, TOOL_VERSION_PROBES.dolt]);
+        assert.ok(!issued.some((c) => SYNC_OR_SETUP_RE.test(c)), JSON.stringify(issued));
+        assert.deepEqual(setupCalls(h.calls), []);
+        assert.deepEqual(h.invalidated, []);
+        assert.ok(!h.order.includes('vcs:m1'), 'no credential refresh for a set-up that must not happen');
+    });
+
+    test('the version probes are read-only: they never invalidate the beads snapshot or the sync.remote memo', () => {
+        for (const cmd of Object.values(TOOL_VERSION_PROBES)) {
+            assert.equal(isBeadsMutatingCommand(cmd), false, cmd);
+            assert.equal(noteMemberCommand('probe-member', cmd), false, cmd);
+        }
+    });
+
+    test('verifyPinnedToolVersions alone: returns per-member found versions', async () => {
+        const { command } = fakeCommand({ a: versionAnswers(), b: versionAnswers({ dolt: { fail: "dolt : The term 'dolt' is not recognized as the name of a cmdlet, function, script file, or operable program." } }) });
+        const found = await verifyPinnedToolVersions({ command, members: ['a', 'b', 'a'] });
+        assert.deepEqual(found, { a: { bd: BEADS_VERSION, dolt: PIN_DOLT }, b: { bd: BEADS_VERSION, dolt: null } });
     });
 });

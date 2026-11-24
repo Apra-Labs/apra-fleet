@@ -27,6 +27,10 @@ compose_permissions tool delivers); a broader prefix entry counts as coverage:
   classifier.
 - `Bash(curl * localhost:8787/api/reservations/*)` -- only for the documented
   force-release of a stale reservation.
+- Member-host detection and verification need NO extra entry: they are
+  `node scripts/deploy-install.mjs --member-host-check` and `--verify-member-host`,
+  covered by the `deploy-install.mjs*` prefix above (data dir, installed binary
+  and `/health` are resolved inside the script).
 
 `## Sandbox Deploy` never runs the installer. It shares the build prefixes
 above (`preflight-clear-build-locks`, `npm ci`, `npm run build`) and
@@ -120,6 +124,32 @@ curl -s -X POST http://localhost:8787/api/reservations/<sprintId>/force-release 
 Same route the dashboard's Stop/Restart controls use. Force-release does not
 restart anything; the sprint must be relaunched (`POST /api/sprints`).
 
+### Member host: `install --member --force`, never a full install
+
+Before the install line, check whether the data dir being replaced holds a
+member install: `member-install.json` under `APRA_FLEET_DATA_DIR` if set, else
+under `<home>/.apra-fleet/data`. A full install clears that marker, which turns
+the host into a full install: every fleet member sharing this OS user is then
+reported `full-install-running` and loses its KB/code tools. The installer
+refuses that path loudly (`E-MEMBER-HOST-FULL-INSTALL`, nothing stopped or
+written), so the deploy must choose the member path itself:
+
+- **Marker present (member host):** install with
+  `node scripts/deploy-install.mjs -- --member --workflows none --transport http`
+  (= `install --force --member ...`; add `--llm <provider>` before `--` for a
+  non-claude member). The previously recorded port is reused automatically
+  (the server port is `APRA_FLEET_PORT`, else the marker's port, else 7523).
+  Do NOT run the `run --transport http` launch step: a member install
+  registers and starts its own user-mode auto-start (it fails with
+  `E-MEMBER-AUTOSTART` when it cannot). Then run the member-host verification
+  in the script below.
+- **Marker absent:** the full-install path below, unchanged.
+
+The orchestrator-side proof that the member still has its fleet tools (an
+operator check, not part of this deploy): `member_detail` shows `fleetMcp`
+available for each member on this host, or `update_member {member_id,
+fleet_install: "auto"}` reports the member install up to date.
+
 ```bash
 # Pre-flight: kills any process holding a lock on a file under THIS repo's
 # node_modules so `npm ci` doesn't fail with EPERM / errno -4048 unlink.
@@ -155,6 +185,19 @@ npm run build:binary
 # --self-sprint-id only when given no identity: every reservation is then foreign.
 curl -s http://localhost:8787/api/sprints
 node scripts/check-foreign-sprints.mjs --self-sprint-id "<your-sprint-id>"
+
+# Member-host detection (see "Member host" above). Prints MEMBER-HOST or FULL-HOST
+# (any OS; the data dir is resolved inside the script):
+node scripts/deploy-install.mjs --member-host-check
+#
+# MEMBER-HOST -> install --member --force, then verify, and STOP here (no launch step):
+#   node scripts/deploy-install.mjs -- --member --workflows none --transport http
+#   node scripts/deploy-install.mjs --verify-member-host
+#   The verify step checks that the marker still exists, its "version" equals the
+#   installed binary's --version, and /health answers on the marker's "port"
+#   (7523 when the marker records none). Non-zero exit = failed deploy: return
+#   deployed: false with the output.
+# FULL-HOST -> continue with the full install below, unchanged.
 
 # Resolves dist/apra-fleet-installer-<platform>-<arch>[.exe] and runs
 # `install --force` with inherited stdio (exit code propagated). Add

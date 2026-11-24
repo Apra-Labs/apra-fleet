@@ -420,7 +420,11 @@ async function createChildBeadAttempt(opts, shared, attempt, attempts) {
     // btj9.7). A PRESENT or UNKNOWN probe consumes the id (never re-pooled --
     // computeChildFloor can miss unlinked children or fall back to floor 0, so
     // a released occupied id would be re-minted every round) and the caller
-    // retries with a fresh id; a gap in the sequence costs nothing. The null-allocator path (`bd create --parent`) lets bd mint a
+    // retries with a fresh id; a gap in the sequence costs nothing.
+    // Note: the sprint-start tool version pin (verifyPinnedToolVersions in
+    // beads-identity-check.mjs) now guarantees every member runs the pinned bd
+    // minor, which refuses a duplicate --id itself; this probe could become
+    // advisory on that guarantee, but is deliberately kept fail-closed. The null-allocator path (`bd create --parent`) lets bd mint a
     // fresh id natively and never collides, so it needs no probe.
     if (grant.childId) {
         try {
