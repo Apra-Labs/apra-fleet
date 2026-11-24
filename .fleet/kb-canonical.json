@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "962e202f8b5910fdecf6f82a46102a798f5cc4f2",
     "branch": "main",
-    "entry_count": 204
+    "entry_count": 205
   },
   "entries": [
     {
@@ -1107,6 +1107,32 @@
       "updated_at": "2026-09-25T22:26:29.791Z",
       "source_file_hashes": {
         "src/services/knowledge/audn.ts": "7adfb0501f6fd3d5dd88406ba68d449930df3f96"
+      }
+    },
+    {
+      "id": "462655e7-d57a-43f4-8034-4fd26abe8e47",
+      "type": "knowledge",
+      "title": "PR path never calls provision_vcs_auth for providers the fleet cannot mint",
+      "summary": "provisionVcsAuthForMember returns provisionSkipped at git_access push+pr whenever the provider's authRemedy.serverSideReMintable === false (Azure DevOps, Bitbucket), as a backstop after the provider hook; both provider hooks also answer skip for push+pr. GitHub App still mints push+pr just in time.",
+      "symbols": [
+        "provisionVcsAuthForMember",
+        "provisionPrCapableAuthForMember",
+        "raiseVcsPrForMember",
+        "buildProvisionArgs"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/azure-devops.mjs",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/bitbucket.mjs",
+        "packages/apra-fleet-se/test/vcs-pr-path-no-reprovision.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-24T12:53:37.823Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs": "c39f238f655c66f9c46f6ed8d36e0ba06a2398a3",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/azure-devops.mjs": "210fd003ba4fa19e06bc219ccc7b33e5c0ea6296",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/bitbucket.mjs": "ac50e09b0dcdaf64f06eb08e61085249f27fc4ad",
+        "packages/apra-fleet-se/test/vcs-pr-path-no-reprovision.test.mjs": "b673d352ebb4fc5dc365d30456c9240356b31ec2"
       }
     },
     {
