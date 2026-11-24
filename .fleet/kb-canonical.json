@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "56ef5cf2d4e382d96760e6982ccf15452746fa07",
     "branch": "main",
-    "entry_count": 184
+    "entry_count": 185
   },
   "entries": [
     {
@@ -68,6 +68,30 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:15.988Z"
+    },
+    {
+      "id": "0b87931a-f912-416c-b03e-5fd4c26ac6ee",
+      "type": "knowledge",
+      "title": "execute_prompt resolved_tier/resolved_model are attached by a wrapper around executePromptCore",
+      "summary": "executePrompt is now a thin wrapper: executePromptCore writes into a mutable PromptResolution object after model resolution, and the wrapper merges resolved_tier/resolved_model into structuredContent of any returned object result. Early returns before resolution and thrown errors carry neither field.",
+      "symbols": [
+        "executePrompt",
+        "executePromptCore",
+        "PromptResolution",
+        "resolveModelForTier"
+      ],
+      "source_files": [
+        "src/tools/execute-prompt.ts",
+        "tests/execute-prompt-resolved-tier.test.ts",
+        "packages/apra-fleet-client/src/client/api.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-24T03:19:38.005Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-client/src/client/api.mjs": "ed0eefe7dfe92f0145638204f3fcaf69eb35308b",
+        "src/tools/execute-prompt.ts": "2cdef64e525797cb388accb76fac8e7f8e7ce50d",
+        "tests/execute-prompt-resolved-tier.test.ts": "00e75945d536faaf095126af2c944a8c259a3203"
+      }
     },
     {
       "id": "0c2d907a-bee5-4324-b61e-6ee0e2bc4b74",
