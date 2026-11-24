@@ -1265,7 +1265,10 @@ async function runSprintCycle(context) {
     // sources (titles of the beads under review) are read from it.
     let kbBeadIndex = new Map();
     const kbBeadTitles = (ids) => (Array.isArray(ids) ? ids : []).map((id) => kbBeadIndex.get(id)?.title).filter((t) => typeof t === 'string' && t);
-    const agent = async (prompt, opts = {}) => {
+    const agent = async (prompt, callOpts = {}) => {
+        // tier_context is engine-internal (bead ids, tierReason, escalations
+        // for the tier log line); it never reaches the workflow agent.
+        const { tier_context: tierContext, ...opts } = callOpts;
         let finalPrompt = prompt;
         if (opts.agentType && !KB_SELF_INJECTING_ROLES.has(opts.agentType) && opts.member_name) {
             // Only promise the kb_captures channel to a persona whose returned
@@ -1290,8 +1293,19 @@ async function runSprintCycle(context) {
                 // Per-dispatch kb_* and code_* counts: session_stats snapshots of the
                 // dispatched member immediately before and after (best-effort;
                 // an unreadable count is recorded as unknown, never 0).
+                // onResolvedTier captures execute_prompt's resolved_tier and
+                // resolved_model for the per-dispatch tier log line.
+                let resolvedTierInfo = null;
+                opts.onResolvedTier = (r) => { resolvedTierInfo = r; };
                 return await dispatchAccounting.around(
-                    { memberName: opts.member_name, role: opts.agentType, label: opts.label },
+                    {
+                        memberName: opts.member_name,
+                        role: opts.agentType,
+                        label: opts.label,
+                        requestedTier: opts.model,
+                        tierContext,
+                        resolved: () => resolvedTierInfo,
+                    },
                     () => agentRaw(finalPrompt, { sprint_id: sprintMutexId, ...opts }),
                 );
             } finally {

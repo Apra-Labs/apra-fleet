@@ -662,6 +662,26 @@ export async function runDevelopPhase({
                     snapshotAfter = await readBranchSnapshot(doerMember);
                 }
             },
+            // Bead ids, each premium bead's tierReason and any escalation, for
+            // the per-dispatch tier log line (read lazily: the claim narrows
+            // actualBeadIds inside the dispatch bracket).
+            tierContext: () => {
+                const claimed = new Set(actualBeadIds.map(String));
+                const beads = streak.filter((b) => claimed.has(String(b.id)));
+                const tierReasons = {};
+                const escalationList = [];
+                for (const b of beads) {
+                    const reason = b.metadata && b.metadata.tierReason;
+                    if (reason && beadTier(b) === 'premium') tierReasons[b.id] = reason;
+                    if (escalatedBead(b)) {
+                        const held = escalations.get(String(b.id));
+                        const from = (held && held.from) || (b.metadata && b.metadata.tierEscalatedFrom);
+                        const to = beadTier(b);
+                        if (from && to) escalationList.push({ id: b.id, from, to });
+                    }
+                }
+                return { beadIds: [...claimed], tierReasons, escalations: escalationList };
+            },
             onSessionId: (id, meta) => {
                 if (!worklistCtx) return;
                 worklistCtx.sessionId = id;

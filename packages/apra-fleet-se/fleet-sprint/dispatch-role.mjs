@@ -647,6 +647,9 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
                 resume: resolveResumeArg(dispatch.resumeArg, localOpts),
                 onSessionId: opts.onSessionId,
                 label: prepared.label ?? defaultLabel,
+                // Engine-internal: bead ids, tierReason and escalations for the
+                // per-dispatch tier log line (stripped by the runner's agent()).
+                tier_context: typeof opts.tierContext === 'function' ? opts.tierContext() : opts.tierContext,
                 // Strict permission handling: a refused tool call fails the
                 // dispatch (permission_denied) so no role trusts a result made
                 // without the refused tool's output, and the progressive heal

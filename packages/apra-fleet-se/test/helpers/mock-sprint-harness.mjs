@@ -2051,7 +2051,15 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
         const handlerStructured = result.structuredContent || {};
         return {
             ...result,
-            structuredContent: { sessionId: MOCK_SESSION_ID, ...handlerStructured },
+            // Like the real execute_prompt: a tier request resolves to itself
+            // (a literal model id resolves to no tier).
+            structuredContent: {
+                sessionId: MOCK_SESSION_ID,
+                ...(opts && (opts.model === 'cheap' || opts.model === 'standard' || opts.model === 'premium')
+                    ? { resolved_tier: opts.model, resolved_model: `mock-model-${opts.model}` }
+                    : {}),
+                ...handlerStructured,
+            },
         };
     };
 
