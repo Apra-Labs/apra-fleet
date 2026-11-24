@@ -101,6 +101,15 @@ export interface ExecutePromptStructured {
   response?: string;
   usage?: StructuredUsage;
   sessionId?: string;
+  /** The model id the dispatch ran on: the id the provider reported when it
+   *  named one (modelSource 'reported'), else the id handed to the provider
+   *  CLI after tier mapping (modelSource 'resolved'). Present on every result produced once the model
+   *  was resolved -- success and typed failures (usage_limit,
+   *  max_turns_exhausted, ...); absent on results returned before that
+   *  (busy, reserved, preflight). */
+  model?: string;
+  /** Whether `model` was reported by the provider or is only the resolved id/alias. */
+  modelSource?: 'reported' | 'resolved';
   /** Present on an 'insufficient_context_headroom' rejection (apra-fleet-eft.81.1). */
   detail?: { demand: number; headroom: number; window: number };
   /** Present on a successful dispatch that fits but lands inside the session's
@@ -672,12 +681,19 @@ async function executePromptInteractive(
 /** Output-only: the tier keyword requested and the concrete model passed to the provider. */
 interface PromptResolution { resolved_tier?: 'cheap' | 'standard' | 'premium' | null; resolved_model?: string }
 
+/**
+ * The concrete model id a dispatch ran on (after tier mapping) is stamped onto
+ * every structuredContent produced once it was resolved -- success and typed
+ * failures alike -- so callers can see which model actually served a dispatch.
+ * resolved_tier/resolved_model report the tier requested and the model passed
+ * to the provider. Results returned before resolution carry none.
+ */
 export async function executePrompt(input: ExecutePromptInput, extra?: any): Promise<string | ExecutePromptResult> {
   const resolution: PromptResolution = {};
-  const result = await executePromptCore(input, extra, resolution);
-  // Every result that got as far as model resolution carries both fields.
+  const tap: { model?: string; reportedModel?: string } = {};
+  let result = await executePromptImpl(input, extra, tap, resolution);
   if (typeof result === 'object' && result !== null && resolution.resolved_model !== undefined) {
-    return {
+    result = {
       ...result,
       structuredContent: {
         ...(result.structuredContent ?? {}),
@@ -686,10 +702,18 @@ export async function executePrompt(input: ExecutePromptInput, extra?: any): Pro
       },
     };
   }
+  if (tap.model && result && typeof result === 'object' && result.structuredContent
+      && result.structuredContent.model === undefined) {
+    // Prefer the id the provider itself reported; fall back to the id/alias
+    // this server resolved and handed to the CLI, and say which it is.
+    const model = tap.reportedModel ?? tap.model;
+    const modelSource = tap.reportedModel ? 'reported' : 'resolved';
+    return { ...result, structuredContent: { ...result.structuredContent, model, modelSource } };
+  }
   return result;
 }
 
-async function executePromptCore(input: ExecutePromptInput, extra: any, resolution: PromptResolution): Promise<string | ExecutePromptResult> {
+async function executePromptImpl(input: ExecutePromptInput, extra: any, tap: { model?: string; reportedModel?: string }, resolution: PromptResolution): Promise<string | ExecutePromptResult> {
   // GitHub #563: max_total_s is measured from HERE, handler entry -- cloud
   // readiness, preflight and agent provisioning are all charged to it, since
   // the client's own deadline (max_total_s + a fixed grace) starts at the call.
@@ -1171,6 +1195,7 @@ async function executePromptCore(input: ExecutePromptInput, extra: any, resoluti
   }
   resolution.resolved_tier = resolvedTier ?? null;
   resolution.resolved_model = resolvedModel;
+  tap.model = resolvedModel;
 
   const scope = new LogScope('execute_prompt', `[${resolvedModel}] resume=${input.resume} fork=${input.fork} timeout=${input.timeout_s ?? 300}s ${truncateForLog(maskSecrets(input.prompt), getLogPreviewChars())}`, agent);
 
@@ -1882,6 +1907,7 @@ async function executePromptCore(input: ExecutePromptInput, extra: any, resoluti
   const parseDispatch = (r: SSHExecResult): ParsedResponse => {
     const p = provider.parseResponse(r, parseCtx);
     _epParsedSid = p.sessionId;
+    if (p.reportedModel) tap.reportedModel = p.reportedModel;
     if (typeof p.sessionCostUsd === 'number') {
       const landedOn = p.sessionId ?? (lastAttemptContinues && !forkDescriptor ? lastAttemptContinues : undefined);
       const cost = dispatchCostFromCumulative(p.sessionCostUsd, landedOn, lastAttemptContinues);

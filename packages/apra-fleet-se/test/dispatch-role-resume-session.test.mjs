@@ -11,6 +11,7 @@ import {
     infraError,
     sessionNotFoundError,
     turnExhaustionError,
+    withWaitNotice,
 } from './helpers/dispatch-role-harness.mjs';
 
 // =============================================================================
@@ -141,7 +142,7 @@ describe('usage-limit resume re-dispatch targets the failed session by explicit 
         assert.strictEqual(outcome.ok, true);
         assert.strictEqual(rec.dispatches.length, 3);
         assert.strictEqual(rec.dispatches[2].options.resume, false);
-        assert.strictEqual(rec.dispatches[2].prompt, ROLE_CALL_OPTS.reviewer.prompt);
+        assert.strictEqual(rec.dispatches[2].prompt, withWaitNotice(ROLE_CALL_OPTS.reviewer.prompt, rec.dispatches[2].options.timeout_s));
         assert.ok(rec.logs.some((m) => m.includes('session_not_found') && m.includes('FRESH session')), JSON.stringify(rec.logs));
     });
 });

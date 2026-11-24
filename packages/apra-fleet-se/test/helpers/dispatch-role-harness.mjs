@@ -32,6 +32,8 @@
 // real contracts.mjs objects.
 
 import { EXECUTE_PROMPT_MAX_TURNS } from '@apralabs/apra-fleet-client';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { AgentOutputError, AgentDispatchError, FleetTransportError, CancelledError, BudgetExceededError } from '@apralabs/apra-fleet-workflow';
 
 import {
@@ -49,8 +51,22 @@ import { isNoMutationDispatchFailure, FIXED_ROLE_TIER as RUNNER_FIXED_ROLE_TIER 
 import { PostDispatchSyncError, GitSyncError, DoltSyncError, GitDivergedError } from '../../fleet-sprint/errors.mjs';
 import { ROLE_POLICIES } from '../../fleet-sprint/role-policies.mjs';
 import { dispatchRole, TURN_BASES } from '../../fleet-sprint/dispatch-role.mjs';
+import { longRunWaitNotice } from '../../fleet-sprint/long-run-wait.mjs';
 
 export { TURN_BASES };
+
+/**
+ * The prompt the engine actually dispatches for a persona told the
+ * engine-stated wait limit (doer, reviewer, integ/regression runners): the
+ * caller's prompt unchanged, then the wait-limit block derived from that
+ * dispatch's own timeout_s.
+ */
+export function withWaitNotice(prompt, timeoutS) {
+    return `${prompt}\n\n${longRunWaitNotice(timeoutS)}`;
+}
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const FLEET_SPRINT_DIR = path.join(__dirname, '..', '..', 'fleet-sprint');
 
 // The engine's timed backoff sleeps exist for production busy-lock
 // resilience only; the documented hermetic-mock flag makes the ladder run its

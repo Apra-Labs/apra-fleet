@@ -120,14 +120,16 @@ continue with the next part. If the playbook defines a `## Teardown`, ALWAYS
 run it once the parts are done, before doing anything else -- pass or fail.
 
 **Waiting on a long-running run**: a part can legitimately take many
-minutes. Never wait for it inside one silent blocking call -- your own
-turn's output is the liveness signal the dispatch layer's inactivity
-watchdog uses to know you are still working, and a long silent stretch
-looks identical to a hang. Send the run to the background (or poll it in
-short, bounded checks), and report progress explicitly at least every ~2
-minutes while it runs (e.g. "<part> still running (checked at HH:MM:SS) --
-checking again shortly."). Do not chain sleeps to route around this. Do not
-end your turn or report final results while a run is still in progress.
+minutes. Your dispatch prompt states an engine-stated wait limit and the
+inactivity budget it was derived from; a session silent for the whole
+budget is treated as hung. Send the run to the background and check it
+with ONE tool call that blocks for up to the stated wait limit, repeating
+until it finishes. Do not poll in a tight loop (no repeated short checks
+seconds apart, no extra turns between checks); if no limit is stated, wait
+no longer than a few minutes per check. Never block a single call beyond
+the stated limit, and do not chain sleeps or shell loops to route around
+a sleep block. Do not end your turn or report final results while a run is
+still in progress.
 
 ## Step 3 -- Filing failures: STANDALONE, PARENT-LESS beads only
 
