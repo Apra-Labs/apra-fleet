@@ -839,11 +839,8 @@ function typedStepError(member, operation, step) {
 // FOREIGN vs OWN holder. The bd process this attempt started legitimately
 // holds the lock while it works, and a slow incremental pull can run for
 // minutes. So a holder only counts as contention when it is provably older
-// than this attempt: its process age exceeds the attempt's elapsed time (read
-// after the probe ran) by more than DOLT_LOCK_HOLDER_AGE_SLACK_S, or by more
-// than DOLT_LOCK_OWN_COMMAND_SLACK_S when the holder's command line is the
-// same bd sync subcommand this attempt issued (its own slow pull, whose age
-// runs ahead of the attempt clock by transport and probe latency). Both are durations (member clock vs
+// than this attempt: its process age exceeds the attempt's elapsed time by
+// more than DOLT_LOCK_HOLDER_AGE_SLACK_S. Both are durations (member clock vs
 // orchestrator clock), so no clock sync is assumed. An own or unknown-age
 // holder is logged and the attempt keeps waiting.
 //
@@ -874,47 +871,6 @@ export const DOLT_LOCK_PROBE_TIMEOUT_S = 30;
 /** A holder must be at least this much older than the attempt to count as foreign. */
 export const DOLT_LOCK_HOLDER_AGE_SLACK_S = 5;
 
-/**
- * Extra age allowance for a holder running the SAME bd sync subcommand this
- * attempt issued (e.g. `bd dolt pull`). Such a process is almost certainly
- * this attempt's own: the attempt clock starts before the command reaches the
- * member (transport latency) and the probe reads the holder's age a few
- * seconds after the clock was sampled, so the own process can look older than
- * the attempt by well over DOLT_LOCK_HOLDER_AGE_SLACK_S. Only a same-command
- * holder older than the attempt by more than this is treated as foreign.
- */
-export const DOLT_LOCK_OWN_COMMAND_SLACK_S = 60;
-
-/**
- * The bd sync subcommand of a logical command ('dolt pull' / 'dolt push'),
- * or null when the command is neither.
- *
- * @param {string} cmd
- * @returns {string|null}
- */
-export function syncSubcommandOf(cmd) {
-    const m = /dolt\s+(pull|push)/.exec(String(cmd == null ? '' : cmd));
-    return m ? `dolt ${m[1]}` : null;
-}
-
-/**
- * Is `holder` a foreign process for an attempt that has run `elapsedS`
- * seconds? Pure (exported for tests).
- *
- * @param {{ ageS: number|null, commandLine: string }} holder
- * @param {number} elapsedS
- * @param {string|null} syncSubcommand
- * @returns {boolean}
- */
-export function isForeignLockHolder(holder, elapsedS, syncSubcommand) {
-    if (holder.ageS === null) return false;
-    let slack = DOLT_LOCK_HOLDER_AGE_SLACK_S;
-    if (syncSubcommand && String(holder.commandLine || '').includes(syncSubcommand)) {
-        slack = DOLT_LOCK_OWN_COMMAND_SLACK_S;
-    }
-    return holder.ageS > elapsedS + slack;
-}
-
 const defaultLockProbeTimer = {
     set(fn, ms) {
         const handle = setTimeout(fn, ms);
@@ -934,7 +890,7 @@ const defaultLockProbeTimer = {
  *
  * @returns {Promise<{ foreignHolders: object[] }>}
  */
-async function probeLockHolders({ command, member, target, label, log, attemptStartedAt, now, syncCmd }) {
+async function probeLockHolders({ command, member, target, label, log, attemptStartedAt, now }) {
     let res;
     try {
         res = await command(buildLockHolderProbe(target), {
@@ -945,21 +901,23 @@ async function probeLockHolders({ command, member, target, label, log, attemptSt
         if (err && err.name === 'CancelledError') throw err;
         res = { ok: false, output: '', error: (err && err.message) || String(err) };
     }
-    // Sampled AFTER the probe ran: the holder's age was read during it.
+    // Sampled AFTER the probe ran: the holder's age is read during the probe, so
+    // an own process can never be older than this reading (the earlier sample
+    // made a slow own pull look foreign by the probe's latency).
     const elapsedS = Math.max(0, Math.round((now() - attemptStartedAt) / 1000));
     if (!res || !res.ok) {
         log(`[Dolt] ${label} has produced no result after ${elapsedS}s on member '${member}'; the beads lock-holder probe failed (${(res && res.error) || 'no result'}), so the holders are unknown. Still waiting.`);
         return { foreignHolders: [] };
     }
     const parsed = parseLockHolderProbe(res.output);
-    const foreignHolders = parsed.holders.filter((h) => isForeignLockHolder(h, elapsedS, syncSubcommandOf(syncCmd)));
+    const foreignHolders = parsed.holders.filter((h) => h.ageS !== null && h.ageS > elapsedS + DOLT_LOCK_HOLDER_AGE_SLACK_S);
     const parts = [`[Dolt] ${label} has produced no result after ${elapsedS}s on member '${member}'.`];
     if (parsed.noLookup) parts.push(`Beads lock holders cannot be listed on this member: ${parsed.noLookup}.`);
     if (parsed.holders.length > 0) parts.push(`Beads lock holders: ${parsed.holders.map(describeLockProcess).join('; ')}.`);
     else if (!parsed.noLookup) parts.push('Beads lock holders: none found.');
     if (parsed.candidates.length > 0) parts.push(`Running bd/dolt processes (candidates): ${parsed.candidates.map(describeLockProcess).join('; ')}.`);
     parts.push(foreignHolders.length > 0
-        ? `Held by a process that started before this sync (older than the ${elapsedS}s attempt beyond the allowance for this sync's own process) -- failing fast.`
+        ? `Held by a process that started before this sync (more than ${DOLT_LOCK_HOLDER_AGE_SLACK_S}s older than the ${elapsedS}s attempt) -- failing fast.`
         : 'No lock held by a process older than this sync -- still waiting.');
     log(parts.join(' '));
     return { foreignHolders };
@@ -970,7 +928,7 @@ async function probeLockHolders({ command, member, target, label, log, attemptSt
  * `{ res }` when the command finishes (probe or not), or to `{ lockHeld }`
  * when the probe names a foreign holder first.
  */
-async function awaitSyncAttempt({ pending, command, member, target, label, log, attemptStartedAt, now, lockProbeAfterMs, lockProbeTimer, syncCmd }) {
+async function awaitSyncAttempt({ pending, command, member, target, label, log, attemptStartedAt, now, lockProbeAfterMs, lockProbeTimer }) {
     if (!(Number(lockProbeAfterMs) > 0)) return { res: await pending };
     const timer = lockProbeTimer || defaultLockProbeTimer;
     let fired = false;
@@ -978,7 +936,7 @@ async function awaitSyncAttempt({ pending, command, member, target, label, log, 
     const probed = new Promise((resolve, reject) => {
         handle = timer.set(() => {
             fired = true;
-            probeLockHolders({ command, member, target, label, log, attemptStartedAt, now, syncCmd }).then(resolve, reject);
+            probeLockHolders({ command, member, target, label, log, attemptStartedAt, now }).then(resolve, reject);
         }, Number(lockProbeAfterMs));
     });
     const first = await Promise.race([
@@ -1055,7 +1013,7 @@ async function runDoltStep({ command, member, cmd, label, log, maxTransientRetri
         // `logicalCommand` lets the beads-scope wrapper classify the unprefixed
         // command (a prefixed D-pull must still drop the shared snapshot).
         const pending = Promise.resolve(command(issued, { member_name: member, silent: true, failSoft: true, label, timeout_s: timeoutS, logicalCommand: cmd }));
-        const waited = await awaitSyncAttempt({ pending, command, member, target, label, log, attemptStartedAt, now, lockProbeAfterMs, lockProbeTimer, syncCmd: cmd });
+        const waited = await awaitSyncAttempt({ pending, command, member, target, label, log, attemptStartedAt, now, lockProbeAfterMs, lockProbeTimer });
         if (waited.lockHeld) {
             // The sync command is still waiting on the member; stop waiting
             // for it here and hand it to the caller (the push bracket keeps
