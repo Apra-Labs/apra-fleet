@@ -218,7 +218,7 @@ export async function runFinalReviewPhase({
     const readFinalCounts = () => Promise.all([
         bdListScoped(`--status=${NOT_DONE_STATUSES} --priority-max=${goalMax} --json`),
         decomposedParentIds(),
-        bdListScoped('--status=closed --json'),
+        bdListScoped('--status=closed --json --brief'),
     ]);
     let [finalOpenAtGoalRaw, finalOpenAtGoalParentIds, finalClosedBeads] = await readFinalCounts();
     // Catch-up review: every bead this sprint dispatched that is closed now
