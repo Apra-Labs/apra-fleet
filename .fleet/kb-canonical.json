@@ -3,9 +3,35 @@
   "provenance": {
     "commit": "56ef5cf2d4e382d96760e6982ccf15452746fa07",
     "branch": "main",
-    "entry_count": 186
+    "entry_count": 188
   },
   "entries": [
+    {
+      "id": "0077b24d-29fe-4f72-94df-0cd6a9e65f90",
+      "type": "knowledge",
+      "title": "Per-run role tiers come from roleTierTable(policy); the reviewer round overrides via bindings.fixedTier",
+      "summary": "runner.js sets dispatchCtx.fixedRoleTier = roleTierTable(tierPolicy) instead of the quality-only FIXED_ROLE_TIER; dispatch-role.mjs resolveModelTier honours bindings.fixedTier, which dispatchReview passes as the per-round reviewer tier.",
+      "symbols": [
+        "roleTierTable",
+        "resolveModelTier",
+        "dispatchReview",
+        "FIXED_ROLE_TIER"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/tier-policy.mjs",
+        "packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/fleet-sprint/phases/review.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-24T04:59:03.713Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs": "5486973539915eb92bfadf46299ae057cc60ffe0",
+        "packages/apra-fleet-se/fleet-sprint/phases/review.mjs": "c243db271b918be37dc82611dc276e4609123d5d",
+        "packages/apra-fleet-se/fleet-sprint/runner.js": "99119bc32f6ed50d00bece21dc4da768f66b47d2",
+        "packages/apra-fleet-se/fleet-sprint/tier-policy.mjs": "e531df63e419054930228b056e0674287b4307de"
+      }
+    },
     {
       "id": "0349a241-9b26-47c6-91d5-2bd998154430",
       "type": "knowledge",
@@ -3065,6 +3091,33 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:15.358Z"
+    },
+    {
+      "id": "d9d21654-e8f4-46ed-948d-13593e25ca2e",
+      "type": "knowledge",
+      "title": "Tier escalation is recorded as tierEscalatedFrom, never by rewriting metadata.model",
+      "summary": "tier-escalation.mjs escalates a reopened or verify-failed bead one tier up, once per sprint, by writing metadata tierEscalatedFrom=<original> and holding the escalation on the run context; effectiveBeadTier derives the running tier. metadata.model is never rewritten by the engine.",
+      "symbols": [
+        "applyEscalations",
+        "effectiveBeadTier",
+        "holdTierEscalations",
+        "isVerifyFailureOutcome",
+        "planEscalations"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/tier-escalation.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/review.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/develop.mjs",
+        "packages/apra-fleet-se/fleet-sprint/tier-cap.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-24T04:59:07.355Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/phases/develop.mjs": "30916e330142da27cb3aaea381221699b0b6d77a",
+        "packages/apra-fleet-se/fleet-sprint/phases/review.mjs": "c243db271b918be37dc82611dc276e4609123d5d",
+        "packages/apra-fleet-se/fleet-sprint/tier-cap.mjs": "aaa7b0e3ed3d909a65135837e94f0ceec80765be",
+        "packages/apra-fleet-se/fleet-sprint/tier-escalation.mjs": "d65b7a3ed7c01949238cbdc510683a5efa3d1b51"
+      }
     },
     {
       "id": "da7d0105-e454-43d0-b12f-c27d00e7f337",
