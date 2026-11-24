@@ -289,7 +289,17 @@ test('gate: over the cap only through premium beads this run already closed -- n
     const out = await runPremiumCapGate({ policy: resolveTierPolicy('balanced'), sprintState, cycle: 2, baseline, ...s });
     assert.equal(out.status, 'closed-only');
     assert.equal(s.calls.filter((c) => c && (c.replan || c.decision)).length, 0);
-    assert.ok(s.logs.some((l) => l.includes('no open premium bead is left to move')), JSON.stringify(s.logs));
+    assert.ok(s.logs.some((l) => l.includes('too few open premium beads are left to move')), JSON.stringify(s.logs));
+    // One open premium bead left, but 3 closed premium of 11 (allowance 3) plus it must move 1: fixable -> re-plan.
+    const one = [...beads, task('t10', 'premium')];
+    const s2 = gateSeams({ scopes: [one, one.map((b) => (b.id === 't10' ? task('t10', 'standard') : b))] });
+    assert.equal((await runPremiumCapGate({ policy: resolveTierPolicy('balanced'), sprintState: {}, cycle: 2, baseline, ...s2 })).status, 'within');
+    // 4 closed premium of 11 exceed the allowance of 3 by themselves: moving the one open bead cannot help.
+    const four = tenTasks(4).map((b) => (b.id && b.id.startsWith('t') && Number(b.id.slice(1)) < 4 ? { ...b, status: 'closed' } : b));
+    four.push(task('t10', 'premium'));
+    const s3 = gateSeams({ scopes: [four] });
+    assert.equal((await runPremiumCapGate({ policy: resolveTierPolicy('balanced'), sprintState: {}, cycle: 2, baseline, ...s3 })).status, 'closed-only');
+    assert.equal(s3.calls.filter((c) => c && (c.replan || c.decision)).length, 0);
 });
 
 test('gate: the engine never writes a bead -- the count is read-only over the listed beads', async () => {

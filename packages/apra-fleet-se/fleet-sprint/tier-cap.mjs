@@ -36,9 +36,10 @@
 // WHAT A RE-PLAN MAY MOVE
 //   Only the OPEN premium beads (openPremiumIds): a closed bead's tier can no
 //   longer change what runs, so the re-plan prompt and the operator decision
-//   never ask for one to be lowered. A plan over the cap only through
-//   premium beads closed in this run (nothing open left to move) is logged
-//   and Develop proceeds -- a re-plan could not fix it.
+//   never ask for one to be lowered. A plan whose premium beads closed in
+//   this run exceed the allowance by themselves (fewer open premium beads
+//   than must move) is logged and Develop proceeds -- a re-plan could not
+//   fix it.
 //
 // ROUNDING (premiumAllowance)
 //   allowed = ceil(premiumCapPct x total / 100), computed in integers. The
@@ -188,6 +189,15 @@ function movableIds(count) {
 }
 
 /**
+ * Whether lowering open beads can bring the count within its cap: false when
+ * the premium beads this run already closed exceed the allowance by
+ * themselves (mustMove is more than the open premium beads).
+ */
+function fixableByReplan(count) {
+    return movableIds(count).length >= count.mustMove;
+}
+
+/**
  * The operator decision raised when the plan is still over the cap after the
  * last scoped re-plan. Its beadId is the first premium bead; the question
  * names every premium bead, the cap and the fixes.
@@ -270,9 +280,10 @@ export async function runPremiumCapGate({ policy, sprintState, cycle, listScope,
         log(`${prefix}: ${describePremiumCount(count)} -- within cap.`);
         return { status: 'within', count, replans: state.replans };
     }
-    if (movableIds(count).length === 0) {
-        log(`${prefix}: ${describePremiumCount(count)} -- over cap by ${count.mustMove}, but only through premium bead(s) ` +
-            'this run already closed; no open premium bead is left to move, so no re-plan can fix it. Develop proceeds.');
+    if (!fixableByReplan(count)) {
+        log(`${prefix}: ${describePremiumCount(count)} -- over cap by ${count.mustMove}, but the premium bead(s) this run ` +
+            'already closed exceed the allowance by themselves; too few open premium beads are left to move, so no ' +
+            're-plan can fix it. Develop proceeds.');
         return { status: 'closed-only', count, replans: state.replans };
     }
     if (state.decisionRaised) {
@@ -281,7 +292,7 @@ export async function runPremiumCapGate({ policy, sprintState, cycle, listScope,
             'proceeding to Develop with the operator\'s answer (or, while it is unanswered, with the premium bead(s) set aside).');
         return { status: 'already-raised', count, replans: state.replans };
     }
-    while (count.over && movableIds(count).length > 0 && state.replans < MAX_PREMIUM_CAP_REPLANS) {
+    while (count.over && fixableByReplan(count) && state.replans < MAX_PREMIUM_CAP_REPLANS) {
         state.replans += 1;
         log(`${prefix}: ${describePremiumCount(count)} -- over cap by ${count.mustMove}. Fix: scoped re-plan ` +
             `${state.replans} of ${MAX_PREMIUM_CAP_REPLANS} asking the planner to move at least ${count.mustMove} of ` +
@@ -293,9 +304,9 @@ export async function runPremiumCapGate({ policy, sprintState, cycle, listScope,
             return { status: 'within', count, replans: state.replans };
         }
     }
-    if (movableIds(count).length === 0) {
-        log(`${prefix}: ${describePremiumCount(count)} -- over cap by ${count.mustMove}, but only through premium bead(s) ` +
-            'this run already closed; no open premium bead is left to move. Develop proceeds.');
+    if (!fixableByReplan(count)) {
+        log(`${prefix}: ${describePremiumCount(count)} -- over cap by ${count.mustMove}, but the premium bead(s) this run ` +
+            'already closed exceed the allowance by themselves; too few open premium beads are left to move. Develop proceeds.');
         return { status: 'closed-only', count, replans: state.replans };
     }
     const decision = buildPremiumCapDecision(count, { replans: state.replans });
