@@ -41,35 +41,87 @@ function wmicCanKill(args) {
     return lower.some((a) => a.includes('*') || a === 'delete' || a === 'terminate');
 }
 
+/** Words after which the next word is itself a command to run. */
+const LAUNCHERS = new Set([
+  'xargs', 'sudo', 'doas', 'env', 'nohup', 'timeout', 'time', 'command', 'exec', 'nice', 'setsid', 'stdbuf',
+  'cmd', 'start', 'call', 'sh', 'bash', 'zsh', 'dash', 'ksh', 'powershell', 'pwsh',
+]);
+
+/** A launcher's own option (`-r`, `-n1`, `/c`, `5`, `FOO=bar`), skipped to reach the command. */
+function isLauncherOption(token) {
+  return /^-/.test(token) || /^\/[a-z]$/i.test(token) || /^\d+$/.test(token) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(token);
+}
+
+/** Options that make a launcher run the next (quoted) word as a command line. */
+const SHELL_COMMAND_FLAG = /^(-[a-z]*c|-command|\/[ck])$/i;
+
+/** Split a command line into segments at `| ; & ( ) { }`, backtick and
+ *  newline, each a list of words with a quoted flag. */
+function segmentWords(spaced) {
+  const segments = [[]];
+  const re = /"([^"]*)"|'([^']*)'|([|;&(){}`\n]+)|([^\s"'|;&(){}`]+)/g;
+  let m;
+  while ((m = re.exec(spaced)) !== null) {
+    if (m[3] !== undefined) { segments.push([]); continue; }
+    segments[segments.length - 1].push({ text: m[1] ?? m[2] ?? m[4], quoted: m[4] === undefined });
+  }
+  return segments.filter((s) => s.length > 0);
+}
+
 /**
  * True when a command line, or the payload of a `Bash(...)`/`PowerShell(...)`
- * rule, names a process-killing command: the command token itself (path and
- * .exe stripped, any case; a wildcard prefix such as `kil*` that covers one),
- * a later token that IS one (`xargs kill`, `powershell -Command
- * Stop-Process`), or wmic in a form that can delete/terminate a process. A
- * token that merely contains a kill word (`kill-port.mjs`) does not match.
- * @param {string} payload
+ * rule, runs a process-killing command. The ':' that separates a command
+ * prefix from its argument pattern counts as a space, and whitespace is
+ * collapsed, so `kill:*`, `kill *` and ` kill  -9 *` are the same request.
+ *  - a kill command matches only at a COMMAND position: the first word of a
+ *    segment (split at `| ; & ( )`), or the word a launcher runs
+ *    (`xargs kill`, `sudo kill`, `cmd /c taskkill`);
+ *  - a launcher's quoted command line is checked too (`bash -c "kill 1"`,
+ *    `powershell -Command "Stop-Process -Id 1"`); any other quoted text, and
+ *    any argument, is not (`git commit -m "fix kill race"`, `grep -rn kill`);
+ *  - a wildcard prefix that covers a kill command (`kil*`, `task*`) matches
+ *    as the payload's first word;
+ *  - wmic matches only in a form that can delete/terminate a process.
+ * A word that merely contains a kill word (`kill-port.mjs`) does not match.
  */
-export function payloadKillsProcesses(payload) {
-    const spaced = String(payload || '').replace(/:/g, (_m, off, str) => {
-        const driveLetter = off >= 1 && /[A-Za-z]/.test(str[off - 1]) && (off === 1 || /\s/.test(str[off - 2]));
-        return driveLetter && /[\\/]/.test(str[off + 1] || '') ? ':' : ' ';
-    });
-    const tokens = spaced.replace(/[(){};|&]/g, ' ').trim().split(/\s+/).filter(Boolean);
-    for (let i = 0; i < tokens.length; i++) {
-        const raw = tokens[i];
-        const wildcard = raw.endsWith('*');
-        const name = commandName(raw.replace(/\*+$/, ''));
-        if (name === 'wmic') {
-            if (wmicCanKill(tokens.slice(i + 1))) return true;
-            continue;
-        }
-        if (KILL_TOKENS.has(name)) return true;
-        if (i === 0 && wildcard && name) {
-            if ([...KILL_TOKENS, 'wmic'].some((k) => k.startsWith(name))) return true;
-        }
+export function payloadKillsProcesses(payload, depth = 0) {
+  // Every ':' counts as a separator except a drive letter's (`C:/...`,
+  // `C:\...` at the start of a word).
+  const spaced = String(payload || '').replace(/:/g, (_m, off, str) => {
+    const driveLetter = off >= 1 && /[A-Za-z]/.test(str[off - 1]) && (off === 1 || /\s/.test(str[off - 2]));
+    return driveLetter && /[\\/]/.test(str[off + 1] || '') ? ':' : ' ';
+  });
+  let firstWord = true;
+  for (const words of segmentWords(spaced)) {
+    let state = 'cmd';
+    let shellFlag = false;
+    for (let i = 0; i < words.length; i++) {
+      const { text, quoted } = words[i];
+      const isFirst = firstWord;
+      firstWord = false;
+      if (state === 'args') continue;
+      if (shellFlag && quoted) {
+        shellFlag = false;
+        if (depth < 3 && payloadKillsProcesses(text, depth + 1)) return true;
+        continue;
+      }
+      shellFlag = false;
+      if (state === 'launcher' && !quoted && isLauncherOption(text)) {
+        shellFlag = SHELL_COMMAND_FLAG.test(text);
+        continue;
+      }
+      const wildcard = !quoted && text.endsWith('*');
+      const name = commandName(text.replace(/\*+$/, ''));
+      if (name === 'wmic') {
+        if (wmicCanKill(words.slice(i + 1).map((w) => w.text))) return true;
+        break;
+      }
+      if (KILL_TOKENS.has(name)) return true;
+      if (isFirst && wildcard && name && [...KILL_TOKENS, 'wmic'].some((k) => k.startsWith(name))) return true;
+      state = LAUNCHERS.has(name) ? 'launcher' : 'args';
     }
-    return false;
+  }
+  return false;
 }
 
 /**

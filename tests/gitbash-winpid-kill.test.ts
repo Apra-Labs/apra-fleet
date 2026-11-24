@@ -13,6 +13,7 @@ import { getOsCommands } from '../src/os/index.js';
 import { pidWrapGitBash, resolveGitBashPath } from '../src/os/windows-gitbash.js';
 import { getProvider } from '../src/providers/index.js';
 import { isPidAlive } from '../src/utils/pid-helpers.js';
+import { isRemoteProcessAlive } from '../src/services/orphan-recovery.js';
 
 const claude = getProvider('claude');
 const promptOpts = {
@@ -161,10 +162,21 @@ describe('Git Bash timeout kill by Windows pid (live)', () => {
       expect(chain, `FLEET_PID ${fleetPid} not in chain ${chain.join(' -> ')}`).toContain(fleetPid);
       expect(fleetPid).not.toBe(wrapped.pid);
 
+      // Liveness probe a Git Bash member's remote check issues, run through its
+      // own bash: the live winpid must read ALIVE (kill -0 reads it DEAD).
+      const bashStrategy = {
+        execCommand: async (cmd: string) => ({
+          stdout: execFileSync(bash, ['-c', cmd], { env, windowsHide: true, timeout: 30_000, encoding: 'utf-8' }),
+          stderr: '', code: 0,
+        }),
+      } as never;
+      expect(await isRemoteProcessAlive(bashStrategy, fleetPid, 'windows', 'gitbash')).toBe(true);
+
       execFileSync(bash, ['-c', gitbash.killPid(fleetPid)], { env, windowsHide: true, timeout: 30_000 });
 
       expect(await waitFor(() => !isPidAlive(innerPid!), 10_000)).toBe(true);
       expect(isPidAlive(fleetPid)).toBe(false);
+      expect(await isRemoteProcessAlive(bashStrategy, fleetPid, 'windows', 'gitbash')).toBe(false);
       await Promise.race([closed, new Promise((r) => setTimeout(r, 10_000))]);
       expect(wrapped.exitCode !== null || wrapped.signalCode !== null).toBe(true);
 

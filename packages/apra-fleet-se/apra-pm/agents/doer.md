@@ -354,8 +354,9 @@ or as prose if you are answering a human directly.
   taken from a process listing, takes them down with yours. On resource exhaustion --
   process launch failures, out-of-memory, "too many processes", a host too loaded to
   start your tests -- stop and report it (BLOCKED, quoting the error) instead of
-  cleaning up. A process you started yourself (e.g. a backgrounded server) you may stop
-  only by the pid you recorded when you started it.
+  cleaning up. A process you started yourself (e.g. a backgrounded server) is stopped
+  through the target's own stop script or pidfile helper, or its stop/teardown step --
+  never by a raw `kill` (the permission config denies it).
 - If the target repo replays `bd` from recorded fixtures in its tests, record any NEW
   bd-shelling test's fixture at authoring time and commit it with the test -- do not
   defer it. Follow the fixture directory's own README for the record command.

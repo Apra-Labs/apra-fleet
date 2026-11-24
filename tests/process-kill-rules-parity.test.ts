@@ -21,6 +21,17 @@ const SAMPLES = [
   'Bash(wmic process where name="node.exe" delete)', 'Bash(wmic process where name="x" call terminate)',
   'Bash(wmic:*)', 'Bash(wmic process list brief)', 'Bash(kil*)',
   'Bash(node scripts/kill-port.mjs:*)', 'Bash(npm run test:*)', 'Bash(git:*)', 'Read', 'Bash(skill-check:*)',
+  'Bash(npm run kill:*)', 'Bash(git log --grep kill:*)', 'Bash(docker kill:*)', 'Bash(sudo kill -9 1)',
+  'Bash(bash -c "kill 1")', 'Bash(env FOO=1 pkill node)',
+];
+
+const FALSE_POSITIVES = [
+  'git commit -m "fix kill race"', 'grep -rn kill src', 'gh issue list --search "kill"', 'bd create "kill stale"',
+  'echo kill', 'tmux kill-session -t x', 'node scripts/kill-port.mjs 1',
+];
+const KILLS = [
+  'kill -9 1', 'cd x; kill 1', 'ps aux | xargs kill -9', 'a && taskkill /F /IM node.exe', 'sh -c "pkill node"',
+  'powershell -NoProfile -Command "Stop-Process -Id 1"', 'cmd /c taskkill /F /PID 1', '$(kill 1)', 'sudo -n kill 1',
 ];
 
 describe('process-kill rules: server and engine parity', () => {
@@ -33,6 +44,17 @@ describe('process-kill rules: server and engine parity', () => {
       expect(engine.isProcessKillGrant(sample)).toBe(isProcessKillGrant(sample));
     });
   }
+
+  it('a command that only mentions a kill word as an argument is not a kill', () => {
+    for (const line of FALSE_POSITIVES) {
+      expect(payloadKillsProcesses(line), line).toBe(false);
+      expect(engine.payloadKillsProcesses(line), line).toBe(false);
+    }
+    for (const line of KILLS) {
+      expect(payloadKillsProcesses(line), line).toBe(true);
+      expect(engine.payloadKillsProcesses(line), line).toBe(true);
+    }
+  });
 
   it('agree on raw command lines', () => {
     for (const line of ['taskkill /F /IM node.exe', 'ps aux | xargs kill -9', 'node scripts/kill-port.mjs 1', 'npm test']) {

@@ -193,8 +193,21 @@ export function isNeverAutoGrant(permission: string): boolean {
 /** Drops process-killing grants from a composed allow list: a profile, stack
  *  or ledger entry written before they were refused must never re-grant one
  *  (the composed deny rules cover them as well). */
-function withoutProcessKillGrants(allow: Iterable<string>): string[] {
-  return [...allow].filter(p => !isProcessKillGrant(p));
+function withoutProcessKillGrants(allow: Iterable<string>, dropped?: string[]): string[] {
+  return [...allow].filter(p => {
+    if (!isProcessKillGrant(p)) return true;
+    dropped?.push(p);
+    return false;
+  });
+}
+
+/** The delivery warning naming grants withoutProcessKillGrants removed, so an
+ *  entry a member or operator had configured never disappears silently. */
+function droppedKillGrantsWarning(dropped: string[]): string[] {
+  const unique = [...new Set(dropped)];
+  return unique.length
+    ? [`Removed process-killing grants (refused by policy): ${unique.join(', ')}`]
+    : [];
 }
 
 interface Ledger {
@@ -362,7 +375,7 @@ async function detectStacks(agent: Agent, projectSubdir?: string): Promise<strin
   return [...found];
 }
 
-function compose(profilesDir: string, role: string, stacks: string[], ledger: Ledger): string[] {
+function compose(profilesDir: string, role: string, stacks: string[], ledger: Ledger, dropped?: string[]): string[] {
   const baseName = role === 'doer' ? 'base-dev' : 'base-reviewer';
   const base = loadProfile(profilesDir, baseName);
   const perms = new Set<string>(base?.permissions?.allow ?? []);
@@ -382,7 +395,7 @@ function compose(profilesDir: string, role: string, stacks: string[], ledger: Le
     perms.add(entry.permission);
   }
 
-  return withoutProcessKillGrants(perms);
+  return withoutProcessKillGrants(perms, dropped);
 }
 
 /** Determine the primary permission mode from tags and/or role.
@@ -401,7 +414,7 @@ function resolvePrimaryMode(role: string | undefined, tags: string[] | undefined
 /** Tag-aware composition. Loads the base profile for the primary mode, merges stack
  *  profiles keyed by mode, then merges tag-<name>.json for every non-mode tag, plus
  *  ledger grants. Additive (Set-based) merge -- order-independent, deduplicated. */
-function composeFromTags(profilesDir: string, mode: 'doer' | 'reviewer', tags: string[], stacks: string[], ledger: Ledger): string[] {
+function composeFromTags(profilesDir: string, mode: 'doer' | 'reviewer', tags: string[], stacks: string[], ledger: Ledger, dropped?: string[]): string[] {
   const baseName = mode === 'doer' ? 'base-dev' : 'base-reviewer';
   const base = loadProfile(profilesDir, baseName);
   const perms = new Set<string>(base?.permissions?.allow ?? []);
@@ -433,7 +446,7 @@ function composeFromTags(profilesDir: string, mode: 'doer' | 'reviewer', tags: s
     perms.add(entry.permission);
   }
 
-  return withoutProcessKillGrants(perms);
+  return withoutProcessKillGrants(perms, dropped);
 }
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
@@ -1140,6 +1153,7 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
     }
 
     let allow: string[];
+    const droppedGrants: string[] = [];
 
     if (provider.name === 'claude') {
       // Claude: read existing allow list and merge. Must read the SAME absolute
@@ -1150,7 +1164,7 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
       const current = await readClaudeSettingsLocal(agent, strategy, agentShell);
       const existingAllow = new Set<string>(current?.permissions?.allow ?? []);
       for (const p of expanded) existingAllow.add(p);
-      allow = withoutProcessKillGrants(existingAllow);
+      allow = withoutProcessKillGrants(existingAllow, droppedGrants);
     } else {
       // Non-Claude: include the role's base profile so reactive grants never strip
       // baseline developer or reviewer permissions.
@@ -1158,7 +1172,7 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
       const base = loadProfile(profilesDir, baseName);
       const basePerms = new Set<string>(base?.permissions?.allow ?? []);
       for (const p of expanded) basePerms.add(p);
-      allow = withoutProcessKillGrants(basePerms);
+      allow = withoutProcessKillGrants(basePerms, droppedGrants);
     }
 
     let deliveryWarnings: string[] = [];
@@ -1170,7 +1184,7 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
     }
     const composeWarnings: string[] = [];
     const configs = provider.composePermissionConfig(mode, allow, agent, { memberHomeDir, warnings: composeWarnings });
-    deliveryWarnings = [...deliveryWarnings, ...composeWarnings];
+    deliveryWarnings = [...deliveryWarnings, ...droppedKillGrantsWarning(droppedGrants), ...composeWarnings];
     const paths = provider.permissionConfigPaths(agent);
     // A grant ADDS to what the member already has. Claude's allow list was
     // merged above; agy's rules are unioned into the project file's existing
@@ -1222,9 +1236,10 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
   const projectSubdir = input.project_folder ? path.basename(input.project_folder) : undefined;
   const stacks = await detectStacks(agent, projectSubdir);
 
+  const droppedGrants: string[] = [];
   const allow = input.tags?.length
-    ? composeFromTags(profilesDir, mode, input.tags, stacks, ledger)
-    : compose(profilesDir, mode, stacks, ledger);
+    ? composeFromTags(profilesDir, mode, input.tags, stacks, ledger, droppedGrants)
+    : compose(profilesDir, mode, stacks, ledger, droppedGrants);
 
   let deliveryWarnings: string[] = [];
   if (provider.preparePermissionsDelivery) {
@@ -1235,7 +1250,7 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
   }
   const composeWarnings: string[] = [];
   const configs = provider.composePermissionConfig(mode, allow, agent, { memberHomeDir, warnings: composeWarnings });
-  deliveryWarnings = [...deliveryWarnings, ...composeWarnings];
+  deliveryWarnings = [...deliveryWarnings, ...droppedKillGrantsWarning(droppedGrants), ...composeWarnings];
   const paths = provider.permissionConfigPaths(agent);
 
   try {
