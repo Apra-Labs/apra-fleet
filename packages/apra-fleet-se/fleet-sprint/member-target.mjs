@@ -80,7 +80,8 @@ export async function resolveMemberTarget({ fleetApi, member, log = () => {}, un
         }
         throw new Error('member_detail response carried no "os" field');
     } catch (err) {
-        log(`Could not resolve OS for member '${member}' from member_detail (${err && err.message ? err.message : err}); assuming ${unresolved.os ? `POSIX ('${unresolved.os}')` : 'an unknown OS (bare commands)'} for member-bound command construction.`);
+        const assumed = unresolved.os ? "POSIX ('" + unresolved.os + "')" : 'an unknown OS (bare commands)';
+        log(`Could not resolve OS for member '${member}' from member_detail (${err && err.message ? err.message : err}); assuming ` + assumed + ' for member-bound command construction.');
         return { os: unresolved.os, shell: unresolved.shell };
     }
 }
