@@ -35,7 +35,9 @@ sprints had before tier policies existed.
 `tierOverrides.premiumCapPct` replaces the preset's cap. The cap allows
 `ceil(premiumCapPct x counted task beads / 100)` premium task beads. Over the
 cap the engine runs up to two scoped re-plans, then raises an operator
-decision before Develop.
+decision before Develop. Escalated beads are excluded from the counted total
+as well as from the premium count, so an escalation alone can shrink the
+allowance and push a previously compliant plan over the cap (a known quirk).
 
 ## Per-bead tiers and tierReason
 
@@ -71,8 +73,16 @@ follows naming the member, the requested and the resolved value:
 [tier] WARN: dispatch 7 to member 'dev1' requested tier 'premium' but it resolved to 'standard' (requested=premium, resolved=standard).
 ```
 
-There is no silent downgrade or upgrade. Budget accounting prices a dispatch
-at its resolved tier when one is reported. The sprint summary has a "Tier
+Known limitation: `resolved_tier` currently echoes the requested tier keyword
+rather than being derived from the model actually chosen. When a member's
+`model_tiers` has no entry for the requested tier, model resolution falls back
+to the standard or cheap model, yet `resolved_tier` still reports the requested
+tier, so the WARN above cannot fire for that fallback. Only `resolved_model`
+shows the downgrade, and budget accounting prices the dispatch at the requested
+tier. Check `resolved_model` in the log line when a member may lack a premium
+model.
+
+Budget accounting prices a dispatch at its resolved tier when one is reported. The sprint summary has a "Tier
 decisions" section with dispatch counts per requested tier, the number of
 escalations and the number of mismatches.
 
