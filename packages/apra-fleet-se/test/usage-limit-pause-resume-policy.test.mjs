@@ -15,7 +15,7 @@ import {
 import { isTypedAbortError } from '../fleet-sprint/abort.mjs';
 import { USAGE_LIMIT_BUDGET_DEFAULTS } from '../fleet-sprint/role-policies.mjs';
 import { dispatchRole } from '../fleet-sprint/dispatch-role.mjs';
-import { createRecordingCtx, ROLE_CALL_OPTS } from './helpers/dispatch-role-harness.mjs';
+import { createRecordingCtx, ROLE_CALL_OPTS, withWaitNotice } from './helpers/dispatch-role-harness.mjs';
 
 // =============================================================================
 // apra-fleet-hzeb.4.3 -- fleet-sprint usage-limit pause/resume POLICY suite.
@@ -360,7 +360,7 @@ describe('dispatchRole usage-limit hook', () => {
         assert.equal(rec.dispatches.length, 2);
         assert.equal(
             rec.dispatches[1].prompt,
-            ROLE_CALL_OPTS.reviewer.resumePrompt,
+            withWaitNotice(ROLE_CALL_OPTS.reviewer.resumePrompt, rec.dispatches[1].options.timeout_s),
             'the re-dispatch used the RESUME prompt (same-session continuation)'
         );
         assert.equal(rec.dispatches[1].options.resume, 'sess-limited-1', 'the resume dispatch names the limited session by its explicit id');
@@ -381,7 +381,7 @@ describe('dispatchRole usage-limit hook', () => {
         assert.equal(rec.dispatches.length, 2);
         assert.equal(
             rec.dispatches[1].prompt,
-            ROLE_CALL_OPTS.reviewer.prompt,
+            withWaitNotice(ROLE_CALL_OPTS.reviewer.prompt, rec.dispatches[1].options.timeout_s),
             'the re-dispatch used the MAIN prompt (a fresh dispatch, not a resume)'
         );
         assert.notEqual(rec.dispatches[1].options.resume, true, 'a fresh re-dispatch does not resume a session');

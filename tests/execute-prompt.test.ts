@@ -370,6 +370,89 @@ describe('executePrompt', () => {
     expect(mockExecCommand.mock.calls[1][0]).not.toContain('"premium"');
   });
 
+  it('reports the resolved model id in structuredContent on success (premium tier -> opus)', async () => {
+    const member = makeTestAgent({ friendlyName: 'model-id-success-member' });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue({
+      stdout: JSON.stringify({ result: 'done', session_id: 'sess-mid' }),
+      stderr: '',
+      code: 0,
+    });
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5, model: 'premium' });
+    expect(result.structuredContent?.model).toBe('opus');
+  });
+
+  it('prefers the provider-reported model id (result modelUsage) over the resolved alias, and labels it reported', async () => {
+    const member = makeTestAgent({ friendlyName: 'model-id-reported-member' });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue({
+      stdout: JSON.stringify({
+        type: 'result', result: 'done', session_id: 'sess-mid-rep',
+        modelUsage: {
+          'claude-haiku-9-9': { inputTokens: 10, outputTokens: 5 },
+          'claude-opus-9-9': { inputTokens: 900, outputTokens: 400 },
+        },
+      }),
+      stderr: '',
+      code: 0,
+    });
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5, model: 'premium' });
+    expect(result.structuredContent).toMatchObject({ model: 'claude-opus-9-9', modelSource: 'reported' });
+  });
+
+  it('picks the reported model by cache-inclusive tokens (or cost), not uncached tokens alone', async () => {
+    const run = async (name: string, modelUsage: object) => {
+      const member = makeTestAgent({ friendlyName: name });
+      addAgent(member);
+      mockExecCommand.mockResolvedValue({
+        stdout: JSON.stringify({ type: 'result', result: 'done', session_id: `sess-${name}`, modelUsage }),
+        stderr: '', code: 0,
+      });
+      return executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5, model: 'premium' });
+    };
+    const byTokens = await run('model-cache-member', {
+      'side-model': { inputTokens: 50, outputTokens: 20 },
+      'main-model': { inputTokens: 3, outputTokens: 10, cacheReadInputTokens: 40000, cacheCreationInputTokens: 500 },
+    });
+    expect(byTokens.structuredContent?.model).toBe('main-model');
+    const byCost = await run('model-cost-member', {
+      'side-model': { inputTokens: 900, outputTokens: 900, costUSD: 0.001 },
+      'main-model': { inputTokens: 10, outputTokens: 10, costUSD: 0.5 },
+    });
+    expect(byCost.structuredContent?.model).toBe('main-model');
+  });
+
+  it('labels the model as resolved when the provider reports none', async () => {
+    const member = makeTestAgent({ friendlyName: 'model-id-resolved-member' });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue({
+      stdout: JSON.stringify({ result: 'done', session_id: 'sess-mid-res' }),
+      stderr: '',
+      code: 0,
+    });
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5, model: 'premium' });
+    expect(result.structuredContent).toMatchObject({ model: 'opus', modelSource: 'resolved' });
+  });
+
+  it('reports the resolved model id on a max_turns_exhausted typed failure', async () => {
+    const member = makeTestAgent({ friendlyName: 'model-id-max-turns-member' });
+    addAgent(member);
+    mockExecCommand
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 })
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify({ type: 'result', subtype: 'error_max_turns', terminal_reason: 'max_turns', result: 'stopped', session_id: 'sess-mid-mt' }),
+        stderr: '',
+        code: 1,
+      })
+      .mockResolvedValueOnce({ stdout: '', stderr: '', code: 0 });
+
+    const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5, model: 'premium' });
+    expect(result.structuredContent).toMatchObject({ isError: true, reason: 'max_turns_exhausted', sessionId: 'sess-mid-mt', model: 'opus' });
+  });
+
   it('reports usage via structuredContent when present in response', async () => {
     const member = makeTestAgent({ friendlyName: 'token-member' });
     addAgent(member);
@@ -2107,6 +2190,9 @@ describe('execute_prompt: usage-limit relay (apra-fleet-hzeb.2)', () => {
 
     expect(detectSpy).toHaveBeenCalled();
     expect(result.structuredContent).toMatchObject({ isError: true, reason: 'usage_limit', sessionId: 'sess-ul-1' });
+    // The resolved model id rides on a usage_limit failure too (default tier: standard).
+    expect(typeof result.structuredContent?.model).toBe('string');
+    expect(result.structuredContent?.model).not.toBe('standard');
     expect(result.structuredContent?.usageLimit).toBe(signal);
     expect(resultText(result)).toContain('usage limit');
     expect(resultText(result)).toContain(signal.resumeAt);
