@@ -762,6 +762,22 @@ export function normalizeMergeAssessment(raw) {
 }
 
 /**
+ * A FAIL (any non-PASS) verdict must never carry a `merge` recommendation:
+ * replaces it with `do_not_merge`. The verdict is never changed, and
+ * `merge_after_proof` / `do_not_merge` are left alone.
+ * @param {object | undefined | null} verdictResult
+ * @returns {{ result: object | undefined | null, changed: boolean }}
+ */
+export function normalizeRecommendationForVerdict(verdictResult) {
+    if (!verdictResult || typeof verdictResult !== 'object') return { result: verdictResult, changed: false };
+    const ma = verdictResult.merge_assessment;
+    if (verdictResult.verdict === 'PASS' || !ma || typeof ma !== 'object' || ma.recommendation !== 'merge') {
+        return { result: verdictResult, changed: false };
+    }
+    return { result: { ...verdictResult, merge_assessment: { ...ma, recommendation: 'do_not_merge' } }, changed: true };
+}
+
+/**
  * Builds the sprint PR body as markdown.
  *
  * The description starts with the sprint verdict, then the merge
