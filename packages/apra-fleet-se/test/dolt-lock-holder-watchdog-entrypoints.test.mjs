@@ -7,6 +7,7 @@ import assert from 'node:assert';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { bdSyncCommandFor } from '../fleet-sprint/bd-sync-command.mjs';
 import { spawn, execFileSync } from 'node:child_process';
 
 import { buildLockHolderProbe, parseLockHolderProbe, BEADS_LOCK_FILES } from '../fleet-sprint/beads-lock-probe.mjs';
@@ -144,7 +145,7 @@ describe('watchdog through the entry points', () => {
         assert.match(err.message, /pid 9001/);
         assert.match(err.message, /bd\.exe dolt push --stale/);
         assert.ok(clock < 600_000);
-        assert.deepStrictEqual(m.syncCalls(), ['GOMAXPROCS=1 bd dolt push'], 'not retried');
+        assert.deepStrictEqual(m.syncCalls(), [bdSyncCommandFor('bd dolt push', target)], 'not retried');
 
         await flush();
         assert.deepStrictEqual(events, ['acquire'], 'mutex NOT released while the abandoned push still runs');

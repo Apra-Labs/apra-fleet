@@ -121,7 +121,8 @@ describe('codex/copilot/opencode: windows install string is identical across she
 describe('PID wrapper (OsCommands.wrapPidCapture) under each registered Windows shell', () => {
   it('gitbash emits the POSIX FLEET_PID subshell wrapper, in the exact format callers parse (FLEET_PID:<pid>)', () => {
     const cmd = getOsCommands('windows', 'gitbash').wrapPidCapture('echo hi');
-    expect(cmd).toContain("printf 'FLEET_PID:%s\\n' \"$_fleet_pid\"");
+    // The Windows pid of the subshell (MSYS /proc/<pid>/winpid), not bash's $!.
+    expect(cmd).toContain("printf 'FLEET_PID:%s\\n' \"$_fleet_wpid\"");
     expect(cmd).not.toContain('FLEET_PID:$pid');
   });
 

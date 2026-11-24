@@ -175,6 +175,31 @@
       }
     },
     {
+      "id": "1011a100-4e86-47c6-ba1f-dfa758016206",
+      "type": "knowledge",
+      "title": "Local Git Bash commands over 4KB are sourced from an owner-only temp file",
+      "summary": "LocalStrategy.execCommand writes a Git Bash command longer than GITBASH_INLINE_COMMAND_MAX_BYTES (4096 bytes) to a 0600 file in privateSecretDir and spawns `. '<file>'`. Sourcing keeps child.pid as the bash running the command, so tree-kill and FLEET_PID still work. The file is removed in a finally.",
+      "symbols": [
+        "GITBASH_INLINE_COMMAND_MAX_BYTES",
+        "writeLocalCommandFile",
+        "gitBashSourceCommand",
+        "removeLocalCommandFile",
+        "LocalStrategy.execCommand"
+      ],
+      "source_files": [
+        "src/services/strategy.ts",
+        "tests/strategy-gitbash-command-file.test.ts",
+        "tests/strategy-gitbash-local-exec.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-22T21:16:59.649Z",
+      "source_file_hashes": {
+        "src/services/strategy.ts": "18aa53258b9ddc2bdba5db5a443023e98d147736",
+        "tests/strategy-gitbash-command-file.test.ts": "2e381898233cefdeb8d7c4cea3c14d1de7d06853",
+        "tests/strategy-gitbash-local-exec.test.ts": "67599c6a13a36a11347e345fcdcb4da7dccf7cf7"
+      }
+    },
+    {
       "id": "101692b0-d5e6-4a32-8d6e-e8595ddc39f0",
       "type": "learning",
       "title": "kb_* tool description text is duplicated in generate-contract.mjs DESCRIPTIONS",
@@ -387,6 +412,28 @@
         "packages/apra-fleet-se/fleet-sprint/explicit-id-create-guard.mjs": "2f23987c7b2c75f47feff528258ba0a2a8455ced",
         "packages/apra-fleet-se/test/dispatch-safety-guard.test.mjs": "cbdca634f5c5dc0f8f640f114761fa3ab117992e",
         "packages/apra-fleet-se/test/sprint-state.test.mjs": "bd1629a4797d638aac29a21828f67918cae4fdf7"
+      }
+    },
+    {
+      "id": "1aee4ff3-3dd4-4052-b233-7edf14b63ed0",
+      "type": "knowledge",
+      "title": "long_running launch success requires exit 0 plus the FLEET_TASK_READY line",
+      "summary": "execute_command long_running treats a launch as successful only when launchSucceeded() sees exit code 0 AND a FLEET_TASK_READY line. Both launch scripts print it only after task.pid exists, or after status.json shows the task already finished. Anything else is a launch_failed failure.",
+      "symbols": [
+        "launchSucceeded",
+        "TASK_READY_MARKER",
+        "launchReadyPollMs",
+        "executeCommand"
+      ],
+      "source_files": [
+        "src/tools/execute-command.ts",
+        "tests/execute-command-long-running-launch.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-22T21:16:59.864Z",
+      "source_file_hashes": {
+        "src/tools/execute-command.ts": "4b76beccc9e844b5aada825d1c854c01a2cca743",
+        "tests/execute-command-long-running-launch.test.ts": "cafff616331eb40eccdfee4c459ee36ba418bf88"
       }
     },
     {
@@ -1056,6 +1103,38 @@
       "updated_at": "2026-09-25T22:26:30.271Z"
     },
     {
+      "id": "48187764-14b0-46d2-9367-b7e74c08e6b9",
+      "type": "knowledge",
+      "title": "Process-kill grants: one matcher in server and engine, kept in step by a parity test",
+      "summary": "compose_permissions refuses process-killing grants (kill, pkill, killall, taskkill, tskill, Stop-Process, wmic process delete) and writes fleet-derived deny rules for them for claude, agy and copilot. The fleet-sprint engine has its own copy of the matcher; tests/process-kill-rules-parity.test.ts keeps the two identical.",
+      "symbols": [
+        "isProcessKillGrant",
+        "payloadKillsProcesses",
+        "claudeProcessKillDenyRules",
+        "agyProcessKillDenyRules",
+        "isNeverAutoGrant",
+        "isFleetDerivedDenyRule",
+        "createPermissionDenialHeal",
+        "grantWithinPolicy"
+      ],
+      "source_files": [
+        "src/services/process-kill-rules.ts",
+        "src/tools/compose-permissions.ts",
+        "packages/apra-fleet-se/fleet-sprint/process-kill-rules.mjs",
+        "packages/apra-fleet-se/fleet-sprint/member-provisioning.mjs",
+        "tests/process-kill-rules-parity.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-22T22:48:55.700Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/member-provisioning.mjs": "028a7dc117f54b2c1327aad0750f4b1319f60ca7",
+        "packages/apra-fleet-se/fleet-sprint/process-kill-rules.mjs": "454622c52d28a531e5b0e7b546b315385cff11ef",
+        "src/services/process-kill-rules.ts": "3e182476534a87a3b8db976d26970a8e800e8456",
+        "src/tools/compose-permissions.ts": "6eb082c123494c378407b0b587465a9bc69fab51",
+        "tests/process-kill-rules-parity.test.ts": "8a02f3335e0d7d9edbd03750bf4d9a670e52587a"
+      }
+    },
+    {
       "id": "483c4334-ebbd-4dda-9e66-ca7899110f85",
       "type": "knowledge",
       "title": "Member kb_promote/kb_resolve_contradiction need the engine kb_maintainer grant",
@@ -1279,6 +1358,33 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:30.391Z"
+    },
+    {
+      "id": "50fa09e7-507d-46d3-b689-40818da75f45",
+      "type": "knowledge",
+      "title": "Git Bash FLEET_PID carries the Windows pid read from /proc/<msys-pid>/winpid",
+      "summary": "Bash $! on Git for Windows is an MSYS pid, which taskkill reads as an unrelated Windows pid. WindowsGitBashCommands overrides the LinuxCommands.pidWrap hook so wrapPidCapture and buildAgentPromptCommand print the subshell's winpid instead. It prints no marker if the winpid cannot be read.",
+      "symbols": [
+        "pidWrapGitBash",
+        "LinuxCommands.pidWrap",
+        "WindowsGitBashCommands.pidWrap",
+        "wrapPidCapture",
+        "buildAgentPromptCommand"
+      ],
+      "source_files": [
+        "src/os/windows-gitbash.ts",
+        "src/os/linux.ts",
+        "tests/go-concurrency-default.test.ts",
+        "tests/provider-install-shell-matrix.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-22T22:48:56.005Z",
+      "source_file_hashes": {
+        "src/os/linux.ts": "1ee4cec7322a0fc89b5c1e8be9e9dfe20aa31178",
+        "src/os/windows-gitbash.ts": "18c6299a400d13f3cc2ab7a1695835ed5c2264d8",
+        "tests/go-concurrency-default.test.ts": "17a3070e288edf15d92eff123c053c0b2c9d7820",
+        "tests/provider-install-shell-matrix.test.ts": "5957d111ba8dd05e8dfd9bdab7784f57ab7b013d"
+      }
     },
     {
       "id": "5227dca4-de64-4430-a394-8c16226e121c",
@@ -1834,6 +1940,21 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:13.250Z"
+    },
+    {
+      "id": "77a8754f-ae10-465b-a58a-646a1267e3c3",
+      "type": "learning",
+      "title": "Git credential-prompt refusal must not classify as remote unreachable",
+      "summary": "bd's 'failed to get remote db' wrapper also carries git's 'could not read Username' / 'terminal prompts disabled' refusal, so the REMOTE_UNREACHABLE classifier must exclude it so the output reaches the AUTH check.",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/dolt.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-24T03:15:31.784Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/dolt.mjs": "67ac5289fe0d4e67f9b87cc370b625e4006426b0"
+      }
     },
     {
       "id": "780724c4-bbfa-458d-94fc-ebb733800a55",
@@ -3342,6 +3463,33 @@
       "updated_at": "2026-09-29T06:13:15.358Z"
     },
     {
+      "id": "d8c7a30e-9dbf-4949-8c5d-0a1aa9bf51e2",
+      "type": "learning",
+      "title": "Composed kill deny rules end a dispatch on any kill, even of the role's own pid",
+      "summary": "Every composed member config denies Bash(kill:*), taskkill and Stop-Process, and the fleet-sprint permission heal stops a dispatch whose only refused calls are kills (process_kill_refused). A role cannot stop even a process it started with a direct kill call; it must go through the target's own scripts.",
+      "symbols": [
+        "claudeProcessKillDenyRules",
+        "agyProcessKillDenyRules",
+        "createPermissionDenialHeal",
+        "isProcessKillCall",
+        "PROCESS_KILL_REFUSED"
+      ],
+      "source_files": [
+        "src/services/process-kill-rules.ts",
+        "src/providers/claude.ts",
+        "packages/apra-fleet-se/fleet-sprint/member-provisioning.mjs",
+        "packages/apra-fleet-se/test/permission-denial-heal.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-24T03:15:31.881Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/member-provisioning.mjs": "028a7dc117f54b2c1327aad0750f4b1319f60ca7",
+        "packages/apra-fleet-se/test/permission-denial-heal.test.mjs": "9a617f8d85e76187f3240c538fdb20a872f88a03",
+        "src/providers/claude.ts": "d6d3047281a9be03956376bf93f1f3331eb1a151",
+        "src/services/process-kill-rules.ts": "3e182476534a87a3b8db976d26970a8e800e8456"
+      }
+    },
+    {
       "id": "da7d0105-e454-43d0-b12f-c27d00e7f337",
       "type": "learning",
       "title": "libuv reads NoDefaultCurrentDirectoryInExePath from the parent env, not the spawn env option",
@@ -3572,6 +3720,25 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:11.365Z"
+    },
+    {
+      "id": "e19d301e-f47d-498b-af86-5125b119256f",
+      "type": "learning",
+      "title": "cat pidfile | xargs -r kill -0 reports alive when the pid file is missing",
+      "summary": "With no pid file, xargs -r runs nothing and exits 0, so `cat task.pid | xargs -r kill -0 && echo alive` reported a never-started task as alive. monitor_task now uses p=$(cat ...) && [ -n \"$p\" ] && kill -0 \"$p\".",
+      "symbols": [
+        "monitorTask"
+      ],
+      "source_files": [
+        "src/tools/monitor-task.ts",
+        "tests/tools-windows-command-safety.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-22T21:16:59.748Z",
+      "source_file_hashes": {
+        "src/tools/monitor-task.ts": "82838c7be72c0388309d1e06680cf894afd35952",
+        "tests/tools-windows-command-safety.test.ts": "1b319eac186b644d0041adfa2d7ae9878b857733"
+      }
     },
     {
       "id": "e3e977ba-8ff5-4b21-a405-a0d01f2281a4",

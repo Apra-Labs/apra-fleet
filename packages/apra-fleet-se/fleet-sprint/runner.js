@@ -1407,7 +1407,10 @@ async function runSprintCycle(context) {
     // the sprint's cached member_detail-backed resolver once, here; with no
     // fleet client the resolver is cleared and members are treated as POSIX.
     setMemberTargetResolver(sprintState.fleetApi
-        ? (member) => resolveMemberTarget({ fleetApi: sprintState.fleetApi, member, log })
+        // A failed lookup leaves the OS unknown (bare bd sync commands), never
+        // a guessed POSIX shell: the sync's POSIX form is a NAME=value prefix
+        // a PowerShell member cannot run.
+        ? (member) => resolveMemberTarget({ fleetApi: sprintState.fleetApi, member, log, unresolved: { os: '', shell: '' } })
         : null);
 
     // Guards every resume re-dispatch below against spawning a second

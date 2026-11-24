@@ -120,11 +120,10 @@ describe('orphan-recovery.ts process-alive check: shell matrix', () => {
     expect(alive).toBe(true);
     const cmd = exec.mock.calls[0][0] as string;
 
-    if (isPosixRow(shell)) {
-      expect(cmd).toBe('kill -0 4242 2>/dev/null && echo ALIVE || echo DEAD');
-      expect(cmd).not.toMatch(/powershell/i);
-      expect(cmd).not.toMatch(/EncodedCommand/i);
-    } else {
+    {
+      // A Windows member's pid is a Windows pid for every shell (gitbash reports
+      // the winpid), so liveness is always the Windows-native probe, never kill -0.
+      expect(cmd).not.toMatch(/kill -0/);
       expect(cmd).toMatch(/^powershell -EncodedCommand /);
       const decoded = decodePowerShellEncodedCommand(cmd);
       expect(decoded).toBe(

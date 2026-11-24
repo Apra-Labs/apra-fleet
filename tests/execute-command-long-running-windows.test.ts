@@ -87,7 +87,7 @@ describe('execute_command long_running: Windows detached CIM launch (guards ot2z
   it('1. windows + long_running=true: launches via Invoke-CimMethod, "Task launched", no POSIX-shell error', async () => {
     const member = makeTestAgent({ os: 'windows' });
     addAgent(member);
-    mockExecCommand.mockResolvedValue({ stdout: 'TASK_PID:4242\n', stderr: '', code: 0 });
+    mockExecCommand.mockResolvedValue({ stdout: 'TASK_PID:4242\nFLEET_TASK_READY\n', stderr: '', code: 0 });
 
     const result = resultText(await executeCommand({
       member_id: member.id,
@@ -103,7 +103,7 @@ describe('execute_command long_running: Windows detached CIM launch (guards ot2z
   it('2. windows + long_running=true: dispatches exactly one Win32_Process.Create command, no POSIX tokens', async () => {
     const member = makeTestAgent({ os: 'windows' });
     addAgent(member);
-    mockExecCommand.mockResolvedValue({ stdout: 'TASK_PID:4242\n', stderr: '', code: 0 });
+    mockExecCommand.mockResolvedValue({ stdout: 'TASK_PID:4242\nFLEET_TASK_READY\n', stderr: '', code: 0 });
 
     await executeCommand({
       member_id: member.id,
@@ -127,7 +127,7 @@ describe('execute_command long_running: Windows detached CIM launch (guards ot2z
   it('3. windows + long_running=true: a task id IS registered in the task-credentials registry (no error path)', async () => {
     const member = makeTestAgent({ os: 'windows' });
     addAgent(member);
-    mockExecCommand.mockResolvedValue({ stdout: 'TASK_PID:4242\n', stderr: '', code: 0 });
+    mockExecCommand.mockResolvedValue({ stdout: 'TASK_PID:4242\nFLEET_TASK_READY\n', stderr: '', code: 0 });
 
     const result = resultText(await executeCommand({
       member_id: member.id,
@@ -146,7 +146,7 @@ describe('execute_command long_running: Windows detached CIM launch (guards ot2z
   it('4. linux + long_running=true: unchanged -- "Task launched" and nohup-bash wrapper dispatch still occur', async () => {
     const member = makeTestAgent({ os: 'linux' });
     addAgent(member);
-    mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+    mockExecCommand.mockResolvedValue({ stdout: 'TASK_PID:4242\nFLEET_TASK_READY\n', stderr: '', code: 0 });
 
     const result = resultText(await executeCommand({
       member_id: member.id,
@@ -164,7 +164,7 @@ describe('execute_command long_running: Windows detached CIM launch (guards ot2z
   it('5. darwin + long_running=true: still launches, still carries the non-linux/windows advisory warning', async () => {
     const member = makeTestAgent({ os: 'macos' });
     addAgent(member);
-    mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+    mockExecCommand.mockResolvedValue({ stdout: 'TASK_PID:4242\nFLEET_TASK_READY\n', stderr: '', code: 0 });
 
     const result = resultText(await executeCommand({
       member_id: member.id,
@@ -198,7 +198,7 @@ describe('execute_command long_running: Windows detached CIM launch (guards ot2z
   it('7. windows + long_running=true: the CIM CommandLine launches run.ps1 rooted at $env:USERPROFILE\\.fleet-tasks\\<taskId>', async () => {
     const member = makeTestAgent({ os: 'windows' });
     addAgent(member);
-    mockExecCommand.mockResolvedValue({ stdout: 'TASK_PID:4242\n', stderr: '', code: 0 });
+    mockExecCommand.mockResolvedValue({ stdout: 'TASK_PID:4242\nFLEET_TASK_READY\n', stderr: '', code: 0 });
 
     await executeCommand({
       member_id: member.id,

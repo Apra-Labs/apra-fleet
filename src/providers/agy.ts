@@ -11,6 +11,7 @@ import { logWarn } from '../utils/log-helpers.js';
 import { getModelOverride } from '../services/user-config.js';
 import { transformAgentForAgy } from '../cli/agent-transform.js';
 import { MEMBER_ALLOWED_TOOLS, MEMBER_DENIED_TOOLS } from '../services/member-tool-allowlist.js';
+import { agyProcessKillDenyRules } from '../services/process-kill-rules.js';
 import {
   agyMemberDenyRules,
   joinMemberPath,
@@ -480,7 +481,10 @@ export class AgyProvider implements ProviderAdapter {
       permissionGrants: {
         permissionGrants: {
           allow: agyAllow,
-          deny: AGY_ORCHESTRATOR_DENY_RULES,
+          // Fleet tools outside the member allowlist, plus process-killing
+          // commands (which reduce, but cannot rule out, a role killing
+          // processes it did not start).
+          deny: [...AGY_ORCHESTRATOR_DENY_RULES, ...agyProcessKillDenyRules(agyCommandRules)],
         },
       },
     }];

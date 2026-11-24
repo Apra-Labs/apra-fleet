@@ -103,3 +103,85 @@ describe('isNeverAutoGrant -- deliberate over-blocking (documented, not a bug)',
     });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Process-killing commands. A local member shares its host with the fleet
+// server and other sprints, so a kill by name there takes them down: these
+// grants are refused for every caller, in every common spelling.
+// ---------------------------------------------------------------------------
+
+describe('isNeverAutoGrant -- process-killing commands are refused', () => {
+  const mustBlock = [
+    // kill / pkill / killall, colon and space separators, whitespace variants
+    'Bash(kill:*)',
+    'Bash(kill *)',
+    'Bash(kill -9 *)',
+    'Bash( kill  -9   1234 )',
+    ' Bash(kill:*) ',
+    'Bash(kill)',
+    'Bash(/usr/bin/kill:*)',
+    'Bash(pkill:*)',
+    'Bash(pkill -f node)',
+    'Bash(killall:*)',
+    'Bash(killall node)',
+    'Bash(xargs kill:*)',
+    // taskkill, including the Git Bash //F //IM forms
+    'Bash(taskkill:*)',
+    'Bash(taskkill *)',
+    'Bash(taskkill //F //IM node.exe)',
+    'Bash(taskkill:/F /IM node.exe)',
+    'Bash(taskkill /F /PID 1234)',
+    'Bash(TASKKILL.EXE /f /im node.exe)',
+    'Bash(C:/Windows/System32/taskkill.exe:*)',
+    'Bash(cmd /c taskkill /F /IM node.exe)',
+    // tskill
+    'Bash(tskill:*)',
+    'Bash(tskill 1234)',
+    // Stop-Process (and its spps alias), Bash or PowerShell tool form
+    'Bash(Stop-Process:*)',
+    'Bash(stop-process -Name node)',
+    'Bash(powershell -Command Stop-Process -Id 1234)',
+    'Bash(pwsh -c Stop-Process *)',
+    'PowerShell(Stop-Process:*)',
+    'PowerShell(Stop-Process -Name node -Force)',
+    'PowerShell(spps -Id 1234)',
+    'powershell(kill -Id 1234)',
+    // wmic process delete / call terminate, and wildcard forms that cover them
+    'Bash(wmic process where name="node.exe" delete)',
+    'Bash(wmic process where name="node.exe" call terminate)',
+    'Bash(wmic.exe process where processid=1234 delete)',
+    'Bash(wmic process:*)',
+    'Bash(wmic:*)',
+    'Bash(wmic)',
+    // a wildcard command prefix that covers a kill command
+    'Bash(kil*)',
+    'Bash(taskk*)',
+  ];
+
+  for (const permission of mustBlock) {
+    it(`blocks ${JSON.stringify(permission)}`, () => {
+      expect(isNeverAutoGrant(permission)).toBe(true);
+    });
+  }
+});
+
+describe('isNeverAutoGrant -- commands that only mention a kill word stay grantable', () => {
+  const mustAllow = [
+    // the pid-scoped port helper a playbook runs is the scoped alternative
+    'Bash(node scripts/kill-port.mjs:*)',
+    'Bash(node scripts/kill-port.mjs 18700)',
+    'Bash(npm run test:*)',
+    'Bash(wmic process list brief)',
+    'Bash(wmic os get caption)',
+    'Bash(skill-check:*)',
+    'Bash(git s*)',
+    'Bash(xargs:*)',
+    'Read(//home/user/kill/**)',
+  ];
+
+  for (const permission of mustAllow) {
+    it(`allows ${JSON.stringify(permission)}`, () => {
+      expect(isNeverAutoGrant(permission)).toBe(false);
+    });
+  }
+});
