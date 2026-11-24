@@ -1117,7 +1117,6 @@ const STEP_EVIDENCE = {
     'verify-streak-closed': { scope: 'region', pattern: () => /verifyDoerStreakClosed\(\{/ },
     'invalidate-beads-cache': { scope: 'region', pattern: () => /invalidateAllBeadsCache\(\)/ },
     'reviewer-contract-guard': { scope: 'global', pattern: () => /isReviewerContractViolation\(verdict\)/ },
-    'clear-round-session': { scope: 'global', pattern: (p) => new RegExp(`roundSessions\\.clear\\('${p.member.role}'\\)`) },
     'select-streaks-validate': { scope: 'region', pattern: () => /selectStreaks\(streakCandidate/ },
     'kb-apply': {
         scope: 'global',

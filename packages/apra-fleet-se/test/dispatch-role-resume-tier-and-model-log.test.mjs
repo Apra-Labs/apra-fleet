@@ -69,12 +69,24 @@ describe('every settled dispatch logs its model id', () => {
 
     test('a result that reports a model id logs that id and the requested tier', async () => {
         const { ctx, rec } = createRecordingCtx({
-            responses: [async (entry) => { entry.options.onModelId('claude-opus-test-1'); return CLEAN; }],
+            responses: [async (entry) => { entry.options.onModelId('claude-opus-test-1', { source: 'reported' }); return CLEAN; }],
         });
         await dispatchRole(ctx, 'doer', doerOptsAt('premium'));
         const lines = modelLines(rec.logs);
         assert.equal(lines.length, 1, JSON.stringify(rec.logs));
         assert.ok(lines[0].includes('claude-opus-test-1') && lines[0].includes('requested tier premium'), lines[0]);
+        assert.ok(lines[0].includes('provider-reported'), lines[0]);
+    });
+
+    test('a model id that is only the resolved alias is labelled as such, never as provider-reported', async () => {
+        const { ctx, rec } = createRecordingCtx({
+            responses: [async (entry) => { entry.options.onModelId('opus', { source: 'resolved' }); return CLEAN; }],
+        });
+        await dispatchRole(ctx, 'doer', doerOptsAt('premium'));
+        const lines = modelLines(rec.logs);
+        assert.equal(lines.length, 1, JSON.stringify(rec.logs));
+        assert.ok(lines[0].includes('actual model opus') && lines[0].includes('resolved alias'), lines[0]);
+        assert.ok(!lines[0].includes('provider-reported'), lines[0]);
     });
 
     test('a result with no model id logs the literal unknown', async () => {
@@ -94,5 +106,19 @@ describe('every settled dispatch logs its model id', () => {
         assert.equal(lines.length, 2, JSON.stringify(rec.logs));
         assert.ok(lines[0].includes('claude-sonnet-test-2'), lines[0]);
         assert.ok(lines[1].includes('actual model unknown'), lines[1]);
+    });
+});
+
+describe('onUsageLimit tier follows the tier the main dispatch was sent at', () => {
+    test('a claim step that narrows the doer bindings does not change the tier handed to onUsageLimit', async () => {
+        const { ctx, rec } = createRecordingCtx({ responses: [usageLimitError('sess-ul-n'), CLEAN] });
+        const seen = [];
+        ctx.onUsageLimit = async (info) => { seen.push(info); return { resumed: true }; };
+        // The claim narrows the streak, and with it the doer's tier: the
+        // dispatch goes out at 'cheap' although the runner-level binding says
+        // 'premium'. The pause must probe at the tier actually dispatched.
+        await dispatchRole(ctx, 'doer', { ...doerOptsAt('premium'), prepare: async () => ({ bindings: { doerModel: 'cheap' } }) });
+        assert.equal(rec.dispatches[0].options.model, 'cheap');
+        assert.equal(seen[0].tier, 'cheap');
     });
 });

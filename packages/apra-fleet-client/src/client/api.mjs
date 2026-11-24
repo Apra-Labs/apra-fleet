@@ -175,11 +175,14 @@
  *   the provider parsed one, so the SAME session can be resumed by explicit id later instead of
  *   losing context to a fresh one. The server also records it as a known session. Absent when
  *   the provider supplied none.
- * @property {string} [model] - The concrete model id the dispatch ran on (the id handed to the
- *   provider CLI after tier mapping). Present on success and on typed failures ('usage_limit',
+ * @property {string} [model] - The model id the dispatch ran on: the id the provider reported when it
+ *   named one (Claude: the model keys of the result's per-model usage), else the id handed to the
+ *   provider CLI after tier mapping (see `modelSource`). Present on success and on typed failures ('usage_limit',
  *   'max_turns_exhausted', ...) produced once the model was resolved; absent on results returned
  *   before that (busy, reserved, preflight) and from older servers.
  *   `packages/apra-fleet-workflow` forwards it via `onModelId` and `AgentDispatchError.details.model`.
+ * @property {'reported'|'resolved'} [modelSource] - Whether `model` was named by the provider
+ *   ('reported') or is only the resolved id/alias the server handed to the CLI ('resolved').
  * @property {ExecutePromptUsage} [usage]
  */
 

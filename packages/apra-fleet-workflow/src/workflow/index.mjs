@@ -349,9 +349,10 @@ function buildRepairPrompt(errorsText, initialPrompt) {
  *   can resume the same role's session across rounds via `resume: <id>`. Never fires when the
  *   provider returns no session id (a capability signal, not a provider-name check); a throwing
  *   callback is caught and never breaks the dispatch. (apra-fleet-eft.78.3)
- * @property {(model: string|null, meta: { member?: string, agent?: string }) => void} [onModelId]
+ * @property {(model: string|null, meta: { member?: string, agent?: string, source?: ('reported'|'resolved'|null) }) => void} [onModelId]
  *   Optional best-effort callback invoked once per settled execute_prompt call (success or
- *   typed failure) with the concrete model id the server reports in structuredContent.model,
+ *   typed failure) with the model id the server reports in structuredContent.model (the
+ *   provider-reported id when the provider named one, else the resolved id; meta.source says which),
  *   or null when it reports none (older server, provider without it). A throwing callback is
  *   caught and never breaks the dispatch. The same id rides on AgentDispatchError.details.model
  *   and in the onSessionId meta.
@@ -1285,9 +1286,12 @@ export class FleetWorkflow extends EventEmitter {
                 // opts.onModelId on success AND failure, and on AgentDispatchError
                 // details.model, so callers can log which model actually served it.
                 const reportedModel = structured && typeof structured.model === 'string' && structured.model ? structured.model : null;
+                // 'reported' = the provider named the model that ran; 'resolved' = the
+                // id/alias the server mapped the tier to (provider reported none).
+                const reportedModelSource = reportedModel && structured && (structured.modelSource === 'reported' || structured.modelSource === 'resolved') ? structured.modelSource : null;
                 if (typeof opts.onModelId === 'function') {
                     try {
-                        opts.onModelId(reportedModel, { member: opts.member_name || opts.member_id, agent: opts.agentType });
+                        opts.onModelId(reportedModel, { member: opts.member_name || opts.member_id, agent: opts.agentType, source: reportedModelSource });
                     } catch (cbErr) {
                         console.error(`[Agent onModelId] callback threw (non-fatal): ${cbErr && cbErr.message ? cbErr.message : cbErr}`);
                     }
@@ -1352,7 +1356,7 @@ export class FleetWorkflow extends EventEmitter {
                     // result forwards its permissionDenied block the same way, and
                     // dispatched:false (nothing was sent to the member) is kept so a
                     // caller can tell a setup-time failure from one where the agent ran.
-                    throw new AgentDispatchError(`[Workflow Error] Agent dispatch failed (${structured.reason || 'unknown'}): ${text}`, { details: { text, reason: structured.reason, member: opts.member_name || opts.member_id, ...(structured.usageLimit ? { usageLimit: structured.usageLimit } : {}), ...(structured.permissionDenied ? { permissionDenied: structured.permissionDenied } : {}), ...(structured.sessionId ? { sessionId: structured.sessionId } : {}), ...(reportedModel ? { model: reportedModel } : {}), ...(structured.dispatched === false ? { dispatched: false } : {}) } });
+                    throw new AgentDispatchError(`[Workflow Error] Agent dispatch failed (${structured.reason || 'unknown'}): ${text}`, { details: { text, reason: structured.reason, member: opts.member_name || opts.member_id, ...(structured.usageLimit ? { usageLimit: structured.usageLimit } : {}), ...(structured.permissionDenied ? { permissionDenied: structured.permissionDenied } : {}), ...(structured.sessionId ? { sessionId: structured.sessionId } : {}), ...(reportedModel ? { model: reportedModel, modelSource: reportedModelSource } : {}), ...(structured.dispatched === false ? { dispatched: false } : {}) } });
                 }
 
                 // A fleet TOOL/TRANSPORT failure that carries no
@@ -1412,7 +1416,7 @@ export class FleetWorkflow extends EventEmitter {
                     && typeof opts.onSessionId === 'function'
                 ) {
                     try {
-                        opts.onSessionId(structured.sessionId, { member: opts.member_name || opts.member_id, agent: opts.agentType, usage: result.usage, ...(reportedModel ? { model: reportedModel } : {}) });
+                        opts.onSessionId(structured.sessionId, { member: opts.member_name || opts.member_id, agent: opts.agentType, usage: result.usage, ...(reportedModel ? { model: reportedModel, modelSource: reportedModelSource } : {}) });
                     } catch (cbErr) {
                         console.error(`[Agent onSessionId] callback threw (non-fatal): ${cbErr && cbErr.message ? cbErr.message : cbErr}`);
                     }

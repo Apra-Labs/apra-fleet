@@ -513,10 +513,6 @@ describe('execution-role dispatch: retry and degrade ladders', () => {
         //   GitSyncError / DoltSyncError degrade    -> degrade.extraDispatchErrors
         //   NO GitDivergedError / DoltDivergedError -> a real divergence really
         //                                              still propagates
-        //   roundSessions.clear('reviewer')         -> the 'clear-round-session'
-        //                                              DEGRADE step, which runs
-        //                                              on failure and NOT on
-        //                                              success
         //   `throw err;`                            -> an unrecognised class
         //                                              really propagates
         const p = policyFor('reviewer');
@@ -575,14 +571,6 @@ describe('execution-role dispatch: retry and degrade ladders', () => {
             'An unrecognised error class still propagates.'
         );
 
-        // Review rounds never resume across rounds, so there is no round
-        // session for a failed round to clear.
-        const failedRound = createRecordingCtx({ responses: [transportError(), transportError()] });
-        await dispatchRole(failedRound.ctx, 'reviewer', opts);
-        assert.ok(
-            !failedRound.rec.steps.some((e) => e.step === 'clear-round-session'),
-            'The reviewer has no round session to clear: every round starts fresh.'
-        );
         assert.deepStrictEqual(p.degrade.steps, []);
     });
 

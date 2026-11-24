@@ -23,6 +23,7 @@ import {
     resolveLongRunWaitS,
     longRunWaitNotice,
     HOST_TOOL_CALL_CAP_S,
+    MAX_WAIT_LIMIT_S,
     LONG_RUN_WAIT_AGENT_TYPES,
 } from '../fleet-sprint/long-run-wait.mjs';
 
@@ -72,7 +73,7 @@ describe('dispatched prompt states a wait limit strictly below its timeout_s', (
                 assert.notEqual(waitS, null, `the dispatched ${role} prompt states a wait limit:\n${dispatch.prompt}`);
                 assert.ok(waitS > 0, 'the stated wait limit is positive');
                 assert.ok(waitS < timeoutS, `stated wait limit ${waitS}s must be strictly below timeout_s ${timeoutS}s`);
-                assert.ok(waitS <= HOST_TOOL_CALL_CAP_S, `stated wait limit ${waitS}s must not exceed the host per-call cap`);
+                assert.ok(waitS < HOST_TOOL_CALL_CAP_S, `stated wait limit ${waitS}s must stay below the host per-call cap`);
                 assert.equal(statedBudgetS(dispatch.prompt), timeoutS, 'the stated inactivity budget is the one the dispatch carries');
                 assert.equal(waitS, resolveLongRunWaitS(timeoutS), 'the stated limit comes from the shared helper');
                 assert.ok(dispatch.prompt.includes(opts.prompt), 'the caller prompt is still delivered in full');
@@ -95,7 +96,7 @@ describe('default run: the inactivity budget passed as timeout_s is unchanged', 
     test('the doer dispatch of a default run carries timeout_s 1800', async () => {
         const { dispatch } = await driveEngineDispatch('doer', 'main', { ctx: { budgets: runBudgets(DEFAULT_DISPATCH_TIMEOUT_S) } });
         assert.equal(dispatch.options.timeout_s, 1800);
-        assert.equal(statedWaitS(dispatch.prompt), 600);
+        assert.equal(statedWaitS(dispatch.prompt), 540);
     });
 });
 
@@ -107,12 +108,13 @@ describe('resolveLongRunWaitS', () => {
             assert.ok(Number.isInteger(w), `${w} is a whole number of seconds`);
             assert.ok(w >= 0);
             assert.ok(w < b, `${w} < ${b}`);
-            assert.ok(w <= HOST_TOOL_CALL_CAP_S, `${w} <= ${HOST_TOOL_CALL_CAP_S}`);
+            assert.ok(w <= MAX_WAIT_LIMIT_S && w < HOST_TOOL_CALL_CAP_S, `${w} <= ${MAX_WAIT_LIMIT_S}`);
         });
     }
 
-    test('the host cap is 10 minutes', () => {
+    test('the host cap is 10 minutes and the stated limit keeps a minute of headroom', () => {
         assert.equal(HOST_TOOL_CALL_CAP_S, 600);
+        assert.equal(MAX_WAIT_LIMIT_S, 540);
     });
 
     test('rejects a non-positive or non-finite budget', () => {

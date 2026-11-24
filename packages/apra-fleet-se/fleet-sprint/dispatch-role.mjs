@@ -1,4 +1,5 @@
 import { EXECUTE_PROMPT_MAX_TURNS } from '@apralabs/apra-fleet-client';
+import { createModelReporter } from './model-log.mjs';
 import { policyFor, PRE_DISPATCH_STEPS_IN_BRACKET } from './role-policies.mjs';
 import { receivesLongRunWait, longRunWaitNotice } from './long-run-wait.mjs';
 import {
@@ -520,8 +521,7 @@ function renderDegradeNote(policy, err, errorClass) {
 /**
  * The DEGRADE_STEPS a policy runs on each attempt that degrades (as opposed
  * to `postResult`, which runs only after a SUCCESSFUL attempt). The one step
- * today is the per-round reviewer's 'clear-round-session': a failed round's
- * session must not be resumed by the next round, and a successful one must.
+ * today: none is registered (reviewers start fresh every round).
  */
 async function runDegradeSteps(ctx, policy, err, errorClass) {
     for (const step of policy.degrade.steps) {
@@ -654,7 +654,7 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
             // Remember what the main dispatch was priced at so every later
             // resume/re-dispatch of this role continues on the SAME tier.
             if (dispatch.model && dispatch.model.kind !== 'inherited' && resolvedTier !== undefined) pricedTier = resolvedTier;
-            let reportedModelId = null;
+            const modelReporter = createModelReporter();
             const options = {
                 agentType: dispatch.agentType ?? undefined,
                 model: resolvedTier,
@@ -664,9 +664,10 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
                 schema: resolveSchema(ctx, dispatch.schema),
                 resume: resolveResumeArg(dispatch.resumeArg, localOpts),
                 onSessionId: opts.onSessionId,
-                // Reports the concrete model id the server ran this dispatch
-                // on (null when it reports none); logged once it settles.
-                onModelId: (id) => { reportedModelId = id; },
+                // Reports the model id the server says served this dispatch
+                // (null when it reports none) and where it came from; logged
+                // once it settles.
+                onModelId: modelReporter.onModelId,
                 label: prepared.label ?? defaultLabel,
                 // Strict permission handling: a refused tool call fails the
                 // dispatch (permission_denied) so no role trusts a result made
@@ -700,13 +701,13 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
             // member session can never leave this await silently hanging past
             // its budget -- needed in ADDITION to the server-side timeouts.
             // One line per settled dispatch (first dispatch and every resume or
-            // re-dispatch): requested tier and the model id actually used, or the
-            // literal 'unknown' when the server reported none -- never omitted.
+            // re-dispatch): requested tier and the model id actually used (and
+            // whether the provider reported it or it is only the resolved
+            // alias), or 'unknown' when none was reported -- never omitted.
             const logModel = (err) => {
-                const actual = reportedModelId || (err && err.details && typeof err.details.model === 'string' && err.details.model) || 'unknown';
                 ctx.log(
                     `${roleLabel}: dispatch '${options.label ?? defaultLabel ?? roleLabel}' on member '${member}' -- ` +
-                    `requested tier ${resolvedTier ?? 'none'}, actual model ${actual}`
+                    `requested tier ${resolvedTier ?? 'none'}, ${modelReporter.describe(err)}`
                 );
             };
             const loggedInFlight = inFlight.then((v) => { logModel(); return v; }, (e) => { logModel(e); throw e; });

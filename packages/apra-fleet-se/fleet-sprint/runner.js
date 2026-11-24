@@ -2319,13 +2319,6 @@ async function runSprintCycle(context) {
                     reason: 'contract violation: CHANGES_NEEDED with empty reopenIds AND empty newTasks -- nothing for the orchestrator to act on',
                 };
             },
-            // A failed round's session must not be resumed by the next round --
-            // drop it so the next review starts fresh. Recorded as a DEGRADE
-            // step, never a postResult one: a successful round's session is
-            // exactly what the next round wants to resume.
-            'clear-round-session': ({ policy }) => {
-                roundSessions.clear(policy.ladder);
-            },
             'sprint-self-id-in-prompt': ({ opts }) => {
                 if (typeof opts.prompt === 'string' && opts.prompt.includes(sprintSelfId)) return;
                 throw new Error(
@@ -2578,8 +2571,8 @@ async function runSprintCycle(context) {
     /**
      * The degraded verdict for a review round whose diff base could not be
      * computed: the reviewer policy's own synthesized-verdict degrade (same
-     * shape, note template, dispatchFailed marker and clear-round-session
-     * step), applied without dispatching the reviewer.
+     * shape, note template and dispatchFailed marker),
+     * applied without dispatching the reviewer.
      * @param {Error} err
      */
     function degradedReviewForReviewBase(err) {
@@ -2593,6 +2586,10 @@ async function runSprintCycle(context) {
         return { ...d.synthesized, [d.notesField]: note, ...(d.marker ? { [d.marker]: true } : {}) };
     }
 
+    // The previous review round's verdict and the cycle it belongs to; only
+    // used when the next dispatch is in the same cycle.
+    let priorReviewFindings = null;
+
     /**
      * Dispatches one reviewer round and returns its schema-validated verdict.
      * Shared by the per-round Develop/Review dispatch and the Cycle Evaluation
@@ -2605,10 +2602,6 @@ async function runSprintCycle(context) {
      * @param {{ beadIds: string[], acceptanceCriteriaJson: string }} opts
      * @returns {Promise<{ verdict: string, notes: string, reopenIds: string[], replanIds?: string[], newTasks: object[] }>}
      */
-    // The previous review round's verdict and the cycle it belongs to; only
-    // used when the next dispatch is in the same cycle.
-    let priorReviewFindings = null;
-
     async function dispatchReview({ beadIds, acceptanceCriteriaJson }) {
         const reviewerPool = getMembersForRole(ROLE_REVIEWER);
         // The diff range the reviewer is told to use: the fork point of the

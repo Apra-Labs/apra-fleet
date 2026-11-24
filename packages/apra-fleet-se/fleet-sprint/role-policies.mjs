@@ -131,9 +131,11 @@ export const ERROR_CLASSES = Object.freeze(['schema', 'dispatch', 'infra', 'sync
  * distinction is load-bearing: the per-round reviewer must drop its round
  * session when a round FAILS, and must NOT drop it when the round succeeds.
  *
- *   'clear-round-session' -- do not let a failed round's session be resumed
+ * No step is registered today: reviewers start a fresh session every round,
+ * so a failed round leaves nothing to clear. The vocabulary stays so a future
+ * degrade-only step has a place to be declared.
  */
-export const DEGRADE_STEPS = Object.freeze(['clear-round-session']);
+export const DEGRADE_STEPS = Object.freeze([]);
 
 /** How a failed ladder degrades once its attempts are spent. */
 export const DEGRADE_KINDS = Object.freeze([
@@ -184,7 +186,6 @@ export const PRE_DISPATCH_STEPS_IN_BRACKET = Object.freeze(['claim-beads-batched
  *   'verify-streak-closed'     -- confirm which beads really closed
  *   'kb-apply'                 -- apply the report's KB work
  *   'reviewer-contract-guard'  -- reject a self-contradictory reviewer verdict
- *   'clear-round-session'      -- do not let a failed round's session be resumed
  *   'select-streaks-validate'  -- validate the returned grouping before trusting it
  */
 export const POST_RESULT_STEPS = Object.freeze([
@@ -192,7 +193,6 @@ export const POST_RESULT_STEPS = Object.freeze([
     'verify-streak-closed',
     'kb-apply',
     'reviewer-contract-guard',
-    'clear-round-session',
     'select-streaks-validate',
 ]);
 

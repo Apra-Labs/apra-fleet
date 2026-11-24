@@ -23,7 +23,7 @@ Procedure (all commands from the repo root):
    repo root (gitignored -- never commit it).
 3. `node scripts/run-integ-suites.mjs --status --wait=N`
    N = the engine-stated wait limit from your dispatch prompt in seconds
-   (45 when none is stated). Repeat until done -- no extra checks between
+   (45 when none is stated; never above 540). Repeat until done -- no extra checks between
    polls. Exit 3 = poll again. Exit 2 mid-run = infra crash: report it,
    then `--start` again to resume.
 4. Complete ONLY when `--status` prints `pass COMPLETE` and exits 0 (all
