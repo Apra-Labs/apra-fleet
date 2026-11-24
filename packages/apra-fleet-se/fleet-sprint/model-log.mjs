@@ -30,7 +30,9 @@ export function createModelReporter() {
                 src = typeof d.modelSource === 'string' ? d.modelSource : null;
             }
             if (!modelId) return 'actual model unknown';
-            return `actual model ${modelId} (${src === 'reported' ? 'provider-reported' : 'resolved alias, provider reported none'})`;
+            if (src === 'reported') return `actual model ${modelId} (provider-reported)`;
+            const alias = /^(cheap|standard|premium|opus|sonnet|haiku)$/i.test(modelId);
+            return `actual model ${modelId} (resolved ${alias ? 'alias' : 'id'}, provider reported none)`;
         },
     };
 }

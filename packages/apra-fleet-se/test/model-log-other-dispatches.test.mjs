@@ -17,6 +17,9 @@ test('createModelReporter labels reported, resolved, error-detail and unknown mo
     const r2 = createModelReporter();
     r2.onModelId('opus', { source: 'resolved' });
     assert.match(r2.describe(), /opus \(resolved alias/);
+    const r3 = createModelReporter();
+    r3.onModelId('gpt-5.4', { source: 'resolved' });
+    assert.match(r3.describe(), /gpt-5\.4 \(resolved id, provider reported none\)/);
     const err = new AgentDispatchError('boom', { details: { model: 'claude-y', modelSource: 'reported' } });
     assert.match(createModelReporter().describe(err), /claude-y \(provider-reported\)/);
 });

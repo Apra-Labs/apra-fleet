@@ -452,12 +452,19 @@ export class ClaudeProvider implements ProviderAdapter {
     const modelOf = (obj: any): string | undefined => {
       const mu = obj?.modelUsage;
       if (mu && typeof mu === 'object' && !Array.isArray(mu)) {
+        // Weight by cost when every entry reports it; otherwise by ALL token
+        // kinds (a short dispatch can be mostly cache reads, which uncached
+        // input+output alone would hide, letting a side model win).
+        const entries = Object.entries<any>(mu).filter(([id]) => id);
+        const useCost = entries.length > 0 && entries.every(([, u]) => typeof u?.costUSD === 'number');
         let best: string | undefined;
-        let bestTokens = -1;
-        for (const [id, u] of Object.entries<any>(mu)) {
-          if (!id) continue;
-          const t = (Number(u?.inputTokens) || 0) + (Number(u?.outputTokens) || 0);
-          if (t > bestTokens) { best = id; bestTokens = t; }
+        let bestScore = -1;
+        for (const [id, u] of entries) {
+          const score = useCost
+            ? u.costUSD
+            : (Number(u?.inputTokens) || 0) + (Number(u?.outputTokens) || 0)
+              + (Number(u?.cacheReadInputTokens) || 0) + (Number(u?.cacheCreationInputTokens) || 0);
+          if (score > bestScore) { best = id; bestScore = score; }
         }
         if (best) return best;
       }

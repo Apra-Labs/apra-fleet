@@ -402,6 +402,28 @@ describe('executePrompt', () => {
     expect(result.structuredContent).toMatchObject({ model: 'claude-opus-9-9', modelSource: 'reported' });
   });
 
+  it('picks the reported model by cache-inclusive tokens (or cost), not uncached tokens alone', async () => {
+    const run = async (name: string, modelUsage: object) => {
+      const member = makeTestAgent({ friendlyName: name });
+      addAgent(member);
+      mockExecCommand.mockResolvedValue({
+        stdout: JSON.stringify({ type: 'result', result: 'done', session_id: `sess-${name}`, modelUsage }),
+        stderr: '', code: 0,
+      });
+      return executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5, model: 'premium' });
+    };
+    const byTokens = await run('model-cache-member', {
+      'side-model': { inputTokens: 50, outputTokens: 20 },
+      'main-model': { inputTokens: 3, outputTokens: 10, cacheReadInputTokens: 40000, cacheCreationInputTokens: 500 },
+    });
+    expect(byTokens.structuredContent?.model).toBe('main-model');
+    const byCost = await run('model-cost-member', {
+      'side-model': { inputTokens: 900, outputTokens: 900, costUSD: 0.001 },
+      'main-model': { inputTokens: 10, outputTokens: 10, costUSD: 0.5 },
+    });
+    expect(byCost.structuredContent?.model).toBe('main-model');
+  });
+
   it('labels the model as resolved when the provider reports none', async () => {
     const member = makeTestAgent({ friendlyName: 'model-id-resolved-member' });
     addAgent(member);
