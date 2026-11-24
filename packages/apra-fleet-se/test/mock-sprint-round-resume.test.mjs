@@ -7,32 +7,13 @@ const check = (cond, msg) => assert.ok(cond, msg);
 // =============================================================================
 // apra-fleet-eft.78.4 -- end-to-end mock-sprint (runSprintCycle()) coverage
 // for the per-role round-resume wiring apra-fleet-eft.78.3 added to runner.js
-// (createRoundSessionRegistry + the planner/reviewer dispatch sites). The
-// unit-level guard logic itself is pinned cheaply by
-// test/round-session-registry.test.mjs; these two scenarios exercise the
-// REAL dispatch call sites through the full engine so a regression in the
-// WIRING (not just the registry's own logic) is caught:
-//   1. warm within-cycle resume (round 2 of a cycle carries round 1's
-//      explicit session id) + cross-cycle reset (a later cycle's first
-//      dispatch is fresh -- `resume: false` -- even though the prior cycle
-//      recorded a session id for that same role).
-//   2. on a session_not_found dispatch failure, the engine never re-sends
-//      the short "continue where you left off" delta/continuation prompt --
-//      every dispatch (including the same-round retry and the next round)
-//      stays the full, self-contained buildReviewerPrompt() text, and the
-//      NEXT round is a fresh session (not the poisoned explicit id),
-//      asserted via the actual dispatched prompt content.
+// (createRoundSessionRegistry + the planner dispatch site; reviewers always
+// start a fresh session each round). The unit-level guard logic is pinned by
+// test/round-session-registry.test.mjs; this scenario exercises the REAL
+// dispatch call sites through the full engine: warm within-cycle planner
+// resume, a reviewer that is fresh every round, and a cross-cycle reset (a
+// later cycle's first dispatch is fresh -- `resume: false`).
 // =============================================================================
-
-const REVIEWER_CONTINUATION_TEXT = 'Continue your review exactly where you left off';
-// apra-fleet-s6d: buildReviewerPrompt has TWO full-prompt framings -- the
-// per-bead one, and the scope-wide one used by the Cycle Evaluation re-review
-// (which legitimately has no bead ids to name). Either satisfies this test's
-// actual invariant: "self-contained prompt, not the continuation delta".
-const FULL_REVIEWER_PROMPT_MARKERS = [
-    'Full task detail (including acceptance criteria), from `bd show --json`:',
-    'The full sprint scope, from `bd list --json`:',
-];
 
 test('mock sprint: round-resume -- planner warm within-cycle resume, reviewer always fresh, reset fresh across cycles', async () => {
     await withScenarioMarkers('round-resume (warm within-cycle, fresh across cycles)', async () => {
@@ -149,10 +130,16 @@ test('mock sprint: round-resume -- planner warm within-cycle resume, reviewer al
 
         // --- Reviewer: warm within-cycle resume, then fresh across cycles ---
         const reviewerDispatches = sc.dispatched.filter((d) => d.agent === 'reviewer' && d.label !== 'Final Review');
+        // The fourth is the catch-up review of B before Final Review: B was
+        // dispatched in cycle 1 and closed later outside any review round.
         check(
-            reviewerDispatches.length === 3,
-            `Expected exactly 3 non-final reviewer dispatches (cycle 1 R1+R2, cycle 2 fresh re-review), got ${reviewerDispatches.length}: ` +
+            reviewerDispatches.length === 4,
+            `Expected exactly 4 non-final reviewer dispatches (cycle 1 R1+R2, cycle 2 fresh re-review, catch-up of B), got ${reviewerDispatches.length}: ` +
             `${JSON.stringify(reviewerDispatches.map((d) => ({ resume: d.resume })))}`
+        );
+        check(
+            reviewerDispatches[3].prompt.includes(taskB.id) && !reviewerDispatches[3].prompt.includes(`${taskA.id},`),
+            'Expected the fourth non-final reviewer dispatch to be the catch-up review of B',
         );
         check(
             reviewerDispatches[0].resume === false,

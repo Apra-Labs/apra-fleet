@@ -85,7 +85,7 @@
  * ASCII only.
  */
 
-import { DoltDivergedError, DoltSyncError, DoltWindowsSpawnLimitError, DoltLockHeldError, UnpublishedSchemaMigrationsError } from './errors.mjs';
+import { DoltDivergedError, DoltSyncError, DoltWindowsSpawnLimitError, DoltLockHeldError, DoltPushRaceError, UnpublishedSchemaMigrationsError } from './errors.mjs';
 import { bdSyncCommandFor, normalizeMemberTarget, POSIX_MEMBER_TARGET } from './bd-sync-command.mjs';
 import { buildLockHolderProbe, parseLockHolderProbe, describeLockProcess } from './beads-lock-probe.mjs';
 import { classifyFailure, toDoltVerdict, commandBinary } from './vcs-module.mjs';
@@ -685,6 +685,34 @@ export function doltBackoffDelayMs(attempt, baseMs = DOLT_BACKOFF_BASE_MS, maxMs
 
 const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** Reconcile cycles a D-push runs when its push keeps losing the race to
+ *  other writers (non-fast-forward rejection, clean reconcile pull) before it
+ *  throws DoltPushRaceError. */
+export const DOLT_PUSH_RACE_MAX_RECONCILES = 3;
+
+/** Backoff base for the race-reconcile wait when the caller passes no
+ *  `backoffBaseMs`: cycles wait 125-250ms, 250-500ms, 500-1000ms. Short on
+ *  purpose -- the winner has already published, so a long wait only delays
+ *  the loser while holding the push mutex. */
+export const DOLT_PUSH_RACE_BACKOFF_BASE_MS = 250;
+
+/**
+ * The jittered wait before reconcile cycle `cycle` (1-based): a uniformly
+ * random value in [half, full] of the exponential backoff for that cycle,
+ * capped like the ordinary transient ladder. The jitter keeps two writers
+ * that lost to each other from retrying in lockstep.
+ *
+ * @param {number} cycle
+ * @param {number} [baseMs]
+ * @param {() => number} [random] - returns [0, 1); injectable for tests
+ * @returns {number}
+ */
+export function doltRaceJitterDelayMs(cycle, baseMs = DOLT_BACKOFF_BASE_MS, random = Math.random) {
+    const full = doltBackoffDelayMs(cycle, baseMs, DOLT_GENERIC_BACKOFF_MAX_MS);
+    const r = Math.min(1, Math.max(0, Number(random()) || 0));
+    return Math.round(full / 2 + (full / 2) * r);
+}
+
 // ---------------------------------------------------------------------------
 // Member OS/shell for the bd sync command string
 // ---------------------------------------------------------------------------
@@ -944,9 +972,15 @@ async function awaitSyncAttempt({ pending, command, member, target, label, log, 
  * 'diverged' classification remains excluded and is still returned
  * immediately, never retried.
  *
+ * `expectedFailureKinds` (optional string array) names failure kinds the
+ * caller handles itself. A failure of such a kind is returned exactly as
+ * before, but without the "FAILED ... may be stale" line, which is reserved
+ * for failures nobody is about to heal. The D-push bracket passes
+ * ['diverged'] for a push it will reconcile.
+ *
  * @returns {Promise<{ ok: boolean, output: string, error: string|null, kind?: 'no-remote'|'empty-remote'|'remote-unreachable'|'diverged'|'auth'|'transient'|'missing-tool'|'unknown', missingTool?: string }>}
  */
-async function runDoltStep({ command, member, cmd, label, log, maxTransientRetries, onAuthFailure, sleep = defaultSleep, backoffBaseMs = DOLT_BACKOFF_BASE_MS, timeoutS = DOLT_STEP_TIMEOUT_S, spawnOutageBudgetMs = DOLT_SPAWN_OUTAGE_BUDGET_MS, now = Date.now, memberTarget, lockProbeAfterMs = DOLT_LOCK_PROBE_AFTER_MS, lockProbeTimer, onAbandonedAttempt }) {
+async function runDoltStep({ command, member, cmd, label, log, maxTransientRetries, onAuthFailure, sleep = defaultSleep, backoffBaseMs = DOLT_BACKOFF_BASE_MS, timeoutS = DOLT_STEP_TIMEOUT_S, spawnOutageBudgetMs = DOLT_SPAWN_OUTAGE_BUDGET_MS, now = Date.now, memberTarget, lockProbeAfterMs = DOLT_LOCK_PROBE_AFTER_MS, lockProbeTimer, onAbandonedAttempt, expectedFailureKinds }) {
     // `cmd` stays the LOGICAL command (classification, commandBinary, labels);
     // `issued` is the member-bound string, which on a Windows member bounds
     // GOMAXPROCS for bd (resolved once per step, not per attempt). The same
@@ -1080,7 +1114,14 @@ async function runDoltStep({ command, member, cmd, label, log, maxTransientRetri
                 catch (recordErr) { log(`[Dolt] could not record the failed self-heal for member '${member}': ${recordErr.message}`); }
             }
         }
-        log(`[Dolt] ${label} FAILED (${kind}) -- reads/writes for member '${member}' may be stale until this is resolved. Raw: ${error}`);
+        // A failure kind the caller declared it handles itself (the D-push
+        // bracket reconciling a non-fast-forward rejection) is returned
+        // without the loud line: the caller logs its own outcome, and a race
+        // that the next reconcile heals must not read as stale data.
+        const handledByCaller = Array.isArray(expectedFailureKinds) && expectedFailureKinds.includes(kind);
+        if (!handledByCaller) {
+            log(`[Dolt] ${label} FAILED (${kind}) -- reads/writes for member '${member}' may be stale until this is resolved. Raw: ${error}`);
+        }
         // A transient failure that is still the Windows process-creation
         // limit after the retry budget is flagged so the caller throws the
         // typed DoltWindowsSpawnLimitError instead of a generic sync failure.
@@ -1946,11 +1987,17 @@ export async function preflightBeadsHealthGate(member, opts = {}) {
  * D-push: publish `member`'s committed beads changes to the shared remote
  * after a beads-mutating step -- `bd dolt push` with a mechanical,
  * first-successful-pusher-wins reconcile. If the push is rejected because the
- * remote moved first, do EXACTLY ONE `bd dolt pull` (reconciling ours/theirs
- * by which clone resolves -- never per-conflict judgment) and re-push once; if
- * that is still rejected, raise a typed DoltDivergedError. Transient (network
- * / server / lock) failures are retried up to `maxTransientRetries`; a
- * divergence is never retried beyond the one bounded reconcile.
+ * remote moved first (a race with another writer, logged as one info line,
+ * not as a failure), run a BOUNDED loop of `bd dolt pull` (reconciling
+ * ours/theirs by which clone resolves -- never per-conflict judgment) plus a
+ * re-push: at most `maxRaceReconciles` cycles (DOLT_PUSH_RACE_MAX_RECONCILES),
+ * each after a jittered wait drawn from the injected `sleep`
+ * (doltRaceJitterDelayMs; `random` is injectable). A reconcile pull that cannot
+ * merge is a real conflict: DoltDivergedError (after settle, when wired). Out
+ * of cycles, settle runs and then a typed DoltPushRaceError (a DoltDivergedError
+ * subtype, kind 'remote-race') is raised. Transient (network / server / lock)
+ * failures are retried up to `maxTransientRetries`; an auth failure takes the
+ * one-shot self-heal path and never enters the race loop.
  *
  * `pushBeads: false` makes this a no-op (a read-only bracket has nothing to
  * publish). Every command is issued via the injected command() with an
@@ -1979,8 +2026,8 @@ export async function preflightBeadsHealthGate(member, opts = {}) {
  * (including the reconcile/re-push) -- see runDoltStep's AUTH SELF-HEAL
  * CONTRACT.
  *
- * REMOTE-TIP FINGERPRINT: a successful push (first attempt or the re-push
- * after the one reconcile) FORGETS this member's recorded tip and issues no
+ * REMOTE-TIP FINGERPRINT: a successful push (first attempt or a re-push
+ * after a reconcile) FORGETS this member's recorded tip and issues no
  * `git ls-remote` at all -- see "WHY A PUSH CANNOT MINT A FINGERPRINT" above
  * doltPullBefore. The pusher's next D-pull is therefore always real.
  *
@@ -1999,7 +2046,12 @@ export async function doltPushAfter(member, opts = {}) {
     // doltPullBefore. `remoteTipFingerprint` is accepted for call-site parity
     // with doltPullBefore but has nothing to switch off on the push side any
     // more: a push never probes and never records (it only forgets).
-    const { command, pushBeads = true, log = () => {}, maxTransientRetries, mutex, sprintId, checkSyncRemoteConfigured, onAuthFailure, sleep, backoffBaseMs, timeoutS, settle, renewIntervalMs = DOLT_MUTEX_RENEW_INTERVAL_MS, spawnOutageBudgetMs, now, memberTarget, lockProbeAfterMs, lockProbeTimer } = opts;
+    const { command, pushBeads = true, log = () => {}, maxTransientRetries, mutex, sprintId, checkSyncRemoteConfigured, onAuthFailure, sleep, backoffBaseMs, timeoutS, settle, renewIntervalMs = DOLT_MUTEX_RENEW_INTERVAL_MS, spawnOutageBudgetMs, now, memberTarget, lockProbeAfterMs, lockProbeTimer, maxRaceReconciles, random = Math.random } = opts;
+    // Bounded race-reconcile loop (see doltPushGuarded): cycle count and the
+    // jittered wait before each cycle, drawn from the injectable `sleep`.
+    const raceMaxReconciles = Number.isInteger(maxRaceReconciles) && maxRaceReconciles > 0 ? maxRaceReconciles : DOLT_PUSH_RACE_MAX_RECONCILES;
+    const raceSleep = typeof sleep === 'function' ? sleep : defaultSleep;
+    const raceJitterDelayMs = (cycle) => doltRaceJitterDelayMs(cycle, backoffBaseMs === undefined || backoffBaseMs === null ? DOLT_PUSH_RACE_BACKOFF_BASE_MS : backoffBaseMs, random);
     // Sync commands this push gave up on while they were still running on the
     // member (a lock-held fail-fast, see runDoltStep). The push mutex is kept
     // until they end -- see the release in the finally below.
@@ -2186,6 +2238,7 @@ export async function doltPushAfter(member, opts = {}) {
     let push = await runDoltStep({
         command, member, cmd: 'bd dolt push',
         label: `D-push for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now, memberTarget, lockProbeAfterMs, lockProbeTimer, onAbandonedAttempt,
+        expectedFailureKinds: ['diverged'],
     });
     if (push.ok) {
         return await confirmPushLanded({ ok: true, member, pushed: true, reconciled: false }, `D-push for member '${member}'`);
@@ -2242,42 +2295,70 @@ export async function doltPushAfter(member, opts = {}) {
         );
     }
 
-    // Push loser: reconcile MECHANICALLY with EXACTLY ONE D-pull (ours/theirs
-    // fixed by which clone resolves -- first-successful-pusher-wins), then one
-    // re-push.
-    log(`[Dolt] D-push for member '${member}' was rejected (another writer pushed first); reconciling with a single D-pull then one re-push (first-successful-pusher-wins).`);
-    const reconcile = await runDoltStep({
-        command, member, cmd: 'bd dolt pull',
-        label: `D-push reconcile pull for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now, memberTarget, lockProbeAfterMs, lockProbeTimer, onAbandonedAttempt,
-    });
-    if (!reconcile.ok) {
-        if (reconcile.kind === 'diverged') {
+    // Push loser: another writer published first. Reconcile MECHANICALLY
+    // (ours/theirs fixed by which clone resolves -- first-successful-pusher-
+    // wins) with a D-pull then a re-push, as a BOUNDED loop: a busy remote can
+    // reject the re-push again, which is the same race, not a data conflict.
+    // Each cycle waits a jittered backoff first so racing writers spread out.
+    // Still inside the push mutex. A reconcile pull that cannot merge is a
+    // real data conflict and keeps the settle/surfaceDivergence terminal;
+    // running out of cycles throws DoltPushRaceError.
+    let reconcileCycles = 0;
+    while (push.kind === 'diverged') {
+        if (reconcileCycles >= raceMaxReconciles) {
+            // Out of cycles. A push that stays rejected after clean pulls is
+            // either a remote that never went quiet or a wedged clone, and
+            // the two cannot be told apart here, so the deterministic settle
+            // still gets its chance (surfaceDivergence) before the typed race
+            // error surfaces.
+            log(`[Dolt] D-push for member '${member}' still rejected after ${reconcileCycles} reconcile cycle(s), each pull merging cleanly -- other writers kept publishing first.`);
             return await surfaceDivergence(
-                new DoltDivergedError(
-                    `[Dolt] D-push reconcile pull for member '${member}' hit an unmergeable beads conflict -- must not be retried blindly: ${reconcile.error}`,
-                    { member, doltOutput: reconcile.error, operation: 'push-reconcile' },
+                new DoltPushRaceError(
+                    `[Dolt] D-push for member '${member}' kept losing a race with other writers on the shared remote: the push was rejected non-fast-forward after each of ${reconcileCycles} reconcile pull(s), and every pull merged cleanly. Not a credential problem. The member's beads changes are safe in its local clone but have not reached the remote.`,
+                    { member, doltOutput: push.error, operation: 'push', details: { attempts: reconcileCycles } },
                 ),
-                'push-reconcile',
+                'push',
             );
         }
-        const typedReconcileError = typedStepError(member, 'push reconcile pull', reconcile);
-        if (typedReconcileError) throw typedReconcileError;
-        throw new DoltSyncError(
-            `[Dolt] D-push reconcile pull for member '${member}' failed: ${reconcile.error}`,
-            { member, doltOutput: reconcile.error },
-        );
-    }
+        reconcileCycles += 1;
+        log(`[Dolt] D-push for member '${member}' lost a race with another writer; reconciling (cycle ${reconcileCycles}/${raceMaxReconciles}: D-pull then re-push, first-successful-pusher-wins).`);
+        const delayMs = raceJitterDelayMs(reconcileCycles);
+        if (delayMs > 0) await raceSleep(delayMs);
+        const reconcile = await runDoltStep({
+            command, member, cmd: 'bd dolt pull',
+            label: `D-push reconcile pull for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now, memberTarget, lockProbeAfterMs, lockProbeTimer, onAbandonedAttempt,
+        });
+        if (!reconcile.ok) {
+            if (reconcile.kind === 'diverged') {
+                return await surfaceDivergence(
+                    new DoltDivergedError(
+                        `[Dolt] D-push reconcile pull for member '${member}' hit an unmergeable beads conflict -- must not be retried blindly: ${reconcile.error}`,
+                        { member, doltOutput: reconcile.error, operation: 'push-reconcile' },
+                    ),
+                    'push-reconcile',
+                );
+            }
+            const typedReconcileError = typedStepError(member, 'push reconcile pull', reconcile);
+            if (typedReconcileError) throw typedReconcileError;
+            throw new DoltSyncError(
+                `[Dolt] D-push reconcile pull for member '${member}' failed: ${reconcile.error}`,
+                { member, doltOutput: reconcile.error },
+            );
+        }
 
-    // The remote moved under the rejected first push (that is why it was
-    // rejected), so the landed check's pre-push tip is re-read now: compared
-    // against the stale one, another writer's push would read as ours landing.
-    landedCheck = await beginDoltPushLandedCheck(member, { command, log });
-    push = await runDoltStep({
-        command, member, cmd: 'bd dolt push',
-        label: `D-push re-push after reconcile for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now, memberTarget, lockProbeAfterMs, lockProbeTimer, onAbandonedAttempt,
-    });
-    if (push.ok) {
-        return await confirmPushLanded({ ok: true, member, pushed: true, reconciled: true }, `D-push re-push after reconcile for member '${member}'`);
+        // The remote moved under the rejected push (that is why it was
+        // rejected), so the landed check's pre-push tip is re-read now:
+        // compared against the stale one, another writer's push would read
+        // as ours landing.
+        landedCheck = await beginDoltPushLandedCheck(member, { command, log });
+        push = await runDoltStep({
+            command, member, cmd: 'bd dolt push',
+            label: `D-push re-push after reconcile for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now, memberTarget, lockProbeAfterMs, lockProbeTimer, onAbandonedAttempt,
+            expectedFailureKinds: ['diverged'],
+        });
+        if (push.ok) {
+            return await confirmPushLanded({ ok: true, member, pushed: true, reconciled: true }, `D-push re-push after reconcile for member '${member}'`);
+        }
     }
 
     if (push.kind === 'auth' && !push.selfHealed) {
@@ -2374,10 +2455,11 @@ export async function doltPushAfter(member, opts = {}) {
         );
     }
 
-    // Still rejected after the one bounded reconcile, and not an auth failure.
+    // The re-push failed for a reason that is neither the race nor auth
+    // (e.g. an unknown failure the one-shot self-heal could not clear).
     return await surfaceDivergence(
         new DoltDivergedError(
-            `[Dolt] D-push for member '${member}' still rejected after one reconcile pull -- refusing to retry further: ${push.error}`,
+            `[Dolt] D-push for member '${member}' re-push failed (${push.kind}) after ${reconcileCycles} reconcile pull(s) -- refusing to retry further: ${push.error}`,
             { member, doltOutput: push.error, operation: 'push' },
         ),
         'push',
@@ -2630,7 +2712,10 @@ async function runDegradable(run, ctx) {
             `The sprint CONTINUES -- this member's beads mutations are safe in its local clone and the next ` +
             `D-${operation} bracket for '${member}' is the queued retry. Cause: ${outcome.detail}`,
         );
-        const record = recordDegradedSync({ member, operation, kind, detail: outcome.detail });
+        // `errorKind` keeps the typed error's own finer kind (e.g. a
+        // DoltPushRaceError's 'remote-race', which classifies 'diverged').
+        const errorKind = (err && (err.kind || (err.details && err.details.kind))) || kind;
+        const record = recordDegradedSync({ member, operation, kind, errorKind, detail: outcome.detail });
         if (typeof onDegraded === 'function') {
             try {
                 await onDegraded({ ...outcome, record });
