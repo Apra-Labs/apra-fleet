@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "56ef5cf2d4e382d96760e6982ccf15452746fa07",
     "branch": "main",
-    "entry_count": 185
+    "entry_count": 186
   },
   "entries": [
     {
@@ -2048,6 +2048,32 @@
         "packages/apra-fleet-se/fleet-sprint/phases/plan.mjs": "4f4c6f39c57e14d042368452742189181058d99c",
         "packages/apra-fleet-se/fleet-sprint/phases/replan.mjs": "d1024b6fb26c1f9493fd19658bd8e781260441fd",
         "packages/apra-fleet-se/test/mock-sprint-replan-needs-decision.test.mjs": "4f1bcb09146fad18e38ef13fe62be43636639a9e"
+      }
+    },
+    {
+      "id": "8b15e895-7b5b-4fb7-ae8f-18bfcfcead1e",
+      "type": "knowledge",
+      "title": "Premium-cap gate runs after Plan via runReplanPhase premiumCap option and holds Develop on a decision",
+      "summary": "runner.js calls tier-cap.mjs runPremiumCapGate right after runPlanPhase. Over the cap it re-plans through phases/replan.mjs runReplanPhase with a premiumCap option (max 2 per sprint on sprintState.premiumCap), then raises one recordPendingDecision and awaits decisionWait.awaitAnswer before Execution Prep.",
+      "symbols": [
+        "runPremiumCapGate",
+        "countPremiumCap",
+        "runReplanPhase",
+        "recordPendingDecision"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/tier-cap.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/fleet-sprint/phases/replan.mjs",
+        "packages/apra-fleet-se/test/mock-sprint-premium-cap.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-24T03:42:39.673Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/phases/replan.mjs": "3a73bf79af1ac64dfc287ff067b8329a25e914c6",
+        "packages/apra-fleet-se/fleet-sprint/runner.js": "9d27bb9425c1e1c55fd7d6326005471e62843f3a",
+        "packages/apra-fleet-se/fleet-sprint/tier-cap.mjs": "aaa7b0e3ed3d909a65135837e94f0ceec80765be",
+        "packages/apra-fleet-se/test/mock-sprint-premium-cap.test.mjs": "af228900acc500b838efd3920a02572de326a9f3"
       }
     },
     {
