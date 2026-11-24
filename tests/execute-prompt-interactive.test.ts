@@ -190,6 +190,10 @@ describe('executePrompt -- interactive routing (apra-fleet-2xs.8)', () => {
 
     expect(resultText(result)).toContain('Timed out');
     expect(resultText(result)).toContain('interactive-timeout');
+    // Typed failure; the prompt WAS delivered, so no dispatched:false.
+    const sc = (result as any).structuredContent;
+    expect(sc).toMatchObject({ isError: true, reason: 'interactive_failed' });
+    expect(sc.dispatched).toBeUndefined();
     expect(inFlightAgents.has(memberId)).toBe(false);
   }, 10000);
 
@@ -422,6 +426,9 @@ describe('dead interactive session detection (apra-fleet-eft.28.1)', () => {
     expect(killSpy).toHaveBeenCalledWith(777, 0);
     expect(resultText(result)).toContain('died while this dispatch was waiting for a response');
     expect(resultText(result)).toContain('dies-mid-wait-member');
+    const sc = (result as any).structuredContent;
+    expect(sc).toMatchObject({ isError: true, reason: 'interactive_failed' });
+    expect(sc.dispatched).toBeUndefined();
     expect(inFlightAgents.has(memberId)).toBe(false);
     // The dead session must be discarded here too, not left registered.
     expect(sessionRegistry.get(workspaceId, memberId)).toBeUndefined();

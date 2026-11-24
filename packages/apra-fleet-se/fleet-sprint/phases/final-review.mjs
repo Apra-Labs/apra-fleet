@@ -93,7 +93,7 @@ import { buildSettleCallback } from '../dolt-settle.mjs';
 import { partitionDeferredBeads } from '../beads-scope.mjs';
 import { applyDeployFailureVerdictGate, formatDeployFailureReason } from './deploy.mjs';
 import { applyVerifyBlockVerdictGate } from '../verify-block.mjs';
-import { applyCarryOverVerdictGate } from '../set-aside.mjs';
+import { applyCarryOverVerdictGate, applyOpenWorkVerdictGate } from '../set-aside.mjs';
 import { buildVerifyCarryOver, applyVerifyCarryOverVerdictGate } from '../verify-carry-over.mjs';
 import { applyRedBuildIntegSkipVerdictGate, formatRedBuildIntegSkipVerdictReason } from '../red-build-integ-gate.mjs';
 
@@ -193,6 +193,11 @@ export async function runFinalReviewPhase({
     // fetched origin/<base> and the branch) on that member. Injected so this
     // phase issues no fleet command of its own; it throws on failure.
     reviewMergeBaseFor,
+    // Optional async ({ closedIds, titleById }) => ({ ran }): the catch-up
+    // review (phases/review.mjs runReviewCatchUpPhase, wired by runner.js).
+    // Called once, after this phase's D-pull and fresh reads; when it ran
+    // (reviewed or reopened beads) the reads below are taken again.
+    reviewCatchUp = null,
 }) {
     phase(`Final Review C${finalCycleLabel}`);
 
@@ -205,11 +210,28 @@ export async function runFinalReviewPhase({
     // (apra-fleet-7dir.24).
     const finalReviewSettleShell = await resolveSettleShell({ args, member: backlogMember, log, sprintState });
     await gitSync.syncBeadsBefore(backlogMember, { fatal: true, settle: buildSettleCallback(backlogMember, { command, log, shell: finalReviewSettleShell }) });
-    const [finalOpenAtGoalRaw, finalOpenAtGoalParentIds, finalClosedBeads] = await Promise.all([
+    const readFinalCounts = () => Promise.all([
         bdListScoped(`--status=${NOT_DONE_STATUSES} --priority-max=${goalMax} --json`),
         decomposedParentIds(),
         bdListScoped('--status=closed --json'),
     ]);
+    let [finalOpenAtGoalRaw, finalOpenAtGoalParentIds, finalClosedBeads] = await readFinalCounts();
+    // Catch-up review: every bead this sprint dispatched that is closed now
+    // but never entered a review round's scope is reviewed (or reopened)
+    // here, before the final verdict. It reuses the fresh closed read above,
+    // so nothing to catch up costs no extra command; when it did run, its
+    // reopens/newTasks changed the local beads clone, so read again.
+    if (typeof reviewCatchUp === 'function') {
+        const closedList = Array.isArray(finalClosedBeads) ? finalClosedBeads : [];
+        const catchUp = await reviewCatchUp({
+            closedIds: closedList.map((b) => b && b.id).filter(Boolean),
+            titleById: new Map(closedList.filter((b) => b && b.id).map((b) => [b.id, b.title || b.id])),
+        });
+        if (catchUp && catchUp.ran) {
+            phase(`Final Review C${finalCycleLabel}`);
+            [finalOpenAtGoalRaw, finalOpenAtGoalParentIds, finalClosedBeads] = await readFinalCounts();
+        }
+    }
     // apra-fleet-rp7a.1: deferred beads are dropped from the closing count for
     // the same reason Cycle Evaluation drops them -- the dispatcher never
     // offers a deferred bead, so it is not work this sprint left undone. Their
@@ -403,6 +425,29 @@ export async function runFinalReviewPhase({
         const llmVerdict = finalVerdictResult && finalVerdictResult.verdict;
         finalVerdictResult = applyRedBuildIntegSkipVerdictGate(finalVerdictResult, redBuildIntegSkip);
         log(`Final Review: sprint verdict forced to FAIL (Final Review returned ${llmVerdict ?? '(none)'}) -- ${formatRedBuildIntegSkipVerdictReason(redBuildIntegSkip)}`);
+    }
+    // A sprint cannot PASS while at/above-goal work is still open or a
+    // verify-routed bead is unclosed, whatever the reviewer concluded. Ids a
+    // sibling gate above already forced and named are not listed twice.
+    // Unclosed verify-routed beads count only when at/above the goal priority
+    // and not deferred, matching how the verify carry-over gate judges them.
+    // Deferred is read from the RAW at-goal read: verify-routed beads are
+    // decomposed parents, so finalDeferredAtGoalIds (parent-filtered) never
+    // holds them. A bounce-cap deferral still FAILs via the carry-over gate.
+    const blockingVerifyIds = (() => {
+        const atGoal = new Set(finalOpenAtGoalRaw.map((b) => b.id));
+        const deferred = new Set(partitionDeferredBeads(finalOpenAtGoalRaw).deferredIds);
+        return finalUnclosedVerifyIds.filter((id) => atGoal.has(id) && !deferred.has(id));
+    })();
+    if (finalOpenAtGoal.length > 0 || blockingVerifyIds.length > 0) {
+        const llmVerdict = finalVerdictResult && finalVerdictResult.verdict;
+        const alreadyNamedIds = [
+            ...(carryOverExit ? carryOverExit.atGoalIds : []),
+            ...(verifyCarryOver ? [...verifyCarryOver.needsEvidenceIds, ...(verifyCarryOver.bounceCapIds || [])] : []),
+        ];
+        const openAtGoalIds = finalOpenAtGoal.map((b) => b.id);
+        finalVerdictResult = applyOpenWorkVerdictGate(finalVerdictResult, { openAtGoalIds, unclosedVerifyIds: blockingVerifyIds, alreadyNamedIds });
+        log(`Final Review: sprint verdict forced to FAIL (Final Review returned ${llmVerdict ?? '(none)'}) -- open at/above goal: ${openAtGoalIds.join(', ') || '(none)'}; unclosed verify-routed: ${blockingVerifyIds.join(', ') || '(none)'}`);
     }
     if (finalVerdictResult && belowGoalCarryOverIds && belowGoalCarryOverIds.size > 0) {
         const belowGoalNote = `Carried over (below goal ${validated.goal}, not reopened): a reviewer CHANGES_NEEDED named only these below-goal bead(s), all skipped by the goal-scope guard, so the sprint did not wait on them: ${[...belowGoalCarryOverIds].sort().join(', ')}.`;

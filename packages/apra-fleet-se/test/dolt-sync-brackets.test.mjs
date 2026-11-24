@@ -20,7 +20,7 @@ import {
     clearTipProbeFailures,
     extractDoltRemoteUrl,
 } from '../fleet-sprint/dolt-sync.mjs';
-import { DoltDivergedError, DoltSyncError } from '../fleet-sprint/errors.mjs';
+import { DoltDivergedError, DoltSyncError, DoltPushRaceError } from '../fleet-sprint/errors.mjs';
 // apra-fleet-3swo.5.7: the D-push flags now live in the policy table, so the
 // census below reads them from there rather than from runner.js source.
 import { allDispatchPolicies } from '../fleet-sprint/role-policies.mjs';
@@ -390,13 +390,17 @@ test('doltPushAfter: push loser reconciles with EXACTLY ONE D-pull then one re-p
     assert.equal(calls.filter((c) => c.cmd.includes('bd dolt push')).length, 2, 'push, reconcile-pull, then re-push');
 });
 
-test('doltPushAfter: still rejected after the one reconcile raises typed DoltDivergedError, no further retry', async () => {
+test('doltPushAfter: still rejected after the bounded reconcile loop raises typed DoltPushRaceError, no further retry', async () => {
+    // Was: one reconcile, then DoltDivergedError. The reconcile is now a
+    // bounded loop (DOLT_PUSH_RACE_MAX_RECONCILES cycles, default 3) and a
+    // remote that keeps rejecting after clean pulls is a race, not a conflict.
     const { command, calls } = makeCommandMock({
         'bd dolt push': [fail('cannot fast-forward: divergent branches')],
         'bd dolt pull': [OK],
     });
-    await assert.rejects(() => doltPushAfter('memberA', { command }), DoltDivergedError);
-    assert.equal(calls.filter((c) => c.cmd.includes('bd dolt push')).length, 2, 'push then one re-push, never a third');
+    await assert.rejects(() => doltPushAfter('memberA', { command, sleep: async () => {} }), DoltPushRaceError);
+    assert.equal(calls.filter((c) => c.cmd.includes('bd dolt push')).length, 4, 'push then three re-pushes, never a fifth');
+    assert.equal(calls.filter((c) => c.cmd.includes('bd dolt pull')).length, 3, 'one reconcile pull per cycle');
 });
 
 test('doltPushAfter: a transient-exhausted push raises DoltSyncError (not DoltDivergedError), no reconcile', async () => {
