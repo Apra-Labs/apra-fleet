@@ -666,7 +666,11 @@ const VCS_AUTH_PATH = path.join(__dirname, '../fleet-sprint/vcs-auth.mjs');
 // without a credentialProbe) and the labelled probe, and added the member
 // home read the labelled probe's helper path is built from, all carrying
 // member_name -- 10.
-const EXPECTED_VCS_AUTH_COMMAND_COUNT = 10;
+//
+// The Sprint Setup provider-match check (assertPrMemberProviderMatchesRepo)
+// added the sprint origin read on the git-capable member, carrying
+// member_name -- 11.
+const EXPECTED_VCS_AUTH_COMMAND_COUNT = 11;
 
 test('every command() call site in vcs-auth.mjs passes member_name or member_id', () => {
     const { sites, violations } = checkPath(VCS_AUTH_PATH);

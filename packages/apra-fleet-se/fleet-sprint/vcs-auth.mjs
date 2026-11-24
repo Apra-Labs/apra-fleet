@@ -285,6 +285,66 @@ function detectVcsProviderFromRemote(remoteUrl) {
     return (impl && impl.name) || null;
 }
 
+/**
+ * Typed error code for a sprint whose repository is served by one VCS
+ * provider while the PR-raising member is registered for another. Stable, so
+ * log readers and tests match it, not prose.
+ */
+export const VCS_PROVIDER_MISMATCH = 'vcs_provider_mismatch';
+
+/**
+ * Sprint Setup check: the PR-raising member's REGISTERED vcsProvider must be
+ * the provider that serves the sprint repository's origin remote. A mismatch
+ * is refused here, before any dispatch, with one typed ERROR naming the repo
+ * provider, the member, its registered provider and the fix -- instead of a
+ * credential mint for the wrong provider (fed a repository name it cannot
+ * parse) at setup and an unrelated credential remedy at Publish PR.
+ *
+ * Reads the member record first and the origin remote only when the member
+ * has a registered provider. Never refuses on missing information: a member
+ * with no registered provider keeps the detect-from-remote path, and an
+ * unreadable record or remote, or a host no auth provider claims, is left to
+ * the paths that already report those.
+ *
+ * @param {{ callTool: Function, command: Function, member: string, remoteMember?: string, log?: Function }} opts
+ *   `member` raises the PR; `remoteMember` is the git-capable member whose
+ *   `origin` is the sprint repository (defaults to `member`).
+ * @returns {Promise<{ checked: boolean, repoProvider?: string, memberProvider?: string }>}
+ * @throws {Error} code VCS_PROVIDER_MISMATCH on a mismatch
+ */
+export async function assertPrMemberProviderMatchesRepo({ callTool, command, member, remoteMember, log = () => {} }) {
+    if (typeof callTool !== 'function' || !member) return { checked: false };
+    let record = null;
+    try {
+        record = await readMemberRecord(member, new ApraFleet({ callTool }));
+    } catch (err) {
+        log(`[Sprint Setup] could not read member '${member}' to compare its VCS provider with the repository's (continuing): ${err && err.message ? err.message : String(err)}`);
+        return { checked: false };
+    }
+    const memberProvider = record && typeof record.vcsProvider === 'string' && getVcsProvider(record.vcsProvider) ? record.vcsProvider : null;
+    if (!memberProvider) return { checked: false };
+    const from = remoteMember || member;
+    let remoteUrl = '';
+    try {
+        const res = await command('git remote get-url origin', { member_name: from, silent: true, failSoft: true });
+        remoteUrl = res && res.ok ? String(res.output || '').trim() : '';
+    } catch { /* unreadable: nothing to compare */ }
+    const repoProvider = remoteUrl ? detectVcsProviderFromRemote(remoteUrl) : null;
+    if (!repoProvider) return { checked: false };
+    if (repoProvider === memberProvider) return { checked: true, repoProvider, memberProvider };
+    const err = new Error(
+        `Sprint Setup: ERROR ${VCS_PROVIDER_MISMATCH}: the sprint repository '${redactUrlUserinfo(remoteUrl)}' is served by VCS provider '${repoProvider}', `
+        + `but the PR-raising member '${member}' is registered for VCS provider '${memberProvider}'. `
+        + `No '${memberProvider}' credential is minted for a '${repoProvider}' repository. `
+        + `Fix: register member '${member}' for '${repoProvider}', or choose a member registered for '${repoProvider}' as the backlog (PR-raising) member, then relaunch.`,
+    );
+    err.message = err.message.replace(/[^\x20-\x7e]+/g, ' ');
+    err.code = VCS_PROVIDER_MISMATCH;
+    err.repoProvider = repoProvider;
+    err.memberProvider = memberProvider;
+    throw err;
+}
+
 async function provisionVcsAuthForMember({ fleetApi, command, member, log = () => {}, logPrefix, gitAccess = DEFAULT_SYNC_GIT_ACCESS, azdevopsPatSecretName, remoteUrlOverride, resolvedProvider, refuseLocalNonReMintable = false }) {
     let repos;
     let derivedRepo = null;
@@ -477,7 +537,9 @@ async function provisionVcsAuthForMember({ fleetApi, command, member, log = () =
     // (provision_vcs_auth swaps labels) and break that provider's sprints.
     // Refuse with a typed error instead; the PR callers degrade on it.
     if (registeredMismatch) {
-        throw new Error(`member '${member}' is registered for VCS provider '${registeredMismatch}', which does not serve this '${provider}' remote; not provisioning '${provider}' on it, because that would revoke the member's '${registeredMismatch}' credential. Use a backlog member dedicated to '${provider}' for this repository.`);
+        const mismatchErr = new Error(`member '${member}' is registered for VCS provider '${registeredMismatch}', which does not serve this '${provider}' remote; not provisioning '${provider}' on it, because that would revoke the member's '${registeredMismatch}' credential. Use a backlog member dedicated to '${provider}' for this repository.`);
+        mismatchErr.code = VCS_PROVIDER_MISMATCH;
+        throw mismatchErr;
     }
     // apra-fleet-d1pk.3: fleet-sprint runs unattended, so it never lets
     // provision_vcs_auth fall into its out-of-band secret prompt -- a missing
@@ -829,6 +891,12 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
         // (Publish PR, finalizeAbort) can report clean, actionable guidance
         // and keep going rather than aborting on this condition.
         let remedyHint = null;
+        // A provider mismatch is not a credential problem: its message already
+        // names the fix, and any provider's credential remedy would be unrelated.
+        if (provisionErr && provisionErr.code === VCS_PROVIDER_MISMATCH) {
+            log(`${logPrefix}: PR-capable credential provisioning failed for member '${member}'; degrading (not throwing): ${provisionErr.message}`);
+            return { ok: false, alreadyExists: false, prUrl: null, error: provisionErr.message, authFailure: true };
+        }
         try {
             // The TARGET remote's provider wins over the member's registered
             // one (same rule provisionVcsAuthForMember applies at push+pr): a

@@ -99,6 +99,7 @@ import {
     createMemberVcsProviderResolver, createVcsAuthSelfHealCallback, createVcsAuthPreflightCallback,
     createWorkflowsPermissionPreflightCallback,
     createLlmAuthSelfHealCallback,
+    assertPrMemberProviderMatchesRepo,
 } from './vcs-auth.mjs';
 import { validateIssueId, validateBranchName, validateBranchPair, validateArgs, validateGoal, validateMaxCycles, validateBudget } from './sprint-args.mjs';
 import { verifyBeadsIdentity, createBeadsIdentityProber, BEADS_READING_ROLES } from './beads-identity-check.mjs';
@@ -2821,6 +2822,20 @@ async function runSprintCycle(context) {
     // Thread the backlog member's REGISTERED shell into dolt-settle,
     // guarded on args.callTool the same way the pre-dispatch bracket is
     // (apra-fleet-7dir.24).
+    // Provider match: the backlog member raises the PR (and its credential is
+    // what any setup self-heal would mint), so a member registered for a
+    // provider other than the one serving the sprint repository fails HERE,
+    // naming both, before any dispatch could mint the wrong provider's
+    // credential. The origin is read on the same git-capable member Publish
+    // PR reads it on. Needs the fleet API (args.callTool) for the registry.
+    await assertPrMemberProviderMatchesRepo({
+        callTool: args && args.callTool,
+        command,
+        member: backlogMember,
+        remoteMember: getMemberForRole('harvester'),
+        log,
+    });
+
     const preflightSettleShell = await resolveSettleShell({ args, member: backlogMember, log, sprintState });
     await gitSync.syncBeadsBefore(backlogMember, { readinessGate: true, settle: buildSettleCallback(backlogMember, { command, log, shell: preflightSettleShell }) });
 
