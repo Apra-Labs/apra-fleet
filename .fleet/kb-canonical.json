@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "962e202f8b5910fdecf6f82a46102a798f5cc4f2",
     "branch": "main",
-    "entry_count": 211
+    "entry_count": 212
   },
   "entries": [
     {
@@ -3581,6 +3581,30 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:37.343Z"
+    },
+    {
+      "id": "d5d34405-0b41-49cb-b3e7-d7b934af7955",
+      "type": "knowledge",
+      "title": "buildSprintPrBody never exceeds the limit because of outside text: compact block or description left unchanged",
+      "summary": "When the text outside the fleet block leaves no room for the block's frame, buildSprintPrBody returns compact:true (verdict, linked pointer, run history; all else in overflow comments) or descriptionUnchanged:true (previousBody as is, or the old block removed when the rest fits). raiseVcsPrForMember sends no description update when descriptionUnchanged is set.",
+      "symbols": [
+        "buildSprintPrBody",
+        "buildOutsideBoundResult",
+        "raiseVcsPrForMember",
+        "capDescriptionPreservingHiddenTail"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/pr-body.mjs",
+        "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs",
+        "packages/apra-fleet-se/test/pr-human-text-preserved.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-24T16:34:53.063Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/pr-body.mjs": "bff0c0546d425a43036fe80262e452d301658f51",
+        "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs": "bb55b5a8ecefc56bdea2fde01838e5c94cbe79b1",
+        "packages/apra-fleet-se/test/pr-human-text-preserved.test.mjs": "39dfcc403231baa059a3670337153857dd315e35"
+      }
     },
     {
       "id": "d6a925e2-7ffb-409e-9d6d-df112557edda",
