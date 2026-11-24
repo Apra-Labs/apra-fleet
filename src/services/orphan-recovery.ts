@@ -100,10 +100,12 @@ export async function isRemoteProcessAlive(
   shell?: MemberShell,
 ): Promise<boolean> {
   try {
-    // Windows has no `kill -0`; mirror the Get-Process idiom monitor-task.ts
-    // already uses for the same pid-alive check. A gitbash member gets the
-    // POSIX form instead -- it has a real `kill` (apra-fleet-7dir.2.4).
-    const cmd = isPosixShell(os, shell)
+    // A Windows member's FLEET_PID is a WINDOWS pid whatever its shell (a Git
+    // Bash member records /proc/<msys-pid>/winpid), and `kill -0` only
+    // understands MSYS pids -- it would read a live winpid as DEAD. So probe
+    // every Windows member with Get-Process; a Git Bash member's bash can run
+    // the encoded powershell command. Only non-Windows members use `kill -0`.
+    const cmd = os !== 'windows'
       ? `kill -0 ${pid} 2>/dev/null && echo ALIVE || echo DEAD`
       : wrapPowerShellEncoded(`if (Get-Process -Id ${pid} -ErrorAction SilentlyContinue) { echo ALIVE } else { echo DEAD }`);
     const res = await strategy.execCommand(cmd, PROBE_TIMEOUT_MS);

@@ -81,6 +81,8 @@ describe('WindowsGitBashCommands emits bash, not PowerShell', () => {
 
   it('inherits the POSIX prompt/filesystem surface from LinuxCommands', () => {
     expect(gb.mkdir('/c/work')).toBe(linux.mkdir('/c/work'));
-    expect(gb.wrapPidCapture('echo hi')).toBe(linux.wrapPidCapture('echo hi'));
+    // wrapPidCapture is the one deliberate difference: Git Bash emits the Windows pid.
+    expect(gb.wrapPidCapture('echo hi')).not.toBe(linux.wrapPidCapture('echo hi'));
+    expect(gb.wrapPidCapture('echo hi')).toContain('/proc/$_fleet_pid/winpid');
   });
 });

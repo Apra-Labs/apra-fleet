@@ -11,7 +11,6 @@
       "Bash(curl:*)", "Bash(tar:*)", "Bash(unzip:*)",
       "Bash(grep:*)", "Bash(sed:*)", "Bash(awk:*)",
       "Bash(tee:*)", "Bash(xargs:*)", "Bash(sleep:*)",
-      "Bash(kill:*)", "Bash(pkill:*)",
       "Bash(bash:*)", "Bash(sh:*)",
       "Bash(gh:*)", "Bash(jq:*)",
       "mcp__apra-fleet__kb_session_prime",

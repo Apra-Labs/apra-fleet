@@ -57,8 +57,15 @@ describe('remote Windows member command strings carry the GOMAXPROCS default', (
     expect(GO_MAXPROCS_DEFAULT_GITBASH).toBe('[ -n "${GOMAXPROCS:-}" ] || export GOMAXPROCS=1; ');
     const gb = getOsCommands('windows', 'gitbash');
     const linux = new LinuxCommands();
+    // Same launch as linux apart from the GOMAXPROCS prefix and the FLEET_PID
+    // emit, which carries the Windows pid on Git Bash (see pidWrapGitBash).
+    const linuxEmit = `printf 'FLEET_PID:%s\\n' "$_fleet_pid"; `;
+    const gitbashEmit = `_fleet_wpid=; { read -r _fleet_wpid < "/proc/$_fleet_pid/winpid"; } 2>/dev/null; `
+      + `if [ -n "$_fleet_wpid" ]; then printf 'FLEET_PID:%s\\n' "$_fleet_wpid"; fi; `;
+    const linuxLaunch = linux.buildAgentPromptCommand(claude, winOpts as never);
+    expect(linuxLaunch).toContain(linuxEmit);
     expect(gb.buildAgentPromptCommand(claude, winOpts as never))
-      .toBe(`${GO_MAXPROCS_DEFAULT_GITBASH}${linux.buildAgentPromptCommand(claude, winOpts as never)}`);
+      .toBe(`${GO_MAXPROCS_DEFAULT_GITBASH}${linuxLaunch.replace(linuxEmit, gitbashEmit)}`);
     expect(gb.wrapInWorkFolder('/c/w', 'bd dolt pull'))
       .toBe(`${GO_MAXPROCS_DEFAULT_GITBASH}cd "/c/w" && export PATH="$PATH:$HOME/.apra-fleet/bin" && bd dolt pull`);
   });

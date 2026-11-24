@@ -842,7 +842,7 @@ describe('inline-ladder guard: (apra-fleet-3swo.35) every real dispatch anchor p
         // Guards the loop itself: if allDispatchPolicies() ever returned an
         // empty/short list (e.g. a de-duplication bug), the per-dispatch
         // tests above would silently not exist rather than fail.
-        assert.strictEqual(allDispatchPolicies().length, 22, 'expected 22 distinct real dispatches (11 role ladders x main + resume/re-ask) -- if this changed, a role ladder was added/removed; update this count deliberately.');
+        assert.strictEqual(allDispatchPolicies().length, 24, 'expected 24 distinct real dispatches (11 role ladders x main + resume/re-ask, plus the two scoped re-plan refusal-resume secondaries) -- if this changed, a role ladder was added/removed; update this count deliberately.');
     });
 
     test('falsification: an anchor that matches no source text is caught', () => {

@@ -79,8 +79,10 @@ Reset, or Teardown sections. Your write scope is the working copy on your featur
 state that outlives your dispatch (environment/sandbox config, remote/sync settings,
 credentials, long-running services) belongs to the integration-test role, not you. Leave
 the bead open and return `status: "BLOCKED"` with `notes` stating it needs
-integration-phase evidence. Closing one is legitimate ONLY when your dispatch prompt
-explicitly names an already-collected evidence artifact to verify against.
+integration-phase evidence, and list its id in `liveEvidenceIds` (see Step 3) so the
+orchestrator routes it to the integration-test runner. Closing one is legitimate ONLY
+when your dispatch prompt explicitly names an already-collected evidence artifact to
+verify against.
 
 ## Step 0 -- Knowledge Bank (do this BEFORE any other work)
 
@@ -296,6 +298,14 @@ lane-mates skipped under the same-lane stop rule) -- the orchestrator sets each
 re-dispatches the unreached ones. Example:
 `{ "status": "BLOCKED", "closedIds": ["<id-1>"], "blockedIds": ["<id-2>"], "notes": "..." }`.
 
+When an assigned bead is open ONLY because its acceptance needs live integration
+evidence (see "Live-evidence beads are not yours to close" above), list its id in
+`liveEvidenceIds` instead of `blockedIds`. The orchestrator labels it as a
+verification-only bead and hands it to the integration-test runner; it is not set aside
+and is never dispatched to a doer again, and beads depending on it are not set aside
+either. Example:
+`{ "status": "BLOCKED", "closedIds": ["<id-1>"], "liveEvidenceIds": ["<id-2>"], "notes": "..." }`.
+
 When a bead needs an operator decision (see "Needs an operator decision" above), stop
 there and return `status: "NEEDS-DECISION"` with its `decision` object, listing in
 `closedIds` whatever you closed before it. Example:
@@ -347,6 +357,16 @@ or as prose if you are answering a human directly.
   is NOT a skip -- close with a blocked reason per Branch and secrets rules.
 - Tests for the changed area must pass before each commit (Step 2.5)
 - No PLAN.md, no progress.json -- beads is the only work tracker
+- NEVER terminate a process you did not start: no `kill`, `pkill`, `killall`,
+  `taskkill`, `tskill`, `Stop-Process` or `wmic process ... delete`, and not the same
+  command through another interpreter either. The machine you run on may also host the
+  services that dispatched you and other concurrent runs; a kill by name, or of pids
+  taken from a process listing, takes them down with yours. On resource exhaustion --
+  process launch failures, out-of-memory, "too many processes", a host too loaded to
+  start your tests -- stop and report it (BLOCKED, quoting the error) instead of
+  cleaning up. A process you started yourself (e.g. a backgrounded server) is stopped
+  through the target's own stop script or pidfile helper, or its stop/teardown step --
+  never by a raw `kill` (the permission config denies it).
 - If the target repo replays `bd` from recorded fixtures in its tests, record any NEW
   bd-shelling test's fixture at authoring time and commit it with the test -- do not
   defer it. Follow the fixture directory's own README for the record command.

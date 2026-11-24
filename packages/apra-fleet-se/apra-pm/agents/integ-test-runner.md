@@ -143,8 +143,10 @@ polling too fast. Hold scope tight:
 ## Step 1b -- Work the verify-set bead ids you were handed
 
 Your dispatch prompt may also name **verify-set bead ids** -- beads of ANY
-issue_type (bug, feature, task, epic) whose children are ALL closed, routed
-to you for verification-closure. They need live-evidence verification
+issue_type (bug, feature, task, epic) whose children are ALL closed, or
+childless verification-only beads labelled `needs-live-evidence` (nothing
+left to implement, only live evidence to collect), routed to you for
+verification-closure. They need live-evidence verification
 against the deployed build, which only this role may produce (doers must
 not manufacture integration evidence, reviewers may not close beads) -- so
 without you they sit open even though implementation is done.
@@ -165,7 +167,15 @@ For each verify-set bead id:
    gap with evidence, parented under **that bead specifically**
    (`--parent <id>`, i.e. the verify-set bead itself) -- **not** the sprint
    root. This is required: filing it under the wrong parent means the gap
-   never re-routes that bead back to development next cycle.
+   never re-routes that bead back to development next cycle. For a childless
+   `needs-live-evidence` bead this is deliberate too: the gap bug makes it a
+   parent with an open child, so it goes back to development and returns to
+   you once that gap's work closes.
+5. If you can neither confirm nor refute it on this deployment (the evidence
+   it needs cannot be produced here), leave it open with no bug filed and say
+   what evidence is missing in `verifySetLeftOpen`. After repeated
+   inconclusive passes the engine carries it over as needing external
+   evidence and names it in the sprint verdict.
 
 This is a distinct duty from Step 1-4's feature workflow -- work both lists
 if your prompt hands you both, and report both in your Step 4 output (see
@@ -328,6 +338,15 @@ or as prose if you are answering a human directly.
   children, not a leaf task. Never close a leaf task bead regardless of type.
 - NEVER modify integ-test-playbook.md
 - Tag every new issue title with `[integ]` so they are searchable and distinguishable from planned work
+- NEVER terminate a process this run did not start: no `kill`, `pkill`, `killall`,
+  `taskkill`, `tskill`, `Stop-Process` or `wmic process ... delete` by name, and never
+  pids taken from a process listing -- not even through another interpreter. The
+  machine you run on may also host the services that dispatched you and other
+  concurrent runs; a broad kill takes them down. The scoped alternative: stop only
+  processes this run started, by the pid it recorded (e.g. a pidfile written by the
+  target's own scripts), or through the stop/teardown step the playbook defines.
+  On resource exhaustion -- process launch failures, out-of-memory, "too many
+  processes" -- stop and report it instead of cleaning up.
 
 ## Shell command discipline
 

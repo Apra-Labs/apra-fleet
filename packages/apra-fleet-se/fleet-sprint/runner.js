@@ -245,7 +245,9 @@ import { pathsFromText, isPriorityTierToken } from './kb-hints.mjs';
 // out of runner.js (apra-fleet-3swo.4.6); beads-scope.mjs's header is the
 // written-down version of that contract.
 import {
-    createBeadsScope, classifyVerifySet,
+    createBeadsScope, classifyVerifySet, hasLiveEvidenceMarker, LIVE_EVIDENCE_LABEL,
+    // Parents held out of verify only by below-goal/out-of-scope open children.
+    belowGoalVerifyHolds, formatVerifyHolds,
     // apra-fleet-3swo.6.13: parseBdJson/goalPriorityMax/partitionByGoalMembership
     // moved here from runner.js; imported back and re-exported (facade region
     // below) so no importer of runner.js is edited by the move.
@@ -1427,7 +1429,10 @@ async function runSprintCycle(context) {
     // the sprint's cached member_detail-backed resolver once, here; with no
     // fleet client the resolver is cleared and members are treated as POSIX.
     setMemberTargetResolver(sprintState.fleetApi
-        ? (member) => resolveMemberTarget({ fleetApi: sprintState.fleetApi, member, log })
+        // A failed lookup leaves the OS unknown (bare bd sync commands), never
+        // a guessed POSIX shell: the sync's POSIX form is a NAME=value prefix
+        // a PowerShell member cannot run.
+        ? (member) => resolveMemberTarget({ fleetApi: sprintState.fleetApi, member, log, unresolved: { os: '', shell: '' } })
         : null);
 
     // Guards every resume re-dispatch below against spawning a second
@@ -3471,8 +3476,9 @@ async function runSprintCycle(context) {
             const closed = closedIds || new Set(allBeads.filter((b) => b.status === 'closed').map((b) => b.id));
             const fresh = classifyVerifySet(allBeads, targetIssues).verifyIds;
             integBoundIds = [...new Set([...fresh, ...[...verifyEverIds].filter((id) => !closed.has(id))])];
-            const knownClosed = [...closed].map((id) => ({ id, status: 'closed' }));
-            verifyBlockedIds = findVerifyBlockedBeads(open, knownClosed, integBoundIds).map((b) => b.id);
+            // The full snapshot (not closed-id stubs): the ancestor walk needs
+            // parent links and ancestor edges; `closed` stays authoritative.
+            verifyBlockedIds = findVerifyBlockedBeads(open, allBeads, integBoundIds, { closedIds: closed }).map((b) => b.id);
         } else {
             const { hasDeploy, hasPlaybook } = runbooks || await (async () => {
                 const deployMd = await probeFileExists('deploy.md', getMemberForRole('deployer'));
@@ -3531,7 +3537,7 @@ async function runSprintCycle(context) {
         // Work this run already closed is never thrown away by a set-aside
         // stall: the set-aside beads become a carry-over instead.
         if (workedOnBeadIds.size > 0 || verifyEverIds.size > 0) {
-            const closedNow = closedIds || new Set((await bdListScoped('--status=closed --json')).map((b) => b.id));
+            const closedNow = closedIds || new Set((await bdListScoped('--status=closed --json --brief')).map((b) => b.id));
             const closedThisRun = closedWorkThisRun({ workedOnIds: workedOnBeadIds, verifyEverIds, closedIds: closedNow });
             if (closedThisRun.length > 0) {
                 return { carryOver: buildSetAsideCarryOver(stall, { where, cycle, closedIds: closedThisRun }) };
@@ -3565,7 +3571,7 @@ async function runSprintCycle(context) {
     // at/above-goal in-scope leaf bead is carried over instead.
     async function planRejectedCarryOver(err, { where, cycle }) {
         if (workedOnBeadIds.size === 0 && verifyEverIds.size === 0) return null;
-        const closedNow = new Set((await bdListScoped('--status=closed --json')).map((b) => b.id));
+        const closedNow = new Set((await bdListScoped('--status=closed --json --brief')).map((b) => b.id));
         const closedThisRun = closedWorkThisRun({ workedOnIds: workedOnBeadIds, verifyEverIds, closedIds: closedNow });
         if (closedThisRun.length === 0) return null;
         const details = (err && err.details) || {};
@@ -3755,8 +3761,16 @@ async function runSprintCycle(context) {
         // sprint progress (see the stall-detector high-water-mark change
         // below), which is the actual fix for tonight's false-stall bug.
         const routeBeads = await fetchAllBeadsShared();
-        const { verifyIds: verifySetThisCycle } = classifyVerifySet(routeBeads, targetIssues);
+        const { verifyIds: verifySetThisCycle, ineligible: routeIneligible } = classifyVerifySet(routeBeads, targetIssues);
         for (const id of verifySetThisCycle) verifyEverIds.add(id);
+        // Rule 4 (any open child holds a parent out of verify) is kept, but a
+        // hold made ONLY by below-goal or out-of-scope children never blocks
+        // the exit gate, so name it here or the parent ends the run silently
+        // unverified.
+        const routeVerifyHolds = belowGoalVerifyHolds(routeIneligible, goalMax);
+        if (routeVerifyHolds.length > 0) {
+            log(`Route C${cycle}: ${routeVerifyHolds.length} parent(s) held out of verify only by open child(ren) below goal ${validated.goal} or out of scope: ${formatVerifyHolds(routeVerifyHolds)}`);
+        }
         // A verify-routed bead deferred by anyone since the last Route can
         // never be dispatched again: record it from the same snapshot (no
         // extra bd call) so the exit gate stops waiting on it.
@@ -4389,8 +4403,15 @@ async function runSprintCycle(context) {
         // phases/final-review.mjs applies to its closing count too). Only
         // 'deferred' changes meaning: a blocked or orphaned in_progress bead
         // still counts as open, exactly as NOT_DONE_STATUSES intends.
+        // A verify-routed verification-only leaf (LIVE_EVIDENCE_LABEL in
+        // ./beads-scope.mjs) is dropped too, for the same reason as a
+        // verify-routed parent: only Integration Test closes it, and the
+        // stillOpenVerifyIds gate below owns whether the exit waits for it
+        // (so a needs-external-evidence carry-over releases it). A marked leaf
+        // that was never verify-routed keeps holding the exit.
         const { active: openAtGoal, deferredIds: deferredAtGoalIds } =
-            partitionDeferredBeads(openAtGoalRaw.filter((b) => !openAtGoalParentIds.has(b.id)));
+            partitionDeferredBeads(openAtGoalRaw.filter((b) => !openAtGoalParentIds.has(b.id)
+                && !(verifyEverIds.has(b.id) && hasLiveEvidenceMarker(b))));
         // Monotone across the sprint, like verifyEverIds: a bead that was
         // deferred in an earlier cycle and then reopened must still be named
         // in the closing text as something a human was asked to look at, and
@@ -4415,7 +4436,7 @@ async function runSprintCycle(context) {
         // both benign no-ops there, so nothing invalidates it): the integ
         // runner's own `bd close` happens inside an agent() dispatch, never
         // through the cache-invalidating command() wrapper.
-        const closedBeadsNow = await bdListScoped('--status=closed --json');
+        const closedBeadsNow = await bdListScoped('--status=closed --json --brief');
         const closedIdsNow = new Set(closedBeadsNow.map((b) => b.id));
         const closedCount = closedBeadsNow.length;
         closedCountHistory.push(closedCount);
@@ -4464,6 +4485,29 @@ async function runSprintCycle(context) {
                     `${inconclusiveVerifyCounts.get(id)} consecutive cycle(s) (limit ${NEEDS_EXTERNAL_EVIDENCE_CYCLE_LIMIT}) -- ` +
                     'carried over as needs-external-evidence: not dispatched to verify again and no longer holding the exit; ' +
                     `the sprint verdict will be FAIL.${reason ? ` Integ runner: ${reason}` : ''}`
+                );
+            }
+        }
+
+        // A verify-routed verification-only leaf (LIVE_EVIDENCE_LABEL) has no
+        // closure path but Integration Test. When this run has no
+        // integ-test-playbook.md or no deploy.md it can never be verified
+        // here, so it is carried over now as needs-external-evidence with that
+        // typed cause (forcing FAIL and naming it), instead of holding the
+        // exit until the stall net fires. A failed deploy is not such a cause:
+        // the deploy-retry path owns it.
+        const runbookCause = integBlockCause({ hasPlaybook, hasDeploy });
+        if (runbookCause && verifyEverIds.size > 0) {
+            // From this cycle's Route snapshot: no extra bd call.
+            const routeParentIds = new Set(routeBeads.filter((b) => b && b.parent).map((b) => b.parent));
+            const liveLeafIds = new Set(routeBeads.filter((b) => hasLiveEvidenceMarker(b) && !routeParentIds.has(b.id)).map((b) => b.id));
+            for (const id of verifyEverIds) {
+                if (closedIdsNow.has(id) || needsEvidenceVerifyIds.has(id) || deferredVerifyIds.has(id) || !liveLeafIds.has(id)) continue;
+                needsEvidenceVerifyIds.set(id, { reason: '', cycles: 0, unverifiableCause: runbookCause });
+                log(
+                    `Cycle ${cycle}: ${id} is a verification-only bead (${LIVE_EVIDENCE_LABEL}) and the Integration Test phase ` +
+                    `cannot run in this run (${runbookCause}) -- carried over as needs-external-evidence: not waited on, ` +
+                    'the sprint verdict will be FAIL.'
                 );
             }
         }
@@ -4592,8 +4636,10 @@ async function runSprintCycle(context) {
         // from this cycle's own fresh closed list and verify set -- no extra
         // bd call.
         if (!integCanRunThisCycle && openAtGoal.length > 0) {
-            const knownClosed = [...closedIdsNow].map((id) => ({ id, status: 'closed' }));
-            const blockedAtGoal = findVerifyBlockedBeads(openAtGoal, knownClosed, verifySetThisCycle);
+            // routeBeads (this cycle's Route snapshot, no extra bd call) carries
+            // the parent links and ancestor edges the inherited-edge walk
+            // needs; closedIdsNow stays the authoritative closed set.
+            const blockedAtGoal = findVerifyBlockedBeads(openAtGoal, routeBeads, verifySetThisCycle, { closedIds: closedIdsNow });
             const blockedAtGoalIds = new Set(blockedAtGoal.map((b) => b.id));
             if (blockedAtGoal.length > 0 && openAtGoal.every((b) => verifyEverIds.has(b.id) || blockedAtGoalIds.has(b.id))) {
                 verifyBlockDiagnosis = buildVerifyBlockDiagnosis({
@@ -4659,7 +4705,7 @@ async function runSprintCycle(context) {
         // (./verify-carry-over.mjs).
         let stillOpenVerifyIds = [];
         if (verifyEverIds.size > 0) {
-            const closedIdsForExitCheck = new Set((await bdListScoped('--status=closed --json')).map((b) => b.id));
+            const closedIdsForExitCheck = new Set((await bdListScoped('--status=closed --json --brief')).map((b) => b.id));
             stillOpenVerifyIds = stillOpenVerifyIdsForExit({
                 verifyEverIds, closedIds: closedIdsForExitCheck,
                 needsEvidence: needsEvidenceVerifyIds, deferred: deferredVerifyIds,
@@ -4850,6 +4896,7 @@ async function runSprintCycle(context) {
         deployFailures, integFailures, rejectedNewTasks, verifyEverIds,
         lastDeployFailure,
         bdListScoped, decomposedParentIds, goalMax, NOT_DONE_STATUSES,
+        fetchAllBeadsShared,
         reclaimCappedIds: orphanClaims.cappedIds(),
         verifyBlockDiagnosis,
         carryOverExit,

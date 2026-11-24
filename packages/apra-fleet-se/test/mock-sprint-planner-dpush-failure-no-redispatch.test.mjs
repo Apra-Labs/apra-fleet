@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
 import { PostDispatchSyncError, isPostDispatchSyncFailure, DoltSyncError } from '../fleet-sprint/errors.mjs';
+import { logicalBdCommand } from '../fleet-sprint/bd-sync-command.mjs';
 
 const check = (cond, msg) => assert.ok(cond, msg);
 
@@ -62,7 +63,7 @@ test('mock sprint: a D-push failure after a SUCCESSFUL Planner turn does not red
             commandFailurePattern: (() => {
                 let syncRemoteReads = 0;
                 return {
-                    test: (cmd) => /^bd dolt push\b/.test(cmd)
+                    test: (cmd) => /^bd dolt push\b/.test(logicalBdCommand(cmd))
                         || (/^bd config get sync\.remote/.test(cmd) && ++syncRemoteReads > 1),
                 };
             })(),

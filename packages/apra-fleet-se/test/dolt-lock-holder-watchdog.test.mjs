@@ -21,6 +21,7 @@ import {
     DOLT_LOCK_PROBE_AFTER_MS,
 } from '../fleet-sprint/dolt-sync.mjs';
 import { DoltLockHeldError, DoltSyncError, DOLT_BEADS_LOCK_HELD_CODE } from '../fleet-sprint/errors.mjs';
+import { bdSyncCommandFor } from '../fleet-sprint/bd-sync-command.mjs';
 
 // ---------------------------------------------------------------------------
 // Probe command strings per member OS/shell
@@ -223,7 +224,7 @@ describe('lock-holder watchdog on a silent D-pull', () => {
         assert.strictEqual((await pull).ok, true);
     });
 
-    test('a fast sync issues no probe and its command strings are unchanged', async () => {
+    test('a fast sync issues no probe and its command string is just the sync command', async () => {
         const target = { os: 'linux', shell: '' };
         const timer = fakeTimer();
         const calls = [];
@@ -237,6 +238,6 @@ describe('lock-holder watchdog on a silent D-pull', () => {
         assert.strictEqual(timer.timers.length, 1);
         assert.strictEqual(timer.timers[0].cleared, true, 'the watchdog is disarmed when the sync finishes');
         assert.ok(!calls.includes(buildLockHolderProbe(target)), 'no probe');
-        assert.deepStrictEqual(calls.filter((c) => /bd dolt/.test(c)), ['bd dolt pull']);
+        assert.deepStrictEqual(calls.filter((c) => /bd dolt/.test(c)), [bdSyncCommandFor('bd dolt pull', target)]);
     });
 });

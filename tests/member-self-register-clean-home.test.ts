@@ -27,7 +27,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { makeTestAgent } from './test-helpers.js';
+import { makeTestAgent, decodePowerShellEncodedCommand } from './test-helpers.js';
 import { buildSelfRegisterCommand, memberBinPath } from '../src/services/member-fleet-install.js';
 
 const MEMBER_ID = '5f0c2a3e-8d41-4b6a-9c3e-2b7d1e4f6a80';
@@ -56,7 +56,7 @@ const saved: Record<string, string | undefined> = {};
 /** The argv the member's shell receives: parse the POSIX single-quoted command. */
 function selfRegisterArgv(): string[] {
   const agent = makeTestAgent({ id: MEMBER_ID, friendlyName: 'bella', workFolder: work, llmProvider: 'claude', os: 'linux' });
-  const cmd = buildSelfRegisterCommand(memberBinPath(home, 'linux', 'bash' as never), agent, 'linux', 'bash' as never);
+  const cmd = decodePowerShellEncodedCommand(buildSelfRegisterCommand(memberBinPath(home, 'linux', 'bash' as never), agent, 'linux', 'bash' as never));
   const tokens = [...cmd.matchAll(/'((?:[^']|'\\'')*)'/g)].map(m => m[1].replace(/'\\''/g, "'"));
   // The command targets a LINUX member, so the binary path is POSIX-joined
   // (forward slashes) even when this test runs on a Windows host.
