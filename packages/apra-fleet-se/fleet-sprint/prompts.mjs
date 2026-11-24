@@ -43,6 +43,73 @@ function boundReplanFindings(text) {
         `[TRUNCATED: original length ${originalLength} characters, cap ${REPLAN_FINDINGS_MAX_LENGTH} characters]`;
 }
 
+// ---------------------------------------------------------------------------
+// Premium cap (tier-policy.mjs premiumCapPct, enforced by tier-cap.mjs).
+// A null/undefined cap (the quality preset) renders NOTHING, so a quality run's
+// planner and plan-reviewer prompts carry no cap text at all.
+// ---------------------------------------------------------------------------
+
+function isCapPct(v) {
+    return Number.isInteger(v) && v >= 0 && v <= 100;
+}
+
+/**
+ * The cap line for the planner / plan-reviewer prompt, or null when no cap.
+ * @param {number|null|undefined} premiumCapPct
+ * @param {'planner'|'plan-reviewer'} role
+ * @returns {string|null}
+ */
+export function premiumCapLine(premiumCapPct, role) {
+    if (!isCapPct(premiumCapPct)) return null;
+    const rule =
+        `PREMIUM CAP -- this sprint's tier policy allows at most ${premiumCapPct}% of the counted task beads ` +
+        '(rounded down; escalated beads and [test] beads riding an implementation lane are not counted) to ' +
+        'carry model tier premium.';
+    if (role === 'plan-reviewer') {
+        return `${rule} Count the premium task beads in scope; when they exceed the cap, return CHANGES_NEEDED ` +
+            'naming the premium beads that do not need the premium tier. The engine also checks the share ' +
+            'after approval and asks for a re-plan when it is exceeded.';
+    }
+    return `${rule} Mark a task premium only when it genuinely needs it; prefer standard. The engine checks the ` +
+        'share after plan approval and asks for a re-plan when it is exceeded.';
+}
+
+function validCapReplan(r) {
+    return r && typeof r === 'object' && Array.isArray(r.premiumIds) && r.premiumIds.length > 0
+        && isCapPct(r.capPct) && Number.isInteger(r.mustMove) && r.mustMove > 0;
+}
+
+/**
+ * The planner clause of a premium-cap scoped replan, or null.
+ * @param {{ premiumIds: string[], mustMove: number, capPct: number, allowed: number, total: number }|null} r
+ * @returns {string|null}
+ */
+export function premiumCapReplanClause(r) {
+    if (!validCapReplan(r)) return null;
+    return 'PREMIUM-CAP REPLAN -- this is a NARROW, targeted re-planning pass, not a full sprint plan. ' +
+        `This sprint's tier policy caps premium-tier task beads at ${r.capPct}% of the counted task beads, rounded ` +
+        `down: at most ${r.allowed} of ${r.total}. The approved plan marks ${r.premiumIds.length} task bead(s) premium: ` +
+        `${r.premiumIds.join(', ')}. Move at least ${r.mustMove} of them to a lower tier: for each bead you lower, ` +
+        'update its model metadata in place (`bd update <id> --set-metadata model=standard`). Keep premium only ' +
+        'where the work genuinely needs it. A bead that is premium only because it is too large may instead be ' +
+        'decomposed into smaller standard-tier task children with clear acceptance criteria. Do NOT touch any bead ' +
+        'outside this set, do NOT close or delete beads, and do NOT add scope beyond the original sprint goal.';
+}
+
+/**
+ * The plan-reviewer clause of a premium-cap scoped replan, or null.
+ * @param {{ premiumIds: string[], mustMove: number, capPct: number }|null} r
+ * @returns {string|null}
+ */
+export function premiumCapReplanReviewClause(r) {
+    if (!validCapReplan(r)) return null;
+    return 'PREMIUM-CAP REPLAN REVIEW -- this pass follows a NARROW re-plan of premium-tier bead(s) ' +
+        `${r.premiumIds.join(', ')}, asked to move at least ${r.mustMove} of them to a lower tier so the plan fits ` +
+        `its ${r.capPct}% premium cap. Approve when every bead that stayed premium genuinely needs that tier and ` +
+        'every lowered or decomposed bead is still well-formed; do not withhold approval over unrelated parts of ' +
+        'the DAG, and do not demand new scope.';
+}
+
 /**
  * @param {{
  *   isDeltaCycle: boolean,
@@ -56,11 +123,23 @@ function boundReplanFindings(text) {
  *   rejectedNewTasksToResubmit?: Array<{title: string, description: string, reason: string, cycle: number|string}>,
  *   verifyExcluded?: string[],
  *   stalenessNotes?: string[],
+ *   premiumCapPct?: number|null,
+ *   premiumCapReplan?: { premiumIds: string[], mustMove: number, capPct: number, allowed: number, total: number }|null,
  * }} opts
  * @returns {string}
  */
-export function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requirementsFile, requirementsContent, feedback, replanScope = null, replanFindings = null, rejectedNewTasksToResubmit = [], verifyExcluded = [], stalenessNotes = [] }) {
+export function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requirementsFile, requirementsContent, feedback, replanScope = null, replanFindings = null, rejectedNewTasksToResubmit = [], verifyExcluded = [], stalenessNotes = [], premiumCapPct = null, premiumCapReplan = null }) {
     const lines = [];
+
+    // Premium-cap scoped replan (tier-cap.mjs): the engine's premium-cap gate
+    // found the approved plan over its tier policy's premium cap. Replaces the
+    // defective-criteria framing below -- these beads are not defective, they
+    // are over-tiered.
+    const capReplan = premiumCapReplanClause(premiumCapReplan);
+    if (capReplan) {
+        lines.push(capReplan);
+        replanScope = null;
+    }
 
     // SCOPED in-cycle replan clause: present ONLY when a reviewer flagged
     // beads whose acceptance criteria are themselves defective, and absent
@@ -185,6 +264,9 @@ export function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requireme
         'comment, per planner.md Step 3.'
     );
 
+    const plannerCapLine = premiumCapLine(premiumCapPct, 'planner');
+    if (plannerCapLine) lines.push(plannerCapLine);
+
     if (requirementsFile && requirementsContent) {
         lines.push(`Requirements file (${requirementsFile}) content, for reference:`);
         lines.push(requirementsContent);
@@ -229,10 +311,14 @@ export function buildPlannerPrompt({ isDeltaCycle, targetIssues, goal, requireme
  *   replanScope?: string[]|null,
  *   stalenessNotes?: string[],
  *   decisionSetAside?: Array<{ id: string, decisionBeadId?: string|null, kind?: string }>,
+ *   premiumCapPct?: number|null,
+ *   premiumCapReplan?: { premiumIds: string[], mustMove: number, capPct: number }|null,
  * }} opts
  * @returns {string}
  */
-export function buildPlanReviewerPrompt({ targetIssues, goal, priorRoundVerdicts = [], replanScope = null, verifyExcluded = [], stalenessNotes = [], decisionSetAside = [] }) {
+export function buildPlanReviewerPrompt({ targetIssues, goal, priorRoundVerdicts = [], replanScope = null, verifyExcluded = [], stalenessNotes = [], decisionSetAside = [], premiumCapPct = null, premiumCapReplan = null }) {
+    const capReplanReview = premiumCapReplanReviewClause(premiumCapReplan);
+    if (capReplanReview) replanScope = null;
     const hasReplanScope = Array.isArray(replanScope) && replanScope.length > 0;
     const lines = [
         'Review the beads DAG created by the planner for this sprint, per your agent contract.',
@@ -278,6 +364,10 @@ export function buildPlanReviewerPrompt({ targetIssues, goal, priorRoundVerdicts
             `round, settles it. Mention them as non-blocking notes only.`
         );
     }
+
+    if (capReplanReview) lines.push(capReplanReview);
+    const reviewerCapLine = premiumCapLine(premiumCapPct, 'plan-reviewer');
+    if (reviewerCapLine) lines.push(reviewerCapLine);
 
     // Present only on a scoped in-cycle replan; an ordinary plan-review
     // dispatch carries no such clause.

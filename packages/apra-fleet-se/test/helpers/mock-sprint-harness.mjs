@@ -2305,6 +2305,9 @@ export async function runDevelopLoopScenario(tag, {
     // Optional `args.decision_notify` (decision-notify.mjs): where the operator
     // is told about a pending decision.
     decisionNotify,
+    // Optional `args.tier_policy` / `args.tier_overrides` passthroughs
+    // (tier-policy.mjs). Omitted: the run's default policy (balanced).
+    tierPolicy, tierOverrides,
     // Optional injected KB work client: main() reads context.kbWork.
     kbWork,
     // Optional `args.kb_demotion_loop` passthrough ('on' | 'off').
@@ -2473,6 +2476,8 @@ export async function runDevelopLoopScenario(tag, {
                 ...(kbDemotionLoop !== undefined ? { kb_demotion_loop: kbDemotionLoop } : {}),
                 ...(skipRegression !== undefined ? { skip_regression: skipRegression } : {}),
                 ...(decisionNotify !== undefined ? { decision_notify: decisionNotify } : {}),
+                ...(tierPolicy !== undefined ? { tier_policy: tierPolicy } : {}),
+                ...(tierOverrides !== undefined ? { tier_overrides: tierOverrides } : {}),
             };
             // An injected kbWork client is not a CLI arg; hand it to main() the way
             // WorkflowEngine.executeFile hands over its context.

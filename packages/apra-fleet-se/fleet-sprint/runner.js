@@ -336,6 +336,10 @@ import {
 } from './verify-block.mjs';
 import { formatRedBuildIntegSkipReason, redBuildIntegSkipEntry } from './red-build-integ-gate.mjs';
 import { resolveTierPolicy, fixedRoleTierTable, holdTierPolicy, describeTierPolicy } from './tier-policy.mjs';
+// The premium-cap gate (after plan approval, before Develop) and the
+// decision it raises when two scoped re-plans leave the plan over the cap.
+import { runPremiumCapGate } from './tier-cap.mjs';
+import { recordPendingDecision } from './decisions.mjs';
 // The dispatch-outcome classification surface: isTerminalSprintFailure,
 // isNoMutationDispatchFailure and withDispatchWatchdog. Extracted out of
 // runner.js (apra-fleet-3swo.6.15); imported only to be re-exported below,
@@ -3770,6 +3774,7 @@ async function runSprintCycle(context) {
                 stageCommandBodyMemberSide,
                 updateDashboard,
                 bdListScoped,
+                tierPolicy,
             });
         } catch (err) {
             if (!(err instanceof SprintPlanRejectedError)) throw err;
@@ -3783,6 +3788,68 @@ async function runSprintCycle(context) {
         pendingRejectedNewTasks = planOutcome.pendingRejectedNewTasks;
         const { planCapDeferredIds, lastVerdict, planningRounds } = planOutcome;
         for (const id of planCapDeferredIds) planCapDeferredEverIds.add(id);
+
+        // =======================
+        // 1b. Premium-cap gate (tier-cap.mjs)
+        // =======================
+        // After plan approval and before this cycle's first Develop round:
+        // count the planner-marked premium task beads against the held tier
+        // policy's premiumCapPct. Over the cap: at most two scoped re-plans per
+        // sprint (sprintState.premiumCap), then one operator decision that holds
+        // Develop until answered. The engine never rewrites a bead's model
+        // metadata. quality (no cap) is a no-op with no command and no log.
+        await runPremiumCapGate({
+            policy: tierPolicy,
+            sprintState,
+            cycle,
+            log,
+            listScope: () => bdListScoped(''),
+            replan: async ({ count, attempt, maxReplans }) => runReplanPhase({
+                phase, log, dispatchCtx,
+                cycle, validated, targetIssues, requirementsContent,
+                backlogMember,
+                gitSync, updateDashboard,
+                verifySetThisCycle, pendingRejectedNewTasks,
+                devRounds: 0, eligibleReplan: [], replanIds: new Set(), replannedThisCycle: new Set(), perBeadFeedback: new Map(),
+                command, sprintState, bdListScoped, extractContestedBeadIds,
+                tierPolicy,
+                premiumCap: {
+                    premiumIds: count.premiumIds, mustMove: count.mustMove, capPct: count.capPct,
+                    allowed: count.allowed, total: count.total, attempt, maxReplans,
+                },
+            }),
+            raiseDecision: async ({ count, decision }) => {
+                const scopeBeads = await bdListScoped('');
+                const record = await gitSync.withOpenSyncBracket(() => recordPendingDecision({
+                    sprintState, decision, raisedBy: 'the premium-cap gate', cycle, round: null,
+                    command, member: backlogMember, scopeBeads, log,
+                }));
+                // Every premium bead waits on the same decision: set aside
+                // under its decisionId, so the answer releases them together.
+                if (record) {
+                    for (const id of count.premiumIds) {
+                        if (sprintState.doctorBlockedIds.has(id)) continue;
+                        sprintState.doctorBlockedIds.set(id, {
+                            kind: 'dependent', blockedBy: record.beadId,
+                            reason: `premium bead held with '${record.beadId}' by the premium-cap operator decision${record.decisionBeadId ? ` (${record.decisionBeadId})` : ''}`,
+                            decisionId: record.decisionId, cycle, round: null,
+                        });
+                    }
+                    await gitSync.syncBeadsAfter(backlogMember, { pushBeads: true });
+                }
+                return record;
+            },
+            awaitDecision: async ({ record }) => {
+                if (!record) return;
+                if (decisionWait && decisionWait.hasPending()) {
+                    await decisionWait.awaitAnswer({ where: `premium-cap gate C${cycle}`, cycle });
+                    return;
+                }
+                log(`[tier-cap] C${cycle}: the premium-cap decision ${record.decisionId} cannot hold the run here ` +
+                    `(${decisionWait ? 'its decision bead could not be filed' : 'this run has no pause/resume channel'}); ` +
+                    'its premium bead(s) stay set aside and Develop runs the rest of the plan.');
+            },
+        });
 
         // =======================
         // 2. Execution Prep
@@ -4004,6 +4071,7 @@ async function runSprintCycle(context) {
                     verifySetThisCycle, pendingRejectedNewTasks,
                     devRounds, eligibleReplan, replanIds, replannedThisCycle, perBeadFeedback,
                     command, sprintState, bdListScoped, extractContestedBeadIds,
+                    tierPolicy,
                 });
                 continue;
             }
