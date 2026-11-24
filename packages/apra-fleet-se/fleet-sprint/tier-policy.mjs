@@ -142,6 +142,41 @@ export function resolveTierPolicy(preset, overrides) {
 }
 
 /**
+ * Parse a tier-overrides value given as an object or a JSON string. Returns
+ * undefined for undefined/null/empty string. Anything unparseable throws an
+ * [Arg Contract] error naming tierOverrides.
+ *
+ * @param {unknown} raw
+ * @returns {object|undefined}
+ */
+export function parseTierOverrides(raw) {
+    if (raw === undefined || raw === null || raw === '') return undefined;
+    if (typeof raw !== 'string') return raw;
+    try { return JSON.parse(raw); }
+    catch { throw argContract('tierOverrides', `a JSON object with keys ${OVERRIDE_KEYS.join(', ')}`, raw); }
+}
+
+/**
+ * The policy a run holds for its whole life. The first call on a run context
+ * stores the policy resolved from the launch args; every later call (a runner
+ * resume rebuilt over the same context) returns the stored one, never one
+ * re-derived from the current default or args.
+ *
+ * @param {object} context the run context
+ * @param {ReturnType<typeof resolveTierPolicy>} resolved the launch policy
+ */
+export function holdTierPolicy(context, resolved) {
+    return (context.tierPolicy ??= resolved);
+}
+
+/** One-line description of a resolved policy for the startup log. */
+export function describeTierPolicy(policy, overrides) {
+    const cap = policy.premiumCapPct === null ? 'none' : `${policy.premiumCapPct}%`;
+    const ov = overrides === undefined || overrides === null ? 'none' : JSON.stringify(overrides);
+    return `[tier-policy] effective policy: preset=${policy.name}, premiumCap=${cap}, overrides=${ov}`;
+}
+
+/**
  * The tier a fixed-role dispatch requests under `policy`.
  *
  * @param {ReturnType<typeof resolveTierPolicy>} policy

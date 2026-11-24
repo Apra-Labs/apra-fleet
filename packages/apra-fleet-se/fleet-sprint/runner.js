@@ -335,7 +335,7 @@ import {
     integCanRun, integBlockCause, findVerifyBlockedBeads, partitionByGoal, buildVerifyBlockDiagnosis,
 } from './verify-block.mjs';
 import { formatRedBuildIntegSkipReason, redBuildIntegSkipEntry } from './red-build-integ-gate.mjs';
-import { resolveTierPolicy, fixedRoleTierTable } from './tier-policy.mjs';
+import { resolveTierPolicy, fixedRoleTierTable, holdTierPolicy, describeTierPolicy } from './tier-policy.mjs';
 // The dispatch-outcome classification surface: isTerminalSprintFailure,
 // isNoMutationDispatchFailure and withDispatchWatchdog. Extracted out of
 // runner.js (apra-fleet-3swo.6.15); imported only to be re-exported below,
@@ -1142,6 +1142,10 @@ async function runSprintCycle(context) {
     // must result in zero fleet dispatches. This must happen early so the
     // validated result is available to setup code that builds callbacks below.
     const validated = validateArgs(args);
+    // The run holds its launch tier policy on the run context: a resume over
+    // the same context reads the held policy, not the current default/args.
+    const tierPolicy = holdTierPolicy(context, validated.tierPolicy);
+    log(describeTierPolicy(tierPolicy, validated.tierOverrides));
 
     // (apra-fleet-p2to.4.1 / apra-fleet-3swo.4.1) Clean-state pause guard.
     // The openSyncBracketCount counter, its withOpenSyncBracket() wrapper and

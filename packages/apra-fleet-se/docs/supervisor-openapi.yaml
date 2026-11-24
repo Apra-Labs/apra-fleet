@@ -299,6 +299,8 @@ paths:
                         members: { type: array, items: { type: string } }
                         issueRoots: { type: array, items: { type: string } }
                         childPid: { type: [integer, "null"] }
+                        tierPolicy: { type: [string, "null"], description: "launch tier policy preset (null for a legacy reservation)" }
+                        tierOverrides: { type: [object, "null"], description: "launch tier overrides, or null" }
                         port: { type: [integer, "null"] }
                   scopeFreshness: { $ref: "#/components/schemas/ScopeFreshness" }
     post:
@@ -382,6 +384,28 @@ paths:
                   additionalProperties:
                     type: array
                     items: { type: string }
+                tierPolicy:
+                  type: string
+                  enum: [balanced, economy, quality]
+                  default: balanced
+                  description: >
+                    Model tier policy preset. Omitted means balanced. Anything
+                    else -> 400 (field tierPolicy) before any spawn. Always
+                    forwarded to the child as --tier-policy, recorded on the
+                    ledger reservation and shown by GET /api/sprints.
+                tierOverrides:
+                  description: >
+                    Policy overrides, a JSON object or a JSON string of one.
+                    The only key is premiumCapPct (integer 0..100, or null for
+                    no cap). Unknown keys or bad values -> 400 (field
+                    tierOverrides) before any spawn. Forwarded as --tier-overrides.
+                  type: object
+                  properties:
+                    premiumCapPct:
+                      type: integer
+                      nullable: true
+                      minimum: 0
+                      maximum: 100
                 budget:
                   type: number
                   description: non-negative finite USD ceiling (else 400, field budget); forwarded into the child's --budget argv

@@ -48,6 +48,7 @@ import { validateIssueId, validateBranchName, validateBranchPair, validateGoal, 
 import { resolveRoleMap } from '../../bin/cli.mjs';
 import { resolveBacklogRoleAlias, ROLE_BACKLOG, ROLE_BACKLOG_ALIAS } from '../../fleet-sprint/backlog-role.mjs';
 import { normalizeRole } from '../../fleet-sprint/contracts.mjs';
+import { resolveTierPolicy, parseTierOverrides, DEFAULT_TIER_POLICY } from '../../fleet-sprint/tier-policy.mjs';
 import { isDeterministicTerminalReason, HISTORY_EVENTS } from './history.mjs';
 import { defaultHasTerminalState } from './watchdog.mjs';
 import { toBeadsSummary } from './beads-identity.mjs';
@@ -585,7 +586,20 @@ export function createSprintController(deps = {}) {
             }
             kbDemotionLoop = body.kbDemotionLoop;
         }
-        return { issue: issueIds.join(','), issueIds, branch, base, members, skipRegression, kbDemotionLoop, decisionNotify };
+        // tierPolicy (optional preset, default balanced) and tierOverrides
+        // (object or JSON string): validated with the engine's own
+        // resolveTierPolicy so a bad value is a 400 naming the field before
+        // any spawn. The child always receives an explicit --tier-policy, so
+        // a launch never depends on the child's own default.
+        let tierOverrides;
+        try { tierOverrides = parseTierOverrides(body.tierOverrides); }
+        catch (err) { throw new ApiError(400, err.message, 'tierOverrides'); }
+        try { resolveTierPolicy(body.tierPolicy, undefined); }
+        catch (err) { throw new ApiError(400, err.message, 'tierPolicy'); }
+        try { resolveTierPolicy(body.tierPolicy, tierOverrides); }
+        catch (err) { throw new ApiError(400, err.message, 'tierOverrides'); }
+        const tierPolicy = body.tierPolicy ?? DEFAULT_TIER_POLICY;
+        return { issue: issueIds.join(','), issueIds, branch, base, members, skipRegression, kbDemotionLoop, tierPolicy, tierOverrides, decisionNotify };
     }
 
     // -- GET /api/members : list_members + live-reservation overlay -----------
@@ -626,7 +640,7 @@ export function createSprintController(deps = {}) {
 
     // -- POST /api/sprints : validated, goal-forwarding launch ----------------
     async function launch(body = {}) {
-        const { issue, issueIds, branch, base, members, skipRegression, kbDemotionLoop, decisionNotify } = validateLaunchRequest(body);
+        const { issue, issueIds, branch, base, members, skipRegression, kbDemotionLoop, tierPolicy, tierOverrides, decisionNotify } = validateLaunchRequest(body);
         // An '@file' roleMap is a CLI-only convenience: over HTTP it would make
         // the supervisor read an arbitrary server-side path named by the request
         // body, and the alias warning could not be computed from it. Reject it.
@@ -809,6 +823,8 @@ export function createSprintController(deps = {}) {
             runId: sprintId,
             skipRegression,
             kbDemotionLoop,
+            tierPolicy,
+            tierOverrides: tierOverrides === undefined ? undefined : JSON.stringify(tierOverrides),
             decisionNotify,
         };
         let spawned;
@@ -858,6 +874,8 @@ export function createSprintController(deps = {}) {
             branch,
             base,
             goal: body.goal ?? null,
+            tierPolicy,
+            tierOverrides: tierOverrides ?? null,
             // Which .beads this supervisor resolved at launch time (see
             // beads-identity.mjs) -- the same identity the child received as
             // --expect-beads, recorded so the dashboard can show it per row.
@@ -872,6 +890,8 @@ export function createSprintController(deps = {}) {
             issueRoots,
             members: union,
             goal: body.goal ?? null,
+            tierPolicy,
+            tierOverrides: tierOverrides ?? null,
             buildVersionWarning,
             warnings: aliasWarnings,
         };
@@ -886,6 +906,8 @@ export function createSprintController(deps = {}) {
                 members: r.members,
                 issueRoots: r.issueRoots,
                 childPid: r.childPid ?? null,
+                tierPolicy: r.tierPolicy ?? null,
+                tierOverrides: r.tierOverrides ?? null,
                 port: resolvePort(r.childPid ?? null) ?? null,
             })),
             scopeFreshness: freshness,
