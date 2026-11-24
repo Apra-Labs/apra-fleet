@@ -10,7 +10,7 @@
 // (provisionOutcome below), keeping the prose regexes only as a fallback for
 // a result with no structuredContent at all.
 import { ApraFleet } from '@apralabs/apra-fleet-client';
-import { buildCreatePrCommand, buildFindPrCommand, buildGetPrCommand, providerImplementsAction, buildUpdatePrCommand, getProviderTextLimits, resolveProvider, capabilities as vcsCapabilities, parseProviderRepoRef, getVcsProvider, resolveVcsAuthProviderForHost, isAuthBackend, VCS_NO_REGISTERED_PROVIDER, DEFAULT_VCS_PROVIDER } from './vcs-module.mjs';
+import { buildCreatePrCommand, buildFindPrCommand, buildGetPrCommand, providerImplementsAction, buildUpdatePrCommand, getProviderTextLimits, resolveProvider, capabilities as vcsCapabilities, parseProviderRepoRef, getVcsProvider, resolveVcsAuthProviderForHost, isAuthBackend, VCS_NO_REGISTERED_PROVIDER, DEFAULT_VCS_PROVIDER, PR_DESCRIPTION_MAX_LENGTH } from './vcs-module.mjs';
 import { getSeCommands } from './se-os-commands.mjs';
 import { resolveMemberTarget } from './member-target.mjs';
 import { resultText } from './mcp-result.mjs';
@@ -1172,7 +1172,7 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
                 if (!linked.ok) log(`${logPrefix}: WARNING: could not add the overflow comment links to the description of PR ${label}: ${linked.error} -- it still says the text continues in the PR comments.`);
                 return { ...res, linked: linked.ok };
             }
-            if (comments.length) log(`${logPrefix}: WARNING: the provider gave no link for the overflow comment(s) on PR ${label}; the description says they are below without linking them.`);
+            if (comments.length && !parts.descriptionUnchanged) log(`${logPrefix}: WARNING: the provider gave no link for the overflow comment(s) on PR ${label}; the description says they are below without linking them.`);
             return { ...res, linked: false };
         }
         // A partial failure (some comments did reach the PR) names how many.
@@ -1225,6 +1225,24 @@ export async function raiseVcsPrForMember({ fleetApi, command, member, base, hea
             const nextTitle = next.title || pr.title || title;
             const nextParts = bodyParts(next.body);
             if (next.body !== undefined) next.body = bodyText(next.body);
+            // The text outside the fleet block leaves no room for it
+            // (pr-body.mjs buildSprintPrBody descriptionUnchanged): the
+            // description is never sent, so the provider limit can never cut
+            // it; only a changed title is, with the description as it is,
+            // and only when that description is within the limit.
+            if (nextParts && nextParts.descriptionUnchanged) {
+                const label = pr.url || `#${pr.id}`;
+                log(`${logPrefix}: WARNING: the description of PR ${label} leaves no room for the fleet block within the ${textLimits.descriptionMaxLength ?? PR_DESCRIPTION_MAX_LENGTH}-character limit; it is left unchanged and the sprint text goes to PR comments only.`);
+                const oldBody = typeof pr.body === 'string' ? pr.body : '';
+                if (nextTitle !== pr.title && oldBody.length <= (textLimits.descriptionMaxLength ?? PR_DESCRIPTION_MAX_LENGTH)) {
+                    const retitled = await runUpdatePathCall(() => buildUpdatePrCommand({
+                        ...coords(), pull_request_id: pr.id, payload_path: payloadPath(), title: nextTitle, body: oldBody,
+                    }), 'update-pull-request');
+                    if (!retitled.ok) return { updated: false, updateError: retitled.error, prUrl: pr.url };
+                }
+                const overflow = await publishOverflow({ prId: pr.id, prUrl: pr.url, parts: nextParts, existing: true, prTitle: nextTitle });
+                return { updated: true, updateError: null, prUrl: pr.url, descriptionUnchanged: true, ...(overflow ? { overflow } : {}) };
+            }
             let warned = false;
             const upd = await runUpdatePathCall(() => {
                 const b = buildUpdatePrCommand({

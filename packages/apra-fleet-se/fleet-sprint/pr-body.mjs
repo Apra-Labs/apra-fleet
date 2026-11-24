@@ -396,6 +396,10 @@ export function sprintPrTitleFor(existingTitle, fleetTitle) {
 //     sprint ..." body before that): fully fleet-owned, replaced whole;
 //   - anything else (a human-written PR): every character is kept and the
 //     block is APPENDED after it, separated by a blank line.
+// Text outside the block is never cut to fit the provider limit: when it
+// leaves too little room, the block is a compact one (verdict, overflow
+// pointer, run history), and when not even that fits the description is
+// left as it is (see buildOutsideBoundResult).
 
 /** Versioned token of the fleet block markers. */
 export const PR_BLOCK_MARKER = 'fleet-sprint:pr-block v1';
@@ -1145,6 +1149,23 @@ export function buildSprintPrBody({
         pointer = 'x'.repeat(pointerReserve);
         settle();
     }
+    // The text outside the fleet block leaves too little room for even the
+    // frame: fleet never cuts that text (the provider backstop would), so it
+    // writes a COMPACT block -- verdict line, pointer, hidden run history --
+    // and carries everything else whole in the overflow comments. When not
+    // even the compact block fits, the description is left as it is (an
+    // earlier fleet block is only removed, when the rest then fits) and the
+    // overflow comments carry the whole fleet text.
+    if (describe(texts).length > maxLength) {
+        return buildOutsideBoundResult({
+            v, headTop, history, placement, previousBody, maxLength, commentMaxLength,
+            pointerReserve, notesHeading, cleanNotes,
+            sectionsText: others
+                .filter((s) => s.text)
+                .sort((a, b) => (a.order - b.order) || (a.index - b.index))
+                .map((s) => ({ id: s.id, heading: s.heading, comment: s.comment })),
+        });
+    }
     const overflow = overflowOf(texts);
     const movedSections = others
         .filter((s) => moved.has(s.id) || abridged(s, texts))
@@ -1199,5 +1220,93 @@ export function buildSprintPrBody({
             return linked.length <= Math.max(maxLength, body.length) ? linked : null;
         },
         previousHadOverflow: bodyHasOverflowPointer(placement.own),
+        compact: false,
+        descriptionUnchanged: false,
+    };
+}
+
+/**
+ * buildSprintPrBody's result when the text outside the fleet block leaves
+ * too little room for the block's frame (a long human description on a
+ * provider with a small description limit). Fleet never cuts text outside
+ * its block, so:
+ *   - when a COMPACT block (verdict line, overflow pointer, hidden run
+ *     history) fits beside that text, the description carries it and the
+ *     overflow comments carry everything else whole: the sprint head (goal,
+ *     branch, run), the notes and every section (`compact: true`);
+ *   - otherwise the description is left as it is (`descriptionUnchanged:
+ *     true`; an earlier fleet block is removed instead when the text outside
+ *     it then fits), and the overflow comments carry the whole fleet text.
+ * Same result shape as buildSprintPrBody.
+ */
+function buildOutsideBoundResult({
+    v, headTop, history, placement, previousBody, maxLength, commentMaxLength,
+    pointerReserve, notesHeading, cleanNotes, sectionsText,
+}) {
+    const overflowText = [
+        headTop.join('\n').trim(),
+        `### ${notesHeading}\n\n${cleanNotes || '*No notes were provided.*'}`,
+        ...sectionsText.map((s) => `### ${s.heading}\n\n${s.comment}`),
+        HUMAN_REVIEW_LINE,
+    ].join('\n\n');
+    const { comments, notPosted } = buildOverflowComments(overflowText, { commentMaxLength: commentMaxLength || PR_DESCRIPTION_MAX_LENGTH });
+    const block = (keep, p) => [
+        PR_BLOCK_START,
+        `## Sprint verdict: ${v}`,
+        '',
+        p,
+        '',
+        `<!-- ${RUN_HISTORY_MARKER}`,
+        JSON.stringify(history.slice(0, keep)),
+        '-->',
+        PR_BLOCK_END,
+    ].join('\n');
+    const describe = (keep, p) => `${placement.before}${block(keep, p)}${placement.after}`;
+    let keep = history.length;
+    const reserve = 'x'.repeat(pointerReserve);
+    while (keep > 1 && describe(keep, reserve).length > maxLength) keep--;
+    const shared = {
+        overflow: cleanNotes,
+        overflowText,
+        overflowSections: sectionsText.map((s) => ({ id: s.id, heading: s.heading })),
+        notes: cleanNotes,
+        comments,
+        notPosted,
+        previousHadOverflow: bodyHasOverflowPointer(placement.own),
+    };
+    if (describe(keep, reserve).length <= maxLength) {
+        const failedBody = describe(keep, overflowFailedPointer(overflowText.length));
+        const body = comments.length ? describe(keep, overflowPointer(comments.length)) : failedBody;
+        return {
+            ...shared,
+            body,
+            failedBody,
+            failedBodyFor: (posted) => {
+                if (!(posted > 0) || posted >= comments.length) return failedBody;
+                return describe(keep, overflowFailedPointer(overflowText.length, posted, comments.length));
+            },
+            linkedBodyFor: (urls) => {
+                if (!comments.length || !Array.isArray(urls) || urls.length !== comments.length) return null;
+                const p = overflowLinkedPointer(urls, pointerReserve);
+                if (!p) return null;
+                const linked = describe(keep, p);
+                return linked.length <= maxLength ? linked : null;
+            },
+            compact: true,
+            descriptionUnchanged: false,
+        };
+    }
+    const prev = String(previousBody ?? '');
+    const loc = locateFleetBlock(prev);
+    const withoutBlock = loc ? `${loc.before}${loc.after}` : null;
+    const removeBlock = withoutBlock !== null && withoutBlock.length <= maxLength;
+    return {
+        ...shared,
+        body: removeBlock ? withoutBlock : prev,
+        failedBody: null,
+        failedBodyFor: () => null,
+        linkedBodyFor: () => null,
+        compact: false,
+        descriptionUnchanged: !removeBlock,
     };
 }

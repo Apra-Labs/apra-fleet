@@ -117,6 +117,12 @@ only what fleet owns on it:
   with a link to them. On a re-run those comments are updated in place, not
   duplicated. If the comments cannot be posted, the block says so and points
   at the sprint run log, which always has the full text.
+- **A long description of your own.** When your text outside the block
+  leaves too little room for the whole block, the block shrinks to the
+  verdict line, the link to the comments and the hidden run history, and the
+  rest goes to the comments. When not even that fits, fleet leaves the
+  description as it is (it only removes its own earlier block, if the rest
+  then fits) and posts all of its text as PR comments. Your text is never cut.
 
 Re-running a sprint on a branch that already has a PR is therefore safe.
 

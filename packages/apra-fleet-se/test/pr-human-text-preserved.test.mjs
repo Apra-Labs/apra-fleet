@@ -68,7 +68,9 @@ function blockOf(body) {
  */
 function fakeProvider(provider, existing = null) {
     const staged = createStagedFileRecorder();
-    const state = { provider, pr: existing ? { ...existing } : null, calls: [] };
+    const state = { provider, pr: existing ? { ...existing } : null, calls: [], comments: [] };
+    // Records a posted overflow comment; answers its id.
+    const addComment = (body) => { state.comments.push(body); return state.comments.length; };
     const respond = (status, body) => ({
         content: [{ text: '' }],
         structuredContent: { ok: true, reason: 'ok', exitCode: 0, stdout: `${body === undefined ? '' : JSON.stringify(body)}\n${status}`, stderr: '' },
@@ -94,6 +96,10 @@ function fakeProvider(provider, existing = null) {
             }
             if (method === 'PATCH' && /\/pulls\/42$/.test(url)) { update(json().title, json().body); return respond(200, { number: 42 }); }
             if (method === 'GET' && /\/issues\/42\/comments\?/.test(url)) return respond(200, []);
+            if (method === 'POST' && /\/issues\/42\/comments$/.test(url)) {
+                const id = addComment(json().body);
+                return respond(201, { id, html_url: `https://github.com/acme/widgets/pull/42#issuecomment-${id}` });
+            }
         }
         if (provider === 'azure-devops') {
             if (method === 'POST' && /\/pullrequests\?api-version/.test(url)) {
@@ -109,6 +115,10 @@ function fakeProvider(provider, existing = null) {
             }
             if (method === 'PATCH' && /\/pullrequests\/7\?api-version/.test(url)) { update(json().title, json().description); return respond(200, { pullRequestId: 7 }); }
             if (method === 'GET' && /\/pullrequests\/7\/threads\?api-version/.test(url)) return respond(200, { value: [] });
+            if (method === 'POST' && /\/pullrequests\/7\/threads\?api-version/.test(url)) {
+                const id = addComment(json().comments[0].content);
+                return respond(200, { id, comments: [{ id: 1, parentCommentId: 0, content: json().comments[0].content }] });
+            }
         }
         if (provider === 'bitbucket') {
             if (method === 'GET' && /\/pullrequests\?/.test(url)) {
@@ -120,6 +130,10 @@ function fakeProvider(provider, existing = null) {
             }
             if (method === 'PUT' && /\/pullrequests\/9$/.test(url)) { update(json().title, json().description); return respond(200, { id: 9 }); }
             if (method === 'GET' && /\/pullrequests\/9\/comments\?/.test(url)) return respond(200, { values: [] });
+            if (method === 'POST' && /\/pullrequests\/9\/comments$/.test(url)) {
+                const id = addComment(json().content.raw);
+                return respond(201, { id, links: { html: { href: `https://bitbucket.org/acme/widgets/pull-requests/9/overview#comment-${id}` } } });
+            }
         }
         throw new Error(`fake ${provider}: unexpected ${method} ${url}`);
     };
@@ -290,6 +304,83 @@ describe('5. the splice is idempotent', () => {
             assert.ok(second.before.startsWith(HUMAN_BODY));
             assert.equal(fake.pr.title, HUMAN_TITLE);
             assert.deepEqual(parseRunHistory(second.block).map((e) => e.run), ['run-2', 'run-1']);
+        });
+    }
+});
+
+describe('6. human text that leaves no room for the full fleet block is never cut', () => {
+    const line = 'Human-written context about this change, kept as is. ';
+    const humanOf = (n) => line.repeat(Math.ceil(n / line.length)).slice(0, n);
+    // The PR's description as fleet sent it, counting only description updates.
+    const descriptionUpdates = (fake) => fake.calls.filter((c) => /^(PATCH|PUT) .*\/(pulls\/42|pullrequests\/7\?|pullrequests\/9$)/.test(c)).length;
+    for (const provider of ['azure-devops', 'bitbucket']) {
+        test(`${provider}: human text near the limit -- a compact block (verdict, linked pointer, history) is written beside it; everything else goes to PR comments`, async () => {
+            const { descriptionMaxLength } = getProviderTextLimits(provider);
+            const human = humanOf(descriptionMaxLength - 600);
+            const fake = fakeProvider(provider, { title: HUMAN_TITLE, body: human });
+            const notes = 'Gate failed: bead 1 open. '.repeat(40);
+            const { logs } = await publish(fake, { runId: 'run-1', verdict: 'FAIL', notes });
+            const body = fake.pr.body;
+            assert.ok(body.startsWith(human), `the human text is kept byte-for-byte:\n${body.slice(0, 200)}`);
+            assert.ok(body.length <= descriptionMaxLength, `description ${body.length} > ${descriptionMaxLength}`);
+            const { before, block, after } = blockOf(body);
+            assert.equal(before, `${human}\n\n`);
+            assert.equal(after, '');
+            assert.ok(block.startsWith(`${BLOCK_START}\n## Sprint verdict: FAIL`), block);
+            assert.ok(!block.includes('- **Branch:**'), `the compact block carries no sprint head:\n${block}`);
+            assert.match(block, /continues in \[a PR comment\]\(https:\/\/|continues in \d+ PR comment\(s\)(: \[comment 1\]|, starting at \[comment 1)/, `the block links the overflow comments:\n${block}`);
+            assert.deepEqual(parseRunHistory(block).map((e) => `${e.run}:${e.verdict}`), ['run-1:FAIL']);
+            const posted = fake.comments.join('\n');
+            assert.ok(posted.includes('Gate failed: bead 1 open.'), 'the notes are in the PR comments');
+            assert.ok(posted.includes('- **Branch:**'), 'the sprint head is in the PR comments');
+            assert.ok(!logs.some((m) => /truncated/.test(m)), `nothing was truncated by the provider limit:\n${logs.join('\n')}`);
+            assert.equal(fake.pr.title, HUMAN_TITLE);
+            // A relaunch keeps the human text and replaces the compact block in place.
+            await publish(fake, { runId: 'run-2', verdict: 'PASS', notes: 'ok' });
+            const second = blockOf(fake.pr.body);
+            assert.equal(second.before, `${human}\n\n`);
+            assert.deepEqual(parseRunHistory(second.block).map((e) => `${e.run}:${e.verdict}`), ['run-2:PASS', 'run-1:FAIL']);
+        });
+
+        test(`${provider}: Publish PR relaunch with human text too long for any fleet block -- the description is never sent, the sprint text goes to PR comments`, async () => {
+            const { descriptionMaxLength } = getProviderTextLimits(provider);
+            const human = humanOf(descriptionMaxLength - 20);
+            const fake = fakeProvider(provider, { title: HUMAN_TITLE, body: human });
+            const { result, logs } = await publish(fake, { runId: 'run-1', verdict: 'FAIL', notes: 'Gate failed: bead 1 open.' });
+            assert.equal(result.pushed, true);
+            assert.equal(fake.pr.body, human, 'the human description is left exactly as it was');
+            assert.equal(fake.pr.title, HUMAN_TITLE);
+            assert.equal(descriptionUpdates(fake), 0, `no description update is sent:\n${fake.calls.join('\n')}`);
+            const posted = fake.comments.join('\n');
+            assert.ok(posted.includes('## Sprint verdict: FAIL') && posted.includes('Gate failed: bead 1 open.'), `the verdict and notes are in the PR comments:\n${posted}`);
+            assert.ok(logs.some((m) => /leaves no room for the fleet block/.test(m)), logs.join('\n'));
+        });
+
+        test(`${provider}: finalizeAbort with human text too long for any fleet block -- no [ABORTED] title, the description untouched, the abort status in PR comments`, async () => {
+            const { descriptionMaxLength } = getProviderTextLimits(provider);
+            const human = humanOf(descriptionMaxLength - 20);
+            const fake = fakeProvider(provider, { title: HUMAN_TITLE, body: human });
+            const { result, logs } = await abort(fake);
+            assert.equal(result.reason, 'already-exists', JSON.stringify({ result, logs }));
+            assert.equal(fake.pr.body, human, 'the human description is left exactly as it was');
+            assert.equal(fake.pr.title, HUMAN_TITLE);
+            assert.equal(descriptionUpdates(fake), 0, `no description update is sent:\n${fake.calls.join('\n')}`);
+            const posted = fake.comments.join('\n');
+            assert.ok(posted.includes('## Sprint verdict: ABORTED') && posted.includes('SPRINT_PLAN_REJECTED'), `the abort status is in the PR comments:\n${posted}`);
+        });
+
+        test(`${provider}: a human who grows the text around fleet's block past the room -- the old block is removed, every byte outside it kept`, async () => {
+            const { descriptionMaxLength } = getProviderTextLimits(provider);
+            const fake = fakeProvider(provider, { title: HUMAN_TITLE, body: 'Short human intro.' });
+            await publish(fake, { runId: 'run-1', verdict: 'FAIL' });
+            const created = blockOf(fake.pr.body);
+            const above = humanOf(descriptionMaxLength - 300);
+            const below = '\n\nHuman note below.\n';
+            fake.pr = { ...fake.pr, body: `${above}${created.block}${below}` };
+            await publish(fake, { runId: 'run-2', verdict: 'PASS' });
+            assert.equal(fake.pr.body, `${above}${below}`, 'only the stale fleet block is removed');
+            assert.equal(count(fake.pr.body, BLOCK_START), 0);
+            assert.ok(fake.comments.join('\n').includes('## Sprint verdict: PASS'));
         });
     }
 });

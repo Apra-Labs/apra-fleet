@@ -65,7 +65,10 @@ what fleet owns:
 - Fleet text that does not fit the provider's description limit (small on
   Bitbucket and Azure DevOps) is posted as engine-marked PR comments that the
   block links to; nothing is truncated away, and a relaunch updates those
-  comments in place.
+  comments in place. Text outside the block is never cut to make room: when
+  it leaves too little room, the block shrinks to the verdict and the link to
+  the comments, and when not even that fits the description is left as it is
+  and all fleet text goes to the comments.
 
 It never merges the PR -- that is always a human decision.
 
