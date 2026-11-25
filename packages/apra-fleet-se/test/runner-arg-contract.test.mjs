@@ -626,8 +626,9 @@ describe('runner.js mock-level execution', () => {
         // where --json`, `bd config get sync.remote --json`, `git remote
         // get-url origin`) precede even that gate; skip them first.
         // Exactly three: this is a single-member sprint. The bd/dolt version
-        // pin probes (`bd --version`, `dolt version`) run before them.
-        const IDENTITY_PROBES = ['bd --version', 'dolt version', 'bd where --json', 'bd config get sync.remote --json', 'git remote get-url origin'];
+        // pin probes (`bd --version`, the fleet-owned dolt probe, then
+        // `dolt version`) run before them.
+        const IDENTITY_PROBES = ['bd --version', '"$HOME/.apra-fleet/bin/dolt" version', 'dolt version', 'bd where --json', 'bd config get sync.remote --json', 'git remote get-url origin'];
         const identityEnd = IDENTITY_PROBES.length;
         assert.deepStrictEqual(spy.commandLog.slice(0, identityEnd), IDENTITY_PROBES, 'the beads identity probes must open the command log');
         // The backlog member's VCS-credential preflight (ensureVcsAuthFresh,
