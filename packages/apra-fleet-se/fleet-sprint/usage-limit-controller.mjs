@@ -47,6 +47,22 @@ import { createModelReporter } from './model-log.mjs';
 // no bead ids -- check-generic-boundary.mjs), a fresh session, a short timeout.
 const PROBE_PROMPT = 'Reply with the single word: ok.';
 const PROBE_TIMEOUT_S = 60;
+// Longest slice of a probe failure message the log carries; a longer one is cut
+// and ends with PROBE_ERROR_TRUNCATION_MARKER.
+export const PROBE_ERROR_LOG_MAX_CHARS = 300;
+export const PROBE_ERROR_TRUNCATION_MARKER = '...[truncated]';
+
+function boundedProbeError(err) {
+    const text = String(err && err.message ? err.message : err);
+    return text.length > PROBE_ERROR_LOG_MAX_CHARS
+        ? text.slice(0, PROBE_ERROR_LOG_MAX_CHARS) + PROBE_ERROR_TRUNCATION_MARKER
+        : text;
+}
+
+/** True for an AgentDispatchError whose reason shows the agent ran a turn. */
+function isMaxTurnsExhausted(err) {
+    return !!(err && err.details && err.details.reason === 'max_turns_exhausted');
+}
 
 /** The default injected sleep: a non-blocking timer that keeps the event loop
  * (and the viewer's /state endpoint) responsive while the sprint is paused.
@@ -74,9 +90,9 @@ function pauseEndedOf(handle) {
 /**
  * Waits `waitMs` on the injected sleep, racing it against an operator RESUME
  * of the pause (the pause-end handle settling with outcome 'resume'). Resolves
- * { wake: 'timer' } or { wake: 'resume', reason }. A 'stop' outcome does not
- * end this wait (the stop surfaces on the probe as before); it is recorded on
- * the returned `pauseEnd` box for callers that act on it.
+ * { wake: 'timer' }, { wake: 'resume', reason } or { wake: 'stop', reason }.
+ * A stop (also one already in effect when the wait starts) ends the wait at
+ * once so the caller can unwind with a CancelledError.
  */
 async function waitOrOperatorResume(sleep, waitMs, ended) {
     if (!ended) {
@@ -87,14 +103,14 @@ async function waitOrOperatorResume(sleep, waitMs, ended) {
     const cancel = new AbortController();
     const resumed = ended.then((end) => {
         box.pauseEnd = end || null;
-        return end && end.outcome === 'resume' ? end : new Promise(() => {});
+        return end && (end.outcome === 'resume' || end.outcome === 'stop') ? end : new Promise(() => {});
     });
     const timer = Promise.resolve(sleep(waitMs, { signal: cancel.signal })).then(() => null);
     const winner = await Promise.race([resumed, timer]);
     // Clear a still-pending default timer: nothing may keep the process alive
     // once the wait is over.
     cancel.abort();
-    if (winner) return { wake: 'resume', reason: winner.reason, pauseEnd: box.pauseEnd };
+    if (winner) return { wake: winner.outcome === 'stop' ? 'stop' : 'resume', reason: winner.reason, pauseEnd: box.pauseEnd };
     return { wake: 'timer', pauseEnd: box.pauseEnd };
 }
 
@@ -214,6 +230,17 @@ export function createUsageLimitPauseController({
             // swallowed.
             const waitStartedAt = now();
             const waited = await waitOrOperatorResume(sleep, waitMs, pauseEndedOf(pauseHandle));
+            if (waited.wake === 'stop') {
+                // The run was stopped during (or before) the wait: no resume,
+                // no probe, no new pause -- unwind like any operator stop.
+                log(
+                    `usage limit wait on member ${member} (${roleLabel}) ended by a stop` +
+                    (waited.reason ? ` (${waited.reason})` : '') + ' -- cancelling.'
+                );
+                throw new CancelledError(
+                    `[Workflow Error] ${waited.reason || 'run stopped during the usage-limit wait'}`
+                );
+            }
             if (waited.wake === 'resume') {
                 // The operator resumed the run during the wait: the cause may
                 // be fixed, so probe now instead of sleeping on to the
@@ -265,6 +292,15 @@ export function createUsageLimitPauseController({
                 // operator stop still tears the run down mid-pause. Never
                 // swallowed by the inconclusive-probe path below.
                 if (probeErr instanceof CancelledError) throw probeErr;
+                // The model answered but called a tool (turn cap hit): the
+                // provider accepted a turn, so the limit is lifted.
+                if (isMaxTurnsExhausted(probeErr)) {
+                    log(
+                        `usage limit re-probe for member ${member} (${roleLabel}) proved the limit lifted ` +
+                        `(max_turns_exhausted) -- proceeding to re-dispatch.`
+                    );
+                    return { resumed: true };
+                }
                 if (isUsageLimitDispatchError(probeErr)) {
                     reprobes += 1;
                     // Prefer the probe's OWN fresh signal (a new parsed
@@ -281,7 +317,7 @@ export function createUsageLimitPauseController({
                 // test rather than burning a reprobe on an unrelated fault.
                 log(
                     `usage limit re-probe for member ${member} (${roleLabel}) was inconclusive ` +
-                    `(${probeErr && probeErr.message ? probeErr.message : probeErr}) -- proceeding to re-dispatch.`
+                    `(${boundedProbeError(probeErr)}) -- proceeding to re-dispatch.`
                 );
                 return { resumed: true };
             }
