@@ -145,6 +145,19 @@ function memberDoltPath(target) {
     return `"${seCmds.homePath(`.apra-fleet/bin/${binaryName}`)}"`;
 }
 
+/**
+ * The version probe for the fleet-owned dolt, built from a member's resolved
+ * SE command primitives (getSeCommands result): the member-shell-correct
+ * quoted path invoked with the call operator only where the shell needs it.
+ * @param {{ shell: string, homePath: (rel: string) => string }} seCmds
+ * @returns {string}
+ */
+export function fleetDoltVersionCommand(seCmds) {
+    const binaryName = seCmds.shell === 'posix' ? 'dolt' : 'dolt.exe';
+    const quoted = `"${seCmds.homePath(`.apra-fleet/bin/${binaryName}`)}"`;
+    return seCmds.shell === 'powershell' ? `& ${quoted} version` : `${quoted} version`;
+}
+
 // ---------------------------------------------------------------------------
 // Section 1b: shell dialect. Every command below is dispatched into the
 // MEMBER's own shell -- PowerShell (5.1, so no `&&`/`||`) on Windows, bash on

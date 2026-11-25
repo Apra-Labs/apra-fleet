@@ -56,7 +56,8 @@ import {
 import { BeadsIdentityError, BEADS_IDENTITY_FAILURE_REASONS, VCS_FAILURE_KINDS } from './errors.mjs';
 import { syncBefore as doltSyncBefore } from './dolt-sync.mjs';
 import { classifyFailure, commandBinary } from './vcs-module.mjs';
-import { BEADS_PACKAGE, BEADS_VERSION, DOLT_VERSION, TOOL_VERSION_PROBES, checkPinnedVersion, majorMinor } from './tool-version-pin.mjs';
+import { fleetDoltVersionCommand } from './dolt-settle.mjs';
+import { BEADS_PACKAGE, BEADS_VERSION, DOLT_VERSION, TOOL_VERSION_PROBES, checkPinnedVersion, majorMinor, parseVersionLine } from './tool-version-pin.mjs';
 
 // Short: three cheap local reads per member. A member that cannot answer
 // `bd where` inside a minute is not a member this sprint should mutate.
@@ -238,7 +239,7 @@ const VERSION_LABEL = 'tool-version';
 export const TOOL_VERSION_FIX =
     `install the pinned bd (${BEADS_PACKAGE}) on each member named above -- re-run that member's fleet install ` +
     `(update_member fleet_install auto), or 'npm install -g ${BEADS_PACKAGE}' in that member's shell -- ` +
-    `and make sure 'dolt version' there reports ${DOLT_VERSION.replace(/^v/, '')} or dolt is absent (the sprint installs the pinned dolt on demand), then relaunch`;
+    `and make sure the dolt the sprint runs there (the fleet-owned copy under the member's .apra-fleet/bin) reports ${DOLT_VERSION.replace(/^v/, '')}, or is absent so the sprint installs the pinned dolt on demand (a different dolt elsewhere on PATH only draws a warning: remove or update it), then relaunch`;
 
 /**
  * Probes `bd --version` and `dolt version` on every given member and throws
@@ -246,10 +247,15 @@ export const TOOL_VERSION_FIX =
  * pinned major.minor. A member whose bd is missing throws the existing
  * MISSING_TOOL failure instead (never double-reported as a mismatch).
  *
- * @param {{ command: Function, members: string[], log?: Function, timeoutS?: number }} opts
+ * The dolt checked is the one the sprint runs: the fleet-owned dolt (resolved
+ * per member OS/shell through `memberShell`) when present; a different dolt
+ * resolving on PATH only logs a warning, once per member. With no fleet-owned
+ * dolt (or no `memberShell`) the PATH dolt is compared as before.
+ *
+ * @param {{ command: Function, members: string[], log?: Function, timeoutS?: number, memberShell?: (member: string) => Promise<object> }} opts
  * @returns {Promise<Record<string, { bd: string, dolt: string|null }>>} per-member found versions
  */
-export async function verifyPinnedToolVersions({ command, members, log = () => {}, timeoutS = BEADS_IDENTITY_PROBE_TIMEOUT_S }) {
+export async function verifyPinnedToolVersions({ command, members, log = () => {}, timeoutS = BEADS_IDENTITY_PROBE_TIMEOUT_S, memberShell }) {
     if (typeof command !== 'function') {
         throw new TypeError('verifyPinnedToolVersions({ command }): command must be a function');
     }
@@ -274,17 +280,33 @@ export async function verifyPinnedToolVersions({ command, members, log = () => {
             : checkPinnedVersion(bd.output, BEADS_VERSION);
         if (!bdCheck.ok) offenders.push({ member, tool: 'bd', found: bdCheck.found, expected: bdCheck.expected, ...(bd.error !== null ? { notRunnable: true } : {}) });
 
-        const dolt = await run(TOOL_VERSION_PROBES.dolt, member);
+        let fleetDolt = null;
+        if (typeof memberShell === 'function') {
+            try {
+                const probe = fleetDoltVersionCommand(await memberShell(member));
+                const r = await run(probe, member);
+                if (r.error === null && parseVersionLine(r.output)) fleetDolt = r;
+            } catch { /* cannot resolve the member's shell: treat as no fleet-owned dolt */ }
+        }
+        const pathDolt = await run(TOOL_VERSION_PROBES.dolt, member);
         let doltFound = null;
-        if (dolt.error !== null) {
-            const c = classifyFailure(dolt.error, { tool: 'dolt' });
+        if (fleetDolt) {
+            const doltCheck = checkPinnedVersion(fleetDolt.output, DOLT_VERSION);
+            doltFound = doltCheck.found;
+            if (!doltCheck.ok) offenders.push({ member, tool: 'dolt', found: doltCheck.found, expected: doltCheck.expected });
+            const pathVer = pathDolt.error === null ? parseVersionLine(pathDolt.output) : null;
+            if (pathVer && pathVer !== doltCheck.parsed) {
+                log(`${BEADS_IDENTITY_WARNING_PREFIX}member '${member}' has a different dolt earlier on PATH (dolt ${pathVer}) than the fleet-owned dolt the sprint runs (dolt ${doltCheck.found}); the sprint uses the fleet-owned one and is not refused for it. To fix: remove or update the PATH copy of dolt on that member.`);
+            }
+        } else if (pathDolt.error !== null) {
+            const c = classifyFailure(pathDolt.error, { tool: 'dolt' });
             if (c.kind === VCS_FAILURE_KINDS.MISSING_TOOL) {
                 log(`[beads-identity] member '${member}' has no dolt on PATH; the sprint installs the pinned dolt ${DOLT_VERSION} there on demand when it needs one.`);
             } else {
-                log(`${BEADS_IDENTITY_WARNING_PREFIX}member '${member}' could not report its dolt version ('${TOOL_VERSION_PROBES.dolt}' -> ${summarizeRaw(dolt.error)}); not compared, the settle-time pin check still applies.`);
+                log(`${BEADS_IDENTITY_WARNING_PREFIX}member '${member}' could not report its dolt version ('${TOOL_VERSION_PROBES.dolt}' -> ${summarizeRaw(pathDolt.error)}); not compared, the settle-time pin check still applies.`);
             }
         } else {
-            const doltCheck = checkPinnedVersion(dolt.output, DOLT_VERSION);
+            const doltCheck = checkPinnedVersion(pathDolt.output, DOLT_VERSION);
             doltFound = doltCheck.found;
             if (!doltCheck.ok) offenders.push({ member, tool: 'dolt', found: doltCheck.found, expected: doltCheck.expected });
         }
@@ -795,6 +817,7 @@ export async function verifyBeadsIdentity({ command, log = () => {}, publishStat
             command,
             log,
             timeoutS,
+            memberShell,
             members: [...ordered, ...(Array.isArray(setupMembers) ? setupMembers : [])],
         });
     }
