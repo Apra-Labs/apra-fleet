@@ -1063,7 +1063,11 @@ node ids are not unique (an incremental analyze corrupted it) carries
 `index_integrity` (`{ corrupt: true, damaged_rows, rebuild }`, where `rebuild` is
 `{ started: true }` or `{ started: false, reason, detail? }`, plus `pause` when
 `reason` is `paused`) and `confidence: 'LOW'`,
-plus a warning text. A flagged "not found" does NOT prove the symbol is absent:
+plus a warning text. When the integrity check itself could not run (its query
+threw, or returned nothing readable), a not-found answer instead carries
+`index_integrity: { checked: false, reason: 'check_failed' | 'check_unreadable' }`,
+`confidence: 'LOW'` and an `NOT FOUND UNVERIFIED` warning, and no rebuild is
+started. A flagged "not found" does NOT prove the symbol is absent:
 use a text search, and retry once `codeStatus()` reports the index ready.
 Extract all of these with `parseToolJson()`.
 
