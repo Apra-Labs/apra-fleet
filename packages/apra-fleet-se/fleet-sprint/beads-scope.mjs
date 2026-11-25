@@ -1535,6 +1535,19 @@ export function createBeadsScope(opts = {}) {
      * fresh. Scope membership is structural and changes only when beads are
      * created/reparented; status is what moves under the sprint's feet.
      */
+    /**
+     * The in-scope rows of an already-fetched full-DB snapshot (exactly what
+     * bdListScoped('') returns for that snapshot), with no bd call -- for a
+     * caller that holds a snapshot from earlier in the same cycle.
+     * @param {Array<object>} allBeads
+     */
+    function scopedFromSnapshot(allBeads) {
+        const beads = Array.isArray(allBeads) ? allBeads : [];
+        const { scopeIds } = scopeOf(beads);
+        if (scopeIds.size === 0) return [];
+        return beads.filter((b) => b && scopeIds.has(b.id));
+    }
+
     async function bdListScoped(restArgs) {
         const rest = restArgs ? restArgs.trim() : '';
 
@@ -1604,6 +1617,7 @@ export function createBeadsScope(opts = {}) {
         wrapPhase,
         fetchAllBeadsShared,
         bdListScoped,
+        scopedFromSnapshot,
         decomposedParentIds,
         liveEvidenceLeafIds,
         readyLeafBeads,

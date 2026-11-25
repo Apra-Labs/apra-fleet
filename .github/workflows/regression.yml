@@ -385,4 +385,7 @@ jobs:
         timeout-minutes: 20
         env:
           APRA_RUN_PACK_INSTALL: '1'
-        run: npx vitest run tests/undici-pack-install.test.ts
+        # dist-pm builds dist/workflows, which the stripped-pack proof packs.
+        run: |
+          npm run dist-pm
+          npx vitest run tests/undici-pack-install.test.ts tests/integration/stripped-pack-install.test.ts

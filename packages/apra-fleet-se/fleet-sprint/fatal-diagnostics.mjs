@@ -2,7 +2,7 @@
 // helpers, extracted out of runner.js (apra-fleet-3swo.6.16); runner.js
 // re-exports every symbol it previously exported from this region, so
 // existing importers of fleet-sprint/runner.js resolve unchanged.
-import { DoltDivergedError } from './errors.mjs';
+import { DoltDivergedError, SprintBlockedOnOperatorError, BLOCKED_ON_OPERATOR_TERMINAL_REASON } from './errors.mjs';
 
 // ---------------------------------------------------------------------------
 // Fatal-diagnostics guard
@@ -113,6 +113,9 @@ export function findDoltDivergedCause(err) {
  */
 export function resolveTerminalReason(err) {
     if (findDoltDivergedCause(err)) return 'BEADS_SYNC_CONFLICT';
+    // Waiting on an operator answer is its own state: never a plan rejection
+    // or a crash, and never a deterministic-and-unaddressed relaunch gate.
+    if (err instanceof SprintBlockedOnOperatorError) return BLOCKED_ON_OPERATOR_TERMINAL_REASON;
     return (err && (err.code || err.name)) || 'UNKNOWN_ABORT';
 }
 

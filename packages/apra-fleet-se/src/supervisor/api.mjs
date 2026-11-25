@@ -53,6 +53,7 @@ import { isDeterministicTerminalReason, HISTORY_EVENTS } from './history.mjs';
 import { defaultHasTerminalState } from './watchdog.mjs';
 import { terminalInfoFromState, terminalInfoFromHistory } from './pr-not-opened.mjs';
 import { toBeadsSummary } from './beads-identity.mjs';
+import { unpushedBeadsMessage, UNPUSHED_BEADS_REMEDY } from './beads-pushed-check.mjs';
 import { fleetMembersUnavailableReason, fleetMembersStoppedByUserReason } from './fleet-members.mjs';
 
 /** This module's own on-disk path -- the default build-version stamp's source (see defaultBuildVersion() below). */
@@ -433,6 +434,10 @@ export function defaultBuildVersion() {
  *     Called once at controller creation to stamp what this process is
  *     running, and again on every launch() to read what's on disk now --
  *     see launch()'s buildVersionWarning below.
+ *   checkBeadsPushed?: () => Promise<{ pending: boolean|null, why?: string }>,
+ *     Unpushed-beads launch preflight (see beads-pushed-check.mjs): pending
+ *     true -> 409 with the push remedy; null -> launch proceeds with a
+ *     warning; absent -> no check.
  *   beadsIdentity?: { get: () => object|null },
  *     src/supervisor/beads-identity.mjs's createBeadsIdentityState() handle.
  *     When present, launch() records toBeadsSummary(get()) as the ledger
@@ -461,6 +466,9 @@ export function createSprintController(deps = {}) {
     const proxyAction = deps.proxyAction ?? proxyChildAction;
     const roleMapResolver = deps.resolveRoleMap ?? resolveRoleMap;
     const beadsIdentity = deps.beadsIdentity ?? null;
+    // Launch preflight: () => Promise<{ pending: boolean|null, why?: string }>.
+    // Absent (tests, older wiring) -> no unpushed-beads check.
+    const checkBeadsPushed = typeof deps.checkBeadsPushed === 'function' ? deps.checkBeadsPushed : null;
     const backlogMemberHandle = deps.backlogMember && typeof deps.backlogMember.get === 'function' ? deps.backlogMember : null;
     const beadsSummaryForLaunch = () => {
         if (!beadsIdentity || typeof beadsIdentity.get !== 'function') return null;
@@ -640,7 +648,7 @@ export function createSprintController(deps = {}) {
     }
 
     // -- POST /api/sprints : validated, goal-forwarding launch ----------------
-    async function launch(body = {}) {
+    async function launch(body = {}, opts = {}) {
         const { issue, issueIds, branch, base, members, skipRegression, kbDemotionLoop, tierPolicy, tierOverrides, decisionNotify } = validateLaunchRequest(body);
         // An '@file' roleMap is a CLI-only convenience: over HTTP it would make
         // the supervisor read an arbitrary server-side path named by the request
@@ -797,6 +805,27 @@ export function createSprintController(deps = {}) {
             }
         }
 
+        // Unpushed-beads preflight: a launch while the supervisor's beads clone
+        // holds changes the Dolt remote lacks makes the target member plan from
+        // stale scope. Definitely unpushed -> 409 with the remedy; inconclusive
+        // -> proceed with one loud warning. Runs before any reservation/spawn.
+        let beadsPushWarning = null;
+        if (checkBeadsPushed) {
+            let outcome;
+            try {
+                outcome = await checkBeadsPushed();
+            } catch (err) {
+                outcome = { pending: null, why: `the probe threw: ${(err && err.message) || err}` };
+            }
+            if (outcome && outcome.pending === true) {
+                throw new ApiError(409, unpushedBeadsMessage(), 'beads');
+            }
+            if (!outcome || outcome.pending !== false) {
+                beadsPushWarning = `could not verify that the local beads clone is pushed (${(outcome && outcome.why) || 'unknown reason'}); launching anyway -- if scope looks stale on the target member, in the supervisor's beads folder ${UNPUSHED_BEADS_REMEDY}.`;
+                console.warn(`[supervisor] WARNING: ${beadsPushWarning}`);
+            }
+        }
+
         // eft.5.2 seam: reject overlapping launches (409) BEFORE spawning a child.
         await beforeLaunch({ members: union, issueRoots, membersList: membersListRaw });
 
@@ -881,6 +910,8 @@ export function createSprintController(deps = {}) {
             // beads-identity.mjs) -- the same identity the child received as
             // --expect-beads, recorded so the dashboard can show it per row.
             beads: beadsSummaryForLaunch(),
+            // docs/supervisor-auth.md audit: the caller who launched it.
+            ...(opts && opts.actor ? { launchedBy: opts.actor } : {}),
         });
 
         return {
@@ -894,7 +925,8 @@ export function createSprintController(deps = {}) {
             tierPolicy,
             tierOverrides: tierOverrides ?? null,
             buildVersionWarning,
-            warnings: aliasWarnings,
+            ...(beadsPushWarning ? { beadsPushWarning } : {}),
+            warnings: beadsPushWarning ? [...aliasWarnings, beadsPushWarning] : aliasWarnings,
         };
     }
 
@@ -997,7 +1029,7 @@ export function createSprintController(deps = {}) {
     }
 
     // -- POST /api/sprints/:id/stop : proxy the child's /stop -----------------
-    async function stopSprint(id) {
+    async function stopSprint(id, opts = {}) {
         const reservation = ledger.get(id);
         if (!reservation) {
             throw new ApiError(404, `no live sprint '${id}' to stop`);
@@ -1019,6 +1051,11 @@ export function createSprintController(deps = {}) {
             throw new ApiError(409, `sprint '${id}' has no reachable child (port unknown)`);
         }
         const result = await proxyStop(port);
+        // docs/supervisor-auth.md audit: who asked it to stop. Best-effort --
+        // the stop itself already went through.
+        if (opts && opts.actor && typeof ledger.recordStop === 'function') {
+            try { await ledger.recordStop(id, opts.actor); } catch (err) { console.error(`[supervisor] recording stoppedBy for '${id}' failed:`, err && err.message ? err.message : err); }
+        }
         return { sprintId: id, status: 'stopping', child: result ?? null };
     }
 
@@ -1083,10 +1120,11 @@ export function registerSprintRoutes(supervisor, controller) {
         sendJson(res, 200, await controller.backlog());
     });
 
-    supervisor.route('POST', '/api/sprints', async (req, res) => {
+    supervisor.route('POST', '/api/sprints', async (req, res, ctx) => {
         const body = (await readJsonBody(req)) ?? {};
+        const actor = ctx?.auth?.actor;
         try {
-            sendJson(res, 201, await controller.launch(body));
+            sendJson(res, 201, await controller.launch(body, actor ? { actor } : undefined));
         } catch (err) {
             if (!onApiError(res, err)) throw err;
         }
@@ -1115,7 +1153,8 @@ export function registerSprintRoutes(supervisor, controller) {
 
     supervisor.route('POST', '/api/sprints/:id/stop', async (req, res, ctx) => {
         try {
-            sendJson(res, 200, await controller.stopSprint(ctx.params.id));
+            const actor = ctx?.auth?.actor;
+            sendJson(res, 200, await controller.stopSprint(ctx.params.id, actor ? { actor } : undefined));
         } catch (err) {
             if (!onApiError(res, err)) throw err;
         }

@@ -394,6 +394,8 @@ Runs a shell command directly on a member without spinning up Claude. Use for qu
 
 **`long_running` launch:** the call returns `Task launched: task_id=...` only after the task wrapper has started on the member (its `task.pid` exists, or its `status.json` already reports a finished task). A launch that exits nonzero, fails `Win32_Process.Create`, or whose wrapper does not start within the launch's bounded wait returns `Failed to launch task on ...` with `structuredContent.isError: true` and `reason: "launch_failed"` (credential values redacted), never a `task_id`. `monitor_task` on a task id whose directory or wrapper never appeared reports `status: "launch_failed"` with a `reason`; when the task state cannot be read it reports `status: "unknown"` with a `reason`.
 
+**`long_running` and secrets (launch-time resolution):** each `{{secret.NAME}}` in a `long_running` command (and its `restart_command`) is resolved ONCE, at launch, and baked into the task wrapper on the member. A running process cannot receive a new value, so rotating or deleting the secret afterwards does not reach the task: it keeps the old value until it is restarted. After rotating a secret that a `long_running` task uses, restart that task. `monitor_task` reports such a change (see below), and `credential_store_set` (overwriting the name with a different value) and `credential_store_delete` append a warning naming the bound task ids. The fleet server tracks these bindings in memory only, so after a server restart no warning can be produced -- the restart rule still applies.
+
 A local Windows Git Bash member receives any command longer than 4KB through an owner-only temp file that bash sources, not as one `bash -c` argument (Git Bash corrupts single arguments above about 8KB). The file is deleted when the command ends.
 
 **Security warning:** This tool executes **raw shell commands** on the target machine with full privileges of the user.
@@ -426,6 +428,24 @@ Always call `TaskStop` on the dispatching background agent after calling this.
 1. Kills the LLM process PID stored for the member using a platform-appropriate kill command (`kill -9` on Unix, `taskkill /F /T /PID` on Windows).
 2. Sets a stopped flag on the member in the in-memory registry.
 3. Returns a human-readable status message.
+
+`stop_prompt` stops an LLM session only; it does not stop a `long_running` task (see `monitor_task`).
+
+### `monitor_task`
+
+Reports the state of a `long_running` task started by `execute_command`.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| member identifier | string | yes | `member_id` or `member_name` |
+| `task_id` | string | yes | Task id returned by `execute_command` with `long_running=true` |
+| `auto_stop` | boolean | no | Default `false`. Stop the cloud instance when the task completes |
+
+**Output:** JSON with `taskId`, `status`, `exitCode`, `retries`, `started`, `updated`, `pidAlive`, `logTail` (credential values redacted), and when they apply `reason`, `gpuUtilization` and `autoStopped`.
+
+**Secret changes:** when a `{{secret.NAME}}` the task resolved at launch has since changed, the result also carries `secretChanges` -- an array of `{ name, change }` with `change` one of `rotated` (the current value differs from the launch value), `deleted` (no longer in the store) or `expired` (past its TTL) -- and a `secretWarning` string. The warning says the task still uses the old value and how to restart it: stop it on the member with the given `execute_command` step, then relaunch with `execute_command` `long_running=true` (setting a deleted or expired secret again first). The stop step is built for the member's OS: on Linux/macOS a `kill` of the PID in `~/.fleet-tasks/<task_id>/task.pid`; on Windows `Stop-Process` on the PID in `%USERPROFILE%\.fleet-tasks\<task_id>\task.pid`. That PID is the task wrapper, so stopping it first ends its crash-retry loop (which would otherwise relaunch with the old value); the step then stops the wrapper's child processes. A rotation done by another process, such as the `apra-fleet secret --set` CLI, is detected too. The comparison uses a fingerprint kept in server memory only; neither the value nor its fingerprint appears in any result or log. With no change, neither field is present. Checking does not delete an expired secret or apply member scoping.
 
 ---
 

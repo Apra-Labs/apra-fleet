@@ -1687,15 +1687,20 @@ export function parseBdDiffPending(output) {
 const SAFE_DOLT_BRANCH_RE = /^[A-Za-z0-9._/-]+$/;
 
 /**
- * Does `member`'s clone still hold changes its Dolt remote-tracking branch
+ * Does a beads clone still hold changes its Dolt remote-tracking branch
  * lacks? Reads the current branch from `bd vc status --json`, then diffs
- * remotes/origin/<branch> against it. Never throws.
+ * remotes/origin/<branch> against it. Transport-agnostic: `runBd` runs one bd
+ * command line (e.g. `bd vc status --json`) wherever the clone lives and
+ * resolves `{ ok, output, error? }` (or the raw output text). Never throws.
+ * `bd vc status --json` (bd 1.3.0) reports no working-set state, so only
+ * committed-but-unpushed changes are detected; the remedy commits first.
+ * @param {(cmd: string, label: string) => Promise<{ok?: boolean, output?: string, error?: string}|string>} runBd
  * @returns {Promise<{ pending: boolean|null, why?: string }>}
  */
-async function readUnpushedDoltChanges(member, { command }) {
+export async function readUnpushedWith(runBd) {
     let branch = null;
     try {
-        const res = await command('bd vc status --json', { member_name: member, silent: true, failSoft: true, label: `D-push landed check: branch read for '${member}'`, timeout_s: DOLT_TIP_PROBE_TIMEOUT_S });
+        const res = await runBd('bd vc status --json', 'branch read');
         if (res && res.ok !== false) {
             const parsed = JSON.parse(String((typeof res === 'object' ? res.output : res) || ''));
             if (parsed && typeof parsed.branch === 'string') branch = parsed.branch;
@@ -1704,13 +1709,20 @@ async function readUnpushedDoltChanges(member, { command }) {
     if (!branch || !SAFE_DOLT_BRANCH_RE.test(branch)) return { pending: null, why: 'could not read the clone\'s Dolt branch' };
     let res;
     try {
-        res = await command(`bd diff remotes/origin/${branch} ${branch} --json`, { member_name: member, silent: true, failSoft: true, label: `D-push landed check: unpushed-change read for '${member}'`, timeout_s: DOLT_TIP_PROBE_TIMEOUT_S });
+        res = await runBd(`bd diff remotes/origin/${branch} ${branch} --json`, 'unpushed-change read');
     } catch (err) {
         return { pending: null, why: `bd diff threw: ${(err && err.message) || err}` };
     }
     if (!res || res.ok === false) return { pending: null, why: `bd diff failed: ${res ? res.error : 'no result'}` };
     const pending = parseBdDiffPending(typeof res === 'object' ? res.output : res);
     return pending === null ? { pending: null, why: 'bd diff output was not recognized' } : { pending };
+}
+
+async function readUnpushedDoltChanges(member, { command }) {
+    return readUnpushedWith((cmd, what) => command(cmd, {
+        member_name: member, silent: true, failSoft: true,
+        label: `D-push landed check: ${what} for '${member}'`, timeout_s: DOLT_TIP_PROBE_TIMEOUT_S,
+    }));
 }
 
 /**

@@ -118,7 +118,7 @@ your deploy; do not clear it yourself -- report it in `notes` so the
 orchestrator/operator can release it against the supervisor:
 
 ```bash
-curl -s -X POST http://localhost:8787/api/reservations/<sprintId>/force-release -H "Content-Type: application/json"
+curl -s -X POST http://localhost:8787/api/reservations/<sprintId>/force-release -H "Content-Type: application/json" -d '{}'
 ```
 
 Same route the dashboard's Stop/Restart controls use. Force-release does not

@@ -118,30 +118,6 @@
       "updated_at": "2026-09-29T06:13:15.988Z"
     },
     {
-      "id": "0b87931a-f912-416c-b03e-5fd4c26ac6ee",
-      "type": "knowledge",
-      "title": "execute_prompt resolved_tier/resolved_model are attached by a wrapper around executePromptCore",
-      "summary": "executePrompt is now a thin wrapper: executePromptCore writes into a mutable PromptResolution object after model resolution, and the wrapper merges resolved_tier/resolved_model into structuredContent of any returned object result. Early returns before resolution and thrown errors carry neither field.",
-      "symbols": [
-        "executePrompt",
-        "executePromptCore",
-        "PromptResolution",
-        "resolveModelForTier"
-      ],
-      "source_files": [
-        "src/tools/execute-prompt.ts",
-        "tests/execute-prompt-resolved-tier.test.ts",
-        "packages/apra-fleet-client/src/client/api.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-11-24T03:19:38.005Z",
-      "source_file_hashes": {
-        "packages/apra-fleet-client/src/client/api.mjs": "ed0eefe7dfe92f0145638204f3fcaf69eb35308b",
-        "src/tools/execute-prompt.ts": "2cdef64e525797cb388accb76fac8e7f8e7ce50d",
-        "tests/execute-prompt-resolved-tier.test.ts": "00e75945d536faaf095126af2c944a8c259a3203"
-      }
-    },
-    {
       "id": "0c2d907a-bee5-4324-b61e-6ee0e2bc4b74",
       "type": "knowledge",
       "title": "dispatchRole has 12 call sites for 13 role-policy-table entries by design",
@@ -637,6 +613,25 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:13.625Z"
+    },
+    {
+      "id": "264002c2-36bd-4fbe-997e-518d5174abf8",
+      "type": "learning",
+      "title": "Build U+2028/U+2029 with String.fromCharCode in shipped scripts",
+      "summary": "strip-comments.mjs builds the line separator chars with String.fromCharCode(0x2028/0x2029) so the file stays ASCII. Backslash-u escapes written through the agent edit path landed as raw characters or bare digits, so check the bytes after writing any escape.",
+      "symbols": [
+        "countLines",
+        "isLineTerminatorChar",
+        "stripComments"
+      ],
+      "source_files": [
+        "scripts/lib/strip-comments.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-25T10:54:32.317Z",
+      "source_file_hashes": {
+        "scripts/lib/strip-comments.mjs": "4d0dff7d00fd1fdf2d8fc46d8ddca2e87ca2a164"
+      }
     },
     {
       "id": "266d51a9-b30a-4d52-bf4c-97f26de518d7",
@@ -2664,6 +2659,32 @@
       }
     },
     {
+      "id": "8d3ac8fe-4d4c-4846-ad85-07a12c300524",
+      "type": "knowledge",
+      "title": "Supervisor launch preflight reuses dolt-sync readUnpushedWith via local bd exec",
+      "summary": "POST /api/sprints runs checkBeadsPushed (src/supervisor/beads-pushed-check.mjs) before the member-overlap guard. It refuses 409 when the beads clone is unpushed and only warns when the result is inconclusive. The reader is dolt-sync.mjs readUnpushedWith(runBd), shared with the D-push landed check.",
+      "symbols": [
+        "createBeadsPushedProbe",
+        "readUnpushedWith",
+        "hasUncommittedChanges",
+        "createSprintController"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/src/supervisor/beads-pushed-check.mjs",
+        "packages/apra-fleet-se/src/supervisor/api.mjs",
+        "packages/apra-fleet-se/fleet-sprint/dolt-sync.mjs",
+        "packages/apra-fleet-se/src/supervisor/lib/exec-bd.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-25T07:20:56.090Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/dolt-sync.mjs": "da026e276040f342b7d945c74200e489cc20c29e",
+        "packages/apra-fleet-se/src/supervisor/api.mjs": "d372fca3a6a791f869c9e29776515eadbe9e53a2",
+        "packages/apra-fleet-se/src/supervisor/beads-pushed-check.mjs": "a0fb3eb0bfa48f74d4c52a40622b81ccef87ab35",
+        "packages/apra-fleet-se/src/supervisor/lib/exec-bd.mjs": "1f416b6ab922fa972b6ce278941da105d424fd2a"
+      }
+    },
+    {
       "id": "8fdf21fa-e64c-43d2-a22a-edfd21bd6791",
       "type": "knowledge",
       "title": "Three distinct git-credential-helper file shapes exist across member OS/shell combinations",
@@ -3314,6 +3335,26 @@
         "src/services/knowledge/bible-import.ts": "0f7245962772ebd3558ad3ae3183983284ed1ac7",
         "src/services/knowledge/sqlite-provider.ts": "e32e86971370ada69962300de4fb73e406f86bae",
         "tests/knowledge/kb-import-audn-ids-tombstone.test.ts": "94191b53d8488b9a66536be8825c57643d15e8ef"
+      }
+    },
+    {
+      "id": "b6f81e56-5051-4387-8fb4-96b2a897b36a",
+      "type": "learning",
+      "title": "auto-sprint.js is a script body: compile it as an AsyncFunction, not node --check",
+      "summary": "The shipped auto-sprint.js uses top-level await and top-level return, and its only export is export const meta on line 1. node --check rejects it even when the code is valid. apra-pm/test/auto-sprint-whole-file-parse.test.mjs compiles the whole file as an async function body.",
+      "symbols": [
+        "logWorktreeRefusals",
+        "compileWorkflowBody"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/apra-pm/.claude/workflows/auto-sprint.js",
+        "packages/apra-fleet-se/apra-pm/test/auto-sprint-whole-file-parse.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-25T10:54:32.220Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/apra-pm/.claude/workflows/auto-sprint.js": "25beed97d8956ef3638e47828fc2a6e47d264730",
+        "packages/apra-fleet-se/apra-pm/test/auto-sprint-whole-file-parse.test.mjs": "1eed66ad08264ab9224b03f89c8b44f47650dcac"
       }
     },
     {
@@ -4896,6 +4937,15 @@
     }
   ],
   "demotions": [
+    {
+      "id": "0b87931a-f912-416c-b03e-5fd4c26ac6ee",
+      "at": "2026-11-25T11:39:18.465Z",
+      "reason": "withdrawn",
+      "note": "At HEAD, src/tools/execute-prompt.ts has no executePromptCore. The wrapper executePrompt (about line 716) calls executePromptImpl (line 741) with a PromptResolution object. The entry names a function that does not exist, so a lookup by that symbol fails.",
+      "evidence_files": [
+        "src/tools/execute-prompt.ts"
+      ]
+    },
     {
       "id": "a098caf8-263f-4b72-b5a7-55fc3d290a07",
       "at": "2026-11-18T03:14:58.284Z",

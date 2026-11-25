@@ -26,12 +26,57 @@
 //   cat pack.json | node scripts/check-pack-size.mjs -    read pre-captured JSON from stdin
 //   node scripts/check-pack-size.mjs --threshold 5000000  override the default byte threshold
 //   PACK_SIZE_THRESHOLD=5000000 node scripts/check-pack-size.mjs   same, via env
+//   node scripts/check-pack-size.mjs --dir <pkgDir>       measure that package dir instead of the cwd
+//   node scripts/check-pack-size.mjs --tarball <file.tgz> measure a packed tarball (sum of file sizes)
 
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
+import { gunzipSync } from 'node:zlib';
 import { pathToFileURL } from 'node:url';
 
-export const DEFAULT_THRESHOLD_BYTES = 10000000;
+// Measured on the comment-stripped package (scripts/pack-stripped.mjs): about
+// 6.07 MB unpacked (9.53 MB unstripped; clean dist/ without SEA artifacts).
+// The threshold sits just above the stripped size, so a regression that stops
+// stripping (or ships stale SEA artifacts) fails the guard.
+export const DEFAULT_THRESHOLD_BYTES = 6500000;
+
+/**
+ * Sum of regular-file sizes inside a gzipped tar (what npm reports as
+ * `unpackedSize`).
+ *
+ * @param {Buffer} tgz
+ * @returns {number}
+ */
+export function tarballUnpackedSize(tgz) {
+  const tar = gunzipSync(tgz);
+  let total = 0;
+  for (let off = 0; off + 512 <= tar.length; ) {
+    const header = tar.subarray(off, off + 512);
+    if (header.every((b) => b === 0)) break;
+    const typeByte = header[156];
+    const rawSize = header.subarray(124, 136).toString('ascii');
+    const nul = rawSize.indexOf(String.fromCharCode(0));
+    const sizeField = (nul === -1 ? rawSize : rawSize.slice(0, nul)).trim();
+    const size = sizeField === '' ? 0 : parseInt(sizeField, 8);
+    if (!Number.isFinite(size)) throw new Error('corrupt tar header: unparseable size field');
+    // '0' (48) or NUL: a regular file. Pax/GNU extension headers are skipped.
+    if (typeByte === 48 || typeByte === 0) total += size;
+    off += 512 + Math.ceil(size / 512) * 512;
+  }
+  return total;
+}
+
+/** Value of `--flag value` / `--flag=value`, or undefined. */
+export function parseValueFlag(argv, flag) {
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === flag) {
+      if (argv[i + 1] === undefined) throw new Error(`${flag} requires a value`);
+      return argv[i + 1];
+    }
+    if (argv[i].startsWith(flag + '=')) return argv[i].slice(flag.length + 1);
+  }
+  return undefined;
+}
 
 /**
  * Extract and parse the JSON array `npm pack --dry-run --json` writes to
@@ -193,10 +238,16 @@ function readStdinSync() {
 function getRawInput(argv) {
   // A positional argument that isn't a flag/its value is treated as a path
   // to pre-captured JSON ('-' means stdin); otherwise run npm pack live.
+  const dir = parseValueFlag(argv, '--dir');
+  const tarball = parseValueFlag(argv, '--tarball');
+  if (tarball !== undefined) {
+    return JSON.stringify([{ name: tarball, unpackedSize: tarballUnpackedSize(fs.readFileSync(tarball)) }]);
+  }
+  const VALUE_FLAGS = ['--threshold', '--dir', '--tarball'];
   const positional = argv.find((a, i) => {
     if (a === '-') return true;
     if (a.startsWith('-')) return false;
-    if (argv[i - 1] === '--threshold') return false;
+    if (VALUE_FLAGS.includes(argv[i - 1])) return false;
     return true;
   });
 
@@ -217,6 +268,7 @@ function getRawInput(argv) {
     encoding: 'utf-8',
     stdio: ['ignore', 'pipe', 'inherit'],
     shell: true,
+    ...(dir !== undefined ? { cwd: dir } : {}),
   });
 }
 

@@ -21,7 +21,69 @@
 // "this sprint" is.
 
 import { resultText } from './mcp-result.mjs';
-import { MemberReservationResumeError } from './errors.mjs';
+import { MemberReservationResumeError, SupervisorUnreachableError } from './errors.mjs';
+
+// ---------------------------------------------------------------------------
+// Bounded wait for the supervisor service URL (acquire / allocate only).
+//
+// Env FLEET_SPRINT_SUPERVISOR_WAIT_MS sets the total budget a REFUSED
+// connection is retried for (default 120000 ms, clamped to a minimum of 100).
+// ONLY a refused TCP connect (error cause code ECONNREFUSED, read from the
+// cause chain, never from message text) is retried: no request bytes reached
+// the supervisor, so a resend cannot double-acquire a lease or mint a second
+// child id. A reset / hang-up / timeout / any failure after connect, and any
+// HTTP response, is never retried; a transport failure is thrown at once as
+// SupervisorUnreachableError, an HTTP error propagates as before.
+// ---------------------------------------------------------------------------
+export const SUPERVISOR_WAIT_ENV = 'FLEET_SPRINT_SUPERVISOR_WAIT_MS';
+export const DEFAULT_SUPERVISOR_WAIT_MS = 120_000;
+export const DEFAULT_SUPERVISOR_BACKOFF_MS = 2_000;
+
+export function resolveSupervisorWaitMs(env = process.env) {
+    const n = Number(env[SUPERVISOR_WAIT_ENV]);
+    return Number.isFinite(n) && n >= 100 ? Math.floor(n) : DEFAULT_SUPERVISOR_WAIT_MS;
+}
+
+/** True when the cause chain (incl. AggregateError members) holds ECONNREFUSED. */
+function isConnectionRefused(err) {
+    const seen = new Set();
+    const walk = (e) => {
+        if (!e || typeof e !== 'object' || seen.has(e)) return false;
+        seen.add(e);
+        if (e.code === 'ECONNREFUSED') return true;
+        if (Array.isArray(e.errors) && e.errors.some(walk)) return true;
+        return walk(e.cause);
+    };
+    return walk(err);
+}
+
+/**
+ * fetch() wrapper: retries a refused connection within the budget, converts
+ * any other thrown (transport-level) failure to SupervisorUnreachableError at
+ * once. Resolves with the Response untouched.
+ */
+async function fetchWithRefusedWait(fetchImpl, base, url, init, opts, log, label) {
+    const now = opts.now ?? Date.now;
+    const sleep = opts.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    const budgetMs = opts.supervisorWaitMs > 0 ? opts.supervisorWaitMs : resolveSupervisorWaitMs();
+    const backoffMs = opts.supervisorBackoffMs > 0 ? opts.supervisorBackoffMs : DEFAULT_SUPERVISOR_BACKOFF_MS;
+    const startedAt = now();
+    for (;;) {
+        try {
+            return await fetchImpl(url, init);
+        } catch (err) {
+            if (!isConnectionRefused(err)) {
+                throw new SupervisorUnreachableError(base, { detail: `connection failed: ${err?.cause?.code ?? err?.code ?? err?.message}`, cause: err });
+            }
+            const elapsed = now() - startedAt;
+            if (elapsed + backoffMs > budgetMs) {
+                throw new SupervisorUnreachableError(base, { detail: `connection refused for ${Math.round(elapsed / 1000)}s`, details: { waitedMs: elapsed }, cause: err });
+            }
+            log(`${label} supervisor at ${base} refused the connection; waiting (elapsed ${Math.round(elapsed / 1000)}s of ${Math.round(budgetMs / 1000)}s)`);
+            await sleep(backoffMs);
+        }
+    }
+}
 
 /**
  * Child-side HTTP client for the supervisor-owned global dolt push mutex
@@ -63,12 +125,18 @@ export function createHttpDoltPushMutexClient(opts = {}) {
     const routeFor = (sprintId, action) =>
         `${base}/api/dolt-push-mutex/${encodeURIComponent(sprintId)}/${action}`;
 
-    async function postJson(url, body) {
-        const res = await fetchImpl(url, {
+    async function postJson(url, body, { waitForService = false } = {}) {
+        const init = {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify(body ?? {}),
-        });
+        };
+        let res;
+        if (waitForService) {
+            res = await fetchWithRefusedWait(fetchImpl, base, url, init, opts, log, '[dolt-mutex]');
+        } else {
+            res = await fetchImpl(url, init);
+        }
         if (!res || !res.ok) {
             const status = res ? res.status : 'no-response';
             throw new Error(`[dolt-mutex] ${url} returned HTTP ${status}`);
@@ -87,7 +155,7 @@ export function createHttpDoltPushMutexClient(opts = {}) {
             waitLog.unref?.();
             let payload;
             try {
-                payload = await postJson(routeFor(id, 'acquire'), { pid: o.pid ?? null });
+                payload = await postJson(routeFor(id, 'acquire'), { pid: o.pid ?? null }, { waitForService: true });
             } finally {
                 clearInterval(waitLog);
             }
@@ -158,12 +226,18 @@ export function createHttpChildIdAllocatorClient(opts = {}) {
     }
     const log = opts.log ?? (() => {});
 
-    async function postJson(url, body) {
-        const res = await fetchImpl(url, {
+    async function postJson(url, body, { waitForService = false } = {}) {
+        const init = {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify(body ?? {}),
-        });
+        };
+        let res;
+        if (waitForService) {
+            res = await fetchWithRefusedWait(fetchImpl, base, url, init, opts, log, '[id-allocator]');
+        } else {
+            res = await fetchImpl(url, init);
+        }
         if (!res || !res.ok) {
             const status = res ? res.status : 'no-response';
             throw new Error(`[id-allocator] ${url} returned HTTP ${status}`);
@@ -179,7 +253,7 @@ export function createHttpChildIdAllocatorClient(opts = {}) {
                 pid: o.pid ?? null,
                 sprintId: o.sprintId ?? boundSprintId ?? null,
                 floor: o.floor,
-            });
+            }, { waitForService: true });
             return { childId: payload.childId ?? null, seq: payload.seq, token: payload.token ?? null, expiresAt: payload.expiresAt };
         },
         async confirm(token) {

@@ -23,7 +23,7 @@ import fs from 'node:fs';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { createSupervisor, DEFAULT_SERVICE_PORT, DEFAULT_SERVICE_HOST, SUPERVISOR_ALLOWED_HOSTS_ENV, readJsonBody, sendJson } from '../src/supervisor/server.mjs';
 import { createLedger, defaultDataDir as defaultSupervisorDataDir } from '../src/supervisor/ledger.mjs';
-import { detachSupervisor } from '../src/supervisor/detach.mjs';
+import { detachSupervisor as realDetachSupervisor, resolveLaunchMode } from '../src/supervisor/detach.mjs';
 import { createHeartbeat, resolveHeartbeatIntervalMs } from '../src/supervisor/heartbeat.mjs';
 import { createHistory, HISTORY_EVENTS } from '../src/supervisor/history.mjs';
 import { createSpawner } from '../src/supervisor/spawner.mjs';
@@ -37,6 +37,7 @@ import { installExitLogging } from '../src/supervisor/exit-log.mjs';
 import { installSelfLogTee, createSelfLogView, registerSelfLogRoutes } from '../src/supervisor/self-log.mjs';
 import { createIdAllocator, registerIdAllocatorRoutes, defaultDataDir as defaultAllocatorDataDir } from '../src/supervisor/id-allocator.mjs';
 import { createDoltMutex, registerDoltMutexRoutes } from '../src/supervisor/dolt-mutex.mjs';
+import { AuthConfigError, resolveAuthConfig, validateAuthConfig } from '../src/supervisor/auth.mjs';
 // eft.4.8.1: the operator-facing surface -- PID-liveness watchdog (eft.4.3),
 // dashboard/backlog/launch-form (eft.6.*), and the six sprint/member/backlog
 // operator endpoints (eft.4.4). These were fully implemented and unit-tested
@@ -50,6 +51,7 @@ import { createBacklog, registerBacklogRoutes } from '../src/supervisor/backlog.
 // constructing the real dashboard below (instead of the inert stub) is what
 // actually wires the Launch Sprint form onto the page.
 import { createDashboard, registerDashboardRoutes } from '../src/supervisor/dashboard.mjs';
+import { createBeadsPushedProbe } from '../src/supervisor/beads-pushed-check.mjs';
 import { createSprintController, registerSprintRoutes, defaultMemberOverlapGuard, ApiError } from '../src/supervisor/api.mjs';
 import { createScopeGuard, formatScopeConflict, formatMissingRoots } from '../src/supervisor/scope-overlap.mjs';
 import { listFleetMembers, executeFleetCommand, registerFleetMember, updateFleetMember } from '../src/supervisor/fleet-members.mjs';
@@ -67,7 +69,14 @@ const SERVE_USAGE = `
 Usage: node "${fileURLToPath(import.meta.url)}" [options]
 
 Starts the always-on fleet-sprint supervisor. Runs until POST /api/shutdown or a
-termination signal (Ctrl-C / SIGTERM).
+termination signal.
+
+Launch mode: started from an interactive console (stdin or stdout is a
+terminal) and given neither --detach nor --foreground, it DETACHES by default,
+exactly as with --detach, so the supervisor survives that console closing.
+With no terminal on either stream (systemd, launchd, a scheduled task, a
+service wrapper, CI, a parent process holding pipes) it runs in the foreground,
+as service managers expect.
 
 Options:
       --port <port>         HTTP service port for the supervisor API. Default: ${DEFAULT_SERVICE_PORT}.
@@ -81,6 +90,20 @@ Options:
                             name is refused (DNS-rebinding defence), so add the
                             DNS name operators use for an off-box bind. Also
                             read from FLEET_SUPERVISOR_ALLOWED_HOSTS.
+      --auth <mode>         Caller authentication: none (default; every caller is
+                            the local operator, as before) or trusted-front
+                            (remote users arrive through an authenticating front
+                            that signs each request; see docs/supervisor-auth.md).
+                            trusted-front requires a loopback --host. Also read
+                            from FLEET_SUPERVISOR_AUTH.
+      --front-jwks <path>   The front's public JWKS file (EC P-256 keys). Required
+                            for trusted-front; re-read when it changes. Also read
+                            from FLEET_SUPERVISOR_FRONT_JWKS.
+      --front-issuer <iss>  Expected iss of the front's assertions. Required for
+                            trusted-front. Also read from
+                            FLEET_SUPERVISOR_FRONT_ISSUER.
+      --front-audience <aud> Expected aud. Default: fleet-supervisor. Also read
+                            from FLEET_SUPERVISOR_FRONT_AUDIENCE.
       --beads-dir <path>    Project folder (or its .beads dir) whose beads tracker
                             this supervisor runs against. Default: discovered by
                             walking up from the current directory, exactly like
@@ -96,6 +119,11 @@ Options:
                             the child it started, prints the reason and the log
                             path (<dataDir>/logs/supervisor-launch.log) and exits
                             non-zero. All other options are passed through.
+                            This is the default on an interactive console.
+      --foreground          Run in the foreground of this process even on an
+                            interactive console (e.g. for debugging); it then
+                            stops when that console closes (Ctrl-C / SIGTERM /
+                            hangup). Cannot be combined with --detach.
   -h, --help                Show this help message.
 
 Environment:
@@ -203,15 +231,21 @@ export function composeBeforeLaunch({ memberOverlapGuard, scopeGuard }) {
 }
 
 export function parseServeArgs(argv) {
+    let parsed;
     try {
-        return parseArgs({
+        parsed = parseArgs({
             args: argv,
             options: {
                 port: { type: 'string' },
                 host: { type: 'string' },
                 'allowed-host': { type: 'string', multiple: true },
                 'beads-dir': { type: 'string' },
+                auth: { type: 'string' },
+                'front-jwks': { type: 'string' },
+                'front-issuer': { type: 'string' },
+                'front-audience': { type: 'string' },
                 detach: { type: 'boolean' },
+                foreground: { type: 'boolean' },
                 help: { type: 'boolean', short: 'h' },
             },
             strict: true,
@@ -220,6 +254,10 @@ export function parseServeArgs(argv) {
     } catch (err) {
         throw new Error(`Invalid command-line arguments: ${err.message}\n\n${SERVE_USAGE}`);
     }
+    if (parsed.values.detach && parsed.values.foreground) {
+        throw new Error(`Invalid command-line arguments: --detach and --foreground cannot be used together\n\n${SERVE_USAGE}`);
+    }
+    return parsed;
 }
 
 /**
@@ -251,6 +289,34 @@ export async function serveMain(argv = process.argv.slice(2), deps = {}) {
         return { exitCode: 0 };
     }
 
+    // Launch mode (detach.mjs resolveLaunchMode): --detach, or no flag on an
+    // interactive console, makes this process only the launcher; the real
+    // supervisor is the detached child (same entry point, run --foreground).
+    // The streams/platform are injectable; an in-process caller that injects
+    // none (a test driving serveMain) is never treated as a console launch.
+    const launchStreams = deps.stdio ?? (isMainModule() ? { stdin: process.stdin, stdout: process.stdout } : {});
+    const launch = resolveLaunchMode({
+        detach: values.detach, foreground: values.foreground,
+        stdin: launchStreams.stdin, stdout: launchStreams.stdout,
+        platform: deps.platform ?? process.platform,
+    });
+    if (launch.mode === 'detach') {
+        const detachPort = values.port !== undefined ? Number(values.port) : DEFAULT_SERVICE_PORT;
+        if (!Number.isInteger(detachPort) || detachPort < 1 || detachPort > 65535) {
+            console.error(`Error: --port must be a valid TCP port number, got "${values.port}".`);
+            return { exitCode: 1 };
+        }
+        if (launch.reason === 'interactive-console') {
+            console.log(`[fleet-se serve] interactive console detected (${launch.platform}): starting the supervisor detached so it survives this console closing; pass --foreground to keep it attached.`);
+        }
+        const detachSupervisor = deps.detachSupervisor ?? realDetachSupervisor;
+        const { exitCode } = await detachSupervisor({
+            argv, scriptPath: fileURLToPath(import.meta.url), dataDir: defaultSupervisorDataDir(),
+            port: detachPort, host: values.host,
+        });
+        return { exitCode };
+    }
+
     // Installed before anything else logs: every console.log/warn/error from
     // this point on (including the seam-construction comments' own
     // console.error calls below) is timestamped (local time, not UTC) and
@@ -259,21 +325,6 @@ export async function serveMain(argv = process.argv.slice(2), deps = {}) {
     // unaffected). This is the supervisor's own equivalent of spawner.mjs's
     // per-sprint-child raw log; a dashboard link to GET /supervisor/log is
     // registered further down, once `supervisor` exists.
-    // --detach: this process is only the launcher; the real supervisor is the
-    // detached child (same entry point, flag removed).
-    if (values.detach) {
-        const detachPort = values.port !== undefined ? Number(values.port) : DEFAULT_SERVICE_PORT;
-        if (!Number.isInteger(detachPort) || detachPort < 1 || detachPort > 65535) {
-            console.error(`Error: --port must be a valid TCP port number, got "${values.port}".`);
-            return { exitCode: 1 };
-        }
-        const { exitCode } = await detachSupervisor({
-            argv, scriptPath: fileURLToPath(import.meta.url), dataDir: defaultSupervisorDataDir(),
-            port: detachPort, host: values.host,
-        });
-        return { exitCode };
-    }
-
     const selfLog = installSelfLogTee();
     process.once('exit', () => selfLog.stop());
     // Final synchronous exit line (cause + exit code) on every observable exit
@@ -307,6 +358,23 @@ export async function serveMain(argv = process.argv.slice(2), deps = {}) {
             console.error(`Error: --port must be a valid TCP port number, got "${values.port}".`);
             return { exitCode: 1 };
         }
+    }
+
+    // Caller authentication (docs/supervisor-auth.md): flags over env.
+    // Checked here, before any seam is built or the port bound, so a
+    // trusted-front supervisor off loopback or missing its JWKS path / issuer
+    // refuses to start with the setting named. createSupervisor().start()
+    // re-checks the same rule.
+    const authConfig = resolveAuthConfig({
+        auth: values.auth, frontJwks: values['front-jwks'], frontIssuer: values['front-issuer'], frontAudience: values['front-audience'],
+    });
+    try {
+        validateAuthConfig(authConfig, host);
+    } catch (err) {
+        if (!(err instanceof AuthConfigError)) throw err;
+        console.error(`Error: refusing to start: ${err.message}`);
+        selfLog.stop();
+        return { exitCode: 1 };
     }
 
     // Which .beads this supervisor runs against -- resolved ONCE, up front,
@@ -586,6 +654,7 @@ export async function serveMain(argv = process.argv.slice(2), deps = {}) {
         port, host,
         // CLI names add to (not replace) the env var's list.
         allowedHosts: [...(values['allowed-host'] ?? []), ...String(process.env[SUPERVISOR_ALLOWED_HOSTS_ENV] ?? '').split(/[\s,]+/).filter(Boolean)],
+        auth: authConfig,
         ledger, spawner, watchdog: hangable.watchdog, dashboard: hangable.dashboard, idAllocator, doltMutex,
         doltOrphanSweep: hangable.doltOrphanSweep, beadsIdentity, backlogMember,
         seamStopTimeoutMs: envMs('FLEET_SE_SHUTDOWN_SEAM_TIMEOUT_MS', 3000),
@@ -640,6 +709,7 @@ export async function serveMain(argv = process.argv.slice(2), deps = {}) {
         beforeLaunch,
         beadsIdentity,
         backlogMember,
+        checkBeadsPushed: createBeadsPushedProbe({ cwd: repoRoot }),
     });
     registerSprintRoutes(supervisor, sprintController);
 

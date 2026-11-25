@@ -38,7 +38,7 @@
 import { ApraFleet } from "@apralabs/apra-fleet-client";
 import { DoltSync } from "./dolt-sync.mjs";
 import { buildSettleCallback } from "./dolt-settle.mjs";
-import { PostDispatchSyncError, ConcurrentSyncBracketError } from "./errors.mjs";
+import { PostDispatchSyncError, ConcurrentSyncBracketError, isSupervisorUnreachableFailure } from "./errors.mjs";
 import { resolveMemberTarget } from "./member-target.mjs";
 
 // (apra-fleet-3swo.4.9 part a) The shared `exclusiveKey` every CODE-WRITING
@@ -482,7 +482,7 @@ export async function withGitSync(ctx, member, pushCode, dispatchFn, { pushBeads
                     // more fundamental failure.
                     if (dispatchThrew) throw dispatchThrew;
                     throw new PostDispatchSyncError(
-                        `Post-dispatch sync (G-push/D-push) failed for member '${member}' AFTER the dispatch completed successfully: ${syncErr.message}. The dispatch's work is already committed locally -- it must NOT be re-dispatched; fix the sync (credentials/remote) and re-run.`,
+                        postDispatchSyncMessage(member, syncErr),
                         { member, dispatchResult, syncAttempts: syncAttemptDelaysMs.length, cause: syncErr },
                     );
                 }
@@ -491,6 +491,23 @@ export async function withGitSync(ctx, member, pushCode, dispatchFn, { pushBeads
         if (dispatchThrew) throw dispatchThrew;
         return dispatchResult;
     }, pushCode ? { exclusiveKey: CODE_WRITE_BRACKET_KEY, label: `withGitSync(${member})` } : undefined);
+}
+
+/**
+ * The PostDispatchSyncError message. When the sync failed because the
+ * fleet-sprint supervisor was unreachable (an infrastructure failure, never a
+ * credential one) the remedy names the supervisor; every other failure keeps
+ * the credentials/remote remedy.
+ * @param {string} member
+ * @param {Error} syncErr
+ * @returns {string}
+ */
+export function postDispatchSyncMessage(member, syncErr) {
+    const head = `Post-dispatch sync (G-push/D-push) failed for member '${member}' AFTER the dispatch completed successfully: ${syncErr.message}. The dispatch's work is already committed locally -- it must NOT be re-dispatched; `;
+    if (isSupervisorUnreachableFailure(syncErr)) {
+        return `${head}the fleet-sprint supervisor is not answering -- start it (see the fleet-supervisor skill) and re-run.`;
+    }
+    return `${head}fix the sync (credentials/remote) and re-run.`;
 }
 
 /**
