@@ -147,8 +147,7 @@ function describeProbeFailure(err) {
     if (err && err.code) parts.push(String(err.code));
     if (err && err.signal) parts.push(`signal ${err.signal}`);
     if (err && typeof err.status === 'number') parts.push(`exit status ${err.status}`);
-    if (parts.length === 0 && err && err.message) parts.push(String(err.message).split('
-')[0].slice(0, 200));
+    if (parts.length === 0 && err && err.message) parts.push(String(err.message).split('\n')[0].slice(0, 200));
     const stderr = err && err.stderr ? String(err.stderr).trim().slice(-200) : '';
     if (stderr) parts.push(`stderr: ${stderr}`);
     return parts.join(', ') || 'unknown error';

@@ -362,3 +362,97 @@ describe('auto-start: version of the server that came up, and a stop racing the 
         assert.strictEqual(w.starts.length, 0);
     });
 });
+
+describe('auto-start: resolution failures and probe failures vs the start budget', () => {
+    let dataDir;
+    let env;
+    const HOME = path.join(os.tmpdir(), 'h-nr7b');
+    const BIN = path.join(HOME, '.apra-fleet', 'bin', 'apra-fleet.exe');
+    const ledgerPath = () => path.join(dataDir, 'client-autostart.json');
+    beforeEach(() => {
+        dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-autostart-nr7b-'));
+        // Sandbox data dir; HOME/USERPROFILE point at it so nothing real is reached.
+        env = { APRA_FLEET_DATA_DIR: dataDir, HOME: dataDir, USERPROFILE: dataDir };
+    });
+    afterEach(() => { fs.rmSync(dataDir, { recursive: true, force: true }); });
+
+    const resolving = (w, probeVersion) => ({
+        env, checkRunningInstance: w.probe, runStart: w.runStart, healthVersion: w.healthVersion, timeoutMs: 5000,
+        execPath: '/usr/bin/node', homedir: () => HOME, platform: 'win32', expectedVersion: 'v0.4.4_abc',
+        exists: (p) => p === BIN, probeVersion,
+    });
+
+    test('resolution failures leave the ledger untouched, never AUTOSTART_LIMIT; a working command then still starts', async () => {
+        const w = world();
+        for (let i = 0; i < AUTOSTART_MAX_STARTS + 1; i++) {
+            await assert.rejects(
+                autoStartFleetServer(resolving(w, () => 'v0.4.3_old')),
+                (err) => err.code === 'AUTOSTART_VERSION_SKEW',
+            );
+            assert.strictEqual(fs.existsSync(ledgerPath()), false, 'ledger not written');
+        }
+        assert.strictEqual(w.starts.length, 0, 'nothing launched');
+        const r = await autoStartFleetServer({
+            env, checkRunningInstance: w.probe, runStart: w.runStart, healthVersion: w.healthVersion,
+            startCommand: { command: '/opt/apra-fleet', args: ['start'] }, timeoutMs: 5000,
+        });
+        assert.strictEqual(r.started, true);
+        assert.strictEqual(w.starts.length, 1);
+        assert.strictEqual(JSON.parse(fs.readFileSync(ledgerPath(), 'utf8')).starts.length, 1);
+    });
+
+    test('an existing ledger is unchanged by a resolution failure', async () => {
+        const before = JSON.stringify({ starts: [Date.now() - 1000] });
+        fs.writeFileSync(ledgerPath(), before);
+        await assert.rejects(autoStartFleetServer(resolving(world(), () => 'v0.4.3_old')), (e) => e.code === 'AUTOSTART_VERSION_SKEW');
+        assert.strictEqual(fs.readFileSync(ledgerPath(), 'utf8'), before);
+    });
+
+    test('three real launches that die -> the fourth call gets AUTOSTART_LIMIT', async () => {
+        const w = world({ startsServer: false });
+        const deps = {
+            env, checkRunningInstance: w.probe, runStart: w.runStart, healthVersion: w.healthVersion,
+            startCommand: { command: 'x', args: ['start'] }, timeoutMs: 600,
+        };
+        for (let i = 0; i < AUTOSTART_MAX_STARTS; i++) {
+            await assert.rejects(autoStartFleetServer(deps), (e) => e.code === 'AUTOSTART_TIMEOUT');
+        }
+        assert.strictEqual(w.starts.length, AUTOSTART_MAX_STARTS);
+        await assert.rejects(autoStartFleetServer(deps), (e) => e.code === 'AUTOSTART_LIMIT');
+        assert.strictEqual(w.starts.length, AUTOSTART_MAX_STARTS, 'no fourth launch');
+    });
+
+    for (const cause of ['ETIMEDOUT', 'ENOENT', 'SIGKILL']) {
+        test(`probe that cannot run (${cause}) -> AUTOSTART_PROBE_FAILED naming the cause, no reinstall advice`, async () => {
+            const w = world();
+            const probe = () => {
+                const e = new Error(`spawnSync ${BIN} ${cause}`);
+                if (cause === 'SIGKILL') e.signal = cause; else e.code = cause;
+                throw e;
+            };
+            await assert.rejects(
+                autoStartFleetServer(resolving(w, probe)),
+                (err) => err.code === 'AUTOSTART_PROBE_FAILED'
+                    && err.message.includes(cause) && err.message.includes(BIN)
+                    && !/apra-fleet install/.test(err.message),
+            );
+            assert.strictEqual(w.starts.length, 0);
+            assert.strictEqual(fs.existsSync(ledgerPath()), false);
+        });
+    }
+
+    test('probe ran and printed a different version -> AUTOSTART_VERSION_SKEW with both versions (unchanged)', () => {
+        assert.throws(
+            () => resolveFleetStartCommand({ env, execPath: '/usr/bin/node', homedir: () => HOME, platform: 'win32', expectedVersion: 'v0.4.4_abc', exists: (p) => p === BIN, probeVersion: () => 'v0.4.3_x' }),
+            (err) => err.code === 'AUTOSTART_VERSION_SKEW' && err.message.includes('v0.4.4_abc') && err.message.includes('v0.4.3_x') && /apra-fleet install/.test(err.message),
+        );
+    });
+
+    test('probe returns the matching version -> start proceeds', async () => {
+        const w = world();
+        const r = await autoStartFleetServer(resolving(w, () => 'v0.4.4_abc'));
+        assert.strictEqual(r.started, true);
+        assert.strictEqual(w.starts.length, 1);
+        assert.strictEqual(w.starts[0].command, BIN);
+    });
+});
