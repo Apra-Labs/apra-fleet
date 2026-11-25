@@ -43,10 +43,15 @@ function agentFor(p: Platform): Agent {
 }
 
 type MarkerMode = 'absent' | 'present' | 'timeout';
-type Step = 'supervisor-check' | 'stop' | 'stop-check' | 'backup' | 'exe-check' | 'uninstall' | 'supervisor' | 'move-data' | 'install';
+type Step = 'supervisor-check' | 'supervisor-stop' | 'supervisor-recheck' | 'supervisor-restart' | 'stop' | 'stop-check' | 'backup' | 'exe-check' | 'uninstall' | 'supervisor' | 'move-data' | 'install';
 
 /** Classify a decoded member command as one of the replacement's destructive steps. */
 function stepOf(c: string): Step | null {
+  // A Git Bash member runs the supervisor stop through a nested powershell.exe -EncodedCommand.
+  const nested = /powershell\.exe -NoProfile -NonInteractive -EncodedCommand (\S+)/.exec(c);
+  const inner = nested ? Buffer.from(nested[1], 'base64').toString('utf16le') : c;
+  if (inner.includes('__APRA_FLEET_SUPERVISOR_VIA__')) return 'supervisor-stop';
+  if (c.includes('schtasks.exe /Run') || c.includes('systemctl --user start fleet-supervisor')) return 'supervisor-restart';
   if (/' 'fleet-se-check'/.test(c)) return 'supervisor-check';
   if (c.includes('__APRA_FLEET_EXE_LOCKED__')) return 'exe-check';
   if (/apra-fleet(\.exe)?' stop(;|$| )/.test(c)) return 'stop';
@@ -59,21 +64,28 @@ function stepOf(c: string): Step | null {
   return null;
 }
 
-function harness(p: Platform, opts: { marker?: MarkerMode; failStep?: Step; serverStaysUp?: boolean; supervisorLine?: string; exeLocked?: boolean } = {}) {
+function harness(p: Platform, opts: { marker?: MarkerMode; failStep?: Step; serverStaysUp?: boolean; supervisorLine?: string; exeLocked?: boolean; supervisorSurvivesStop?: boolean; supervisorVia?: 'task' | 'unit' | 'manual' } = {}) {
   const log: string[] = [];
   const events: string[] = [];
-  const w = { installed: OLD as string | null, marker: opts.marker ?? 'absent' as MarkerMode };
+  const w = { installed: OLD as string | null, marker: opts.marker ?? 'absent' as MarkerMode, checks: 0, supervisorUp: true };
+  const via = opts.supervisorVia ?? (p.os === 'windows' ? 'task' : p.os === 'linux' ? 'unit' : 'manual');
   const ok = (stdout: string): SSHExecResult => ({ stdout, stderr: '', code: 0 });
   const deps: MemberFleetInstallDeps = {
     exec: async (_a, raw) => {
       const c = decodePowerShellEncodedCommand(raw);
       log.push(c);
-      const step = stepOf(c);
+      let step = stepOf(c);
+      // The re-check after the supervisor stop is the same fleet-se-check command.
+      if (step === 'supervisor-check' && w.checks++ > 0) step = 'supervisor-recheck';
       if (step) {
         events.push(step);
         if (step === opts.failStep) return { stdout: '', stderr: `${step} broke`, code: 1 };
         // The installed (old) binary's status never carries a Supervisor line; the staged fleet-se-check does the detecting.
-        if (step === 'supervisor-check') return ok('FLEET_SE_CHECK ok\n' + (opts.supervisorLine ?? ''));
+        if (step === 'supervisor-check' || step === 'supervisor-recheck') {
+          const lines = (opts.supervisorLine ?? '').split('\n').filter(l => w.supervisorUp || !l.startsWith('FLEET_SE supervisor ')).join('\n');
+          return ok('FLEET_SE_CHECK ok\n' + lines);
+        }
+        if (step === 'supervisor-stop') { w.supervisorUp = !!opts.supervisorSurvivesStop; return ok(`__APRA_FLEET_SUPERVISOR_VIA__ ${via}\n`); }
         if (step === 'exe-check') return ok(opts.exeLocked ? '__APRA_FLEET_EXE_LOCKED__ The process cannot access the file because it is being used by another process.\n' : '__APRA_FLEET_EXE_FREE__\n');
         if (step === 'stop-check') return ok(opts.serverStaysUp ? 'apra-fleet status\n  State:    running\n' : 'apra-fleet status\n  State:    stopped\n');
         if (step === 'uninstall') w.installed = null;
@@ -206,7 +218,9 @@ describe('replace-full: a failure after the uninstall names the step and the rol
     expect(detail).toContain(`if [ -d '${aside}' ]; then rm -rf '${LINUX.home}/.apra-fleet/data' && mv '${aside}' '${LINUX.home}/.apra-fleet/data'; else`);
     expect(detail).toContain(`cp -R '${backupDir}/data' '${LINUX.home}/.apra-fleet/data'`);
     expect(detail).toContain(`cp '${backupDir}/fleet.key' '${LINUX.home}/.apra-fleet/fleet.key'`);
-    expect(detail).toContain('systemctl --user enable --now fleet-supervisor');
+    // Re-enabled before the reinstall but not started there (a running supervisor makes the old install refuse).
+    expect(detail).toContain('systemctl --user enable fleet-supervisor');
+    expect(detail).not.toContain('enable --now');
     expect(detail).toContain(`chmod +x '${backupDir}/apra-fleet' && '${backupDir}/apra-fleet' install --llm claude --force`);
   });
 
@@ -581,17 +595,16 @@ describe('d05q: step 2 uninstalls with the BACKUP copy of the binary', () => {
   }
 });
 
-describe('9hyz: a running fleet-sprint supervisor on the member refuses before anything is stopped', () => {
-  const UP = 'FLEET_SE supervisor pid=16028 port=8788\n';
+describe('9hyz: a live fleet-sprint sprint on the member refuses before anything is stopped', () => {
+  const LIVE = 'FLEET_SE supervisor pid=16028 port=8788\nFLEET_SE sprint pid=16100 id=s7\n';
   for (const p of [LINUX, WINDOWS, GITBASH]) {
-    it(`${p.shell ?? p.os}: Supervisor UP -> typed fleet-se-running, no stop/backup/uninstall, names the port and the shutdown call`, async () => {
-      const h = harness(p, { supervisorLine: UP });
+    it(`${p.shell ?? p.os}: supervisor with a live sprint -> typed fleet-se-running, no supervisor stop/stop/backup/uninstall`, async () => {
+      const h = harness(p, { supervisorLine: LIVE });
       const r = await ensureMemberFleetInstall(agentFor(p), h.deps, { replaceFull: true });
       expect(r).toMatchObject({ state: 'unavailable', reason: 'fleet-se-running', version: OLD });
       expect(h.events.filter(e => !e.startsWith('transfer:'))).toEqual(['supervisor-check']);
       const detail = (r as { detail: string }).detail;
-      expect(detail).toContain('http://localhost:8788/api/shutdown');
-      expect(detail).toContain('Content-Type: application/json');
+      expect(detail).toContain('FLEET_SE sprint pid=16100 id=s7');
       expect(detail).toContain('Nothing was stopped, removed or backed up');
       expect(FLEET_MCP_FIX['fleet-se-running']).toContain('/api/shutdown');
     });
@@ -614,7 +627,7 @@ describe('re-judge 2: the supervisor check uses the staged binary and sees what 
     expect(h.events.filter(e => !e.startsWith('transfer:'))).toEqual(['supervisor-check']);
     const detail = (r as { detail: string }).detail;
     expect(detail).toContain('FLEET_SE sprint pid=9 id=s1');
-    expect(detail).toContain('systemctl --user stop fleet-supervisor');
+    expect(detail).toContain('Let its sprints finish');
     expect(h.log.find(c => stepOf(c) === 'supervisor-check')).toContain(`'${LINUX.home}/.apra-fleet/staging/apra-fleet' 'fleet-se-check'`);
   });
 
