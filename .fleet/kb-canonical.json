@@ -1,7 +1,9 @@
 {
   "version": 3,
   "provenance": {
-    "branch": "main"
+    "commit": "7b7d91ee900870c839aefef3bb38c32459257d49",
+    "branch": "main",
+    "entry_count": 220
   },
   "entries": [
     {
@@ -200,6 +202,30 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:26.644Z"
+    },
+    {
+      "id": "0f5c5b8d-e923-454f-b869-9c205cffc1dc",
+      "type": "knowledge",
+      "title": "requestPause returns a pause-end handle that resolves resume or stop",
+      "summary": "FleetWorkflow.requestPause() returns { ended }, a promise that only resolves, once, with { outcome: 'resume'|'stop', reason }. The usage-limit controller races its wait against it so an operator resume probes at once; a 'stop' outcome does not wake that wait yet.",
+      "symbols": [
+        "requestPause",
+        "requestResume",
+        "requestStop",
+        "_settlePauseEnd",
+        "createUsageLimitPauseController",
+        "waitOrOperatorResume"
+      ],
+      "source_files": [
+        "packages/apra-fleet-workflow/src/workflow/index.mjs",
+        "packages/apra-fleet-se/fleet-sprint/usage-limit-controller.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-25T18:31:25.821Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/usage-limit-controller.mjs": "e7f6e239fe8d3e6106a7effabd263f3c4d6b54f1",
+        "packages/apra-fleet-workflow/src/workflow/index.mjs": "bf5ec6815c9227a61b5dd32d4820ac319b4cb332"
+      }
     },
     {
       "id": "0f9d099d-5415-4305-a0f8-fe1ecf05fc64",
