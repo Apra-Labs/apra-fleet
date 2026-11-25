@@ -1430,25 +1430,32 @@ function gitExcludeSucceeded(result) {
 }
 
 // SAFE WORKTREE REMOVAL: returns a POSIX shell string that removes the git worktree at
-// `wtPath` ONLY when it holds no symlink or junction. A `node -e` lstat walk (paths via
-// process.argv, never interpolated into JS source) never descends into a link; on Windows
-// Node reports junctions as symbolic links from lstat, so one check covers both. If any link
-// is found it prints one WORKTREE_CLEANUP_REFUSED line naming each link and its target and
-// exits 1, so the forced git worktree removal (which could follow the link and delete a shared
-// directory such as a linked node_modules) never runs. Otherwise it runs
-// the forced git worktree removal exactly as before. A missing path has no links, so git's own
-// no-such-worktree failure is swallowed as before. Self-contained: no outer helpers.
+// `wtPath` ONLY when it holds no symlink or junction whose resolved target is OUTSIDE the
+// worktree. A `node -e` lstat walk (paths via process.argv, never interpolated into JS source)
+// never descends into a link; on Windows Node reports junctions as symbolic links from lstat,
+// so one check covers both. Each link is resolved (realpath; a dangling link falls back to its
+// lexical target): a target inside the worktree (npm workspace links under node_modules/@scope,
+// POSIX node_modules/.bin) is harmless and allowed; a target outside it prints one
+// WORKTREE_CLEANUP_REFUSED line naming each such link and target and exits 1, so the forced git
+// worktree removal (which could follow the link and delete a shared directory) never runs.
+// Otherwise it runs the forced git worktree removal exactly as before. A missing path has no
+// links, so git's own no-such-worktree failure is swallowed as before. Self-contained.
 function safeWorktreeRemoveCmd(repoPath, wtPath) {
   const js =
     `const fs=require('fs'),p=require('path');` +
     `const root=process.argv[1];const found=[];` +
-    `function note(f){let t='?';try{t=fs.readlinkSync(f);}catch(e){}found.push(f+' -> '+t);}` +
+    `let rr=root;try{rr=fs.realpathSync(root);}catch(e){}` +
+    `const lc=s=>process.platform==='win32'?s.toLowerCase():s;` +
+    `function inside(t){const a=lc(t),b=lc(rr);return a===b||a.startsWith(b.endsWith(p.sep)?b:b+p.sep);}` +
+    `function target(f){try{return fs.realpathSync(f);}catch(e){}` +
+      `try{return p.resolve(p.dirname(f),fs.readlinkSync(f));}catch(e){}return null;}` +
+    `function note(f){const t=target(f);if(t!==null&&inside(t))return;found.push(f+' -> '+(t===null?'?':t));}` +
     `function walk(d){let es;try{es=fs.readdirSync(d,{withFileTypes:true});}catch(e){return;}` +
       `for(const e of es){const f=p.join(d,e.name);let st;try{st=fs.lstatSync(f);}catch(x){continue;}` +
       `if(st.isSymbolicLink())note(f);else if(st.isDirectory())walk(f);}}` +
     `let rs=null;try{rs=fs.lstatSync(root);}catch(e){}` +
-    `if(rs&&rs.isSymbolicLink())note(root);else if(rs&&rs.isDirectory())walk(root);` +
-    `if(found.length){console.log('WORKTREE_CLEANUP_REFUSED: worktree '+root+' left in place; it contains symlink or junction link(s) that a removal could follow into a shared directory: '+found.join('; ')+'. Remove each link with unlink (never a recursive delete), then retry.');process.exit(1);}`;
+    `if(rs&&rs.isSymbolicLink())found.push(root+' -> '+rr);else if(rs&&rs.isDirectory())walk(root);` +
+    `if(found.length){console.log('WORKTREE_CLEANUP_REFUSED: worktree '+root+' left in place; it contains symlink or junction link(s) pointing outside it that a removal could follow into a shared directory: '+found.join('; ')+'. Remove each link with unlink (never a recursive delete), then retry.');process.exit(1);}`;
   return `node -e "${js}" "${wtPath}" && git -C "${repoPath}" worktree remove --force "${wtPath}" 2>/dev/null`;
 }
 

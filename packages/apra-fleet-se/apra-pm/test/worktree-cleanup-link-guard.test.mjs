@@ -126,3 +126,52 @@ test('a plain worktree without links is removed normally', () => {
     cleanup(ctx, []);
   }
 });
+
+test('in-worktree links are allowed: npm workspace link and .bin link resolve inside the tree', () => {
+  const ctx = setup();
+  try {
+    // npm workspace shape: node_modules/@scope/a -> packages/a (a link to a real in-tree dir).
+    mkdirSync(join(ctx.wt, 'packages', 'a'), { recursive: true });
+    writeFileSync(join(ctx.wt, 'packages', 'a', 'index.js'), 'A\n');
+    mkdirSync(join(ctx.wt, 'node_modules', '@scope'), { recursive: true });
+    link(join(ctx.wt, 'packages', 'a'), join(ctx.wt, 'node_modules', '@scope', 'a'));
+
+    // node_modules/.bin/tool -> ../pkg/cli.js (relative file symlink; junction fallback on Windows
+    // hosts without symlink privilege, which is still a link whose target is in-tree).
+    mkdirSync(join(ctx.wt, 'node_modules', 'pkg'), { recursive: true });
+    writeFileSync(join(ctx.wt, 'node_modules', 'pkg', 'cli.js'), 'CLI\n');
+    mkdirSync(join(ctx.wt, 'node_modules', '.bin'), { recursive: true });
+    try {
+      symlinkSync('../pkg/cli.js', join(ctx.wt, 'node_modules', '.bin', 'tool'), 'file');
+    } catch {
+      link(join(ctx.wt, 'node_modules', 'pkg'), join(ctx.wt, 'node_modules', '.bin', 'tool'));
+    }
+
+    const r = bash(safeWorktreeRemoveCmd(ctx.repo, ctx.wt));
+    assert.equal(r.status, 0, `in-tree links must not block cleanup: ${r.stdout}${r.stderr}`);
+    assert.doesNotMatch(r.stdout, /WORKTREE_CLEANUP_REFUSED/);
+    assert.ok(!registered(ctx), 'worktree must be removed');
+  } finally {
+    cleanup(ctx, []);
+  }
+});
+
+test('a link to an outside dir is still refused when in-tree links sit beside it', () => {
+  const ctx = setup();
+  const bad = join(ctx.wt, 'node_modules', 'shared');
+  try {
+    mkdirSync(join(ctx.wt, 'packages', 'a'), { recursive: true });
+    mkdirSync(join(ctx.wt, 'node_modules', '@scope'), { recursive: true });
+    link(join(ctx.wt, 'packages', 'a'), join(ctx.wt, 'node_modules', '@scope', 'a'));
+    link(join(ctx.outside, 'node_modules'), bad);
+    const r = bash(safeWorktreeRemoveCmd(ctx.repo, ctx.wt));
+    assert.notEqual(r.status, 0);
+    assert.match(r.stdout, /WORKTREE_CLEANUP_REFUSED/);
+    assert.ok(r.stdout.includes('shared'), r.stdout);
+    assert.ok(!r.stdout.includes('@scope'), `the in-tree link must not be reported: ${r.stdout}`);
+    assert.equal(readFileSync(ctx.sentinel, 'utf-8'), 'SENTINEL\n');
+    assert.ok(registered(ctx));
+  } finally {
+    cleanup(ctx, [bad]);
+  }
+});

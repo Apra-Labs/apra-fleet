@@ -271,6 +271,22 @@ describe('ci.yml wiring (apra-fleet-yj1.2)', () => {
   });
 });
 
+describe('publish workflows share the stripped pack path (apra-fleet-kc3e)', () => {
+  const read = (n: string) => fs.readFileSync(path.join(repoRoot, '.github', 'workflows', n), 'utf-8');
+  for (const name of ['ci.yml', 'npm-publish-tag.yml']) {
+    it(`${name} packs via pack-stripped, guards the tarball and publishes the tarball`, () => {
+      const y = read(name);
+      expect(y).toContain('node scripts/pack-stripped.mjs --out "$RUNNER_TEMP/stripped-pack"');
+      expect(y).toContain('check-pack-size.mjs --tarball "$TGZ"');
+      expect(y).toMatch(/npm publish "\$\(ls "\$RUNNER_TEMP"\/stripped-pack\/\*\.tgz\)"/);
+      // Never the unstripped cwd: no bare publish, no bare size guard.
+      expect(y).not.toMatch(/npm publish --access/);
+      expect(y).not.toMatch(/check-pack-size\.mjs\s*$/m);
+      expect(y).not.toMatch(/npm pack --dry-run/);
+    });
+  }
+});
+
 // apra-fleet-kc3e.2: the guard also measures a staged package dir
 // (--dir) or a packed tarball (--tarball), not only the cwd.
 

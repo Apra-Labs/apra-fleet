@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import ts from 'typescript';
 import { extractTgz } from '../helpers/tgz.js';
-import { stripComments } from '../../scripts/lib/strip-comments.mjs';
+import { stripComments, countLines } from '../../scripts/lib/strip-comments.mjs';
 import { isExempt, shouldStrip, packStripped } from '../../scripts/pack-stripped.mjs';
 
 // apra-fleet-kc3e.4 part A: proves the comment-stripped npm package from REPO
@@ -48,10 +48,6 @@ function shippedSources(): string[] {
   return files.filter((f) => fs.existsSync(path.join(repoRoot, f)));
 }
 
-function lineCount(s: string): number {
-  return s.split('\n').length;
-}
-
 /** In-process syntax check: TypeScript's parser diagnostics for a JS file. */
 function syntaxErrors(fileName: string, text: string): string[] {
   const sf = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, false, ts.ScriptKind.JS);
@@ -72,15 +68,14 @@ describe('stripped pack, repo-source proof (apra-fleet-kc3e.4 part A)', () => {
     expect(sources).toContain('packages/apra-fleet-se/bin/cli.mjs');
   });
 
-  it('A1: every shipped source keeps its line count and still parses once stripped', () => {
+  it('A1: every shipped source keeps its line count and parses with ZERO errors once stripped', () => {
     const problems: string[] = [];
     for (const f of sources) {
       const text = read(f);
       const out = stripComments(text, { fileName: f });
-      if (lineCount(out) !== lineCount(text)) problems.push(`${f}: line count ${lineCount(text)} -> ${lineCount(out)}`);
-      const before = syntaxErrors(f, text);
+      if (countLines(out) !== countLines(text)) problems.push(`${f}: line count ${countLines(text)} -> ${countLines(out)}`);
       const after = syntaxErrors(f, out);
-      if (after.length > before.length) problems.push(`${f}: stripping introduced syntax errors: ${after.join('; ')}`);
+      if (after.length > 0) problems.push(`${f}: ${after.length} parse error(s) after stripping: ${after.join('; ')}`);
       if (stripComments(out, { fileName: f }) !== out) problems.push(`${f}: not idempotent`);
     }
     expect(problems).toEqual([]);
