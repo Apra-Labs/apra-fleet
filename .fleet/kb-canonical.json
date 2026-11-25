@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "dfb66cdb8c3edd97b3eeef1c6639abb5e8450e2a",
     "branch": "main",
-    "entry_count": 218
+    "entry_count": 220
   },
   "entries": [
     {
@@ -1934,6 +1934,23 @@
       "updated_at": "2026-09-29T06:13:16.498Z"
     },
     {
+      "id": "6818e92f-0227-4a50-9054-b130f6f88cae",
+      "type": "learning",
+      "title": "Any bd invocation writes ~/.beads/eventsData under the invoking HOME",
+      "summary": "Even `bd version` records an event file under $HOME/.beads/eventsData, and bd's background event writer can recreate files after the directory is removed. Tests that must leave nothing outside their sandbox should detect bd by scanning PATH, not by running it under the real HOME.",
+      "symbols": [
+        "bdAvailable"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/dolt-push-verify-links-real-bd.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-25T08:30:23.491Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/test/dolt-push-verify-links-real-bd.test.mjs": "b8c2ddc4015cb728ae913a45e243e8c55847fe5a"
+      }
+    },
+    {
       "id": "6a23848a-42af-47cf-aacb-678b0936dd74",
       "type": "knowledge",
       "title": "Member kb_query without limit returns 6 slim rows and no L2; own_scope exempt",
@@ -2064,6 +2081,31 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:41.271Z"
+    },
+    {
+      "id": "71d667c4-47e0-4b6a-baa3-893c712f4251",
+      "type": "knowledge",
+      "title": "Member replace-full backup layout and which rollback step is supervisor-guarded",
+      "summary": "replace-full backs up into <home>/.apra-fleet-replace-backup-<stamp>/ (data/, fleet.key only if present, old binary). In the documented rollback only the reinstall (install) refuses with E-FLEET-SE-RUNNING; uninstall has no fleet-sprint guard.",
+      "symbols": [
+        "buildReplaceFullInstallPlan",
+        "guardedReinstallCommand",
+        "rollbackCommand"
+      ],
+      "source_files": [
+        "src/services/member-fleet-install.ts",
+        "src/cli/install.ts",
+        "src/cli/uninstall.ts",
+        "tests/integration/member-host/lib/rollback.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-25T08:30:19.934Z",
+      "source_file_hashes": {
+        "src/cli/install.ts": "75a80d49fce97454f64a4d4dd134516bf0305966",
+        "src/cli/uninstall.ts": "22699f50d66aa7bff10e2c65bc04c11374de8ac3",
+        "src/services/member-fleet-install.ts": "ee70ed7181753b307c2108a45dd9b0fea6003705",
+        "tests/integration/member-host/lib/rollback.mjs": "1ac14f76b11c130fd8838b2be97f91c5e0e09c4e"
+      }
     },
     {
       "id": "75c4aab8-77f1-4f45-89aa-fe89a173ec6b",
