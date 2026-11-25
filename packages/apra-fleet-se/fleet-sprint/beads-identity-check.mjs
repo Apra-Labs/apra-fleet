@@ -61,7 +61,7 @@ import {
 } from './beads-identity.mjs';
 import { BeadsIdentityError, BEADS_IDENTITY_FAILURE_REASONS, VCS_FAILURE_KINDS, DoltUnrelatedHistoryError } from './errors.mjs';
 import { syncBefore as doltSyncBefore, preflightBeadsHealthGate } from './dolt-sync.mjs';
-import { recoverFlattenedClone, restoreLeftoverFlattenBackup, resolveRecoveryShell } from './beads-flatten-recovery.mjs';
+import { recoverFlattenedClone, restoreLeftoverFlattenBackup, resolveRecoveryShell, longPathHint } from './beads-flatten-recovery.mjs';
 import { classifyFailure, commandBinary } from './vcs-module.mjs';
 import { BEADS_PACKAGE, BEADS_VERSION, DOLT_VERSION, TOOL_VERSION_PROBES, checkPinnedVersion, majorMinor, bdConflictedPullAffected, bdConflictedPullWarningText } from './tool-version-pin.mjs';
 
@@ -642,7 +642,7 @@ export async function setupMemberBeads({ command, member, url, hasDb, memberShel
             const boot = await run(BEADS_SETUP_COMMANDS.bootstrap);
             assertNoMigration(BEADS_SETUP_COMMANDS.bootstrap, boot);
             if (!boot.ok) {
-                throw setupFailed(member, `could not bootstrap its beads from '${url}' ('${BEADS_SETUP_COMMANDS.bootstrap}' -> ${summarizeRaw(boot.error || boot.output)})`, setupFix(url), { step: 'bootstrap', url });
+                throw setupFailed(member, `could not bootstrap its beads from '${url}' ('${BEADS_SETUP_COMMANDS.bootstrap}' -> ${summarizeRaw(boot.error || boot.output)})${longPathHint(boot.error || boot.output)}`, setupFix(url), { step: 'bootstrap', url });
             }
             return issued;
         }

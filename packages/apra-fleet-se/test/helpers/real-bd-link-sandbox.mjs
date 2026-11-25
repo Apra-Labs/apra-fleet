@@ -34,7 +34,7 @@ export function bdAvailable() {
 
 /** One sandbox: HOME/USERPROFILE/GIT_CONFIG_GLOBAL/TMPDIR inside it, a bare git remote, clones A and B. */
 export function createSandbox() {
-    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'linkguard-realbd-')));
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'lg-')));
     const home = path.join(root, 'home');
     const tmp = path.join(root, 'tmp');
     fs.mkdirSync(home);
@@ -54,6 +54,20 @@ export function createSandbox() {
     delete env.BEADS_ACTOR;
     const dirs = { A: path.join(root, 'A'), B: path.join(root, 'B') };
     return { root, env, dirs, remote: path.join(root, 'remote.git') };
+}
+
+/** A file URL for a local path: file:///tmp/x on POSIX, file:///C:/x on Windows. */
+export function fileUrl(p) {
+    const fwd = p.split(path.sep).join('/');
+    return `file://${fwd.startsWith('/') ? '' : '/'}${fwd}`;
+}
+
+/**
+ * dolt's git remote cache inside .beads passes MAX_PATH on Windows; this is
+ * the member-side fix the product names on that failure (longPathHint).
+ */
+export async function enableWindowsLongPaths(sb) {
+    if (process.platform === 'win32') await runOrThrow(sb, 'git config --global core.longpaths true', sb.root);
 }
 
 /** Run `cmd` for real in `cwd`; resolves { ok, stdout, stderr } (never rejects). */
@@ -95,8 +109,11 @@ export async function buildScenario() {
     await runOrThrow(sb, 'git config --global user.name "Link Guard"', sb.root);
     await runOrThrow(sb, 'git config --global user.email link-guard@test.local', sb.root);
     await runOrThrow(sb, 'git config --global commit.gpgsign false', sb.root);
+    await enableWindowsLongPaths(sb);
     await runOrThrow(sb, `git init -q --bare -b main "${sb.remote}"`, sb.root);
-    const url = `file://${sb.remote}`;
+    // A real file URL (file:///C:/... on Windows): `bd init` only adopts
+    // git origin as its dolt remote when the URL parses.
+    const url = fileUrl(sb.remote);
     fs.mkdirSync(A);
     await runOrThrow(sb, 'git init -q -b main', A);
     await runOrThrow(sb, `git remote add origin "${url}"`, A);
@@ -180,7 +197,7 @@ export const pushOptsFor = (eng) => ({
 export async function remoteLinks(sb, name) {
     const dir = path.join(sb.root, name);
     fs.mkdirSync(dir);
-    await runOrThrow(sb, `git clone -q "file://${sb.remote}" .`, dir);
+    await runOrThrow(sb, `git clone -q "${fileUrl(sb.remote)}" .`, dir);
     await runOrThrow(sb, 'bd bootstrap --yes', dir);
     return linksOf(sb, dir);
 }

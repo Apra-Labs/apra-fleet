@@ -392,7 +392,12 @@ export class SeWindowsCommands {
   }
 
   /**
-   * PowerShell twin of SePosixCommands.removeDirectory.
+   * PowerShell twin of SePosixCommands.removeDirectory. A directory goes
+   * through `rd /s /q` on its `\\?\` form: a bd clone holds dolt's
+   * git-remote-cache paths that pass MAX_PATH (260) once the clone sits
+   * under a longer name (e.g. a flatten-recovery discard), and Windows
+   * PowerShell 5.1's Remove-Item fails on those. A file (bd's
+   * `.gate.lock`) uses Remove-Item. Throws when the path is still there.
    * @param {string} relPath validated
    * @returns {string}
    */
@@ -401,7 +406,16 @@ export class SeWindowsCommands {
     if (p === '.' || p.split('/').every((s) => s === '.' || s === '')) {
       throw new Error(`Refusing to build a member command that removes the work folder itself ('${relPath}').`);
     }
-    return this.wrapForMember(`if (Test-Path -LiteralPath '${p}') { Remove-Item -LiteralPath '${p}' -Recurse -Force }`);
+    return this.wrapForMember(
+      `if (Test-Path -LiteralPath '${p}') { `
+      + `if (Test-Path -LiteralPath '${p}' -PathType Container) { `
+      + `$full = (Resolve-Path -LiteralPath '${p}').ProviderPath; `
+      + `if ($full.StartsWith('\\\\')) { $long = '\\\\?\\UNC\\' + $full.Substring(2) } else { $long = '\\\\?\\' + $full }; `
+      + `cmd /d /c rd /s /q "$long" `
+      + `} else { Remove-Item -LiteralPath '${p}' -Force }; `
+      + `if (Test-Path -LiteralPath '${p}') { throw 'could not remove: ${p}' }; `
+      + `$global:LASTEXITCODE = 0 }`,
+    );
   }
 }
 

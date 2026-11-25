@@ -84,7 +84,7 @@ export function makeMember({ local, remote, failOn = {}, entries, knownHistory }
             if (!dir || !dir.files.has(f)) return bad(`no such file ${m[1]}`);
             return ok(dir.files.get(f));
         }
-        if ((m = /^rm -rf -- '(.+)'$/.exec(text)) || (m = /Remove-Item -LiteralPath '(.+?)' -Recurse -Force/.exec(text))) {
+        if ((m = /^rm -rf -- '(.+)'$/.exec(text)) || (m = /Test-Path -LiteralPath '([^']+)' -PathType Container\) \{ .*cmd \/d \/c rd \/s \/q/.exec(text))) {
             fsx.delete(m[1]);
             return ok();
         }

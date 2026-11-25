@@ -97,7 +97,7 @@ const SHELL = process.platform === 'win32'
     : getSeCommands({ os: process.platform === 'darwin' ? 'darwin' : 'linux', shell: 'bash' });
 
 function createSandbox() {
-    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'flatten-realbd-')));
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'fr-')));
     const home = path.join(root, 'home');
     const tmp = path.join(root, 'tmp');
     fs.mkdirSync(home);
@@ -153,6 +153,9 @@ async function buildScenario({ unpushedOnB = false, prune = false, onB = null } 
     await runOrThrow(sb, 'git config --global user.name "Flatten Recovery"', sb.root);
     await runOrThrow(sb, 'git config --global user.email flatten-recovery@test.local', sb.root);
     await runOrThrow(sb, 'git config --global commit.gpgsign false', sb.root);
+    // dolt's git remote cache inside .beads passes MAX_PATH on Windows; this
+    // is the member-side fix the product names on that failure (longPathHint).
+    if (process.platform === 'win32') await runOrThrow(sb, 'git config --global core.longpaths true', sb.root);
     await runOrThrow(sb, `git init -q --bare -b main "${sb.remote}"`, sb.root);
     const url = `file://${sb.remote.split(path.sep).join('/')}`;
     fs.mkdirSync(A);

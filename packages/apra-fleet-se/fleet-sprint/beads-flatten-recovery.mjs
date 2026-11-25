@@ -649,7 +649,7 @@ export async function recoverFlattenedClone({ command, member, shell, log = () =
         throw await abort('plan', `'${FLATTEN_RECOVERY_COMMANDS.plan}' -> ${why}`);
     }
     const boot = await run(FLATTEN_RECOVERY_COMMANDS.bootstrap);
-    if (!boot.ok) throw await abort('bootstrap', `'${FLATTEN_RECOVERY_COMMANDS.bootstrap}' -> ${summarize(boot.error || boot.output)}`);
+    if (!boot.ok) throw await abort('bootstrap', `'${FLATTEN_RECOVERY_COMMANDS.bootstrap}' -> ${summarize(boot.error || boot.output)}${longPathHint(boot.error || boot.output)}`);
 
     // 5. Export the fresh clone (into the backup, never into the new .beads).
     const freshExport = `${pending}/${FLATTEN_FRESH_EXPORT}`;
@@ -719,6 +719,20 @@ export async function recoverFlattenedClone({ command, member, shell, log = () =
         `(no local-only work found; ${total === null ? 'issue count unavailable' : `${total} issue(s)`}` +
         `${pruned.length ? `; ${pruned.length} closed bead(s) the remote pruned were not counted as local work` : ''}). The previous clone is kept at '${kept}' in that member's workFolder; delete it once the clone is verified.`);
     return { recovered: true, backup: kept, localExport: `${kept}/${FLATTEN_LOCAL_EXPORT}`, freshExport: `${kept}/${FLATTEN_FRESH_EXPORT}`, totalIssues: total, issued };
+}
+
+/**
+ * A hint for a bd/dolt failure that hit the Windows 260-character path limit
+ * (dolt clones its remote into a deep git cache inside .beads, and git there
+ * needs core.longpaths). '' when the output does not look like one.
+ * @param {string} text
+ * @returns {string}
+ */
+export function longPathHint(text) {
+    const s = String(text || '');
+    if (!/Filename too long|path too long|cannot lock ref[\s\S]*Unable to create/i.test(s)) return '';
+    return "; this looks like the Windows 260-character path limit (bd's dolt remote cache sits deep inside .beads): " +
+        "on that member run 'git config --global core.longpaths true' (or use a shorter workFolder), then retry";
 }
 
 function manualFix(member) {

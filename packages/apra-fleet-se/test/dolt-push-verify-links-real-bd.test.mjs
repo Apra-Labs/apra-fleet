@@ -80,6 +80,7 @@ import {
 import { ParentLinkRestoreError } from '../fleet-sprint/parent-link-guard.mjs';
 import {
     bdAvailable, createSandbox, runOrThrow, linksOf, buildScenario, engineFor, pushOptsFor, remoteLinks, pullOptsFor,
+    fileUrl, enableWindowsLongPaths,
 } from './helpers/real-bd-link-sandbox.mjs';
 import { scaledTimeout } from './helpers/scaled-timeout.mjs';
 import { TEST_CONCURRENCY } from './helpers/test-concurrency.mjs';
@@ -177,7 +178,7 @@ describe('verify-before-push against a real conflicted bd pull', { skip: SKIP, c
             },
         });
         await seedLedger(eng, ids);
-        const remoteTipBefore = await runOrThrow(sb, `git ls-remote "file://${sb.remote}" refs/dolt/data`, sb.root);
+        const remoteTipBefore = await runOrThrow(sb, `git ls-remote "${fileUrl(sb.remote)}" refs/dolt/data`, sb.root);
 
         await assert.rejects(() => doltPushAfter('B', pushOptsFor(eng)), (err) => {
             assert.ok(err instanceof ParentLinkRestoreError, `${err && err.name}: ${err && err.message}`);
@@ -188,7 +189,7 @@ describe('verify-before-push against a real conflicted bd pull', { skip: SKIP, c
         });
         const pushes = eng.calls.filter((c) => c.member === 'B' && /bd dolt push/.test(c.cmd));
         assert.equal(pushes.length, 1, `only the first (rejected) push may run:\n${eng.calls.map((c) => `${c.member}: ${c.cmd}`).join('\n')}`);
-        const remoteTipAfter = await runOrThrow(sb, `git ls-remote "file://${sb.remote}" refs/dolt/data`, sb.root);
+        const remoteTipAfter = await runOrThrow(sb, `git ls-remote "${fileUrl(sb.remote)}" refs/dolt/data`, sb.root);
         assert.equal(remoteTipAfter, remoteTipBefore, 'nothing from B reached the remote');
     });
 });
@@ -224,8 +225,9 @@ async function buildAgentScenario() {
     await runOrThrow(sb, 'git config --global user.name "Link Guard"', sb.root);
     await runOrThrow(sb, 'git config --global user.email link-guard@test.local', sb.root);
     await runOrThrow(sb, 'git config --global commit.gpgsign false', sb.root);
+    await enableWindowsLongPaths(sb);
     await runOrThrow(sb, `git init -q --bare -b main "${sb.remote}"`, sb.root);
-    const url = `file://${sb.remote}`;
+    const url = fileUrl(sb.remote);
     fs.mkdirSync(A);
     await runOrThrow(sb, 'git init -q -b main', A);
     await runOrThrow(sb, `git remote add origin "${url}"`, A);

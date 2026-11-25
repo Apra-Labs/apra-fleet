@@ -144,7 +144,9 @@ The next push can then silently revert other clones' links. Defences:
 - Known gap: a removal made on a clone the engine never reads (an operator
   checkout outside the sprint) is not on the agent-removal record, so when a
   sprint member pulls it, the engine restores the link. Re-remove it from a
-  sprint member, or make the change before the sprint starts.
+  sprint member, or make the change before the sprint starts. A blocks
+  restore that bd refuses as a cycle (the edge was reversed) is logged as a
+  WARN and dropped from tracking; it does not stop the run.
 
 ### Flattened-remote recovery
 
@@ -171,6 +173,12 @@ Sprint launch also pulls every non-backlog member that already has a beads DB,
 through the same health gate and recovery. A diverged clone is settled there
 exactly as at its first dispatch pull; only a divergence settle cannot resolve
 stops the launch.
+
+Windows members: dolt keeps a git cache of the remote deep inside `.beads`,
+so with a long workFolder `bd bootstrap` (setup and recovery) can fail on the
+260-character path limit. The setup/recovery error then says so; the fix is
+`git config --global core.longpaths true` on that member (or a shorter
+workFolder). A discarded clone is deleted with a long-path-safe removal.
 
 ---
 

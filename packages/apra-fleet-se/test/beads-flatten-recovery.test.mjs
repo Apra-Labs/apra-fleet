@@ -25,6 +25,7 @@ import {
     pickLeftoverBackup,
     recoverFlattenedClone,
     restoreLeftoverFlattenBackup,
+    longPathHint,
     FLATTEN_BACKUP_PREFIX,
     FLATTEN_PENDING_PREFIX,
     FLATTEN_DISCARD_PREFIX,
@@ -553,5 +554,34 @@ describe('flatten-recovery primitives on bash', { skip: !hasBash && 'no bash on 
             assert.throws(() => s.removeDirectory('.'));
             assert.throws(() => s.listDirectory('/etc'));
         }
+    });
+});
+
+test('longPathHint names core.longpaths for a Windows MAX_PATH failure of dolt\'s git remote cache, nothing otherwise', () => {
+    const maxPath = "Error 1105: error: cannot lock ref 'refs/dolt/remotes/origin/dolt/data/x': Unable to create 'C:\\w\\.beads\\embeddeddolt\\beads\\.dolt\\git-remote-cache\\ab\\repo.git/refs/dolt/remotes/origin/dolt/data/x.lock': Filename too long";
+    assert.match(longPathHint(maxPath), /core\.longpaths true/);
+    assert.match(longPathHint('fatal: cannot create directory: Filename too long'), /core\.longpaths/);
+    assert.equal(longPathHint('Error: remote not found'), '');
+    assert.equal(longPathHint(undefined), '');
+});
+
+describe('flatten-recovery primitives on Windows PowerShell',{ skip: process.platform !== 'win32' && 'Windows only' }, () => {
+    const ps = (dir, cmd) => spawnSync('powershell', cmd.replace(/^powershell /, '').split(' '), { cwd: dir, encoding: 'utf8' });
+    test('removeDirectory drops a clone whose files pass MAX_PATH (a bd git-remote-cache under a discard name) and a lock file', () => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'flatten-prims-'));
+        tmpRoots.push(dir);
+        const name = '.beads.flatten-discard-20261125T101010Z';
+        const deep = path.join(dir, name, 'embeddeddolt', 'beads', '.dolt', 'git-remote-cache', 'f'.repeat(64), 'repo.git', 'refs', 'dolt', 'remotes', 'origin', 'dolt', 'data');
+        fs.mkdirSync(deep, { recursive: true });
+        const leaf = path.join(deep, `${'0'.repeat(Math.max(8, 300 - deep.length))}.lock`);
+        fs.writeFileSync(leaf, 'x');
+        assert.ok(leaf.length > 260, `test tree passes MAX_PATH (${leaf.length})`);
+        fs.writeFileSync(path.join(dir, `${name}.gate.lock`), '');
+        const r = ps(dir, powershell.removeDirectory(name));
+        assert.equal(r.status, 0, r.stderr);
+        assert.ok(!fs.existsSync(path.join(dir, name)));
+        assert.equal(ps(dir, powershell.removeDirectory(`${name}.gate.lock`)).status, 0);
+        assert.ok(!fs.existsSync(path.join(dir, `${name}.gate.lock`)));
+        assert.equal(ps(dir, powershell.removeDirectory('.absent')).status, 0, 'a missing path is a no-op');
     });
 });
