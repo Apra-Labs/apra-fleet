@@ -637,6 +637,25 @@
       "updated_at": "2026-09-29T06:13:13.625Z"
     },
     {
+      "id": "264002c2-36bd-4fbe-997e-518d5174abf8",
+      "type": "learning",
+      "title": "Build U+2028/U+2029 with String.fromCharCode in shipped scripts",
+      "summary": "strip-comments.mjs builds the line separator chars with String.fromCharCode(0x2028/0x2029) so the file stays ASCII. Backslash-u escapes written through the agent edit path landed as raw characters or bare digits, so check the bytes after writing any escape.",
+      "symbols": [
+        "countLines",
+        "isLineTerminatorChar",
+        "stripComments"
+      ],
+      "source_files": [
+        "scripts/lib/strip-comments.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-25T10:54:32.317Z",
+      "source_file_hashes": {
+        "scripts/lib/strip-comments.mjs": "4d0dff7d00fd1fdf2d8fc46d8ddca2e87ca2a164"
+      }
+    },
+    {
       "id": "266d51a9-b30a-4d52-bf4c-97f26de518d7",
       "type": "knowledge",
       "title": "Thrown tool errors lose all fields except message at the MCP boundary",
@@ -3175,6 +3194,26 @@
         "src/services/knowledge/bible-import.ts": "0f7245962772ebd3558ad3ae3183983284ed1ac7",
         "src/services/knowledge/sqlite-provider.ts": "e32e86971370ada69962300de4fb73e406f86bae",
         "tests/knowledge/kb-import-audn-ids-tombstone.test.ts": "94191b53d8488b9a66536be8825c57643d15e8ef"
+      }
+    },
+    {
+      "id": "b6f81e56-5051-4387-8fb4-96b2a897b36a",
+      "type": "learning",
+      "title": "auto-sprint.js is a script body: compile it as an AsyncFunction, not node --check",
+      "summary": "The shipped auto-sprint.js uses top-level await and top-level return, and its only export is export const meta on line 1. node --check rejects it even when the code is valid. apra-pm/test/auto-sprint-whole-file-parse.test.mjs compiles the whole file as an async function body.",
+      "symbols": [
+        "logWorktreeRefusals",
+        "compileWorkflowBody"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/apra-pm/.claude/workflows/auto-sprint.js",
+        "packages/apra-fleet-se/apra-pm/test/auto-sprint-whole-file-parse.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-25T10:54:32.220Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/apra-pm/.claude/workflows/auto-sprint.js": "25beed97d8956ef3638e47828fc2a6e47d264730",
+        "packages/apra-fleet-se/apra-pm/test/auto-sprint-whole-file-parse.test.mjs": "1eed66ad08264ab9224b03f89c8b44f47650dcac"
       }
     },
     {
