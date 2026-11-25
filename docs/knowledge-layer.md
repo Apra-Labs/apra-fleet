@@ -1358,7 +1358,8 @@ token. Regenerate on the server:
 node dist/index.js kb-server --generate-token
 ```
 
-Then re-run `kb_setup` on each client with the new token.
+Then restart `kb-server` (it reads the token only at start; the command above
+no longer restarts it) and re-run `kb_setup` on each client with the new token.
 
 **Named secret** (`token={{secret.NAME}}`): the error is `E-KB-HTTP-AUTH` and
 names the secret and the reason (`missing`, `expired`, `unreadable` or

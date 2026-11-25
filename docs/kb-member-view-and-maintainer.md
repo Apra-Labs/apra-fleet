@@ -193,8 +193,11 @@ The warning (and the PR-body report of unreadable branches) distinguishes two
 causes, each naming the member, host and underlying error: the maintainer could
 not be reached at all, versus it was reached but its branch could not be read.
 A git command that exits non-zero on a reachable member is not the same as an
-unreachable one; the transport reports both as a failed result, so wording
-must not assume a failed result means "unreachable".
+unreachable one; the transport reports both as a failed result. The engine
+tells them apart by the exit code: a failure reading "[Command Failed] Exit code
+N" (N >= 0) ran, so the member is reached and the branch is "unreadable"; a
+failure with no exit code (timeout, transport error, member not started) is
+"unreachable". The host appears in the wording only when a result carries one.
 
 Any change to branch ensuring or maintainer selection must preserve both.
 

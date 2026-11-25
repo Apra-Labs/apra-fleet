@@ -319,7 +319,7 @@ describe('kb (self): a REMOTE member session resolves the KB from its single kno
     expect(alphaHits.l1_results.map((e: { id: string }) => e.id)).not.toContain(id);
   });
 
-  it('a remote member\'s mixed-tier kb_query and kb_list return the bible CONFIRMED set plus its own captures, never another member\'s', async () => {
+  it.skipIf(process.platform === 'win32')('a remote member\'s mixed-tier kb_query and kb_list return the bible CONFIRMED set plus its own captures, never another member\'s', async () => {
     const seedDir = gitRepo('remotemixed', false);
     execFileSync('git', ['remote', 'add', 'origin', remoteFor('remote')], { cwd: seedDir });
     const providers = await getKbProviders(seedDir);

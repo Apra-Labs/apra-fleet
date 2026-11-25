@@ -502,7 +502,7 @@ describe('kb_query expand_related in a MEMBER session with a mixed tier list', (
     for (const e of rel) expect(e.confidence === 'CONFIRMED' || e.tags?.includes(`member:${memberA}`)).toBe(true);
   });
 
-  it('member B sees only its own linked entry', async () => {
+  it('member B never sees member A\'s linked entries', async () => {
     const { related: rel } = await related(memberB);
     // B's hits are its own capture; its link to A's top hit is A's entry, filtered out.
     expect(ids(rel)).not.toContain(aBase);

@@ -23,14 +23,29 @@ function gitSyncWith(command) {
 }
 
 describe('gitSync.checkedOutBranch tells a failed command from an empty answer', () => {
-    test('a failed command is unreachable with its error and host', async () => {
-        const gs = gitSyncWith(async () => ({ ok: false, output: '', error: 'ssh: connect to host h1 port 22: timed out', host: 'h1' }));
+    test('a command that never got an exit code (transport failure) is unreachable, naming the error', async () => {
+        // Shape of command()'s failSoft result for a FleetTransportError (workflow/index.mjs softFail).
+        const gs = gitSyncWith(async () => ({ ok: false, output: '', error: '[Workflow Error] Transport failure while executing command: ssh: connect to host h1 port 22: timed out' }));
         const r = await gs.checkedOutBranch('maint');
         assert.equal(r.branch, null);
         assert.equal(r.unreachable, true);
         assert.match(r.error, /timed out/);
-        assert.equal(r.host, 'h1');
         assert.equal(r.sprintBranch, SPRINT);
+    });
+    test('a command flagged failed with no exit code (exitCode -1 / timeout) is unreachable', async () => {
+        // Shape of the commandFailureOf branch: "[Command Failed] <server text>", no "Exit code N".
+        const gs = gitSyncWith(async () => ({ ok: false, output: '', error: '[Command Failed] Failed to execute command on maint: connection refused' }));
+        const r = await gs.checkedOutBranch('maint');
+        assert.deepEqual([r.branch, r.unreachable], [null, true]);
+        assert.match(r.error, /connection refused/);
+    });
+    test('a command that ran and exited non-zero is reached: unreachable=false with the git error', async () => {
+        // Shape of the exit-code branch of command() with failSoft.
+        const gs = gitSyncWith(async () => ({ ok: false, output: '', error: '[Command Failed] Exit code 128: fatal: not a git repository (or any of the parent directories): .git' }));
+        const r = await gs.checkedOutBranch('maint');
+        assert.equal(r.branch, null);
+        assert.equal(r.unreachable, false);
+        assert.match(r.error, /Exit code 128: fatal: not a git repository/);
     });
     test('a thrown command is unreachable too', async () => {
         const gs = gitSyncWith(async () => { throw new Error('member offline'); });

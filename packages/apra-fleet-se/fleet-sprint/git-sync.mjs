@@ -740,8 +740,9 @@ export function createGitSync(deps = {}) {
          * expansion) so a PowerShell member works. `branch` is null when it
          * cannot be read; a detached HEAD reads as 'HEAD'.
          * Resolves { branch: string|null, sprintBranch: string|null, unreachable: boolean,
-         * error?: string, host?: string }: `unreachable` is true when the command itself
-         * failed (so `branch` says nothing about git), false when it ran.
+         * error?: string, host?: string }: `unreachable` is true when the command never
+         * produced an exit code (so `branch` says nothing about git), false when it ran,
+         * including when git itself exited non-zero.
          */
         checkedOutBranch: async (memberName) => {
             const sprintBranch = typeof branch === 'string' && branch ? branch : null;
@@ -755,11 +756,16 @@ export function createGitSync(deps = {}) {
                 return { branch: null, sprintBranch, unreachable: true, error: err && err.message ? err.message : String(err) };
             }
             if (!res || !res.ok) {
-                // The command itself failed (transport/connection error, member
-                // offline): not the same as git answering with something unparseable.
                 const detail = res && (res.error || res.output);
                 const error = typeof detail === 'string' && detail.trim() ? detail.trim() : 'the command failed';
-                const out = { branch: null, sprintBranch, unreachable: true, error };
+                // failSoft folds two different failures into { ok:false, error }.
+                // A command that ran and exited non-zero reports
+                // "[Command Failed] Exit code N: ..." (N >= 0): the member answered,
+                // so it is reached and only its branch is unreadable. Anything else
+                // (no exit code: timeout, transport failure, member not started)
+                // never reached git, so the member is unreachable.
+                const ran = /^\[Command Failed\] Exit code \d+\b/.test(error);
+                const out = { branch: null, sprintBranch, unreachable: !ran, error };
                 if (res && typeof res.host === 'string' && res.host) out.host = res.host;
                 return out;
             }
