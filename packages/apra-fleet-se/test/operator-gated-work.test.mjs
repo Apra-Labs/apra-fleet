@@ -34,6 +34,25 @@ test('a closed decision bead gates nothing; empty or closed-only scope is not ga
     assert.equal(allRemainingWorkOperatorGated([{ id: 't1', status: 'closed' }], {}, []).gated, false);
 });
 
+test('a gate blocked BY ready work does not hold that work: not gated', () => {
+    // {depends_on_id: 't1', type: 'blocks'} on h1 means t1 blocks h1: the gate
+    // waits on t1, so t1 is ordinary ready work and Plan must run.
+    const scope = [{ id: 't1', status: 'open', dependencies: [] }];
+    const h1 = { id: 'h1', status: 'open', labels: ['human'], dependencies: [{ depends_on_id: 't1', type: 'blocks' }] };
+    const r = allRemainingWorkOperatorGated(scope, {}, [...scope, h1]);
+    assert.equal(r.gated, false);
+    assert.deepEqual(r.heldIds, []);
+});
+
+test('a gate\'s related or untyped edges hold nothing; work blocked BY a gate is held', () => {
+    const scope = [{ id: 't1', status: 'open', dependencies: [] }, { id: 't2', status: 'open', dependencies: [] }];
+    const h1 = { id: 'h1', status: 'open', labels: ['human'], dependencies: [{ depends_on_id: 't1', type: 'related' }, { depends_on_id: 't2' }] };
+    assert.equal(allRemainingWorkOperatorGated(scope, {}, [...scope, h1]).gated, false);
+    const blockedByGate = [{ id: 't3', status: 'open', dependencies: [{ depends_on_id: 'h2', type: 'blocks' }] }];
+    const h2 = { id: 'h2', status: 'open', labels: ['human'], dependencies: [] };
+    assert.equal(allRemainingWorkOperatorGated(blockedByGate, {}, [...blockedByGate, h2]).gated, true);
+});
+
 test('plannerBlockedDecisionRequest builds a valid request from the notes and the first target', () => {
     const r = plannerBlockedDecisionRequest({ status: 'BLOCKED', notes: ' Need the region. ' }, ['x-1', 'x-2']);
     assert.equal(r.ok, true);

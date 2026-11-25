@@ -3820,8 +3820,12 @@ async function runSprintCycle(context) {
         // decision gate, a planner can only come back BLOCKED, so none is
         // dispatched. Pause for the answer; with no pause channel (or nothing
         // this run can wait on) end with the typed blocked-on-operator outcome.
+        // Reads Route's snapshot from this cycle: no extra bd call. The in-run
+        // reclaim between Route and here invalidates the shared cache, but it
+        // only moves in_progress beads back to open, which this gate treats
+        // the same (neither is closed), and changes no labels or edges.
         {
-            const gate = allRemainingWorkOperatorGated(await bdListScoped(''), sprintState, await fetchAllBeadsShared());
+            const gate = allRemainingWorkOperatorGated(beadsScope.scopedFromSnapshot(routeBeads), sprintState, routeBeads);
             if (gate.gated) {
                 log(`[fleet-sprint] Plan C${cycle} skipped: all remaining work waits on operator decisions [${gate.heldIds.join(', ')}].`);
                 if (decisionWait && decisionWait.hasPending()) {

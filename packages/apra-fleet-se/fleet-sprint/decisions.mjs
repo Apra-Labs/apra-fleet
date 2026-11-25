@@ -615,8 +615,10 @@ function depTargets(b, types) {
     const out = [];
     for (const d of deps) {
         if (!d || typeof d !== 'object') continue;
+        // Explicit types only: an untyped edge is never assumed to be one of
+        // `types` (it could be any relation, parent-child included).
         const type = d.type ?? d.dependency_type;
-        if (type !== undefined && !types.includes(type)) continue;
+        if (!types.includes(type)) continue;
         const id = d.depends_on_id ?? d.id;
         if (id !== undefined && id !== null && id !== '') out.push(String(id));
     }
@@ -626,7 +628,8 @@ function depTargets(b, types) {
 /**
  * The ids of in-scope beads held by an OPEN operator decision gate: beads a
  * sprintState decision set-aside names, beads an open decision/human bead was
- * discovered from, beads blocked (blocks edge, directly or transitively) by
+ * discovered from (its only holding edge -- a gate's own blocks deps are its
+ * prerequisites, not beads it holds), beads blocked (blocks edge, directly or transitively) by
  * an open gate or a held bead, and any parent whose open children are all
  * held. Gate beads themselves are not included.
  *
@@ -646,8 +649,13 @@ export function operatorHeldBeadIds(scopeBeads, sprintState, allBeads = null) {
     const openGates = everyBead.filter((b) => b.status !== 'closed' && isDecisionGateBead(b));
     const gateIds = new Set(openGates.map((b) => String(b.id)));
     const held = new Set(decisionSetAsideEntries(sprintState).keys());
+    // Only a gate's discovered-from edge names the work it holds. A gate's own
+    // `blocks` deps are ITS prerequisites (a {depends_on_id: X, type: 'blocks'}
+    // row on bead A means X blocks A), so a gate waiting on ready work must
+    // not hold that work; beads blocked BY a gate are found below through
+    // openBlocksDependents. `related` carries no holding meaning either.
     for (const g of openGates) {
-        for (const id of depTargets(g, ['discovered-from', 'blocks', 'related'])) held.add(id);
+        for (const id of depTargets(g, ['discovered-from'])) held.add(id);
     }
     for (const id of gateIds) held.delete(id);
     // Beads blocked by a gate or by a held bead.
