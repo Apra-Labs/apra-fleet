@@ -57,7 +57,7 @@ import {
 import { runEnsureSprintBranchPhase } from '../fleet-sprint/phases/ensure-sprint-branch.mjs';
 import { buildAnalysisText } from '../fleet-sprint/sprint-report.mjs';
 import { createGitRepoFixture, probeGitRepoFixtureSupport } from './helpers/git-repo-fixture.mjs';
-import { selfMaintainer } from './helpers/kb-maintainer-fakes.mjs';
+import { selfMaintainer, kbCapabilitiesResult } from './helpers/kb-maintainer-fakes.mjs';
 
 const support = probeGitRepoFixtureSupport();
 if (!support.ok) {
@@ -106,6 +106,8 @@ function createFakeKb(fixture, { afterBibleCommit } = {}) {
     const memberCall = async (member, tool, args) => {
         // Candidate read offering ids to the reviewer: bookkeeping, not recorded.
         if (tool === 'kb_query') return { l1_results: offered.map((id) => ({ id })) };
+        // The bible-commit build gate's read: a current server, not recorded.
+        if (tool === 'kb_capabilities') return kbCapabilitiesResult();
         calls.push({ tool, member: member.name, args });
         if (tool === 'kb_promote') {
             if (!kb.has(args.id)) kb.set(args.id, { ...entry(args.id), confidence: 'INFERRED' });

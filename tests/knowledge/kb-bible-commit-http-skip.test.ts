@@ -195,6 +195,9 @@ describe('kb_bible_commit http skip and the existing bible file', () => {
   function writeBible(content: string): void {
     fs.mkdirSync(path.join(clone, '.fleet'), { recursive: true });
     fs.writeFileSync(path.join(clone, BIBLE_REL), content, 'utf-8');
+    // kb_bible_commit reads the bible committed at HEAD, never the work tree.
+    git(clone, ['add', BIBLE_REL]);
+    git(clone, ['commit', '-q', '-m', 'seed bible', '--', BIBLE_REL]);
   }
 
   it('reports entry_count as the size of the existing parseable bible', async () => {

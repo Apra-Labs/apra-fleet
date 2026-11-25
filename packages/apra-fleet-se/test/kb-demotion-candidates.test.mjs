@@ -606,9 +606,23 @@ describe('createKbWorkClient.demotionCandidates: final review only, widened, fea
         }
     });
 
-    test('a tools/list that throws, or answers unreadably, once is not cached: the next offering offers candidates', async () => {
+    test('a tools/list that throws once is not cached: the next offering offers candidates', async () => {
+        const { memberCall } = splitReads(OTHERS, []);
+        const logs = [];
+        let lists = 0;
+        const client = createKbWorkClient({
+            memberCall, maintainers: withMaintainer(),
+            listTools: async (...a) => { lists += 1; if (lists === 1) throw new Error('session dropped'); return newSchemaListTools(...a); },
+            sprintChangedFiles: async () => ['server/transit.js'], log: (l) => logs.push(l),
+        });
+        assert.deepEqual(await client.demotionCandidates(REVIEWER), [], 'the failed listing offers nothing');
+        assert.ok(warnFor(logs), logs.join('\n'));
+        assert.deepEqual((await client.demotionCandidates(REVIEWER)).map((e) => e.id), ['kb-other'], 'a tools/list failure is not cached');
+        assert.equal(lists, 2);
+    });
+
+    test('a tools/list that answers unreadably once is retried within the same offering', async () => {
         const failures = [
-            async () => { throw new Error('session dropped'); },
             async () => 'not json',
             async () => ({ content: [{ type: 'text', text: 'not json' }] }),
         ];
@@ -621,11 +635,25 @@ describe('createKbWorkClient.demotionCandidates: final review only, widened, fea
                 listTools: async (...a) => { lists += 1; return lists === 1 ? failure(...a) : newSchemaListTools(...a); },
                 sprintChangedFiles: async () => ['server/transit.js'], log: (l) => logs.push(l),
             });
-            assert.deepEqual(await client.demotionCandidates(REVIEWER), [], 'the failed listing offers nothing');
-            assert.ok(warnFor(logs), logs.join('\n'));
-            assert.deepEqual((await client.demotionCandidates(REVIEWER)).map((e) => e.id), ['kb-other'], 'a tools/list failure is not cached');
-            assert.equal(lists, 2);
+            assert.deepEqual((await client.demotionCandidates(REVIEWER)).map((e) => e.id), ['kb-other'], 'the retry read the list');
+            assert.equal(lists, 2, 'exactly one retry');
         }
+    });
+
+    test('a tools/list that answers unreadably twice offers nothing, WARNs the raw answer, and is not cached', async () => {
+        const { memberCall } = splitReads(OTHERS, []);
+        const logs = [];
+        let lists = 0;
+        const client = createKbWorkClient({
+            memberCall, maintainers: withMaintainer(),
+            listTools: async (...a) => { lists += 1; return lists <= 2 ? 'not json' : newSchemaListTools(...a); },
+            sprintChangedFiles: async () => ['server/transit.js'], log: (l) => logs.push(l),
+        });
+        assert.deepEqual(await client.demotionCandidates(REVIEWER), [], 'the failed listing offers nothing');
+        assert.equal(lists, 2, 'one call plus exactly one retry');
+        assert.ok(logs.some((l) => /WARN tools\/list answer from member '.+' could not be parsed.*: not json$/.test(l)), logs.join('\n'));
+        assert.ok(warnFor(logs), logs.join('\n'));
+        assert.deepEqual((await client.demotionCandidates(REVIEWER)).map((e) => e.id), ['kb-other'], 'a tools/list failure is not cached');
     });
 
     test('the support answer is cached per member AND repository: a gap for one repository does not hide another', async () => {

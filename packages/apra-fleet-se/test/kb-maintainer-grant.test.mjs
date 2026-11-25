@@ -1,7 +1,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { createKbWorkClient, createKbPrimingClient, KB_MAINTAINER_CALL } from '../fleet-sprint/kb.mjs';
-import { selfMaintainer, currentServerListTools } from './helpers/kb-maintainer-fakes.mjs';
+import { selfMaintainer, currentServerListTools, kbCapabilitiesResult } from './helpers/kb-maintainer-fakes.mjs';
 import { createMemberCall } from '../fleet-sprint/member-call.mjs';
 
 // =============================================================================
@@ -20,6 +20,8 @@ const BASE = { baseBranch: 'main', baseCommit: 'a'.repeat(40) };
 function harness() {
     const calls = [];
     const memberCall = async (member, tool, args, ...rest) => {
+        // The bible-commit build gate's read: a current server, not recorded.
+        if (tool === 'kb_capabilities') return kbCapabilitiesResult();
         calls.push({ tool, member: member.name, opts: rest[0], arity: 3 + rest.length });
         if (tool === 'kb_query') return { l1_results: [{ id: 'e1' }, { id: 'e2' }] };
         if (tool === 'kb_bible_commit') {

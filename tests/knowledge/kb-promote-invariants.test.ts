@@ -123,3 +123,20 @@ describe('kb_promote refuses an entry whose basis no longer resolves', () => {
     expect(res.confidence_after).toBe('CONFIRMED');
   });
 });
+
+describe('kb_promote basis stamp outside a git work tree', () => {
+  it('leaves the stored basis as it was and reports basis_stamped: false (HEAD content cannot be read)', async () => {
+    const { id } = await provider.capture(entry({ source_files: ['src/real.ts'] }));
+    const before = provider.getSourceFileBases([id]).get(id);
+    fs.writeFileSync(path.join(repo, 'src', 'real.ts'), 'export const real = 2;\n');
+
+    const res = await provider.promote(id, GOOD_REASON);
+    expect(res).toMatchObject({ confidence_after: 'CONFIRMED', basis_stamped: false });
+    expect(res.unstamped_files).toBeUndefined();
+    expect(provider.getSourceFileBases([id]).get(id)).toEqual(before);
+
+    // A re-promote of the CONFIRMED entry is a no-op here: nothing to re-base against.
+    const again = await provider.promote(id, GOOD_REASON);
+    expect(again).toEqual({ id, confidence_before: 'CONFIRMED', confidence_after: 'CONFIRMED', basis_stamped: false });
+  });
+});

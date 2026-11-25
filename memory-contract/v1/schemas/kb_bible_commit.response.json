@@ -104,6 +104,30 @@
                       "demoted_tombstone",
                       "not_in_base_bible"
                     ]
+                  },
+                  "changed_files": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "path": {
+                          "type": "string"
+                        },
+                        "reason": {
+                          "type": "string",
+                          "enum": [
+                            "changed",
+                            "absent",
+                            "no_basis"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "path",
+                        "reason"
+                      ],
+                      "additionalProperties": false
+                    }
                   }
                 },
                 "required": [

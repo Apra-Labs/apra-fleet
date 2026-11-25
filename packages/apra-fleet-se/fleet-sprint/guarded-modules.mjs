@@ -62,6 +62,8 @@ export const GUARDED_MODULES = [
     'mcp-result.mjs',
     'member-target.mjs',
     'member-call.mjs',
+    // The tolerant tools/list / JSON reader member-call and kb.mjs share.
+    'tools-list.mjs',
     // File-based VCS request-body transport: stages bodies with send_files
     // and dispatches the git-exclude / delete commands for them.
     'vcs-payload.mjs',

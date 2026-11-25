@@ -5,14 +5,20 @@ import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 
-const mockExecFile = vi.hoisted(() => vi.fn());
+const { mockExecFile, realExecFile } = vi.hoisted(() => ({
+  mockExecFile: vi.fn(),
+  realExecFile: { fn: undefined as unknown as (...args: unknown[]) => unknown },
+}));
 
 // Only execFile (the async hasher) is mocked; execFileSync stays real so the
 // kb (self) git checks and makeSelfRepo() below run against real repos.
-vi.mock('node:child_process', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('node:child_process')>()),
-  execFile: mockExecFile,
-}));
+// setupGitSuccess fakes `git hash-object` only; every other async git call
+// (the cold-seed's read of the bible committed at HEAD) runs for real.
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  realExecFile.fn = actual.execFile as unknown as (...args: unknown[]) => unknown;
+  return { ...actual, execFile: mockExecFile };
+});
 
 import { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js';
 import type { KBEntryInput } from '../../src/services/knowledge/types.js';
@@ -25,6 +31,7 @@ function gitBlobHash(data: Buffer): string {
 
 function setupGitSuccess(): void {
   mockExecFile.mockImplementation((...allArgs: unknown[]) => {
+    if (!(allArgs[1] as string[]).includes('hash-object')) return realExecFile.fn(...allArgs);
     const cb = allArgs[allArgs.length - 1] as (err: Error | null, stdout: string, stderr: string) => void;
     const fileArgs = (allArgs[1] as string[]).slice(1);
     const hashes = fileArgs.map((f: string) => {
@@ -219,6 +226,13 @@ function makeSelfRepo(dir: string): string {
   execFileSync('git', ['init', '-q'], { cwd: dir });
   execFileSync('git', ['remote', 'add', 'origin', 'https://example.test/kb-session-prime-self.git'], { cwd: dir });
   return dir;
+}
+
+/** Commit <dir>/.fleet/kb-canonical.json: the cold-seed reads only the bible committed at HEAD. */
+function commitBible(dir: string): void {
+  execFileSync('git', ['add', '.fleet/kb-canonical.json'], { cwd: dir });
+  execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', '-c', 'commit.gpgsign=false',
+    'commit', '-q', '--no-verify', '-m', 'bible', '--', '.fleet/kb-canonical.json'], { cwd: dir });
 }
 
 describe('kb_session_prime graph-neighbor expansion', () => {
@@ -480,6 +494,7 @@ describe('kb_session_prime canonical-bible cold-seed', () => {
       typeof entries === 'string' ? entries : JSON.stringify(entries),
       'utf-8',
     );
+    commitBible(bibleTmpDir);
   }
 
   beforeEach(() => {
@@ -540,6 +555,53 @@ describe('kb_session_prime canonical-bible cold-seed', () => {
 
     expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['a']);
     expect(parsed.top_entries.some((e: KBEntry & { via?: string }) => e.via)).toBe(false);
+  });
+
+  // COMMITTED ONLY. The cold-seed's bible entries reach prompts as CONFIRMED,
+  // so it reads the bible committed at HEAD, never the work-tree file an agent
+  // sharing the folder can hand-edit.
+  //
+  // FALSIFICATION: reading <folder>/.fleet/kb-canonical.json from disk again in
+  // kb-session-prime.ts seeds the uncommitted entries (test 1) and the
+  // work-tree-only edit (test 2).
+  function writeWorkTreeBible(entries: unknown): void {
+    fs.mkdirSync(path.join(bibleTmpDir, '.fleet'), { recursive: true });
+    fs.writeFileSync(path.join(bibleTmpDir, '.fleet', 'kb-canonical.json'), JSON.stringify(entries), 'utf-8');
+  }
+
+  it('cold KB + an uncommitted work-tree bible: none of its entries are seeded, and the skip is logged with its reason', async () => {
+    mockPrime.mockResolvedValue(primedContext([entry('a')]));
+    writeWorkTreeBible([canonicalEntry('hand-made-1'), canonicalEntry('hand-made-2')]);
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+      const parsed = JSON.parse(await kbSessionPrime({}));
+
+      expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['a']);
+      expect(parsed.top_entries.some((e: KBEntry & { via?: string }) => e.via === 'canonical-bible')).toBe(false);
+      expect(mockTouch).not.toHaveBeenCalled();
+      const logged = errSpy.mock.calls.map(c => String(c[0])).join('\n');
+      expect(logged).toMatch(/kb_session_prime bible cold-seed skipped: .*no committed copy at HEAD/);
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
+  it('cold KB + a committed bible with an extra uncommitted work-tree edit: only the committed entries are seeded', async () => {
+    mockPrime.mockResolvedValue(primedContext([entry('a')]));
+    writeCanonicalFile([canonicalEntry('c1'), canonicalEntry('c2')]);
+    writeWorkTreeBible([canonicalEntry('c1'), canonicalEntry('c2'), canonicalEntry('hand-made-3')]);
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
+      const parsed = JSON.parse(await kbSessionPrime({}));
+
+      expect(parsed.top_entries.map((e: KBEntry) => e.id)).toEqual(['a', 'c1', 'c2']);
+      const logged = errSpy.mock.calls.map(c => String(c[0])).join('\n');
+      expect(logged).toMatch(/kb_session_prime bible cold-seed reads the .* committed at HEAD .*differs from it and is ignored/);
+    } finally {
+      errSpy.mockRestore();
+    }
   });
 
   it('malformed JSON: output identical to today', async () => {
@@ -895,6 +957,7 @@ describe('kb_session_prime global-bible cold-seed (T3.5, F9c, D8)', () => {
       JSON.stringify([canonicalEntry('p1')]),
       'utf-8',
     );
+    commitBible(emptyCwdDir);
     writeGlobalBibleFile([canonicalEntry('g1')]);
 
     const { kbSessionPrime } = await import('../../src/tools/kb-session-prime.js');
@@ -967,6 +1030,7 @@ describe('kb_session_prime global-bible cold-seed (T3.5, F9c, D8)', () => {
       JSON.stringify([canonicalEntry('shared')]),
       'utf-8',
     );
+    commitBible(emptyCwdDir);
     // Global bible carries the SAME id -- must not duplicate.
     writeGlobalBibleFile([canonicalEntry('shared'), canonicalEntry('g1')]);
 
