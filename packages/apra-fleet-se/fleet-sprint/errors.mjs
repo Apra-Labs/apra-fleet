@@ -121,6 +121,41 @@ export class SprintPlanRejectedError extends WorkflowError {
     }
 }
 
+/** Stable code of SprintBlockedOnOperatorError. */
+export const SPRINT_BLOCKED_ON_OPERATOR_CODE = 'SPRINT_BLOCKED_ON_OPERATOR';
+/** The terminalReason a run that ended blocked on an operator is recorded under. */
+export const BLOCKED_ON_OPERATOR_TERMINAL_REASON = 'BLOCKED_ON_OPERATOR';
+
+/**
+ * Thrown when planning cannot go on until an operator answers a question (the
+ * planner reported BLOCKED, or every remaining in-scope bead is held by an
+ * open decision gate) and the run has no pause/resume channel to wait on. It
+ * is NOT a plan rejection and NOT a crash: an operator answering the decision
+ * is exactly what unblocks a relaunch.
+ *
+ * @property {string|null} question - the operator question
+ * @property {string[]} beadIds - the bead(s) the question holds
+ * @property {string|null} decisionBeadId - the decision bead filed for it, when one was
+ */
+export class SprintBlockedOnOperatorError extends WorkflowError {
+    /**
+     * @param {string} message
+     * @param {{ question?: string|null, beadIds?: string[], decisionBeadId?: string|null, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(message, opts = {}) {
+        const { question = null, beadIds = [], decisionBeadId = null, details, cause } = opts;
+        super(message, {
+            code: SPRINT_BLOCKED_ON_OPERATOR_CODE,
+            details: { question, beadIds, decisionBeadId, ...details },
+            cause,
+        });
+        this.name = 'SprintBlockedOnOperatorError';
+        this.question = question;
+        this.beadIds = beadIds;
+        this.decisionBeadId = decisionBeadId;
+    }
+}
+
 /**
  * apra-fleet-unw.17 (A5) -- thrown when the sprint's cycle loop detects N
  * consecutive cycles (default 2, per the pm skill mandate cited in the

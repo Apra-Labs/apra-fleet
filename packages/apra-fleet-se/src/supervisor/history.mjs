@@ -92,6 +92,8 @@ const TERMINAL_DETAIL_EVENTS = Object.freeze([HISTORY_EVENTS.FINISHED, HISTORY_E
  * simply does not gate a relaunch (a false negative here only skips a
  * warning -- it never blocks a legitimate relaunch).
  */
+// BLOCKED_ON_OPERATOR is deliberately NOT listed: an operator answering the
+// decision is exactly what unblocks a relaunch.
 export const DETERMINISTIC_TERMINAL_REASONS = Object.freeze(new Set(['BEADS_SYNC_CONFLICT']));
 
 /**
