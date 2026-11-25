@@ -338,6 +338,12 @@ export class KbHttpUnreachableError extends Error {
  * blindly could apply it twice, and a server that always answers 500 would be
  * retried forever. A read answered 5xx is E-KB-HTTP-UNREACHABLE instead (a
  * read writes nothing, so repeating it is safe).
+ *
+ * Not retrying or queueing a write answered 500/502/504 is a deliberate
+ * design decision, not a gap: the server may already have stored the write,
+ * so a retry could apply it twice. Making such retries safe would need a
+ * server-side de-duplication contract (for example an optional idempotency
+ * key), which is out of scope here.
  */
 export class KbHttpServerError extends Error {
   readonly code = 'E-KB-HTTP-SERVER-ERROR' as const;
