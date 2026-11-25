@@ -9,6 +9,7 @@ import { buildListStatePayload, resolveStringRefs } from './lean-state.mjs';
 import { capCommandActivityMeta, getFullOutput } from './command-output-cap.mjs';
 import { buildRunTitle } from './run-title.mjs';
 import { billedTokens } from '../workflow/pricing.mjs';
+import { shouldSuppressToggle } from './header-selection.mjs';
 import { createRunSummary, refreshSummaryCore, applyExtensionSummary, backfillExtensionSummaries } from './run-summary.mjs';
 import { checkMutatingRequest, checkRequestHost } from './request-guard.mjs';
 
@@ -103,7 +104,7 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
        scroll. flex-shrink: 0 pins each row to its content size so the bounded
        pane scrolls, rather than crushing its children to fit. */
     .tree-group { background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; flex-shrink: 0; }
-    .group-header { padding: 12px 16px; background: rgba(0,0,0,0.4); cursor: pointer; display: flex; justify-content: space-between; align-items: center; user-select: none; outline: none; list-style: none; }
+    .group-header { padding: 12px 16px; background: rgba(0,0,0,0.4); cursor: pointer; display: flex; justify-content: space-between; align-items: center; user-select: text; outline: none; list-style: none; }
     .group-header h3 { font-size: 14px; font-weight: 700; color: var(--accent); margin: 0; }
     .group-header:hover { background: rgba(0,0,0,0.6); }
     .group-header::-webkit-details-marker { display: none; }
@@ -111,7 +112,7 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
 
     /* Tree Phase */
     .tree-phase { background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.05); border-radius: 6px; overflow: hidden; flex-shrink: 0; }
-    .phase-header { padding: 8px 12px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; user-select: none; border-bottom: 1px solid rgba(255,255,255,0.02); outline: none; list-style: none; }
+    .phase-header { padding: 8px 12px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; user-select: text; border-bottom: 1px solid rgba(255,255,255,0.02); outline: none; list-style: none; }
     .phase-header h4 { font-size: 13px; font-weight: 600; color: #e4e4e7; margin: 0; }
     .phase-header:hover { background: rgba(255,255,255,0.05); }
     .phase-header::-webkit-details-marker { display: none; }
@@ -131,7 +132,7 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
     details.event-activity.log-multiline { border-color: rgba(255,255,255,0.02); background: transparent; }
     details.event-activity.log-multiline summary { padding: 4px 8px; }
     
-    summary.activity-header { display: flex; align-items: center; padding: 6px 8px; font-size: 12px; gap: 8px; cursor: pointer; user-select: none; list-style: none; outline: none; }
+    summary.activity-header { display: flex; align-items: center; padding: 6px 8px; font-size: 12px; gap: 8px; cursor: pointer; user-select: text; list-style: none; outline: none; }
     summary.activity-header::-webkit-details-marker { display: none; }
     summary.activity-header:hover { background: rgba(255,255,255,0.04); }
     
@@ -139,7 +140,8 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
     .activity-title .muted { color: #a1a1aa; font-weight: normal; font-size: 11px; margin-left: 6px; }
     .activity-meta { display: flex; gap: 12px; align-items: center; font-size: 11px; color: #a1a1aa; flex-shrink: 0; }
     
-    .toggle-icon { margin-left: 8px; font-family: monospace; font-size: 14px; color: var(--text-muted); width: 14px; text-align: center; }
+    /* Header text is selectable (copy/paste); the disclosure marker is not. */
+    .toggle-icon { user-select: none; margin-left: 8px; font-family: monospace; font-size: 14px; color: var(--text-muted); width: 14px; text-align: center; }
     details:not([open]) > summary .toggle-icon::after { content: "+"; }
     details[open] > summary .toggle-icon::after { content: "-"; }
     
@@ -423,6 +425,20 @@ const HTML_TEMPLATE = (dashboardExtensions, opts = {}) => {
     // own <summary> header, which keeps its native <details> expand/collapse
     // behavior untouched.
     let expandedMoreBtn = null;
+    // Selecting header text by dragging must not toggle the <details> when the
+    // mouse is released inside the header: suppress the click's default
+    // toggle when a non-collapsed selection touches that header. Keyboard
+    // Enter/Space (a click with detail === 0) is never suppressed.
+    ${shouldSuppressToggle.toString()}
+    document.addEventListener('click', (e) => {
+        const header = e.target && e.target.closest ? e.target.closest('summary.group-header, summary.phase-header, summary.activity-header') : null;
+        if (!header) return;
+        const sel = window.getSelection();
+        const info = sel
+            ? { isCollapsed: sel.isCollapsed, rangeCount: sel.rangeCount, anchorNode: sel.anchorNode, focusNode: sel.focusNode, keyboard: e.detail === 0 }
+            : null;
+        if (shouldSuppressToggle(info, header)) e.preventDefault();
+    });
     function collapseMoreBtn(btn) {
         if (!btn) return;
         const span = btn.previousElementSibling;
