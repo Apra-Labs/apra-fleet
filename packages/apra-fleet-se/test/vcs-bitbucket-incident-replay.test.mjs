@@ -155,7 +155,7 @@ describe('incident replay through the real sprint cycle', () => {
             assert.match(line, /username line is the unresolved placeholder literal \{\{secret\.e2e_bb_user\}\}, not x-bitbucket-api-token-auth/);
             assert.ok(line.includes('provision_vcs_auth member_name=local provider=bitbucket workspace=acme api_token={{secret.bitbucket_api_token}}'), line);
             assert.match(line, /this member is LOCAL, so the sprint never runs it for you/);
-            assert.match(line, /failed the PR \(REST API\) channel check/);
+            assert.match(line, /failed the PR \(REST API\) probe/);
             assert.match(line, /No PR will be opened this sprint/);
             assert.ok([...line].every((ch) => ch.charCodeAt(0) < 128), 'ASCII only');
 

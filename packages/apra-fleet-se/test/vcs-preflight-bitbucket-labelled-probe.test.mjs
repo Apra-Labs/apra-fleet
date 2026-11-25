@@ -130,7 +130,7 @@ describe('labelled credential REST probe (local member)', () => {
         assert.ok(line.includes('provision_vcs_auth member_name=bb-local provider=bitbucket workspace=acme api_token={{secret.bitbucket_api_token}}'), line);
         assert.match(line, /this member is LOCAL, so the sprint never runs it for you/);
         assert.match(line, /leaves the host's own git credential untouched/);
-        assert.match(line, /failed the PR \(REST API\) channel check/);
+        assert.match(line, /failed the PR \(REST API\) probe/);
         assert.match(line, /No PR will be opened this sprint/);
         assert.ok(!/create/i.test(line.slice(line.indexOf('Fix: '))), 'token stored: never told to create one');
         assert.ok([...line].every((ch) => ch.charCodeAt(0) < 128), line);

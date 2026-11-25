@@ -163,7 +163,7 @@ describe('case 3: the REST probe fails', () => {
         assert.equal(noPrOf(h.logs).length, 1, h.logs.join('\n'));
         const errors = errorsOf(h.logs);
         assert.equal(errors.length, 1);
-        assert.match(errors[0], /failed the PR \(REST API\) channel check/);
+        assert.match(errors[0], /failed the PR \(REST API\) probe/);
         assert.match(errors[0], /refused by the REST probe with HTTP 401/);
         assert.equal(h.tools.filter((t) => t.name === 'vcs_credential_exec').length, 1, 'probed once per run');
     });
