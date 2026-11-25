@@ -7,7 +7,7 @@ import assert from 'node:assert';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { bdSyncCommandFor } from '../fleet-sprint/bd-sync-command.mjs';
+import { bdSyncCommandFor, unwrapSyncHeartbeat } from '../fleet-sprint/bd-sync-command.mjs';
 import { spawn, execFileSync } from 'node:child_process';
 
 import { buildLockHolderProbe, parseLockHolderProbe, BEADS_LOCK_FILES } from '../fleet-sprint/beads-lock-probe.mjs';
@@ -55,7 +55,8 @@ function scriptedMember({ target, op, script, probeOutput }) {
     let attempts = 0;
     let pushed = 0;
     const probe = buildLockHolderProbe(target);
-    const command = async (cmd) => {
+    const command = async (wire) => {
+        const cmd = unwrapSyncHeartbeat(wire); // the bd command inside the heartbeat wrapper
         calls.push(cmd);
         if (cmd.includes('bd config get sync.remote')) return { ok: true, output: JSON.stringify({ value: SYNC_REMOTE }), error: null };
         if (cmd === probe) return { ok: true, output: probeOutput, error: null };
@@ -97,7 +98,8 @@ describe('watchdog through the entry points', () => {
         const calls = [];
         const probe = buildLockHolderProbe(target);
         let attempts = 0;
-        const command = async (cmd) => {
+        const command = async (wire) => {
+            const cmd = unwrapSyncHeartbeat(wire);
             calls.push(cmd);
             if (cmd.includes('bd config get sync.remote')) return { ok: true, output: JSON.stringify({ value: SYNC_REMOTE }), error: null };
             if (cmd === probe) return { ok: true, output: `HOLDER\t${4000 + attempts}\t00:59\t.beads/embeddeddolt.gate.lock\tbd dolt pull\n`, error: null };

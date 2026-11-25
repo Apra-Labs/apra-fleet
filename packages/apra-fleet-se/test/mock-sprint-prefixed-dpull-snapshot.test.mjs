@@ -29,7 +29,7 @@ import {
 } from './helpers/mock-sprint-harness.mjs';
 import { invalidateSyncRemoteCache, clearLastSyncedTip, clearTipProbeFailures } from '../fleet-sprint/dolt-sync.mjs';
 import { clearMemberOsCache } from '../fleet-sprint/runner.js';
-import { logicalBdCommand } from '../fleet-sprint/bd-sync-command.mjs';
+import { logicalBdCommand, unwrapSyncHeartbeat } from '../fleet-sprint/bd-sync-command.mjs';
 
 const BACKLOG_MEMBER = 'local';
 const INTEG_MEMBER = 'integ';
@@ -73,7 +73,7 @@ test('a gitbash backlog member: after Integ Test closes a verify bead and files 
             if (/^bd config get sync\.remote/.test(logical)) return exit0(JSON.stringify({ key: 'sync.remote', value: SYNC_REMOTE }));
             if (LS_REMOTE_RE.test(command)) return exit0(`${state.tip}\trefs/dolt/data\n`);
             if (logical === 'bd dolt pull') {
-                state.pulls.push({ member, phase: state.phase, command });
+                state.pulls.push({ member, phase: state.phase, command: unwrapSyncHeartbeat(command) });
                 if (member === BACKLOG_MEMBER && state.pending.length > 0) {
                     const queued = state.pending.splice(0);
                     for (const apply of queued) await apply();

@@ -9,7 +9,7 @@
 import { test, describe, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert';
 
-import { bdSyncCommandFor, WINDOWS_BD_GOMAXPROCS } from '../fleet-sprint/bd-sync-command.mjs';
+import { bdSyncCommandFor, WINDOWS_BD_GOMAXPROCS, unwrapSyncHeartbeat } from '../fleet-sprint/bd-sync-command.mjs';
 import {
     doltPullBefore,
     doltPushAfter,
@@ -52,7 +52,10 @@ const SYNC_REMOTE = 'git+https://example.com/org/repo.git';
 function recordingCommand(syncResult = () => ({ ok: true, output: '', error: null })) {
     const calls = [];
     let pushed = 0;
-    const command = async (cmd, opts) => {
+    const command = async (wire, opts) => {
+        // A sync step is issued inside the heartbeat wrapper; these checks
+        // are about the bd command inside it (the env prefix + bd).
+        const cmd = unwrapSyncHeartbeat(wire);
         calls.push({ cmd, member: opts && opts.member_name });
         if (cmd.includes('bd config get sync.remote')) {
             return { ok: true, output: JSON.stringify({ value: SYNC_REMOTE }), error: null };
