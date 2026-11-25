@@ -3,9 +3,29 @@
   "provenance": {
     "commit": "7b7d91ee900870c839aefef3bb38c32459257d49",
     "branch": "main",
-    "entry_count": 220
+    "entry_count": 221
   },
   "entries": [
+    {
+      "id": "006297dc-eb50-4cc8-bc88-29d35a766bf3",
+      "type": "knowledge",
+      "title": "Viewer page embeds shouldSuppressToggle via Function.toString",
+      "summary": "The run viewer HTML template inlines shouldSuppressToggle from header-selection.mjs using .toString(), so that module must stay self-contained, with no imports, module-scope references or backticks.",
+      "symbols": [
+        "shouldSuppressToggle",
+        "HTML_TEMPLATE"
+      ],
+      "source_files": [
+        "packages/apra-fleet-workflow/src/viewer/header-selection.mjs",
+        "packages/apra-fleet-workflow/src/viewer/index.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-25T20:25:53.680Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-workflow/src/viewer/header-selection.mjs": "9c7d6b8b6cc39944555a79372fdb6c32fd43be1c",
+        "packages/apra-fleet-workflow/src/viewer/index.mjs": "22ca76fef5bd9b54cfdcdd6ac5c65db4f2a44351"
+      }
+    },
     {
       "id": "0077b24d-29fe-4f72-94df-0cd6a9e65f90",
       "type": "knowledge",
