@@ -18,7 +18,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { windowsExecutable } from '../os/windows-executable.js';
+import { isAbsoluteWindowsPath, windowsExecutable } from '../os/windows-executable.js';
 import { FLEET_BASE, readConfig, writeConfig, type ProviderInstallConfig } from './config.js';
 import { findExecutableOnPath, splitPath } from '../utils/find-on-path.js';
 
@@ -117,7 +117,9 @@ export function claudeSpawnSpec(
   file: string, args: string[], platform: NodeJS.Platform = process.platform, comSpec = process.env.ComSpec,
 ): { cmd: string; argv: string[]; verbatim: boolean } {
   if (platform === 'win32' && /\.(cmd|bat)$/i.test(file)) {
-    return { cmd: comSpec || windowsExecutable('cmd.exe'), argv: ['/d', '/s', '/c', `"${[file, ...args].map(cmdQuote).join(' ')}"`], verbatim: true };
+    // A ComSpec that is not an absolute path to cmd.exe would be searched in the cwd: use the resolver instead.
+    const comSpecOk = !!comSpec && isAbsoluteWindowsPath(comSpec) && /^cmd\.exe$/i.test(path.win32.basename(comSpec));
+    return { cmd: comSpecOk ? comSpec! : windowsExecutable('cmd.exe'), argv: ['/d', '/s', '/c', `"${[file, ...args].map(cmdQuote).join(' ')}"`], verbatim: true };
   }
   return { cmd: file, argv: args, verbatim: false };
 }

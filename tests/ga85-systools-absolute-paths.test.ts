@@ -129,6 +129,13 @@ describe('system tools resolve to System32 on win32 (planted files in cwd/PATH a
     expect(spec.verbatim).toBe(true);
   });
 
+  it('claude-mod: a relative or non-cmd.exe ComSpec is ignored in favour of System32 cmd.exe', async () => {
+    const { claudeSpawnSpec } = await import('../src/cli/claude-mod.js');
+    expect(claudeSpawnSpec('C:\\npm\\claude.cmd', [], 'win32', 'cmd.exe').cmd).toBe(`${SYS32}\\cmd.exe`);
+    expect(claudeSpawnSpec('C:\\npm\\claude.cmd', [], 'win32', 'C:\\evil\\pwn.exe').cmd).toBe(`${SYS32}\\cmd.exe`);
+    expect(claudeSpawnSpec('C:\\npm\\claude.cmd', [], 'win32', 'D:\\alt\\cmd.exe').cmd).toBe('D:\\alt\\cmd.exe');
+  });
+
   it('service manager: default schtasks runner and whoami use System32 paths', async () => {
     h.execFileSync.mockReturnValue('CORP\\alice\r\n');
     const { WindowsServiceManager, resolveTaskUserId } = await import('../src/services/service-manager/windows.js');
