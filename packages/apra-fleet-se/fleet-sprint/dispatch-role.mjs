@@ -593,6 +593,23 @@ async function runDegradeSteps(ctx, policy, err, errorClass) {
  *                    attempts:number, resumesIssued:number,
  *                    stepResults:Record<string,any>, validation:any}>}
  */
+const LLM_AUTH_HEAL_FAILED_MARKER = 'LLM auth heal failed';
+
+/** The LLM-auth fix wording for a member kind. provision_llm_auth skips local members, so it is remote-only. */
+export function llmAuthFixText(memberKind) {
+    return memberKind === 'local'
+        ? 'log in again interactively in the LLM CLI on this host (for Claude: /login); or provision an API key'
+        : 're-login on the source machine with /login, then provision_llm_auth; or provision an API key';
+}
+
+async function resolveKindSafe(ctx, member) {
+    try {
+        return typeof ctx.memberKind === 'function' ? await ctx.memberKind(member) : 'remote';
+    } catch {
+        return 'remote';
+    }
+}
+
 export async function dispatchRole(ctx, roleName, opts = {}) {
     // Destructured so this module's ONE dispatch reads `agent(` -- the literal
     // token dispatch-safety-guard.mjs and inline-ladder-guard.mjs scan for. A
@@ -1324,17 +1341,18 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
                         continue;
                     }
                 }
+                const authFix = llmAuthFixText(await resolveKindSafe(ctx, member));
                 ctx.log(
                     `${roleLabel} dispatch threw a non-retryable error (auth/trust): ${err.message}. Aborting ` +
-                    `retries -- fix member '${member}' credentials/trust and re-run (for an LLM auth failure: re-login on the source machine with /login, then provision_llm_auth; or provision an API key).`
+                    `retries -- fix member '${member}' credentials/trust and re-run (for an LLM auth failure: ${authFix}).`
                 );
                 // A ladder whose own failure legitimately fails the whole
                 // sprint propagates instead of degrading: with the dispatch
                 // channel walled off there is no judgement to fabricate.
                 if (retry.rethrowsUnhealedNonRetryable) {
                     if (isAuthDispatchError(err) && err && typeof err.message === 'string'
-                        && !err.message.includes('provision_llm_auth')) {
-                        err.message += ` [LLM auth heal failed for member '${member}': re-login on the source machine with /login, then provision_llm_auth; or provision an API key]`;
+                        && !err.message.includes(LLM_AUTH_HEAL_FAILED_MARKER)) {
+                        err.message += ` [${LLM_AUTH_HEAL_FAILED_MARKER} for member '${member}': ${authFix}]`;
                     }
                     throw err;
                 }
