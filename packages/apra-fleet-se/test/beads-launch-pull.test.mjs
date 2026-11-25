@@ -5,6 +5,8 @@
 // first pre-dispatch pull.
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 import { verifyBeadsIdentity } from '../fleet-sprint/beads-identity-check.mjs';
 import { BEADS_IDENTITY_PROBES } from '../fleet-sprint/beads-identity.mjs';
@@ -104,6 +106,14 @@ describe('launch pull of members that already have a beads database', () => {
         const member = makeMember({ local: SAME(), remote: SAME(), failOn: { 'bd dolt pull': PULL_CONFLICT } });
         member.fsx.get('.beads').db.unrelated = false;
         await assert.rejects(() => run(harness(member), []), (err) => err instanceof DoltDivergedError);
+    });
+
+    test('the runner wires a settle per member into the launch preflight (same settle as the first dispatch pull)', () => {
+        const src = fs.readFileSync(fileURLToPath(new URL('../fleet-sprint/runner.js', import.meta.url)), 'utf8');
+        const start = src.indexOf('(context.verifyBeadsIdentity ?? verifyBeadsIdentity)({');
+        assert.ok(start > 0, 'runner calls verifyBeadsIdentity');
+        const call = src.slice(start, src.indexOf('\n    });', start));
+        assert.match(call, /settleFor: async \(member\) => buildSettleCallback\(member, \{ command, log, shell: await resolveSettleShell\(/);
     });
 
     test('without memberShell (no recovery primitives) no launch pull is issued', async () => {
