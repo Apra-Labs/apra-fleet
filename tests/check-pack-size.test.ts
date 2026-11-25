@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
+import { gzipSync } from 'node:zlib';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -9,6 +11,7 @@ import {
   parseThresholdArg,
   checkPackSize,
   DEFAULT_THRESHOLD_BYTES,
+  tarballUnpackedSize,
 } from '../scripts/check-pack-size.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -203,11 +206,11 @@ describe('check-pack-size.mjs script process behavior (fixture stdin, no npm pac
   });
 
   it('exits 0 with no ::error:: for a fixture below the threshold', () => {
-    const fixture = JSON.stringify([{ name: 'apra-fleet', unpackedSize: 9999999 }]);
+    const fixture = JSON.stringify([{ name: 'apra-fleet', unpackedSize: DEFAULT_THRESHOLD_BYTES - 1 }]);
     const { status, stdout, stderr } = runScript([], fixture);
     expect(status).toBe(0);
     expect(stderr).not.toContain('::error::');
-    expect(stdout).toContain('9999999');
+    expect(stdout).toContain(String(DEFAULT_THRESHOLD_BYTES - 1));
   });
 
   it('regression fixture (scrapes to "4", real size over threshold) is rejected by the script', () => {
@@ -265,5 +268,68 @@ describe('ci.yml wiring (apra-fleet-yj1.2)', () => {
 
   it('invokes check-pack-size.mjs', () => {
     expect(ciYml).toContain('check-pack-size.mjs');
+  });
+});
+
+// apra-fleet-kc3e.2: the guard also measures a staged package dir
+// (--dir) or a packed tarball (--tarball), not only the cwd.
+
+/** Minimal ustar archive builder: one regular file per entry. */
+function buildTgz(files: Record<string, string>): Buffer {
+  const blocks: Buffer[] = [];
+  for (const [name, content] of Object.entries(files)) {
+    const data = Buffer.from(content);
+    const header = Buffer.alloc(512);
+    header.write(name, 0, 'utf-8');
+    header.write('0000644\0', 100, 'ascii');
+    header.write(data.length.toString(8).padStart(11, '0') + '\0', 124, 'ascii');
+    header.write('0', 156, 'ascii');
+    blocks.push(header, data, Buffer.alloc((512 - (data.length % 512)) % 512));
+  }
+  blocks.push(Buffer.alloc(1024));
+  return gzipSync(Buffer.concat(blocks));
+}
+
+describe('tarball and --dir modes (apra-fleet-kc3e.2)', () => {
+  it('tarballUnpackedSize sums regular-file sizes', () => {
+    expect(tarballUnpackedSize(buildTgz({ 'package/a.js': 'x'.repeat(700), 'package/b.json': '{}' }))).toBe(702);
+  });
+
+  it('--tarball passes below the threshold and fails above it', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cps-tgz-'));
+    try {
+      const tgz = path.join(dir, 'p.tgz');
+      fs.writeFileSync(tgz, buildTgz({ 'package/a.js': 'x'.repeat(1000) }));
+      const ok = execFileSync(process.execPath, [scriptPath, '--tarball', tgz, '--threshold', '1000'], { encoding: 'utf-8' });
+      expect(ok).toContain('1000');
+      let status = 0;
+      try {
+        execFileSync(process.execPath, [scriptPath, '--tarball', tgz, '--threshold', '999'], { encoding: 'utf-8', stdio: 'pipe' });
+      } catch (err) {
+        status = (err as { status: number }).status;
+      }
+      expect(status).not.toBe(0);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('--dir measures the given package dir instead of the cwd', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cps-dir-'));
+    try {
+      fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'tiny', version: '1.0.0', files: ['a.js'] }));
+      fs.writeFileSync(path.join(dir, 'a.js'), 'y'.repeat(5000));
+      const out = execFileSync(process.execPath, [scriptPath, '--dir', dir, '--threshold', '100000'], { encoding: 'utf-8' });
+      expect(out).toMatch(/unpacked package size \d+ bytes/);
+      let status = 0;
+      try {
+        execFileSync(process.execPath, [scriptPath, '--dir', dir, '--threshold', '4000'], { encoding: 'utf-8', stdio: 'pipe' });
+      } catch (err) {
+        status = (err as { status: number }).status;
+      }
+      expect(status).not.toBe(0);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
