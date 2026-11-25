@@ -213,6 +213,43 @@ start/stop/restart/auto-start-on-login procedures, and `docs/supervisor-api.md`
 in this folder for the API's operational semantics -- both are fully generic,
 nothing there is apra-fleet-specific either.
 
+### Optional: remote users through an authenticating front (`trusted-front`)
+
+By default (`--auth none`) the supervisor has no user identity: anything that
+can reach its port is the local operator, so keep it on loopback. To let
+remote users in, run an authenticating front on the same machine (any process
+that follows the "Front contract" in [supervisor-auth.md](supervisor-auth.md):
+it signs users in, maps them to the roles `viewer` / `operator` / `admin`, and
+signs every request it forwards) and start the supervisor in `trusted-front`
+mode, bound to loopback, with the front's public JWKS file and issuer:
+
+```bash
+node ~/.apra-fleet/workflows/fleet-sprint/bin/serve.mjs \
+  --auth trusted-front \
+  --front-jwks /path/to/front-keys/jwks.json \
+  --front-issuer https://front.example.com
+```
+```powershell
+node "$HOME\.apra-fleet\workflows\fleet-sprint\bin\serve.mjs" --auth trusted-front `
+  --front-jwks "C:\path\to\front-keys\jwks.json" --front-issuer https://front.example.com
+```
+
+The same settings can come from `FLEET_SUPERVISOR_AUTH`,
+`FLEET_SUPERVISOR_FRONT_JWKS`, `FLEET_SUPERVISOR_FRONT_ISSUER` and
+`FLEET_SUPERVISOR_FRONT_AUDIENCE` (default `fleet-supervisor`; flags win). The
+supervisor refuses to start in this mode on a non-loopback `--host` or without
+the JWKS path or the issuer. Sprint children, local scripts and the fleet
+skills keep reaching it over loopback with no token. Check the wiring with:
+
+```bash
+curl -s http://127.0.0.1:8787/api/whoami    # {"sub":"local",...,"roles":["admin"],"mode":"trusted-front"}
+```
+
+then sign in through the front in a browser: the dashboard header says
+"Signed in as ...". The step-by-step procedure, the role of each route, key
+rotation, the audit trail and the security notes are in
+[supervisor-auth.md](supervisor-auth.md).
+
 ## Step 5 -- Launch your first sprint
 
 ```bash

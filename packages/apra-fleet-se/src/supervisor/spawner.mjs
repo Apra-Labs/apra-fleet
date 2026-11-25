@@ -208,13 +208,14 @@ export async function allocateFreePort(opts = {}) {
  *   requirementsFile?: string, roleMap?: object|string, budget?: number|string,
  *   viewerPort: number, serviceUrl?: string, runId?: string, expectBeads?: string,
  *   extraArgs?: string[], skipRegression?: boolean, kbDemotionLoop?: 'on'|'off',
+ *   tierPolicy?: string, tierOverrides?: string|object,
  *   decisionNotify?: string|object,
  * }} opts
  * @returns {string[]}
  */
 export function buildSprintArgv(opts = {}) {
     const { issue, members, branch, base, goal, maxCycles, allowMissingMembers,
-        requirementsFile, roleMap, budget, viewerPort, serviceUrl, runId, expectBeads, extraArgs, skipRegression, kbDemotionLoop, decisionNotify } = opts;
+        requirementsFile, roleMap, budget, viewerPort, serviceUrl, runId, expectBeads, extraArgs, skipRegression, kbDemotionLoop, tierPolicy, tierOverrides, decisionNotify } = opts;
 
     if (!issue || !members || !branch || !base) {
         throw new Error('buildSprintArgv requires issue, members, branch, and base');
@@ -240,6 +241,8 @@ export function buildSprintArgv(opts = {}) {
     if (budget !== undefined) args.push('--budget', String(budget));
     if (skipRegression === true) args.push('--skip-regression');
     if (kbDemotionLoop !== undefined) args.push('--kb-demotion-loop', kbDemotionLoop);
+    if (tierPolicy !== undefined) args.push('--tier-policy', tierPolicy);
+    if (tierOverrides !== undefined) args.push('--tier-overrides', typeof tierOverrides === 'string' ? tierOverrides : JSON.stringify(tierOverrides));
     if (decisionNotify !== undefined) args.push('--decision-notify', typeof decisionNotify === 'string' ? decisionNotify : JSON.stringify(decisionNotify));
     // apra-fleet-f34.1: when this supervisor instance has a known --service-url
     // (its own HTTP listen address, wired in from createSpawner()'s deps.serviceUrl

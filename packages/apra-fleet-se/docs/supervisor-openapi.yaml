@@ -22,6 +22,18 @@ info:
     literal, the bind host or a --allowed-host / FLEET_SUPERVISOR_ALLOWED_HOSTS
     entry is 403 (DNS-rebinding defence). See supervisor-api.md,
     "Mutating requests".
+
+    Authentication (supervisor-auth.md; supervisor-api.md "Authentication"):
+    in the default `none` mode every caller is the local operator. In
+    `trusted-front` mode (--auth trusted-front) a request carrying an
+    X-Fleet-Identity assertion (ES256 compact JWS signed by the front) that
+    does not verify, or an unsigned request from a non-loopback address, is
+    401 {"error":"unauthenticated"}; unsigned loopback callers are the local
+    operator. A verified caller below a route's minimum role gets 403
+    {"error":"forbidden","requiredRole":"<role>"}; a local-only route (the
+    dolt-push-mutex and child-id-allocator callbacks) or an unlisted route is
+    403 {"error":"forbidden"}. These 401/403 answers apply to every route
+    below and are not repeated per operation.
   version: "1.0.0"
 servers:
   - url: http://127.0.0.1:8787
@@ -136,6 +148,41 @@ paths:
                 type: object
                 properties:
                   status: { type: string, enum: [shutting-down] }
+
+  /api/whoami:
+    get:
+      tags: [lifecycle]
+      summary: The caller's identity and roles as the supervisor sees them
+      description: >
+        In `none` mode, and for unsigned loopback callers in `trusted-front`
+        mode, the local operator (sub "local", roles [admin]). For a caller
+        with a verified X-Fleet-Identity assertion, its own identity and the
+        known roles from the assertion (possibly empty); any verified
+        identity may call this route. See supervisor-auth.md.
+      responses:
+        "200":
+          description: The caller's identity.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sub, name, email, roles, mode]
+                properties:
+                  sub: { type: string }
+                  name: { type: [string, "null"] }
+                  email: { type: [string, "null"] }
+                  roles:
+                    type: array
+                    items: { type: string, enum: [viewer, operator, admin] }
+                  mode: { type: string, enum: [none, trusted-front] }
+        "401":
+          description: trusted-front mode only -- the assertion did not verify, or an unsigned non-loopback caller.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error: { type: string, enum: [unauthenticated] }
 
   # ---------------------------------------------------------------------
   # Sprint / member / backlog operator endpoints (api.mjs)
@@ -299,6 +346,8 @@ paths:
                         members: { type: array, items: { type: string } }
                         issueRoots: { type: array, items: { type: string } }
                         childPid: { type: [integer, "null"] }
+                        tierPolicy: { type: [string, "null"], description: "launch tier policy preset (null for a legacy reservation)" }
+                        tierOverrides: { type: [object, "null"], description: "launch tier overrides, or null" }
                         port: { type: [integer, "null"] }
                   scopeFreshness: { $ref: "#/components/schemas/ScopeFreshness" }
     post:
@@ -382,6 +431,47 @@ paths:
                   additionalProperties:
                     type: array
                     items: { type: string }
+                tierPolicy:
+                  type: string
+                  enum: [balanced, economy, quality]
+                  default: balanced
+                  description: >
+                    Model tier policy preset. Omitted means balanced. Anything
+                    else -> 400 (field tierPolicy) before any spawn. Always
+                    forwarded to the child as --tier-policy, recorded on the
+                    ledger reservation and shown by GET /api/sprints.
+                tierOverrides:
+                  description: >
+                    Policy overrides, a JSON object or a JSON string of one.
+                    A fixed-role key (planner, re-planner, plan-reviewer,
+                    reviewer-round, final-review, deployer, integ-test-runner,
+                    regression-test-runner, harvester, streakAssignment) pins
+                    that role's tier; doerDefault is the tier of a doer
+                    dispatch whose beads declare none; doerCeiling caps
+                    escalation; premiumCapPct (integer 0..100, or null for no
+                    cap) replaces the preset's cap. Unknown keys or bad values
+                    -> 400 (field tierOverrides) before any spawn. Forwarded as
+                    --tier-overrides. See docs/fleet-sprint-tier-policy.md.
+                  type: object
+                  additionalProperties: false
+                  properties:
+                    planner: { type: string, enum: [cheap, standard, premium] }
+                    're-planner': { type: string, enum: [cheap, standard, premium] }
+                    'plan-reviewer': { type: string, enum: [cheap, standard, premium] }
+                    'reviewer-round': { type: string, enum: [cheap, standard, premium] }
+                    'final-review': { type: string, enum: [cheap, standard, premium] }
+                    deployer: { type: string, enum: [cheap, standard, premium] }
+                    'integ-test-runner': { type: string, enum: [cheap, standard, premium] }
+                    'regression-test-runner': { type: string, enum: [cheap, standard, premium] }
+                    harvester: { type: string, enum: [cheap, standard, premium] }
+                    streakAssignment: { type: string, enum: [cheap, standard, premium] }
+                    doerDefault: { type: string, enum: [cheap, standard, premium] }
+                    doerCeiling: { type: string, enum: [cheap, standard, premium] }
+                    premiumCapPct:
+                      type: integer
+                      nullable: true
+                      minimum: 0
+                      maximum: 100
                 budget:
                   type: number
                   description: non-negative finite USD ceiling (else 400, field budget); forwarded into the child's --budget argv

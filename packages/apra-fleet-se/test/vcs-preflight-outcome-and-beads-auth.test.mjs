@@ -5,7 +5,6 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createGitSync, createSyncBrackets } from '../fleet-sprint/git-sync.mjs';
 import { createVcsAuthPreflightCallback, createVcsAuthSelfHealCallback, VCS_CREDENTIAL_PROBE_FAILED, VCS_MEMBER_LOOKUP_FAILED } from '../fleet-sprint/vcs-auth.mjs';
-import { getVcsProvider } from '../fleet-sprint/vcs-module.mjs';
 import { getSeCommands } from '../fleet-sprint/se-os-commands.mjs';
 import { preflightBeadsHealthGate, invalidateSyncRemoteCache, clearLastSyncedTip, clearTipProbeFailures } from '../fleet-sprint/dolt-sync.mjs';
 import { DoltSyncError, UnpublishedSchemaMigrationsError } from '../fleet-sprint/errors.mjs';
@@ -254,8 +253,9 @@ describe('C. migrated-but-unpushed beads clone at the preflight D-pull', () => {
 // of the probe-first branch in vcs-auth.mjs turns these red.
 describe('D. probe-first preflight for non-re-mintable members (Bitbucket)', () => {
     const BB_REMOTE = { ok: true, output: 'https://bitbucket.org/acme/widgets.git', error: null };
-    const BITBUCKET_HINT = getVcsProvider('bitbucket').authRemedy.hint;
-    const isProbe = (cmd) => cmd.includes('git ls-remote origin');
+    // The git channel probe: ls-remote through only the labelled helper.
+    const isProbe = (cmd) => cmd.includes('ls-remote origin HEAD');
+    const PS_HOME_PROBE = getSeCommands({ os: 'windows', shell: '' }).memberHomeProbe();
 
     // The labelled-credential checks a Bitbucket preflight also runs: the
     // REST probe through vcs_credential_exec (default: 200) and the helper's
@@ -274,7 +274,14 @@ describe('D. probe-first preflight for non-re-mintable members (Bitbucket)', () 
         };
         const logs = [];
         const log = (m) => logs.push(m);
-        const { command, calls } = makeCommandMock({ 'git ls-remote origin': [probe], 'git remote get-url origin': [remote], "grep '^username='": [user] });
+        const { command, calls } = makeCommandMock({
+            'ls-remote origin HEAD': Array.isArray(probe) ? probe : [probe],
+            'git remote get-url origin': [remote],
+            "grep '^username='": [user],
+            // The member home the labelled git probe is built from.
+            [`printf '%s' "$HOME"`]: [{ ok: true, output: '/home/dev', error: null }],
+            [PS_HOME_PROBE]: [{ ok: true, output: 'C:\\Users\\dev', error: null }],
+        });
         const ensureVcsAuthFresh = createVcsAuthPreflightCallback({ callTool, command, log });
         const gitSync = createGitSync({
             brackets: createSyncBrackets({ setPauseGuard: () => {} }),
@@ -313,19 +320,23 @@ describe('D. probe-first preflight for non-re-mintable members (Bitbucket)', () 
         const line = errors[0];
         assert.ok([...line].every((ch) => ch.charCodeAt(0) < 128), `non-ASCII in: ${line}`);
         assert.match(line, /ERROR vcs_credential_probe_failed: local member 'backlog' \(provider 'bitbucket'\)/);
-        assert.ok(line.includes(BITBUCKET_HINT), 'names the Bitbucket remedy hint');
+        // The provider's member-specific remedy (credentialProbe.remedy).
+        assert.ok(line.includes('provision_vcs_auth member_name=backlog provider=bitbucket workspace=acme api_token={{secret.bitbucket_api_token}}'), 'names the Bitbucket remedy for this member');
         assert.match(line, /Authentication failed/, 'carries the probe detail');
         assert.equal(provisionCalls(tools).length, 0, 'a local member is never provisioned (would overwrite the host credential)');
         assert.equal(calls.filter((c) => isProbe(c.cmd)).length, 1, 'never re-probed this run');
     });
 
-    test('local member probe failure names the by-hand re-provision a 0.4.4-provisioned local member needs', async () => {
-        const { threeBrackets, logs } = makeProbeSync({ record: LOCAL_BB, probe: fail('fatal: Authentication failed') });
+    test('local member probe failure names the by-hand re-provision and the earlier-helper username note', async () => {
+        // No stored token: the remedy carries the full Bitbucket guidance.
+        const { threeBrackets, logs } = makeProbeSync({ record: LOCAL_BB, probe: fail('fatal: Authentication failed'), store: [] });
         await threeBrackets('backlog');
         const line = logs.find((l) => l.includes(VCS_CREDENTIAL_PROBE_FAILED));
         assert.ok(line, logs.join('\n'));
-        assert.match(line, /provisioned by fleet 0\.4\.4/);
-        assert.match(line, /re-provisioned by hand/);
+        assert.match(line, /A helper written by an earlier provision_vcs_auth may carry the account login/);
+        assert.match(line, /run it by hand for a local member/);
+        assert.match(line, /failed the git ls-remote probe through only the fleet-written .* helper \(git through the host's own credential chain was not checked\)/);
+        assert.ok(!/No PR will be opened/.test(line), 'a git-only failure predicts nothing about the PR');
         assert.ok(
             line.includes('provision_vcs_auth member_name=MEMBER provider=bitbucket workspace=WORKSPACE api_token={{secret.bitbucket_api_token}}'),
             'gives the exact re-provision command',
@@ -351,21 +362,25 @@ describe('D. probe-first preflight for non-re-mintable members (Bitbucket)', () 
         assert.match(ps, /\$env:GCM_INTERACTIVE='never'/);
         assert.ok(ps.includes('git ls-remote origin') && !ps.includes('credential.helper'), ps);
 
-        // And the callback actually dispatches the member's own dialect.
+        // And the callback actually dispatches the member's own dialect: the
+        // git channel is the LABELLED probe (helper list reset, only the
+        // fleet helper named), built from the member home it read first.
         const { ensureVcsAuthFresh, calls } = makeProbeSync({ record: { ...LOCAL_BB, os: 'windows', shell: 'powershell5' }, probe: OK });
         // The command mock's key match cannot see inside the encoding, so
         // every non-matching command (the probe included) answers OK.
         await ensureVcsAuthFresh('win-backlog');
-        // (The labelled helper's username read is a second encoded command.)
-        const issued = calls.map((c) => c.cmd).filter((c) => c.startsWith('powershell -EncodedCommand ') && decode(c).includes('git ls-remote'));
+        // (The labelled helper's username read is another encoded command.)
+        const issued = calls.map((c) => c.cmd).filter((c) => c.startsWith('powershell -EncodedCommand ') && decode(c).includes('ls-remote origin HEAD'));
         assert.equal(issued.length, 1, `expected one PowerShell probe, got: ${JSON.stringify(calls.map((c) => c.cmd))}`);
-        assert.equal(decode(issued[0]), ps);
+        assert.equal(issued[0], getSeCommands({ os: 'windows', shell: '' }).gitLsRemoteLabelledProbe('bitbucket', undefined, 'C:\\Users\\dev').command);
+        assert.ok(decode(issued[0]).includes("-c 'credential.helper='"), decode(issued[0]));
     });
 
     test('remote Bitbucket member, failed probe: one non-interactive provision with workspace and api_token placeholder, no email; not repeated', async () => {
         const { threeBrackets, tools, logs } = makeProbeSync({
             record: { type: 'ssh', os: 'linux', vcsProvider: 'bitbucket' },
-            probe: fail('fatal: Authentication failed'),
+            // The labelled git probe fails, provision fixes it, the re-probe passes.
+            probe: [fail('fatal: Authentication failed'), OK],
         });
         await threeBrackets('bb-remote');
         const provs = provisionCalls(tools);
@@ -395,7 +410,8 @@ describe('D. probe-first preflight for non-re-mintable members (Bitbucket)', () 
         assert.equal(provs[0].args.non_interactive, true);
         const errors = logs.filter((l) => l.includes(VCS_CREDENTIAL_PROBE_FAILED));
         assert.equal(errors.length, 1, errors.join('\n'));
-        assert.ok(errors[0].includes(BITBUCKET_HINT));
+        assert.ok(errors[0].includes('provision_vcs_auth member_name=bb-remote provider=bitbucket workspace=acme'), errors[0]);
+        assert.ok(errors[0].includes('provision_vcs_auth also failed'), errors[0]);
     });
 
     test('regression: GitHub-App local backlog member with an expiring cached credential still calls provision_vcs_auth, never probes', async () => {

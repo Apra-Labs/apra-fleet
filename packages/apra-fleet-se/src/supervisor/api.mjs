@@ -48,8 +48,10 @@ import { validateIssueId, validateBranchName, validateBranchPair, validateGoal, 
 import { resolveRoleMap } from '../../bin/cli.mjs';
 import { resolveBacklogRoleAlias, ROLE_BACKLOG, ROLE_BACKLOG_ALIAS } from '../../fleet-sprint/backlog-role.mjs';
 import { normalizeRole } from '../../fleet-sprint/contracts.mjs';
+import { resolveTierPolicy, parseTierOverrides, DEFAULT_TIER_POLICY } from '../../fleet-sprint/tier-policy.mjs';
 import { isDeterministicTerminalReason, HISTORY_EVENTS } from './history.mjs';
 import { defaultHasTerminalState } from './watchdog.mjs';
+import { terminalInfoFromState, terminalInfoFromHistory } from './pr-not-opened.mjs';
 import { toBeadsSummary } from './beads-identity.mjs';
 import { fleetMembersUnavailableReason, fleetMembersStoppedByUserReason } from './fleet-members.mjs';
 
@@ -585,7 +587,20 @@ export function createSprintController(deps = {}) {
             }
             kbDemotionLoop = body.kbDemotionLoop;
         }
-        return { issue: issueIds.join(','), issueIds, branch, base, members, skipRegression, kbDemotionLoop, decisionNotify };
+        // tierPolicy (optional preset, default balanced) and tierOverrides
+        // (object or JSON string): validated with the engine's own
+        // resolveTierPolicy so a bad value is a 400 naming the field before
+        // any spawn. The child always receives an explicit --tier-policy, so
+        // a launch never depends on the child's own default.
+        let tierOverrides;
+        try { tierOverrides = parseTierOverrides(body.tierOverrides); }
+        catch (err) { throw new ApiError(400, err.message, 'tierOverrides'); }
+        try { resolveTierPolicy(body.tierPolicy, undefined); }
+        catch (err) { throw new ApiError(400, err.message, 'tierPolicy'); }
+        try { resolveTierPolicy(body.tierPolicy, tierOverrides); }
+        catch (err) { throw new ApiError(400, err.message, 'tierOverrides'); }
+        const tierPolicy = body.tierPolicy ?? DEFAULT_TIER_POLICY;
+        return { issue: issueIds.join(','), issueIds, branch, base, members, skipRegression, kbDemotionLoop, tierPolicy, tierOverrides, decisionNotify };
     }
 
     // -- GET /api/members : list_members + live-reservation overlay -----------
@@ -625,8 +640,8 @@ export function createSprintController(deps = {}) {
     }
 
     // -- POST /api/sprints : validated, goal-forwarding launch ----------------
-    async function launch(body = {}) {
-        const { issue, issueIds, branch, base, members, skipRegression, kbDemotionLoop, decisionNotify } = validateLaunchRequest(body);
+    async function launch(body = {}, opts = {}) {
+        const { issue, issueIds, branch, base, members, skipRegression, kbDemotionLoop, tierPolicy, tierOverrides, decisionNotify } = validateLaunchRequest(body);
         // An '@file' roleMap is a CLI-only convenience: over HTTP it would make
         // the supervisor read an arbitrary server-side path named by the request
         // body, and the alias warning could not be computed from it. Reject it.
@@ -809,6 +824,8 @@ export function createSprintController(deps = {}) {
             runId: sprintId,
             skipRegression,
             kbDemotionLoop,
+            tierPolicy,
+            tierOverrides: tierOverrides === undefined ? undefined : JSON.stringify(tierOverrides),
             decisionNotify,
         };
         let spawned;
@@ -858,10 +875,14 @@ export function createSprintController(deps = {}) {
             branch,
             base,
             goal: body.goal ?? null,
+            tierPolicy,
+            tierOverrides: tierOverrides ?? null,
             // Which .beads this supervisor resolved at launch time (see
             // beads-identity.mjs) -- the same identity the child received as
             // --expect-beads, recorded so the dashboard can show it per row.
             beads: beadsSummaryForLaunch(),
+            // docs/supervisor-auth.md audit: the caller who launched it.
+            ...(opts && opts.actor ? { launchedBy: opts.actor } : {}),
         });
 
         return {
@@ -872,9 +893,37 @@ export function createSprintController(deps = {}) {
             issueRoots,
             members: union,
             goal: body.goal ?? null,
+            tierPolicy,
+            tierOverrides: tierOverrides ?? null,
             buildVersionWarning,
             warnings: aliasWarnings,
         };
+    }
+
+    // Additive list-row fields for a sprint that already reached a terminal
+    // state (it can still hold a ledger row in the post-terminal linger window):
+    // `verdict`, and `prNotOpened { reason }` only when the branch was pushed
+    // but the PR was skipped. The persisted terminal run-state is the source;
+    // the FINISHED history event is the fallback. A sprint still running (or
+    // whose PR opened) gets no marker. Never throws.
+    function terminalListFields(r) {
+        try {
+            let info = null;
+            const st = hasTerminalState(r.sprintId, r.branch ?? null);
+            if (st && typeof st === 'object') {
+                info = terminalInfoFromState(st);
+            } else {
+                const fin = history.forSprint(r.sprintId).filter((e) => e.event === HISTORY_EVENTS.FINISHED).pop();
+                if (fin) info = terminalInfoFromHistory(fin);
+            }
+            if (!info) return {};
+            return {
+                ...(info.verdict ? { verdict: info.verdict } : {}),
+                ...(info.prNotOpened ? { prNotOpened: info.prNotOpened } : {}),
+            };
+        } catch {
+            return {};
+        }
     }
 
     // -- GET /api/sprints : every live sprint ---------------------------------
@@ -886,7 +935,10 @@ export function createSprintController(deps = {}) {
                 members: r.members,
                 issueRoots: r.issueRoots,
                 childPid: r.childPid ?? null,
+                tierPolicy: r.tierPolicy ?? null,
+                tierOverrides: r.tierOverrides ?? null,
                 port: resolvePort(r.childPid ?? null) ?? null,
+                ...terminalListFields(r),
             })),
             scopeFreshness: freshness,
         };
@@ -947,7 +999,7 @@ export function createSprintController(deps = {}) {
     }
 
     // -- POST /api/sprints/:id/stop : proxy the child's /stop -----------------
-    async function stopSprint(id) {
+    async function stopSprint(id, opts = {}) {
         const reservation = ledger.get(id);
         if (!reservation) {
             throw new ApiError(404, `no live sprint '${id}' to stop`);
@@ -969,6 +1021,11 @@ export function createSprintController(deps = {}) {
             throw new ApiError(409, `sprint '${id}' has no reachable child (port unknown)`);
         }
         const result = await proxyStop(port);
+        // docs/supervisor-auth.md audit: who asked it to stop. Best-effort --
+        // the stop itself already went through.
+        if (opts && opts.actor && typeof ledger.recordStop === 'function') {
+            try { await ledger.recordStop(id, opts.actor); } catch (err) { console.error(`[supervisor] recording stoppedBy for '${id}' failed:`, err && err.message ? err.message : err); }
+        }
         return { sprintId: id, status: 'stopping', child: result ?? null };
     }
 
@@ -1033,10 +1090,11 @@ export function registerSprintRoutes(supervisor, controller) {
         sendJson(res, 200, await controller.backlog());
     });
 
-    supervisor.route('POST', '/api/sprints', async (req, res) => {
+    supervisor.route('POST', '/api/sprints', async (req, res, ctx) => {
         const body = (await readJsonBody(req)) ?? {};
+        const actor = ctx?.auth?.actor;
         try {
-            sendJson(res, 201, await controller.launch(body));
+            sendJson(res, 201, await controller.launch(body, actor ? { actor } : undefined));
         } catch (err) {
             if (!onApiError(res, err)) throw err;
         }
@@ -1065,7 +1123,8 @@ export function registerSprintRoutes(supervisor, controller) {
 
     supervisor.route('POST', '/api/sprints/:id/stop', async (req, res, ctx) => {
         try {
-            sendJson(res, 200, await controller.stopSprint(ctx.params.id));
+            const actor = ctx?.auth?.actor;
+            sendJson(res, 200, await controller.stopSprint(ctx.params.id, actor ? { actor } : undefined));
         } catch (err) {
             if (!onApiError(res, err)) throw err;
         }

@@ -183,7 +183,9 @@ export function resolveMember(ctx, member, bindings = {}) {
 
 /**
  * The model tier a dispatch is priced at, resolved from `policy.model`:
- *   'fixed'     -- ctx.fixedRoleTier[model.key]
+ *   'fixed'     -- ctx.fixedRoleTier[model.key], unless the caller passes a
+ *                  per-dispatch tier as bindings.fixedTier (the per-round
+ *                  reviewer, whose tier depends on the round's beads)
  *   'per-bead'  -- bindings[model.binding] (the doer's declared tier)
  *   'inherited' -- the tier of the dispatch this one continues: `inheritedTier`
  *                  (what the main dispatch was actually priced at) when the
@@ -194,7 +196,7 @@ export function resolveMember(ctx, member, bindings = {}) {
  */
 export function resolveModelTier(ctx, model, bindings = {}, inherit = {}) {
     if (!model) return undefined;
-    if (model.kind === 'fixed') return ctx.fixedRoleTier[model.key];
+    if (model.kind === 'fixed') return bindings.fixedTier ?? ctx.fixedRoleTier[model.key];
     if (model.kind === 'per-bead') return bindings[model.binding];
     if (model.kind === 'inherited') {
         if (inherit.inheritedTier !== undefined) return inherit.inheritedTier;
@@ -699,6 +701,9 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
                 // once it settles.
                 onModelId: modelReporter.onModelId,
                 label: prepared.label ?? defaultLabel,
+                // Engine-internal: bead ids, tierReason and escalations for the
+                // per-dispatch tier log line (stripped by the runner's agent()).
+                tier_context: typeof opts.tierContext === 'function' ? opts.tierContext() : opts.tierContext,
                 // Strict permission handling: a refused tool call fails the
                 // dispatch (permission_denied) so no role trusts a result made
                 // without the refused tool's output, and the progressive heal

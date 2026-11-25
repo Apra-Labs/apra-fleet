@@ -204,6 +204,49 @@ export function closedWorkThisRun({ workedOnIds = [], verifyEverIds = [], closed
     return [...ids].filter((id) => closed.has(id)).sort();
 }
 
+/** Longest reviewer-notes excerpt the stall message carries (the full notes
+ *  travel in the error details and reach the abort PR's own section). */
+export const STALL_REVIEW_NOTES_MAX_LENGTH = 400;
+
+/**
+ * Whether a stall with nothing open at goal priority may be described as "in
+ * closing out the sprint, not in the work itself", and the message suffix
+ * either way. That wording is used only when nothing is open at goal,
+ * nothing at goal is deferred, no bead was reopened by a reviewer and then
+ * closed again this run, and the last Review/Re-Review verdict was not
+ * CHANGES_NEEDED; otherwise the suffix names the deferred at-goal beads, the
+ * reopened-then-closed beads and the last reviewer verdict. Every id comes
+ * from the arguments.
+ *
+ * @param {object} opts
+ * @param {string[]} opts.openAtGoalIds open, non-deferred beads at goal priority
+ * @param {number|string} opts.goalMax
+ * @param {string[]} [opts.deferredAtGoalIds] deferred beads at goal priority, not closed
+ * @param {string[]} [opts.reopenedThenClosedIds] reopened by a reviewer this run, now closed
+ * @param {{ verdict?: string, notes?: string, site?: string, cycle?: unknown }|null} [opts.lastReview]
+ * @returns {{ closingOut: boolean, suffix: string }}
+ */
+export function stallSettlementSummary({ openAtGoalIds = [], goalMax, deferredAtGoalIds = [], reopenedThenClosedIds = [], lastReview = null }) {
+    const changesNeeded = Boolean(lastReview && lastReview.verdict === 'CHANGES_NEEDED');
+    const closingOut = openAtGoalIds.length === 0 && deferredAtGoalIds.length === 0
+        && reopenedThenClosedIds.length === 0 && !changesNeeded;
+    if (closingOut) {
+        return { closingOut, suffix: ' No beads remain open at/above goal priority -- the stall is in closing out the sprint, not in the work itself.' };
+    }
+    const parts = [];
+    if (openAtGoalIds.length > 0) parts.push(` Still open at/above goal priority ${goalMax}: [${openAtGoalIds.join(', ')}].`);
+    else parts.push(' No beads remain open (and not deferred) at/above goal priority, but the work itself is not settled:');
+    if (deferredAtGoalIds.length > 0) parts.push(` Deferred at/above goal priority (not done, only never dispatched): [${deferredAtGoalIds.join(', ')}].`);
+    if (reopenedThenClosedIds.length > 0) parts.push(` Reopened by a reviewer and then closed again this run: [${reopenedThenClosedIds.join(', ')}].`);
+    if (lastReview && lastReview.verdict) {
+        const where = [lastReview.site, lastReview.cycle !== undefined && lastReview.cycle !== null ? `cycle ${lastReview.cycle}` : null].filter(Boolean).join(', ');
+        const notes = String(lastReview.notes ?? '').replace(/\s+/g, ' ').trim();
+        const clipped = notes.length > STALL_REVIEW_NOTES_MAX_LENGTH ? `${notes.slice(0, STALL_REVIEW_NOTES_MAX_LENGTH - 3)}...` : notes;
+        parts.push(` Last reviewer verdict${where ? ` (${where})` : ''}: ${lastReview.verdict}${clipped ? ` -- ${clipped}` : ''}.`);
+    }
+    return { closingOut, suffix: parts.join('') };
+}
+
 /**
  * The carry-over handed to Finalization when a set-aside stall fires after
  * this run already closed work: the exit reason, where it fired, the closed

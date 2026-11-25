@@ -453,6 +453,17 @@ export const GUARDED_MODULES = [
     // Operator notification for a pending decision: no command() or agent()
     // site (sends through the injected fleet client), zero baseline.
     'decision-notify.mjs',
+    // Tier policy presets and resolution (pure): no command() or agent()
+    // site, no I/O; runner.js reads the resolved tiers.
+    'tier-policy.mjs',
+    // The premium-cap gate: counting is pure, every bd read, dispatch and
+    // decision write is an injected runner.js seam -- no command() or agent()
+    // site of its own.
+    'tier-cap.mjs',
+    // One-step tier escalation: the decision is pure; its one command() site
+    // (the tierEscalatedFrom bead write) is member_name-bearing and runs
+    // inside the caller's gitSync bracket, which D-pushes.
+    'tier-escalation.mjs',
     // The per-member sprint-init probe: kb_*/code_* calls through the injected
     // memberCall, member_detail on the orchestrator session, and ONE
     // member-bound command channel (fleetApi.executeCommand, command strings

@@ -751,6 +751,9 @@ export function createWatchdog(deps = {}) {
                 reason: `watchdog: classified ${status} (${detail})`,
                 members,
                 issueRoots,
+                // docs/supervisor-auth.md audit, carried over when recorded.
+                ...(entry?.launchedBy ? { launchedBy: entry.launchedBy } : {}),
+                ...(entry?.stoppedBy ? { stoppedBy: entry.stoppedBy } : {}),
             });
             // history.record() is async; a rejection must never take the
             // classifier down with it, same discipline as recordFinished's

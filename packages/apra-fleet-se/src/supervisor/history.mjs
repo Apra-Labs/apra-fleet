@@ -152,6 +152,11 @@ function cloneEvent(e) {
         // failure) and its warnings, so they survive the reservation release.
         resultStatus: e.resultStatus === undefined ? null : e.resultStatus,
         warnings: Array.isArray(e.warnings) ? [...e.warnings] : [],
+        // docs/supervisor-auth.md audit: who launched / stopped the sprint,
+        // `{ sub, name }`. Present only when recorded, so every existing
+        // event (and reader) is unchanged.
+        ...(e.launchedBy ? { launchedBy: { sub: e.launchedBy.sub, name: e.launchedBy.name ?? null } } : {}),
+        ...(e.stoppedBy ? { stoppedBy: { sub: e.stoppedBy.sub, name: e.stoppedBy.name ?? null } } : {}),
     };
 }
 
@@ -238,7 +243,7 @@ export function createHistory(deps = {}) {
         /**
          * Append one terminal event and persist atomically. The in-memory log is
          * committed only after the disk write succeeds.
-         * @param {{ sprintId: string, event: string, reason?: string, by?: string|null, members?: string[], issueRoots?: string[], at?: string, exitCode?: number|null, signal?: string|null, logPath?: string|null, terminalReason?: string|null, verdict?: string|null, resultStatus?: string|null, warnings?: string[] }} entry
+         * @param {{ sprintId: string, event: string, reason?: string, by?: string|null, members?: string[], issueRoots?: string[], at?: string, exitCode?: number|null, signal?: string|null, logPath?: string|null, terminalReason?: string|null, verdict?: string|null, resultStatus?: string|null, warnings?: string[], launchedBy?: { sub: string, name: string|null }, stoppedBy?: { sub: string, name: string|null } }} entry
          * @returns {Promise<object>} a clone of the stored event
          */
         async record(entry) {
@@ -263,6 +268,8 @@ export function createHistory(deps = {}) {
                 verdict: entry.verdict,
                 resultStatus: entry.resultStatus,
                 warnings: entry.warnings,
+                launchedBy: entry.launchedBy,
+                stoppedBy: entry.stoppedBy,
             });
             const run = txChain.then(async () => {
                 const next = [...events, stored];
