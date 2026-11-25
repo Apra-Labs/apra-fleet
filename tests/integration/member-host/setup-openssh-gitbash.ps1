@@ -14,8 +14,8 @@
 # Writes <InfoFile> (JSON: user, keyPath, port, home, bash) for run.mjs.
 param(
   [switch]$IAmDisposable,
-  [string]$KeyDir = (Join-Path ($(if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { $env:TEMP })) 'member-host-ssh'),
-  [string]$InfoFile = (Join-Path ($(if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { $env:TEMP })) 'member-host-info.json'),
+  [string]$KeyDir = (Join-Path ($(if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [System.IO.Path]::GetTempPath() })) 'member-host-ssh'),
+  [string]$InfoFile = (Join-Path ($(if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [System.IO.Path]::GetTempPath() })) 'member-host-info.json'),
   [string]$MemberUser = 'fleetmember'
 )
 $ErrorActionPreference = 'Stop'
@@ -47,17 +47,40 @@ $sec = ConvertTo-SecureString $pw -AsPlainText -Force
 if (-not (Get-LocalUser -Name $MemberUser -ErrorAction SilentlyContinue)) {
   New-LocalUser -Name $MemberUser -Password $sec -PasswordNeverExpires -AccountNeverExpires | Out-Null
 }
-$home = Join-Path 'C:\Users' $MemberUser
-New-Item -ItemType Directory -Force -Path (Join-Path $home '.ssh') | Out-Null
+# Create the user's profile NOW, through the profile service, and take its
+# real folder from the registry. Pre-creating C:\Users\<user> by hand would
+# make Windows put the real profile elsewhere at first logon (<user>.<HOST>),
+# where sshd would never read our authorized_keys. (The variable is
+# $memberHome: the automatic variable HOME is read-only, and PowerShell
+# variable names are case-insensitive.)
+$sid = (Get-LocalUser -Name $MemberUser).SID.Value
+if (-not ('MemberHost.UserEnv' -as [type])) {
+  Add-Type -Namespace MemberHost -Name UserEnv -MemberDefinition '[DllImport("userenv.dll", CharSet = CharSet.Unicode, SetLastError = true)] public static extern int CreateProfile(string pszUserSid, string pszUserName, System.Text.StringBuilder pszProfilePath, uint cchProfilePath);'
+}
+$profileBuf = New-Object System.Text.StringBuilder 260
+$hr = [MemberHost.UserEnv]::CreateProfile($sid, $MemberUser, $profileBuf, 260)
+# S_OK, or HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS) when it was created before.
+if ($hr -ne 0 -and $hr -ne -2147024713) { throw ('CreateProfile failed for {0}: HRESULT 0x{1:X8}' -f $MemberUser, $hr) }
+$memberHome = (Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$sid").ProfileImagePath
+if (-not $memberHome -or -not (Test-Path $memberHome)) { throw "the profile of $MemberUser has no folder (ProfileImagePath '$memberHome')" }
+New-Item -ItemType Directory -Force -Path (Join-Path $memberHome '.ssh') | Out-Null
 
 # 4. Throwaway key pair in the temp dir, authorized for localhost only
 New-Item -ItemType Directory -Force -Path $KeyDir | Out-Null
 $key = Join-Path $KeyDir 'member_key'
 if (Test-Path $key) { Remove-Item -Force $key, "$key.pub" }
-ssh-keygen -q -t ed25519 -N '""' -f $key | Out-Null
+# An EMPTY passphrase. PowerShell 7.3+ passes '' to a native command as a real
+# empty argument (and '""' as two literal quote characters, which would
+# protect the key); Windows PowerShell 5.1 drops '' and needs '""'.
+$emptyArg = if ($PSVersionTable.PSVersion -ge [version]'7.3') { '' } else { '""' }
+ssh-keygen -q -t ed25519 -N $emptyArg -f $key | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "ssh-keygen failed (exit $LASTEXITCODE)" }
+# Prove the key opens with an empty passphrase (register_member uses it as is).
+ssh-keygen -y -P $emptyArg -f $key | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'the generated member key is passphrase-protected; register_member could not use it' }
 $pub = (Get-Content "$key.pub" -Raw).Trim()
 $authLine = "from=`"127.0.0.1,::1`" $pub"
-$authFile = Join-Path $home '.ssh\authorized_keys'
+$authFile = Join-Path $memberHome '.ssh\authorized_keys'
 Set-Content -Path $authFile -Value $authLine -Encoding ascii
 icacls $authFile /inheritance:r /grant "${MemberUser}:F" /grant 'SYSTEM:F' /grant 'Administrators:F' | Out-Null
 
@@ -71,5 +94,5 @@ while ((Get-Date) -lt $deadline) {
 }
 if (-not (Test-NetConnection -ComputerName 127.0.0.1 -Port 22 -WarningAction SilentlyContinue).TcpTestSucceeded) { throw 'sshd did not start answering on 127.0.0.1:22' }
 
-@{ user = $MemberUser; keyPath = $key; port = 22; home = $home; bash = $bash } | ConvertTo-Json | Set-Content -Path $InfoFile -Encoding ascii
+@{ user = $MemberUser; keyPath = $key; port = 22; home = $memberHome; bash = $bash } | ConvertTo-Json | Set-Content -Path $InfoFile -Encoding ascii
 Write-Host "member host ready: $MemberUser@127.0.0.1:22 (info: $InfoFile)"

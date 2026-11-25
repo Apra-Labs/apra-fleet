@@ -26,3 +26,23 @@ export function verifyEcho(testCase, output) {
   const ok = got === testCase.expected;
   return { ok, got, expected: testCase.expected };
 }
+
+/**
+ * A Windows path as Git Bash names it: C:\Users\x -> /c/Users/x. Anything
+ * that is not a drive path is returned with forward slashes only.
+ */
+export function gitBashPath(winPath) {
+  const p = String(winPath ?? '').replace(/\\/g, '/').replace(/\/+$/, '');
+  const m = /^([A-Za-z]):(\/.*)?$/.exec(p);
+  return m ? `/${m[1].toLowerCase()}${m[2] || ''}` : p;
+}
+
+/**
+ * The member's work folder (Git Bash form) under the profile folder the setup
+ * script read from the registry (info.home). Falls back to C:\Users\<user>
+ * only when the info file carries no home.
+ */
+export function memberWorkFolder(info) {
+  const home = info && info.home ? String(info.home) : `C:\\Users\\${info && info.user}`;
+  return `${gitBashPath(home)}/work`;
+}

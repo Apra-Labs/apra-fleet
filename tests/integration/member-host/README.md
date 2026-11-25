@@ -9,7 +9,12 @@ rollback paths from the latest release, on a disposable Windows VM.
 - `setup-openssh-gitbash.ps1` - installs and starts OpenSSH, sets Git Bash as
   its DefaultShell, creates a throwaway user and a per-run key pair in the
   runner temp dir, authorized for localhost only. Refuses (exit 2) unless
-  `CI=true` and `-IAmDisposable`.
+  `CI=true` and `-IAmDisposable`. The user's profile is created through the
+  Windows profile service (userenv CreateProfile) and its real folder read
+  from the registry, so `authorized_keys` lands where sshd looks; the key has
+  an empty passphrase, checked right after it is generated. The info file's
+  `home` is that folder, and `run.mjs` registers the member's work folder
+  under it.
 - `run.mjs` - `--plan` lists the passes and expected outcomes (any OS, no VM
   changes). A real run needs `--binary`, `--setup-info`, `--i-am-disposable`.
 - `lib/` - pure helpers (opt-in refusal, quote-led cases, sandbox paths,

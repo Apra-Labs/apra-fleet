@@ -22,7 +22,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DISPOSABLE_FLAG, disposableRefusal } from './lib/opt-in.mjs';
-import { QUOTE_LED_CASES, verifyEcho } from './lib/commands.mjs';
+import { QUOTE_LED_CASES, verifyEcho, memberWorkFolder } from './lib/commands.mjs';
 import { PASS_IDS, REFUSAL_CODE, compareSnapshots, planPasses, resolveBaseline } from './lib/scenarios.mjs';
 import { assertInside, resolveSandbox, sandboxEnv } from './lib/sandbox.mjs';
 import { buildReport } from './lib/report.mjs';
@@ -115,7 +115,7 @@ async function realRun(o) {
 
   const reg = await call('register_member', {
     friendly_name: 'member-host', member_type: 'remote', host: '127.0.0.1', port: info.port ?? 22,
-    username: info.user, auth_type: 'key', key_path: info.keyPath, work_folder: '/c/Users/' + info.user + '/work', llm_provider: 'none',
+    username: info.user, auth_type: 'key', key_path: info.keyPath, work_folder: memberWorkFolder(info), llm_provider: 'none',
   });
   const idMatch = /([0-9a-f]{8}-[0-9a-f-]{27})/i.exec(reg.text);
   if (reg.isError || !idMatch) throw new Error(`register_member failed: ${reg.text.slice(0, 300)}`);

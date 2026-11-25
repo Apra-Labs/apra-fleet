@@ -8,7 +8,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DISPOSABLE_FLAG, DISPOSABLE_PS_SWITCH, disposableRefusal } from './integration/member-host/lib/opt-in.mjs';
-import { QUOTE_LED_CASES, verifyEcho } from './integration/member-host/lib/commands.mjs';
+import { QUOTE_LED_CASES, verifyEcho, gitBashPath, memberWorkFolder } from './integration/member-host/lib/commands.mjs';
+import { spawnSync } from 'node:child_process';
 import { assertInside, isInside, resolveSandbox, sandboxEnv } from './integration/member-host/lib/sandbox.mjs';
 import { wrapPosixEncoded } from '../src/services/member-fleet-install.js';
 
@@ -56,8 +57,65 @@ describe('member-host opt-in refusal', () => {
     expect(/[^\x00-\x7f]/.test(ps)).toBe(false);
   });
 
+  it('the setup script never assigns the read-only HOME automatic variable (names are case-insensitive)', () => {
+    const ps = fs.readFileSync(path.join(HARNESS, 'setup-openssh-gitbash.ps1'), 'utf8');
+    const code = ps.split(/\r?\n/).filter((l) => !/^\s*#/.test(l)).join('\n');
+    expect(code).not.toMatch(/\$home\s*=/i);
+    expect(code).not.toMatch(/\$home\b(?!\w)/i);
+    expect(code).toMatch(/\$memberHome = \(Get-ItemProperty -Path "HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\ProfileList\\\$sid"\)\.ProfileImagePath/);
+  });
+
+  it('the setup script creates the profile through the profile service before writing authorized_keys', () => {
+    const ps = fs.readFileSync(path.join(HARNESS, 'setup-openssh-gitbash.ps1'), 'utf8');
+    const create = ps.indexOf('::CreateProfile(');
+    const sshDir = ps.indexOf("New-Item -ItemType Directory -Force -Path (Join-Path $memberHome '.ssh')");
+    expect(create).toBeGreaterThan(0);
+    expect(sshDir).toBeGreaterThan(create);
+    expect(ps).not.toMatch(/Join-Path 'C:\\Users' \$MemberUser/);
+    expect(ps).toMatch(/home = \$memberHome/);
+  });
+
+  it('the setup script passes a real empty passphrase and proves the key opens without one', () => {
+    const ps = fs.readFileSync(path.join(HARNESS, 'setup-openssh-gitbash.ps1'), 'utf8');
+    expect(ps).not.toMatch(/-N '""'/);
+    expect(ps).toMatch(/\$emptyArg = if \(\$PSVersionTable\.PSVersion -ge \[version\]'7\.3'\) \{ '' \} else \{ '""' \}/);
+    expect(ps).toMatch(/ssh-keygen -q -t ed25519 -N \$emptyArg -f \$key/);
+    const verify = ps.indexOf('ssh-keygen -y -P $emptyArg -f $key');
+    expect(verify).toBeGreaterThan(ps.indexOf('ssh-keygen -q -t ed25519'));
+    expect(verify).toBeLessThan(ps.indexOf('$authLine ='));
+  });
+
+  const pwsh = (() => { const r = spawnSync('pwsh', ['-NoProfile', '-Command', 'exit 0']); return !r.error && r.status === 0; })();
+
+  it.skipIf(!pwsh)('pwsh: the setup script parses and, without the opt-in, exits 2 before any change', () => {
+    const script = path.join(HARNESS, 'setup-openssh-gitbash.ps1');
+    const parse = spawnSync('pwsh', ['-NoProfile', '-Command',
+      `$e = $null; [System.Management.Automation.Language.Parser]::ParseFile('${script.replace(/'/g, "''")}', [ref]$null, [ref]$e) | Out-Null; exit $e.Count`]);
+    expect(parse.status).toBe(0);
+    const env = { ...process.env };
+    delete env.CI;
+    const r = spawnSync('pwsh', ['-NoProfile', '-File', script], { env, encoding: 'utf8' });
+    expect(r.status).toBe(2);
+    expect(r.stderr).toMatch(/^REFUSED:/m);
+  });
+
   it('keeps the flag spelling shared with the fresh-install harness', () => {
     expect(DISPOSABLE_FLAG).toBe('--i-am-disposable');
+  });
+});
+
+describe('member-host work folder', () => {
+  it('names the registry profile folder in Git Bash form', () => {
+    expect(gitBashPath('C:\\Users\\fleetmember')).toBe('/c/Users/fleetmember');
+    expect(gitBashPath('D:\\profiles\\fleetmember.HOST\\')).toBe('/d/profiles/fleetmember.HOST');
+    expect(memberWorkFolder({ user: 'fleetmember', home: 'C:\\Users\\fleetmember.WIN-1' })).toBe('/c/Users/fleetmember.WIN-1/work');
+    expect(memberWorkFolder({ user: 'fleetmember' })).toBe('/c/Users/fleetmember/work');
+  });
+
+  it('run.mjs registers the member with that work folder, not a hard-coded C:\\Users path', () => {
+    const run = fs.readFileSync(path.join(HARNESS, 'run.mjs'), 'utf8');
+    expect(run).toMatch(/work_folder: memberWorkFolder\(info\)/);
+    expect(run).not.toMatch(/'\/c\/Users\/' \+ info\.user/);
   });
 });
 
