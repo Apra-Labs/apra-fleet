@@ -1012,8 +1012,8 @@
       "confidence": "CONFIRMED",
       "updated_at": "2026-11-22T10:49:19.979Z",
       "source_file_hashes": {
-        "packages/apra-fleet-se/fleet-sprint/guarded-modules.mjs": "fed1e79dad2cc93872212c7161c88d0ecde06a3d",
-        "packages/apra-fleet-se/test/guarded-modules-coverage.test.mjs": "b806d85d05b5263567892ce97f1487a644a385b8"
+        "packages/apra-fleet-se/fleet-sprint/guarded-modules.mjs": "3d8ee9355d2eb103d8f45df98dc553b6c51df32b",
+        "packages/apra-fleet-se/test/guarded-modules-coverage.test.mjs": "c38865f8485acc15aefb765864ba60822b3d81c7"
       }
     },
     {
@@ -3745,7 +3745,7 @@
       "updated_at": "2026-11-22T20:36:27.365Z",
       "source_file_hashes": {
         "packages/apra-fleet-se/fleet-sprint/kb.mjs": "41f6e273087e48bc4a34fbbe77b3cbfb59ac66e9",
-        "packages/apra-fleet-se/fleet-sprint/phases/final-review.mjs": "0bd5f7d40437b1b66a5a858ec7ee17ad8812b88d",
+        "packages/apra-fleet-se/fleet-sprint/phases/final-review.mjs": "1b26c88531cfa3021e26a2d3ccf72db71e73b969",
         "packages/apra-fleet-se/test/kb-bible-commit-round.test.mjs": "58fa49455f60d0f2c72910a2552ff7333e708528"
       }
     },
