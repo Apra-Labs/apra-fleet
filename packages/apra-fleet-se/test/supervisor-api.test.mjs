@@ -903,7 +903,7 @@ describe('api -- GET /api/sprints and /api/sprints/:id', () => {
         const out = await controller.getSprint('s1');
         assert.deepEqual(out, {
             ...buildSprintSummary({ sprintId: 's1', live: false, runSummary: runSummaryFromState(terminalState), reservation: ledger.get('s1') }),
-            sprintId: 's1', live: false, terminal: true, state: terminalState,
+            sprintId: 's1', live: false, terminal: true, state: terminalState, analysis: null, result: null,
         });
         assert.equal(resolvePortCalled, false, 'resolvePort must not be called once hasTerminalState reports terminal');
         assert.equal(proxyStateCalled, false, 'proxyState must not be called (no doomed proxy into a closed port)');
