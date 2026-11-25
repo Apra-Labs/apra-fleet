@@ -242,7 +242,8 @@ export function execBdSync(args, options = {}, execFileSyncImpl = nodeExecFileSy
 // callers that DO pass free text, e.g. sandbox-seed-beads.mjs) does not apply
 // this same validation; a shared allowlist tight enough to be a real
 // injection backstop cannot also cover arbitrary free text.
-const SAFE_ARG_PATTERN = /^[A-Za-z0-9_.\-]+$/;
+// A path separator is allowed so a Dolt ref such as remotes/origin/main can be passed.
+const SAFE_ARG_PATTERN = /^[A-Za-z0-9_.\-/]+$/;
 
 /**
  * Rejects any arg containing a shell metacharacter before it can ever reach

@@ -6,7 +6,7 @@ import { getAgentOS, getAgentShell } from '../utils/agent-helpers.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { ensureCloudReady } from '../services/cloud/lifecycle.js';
 import { awsProvider } from '../services/cloud/aws.js';
-import { getTaskCredentials } from '../services/credential-store.js';
+import { getTaskCredentials, getTaskSecretChanges, type TaskSecretChange } from '../services/credential-store.js';
 import { parseGpuUtilization } from '../utils/gpu-parser.js';
 import type { Agent } from '../types.js';
 
@@ -22,6 +22,64 @@ export type MonitorTaskInput = z.infer<typeof monitorTaskSchema>;
 
 function errMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * The member-side step that stops a long_running task, correct for the
+ * member's OS. task.pid records the task WRAPPER itself (bash `$$` of run.sh
+ * on POSIX, `$PID` of run.ps1 on Windows -- see generateTaskWrapper /
+ * generateTaskWrapperWindows), and the wrapper runs the command as its
+ * child inside a crash-retry loop. Killing only the child would hand control
+ * back to that loop, which relaunches with the OLD baked-in secret value.
+ * So: snapshot the wrapper's direct children, kill the wrapper (ends the
+ * retry loop), then kill the snapshotted child trees, which would otherwise
+ * be orphaned. taskkill /T is not used: it does not guarantee that order.
+ */
+export function stopTaskStep(taskId: string, isWindows: boolean): { command: string; description: string } {
+  if (isWindows) {
+    const pidFile = `$env:USERPROFILE\\.fleet-tasks\\${taskId}\\task.pid`;
+    const script = [
+      'function Stop-FleetTree($i) { Get-CimInstance Win32_Process -Filter "ParentProcessId=$i" | ForEach-Object { Stop-FleetTree $_.ProcessId }; Stop-Process -Id $i -Force -ErrorAction SilentlyContinue }',
+      `if (-not (Test-Path "${pidFile}")) { echo 'no task.pid: the task is not running'; exit 0 }`,
+      `$p = [int](Get-Content "${pidFile}" -Raw).Trim()`,
+      '$kids = @(Get-CimInstance Win32_Process -Filter "ParentProcessId=$p")',
+      'Stop-Process -Id $p -Force -ErrorAction SilentlyContinue',
+      'foreach ($k in $kids) { Stop-FleetTree $k.ProcessId }',
+      'echo stopped',
+    ].join('; ');
+    return {
+      command: wrapPowerShellEncoded(script),
+      description: `Stop-Process on the PID in %USERPROFILE%\\.fleet-tasks\\${taskId}\\task.pid (the task wrapper, which ends its retry loop), then on that wrapper's child process trees`,
+    };
+  }
+  const pidFile = `~/.fleet-tasks/${taskId}/task.pid`;
+  return {
+    command:
+      `p=$(cat ${pidFile} 2>/dev/null); if [ -n "$p" ]; then ` +
+      `kids=$(pgrep -P "$p" 2>/dev/null); kill -9 "$p" 2>/dev/null; ` +
+      `_fleet_kill_tree() { for c in $(pgrep -P "$1" 2>/dev/null); do _fleet_kill_tree "$c"; done; kill -9 "$1" 2>/dev/null; }; ` +
+      `for k in $kids; do _fleet_kill_tree "$k"; done; echo stopped; ` +
+      `else echo 'no task.pid: the task is not running'; fi`,
+    description: `kill of the PID in ${pidFile} (the task wrapper, which ends its retry loop), then of that wrapper's child process trees`,
+  };
+}
+
+/**
+ * The loud warning monitor_task adds when a secret bound to the task changed
+ * after launch. Names only the secrets and the kind of change -- never a
+ * value or a fingerprint.
+ */
+export function secretChangeWarning(taskId: string, changes: TaskSecretChange[], isWindows: boolean): string {
+  const list = changes.map(c => `${c.name} (${c.change})`).join(', ');
+  const step = stopTaskStep(taskId, isWindows);
+  const reset = changes.some(c => c.change !== 'rotated')
+    ? ' A deleted or expired secret must be set again with credential_store_set before relaunching, or the relaunch cannot resolve its placeholder.'
+    : '';
+  return `WARNING: secret(s) ${list} changed after task ${taskId} launched. ` +
+    'A long_running task resolves each {{secret.NAME}} once at launch, so this task still uses the OLD value and cannot pick up the new one ' +
+    '(expect authentication failures). Restart it: ' +
+    `1) stop it on the member with execute_command running: ${step.command} -- that is a ${step.description}; ` +
+    '2) relaunch the command with execute_command long_running=true.' + reset;
 }
 
 export async function monitorTask(input: MonitorTaskInput): Promise<string> {
@@ -147,6 +205,10 @@ export async function monitorTask(input: MonitorTaskInput): Promise<string> {
     rawLogTail,
   );
 
+  // Secrets bound at launch whose current value differs (read side-effect
+  // free: no expired-entry deletion, no member-scope check).
+  const secretChanges = getTaskSecretChanges(input.task_id);
+
   const taskStatus = String(statusData.status ?? derivedStatus ?? 'unknown');
   const isCompleted = taskStatus === 'completed' || taskStatus === 'failed';
 
@@ -173,6 +235,9 @@ export async function monitorTask(input: MonitorTaskInput): Promise<string> {
     ...(gpuUtilization !== undefined ? { gpuUtilization } : {}),
     logTail: logTail || null,
     ...(autoStopped ? { autoStopped: true } : {}),
+    ...(secretChanges.length > 0
+      ? { secretChanges, secretWarning: secretChangeWarning(input.task_id, secretChanges, isWindows) }
+      : {}),
   };
 
   return JSON.stringify(result, null, 2);

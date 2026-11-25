@@ -137,7 +137,7 @@ check the result with `node scripts/check-kb-canonical.mjs`.
 `node scripts/check-kb-canonical.mjs [path]` (repository root; default
 `.fleet/kb-canonical.json`, also `npm run check:kb-canonical`) rejects a bible
 no writer would produce: unexpected or missing envelope keys, a wrong format
-version, a provenance `entry_count` that does not match the entries, duplicate
+version, duplicate
 or unsorted entry or tombstone ids, an id that is both an entry and a
 tombstone, a tombstone whose reason is unknown or whose keys do not fit that
 reason, and a file not in the exporter's serialization (2-space JSON,

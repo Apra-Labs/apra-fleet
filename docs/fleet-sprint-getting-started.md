@@ -395,6 +395,14 @@ node ~/.apra-fleet/workflows/fleet-sprint/bin/serve.mjs              # macOS / L
 node "$HOME\.apra-fleet\workflows\fleet-sprint\bin\serve.mjs"    # Windows PowerShell
 ```
 
+Run from an interactive terminal, this detaches by default: the supervisor
+moves to a background process that survives the terminal closing, and the
+command prints its pid and port and returns once `GET /api/health` answers with
+that pid. Without a terminal (systemd, launchd, a scheduled task, CI, a parent
+process holding pipes) it stays in the foreground, as service managers expect.
+`--detach` forces the background launch anywhere; `--foreground` keeps it
+attached to the terminal (it then stops when the terminal closes).
+
 At startup the supervisor sets up its own **backlog member**: a local member with
 no LLM whose work folder is that project folder. It adopts an LLM-less local
 member already registered there (name kept), or registers one named
@@ -639,9 +647,11 @@ exit path: SIGINT, SIGTERM, SIGHUP, SIGBREAK (Windows Ctrl+Break or console
 close), an uncaught exception or unhandled rejection, `POST /api/shutdown`,
 and the forced-exit timeout. Signal handlers are persistent, so a second
 Ctrl+C does not kill immediately; the forced-exit timeout is the backstop.
-On POSIX a detached launch (`nohup`) logs and survives SIGHUP; a foreground
-launch is not detached, and the skill says so. On Windows the final SIGHUP
-line is written synchronously and the supervisor stops.
+On POSIX a detached launch logs and survives SIGHUP; a foreground launch is
+not detached, and the skill says so. On Windows the final SIGHUP line is
+written synchronously and the supervisor stops. A launch from an interactive
+console now detaches by default, so closing that console no longer stops the
+supervisor; only an explicit `--foreground` launch stays attached to it.
 
 **Sprint lock.** Each (branch, members) pair has a machine-local pidfile lock
 (directory overridable with `APRA_FLEET_SPRINT_LOCK_DIR`; test sandboxes set

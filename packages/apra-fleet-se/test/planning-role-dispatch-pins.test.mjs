@@ -33,6 +33,7 @@ import { PLANNING_LADDERS, PLANNING_ENGINE_DISPATCHES } from './helpers/planning
 
 const ENGINE_DISPATCHES = PLANNING_ENGINE_DISPATCHES;
 import { dispatchRole } from '../fleet-sprint/dispatch-role.mjs';
+import { LlmAuthSelfHealFailedError } from '../fleet-sprint/errors.mjs';
 import {
     createRecordingCtx,
     driveEngineDispatch,
@@ -526,7 +527,9 @@ describe('planning-role dispatch: retry and degrade ladders', () => {
         assert.strictEqual(trust.rec.authHeals.length, 0, 'Workspace trust is not something LLM-auth self-heal can fix.');
 
         const unhealable = createRecordingCtx({ responses: [authError(), authError()], healed: false });
-        await assert.rejects(() => dispatchRole(unhealable.ctx, 'planner', ROLE_CALL_OPTS.planner));
+        await assert.rejects(() => dispatchRole(unhealable.ctx, 'planner', ROLE_CALL_OPTS.planner), LlmAuthSelfHealFailedError);
+        assert.ok(!unhealable.rec.logs.some((m) => /self-heal succeeded/.test(m)), 'A failed heal never logs success.');
+        assert.ok(!unhealable.rec.logs.some((m) => /waiting [\d.]+s before retry attempt/.test(m)), 'A failed heal requests no backoff wait.');
         assert.strictEqual(
             unhealable.rec.authHeals.length,
             1,
@@ -632,12 +635,20 @@ describe('planning-role dispatch: retry and degrade ladders', () => {
             'An unrecognised error class must still propagate rather than being degraded silently.'
         );
 
-        // An unhealed LLM-auth failure would reproduce on every remaining
-        // planning round, so one self-heal attempt runs here.
+        // An LLM-auth failure would reproduce on every remaining planning
+        // round, so one self-heal attempt runs here. A heal that does NOT heal
+        // ends the ladder: the ladder degrades after
+        // the one heal, with no second attempt, and never aborts the sprint.
         const auth = createRecordingCtx({ responses: [authError(), authError()], healed: false });
         await dispatchRole(auth.ctx, 'plan-reviewer', opts);
-        assert.strictEqual(auth.rec.authHeals.length, 2, 'Each failing attempt self-heals, so the next round has a real chance.');
+        assert.strictEqual(auth.rec.authHeals.length, 1, 'An unhealed auth failure gets exactly one self-heal and then ends the ladder (degrading, not aborting).');
+        assert.strictEqual(auth.rec.dispatches.length, 1, 'No further attempt follows a failed heal.');
         assert.strictEqual(auth.rec.authHeals[0].label, 'Plan Reviewer dispatch');
+        // A heal that DID heal leaves the ladder's own second attempt to run.
+        const healedAuth = createRecordingCtx({ responses: [authError(), { verdict: 'APPROVED', notes: 'ok', taskAssignments: [] }], healed: true });
+        const healedOutcome = await dispatchRole(healedAuth.ctx, 'plan-reviewer', opts);
+        assert.strictEqual(healedAuth.rec.dispatches.length, 2, 'A healed auth failure is retried by the ladder.');
+        assert.strictEqual(healedOutcome.value.verdict, 'APPROVED');
     });
 
     // apra-fleet-3swo.5.3: RE-ANCHORED onto the engine, same facts.
@@ -672,6 +683,7 @@ describe('planning-role dispatch: retry and degrade ladders', () => {
 
         // A scoped replan auth failure self-heals so the next cycle's planner
         // does not hit the identical wall.
+        // A heal that does not heal ends the ladder, which degrades as before.
         const auth = createRecordingCtx({ responses: [authError()], healed: false });
         await dispatchRole(auth.ctx, 'scoped-replan-planner', opts);
         assert.strictEqual(auth.rec.authHeals.length, 1);
@@ -716,6 +728,7 @@ describe('planning-role dispatch: retry and degrade ladders', () => {
 
         // Same rationale as the scoped planner: self-heal before deferring to
         // the next cycle's planner/plan-reviewer pass.
+        // A heal that does not heal ends the ladder, which degrades as before.
         const auth = createRecordingCtx({ responses: [authError()], healed: false });
         await dispatchRole(auth.ctx, 'scoped-replan-plan-reviewer', opts);
         assert.strictEqual(auth.rec.authHeals.length, 1);
@@ -749,6 +762,7 @@ describe('planning-role dispatch: retry and degrade ladders', () => {
 
         // Streak Assignment self-heals an auth failure because the SAME member
         // is dispatched again later in the cycle.
+        // A heal that does not heal ends the ladder, which degrades as before.
         const auth = createRecordingCtx({ responses: [authError()], healed: false });
         await dispatchRole(auth.ctx, 'streak-assignment', opts);
         assert.strictEqual(auth.rec.authHeals.length, 1);
