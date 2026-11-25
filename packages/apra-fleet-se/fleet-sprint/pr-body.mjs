@@ -49,30 +49,70 @@ export const OVERFLOW_MAX_COMMENTS = 20;
  *  cannot be deleted; a later run reuses it before posting a new one. */
 export const OVERFLOW_SUPERSEDED_COMMENT = `<!-- ${OVERFLOW_COMMENT_MARKER} superseded -->\n*(superseded by a later sprint run)*`;
 
-const OVERFLOW_CHUNK_RE = /^<!-- fleet-sprint:pr-overflow v1 (\d+)\/(\d+) -->\r?\n\*\*Reviewer notes, continued \(\d+ of \d+\)\*\*\r?\n([\s\S]*)$/;
+// The visible header line was "Reviewer notes, continued" before other
+// sections could overflow too; both read back so a relaunch still upserts an
+// earlier run's comments.
+const OVERFLOW_CHUNK_RE = /^<!-- fleet-sprint:pr-overflow v1 (\d+)\/(\d+) -->\r?\n\*\*(?:Reviewer notes|Sprint text), continued \(\d+ of \d+\)\*\*\r?\n([\s\S]*)$/;
 const OVERFLOW_SUPERSEDED_RE = /^<!-- fleet-sprint:pr-overflow v1 superseded -->/;
 
 /** The engine-written header of overflow comment `index` of `total`. */
 function overflowCommentHeader(index, total) {
-    return `<!-- ${OVERFLOW_COMMENT_MARKER} ${index}/${total} -->\n**Reviewer notes, continued (${index} of ${total})**\n`;
+    return `<!-- ${OVERFLOW_COMMENT_MARKER} ${index}/${total} -->\n**Sprint text, continued (${index} of ${total})**\n`;
 }
 
-/** The description's closing pointer line when the overflow is posted. */
+const POINTER_LEAD = 'Sprint text that did not fit this description continues in';
+
+/** The description's closing pointer line when the overflow is posted and
+ *  the comments' links are not known (yet). */
 export function overflowPointer(count) {
-    return `Reviewer notes continued in ${count} comment(s) below.`;
+    return `${POINTER_LEAD} ${count} PR comment(s) below.`;
 }
+
+/**
+ * The description's closing pointer line with a markdown link to each
+ * overflow comment (`urls`, one per comment, in order); when that is longer
+ * than `max`, a link to the first comment plus the count. null when a needed
+ * link is missing or even the short form is longer than `max`.
+ * @param {Array<string|null>} urls
+ * @param {number} [max]
+ * @returns {string|null}
+ */
+export function overflowLinkedPointer(urls, max = Infinity) {
+    const list = Array.isArray(urls) ? urls : [];
+    const n = list.length;
+    if (n === 0 || !list[0]) return null;
+    if (list.every(Boolean)) {
+        const all = `${POINTER_LEAD} ${n} PR comment(s): ${list.map((u, i) => `[comment ${i + 1}](${u})`).join(', ')}.`;
+        if (all.length <= max) return all;
+    }
+    const short = n === 1
+        ? `${POINTER_LEAD} [a PR comment](${list[0]}).`
+        : `${POINTER_LEAD} ${n} PR comment(s), starting at [comment 1 of ${n}](${list[0]}).`;
+    return short.length <= max ? short : null;
+}
+
+/** What a section that did not fit the description shows there, under its
+ *  heading; the section itself is in the overflow comments. */
+export const OVERFLOW_SECTION_STUB = '*(in the PR comments named at the end)*';
+
+/** Characters the description keeps free for the pointer line whenever
+ *  anything overflows, so the linked form (written once the comment links
+ *  are known) still fits the provider limit. */
+export const OVERFLOW_POINTER_RESERVE = 260;
 
 /** The description's closing pointer line when the overflow could not be
  *  posted as PR comments; with `posted` of `total` comments already on the
  *  PR (a partial failure) it says how many were posted. */
 export function overflowFailedPointer(chars, posted = 0, total = 0) {
     if (posted > 0 && total > posted) {
-        return `Reviewer notes continued: ${chars} characters did not fit this description; ${posted} of ${total} overflow comment(s) were posted and ${total - posted} could not be -- the rest of the notes are in the sprint run log.`;
+        return `Sprint text continued: ${chars} characters did not fit this description; ${posted} of ${total} overflow comment(s) were posted and ${total - posted} could not be -- the rest is in the sprint run log.`;
     }
-    return `Reviewer notes continued: ${chars} characters did not fit this description and could not be posted as PR comments -- the full notes are in the sprint run log.`;
+    return `Sprint text continued: ${chars} characters did not fit this description and could not be posted as PR comments -- the full text is in the sprint run log.`;
 }
 
-const OVERFLOW_POINTER_RE = /^Reviewer notes continued(?: in \d+ comment\(s\) below\.|: \d+ characters did not fit)/m;
+// Current pointer forms plus the "Reviewer notes continued ..." ones earlier
+// runs wrote, so a relaunch still knows to clean their comments up.
+const OVERFLOW_POINTER_RE = /^(?:Reviewer notes continued(?: in \d+ comment\(s\) below\.|: \d+ characters did not fit)|Sprint text that did not fit this description continues in |Sprint text continued: \d+ characters did not fit)/m;
 
 /** Whether `body` (a PR description) carries an overflow pointer line, i.e.
  *  the run that wrote it posted (or tried to post) overflow comments. */
@@ -314,10 +354,105 @@ export function parseRunHistory(body) {
 }
 
 /** `fleet-sprint [<VERDICT>]: <branch>`. PRs opened before the rename carry the
- *  older `Auto-sprint [<VERDICT>]: <branch>` form; nothing in-repo matches on the
- *  title (an existing PR is found by head branch), so both forms coexist safely. */
+ *  older `Auto-sprint [<VERDICT>]: <branch>` form; an existing PR is found by
+ *  head branch, and isFleetPrTitle() recognises both forms as fleet-written. */
 export function buildSprintPrTitle({ verdict, branch }) {
     return `fleet-sprint [${verdict}]: ${branch}`;
+}
+
+const FLEET_TITLE_RE = /^(?:fleet-sprint|Auto-sprint) \[[A-Z]+\]: /;
+
+/** Whether `title` is one fleet wrote (the `fleet-sprint [<VERDICT>]: ` prefix,
+ *  or the older `Auto-sprint [<VERDICT>]: ` one). */
+export function isFleetPrTitle(title) {
+    return FLEET_TITLE_RE.test(String(title ?? ''));
+}
+
+/**
+ * The title an update of an existing PR sends: `fleetTitle` when the PR's
+ * current title is fleet-written (or empty), otherwise the current title
+ * unchanged -- fleet never writes any title, [ABORTED] included, over a
+ * human-written one (the verdict is in the description's fleet block).
+ * @param {unknown} existingTitle
+ * @param {string} fleetTitle
+ * @returns {string}
+ */
+export function sprintPrTitleFor(existingTitle, fleetTitle) {
+    const current = String(existingTitle ?? '');
+    return !current.trim() || isFleetPrTitle(current) ? fleetTitle : current;
+}
+
+// ---------------------------------------------------------------------------
+// The fleet block
+// ---------------------------------------------------------------------------
+//
+// Fleet owns only the part of a PR description between PR_BLOCK_START and
+// PR_BLOCK_END (verdict header, merge assessment, notes, sections, run
+// history). On an update the new block replaces the old one in place and the
+// text outside it is kept byte-for-byte. A description with no block is
+// either:
+//   - empty, or an older fleet layout written before the markers existed
+//     (verdict header + run-history block, or the plain-text "Automated
+//     sprint ..." body before that): fully fleet-owned, replaced whole;
+//   - anything else (a human-written PR): every character is kept and the
+//     block is APPENDED after it, separated by a blank line.
+// Text outside the block is never cut to fit the provider limit: when it
+// leaves too little room, the block is a compact one (verdict, overflow
+// pointer, run history), and when not even that fits the description is
+// left as it is (see buildOutsideBoundResult).
+
+/** Versioned token of the fleet block markers. */
+export const PR_BLOCK_MARKER = 'fleet-sprint:pr-block v1';
+/** Opening line of the fleet block. */
+export const PR_BLOCK_START = `<!-- ${PR_BLOCK_MARKER} -->`;
+/** Closing line of the fleet block. */
+export const PR_BLOCK_END = `<!-- /${PR_BLOCK_MARKER} -->`;
+
+const LEGACY_FLEET_BODY_RE = /^\s*## Sprint verdict: [A-Z]+\r?\n/;
+const RUN_HISTORY_OPEN_RE = /<!-- fleet-sprint:run-history v1\r?\n/;
+// The plain-text body fleet wrote before the markdown format ("Automated
+// sprint (goal: ...)." / "Automated sprint ABORTED.").
+const PRE_FORMAT_FLEET_BODY_RE = /^Automated sprint\b/;
+
+/**
+ * Finds the fleet block in `body`: { before, block, after } (the three
+ * concatenate back to `body`), or null when it carries no complete block.
+ * The last opening marker that is followed by a closing one is taken, so a
+ * stray opening marker left above the block never captures human text.
+ * @param {unknown} body
+ */
+export function locateFleetBlock(body) {
+    const text = String(body ?? '');
+    let from = text.length;
+    while (from >= 0) {
+        const s = text.lastIndexOf(PR_BLOCK_START, from);
+        if (s < 0) return null;
+        const e = text.indexOf(PR_BLOCK_END, s + PR_BLOCK_START.length);
+        if (e >= 0) {
+            const end = e + PR_BLOCK_END.length;
+            return { before: text.slice(0, s), block: text.slice(s, end), after: text.slice(end) };
+        }
+        from = s - 1;
+    }
+    return null;
+}
+
+/**
+ * How a new fleet block goes into `previousBody`: { before, after, own }.
+ * The new description is before + block + after; `own` is the earlier
+ * fleet-owned text (run history and overflow pointer are read from it).
+ * @param {unknown} previousBody
+ */
+export function fleetBlockPlacement(previousBody) {
+    const prev = String(previousBody ?? '');
+    const loc = locateFleetBlock(prev);
+    if (loc) return { before: loc.before, after: loc.after, own: loc.block };
+    if (!prev.trim() || (LEGACY_FLEET_BODY_RE.test(prev) && RUN_HISTORY_OPEN_RE.test(prev)) || PRE_FORMAT_FLEET_BODY_RE.test(prev)) {
+        return { before: '', after: '', own: prev };
+    }
+    // A human-written description: kept whole, the block appended below it.
+    const sep = prev.endsWith('\n\n') ? '' : (prev.endsWith('\n') ? '\n' : '\n\n');
+    return { before: prev + sep, after: '', own: '' };
 }
 
 /** Markdown inline code span. Only ever applied to engine-validated tokens
@@ -346,6 +481,10 @@ function inline(text) {
  *  stub (a heading plus a truncation marker carries no information). */
 export const SECTION_MIN_LENGTH = 40;
 
+/** Ends the Merge assessment section when only its first lines fit the
+ *  description; the whole assessment is in the overflow comments. */
+export const MERGE_ASSESSMENT_CONTINUED_MARKER = '*[... the full merge assessment is in the PR comments named at the end ...]*';
+
 /** Upper bound on the Merge assessment section before the whole-body budget
  *  is even considered, and on each of its fields. */
 export const MERGE_ASSESSMENT_MAX_LENGTH = 1500;
@@ -360,6 +499,11 @@ export const SECTION_PRIORITY = Object.freeze({
     waited: 95,
     details: 95,
     cost: 90,
+    previousRuns: 85,
+    // [ABORTED] PR sections on the run's work (abort.mjs buildAbortWorkSections).
+    abortStillOpen: 94,
+    abortClosedWork: 93,
+    abortLastReview: 92,
     notes: 80,
     extra: 50,
 });
@@ -607,20 +751,28 @@ function clipInline(text, max) {
  * Renders a final verdict's merge_assessment as the body of the Merge
  * assessment section (no heading), sanitized and capped at
  * MERGE_ASSESSMENT_MAX_LENGTH. '' when `assessment` is not an object.
+ * With `uncapped` neither the field caps nor the section cap apply: the
+ * form an overflow PR comment carries, so nothing is lost there. With
+ * `sectionCap: false` only the field caps apply: the PR body's own budget
+ * decides whether the section fits (and moves it to the overflow comments
+ * whole when it does not), so it is never truncated to fit.
  * @param {unknown} assessment
+ * @param {string[]} [incomplete]
+ * @param {{ uncapped?: boolean, sectionCap?: boolean }} [opts]
  * @returns {string}
  */
-export function renderMergeAssessment(assessment, incomplete = []) {
+export function renderMergeAssessment(assessment, incomplete = [], { uncapped = false, sectionCap = true } = {}) {
+    const cap = (text) => (uncapped || !sectionCap ? text : clipSectionText(text, MERGE_ASSESSMENT_MAX_LENGTH));
     const missing = Array.isArray(incomplete) ? incomplete.filter((f) => typeof f === 'string' && f) : [];
     const note = missing.length > 0
         ? `_assessment incomplete: ${inline(missing.join(', '))}_`
         : '';
     const isObj = assessment && typeof assessment === 'object' && !Array.isArray(assessment);
-    if (!isObj) return note ? clipSectionText(note, MERGE_ASSESSMENT_MAX_LENGTH) : '';
+    if (!isObj) return note ? cap(note) : '';
     const rec = PR_MERGE_RECOMMENDATIONS.includes(assessment.recommendation) ? assessment.recommendation : null;
     const field = (k) => {
         const v = assessment[k];
-        const s = typeof v === 'string' ? clipInline(v, MERGE_ASSESSMENT_FIELD_MAX_LENGTH) : '';
+        const s = typeof v === 'string' ? (uncapped ? inline(v) : clipInline(v, MERGE_ASSESSMENT_FIELD_MAX_LENGTH)) : '';
         return s || '(not given)';
     };
     // A complete assessment renders exactly as before. An incomplete one
@@ -638,7 +790,7 @@ export function renderMergeAssessment(assessment, incomplete = []) {
             ...Object.entries(MERGE_ASSESSMENT_LABELS).filter(([k]) => given(k)).map(([k, label]) => `- **${label}:** ${field(k)}`),
             note,
         ];
-    return clipSectionText(lines.join('\n'), MERGE_ASSESSMENT_MAX_LENGTH);
+    return cap(lines.join('\n'));
 }
 
 /**
@@ -670,6 +822,22 @@ export function normalizeMergeAssessment(raw) {
 }
 
 /**
+ * A FAIL (any non-PASS) verdict must never carry a `merge` recommendation:
+ * replaces it with `do_not_merge`. The verdict is never changed, and
+ * `merge_after_proof` / `do_not_merge` are left alone.
+ * @param {object | undefined | null} verdictResult
+ * @returns {{ result: object | undefined | null, changed: boolean }}
+ */
+export function normalizeRecommendationForVerdict(verdictResult) {
+    if (!verdictResult || typeof verdictResult !== 'object') return { result: verdictResult, changed: false };
+    const ma = verdictResult.merge_assessment;
+    if (verdictResult.verdict === 'PASS' || !ma || typeof ma !== 'object' || ma.recommendation !== 'merge') {
+        return { result: verdictResult, changed: false };
+    }
+    return { result: { ...verdictResult, merge_assessment: { ...ma, recommendation: 'do_not_merge' } }, changed: true };
+}
+
+/**
  * Builds the sprint PR body as markdown.
  *
  * The description starts with the sprint verdict, then the merge
@@ -677,9 +845,10 @@ export function normalizeMergeAssessment(raw) {
  * assessment, reviewer notes, set-aside, waited, details, cost, and any
  * caller-registered `sections`) draws on one budget -- `maxLength` -- through
  * fitSectionsToBudget, by priority; the verdict header, human-review line and
- * run-history marker block are the fixed frame and are never clipped. The
- * reviewer notes are never truncated away: the part that does not fit is
- * returned as `overflow`.
+ * run-history marker block are the fixed frame and are never clipped. Nothing
+ * is truncated away: the part of the reviewer notes that does not fit is
+ * returned as `overflow`, and any other section that does not fit in full
+ * moves whole to the overflow comments.
  *
  * @param {object} opts
  * @param {'PASS'|'FAIL'|'ABORTED'} opts.verdict
@@ -708,25 +877,41 @@ export function normalizeMergeAssessment(raw) {
  *   collectWaitEntries), rendered as one "Waited this run" line after the
  *   set-aside section; omitted when empty
  * @param {string} [opts.costAnalysis] engine-computed cost block, rendered in a fenced Cost section
- * @param {string} [opts.previousBody] the existing PR's body, for history carry-forward
+ * @param {string} [opts.previousBody] the existing PR's body. Fleet owns only
+ *   its marked block (PR_BLOCK_START..PR_BLOCK_END, see fleetBlockPlacement):
+ *   the new block replaces the old one in place, text outside it is kept
+ *   byte-for-byte, and a human-written body with no block keeps all its text
+ *   with the block appended. Run history is carried forward from the old
+ *   block.
  * @param {number} [opts.maxLength] the description limit of the provider the
  *   PR is raised on (its descriptor's descriptionMaxLength, see
  *   vcs-module.mjs getProviderTextLimits); PR_DESCRIPTION_MAX_LENGTH when
- *   omitted
+ *   omitted. The fleet block's budget is this limit minus the length of the
+ *   text outside the block; under a budget smaller than the frame the
+ *   visible "Previous runs" list goes first, then the oldest hidden history
+ *   entries
  * @param {number} [opts.commentMaxLength] the same provider's PR comment
  *   limit (commentMaxLength); the overflow is split into comments within it
- * @returns {{ body: string, overflow: string, notes: string, comments: string[],
+ * @returns {{ body: string, overflow: string, overflowText: string,
+ *   overflowSections: Array<{ id: string, heading: string }>, notes: string, comments: string[],
  *   notPosted: number, failedBody: string|null, failedBodyFor: (posted: number) => string|null,
- *   previousHadOverflow: boolean }}
- *   `body` is the description (<= maxLength); `notes` the full sanitized
+ *   linkedBodyFor: (urls: Array<string|null>) => string|null, previousHadOverflow: boolean }}
+ *   `body` is the whole description (the fleet block among the text outside
+ *   it; <= maxLength whenever the frame fits the block budget); `notes` the full sanitized
  *   notes; `overflow` the part of `notes` the description could not carry
  *   ('' when it all fits) -- the section in `body` holds exactly
  *   notes.slice(0, notes.length - overflow.length), so nothing is ever
- *   silently dropped. `comments` is the overflow as ordered PR comment bodies
- *   (buildOverflowComments; `notPosted` characters past its ceiling), and
- *   `body` then ends with "Reviewer notes continued in N comment(s) below.";
- *   `failedBody` is the same description pointing at the run log instead,
- *   for when the comments cannot be posted (null with no overflow).
+ *   silently dropped. Every other section that does not fit the description
+ *   in full is never truncated either: it shows OVERFLOW_SECTION_STUB under
+ *   its heading and is carried whole (`overflowSections` names them).
+ *   `overflowText` is everything the comments carry: the notes overflow
+ *   first, then each such section under its heading. `comments` is
+ *   overflowText as ordered PR comment bodies (buildOverflowComments;
+ *   `notPosted` characters past its ceiling), and `body` then ends with the
+ *   plain pointer (overflowPointer); `linkedBodyFor(urls)` is the same
+ *   description whose pointer links to the posted comments, sent once their
+ *   links are known; `failedBody` points at the run log instead, for when
+ *   the comments cannot be posted (null with no overflow).
  *   `previousHadOverflow` says whether `previousBody` pointed at overflow
  *   comments (so a relaunch knows to clean them up).
  */
@@ -739,12 +924,19 @@ export function buildSprintPrBody({
     const v = VERDICTS.has(verdict) ? verdict : 'FAIL';
     const run = normalizeRunId(runId);
     const stamp = runStamp(now);
+    // Fleet writes only its own block; text outside it is kept byte-for-byte
+    // and its length comes off the description budget.
+    const placement = fleetBlockPlacement(previousBody);
+    const blockMax = Math.max(0, maxLength - placement.before.length - placement.after.length);
     const history = [{ run, date: stamp, verdict: v }];
-    for (const e of parseRunHistory(previousBody)) {
+    for (const e of parseRunHistory(placement.own)) {
         if (history.length >= RUN_HISTORY_MAX_ENTRIES) break;
         history.push(e);
     }
     const previous = history.slice(1);
+    // Hidden history entries written; only lowered when even the frame does
+    // not fit the budget (a long description outside the fleet block).
+    let historyKeep = history.length;
 
     const headTop = [
         `## Sprint verdict: ${v}`,
@@ -758,17 +950,17 @@ export function buildSprintPrBody({
     // The overflow pointer line, when set, is the description's last visible
     // line, just above the hidden run-history block.
     let pointer = '';
-    const footer = () => [
+    const footer = (previousRuns) => [
         '---',
         '',
         HUMAN_REVIEW_LINE,
-        previous.length ? '\n### Previous runs\n' : null,
-        previous.length ? previous.map((e) => `- ${codeSpan(e.run)} (${e.date}): ${e.verdict}`).join('\n') : null,
+        previousRuns ? '\n### Previous runs\n' : null,
+        previousRuns || null,
         pointer ? '' : null,
         pointer || null,
         '',
         `<!-- ${RUN_HISTORY_MARKER}`,
-        JSON.stringify(history),
+        JSON.stringify(history.slice(0, historyKeep)),
         '-->',
     ].filter((l) => l !== null);
 
@@ -805,12 +997,15 @@ export function buildSprintPrBody({
             t.details || null,
             t.details ? '' : null,
             cost ? `### Cost\n\n${costFence}\n${cost}\n${costFence}\n` : null,
-            ...footer(),
+            ...footer(t['previous-runs']),
         ].filter((l) => l !== null).join('\n');
         // Blank lines around the notes keep them their own block: notes ending
         // in a paragraph directly above '---' would otherwise turn into a heading.
-        return `${head.join('\n')}\n${t.notes}${extraBlocks}\n${tail}`;
+        return `${PR_BLOCK_START}\n${head.join('\n')}\n${t.notes}${extraBlocks}\n${tail}\n${PR_BLOCK_END}`;
     };
+    // The whole description: the fleet block in its place among the text
+    // outside it.
+    const describe = (t) => `${placement.before}${render(t)}${placement.after}`;
 
     const cleanNotes = sanitizePrMarkdown(notes);
     const waitedLine = formatWaitedLine(waited);
@@ -823,50 +1018,187 @@ export function buildSprintPrBody({
         return r.text;
     };
     const notesOmitted = '*[... reviewer notes continue past the description limit -- see the end of this description ...]*';
-    const fit = () => fitSectionsToBudget({
-        maxLength,
-        render,
-        sections: [
-            { id: 'merge-assessment', priority: SECTION_PRIORITY.mergeAssessment, text: renderMergeAssessment(mergeAssessment, mergeAssessmentIncomplete) },
-            {
-                id: 'notes',
-                priority: SECTION_PRIORITY.notes,
-                // Always present: no notes renders a placeholder, never an empty section.
-                text: cleanNotes || '*No notes were provided.*',
-                // `available` is maxLength minus the body with the notes empty.
-                // The notes take every character the budget leaves them; what
-                // does not fit is NOT truncated away but returned as overflow.
-                fit: (text, available) => (cleanNotes ? (notesWithin(available) || notesOmitted) : text),
-                hardClip: (_text, max) => (cleanNotes ? notesWithin(max) : ''),
-                omitted: cleanNotes ? notesOmitted : undefined,
-            },
-            ...extras.map((e) => ({ id: e.id, priority: e.priority, text: e.text, fit: e.fit, hardClip: e.hardClip, omitted: e.omitted })),
-            { id: 'set-aside', priority: SECTION_PRIORITY.setAside, text: formatSetAsideItems(setAside).map((d) => `- ${inline(d)}`).join('\n') },
-            { id: 'waited', priority: SECTION_PRIORITY.waited, text: waitedLine ? inline(waitedLine) : '' },
-            { id: 'details', priority: SECTION_PRIORITY.details, text: (details || []).filter(Boolean).map((d) => `- ${inline(d)}`).join('\n') },
-            { id: 'cost', priority: SECTION_PRIORITY.cost, text: sanitizePrMarkdown(costAnalysis) },
-        ],
+    const costText = sanitizePrMarkdown(costAnalysis);
+    const maFull = renderMergeAssessment(mergeAssessment, mergeAssessmentIncomplete, { uncapped: true });
+    const maFieldCapped = renderMergeAssessment(mergeAssessment, mergeAssessmentIncomplete, { sectionCap: false });
+    // Set before fitting: whether the whole description fits with every
+    // section in full, in which case nothing is capped.
+    let everythingFits = false;
+    const fitMergeAssessment = (available) => {
+        const max = everythingFits ? available : Math.min(available, MERGE_ASSESSMENT_MAX_LENGTH);
+        if (maFull.length <= max) return maFull;
+        if (maFieldCapped.length <= max) return maFieldCapped;
+        const marker = `\n\n${MERGE_ASSESSMENT_CONTINUED_MARKER}`;
+        const room = max - marker.length;
+        if (room < SECTION_MIN_LENGTH) return '';
+        let cut = maFieldCapped.slice(0, room);
+        const nl = cut.lastIndexOf('\n');
+        if (nl > 0) cut = cut.slice(0, nl);
+        return `${cut.replace(/\s+$/, '')}${marker}`;
+    };
+    const costFenceOf = (c) => '`'.repeat(Math.max(3, ...(c.match(/`+/g) || []).map((r) => r.length + 1)));
+    const notesSection = {
+        id: 'notes',
+        priority: SECTION_PRIORITY.notes,
+        // Always present: no notes renders a placeholder, never an empty section.
+        text: cleanNotes || '*No notes were provided.*',
+        // `available` is maxLength minus the body with the notes empty.
+        // The notes take every character the budget leaves them; what
+        // does not fit is NOT truncated away but returned as overflow.
+        fit: (text, available) => (cleanNotes ? (notesWithin(available) || notesOmitted) : text),
+        hardClip: (_text, max) => (cleanNotes ? notesWithin(max) : ''),
+        omitted: cleanNotes ? notesOmitted : undefined,
+    };
+    // Every other variable section. `order` is where it sits in the
+    // description (and so in the overflow comments); `comment` is the text an
+    // overflow comment carries when the section does not fit the description
+    // in full -- the whole section, never a truncated one.
+    const others = [
+        {
+            id: 'merge-assessment', priority: SECTION_PRIORITY.mergeAssessment, heading: 'Merge assessment', order: 0,
+            text: maFull,
+            fullText: maFull,
+            // In full when it fits (and within MERGE_ASSESSMENT_MAX_LENGTH, so
+            // it never crowds out the rest); otherwise the field-capped form,
+            // cut at a line with a marker, while the overflow comments carry
+            // it whole.
+            fit: (_text, available) => fitMergeAssessment(available),
+            hardClip: (_text, max) => fitMergeAssessment(max),
+        },
+        ...extras.map((e) => ({
+            id: e.id, priority: e.priority, heading: e.heading, order: e.placement === 'after-merge-assessment' ? 1 : 3,
+            text: e.text, fit: e.fit, hardClip: e.hardClip, omitted: e.omitted,
+        })),
+        { id: 'set-aside', priority: SECTION_PRIORITY.setAside, heading: 'Set aside this run', order: 4, text: formatSetAsideItems(setAside).map((d) => `- ${inline(d)}`).join('\n') },
+        { id: 'waited', priority: SECTION_PRIORITY.waited, heading: 'Waited this run', order: 5, text: waitedLine ? inline(waitedLine) : '' },
+        { id: 'details', priority: SECTION_PRIORITY.details, heading: 'Details', order: 6, text: (details || []).filter(Boolean).map((d) => `- ${inline(d)}`).join('\n') },
+        {
+            id: 'cost', priority: SECTION_PRIORITY.cost, heading: 'Cost', order: 7, text: costText,
+            comment: costText ? `${costFenceOf(costText)}\n${costText}\n${costFenceOf(costText)}` : '',
+        },
+        {
+            id: 'previous-runs',
+            priority: SECTION_PRIORITY.previousRuns,
+            heading: 'Previous runs',
+            order: 8,
+            text: previous.map((e) => `- ${codeSpan(e.run)} (${e.date}): ${e.verdict}`).join('\n'),
+            // All or nothing in the description.
+            hardClip: () => '',
+        },
+    ].map((s, index) => {
+        // The form a section takes with no budget limit: a section with its
+        // own fit hook may render its full text differently from `text`.
+        const full = s.fullText ?? (s.text && s.fit ? s.fit(s.text, Number.POSITIVE_INFINITY) : s.text);
+        return { ...s, index, full, comment: s.comment || full };
     });
+    // Sections that do not fit the description in full: each is replaced by a
+    // one-line stub there and carried whole by the overflow comments.
+    const moved = new Set();
+    // The waited line renders with no heading, so its stub names it.
+    const stubFor = (s) => (s.id === 'waited' ? `${s.heading}: ${OVERFLOW_SECTION_STUB}` : OVERFLOW_SECTION_STUB);
+    const sectionsNow = () => {
+        const list = others.map((s) => (moved.has(s.id)
+            ? { id: s.id, priority: s.priority, text: stubFor(s), hardClip: () => '' }
+            : s));
+        // List order matters for priority ties: merge assessment, notes,
+        // extras, then the engine tail.
+        return [list[0], notesSection, ...list.slice(1)];
+    };
+    const fit = () => fitSectionsToBudget({ maxLength: blockMax, render, sections: sectionsNow() });
+    // Last resort when the frame alone is over the budget: drop the oldest
+    // hidden history entries (the current run always stays).
+    const fitBlock = () => {
+        let r = fit();
+        while (r.body.length > blockMax && historyKeep > 1) {
+            historyKeep--;
+            r = fit();
+        }
+        return r;
+    };
+    // A section with its own fit hook may answer a shorter form of itself
+    // (e.g. ids only): that form stays in the description and the full one
+    // also goes to the overflow comments. Any other section that does not fit
+    // in full is moved.
+    const abridged = (s, t) => Boolean(s.fit && t[s.id] && t[s.id] !== s.full);
+    // Fits, then moves the highest-priority section that did not fit in full
+    // to the overflow, one at a time (moving one frees room for the rest),
+    // until every section left in the description is whole or abridged.
+    let texts;
+    const settle = () => {
+        for (;;) {
+            ({ texts } = fitBlock());
+            const next = others
+                .filter((s) => s.text && !moved.has(s.id) && texts[s.id] !== s.full && !abridged(s, texts))
+                .sort((a, b) => (b.priority - a.priority) || (a.index - b.index))[0];
+            if (!next) return;
+            moved.add(next.id);
+        }
+    };
     const overflowOf = (t) => cleanNotes.slice(cleanNotes ? (notesUsed.get(t.notes) ?? 0) : 0);
-    let { texts } = fit();
-    let overflow = overflowOf(texts);
+    everythingFits = render({
+        ...Object.fromEntries(others.map((s) => [s.id, s.full])),
+        notes: notesSection.text,
+    }).length <= blockMax;
+    settle();
+    // The room the pointer line may take: the linked form, or the longest
+    // run-log form.
+    const pointerReserve = Math.max(OVERFLOW_POINTER_RESERVE, overflowFailedPointer(9999999, 9999, 99999).length);
+    if (overflowOf(texts) || moved.size || others.some((s) => abridged(s, texts))) {
+        // Re-fit with the pointer room reserved, so whichever pointer the
+        // description ends up with still fits maxLength.
+        pointer = 'x'.repeat(pointerReserve);
+        settle();
+    }
+    // The text outside the fleet block leaves too little room for even the
+    // frame: fleet never cuts that text (the provider backstop would), so it
+    // writes a COMPACT block -- verdict line, pointer, hidden run history --
+    // and carries everything else whole in the overflow comments. When not
+    // even the compact block fits, the description is left as it is (an
+    // earlier fleet block is only removed, when the rest then fits) and the
+    // overflow comments carry the whole fleet text.
+    if (describe(texts).length > maxLength) {
+        return buildOutsideBoundResult({
+            v, headTop, history, placement, previousBody, maxLength, commentMaxLength,
+            pointerReserve, notesHeading, cleanNotes,
+            sectionsText: others
+                .filter((s) => s.text)
+                .sort((a, b) => (a.order - b.order) || (a.index - b.index))
+                .map((s) => ({ id: s.id, heading: s.heading, comment: s.comment })),
+        });
+    }
+    const overflow = overflowOf(texts);
+    const movedSections = others
+        .filter((s) => moved.has(s.id) || abridged(s, texts))
+        .sort((a, b) => (a.order - b.order) || (a.index - b.index));
+    // The overflow comments carry the notes' continuation first (it follows
+    // the description's notes prefix directly), then each moved section whole
+    // under its own heading (an abridged one: its full form, marked so).
+    const overflowText = [
+        overflow,
+        ...movedSections.map((s) => `### ${s.heading}${moved.has(s.id) ? '' : ' (in full)'}\n\n${s.comment}`),
+    ].filter(Boolean).join('\n\n');
     let comments = [];
     let notPosted = 0;
     let failedBody = null;
-    if (overflow) {
-        // Re-fit with the longest pointer line reserved, so whichever pointer
-        // the description ends up with still fits maxLength.
-        pointer = overflowFailedPointer(cleanNotes.length, 9999, 99999);
-        ({ texts } = fit());
-        overflow = overflowOf(texts);
-        ({ comments, notPosted } = buildOverflowComments(overflow, { commentMaxLength: commentMaxLength || PR_DESCRIPTION_MAX_LENGTH }));
-        pointer = overflowFailedPointer(overflow.length);
-        failedBody = render(texts);
+    pointer = '';
+    if (overflowText) {
+        ({ comments, notPosted } = buildOverflowComments(overflowText, { commentMaxLength: commentMaxLength || PR_DESCRIPTION_MAX_LENGTH }));
+        pointer = overflowFailedPointer(overflowText.length);
+        failedBody = describe(texts);
         if (comments.length) pointer = overflowPointer(comments.length);
     }
+    const body = describe(texts);
+    // Renders the description with `p` as the pointer line.
+    const withPointer = (p) => {
+        const kept = pointer;
+        pointer = p;
+        try { return describe(texts); } finally { pointer = kept; }
+    };
     return {
-        body: render(texts),
+        body,
         overflow,
+        overflowText,
+        overflowSections: movedSections.map((s) => ({ id: s.id, heading: s.heading })),
         notes: cleanNotes,
         comments,
         notPosted,
@@ -875,10 +1207,106 @@ export function buildSprintPrBody({
         // onto the PR (a partial failure); the plain failedBody when none did.
         failedBodyFor: (posted) => {
             if (!failedBody || !(posted > 0) || posted >= comments.length) return failedBody;
-            const kept = pointer;
-            pointer = overflowFailedPointer(overflow.length, posted, comments.length);
-            try { return render(texts); } finally { pointer = kept; }
+            return withPointer(overflowFailedPointer(overflowText.length, posted, comments.length));
         },
-        previousHadOverflow: bodyHasOverflowPointer(previousBody),
+        // The description whose pointer line links to the posted comments
+        // (`urls`, one per comment, in order); null when there are no
+        // comments or the links cannot be rendered within the limit.
+        linkedBodyFor: (urls) => {
+            if (!comments.length || !Array.isArray(urls) || urls.length !== comments.length) return null;
+            const p = overflowLinkedPointer(urls, pointerReserve);
+            if (!p) return null;
+            const linked = withPointer(p);
+            return linked.length <= Math.max(maxLength, body.length) ? linked : null;
+        },
+        previousHadOverflow: bodyHasOverflowPointer(placement.own),
+        compact: false,
+        descriptionUnchanged: false,
+    };
+}
+
+/**
+ * buildSprintPrBody's result when the text outside the fleet block leaves
+ * too little room for the block's frame (a long human description on a
+ * provider with a small description limit). Fleet never cuts text outside
+ * its block, so:
+ *   - when a COMPACT block (verdict line, overflow pointer, hidden run
+ *     history) fits beside that text, the description carries it and the
+ *     overflow comments carry everything else whole: the sprint head (goal,
+ *     branch, run), the notes and every section (`compact: true`);
+ *   - otherwise the description is left as it is (`descriptionUnchanged:
+ *     true`; an earlier fleet block is removed instead when the text outside
+ *     it then fits), and the overflow comments carry the whole fleet text.
+ * Same result shape as buildSprintPrBody.
+ */
+function buildOutsideBoundResult({
+    v, headTop, history, placement, previousBody, maxLength, commentMaxLength,
+    pointerReserve, notesHeading, cleanNotes, sectionsText,
+}) {
+    const overflowText = [
+        headTop.join('\n').trim(),
+        `### ${notesHeading}\n\n${cleanNotes || '*No notes were provided.*'}`,
+        ...sectionsText.map((s) => `### ${s.heading}\n\n${s.comment}`),
+        HUMAN_REVIEW_LINE,
+    ].join('\n\n');
+    const { comments, notPosted } = buildOverflowComments(overflowText, { commentMaxLength: commentMaxLength || PR_DESCRIPTION_MAX_LENGTH });
+    const block = (keep, p) => [
+        PR_BLOCK_START,
+        `## Sprint verdict: ${v}`,
+        '',
+        p,
+        '',
+        `<!-- ${RUN_HISTORY_MARKER}`,
+        JSON.stringify(history.slice(0, keep)),
+        '-->',
+        PR_BLOCK_END,
+    ].join('\n');
+    const describe = (keep, p) => `${placement.before}${block(keep, p)}${placement.after}`;
+    let keep = history.length;
+    const reserve = 'x'.repeat(pointerReserve);
+    while (keep > 1 && describe(keep, reserve).length > maxLength) keep--;
+    const shared = {
+        overflow: cleanNotes,
+        overflowText,
+        overflowSections: sectionsText.map((s) => ({ id: s.id, heading: s.heading })),
+        notes: cleanNotes,
+        comments,
+        notPosted,
+        previousHadOverflow: bodyHasOverflowPointer(placement.own),
+    };
+    if (describe(keep, reserve).length <= maxLength) {
+        const failedBody = describe(keep, overflowFailedPointer(overflowText.length));
+        const body = comments.length ? describe(keep, overflowPointer(comments.length)) : failedBody;
+        return {
+            ...shared,
+            body,
+            failedBody,
+            failedBodyFor: (posted) => {
+                if (!(posted > 0) || posted >= comments.length) return failedBody;
+                return describe(keep, overflowFailedPointer(overflowText.length, posted, comments.length));
+            },
+            linkedBodyFor: (urls) => {
+                if (!comments.length || !Array.isArray(urls) || urls.length !== comments.length) return null;
+                const p = overflowLinkedPointer(urls, pointerReserve);
+                if (!p) return null;
+                const linked = describe(keep, p);
+                return linked.length <= maxLength ? linked : null;
+            },
+            compact: true,
+            descriptionUnchanged: false,
+        };
+    }
+    const prev = String(previousBody ?? '');
+    const loc = locateFleetBlock(prev);
+    const withoutBlock = loc ? `${loc.before}${loc.after}` : null;
+    const removeBlock = withoutBlock !== null && withoutBlock.length <= maxLength;
+    return {
+        ...shared,
+        body: removeBlock ? withoutBlock : prev,
+        failedBody: null,
+        failedBodyFor: () => null,
+        linkedBodyFor: () => null,
+        compact: false,
+        descriptionUnchanged: !removeBlock,
     };
 }

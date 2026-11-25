@@ -167,7 +167,7 @@ describe('(b) a relaunch rewrites the open Bitbucket PR', () => {
         assert.deepEqual(bb.calls, ['GET', 'POST', 'GET', 'PUT']);
         assert.equal(bb.pr.title, 'fleet-sprint [PASS]: feat/x');
         assert.ok(bb.pr.description.includes('all good') && !bb.pr.description.includes('gate failed'), bb.pr.description);
-        assert.ok(logs.some((m) => m.includes('updated its title and body') && PR_URL_RE.test(m)), JSON.stringify(logs));
+        assert.ok(logs.some((m) => m.includes('updated its fleet block') && PR_URL_RE.test(m)), JSON.stringify(logs));
         const find = bb.execCommands.find((c) => c.startsWith('curl -sS -X GET'));
         assert.ok(find.includes("-H 'Authorization: Bearer {{vcs_token_inline}}'") && !/ -u /.test(find), `find must authenticate with Bearer: ${find}`);
     });

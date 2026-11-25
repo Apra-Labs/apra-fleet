@@ -3,9 +3,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildCreatePrCommand as rawBuildCreatePrCommand, buildCommentCommand as rawBuildCommentCommand, capabilities } from '../fleet-sprint/vcs-module.mjs';
+import { buildCreatePrCommand as rawBuildCreatePrCommand, buildCommentCommand as rawBuildCommentCommand, buildGetPrCommand, providerImplementsAction, capabilities } from '../fleet-sprint/vcs-module.mjs';
 import { withPayloadPath, stagedJson, posixDataBinaryArg, WINDOWS_PAYLOAD_PATH } from './helpers/vcs-payload-test.mjs';
 import * as shellHelpers from '../fleet-sprint/vcs-providers/shell-helpers.mjs';
+import { AzureDevOpsVCS } from '../fleet-sprint/vcs-providers/azure-devops.mjs';
 
 // =============================================================================
 // apra-fleet-lzfv.3 -- Azure DevOps builder GOLDEN tests.
@@ -110,6 +111,41 @@ test('azure-devops create-pull-request: exact Windows curl.exe command (the body
     const built = buildCreatePrCommand({ ...PR_PARAMS, os: 'windows' });
     assert.equal(built.command, WINDOWS_CREATE_PR);
     assert.deepEqual(stagedJson(built), CREATE_PR_BODY);
+});
+
+// get-pull-request: the list endpoint truncates descriptions to 400 chars, so
+// the existing-PR update path reads the full PR by id through this command.
+const GET_PR_PARAMS = Object.freeze({ provider: 'azure-devops', repoRef: REPO_REF, pull_request_id: 42, token: TOKEN });
+const GET_PR_TAIL = " -H 'Accept: application/json'"
+    + " -w '\n%{http_code}'"
+    + ` '${API_BASE}/pullrequests/42?api-version=7.1'`;
+
+test('azure-devops get-pull-request: exact POSIX curl command, token only in command, full PR mapped', () => {
+    const built = buildGetPrCommand({ ...GET_PR_PARAMS, os: 'linux' });
+    assert.equal(built.provider, 'azure-devops');
+    assert.equal(built.action, 'get-pull-request');
+    assert.equal(built.command, `curl -sS -X GET -u ':${TOKEN}'${GET_PR_TAIL}`);
+    assert.equal(built.logSafeCommand, `curl -sS -X GET -u ':${REDACTED}'${GET_PR_TAIL}`);
+    assert.deepEqual(built.interpret, { successStatusRange: [200, 299] });
+    const long = 'x'.repeat(3000);
+    assert.deepEqual(built.mapResponse({ pullRequestId: 42, title: 'T', description: long }), {
+        id: 42, title: 'T', body: long, url: 'https://dev.azure.com/apralabs/e2e-fleet-testing/_git/fleet-e2e-toy/pullrequest/42',
+    });
+});
+
+test('azure-devops get-pull-request: exact PowerShell (windows) curl.exe command', () => {
+    for (const shell of [undefined, 'powershell']) {
+        const built = buildGetPrCommand({ ...GET_PR_PARAMS, os: 'windows', ...(shell ? { shell } : {}) });
+        assert.equal(built.command, `curl.exe -sS -X GET -u ':${TOKEN}'${GET_PR_TAIL}`);
+        assert.equal(built.logSafeCommand, `curl.exe -sS -X GET -u ':${REDACTED}'${GET_PR_TAIL}`);
+    }
+});
+
+test('get-pull-request is declared only where the list response truncates the description', () => {
+    assert.equal(providerImplementsAction('azure-devops', 'get-pull-request'), true);
+    assert.equal(providerImplementsAction('github', 'get-pull-request'), false, 'GitHub list returns the full body');
+    assert.equal(providerImplementsAction('bitbucket', 'get-pull-request'), false, 'Bitbucket list asks for values.description explicitly');
+    assert.throws(() => buildGetPrCommand({ ...GET_PR_PARAMS, pull_request_id: 'abc', os: 'linux' }), /numeric "pull_request_id"/);
 });
 
 test('azure-devops create-pull-request: an omitted body emits NO description key at all', () => {
@@ -388,5 +424,53 @@ test('shell-helpers: neither github.mjs nor azure-devops.mjs re-inlines a local 
                 `${file} declares its own ${name}() -- it must use the shared vcs-providers/shell-helpers.mjs export instead (this is the clobber apra-fleet-lzfv.1's hoist was reverted by once already)`,
             );
         }
+    }
+});
+
+// -----------------------------------------------------------------------------
+// Preflight credential probe (PR channel): a REST GET of the repository with
+// the labelled PAT, so a missing or wrong PAT fails at Sprint Setup instead of
+// at Publish PR.
+// -----------------------------------------------------------------------------
+
+const PROBE_REF = { org: 'example-org', project: 'Example Project', repo: 'example-repo' };
+
+test('azure-devops credentialProbe: posix GET of the repository endpoint with the placeholder token, never a literal one', () => {
+    const built = AzureDevOpsVCS.credentialProbe.build({ repoRef: PROBE_REF, token: '{{vcs_token_inline}}', os: 'linux', shell: '' });
+    assert.equal(built.command, "curl -sS -X GET -u ':{{vcs_token_inline}}' -H 'Accept: application/json' -w '\n%{http_code}' 'https://dev.azure.com/example-org/Example%20Project/_apis/git/repositories/example-repo?api-version=7.1'");
+    assert.equal(built.logSafeCommand, built.command.replace('{{vcs_token_inline}}', '***REDACTED***'));
+    assert.deepEqual(built.interpret.successStatusRange, [200, 299]);
+    assert.equal(built.action, 'credential-probe');
+});
+
+test('azure-devops credentialProbe: powershell GET uses curl.exe and PowerShell quoting, placeholder only', () => {
+    const built = AzureDevOpsVCS.credentialProbe.build({ repoRef: PROBE_REF, token: '{{vcs_token_inline}}', os: 'windows', shell: 'powershell5' });
+    assert.match(built.command, /^curl\.exe -sS -X GET -u ':\{\{vcs_token_inline\}\}' /);
+    assert.ok(built.command.includes('/_apis/git/repositories/example-repo?api-version=7.1'), built.command);
+    assert.ok(!built.logSafeCommand.includes('{{vcs_token_inline}}'));
+    assert.throws(() => AzureDevOpsVCS.credentialProbe.build({ repoRef: PROBE_REF, token: '', os: 'linux' }));
+    assert.throws(() => AzureDevOpsVCS.credentialProbe.build({ repoRef: { org: 'o' }, token: '{{vcs_token_inline}}', os: 'linux' }), /needs org, project and repo/);
+});
+
+test('azure-devops credentialProbe: no expectedUsername (an Azure DevOps helper username is not judged)', () => {
+    assert.equal(AzureDevOpsVCS.credentialProbe.expectedUsername, undefined);
+});
+
+test('azure-devops credentialProbe remedy: names the PAT secret (configured or default) and the member org, no fixed org', () => {
+    const remedy = AzureDevOpsVCS.credentialProbe.remedy;
+    const stored = remedy({ availableSecrets: ['team_ado_pat'], memberName: 'm1', repoRef: PROBE_REF, local: false, secretName: 'team_ado_pat' });
+    assert.ok(stored.includes('pat={{secret.team_ado_pat}}'), stored);
+    assert.ok(stored.includes('org_url=https://dev.azure.com/example-org'), stored);
+    assert.match(stored, /stored PAT secret team_ado_pat/);
+    const missing = remedy({ availableSecrets: [], memberName: 'm1', repoRef: { org: 'other-org' }, local: true });
+    assert.match(missing, /the credential store has no PAT secret named azdevops_pat/);
+    assert.ok(missing.includes('credential_store_set name=azdevops_pat'), missing);
+    assert.match(missing, /(?:^|\s)https:\/\/dev\.azure\.com\/other-org\/_settings\/tokens(?:\s|$|[.,)])/);
+    assert.match(missing, /this member is LOCAL/);
+    const generic = remedy({});
+    assert.ok(generic.includes('org_url=https://dev.azure.com/ORG'), generic);
+    for (const text of [stored, missing, generic]) {
+        assert.ok(!/apra-fleet-[a-z0-9]{4}/.test(text), 'no bead id');
+        assert.ok([...text].every((ch) => ch.charCodeAt(0) < 128), 'ASCII only');
     }
 });

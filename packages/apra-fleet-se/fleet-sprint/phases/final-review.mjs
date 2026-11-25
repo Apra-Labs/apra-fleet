@@ -79,7 +79,7 @@
 import { dispatchRole, secondaryMaxTurns } from '../dispatch-role.mjs';
 import { buildFinalVerdictPrompt } from '../prompts.mjs';
 import { resolveFinalReviewMergeBase } from '../git-topology.mjs';
-import { normalizeMergeAssessment } from '../pr-body.mjs';
+import { normalizeMergeAssessment, normalizeRecommendationForVerdict } from '../pr-body.mjs';
 import { applyGuardedReopens, parseIdWithReasonEntry } from '../beads-transitions.mjs';
 import {
     validateNewTask, buildFallbackNewTask, appendRejectedFindingToParentNotes, persistNewTaskBestEffort,
@@ -485,6 +485,15 @@ export async function runFinalReviewPhase({
         const prior = typeof finalVerdictResult.notes === 'string' ? finalVerdictResult.notes : '';
         finalVerdictResult = { ...finalVerdictResult, notes: prior ? `${prior}\n\n${cappedNote}` : cappedNote };
         log(`Final Review: ${cappedNote}`);
+    }
+    // Advisory merge recommendation must agree with the final (post-gate)
+    // verdict: a non-PASS verdict never carries `merge`. Verdict unchanged.
+    {
+        const { result, changed } = normalizeRecommendationForVerdict(finalVerdictResult);
+        if (changed) {
+            finalVerdictResult = result;
+            log('Final Review: merge_assessment recommendation normalised from merge to do_not_merge to match the FAIL verdict (verdict unchanged).');
+        }
     }
     // No duplicate log() dump -- see dispatchReview() for why.
     // `finalVerdictResult.verdict` also surfaces via the generic,

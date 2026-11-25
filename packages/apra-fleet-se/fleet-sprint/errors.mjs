@@ -158,13 +158,22 @@ export class SprintPlanRejectedError extends WorkflowError {
 export class StalledSprintError extends WorkflowError {
     /**
      * @param {string} message
-     * @param {{ staleCycles?: number, closedCountHistory?: number[], highWaterClosedCount?: number, thrashIds?: string[], blockerIds?: string[], blockerReasons?: Record<string, string>, setAside?: object[], waited?: object[], cycle?: number, details?: object, cause?: unknown }} [opts]
+     * @param {{ staleCycles?: number, closedCountHistory?: number[], highWaterClosedCount?: number, thrashIds?: string[], blockerIds?: string[], blockerReasons?: Record<string, string>, setAside?: object[], waited?: object[], cycle?: number,
+     *   closedThisRun?: Array<{ id: string, title?: string }>, openAtGoalIds?: string[], deferredAtGoal?: string[], reopenedThenClosed?: string[],
+     *   lastReview?: { verdict: string, notes?: string, site?: string, cycle?: unknown }|null, details?: object, cause?: unknown }} [opts]
+     *   closedThisRun / openAtGoalIds / deferredAtGoal / reopenedThenClosed /
+     *   lastReview: what the [ABORTED] PR body reports about the run's work;
+     *   kept in details only when given.
      */
     constructor(message, opts = {}) {
         const { staleCycles = null, closedCountHistory = [], highWaterClosedCount = null, thrashIds = [], blockerIds = [], blockerReasons = {}, setAside = [], waited = [], cycle, details, cause } = opts;
+        const work = {};
+        for (const k of ['closedThisRun', 'openAtGoalIds', 'deferredAtGoal', 'reopenedThenClosed', 'lastReview']) {
+            if (opts[k] !== undefined) work[k] = opts[k];
+        }
         super(message, {
             code: 'SPRINT_STALLED',
-            details: { staleCycles, closedCountHistory, highWaterClosedCount, thrashIds, blockerIds, blockerReasons, setAside, cycle, ...details },
+            details: { staleCycles, closedCountHistory, highWaterClosedCount, thrashIds, blockerIds, blockerReasons, setAside, cycle, ...work, ...details },
             cause,
         });
         this.staleCycles = staleCycles;

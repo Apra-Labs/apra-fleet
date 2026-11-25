@@ -50,9 +50,27 @@ writes durable documentation and the sprint analysis, an optional
 once-per-sprint regression pass runs your regression playbook, and the engine
 pushes the branch and **opens a pull request** whose title and body state the
 verdict plainly, with a cost breakdown. If the branch already has an open PR
-(a relaunch), every sprint end rewrites that PR's title and body to the latest
-verdict and keeps earlier runs in a short run history. It never merges the PR --
-that is always a human decision.
+(a relaunch, or a PR a human opened), the sprint updates it instead of opening
+a second one, on GitHub, Bitbucket and Azure DevOps alike, and changes only
+what fleet owns:
+
+- Fleet owns only its engine-marked block of the description (between the
+  hidden `<!-- fleet-sprint:pr-block v1 -->` and
+  `<!-- /fleet-sprint:pr-block v1 -->` markers). Each sprint end replaces that
+  block with the latest verdict and a short run history of earlier runs; text
+  outside it is kept exactly as written, and a human-written description with
+  no block keeps all its text with the block appended below it.
+- A title fleet wrote is updated to the latest verdict; a human-written title
+  is never changed. An aborted run's `[ABORTED]` status goes into the block.
+- Fleet text that does not fit the provider's description limit (small on
+  Bitbucket and Azure DevOps) is posted as engine-marked PR comments that the
+  block links to; nothing is truncated away, and a relaunch updates those
+  comments in place. Text outside the block is never cut to make room: when
+  it leaves too little room, the block shrinks to the verdict and the link to
+  the comments, and when not even that fits the description is left as it is
+  and all fleet text goes to the comments.
+
+It never merges the PR -- that is always a human decision.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="../assets/marketing/fleet-sprint-pipeline-dark.svg">
@@ -283,22 +301,33 @@ GitHub repo, opening the PR needs a GitHub App configured on the fleet
 with only a PAT the sprint pushes the branch but logs `[Publish PR Skipped]
 ... GitHub App not configured` and opens no PR.
 
-For a Bitbucket member, the sprint's VCS preflight checks the exact credential
-Publish PR will use -- the fleet's `bitbucket`-labelled git credential helper --
-and not only `git ls-remote` (which another helper on the host, such as a
-system credential manager, can answer for a broken fleet helper). It runs a
-REST call (`GET .../pullrequests?pagelen=1`) with that credential and checks
-that the helper's username line is `x-bitbucket-api-token-auth`. A failure is
-reported once, at preflight time, as an `ERROR vcs_credential_probe_failed`
-line that names the cause (for an HTTP refusal: the credential type and the
-required/granted scopes Bitbucket reported) and the exact
-`provision_vcs_auth member_name=... provider=bitbucket workspace=...
-api_token={{secret.bitbucket_api_token}}` command to fix it. A remote member gets
-one automatic re-provision followed by a re-probe. A local member is never
-re-provisioned automatically, because that rewrites the host's global
-bitbucket.org git credential helper. Run the command yourself. The sprint keeps
-going without stopping at launch: no PR is opened, and the final status reports
-the skipped PR.
+For a Bitbucket or Azure DevOps member, the sprint's VCS preflight judges the
+exact credential the sprint will use -- the fleet-written, provider-labelled git
+credential helper -- by whether it works, on two channels:
+
+- **git channel**: `git ls-remote origin HEAD` through *only* that labelled
+  helper (the host's helper chain is reset, so a system credential manager or a
+  global store cannot answer for a broken fleet helper), non-interactive.
+- **PR channel**: a REST call with that same credential through
+  `vcs_credential_exec` (Bitbucket: `GET .../pullrequests?pagelen=1`; Azure
+  DevOps: `GET .../_apis/git/repositories/<repo>`).
+
+A failure is reported once, at preflight time, as an
+`ERROR vcs_credential_probe_failed` line that names the failed channel and the
+cause (for an HTTP refusal: what the provider reported, e.g. the Bitbucket
+credential type and required/granted scopes, or the Azure DevOps PAT secret
+name) and the exact `provision_vcs_auth ...` command to fix it. "No PR will be
+opened" is predicted only when the PR channel fails. A helper username other
+than the provider's preferred one (for example the account login a helper
+written by an earlier `provision_vcs_auth` carries, where Bitbucket now uses
+`x-bitbucket-api-token-auth`) is one `WARN` line -- the credential works;
+re-provision to normalise it -- never an error. A remote member gets one
+automatic re-provision followed by a re-probe. A local member is never
+re-provisioned automatically, so the host operator's own credential is never
+touched: run the command yourself (it writes a fleet-owned per-member helper
+that only fleet dispatches use). The sprint keeps going without stopping at
+launch; when the PR channel failed, no PR is opened and the final status
+reports the skipped PR.
 
 ### 2.5 Scale sideways: one member per sprint, several sprints at once
 

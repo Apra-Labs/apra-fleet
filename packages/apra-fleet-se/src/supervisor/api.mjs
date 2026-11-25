@@ -51,6 +51,7 @@ import { normalizeRole } from '../../fleet-sprint/contracts.mjs';
 import { resolveTierPolicy, parseTierOverrides, DEFAULT_TIER_POLICY } from '../../fleet-sprint/tier-policy.mjs';
 import { isDeterministicTerminalReason, HISTORY_EVENTS } from './history.mjs';
 import { defaultHasTerminalState } from './watchdog.mjs';
+import { terminalInfoFromState, terminalInfoFromHistory } from './pr-not-opened.mjs';
 import { toBeadsSummary } from './beads-identity.mjs';
 import { fleetMembersUnavailableReason, fleetMembersStoppedByUserReason } from './fleet-members.mjs';
 
@@ -897,6 +898,32 @@ export function createSprintController(deps = {}) {
         };
     }
 
+    // Additive list-row fields for a sprint that already reached a terminal
+    // state (it can still hold a ledger row in the post-terminal linger window):
+    // `verdict`, and `prNotOpened { reason }` only when the branch was pushed
+    // but the PR was skipped. The persisted terminal run-state is the source;
+    // the FINISHED history event is the fallback. A sprint still running (or
+    // whose PR opened) gets no marker. Never throws.
+    function terminalListFields(r) {
+        try {
+            let info = null;
+            const st = hasTerminalState(r.sprintId, r.branch ?? null);
+            if (st && typeof st === 'object') {
+                info = terminalInfoFromState(st);
+            } else {
+                const fin = history.forSprint(r.sprintId).filter((e) => e.event === HISTORY_EVENTS.FINISHED).pop();
+                if (fin) info = terminalInfoFromHistory(fin);
+            }
+            if (!info) return {};
+            return {
+                ...(info.verdict ? { verdict: info.verdict } : {}),
+                ...(info.prNotOpened ? { prNotOpened: info.prNotOpened } : {}),
+            };
+        } catch {
+            return {};
+        }
+    }
+
     // -- GET /api/sprints : every live sprint ---------------------------------
     async function listSprints() {
         const freshness = ledger.getScopeFreshness();
@@ -909,6 +936,7 @@ export function createSprintController(deps = {}) {
                 tierPolicy: r.tierPolicy ?? null,
                 tierOverrides: r.tierOverrides ?? null,
                 port: resolvePort(r.childPid ?? null) ?? null,
+                ...terminalListFields(r),
             })),
             scopeFreshness: freshness,
         };

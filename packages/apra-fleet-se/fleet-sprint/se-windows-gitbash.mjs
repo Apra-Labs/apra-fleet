@@ -35,7 +35,7 @@
 // for them (apra-fleet-7dir.21). See that method's own doc comment for the
 // full design rationale.
 
-import { SePosixCommands } from './se-posix.mjs';
+import { SePosixCommands, isEmbeddableHome } from './se-posix.mjs';
 
 /**
  * Bash command primitives for a Windows member running Git-for-Windows bash.
@@ -55,6 +55,30 @@ export class SeWindowsGitbashCommands extends SePosixCommands {
    */
   get credentialHelperSuffix() {
     return '.bat';
+  }
+
+  /**
+   * git.exe on a gitbash member needs the Windows form of the home
+   * (C:/Users/name), not bash's /c/Users/name -- the same conversion core's
+   * windows-gitbash gitHelperHomeCommand uses.
+   * @returns {string}
+   */
+  memberHomeProbe() {
+    return this.wrapForMember(`cygpath -m "$HOME"`);
+  }
+
+  /**
+   * A gitbash home for a git helper path: a drive path (C:/...) or UNC
+   * share, backslashes turned into git's forward slashes.
+   * @param {string} home
+   * @returns {string}
+   */
+  gitHelperHome(home) {
+    const h = String(home ?? '').replace(/[\r\n]+$/, '').replace(/\\/g, '/');
+    if (!/^([A-Za-z]:\/|\/\/)/.test(h) || !isEmbeddableHome(h)) {
+      throw new Error(`Refusing to build a labelled git probe for unusable member home '${h}' (expected a Windows drive or UNC path with no '$', backtick, double quote or control character).`);
+    }
+    return h.replace(/\/+$/, '');
   }
 
   /**

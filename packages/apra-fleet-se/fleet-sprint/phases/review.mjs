@@ -300,6 +300,9 @@ export async function runReviewPhase({
     // completion requires this to be exactly 'APPROVED', not just
     // an empty ready-bead list.
     lastReviewVerdict = verdict.verdict;
+    // The last Review/Re-Review verdict and notes of the run (kept across
+    // cycles, unlike lastReviewVerdict): a stall abort names it.
+    if (sprintState) sprintState.lastReview = { verdict: verdict.verdict, notes: typeof verdict.notes === 'string' ? verdict.notes : '', site: 'Review', cycle };
     // Sticky red-build flag (../red-build-integ-gate.mjs): gates the
     // Integration Test dispatch until a later review reports the build green.
     lastBuildFailing = nextLastBuildFailing(lastBuildFailing, verdict);

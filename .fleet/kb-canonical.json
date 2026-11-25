@@ -77,6 +77,28 @@
       }
     },
     {
+      "id": "099b211c-923b-44d6-8767-8c8c741dbc20",
+      "type": "knowledge",
+      "title": "Description cap keeps only the trailing hidden blocks and cuts text before them",
+      "summary": "capDescriptionPreservingHiddenTail treats the trailing run of HTML comment blocks as the tail and cuts everything before it. When the fleet block is appended after human text and the total is over the provider limit, the human text and the block's opening marker are what get cut.",
+      "symbols": [
+        "capDescriptionPreservingHiddenTail",
+        "fleetBlockPlacement",
+        "locateFleetBlock",
+        "buildSprintPrBody"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/vcs-module.mjs",
+        "packages/apra-fleet-se/fleet-sprint/pr-body.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-24T15:03:39.844Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/pr-body.mjs": "1f171a8d85043b5bc5d915e8d92b14621c7de315",
+        "packages/apra-fleet-se/fleet-sprint/vcs-module.mjs": "c11e6f3738685e445bf417b8ce5d666c8d20af9a"
+      }
+    },
+    {
       "id": "0b6a7734-3224-4b5e-b407-6353af651e29",
       "type": "learning",
       "title": "Generic-boundary guard scans fleet-sprint runtime strings, so error messages must not cite apra-fleet source paths",
@@ -686,6 +708,37 @@
       }
     },
     {
+      "id": "26d29e21-540c-409c-b1f0-68734ecc7c47",
+      "type": "knowledge",
+      "title": "VCS preflight judges a credential per channel by function, not by username",
+      "summary": "createVcsAuthPreflightCallback probes a credentialProbe provider (Bitbucket, Azure DevOps) on two channels: git ls-remote through ONLY the labelled fleet helper, and the provider REST probe via vcs_credential_exec. No-PR is predicted only when the REST channel fails; a username other than expectedUsername is one WARN.",
+      "symbols": [
+        "createVcsAuthPreflightCallback",
+        "judgeCredential",
+        "checkGitChannel",
+        "checkPrChannel",
+        "gitLsRemoteLabelledProbe",
+        "memberHomeProbe",
+        "credentialProbe"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs",
+        "packages/apra-fleet-se/fleet-sprint/se-posix.mjs",
+        "packages/apra-fleet-se/fleet-sprint/se-windows.mjs",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/azure-devops.mjs",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/bitbucket.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-24T13:47:14.191Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/se-posix.mjs": "3b0407042969cd9dfddf1b23e8f028c0ee8d8372",
+        "packages/apra-fleet-se/fleet-sprint/se-windows.mjs": "6b272877e84518facef106420b4316360f892781",
+        "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs": "2ee3357322ce103d1563d40b0a55ed266c208c64",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/azure-devops.mjs": "b717fd79466efb0438a3ebf809d498c90a1f07c3",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/bitbucket.mjs": "5e5ab465d517312b1c5962cbf6a1f4c004afc5f5"
+      }
+    },
+    {
       "id": "2818267b-eebb-4cad-9b78-e5a21b64ea40",
       "type": "knowledge",
       "title": "Supervisor beads-view runs the bd/dolt pin check before any D-pull",
@@ -799,6 +852,30 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:28.685Z"
+    },
+    {
+      "id": "2da1e3b1-1bc5-4295-a415-3f6673a45c6c",
+      "type": "knowledge",
+      "title": "Azure DevOps PR list truncates descriptions; update path reads the PR by id",
+      "summary": "The ADO find-pull-request list returns descriptions cut to 400 chars, so raiseVcsPrForMember's updateExistingPr reads the full PR through the optional get-pull-request builder (declared only by azure-devops) and skips the update with a WARNING if that read fails.",
+      "symbols": [
+        "buildGetPrCommand",
+        "providerImplementsAction",
+        "buildAzureDevOpsGetPrCommand",
+        "raiseVcsPrForMember"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs",
+        "packages/apra-fleet-se/fleet-sprint/vcs-module.mjs",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/azure-devops.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-24T12:05:11.883Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs": "e4acddd11d3df49f9ee65f38d3b21400c1596eb6",
+        "packages/apra-fleet-se/fleet-sprint/vcs-module.mjs": "c11e6f3738685e445bf417b8ce5d666c8d20af9a",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/azure-devops.mjs": "326f0ec8365a4a90aaf676b2baf838dd3fea9edb"
+      }
     },
     {
       "id": "2e85c726-b08e-4d07-991d-28a387e4a507",
@@ -1131,6 +1208,32 @@
       "updated_at": "2026-09-25T22:26:29.791Z",
       "source_file_hashes": {
         "src/services/knowledge/audn.ts": "7adfb0501f6fd3d5dd88406ba68d449930df3f96"
+      }
+    },
+    {
+      "id": "462655e7-d57a-43f4-8034-4fd26abe8e47",
+      "type": "knowledge",
+      "title": "PR path never calls provision_vcs_auth for providers the fleet cannot mint",
+      "summary": "provisionVcsAuthForMember returns provisionSkipped at git_access push+pr whenever the provider's authRemedy.serverSideReMintable === false (Azure DevOps, Bitbucket), as a backstop after the provider hook; both provider hooks also answer skip for push+pr. GitHub App still mints push+pr just in time.",
+      "symbols": [
+        "provisionVcsAuthForMember",
+        "provisionPrCapableAuthForMember",
+        "raiseVcsPrForMember",
+        "buildProvisionArgs"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/azure-devops.mjs",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/bitbucket.mjs",
+        "packages/apra-fleet-se/test/vcs-pr-path-no-reprovision.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-24T12:53:37.823Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs": "c39f238f655c66f9c46f6ed8d36e0ba06a2398a3",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/azure-devops.mjs": "210fd003ba4fa19e06bc219ccc7b33e5c0ea6296",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/bitbucket.mjs": "ac50e09b0dcdaf64f06eb08e61085249f27fc4ad",
+        "packages/apra-fleet-se/test/vcs-pr-path-no-reprovision.test.mjs": "b673d352ebb4fc5dc365d30456c9240356b31ec2"
       }
     },
     {
@@ -2395,6 +2498,34 @@
       }
     },
     {
+      "id": "8ad25f1d-0612-4a49-b0e7-643d8a11ae42",
+      "type": "knowledge",
+      "title": "PR overflow comment links come from the provider commentWebUrl hook",
+      "summary": "publishPrOverflowComments returns urls[] through vcs-module commentWebUrlFor, which calls the provider descriptor's optional commentWebUrl hook. raiseVcsPrForMember then updates the description a second time with linkedBodyFor so the pointer is a markdown link.",
+      "symbols": [
+        "commentWebUrlFor",
+        "publishPrOverflowComments",
+        "overflowLinkedPointer",
+        "buildSprintPrBody"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/vcs-module.mjs",
+        "packages/apra-fleet-se/fleet-sprint/pr-overflow-comments.mjs",
+        "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs",
+        "packages/apra-fleet-se/fleet-sprint/pr-body.mjs",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/azure-devops.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-24T16:06:37.446Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/pr-body.mjs": "ce9b52af582306f14347fc53f90a01b10383f5e6",
+        "packages/apra-fleet-se/fleet-sprint/pr-overflow-comments.mjs": "75386a4e5512c924253d8c5506a4454f0c68e9fa",
+        "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs": "18f9fa85886c72eac46b1c6beaec5d829c17aeb8",
+        "packages/apra-fleet-se/fleet-sprint/vcs-module.mjs": "5fe9704d2b723282428edc1f33d89441a9204e67",
+        "packages/apra-fleet-se/fleet-sprint/vcs-providers/azure-devops.mjs": "19d52e29492c28d46edea17c2857cc9879fa95e9"
+      }
+    },
+    {
       "id": "8b15e895-7b5b-4fb7-ae8f-18bfcfcead1e",
       "type": "knowledge",
       "title": "Premium-cap gate runs after Plan via runReplanPhase premiumCap option and holds Develop on a decision",
@@ -3245,6 +3376,29 @@
       }
     },
     {
+      "id": "bd2d257d-a830-4df1-a66e-0f499050aa94",
+      "type": "knowledge",
+      "title": "git -c credential.helper= resets URL-scoped helpers too, so the labelled probe is host-chain-free",
+      "summary": "The labelled git probe passes -c credential.helper= and then only the fleet helper. git keeps one helper list built from credential.helper and matching credential.<url>.helper keys in config-read order, so the empty value also drops URL-scoped helpers from system/global config and the dispatch GIT_CONFIG_PARAMETERS.",
+      "symbols": [
+        "gitLsRemoteLabelledProbe",
+        "memberHomeProbe",
+        "gitHelperHome"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/se-posix.mjs",
+        "packages/apra-fleet-se/fleet-sprint/se-windows.mjs",
+        "packages/apra-fleet-se/test/vcs-preflight-credential-by-function.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-24T14:13:50.956Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/se-posix.mjs": "3b0407042969cd9dfddf1b23e8f028c0ee8d8372",
+        "packages/apra-fleet-se/fleet-sprint/se-windows.mjs": "6b272877e84518facef106420b4316360f892781",
+        "packages/apra-fleet-se/test/vcs-preflight-credential-by-function.test.mjs": "3dca7d49e81f9f198125665adced44dc65f3999a"
+      }
+    },
+    {
       "id": "bfcfe1fe-571d-4f3a-a0ce-04fedcd7a088",
       "type": "learning",
       "title": "APRA_TEST_SUITES_JSON narrowing leaks into run-all-tests-suite-enumeration test",
@@ -3503,6 +3657,30 @@
       "updated_at": "2026-09-25T22:26:37.343Z"
     },
     {
+      "id": "d5d34405-0b41-49cb-b3e7-d7b934af7955",
+      "type": "knowledge",
+      "title": "buildSprintPrBody never exceeds the limit because of outside text: compact block or description left unchanged",
+      "summary": "When the text outside the fleet block leaves no room for the block's frame, buildSprintPrBody returns compact:true (verdict, linked pointer, run history; all else in overflow comments) or descriptionUnchanged:true (previousBody as is, or the old block removed when the rest fits). raiseVcsPrForMember sends no description update when descriptionUnchanged is set.",
+      "symbols": [
+        "buildSprintPrBody",
+        "buildOutsideBoundResult",
+        "raiseVcsPrForMember",
+        "capDescriptionPreservingHiddenTail"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/pr-body.mjs",
+        "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs",
+        "packages/apra-fleet-se/test/pr-human-text-preserved.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-24T16:34:53.063Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/pr-body.mjs": "bff0c0546d425a43036fe80262e452d301658f51",
+        "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs": "bb55b5a8ecefc56bdea2fde01838e5c94cbe79b1",
+        "packages/apra-fleet-se/test/pr-human-text-preserved.test.mjs": "39dfcc403231baa059a3670337153857dd315e35"
+      }
+    },
+    {
       "id": "d6a925e2-7ffb-409e-9d6d-df112557edda",
       "type": "knowledge",
       "title": "The dolt-orphan-sweep owner filter lives only in the generated shell string, never in JS",
@@ -3634,6 +3812,28 @@
         "src/services/vcs/types.ts": "64f8ad879942ce3fd098e910990d1fa3259298c5",
         "src/tools/provision-vcs-auth.ts": "39ca9fa23f8bf74428773eb3ee59deabd2ad20cf",
         "tests/provision-vcs-auth.test.ts": "aa71779179a2b17f9ba69174729562f3e2ee0e4b"
+      }
+    },
+    {
+      "id": "db7c99e1-623a-40a3-9faf-841dd8257a38",
+      "type": "knowledge",
+      "title": "StalledSprintError drops opts it does not destructure; extra fields must be listed",
+      "summary": "StalledSprintError's constructor builds details only from the opts keys it destructures, plus opts.details. Any other top-level key passed by a throw site is silently lost. The work fields for the abort PR are listed explicitly.",
+      "symbols": [
+        "StalledSprintError",
+        "buildAbortWorkSections"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/errors.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/fleet-sprint/abort.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-24T16:06:38.330Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/abort.mjs": "f9c0b15bce4cebff1f416d468983e294e982bd32",
+        "packages/apra-fleet-se/fleet-sprint/errors.mjs": "5df99a722cfebdff63500066036aaf4f1a8c663c",
+        "packages/apra-fleet-se/fleet-sprint/runner.js": "bb48d16606a292668a9a258cbc17ffe017e819d2"
       }
     },
     {
@@ -4460,6 +4660,30 @@
         "docs/knowledge-layer.md": "cf7a175e11afbbb6c67be06aea9c7d0864a8ed55",
         "src/cli/secret.ts": "01ea1129155b296006c2faf310c8686311b6b87c",
         "tests/knowledge/kb-named-credential-live-e2e.test.ts": "fc532dfe2a2ab4ef542f3ab66dbd9d146c08216b"
+      }
+    },
+    {
+      "id": "f8f19262-c997-4678-90a8-a905412e0986",
+      "type": "knowledge",
+      "title": "Sprint Setup refuses a repo/PR-member VCS provider mismatch before any dispatch",
+      "summary": "runner.js calls assertPrMemberProviderMatchesRepo (vcs-auth.mjs) before the beads readiness gate. It compares the backlog member's registered vcsProvider with the provider serving origin (read on the harvester member) and throws code vcs_provider_mismatch; an unregistered member or unreadable record/remote never refuses.",
+      "symbols": [
+        "assertPrMemberProviderMatchesRepo",
+        "VCS_PROVIDER_MISMATCH",
+        "provisionVcsAuthForMember",
+        "raiseVcsPrForMember"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/test/mock-sprint-provider-mismatch-setup.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-24T15:03:39.257Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/runner.js": "8119d866a8a0f82adf59be22a5bcc6f7215cde06",
+        "packages/apra-fleet-se/fleet-sprint/vcs-auth.mjs": "9ea67e9103717013fb023f972645802183ee47f9",
+        "packages/apra-fleet-se/test/mock-sprint-provider-mismatch-setup.test.mjs": "bea2d1792178ada8ac052ba163329ab03109c959"
       }
     },
     {
