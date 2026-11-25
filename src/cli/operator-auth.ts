@@ -312,8 +312,10 @@ the App configured by setup_git_app, re-minted 5 minutes before it expires.
              ${DEFAULT_OPERATOR_ACCESS}; one of ${ACCESS_LEVELS.join(', ')}) and repos (default:
              every repo of the installation); removes only fleet's own legacy
              helper value(s) (0.4.5 and older) from the global git config key
-             ${OPERATOR_HELPER_KEY}, keeping every other value; and adds
-             'apra-fleet git-credential --label <label>' as a helper there.
+             ${OPERATOR_HELPER_KEY}, keeping every other value; and puts
+             'apra-fleet git-credential --label <label>' there as the first
+             helper, right after an empty reset entry. Fleet members never
+             use it.
              Running it again changes nothing.
   --remove   Undo: remove the helper this command added and its record.
   token      Print a fresh token on stdout (nothing else). gh cannot use a
@@ -520,16 +522,23 @@ async function operatorAuthGithub(flags: Record<string, string | true>, d: Retur
   // handed the minted token after -- the fleet helper for github.com. The
   // legacy migration drops the reset when it leaves nothing else on the key,
   // and a fresh host never had one. Foreign values keep their order after it.
+  // The fleet helper goes directly after the reset: git uses the first helper
+  // that answers, so a foreign value ahead of it (e.g. a stale token) would
+  // keep answering. Foreign values keep their order after it; an inner empty
+  // value would reset the list and drop the fleet helper, so it goes too.
   let resetAdded = previous?.resetAdded === true;
-  if (values[0] !== '') {
-    rewriteGlobalKey(OPERATOR_HELPER_KEY, ['', ...values.filter(v => v !== helper)]);
-    resetAdded = true;
-    changes.push(`Put an empty reset entry first on ${OPERATOR_HELPER_KEY}, so system and global credential.helper values are not used for github.com.`);
-    values = gitGetAll(OPERATOR_HELPER_KEY);
-  }
-  if (!values.includes(helper)) {
-    git(['config', '--global', '--add', OPERATOR_HELPER_KEY, helper]);
-    changes.push(`Added the fleet git-credential helper to ${OPERATOR_HELPER_KEY}.`);
+  const wanted = ['', helper, ...values.filter(v => v !== '' && v !== helper)];
+  if (JSON.stringify(values) !== JSON.stringify(wanted)) {
+    if (values[0] !== '') {
+      resetAdded = true;
+      changes.push(`Put an empty reset entry first on ${OPERATOR_HELPER_KEY}, so system and global credential.helper values are not used for github.com.`);
+    }
+    const others = wanted.length - 2;
+    changes.push(values.includes(helper)
+      ? `Moved the fleet git-credential helper to the front of ${OPERATOR_HELPER_KEY} (right after the reset entry).`
+      : `Added the fleet git-credential helper to ${OPERATOR_HELPER_KEY}, right after the reset entry.`);
+    if (others > 0) changes.push(`Kept ${others} other helper value(s) on ${OPERATOR_HELPER_KEY}, after the fleet helper.`);
+    rewriteGlobalKey(OPERATOR_HELPER_KEY, wanted);
     values = gitGetAll(OPERATOR_HELPER_KEY);
   }
 
@@ -547,7 +556,7 @@ async function operatorAuthGithub(flags: Record<string, string | true>, d: Retur
   else for (const c of changes) d.stdout(`${c}\n`);
   const ahead = effectiveHelpersAhead(helper);
   if (ahead > 0) {
-    d.stdout(`Note: ${ahead} other helper(s) are asked before it for https://github.com; git uses the first that answers, so they win while they hold a credential.\n`);
+    d.stdout(`[WARN] ${ahead} other helper(s) are still asked before it for https://github.com (git uses the first that answers, so a stale one keeps failing). Remove them with 'git config --global --edit' (or 'git config --system --edit'), then re-run '${OPERATOR_SETUP_COMMAND}'.\n`);
   }
   d.stdout(`git: tokens are minted on demand and refreshed before they expire.\n`
     + `gh: run it with a token per invocation, e.g. GH_TOKEN="$(apra-fleet operator-auth token${label === DEFAULT_OPERATOR_LABEL ? '' : ` --label ${label}`})" gh ...\n`);

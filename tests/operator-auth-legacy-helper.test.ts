@@ -255,20 +255,48 @@ describe('operator-auth github keeps an empty reset entry ahead of the fleet hel
     expect(getAll()).toEqual([]);
   });
 
-  it('7: a foreign value with no reset keeps its place after a reset put first, ahead of the fleet helper', async () => {
+  it('7: a foreign value with no reset is kept, but AFTER the fleet helper (which sits right after the reset)', async () => {
     resetGlobal([FOREIGN]);
     const a = io();
     expect(await runOperatorAuth(['github'], a.io)).toBe(0);
     const values = getAll();
-    expect(values.slice(0, 2)).toEqual(['', FOREIGN]);
     expect(values).toHaveLength(3);
-    expect(values[2]).toContain('git-credential --label github');
-    // Only the foreign URL-scoped value is asked first; the system one is reset.
-    expect(a.out.join('')).toMatch(/Note: 1 other helper\(s\) are asked before it/);
+    expect(values[0]).toBe('');
+    expect(values[1]).toContain('git-credential --label github');
+    expect(values[2]).toBe(FOREIGN);
+    // Nothing answers ahead of the fleet helper any more.
+    expect(a.out.join('')).not.toMatch(/asked before it/);
 
     const c = io();
     expect(await runOperatorAuth(['github', '--remove'], c.io)).toBe(0);
     // Only what setup added goes: the helper and the reset it put first.
+    expect(getAll()).toEqual([FOREIGN]);
+  });
+
+  it('8: a host set up with a foreign value ahead of the fleet helper (or an inner reset) is reordered; a rerun is byte-identical', async () => {
+    const a = io();
+    resetGlobal([FOREIGN]);
+    expect(await runOperatorAuth(['github'], a.io)).toBe(0);
+    const fleet = getAll()[1];
+    // The order an earlier build left (foreign first), plus an inner reset
+    // that would otherwise wipe the fleet helper from git's list.
+    // Same record (setup put the reset first), config rewritten by hand.
+    fs.writeFileSync(globalConfig, '');
+    for (const v of ['', FOREIGN, '', fleet]) execFileSync('git', ['config', '--global', '--add', OPERATOR_HELPER_KEY, v]);
+    const b = io();
+    expect(await runOperatorAuth(['github'], b.io)).toBe(0);
+    expect(getAll()).toEqual(['', fleet, FOREIGN]);
+    expect(b.out.join('')).toMatch(/Moved the fleet git-credential helper to the front/);
+    expect(b.out.join('')).not.toMatch(/asked before it/);
+
+    const configBefore = fs.readFileSync(globalConfig);
+    const c = io();
+    expect(await runOperatorAuth(['github'], c.io)).toBe(0);
+    expect(fs.readFileSync(globalConfig).equals(configBefore)).toBe(true);
+    expect(c.out.join('')).toContain('nothing changed');
+
+    const d = io();
+    expect(await runOperatorAuth(['github', '--remove'], d.io)).toBe(0);
     expect(getAll()).toEqual([FOREIGN]);
   });
 });

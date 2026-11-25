@@ -2525,10 +2525,18 @@ Design notes for `operator-auth github` / `git-credential`:
   config and PEM. The token is cached owner-only (mode 0600) and re-minted inside
   a 5-minute expiry margin. Only `get` for github.com HTTPS answers; `store`,
   `erase` and other hosts are no-ops, and the token goes only to stdout.
-- The registered entry is an empty reset value followed by a quoted
-  `!<self> git-credential --label <label>` helper. The reset means GCM and system
+- The key is rewritten to: empty reset value, then the quoted
+  `!<self> git-credential --label <label>` helper, then any other values (inner
+  reset values dropped). git uses the first helper that answers, so a stale
+  foreign value can no longer answer ahead of it. The reset means GCM and system
   helpers are turned off for all github.com HTTPS for that OS user, not just for
   fleet repositories. Run `operator-auth github --remove` to undo it.
+- Members never use it. Once it is set up, every dispatch to a local member
+  (which shares this global config) resets the `https://github.com` helper list
+  first, unless the member has its own helper for exactly that scope. A local
+  member with no GitHub credential of its own then fails to authenticate
+  instead of pushing with the operator's token: give it one with
+  `provision_vcs_auth`.
 - With no `--repos`, the token covers the whole installation (the repositories
   field is omitted from the mint request).
 - `operator-auth token` prints only the token, so it is safe in command
