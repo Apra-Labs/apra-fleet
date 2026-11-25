@@ -5068,7 +5068,7 @@ async function runSprintCycle(context) {
         setAside: collectSetAsideEntries(sprintState),
         waited: collectWaitEntries(sprintState),
         kbWork,
-        command, memberSeCommands,
+        command, memberSeCommands, publishState,
         computeBranchSlug, buildAnalysisText, buildCostAnalysis,
     });
 
