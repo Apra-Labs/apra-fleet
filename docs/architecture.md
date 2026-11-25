@@ -443,7 +443,7 @@ Two-layer monitoring. `fleet_status` gives a quick summary table across all memb
 
 The LLM auth label shown by `list_members` and `member_detail` comes from one shared helper. It joins `api-key`, `oauth-token` and `oauth-login` with `+` in a fixed order, checks every auth env var a provider declares (not just the first found), and filters out empty var names. Providers classify a var via the optional `ProviderAdapter.authEnvVarKind`.
 
-`execute_command` with `network_policy=deny` blocks git network subcommands (push, pull, fetch, clone, ls-remote, including after global options such as `-C`) and also checks `restart_command`. Local git stays allowed. This is a best-effort heuristic: `git remote update`, `git submodule update --remote` and git aliases are not covered.
+`execute_command` with `network_policy=deny` blocks git network subcommands (push, pull, fetch, clone, ls-remote, remote update; also spelled `git.exe`/`git.cmd`, quoted, via the PowerShell `&` operator, or after global options such as `-C`) and also checks `restart_command`. Local git stays allowed. These two checks are deny-only: `confirm` (the default policy) still prompts only for a network tool in `command`, exactly as before, so upgrading users see no new prompts. This is a best-effort heuristic: `git submodule update --remote` and git aliases are not covered.
 
 ## Cross-Platform Support
 

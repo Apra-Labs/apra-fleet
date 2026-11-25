@@ -88,9 +88,9 @@ network access for commands that use it:
 
 | Policy | Behaviour |
 |--------|-----------|
-| `'allow'` (default) | No restriction |
-| `'deny'` | Commands invoking network tools (curl, wget, ssh, scp, sftp, rsync, nc, http, fetch, Invoke-WebRequest, Invoke-RestMethod) or the git network subcommands `push`, `pull`, `fetch`, `clone`, `ls-remote` (also after global options such as `git -C dir push`) are blocked; `restart_command` is checked the same way. Local git (`status`, `log`, `commit`, `diff`, `add`) is not |
-| `'confirm'` | OOB prompt before the network call is allowed |
+| `'allow'` | No restriction |
+| `'deny'` | Commands invoking network tools (curl, wget, ssh, scp, sftp, rsync, nc, http, fetch, Invoke-WebRequest, Invoke-RestMethod) or the git network subcommands `push`, `pull`, `fetch`, `clone`, `ls-remote`, `remote update` (also as `git.exe`, quoted, via `&`, or after global options such as `git -C dir push`) are blocked; `restart_command` is checked the same way. Local git (`status`, `log`, `commit`, `diff`, `add`) is not |
+| `'confirm'` (default) | OOB prompt before a network tool in `command` runs (unattended: blocked). The git-subcommand and `restart_command` checks are deny-only |
 
 ## Member Identification
 
