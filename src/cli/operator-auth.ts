@@ -65,6 +65,11 @@ export interface OperatorRecord {
   repos: string[];
   /** The exact helper value registered in the global git config. */
   helper: string;
+  /**
+   * True when operator-auth github put the empty reset entry at the head of
+   * the key itself (so --remove takes it out again once nothing else is left).
+   */
+  resetAdded?: boolean;
 }
 
 interface OperatorFile {
@@ -366,6 +371,42 @@ function git(args: string[]): void {
   }
 }
 
+/** Replace every value of the global key with `values`, in order (an empty list removes the key). */
+function rewriteGlobalKey(key: string, values: string[]): void {
+  if (gitGetAll(key).length > 0) git(['config', '--global', '--unset-all', key]);
+  for (const v of values) git(['config', '--global', '--add', key, v]);
+}
+
+/** `key\nvalue` entries of one config scope matching the github.com credential helper keys, in file order. */
+function helperEntries(scope: '--system' | '--global'): { key: string; value: string }[] {
+  try {
+    const out = execFileSync(gitExe(), ['config', scope, '-z', '--get-regexp', '^credential\\.(https://github\\.com\\.)?helper$'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    return out.split('\0').slice(0, -1).map(e => {
+      const nl = e.indexOf('\n');
+      return nl < 0 ? { key: e, value: '' } : { key: e.slice(0, nl), value: e.slice(nl + 1) };
+    });
+  } catch {
+    // Absent key, or no readable system config: nothing contributes.
+    return [];
+  }
+}
+
+/**
+ * How many helpers git consults for https://github.com before `helper`:
+ * system then global credential.helper / credential.https://github.com.helper
+ * values in config order, each empty value resetting the list.
+ */
+function effectiveHelpersAhead(helper: string): number {
+  const list: string[] = [];
+  for (const e of [...helperEntries('--system'), ...helperEntries('--global')]) {
+    if (e.key.toLowerCase() === OPERATOR_HELPER_KEY.toLowerCase() && e.value === helper) return list.length;
+    if (e.value === '') list.length = 0;
+    else list.push(e.value);
+  }
+  return 0;
+}
+
 /**
  * The values fleet 0.4.5 and older stored on the global key for `label`
  * (`<home>/.fleet-git-credential-<label>` on POSIX; the forward-slash .bat
@@ -403,7 +444,7 @@ async function removeLegacyHelperValues(label: string): Promise<{ removed: numbe
     } else {
       const { posixLegacyHelperUnset } = await import('../os/linux.js');
       out = execFileSync('sh', ['-c', posixLegacyHelperUnset(escapeShellArg(OPERATOR_HELPER_KEY), escapeShellArg(value))],
-        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
     }
     const report = parseLegacyHelperReport(out);
     if (!report || report.failed) failed = true;
@@ -432,6 +473,13 @@ async function operatorAuthGithub(flags: Record<string, string | true>, d: Retur
       git(['config', '--global', '--fixed-value', '--unset-all', OPERATOR_HELPER_KEY, existing.helper]);
       d.stdout(`Removed the fleet git-credential helper (label '${label}') from ${OPERATOR_HELPER_KEY}.\n`);
     }
+    // The reset entry this command put in front goes too, once nothing but
+    // resets is left on the key (the same rule as the legacy migration).
+    const rest = gitGetAll(OPERATOR_HELPER_KEY);
+    if (existing.resetAdded && rest.length > 0 && rest.every(v => v === '')) {
+      rewriteGlobalKey(OPERATOR_HELPER_KEY, []);
+      d.stdout(`Removed the empty reset entry it added to ${OPERATOR_HELPER_KEY}.\n`);
+    }
     delete records.github[label];
     saveRecords(records);
     try { fs.rmSync(operatorTokenCachePath(label), { force: true }); } catch { /* best effort */ }
@@ -453,14 +501,7 @@ async function operatorAuthGithub(flags: Record<string, string | true>, d: Retur
   const helper = operatorHelperValue(label, d.selfCommand ?? resolveSelfCommand());
   const changes: string[] = [];
 
-  // (a) the record git-credential and `operator-auth token` read on every mint.
   const previous = records.github[label];
-  const record: OperatorRecord = { label, access, repos, helper };
-  if (JSON.stringify(previous) !== JSON.stringify(record)) {
-    records.github[label] = record;
-    saveRecords(records);
-    changes.push(`Recorded operator credential '${label}' (access ${access}, repos ${repos.length ? repos.join(',') : 'all of the installation'}).`);
-  }
 
   // (b) fleet's own legacy value(s) only.
   const legacy = await removeLegacyHelperValues(label);
@@ -473,19 +514,39 @@ async function operatorAuthGithub(flags: Record<string, string | true>, d: Retur
     git(['config', '--global', '--fixed-value', '--unset-all', OPERATOR_HELPER_KEY, previous.helper]);
     values = gitGetAll(OPERATOR_HELPER_KEY);
   }
+  // The key must open with the empty reset entry, so a system or global
+  // credential.helper (e.g. Git Credential Manager) is not asked before -- or
+  // handed the minted token after -- the fleet helper for github.com. The
+  // legacy migration drops the reset when it leaves nothing else on the key,
+  // and a fresh host never had one. Foreign values keep their order after it.
+  let resetAdded = previous?.resetAdded === true;
+  if (values[0] !== '') {
+    rewriteGlobalKey(OPERATOR_HELPER_KEY, ['', ...values.filter(v => v !== helper)]);
+    resetAdded = true;
+    changes.push(`Put an empty reset entry first on ${OPERATOR_HELPER_KEY}, so system and global credential.helper values are not used for github.com.`);
+    values = gitGetAll(OPERATOR_HELPER_KEY);
+  }
   if (!values.includes(helper)) {
     git(['config', '--global', '--add', OPERATOR_HELPER_KEY, helper]);
     changes.push(`Added the fleet git-credential helper to ${OPERATOR_HELPER_KEY}.`);
     values = gitGetAll(OPERATOR_HELPER_KEY);
   }
 
+  // (a) the record git-credential and `operator-auth token` read on every
+  // mint, written last so a rerun computes the same record and writes nothing.
+  const record: OperatorRecord = { label, access, repos, helper, ...(resetAdded ? { resetAdded: true } : {}) };
+  if (JSON.stringify(previous) !== JSON.stringify(record)) {
+    records.github[label] = record;
+    saveRecords(records);
+    changes.push(`Recorded operator credential '${label}' (access ${access}, repos ${repos.length ? repos.join(',') : 'all of the installation'}).`);
+  }
+
   // (e) report.
   if (changes.length === 0) d.stdout(`Operator GitHub credential '${label}' is already set up; nothing changed.\n`);
   else for (const c of changes) d.stdout(`${c}\n`);
-  const ours = values.indexOf(helper);
-  const ahead = values.slice(0, ours).filter(v => v !== '');
-  if (ahead.length > 0) {
-    d.stdout(`Note: ${ahead.length} other helper(s) come before it on ${OPERATOR_HELPER_KEY}; git uses the first that answers, so they win while they hold a credential.\n`);
+  const ahead = effectiveHelpersAhead(helper);
+  if (ahead > 0) {
+    d.stdout(`Note: ${ahead} other helper(s) are asked before it for https://github.com; git uses the first that answers, so they win while they hold a credential.\n`);
   }
   d.stdout(`git: tokens are minted on demand and refreshed before they expire.\n`
     + `gh: run it with a token per invocation, e.g. GH_TOKEN="$(apra-fleet operator-auth token${label === DEFAULT_OPERATOR_LABEL ? '' : ` --label ${label}`})" gh ...\n`);
