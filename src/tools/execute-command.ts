@@ -42,17 +42,24 @@ export type ExecuteCommandInput = z.infer<typeof executeCommandSchema>;
 // Best-effort heuristic — not a security boundary
 const NETWORK_TOOL_RE = /\b(curl|wget|ssh|sftp|scp|rsync|nc|netcat|http|fetch|Invoke-WebRequest|Invoke-RestMethod)\b/i;
 
-// git subcommands that reach the network: push, pull, fetch, clone, ls-remote.
-// Global options may precede the subcommand (git -C dir push, git -c k=v fetch,
-// git --git-dir=x fetch). Local subcommands (status, log, commit, diff, add...)
-// never match.
+// git subcommands that reach the network: push, pull, fetch, clone, ls-remote,
+// remote update. Global options may precede the subcommand (git -C dir push,
+// git -c k=v fetch, git --git-dir=x fetch). The executable may be spelled
+// git.exe / git.cmd, quoted ("git", 'git', "C:\...\git.exe") or run through
+// the PowerShell call operator (& git.exe push). Local subcommands (status,
+// log, commit, diff, add...) never match.
 const GIT_ARG = String.raw`(?:"[^"]*"|'[^']*'|\S+)`;
 const GIT_NETWORK_RE = new RegExp(
-  String.raw`\bgit(?:\s+(?:-[Cc]\s+${GIT_ARG}|--(?:git-dir|work-tree|namespace|exec-path)\s+${GIT_ARG}|--[\w-]+(?:=${GIT_ARG})?|-[\w]))*\s+(?:push|pull|fetch|clone|ls-remote)(?![\w-])`,
+  String.raw`\bgit(?:\.exe|\.cmd)?["']?(?:\s+(?:-[Cc]\s+${GIT_ARG}|--(?:git-dir|work-tree|namespace|exec-path)\s+${GIT_ARG}|--[\w-]+(?:=${GIT_ARG})?|-[\w]))*\s+(?:push|pull|fetch|clone|ls-remote|remote\s+update)(?![\w-])`,
   'i',
 );
 
-/** True when a resolved command string invokes a network tool or a git network subcommand. */
+/**
+ * True when a resolved command string invokes a network tool or a git network
+ * subcommand. Used for network_policy=deny only; confirm keeps the narrower
+ * NETWORK_TOOL_RE check on `command` alone, so users on the default confirm
+ * policy get no new prompts (or unattended blocks) after upgrading.
+ */
 function usesNetworkTool(cmd: string | undefined): boolean {
   return !!cmd && (NETWORK_TOOL_RE.test(cmd) || GIT_NETWORK_RE.test(cmd));
 }
@@ -303,13 +310,17 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
   }
 
   // -- Network egress check for credentials with confirm/deny policy --
-  // restart_command runs with the same credentials, so it is checked the same way.
-  if (credentials.length > 0 && (usesNetworkTool(resolvedCommand) || usesNetworkTool(resolvedRestartCommand))) {
+  // deny: command and restart_command (same credentials) are checked for network
+  // tools AND git network subcommands. confirm: only `command` against
+  // NETWORK_TOOL_RE, unchanged, so default-policy users see no new prompts.
+  const denyMatch = usesNetworkTool(resolvedCommand) || usesNetworkTool(resolvedRestartCommand);
+  const confirmMatch = NETWORK_TOOL_RE.test(resolvedCommand);
+  if (credentials.length > 0 && denyMatch) {
     for (const cred of credentials) {
       if (cred.network_policy === 'deny') {
         return `❌ Blocked: credential "${cred.name}" has network_policy=deny and the command or restart_command contains a network tool.`;
       }
-      if (cred.network_policy === 'confirm') {
+      if (cred.network_policy === 'confirm' && confirmMatch) {
         const { confirmed, terminalUnavailable } = await collectOobConfirm(cred.name, { command: input.command, memberName: agent.friendlyName });
         if (!confirmed) {
           const reason = terminalUnavailable

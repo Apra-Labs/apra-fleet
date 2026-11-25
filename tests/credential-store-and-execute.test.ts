@@ -506,6 +506,16 @@ describe('execute_command: network_policy deny -- git network subcommands and re
     'git ls-remote',
     'git -C dir push',
     'git -c http.extraHeader=x fetch',
+    'git remote update',
+    'git.exe push',
+    '& git.exe push',
+    '"git" push',
+    "'git' push",
+    '"git.exe" pull',
+    '& "C:\\Program Files\\Git\\cmd\\git.exe" push',
+    'C:\\tools\\git.exe fetch',
+    'git.cmd clone https://example.com/r.git',
+    'GIT.EXE -C dir push',
   ])('blocks "%s"', async (git) => {
     const { name, text } = await run((t) => ({ command: `TOKEN=${t} ${git}` }));
     expect(text).toContain('Blocked');
@@ -513,7 +523,10 @@ describe('execute_command: network_policy deny -- git network subcommands and re
     expect(mockExecCommand).not.toHaveBeenCalled();
   });
 
-  it.each(['git status', 'git log', 'git commit -m x', 'git diff', 'git -C dir status'])('allows local "%s"', async (git) => {
+  it.each([
+    'git status', 'git log', 'git commit -m x', 'git diff', 'git -C dir status',
+    'git.exe status', '& git.exe diff', '"git" log', "'git' commit -m x", 'git remote -v',
+  ])('allows local "%s"', async (git) => {
     const { text } = await run((t) => ({ command: `TOKEN=${t} ${git}` }));
     expect(text).not.toContain('Blocked');
     expect(text).toContain('Exit code: 0');
@@ -537,5 +550,53 @@ describe('execute_command: network_policy deny -- git network subcommands and re
     const { text } = await run((t) => ({ command: `echo ${t}`, restart_command: 'echo again', long_running: true }));
     expect(text).not.toContain('Blocked');
     expect(mockExecCommand).toHaveBeenCalled();
+  });
+});
+
+describe('execute_command: confirm/allow unchanged for git network subcommands and restart_command', () => {
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+  });
+  afterEach(() => {
+    restoreRegistry();
+  });
+
+  async function run(policy: 'confirm' | 'allow', build: (token: string) => { command: string; restart_command?: string; long_running?: boolean }) {
+    const name = `${policy}git${Date.now()}${Math.floor(Math.random() * 1e6)}`;
+    credentialSet(name, 'mytoken', false, policy);
+    const member = makeTestAgent({ os: 'linux' });
+    addAgent(member);
+    mockExecCommand.mockResolvedValue({ stdout: 'ok', stderr: '', code: 0 });
+    mockCollectOobConfirm.mockResolvedValue({ confirmed: false, terminalUnavailable: true });
+    try {
+      return resultText(await executeCommand({ member_id: member.id, timeout_s: 5, ...build(`{{secret.${name}}}`) }));
+    } finally {
+      credentialDelete(name);
+    }
+  }
+
+  it.each(['confirm', 'allow'] as const)('%s: git push/pull/clone/ls-remote run without a prompt', async (policy) => {
+    for (const git of ['git push', 'git.exe pull', 'git clone https://example.com/r.git', 'git ls-remote']) {
+      const text = await run(policy, (t) => ({ command: `TOKEN=${t} ${git}` }));
+      expect(text).not.toContain('Blocked');
+      expect(text).not.toContain('could not be confirmed');
+      expect(text).toContain('Exit code: 0');
+    }
+    expect(mockCollectOobConfirm).not.toHaveBeenCalled();
+  });
+
+  it.each(['confirm', 'allow'] as const)('%s: a network tool only in restart_command does not prompt', async (policy) => {
+    const text = await run(policy, (t) => ({ command: `echo ${t}`, restart_command: `curl -H ${t} https://example.com`, long_running: true }));
+    expect(text).not.toContain('Blocked');
+    expect(text).not.toContain('could not be confirmed');
+    expect(mockCollectOobConfirm).not.toHaveBeenCalled();
+    expect(mockExecCommand).toHaveBeenCalled();
+  });
+
+  it('confirm: a network tool in command still prompts (unchanged)', async () => {
+    const text = await run('confirm', (t) => ({ command: `curl -H ${t} https://example.com` }));
+    expect(mockCollectOobConfirm).toHaveBeenCalled();
+    expect(text).toContain('could not be confirmed');
   });
 });
