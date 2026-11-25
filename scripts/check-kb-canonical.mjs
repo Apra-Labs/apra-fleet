@@ -14,8 +14,8 @@
  *   - envelope: exactly the keys version, provenance, entries and (optional,
  *     never empty) demotions; version is the current format version (3)
  *   - provenance: branch (a string or null); the legacy keys commit and
- *     entry_count are accepted, and entry_count, when present, must equal the
- *     number of entries
+ *     entry_count are accepted but their values are not validated (nothing
+ *     reads them, and a plain merge leaves them stale)
  *   - entries: each an object with a non-empty string id, a known type and
  *     confidence, a non-empty title and summary; ids unique and sorted
  *   - demotions (tombstones): each {id, at, reason} with a known reason --
@@ -127,12 +127,6 @@ export function validateBibleText(raw) {
             }
             if (!Object.prototype.hasOwnProperty.call(prov, 'branch')) add('provenance-key', 'provenance has no branch');
             else if (prov.branch !== null && !isNonEmptyString(prov.branch)) add('provenance', 'provenance.branch is not a non-empty string or null');
-            if (Object.prototype.hasOwnProperty.call(prov, 'commit') && prov.commit !== null && !isNonEmptyString(prov.commit)) {
-                add('provenance', 'provenance.commit is not a non-empty string or null');
-            }
-            if (Object.prototype.hasOwnProperty.call(prov, 'entry_count') && entries !== null && prov.entry_count !== entries.length) {
-                add('entry-count', 'provenance.entry_count is ' + JSON.stringify(prov.entry_count) + ' but the file has ' + entries.length + ' entries');
-            }
         }
     }
 

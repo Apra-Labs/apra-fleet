@@ -66,10 +66,50 @@ describe('check-kb-canonical: valid bibles', () => {
     expect(problemsOf(noTombstones)).toEqual([]);
   });
 
-  it('accepts the legacy provenance keys when entry_count matches', () => {
+  it('accepts the legacy provenance keys without validating their values', () => {
     const doc = valid();
     doc.provenance = { commit: 'f'.repeat(40), branch: 'main', entry_count: 3 };
     expect(problemsOf(doc)).toEqual([]);
+    doc.provenance = { commit: 'not-a-sha', branch: 'main', entry_count: 7 };
+    expect(problemsOf(doc)).toEqual([]);
+    doc.provenance = { commit: 12, branch: 'main', entry_count: 'x' };
+    expect(problemsOf(doc)).toEqual([]);
+  });
+
+  it('passes after a plain git merge leaves a stale legacy entry_count', () => {
+    const git = (cwd: string, ...args: string[]) => {
+      const r = spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'core.autocrlf=false', ...args], { cwd, encoding: 'utf8' });
+      if (r.status !== 0) throw new Error('git ' + args.join(' ') + ': ' + r.stderr);
+      return r.stdout;
+    };
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-merge-'));
+    tmpDirs.push(dir);
+    const rel = '.fleet/kb-canonical.json';
+    const write = (doc: unknown) => {
+      fs.mkdirSync(path.join(dir, '.fleet'), { recursive: true });
+      fs.writeFileSync(path.join(dir, rel), exporterSerialization(doc));
+    };
+    const base = valid();
+    delete base.demotions;
+    base.entries = [entry('a-1'), entry('c-3')];
+    base.provenance = { commit: 'f'.repeat(40), branch: 'feat/x', entry_count: 2 };
+    git(dir, 'init', '-q', '-b', 'main');
+    write(base);
+    git(dir, 'add', '.'); git(dir, 'commit', '-q', '-m', 'base');
+    git(dir, 'checkout', '-q', '-b', 'feat/x');
+    const branchDoc = { ...base, entries: [entry('a-1'), entry('b-2'), entry('c-3')] };
+    write(branchDoc);
+    git(dir, 'commit', '-q', '-am', 'branch adds b-2');
+    git(dir, 'checkout', '-q', 'main');
+    const mainDoc = { ...base, entries: [entry('a-1'), entry('c-3'), entry('e-5')] };
+    write(mainDoc);
+    git(dir, 'commit', '-q', '-am', 'main adds e-5');
+    git(dir, 'checkout', '-q', 'feat/x');
+    git(dir, 'merge', '-q', '--no-edit', 'main');
+    const merged = JSON.parse(fs.readFileSync(path.join(dir, rel), 'utf8'));
+    expect(merged.entries).toHaveLength(4);
+    expect(merged.provenance.entry_count).toBe(2);
+    expect(checkBibleFile(path.join(dir, rel))).toMatchObject({ exists: true, problems: [] });
   });
 
   it('a missing file is not a failure (nothing to check)', () => {
@@ -103,12 +143,6 @@ describe('check-kb-canonical: each malformed case names the problem', () => {
   it('provenance without branch, or with an unknown key', () => {
     expectProblem({ ...valid(), provenance: {} }, 'provenance-key', /no branch/);
     expectProblem({ ...valid(), provenance: { branch: 'main', merged_by: 'x' } }, 'provenance-key', /"merged_by"/);
-  });
-
-  it('entry_count that does not match the entries', () => {
-    const doc = valid();
-    doc.provenance = { commit: null, branch: 'main', entry_count: 7 };
-    expectProblem(doc, 'entry-count', /entry_count is 7 but the file has 3 entries/);
   });
 
   it('a duplicate entry id', () => {
