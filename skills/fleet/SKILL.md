@@ -67,6 +67,7 @@ The `{{secret.NAME}}` pattern lets you reference stored secrets in any command w
 **When to use:**
 - Any API key, token, or password that a member needs in a shell command
 - Rotating credentials: `credential_store_delete` then `credential_store_set`  -  no re-provisioning required
+- A `long_running` task resolves `{{secret.NAME}}` once at launch: after rotating a secret it uses, restart the task (`monitor_task` warns and gives the stop step)
 - Pre-loading secrets before a dispatch so members can authenticate in commands autonomously
 
 NOTE: **`{{secret.NAME}}` only resolves in specific credential fields** (listed above). Using it in any other parameter (e.g. a prompt, a path field in a non-credential tool, or any other unsupported parameter) will pass the token string through literally  -  the secret will NOT be injected, and the raw handle name will be visible in logs. Only use `{{secret.NAME}}` in the fields documented above.

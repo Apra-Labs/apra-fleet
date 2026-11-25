@@ -312,6 +312,11 @@
  * @property {number} [gpuUtilization] - Cloud members only.
  * @property {string|null} logTail - Last lines of task.log (credential values redacted).
  * @property {boolean} [autoStopped] - Set when auto_stop stopped the cloud instance.
+ * @property {Array<{name: string, change: 'rotated'|'deleted'|'expired'}>} [secretChanges] -
+ *   Present only when a {{secret.NAME}} the task resolved at launch has since been rotated,
+ *   deleted or has expired: the task still uses the old value. Never carries a value.
+ * @property {string} [secretWarning] - Present with secretChanges: the warning, with the
+ *   member-OS stop step and the relaunch instruction.
  */
 
 /**
