@@ -37,6 +37,7 @@ import { installExitLogging } from '../src/supervisor/exit-log.mjs';
 import { installSelfLogTee, createSelfLogView, registerSelfLogRoutes } from '../src/supervisor/self-log.mjs';
 import { createIdAllocator, registerIdAllocatorRoutes, defaultDataDir as defaultAllocatorDataDir } from '../src/supervisor/id-allocator.mjs';
 import { createDoltMutex, registerDoltMutexRoutes } from '../src/supervisor/dolt-mutex.mjs';
+import { AuthConfigError, resolveAuthConfig, validateAuthConfig } from '../src/supervisor/auth.mjs';
 // eft.4.8.1: the operator-facing surface -- PID-liveness watchdog (eft.4.3),
 // dashboard/backlog/launch-form (eft.6.*), and the six sprint/member/backlog
 // operator endpoints (eft.4.4). These were fully implemented and unit-tested
@@ -81,6 +82,20 @@ Options:
                             name is refused (DNS-rebinding defence), so add the
                             DNS name operators use for an off-box bind. Also
                             read from FLEET_SUPERVISOR_ALLOWED_HOSTS.
+      --auth <mode>         Caller authentication: none (default; every caller is
+                            the local operator, as before) or trusted-front
+                            (remote users arrive through an authenticating front
+                            that signs each request; see docs/supervisor-auth.md).
+                            trusted-front requires a loopback --host. Also read
+                            from FLEET_SUPERVISOR_AUTH.
+      --front-jwks <path>   The front's public JWKS file (EC P-256 keys). Required
+                            for trusted-front; re-read when it changes. Also read
+                            from FLEET_SUPERVISOR_FRONT_JWKS.
+      --front-issuer <iss>  Expected iss of the front's assertions. Required for
+                            trusted-front. Also read from
+                            FLEET_SUPERVISOR_FRONT_ISSUER.
+      --front-audience <aud> Expected aud. Default: fleet-supervisor. Also read
+                            from FLEET_SUPERVISOR_FRONT_AUDIENCE.
       --beads-dir <path>    Project folder (or its .beads dir) whose beads tracker
                             this supervisor runs against. Default: discovered by
                             walking up from the current directory, exactly like
@@ -211,6 +226,10 @@ export function parseServeArgs(argv) {
                 host: { type: 'string' },
                 'allowed-host': { type: 'string', multiple: true },
                 'beads-dir': { type: 'string' },
+                auth: { type: 'string' },
+                'front-jwks': { type: 'string' },
+                'front-issuer': { type: 'string' },
+                'front-audience': { type: 'string' },
                 detach: { type: 'boolean' },
                 help: { type: 'boolean', short: 'h' },
             },
@@ -307,6 +326,23 @@ export async function serveMain(argv = process.argv.slice(2), deps = {}) {
             console.error(`Error: --port must be a valid TCP port number, got "${values.port}".`);
             return { exitCode: 1 };
         }
+    }
+
+    // Caller authentication (docs/supervisor-auth.md): flags over env.
+    // Checked here, before any seam is built or the port bound, so a
+    // trusted-front supervisor off loopback or missing its JWKS path / issuer
+    // refuses to start with the setting named. createSupervisor().start()
+    // re-checks the same rule.
+    const authConfig = resolveAuthConfig({
+        auth: values.auth, frontJwks: values['front-jwks'], frontIssuer: values['front-issuer'], frontAudience: values['front-audience'],
+    });
+    try {
+        validateAuthConfig(authConfig, host);
+    } catch (err) {
+        if (!(err instanceof AuthConfigError)) throw err;
+        console.error(`Error: refusing to start: ${err.message}`);
+        selfLog.stop();
+        return { exitCode: 1 };
     }
 
     // Which .beads this supervisor runs against -- resolved ONCE, up front,
@@ -586,6 +622,7 @@ export async function serveMain(argv = process.argv.slice(2), deps = {}) {
         port, host,
         // CLI names add to (not replace) the env var's list.
         allowedHosts: [...(values['allowed-host'] ?? []), ...String(process.env[SUPERVISOR_ALLOWED_HOSTS_ENV] ?? '').split(/[\s,]+/).filter(Boolean)],
+        auth: authConfig,
         ledger, spawner, watchdog: hangable.watchdog, dashboard: hangable.dashboard, idAllocator, doltMutex,
         doltOrphanSweep: hangable.doltOrphanSweep, beadsIdentity, backlogMember,
         seamStopTimeoutMs: envMs('FLEET_SE_SHUTDOWN_SEAM_TIMEOUT_MS', 3000),

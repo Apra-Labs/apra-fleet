@@ -191,7 +191,9 @@ export function createReconciler(deps = {}) {
      * all) never blocks the release that follows it. Throws
      * SprintNotFoundError for an unknown sprint.
      * @param {string} sprintId
-     * @param {{ by?: string, reason?: string }} [audit]
+     * @param {{ by?: string, reason?: string, actor?: { sub: string, name: string|null } }} [audit]
+     *   `actor`: the authenticated caller (docs/supervisor-auth.md audit),
+     *   recorded as `stoppedBy`; the entry's own `launchedBy` is carried over.
      * @returns {Promise<object>} the recorded history event, plus `childPid`,
      *   `killed` (whether the kill signal was believed to land; null when
      *   there was no recorded childPid to kill), and (apra-fleet-3i3.3) the
@@ -222,6 +224,8 @@ export function createReconciler(deps = {}) {
             members: entry.members,
             issueRoots: entry.issueRoots,
             at: now(),
+            ...(entry.launchedBy ? { launchedBy: entry.launchedBy } : {}),
+            ...(audit.actor ? { stoppedBy: audit.actor } : {}),
         });
         return { ...recorded, childPid, killed, branch, base, goal };
     }
@@ -250,7 +254,8 @@ export function registerReservationRoutes(supervisor, reconciler) {
         }
         const body = (await readJsonBody(req)) ?? {};
         try {
-            const audit = await reconciler.forceRelease(sprintId, { by: body.by, reason: body.reason });
+            const actor = ctx?.auth?.actor;
+            const audit = await reconciler.forceRelease(sprintId, { by: body.by, reason: body.reason, ...(actor ? { actor } : {}) });
             sendJson(res, 200, { status: 'force-released', sprintId, audit });
         } catch (err) {
             if (err && err.code === 'SPRINT_NOT_FOUND') {
