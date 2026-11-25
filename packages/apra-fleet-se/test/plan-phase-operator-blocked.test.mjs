@@ -24,7 +24,7 @@ function fakeBd() {
     return { commands, command };
 }
 
-function harness({ responses, scope, decisionWait = null, sprintState = {} }) {
+function harness({ responses, scope, decisionWait = null, sprintState = {}, allBeads = null }) {
     const { ctx, rec } = createRecordingCtx({ responses });
     const bd = fakeBd();
     const logs = [];
@@ -47,6 +47,7 @@ function harness({ responses, scope, decisionWait = null, sprintState = {} }) {
         updateDashboard: async () => {},
         bdListScoped: async () => scope.map((b) => ({ ...b })),
         decisionWait,
+        fetchAllBeads: async () => (allBeads || scope).map((b) => ({ ...b })),
     });
     return { run, rec, bd, logs, sprintState };
 }
@@ -97,10 +98,11 @@ test('last CHANGES_NEEDED whose contested beads are all held by an open decision
     const scope = [
         { id: 'x-1', status: 'open', dependencies: [] },
         { id: 'x-2', status: 'open', dependencies: [] },
-        { id: 'x-dec', status: 'deferred', issue_type: 'decision', labels: ['human'], dependencies: [{ depends_on_id: 'x-1', type: 'discovered-from' }] },
     ];
+    // The decision bead is outside the scoped listing (a discovered-from edge is not walked).
+    const allBeads = [...scope, { id: 'x-dec', status: 'deferred', issue_type: 'decision', labels: ['human'], dependencies: [{ depends_on_id: 'x-1', type: 'discovered-from' }] }];
     const verdict = changesNeeded(['x-1'], [{ id: 'x-1', kind: 'coverage', detail: 'held' }]);
-    const h = harness({ responses: ['p1', verdict, 'p2', verdict, 'p3', verdict], scope });
+    const h = harness({ responses: ['p1', verdict, 'p2', verdict, 'p3', verdict], scope, allBeads });
     const out = await h.run();
     assert.equal(out.planCapDeferredIds.length, 0);
     assert.ok(h.logs.some((l) => l.includes('held by an open operator decision')), h.logs.join('\n'));

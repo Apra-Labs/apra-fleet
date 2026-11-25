@@ -113,6 +113,9 @@ export async function runPlanPhase({
     // The run's decision-wait channel (decision-wait.mjs); null for a run with
     // no pause/resume primitives. A BLOCKED planner pauses on it.
     decisionWait = null,
+    // Every bead in the database (beads-scope fetchAllBeadsShared): open
+    // decision/human beads are not in the scoped listing.
+    fetchAllBeads = null,
 }) {
     const premiumCapPct = tierPolicy ? tierPolicy.premiumCapPct : null;
     // The one reassigned input (header: MUTABLE STATE IS THREADED). Rebound to
@@ -418,7 +421,7 @@ export async function runPlanPhase({
         // (not only this run's sprintState set-asides) are non-blocking, like
         // the in-loop set-aside waiver: the operator's answer settles them.
         const scopeBeads = await bdListScoped('');
-        const { heldIds } = operatorHeldBeadIds(scopeBeads, sprintState);
+        const { heldIds } = operatorHeldBeadIds(scopeBeads, sprintState, typeof fetchAllBeads === 'function' ? await fetchAllBeads() : null);
         if (onlyDecisionSetAsideFindings(lastVerdict, sprintState, extractContestedBeadIds, heldIds)) {
             log(`[fleet-sprint] Plan C${cycle}: after ${planningRounds} round(s), CHANGES_NEEDED names only bead(s) held by an open operator decision ` +
                 `[${namedFindingIds(lastVerdict, extractContestedBeadIds).join(', ')}] -- treated as non-blocking; the plan proceeds.`);

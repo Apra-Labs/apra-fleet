@@ -5,7 +5,7 @@ import {
     ROLES, planReviewerVerdict, doerReport, reviewerVerdict, streakAssignment,
     deployerReport, integReport, regressionReport, finalVerdict, harvesterReport, wrapUntrustedBlock,
 } from './contracts.mjs';
-import { SprintPlanRejectedError, StalledSprintError, ReviewerContractViolationError, DoltSyncError, GitSyncError,PlanReviewDispatchFailedError, PreSprintValidationError, PRE_SPRINT_REFUSAL_REASONS, isNonRetryableDispatchError, isAuthDispatchError, isInfraDispatchFailure, isPostDispatchSyncFailure } from './errors.mjs';
+import { SprintPlanRejectedError, SprintBlockedOnOperatorError, StalledSprintError, ReviewerContractViolationError, DoltSyncError, GitSyncError,PlanReviewDispatchFailedError, PreSprintValidationError, PRE_SPRINT_REFUSAL_REASONS, isNonRetryableDispatchError, isAuthDispatchError, isInfraDispatchFailure, isPostDispatchSyncFailure } from './errors.mjs';
 // The ONLY dolt command surface in fleet-sprint (apra-fleet-417.2.1). Every
 // runner.js call site uses the purpose-based entry points on DoltSync
 // (apra-fleet-417.2.2); the named primitives are imported here only to be
@@ -343,7 +343,7 @@ import { holdTierEscalations } from './tier-escalation.mjs';
 // The premium-cap gate (after plan approval, before Develop) and the
 // decision it raises when two scoped re-plans leave the plan over the cap.
 import { runPremiumCapGate, holdPremiumCapBaseline } from './tier-cap.mjs';
-import { recordPendingDecision } from './decisions.mjs';
+import { recordPendingDecision, allRemainingWorkOperatorGated, collectPendingDecisions } from './decisions.mjs';
 // The dispatch-outcome classification surface: isTerminalSprintFailure,
 // isNoMutationDispatchFailure and withDispatchWatchdog. Extracted out of
 // runner.js (apra-fleet-3swo.6.15); imported only to be re-exported below,
@@ -3816,6 +3816,37 @@ async function runSprintCycle(context) {
         // carry-over exit to Finalization instead (planRejectedCarryOver).
         // PlanReviewDispatchFailedError is a different class and always
         // propagates.
+        // Skip gate: when every open in-scope bead is held by an open operator
+        // decision gate, a planner can only come back BLOCKED, so none is
+        // dispatched. Pause for the answer; with no pause channel (or nothing
+        // this run can wait on) end with the typed blocked-on-operator outcome.
+        {
+            const gate = allRemainingWorkOperatorGated(await bdListScoped(''), sprintState, await fetchAllBeadsShared());
+            if (gate.gated) {
+                log(`[fleet-sprint] Plan C${cycle} skipped: all remaining work waits on operator decisions [${gate.heldIds.join(', ')}].`);
+                if (decisionWait && decisionWait.hasPending()) {
+                    const answers = await decisionWait.awaitAnswer({ where: `Plan C${cycle} (skipped)`, cycle });
+                    if (!Array.isArray(answers) || answers.length === 0) {
+                        throw new SprintBlockedOnOperatorError(
+                            `Cycle ${cycle}: all remaining work waits on operator decisions and none was answered; answer the decision(s) and relaunch the sprint.`,
+                            { beadIds: gate.heldIds, decisionBeadId: (collectPendingDecisions(sprintState)[0] || {}).decisionBeadId || null, details: { cycle } },
+                        );
+                    }
+                } else {
+                    const pendingRecord = collectPendingDecisions(sprintState)[0] || null;
+                    throw new SprintBlockedOnOperatorError(
+                        `Cycle ${cycle}: all remaining work waits on operator decisions [${gate.heldIds.join(', ')}] and this run ` +
+                        `${decisionWait ? 'has no filed decision it can wait on' : 'has no pause/resume channel'}; answer the decision(s) and relaunch the sprint.`,
+                        {
+                            question: pendingRecord ? pendingRecord.question : null,
+                            beadIds: gate.heldIds,
+                            decisionBeadId: pendingRecord ? pendingRecord.decisionBeadId || null : (gate.gateIds[0] || null),
+                            details: { cycle },
+                        },
+                    );
+                }
+            }
+        }
         let planOutcome;
         try {
             planOutcome = await runPlanPhase({
@@ -3833,6 +3864,7 @@ async function runSprintCycle(context) {
                 bdListScoped,
                 tierPolicy,
                 decisionWait,
+                fetchAllBeads: fetchAllBeadsShared,
             });
         } catch (err) {
             if (!(err instanceof SprintPlanRejectedError)) throw err;

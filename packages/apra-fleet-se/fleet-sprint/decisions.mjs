@@ -630,16 +630,23 @@ function depTargets(b, types) {
  * an open gate or a held bead, and any parent whose open children are all
  * held. Gate beads themselves are not included.
  *
+ * A decision bead is linked to its work bead by a discovered-from edge, which
+ * the sprint scope walk does not follow, so the gates are read from `allBeads`
+ * (every bead in the database; defaults to the scope listing).
+ *
  * @param {Array<object>} scopeBeads in-scope beads, any status
  * @param {object} [sprintState]
+ * @param {Array<object>} [allBeads] every bead, any status, to find open gates in
  * @returns {{ gateIds: Set<string>, heldIds: Set<string> }}
  */
-export function operatorHeldBeadIds(scopeBeads, sprintState) {
+export function operatorHeldBeadIds(scopeBeads, sprintState, allBeads = null) {
     const scope = Array.isArray(scopeBeads) ? scopeBeads.filter((b) => b && b.id !== undefined && b.id !== null) : [];
     const open = scope.filter((b) => b.status !== 'closed');
-    const gateIds = new Set(open.filter(isDecisionGateBead).map((b) => String(b.id)));
+    const everyBead = Array.isArray(allBeads) ? allBeads.filter((b) => b && b.id !== undefined && b.id !== null) : scope;
+    const openGates = everyBead.filter((b) => b.status !== 'closed' && isDecisionGateBead(b));
+    const gateIds = new Set(openGates.map((b) => String(b.id)));
     const held = new Set(decisionSetAsideEntries(sprintState).keys());
-    for (const g of open.filter(isDecisionGateBead)) {
+    for (const g of openGates) {
         for (const id of depTargets(g, ['discovered-from', 'blocks', 'related'])) held.add(id);
     }
     for (const id of gateIds) held.delete(id);
@@ -674,10 +681,11 @@ export function operatorHeldBeadIds(scopeBeads, sprintState) {
  *
  * @param {Array<object>} scopeBeads
  * @param {object} [sprintState]
+ * @param {Array<object>} [allBeads] every bead, to find open gates in
  * @returns {{ gated: boolean, heldIds: string[], gateIds: string[] }}
  */
-export function allRemainingWorkOperatorGated(scopeBeads, sprintState) {
-    const { gateIds, heldIds } = operatorHeldBeadIds(scopeBeads, sprintState);
+export function allRemainingWorkOperatorGated(scopeBeads, sprintState, allBeads = null) {
+    const { gateIds, heldIds } = operatorHeldBeadIds(scopeBeads, sprintState, allBeads);
     const work = (Array.isArray(scopeBeads) ? scopeBeads : [])
         .filter((b) => b && b.id !== undefined && b.status !== 'closed' && b.status !== 'deferred' && !gateIds.has(String(b.id)));
     const gated = work.length > 0 && work.every((b) => heldIds.has(String(b.id)));
