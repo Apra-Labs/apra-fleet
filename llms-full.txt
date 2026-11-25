@@ -2517,6 +2517,21 @@ It replaces fleet's stale legacy helper value on the global key with a
 refreshing on-demand helper (`apra-fleet git-credential`), mints a fresh App
 token whenever git asks, and is idempotent. No hourly 401.
 
+Design notes for `operator-auth github` / `git-credential`:
+
+- `git-credential` needs no running server: it mints from the stored GitHub App
+  config and PEM. The token is cached owner-only (mode 0600) and re-minted inside
+  a 5-minute expiry margin. Only `get` for github.com HTTPS answers; `store`,
+  `erase` and other hosts are no-ops, and the token goes only to stdout.
+- The registered entry is an empty reset value followed by a quoted
+  `!<self> git-credential --label <label>` helper. The reset means GCM and system
+  helpers are turned off for all github.com HTTPS for that OS user, not just for
+  fleet repositories. Run `operator-auth github --remove` to undo it.
+- With no `--repos`, the token covers the whole installation (the repositories
+  field is omitted from the mint request).
+- `operator-auth token` prints only the token, so it is safe in command
+  substitution.
+
 #### Operator credentials
 
 `gh` has no helper hook. For gh in your shell or unattended automation, set
