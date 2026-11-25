@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { isTypedAbortError, isTerminalSprintFailure, isNoMutationDispatchFailure } from '../fleet-sprint/runner.js';
 import {
     SprintPlanRejectedError,
+    SprintBlockedOnOperatorError,
     StalledSprintError,
     ReviewerContractViolationError,
     GitDivergedError,
@@ -36,6 +37,10 @@ describe('apra-fleet-9ta.1: isTypedAbortError() -- TRUE for the curated abort se
 
     test('SprintPlanRejectedError', () => {
         assert.equal(isTypedAbortError(new SprintPlanRejectedError('plan rejected')), true);
+    });
+
+    test('SprintBlockedOnOperatorError -- a typed (non-crash) abort', () => {
+        assert.equal(isTypedAbortError(new SprintBlockedOnOperatorError('waiting on an operator')), true);
     });
 
     test('ReviewerContractViolationError', () => {

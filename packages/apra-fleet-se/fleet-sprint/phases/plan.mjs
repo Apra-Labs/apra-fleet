@@ -49,9 +49,13 @@
 import { dispatchRole, secondaryMaxTurns } from '../dispatch-role.mjs';
 import { buildPlannerPrompt, buildPlanReviewerPrompt } from '../prompts.mjs';
 import { collectParentNotesStalenessNotes } from '../parent-notes-staleness.mjs';
-import { PlanReviewDispatchFailedError, SprintPlanRejectedError } from '../errors.mjs';
+import { PlanReviewDispatchFailedError, SprintPlanRejectedError, SprintBlockedOnOperatorError } from '../errors.mjs';
 import { buildSettleCallback } from '../dolt-settle.mjs';
-import { applyPlannerDecision, decisionSetAsideEntries, decisionSetAsideList, namedFindingIds, onlyDecisionSetAsideFindings } from '../decisions.mjs';
+import {
+    applyPlannerDecision, decisionSetAsideEntries, decisionSetAsideList, namedFindingIds, onlyDecisionSetAsideFindings,
+    parsePlannerReport, plannerBlockedDecisionRequest, recordPendingDecision, collectPendingDecisions,
+    plannerFeedbackAfterAnswer, operatorHeldBeadIds,
+} from '../decisions.mjs';
 
 /**
  * Runs the Plan phase for ONE sprint cycle: up to three planner <->
@@ -106,6 +110,12 @@ export async function runPlanPhase({
     // passed into the planner and plan-reviewer prompts; null (quality, or a
     // caller without a policy) adds no cap text.
     tierPolicy = null,
+    // The run's decision-wait channel (decision-wait.mjs); null for a run with
+    // no pause/resume primitives. A BLOCKED planner pauses on it.
+    decisionWait = null,
+    // Every bead in the database (beads-scope fetchAllBeadsShared): open
+    // decision/human beads are not in the scoped listing.
+    fetchAllBeads = null,
 }) {
     const premiumCapPct = tierPolicy ? tierPolicy.premiumCapPct : null;
     // The one reassigned input (header: MUTABLE STATE IS THREADED). Rebound to
@@ -276,15 +286,79 @@ export async function runPlanPhase({
         // (../decisions.mjs): a separate decision bead, the work bead set
         // aside (never labelled human), and a pause for the answer once only
         // set-aside work remains. No decision: nothing here runs a bd call.
+        let plannerRecorded = null;
         if (plannerOutcome && plannerOutcome.value !== undefined) {
             const site = `Plan C${cycle} R${planningRounds}`;
-            const recorded = await gitSync.withOpenSyncBracket(() => applyPlannerDecision({
+            plannerRecorded = await gitSync.withOpenSyncBracket(() => applyPlannerDecision({
                 value: plannerOutcome.value, sprintState, command, member: backlogMember, bdListScoped,
                 cycle, round: planningRounds, site, log,
             }));
             // The engine just mutated beads (decision bead, note) in its own
             // clone: D-push so the operator and every member see them.
-            if (recorded) await gitSync.syncBeadsAfter(backlogMember, { pushBeads: true });
+            if (plannerRecorded) await gitSync.syncBeadsAfter(backlogMember, { pushBeads: true });
+        }
+        // A planner that reports status BLOCKED needs an operator: re-planning
+        // or reviewing cannot change that, so the loop stops here for this
+        // cycle (no reviewer, no further planner dispatch), the question is
+        // filed as a decision, and the run pauses for the answer. Without a
+        // pause channel (or a filed decision bead) it ends with the typed
+        // blocked-on-operator error, never a plan rejection.
+        const plannerReport = plannerOutcome ? parsePlannerReport(plannerOutcome.value) : null;
+        // Exception: the planner also carried a usable decision (applied above:
+        // the work bead is set aside) and other open, unheld work remains in
+        // scope. That decision does not block the rest, so the cycle goes on
+        // exactly as before; a later cycle pauses once only held work is left.
+        let blockedButOtherWorkRemains = false;
+        if (plannerReport && plannerReport.status === 'BLOCKED' && plannerRecorded && typeof bdListScoped === 'function') {
+            const scopeBeads = await bdListScoped('');
+            const { heldIds, gateIds } = operatorHeldBeadIds(scopeBeads, sprintState, typeof fetchAllBeads === 'function' ? await fetchAllBeads() : null);
+            const unheldOpen = (Array.isArray(scopeBeads) ? scopeBeads : [])
+                .filter((b) => b && b.status !== 'closed' && !heldIds.has(String(b.id)) && !gateIds.has(String(b.id)));
+            if (unheldOpen.length > 0) {
+                blockedButOtherWorkRemains = true;
+                log(`[fleet-sprint] Plan C${cycle} R${planningRounds}: planner reported BLOCKED with a decision recorded, but ${unheldOpen.length} open bead(s) are not held by it; planning continues with the rest.`);
+            }
+        }
+        if (plannerReport && plannerReport.status === 'BLOCKED' && !blockedButOtherWorkRemains) {
+            const site = `Plan C${cycle} R${planningRounds}`;
+            let record = plannerRecorded;
+            if (!record) {
+                const request = plannerBlockedDecisionRequest(plannerReport, targetIssues);
+                if (request.ok) {
+                    const scopeBeads = typeof bdListScoped === 'function' ? await bdListScoped('') : [];
+                    record = await gitSync.withOpenSyncBracket(() => recordPendingDecision({
+                        sprintState, decision: request.decision, raisedBy: `planner (${site})`,
+                        cycle, round: planningRounds, command, member: backlogMember, scopeBeads, log,
+                    }));
+                    if (record) await gitSync.syncBeadsAfter(backlogMember, { pushBeads: true });
+                    else record = collectPendingDecisions(sprintState).find((d) => d.beadId === request.decision.beadId) || null;
+                } else {
+                    log(`[fleet-sprint] ${site}: planner reported BLOCKED but no decision request could be built (${request.reason}).`);
+                }
+            }
+            const question = (record && record.question) || (typeof plannerReport.notes === 'string' ? plannerReport.notes.trim() : '') || null;
+            log(`[fleet-sprint] ${site}: planner reported BLOCKED on an operator; planning stops for this cycle without re-dispatching the planner.`);
+            if (decisionWait && record && record.decisionBeadId && decisionWait.hasPending()) {
+                const answers = await decisionWait.awaitAnswer({ where: `Plan C${cycle}`, cycle });
+                if (Array.isArray(answers) && answers.length > 0) {
+                    plannerFeedback = plannerFeedbackAfterAnswer(answers);
+                    // The blocked round does not count against the round cap.
+                    planningRounds--;
+                    await updateDashboard();
+                    continue;
+                }
+            }
+            throw new SprintBlockedOnOperatorError(
+                `Planning for cycle ${cycle} is blocked on an operator${question ? `: ${question}` : ''}. ` +
+                `${decisionWait ? 'No answer was recorded' : 'This run has no pause/resume channel'}; answer the decision` +
+                `${record && record.decisionBeadId ? ` (${record.decisionBeadId})` : ''} and relaunch the sprint.`,
+                {
+                    question,
+                    beadIds: record ? [record.beadId] : (Array.isArray(targetIssues) ? targetIssues.slice(0, 1) : []),
+                    decisionBeadId: record ? record.decisionBeadId || null : null,
+                    details: { cycle, planningRounds },
+                },
+            );
         }
         // Deliberately no log() dump of the planner's response here: the
         // agent() call inside dispatchPlanner() already emits it as the
@@ -357,6 +431,18 @@ export async function runPlanPhase({
     // the contested set is the whole plan, or when deferring it would leave
     // nothing ready to dispatch (checked once readyBeads is computed).
     let planCapDeferredIds = [];
+    if (!planApproved && typeof bdListScoped === 'function' && lastVerdict && !lastVerdict.dispatchFailed) {
+        // Contested beads all held by an OPEN decision/human bead in scope
+        // (not only this run's sprintState set-asides) are non-blocking, like
+        // the in-loop set-aside waiver: the operator's answer settles them.
+        const scopeBeads = await bdListScoped('');
+        const { heldIds } = operatorHeldBeadIds(scopeBeads, sprintState, typeof fetchAllBeads === 'function' ? await fetchAllBeads() : null);
+        if (onlyDecisionSetAsideFindings(lastVerdict, sprintState, extractContestedBeadIds, heldIds)) {
+            log(`[fleet-sprint] Plan C${cycle}: after ${planningRounds} round(s), CHANGES_NEEDED names only bead(s) held by an open operator decision ` +
+                `[${namedFindingIds(lastVerdict, extractContestedBeadIds).join(', ')}] -- treated as non-blocking; the plan proceeds.`);
+            planApproved = true;
+        }
+    }
     if (!planApproved) {
         const allTaskIds = (lastVerdict && Array.isArray(lastVerdict.taskAssignments))
             ? lastVerdict.taskAssignments.map((a) => a && a.id).filter((id) => typeof id === 'string' && id.length > 0)

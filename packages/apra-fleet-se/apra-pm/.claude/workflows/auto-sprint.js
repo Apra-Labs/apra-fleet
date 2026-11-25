@@ -1429,6 +1429,36 @@ function gitExcludeSucceeded(result) {
   return text.includes('GIT_EXCLUDE_OK:') && !text.includes('GIT_EXCLUDE_ERROR:');
 }
 
+// SAFE WORKTREE REMOVAL: returns a POSIX shell string that removes the git worktree at
+// `wtPath` ONLY when it holds no symlink or junction whose resolved target is OUTSIDE the
+// worktree. A `node -e` lstat walk (paths via process.argv, never interpolated into JS source)
+// never descends into a link; on Windows Node reports junctions as symbolic links from lstat,
+// so one check covers both. Each link is resolved (native realpath, so 8.3 short names and casing compare like-for-like; a dangling link falls back to its
+// lexical target): a target inside the worktree (npm workspace links under node_modules/@scope,
+// POSIX node_modules/.bin) is harmless and allowed; a target outside it prints one
+// WORKTREE_CLEANUP_REFUSED line naming each such link and target and exits 1, so the forced git
+// worktree removal (which could follow the link and delete a shared directory) never runs.
+// Otherwise it runs the forced git worktree removal exactly as before. A missing path has no
+// links, so git's own no-such-worktree failure is swallowed as before. Self-contained.
+function safeWorktreeRemoveCmd(repoPath, wtPath) {
+  const js =
+    `const fs=require('fs'),p=require('path');` +
+    `const root=process.argv[1];const found=[];` +
+    `let rr=root;try{rr=fs.realpathSync.native(root);}catch(e){}` +
+    `const lc=s=>process.platform==='win32'?s.toLowerCase():s;` +
+    `function inside(t){const a=lc(t),b=lc(rr);return a===b||a.startsWith(b.endsWith(p.sep)?b:b+p.sep);}` +
+    `function target(f){try{return fs.realpathSync.native(f);}catch(e){}` +
+      `try{return p.resolve(p.dirname(f),fs.readlinkSync(f));}catch(e){}return null;}` +
+    `function note(f){const t=target(f);if(t!==null&&inside(t))return;found.push(f+' -> '+(t===null?'?':t));}` +
+    `function walk(d){let es;try{es=fs.readdirSync(d,{withFileTypes:true});}catch(e){return;}` +
+      `for(const e of es){const f=p.join(d,e.name);let st;try{st=fs.lstatSync(f);}catch(x){continue;}` +
+      `if(st.isSymbolicLink())note(f);else if(st.isDirectory())walk(f);}}` +
+    `let rs=null;try{rs=fs.lstatSync(root);}catch(e){}` +
+    `if(rs&&rs.isSymbolicLink())found.push(root+' -> '+rr);else if(rs&&rs.isDirectory())walk(root);` +
+    `if(found.length){console.log('WORKTREE_CLEANUP_REFUSED: worktree '+root+' left in place; it contains symlink or junction link(s) pointing outside it that a removal could follow into a shared directory: '+found.join('; ')+'. Remove each link with unlink (never a recursive delete), then retry.');process.exit(1);}`;
+  return `node -e "${js}" "${wtPath}" && git -C "${repoPath}" worktree remove --force "${wtPath}" 2>/dev/null`;
+}
+
 // PURE_FUNCTIONS_END
 
 // ROLE_SCHEMAS_GENERATED_BEGIN -- do not hand-edit; run `node scripts/gen-auto-sprint-schemas.mjs` to regenerate from agents/schemas/*.json
@@ -2578,6 +2608,16 @@ function buildShellPrompt(cmds) {
 // stops the dispatch at maxTurns, so a misbehaving agent cannot stall for minutes.
 function shellMaxTurns(cmds) {
   return cmds.length + 1;
+}
+
+// Surface any WORKTREE_CLEANUP_REFUSED line (see safeWorktreeRemoveCmd) in the workflow log so a
+// refused cleanup is never swallowed by the callers' `|| true`.
+function logWorktreeRefusals(res) {
+  for (const o of (res && res.outputs) || []) {
+    for (const line of String(o || '').split(/\r?\n/)) {
+      if (line.includes('WORKTREE_CLEANUP_REFUSED')) log(line.trim());
+    }
+  }
 }
 
 async function dispatchShell(cmds, opts) {
@@ -3748,25 +3788,26 @@ while (cycleCount < maxCycles) {
       // branch first). Each command echoes OK/FAIL <id> so we only work tasks that isolated cleanly.
       const createRes = await dispatchShell(
         wt.map(w =>
-          `git -C "${repo}" worktree remove --force "${repo}/${w.path}" 2>/dev/null; ` +
+          `${safeWorktreeRemoveCmd(repo, `${repo}/${w.path}`)}; ` +
           `git -C "${repo}" branch -D "${w.branch}" 2>/dev/null; ` +
           `git -C "${repo}" worktree add -b "${w.branch}" "${repo}/${w.path}" "${branch}" >/dev/null 2>&1 && echo "OK ${w.id}" || echo "FAIL ${w.id}"`
         ),
         { model: MODEL_HAIKU, label: `wt-create-c${cycleCount}-i${devIter}`, phase: 'Develop', maxTurns: wt.length + 2 }
       );
+      logWorktreeRefusals(createRes);
       const createdOk = {};
       (createRes?.outputs || []).forEach((o, i) => { if (/\bOK\b/.test(o || '')) createdOk[wt[i].id] = true; });
       const okWt = wt.filter(w => createdOk[w.id]);
 
       if (okWt.length === 0) {
         log(`All worktree creations failed -- falling back to serial for this iteration`);
-        await dispatchShell(
+        logWorktreeRefusals(await dispatchShell(
           wt.flatMap(w => [
-            `git -C "${repo}" worktree remove --force "${repo}/${w.path}" 2>/dev/null || true`,
+            `${safeWorktreeRemoveCmd(repo, `${repo}/${w.path}`)} || true`,
             `git -C "${repo}" branch -D "${w.branch}" 2>/dev/null || true`,
           ]),
           { model: MODEL_HAIKU, label: `wt-cleanup-c${cycleCount}-i${devIter}`, phase: 'Develop' }
-        );
+        ));
       } else {
         parallelHandled = true;
         // Read each task's spec centrally (human-readable bd show) and INLINE it into the doer
@@ -3788,7 +3829,8 @@ while (cycleCount < maxCycles) {
             kbContext +
             `You are working in an ISOLATED git worktree -- other doers run concurrently in their own worktrees.\n` +
             `Worktree path: ${repo}/${w.path}  (cd into it first; you are on temp branch ${w.branch})\n` +
-            `Work ONLY task ${w.id}. Do NOT work any other task.\n\n` +
+            `Work ONLY task ${w.id}. Do NOT work any other task.\n` +
+            `Never create a symlink or junction to a dependency or shared directory (for example node_modules) inside a worktree or work folder; install dependencies inside it instead, because removing the worktree can follow the link and delete the shared target.\n\n` +
             (devFeedback
               ? `Reviewer feedback from the previous iteration (also in feedback.md at ${repo}):\n${devFeedback}\nAddress every relevant finding.\n\n`
               : '') +
@@ -3833,13 +3875,13 @@ while (cycleCount < maxCycles) {
 
         // Always tear down every worktree + temp branch (even failed ones): a leak must never
         // block the next iteration's idempotent create.
-        await dispatchShell(
+        logWorktreeRefusals(await dispatchShell(
           wt.flatMap(w => [
-            `git -C "${repo}" worktree remove --force "${repo}/${w.path}" 2>/dev/null || true`,
+            `${safeWorktreeRemoveCmd(repo, `${repo}/${w.path}`)} || true`,
             `git -C "${repo}" branch -D "${w.branch}" 2>/dev/null || true`,
           ]),
           { model: MODEL_HAIKU, label: `wt-cleanup-c${cycleCount}-i${devIter}`, phase: 'Develop', maxTurns: wt.length * 2 + 2 }
-        );
+        ));
 
         // Zero progress this parallel iteration (all failed / all conflicted): force serial next
         // iteration so a same-batch conflict cannot loop forever.

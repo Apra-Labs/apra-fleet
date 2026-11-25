@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { credentialDelete } from '../services/credential-store.js';
+import { credentialDelete, getTasksHoldingStaleSecret, staleTaskNotice } from '../services/credential-store.js';
 import { logLine } from '../utils/log-helpers.js';
 
 export const credentialStoreDeleteSchema = z.object({
@@ -12,7 +12,7 @@ export async function credentialStoreDelete(input: CredentialStoreDeleteInput): 
   const deleted = credentialDelete(input.name);
   if (deleted) {
     logLine('credential_store_delete', `name=${input.name}`);
-    return `✅ Credential "${input.name}" deleted.`;
+    return `✅ Credential "${input.name}" deleted.` + staleTaskNotice(input.name, getTasksHoldingStaleSecret(input.name));
   }
   return `❌ Credential "${input.name}" not found.`;
 }

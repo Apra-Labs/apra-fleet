@@ -354,19 +354,22 @@ describe('createVcsAuthSelfHealCallback / createLlmAuthSelfHealCallback branch o
         assert.deepStrictEqual(provision[0].args, { member_name: 'fleet-mac' });
     });
 
-    test('createLlmAuthSelfHealCallback: deployed_unverified logs the auth test error and the force_oauth_copy hint, then retries once', async () => {
+    test('createLlmAuthSelfHealCallback: deployed_unverified is NOT healed -- cause is the Auth test line verbatim, remedy names /login then provision_llm_auth', async () => {
         const callTool = async () => ({
-            content: [{ text: '[OK] OAuth token provisioned on "m"\n  Auth test: FAILED -- Invalid bearer token sk-ant-[REDACTED]\n' }],
-            structuredContent: { ok: true, reason: 'deployed_unverified' },
+            content: [{ text: '[OK] OAuth token provisioned on "m"\n  Auth test: FAILED -- OAuth token revoked\n' }],
+            structuredContent: { ok: true, reason: 'deployed_unverified', verified: false },
         });
         const logs = [];
         const onLlmAuthFailure = createLlmAuthSelfHealCallback({ callTool, log: (m) => logs.push(m) });
-        const retry = await onLlmAuthFailure({ member: 'fleet-mac', label: 'doer', error: 'authentication failed' });
-        assert.equal(retry, true);
+        const outcome = await onLlmAuthFailure({ member: 'fleet-mac', label: 'doer', error: 'authentication failed' });
+        assert.equal(outcome.healed, false);
+        assert.equal(outcome.reason, 'deployed_unverified');
+        assert.equal(outcome.cause, 'Auth test: FAILED -- OAuth token revoked');
+        assert.match(outcome.remedy, /\/login on the source machine, then re-run provision_llm_auth/);
         const last = logs[logs.length - 1];
-        assert.match(last, /could not verify them: Auth test: FAILED -- Invalid bearer token/);
-        assert.match(last, /force_oauth_copy: true/);
-        assert.doesNotMatch(last, /succeeded/);
+        assert.match(last, /could not verify them: Auth test: FAILED -- OAuth token revoked/);
+        assert.match(last, /Not retrying/);
+        assert.doesNotMatch(last, /succeeded|Retrying/);
     });
 
     test('createLlmAuthSelfHealCallback: a [FAIL] prose result with structuredContent.ok === false returns false (no retry)', async () => {
@@ -384,7 +387,9 @@ describe('createVcsAuthSelfHealCallback / createLlmAuthSelfHealCallback branch o
 
         const healed = await onLlmAuthFailure({ member: 'fleet-mac', label: 'run', error: 'Authentication failed' });
 
-        assert.equal(healed, false, 'expected a structuredContent.ok === false result to NOT be treated as healed');
+        assert.equal(healed.healed, false, 'expected a structuredContent.ok === false result to NOT be treated as healed');
+        assert.equal(healed.reason, 'secret_variable_denied');
+        assert.match(healed.cause, /secure credential denied/);
         assert.ok(
             logs.some((l) => /provision_llm_auth failed for member 'fleet-mac'/.test(l) && /Not retrying/.test(l)),
             `expected a failure log entry, got: ${JSON.stringify(logs)}`,
@@ -406,7 +411,9 @@ describe('createVcsAuthSelfHealCallback / createLlmAuthSelfHealCallback branch o
 
         const healed = await onLlmAuthFailure({ member: 'fleet-mac', label: 'run', error: 'Authentication failed' });
 
-        assert.equal(healed, false, 'expected skipped_local_member to NOT be treated as healed even though structuredContent.ok is true');
+        assert.equal(healed.healed, false, 'expected skipped_local_member to NOT be treated as healed even though structuredContent.ok is true');
+        assert.equal(healed.reason, 'skipped_local_member');
+        assert.match(healed.remedy, /\/login/);
         assert.ok(
             logs.some((l) => /provision_llm_auth skipped for local member 'fleet-mac'/.test(l)),
             `expected a skip log entry, got: ${JSON.stringify(logs)}`,
@@ -427,7 +434,7 @@ describe('createVcsAuthSelfHealCallback / createLlmAuthSelfHealCallback branch o
 
         const healed = await onLlmAuthFailure({ member: 'fleet-mac', label: 'run', error: 'Authentication failed' });
 
-        assert.equal(healed, true, 'expected structuredContent.ok === true (non-skip reason) to be treated as healed');
+        assert.deepStrictEqual(healed, { healed: true }, 'expected structuredContent.ok === true (non-skip reason) to be treated as healed');
     });
 
     // =========================================================================
@@ -474,7 +481,7 @@ describe('createVcsAuthSelfHealCallback / createLlmAuthSelfHealCallback branch o
 
         const healed = await onLlmAuthFailure({ member: 'fleet-mac', label: 'run', error: 'Authentication failed' });
 
-        assert.equal(healed, false, 'expected a [SKIP] prose result with no structuredContent to NOT be treated as healed');
+        assert.equal(healed.healed, false, 'expected a [SKIP] prose result with no structuredContent to NOT be treated as healed');
         assert.ok(
             logs.some((l) => /provision_llm_auth skipped for local member 'fleet-mac'/.test(l)),
             `expected a skip log entry, got: ${JSON.stringify(logs)}`,

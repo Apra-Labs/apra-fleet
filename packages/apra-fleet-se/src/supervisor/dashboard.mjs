@@ -66,6 +66,8 @@ import { bdListAllBeadsWithClosed } from './scope-overlap.mjs';
 import { renderProgressBarHtml } from '../../fleet-sprint/viewer-extensions.mjs';
 import { toBeadsSummary } from './beads-identity.mjs';
 import { createChildPortResolver } from './child-port.mjs';
+import { hasRole } from './auth.mjs';
+import { prefixPageHtml } from './base-path.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -972,6 +974,27 @@ export function renderBeadsFreshnessHtml(f) {
     return html + '</div>\n';
 }
 
+// Role-based hiding for the signed-in caller (trusted-front mode). Stop and
+// Restart use force-release (admin); Pause/Resume and Launch need operator.
+// Rows rebuilt client-side by SPRINT_STACK_LIVE_SCRIPT are covered too, since
+// this is CSS keyed on the body, not markup in each row.
+const VIEWER_ROLE_CSS = `
+    body[data-fleet-can-operate="0"] .btn-pause-sprint,
+    body[data-fleet-can-operate="0"] .btn-resume-sprint,
+    body[data-fleet-can-operate="0"] #launch-sprint-form button[type="submit"],
+    body[data-fleet-can-admin="0"] .btn-stop-sprint,
+    body[data-fleet-can-admin="0"] .btn-restart-sprint { display: none; }
+    .fleet-identity { font-size: 12px; color: var(--text-muted); margin-right: 10px; }
+`;
+
+/** "Signed in as <name> (<highest role>)", HTML-escaped. */
+function renderViewerIdentityHtml(viewer) {
+    const roles = Array.isArray(viewer.roles) ? viewer.roles : [];
+    const top = ['admin', 'operator', 'viewer'].find((r) => roles.includes(r)) || 'no role';
+    const who = viewer.name || viewer.email || viewer.sub || 'unknown';
+    return '<span class="fleet-identity" id="fleet-identity" data-sub="' + escapeHtml(viewer.sub || '') + '">Signed in as ' + escapeHtml(who) + ' (' + escapeHtml(top) + ')</span>';
+}
+
 /**
  * Renders the full index page (`GET /` document): a header, then a Sprints
  * tab (Sprint Stack alone) and a separate Backlog tab (eft.6.2's cross-sprint
@@ -991,9 +1014,14 @@ export function renderBeadsFreshnessHtml(f) {
  *   toBeadsSummary()), rendered as one header line above the Sprint Stack;
  *   `beadsWarning`: when `beads` is null, why it is unknown (rendered as an
  *   amber warning line in its place).
+ *   `viewer` (trusted-front mode only, docs/supervisor-auth.md): the signed-in
+ *   caller `{ sub, name, email, roles }`. Adds a "Signed in as" line and hides
+ *   the buttons the caller's role may not use (cosmetic -- the server enforces
+ *   the route policy). Absent, the page is exactly as before.
  * @returns {string}
  */
 export function renderIndexPageHtml(views, backlogHtml, launchFormHtml, opts = {}) {
+    const viewer = opts && opts.viewer ? opts.viewer : null;
     const backlogSection = typeof backlogHtml === 'string'
         ? backlogHtml
         : '<p style="color:var(--text-muted); font-style: italic;">No unclaimed work in the backlog.</p>';
@@ -1007,11 +1035,15 @@ export function renderIndexPageHtml(views, backlogHtml, launchFormHtml, opts = {
         '<meta name="viewport" content="width=device-width,initial-scale=1">\n' +
         '<title>Fleet-Sprint Supervisor</title>\n' +
         '<style>' + DASHBOARD_CSS + '</style>\n' +
+        (viewer ? '<style>' + VIEWER_ROLE_CSS + '</style>\n' : '') +
         '</head>\n' +
-        '<body>\n' +
+        (viewer
+            ? '<body data-fleet-can-operate="' + (hasRole(viewer.roles, 'operator') ? '1' : '0') + '" data-fleet-can-admin="' + (hasRole(viewer.roles, 'admin') ? '1' : '0') + '">\n'
+            : '<body>\n') +
         '<div class="header">' +
         '<h1>Fleet-Sprint Supervisor</h1>' +
         '<div class="header-actions"><div class="stats-banner"><span><strong>' + runningCount + '</strong> running</span></div>' +
+        (viewer ? renderViewerIdentityHtml(viewer) : '') +
         '<a href="/supervisor/log" target="_blank" rel="noopener" style="font-size: 12px;">Supervisor log</a></div>' +
         '</div>\n' +
         renderBeadsHeaderHtml(opts && opts.beads, opts && opts.beadsWarning) +
@@ -1582,7 +1614,13 @@ export function createDashboard(deps = {}) {
             changeEmitter.on('change', listener);
             return () => changeEmitter.off('change', listener);
         },
-        async renderIndexPage() {
+        async renderIndexPage(pageOpts = {}) {
+            // trusted-front only (docs/supervisor-auth.md): the signed-in
+            // caller, for the identity line and role hiding. A caller below
+            // operator gets no Backlog/Launch content, since GET /api/backlog*
+            // and the launch routes need operator.
+            const viewer = pageOpts && pageOpts.viewer ? pageOpts.viewer : null;
+            const backlogAllowed = !viewer || hasRole(viewer.roles, 'operator');
             // Render the sprint stack and the Backlog tab content concurrently
             // with the page shell; a Backlog render failure is isolated so it
             // can never take the whole page down (renderIndexPageHtml falls
@@ -1596,7 +1634,11 @@ export function createDashboard(deps = {}) {
             // implements renderHtml() (as some tests still do) still works via
             // that fallback.
             let backlogHtml;
-            if (backlog && typeof backlog.buildBacklogTasks === 'function') {
+            let launchFormHtml;
+            if (!backlogAllowed) {
+                backlogHtml = '<p style="color:var(--text-muted); font-style: italic;">The backlog and the Launch Sprint form need the operator role.</p>';
+                launchFormHtml = '';
+            } else if (backlog && typeof backlog.buildBacklogTasks === 'function') {
                 try {
                     const { tasks, filterOptions } = await backlog.buildBacklogTasks();
                     backlogHtml = renderBacklogPanelHtml(tasks, filterOptions);
@@ -1620,7 +1662,7 @@ export function createDashboard(deps = {}) {
                     logError('[dashboard] beads identity read failed:', err);
                 }
             }
-            return renderIndexPageHtml(await buildSprintViews(), backlogHtml, undefined, { beads, beadsWarning, beadsFreshness: beadsFreshness() });
+            return renderIndexPageHtml(await buildSprintViews(), backlogHtml, launchFormHtml, { beads, beadsWarning, beadsFreshness: beadsFreshness(), ...(viewer ? { viewer } : {}) });
         },
     };
 }
@@ -1632,8 +1674,16 @@ export function createDashboard(deps = {}) {
  * @param {ReturnType<typeof createDashboard>} dashboard
  */
 export function registerDashboardRoutes(supervisor, dashboard) {
-    supervisor.route('GET', '/', async (req, res) => {
-        const html = await dashboard.renderIndexPage();
+    supervisor.route('GET', '/', async (req, res, ctx) => {
+        // docs/supervisor-auth.md: in trusted-front mode the page names the
+        // signed-in caller and hides what its role may not use; under a
+        // forwarded prefix every root-absolute URL is re-rooted. In none mode
+        // (and with no prefix) the page is exactly as before.
+        const auth = ctx && ctx.auth ? ctx.auth : null;
+        const viewer = auth && auth.mode === 'trusted-front' && auth.identity
+            ? { sub: auth.identity.sub, name: auth.identity.name ?? null, email: auth.identity.email ?? null, roles: auth.identity.roles ?? [] }
+            : null;
+        const html = prefixPageHtml(await dashboard.renderIndexPage(viewer ? { viewer } : undefined), auth ? auth.base : '');
         const body = Buffer.from(html, 'utf-8');
         res.writeHead(200, {
             'content-type': 'text/html; charset=utf-8',

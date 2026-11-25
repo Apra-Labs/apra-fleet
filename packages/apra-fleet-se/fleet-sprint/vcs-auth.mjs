@@ -14,6 +14,7 @@ import { buildCreatePrCommand, buildFindPrCommand, buildGetPrCommand, providerIm
 import { getSeCommands } from './se-os-commands.mjs';
 import { resolveMemberTarget } from './member-target.mjs';
 import { resultText } from './mcp-result.mjs';
+import { LLM_AUTH_SELF_HEAL_REMEDY } from './errors.mjs';
 import { resolveVcsPayloadDir, memberPayloadPath, execVcsWithPayload } from './vcs-payload.mjs';
 import { publishPrOverflowComments } from './pr-overflow-comments.mjs';
 import { classifyPrResponseBody, unmappedPrResponseFailure } from './vcs-providers/index.mjs';
@@ -2371,14 +2372,24 @@ export function createWorkflowsPermissionPreflightCallback(opts = {}) {
  * LLM-auth counterpart to createVcsAuthSelfHealCallback, invoked by a
  * dispatch-site catch handler on an auth dispatch error: re-provisions LLM
  * credentials for the failing member via provision_llm_auth, after which the
- * caller retries its own dispatch once. Never throws -- every failure path
- * returns false ("do not retry"). A local member returns false without
- * retrying, because provision_llm_auth is a no-op for local members: they
- * share the operator's host credentials, and only an interactive `/login` on
- * that machine can fix an expired local session.
+ * caller retries its own dispatch once -- but ONLY when the heal really
+ * healed. Never throws: every path resolves a structured outcome.
+ *
+ *   { healed: true }                                  -> retry once
+ *   { healed: false, reason, cause, remedy }          -> terminal, no retry
+ *
+ * Not healed (apra-fleet-3b8p.1): the provision_llm_auth call failed or
+ * returned a failure; the member is local (provision_llm_auth is a no-op
+ * there -- local members share the operator's host credentials and only an
+ * interactive `/login` on that machine fixes them); or the credentials were
+ * deployed but the server's post-deploy auth test did not confirm them
+ * (reason 'deployed_unverified' -- e.g. a revoked OAuth token at the source).
+ * A dispatch retried on unverified credentials only reproduces the same
+ * failure, so that case is a failed heal whose cause is the server's Auth
+ * test line verbatim.
  *
  * @param {{ callTool: (name: string, args: object) => Promise<any>, log?: Function }} opts
- * @returns {(info: { member: string, label: string, error: string }) => Promise<boolean>} resolves true if healed (retry), false if not (do not retry)
+ * @returns {(info: { member: string, label: string, error: string }) => Promise<{ healed: true } | { healed: false, reason: string, cause: string, remedy: string }>}
  */
 export function createLlmAuthSelfHealCallback(opts = {}) {
     const { callTool, log = () => {} } = opts;
@@ -2392,7 +2403,12 @@ export function createLlmAuthSelfHealCallback(opts = {}) {
             provisionRes = await fleetApi.provisionLlmAuth({ member_name: member });
         } catch (callErr) {
             log(`[Dispatch] self-heal: provision_llm_auth call failed for member '${member}': ${callErr.message}. Not retrying -- fix credentials manually and re-run.`);
-            return false;
+            return {
+                healed: false,
+                reason: 'provision_call_failed',
+                cause: `provision_llm_auth call failed: ${callErr.message}`,
+                remedy: LLM_AUTH_SELF_HEAL_REMEDY,
+            };
         }
 
         const text = resultText(provisionRes).trim();
@@ -2411,24 +2427,36 @@ export function createLlmAuthSelfHealCallback(opts = {}) {
             // Skip marker (local member): provision_llm_auth is a no-op here,
             // so retrying would just reproduce the same failure.
             log(`[Dispatch] self-heal: provision_llm_auth skipped for local member '${member}': ${text || '(no detail)'}. This member's credentials can only be refreshed via an interactive /login on this machine.`);
-            return false;
+            return {
+                healed: false,
+                reason: 'skipped_local_member',
+                cause: `provision_llm_auth skipped for local member: ${text || '(no detail)'}`,
+                remedy: 'run an interactive /login on this machine (a local member shares the operator\'s own credentials), then re-run',
+            };
         }
 
         if (!outcome.ok) {
             log(`[Dispatch] self-heal: provision_llm_auth failed for member '${member}': ${text || '(no detail)'}. Not retrying.`);
-            return false;
+            return {
+                healed: false,
+                reason: outcome.reason || 'provision_failed',
+                cause: `provision_llm_auth failed: ${text || '(no detail)'}`,
+                remedy: LLM_AUTH_SELF_HEAL_REMEDY,
+            };
         }
 
         if (outcome.reason === 'deployed_unverified') {
             // Credentials were deployed but the server's post-deploy auth test
-            // did not confirm them: surface its error line and the explicit
-            // switch, then still retry once (the test can be stricter than a real dispatch).
+            // did not confirm them. Retrying the dispatch on credentials the
+            // server itself just failed would only reproduce the failure, so
+            // this is a failed heal; its cause is the Auth test line verbatim.
             const authLine = (text.split('\n').find((l) => /Auth test/i.test(l)) || '').trim();
-            log(`[Dispatch] self-heal: provision_llm_auth deployed credentials for member '${member}' (${label}) but could not verify them${authLine ? `: ${authLine}` : ''}. If the member's stored credential is stale, re-run provision_llm_auth with a fresh api_key, or with force_oauth_copy: true to use your local login. Retrying the failed dispatch once.`);
-            return true;
+            const cause = authLine || 'provision_llm_auth deployed credentials but its post-deploy auth test did not confirm them';
+            log(`[Dispatch] self-heal: provision_llm_auth deployed credentials for member '${member}' (${label}) but could not verify them: ${cause}. Not retrying. Remedy: ${LLM_AUTH_SELF_HEAL_REMEDY}.`);
+            return { healed: false, reason: 'deployed_unverified', cause, remedy: LLM_AUTH_SELF_HEAL_REMEDY };
         }
 
         log(`[Dispatch] self-heal: provision_llm_auth succeeded for member '${member}' (${label}); the failed dispatch will be retried once.`);
-        return true;
+        return { healed: true };
     };
 }
