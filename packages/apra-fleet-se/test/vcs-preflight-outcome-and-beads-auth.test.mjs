@@ -335,7 +335,7 @@ describe('D. probe-first preflight for non-re-mintable members (Bitbucket)', () 
         assert.ok(line, logs.join('\n'));
         assert.match(line, /A helper written by an earlier provision_vcs_auth may carry the account login/);
         assert.match(line, /run it by hand for a local member/);
-        assert.match(line, /failed the git channel check/);
+        assert.match(line, /failed the git ls-remote probe through only the fleet-written .* helper \(git through the host's own credential chain was not checked\)/);
         assert.ok(!/No PR will be opened/.test(line), 'a git-only failure predicts nothing about the PR');
         assert.ok(
             line.includes('provision_vcs_auth member_name=MEMBER provider=bitbucket workspace=WORKSPACE api_token={{secret.bitbucket_api_token}}'),

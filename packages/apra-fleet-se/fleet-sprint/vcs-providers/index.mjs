@@ -745,7 +745,10 @@ export const PR_RESPONSE_SIGN_IN = 'pr-response-sign-in';
 /** Typed reason for a 2xx PR response whose body maps to no PR (or is not JSON). */
 export const PR_RESPONSE_UNMAPPED = 'pr-response-unmapped';
 
-const HTML_START_RE = /^(?:<\?xml[^>]*>\s*)?(?:<!--[\s\S]*?-->\s*)*<(?:!doctype\s+html|html[\s>])/i;
+// The comment group is unambiguous (no overlapping lazy quantifier), and the
+// inspected text is capped, so a hostile body cannot cause backtracking blowup.
+const HTML_START_RE = /^(?:<\?xml[^>]*>\s*)?(?:<!--(?:[^-]|-(?!->))*-->\s*)*<(?:!doctype\s+html|html[\s>])/i;
+const HTML_INSPECT_LIMIT = 2048;
 const SIGN_IN_MARKER_RE = /\bsign[\s-]?in\b|\bsignin\b|\blog[\s-]?in\b|login\.microsoftonline\.com|_signin|id="?loginform|\bauthenticate to continue\b/i;
 
 /**
@@ -754,7 +757,7 @@ const SIGN_IN_MARKER_RE = /\bsign[\s-]?in\b|\bsignin\b|\blog[\s-]?in\b|login\.mi
  * @returns {{ html: boolean, signIn: boolean }}
  */
 export function classifyPrResponseBody(bodyText) {
-    const text = String(bodyText ?? '').trim();
+    const text = String(bodyText ?? '').slice(0, HTML_INSPECT_LIMIT).trim();
     const html = HTML_START_RE.test(text);
     const signIn = html || (text !== '' && SIGN_IN_MARKER_RE.test(text) && !/^[[{]/.test(text));
     return { html, signIn };

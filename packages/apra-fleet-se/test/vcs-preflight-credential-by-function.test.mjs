@@ -146,7 +146,7 @@ describe('case 2: a labelled helper whose email username git rejects', () => {
         await h.ensure('bb-local');
         const errors = errorsOf(h.logs);
         assert.equal(errors.length, 1, h.logs.join('\n'));
-        assert.match(errors[0], /failed the git channel check/);
+        assert.match(errors[0], /failed the git ls-remote probe through only the fleet-written .* helper \(git through the host's own credential chain was not checked\)/);
         assert.ok(!/PR \(REST API\) channel/.test(errors[0]), errors[0]);
         assert.match(errors[0], /git ls-remote origin through only the fleet-written 'bitbucket' helper \(\/home\/dev\/\.fleet-git-credential-bitbucket\) failed: .*Authentication failed/);
         assert.equal(noPrOf(h.logs).length, 0, h.logs.join('\n'));
@@ -176,7 +176,7 @@ describe('case 4: a host credential manager answers git but the labelled helper 
         assert.ok(!h.commands.some((c) => plain(c).includes('ls-remote origin HEAD') && !plain(c).includes('credential.helper=!')), 'the host-chain probe is never run');
         const errors = errorsOf(h.logs);
         assert.equal(errors.length, 1, h.logs.join('\n'));
-        assert.match(errors[0], /failed the git channel and PR \(REST API\) channel check/);
+        assert.match(errors[0], /failed the git ls-remote probe .*and PR \(REST API\) probe/);
         assert.match(errors[0], /terminal prompts disabled/);
         assert.match(errors[0], /vcs_credential_exec reason: no_credential/);
         assert.equal(noPrOf(h.logs).length, 1);

@@ -21,10 +21,7 @@ username matches. A different helper username is a single WARN. The run
 predicts "no PR" only when the PR channel fails, including after a
 re-provision. The skipped-provision line is logged once per member per run.
 
-Known gap: when a host credential manager answers git while the labelled
-helper is absent, the report says the git channel FAILED although it would
-work through the host chain. The overall verdict is the same; the message is
-misleading.
+The git probe goes through only the fleet-written helper; git through the host's own credential chain is not checked. The ERROR text says exactly that, so it never claims git is broken when it works through the host chain.
 
 ## No re-provision on the push+pr path for non-mintable providers
 

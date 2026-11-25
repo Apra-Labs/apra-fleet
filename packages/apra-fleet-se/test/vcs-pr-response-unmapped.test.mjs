@@ -2,6 +2,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { raiseVcsPrForMember } from '../fleet-sprint/vcs-auth.mjs';
+import { classifyPrResponseBody } from '../fleet-sprint/vcs-providers/index.mjs';
 import { createStagedFileRecorder, TEST_MEMBER_FOLDER } from './helpers/vcs-payload-test.mjs';
 
 // =============================================================================
@@ -164,5 +165,20 @@ describe('update path: a 2xx HTML page on find is a failure, not an empty list',
         assert.match(up.updateError, /sign-in/);
         assert.ok(!/no open pull request found/.test(up.updateError), up.updateError);
         assertNoSecretLogged(upLogs, { error: up.updateError });
+    });
+});
+
+describe('classifyPrResponseBody is not exponential on hostile bodies', () => {
+    test('pathological comment run classifies fast', () => {
+        const body = '<!--' + '--><!--'.repeat(40);
+        const t0 = Date.now();
+        const r = classifyPrResponseBody(body);
+        assert.ok(Date.now() - t0 < 50, 'took ' + (Date.now() - t0) + 'ms');
+        assert.equal(r.html, false);
+        const big = '<!--' + '--><!--'.repeat(100000);
+        const t1 = Date.now();
+        classifyPrResponseBody(big);
+        assert.ok(Date.now() - t1 < 50);
+        assert.equal(classifyPrResponseBody('<!-- c --><!DOCTYPE html><html>').html, true);
     });
 });

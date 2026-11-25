@@ -465,7 +465,7 @@ test('azure-devops credentialProbe remedy: names the PAT secret (configured or d
     const missing = remedy({ availableSecrets: [], memberName: 'm1', repoRef: { org: 'other-org' }, local: true });
     assert.match(missing, /the credential store has no PAT secret named azdevops_pat/);
     assert.ok(missing.includes('credential_store_set name=azdevops_pat'), missing);
-    assert.ok(missing.includes('https://dev.azure.com/other-org/_settings/tokens'), missing);
+    assert.match(missing, /(?:^|\s)https:\/\/dev\.azure\.com\/other-org\/_settings\/tokens(?:\s|$|[.,)])/);
     assert.match(missing, /this member is LOCAL/);
     const generic = remedy({});
     assert.ok(generic.includes('org_url=https://dev.azure.com/ORG'), generic);

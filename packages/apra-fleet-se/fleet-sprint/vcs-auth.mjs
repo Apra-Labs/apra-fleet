@@ -1839,11 +1839,11 @@ export function createVcsAuthPreflightCallback(opts = {}) {
     function logProbeFailure(member, plan, why, { remedy = null, noPr = false, failed = ['git'] } = {}) {
         const where = plan.local ? 'local member' : 'member';
         const label = vcsCredentialLabelForProvider(plan.provider);
-        const channels = failed.map((c) => (c === 'pr' ? 'PR (REST API) channel' : 'git channel')).join(' and ');
+        const channels = failed.map((c) => (c === 'pr' ? 'PR (REST API) probe' : `git ls-remote probe through only the fleet-written '${label}' helper (git through the host's own credential chain was not checked)`)).join(' and ');
         const consequence = noPr
             ? ` No PR will be opened this sprint for member '${member}': Publish PR reads this same '${label}' credential (the sprint continues and the skipped PR is reported in its final status).`
             : '';
-        const line = `[Sync] preflight: ERROR ${VCS_CREDENTIAL_PROBE_FAILED}: ${where} '${member}' (provider '${plan.provider}') failed the ${channels} check of its existing '${label}' credential: ${why}. ${remedy || plan.impl.authRemedy.hint}${consequence}`;
+        const line = `[Sync] preflight: ERROR ${VCS_CREDENTIAL_PROBE_FAILED}: ${where} '${member}' (provider '${plan.provider}') failed the ${channels} of its existing '${label}' credential: ${why}. ${remedy || plan.impl.authRemedy.hint}${consequence}`;
         // ASCII only, whatever git or the member shell printed.
         log(line.replace(/[^\x20-\x7e]+/g, ' '));
     }
