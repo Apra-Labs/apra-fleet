@@ -192,26 +192,34 @@ async function splitQuery(split: MemberSplitRead, raw: KbQueryInput, shape: Read
   const globalConfirmedL1 = await trustedL1(split.bible.global, bibleOpts, bibleInput);
   const globalOwnL1 = await trustedL1(split.own.global, ownOpts, ownInput, ownerTag);
 
+  const projectL1 = mergeSplitById(viewL1, repoL1, { limit });
+  const globalL1 = mergeSplitById(globalConfirmedL1, globalOwnL1, { limit });
+
   // Which store owns each id, so its L2 copy is fetched from that store.
   const viewIds = new Set(viewL1.map(e => e.id));
   const repoIds = new Set(repoL1.map(e => e.id));
 
-  // The result must contain every row the CONFIRMED-only read returns (view
-  // rows, then global CONFIRMED rows de-duplicated by title against the view
-  // only), so those come first; the member's own captures only fill what is
-  // left under the cap. The limit (the member default or an explicit one)
-  // caps the MERGED result.
-  const confirmedHead = [...viewL1, ...globalConfirmedL1.filter(e => !viewL1.some(v => v.title === e.title))];
-  const taken = new Set(confirmedHead.map(e => e.id));
-  const takenTitles = new Set(confirmedHead.map(e => e.title));
-  const allL1 = [...confirmedHead];
-  for (const e of [...repoL1, ...globalOwnL1]) {
-    if (taken.has(e.id) || takenTitles.has(e.title)) continue;
-    taken.add(e.id);
-    takenTitles.add(e.title);
-    allL1.push(e);
+  // Default member read: the result must contain every row the CONFIRMED-only
+  // read returns (view rows, then global CONFIRMED rows de-duped by title), so
+  // those come first; the member's own captures only fill what is left under the
+  // cap. An explicit limit keeps the per-side merge above.
+  const seenTitles = new Set(projectL1.map(e => e.title));
+  let allL1 = [...projectL1, ...globalL1.filter(e => !seenTitles.has(e.title))];
+  if (shape.memberDefault) {
+    const confirmedHead = [...viewL1, ...globalConfirmedL1.filter(e => !viewL1.some(v => v.title === e.title))];
+    const taken = new Set(confirmedHead.map(e => e.id));
+    const takenTitles = new Set(confirmedHead.map(e => e.title));
+    allL1 = [...confirmedHead];
+    for (const e of [...repoL1, ...globalOwnL1]) {
+      if (taken.has(e.id) || takenTitles.has(e.title)) continue;
+      taken.add(e.id);
+      takenTitles.add(e.title);
+      allL1.push(e);
+    }
   }
-  const mergedL1 = allL1.slice(0, limit);
+  // The member default caps the MERGED result (the per-side limit alone could
+  // return up to twice the cap); an explicit limit keeps its per-side meaning.
+  const mergedL1 = shape.memberDefault ? allL1.slice(0, limit) : allL1;
 
   const top5Ids = mergedL1.slice(0, L2_TOP).map(e => e.id);
   let l2Results: Entry[] = shape.memberDefault ? [] : mergedL1.slice(0, L2_TOP);
