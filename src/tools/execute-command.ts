@@ -42,6 +42,21 @@ export type ExecuteCommandInput = z.infer<typeof executeCommandSchema>;
 // Best-effort heuristic — not a security boundary
 const NETWORK_TOOL_RE = /\b(curl|wget|ssh|sftp|scp|rsync|nc|netcat|http|fetch|Invoke-WebRequest|Invoke-RestMethod)\b/i;
 
+// git subcommands that reach the network: push, pull, fetch, clone, ls-remote.
+// Global options may precede the subcommand (git -C dir push, git -c k=v fetch,
+// git --git-dir=x fetch). Local subcommands (status, log, commit, diff, add...)
+// never match.
+const GIT_ARG = String.raw`(?:"[^"]*"|'[^']*'|\S+)`;
+const GIT_NETWORK_RE = new RegExp(
+  String.raw`\bgit(?:\s+(?:-[Cc]\s+${GIT_ARG}|--(?:git-dir|work-tree|namespace|exec-path)\s+${GIT_ARG}|--[\w-]+(?:=${GIT_ARG})?|-[\w]))*\s+(?:push|pull|fetch|clone|ls-remote)(?![\w-])`,
+  'i',
+);
+
+/** True when a resolved command string invokes a network tool or a git network subcommand. */
+function usesNetworkTool(cmd: string | undefined): boolean {
+  return !!cmd && (NETWORK_TOOL_RE.test(cmd) || GIT_NETWORK_RE.test(cmd));
+}
+
 // Matches raw sec:// credential handles that must never reach shell or LLM
 const SEC_RE = /sec:\/\/[a-zA-Z0-9_]+/;
 
@@ -288,10 +303,11 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
   }
 
   // -- Network egress check for credentials with confirm/deny policy --
-  if (credentials.length > 0 && NETWORK_TOOL_RE.test(resolvedCommand)) {
+  // restart_command runs with the same credentials, so it is checked the same way.
+  if (credentials.length > 0 && (usesNetworkTool(resolvedCommand) || usesNetworkTool(resolvedRestartCommand))) {
     for (const cred of credentials) {
       if (cred.network_policy === 'deny') {
-        return `❌ Blocked: credential "${cred.name}" has network_policy=deny and the command contains a network tool.`;
+        return `❌ Blocked: credential "${cred.name}" has network_policy=deny and the command or restart_command contains a network tool.`;
       }
       if (cred.network_policy === 'confirm') {
         const { confirmed, terminalUnavailable } = await collectOobConfirm(cred.name, { command: input.command, memberName: agent.friendlyName });

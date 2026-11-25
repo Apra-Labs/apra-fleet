@@ -89,7 +89,7 @@ network access for commands that use it:
 | Policy | Behaviour |
 |--------|-----------|
 | `'allow'` (default) | No restriction |
-| `'deny'` | Commands invoking network tools (curl, wget, ssh, git push, etc.) are blocked |
+| `'deny'` | Commands invoking network tools (curl, wget, ssh, scp, sftp, rsync, nc, http, fetch, Invoke-WebRequest, Invoke-RestMethod) or the git network subcommands `push`, `pull`, `fetch`, `clone`, `ls-remote` (also after global options such as `git -C dir push`) are blocked; `restart_command` is checked the same way. Local git (`status`, `log`, `commit`, `diff`, `add`) is not |
 | `'confirm'` | OOB prompt before the network call is allowed |
 
 ## Member Identification
