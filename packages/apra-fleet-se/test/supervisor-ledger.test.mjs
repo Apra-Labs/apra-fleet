@@ -55,6 +55,8 @@ describe('ledger -- lockstep claim/release + atomic persistence', () => {
             branch: null,
             base: null,
             goal: null,
+            tierPolicy: null,
+            tierOverrides: null,
             // apra-fleet-k7b.3: null until recordExit() is called.
             exitCode: null,
             signal: null,

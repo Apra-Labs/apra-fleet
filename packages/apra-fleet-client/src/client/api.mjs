@@ -153,6 +153,13 @@
  *   present as an EXTRA field on a typed failure (max_turns_exhausted, auth, server,
  *   overloaded, ...) or a non-strict Claude failure whose turn carried refusals: the typed
  *   reason wins.
+ * @property {'cheap'|'standard'|'premium'|null} [resolved_tier] - The tier that actually ran:
+ *   the requested tier keyword ('standard' when `model` was omitted), or the fallback tier when
+ *   the member's model_tiers lacks the requested one (a premium request on a member without a
+ *   premium model reports 'standard'). null when the caller passed a literal model id. Present
+ *   on every result that got as far as model resolution (success and later failures).
+ * @property {string} [resolved_model] - The concrete model string actually passed to the
+ *   provider (the model of resolved_tier).
  * @property {PermissionDenied} [permissionWarning] - Present on a SUCCESSFUL dispatch whose
  *   session refused tool calls without failing it: a healable:false refusal (never grant it),
  *   or any Claude refusal when `fail_on_permission_denial` was not set. A logged warning.
@@ -232,7 +239,10 @@
  *   (WMI provider host / session 0), independent of the SSH session's job object, since a plain
  *   background launch dies with the SSH channel there. darwin gets an advisory warning (the
  *   wrapper script is designed for Linux) but is not blocked. Matches
- *   src/tools/execute-command.ts's long_running branch exactly.
+ *   src/tools/execute-command.ts's long_running branch exactly. The call returns the
+ *   `Task launched: task_id=...` text only after the task wrapper started on the member;
+ *   otherwise it is a failure with `structuredContent.reason: 'launch_failed'` and no task_id.
+ *   Poll the task with the monitor_task tool (result shape: {@link MonitorTaskResult}).
  * @property {number} [max_retries] - Max crash retries (long_running only)
  * @property {string} [member_id] - UUID of the member
  * @property {string} [member_name] - Friendly name of the member
@@ -277,11 +287,31 @@
  * @property {boolean} [isError] - true when the command did not run to an exit code.
  * @property {string} [reason] - Present with isError: 'timeout' (inactivity timeout) |
  *   'max_total_time' (hard total-time cap) | 'transport_error' (connection/channel failure) |
- *   'cloud_start_failed' | 'preflight_offline' | 'preflight_auth_expired' |
- *   'preflight_auth_missing'.
+ *   'launch_failed' (long_running only: the launch exited nonzero or the task wrapper
+ *   never started on the member) | 'cloud_start_failed' | 'preflight_offline' |
+ *   'preflight_auth_expired' | 'preflight_auth_missing'.
  * @property {'secret_delivery_unavailable'} [storedEnvNotDelivered] - Present when the
  *   command ran WITHOUT the member's stored credential env vars because no
  *   owner-only file channel exists to deliver them (SFTP disabled, relay member).
+ */
+
+/**
+ * Parsed JSON text returned by the monitor_task tool for a long_running task.
+ * Mirrors src/tools/monitor-task.ts.
+ * @typedef {Object} MonitorTaskResult
+ * @property {string} taskId - The task id passed in.
+ * @property {'running'|'completed'|'failed'|'launch_failed'|'unknown'} status - The wrapper's
+ *   status.json status; 'launch_failed' when the task directory or wrapper never appeared on the
+ *   member (the task never started); 'unknown' when the task state could not be read.
+ * @property {number|null} exitCode - Final exit code, or null while running / never started.
+ * @property {number} retries - Crash retries used so far.
+ * @property {string|null} started - ISO start time, or null.
+ * @property {string|null} updated - ISO time of the last status update, or null.
+ * @property {boolean} pidAlive - Whether the task process is alive.
+ * @property {string} [reason] - Present with status 'launch_failed' or 'unknown': why.
+ * @property {number} [gpuUtilization] - Cloud members only.
+ * @property {string|null} logTail - Last lines of task.log (credential values redacted).
+ * @property {boolean} [autoStopped] - Set when auto_stop stopped the cloud instance.
  */
 
 /**
@@ -768,9 +798,15 @@
  *   Each entry is checked against the NEVER_AUTO_GRANT denylist, which is
  *   wildcard-matched (not exact-matched) against a normalized form of the
  *   request: sudo/su/doas, `bash -c`/`sh -c`/eval, env/printenv, nc/nmap,
- *   `chmod 777`, any catch-all such as `Bash(*)`, and any payload containing a
- *   shell-chaining metacharacter (| ; && backtick $() are rejected outright,
- *   for every caller.
+ *   `chmod 777`, process-killing commands (kill, pkill, killall, taskkill,
+ *   tskill, Stop-Process, wmic process delete/terminate -- Bash or PowerShell
+ *   form, any case, path or .exe), any catch-all such as `Bash(*)`, and any
+ *   payload containing a shell-chaining metacharacter (| ; && backtick $() are
+ *   rejected outright, for every caller. A refused process-kill grant's text
+ *   says so. Every composed config also carries deny rules for
+ *   process-killing commands; they reduce the risk of a role killing
+ *   processes it did not start but cannot rule it out while other
+ *   interpreters (e.g. `Bash(bash:*)`) are allowed.
  * @property {string} [grant_reason] - Reason for the grant (stored in ledger)
  * @property {boolean} [dry_run] - Compose only: return the allow list the role/tags
  *   (plus detected stacks, plus the ledger when project_folder is given) would deliver, as

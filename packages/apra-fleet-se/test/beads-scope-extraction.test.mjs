@@ -236,7 +236,10 @@ function buildScopeHarness({ targetIssues = ['root'], assignee = null, beads = [
     // exercise) so a "fresh read" is genuinely fresher than the snapshot.
     const rawCommand = async (cmdStr, opts) => {
         commandLog.push({ cmd: cmdStr, opts });
-        if (/^bd list --all/.test(cmdStr)) return JSON.stringify(db.beads);
+        const ids = /--id\s+"([^"]+)"/.exec(cmdStr);
+        if (/^bd list --all/.test(cmdStr)) {
+            return JSON.stringify(ids ? db.beads.filter((b) => ids[1].split(',').includes(b.id)) : db.beads);
+        }
         if (/^bd list /.test(cmdStr)) {
             const status = /--status=([^\s]+)/.exec(cmdStr);
             const rows = status ? db.beads.filter((b) => b.status === status[1]) : db.beads;
@@ -250,7 +253,7 @@ function buildScopeHarness({ targetIssues = ['root'], assignee = null, beads = [
     const phase = scope.wrapPhase((title) => { phaseLog.push(title); return title; });
 
     return { scope, db, command, phase, commandLog, phaseLog,
-        fullFetches: () => commandLog.filter((e) => e.cmd === 'bd list --all --limit 0 --json').length };
+        fullFetches: () => commandLog.filter((e) => e.cmd === 'bd list --all --limit 0 --json --brief').length };
 }
 
 describe('apra-fleet-3swo.4.6: the snapshot invalidation contract, enforced', () => {

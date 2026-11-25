@@ -414,6 +414,10 @@ export const GUARDED_MODULES = [
     // scans clean under itself and every other guard rather than needing a
     // GUARD_REGISTRATION_EXEMPT carve-out.
     'explicit-id-create-guard.mjs',
+    // The process-killing command set the engine never grants (pure matching
+    // helpers used by member-provisioning.mjs). No command() or agent() site:
+    // zero baseline.
+    'process-kill-rules.mjs',
     // The beads identity contract (pure parse/compare helpers, no command()
     // or agent() site -- zero baseline) and the precondition that runs its
     // three read-only probes: beads-identity-check.mjs carries THREE
@@ -449,6 +453,17 @@ export const GUARDED_MODULES = [
     // Operator notification for a pending decision: no command() or agent()
     // site (sends through the injected fleet client), zero baseline.
     'decision-notify.mjs',
+    // Tier policy presets and resolution (pure): no command() or agent()
+    // site, no I/O; runner.js reads the resolved tiers.
+    'tier-policy.mjs',
+    // The premium-cap gate: counting is pure, every bd read, dispatch and
+    // decision write is an injected runner.js seam -- no command() or agent()
+    // site of its own.
+    'tier-cap.mjs',
+    // One-step tier escalation: the decision is pure; its one command() site
+    // (the tierEscalatedFrom bead write) is member_name-bearing and runs
+    // inside the caller's gitSync bracket, which D-pushes.
+    'tier-escalation.mjs',
     // The per-member sprint-init probe: kb_*/code_* calls through the injected
     // memberCall, member_detail on the orchestrator session, and ONE
     // member-bound command channel (fleetApi.executeCommand, command strings
@@ -565,10 +580,11 @@ export const GUARD_REGISTRATION_EXEMPT = {
         'builder of the beads lock-holder probe; scanning it would report its entire reason for ' +
         'existing as violations.',
     // bd-sync-command.mjs: the per-OS/shell builder of the bd sync command
-    // string (the Windows GOMAXPROCS assignment), the same kind of
+    // string (the PowerShell `$env:` assignments of the non-interactive git
+    // credential environment and the Windows GOMAXPROCS), the same kind of
     // OS-branched command surface as the shell builders above.
     'bd-sync-command.mjs':
-        'deliberately emits the PowerShell `$env:GOMAXPROCS=` assignment because it IS the ' +
+        'deliberately emits PowerShell `$env:NAME=` assignments because it IS the ' +
         'OS-branched builder of the bd sync command string; scanning it would report its entire ' +
         'reason for existing as violations.',
     // dolt-sync.mjs -- reason reused verbatim from the same header (do not

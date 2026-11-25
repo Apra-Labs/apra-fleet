@@ -459,6 +459,10 @@ const FALLBACK_planReviewerVerdict = {
                             'ready_work',
                             'model_metadata',
                             'lane_cohesion',
+                            'tier_cap',
+                            'tier_reason',
+                            'tier_split',
+                            'lane_tier',
                             'other',
                         ],
                     },
@@ -562,6 +566,9 @@ const FALLBACK_doerReport = {
         // doer-output.json.
         decision: FALLBACK_decisionRequest,
         blockedIds: { type: 'array', items: { type: 'string' } },
+        // Mirrors doer-output.json: BLOCKED beads that need live integration
+        // evidence (phases/develop.mjs applyLiveEvidenceMarker).
+        liveEvidenceIds: { type: 'array', items: { type: 'string' } },
     },
     required: ['status', 'closedIds', 'notes'],
     allOf: [needsDecisionRequires('status')],

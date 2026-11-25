@@ -121,8 +121,16 @@ export const KB_INJECTION_KINDS = Object.freeze(['wrapper', 'prompt-builder', 'n
  *                 ONLY by a policy that sets `classifiesSyncFailures`.
  *   'unknown'  -- anything else, recognised ONLY by a policy that sets
  *                 `classifiesUnrecognisedErrors` (the regression catch-all).
+ *   'credential' -- a sync-bracket error a policy names in
+ *                 `extraDispatchErrors` that the sync layer classified as a
+ *                 VCS CREDENTIAL failure (errors.mjs isDoltCredentialFailure).
+ *                 Never degraded and never in any `degrade.classes`: a
+ *                 credential the member cannot present is an infrastructure
+ *                 fault no retry fixes, and a value fabricated over it would
+ *                 read as a role outcome. The engine logs it as a typed line
+ *                 naming the class and the remedy, then rethrows.
  */
-export const ERROR_CLASSES = Object.freeze(['schema', 'dispatch', 'infra', 'sync', 'unknown']);
+export const ERROR_CLASSES = Object.freeze(['schema', 'dispatch', 'infra', 'sync', 'unknown', 'credential']);
 
 /**
  * Steps the engine runs on the DEGRADE path -- i.e. once per attempt that
@@ -657,6 +665,7 @@ const planner = policy('planner', {
         skipPreDispatchSyncOnNoMutation: true,
         maxTurnsResume: true,
         resumeAttempts: 1,
+        unmappableRefusalResume: true,
         turnEscalation: 'double',
     }),
     // The planner is the ONLY role whose exhausted ladder is fatal: there is
@@ -711,6 +720,7 @@ const planReviewer = policy('plan-reviewer', {
         authSelfHeal: true,
         maxTurnsResume: true,
         resumeAttempts: 1,
+        unmappableRefusalResume: true,
         turnEscalation: 'double',
     }),
     degrade: degrade({
@@ -741,7 +751,9 @@ const scopedReplanPlanner = policy('scoped-replan-planner', {
     ladderAnchor: "label: 'Scoped Replan Plan (interactive)'",
     member: roleMember('planner'),
     agentType: 'planner',
-    model: fixedTier('planner'),
+    // Its own tier key, so tierOverrides can pin the re-planner apart from
+    // the planner (every preset gives it the planner's tier).
+    model: fixedTier('re-planner'),
     schema: null,
     // A scoped re-plan is a fresh, single-purpose instruction: it carries the
     // reviewer's scope in its own prompt and must not inherit the interactive
@@ -757,9 +769,24 @@ const scopedReplanPlanner = policy('scoped-replan-planner', {
     ),
     kbInjection: 'wrapper',
     // A single bounded attempt: no retry ladder and no resume of its own.
-    retry: retry({ usageLimitPause: true, attempts: 1, authSelfHeal: true }),
+    retry: retry({ usageLimitPause: true, attempts: 1, authSelfHeal: true, unmappableRefusalResume: true }),
     degrade: degrade({ kind: 'defer-to-next-cycle', rethrowsUnrecognisedErrors: false }),
     postResult: ['invalidate-beads-cache'],
+});
+// Exists ONLY so an unmappable permission refusal can be resumed in the same
+// session (retry.unmappableRefusalResume): maxTurnsResume stays false, so a
+// turn-exhausted scoped re-plan is never resumed -- the ladder stays one attempt.
+scopedReplanPlanner.secondary = secondary(scopedReplanPlanner, 'scoped-replan-planner', 'max-turns-resume', {
+    ladderAnchor: 'Continue your scoped re-plan exactly where you left off',
+    maxTurns: turns('SCOPED_REPLAN_PLANNER_MAX_TURNS', 1, 500),
+    watchdog: watchdog(
+        ['Scoped Replan Plan (resume)'],
+        'Same interactive session, continued after a refusal no permission grant can allow: the resumed '
+        + 'dispatch carries the identical alive-but-silent risk as the main scoped re-plan dispatch.'
+    ),
+    resumeArg: SAME_SESSION_RESUME,
+    // Reached only after a refusal report, when no live session exists to kill.
+    preDispatch: [],
 });
 
 const scopedReplanPlanReviewer = policy('scoped-replan-plan-reviewer', {
@@ -782,8 +809,16 @@ const scopedReplanPlanReviewer = policy('scoped-replan-plan-reviewer', {
         + 'safe non-approval rather than needing a second, independent kill-path.'
     ),
     kbInjection: 'wrapper',
-    retry: retry({ usageLimitPause: true, attempts: 1, authSelfHeal: true }),
+    retry: retry({ usageLimitPause: true, attempts: 1, authSelfHeal: true, unmappableRefusalResume: true }),
     degrade: degrade({ kind: 'non-approval', rethrowsUnrecognisedErrors: false }),
+});
+// Resume-only secondary for an unmappable refusal; see scopedReplanPlanner above.
+scopedReplanPlanReviewer.secondary = secondary(scopedReplanPlanReviewer, 'scoped-replan-plan-reviewer', 'max-turns-resume', {
+    ladderAnchor: 'Continue your scoped review exactly where you left off',
+    maxTurns: turns('SCOPED_REPLAN_REVIEWER_MAX_TURNS', 1, 500),
+    resumeArg: SAME_SESSION_RESUME,
+    // Reached only after a refusal report, when no live session exists to kill.
+    preDispatch: [],
 });
 
 const streakAssignment = policy('streak-assignment', {
@@ -819,7 +854,7 @@ const streakAssignment = policy('streak-assignment', {
         + 'Left disarmed: inherited, and lower-risk than the bracketed roles for that reason.'
     ),
     kbInjection: 'none',
-    retry: retry({ usageLimitPause: true, attempts: 1, authSelfHeal: true, semanticRepairReAsks: 1 }),
+    retry: retry({ usageLimitPause: true, attempts: 1, authSelfHeal: true, semanticRepairReAsks: 1, unmappableRefusalResume: true }),
     degrade: degrade({
         kind: 'fallback-value',
         synthesized: { grouping: 'one-bead-per-streak' },
@@ -925,6 +960,7 @@ const reviewer = policy('reviewer', {
         authSelfHeal: true,
         maxTurnsResume: true,
         resumeAttempts: 1,
+        unmappableRefusalResume: true,
         turnEscalation: 'double',
         // The SAME two-attempt budget covers both ways a round can fail: an
         // infrastructure failure, and a schema-valid verdict the contract
@@ -952,7 +988,10 @@ const reviewer = policy('reviewer', {
         // transient infrastructure reasons as the dispatch, so it degrades
         // identically. A REAL divergence (GitDivergedError / DoltDivergedError
         // -- deliberately NOT listed) still propagates: that is a branch
-        // integrity problem, not a blip.
+        // integrity problem, not a blip. So does a DoltSyncError the sync
+        // layer classified as a VCS CREDENTIAL failure: the engine files it
+        // under the 'credential' class, logs it with its remedy and rethrows
+        // it, never fabricating a verdict over it.
         extraDispatchErrors: ['GitSyncError', 'DoltSyncError'],
     }),
     postResult: ['reviewer-contract-guard', 'kb-apply'],
@@ -1002,6 +1041,7 @@ const finalReview = policy('final-review', {
         rethrowsUnhealedNonRetryable: true,
         maxTurnsResume: true,
         resumeAttempts: 1,
+        unmappableRefusalResume: true,
         turnEscalation: 'double',
     }),
     degrade: degrade({
@@ -1064,6 +1104,7 @@ const deployer = policy('deployer', {
         authSelfHeal: true,
         maxTurnsResume: true,
         resumeAttempts: 1,
+        unmappableRefusalResume: true,
         turnEscalation: 'double',
     }),
     degrade: degrade({
@@ -1132,6 +1173,7 @@ const integTestRunner = policy('integ-test-runner', {
         authSelfHeal: true,
         maxTurnsResume: true,
         resumeAttempts: 1,
+        unmappableRefusalResume: true,
         turnEscalation: 'double',
         infraResumeAttempts: 1,
     }),
@@ -1209,6 +1251,7 @@ const regressionTestRunner = policy('regression-test-runner', {
         skipRedispatchOnPostDispatchSyncFailure: true,
         maxTurnsResume: true,
         resumeAttempts: 1,
+        unmappableRefusalResume: true,
         turnEscalation: 'double',
     }),
     // The only load-bearing catch-all in the table: this phase is
@@ -1288,6 +1331,7 @@ const harvester = policy('harvester', {
         authSelfHeal: true,
         maxTurnsResume: true,
         resumeAttempts: 1,
+        unmappableRefusalResume: true,
         turnEscalation: 'double',
     }),
     // Fabricates NOTHING: by this point the sprint's verdict is already

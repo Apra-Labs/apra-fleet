@@ -48,8 +48,10 @@ import { validateIssueId, validateBranchName, validateBranchPair, validateGoal, 
 import { resolveRoleMap } from '../../bin/cli.mjs';
 import { resolveBacklogRoleAlias, ROLE_BACKLOG, ROLE_BACKLOG_ALIAS } from '../../fleet-sprint/backlog-role.mjs';
 import { normalizeRole } from '../../fleet-sprint/contracts.mjs';
+import { resolveTierPolicy, parseTierOverrides, DEFAULT_TIER_POLICY } from '../../fleet-sprint/tier-policy.mjs';
 import { isDeterministicTerminalReason, HISTORY_EVENTS } from './history.mjs';
 import { defaultHasTerminalState } from './watchdog.mjs';
+import { terminalInfoFromState, terminalInfoFromHistory } from './pr-not-opened.mjs';
 import { toBeadsSummary } from './beads-identity.mjs';
 import { fleetMembersUnavailableReason, fleetMembersStoppedByUserReason } from './fleet-members.mjs';
 
@@ -585,7 +587,20 @@ export function createSprintController(deps = {}) {
             }
             kbDemotionLoop = body.kbDemotionLoop;
         }
-        return { issue: issueIds.join(','), issueIds, branch, base, members, skipRegression, kbDemotionLoop, decisionNotify };
+        // tierPolicy (optional preset, default balanced) and tierOverrides
+        // (object or JSON string): validated with the engine's own
+        // resolveTierPolicy so a bad value is a 400 naming the field before
+        // any spawn. The child always receives an explicit --tier-policy, so
+        // a launch never depends on the child's own default.
+        let tierOverrides;
+        try { tierOverrides = parseTierOverrides(body.tierOverrides); }
+        catch (err) { throw new ApiError(400, err.message, 'tierOverrides'); }
+        try { resolveTierPolicy(body.tierPolicy, undefined); }
+        catch (err) { throw new ApiError(400, err.message, 'tierPolicy'); }
+        try { resolveTierPolicy(body.tierPolicy, tierOverrides); }
+        catch (err) { throw new ApiError(400, err.message, 'tierOverrides'); }
+        const tierPolicy = body.tierPolicy ?? DEFAULT_TIER_POLICY;
+        return { issue: issueIds.join(','), issueIds, branch, base, members, skipRegression, kbDemotionLoop, tierPolicy, tierOverrides, decisionNotify };
     }
 
     // -- GET /api/members : list_members + live-reservation overlay -----------
@@ -626,7 +641,7 @@ export function createSprintController(deps = {}) {
 
     // -- POST /api/sprints : validated, goal-forwarding launch ----------------
     async function launch(body = {}, opts = {}) {
-        const { issue, issueIds, branch, base, members, skipRegression, kbDemotionLoop, decisionNotify } = validateLaunchRequest(body);
+        const { issue, issueIds, branch, base, members, skipRegression, kbDemotionLoop, tierPolicy, tierOverrides, decisionNotify } = validateLaunchRequest(body);
         // An '@file' roleMap is a CLI-only convenience: over HTTP it would make
         // the supervisor read an arbitrary server-side path named by the request
         // body, and the alias warning could not be computed from it. Reject it.
@@ -809,6 +824,8 @@ export function createSprintController(deps = {}) {
             runId: sprintId,
             skipRegression,
             kbDemotionLoop,
+            tierPolicy,
+            tierOverrides: tierOverrides === undefined ? undefined : JSON.stringify(tierOverrides),
             decisionNotify,
         };
         let spawned;
@@ -858,6 +875,8 @@ export function createSprintController(deps = {}) {
             branch,
             base,
             goal: body.goal ?? null,
+            tierPolicy,
+            tierOverrides: tierOverrides ?? null,
             // Which .beads this supervisor resolved at launch time (see
             // beads-identity.mjs) -- the same identity the child received as
             // --expect-beads, recorded so the dashboard can show it per row.
@@ -874,9 +893,37 @@ export function createSprintController(deps = {}) {
             issueRoots,
             members: union,
             goal: body.goal ?? null,
+            tierPolicy,
+            tierOverrides: tierOverrides ?? null,
             buildVersionWarning,
             warnings: aliasWarnings,
         };
+    }
+
+    // Additive list-row fields for a sprint that already reached a terminal
+    // state (it can still hold a ledger row in the post-terminal linger window):
+    // `verdict`, and `prNotOpened { reason }` only when the branch was pushed
+    // but the PR was skipped. The persisted terminal run-state is the source;
+    // the FINISHED history event is the fallback. A sprint still running (or
+    // whose PR opened) gets no marker. Never throws.
+    function terminalListFields(r) {
+        try {
+            let info = null;
+            const st = hasTerminalState(r.sprintId, r.branch ?? null);
+            if (st && typeof st === 'object') {
+                info = terminalInfoFromState(st);
+            } else {
+                const fin = history.forSprint(r.sprintId).filter((e) => e.event === HISTORY_EVENTS.FINISHED).pop();
+                if (fin) info = terminalInfoFromHistory(fin);
+            }
+            if (!info) return {};
+            return {
+                ...(info.verdict ? { verdict: info.verdict } : {}),
+                ...(info.prNotOpened ? { prNotOpened: info.prNotOpened } : {}),
+            };
+        } catch {
+            return {};
+        }
     }
 
     // -- GET /api/sprints : every live sprint ---------------------------------
@@ -888,7 +935,10 @@ export function createSprintController(deps = {}) {
                 members: r.members,
                 issueRoots: r.issueRoots,
                 childPid: r.childPid ?? null,
+                tierPolicy: r.tierPolicy ?? null,
+                tierOverrides: r.tierOverrides ?? null,
                 port: resolvePort(r.childPid ?? null) ?? null,
+                ...terminalListFields(r),
             })),
             scopeFreshness: freshness,
         };

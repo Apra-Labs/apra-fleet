@@ -71,6 +71,20 @@ import {
 } from '../abort.mjs';
 import { applyReviewerDecision, reviewerReopenEntries } from '../decisions.mjs';
 import { nextLastBuildFailing } from '../red-build-integ-gate.mjs';
+import { roleTier, reproducesPrePolicyTiers } from '../tier-policy.mjs';
+import { applyEscalations, roundHasPremiumOrEscalated, ESCALATION_REASONS } from '../tier-escalation.mjs';
+
+// The round's `bd show --json` text as bead objects. Tolerant: an unreadable
+// read gives no beads (the round then reviews at its non-premium tier and
+// escalates nothing) rather than failing the review it only prices.
+function parseBeadList(raw) {
+    try {
+        const parsed = JSON.parse(raw || '[]');
+        return Array.isArray(parsed) ? parsed : [];
+    } catch {
+        return [];
+    }
+}
 import { BudgetExceededError } from '@apralabs/apra-fleet-workflow';
 
 /**
@@ -208,6 +222,9 @@ export async function runReviewPhase({
     createChildBeadWithAllocatedId,
     trackRejectedNewTaskForResurfacing,
     clearResubmittedNewTask,
+    // The run's resolved tier policy (../tier-policy.mjs): prices the round's
+    // review and decides whether a reopen escalates (../tier-escalation.mjs).
+    tierPolicy = null,
     // Optional phase/site label override; the catch-up round
     // (runReviewCatchUpPhase) passes its own. Defaults to the round label.
     phaseLabel,
@@ -254,7 +271,24 @@ export async function runReviewPhase({
     // ReviewerContractViolationError) -- a CHANGES_NEEDED verdict with
     // both reopenIds and newTasks empty is self-contradictory and must
     // never be treated as an ordinary "more work needed" round.
-    const verdict = await dispatchReview({ beadIds: assignedBeadIds, acceptanceCriteriaJson });
+    // The round's beads as `bd show` read them (metadata included), for the
+    // review tier and the reopen escalation below.
+    const roundBeads = parseBeadList(acceptanceCriteriaJson);
+    // Direct callers may hold no sprint state; escalation is then off anyway
+    // (no tier policy), so a throwaway map serves.
+    const escalations = sprintState
+        ? (sprintState.tierEscalations || (sprintState.tierEscalations = new Map()))
+        : new Map();
+    // Review tier: under balanced/economy premium only when the round holds a
+    // premium or escalated bead, else standard; quality is premium always.
+    const roundTier = tierPolicy
+        ? roleTier(tierPolicy, 'reviewer-round', { hasPremiumOrEscalated: roundHasPremiumOrEscalated(roundBeads, escalations) })
+        : undefined;
+    if (roundTier && !reproducesPrePolicyTiers(tierPolicy)) {
+        log(`[tier-policy] Review C${cycle} R${devRounds}: reviewer round tier ${roundTier} (${tierPolicy.name}; ` +
+            `${roundTier === 'premium' ? 'the round holds a premium or escalated bead' : 'no premium or escalated bead in the round'}).`);
+    }
+    const verdict = await dispatchReview({ beadIds: assignedBeadIds, acceptanceCriteriaJson, roundTier });
     // KB trust pipeline Phase 2: the reviewer decides, the engine
     // executes. Reviewer is the ONLY role whose kb_promotions are
     // honoured. apra-fleet-3swo.5.7: performed by the 'reviewer' row's
@@ -266,6 +300,9 @@ export async function runReviewPhase({
     // completion requires this to be exactly 'APPROVED', not just
     // an empty ready-bead list.
     lastReviewVerdict = verdict.verdict;
+    // The last Review/Re-Review verdict and notes of the run (kept across
+    // cycles, unlike lastReviewVerdict): a stall abort names it.
+    if (sprintState) sprintState.lastReview = { verdict: verdict.verdict, notes: typeof verdict.notes === 'string' ? verdict.notes : '', site: 'Review', cycle };
     // Sticky red-build flag (../red-build-integ-gate.mjs): gates the
     // Integration Test dispatch until a later review reports the build green.
     lastBuildFailing = nextLastBuildFailing(lastBuildFailing, verdict);
@@ -313,6 +350,19 @@ export async function runReviewPhase({
         },
         onSkippedBelowGoal: ({ id }) => skippedBelowGoalIds.push(id),
     }));
+    // One-step tier escalation (../tier-escalation.mjs): every bead the
+    // reviewer reopened through reopenIds is redone one tier up, once per
+    // bead per sprint (balanced/economy only). A NEEDS-DECISION reopen is not
+    // a quality verdict and never escalates. Written before the D-push below.
+    const reviewerReopened = new Set((Array.isArray(verdict.reopenIds) ? verdict.reopenIds : [])
+        .filter((id) => typeof id === 'string' && reopenedIds.has(id)));
+    if (reviewerReopened.size > 0) {
+        await applyEscalations({
+            beads: roundBeads.filter((b) => b && reviewerReopened.has(String(b.id))),
+            policy: tierPolicy, escalations, reason: ESCALATION_REASONS.REOPEN,
+            command, member: backlogMember, log,
+        });
+    }
     // A NEEDS-DECISION verdict: record the decision for an operator and set
     // the named bead aside -- see ../decisions.mjs. A closed bead was
     // reopened just above, through the same guarded reopen call
@@ -503,6 +553,7 @@ export async function runReviewCatchUpPhase({
     computeChildFloor, createChildBeadWithAllocatedId,
     trackRejectedNewTaskForResurfacing, clearResubmittedNewTask,
     titleById = new Map(),
+    tierPolicy = null,
 }) {
     const ledger = sprintState && sprintState.reviewedScopeIds instanceof Set ? sprintState.reviewedScopeIds : new Set();
     const unchanged = { catchUpIds: [], ran: false, reviewed: false, reopenedIds: [], lastReviewVerdict, pendingRejectedNewTasks, lastBuildFailing };
@@ -531,6 +582,7 @@ export async function runReviewCatchUpPhase({
                 computeChildFloor, createChildBeadWithAllocatedId,
                 trackRejectedNewTaskForResurfacing, clearResubmittedNewTask,
                 phaseLabel: label,
+                tierPolicy,
             });
             return {
                 catchUpIds, ran: true, reviewed: true, reopenedIds: [],

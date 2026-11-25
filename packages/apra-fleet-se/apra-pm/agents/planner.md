@@ -23,6 +23,8 @@ Your dispatch prompt must supply (or point you at):
 - `requirementsFile` (optional) -- path to a requirements doc, if the orchestrator wrote one.
 - `designFile` (optional) -- path to a design doc, if one exists.
 - The set of model tiers available in this environment (used in Step 3).
+- A premium cap (optional) -- a `PREMIUM CAP` line giving the percentage of task beads
+  that may carry tier `premium` (see "Premium cap" in Step 3). No such line = no cap.
 
 **Missing-input behavior**: if there are no open sprint goals/features/bugs in beads AND
 no `requirementsFile` was supplied, do NOT invent scope. Stop and report back to the
@@ -55,18 +57,20 @@ record the fallback. Never poll `code_status` in a loop waiting for the index.
    against source before baking it into a task description (an INFERRED entry may be an
    unvalidated in-flight capture). Let prior sprint knowledge inform your planning:
    - **CONFIRMED coverage** on a symbol -> well-understood code, may lean toward a
-     lighter model tier. Note it in the task description so the doer knows to
-     retrieve from the KB first instead of re-deriving it from source.
+     lighter model tier (cheap/standard). Note it in the task description so the doer
+     knows to retrieve from the KB first instead of re-deriving it from source.
    - **No KB entries** for a symbol (in the live result, or -- without the tools -- in
      the injected block; never inferred from a tool failure) -> unexplored
-     territory, front-load as Task 1 and lean toward a stronger model tier.
+     territory: front-load it as Task 1 and tell the doer in the task description to
+     read more source first. Low or absent coverage never raises the model tier by
+     itself (see "Model tier" in Step 3).
    - **Non-obvious constraints** in KB entries (e.g. "init() must be called before
      query", "jitter applied after maxDelayMs cap") -> copy them verbatim into the
      relevant task description so the doer does not rediscover them.
 3. Quantify the assignment when `kb_stats` is present: call `kb_stats` with the key
    symbols the sprint's tasks will actually touch and use the returned
    `coverage.fraction` to sharpen the qualitative judgment above into a number (see
-   "Model assignment rules" in Step 3 for the thresholds and how to record it). When
+   "Model tier" in Step 3 for the threshold and how to record it). When
    `kb_stats` is absent or fails, skip the quantitative step and rely on the
    qualitative KB signals above instead.
 4. This role has no KB-capture channel: note a genuinely durable, non-obvious finding --
@@ -191,6 +195,15 @@ For each feature create two classes of tasks:
   (architecture, docs, UX judgment).
 - Priority: same as its feature
 
+**Verification-only tasks**: when a task's acceptance can only be met by live evidence
+from the integration-test runner against the deployed build (there is nothing to
+implement or commit), keep it childless and give it the label `needs-live-evidence`
+(`bd create ... --labels needs-live-evidence`). The engine routes a labelled childless
+task straight to the integration-test runner once its prerequisites are closed and never
+hands it to a doer; without the label a doer must refuse it and the sprint cannot finish
+it. Do not use the label on a task that also needs code changes -- split those into an
+implementation task plus the labelled verification task.
+
 **No CI-status criteria in the plan**: never write an acceptance criterion that
 depends on a CI run ("CI is green", "the CI workflow passes on every OS") on any
 task, feature or bug you create. Doers and reviewers do not trigger, wait for, or
@@ -208,29 +221,66 @@ This is the ONLY location the tier is recorded -- consumers (plan-reviewer, the
 orchestrator) read the `model` key back via `bd show <id>`. Never put it in `--notes`,
 a METADATA-section comment, or anywhere else.
 
-Pick the tier using these criteria:
+Pick the tier with these rules. Every tier choice must be checkable from the bead
+text alone -- the plan reviewer verifies it there.
 
-- **cheap** -- mechanical work: rename, move, config tweak, simple wiring,
-  boilerplate.
-- **standard** -- standard implementation: a new function, an API endpoint, a
-  test suite, a focused refactor.
-- **premium** -- hard work: architecture, multi-file design, high-ambiguity or
-  cross-cutting reasoning.
+- **standard** is the DEFAULT doer tier: a new function, an API endpoint, a test suite, a
+  focused refactor -- any code logic that does not meet a hard criterion below.
+- **cheap** -- mechanical work ONLY: rename, move, config key, boilerplate, doc-only
+  changes. Never use cheap for a bead that writes or changes code logic.
+- **premium** -- ONLY when the bead meets at least one hard criterion H1-H6 below, each
+  observable from the bead text:
+  - **H1 Contract change**: alters a contract other code or other systems depend on --
+    for example a persisted format or schema, a migration, a wire or API protocol, a
+    public CLI/tool schema. Includes keeping a published spec in step with the change.
+  - **H2 Concurrency or durability semantics**: ordering, locking, retries/idempotency,
+    crash recovery, or partial-failure handling.
+  - **H3 Security or trust boundary**: authn/authz, credential handling, sandboxing,
+    input reaching a shell, path or query.
+  - **H4 Open design**: an acceptance criterion needs a design choice the bead does not
+    settle -- two or more viable approaches with different external behaviour.
+  - **H5 Cross-cutting invariant**: the change must keep an invariant enforced in more
+    than one module, and the bead names that invariant.
+  - **H6 Diagnosis-first**: a bug whose root cause is not yet known (the bead says so).
 
-Symbols with CONFIRMED KB coverage -> lean toward standard or cheap (well-understood).
-Symbols with no KB entries -> lean toward premium (unknown territory).
+**tierReason** (required for every premium task): record which hard criteria the bead
+meets in the SAME `--metadata` channel as `model`, key `tierReason`, one or more of
+`H1`-`H6`:
+```bash
+bd create ... --metadata '{"model": "premium", "tierReason": "H2"}'
+```
+Also state in the task description which part of the work meets that criterion, so a
+reviewer can match the reason against the bead text. `tierReason` is optional on cheap
+and standard tasks. A premium task without a valid `tierReason` is a plan-review finding.
+
+**These NEVER force premium by themselves:**
+- File count or size `L`. Size drives lane sizing (below), not the tier.
+- Low or absent KB coverage. It means "read more source first" -- say so in the task
+  description instead of raising the tier.
+- `[test]` beads. A test bead is standard, unless it builds new test infrastructure that
+  itself meets H1, H2 or H3. A `[test]` bead riding its impl lane takes the impl tier
+  (see "Single-tier lanes" below).
+
+**Split first.** When a bead meets a hard criterion, first try to separate its hard core
+(the H1-H6 part) from the surrounding standard or cheap work, and keep only the core on
+premium. Splitting is not forced: a bead whose hard core cannot be separated keeps
+premium and counts toward the premium cap.
+
+**Premium cap.** When your dispatch prompt carries a `PREMIUM CAP` line with a
+percentage `pct`, keep the planner-declared premium task beads at or under
+`ceil(pct x task beads / 100)`, counted by bead and cumulative across re-plans in the
+same sprint (premium beads you or an earlier planning pass already created count).
+Beads the engine escalated (metadata `tierEscalatedFrom` set) and `[test]` beads riding
+an impl lane do not count, in the numerator or the denominator. Over the cap, split
+further or move the beads whose hard-criterion case is weakest to standard. No cap line
+in the prompt = no cap.
 
 **Quantify with `kb_stats`** (see Step 0.3): if you called `kb_stats` for the task's
-symbols, use `coverage.fraction` to sharpen the tier choice:
-
-- coverage >= 0.8 -> lean cheap/standard for tasks on those symbols.
-- coverage < 0.3 -> lean premium and front-load the risk (Task 1) -- unexplored territory.
-- between 0.3 and 0.8 -> judgment call; weigh the qualitative KB signals above
-  (non-obvious constraints, CONFIRMED vs. no entries) alongside the number.
-
-When `kb_stats` backed a tier choice, cite the coverage number in the task's
-description (e.g. "coverage 0.85 across {symbols} -> standard"). If `kb_stats` was
-unavailable, the qualitative reasoning above suffices -- no citation required.
+symbols, `coverage.fraction >= 0.8` may lean a task on those symbols toward
+cheap/standard. Coverage never raises the tier: below that threshold, pick the tier from
+the rules above alone. When `kb_stats` backed a tier choice, cite the coverage number in
+the task's description (e.g. "coverage 0.85 across {symbols} -> standard"). If
+`kb_stats` was unavailable, no citation is required.
 
 Pick from the models actually available in the current environment. A user override
 always wins.
@@ -264,6 +314,14 @@ separate), so normally that costs nothing extra -- keep genuinely independent wo
 separate lanes rather than merging it for size alone; merging removes parallelism without
 reliably saving a review.
 
+**Single-tier lanes.** One lane = one doer session, run at one model tier, on both the
+packed and the non-packed dispatch paths. Every work bead in a lane must carry the SAME
+`model` tier. A `[test]` bead rides its impl bead's session at the impl's tier: give it
+the impl lane's tier, and it is exempt from the premium cap and from this single-tier
+check (it needs no `tierReason`). When cohesive work needs different tiers, split it so
+each lane is single-tier (the split-first rule in "Model tier" above) or raise/lower the
+odd bead only when its own bead text justifies that tier -- never mix tiers in a lane.
+
 Put tasks in the SAME lane when they are highly coupled or cohesive -- any of:
 - they touch the same files, module, or component, or the same test suite;
 - one exists to enable the next (add a helper, then use it; change a schema, then its
@@ -288,7 +346,8 @@ Put tasks in DIFFERENT lanes only when at least one of these holds:
   not left blank, and state the dependency explicitly in its description so the criteria
   are never read as unconditional; the earlier task ends its lane, and the later one
   starts a new lane in the next round;
-- the lane would exceed the sizing limits below.
+- the lane would exceed the sizing limits below;
+- the tasks need different model tiers (see "Single-tier lanes" above).
 
 **Sizing a lane.** Size buckets are the same ones the plan reviewer classifies with:
 S = 1 file/narrow, M = 2-3 files/moderate logic, L = 3+ files or non-trivial design (see
@@ -298,8 +357,10 @@ these LANE SIZING PARAMETERS (fixed defaults for now -- no per-dispatch override
 exists yet):
 - `laneMaxTasks` (default `6`): hard cap on tasks per lane -- a reviewer must be able to
   verify the whole lane in one pass.
-- `laneMaxEffort` (default `200`): `effort = (sum of size points S=1/M=2/L=4) x (max model
-  weight in the lane, cheap=1/standard=10/premium=20)`; caps one doer session's load.
+- `laneMaxEffort` (default `200`): `effort = (sum of size points S=1/M=2/L=4) x (the
+  lane's model weight, cheap=1/standard=10/premium=20)`; caps one doer session's load.
+  Lanes are single-tier (below), so there is exactly one weight per lane -- never take a
+  maximum over mixed tiers.
 - `laneTargetEffort` (default `60`): a lane BELOW this that has a cohesive neighbour (per
   the SAME-lane rules above) should be MERGED with it, not left as its own review round.
   State in the lane's first task description why a lane was left below target if it was.
@@ -325,6 +386,13 @@ Wire dependencies (semantics: `bd dep add A B` means A is blocked by B -- B must
   is done, add `bd dep add <B-task> <A-last-task>` for EVERY task in lane B against the
   LAST (highest `streakOrder`) task of lane A. Wiring only B's first task would let B's
   later tasks become ready out of order.
+- A dependency on work another feature produces targets the PRODUCING TASK (the last task
+  of the lane that produces it), never the feature itself: never add a `blocks` edge onto
+  a sibling feature or onto any other bead that has children. Why: a feature whose
+  children are all closed is not closed by a doer -- it waits for the Integration Test
+  phase to verify and close it. A `blocks` edge onto that feature therefore starves every
+  dependent (and every child of a dependent) whenever that phase cannot run, for example
+  after a failed deploy, even though the work they need is already done.
 - Sibling tasks in different lanes with no enabling relationship get no edge.
 
 ## Step 4 -- Validate your own DAG
@@ -364,6 +432,16 @@ Also check each open feature:
 - Every task description has clear acceptance criteria?
 - Every task carries `model`, `size`, `streak`, `streakOrder` metadata via `--metadata`
   (see Step 3) -- never `--notes`?
+- Is standard the tier of every task that meets no hard criterion H1-H6, and cheap used
+  only for mechanical work (never code logic)?
+- Does every premium task carry a `tierReason` (one or more of H1-H6) that its own text
+  supports, with any separable non-hard work split out into standard/cheap tasks?
+- Was no task made premium only for its file count, size `L`, low KB coverage, or being a
+  `[test]` task?
+- Is every lane single-tier (all work beads share one `model`; riding `[test]` beads take
+  the impl tier)?
+- When the dispatch prompt gave a premium cap, are the counted premium task beads at or
+  under `ceil(pct x task beads / 100)`, including premium beads from earlier passes?
 - Does every lane hold ONE reviewable increment (impl + its test, all mutex members, all
   enabling chains), within `laneMaxTasks` / `laneMaxEffort`?
 - Is every lane below `laneTargetEffort` either justified in its first task description or
@@ -371,6 +449,9 @@ Also check each open feature:
 - Is there NO `blocks` edge between two tasks that share a `streak` id?
 - Does every cross-lane `blocks` edge target the upstream lane's LAST task and originate
   from EVERY task of the downstream lane?
+- Is there NO `blocks` edge whose target (the depends-on side) is a feature or any other
+  bead with children? A cross-feature dependency must target the producing task instead
+  -- retarget any such edge (`bd dep remove`, then `bd dep add` onto the producing task).
 - Expected review rounds (= longest chain of lanes joined by `blocks` edges): state the
   number in your `notes`. If it exceeds 3 for one sprint goal, re-examine whether the
   chain can be shortened by merging lanes.
@@ -470,6 +551,8 @@ the only way to ask an operator; the orchestrator files its own separate decisio
   apart
 - Never place a `blocks` edge between two tasks that share a `streak` id -- it silently
   defeats the lane by pushing the later task into a separate review round
+- Default tier is standard; premium only with a `tierReason` naming H1-H6, cheap only for
+  mechanical work; every lane single-tier; stay within the premium cap when one is given
 
 ## Shell command discipline
 

@@ -241,6 +241,133 @@ export function streakRequiredTier(streak) {
     return best;
 }
 
+// ---------------------------------------------------------------------------
+// Single-tier lanes (tier policies balanced/economy; tier-policy.mjs)
+// ---------------------------------------------------------------------------
+//
+// Under a tier policy other than quality, a doer dispatch runs at ONE tier:
+// the tier of its lane's implementation beads. A lane whose ready beads
+// declare different tiers is a planning slip; the engine splits it into
+// consecutive single-tier segments, run strictly in lane order across rounds
+// (splitLanesByTier), instead of rounding the whole lane up to its most
+// expensive bead (quality keeps that older behaviour, see develop.mjs).
+//
+// ANCHORS AND RIDERS. A lane's anchors are its tiered beads whose title does
+// not start with "[test]" (the implementation beads). Every other bead -- a
+// [test] bead, or a bead with no tier at all -- RIDES: it joins the sub-lane
+// of the nearest anchor that precedes it in lane order (or, when none
+// precedes it, the first anchor of the lane), so it never raises, lowers or
+// splits the lane's tier. A lane with no implementation bead anchors on its
+// tiered [test] beads instead; a lane with no tiered bead at all is left as is.
+
+const TEST_TITLE_RE = /^\s*\[test\]/i;
+
+/** Whether a bead is a [test] bead (its title starts with "[test]"). */
+export function isTestBead(bead) {
+    return TEST_TITLE_RE.test(String((bead && bead.title) || ''));
+}
+
+/** Default tierOf: the bead's declared metadata.model, normalized; null when it names no tier. */
+function declaredTier(bead) {
+    const tier = normalizeTierToken(bead && bead.metadata && bead.metadata.model);
+    return typeof tier === 'string' && MODEL_WEIGHT[tier] ? tier : null;
+}
+
+function laneAnchors(streak, tierOf, pinned) {
+    const tiered = (streak || []).filter((b) => tierOf(b));
+    const impl = tiered.filter((b) => !isTestBead(b) || (pinned && pinned(b)));
+    return impl.length > 0 ? impl : tiered;
+}
+
+/**
+ * The single tier a lane dispatches at under a single-tier policy: the tier
+ * of its anchors (see above). After splitLanesByTier every anchor of a lane
+ * shares one tier; null when no bead of the lane names a tier.
+ * @param {Array<object>} streak
+ * @param {(bead: object) => string|null} [tierOf]
+ * @param {((bead: object) => boolean)|null} [pinned] beads that anchor even
+ *   when they are [test] beads (an escalated bead runs at its own tier)
+ * @returns {'cheap'|'standard'|'premium'|null}
+ */
+export function laneTier(streak, tierOf = declaredTier, pinned = null) {
+    const anchors = laneAnchors(streak, tierOf, pinned);
+    return anchors.length > 0 ? tierOf(anchors[0]) : null;
+}
+
+/**
+ * Splits every lane whose anchors declare different tiers into CONSECUTIVE
+ * single-tier segments, cut only at tier boundaries in lane (streakOrder)
+ * order -- never regrouped by tier. Riders join the segment of the anchor
+ * preceding them (see above). Lane [A std, B prem, C std, T test] becomes
+ * the segments [A] [B] [C, T].
+ *
+ * The segments of one lane must run strictly in order, as one doer session
+ * would run the lane: a later segment never runs before or beside an earlier
+ * one, and never after an earlier one left a bead open. So only the HEAD
+ * segment of a split lane runs this round; the rest of the lane is held
+ * (`held`) and re-forms from the still-ready beads next round, where its next
+ * segment is the head. A split can never cross a `blocks` edge: every bead of
+ * a ready lane is ready, so none blocks another, and the segments run in lane
+ * order anyway -- which is why no lane is ever rounded up to one tier.
+ *
+ * Pure: no I/O.
+ * @param {Array<Array<object>>} streaks ordered lanes (arrays of bead objects)
+ * @param {{ tierOf?: (bead: object) => string|null, pinned?: (bead: object) => boolean }} [opts]
+ *   pinned: beads that anchor even when they are [test] beads
+ * @returns {{ streaks: Array<Array<object>>, held: Array<Array<object>>,
+ *   splits: Array<{ lane: string, segments: Array<{ tier: string, ids: string[] }>, heldIds: string[] }> }}
+ *   streaks: what runs this round (unsplit lanes, and each split lane's head
+ *   segment, in the input lane order); held: the held tail of each split lane
+ */
+export function splitLanesByTier(streaks, opts = {}) {
+    const tierOf = typeof opts.tierOf === 'function' ? opts.tierOf : declaredTier;
+    const pinned = typeof opts.pinned === 'function' ? opts.pinned : null;
+    const out = [];
+    const held = [];
+    const splits = [];
+    for (const streak of Array.isArray(streaks) ? streaks : []) {
+        const anchors = new Set(laneAnchors(streak, tierOf, pinned));
+        const anchorTiers = new Set([...anchors].map((b) => tierOf(b)));
+        if (anchorTiers.size <= 1) {
+            out.push(streak);
+            continue;
+        }
+        const firstAnchorTier = tierOf(streak.find((b) => anchors.has(b)));
+        const segments = [];
+        let current = null;
+        for (const bead of streak) {
+            if (anchors.has(bead)) current = tierOf(bead);
+            const tier = current || firstAnchorTier;
+            const last = segments[segments.length - 1];
+            if (last && last.tier === tier) last.beads.push(bead);
+            else segments.push({ tier, beads: [bead] });
+        }
+        out.push(segments[0].beads);
+        const tail = segments.slice(1).flatMap((seg) => seg.beads);
+        held.push(tail);
+        const first = streak[0];
+        const laneId = first && first.metadata && typeof first.metadata.streak === 'string' && first.metadata.streak.trim()
+            ? first.metadata.streak
+            : `[${streak.map((b) => b.id).join(', ')}]`;
+        splits.push({
+            lane: laneId,
+            segments: segments.map((seg) => ({ tier: seg.tier, ids: seg.beads.map((b) => String(b.id)) })),
+            heldIds: tail.map((b) => String(b.id)),
+        });
+    }
+    return { streaks: out, held, splits };
+}
+
+/** The one log line for a lane splitLanesByTier split (event tier.split). */
+export function formatLaneSplitLog(split) {
+    const [head, ...rest] = split.segments;
+    return `[tier-lanes] tier.split: lane '${split.lane}' mixes tiers -- split in lane order into single-tier segments ` +
+        split.segments.map((t) => `${t.tier} [${t.ids.join(', ')}]`).join(' -> ') +
+        `; this round runs only the first segment, ${head.tier} [${head.ids.join(', ')}]` +
+        (rest.length > 0 ? `, and holds [${split.heldIds.join(', ')}] for a later round so the lane keeps its order` : '') +
+        ' (the plan should have been single-tier per lane).';
+}
+
 /**
  * A streak's priority: the MINIMUM (i.e. most urgent) numeric priority among
  * its member beads (bd's `priority` field, where 0 = P0). Beads without a
@@ -404,7 +531,8 @@ export function hasContextHeadroomForResume(usage, opts = {}) {
  *
  * @param {Array<Array<object>>} streaks - arrays of ORIGINAL bead objects
  * @param {number} doerCount
- * @param {{ effortBudget?: number, tierHomogeneous?: boolean }} [opts]
+ * @param {{ effortBudget?: number, tierHomogeneous?: boolean,
+ *   streakTier?: (streak: Array<object>) => string|null }} [opts]
  * @returns {{
  *   worklists: Array<Array<Array<object>>>,  // worklists[doerIndex] = ordered streak list
  *   overflow: Array<Array<object>>,          // streaks queued to the next round
@@ -424,13 +552,16 @@ export function assignDoerWorklists(streaks, doerCount, opts = {}) {
         ? opts.effortBudget
         : DEFAULT_EFFORT_THRESHOLD;
     const tierHomogeneous = opts.tierHomogeneous === true;
+    // The tier a streak is grouped under: its REQUIRED (max) tier by default;
+    // a single-tier policy passes the lane's own tier (laneTier) instead.
+    const streakTierOf = typeof opts.streakTier === 'function' ? opts.streakTier : streakRequiredTier;
 
     // --- Descriptors -------------------------------------------------------
     const descs = streaks.map((streak, index) => ({
         streak,
         index,
         priority: streakMinPriority(streak),
-        tierKey: streakRequiredTier(streak) || UNSPECIFIED_TIER_KEY,
+        tierKey: streakTierOf(streak) || UNSPECIFIED_TIER_KEY,
         effort: streakEffortPoints(streak),
         beadIds: new Set(streak.map((b) => String(b && b.id))),
         depIndexes: new Set(),

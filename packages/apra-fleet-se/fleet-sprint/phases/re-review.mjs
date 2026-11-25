@@ -168,6 +168,9 @@ export async function runReReviewPhase({
     // any bead in it.
     const reReviewScopeIds = [...targetIssues, ...(Array.isArray(reReviewScope) ? reReviewScope.map((b) => b && b.id).filter(Boolean) : [])];
     lastReviewVerdict = reReviewVerdict.verdict;
+    // The last Review/Re-Review verdict and notes of the run (kept across
+    // cycles, unlike lastReviewVerdict): a stall abort names it.
+    if (sprintState) sprintState.lastReview = { verdict: reReviewVerdict.verdict, notes: typeof reReviewVerdict.notes === 'string' ? reReviewVerdict.notes : '', site: 'Re-Review', cycle };
     lastBuildFailing = nextLastBuildFailing(lastBuildFailing, reReviewVerdict);
     reviewedThisCycle = true;
     belowGoalOnlySkippedIds = null;

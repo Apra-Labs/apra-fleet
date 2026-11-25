@@ -158,13 +158,22 @@ export class SprintPlanRejectedError extends WorkflowError {
 export class StalledSprintError extends WorkflowError {
     /**
      * @param {string} message
-     * @param {{ staleCycles?: number, closedCountHistory?: number[], highWaterClosedCount?: number, thrashIds?: string[], blockerIds?: string[], blockerReasons?: Record<string, string>, setAside?: object[], waited?: object[], cycle?: number, details?: object, cause?: unknown }} [opts]
+     * @param {{ staleCycles?: number, closedCountHistory?: number[], highWaterClosedCount?: number, thrashIds?: string[], blockerIds?: string[], blockerReasons?: Record<string, string>, setAside?: object[], waited?: object[], cycle?: number,
+     *   closedThisRun?: Array<{ id: string, title?: string }>, openAtGoalIds?: string[], deferredAtGoal?: string[], reopenedThenClosed?: string[],
+     *   lastReview?: { verdict: string, notes?: string, site?: string, cycle?: unknown }|null, details?: object, cause?: unknown }} [opts]
+     *   closedThisRun / openAtGoalIds / deferredAtGoal / reopenedThenClosed /
+     *   lastReview: what the [ABORTED] PR body reports about the run's work;
+     *   kept in details only when given.
      */
     constructor(message, opts = {}) {
         const { staleCycles = null, closedCountHistory = [], highWaterClosedCount = null, thrashIds = [], blockerIds = [], blockerReasons = {}, setAside = [], waited = [], cycle, details, cause } = opts;
+        const work = {};
+        for (const k of ['closedThisRun', 'openAtGoalIds', 'deferredAtGoal', 'reopenedThenClosed', 'lastReview']) {
+            if (opts[k] !== undefined) work[k] = opts[k];
+        }
         super(message, {
             code: 'SPRINT_STALLED',
-            details: { staleCycles, closedCountHistory, highWaterClosedCount, thrashIds, blockerIds, blockerReasons, setAside, cycle, ...details },
+            details: { staleCycles, closedCountHistory, highWaterClosedCount, thrashIds, blockerIds, blockerReasons, setAside, cycle, ...work, ...details },
             cause,
         });
         this.staleCycles = staleCycles;
@@ -365,6 +374,45 @@ export class DoltSyncError extends WorkflowError {
         this.member = member;
         this.doltOutput = doltOutput;
     }
+}
+
+/**
+ * The failure class a Dolt sync that ended on a VCS CREDENTIAL failure is
+ * logged under. Infrastructure, not a review outcome: the remote refused (or
+ * could not ask for) the member's git credential, so no read of the shared
+ * beads state happened at all.
+ */
+export const DOLT_CREDENTIAL_FAILURE_CLASS = 'dolt-sync-credentials';
+
+/**
+ * The remedy every credential-class Dolt sync failure names. Works for a
+ * local member (which has no fleet-provisioned credential to re-mint) and a
+ * remote member alike: bd's git runs with terminal prompts and credential
+ * manager dialogs disabled, so the credential must answer without prompting.
+ */
+export const DOLT_CREDENTIAL_REMEDY =
+    'Remedy: on that member, configure a git credential for the beads Dolt remote that answers without prompting '
+    + '(a stored credential or credential helper -- bd runs git with terminal prompts and credential manager dialogs disabled), '
+    + 'or, for a remote member, re-provision its VCS auth with provision_vcs_auth; then re-run.';
+
+/**
+ * True when `err` (or an error on its `cause` chain) is a DoltSyncError the
+ * sync layer classified as a VCS credential failure (`details.kind === 'auth'`
+ * -- including a non-interactive prompt refusal such as "terminal prompts
+ * disabled" or "could not read Username"). A divergence is never one: it is a
+ * different class (DoltDivergedError), and a non-credential sync failure
+ * carries no 'auth' kind.
+ *
+ * @param {unknown} err
+ * @returns {boolean}
+ */
+export function isDoltCredentialFailure(err) {
+    const seen = new Set();
+    for (let e = err; e && typeof e === 'object' && !seen.has(e); e = e.cause) {
+        seen.add(e);
+        if (e instanceof DoltSyncError && e.details && e.details.kind === 'auth') return true;
+    }
+    return false;
 }
 
 /** Stable error code of DoltWindowsSpawnLimitError. */

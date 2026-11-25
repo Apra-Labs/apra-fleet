@@ -193,10 +193,15 @@ function buildGitHubListCommentsCommand(params) {
         logSafeCommand: buildCurl(REDACTED),
         interpret: { successStatusRange: [200, 299] },
         nextPage: (respBody) => (Array.isArray(respBody) && respBody.length >= GITHUB_COMMENTS_PER_PAGE ? { page: page + 1 } : null),
-        /** 2xx body ([...]) -> [{ id, body, ref: { id } }]. */
+        /** 2xx body ([...]) -> [{ id, body, ref: { id }, webUrl? }] (webUrl: the comment's html_url). */
         mapResponse: (respBody) => (Array.isArray(respBody) ? respBody : [])
             .filter((c) => c && (typeof c.id === 'number' || (typeof c.id === 'string' && /^\d+$/.test(c.id))))
-            .map((c) => ({ id: String(c.id), body: typeof c.body === 'string' ? c.body : '', ref: { id: c.id } })),
+            .map((c) => ({
+                id: String(c.id),
+                body: typeof c.body === 'string' ? c.body : '',
+                ref: { id: c.id },
+                ...(typeof c.html_url === 'string' ? { webUrl: c.html_url } : {}),
+            })),
     };
 }
 
@@ -735,6 +740,17 @@ export const GitHubVCS = Object.freeze({
         'update-comment': buildGitHubUpdateCommentCommand,
         'delete-comment': buildGitHubDeleteCommentCommand,
     }),
+    // An issue comment's create/update/list response carries its browser
+    // link as html_url
+    // (https://docs.github.com/en/rest/issues/comments#create-an-issue-comment);
+    // without it the PR page's #issuecomment-<id> anchor is the same link.
+    commentWebUrl: ({ response, ref, prUrl }) => {
+        const r = response && typeof response === 'object' ? response : {};
+        if (typeof r.html_url === 'string') return r.html_url;
+        if (typeof r.webUrl === 'string') return r.webUrl;
+        const id = String((ref && ref.id) ?? r.id ?? '');
+        return prUrl && /^\d+$/.test(id) ? `${prUrl}#issuecomment-${id}` : null;
+    },
     // Text limits: GitHub rejects a PR body or comment over 65536 characters
     // (422 "body is too long"); 60000 keeps a margin under it.
     descriptionMaxLength: 60000,
