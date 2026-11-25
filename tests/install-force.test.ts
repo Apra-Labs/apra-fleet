@@ -5,7 +5,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
-import { execSync } from 'node:child_process';
+import { execSync, execFileSync } from 'node:child_process';
 import net from 'node:net';
 import { runInstall, isApraFleetRunning, killApraFleet, _setSeaOverride, _setManifestOverride, _setInstallForceTimingOverride, _setServiceHealthWaitOverride, ACCESS_RESTART_NOTE } from '../src/cli/install.js';
 import { SERVICE_NOTICE_PATH, showPendingServiceNotice } from '../src/services/service-notice.js';
@@ -22,6 +22,21 @@ vi.mock('node:os', () => ({
 }));
 vi.mock('node:fs');
 vi.mock('node:child_process');
+// node:fs is mocked and SystemRoot is absent off Windows, so pin the resolver to
+// a fixed System32 (only files there exist); resolution logic stays real.
+vi.mock('../src/os/windows-executable.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/os/windows-executable.js')>();
+  return {
+    ...actual,
+    windowsExecutable: (name: string) => actual.resolveWindowsExecutable(name, {
+      platform: process.platform,
+      pathValue: 'C:\\Windows\\System32',
+      pathext: '.EXE',
+      isFile: (p: string) => /^C:\\Windows\\System32\\/i.test(p),
+      systemRoot: 'C:\\Windows',
+    }),
+  };
+});
 vi.mock('../src/services/service-manager/index.js', () => ({
   getServiceManager: vi.fn(),
   gracefulStopByServerJson: vi.fn().mockResolvedValue(true),
@@ -42,7 +57,28 @@ let killHandler: (pid: number, sig: string) => void = () => {};
 let signalled: string[] = [];
 /** Extra pids isPidAlive() reports alive (e.g. a server.json pid). */
 let alivePids = new Set<number>();
+/**
+ * install-guard.ts runs tasklist and powershell on win32 through
+ * execFileSync with an ABSOLUTE program path (windowsExecutable), never a
+ * cmd.exe string. The fakes in this file answer execSync command strings, so
+ * forward those two programs to the execSync fake as "<name> <args...>"
+ * (e.g. "tasklist /FI ..."), asserting the program really is absolute.
+ * Every other execFileSync keeps the automock's undefined result.
+ */
+const BRIDGED_WINDOWS_TOOLS = new Set(['tasklist', 'powershell']);
+function bridgeWindowsToolsToExecSync(): void {
+  vi.mocked(execFileSync).mockImplementation(((file: string, args?: readonly string[], opts?: any) => {
+    const name = String(file).split(/[\\/]/).pop()!.replace(/\.exe$/i, '').toLowerCase();
+    if (!BRIDGED_WINDOWS_TOOLS.has(name)) return undefined as any;
+    if (!/^[A-Za-z]:[\\/]/.test(String(file))) {
+      throw new Error(`${name} must be spawned by absolute path, got: ${file}`);
+    }
+    return execSync([name, ...(args ?? [])].join(' '), opts);
+  }) as any);
+}
+
 beforeEach(() => {
+  bridgeWindowsToolsToExecSync();
   signalled = [];
   alivePids = new Set<number>();
   killHandler = () => {};
