@@ -37,7 +37,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { stripComments } from './lib/strip-comments.mjs';
+import { stripComments, countLines } from './lib/strip-comments.mjs';
 import { parsePackJson } from './check-pack-size.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -74,10 +74,6 @@ function dropPackLifecycleScripts(pkgJsonPath) {
     if (Object.keys(pkg.scripts).length === 0) delete pkg.scripts;
   }
   fs.writeFileSync(pkgJsonPath, JSON.stringify(pkg, null, 2) + '\n');
-}
-
-function lineCount(s) {
-  return s.split(/\r\n|\r|\n|2028|2029/).length;
 }
 
 function npm(args, cwd) {
@@ -140,8 +136,8 @@ export function packStripped({
       if (shouldStrip(rel, exemptPrefixes)) {
         const text = fs.readFileSync(src, 'utf-8');
         const out = stripComments(text, { fileName: rel });
-        if (lineCount(out) !== lineCount(text)) {
-          throw new Error(`stripping changed the line count of ${rel} (${lineCount(text)} -> ${lineCount(out)})`);
+        if (countLines(out) !== countLines(text)) {
+          throw new Error(`stripping changed the line count of ${rel} (${countLines(text)} -> ${countLines(out)})`);
         }
         fs.writeFileSync(dest, out);
         strippedCount++;
