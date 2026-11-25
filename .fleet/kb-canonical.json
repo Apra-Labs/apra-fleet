@@ -4099,6 +4099,32 @@
       "updated_at": "2026-10-06T17:05:07.548Z"
     },
     {
+      "id": "f33afbfc-238f-4f6d-bf1c-80e8a4b8bd9e",
+      "type": "knowledge",
+      "title": "Operator git-credential helper mints App tokens from files, no server needed",
+      "summary": "src/cli/operator-auth.ts provides apra-fleet git-credential and operator-auth github/token. It mints GitHub App installation tokens from FLEET_DIR/git-config.json plus the stored PEM, with no running fleet server, and caches them owner-only until 5 minutes before expiry.",
+      "symbols": [
+        "runGitCredential",
+        "runOperatorAuth",
+        "getOperatorToken",
+        "operatorHelperValue",
+        "powershellLegacyHelperUnset",
+        "posixLegacyHelperUnset"
+      ],
+      "source_files": [
+        "src/cli/operator-auth.ts",
+        "src/os/windows.ts",
+        "src/os/linux.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-25T05:15:00.958Z",
+      "source_file_hashes": {
+        "src/cli/operator-auth.ts": "03c4210ea2178b8bab0d5e4bcf297dbd33e5fd6d",
+        "src/os/linux.ts": "1ee4cec7322a0fc89b5c1e8be9e9dfe20aa31178",
+        "src/os/windows.ts": "12bc6ebbbe03b86a1816d47968e90863162b970b"
+      }
+    },
+    {
       "id": "f3a5a58e-1d41-4ddd-8705-2b4e1985deab",
       "type": "learning",
       "title": "Mock-timer callbacks lose the workflow run's async context, so ctx.stopSignal() and command()'s implicit signal are undefined there",
