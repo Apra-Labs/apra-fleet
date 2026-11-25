@@ -393,23 +393,22 @@ describe('usage-limit controller: operator resume wakes the wait', () => {
         assert.equal(rec.resumes.length, 0);
     });
 
-    test('a stop outcome on the handle does not wake the wait as a resume (no probe, no wake log)', async () => {
+    test('a stop outcome on the handle ends the wait with CancelledError (no probe, no resume, no wake-as-resume log)', async () => {
         const { deps, rec } = recordingDeps({ agentResponses: ['ok'] });
         const { requestPause, handles } = handleRequestPause(rec);
         deps.requestPause = requestPause;
-        let releaseSleep;
-        deps.sleep = () => new Promise((r) => { releaseSleep = r; });
+        deps.sleep = () => new Promise(() => {});
         const controller = createUsageLimitPauseController(deps);
 
         const run = controller({ member: 'bob', roleLabel: 'Reviewer', signal });
-        await until(() => handles.length === 1 && releaseSleep, 'the pause');
+        const settled = run.then(() => null, (e) => e);
+        await until(() => handles.length === 1, 'the pause');
         handles[0].end('stop', 'operator stop');
-        await tick(); await tick();
+        const err = await settled;
+        assert.ok(err instanceof CancelledError, String(err));
         assert.equal(rec.probes.length, 0, 'a stop is not an operator resume');
-        releaseSleep();
-        await run;
+        assert.equal(rec.resumes.length, 0);
         assert.ok(!rec.logs.some((m) => m.includes('woken by operator resume')), JSON.stringify(rec.logs));
-        assert.equal(rec.resumes.length, 1, 'the timer path still calls its own requestResume');
     });
 
     test('when requestPause returns undefined the controller behaves as before: timed wait, own requestResume, then probe', async () => {
