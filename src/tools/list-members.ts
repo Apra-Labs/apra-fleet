@@ -8,6 +8,7 @@ import { getProvider } from '../providers/index.js';
 import { getAgentOS, getAgentShell, groupByCategory, formatAgentHost } from '../utils/agent-helpers.js';
 import type { Agent } from '../types.js';
 import { syncCloudCache } from '../services/cloud-sync.js';
+import { probeLlmAuthStatus } from '../services/llm-auth-label.js';
 
 export const listMembersSchema = z.object({
   format: z.enum(['compact', 'json']).default('compact').describe('Output format: "compact" (default, few lines) or "json" (structured data for detailed rendering)'),
@@ -34,40 +35,7 @@ async function getAuthStatus(agent: Agent): Promise<string> {
     return 'offline';
   }
 
-  let oauthFilesExist = false;
-  const oauthFiles = provider.oauthCredentialFiles?.();
-  if (oauthFiles && oauthFiles.length > 0) {
-    try {
-      const credResult = await strategy.execCommand(cmds.credentialFileCheck(oauthFiles[0].remotePath), 5000); // 5s timeout
-      if (credResult.stdout.trim() === 'found') {
-        oauthFilesExist = true;
-      }
-    } catch { /* ignore */ }
-  }
-
-  let apiKeyExists = false;
-  // Every credential kind counts (e.g. CLAUDE_CODE_OAUTH_TOKEN as well as ANTHROPIC_API_KEY).
-  const authVars = provider.authEnvVarNames?.() ?? (provider.authEnvVar ? [provider.authEnvVar] : []);
-  for (const envVar of authVars) {
-    try {
-      const apiKeyResult = await strategy.execCommand(cmds.apiKeyCheck(envVar), 5000);
-      if (apiKeyResult.stdout.trim().length > 5) {
-        apiKeyExists = true;
-        break;
-      }
-    } catch { /* ignore */ }
-  }
-
-  if (apiKeyExists && oauthFilesExist) {
-    return "api-key (warn: oauth)";
-  }
-  if (apiKeyExists) {
-    return "api-key";
-  }
-  if (oauthFilesExist) {
-    return "oauth";
-  }
-  return "none";
+  return (await probeLlmAuthStatus(provider, cmds, (c, t) => strategy.execCommand(c, t), 5000)).label;
 }
 
 export async function listMembers(input?: ListMembersInput): Promise<string> {

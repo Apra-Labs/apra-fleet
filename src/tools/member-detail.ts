@@ -6,6 +6,7 @@ import { getProvider } from '../providers/index.js';
 import { getAgentOS, getAgentShell, getStoredPid } from '../utils/agent-helpers.js';
 import { inFlightAgents } from '../services/in-flight-agents.js';
 import { parseFleetProcessCheck } from '../services/session-status.js';
+import { probeLlmAuthStatus } from '../services/llm-auth-label.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { updateAgent } from '../services/registry.js';
 import type { Agent } from '../types.js';
@@ -185,47 +186,18 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
   try {
     const versionResult = await strategy.execCommand(cmds.agentVersion(provider), 10000);
     cli.version = versionResult.stdout.trim();
-    // Strip provider prefix: "Claude Code 2.1.92" → "2.1.92"
+    // Strip provider prefix: "Claude Code 2.1.92" -> "2.1.92"
     const vMatch = String(cli.version).match(/(\d+\.\d+\.\d+.*)$/);
     if (vMatch) cli.version = vMatch[1];
   } catch {
     cli.version = 'unknown';
   }
 
-  let oauthFilesExist = false;
-  const oauthFiles = provider.oauthCredentialFiles?.();
-  if (oauthFiles && oauthFiles.length > 0) {
-    try {
-      // Check for the first file, assuming if it's there, the others are too.
-      const credResult = await strategy.execCommand(cmds.credentialFileCheck(oauthFiles[0].remotePath), 10000);
-      if (credResult.stdout.trim() === 'found') {
-        oauthFilesExist = true;
-      }
-    } catch { /* ignore */ }
-  }
-
-  let apiKeyExists = false;
-  // Every credential kind counts (e.g. CLAUDE_CODE_OAUTH_TOKEN as well as ANTHROPIC_API_KEY).
-  const authVars = provider.authEnvVarNames?.() ?? (provider.authEnvVar ? [provider.authEnvVar] : []);
-  for (const envVar of authVars) {
-    try {
-      const apiKeyResult = await strategy.execCommand(cmds.apiKeyCheck(envVar), 10000);
-      if (apiKeyResult.stdout.trim().length > 5) {
-        apiKeyExists = true;
-        break;
-      }
-    } catch { /* ignore */ }
-  }
-
-  if (apiKeyExists && oauthFilesExist) {
-    cli.auth = 'api-key (WARNING: OAuth also present — API key takes precedence)';
-  } else if (apiKeyExists) {
-    cli.auth = 'api-key';
-  } else if (oauthFilesExist) {
-    cli.auth = 'oauth';
-  } else {
-    cli.auth = 'none';
-  }
+  // Same label list_members reports (see llm-auth-label.ts); with more than
+  // one credential source authNote names the one the CLI uses.
+  const authStatus = await probeLlmAuthStatus(provider, cmds, (c, t) => strategy.execCommand(c, t), 10000);
+  cli.auth = authStatus.label;
+  cli.authNote = authStatus.precedenceNote;
   result.llmProvider = agent.llmProvider ?? 'claude';
   if (agent.llmProvider === 'agy') {
     // The member's own agy project (--project <id>); null until provisioned.
@@ -340,7 +312,7 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
       branch = branchName;
       updateAgent(agent.id, { lastBranch: branch });
     }
-  } catch { /* not a git repo — ignore */ }
+  } catch { /* not a git repo -- ignore */ }
 
   if (branch) {
     result.branch = branch;
@@ -364,7 +336,7 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
 
   // Compact: pack key info into a few lines
   const connStatus = 'online';
-  const authStr = Array.isArray(cli.auth) ? (cli.auth as string[]).join(', ') : String(cli.auth);
+  const authStr = String(cli.auth) + (cli.authNote ? ` (${String(cli.authNote)})` : '');
   const sessId = agent.sessionId ? agent.sessionId.substring(0, 8) + '...' : 'none';
   const sessStatus = String(session.status ?? 'unknown')
     + (session.statusSource ? ` via ${session.statusSource}${session.busyPid != null ? ` pid=${session.busyPid}` : ''}` : '');

@@ -378,6 +378,16 @@ the unit tests -- calling with no arguments sends an empty object, not
 | `format` | `"compact" \| "json"?` | Output format. |
 | `tags` | `string[]?` | Filter members by tags (AND semantics). |
 
+Each member's `llm_auth` (compact: `llm-auth=`) is `N/A` for local and relay
+members, `offline` when the member cannot be reached, or the credential label
+`member_detail` reports as `llm_cli.auth` (below): `none`, or the sources
+present joined with `+` in this fixed order -- `api-key` (an API-key env var),
+`oauth-token` (an OAuth/setup-token env var, e.g. Claude's
+`CLAUDE_CODE_OAUTH_TOKEN`), `oauth-login` (the provider's OAuth credentials
+file). Examples: `oauth-token`, `api-key+oauth-login`,
+`oauth-token+oauth-login`. A provider that does not classify its env vars
+(`authEnvVarKind`) reports each as `api-key`.
+
 #### `fleetSnapshot()`
 
 Calls `fleet_snapshot` -- a cheap read-only fleet view for status displays
@@ -432,6 +442,12 @@ session (`session.id`, the current session ID or `null`), work folder
 | `refresh` | `boolean?` | Re-probe the member's own apra-fleet MCP now and record the new `fleetMcp` status. Without it the recorded status is returned and nothing is probed. |
 
 `fleetMcp` (`{state, reason?, version?, checkedAt, detail?, unverified?, fleetInstalledAt?, installFailure?, beads?, port?, portSource?, replacedFullInstall?, manualInstall?, sameCoreFallback?}` or `null`) is the last recorded status of the member's own apra-fleet MCP server; `fleetInstalledAt` is the ISO 8601 time this fleet's own install last succeeded on the member (absent if it never did). `installFailure` (`{reason, detail?}`) is set when a requested upgrade failed before the member was touched and the older install stayed in use (also named in `detail`; `fleetMcpFix` then carries the upgrade fix even when `available`). `fleetMcpFix` (`string` or `null`) is a one-line operator fix, present when `fleetMcp` is `unavailable` or `unverified` and `null` when the member's KB/code tools are usable; the text output prints it as a `fleetMcp fix:` line. `beads` (`{state: "missing"|"broken"|"version-mismatch", detail, fix}`) is present only when the bd CLI is not usable on a remote member (neither on its PATH nor in `<home>/.apra-fleet/bin`), or runs but is off the pinned major.minor (`version-mismatch`, `E-BD-VERSION-MISMATCH`; re-probed on every refresh); it is independent of `state`, and the text output prints it as `bd=` and `bd fix:` lines. `port` is the remote member install's port from its member-install marker (`portSource` `"marker"`, or `"default"` when the install recorded none). `replacedFullInstall` (`{previousVersion, removed, backupPath}`) is set by the probe that replaced a full install with a member install (`fleet_install` `"replace-full"`): the replaced version, what was removed or moved, and the timestamped backup directory on the member. `manualInstall` (`string`) is set when a requested apra-fleet install/upgrade on the member did not happen (any install reason, e.g. `no-matching-release`): the OS-correct manual steps (anonymous release download URL, SHA-256 check against the release SHA256SUMS, member-mode install, then `update_member`). `sameCoreFallback` (`{tag, wantedBuild, why}`) is set when no release carries the exact orchestrator build and the member had no apra-fleet or an older core, so the signed stable release of the same core was installed instead (a NOTICE in the register/update result); never across cores.
+
+`llm_cli.auth` is the same credential label `list_members` reports as
+`llm_auth` (`none`, or `+`-joined `api-key` / `oauth-token` / `oauth-login`, in
+that order). `llm_cli.authNote` names the source the CLI uses when more than one
+is present (e.g. `api-key takes precedence over oauth-login`), `null` otherwise;
+the compact output prints it in parentheses after `auth=`.
 
 `session.status` is `busy`, `idle`, `idle (unrelated <cli> processes running)` or `unknown`
 (probe failed). `session.statusSource` names the signal that produced `busy` and is `null`

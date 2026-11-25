@@ -106,7 +106,8 @@ describe('memberDetail auth detection', () => {
     });
 
     const result = JSON.parse(await memberDetail({ member_id: member.id, format: 'json' }));
-    expect(result.llm_cli.auth).toBe('api-key (WARNING: OAuth also present — API key takes precedence)');
+    expect(result.llm_cli.auth).toBe('api-key+oauth-login');
+    expect(result.llm_cli.authNote).toBe('api-key takes precedence over oauth-login');
   });
 
   it('detects API key only', async () => {
@@ -142,7 +143,7 @@ describe('memberDetail auth detection', () => {
     });
 
     const result = JSON.parse(await memberDetail({ member_id: member.id, format: 'json' }));
-    expect(result.llm_cli.auth).toBe('api-key');
+    expect(result.llm_cli.auth).toBe('oauth-token');
   });
 
   it('strips provider prefix from version string', async () => {
