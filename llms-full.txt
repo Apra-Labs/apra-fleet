@@ -3593,9 +3593,9 @@ bead changed after that point still refuses. Removing a label, dependency or
 comment cannot be told apart from another clone's add, so it is not counted.
 
 Sprint launch also pulls every non-backlog member that already has a beads DB,
-through the same health gate and recovery. This pull is fatal: a clone that has
-diverged aborts the launch rather than self-healing at its first dispatch
-pull, so reconcile such a clone (see the conflict runbook) before launching.
+through the same health gate and recovery. A diverged clone is settled there
+exactly as at its first dispatch pull; only a divergence settle cannot resolve
+stops the launch.
 
 ---
 

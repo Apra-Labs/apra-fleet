@@ -2065,6 +2065,9 @@ async function runSprintCycle(context) {
         // Built per member OS/shell (member_detail via resolveMemberTarget,
         // which degrades to POSIX and logs when the member cannot be resolved).
         memberShell: memberSeCommands,
+        // The launch pull settles a diverged clone the same way the first
+        // pre-dispatch pull does (git-sync.mjs), so it never stops the launch.
+        settleFor: async (member) => buildSettleCallback(member, { command, log, shell: await resolveSettleShell({ args, member, log, sprintState }) }),
     });
 
     // Member permission-config preflight: every dispatch member's composed

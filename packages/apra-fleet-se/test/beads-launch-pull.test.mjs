@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 
 import { verifyBeadsIdentity } from '../fleet-sprint/beads-identity-check.mjs';
 import { BEADS_IDENTITY_PROBES } from '../fleet-sprint/beads-identity.mjs';
-import { BeadsFlattenRecoveryRefusedError } from '../fleet-sprint/errors.mjs';
+import { BeadsFlattenRecoveryRefusedError, DoltDivergedError } from '../fleet-sprint/errors.mjs';
 import { FLATTEN_RECOVERY_WARNING_PREFIX } from '../fleet-sprint/beads-flatten-recovery.mjs';
 import { getSeCommands } from '../fleet-sprint/se-os-commands.mjs';
 import { REMOTE, makeMember } from './helpers/flatten-member.mjs';
@@ -17,7 +17,8 @@ const posix = getSeCommands({ os: 'linux', shell: 'bash' });
 const T = '2026-11-20T10:00:00Z';
 const issue = (id, updatedAt = T) => ({ _type: 'issue', id, title: id, status: 'open', updated_at: updatedAt });
 const SAME = () => [issue('p-1'), issue('p-2')];
-const EXPECTED = { prefix: 'proj', syncRemote: REMOTE, repoRemote: REMOTE };
+const PULL_CONFLICT = 'CONFLICT (content): Merge conflict in table issues\nAutomatic merge failed; fix conflicts and then commit the result.';
+const EXPECTED ={ prefix: 'proj', syncRemote: REMOTE, repoRemote: REMOTE };
 
 // Identity probes answered statically (the database "exists" on both
 // members); every other command goes to the simulated member folder.
@@ -83,6 +84,26 @@ describe('launch pull of members that already have a beads database', () => {
         const pulled = [];
         await run(h, [], { launchPull: async (m, opts) => { pulled.push([m, typeof opts.flattenRecovery]); return { ok: true, member: m }; } });
         assert.deepEqual(pulled, [['m2', 'function']]);
+    });
+
+    test('a diverged member at launch is settled (as at its first dispatch pull) and the launch continues', async () => {
+        const member = makeMember({ local: SAME(), remote: SAME(), failOn: { 'bd dolt pull': PULL_CONFLICT } });
+        member.fsx.get('.beads').db.unrelated = false;
+        const h = harness(member);
+        const settled = [];
+        const logs = [];
+        const res = await run(h, logs, {
+            settleFor: async (m) => async (ctx) => { settled.push([m, ctx.operation]); return { ok: true, resolvedTables: ['issues'], warnings: [] }; },
+        });
+        assert.deepEqual(settled, [['m2', 'D-pull']]);
+        assert.ok(!res.setUp.includes('m2'), 'a settle is not a re-bootstrap');
+        assert.ok(!member.texts().includes('bd bootstrap --yes'));
+    });
+
+    test('a diverged member with no settle wired still stops the launch with DoltDivergedError', async () => {
+        const member = makeMember({ local: SAME(), remote: SAME(), failOn: { 'bd dolt pull': PULL_CONFLICT } });
+        member.fsx.get('.beads').db.unrelated = false;
+        await assert.rejects(() => run(harness(member), []), (err) => err instanceof DoltDivergedError);
     });
 
     test('without memberShell (no recovery primitives) no launch pull is issued', async () => {

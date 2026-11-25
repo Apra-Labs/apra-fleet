@@ -780,6 +780,7 @@ function assertMatches(member, expected, actual, cmp) {
  *   setupMembers?: string[], ensureVcsAuth?: (member: string) => Promise<void>,
  *   memberShell?: (member: string) => Promise<object>,
  *   onAuthFailure?: Function, pullBeads?: Function, launchPull?: Function,
+ *   settleFor?: (member: string) => Promise<Function|null>,
  *   setupTimeoutS?: number, checkToolVersions?: boolean,
  * }} opts
  *   `launchPull` (test seam, default DoltSync's preflightBeadsHealthGate) is
@@ -787,6 +788,9 @@ function assertMatches(member, expected, actual, cmp) {
  *   has a database and the expected sync.remote gets, so a flattened remote
  *   is recovered (or refused, naming the member) at launch, not at first
  *   dispatch. It needs `memberShell` (the recovery command primitives).
+ *   `settleFor` returns the member's settle callback (buildSettleCallback),
+ *   so a diverged clone self-heals at the launch pull exactly as it does at
+ *   its first pre-dispatch pull instead of stopping the launch.
  *   `checkToolVersions` first runs verifyPinnedToolVersions on every member
  *   (backlog, members and setupMembers) and throws VERSION_MISMATCH before
  *   any identity probe or set-up; the runner always sets it.
@@ -802,7 +806,7 @@ function assertMatches(member, expected, actual, cmp) {
  *   `unresolved: string[]` (the compared fields it could not report). A
  *   member with no beads database at all has NO entry -- only a warning.
  */
-export async function verifyBeadsIdentity({ command, log = () => {}, publishState, backlogMember, members, expected = null, prober, timeoutS, setupMembers, memberShell, ensureVcsAuth, onAuthFailure, pullBeads, launchPull, setupTimeoutS, checkToolVersions = false }) {
+export async function verifyBeadsIdentity({ command, log = () => {}, publishState, backlogMember, members, expected = null, prober, timeoutS, setupMembers, memberShell, ensureVcsAuth, onAuthFailure, pullBeads, launchPull, settleFor, setupTimeoutS, checkToolVersions = false }) {
     if (typeof backlogMember !== 'string' || !backlogMember) {
         throw new TypeError('verifyBeadsIdentity: backlogMember must be a non-empty string');
     }
@@ -963,16 +967,29 @@ export async function verifyBeadsIdentity({ command, log = () => {}, publishStat
             }
         }
         log(`[beads-identity] member '${member}' has a beads database on the expected remote; pulling it at launch (a flattened remote is recovered here, not at its first dispatch).`);
+        // Same settle the first pre-dispatch pull gets (git-sync.mjs), so a
+        // diverged clone self-heals here instead of stopping the launch.
+        let settle;
+        if (typeof settleFor === 'function') {
+            try {
+                settle = (await settleFor(member)) || undefined;
+            } catch (err) {
+                log(`[beads-identity] could not build the dolt settle for member '${member}' (a divergence at its launch pull will not self-heal): ${err && err.message ? err.message : err}`);
+            }
+        }
         const pulled = await (launchPull || preflightBeadsHealthGate)(member, {
             command,
             log,
             fatal: true,
             onAuthFailure,
             flattenRecovery: memberShell,
+            settle,
             checkSyncRemoteConfigured: async () => true,
             remoteTipFingerprint: false,
         });
-        if (!pulled || !pulled.recovered) return probed;
+        // A settled divergence also reports `recovered`; only a flatten
+        // recovery (a re-bootstrapped clone) needs the re-probe below.
+        if (!pulled || !pulled.recovered || pulled.settledTables) return probed;
         p.forget(member);
         const again = await p.probe(member);
         assertBdPresent(member, again);
