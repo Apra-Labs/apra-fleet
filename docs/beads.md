@@ -99,6 +99,39 @@ a performance nicety. See `packages/apra-fleet-se/docs/architecture.md`'s
 "Dolt sync discipline" section for the full mechanism and its conflict
 recovery ladder.
 
+### Link preservation on conflicted pulls
+
+On the pinned `bd` (1.3.x), a conflicted `bd dolt pull` auto-resolves and
+commits only the tables it resolved; cleanly merged tables (notably the
+dependency table holding parent-child and `blocks` edges) keep the local copy.
+The next push can then silently revert other clones' links. Defences:
+
+- Before a push publishes a reconcile pull, the engine commits the merged
+  working set and runs a link verification (both parent-child and `blocks`
+  edges must survive). A failed restore issues no push and leaves the member
+  owing a verification before its next first push.
+- `apra-fleet install` and sprint launch print a warning while the pinned `bd`
+  is a version that can drop links. The install-side and engine-side version
+  constants are kept in step by a test. Until a fixed `bd` is verified, the
+  warning prints on every install and launch.
+- Known gap: the verification runs only inside the push path's reconcile
+  pulls. A conflicted pre-dispatch pull that `bd` auto-merges can leave merged
+  dependency rows uncommitted, and the later fast-forward push neither commits
+  nor verifies on that path.
+
+### Flattened-remote recovery
+
+If the shared Dolt remote is rebuilt with a flattened history, a clone's pull
+and push classify as unrelated-history (checked before diverged). The launch
+health gate, member setup and repair automatically re-bootstrap such a clone:
+export, read back with a count check, rename the old clone (never delete),
+seed config, dry-run bootstrap that must plan a sync, bootstrap, export the
+fresh clone and compare. Any failure after the rename restores the original,
+and a backup left by a crash is restored first. A clone holding work that is
+absent from the remote is refused intact, never overwritten. Caveat: every id
+missing from the remote counts as local-only work, so a remote rebuilt after
+pruning closed beads would cause other clones to be refused.
+
 ---
 
 See [the PM skill](../packages/apra-fleet-se/apra-pm/skills/pm/SKILL.md) for the full PM skill reference.
