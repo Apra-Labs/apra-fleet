@@ -43,11 +43,23 @@
 // re-push) and case 3 fail (the re-push is issued) -- checked locally once by
 // reverting the fix.
 //
+// The second block covers links an AGENT changed on its own clone (outside
+// the engine's command path, no pull in between): (1) a retarget and a
+// reversal (cycle-break) on A survive A's reconciled push, with no
+// ParentLinkRestoreError; (2) a reparent on A reaches the remote; (4) a
+// removal and a retarget A pushed are not restored when B pulls them through
+// the engine pull path and pushes (the run-wide agent-removal record). Each
+// is checked on a FRESH clone of the remote. Falsifiability: with
+// parent-link-guard.mjs and beads-scope.mjs reverted to before the
+// pull-bracket change, (1) fails (bd refuses the re-added X blocked-by Y as a
+// cycle); with only the agent-removal record disabled, (4) fails (B restores
+// both edges) -- checked locally once.
+//
 // Hermetic: HOME, USERPROFILE, GIT_CONFIG_GLOBAL and TMPDIR point into one
 // temp sandbox, removed afterwards; no network. Skips (with the reason) when
 // no bd binary is on PATH. ASCII only.
 
-import { test, describe, before, after } from 'node:test';
+import { test, describe, before, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -56,6 +68,8 @@ import { exec } from 'node:child_process';
 
 import {
     doltPushAfter,
+    doltPullBefore,
+    clearMembersOwingLinkVerify,
     invalidateSyncRemoteCache,
     clearLastSyncedTip,
     clearTipProbeFailures,
@@ -191,7 +205,7 @@ async function buildScenario() {
  * @param {(cmd: string, member: string) => boolean} [opts.failCommand] - answer this command with a failure instead of running it
  * @param {(member: string) => Promise<void>} [opts.afterPull] - runs after each real `bd dolt pull`
  */
-async function engineFor(sb, ids, { failCommand = () => false, afterPull = async () => {} } = {}) {
+async function engineFor(sb, ids, { failCommand = () => false, afterPull = async () => {}, backlog = 'A' } = {}) {
     const calls = [];
     const logs = [];
     const rawCommand = async (cmd, opts = {}) => {
@@ -214,7 +228,7 @@ async function engineFor(sb, ids, { failCommand = () => false, afterPull = async
     const scope = createBeadsScope({
         targetIssues: [ids.P],
         parseBdJson,
-        getBacklogMember: () => 'A',
+        getBacklogMember: () => backlog,
         log: (line) => logs.push(line),
     });
     const command = scope.wrapCommand(rawCommand);
@@ -237,6 +251,10 @@ describe('verify-before-push against a real conflicted bd pull', { skip: SKIP, c
         clearLastSyncedTip();
         clearTipProbeFailures();
         clearDegradedSyncRecords();
+    });
+    beforeEach(() => {
+        clearMembersOwingLinkVerify();
+        clearLastSyncedTip();
     });
     after(() => {
         for (const root of sandboxes) fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
@@ -345,3 +363,161 @@ async function seedLedger(eng, ids) {
     assert.ok(x && (x.dependencies || []).some((d) => d.type === 'blocks' && d.depends_on_id === ids.Y), 'the ledger snapshot carries X blocked-by Y');
     eng.calls.length = 0;
 }
+
+// ---------------------------------------------------------------------------
+// Links an AGENT changes on its own clone (outside the engine's command path,
+// with no pull in between) are never restored -- on that clone, or on another
+// clone that pulls the change. Real bd, real clones, real remote.
+// ---------------------------------------------------------------------------
+
+/**
+ * A, B and a bare remote. On A, published before B bootstraps: features P and
+ * Q (Q under P), tasks X, Y, Z, W under P, and V (no parent, touched only by
+ * B to make A's push non-fast-forward); X blocked by Y and W blocked by Y.
+ */
+async function buildAgentScenario() {
+    const sb = createSandbox();
+    const { A, B } = sb.dirs;
+    await runOrThrow(sb, 'git config --global user.name "Link Guard"', sb.root);
+    await runOrThrow(sb, 'git config --global user.email link-guard@test.local', sb.root);
+    await runOrThrow(sb, 'git config --global commit.gpgsign false', sb.root);
+    await runOrThrow(sb, `git init -q --bare -b main "${sb.remote}"`, sb.root);
+    const url = `file://${sb.remote}`;
+    fs.mkdirSync(A);
+    await runOrThrow(sb, 'git init -q -b main', A);
+    await runOrThrow(sb, `git remote add origin "${url}"`, A);
+    await runOrThrow(sb, 'git commit -q --allow-empty -m init', A);
+    await runOrThrow(sb, 'git push -q origin main', A);
+    await runOrThrow(sb, 'bd init --prefix ag', A);
+    const ids = {};
+    const create = async (title, extra = '') => (await runOrThrow(sb, `bd create "${title}" ${extra} --silent`, A)).split(/\s+/).pop();
+    ids.P = await create('P', '-t feature');
+    ids.Q = await create('Q', `-t feature --parent ${ids.P}`);
+    for (const name of ['X', 'Y', 'Z', 'W']) ids[name] = await create(name, `-t task --parent ${ids.P}`);
+    ids.V = await create('V', '-t task');
+    await runOrThrow(sb, `bd dep add ${ids.X} ${ids.Y}`, A);
+    await runOrThrow(sb, `bd dep add ${ids.W} ${ids.Y}`, A);
+    await runOrThrow(sb, 'bd dolt push', A);
+    fs.mkdirSync(B);
+    await runOrThrow(sb, `git clone -q "${url}" .`, B);
+    await runOrThrow(sb, 'bd bootstrap --yes', B);
+    return { sb, ids };
+}
+
+/** The links of a FRESH clone of the remote (what every other clone will pull). */
+async function remoteLinks(sb, name) {
+    const dir = path.join(sb.root, name);
+    fs.mkdirSync(dir);
+    await runOrThrow(sb, `git clone -q "file://${sb.remote}" .`, dir);
+    await runOrThrow(sb, 'bd bootstrap --yes', dir);
+    return linksOf(sb, dir);
+}
+
+/** B publishes an unrelated edit, so A's next push is rejected and reconciles (the path that runs the verify). */
+async function publishUnrelatedEditFromB(sb, ids) {
+    await runOrThrow(sb, `bd update ${ids.V} --title "V edited on B"`, sb.dirs.B);
+    await runOrThrow(sb, 'bd dolt push', sb.dirs.B);
+}
+
+const pullOptsFor = (eng) => ({
+    command: eng.command,
+    log: (m) => eng.logs.push(m),
+    sleep: async () => {},
+    remoteTipFingerprint: false,
+});
+
+const restoresIn = (eng) => eng.calls.filter((c) => /^bd dep add |^bd update \S+ --parent /.test(c.cmd));
+const traceOf = (eng) => eng.calls.map((c) => `${c.member}: ${c.cmd}`).join('\n');
+
+describe('agent link changes survive the link guard against real bd', { skip: SKIP, concurrency: false }, () => {
+    const budget = scaledTimeout(120_000, { concurrency: TEST_CONCURRENCY });
+    const sandboxes = [];
+    before(() => {
+        invalidateSyncRemoteCache();
+        clearTipProbeFailures();
+        clearDegradedSyncRecords();
+    });
+    beforeEach(() => {
+        clearMembersOwingLinkVerify();
+        clearLastSyncedTip();
+    });
+    after(() => {
+        for (const root of sandboxes) fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+    });
+
+    test('(1) an agent on A retargets one blocks edge and reverses another; the guarded push publishes exactly that, no ParentLinkRestoreError', { timeout: budget }, async () => {
+        const { sb, ids } = await buildAgentScenario();
+        sandboxes.push(sb.root);
+        const eng = await engineFor(sb, ids);
+        await eng.scope.fetchAllBeadsShared(); // the run's ledger records X blocked-by Y and W blocked-by Y
+        eng.calls.length = 0;
+        await publishUnrelatedEditFromB(sb, ids);
+
+        // The planner on A: retarget W (blocked by Y -> blocked by Z) and break
+        // a would-be cycle by reversing X blocked-by Y into Y blocked-by X.
+        await runOrThrow(sb, `bd dep remove ${ids.W} ${ids.Y}`, sb.dirs.A);
+        await runOrThrow(sb, `bd dep add ${ids.W} ${ids.Z}`, sb.dirs.A);
+        await runOrThrow(sb, `bd dep remove ${ids.X} ${ids.Y}`, sb.dirs.A);
+        await runOrThrow(sb, `bd dep add ${ids.Y} ${ids.X}`, sb.dirs.A);
+
+        const res = await doltPushAfter('A', pushOptsFor(eng));
+        assert.equal(res.pushed, true, JSON.stringify(res));
+        assert.equal(res.reconciled, true, `A's push must be rejected and reconciled (the verify path): ${eng.logs.join('\n')}`);
+        assert.deepEqual(restoresIn(eng), [], traceOf(eng));
+        assert.ok(!eng.logs.some((l) => l.startsWith('ERROR')), eng.logs.join('\n'));
+
+        const onRemote = await remoteLinks(sb, 'fresh1');
+        assert.ok(onRemote.blocks.has(`${ids.W}>${ids.Z}`), 'the retargeted edge W blocked-by Z is on the remote');
+        assert.ok(!onRemote.blocks.has(`${ids.W}>${ids.Y}`), 'the original edge W blocked-by Y is not');
+        assert.ok(onRemote.blocks.has(`${ids.Y}>${ids.X}`), 'the reversed edge Y blocked-by X is on the remote');
+        assert.ok(!onRemote.blocks.has(`${ids.X}>${ids.Y}`), 'the original edge X blocked-by Y is not');
+    });
+
+    test('(2) an agent reparent on A (Z: P -> Q) reaches the remote unreverted', { timeout: budget }, async () => {
+        const { sb, ids } = await buildAgentScenario();
+        sandboxes.push(sb.root);
+        const eng = await engineFor(sb, ids);
+        await eng.scope.fetchAllBeadsShared();
+        eng.calls.length = 0;
+        await publishUnrelatedEditFromB(sb, ids);
+
+        await runOrThrow(sb, `bd update ${ids.Z} --parent ${ids.Q}`, sb.dirs.A);
+
+        const res = await doltPushAfter('A', pushOptsFor(eng));
+        assert.equal(res.pushed, true, JSON.stringify(res));
+        assert.equal(res.reconciled, true, eng.logs.join('\n'));
+        assert.deepEqual(restoresIn(eng), [], traceOf(eng));
+        const onRemote = await remoteLinks(sb, 'fresh2');
+        assert.equal(onRemote.parentOf.get(ids.Z), ids.Q, 'the remote holds the new parent');
+    });
+
+    test('(4) cross clone: A removes one blocks edge and retargets another and pushes; B pulls through the engine and pushes -- nothing is restored', { timeout: budget }, async () => {
+        const { sb, ids } = await buildAgentScenario();
+        sandboxes.push(sb.root);
+        // The backlog member is B: the planner works on a non-backlog member.
+        const eng = await engineFor(sb, ids, { backlog: 'B' });
+        await eng.scope.fetchAllBeadsShared();
+        eng.calls.length = 0;
+
+        // A's pre-dispatch pull (its links are read around it).
+        await doltPullBefore('A', pullOptsFor(eng));
+        // The planner on A: remove X blocked-by Y; retarget W (Y -> Z).
+        await runOrThrow(sb, `bd dep remove ${ids.X} ${ids.Y}`, sb.dirs.A);
+        await runOrThrow(sb, `bd dep remove ${ids.W} ${ids.Y}`, sb.dirs.A);
+        await runOrThrow(sb, `bd dep add ${ids.W} ${ids.Z}`, sb.dirs.A);
+        await doltPushAfter('A', pushOptsFor(eng));
+
+        // B pulls A's push through the engine pull path (a clean pull: the
+        // edges are present before it and missing after it), then pushes.
+        await doltPullBefore('B', pullOptsFor(eng));
+        const res = await doltPushAfter('B', pushOptsFor(eng));
+        assert.equal(res.ok, true, JSON.stringify(res));
+        assert.deepEqual(restoresIn(eng), [], traceOf(eng));
+        assert.ok(!eng.logs.some((l) => l.startsWith('ERROR')), eng.logs.join('\n'));
+
+        const onRemote = await remoteLinks(sb, 'fresh4');
+        assert.ok(!onRemote.blocks.has(`${ids.X}>${ids.Y}`), 'the removed edge X blocked-by Y is not on the remote');
+        assert.ok(!onRemote.blocks.has(`${ids.W}>${ids.Y}`), 'the original target of the retargeted edge is not on the remote');
+        assert.ok(onRemote.blocks.has(`${ids.W}>${ids.Z}`), 'the retargeted edge W blocked-by Z is on the remote');
+    });
+});
