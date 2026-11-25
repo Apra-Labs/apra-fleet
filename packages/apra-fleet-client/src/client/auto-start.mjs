@@ -63,7 +63,7 @@ export function stoppedByUserError(marker) {
 
 /**
  * Typed failure of a client auto-start. code: AUTOSTART_LIMIT | AUTOSTART_TIMEOUT |
- * AUTOSTART_NO_BINARY | AUTOSTART_VERSION_SKEW | AUTOSTART_VERSION_UNKNOWN |
+ * AUTOSTART_NO_BINARY | AUTOSTART_VERSION_SKEW | AUTOSTART_PROBE_FAILED | AUTOSTART_VERSION_UNKNOWN |
  * AUTOSTART_TEST_UNINJECTED | SERVER_UNRESPONSIVE | SERVER_STOPPED_BY_USER
  */
 export class FleetAutoStartError extends Error {
@@ -134,13 +134,24 @@ function defaultProbeVersion(candidate, env) {
     if (candidate.kind === 'entry') {
         return readJsonVersion(path.join(path.dirname(path.dirname(candidate.entry)), 'version.json'), fs.existsSync, (f) => fs.readFileSync(f, 'utf8'));
     }
-    try {
-        const out = execFileSync(candidate.command, ['--version'], { env, stdio: 'pipe', windowsHide: true, timeout: 15_000 }).toString();
-        const m = /apra-fleet\s+(v?\S+)/i.exec(out);
-        return m ? m[1] : null;
-    } catch {
-        return null;
-    }
+    // A probe that could not run THROWS (spawn error, timeout, non-zero exit,
+    // killed); null means it ran and printed no recognisable version.
+    const out = execFileSync(candidate.command, ['--version'], { env, stdio: 'pipe', windowsHide: true, timeout: 15_000 }).toString();
+    const m = /apra-fleet\s+(v?\S+)/i.exec(out);
+    return m ? m[1] : null;
+}
+
+/** Why a version probe could not run: err.code / signal / exit status / timeout / stderr tail. */
+function describeProbeFailure(err) {
+    const parts = [];
+    if (err && err.code) parts.push(String(err.code));
+    if (err && err.signal) parts.push(`signal ${err.signal}`);
+    if (err && typeof err.status === 'number') parts.push(`exit status ${err.status}`);
+    if (parts.length === 0 && err && err.message) parts.push(String(err.message).split('
+')[0].slice(0, 200));
+    const stderr = err && err.stderr ? String(err.stderr).trim().slice(-200) : '';
+    if (stderr) parts.push(`stderr: ${stderr}`);
+    return parts.join(', ') || 'unknown error';
 }
 
 /**
@@ -216,10 +227,25 @@ export function resolveFleetStartCommand(deps = {}) {
         );
     }
     const seen = [];
+    const probeFailures = [];
     for (const c of candidates) {
-        const v = probeVersion(c);
+        let v;
+        try {
+            v = probeVersion(c);
+        } catch (err) {
+            probeFailures.push({ binary: c.entry || c.command, cause: describeProbeFailure(err) });
+            continue;
+        }
         if (versionCore(v) === versionCore(expected)) return { command: c.command, args: c.args, version: v };
         seen.push(`${c.label} ${c.entry || c.command}: ${v || 'unknown version'}`);
+    }
+    if (probeFailures.length > 0) {
+        throw new FleetAutoStartError(
+            'The apra-fleet HTTP server is not running, and the version check of the apra-fleet that would start it ' +
+                `could not run: ${probeFailures.map((f) => `${f.binary} (${f.cause})`).join('; ')}. ` +
+                "This is usually transient (e.g. the machine is busy or shutting down): retry, or start the server yourself ('apra-fleet start').",
+            { code: 'AUTOSTART_PROBE_FAILED', details: { expected, probeFailures, found: seen } },
+        );
     }
     throw new FleetAutoStartError(
         `The apra-fleet HTTP server is not running. This client belongs to apra-fleet ${expected}, but the only apra-fleet ` +
@@ -399,11 +425,12 @@ export async function autoStartFleetServer(deps) {
                 { code: 'AUTOSTART_LIMIT', details: { log, starts: recent.length } },
             );
         }
+        // Resolve first: an attempt that fails before anything is launched must
+        // not count toward the limit (its own error propagates).
+        const cmd = deps.startCommand || resolveFleetStartCommand(deps);
         try {
             fs.writeFileSync(ledgerFile, JSON.stringify({ starts: [...recent, now()] }));
         } catch { /* best-effort */ }
-
-        const cmd = deps.startCommand || resolveFleetStartCommand(deps);
         // APRA_FLEET_AUTOSTART=1: the started `apra-fleet start` refuses (instead
         // of clearing the marker) if a user stop lands in the meantime.
         child = runStart(cmd.command, cmd.args, { ...env, APRA_FLEET_AUTOSTART: '1' });

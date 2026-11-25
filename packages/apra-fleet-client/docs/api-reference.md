@@ -1084,7 +1084,10 @@ Resolution order:
    (`AUTOSTART_VERSION_UNKNOWN` when its own version is unknown); an older
    server can lack guards the client relies on. Inside the test sandbox
    (`APRA_TEST_SANDBOX_ROOT`) an uninjected lookup fails with
-   `AUTOSTART_TEST_UNINJECTED`. A server stopped on purpose (`apra-fleet stop`
+   `AUTOSTART_TEST_UNINJECTED`. A version probe that cannot run (spawn error,
+   timeout, killed) fails with `AUTOSTART_PROBE_FAILED` naming the cause and
+   advising a retry, not `AUTOSTART_VERSION_SKEW`. Only launched starts count
+   toward the loop guard. A server stopped on purpose (`apra-fleet stop`
    wrote `<data dir>/stopped-by-user.json`, see `readStoppedByUser()`) is never
    started: `SERVER_STOPPED_BY_USER` with "apra-fleet was stopped by the user
    at <time> ...; run 'apra-fleet start'" (resolution and the reconnecting
