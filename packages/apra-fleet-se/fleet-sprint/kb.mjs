@@ -500,8 +500,9 @@ function isUnreachableError(err) {
  * never handled, each with the reason the engine logs:
  *   - E-KB-HTTP-UNREACHABLE: the KB server cannot be reached, or refused the
  *     request before handling it (429, 503);
- *   - E-KB-HTTP-AUTH: the KB server token (a named secret) is missing,
- *     expired or refused; the identical write succeeds once it is fixed.
+ *   - E-KB-HTTP-AUTH: the KB server token (a named secret or a literal
+ *     token) is missing, expired or refused; the identical write succeeds
+ *     once it is fixed.
  * The provider queues nothing, so the engine owns the retry: a write that
  * fails with one of these stays queued for the next flush.
  */

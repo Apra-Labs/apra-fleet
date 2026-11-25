@@ -75,21 +75,27 @@ export type KbHttpTokenSource = string | { secretName: string };
 export type KbHttpAuthReason = 'missing' | 'expired' | 'rejected' | 'unreadable';
 
 /**
- * E-KB-HTTP-AUTH: the remote KB's token comes from a named fleet secret and
- * that secret is missing, expired, unreadable, or was rejected by the server
- * (HTTP 401) on the request and on one retry after re-reading it. The message
- * names the secret and the reason, never the value. Nothing is queued: the
- * caller decides whether to repeat the operation once the secret is fixed.
+ * E-KB-HTTP-AUTH: the remote KB's token was not accepted. Either it comes from
+ * a named fleet secret and that secret is missing, expired, unreadable, or was
+ * rejected by the server (HTTP 401) on the request and on one retry after
+ * re-reading it; or it is a literal token stored in the KB config and the
+ * server answered 401 (no retry: the value cannot change between attempts;
+ * `secretName` is then undefined). The message names the secret (if any) and
+ * the reason, never the value. Nothing is queued: the caller decides whether
+ * to repeat the operation once the token is fixed.
  */
 export class KbHttpAuthError extends Error {
   readonly code = 'E-KB-HTTP-AUTH' as const;
-  readonly secretName: string;
+  /** The fleet secret the token comes from; undefined for a literal token. */
+  readonly secretName: string | undefined;
   readonly reason: KbHttpAuthReason;
   readonly remediation: string;
   /** The problem sentence, without the code prefix and remediation. */
   readonly problem: string;
-  constructor(secretName: string, reason: KbHttpAuthReason, problem: string) {
-    const remediation = `apra-fleet secret --set ${secretName} --persist -y (the next KB call uses the new value; no restart needed)`;
+  constructor(secretName: string | undefined, reason: KbHttpAuthReason, problem: string) {
+    const remediation = secretName !== undefined
+      ? `apra-fleet secret --set ${secretName} --persist -y (the next KB call uses the new value; no restart needed)`
+      : 'run kb_setup again with a token the KB server accepts, which replaces the token stored in the KB config (the next KB call uses it)';
     super(`E-KB-HTTP-AUTH: ${problem} Remediation: ${remediation}`);
     this.name = 'KbHttpAuthError';
     this.secretName = secretName;
@@ -106,6 +112,22 @@ export class KbHttpAuthError extends Error {
 function isServerUnavailable(err: unknown): boolean {
   const code = err instanceof Error ? (err as NodeJS.ErrnoException).code : undefined;
   return typeof code === 'string' && (code === 'HTTP_429' || /^HTTP_5\d\d$/.test(code));
+}
+
+function isHttp429(err: unknown): boolean {
+  return err instanceof Error && (err as NodeJS.ErrnoException).code === 'HTTP_429';
+}
+
+/**
+ * The Retry-After header value of a 429 answer, or undefined. Only a value
+ * made of printable ASCII and at most 64 characters long is kept (delta
+ * seconds or an HTTP date); anything else is dropped rather than quoted.
+ */
+function retryAfterOf(err: unknown): string | undefined {
+  const value = err instanceof Error ? (err as { retryAfter?: unknown }).retryAfter : undefined;
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 && trimmed.length <= 64 && /^[\x20-\x7e]+$/.test(trimmed) ? trimmed : undefined;
 }
 
 /**
@@ -259,50 +281,71 @@ function hasTag(entry: { tags?: unknown }, tag: string): boolean {
   return Array.isArray(entry.tags) && entry.tags.includes(tag);
 }
 
+/** How the KB server refused a request it answered 429 to (E-KB-HTTP-UNREACHABLE). */
+export interface KbHttpRateLimit {
+  /** The Retry-After header value, when the answer carried a usable one. */
+  retryAfter?: string;
+}
+
 /**
  * E-KB-HTTP-UNREACHABLE: the KB server could not be reached (connection
  * refused, DNS failure, timeout, reset), its capabilities read answered a
- * 5xx or 429 (so the request itself was never sent), or the request itself
- * was answered 429 or 503 (refused before it was handled). Over http the server is
- * the only source of truth, so nothing is answered from a local store or the
- * checkout bible instead. Nothing is queued: the error is retryable, and the
- * caller decides whether to repeat the call (the sprint engine keeps its own
- * KB write queued and repeats it on its next flush).
+ * 5xx or 429 (so the request itself was never sent), a write was answered
+ * 429 or 503 (refused before it was handled), or a read was answered 429 or
+ * any 5xx (a read writes nothing, so repeating it is safe). Over http the
+ * server is the only source of truth, so nothing is answered from a local
+ * store or the checkout bible instead. Nothing is queued: the error is
+ * retryable, and the caller decides whether to repeat the call (the sprint
+ * engine keeps its own KB write queued and repeats it on its next flush).
+ * A 429 answer (`rateLimit` set) says the server rate limited the request,
+ * names the Retry-After value when there is one, and never suggests starting
+ * the server.
  */
 export class KbHttpUnreachableError extends Error {
   readonly code = 'E-KB-HTTP-UNREACHABLE' as const;
-  /** The connection error text (e.g. "connect ECONNREFUSED ..."). */
+  /** The connection error text (e.g. "connect ECONNREFUSED ...") or the HTTP answer. */
   readonly causeText: string;
-  constructor(serverUrl: string, operation: string, causeText: string) {
-    super(
-      `E-KB-HTTP-UNREACHABLE: ${operation}: the KB server at ${serverUrl} is unreachable (${causeText}); `
-      + 'nothing was read or written, and no local store or bible is used instead. '
-      + 'Remediation: start the KB server or restore the network path to it, then repeat the call; or use a local SQLite KB (kb_setup provider sqlite).',
+  /** Set when the server answered 429; undefined for every other cause. */
+  readonly rateLimit: KbHttpRateLimit | undefined;
+  constructor(serverUrl: string, operation: string, causeText: string, rateLimit?: KbHttpRateLimit) {
+    super(rateLimit === undefined
+      ? `E-KB-HTTP-UNREACHABLE: ${operation}: the KB server at ${serverUrl} is unreachable (${causeText}); `
+        + 'nothing was read or written, and no local store or bible is used instead. '
+        + 'Remediation: start the KB server or restore the network path to it, then repeat the call; or use a local SQLite KB (kb_setup provider sqlite).'
+      : `E-KB-HTTP-UNREACHABLE: ${operation}: the KB server at ${serverUrl} rate limited the request (${causeText}`
+        + (rateLimit.retryAfter !== undefined ? `; Retry-After: ${rateLimit.retryAfter}` : '')
+        + '); nothing was read or written, and no local store or bible is used instead. '
+        + (rateLimit.retryAfter !== undefined
+          ? `Remediation: wait for the Retry-After interval (${rateLimit.retryAfter}), then repeat the call.`
+          : 'Remediation: wait, then repeat the call; if it keeps happening, lower the request rate or raise the server\'s rate limit.'),
     );
     this.name = 'KbHttpUnreachableError';
     this.causeText = causeText;
+    this.rateLimit = rateLimit;
+  }
+
+  /** The same error naming `operation` instead (the caller's request, not an inner read). */
+  forOperation(serverUrl: string, operation: string): KbHttpUnreachableError {
+    return new KbHttpUnreachableError(serverUrl, operation, this.causeText, this.rateLimit);
   }
 }
 
 /**
  * E-KB-HTTP-SERVER-ERROR: the KB server (or a gateway in front of it) answered
- * a request itself with a 5xx other than 503. For a write the request reached
- * the server, so whether the write took effect is unknown (a 502 or 504 can
- * follow a stored write). It is not retried and nothing is queued: repeating
- * it blindly could apply it twice, and a server that always answers 500 would
- * be retried forever. For a read nothing was read, and no local store or
- * bible answers instead.
+ * a WRITE itself with a 5xx other than 503. The request reached the server,
+ * so whether the write took effect is unknown (a 502 or 504 can follow a
+ * stored write). It is not retried and nothing is queued: repeating it
+ * blindly could apply it twice, and a server that always answers 500 would be
+ * retried forever. A read answered 5xx is E-KB-HTTP-UNREACHABLE instead (a
+ * read writes nothing, so repeating it is safe).
  */
 export class KbHttpServerError extends Error {
   readonly code = 'E-KB-HTTP-SERVER-ERROR' as const;
-  constructor(serverUrl: string, operation: string, answer: string, kind: 'write' | 'read' = 'write') {
+  constructor(serverUrl: string, operation: string, answer: string) {
     super(
       `E-KB-HTTP-SERVER-ERROR: ${operation}: the KB server at ${serverUrl} answered ${answer}; `
-      + (kind === 'write'
-        ? 'whether the write took effect is unknown, so it was not retried or queued. '
-          + 'Remediation: check the KB server (or the gateway in front of it); once it answers normally, read the entry back (kb_query) before repeating the write.'
-        : 'nothing was read, and no local store or bible is used instead. '
-          + 'Remediation: check the KB server (or the gateway in front of it), then repeat the call.'),
+      + 'whether the write took effect is unknown, so it was not retried or queued. '
+      + 'Remediation: check the KB server (or the gateway in front of it); once it answers normally, read the entry back (kb_query) before repeating the write.',
     );
     this.name = 'KbHttpServerError';
   }
@@ -520,8 +563,8 @@ export class HttpKbProvider implements MemoryProvider {
   }
 
   /**
-   * One authenticated request. Literal token: exactly the old behaviour (a
-   * 401 is thrown as the plain HTTP_401 error, no retry). Secret name: the
+   * One authenticated request. Literal token: a 401 is E-KB-HTTP-AUTH
+   * (reason rejected, no retry: the value cannot change). Secret name: the
    * secret is looked up for this request; on 401 it is looked up once more
    * and the request retried once; a second 401 raises E-KB-HTTP-AUTH.
    * Records the last success / last 401 for fleet_status either way.
@@ -554,7 +597,12 @@ export class HttpKbProvider implements MemoryProvider {
         }
         if (!isHttp401(err)) throw err;
         recordKbHttpRejected(this.baseUrl);
-        if (secretName === undefined) throw err;
+        if (secretName === undefined) {
+          throw new KbHttpAuthError(
+            undefined, 'rejected',
+            'the KB server rejected the literal token stored in the KB config (HTTP 401).',
+          );
+        }
         if (attempt >= attempts) {
           throw new KbHttpAuthError(
             secretName, 'rejected',
@@ -624,6 +672,11 @@ export class HttpKbProvider implements MemoryProvider {
               : describeErrorBody(data);
             const httpErr = new Error(redactToken(`HTTP ${status}: ${text}`, token)) as NodeJS.ErrnoException & { serverCode?: string };
             httpErr.code = `HTTP_${status}`;
+            if (status === 429) {
+              const header = res.headers['retry-after'];
+              const retryAfter = Array.isArray(header) ? header[0] : header;
+              if (typeof retryAfter === 'string') (httpErr as { retryAfter?: string }).retryAfter = retryAfter;
+            }
             const serverCode = bodyCodeOf(data);
             if (serverCode !== undefined) httpErr.serverCode = serverCode;
             reject(httpErr);
@@ -741,8 +794,8 @@ export class HttpKbProvider implements MemoryProvider {
   }
 
   /**
-   * A failed capabilities read as the typed error callers see. A 401 (literal
-   * token) and the already-typed errors pass through as on any route. Any
+   * A failed capabilities read as the typed error callers see. The
+   * already-typed errors (E-KB-HTTP-AUTH for a 401) pass through as on any route. Any
    * other HTTP status is never a raw HTTP error: a 5xx or 429 (a restarting or
    * rate-limiting server, a gateway with no backend) is E-KB-HTTP-UNREACHABLE
    * naming the status (the caller's own request was never sent, so it is safe
@@ -762,13 +815,15 @@ export class HttpKbProvider implements MemoryProvider {
   }
 
   /**
-   * E-KB-HTTP-UNREACHABLE for a 5xx or 429 answer to the capabilities read,
-   * or a 429 or 503 answer to `operation` itself: the server's state
+   * E-KB-HTTP-UNREACHABLE for a 5xx or 429 answer to the capabilities read or
+   * to a read, or a 429 or 503 answer to a write: the server's state
    * (restarting, rate limiting, a gateway with no backend), never the fault
-   * of the request.
+   * of the request. A 429 says the request was rate limited and carries the
+   * Retry-After value when the answer had one.
    */
   private serverUnavailableError(operation: string, err: Error): KbHttpUnreachableError {
-    return new KbHttpUnreachableError(this.displayUrl, operation, `${operation} answered ${err.message}`);
+    const rateLimit = isHttp429(err) ? { retryAfter: retryAfterOf(err) } : undefined;
+    return new KbHttpUnreachableError(this.displayUrl, operation, `${operation} answered ${err.message}`, rateLimit);
   }
 
   /** E-KB-HTTP-UNSUPPORTED naming `route`: the server does not serve it. */
@@ -810,7 +865,7 @@ export class HttpKbProvider implements MemoryProvider {
     } catch (err) {
       // Name the operation the caller asked for, not the capabilities read.
       if (err instanceof KbHttpUnreachableError) {
-        throw new KbHttpUnreachableError(this.displayUrl, `${method} ${pathname}`, err.causeText);
+        throw err.forOperation(this.displayUrl, `${method} ${pathname}`);
       }
       throw err;
     }
@@ -853,9 +908,9 @@ export class HttpKbProvider implements MemoryProvider {
 
   /**
    * One read request (query, context, prime, list). A 5xx or 429 answering it
-   * is never a raw HTTP error: 429 and 503 are E-KB-HTTP-UNREACHABLE naming
-   * the status, any other 5xx is E-KB-HTTP-SERVER-ERROR naming the status.
-   * Nothing is answered from a local store or the bible instead.
+   * is never a raw HTTP error: every one is E-KB-HTTP-UNREACHABLE naming the
+   * status (a read writes nothing, so repeating it is safe). Nothing is
+   * answered from a local store or the bible instead.
    */
   private async readRequest<T>(
     route: KbRoute,
@@ -871,10 +926,16 @@ export class HttpKbProvider implements MemoryProvider {
     }
   }
 
-  /** A 5xx or 429 answering `operation` as its typed error; any other error as is. */
+  /**
+   * A 5xx or 429 answering `operation` as its typed error; any other error as
+   * is. A read: every 5xx or 429 is E-KB-HTTP-UNREACHABLE. A write: 429 and
+   * 503 are E-KB-HTTP-UNREACHABLE, any other 5xx is E-KB-HTTP-SERVER-ERROR.
+   */
   private answeredError(err: unknown, operation: string, kind: 'write' | 'read'): unknown {
-    if (isRetryableStatus(err)) return this.serverUnavailableError(operation, err as Error);
-    if (isServerUnavailable(err)) return new KbHttpServerError(this.displayUrl, operation, (err as Error).message, kind);
+    if (kind === 'read' ? isServerUnavailable(err) : isRetryableStatus(err)) {
+      return this.serverUnavailableError(operation, err as Error);
+    }
+    if (isServerUnavailable(err)) return new KbHttpServerError(this.displayUrl, operation, (err as Error).message);
     return err;
   }
 
@@ -919,7 +980,7 @@ export class HttpKbProvider implements MemoryProvider {
         listed = (await this.capabilities()).query_filters ?? [];
       } catch (err) {
         if (err instanceof KbHttpUnreachableError) {
-          throw new KbHttpUnreachableError(this.displayUrl, 'GET /api/kb/query', err.causeText);
+          throw err.forOperation(this.displayUrl, 'GET /api/kb/query');
         }
         throw err;
       }
