@@ -271,6 +271,67 @@ export function recordFullInstallPort(version: string, env: string | undefined =
   }
 }
 
+// ---------------------------------------------------------------------------
+// Full install over a member host (apra-fleet-vrzn.1)
+//
+// A full install ends by clearing the member-install marker, which silently
+// turns a fleet member host into a full install: the fleet then reports
+// full-install-running for every member sharing that data dir and those
+// members lose their KB/code tools. A full install whose target data dir
+// carries the marker therefore refuses before anything is stopped or written;
+// converting the host on purpose needs the explicit flag below.
+// ---------------------------------------------------------------------------
+
+/** Explicit override that lets a full install convert a member host (clears the marker). */
+export const CONVERT_MEMBER_HOST_FLAG = '--convert-member-host';
+
+/** Machine-readable code printed when a full install targets a member host. */
+export const MEMBER_HOST_FULL_INSTALL_CODE = 'E-MEMBER-HOST-FULL-INSTALL';
+
+export interface MemberInstallMarkerInfo {
+  path: string;
+  version: string | null;
+  port: number | null;
+}
+
+/** The marker in the targeted data dir, or null when there is none. An
+ *  unreadable or malformed marker still counts as present (version/port null). */
+export function readMemberInstallMarker(): MemberInstallMarkerInfo | null {
+  const file = memberInstallMarkerPath();
+  if (!hasMemberInstallMarker()) return null;
+  let version: string | null = null;
+  let port: number | null = null;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as { version?: unknown; port?: unknown };
+    if (typeof parsed?.version === 'string') version = parsed.version;
+    if (typeof parsed?.port === 'number' && Number.isInteger(parsed.port)) port = parsed.port;
+  } catch { /* present but unreadable: still a member host */ }
+  return { path: file, version, port };
+}
+
+/** The refusal a full install prints on a member host. `memberRerunLines` is
+ *  the exact install --member --force command line(s) for this executable. */
+export function memberHostRefusalText(marker: MemberInstallMarkerInfo, memberRerunLines: string[]): string {
+  const rerun = memberRerunLines.map(l => `      ${l}`).join('\n');
+  return `
+Error: ${MEMBER_HOST_FULL_INSTALL_CODE}: this host is a fleet member host; a full install would remove its member install.
+  Member-install marker: ${marker.path}
+  Recorded version: ${marker.version ?? 'unknown'}, recorded port: ${marker.port ?? 'unknown (default)'}
+
+  A full install clears this marker, after which the fleet treats every member using this
+  data dir as a full install (full-install-running) and they lose their KB/code tools.
+  Nothing was stopped or written.
+
+  To upgrade the member install, either:
+    - from the orchestrator: update_member {member_id, fleet_install: "auto"}
+    - or on this host: install --member --force (keeps the marker and the recorded port):
+${rerun}
+
+  To deliberately convert this host to a full install (removes the marker), re-run with
+  ${CONVERT_MEMBER_HOST_FLAG}.
+`;
+}
+
 export function clearMemberInstallMarker(): void {
   try { fs.rmSync(memberInstallMarkerPath(), { force: true }); } catch { /* best effort */ }
 }

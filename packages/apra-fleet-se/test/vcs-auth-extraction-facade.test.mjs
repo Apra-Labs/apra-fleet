@@ -120,6 +120,11 @@ const MOVED_PRIVATE_SYMBOLS = [
     // line. Added after the move; vcs-auth.mjs-only, never exported by
     // runner.js.
     'redactUrlUserinfo',
+    // The Sprint Setup provider-match check and its typed error code. Added
+    // after the move; runner.js imports the check for its own use and does
+    // not re-export either.
+    'VCS_PROVIDER_MISMATCH',
+    'assertPrMemberProviderMatchesRepo',
 ];
 
 const declaresTopLevel = (src, name) =>

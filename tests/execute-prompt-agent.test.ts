@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
+import { makeTestLocalAgent, backupAndResetRegistry, restoreRegistry, resultText } from './test-helpers.js';
 import { addAgent } from '../src/services/registry.js';
 import { executePrompt } from '../src/tools/execute-prompt.js';
 import type { SSHExecResult } from '../src/types.js';
@@ -109,8 +109,8 @@ describe('execute_prompt -- agent parameter', () => {
 
     const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5, agent: 'nonexistent' });
 
-    expect(result).toContain('not found');
-    expect(result).toContain('nonexistent');
+    expect(resultText(result)).toContain('not found');
+    expect(resultText(result)).toContain('nonexistent');
     expect(mockExecCommand).not.toHaveBeenCalled();
   });
 
@@ -125,7 +125,7 @@ describe('execute_prompt -- agent parameter', () => {
 
     const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5, agent: 'myagent' });
 
-    expect(result).toContain('.claude/agents/myagent.md');
+    expect(resultText(result)).toContain('.claude/agents/myagent.md');
     expect(mockExecCommand).not.toHaveBeenCalled();
   });
 
@@ -184,9 +184,9 @@ describe('execute_prompt -- agent parameter', () => {
 
     const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5, agent: 'nonexistent' });
 
-    expect(result).toContain('not found');
-    expect(result).toContain('nonexistent');
-    expect(result).toContain('.gemini/antigravity-cli/agents/nonexistent.md');
+    expect(resultText(result)).toContain('not found');
+    expect(resultText(result)).toContain('nonexistent');
+    expect(resultText(result)).toContain('.gemini/antigravity-cli/agents/nonexistent.md');
     expect(mockExecCommand).not.toHaveBeenCalled();
   });
 
@@ -332,13 +332,13 @@ describe('execute_prompt -- agent parameter', () => {
 
     const result = await executePrompt({ member_id: member.id, prompt: 'hi', resume: false, timeout_s: 5, agent: 'nonexistent' });
 
-    expect(result).toContain('not found');
-    expect(result).toContain('nonexistent');
+    expect(resultText(result)).toContain('not found');
+    expect(resultText(result)).toContain('nonexistent');
     // Project path should be .opencode/agents/, home path should be ~/.config/opencode/agents/
-    expect(result).toContain('.opencode/agents/nonexistent.md');
-    expect(result).toContain('.config/opencode/agents/nonexistent.md');
+    expect(resultText(result)).toContain('.opencode/agents/nonexistent.md');
+    expect(resultText(result)).toContain('.config/opencode/agents/nonexistent.md');
     // Must NOT show the old wrong path
-    expect(result).not.toMatch(/~\/\.opencode\/agents\//);
+    expect(resultText(result)).not.toMatch(/~\/\.opencode\/agents\//);
     expect(mockExecCommand).not.toHaveBeenCalled();
   });
 });

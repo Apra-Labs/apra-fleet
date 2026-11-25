@@ -134,7 +134,7 @@ export function syncDeferredVerifyIds(deferred, { beads, verifyEverIds }) {
  * The verify carry-over handed to Final Review, or null when nothing was
  * carried over.
  *
- * @param {{ needsEvidence?: Map<string, { reason: string, cycles: number }>, deferred?: Map<string, string|{ reason: string, bounceCap: true }>, closedIds?: Set<string>, atGoalIds?: Set<string> }} opts
+ * @param {{ needsEvidence?: Map<string, { reason: string, cycles: number, unverifiableCause?: string }>, deferred?: Map<string, string|{ reason: string, bounceCap: true }>, closedIds?: Set<string>, atGoalIds?: Set<string> }} opts
  *   closedIds: a carried-over id that closed after all (the runner did close
  *   it on a later pass) is not carried over.
  *   atGoalIds: the ids of the not-done beads (open, in_progress, blocked or
@@ -161,8 +161,11 @@ export function buildVerifyCarryOver({
                 id,
                 ...(belowGoal(id) ? { belowGoal: true } : {}),
                 kind: NEEDS_EXTERNAL_EVIDENCE,
-                reason: `left open by Integration Test with no gap bug filed on ${rec.cycles} consecutive cycle(s)` +
-                    (rec.reason ? `; integ runner: ${rec.reason}` : ''),
+                reason: rec.unverifiableCause
+                    ? `the Integration Test phase cannot run in this run (${rec.unverifiableCause}), and only it can close ` +
+                      'this verification-only bead'
+                    : `left open by Integration Test with no gap bug filed on ${rec.cycles} consecutive cycle(s)` +
+                      (rec.reason ? `; integ runner: ${rec.reason}` : ''),
             };
         }),
         ...deferredIds.map((id) => ({

@@ -1009,6 +1009,9 @@ const BEADS_IDENTITY_PROBE_KEYS = [
     ['where', /^bd where( --json)?$/],
     ['syncRemote', /^bd config get sync\.remote( --json)?$/],
     ['repoRemote', /^git remote get-url origin$/],
+    // The sprint-start tool version pin probes (same override map).
+    ['bdVersion', /^bd --version$/],
+    ['doltVersion', /^dolt version$/],
 ];
 
 /**
@@ -1037,6 +1040,10 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
     const {
         planReviewerMode = 'reject-then-approve',
         doerHandler = null,
+        // Optional (opts) => result override for the Streak Assignment
+        // dispatch (the LLM fallback taken only when ready beads carry no lane
+        // metadata). Absent: the default one-bead-per-streak JSON reply.
+        streakAssignmentHandler = null,
         reviewerHandler = null,
         // apra-fleet-eft.28.2: optional (opts) => result override for the
         // Planner dispatch (the fresh, non-streak-assignment 'planner' call
@@ -1181,7 +1188,9 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
         // `bd where` is synthesized from the shared tempDir by bd-replay.mjs,
         // sync.remote is unset, and origin is `originUrl` above -- so the
         // check passes. Shape: `{ [member]: { where?, syncRemote?,
-        // repoRemote? } }`, each value either the raw stdout to answer with or
+        // repoRemote?, bdVersion?, doltVersion? } }` (the last two answer the
+        // sprint-start `bd --version` / `dolt version` pin probes, which
+        // otherwise answer with the engine's pins), each value either the raw stdout to answer with or
         // `{ fail: '<stderr>' }` for a nonzero exit. Only the members/probes
         // named are intercepted; everything else keeps the default answer.
         beadsIdentity = null,
@@ -1812,6 +1821,7 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
             // consumption" path is exercised, not the invalid-output
             // fallback.
             if (isStreakAssignment) {
+                if (streakAssignmentHandler) return streakAssignmentHandler({ opts, tempDir });
                 const idsMatch = opts.prompt.match(/Ready bead ids:\s*(.+)/);
                 const ids = idsMatch ? idsMatch[1].split(',').map((s) => s.trim()).filter(Boolean) : [];
                 return { content: [{ text: JSON.stringify({ streaks: ids.map((id) => [id]) }) }] };
@@ -2051,7 +2061,15 @@ export function buildMockFleetApi(tempDir, epicBead, dispatched, commandLog, opt
         const handlerStructured = result.structuredContent || {};
         return {
             ...result,
-            structuredContent: { sessionId: MOCK_SESSION_ID, ...handlerStructured },
+            // Like the real execute_prompt: a tier request resolves to itself
+            // (a literal model id resolves to no tier).
+            structuredContent: {
+                sessionId: MOCK_SESSION_ID,
+                ...(opts && (opts.model === 'cheap' || opts.model === 'standard' || opts.model === 'premium')
+                    ? { resolved_tier: opts.model, resolved_model: `mock-model-${opts.model}` }
+                    : {}),
+                ...handlerStructured,
+            },
         };
     };
 
@@ -2225,7 +2243,7 @@ export async function runRejectedPlanScenario(tag) {
  * doer/reviewer handler overrides.
  */
 export async function runDevelopLoopScenario(tag, {
-    members, taskSpecs, doerHandler, reviewerHandler, plannerHandler,
+    members, taskSpecs, doerHandler, reviewerHandler, plannerHandler, streakAssignmentHandler,
     // apra-fleet-eft.72.2: optional plan-reviewer override -- see
     // buildMockFleetApi's `planReviewerHandler` option comment above. When
     // provided, this scenario's plan phase is driven by the handler instead
@@ -2305,6 +2323,9 @@ export async function runDevelopLoopScenario(tag, {
     // Optional `args.decision_notify` (decision-notify.mjs): where the operator
     // is told about a pending decision.
     decisionNotify,
+    // Optional `args.tier_policy` / `args.tier_overrides` passthroughs
+    // (tier-policy.mjs). Omitted: the run's default policy (balanced).
+    tierPolicy, tierOverrides,
     // Optional injected KB work client: main() reads context.kbWork.
     kbWork,
     // Optional `args.kb_demotion_loop` passthrough ('on' | 'off').
@@ -2409,6 +2430,7 @@ export async function runDevelopLoopScenario(tag, {
             planReviewerMode: 'approve-immediately',
             addExtraTaskDuringPlan: false,
             doerHandler,
+            streakAssignmentHandler,
             reviewerHandler,
             plannerHandler,
             planReviewerHandler,
@@ -2473,6 +2495,8 @@ export async function runDevelopLoopScenario(tag, {
                 ...(kbDemotionLoop !== undefined ? { kb_demotion_loop: kbDemotionLoop } : {}),
                 ...(skipRegression !== undefined ? { skip_regression: skipRegression } : {}),
                 ...(decisionNotify !== undefined ? { decision_notify: decisionNotify } : {}),
+                ...(tierPolicy !== undefined ? { tier_policy: tierPolicy } : {}),
+                ...(tierOverrides !== undefined ? { tier_overrides: tierOverrides } : {}),
             };
             // An injected kbWork client is not a CLI arg; hand it to main() the way
             // WorkflowEngine.executeFile hands over its context.

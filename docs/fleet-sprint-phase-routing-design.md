@@ -126,6 +126,30 @@ rides the parent's own verify route instead of living on a leaf -- i.e. never
 create a childless bead whose entire purpose is deployed-product
 verification.
 
+Option (a) is now implemented: a childless bead labelled `needs-live-evidence`
+is a verify target when it has no unmet prerequisite, and the doer-facing ready
+list never offers it. Rule 4 (all children closed) is unchanged for parents.
+
+Rule 4 is kept on purpose even when the only open children are below the goal
+priority or unrelated hygiene work. The integration-test runner files gap bugs
+under a verify target with no priority floor (`buildIntegVerifyClause` in
+`phases/integ-test.mjs`), so exempting below-goal children would let a parent
+with an open gap bug be verified again and break the path that routes a gap bug
+back to development. Such a held parent is a decomposed parent, so it never
+counts in open-at-goal and never blocks the exit gate; left unreported, the run
+would end with it silently open and unverified. The hold is therefore made
+observable instead of relaxed:
+
+- `classifyVerifySet()` records an `ineligible` entry (`kind: 'open-children'`,
+  `heldBy`) for every in-scope open parent with at least one closed child and at
+  least one open child, naming each open child and its priority.
+- `belowGoalVerifyHolds()` picks out the parents held ONLY by open children below
+  the goal priority or out of scope. The cycle-top Route log names each of them
+  with its holding child ids.
+- At sprint end, Final Review appends the same list to the verdict notes and
+  logs it, so the final report says which parents were left open and unverified
+  and which children held them.
+
 ### The rejected fix, and why
 
 A `--verify-only` sprint flag was proposed and rejected. A flag is a binary

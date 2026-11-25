@@ -10,6 +10,7 @@ import { ROLE_KB_MAINTAINER } from './kb-maintainer.mjs';
 import { parseExpectedIdentity } from './beads-identity.mjs';
 import { resolveBacklogRoleAlias } from './backlog-role.mjs';
 import { validateDecisionNotify } from './decision-notify.mjs';
+import { resolveTierPolicy, parseTierOverrides } from './tier-policy.mjs';
 
 // ---------------------------------------------------------------------------
 // CLI -> runner argument contract
@@ -103,6 +104,8 @@ const KNOWN_ARG_KEYS = new Set([
     // Off: the reviewer is offered no demotion candidates and no kb_demote is
     // issued. Any other value is rejected loudly (never a silent fallback).
     'kb_demotion_loop',
+    'tier_policy',
+    'tier_overrides',
     // Multi-streak worklist dispatch mode when a develop round has more ready
     // streaks than doers. 'resume' (default): per-streak dispatches that resume
     // the SAME doer session by explicit session id (warm-context carryover,
@@ -533,6 +536,12 @@ export function validateArgs(args) {
         throw new Error(`[Arg Contract] Invalid kb_demotion_loop ${JSON.stringify(kbDemotionLoop)}: must be 'on' (default) or 'off'.`);
     }
 
+    // --- tier_policy / tier_overrides (optional, default balanced) -----------
+    // Validated by resolveTierPolicy; the resolved policy is exposed as
+    // tierPolicy. tier_overrides is an object or a JSON string of one.
+    const tierOverrides = parseTierOverrides(args.tier_overrides);
+    const tierPolicy = resolveTierPolicy(args.tier_policy, tierOverrides);
+
     // --- skip_regression (optional, default false) -------------------------
     const skipRegression = args.skip_regression === undefined ? false : args.skip_regression;
     if (typeof skipRegression !== 'boolean') {
@@ -615,6 +624,8 @@ export function validateArgs(args) {
         resumeModelSwitch,
         skipRegression,
         kbDemotionLoop,
+        tierPolicy,
+        tierOverrides,
         worklistEffortBudget: args.worklist_effort_budget,
         usageLimitMaxWaitS: args.usage_limit_max_wait_s,
         usageLimitMaxReprobes: args.usage_limit_max_reprobes,

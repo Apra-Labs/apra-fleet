@@ -79,7 +79,7 @@
 import { dispatchRole, secondaryMaxTurns } from '../dispatch-role.mjs';
 import { buildFinalVerdictPrompt } from '../prompts.mjs';
 import { resolveFinalReviewMergeBase } from '../git-topology.mjs';
-import { normalizeMergeAssessment } from '../pr-body.mjs';
+import { normalizeMergeAssessment, normalizeRecommendationForVerdict } from '../pr-body.mjs';
 import { applyGuardedReopens, parseIdWithReasonEntry } from '../beads-transitions.mjs';
 import {
     validateNewTask, buildFallbackNewTask, appendRejectedFindingToParentNotes, persistNewTaskBestEffort,
@@ -90,10 +90,10 @@ import { buildSettleCallback } from '../dolt-settle.mjs';
 // exactly the bug: the cycle loop would exit "satisfied" while this phase
 // reported the deferred bead as still open, and the evidence-based final
 // verdict would then FAIL a sprint the loop had just declared complete.
-import { partitionDeferredBeads } from '../beads-scope.mjs';
+import { partitionDeferredBeads, hasLiveEvidenceMarker, classifyVerifySet, belowGoalVerifyHolds, formatVerifyHolds } from '../beads-scope.mjs';
 import { applyDeployFailureVerdictGate, formatDeployFailureReason } from './deploy.mjs';
 import { applyVerifyBlockVerdictGate } from '../verify-block.mjs';
-import { applyCarryOverVerdictGate } from '../set-aside.mjs';
+import { applyCarryOverVerdictGate, applyOpenWorkVerdictGate } from '../set-aside.mjs';
 import { buildVerifyCarryOver, applyVerifyCarryOverVerdictGate } from '../verify-carry-over.mjs';
 import { applyRedBuildIntegSkipVerdictGate, formatRedBuildIntegSkipVerdictReason } from '../red-build-integ-gate.mjs';
 
@@ -173,6 +173,11 @@ export async function runFinalReviewPhase({
     bdListScoped,
     decomposedParentIds,
     goalMax,
+    // Optional full-bead-list reader: when given, the end-of-run summary
+    // names every in-scope parent left open and unverified because only
+    // below-goal or out-of-scope open children held it out of verify
+    // (classifyVerifySet rule 4). Omitted -> not reported.
+    fetchAllBeadsShared = null,
     // Bead ids this sprint has dispatched or closed: a below-goal reopen of
     // one of them is applied, not deferred (see isDeferredScopeReopen).
     workedOnIds,
@@ -193,6 +198,11 @@ export async function runFinalReviewPhase({
     // fetched origin/<base> and the branch) on that member. Injected so this
     // phase issues no fleet command of its own; it throws on failure.
     reviewMergeBaseFor,
+    // Optional async ({ closedIds, titleById }) => ({ ran }): the catch-up
+    // review (phases/review.mjs runReviewCatchUpPhase, wired by runner.js).
+    // Called once, after this phase's D-pull and fresh reads; when it ran
+    // (reviewed or reopened beads) the reads below are taken again.
+    reviewCatchUp = null,
 }) {
     phase(`Final Review C${finalCycleLabel}`);
 
@@ -205,11 +215,28 @@ export async function runFinalReviewPhase({
     // (apra-fleet-7dir.24).
     const finalReviewSettleShell = await resolveSettleShell({ args, member: backlogMember, log, sprintState });
     await gitSync.syncBeadsBefore(backlogMember, { fatal: true, settle: buildSettleCallback(backlogMember, { command, log, shell: finalReviewSettleShell }) });
-    const [finalOpenAtGoalRaw, finalOpenAtGoalParentIds, finalClosedBeads] = await Promise.all([
+    const readFinalCounts = () => Promise.all([
         bdListScoped(`--status=${NOT_DONE_STATUSES} --priority-max=${goalMax} --json`),
         decomposedParentIds(),
-        bdListScoped('--status=closed --json'),
+        bdListScoped('--status=closed --json --brief'),
     ]);
+    let [finalOpenAtGoalRaw, finalOpenAtGoalParentIds, finalClosedBeads] = await readFinalCounts();
+    // Catch-up review: every bead this sprint dispatched that is closed now
+    // but never entered a review round's scope is reviewed (or reopened)
+    // here, before the final verdict. It reuses the fresh closed read above,
+    // so nothing to catch up costs no extra command; when it did run, its
+    // reopens/newTasks changed the local beads clone, so read again.
+    if (typeof reviewCatchUp === 'function') {
+        const closedList = Array.isArray(finalClosedBeads) ? finalClosedBeads : [];
+        const catchUp = await reviewCatchUp({
+            closedIds: closedList.map((b) => b && b.id).filter(Boolean),
+            titleById: new Map(closedList.filter((b) => b && b.id).map((b) => [b.id, b.title || b.id])),
+        });
+        if (catchUp && catchUp.ran) {
+            phase(`Final Review C${finalCycleLabel}`);
+            [finalOpenAtGoalRaw, finalOpenAtGoalParentIds, finalClosedBeads] = await readFinalCounts();
+        }
+    }
     // apra-fleet-rp7a.1: deferred beads are dropped from the closing count for
     // the same reason Cycle Evaluation drops them -- the dispatcher never
     // offers a deferred bead, so it is not work this sprint left undone. Their
@@ -217,8 +244,22 @@ export async function runFinalReviewPhase({
     // silently folded away, so the final reviewer judges "finished with N
     // beads deliberately deferred", not "finished with N beads still open".
     const { active: finalOpenAtGoal, deferredIds: finalDeferredAtGoalIds } =
-        partitionDeferredBeads(finalOpenAtGoalRaw.filter((b) => !finalOpenAtGoalParentIds.has(b.id)));
+        partitionDeferredBeads(finalOpenAtGoalRaw.filter((b) => !finalOpenAtGoalParentIds.has(b.id)
+            // A verify-routed verification-only leaf is reported through the
+            // verify evidence (finalUnclosedVerifyIds / verifyCarryOver), as a
+            // verify-routed parent is -- the same filter Cycle Evaluation applies.
+            && !(verifyEverIds.has(b.id) && hasLiveEvidenceMarker(b))));
     const finalClosedCount = finalClosedBeads.length;
+    // Parents held out of verify only by below-goal / out-of-scope open
+    // children never appear in finalOpenAtGoal (they are decomposed parents)
+    // and never block the exit gate, so name them here: otherwise the run ends
+    // with them silently open and unverified. The D-pull above dropped the
+    // shared snapshot and the bdListScoped reads just refilled it, so this
+    // read is post-pull and served from that snapshot (no extra bd call).
+    let finalVerifyHolds = [];
+    if (typeof fetchAllBeadsShared === 'function') {
+        finalVerifyHolds = belowGoalVerifyHolds(classifyVerifySet(await fetchAllBeadsShared(), targetIssues).ineligible, goalMax);
+    }
     // apra-fleet-jfo.2: same structural blind spot as the per-cycle exit
     // check -- verify-routed beads are decomposed parents, so they never
     // appear in finalOpenAtGoal (post-filtered via decomposedParentIds()),
@@ -412,17 +453,55 @@ export async function runFinalReviewPhase({
         finalVerdictResult = applyRedBuildIntegSkipVerdictGate(finalVerdictResult, redBuildIntegSkip);
         log(`Final Review: sprint verdict forced to FAIL (Final Review returned ${llmVerdict ?? '(none)'}) -- ${formatRedBuildIntegSkipVerdictReason(redBuildIntegSkip)}`);
     }
+    // A sprint cannot PASS while at/above-goal work is still open or a
+    // verify-routed bead is unclosed, whatever the reviewer concluded. Ids a
+    // sibling gate above already forced and named are not listed twice.
+    // Unclosed verify-routed beads count only when at/above the goal priority
+    // and not deferred, matching how the verify carry-over gate judges them.
+    // Deferred is read from the RAW at-goal read: verify-routed beads are
+    // decomposed parents, so finalDeferredAtGoalIds (parent-filtered) never
+    // holds them. A bounce-cap deferral still FAILs via the carry-over gate.
+    const blockingVerifyIds = (() => {
+        const atGoal = new Set(finalOpenAtGoalRaw.map((b) => b.id));
+        const deferred = new Set(partitionDeferredBeads(finalOpenAtGoalRaw).deferredIds);
+        return finalUnclosedVerifyIds.filter((id) => atGoal.has(id) && !deferred.has(id));
+    })();
+    if (finalOpenAtGoal.length > 0 || blockingVerifyIds.length > 0) {
+        const llmVerdict = finalVerdictResult && finalVerdictResult.verdict;
+        const alreadyNamedIds = [
+            ...(carryOverExit ? carryOverExit.atGoalIds : []),
+            ...(verifyCarryOver ? [...verifyCarryOver.needsEvidenceIds, ...(verifyCarryOver.bounceCapIds || [])] : []),
+        ];
+        const openAtGoalIds = finalOpenAtGoal.map((b) => b.id);
+        finalVerdictResult = applyOpenWorkVerdictGate(finalVerdictResult, { openAtGoalIds, unclosedVerifyIds: blockingVerifyIds, alreadyNamedIds });
+        log(`Final Review: sprint verdict forced to FAIL (Final Review returned ${llmVerdict ?? '(none)'}) -- open at/above goal: ${openAtGoalIds.join(', ') || '(none)'}; unclosed verify-routed: ${blockingVerifyIds.join(', ') || '(none)'}`);
+    }
     if (finalVerdictResult && belowGoalCarryOverIds && belowGoalCarryOverIds.size > 0) {
         const belowGoalNote = `Carried over (below goal ${validated.goal}, not reopened): a reviewer CHANGES_NEEDED named only these below-goal bead(s), all skipped by the goal-scope guard, so the sprint did not wait on them: ${[...belowGoalCarryOverIds].sort().join(', ')}.`;
         const prior = typeof finalVerdictResult.notes === 'string' ? finalVerdictResult.notes : '';
         finalVerdictResult = { ...finalVerdictResult, notes: prior ? `${prior}\n\n${belowGoalNote}` : belowGoalNote };
         log(`Final Review: ${belowGoalNote}`);
     }
+    if (finalVerdictResult && finalVerifyHolds.length > 0) {
+        const holdNote = `Left open and unverified: ${finalVerifyHolds.length} in-scope parent(s) had their other children closed but were held out of verify by open child(ren) below goal ${validated.goal} or out of scope (a parent with any open child is never verified): ${formatVerifyHolds(finalVerifyHolds)}.`;
+        const prior = typeof finalVerdictResult.notes === 'string' ? finalVerdictResult.notes : '';
+        finalVerdictResult = { ...finalVerdictResult, notes: prior ? `${prior}\n\n${holdNote}` : holdNote };
+        log(`Final Review: ${holdNote}`);
+    }
     if (finalVerdictResult && Array.isArray(reclaimCappedIds) && reclaimCappedIds.length > 0) {
         const cappedNote = `${reclaimCappedIds.length} bead(s) were left 'in_progress' by failed doer streaks of this sprint more often than the re-dispatch cap allows and were NOT re-laned again -- needs human investigation: ${reclaimCappedIds.join(', ')}.`;
         const prior = typeof finalVerdictResult.notes === 'string' ? finalVerdictResult.notes : '';
         finalVerdictResult = { ...finalVerdictResult, notes: prior ? `${prior}\n\n${cappedNote}` : cappedNote };
         log(`Final Review: ${cappedNote}`);
+    }
+    // Advisory merge recommendation must agree with the final (post-gate)
+    // verdict: a non-PASS verdict never carries `merge`. Verdict unchanged.
+    {
+        const { result, changed } = normalizeRecommendationForVerdict(finalVerdictResult);
+        if (changed) {
+            finalVerdictResult = result;
+            log('Final Review: merge_assessment recommendation normalised from merge to do_not_merge to match the FAIL verdict (verdict unchanged).');
+        }
     }
     // No duplicate log() dump -- see dispatchReview() for why.
     // `finalVerdictResult.verdict` also surfaces via the generic,
@@ -615,5 +694,8 @@ export async function runFinalReviewPhase({
         finalDeferredAtGoalIds,
         // The verify carry-over applied above, or null.
         verifyCarryOver,
+        // Parents left open and unverified because only below-goal or
+        // out-of-scope open children held them ([{ id, heldBy }]).
+        finalVerifyHolds,
     };
 }

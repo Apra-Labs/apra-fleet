@@ -132,7 +132,16 @@
  *   'max_total_time' (max_total_s, measured from the call including setup, ran out) |
  *   'secret_delivery_unavailable' (the member's stored credentials cannot be delivered
  *   without a command line -- relay member or SFTP disabled; deterministic, do not retry;
- *   no LLM call was made) | ...
+ *   no LLM call was made) |
+ *   'secret_in_prompt' (prompt contains a {{secret.NAME}} token; no LLM call) |
+ *   'invalid_arguments' (fork combined with session_id or a non-default resume, or neither
+ *   member_id nor member_name given; no LLM call) |
+ *   'substitution_failed' (substitutions key/placeholder validation failed; no LLM call) |
+ *   'provider_none' (member has llm_provider none; use execute_command; no LLM call) |
+ *   'agent_file_not_found' (the named `agent` file is missing on the member; no LLM call) |
+ *   'interactive_failed' (interactive-session delivery failed, the session died, or the wait
+ *   timed out; `dispatched:false` only when delivery itself failed) | ...
+ *   Early rejections that invoked no LLM carry `dispatched: false`.
  * @property {PermissionDenied} [permissionDenied] - Present when `reason === 'permission_denied'`:
  *   the member CLI refused tool calls (AGY headless mode auto-denies them and exits 0; Claude
  *   reports them in its result event's non-empty `permission_denials`). For Claude this needs the
@@ -144,6 +153,13 @@
  *   present as an EXTRA field on a typed failure (max_turns_exhausted, auth, server,
  *   overloaded, ...) or a non-strict Claude failure whose turn carried refusals: the typed
  *   reason wins.
+ * @property {'cheap'|'standard'|'premium'|null} [resolved_tier] - The tier that actually ran:
+ *   the requested tier keyword ('standard' when `model` was omitted), or the fallback tier when
+ *   the member's model_tiers lacks the requested one (a premium request on a member without a
+ *   premium model reports 'standard'). null when the caller passed a literal model id. Present
+ *   on every result that got as far as model resolution (success and later failures).
+ * @property {string} [resolved_model] - The concrete model string actually passed to the
+ *   provider (the model of resolved_tier).
  * @property {PermissionDenied} [permissionWarning] - Present on a SUCCESSFUL dispatch whose
  *   session refused tool calls without failing it: a healable:false refusal (never grant it),
  *   or any Claude refusal when `fail_on_permission_denial` was not set. A logged warning.
@@ -166,6 +182,14 @@
  *   the provider parsed one, so the SAME session can be resumed by explicit id later instead of
  *   losing context to a fresh one. The server also records it as a known session. Absent when
  *   the provider supplied none.
+ * @property {string} [model] - The model id the dispatch ran on: the id the provider reported when it
+ *   named one (Claude: the model keys of the result's per-model usage), else the id handed to the
+ *   provider CLI after tier mapping (see `modelSource`). Present on success and on typed failures ('usage_limit',
+ *   'max_turns_exhausted', ...) produced once the model was resolved; absent on results returned
+ *   before that (busy, reserved, preflight) and from older servers.
+ *   `packages/apra-fleet-workflow` forwards it via `onModelId` and `AgentDispatchError.details.model`.
+ * @property {'reported'|'resolved'} [modelSource] - Whether `model` was named by the provider
+ *   ('reported') or is only the resolved id/alias the server handed to the CLI ('resolved').
  * @property {ExecutePromptUsage} [usage]
  */
 
@@ -215,7 +239,10 @@
  *   (WMI provider host / session 0), independent of the SSH session's job object, since a plain
  *   background launch dies with the SSH channel there. darwin gets an advisory warning (the
  *   wrapper script is designed for Linux) but is not blocked. Matches
- *   src/tools/execute-command.ts's long_running branch exactly.
+ *   src/tools/execute-command.ts's long_running branch exactly. The call returns the
+ *   `Task launched: task_id=...` text only after the task wrapper started on the member;
+ *   otherwise it is a failure with `structuredContent.reason: 'launch_failed'` and no task_id.
+ *   Poll the task with the monitor_task tool (result shape: {@link MonitorTaskResult}).
  * @property {number} [max_retries] - Max crash retries (long_running only)
  * @property {string} [member_id] - UUID of the member
  * @property {string} [member_name] - Friendly name of the member
@@ -260,11 +287,31 @@
  * @property {boolean} [isError] - true when the command did not run to an exit code.
  * @property {string} [reason] - Present with isError: 'timeout' (inactivity timeout) |
  *   'max_total_time' (hard total-time cap) | 'transport_error' (connection/channel failure) |
- *   'cloud_start_failed' | 'preflight_offline' | 'preflight_auth_expired' |
- *   'preflight_auth_missing'.
+ *   'launch_failed' (long_running only: the launch exited nonzero or the task wrapper
+ *   never started on the member) | 'cloud_start_failed' | 'preflight_offline' |
+ *   'preflight_auth_expired' | 'preflight_auth_missing'.
  * @property {'secret_delivery_unavailable'} [storedEnvNotDelivered] - Present when the
  *   command ran WITHOUT the member's stored credential env vars because no
  *   owner-only file channel exists to deliver them (SFTP disabled, relay member).
+ */
+
+/**
+ * Parsed JSON text returned by the monitor_task tool for a long_running task.
+ * Mirrors src/tools/monitor-task.ts.
+ * @typedef {Object} MonitorTaskResult
+ * @property {string} taskId - The task id passed in.
+ * @property {'running'|'completed'|'failed'|'launch_failed'|'unknown'} status - The wrapper's
+ *   status.json status; 'launch_failed' when the task directory or wrapper never appeared on the
+ *   member (the task never started); 'unknown' when the task state could not be read.
+ * @property {number|null} exitCode - Final exit code, or null while running / never started.
+ * @property {number} retries - Crash retries used so far.
+ * @property {string|null} started - ISO start time, or null.
+ * @property {string|null} updated - ISO time of the last status update, or null.
+ * @property {boolean} pidAlive - Whether the task process is alive.
+ * @property {string} [reason] - Present with status 'launch_failed' or 'unknown': why.
+ * @property {number} [gpuUtilization] - Cloud members only.
+ * @property {string|null} logTail - Last lines of task.log (credential values redacted).
+ * @property {boolean} [autoStopped] - Set when auto_stop stopped the cloud instance.
  */
 
 /**
@@ -402,7 +449,7 @@
  * @property {boolean} [unverified] - KB/code tools could not be verified (e.g. agy)
  * @property {string} [fleetInstalledAt] - ISO 8601 time this fleet's own install run last succeeded on the member; carried across later probes; absent when the fleet never installed it (a refusal or observation-only probe never sets it)
  * @property {{reason: string, detail?: string}} [installFailure] - A requested apra-fleet upgrade that failed before the member was touched while the older install stayed in use; present on available and unavailable statuses, also named in detail
- * @property {{state: "missing" | "broken", detail: string, fix: string}} [beads] - Present only when the beads CLI (bd) is not usable on a remote member (not on its PATH nor in <home>/.apra-fleet/bin); independent of state; absent when bd works or could not be probed
+ * @property {{state: "missing" | "broken" | "version-mismatch", detail: string, fix: string}} [beads] - Present only when the beads CLI (bd) is not usable on a remote member, or runs but is off the pinned major.minor (state "version-mismatch", E-BD-VERSION-MISMATCH); "missing" means neither on its PATH nor in <home>/.apra-fleet/bin; independent of state; absent when bd works or could not be probed
  * @property {number} [port] - Remote members: the port of the member's own apra-fleet install, resolved from its member-install marker; the member MCP URL (per-folder entry and per-session config) uses it
  * @property {"marker" | "default"} [portSource] - Where port came from: the member-install marker, or the built-in default because the install recorded no port (detail says so)
  * @property {{previousVersion: string, removed: string[], backupPath: string}} [replacedFullInstall] - Set by the probe that replaced a full install with a member install (fleet_install "replace-full"): replaced version, what was removed or moved, and the timestamped backup directory on the member
@@ -751,9 +798,15 @@
  *   Each entry is checked against the NEVER_AUTO_GRANT denylist, which is
  *   wildcard-matched (not exact-matched) against a normalized form of the
  *   request: sudo/su/doas, `bash -c`/`sh -c`/eval, env/printenv, nc/nmap,
- *   `chmod 777`, any catch-all such as `Bash(*)`, and any payload containing a
- *   shell-chaining metacharacter (| ; && backtick $() are rejected outright,
- *   for every caller.
+ *   `chmod 777`, process-killing commands (kill, pkill, killall, taskkill,
+ *   tskill, Stop-Process, wmic process delete/terminate -- Bash or PowerShell
+ *   form, any case, path or .exe), any catch-all such as `Bash(*)`, and any
+ *   payload containing a shell-chaining metacharacter (| ; && backtick $() are
+ *   rejected outright, for every caller. A refused process-kill grant's text
+ *   says so. Every composed config also carries deny rules for
+ *   process-killing commands; they reduce the risk of a role killing
+ *   processes it did not start but cannot rule it out while other
+ *   interpreters (e.g. `Bash(bash:*)`) are allowed.
  * @property {string} [grant_reason] - Reason for the grant (stored in ledger)
  * @property {boolean} [dry_run] - Compose only: return the allow list the role/tags
  *   (plus detected stacks, plus the ledger when project_folder is given) would deliver, as

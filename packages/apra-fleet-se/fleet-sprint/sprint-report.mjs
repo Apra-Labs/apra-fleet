@@ -23,7 +23,7 @@
 
 import { createHash } from 'crypto';
 import { SAFE_TEXT_RE } from './newtask-text.mjs';
-import { formatDispatchToolCalls } from './dispatch-accounting.mjs';
+import { formatDispatchToolCalls, formatTierSummary } from './dispatch-accounting.mjs';
 import { formatSetAsideItems, formatWaitedLine } from './set-aside.mjs';
 
 // ---------------------------------------------------------------------------
@@ -228,6 +228,10 @@ export function buildAnalysisText({
             "Counted by each member's own fleet server (session_stats before/after each dispatch; the engine's own reads are excluded). 'unknown' means the count could not be read -- it is not zero.",
             '',
             ...formatDispatchToolCalls(dispatchToolCalls),
+            '',
+            '## Tier decisions',
+            '',
+            ...formatTierSummary(dispatchToolCalls),
         );
     }
     return lines.join('\n');

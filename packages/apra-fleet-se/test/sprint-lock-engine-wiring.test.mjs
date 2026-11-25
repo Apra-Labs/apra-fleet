@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { FleetWorkflow } from '@apralabs/apra-fleet-workflow';
 import { WorkflowEngine } from '@apralabs/apra-fleet-workflow/engine';
 import { acquireSprintLock, SprintLockHeldError } from '../fleet-sprint/sprint-lock.mjs';
+import { synthesizeToolVersion } from './helpers/bd-replay.mjs';
 
 // apra-fleet-eft.75.2: proves the REAL wiring in runner.js's main() -- not
 // just the standalone pidfile module (see sprint-lock.test.mjs) -- actually
@@ -58,12 +59,16 @@ function buildGatedFleetApi({ onFirstCommand } = {}) {
             if (/^bd where --json$/.test(opts.command)) {
                 return mockCmdResult(0, JSON.stringify({ database_path: '/spy/.beads/dolt', path: '/spy/.beads', prefix: 'bd', schema_version: 1 }));
             }
-            if (/^bd list --all --limit 0 --json$/.test(opts.command)) {
-                // Target must be visible (TARGET_NOT_VISIBLE is unconditional).
-                return mockCmdResult(0, JSON.stringify([
-                    ...JSON.parse(ONE_BEAD_JSON),
-                    { id: 'bd-1', status: 'open', title: 'Target' },
-                ]));
+            // The sprint-start bd/dolt version pin probes: answer with the
+            // engine's own pins so the check passes.
+            const toolVersion = synthesizeToolVersion(opts.command);
+            if (toolVersion) return mockCmdResult(0, toolVersion.stdout);
+            const byIdRead = /^bd list --all --limit 0 --json --id "([^"]+)"$/.exec(opts.command);
+            if (byIdRead || /^bd list --all --limit 0 --json --brief$/.test(opts.command)) {
+                // Target must be visible (TARGET_NOT_VISIBLE is unconditional);
+                // the snapshot's by-id text read is answered from the same rows.
+                const rows = [...JSON.parse(ONE_BEAD_JSON), { id: 'bd-1', status: 'open', title: 'Target' }];
+                return mockCmdResult(0, JSON.stringify(byIdRead ? rows.filter((b) => byIdRead[1].split(',').includes(b.id)) : rows));
             }
             if (/^bd list .*--ready/.test(opts.command)) {
                 // apra-fleet-eft.6.7 (mirrored from runner-arg-contract.test.mjs's

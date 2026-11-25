@@ -92,6 +92,30 @@ export function resolveGitBashPath(deps: ResolveGitBashPathDeps = {}): string {
 }
 
 /**
+ * The Git Bash FLEET_PID wrapper: pidWrapUnix's shape, but the marker carries
+ * the WINDOWS pid of the backgrounded subshell, read from MSYS's
+ * /proc/<msys-pid>/winpid, instead of bash's `$!`.
+ *
+ * `$!` is an MSYS pid, a namespace of its own: taskkill (killPid below) and
+ * every other Windows API read it as an unrelated Windows pid, so a timeout
+ * kill either missed the command or hit some other process. The winpid of the
+ * `{ cmd; } &` subshell is the Windows root of the command's tree. Verified on
+ * Git for Windows (GNU bash 5.2.37 x86_64-pc-msys) with a single native
+ * command: winpid -> bash.exe (fork stub) -> node.exe, where the MSYS pid
+ * matched none of them.
+ *
+ * `read` is a builtin, so no extra fork delays the marker. When the winpid
+ * cannot be read (the subshell already exited) NO marker is emitted -- falling
+ * back to the MSYS pid would reintroduce the wrong-process kill; with no pid
+ * captured the timeout kill is simply skipped, same as a command that never
+ * printed one. `wait` keeps the MSYS pid: it is bash's job id.
+ */
+export function pidWrapGitBash(cmd: string): string {
+  return `{ ${cmd}; } & _fleet_pid=$!; _fleet_wpid=; { read -r _fleet_wpid < "/proc/$_fleet_pid/winpid"; } 2>/dev/null; `
+    + `if [ -n "$_fleet_wpid" ]; then printf 'FLEET_PID:%s\\n' "$_fleet_wpid"; fi; wait "$_fleet_pid"; exit $?`;
+}
+
+/**
  * OS commands for a Windows member whose registered shell is Git-for-Windows
  * bash (`shell: 'gitbash'`).
  *
@@ -349,6 +373,16 @@ export class WindowsGitBashCommands extends LinuxCommands {
   }
 
   // --- Process management ---
+
+  /**
+   * Both FLEET_PID emit paths (wrapPidCapture and buildAgentPromptCommand)
+   * go through this hook, so both carry the Windows pid killPid needs -- see
+   * pidWrapGitBash. killPid itself still takes a Windows pid unchanged: a
+   * local member's timeout kills via Node's child.pid, already a Windows pid.
+   */
+  protected override pidWrap(command: string): string {
+    return pidWrapGitBash(command);
+  }
 
   override killPid(pid: number): string {
     // taskkill /T kills the whole process tree, which is what LinuxCommands

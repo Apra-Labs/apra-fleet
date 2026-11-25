@@ -160,6 +160,17 @@ export async function resolveSettleShellWith({ fleetApi, member, log = () => {} 
  * lazily-attached, sprint-lifetime pattern as `doctorBlockedIds`; this module
  * deliberately constructs no Map), which also sets the bead aside on
  * `doctorBlockedIds` (kind 'needs-decision').
+ *
+ * `reviewedScopeIds` is the sprint-scoped review-scope LEDGER: every bead id
+ * that entered some Review round's scope this run (phases/review.mjs
+ * recordReviewedScope). The catch-up review before Final Review
+ * (runReviewCatchUpPhase) reads it so a bead dispatched this sprint that
+ * closed outside any reviewed round -- e.g. a FAILED streak whose close
+ * landed later -- is reviewed (or reopened) exactly once, and a bead already
+ * reviewed is never re-reviewed by that path. Like every other in-memory
+ * sprint-lifetime record it is rebuilt on a journal resume: the workflow
+ * engine replays the recorded dispatch/command results through the same code
+ * path, so the same ids are added in the same order.
  */
 export function createSprintState({ callTool, log = () => {}, createFleetApi } = {}) {
     const active = typeof callTool === 'function';
@@ -190,5 +201,6 @@ export function createSprintState({ callTool, log = () => {}, createFleetApi } =
         },
         dispatchToolCalls: [],
         memberInit: [],
+        reviewedScopeIds: new Set(),
     };
 }

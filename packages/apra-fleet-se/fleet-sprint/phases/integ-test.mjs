@@ -73,8 +73,54 @@
 // =============================================================================
 
 import { dispatchRole, secondaryMaxTurns } from '../dispatch-role.mjs';
-import { classifyVerifySet } from '../beads-scope.mjs';
+import { classifyVerifySet, LIVE_EVIDENCE_LABEL } from '../beads-scope.mjs';
 import { markBounceCapDeferral } from '../verify-carry-over.mjs';
+
+/**
+ * The verify clause of the integ-test-runner dispatch prompt: names every
+ * verify-routed bead (classifyVerifySet) and says how to close it or report a
+ * gap. With no verification-only leaf in the set the text is the historical
+ * all-children-closed wording, byte for byte. When the set holds marked
+ * childless leaves (LIVE_EVIDENCE_LABEL), the opening no longer claims every
+ * bead has closed children, and a closing sentence names the leaves and what
+ * a gap bug under one does: it makes the leaf a parent with an open child,
+ * which deliberately routes it back to development; once that gap's work
+ * closes it returns to verification. The id list always sits between
+ * "verification-closure: " and ". For each," (test/helpers/verify-clause.mjs).
+ *
+ * @param {{ verifyIds: string[], leafVerifyIds?: string[], fallbackParentId: string }} opts
+ * @returns {string} '' when there is nothing to verify
+ */
+export function buildIntegVerifyClause({ verifyIds, leafVerifyIds = [], fallbackParentId }) {
+    const ids = Array.isArray(verifyIds) ? verifyIds : [];
+    if (ids.length === 0) return '';
+    const idSet = new Set(ids);
+    const leaves = (Array.isArray(leafVerifyIds) ? leafVerifyIds : []).filter((id) => idSet.has(id));
+    const parents = ids.filter((id) => !leaves.includes(id));
+    const opening = leaves.length === 0
+        ? ` Additionally, these bead(s) have ALL their children closed and await `
+        : ` Additionally, these bead(s) await `;
+    const body =
+        `verification-closure: ${ids.join(', ')}. For each, verify against the ` +
+        `deployed build per the playbook. If your pass shows the underlying work holds (the ` +
+        `defect no longer reproduces, or the feature behaves as specified), close it (bd close) ` +
+        `with a note citing the commands run and the observed output. If it does NOT hold, leave ` +
+        `it open and file a bug describing the gap with evidence, parented under THAT bead ` +
+        `specifically (--parent <that bead's own id>, NOT ${fallbackParentId}) -- filing it under ` +
+        `the right parent is required so the gap is correctly attributed and that parent is ` +
+        `re-routed to development next cycle instead of staying stuck in verify.`;
+    if (leaves.length === 0) return opening + body;
+    const leafSentence =
+        ` Of these, ${leaves.join(', ')} ${leaves.length === 1 ? 'is a childless verification-only bead' : 'are childless verification-only beads'} ` +
+        `labelled ${LIVE_EVIDENCE_LABEL}: there is nothing left to implement, only live evidence from ` +
+        `this pass to collect` +
+        (parents.length > 0 ? `; the others (${parents.join(', ')}) have ALL their children closed` : '') +
+        `. A gap bug filed under such a childless bead makes it a parent with an open child, which ` +
+        `deliberately routes it back to development; once that gap's work closes it returns to ` +
+        `verification. If you can neither confirm nor refute it on this deployment, leave it open ` +
+        `with a note saying what evidence is missing and file no bug.`;
+    return opening + body + leafSentence;
+}
 
 /**
  * Runs the per-cycle Integ Test phase.
@@ -177,7 +223,8 @@ export async function runIntegTestPhase({
     // names features -- without this they would linger open at goal
     // priority forever. The integ runner has bead-closing authority
     // and pushBeads: true, so it owns verify-set closure.
-    ({ verifyIds: verifySetForIntegTest } = classifyVerifySet(await fetchAllBeadsShared(), targetIssues));
+    let verifyLeafIdsForIntegTest;
+    ({ verifyIds: verifySetForIntegTest, leafVerifyIds: verifyLeafIdsForIntegTest } = classifyVerifySet(await fetchAllBeadsShared(), targetIssues));
     // A verify-routed bead carried over as needs-external-evidence is not
     // re-dispatched: two consecutive passes could neither confirm nor refute
     // it on these members, so another pass only burns a cycle.
@@ -203,17 +250,11 @@ export async function runIntegTestPhase({
     // verify clause below (real evidence, gap filed under itself), not
     // also the generic "run tests for this feature" line.
     const openFeaturesNotInVerifySet = openFeatures.filter((f) => !verifySetIdSet.has(f.id));
-    const verifyClause = verifySetForIntegTest.length > 0
-        ? ` Additionally, these bead(s) have ALL their children closed and await ` +
-          `verification-closure: ${verifySetForIntegTest.join(', ')}. For each, verify against the ` +
-          `deployed build per the playbook. If your pass shows the underlying work holds (the ` +
-          `defect no longer reproduces, or the feature behaves as specified), close it (bd close) ` +
-          `with a note citing the commands run and the observed output. If it does NOT hold, leave ` +
-          `it open and file a bug describing the gap with evidence, parented under THAT bead ` +
-          `specifically (--parent <that bead's own id>, NOT ${targetIssues[0]}) -- filing it under ` +
-          `the right parent is required so the gap is correctly attributed and that parent is ` +
-          `re-routed to development next cycle instead of staying stuck in verify.`
-        : '';
+    const verifyClause = buildIntegVerifyClause({
+        verifyIds: verifySetForIntegTest,
+        leafVerifyIds: verifyLeafIdsForIntegTest,
+        fallbackParentId: targetIssues[0],
+    });
     // The per-cycle Integ Test phase is FEATURE CLOSURE ONLY:
     // whole-product regression checks belong to the target's
     // regression-test-playbook.md, dispatched once per sprint in

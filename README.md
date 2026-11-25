@@ -90,6 +90,11 @@ It is not a toy. It builds apra-fleet itself:
   notified once by message and email, and your answer on the dashboard or
   via `bd human respond` resumes it
   ([details](docs/fleet-sprint-set-aside.md))
+- Will not report a clean PASS with work still open: the final review fails
+  the verdict when beads at or above goal priority remain open, catches up
+  review of beads that closed after the last review round, and surfaces any
+  beads-sync failure in the PR body
+  ([details](docs/fleet-sprint-final-review-gates.md))
 
 A fleet that has run in production:
 
@@ -195,7 +200,7 @@ for every option.
   <img src="assets/marketing/fleet-stack-light.svg" alt="apra-fleet layered architecture stack: dependencies from OS primitives up to autonomous engineering orchestrators" width="100%">
 </picture>
 
-**Component Docs:** [fleet-sprint](packages/apra-fleet-se/fleet-sprint/docs/README.md) | [auto-sprint.js](packages/apra-fleet-se/apra-pm/docs/sprint-workflow.md) | [apra-fleet-client](packages/apra-fleet-client/docs/overview.md) | [apra-pm](packages/apra-fleet-se/apra-pm/README.md) | [apra-fleet-mcp](docs/mcp-tools.md) | [Agent Roles](packages/apra-fleet-se/docs/role-contracts.md) | [Sprint reliability gates](docs/sprint-reliability-gates.md)
+**Component Docs:** [fleet-sprint](packages/apra-fleet-se/fleet-sprint/docs/README.md) | [auto-sprint.js](packages/apra-fleet-se/apra-pm/docs/sprint-workflow.md) | [apra-fleet-client](packages/apra-fleet-client/docs/overview.md) | [apra-pm](packages/apra-fleet-se/apra-pm/README.md) | [apra-fleet-mcp](docs/mcp-tools.md) | [Agent Roles](packages/apra-fleet-se/docs/role-contracts.md) | [Sprint reliability gates](docs/sprint-reliability-gates.md) | [Dispatch spend design](docs/fleet-sprint-dispatch-spend-design.md)
 
 ### Fleet Dispatch Topology
 
@@ -399,7 +404,9 @@ Bitbucket, and Azure DevOps -- host differences (URL shape, PR REST dialect,
 auth pattern, error vocabulary) are hidden behind a per-provider descriptor
 rather than leaking into shared code; see
 `docs/design-azure-devops-vcs-auth.md` for the Azure DevOps provider's
-credential-assembly and PAT-lifetime details. A credential-requiring VCS
+credential-assembly and PAT-lifetime details. Sprint PR publishing never
+overwrites human PR text outside its marked block and fails loudly on provider
+mismatch; see `docs/fleet-sprint-pr-publishing.md`. A credential-requiring VCS
 command can be handed to the server for execution (`vcs_credential_exec`)
 rather than the orchestrator learning the plaintext token itself: the
 server substitutes the credential into the command, runs it on the member,

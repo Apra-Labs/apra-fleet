@@ -7,7 +7,8 @@ import { v4 as uuid } from 'uuid';
 import type { Agent, SSHExecResult, TransferResult } from '../types.js';
 import { getOsCommands } from '../os/index.js';
 import { getAgentOS, getAgentShell, setStoredPid, clearStoredPid } from '../utils/agent-helpers.js';
-import { escapeDoubleQuoted, escapeWindowsArg } from '../utils/shell-escape.js';
+import { escapeDoubleQuoted, escapeShellArg, escapeWindowsArg } from '../utils/shell-escape.js';
+import { logWarn } from '../utils/log-helpers.js';
 import { wrapPowerShellEncoded } from '../os/windows.js';
 import { completesOnProcessExit, exitDrainMs } from './exit-drain.js';
 
@@ -163,15 +164,90 @@ export function privateSecretDir(base = os.tmpdir()): string {
   return dir;
 }
 
+/**
+ * Largest command (in UTF-8 bytes) a local Git Bash member receives inline as
+ * the `bash.exe -c <command>` argv element. Above it the command travels as
+ * DATA in a temp file instead: a single large argv element is corrupted
+ * between Node's spawn() and the MSYS runtime's argv reconstruction somewhere
+ * around 8.1-8.4KB (a PowerShell -EncodedCommand payload then fails with
+ * "not properly encoded", exit 127), and past ~29KB spawn() throws
+ * ENAMETOOLONG. 4KB leaves a wide margin under the empirical limit.
+ */
+export const GITBASH_INLINE_COMMAND_MAX_BYTES = 4096;
+
+/**
+ * Write an oversized local Git Bash command to a fresh owner-only file
+ * (0600, O_EXCL, random name) inside the per-user 0700 privateSecretDir --
+ * the command may carry resolved {{secret.*}} values. Returns the path.
+ */
+export function writeLocalCommandFile(command: string, base?: string): string {
+  const p = path.join(privateSecretDir(base), `fleet-cmd-${uuid()}.sh`);
+  fs.writeFileSync(p, command, { encoding: 'utf-8', mode: 0o600, flag: 'wx' });
+  return p;
+}
+
+/**
+ * The short inline command that makes bash run a command file: `.` (source)
+ * runs it in the SAME bash process, so child.pid stays the process running
+ * the command (tree-kill and the FLEET_PID protocol are unchanged), and bash
+ * reads the whole file before executing it. Git Bash wants forward slashes.
+ */
+export function gitBashSourceCommand(filePath: string): string {
+  return `. ${escapeShellArg(filePath.replace(/\\/g, '/'))}`;
+}
+
+/**
+ * Delete a command file written by writeLocalCommandFile. Retries once
+ * shortly after a failure (on Windows a just-killed process tree can briefly
+ * keep the file busy), and logs if it still cannot be removed rather than
+ * silently leaving a file that may hold credentials.
+ */
+export function removeLocalCommandFile(filePath: string): void {
+  try {
+    fs.rmSync(filePath, { force: true });
+    return;
+  } catch { /* retried below */ }
+  const retry = setTimeout(() => {
+    try {
+      fs.rmSync(filePath, { force: true });
+    } catch (err: any) {
+      logWarn('local_exec', `could not delete command file ${filePath}: ${err?.message ?? err}`);
+    }
+  }, 500);
+  retry.unref();
+}
+
 class LocalStrategy implements AgentStrategy {
   constructor(private agent: Agent) {}
 
   async execCommand(command: string, timeoutMs = 30000, maxTotalMs?: number, onPidCaptured?: (pid: number) => void, abortSignal?: AbortSignal): Promise<SSHExecResult> {
+    // Set when an oversized Git Bash command is delivered through a temp
+    // file; deleted in the finally below on every exit path (close, nonzero
+    // exit, spawn error, timeouts, abort, a synchronous throw).
+    let commandFile: string | undefined;
+    try {
+      return await this.execCommandInner(command, timeoutMs, maxTotalMs, onPidCaptured, abortSignal, (p) => { commandFile = p; });
+    } finally {
+      if (commandFile) removeLocalCommandFile(commandFile);
+    }
+  }
+
+  private async execCommandInner(command: string, timeoutMs: number, maxTotalMs: number | undefined, onPidCaptured: ((pid: number) => void) | undefined, abortSignal: AbortSignal | undefined, onCommandFile: (p: string) => void): Promise<SSHExecResult> {
     let pidExtracted = false;
     const result = await new Promise<SSHExecResult>((resolve, reject) => {
-      const cmds = getOsCommands(getAgentOS(this.agent), getAgentShell(this.agent));
+      const agentShell = getAgentShell(this.agent);
+      const cmds = getOsCommands(getAgentOS(this.agent), agentShell);
       const { command: wrapped, env, shell } = cmds.cleanExec(command);
-      const child = spawn(wrapped, { shell: shell ?? true, cwd: this.agent.workFolder, env, windowsHide: true });
+      // Git Bash member: a long command travels as data in a temp file, never
+      // as one huge argv element (see GITBASH_INLINE_COMMAND_MAX_BYTES).
+      // Every other member, and short Git Bash commands, spawn exactly as before.
+      let spawnCommand = wrapped;
+      if (agentShell === 'gitbash' && shell && Buffer.byteLength(wrapped, 'utf8') > GITBASH_INLINE_COMMAND_MAX_BYTES) {
+        const file = writeLocalCommandFile(wrapped);
+        onCommandFile(file);
+        spawnCommand = gitBashSourceCommand(file);
+      }
+      const child = spawn(spawnCommand, { shell: shell ?? true, cwd: this.agent.workFolder, env, windowsHide: true });
 
       // child.kill() only signals the immediate spawned process (the shell
       // wrapper -- powershell.exe / sh). The actual provider CLI runs as a

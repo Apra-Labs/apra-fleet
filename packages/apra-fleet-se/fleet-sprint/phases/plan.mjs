@@ -102,7 +102,12 @@ export async function runPlanPhase({
     // against. Optional: without it a planner decision cannot be placed in
     // scope and is ignored (logged).
     bdListScoped = null,
+    // The run's held tier policy (tier-policy.mjs). Its premiumCapPct is
+    // passed into the planner and plan-reviewer prompts; null (quality, or a
+    // caller without a policy) adds no cap text.
+    tierPolicy = null,
 }) {
+    const premiumCapPct = tierPolicy ? tierPolicy.premiumCapPct : null;
     // The one reassigned input (header: MUTABLE STATE IS THREADED). Rebound to
     // a local so the body below reads exactly as it did inline, and handed
     // back to runner.js in the return value.
@@ -166,6 +171,7 @@ export async function runPlanPhase({
             rejectedNewTasksToResubmit: pendingRejectedNewTasks,
             verifyExcluded: verifySetThisCycle,
             stalenessNotes: parentNotesStalenessNotes,
+            premiumCapPct,
         });
         // The planner writes no code but MUTATES beads (it creates the task
         // DAG), so its policy is bracketed pushCode:false / pushBeads:true --
@@ -308,7 +314,7 @@ export async function runPlanPhase({
         // stamps that marker from the policy row; the notes below are the
         // per-error-class text this call site still owns.
         const planReviewOutcome = await dispatchRole(dispatchCtx, 'plan-reviewer', {
-            prompt: buildPlanReviewerPrompt({ targetIssues, goal: validated.goal, priorRoundVerdicts: priorPlanRoundVerdicts, verifyExcluded: verifySetThisCycle, stalenessNotes: parentNotesStalenessNotes, decisionSetAside: decisionSetAsideList(sprintState) }),
+            prompt: buildPlanReviewerPrompt({ targetIssues, goal: validated.goal, priorRoundVerdicts: priorPlanRoundVerdicts, verifyExcluded: verifySetThisCycle, stalenessNotes: parentNotesStalenessNotes, decisionSetAside: decisionSetAsideList(sprintState), premiumCapPct }),
             resumePrompt: 'Continue your plan review exactly where you left off in this same session -- do not restart or re-read the DAG from scratch. Finish the remaining criteria and return your final verdict now.',
             roleLabel: 'Plan Reviewer',
             resumeLabel: `Plan Review (resume, max_turns=${secondaryMaxTurns('plan-reviewer')})`,

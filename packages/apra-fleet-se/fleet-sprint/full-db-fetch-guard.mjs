@@ -50,14 +50,16 @@ import { guardedModulePaths } from './guarded-modules.mjs';
 import { logicalBdCommand } from './bd-sync-command.mjs';
 
 /** The single documented, cache-backed full-DB fetch command (runner.js's fetchAllBeadsShared()). */
-export const FULL_DB_FETCH_CMD = 'bd list --all --limit 0 --json';
+export const FULL_DB_FETCH_CMD = 'bd list --all --limit 0 --json --brief';
 
 // Matches ANY "unscoped full list" shaped `bd list` invocation -- i.e. one
 // that combines `--all` with `--limit 0` -- regardless of flag order or
 // trailing flags, so a regression that reshapes fetchAllBeadsShared's
 // command text (or a brand new call site with a similar but non-identical
 // shape) is still caught by rule 2 above, not just an exact-string match.
-const FULL_DB_SHAPE_RE = /^bd\s+list\b(?=.*(?:^|\s)--all(?:\s|$))(?=.*(?:^|\s)--limit\s+0(?:\s|$))/;
+// A list narrowed by `--id` (the snapshot's in-scope text read) is scoped,
+// not a full-DB fetch.
+const FULL_DB_SHAPE_RE = /^bd\s+list\b(?=.*(?:^|\s)--all(?:\s|$))(?=.*(?:^|\s)--limit\s+0(?:\s|$))(?!.*(?:^|\s)--id(?:\s|=|$))/;
 
 // Mirrors runner.js's own BD_READ_ONLY_RE (the `command`/`phase` wrapper at
 // the top of runSprintCycle): a `bd` command matching this shape is treated
@@ -66,7 +68,8 @@ const FULL_DB_SHAPE_RE = /^bd\s+list\b(?=.*(?:^|\s)--all(?:\s|$))(?=.*(?:^|\s)--
 // dep/dolt pull/etc -- an unrecognized subcommand is conservatively assumed
 // to mutate) does invalidate it. Non-`bd` commands (git, node probes) never
 // touch beads state and are ignored entirely.
-const BD_READ_ONLY_RE = /^bd\s+(list|show|ready|config)\b/i;
+// `bd --version` is the sprint-start version pin probe (read-only).
+const BD_READ_ONLY_RE = /^bd\s+(list|show|ready|config|--version)\b/i;
 
 /**
  * Given `entries` (an ordered array of { phase, command }, as produced by

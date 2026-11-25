@@ -530,3 +530,77 @@ test('permissionLedgerFolder: no member name can escape the ledger root (dot-onl
         assert.ok(!path.basename(folder).includes('.'), `${JSON.stringify(name)} -> ${folder}`);
     }
 });
+
+// ---------------------------------------------------------------------------
+// Process-killing commands: never granted by the engine (parity with
+// compose_permissions). The policy below deliberately CONTAINS kill grants
+// (as an older profile or ledger could), so only the engine's own refusal
+// keeps them from being granted.
+// ---------------------------------------------------------------------------
+
+const KILL_POLICY = { doer: [...DOER_NODE_POLICY, 'Bash(kill:*)', 'Bash(pkill:*)', 'Bash(taskkill:*)'], reviewer: REVIEWER_POLICY };
+
+test('process kill: a refusal whose only calls are kills is never granted -- no compose call, typed reason, no heal spent', async () => {
+    const fleet = fakeFleet({ policy: KILL_POLICY });
+    const logs = [];
+    const heal = createPermissionDenialHeal({ callTool: fleet.callTool, memberRoles: () => ['doer'], log: (l) => logs.push(l) });
+    for (const cmd of ['taskkill //F //IM node.exe', 'kill -9 4242', 'pkill -f node']) {
+        const res = await heal({ member: 'dev', role: 'doer', denial: bashDenial(cmd) });
+        assert.equal(res.healed, false, cmd);
+        assert.equal(res.step, 'not_healable', cmd);
+        assert.equal(res.refused, 'process_kill_refused', cmd);
+        assert.match(res.reason, /^process_kill_refused: /, cmd);
+        assert.ok(res.refusedRules.length > 0, cmd);
+        assert.deepEqual(res.grants, [], cmd);
+    }
+    assert.equal(fleet.calls.length, 0, 'a process-kill refusal must never reach compose_permissions (not even dry_run)');
+    assert.ok(logs.some((l) => l.includes('REFUSED (process_kill_refused)') && l.includes('Bash(taskkill:*)')), logs.join('\n'));
+    // The heal counter was not touched: the full per-member cap is still available.
+    for (const cmd of ['npm test', 'gh pr view 1', 'git status'].slice(0, PERMISSION_HEAL_MEMBER_CAP)) {
+        assert.equal((await heal({ member: 'dev', role: 'doer', denial: bashDenial(cmd) })).healed, true, cmd);
+    }
+});
+
+test('process kill: the dispatch stops at once -- one dispatch, no re-dispatch, MemberPermissionDeniedError naming the typed reason', async () => {
+    const fleet = fakeFleet({ policy: KILL_POLICY });
+    const { ctx, rec } = createRecordingCtx({
+        responses: [deniedWith(bashDenial('taskkill //F //IM node.exe')), APPROVED],
+        members: { 'plan-reviewer': 'dev' },
+    });
+    ctx.onPermissionDenied = createPermissionDenialHeal({ callTool: fleet.callTool, memberRoles: () => ['doer'] });
+    await assert.rejects(dispatchRole(ctx, 'plan-reviewer', planReviewOpts()), (err) => {
+        assert.ok(err instanceof MemberPermissionDeniedError, String(err));
+        assert.equal(err.step, 'not_healable');
+        assert.match(err.message, /process_kill_refused/);
+        return true;
+    });
+    assert.equal(rec.dispatches.length, 1);
+    assert.equal(fleet.calls.length, 0);
+});
+
+test('process kill: refused next to another call, only the other call is healed', async () => {
+    const fleet = fakeFleet({ policy: KILL_POLICY });
+    const logs = [];
+    const heal = createPermissionDenialHeal({ callTool: fleet.callTool, memberRoles: () => ['doer'], log: (l) => logs.push(l) });
+    const kill = bashDenial('pkill -f node');
+    const npm = bashDenial('npm test');
+    const denial = {
+        ...npm,
+        denials: [...kill.denials, ...npm.denials],
+        suggestedGrants: [...kill.suggestedGrants, ...npm.suggestedGrants],
+    };
+    const res = await heal({ member: 'dev', role: 'doer', denial });
+    assert.equal(res.healed, true);
+    assert.deepEqual(res.grants, ['Bash(npm:*)']);
+    const granted = fleet.writes().filter((c) => c.args.grant).flatMap((c) => c.args.grant);
+    assert.deepEqual(granted, ['Bash(npm:*)']);
+    assert.ok(logs.some((l) => l.includes('REFUSED (process_kill_refused)')), logs.join('\n'));
+});
+
+test('grantWithinPolicy: a process-kill grant is never in policy, even when the policy lists it', () => {
+    for (const g of ['Bash(kill:*)', 'Bash(pkill:*)', 'Bash(taskkill:*)', 'Bash(taskkill //F //IM node.exe)']) {
+        assert.equal(grantWithinPolicy(g, KILL_POLICY.doer), false, g);
+    }
+    assert.equal(grantWithinPolicy('Bash(npm:*)', KILL_POLICY.doer), true);
+    assert.equal(grantWithinPolicy('Bash(node scripts/kill-port.mjs 1)', KILL_POLICY.doer), true);
+});

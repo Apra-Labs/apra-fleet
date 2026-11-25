@@ -9,7 +9,7 @@ import { describe, it, expect } from 'vitest';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
-import { makeTestAgent } from './test-helpers.js';
+import { makeTestAgent, decodePowerShellEncodedCommand } from './test-helpers.js';
 import {
   parseSha256Sums,
   downloadVerifiedAsset,
@@ -86,7 +86,7 @@ describe('release asset download integrity', () => {
 function depsWithDownloadError(err: Error): MemberFleetInstallDeps {
   const ok = (stdout: string) => ({ stdout, stderr: '', code: 0 });
   return {
-    exec: async (_a, command) => (command.includes('--version') ? ok('__APRA_FLEET_NO_INSTALL__\n') : ok('x86_64\n')),
+    exec: async (_a, command) => (decodePowerShellEncodedCommand(command).includes('--version') ? ok('__APRA_FLEET_NO_INSTALL__\n') : ok('x86_64\n')),
     transfer: async () => ({ success: [], failed: [] }),
     resolveHome: async () => '/home/bella',
     orchestratorPlatform: () => ({ os: 'macos', arch: 'arm64' }),
@@ -115,7 +115,8 @@ describe('a refused install over a running full-install server is typed full-ins
       orchestratorPlatform: () => ({ os: 'linux', arch: 'x64' }),
       orchestratorExecutable: () => '/opt/fleet/apra-fleet',
       transfer: async (_a, p) => ({ success: p, failed: [] }),
-      exec: async (_a, command) => {
+      exec: async (_a, raw) => {
+        const command = decodePowerShellEncodedCommand(raw);
         if (command.includes('--version')) return ok('__APRA_FLEET_NO_INSTALL__\n');
         if (command.includes('uname -m')) return ok('x86_64\n');
         installed = true;

@@ -99,6 +99,7 @@ import {
     createMemberVcsProviderResolver, createVcsAuthSelfHealCallback, createVcsAuthPreflightCallback,
     createWorkflowsPermissionPreflightCallback,
     createLlmAuthSelfHealCallback,
+    assertPrMemberProviderMatchesRepo,
 } from './vcs-auth.mjs';
 import { validateIssueId, validateBranchName, validateBranchPair, validateArgs, validateGoal, validateMaxCycles, validateBudget } from './sprint-args.mjs';
 import { verifyBeadsIdentity, createBeadsIdentityProber, BEADS_READING_ROLES } from './beads-identity-check.mjs';
@@ -165,9 +166,9 @@ import { runDevelopPhase } from './phases/develop.mjs';
 // module's header for where its boundary is drawn and why the probe/else
 // around Deploy, and the dashboard/still-open loop control after Review,
 // stayed here.
-import { runReviewPhase } from './phases/review.mjs';
+import { runReviewPhase, runReviewCatchUpPhase } from './phases/review.mjs';
 import { runDeployPhase, latestDeployFailure, formatDeployFailureReason, formatDeploySetAsideNotes, DEPLOY_RETRY_CYCLE_LIMIT } from './phases/deploy.mjs';
-import { collectSetAsideEntries, evaluateSetAsideStall, formatSetAsideStallMessage, stuckBehindSetAside, collectWaitEntries, closedWorkThisRun, buildSetAsideCarryOver, buildPlanRejectedCarryOver, formatCarryOverNotes } from './set-aside.mjs';
+import { collectSetAsideEntries, evaluateSetAsideStall, formatSetAsideStallMessage, stuckBehindSetAside, collectWaitEntries, closedWorkThisRun, stallSettlementSummary, buildSetAsideCarryOver, buildPlanRejectedCarryOver, formatCarryOverNotes } from './set-aside.mjs';
 import { NEEDS_EXTERNAL_EVIDENCE_CYCLE_LIMIT, recordInconclusiveVerifyCycle, stillOpenVerifyIdsForExit, syncDeferredVerifyIds, buildVerifyCarryOver, formatVerifyCarryOverNotes } from './verify-carry-over.mjs';
 // apra-fleet-3swo.6.8: the next two phase() boundaries -- the per-cycle Integ
 // Test and the Re-Review that Cycle Evaluation dispatches when the goal-
@@ -245,7 +246,9 @@ import { pathsFromText, isPriorityTierToken } from './kb-hints.mjs';
 // out of runner.js (apra-fleet-3swo.4.6); beads-scope.mjs's header is the
 // written-down version of that contract.
 import {
-    createBeadsScope, classifyVerifySet,
+    createBeadsScope, classifyVerifySet, hasLiveEvidenceMarker, LIVE_EVIDENCE_LABEL,
+    // Parents held out of verify only by below-goal/out-of-scope open children.
+    belowGoalVerifyHolds, formatVerifyHolds,
     // apra-fleet-3swo.6.13: parseBdJson/goalPriorityMax/partitionByGoalMembership
     // moved here from runner.js; imported back and re-exported (facade region
     // below) so no importer of runner.js is edited by the move.
@@ -335,6 +338,12 @@ import {
     integCanRun, integBlockCause, findVerifyBlockedBeads, partitionByGoal, buildVerifyBlockDiagnosis,
 } from './verify-block.mjs';
 import { formatRedBuildIntegSkipReason, redBuildIntegSkipEntry } from './red-build-integ-gate.mjs';
+import { resolveTierPolicy, fixedRoleTierTable, roleTierTable, holdTierPolicy, describeTierPolicy } from './tier-policy.mjs';
+import { holdTierEscalations } from './tier-escalation.mjs';
+// The premium-cap gate (after plan approval, before Develop) and the
+// decision it raises when two scoped re-plans leave the plan over the cap.
+import { runPremiumCapGate, holdPremiumCapBaseline } from './tier-cap.mjs';
+import { recordPendingDecision } from './decisions.mjs';
 // The dispatch-outcome classification surface: isTerminalSprintFailure,
 // isNoMutationDispatchFailure and withDispatchWatchdog. Extracted out of
 // runner.js (apra-fleet-3swo.6.15); imported only to be re-exported below,
@@ -862,6 +871,9 @@ const ROLE_REVIEWER = roleConst('reviewer');
 //   integ-test-runner  -> 'standard' (mostly mechanical: follow integ-test-playbook.md)
 //   regression-test-runner -> 'standard' (mostly mechanical: follow regression-test-playbook.md)
 //   harvester          -> 'standard' (docs synthesis, not code-critical)
+//   streakAssignment   -> 'cheap'    (this runner's own "group these ready bead ids" call: a small,
+//                                     fully-specified classification task; it borrows the planner
+//                                     MEMBER for routing convenience, not the planner tier)
 // These tier keywords ('cheap' | 'standard' | 'premium') are resolved to a
 // concrete model PER MEMBER, server-side, by execute-prompt.ts's
 // resolveModelForTier() (via each member's registered model_tiers). That is
@@ -871,21 +883,12 @@ const ROLE_REVIEWER = roleConst('reviewer');
 // it means nothing. Real per-member cost lookup (rather than a tier-band
 // estimate) is available via the get_member_model_pricing MCP tool; see
 // pricing.mjs.
-const FIXED_ROLE_TIER = {
-    planner: 'premium',
-    'plan-reviewer': 'premium',
-    reviewer: 'premium',
-    deployer: 'standard',
-    'integ-test-runner': 'standard',
-    'regression-test-runner': 'standard',
-    harvester: 'standard',
-    // Streak Assignment is this runner's own ad-hoc "group these ready bead
-    // ids" call (no vendored persona): a small, fully-specified classification
-    // task with no exploration or judgment beyond what the prompt already
-    // states, so it gets 'cheap' even though it borrows the planner MEMBER for
-    // routing convenience.
-    streakAssignment: 'cheap',
-};
+// The table itself now lives in ./tier-policy.mjs: the quality preset is the
+// policy that reproduces exactly the tiers listed above, so the runner derives
+// its fixed-role table from it (no runtime change). Exported for the test
+// harness, which pins dispatches against this resolved value.
+const FIXED_ROLE_TIER = fixedRoleTierTable(resolveTierPolicy('quality'));
+export { FIXED_ROLE_TIER };
 
 export const meta = { name: 'fleet-sprint-runner' };
 
@@ -1147,6 +1150,10 @@ async function runSprintCycle(context) {
     // must result in zero fleet dispatches. This must happen early so the
     // validated result is available to setup code that builds callbacks below.
     const validated = validateArgs(args);
+    // The run holds its launch tier policy on the run context: a resume over
+    // the same context reads the held policy, not the current default/args.
+    const tierPolicy = holdTierPolicy(context, validated.tierPolicy);
+    log(describeTierPolicy(tierPolicy, validated.tierOverrides));
 
     // (apra-fleet-p2to.4.1 / apra-fleet-3swo.4.1) Clean-state pause guard.
     // The openSyncBracketCount counter, its withOpenSyncBracket() wrapper and
@@ -1262,6 +1269,10 @@ async function runSprintCycle(context) {
     let kbBeadIndex = new Map();
     const kbBeadTitles = (ids) => (Array.isArray(ids) ? ids : []).map((id) => kbBeadIndex.get(id)?.title).filter((t) => typeof t === 'string' && t);
     const agent = async (prompt, opts = {}) => {
+        // tier_context is engine-internal (bead ids, tierReason, escalations
+        // for the tier log line); it never reaches the workflow agent.
+        const { tier_context: tierContext, ...optsRest } = opts;
+        opts = optsRest;
         let finalPrompt = prompt;
         if (opts.agentType && !KB_SELF_INJECTING_ROLES.has(opts.agentType) && opts.member_name) {
             // Only promise the kb_captures channel to a persona whose returned
@@ -1286,8 +1297,19 @@ async function runSprintCycle(context) {
                 // Per-dispatch kb_* and code_* counts: session_stats snapshots of the
                 // dispatched member immediately before and after (best-effort;
                 // an unreadable count is recorded as unknown, never 0).
+                // onResolvedTier captures execute_prompt's resolved_tier and
+                // resolved_model for the per-dispatch tier log line.
+                let resolvedTierInfo = null;
+                opts.onResolvedTier = (r) => { resolvedTierInfo = r; };
                 return await dispatchAccounting.around(
-                    { memberName: opts.member_name, role: opts.agentType, label: opts.label },
+                    {
+                        memberName: opts.member_name,
+                        role: opts.agentType,
+                        label: opts.label,
+                        requestedTier: opts.model,
+                        tierContext,
+                        resolved: () => resolvedTierInfo,
+                    },
                     () => agentRaw(finalPrompt, { sprint_id: sprintMutexId, ...opts }),
                 );
             } finally {
@@ -1399,13 +1421,19 @@ async function runSprintCycle(context) {
         callTool: (args && typeof args.callTool === 'function') ? args.callTool : undefined,
         log,
     });
+    // One-step tier escalations (tier-escalation.mjs), held on the run
+    // context like the tier policy so a resume never escalates a bead twice.
+    sprintState.tierEscalations = holdTierEscalations(context);
 
     // Every `bd dolt pull`/`bd dolt push` DoltSync issues is built per member
     // OS/shell (a Windows member runs bd with a bounded GOMAXPROCS). Install
     // the sprint's cached member_detail-backed resolver once, here; with no
     // fleet client the resolver is cleared and members are treated as POSIX.
     setMemberTargetResolver(sprintState.fleetApi
-        ? (member) => resolveMemberTarget({ fleetApi: sprintState.fleetApi, member, log })
+        // A failed lookup leaves the OS unknown (bare bd sync commands), never
+        // a guessed POSIX shell: the sync's POSIX form is a NAME=value prefix
+        // a PowerShell member cannot run.
+        ? (member) => resolveMemberTarget({ fleetApi: sprintState.fleetApi, member, log, unresolved: { os: '', shell: '' } })
         : null);
 
     // Guards every resume re-dispatch below against spawning a second
@@ -2026,6 +2054,9 @@ async function runSprintCycle(context) {
         expected: validated.expectBeads ?? null,
         prober: beadsIdentityProber,
         setupMembers: beadsSetupMembers,
+        // bd/dolt version pin on every member above, before any set-up or
+        // D-pull: a newer-minor bd would migrate the shared beads remote.
+        checkToolVersions: true,
         ensureVcsAuth: ensureVcsAuthFresh,
         // The set-up's beads pull goes through DoltSync with the same
         // reactive VCS-auth self-heal every D-pull bracket gets.
@@ -2223,7 +2254,10 @@ async function runSprintCycle(context) {
         onUsageLimit,
         // The one bounded heal for a 'permission_denied' dispatch.
         onPermissionDenied,
-        fixedRoleTier: FIXED_ROLE_TIER,
+        // The run's fixed-role tiers, from its resolved tier policy (quality
+        // reproduces FIXED_ROLE_TIER exactly). The per-round reviewer passes
+        // its round tier per dispatch (dispatchReview's roundTier).
+        fixedRoleTier: roleTierTable(tierPolicy),
         budgets: {
             DISPATCH_TIMEOUT_S,
             DISPATCH_INACTIVITY_TIMEOUT_S,
@@ -2318,13 +2352,6 @@ async function runSprintCycle(context) {
                     // phrase is what an operator scans the log for.
                     reason: 'contract violation: CHANGES_NEEDED with empty reopenIds AND empty newTasks -- nothing for the orchestrator to act on',
                 };
-            },
-            // A failed round's session must not be resumed by the next round --
-            // drop it so the next review starts fresh. Recorded as a DEGRADE
-            // step, never a postResult one: a successful round's session is
-            // exactly what the next round wants to resume.
-            'clear-round-session': ({ policy }) => {
-                roundSessions.clear(policy.ladder);
             },
             'sprint-self-id-in-prompt': ({ opts }) => {
                 if (typeof opts.prompt === 'string' && opts.prompt.includes(sprintSelfId)) return;
@@ -2578,14 +2605,13 @@ async function runSprintCycle(context) {
     /**
      * The degraded verdict for a review round whose diff base could not be
      * computed: the reviewer policy's own synthesized-verdict degrade (same
-     * shape, note template, dispatchFailed marker and clear-round-session
-     * step), applied without dispatching the reviewer.
+     * shape, note template and dispatchFailed marker),
+     * applied without dispatching the reviewer.
      * @param {Error} err
      */
     function degradedReviewForReviewBase(err) {
         const reviewerPolicy = policyFor('reviewer');
         const d = reviewerPolicy.degrade;
-        roundSessions.clear(reviewerPolicy.ladder);
         log(
             `Reviewer: review diff base failed, degrading (${d.kind}) -- the reviewer was NOT dispatched this round ` +
             `and no fallback to the local '${validated.baseBranch}' branch was used: ${err.message}`
@@ -2593,6 +2619,10 @@ async function runSprintCycle(context) {
         const note = d.noteTemplates.dispatch.replace(/\{(message|name)\}/g, (_, f) => (f === 'name' ? err.name : err.message));
         return { ...d.synthesized, [d.notesField]: note, ...(d.marker ? { [d.marker]: true } : {}) };
     }
+
+    // The previous review round's verdict and the cycle it belongs to; only
+    // used when the next dispatch is in the same cycle.
+    let priorReviewFindings = null;
 
     /**
      * Dispatches one reviewer round and returns its schema-validated verdict.
@@ -2606,7 +2636,10 @@ async function runSprintCycle(context) {
      * @param {{ beadIds: string[], acceptanceCriteriaJson: string }} opts
      * @returns {Promise<{ verdict: string, notes: string, reopenIds: string[], replanIds?: string[], newTasks: object[] }>}
      */
-    async function dispatchReview({ beadIds, acceptanceCriteriaJson }) {
+    // roundTier: the per-round review's tier (tier-policy.mjs roleTier
+    // 'reviewer-round'); absent = the dispatch context's 'reviewer' tier, the
+    // final review's (a scope-wide re-review).
+    async function dispatchReview({ beadIds, acceptanceCriteriaJson, roundTier }) {
         const reviewerPool = getMembersForRole(ROLE_REVIEWER);
         // The diff range the reviewer is told to use: the fork point of the
         // sprint branch from a freshly fetched origin/<base>, computed on the
@@ -2691,6 +2724,8 @@ async function runSprintCycle(context) {
                 goal: validated.goal,
                 kbCandidates,
                 kbBlock: reviewerKbBlock,
+                priorRoundFindings: priorReviewFindings && priorReviewFindings.cycle === cycle
+                    ? priorReviewFindings.verdict : undefined,
             }),
             // Restate the review scope: a resumed dispatch replaces the
             // delivered prompt artifact, so the scope must be repeated inline.
@@ -2709,19 +2744,14 @@ async function runSprintCycle(context) {
             resumeLabel: `Review (resume, max_turns=${secondaryMaxTurns('reviewer')})`,
             // The reviewer pool head is a runner-local value; the policy names
             // it by binding and the engine resolves it from here.
-            bindings: { 'reviewerPool[0]': reviewerPool[0] },
-            // Within THIS cycle's develop-review loop, resume the reviewer's own
-            // prior-round session by explicit session id so a re-review of the
-            // next round's fixes keeps the diff/context it already built. False
-            // on the first round of any cycle (roundSessions never resumes
-            // across cycles) and cleared on a failed round by the policy's
-            // 'clear-round-session' degrade step. The max_turns-exhaustion
-            // resume overrides this with the exhausted dispatch's OWN session
-            // id (`resume: "<sessionId>"`, never `resume: true`, which the
-            // server resolves to the member's last session, whichever role ran
-            // it) -- an in-dispatch continuation, not a cross-round one.
-            resumeArg: roundSessions.resumeArgFor('reviewer', cycle),
-            onSessionId: (id, meta) => roundSessions.record('reviewer', cycle, id, meta),
+            bindings: { 'reviewerPool[0]': reviewerPool[0], ...(roundTier ? { fixedTier: roundTier } : {}) },
+            // Every review round is a FRESH session (the policy's resumeArg is
+            // fresh-session): resuming the prior round's session started rounds
+            // 2-3 at 200k+ tokens of context. The prior round's findings reach
+            // this fresh session through `priorRoundFindings` in the prompt.
+            // The max_turns-exhaustion resume still continues the exhausted
+            // dispatch's OWN session by explicit id (`resume: "<sessionId>"`,
+            // never `resume: true`) -- an in-dispatch continuation.
             onResultRejected: (reason) => new ReviewerContractViolationError(
                 `Reviewer returned CHANGES_NEEDED with empty reopenIds AND empty newTasks twice in a ` +
                 `row (cycle ${cycle}) -- a self-contradictory verdict with nothing for the ` +
@@ -2746,6 +2776,12 @@ async function runSprintCycle(context) {
         // (the per-round review and the scope-wide re-review); a round with
         // no confirmations makes no call. Never throws.
         if (typeof kbWork.commitRound === 'function') await kbWork.commitRound(`review C${cycle}`);
+        // Remember this round's verdict (a genuine one only -- a degraded
+        // dispatch-failure carries no findings) for the next round of THIS
+        // cycle's fresh reviewer prompt.
+        if (reviewOutcome.value && !reviewOutcome.value.dispatchFailed) {
+            priorReviewFindings = { cycle, verdict: reviewOutcome.value };
+        }
         return reviewOutcome.value;
     }
 
@@ -2816,6 +2852,20 @@ async function runSprintCycle(context) {
     // Thread the backlog member's REGISTERED shell into dolt-settle,
     // guarded on args.callTool the same way the pre-dispatch bracket is
     // (apra-fleet-7dir.24).
+    // Provider match: the backlog member raises the PR (and its credential is
+    // what any setup self-heal would mint), so a member registered for a
+    // provider other than the one serving the sprint repository fails HERE,
+    // naming both, before any dispatch could mint the wrong provider's
+    // credential. The origin is read on the same git-capable member Publish
+    // PR reads it on. Needs the fleet API (args.callTool) for the registry.
+    await assertPrMemberProviderMatchesRepo({
+        callTool: args && args.callTool,
+        command,
+        member: backlogMember,
+        remoteMember: getMemberForRole('harvester'),
+        log,
+    });
+
     const preflightSettleShell = await resolveSettleShell({ args, member: backlogMember, log, sprintState });
     await gitSync.syncBeadsBefore(backlogMember, { readinessGate: true, settle: buildSettleCallback(backlogMember, { command, log, shell: preflightSettleShell }) });
 
@@ -3443,8 +3493,9 @@ async function runSprintCycle(context) {
             const closed = closedIds || new Set(allBeads.filter((b) => b.status === 'closed').map((b) => b.id));
             const fresh = classifyVerifySet(allBeads, targetIssues).verifyIds;
             integBoundIds = [...new Set([...fresh, ...[...verifyEverIds].filter((id) => !closed.has(id))])];
-            const knownClosed = [...closed].map((id) => ({ id, status: 'closed' }));
-            verifyBlockedIds = findVerifyBlockedBeads(open, knownClosed, integBoundIds).map((b) => b.id);
+            // The full snapshot (not closed-id stubs): the ancestor walk needs
+            // parent links and ancestor edges; `closed` stays authoritative.
+            verifyBlockedIds = findVerifyBlockedBeads(open, allBeads, integBoundIds, { closedIds: closed }).map((b) => b.id);
         } else {
             const { hasDeploy, hasPlaybook } = runbooks || await (async () => {
                 const deployMd = await probeFileExists('deploy.md', getMemberForRole('deployer'));
@@ -3503,7 +3554,7 @@ async function runSprintCycle(context) {
         // Work this run already closed is never thrown away by a set-aside
         // stall: the set-aside beads become a carry-over instead.
         if (workedOnBeadIds.size > 0 || verifyEverIds.size > 0) {
-            const closedNow = closedIds || new Set((await bdListScoped('--status=closed --json')).map((b) => b.id));
+            const closedNow = closedIds || new Set((await bdListScoped('--status=closed --json --brief')).map((b) => b.id));
             const closedThisRun = closedWorkThisRun({ workedOnIds: workedOnBeadIds, verifyEverIds, closedIds: closedNow });
             if (closedThisRun.length > 0) {
                 return { carryOver: buildSetAsideCarryOver(stall, { where, cycle, closedIds: closedThisRun }) };
@@ -3537,7 +3588,7 @@ async function runSprintCycle(context) {
     // at/above-goal in-scope leaf bead is carried over instead.
     async function planRejectedCarryOver(err, { where, cycle }) {
         if (workedOnBeadIds.size === 0 && verifyEverIds.size === 0) return null;
-        const closedNow = new Set((await bdListScoped('--status=closed --json')).map((b) => b.id));
+        const closedNow = new Set((await bdListScoped('--status=closed --json --brief')).map((b) => b.id));
         const closedThisRun = closedWorkThisRun({ workedOnIds: workedOnBeadIds, verifyEverIds, closedIds: closedNow });
         if (closedThisRun.length === 0) return null;
         const details = (err && err.details) || {};
@@ -3727,8 +3778,16 @@ async function runSprintCycle(context) {
         // sprint progress (see the stall-detector high-water-mark change
         // below), which is the actual fix for tonight's false-stall bug.
         const routeBeads = await fetchAllBeadsShared();
-        const { verifyIds: verifySetThisCycle } = classifyVerifySet(routeBeads, targetIssues);
+        const { verifyIds: verifySetThisCycle, ineligible: routeIneligible } = classifyVerifySet(routeBeads, targetIssues);
         for (const id of verifySetThisCycle) verifyEverIds.add(id);
+        // Rule 4 (any open child holds a parent out of verify) is kept, but a
+        // hold made ONLY by below-goal or out-of-scope children never blocks
+        // the exit gate, so name it here or the parent ends the run silently
+        // unverified.
+        const routeVerifyHolds = belowGoalVerifyHolds(routeIneligible, goalMax);
+        if (routeVerifyHolds.length > 0) {
+            log(`Route C${cycle}: ${routeVerifyHolds.length} parent(s) held out of verify only by open child(ren) below goal ${validated.goal} or out of scope: ${formatVerifyHolds(routeVerifyHolds)}`);
+        }
         // A verify-routed bead deferred by anyone since the last Route can
         // never be dispatched again: record it from the same snapshot (no
         // extra bd call) so the exit gate stops waiting on it.
@@ -3773,6 +3832,7 @@ async function runSprintCycle(context) {
                 stageCommandBodyMemberSide,
                 updateDashboard,
                 bdListScoped,
+                tierPolicy,
             });
         } catch (err) {
             if (!(err instanceof SprintPlanRejectedError)) throw err;
@@ -3786,6 +3846,72 @@ async function runSprintCycle(context) {
         pendingRejectedNewTasks = planOutcome.pendingRejectedNewTasks;
         const { planCapDeferredIds, lastVerdict, planningRounds } = planOutcome;
         for (const id of planCapDeferredIds) planCapDeferredEverIds.add(id);
+
+        // =======================
+        // 1b. Premium-cap gate (tier-cap.mjs)
+        // =======================
+        // After plan approval and before this cycle's first Develop round:
+        // count the planner-marked premium task beads against the held tier
+        // policy's premiumCapPct. Over the cap: at most two scoped re-plans per
+        // sprint (sprintState.premiumCap), then one operator decision that holds
+        // Develop until answered. The engine never rewrites a bead's model
+        // metadata. quality (no cap) is a no-op with no command and no log.
+        await runPremiumCapGate({
+            policy: tierPolicy,
+            sprintState,
+            cycle,
+            log,
+            // Beads already closed when this run started never count; held on
+            // the run context so a resume keeps the original baseline.
+            baseline: holdPremiumCapBaseline(context),
+            listScope: () => bdListScoped(''),
+            replan: async ({ count, attempt, maxReplans }) => runReplanPhase({
+                phase, log, dispatchCtx,
+                cycle, validated, targetIssues, requirementsContent,
+                backlogMember,
+                gitSync, updateDashboard,
+                verifySetThisCycle, pendingRejectedNewTasks,
+                devRounds: 0, eligibleReplan: [], replanIds: new Set(), replannedThisCycle: new Set(), perBeadFeedback: new Map(),
+                command, sprintState, bdListScoped, extractContestedBeadIds,
+                tierPolicy,
+                premiumCap: {
+                    // Only the OPEN premium beads can still move to a lower tier.
+                    premiumIds: count.openPremiumIds, mustMove: count.mustMove, capPct: count.capPct,
+                    allowed: count.allowed, total: count.total, attempt, maxReplans,
+                },
+            }),
+            raiseDecision: async ({ count, decision }) => {
+                const scopeBeads = await bdListScoped('');
+                const record = await gitSync.withOpenSyncBracket(() => recordPendingDecision({
+                    sprintState, decision, raisedBy: 'the premium-cap gate', cycle, round: null,
+                    command, member: backlogMember, scopeBeads, log,
+                }));
+                // Every premium bead waits on the same decision: set aside
+                // under its decisionId, so the answer releases them together.
+                if (record) {
+                    for (const id of count.openPremiumIds) {
+                        if (sprintState.doctorBlockedIds.has(id)) continue;
+                        sprintState.doctorBlockedIds.set(id, {
+                            kind: 'dependent', blockedBy: record.beadId,
+                            reason: `premium bead held with '${record.beadId}' by the premium-cap operator decision${record.decisionBeadId ? ` (${record.decisionBeadId})` : ''}`,
+                            decisionId: record.decisionId, cycle, round: null,
+                        });
+                    }
+                    await gitSync.syncBeadsAfter(backlogMember, { pushBeads: true });
+                }
+                return record;
+            },
+            awaitDecision: async ({ record }) => {
+                if (!record) return;
+                if (decisionWait && decisionWait.hasPending()) {
+                    await decisionWait.awaitAnswer({ where: `premium-cap gate C${cycle}`, cycle });
+                    return;
+                }
+                log(`[tier-cap] C${cycle}: the premium-cap decision ${record.decisionId} cannot hold the run here ` +
+                    `(${decisionWait ? 'its decision bead could not be filed' : 'this run has no pause/resume channel'}); ` +
+                    'its premium bead(s) stay set aside and Develop runs the rest of the plan.');
+            },
+        });
 
         // =======================
         // 2. Execution Prep
@@ -4007,6 +4133,7 @@ async function runSprintCycle(context) {
                     verifySetThisCycle, pendingRejectedNewTasks,
                     devRounds, eligibleReplan, replanIds, replannedThisCycle, perBeadFeedback,
                     command, sprintState, bdListScoped, extractContestedBeadIds,
+                    tierPolicy,
                 });
                 continue;
             }
@@ -4064,6 +4191,7 @@ async function runSprintCycle(context) {
                 verifyDoerStreakClosed,
                 normalizeTierToken,
                 kbQueryTerms,
+                tierPolicy,
             });
             for (const o of streakOutcomes) {
                 for (const id of (o.beadIds || [])) workedOnBeadIds.add(id);
@@ -4100,6 +4228,7 @@ async function runSprintCycle(context) {
                 childIdAllocator, sprintMutexId,
                 computeChildFloor, createChildBeadWithAllocatedId,
                 trackRejectedNewTaskForResurfacing, clearResubmittedNewTask,
+                tierPolicy,
             }));
 
             await updateDashboard();
@@ -4295,8 +4424,15 @@ async function runSprintCycle(context) {
         // phases/final-review.mjs applies to its closing count too). Only
         // 'deferred' changes meaning: a blocked or orphaned in_progress bead
         // still counts as open, exactly as NOT_DONE_STATUSES intends.
+        // A verify-routed verification-only leaf (LIVE_EVIDENCE_LABEL in
+        // ./beads-scope.mjs) is dropped too, for the same reason as a
+        // verify-routed parent: only Integration Test closes it, and the
+        // stillOpenVerifyIds gate below owns whether the exit waits for it
+        // (so a needs-external-evidence carry-over releases it). A marked leaf
+        // that was never verify-routed keeps holding the exit.
         const { active: openAtGoal, deferredIds: deferredAtGoalIds } =
-            partitionDeferredBeads(openAtGoalRaw.filter((b) => !openAtGoalParentIds.has(b.id)));
+            partitionDeferredBeads(openAtGoalRaw.filter((b) => !openAtGoalParentIds.has(b.id)
+                && !(verifyEverIds.has(b.id) && hasLiveEvidenceMarker(b))));
         // Monotone across the sprint, like verifyEverIds: a bead that was
         // deferred in an earlier cycle and then reopened must still be named
         // in the closing text as something a human was asked to look at, and
@@ -4321,7 +4457,7 @@ async function runSprintCycle(context) {
         // both benign no-ops there, so nothing invalidates it): the integ
         // runner's own `bd close` happens inside an agent() dispatch, never
         // through the cache-invalidating command() wrapper.
-        const closedBeadsNow = await bdListScoped('--status=closed --json');
+        const closedBeadsNow = await bdListScoped('--status=closed --json --brief');
         const closedIdsNow = new Set(closedBeadsNow.map((b) => b.id));
         const closedCount = closedBeadsNow.length;
         closedCountHistory.push(closedCount);
@@ -4370,6 +4506,29 @@ async function runSprintCycle(context) {
                     `${inconclusiveVerifyCounts.get(id)} consecutive cycle(s) (limit ${NEEDS_EXTERNAL_EVIDENCE_CYCLE_LIMIT}) -- ` +
                     'carried over as needs-external-evidence: not dispatched to verify again and no longer holding the exit; ' +
                     `the sprint verdict will be FAIL.${reason ? ` Integ runner: ${reason}` : ''}`
+                );
+            }
+        }
+
+        // A verify-routed verification-only leaf (LIVE_EVIDENCE_LABEL) has no
+        // closure path but Integration Test. When this run has no
+        // integ-test-playbook.md or no deploy.md it can never be verified
+        // here, so it is carried over now as needs-external-evidence with that
+        // typed cause (forcing FAIL and naming it), instead of holding the
+        // exit until the stall net fires. A failed deploy is not such a cause:
+        // the deploy-retry path owns it.
+        const runbookCause = integBlockCause({ hasPlaybook, hasDeploy });
+        if (runbookCause && verifyEverIds.size > 0) {
+            // From this cycle's Route snapshot: no extra bd call.
+            const routeParentIds = new Set(routeBeads.filter((b) => b && b.parent).map((b) => b.parent));
+            const liveLeafIds = new Set(routeBeads.filter((b) => hasLiveEvidenceMarker(b) && !routeParentIds.has(b.id)).map((b) => b.id));
+            for (const id of verifyEverIds) {
+                if (closedIdsNow.has(id) || needsEvidenceVerifyIds.has(id) || deferredVerifyIds.has(id) || !liveLeafIds.has(id)) continue;
+                needsEvidenceVerifyIds.set(id, { reason: '', cycles: 0, unverifiableCause: runbookCause });
+                log(
+                    `Cycle ${cycle}: ${id} is a verification-only bead (${LIVE_EVIDENCE_LABEL}) and the Integration Test phase ` +
+                    `cannot run in this run (${runbookCause}) -- carried over as needs-external-evidence: not waited on, ` +
+                    'the sprint verdict will be FAIL.'
                 );
             }
         }
@@ -4432,9 +4591,20 @@ async function runSprintCycle(context) {
             const openAtGoalIds = openAtGoal.map((b) => b.id);
             const blockerIds = [...new Set([...openAtGoalIds, ...setAsideOpenIds])];
             const setAsideOnlyIds = setAsideOpenIds.filter((id) => !openAtGoalIds.includes(id));
-            const blockerSuffix = (openAtGoalIds.length > 0
-                ? ` Still open at/above goal priority ${goalMax}: [${openAtGoalIds.join(', ')}].`
-                : ' No beads remain open at/above goal priority -- the stall is in closing out the sprint, not in the work itself.') +
+            // "The stall is in closing out the sprint, not in the work itself"
+            // only when nothing at goal is open OR deferred, no bead was
+            // reopened by a reviewer and then closed again, and the last
+            // Review/Re-Review did not ask for changes; otherwise those are
+            // named (stallSettlementSummary).
+            const deferredAtGoalOpenIds = [...deferredEverIds].filter((id) => !closedIdsNow.has(id));
+            const reopenedThenClosedIds = [...reopenCounts.keys()].filter((id) => closedIdsNow.has(id)).sort();
+            const lastReview = sprintState.lastReview && typeof sprintState.lastReview === 'object' ? sprintState.lastReview : null;
+            const closedThisRunIds = closedWorkThisRun({ workedOnIds: workedOnBeadIds, verifyEverIds, closedIds: closedIdsNow });
+            const closedTitleById = new Map(closedBeadsNow.filter((b) => b && typeof b.title === 'string').map((b) => [b.id, b.title]));
+            const settlement = stallSettlementSummary({
+                openAtGoalIds, goalMax, deferredAtGoalIds: deferredAtGoalOpenIds, reopenedThenClosedIds, lastReview,
+            });
+            const blockerSuffix = settlement.suffix +
                 (setAsideOnlyIds.length > 0 ? ` Also set aside for this run (doer-BLOCKED or a dependent of one): [${setAsideOnlyIds.join(', ')}].` : '');
             const deferredStallIds = [...deferredEverIds];
             const deferredStallSuffix = deferredStallIds.length > 0
@@ -4471,7 +4641,16 @@ async function runSprintCycle(context) {
                 `[${closedCountHistory.join(', ')}] (high-water mark on progress score: ${highWaterClosedCount}).` +
                 blockerSuffix + deferredStallSuffix + thrashSuffix + verifySuffix +
                 ` Aborting rather than burning the remaining cycles.`,
-                { staleCycles, closedCountHistory, highWaterClosedCount, blockerIds, deferredIds: deferredStallIds, thrashIds, reopenCounts: Object.fromEntries(reopenCounts), verifyEverIds: [...verifyEverIds], cycle, setAside: collectSetAsideEntries(sprintState), waited: collectWaitEntries(sprintState) }
+                {
+                    staleCycles, closedCountHistory, highWaterClosedCount, blockerIds, deferredIds: deferredStallIds, thrashIds, reopenCounts: Object.fromEntries(reopenCounts), verifyEverIds: [...verifyEverIds], cycle, setAside: collectSetAsideEntries(sprintState), waited: collectWaitEntries(sprintState),
+                    // For the [ABORTED] PR body: the work closed this run, what is
+                    // still open or deferred at goal, and the last review.
+                    closedThisRun: closedThisRunIds.map((id) => (closedTitleById.has(id) ? { id, title: closedTitleById.get(id) } : { id })),
+                    openAtGoalIds,
+                    deferredAtGoal: deferredAtGoalOpenIds,
+                    reopenedThenClosed: reopenedThenClosedIds,
+                    lastReview: lastReview ? { verdict: lastReview.verdict, notes: lastReview.notes ?? '', site: lastReview.site, cycle: lastReview.cycle } : null,
+                }
             );
         }
 
@@ -4498,8 +4677,10 @@ async function runSprintCycle(context) {
         // from this cycle's own fresh closed list and verify set -- no extra
         // bd call.
         if (!integCanRunThisCycle && openAtGoal.length > 0) {
-            const knownClosed = [...closedIdsNow].map((id) => ({ id, status: 'closed' }));
-            const blockedAtGoal = findVerifyBlockedBeads(openAtGoal, knownClosed, verifySetThisCycle);
+            // routeBeads (this cycle's Route snapshot, no extra bd call) carries
+            // the parent links and ancestor edges the inherited-edge walk
+            // needs; closedIdsNow stays the authoritative closed set.
+            const blockedAtGoal = findVerifyBlockedBeads(openAtGoal, routeBeads, verifySetThisCycle, { closedIds: closedIdsNow });
             const blockedAtGoalIds = new Set(blockedAtGoal.map((b) => b.id));
             if (blockedAtGoal.length > 0 && openAtGoal.every((b) => verifyEverIds.has(b.id) || blockedAtGoalIds.has(b.id))) {
                 verifyBlockDiagnosis = buildVerifyBlockDiagnosis({
@@ -4565,7 +4746,7 @@ async function runSprintCycle(context) {
         // (./verify-carry-over.mjs).
         let stillOpenVerifyIds = [];
         if (verifyEverIds.size > 0) {
-            const closedIdsForExitCheck = new Set((await bdListScoped('--status=closed --json')).map((b) => b.id));
+            const closedIdsForExitCheck = new Set((await bdListScoped('--status=closed --json --brief')).map((b) => b.id));
             stillOpenVerifyIds = stillOpenVerifyIdsForExit({
                 verifyEverIds, closedIds: closedIdsForExitCheck,
                 needsEvidence: needsEvidenceVerifyIds, deferred: deferredVerifyIds,
@@ -4720,6 +4901,35 @@ async function runSprintCycle(context) {
     // a reader; the test pin plus the A/B mock sprint in
     // mock-sprint-regression-failure-never-gates.test.mjs are what actually
     // hold the line.
+    //
+    // The catch-up review (./phases/review.mjs runReviewCatchUpPhase) runs
+    // INSIDE Final Review, right after its D-pull and fresh closed-list read,
+    // through this closure: a bead this sprint dispatched that is closed now
+    // but never entered any review round's scope (a FAILED streak whose close
+    // landed later, or a close behind a failed publish) is reviewed there --
+    // or reopened when no review can run -- before the final verdict is
+    // dispatched. Reusing that read means a sprint with nothing to catch up
+    // issues no extra command.
+    const reviewCatchUp = async ({ closedIds, titleById }) => {
+        const out = await runReviewCatchUpPhase({
+            phase, log, command,
+            cycle: finalCycleLabel, validated, targetIssues, backlogMember,
+            gitSync, sprintState,
+            closedIds, titleById,
+            rejectedNewTasks,
+            lastReviewVerdict, pendingRejectedNewTasks, lastBuildFailing,
+            budget,
+            dispatchReview, bdListScoped, goalMax,
+            workedOnIds: workedOnBeadIds,
+            recordReopen,
+            childIdAllocator, sprintMutexId,
+            computeChildFloor, createChildBeadWithAllocatedId,
+            trackRejectedNewTaskForResurfacing, clearResubmittedNewTask,
+            tierPolicy,
+        });
+        ({ lastReviewVerdict, pendingRejectedNewTasks, lastBuildFailing } = out);
+        return out;
+    };
     const { finalVerdictResult, finalClosedCount, finalOpenAtGoalCount, finalDeferredAtGoalIds, verifyCarryOver } = await runFinalReviewPhase({
         phase, log, command, dispatchCtx,
         args, validated, targetIssues, backlogMember, finalCycleLabel, sprintState,
@@ -4727,6 +4937,7 @@ async function runSprintCycle(context) {
         deployFailures, integFailures, rejectedNewTasks, verifyEverIds,
         lastDeployFailure,
         bdListScoped, decomposedParentIds, goalMax, NOT_DONE_STATUSES,
+        fetchAllBeadsShared,
         reclaimCappedIds: orphanClaims.cappedIds(),
         verifyBlockDiagnosis,
         carryOverExit,
@@ -4739,6 +4950,7 @@ async function runSprintCycle(context) {
         childIdAllocator, sprintMutexId, resolveSettleShell,
         computeChildFloor, createChildBeadWithAllocatedId, sanitizePrText,
         reviewMergeBaseFor,
+        reviewCatchUp,
     });
 
     // =======================
@@ -4841,7 +5053,7 @@ async function runSprintCycle(context) {
     // phase, before the endGroup() below, exactly as the inline version did.
     // Sprint-summary WARN: repeat the lower-quality banner once at the end.
     const lowerQualityBanner = logLowerQualityWarn(log, MEMBER_INIT_LOG_PREFIX, sprintState.memberInit, 'summary');
-    const { pushed, prSkipped } = await runPublishPrPhase({
+    const { pushed, prSkipped, beadsSyncFailure } = await runPublishPrPhase({
         lowerQualityBanner,
         phase, log, command,
         args, validated, targetIssues, backlogMember, finalCycleLabel,
@@ -4855,6 +5067,9 @@ async function runSprintCycle(context) {
     // Final summary line: a skipped PR must not read as a clean success.
     if (prSkipped) {
         log(`[Sprint Summary] ${finalVerdictResult.verdict}, ${prSkipped.message} (reason: ${prSkipped.reason}); branch '${validated.branch}' is pushed.`);
+    }
+    if (beadsSyncFailure) {
+        log(`[Sprint Summary] ${finalVerdictResult.verdict}, ${beadsSyncFailure.message} (reason: ${beadsSyncFailure.reason}).`);
     }
 
     endGroup();
@@ -4899,6 +5114,18 @@ async function runSprintCycle(context) {
             ...(finalVerdictResult.verdict === 'PASS' ? { status: 'success-with-warnings' } : {}),
             prSkipped,
             warnings: [`${prSkipped.message} (reason: ${prSkipped.reason})`],
+        } : {}),
+        // Present only when beads changes still had not reached the shared
+        // remote after the terminal retry ({ reason: 'beads-sync-failed',
+        // message, members: [{ member, kind, detail }] }). Reported, never a
+        // verdict change: a PASS ends 'success-with-warnings', like prSkipped.
+        ...(beadsSyncFailure ? {
+            ...(finalVerdictResult.verdict === 'PASS' ? { status: 'success-with-warnings' } : {}),
+            beadsSyncFailure,
+            warnings: [
+                ...(prSkipped ? [`${prSkipped.message} (reason: ${prSkipped.reason})`] : []),
+                `${beadsSyncFailure.message} (reason: ${beadsSyncFailure.reason})`,
+            ],
         } : {}),
     };
 }

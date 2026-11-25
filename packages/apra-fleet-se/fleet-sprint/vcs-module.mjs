@@ -44,7 +44,7 @@ import {
 /**
  * Provider-dispatched command build step. `action` is one of
  * 'create-pull-request' | 'comment' | 'find-pull-request' |
- * 'update-pull-request' | 'list-comments' | 'update-comment' |
+ * 'get-pull-request' | 'update-pull-request' | 'list-comments' | 'update-comment' |
  * 'delete-comment'; `params.provider` selects the REST
  * dispatch. Pure and deterministic -- no network I/O, no filesystem access,
  * no randomness (beyond whatever caller-supplied fields it is handed).
@@ -108,8 +108,9 @@ export function buildCreatePrCommand(params) {
 
 /**
  * Shortens `body` to at most `max` characters WITHOUT cutting the hidden
- * HTML comment block it ends with (the sprint PR body's run-history marker
- * block, which the next run parses back): the text before that block is
+ * HTML comment blocks it ends with (the sprint PR body's run-history marker
+ * block, which the next run parses back, and the fleet block's closing
+ * marker after it -- consecutive trailing blocks are one tail): the text before that block is
  * shortened instead. A body that does not end with such a block is cut to
  * its first `max` characters. Throws an ERROR when the trailing block alone
  * does not fit -- an assertion, never a cut through the block. Pure.
@@ -124,7 +125,17 @@ export function capDescriptionPreservingHiddenTail(body, max) {
     const open = trimmed.endsWith('-->') ? trimmed.lastIndexOf('<!--') : -1;
     if (open < 0) return text.slice(0, max);
     const lineStart = text.lastIndexOf('\n', open);
-    const tailStart = lineStart >= 0 ? lineStart : open;
+    let tailStart = lineStart >= 0 ? lineStart : open;
+    // A run of hidden blocks at the end (the sprint body's run-history block
+    // followed by the fleet block's closing marker) is one tail.
+    for (;;) {
+        const head = text.slice(0, tailStart).replace(/\s+$/, '');
+        if (!head.endsWith('-->')) break;
+        const prevOpen = head.lastIndexOf('<!--');
+        if (prevOpen < 0) break;
+        const prevLine = text.lastIndexOf('\n', prevOpen);
+        tailStart = prevLine >= 0 ? prevLine : prevOpen;
+    }
     const tail = text.slice(tailStart);
     if (tail.length > max) {
         throw new Error(`ERROR: VCSModule: the PR description's trailing hidden block is ${tail.length} characters, over the ${max}-character description limit on its own -- refusing to cut it.`);
@@ -157,6 +168,24 @@ function buildCappedBodyCommand(action, params) {
  */
 export function buildFindPrCommand(params) {
     return buildVcsCommand('find-pull-request', params);
+}
+
+/**
+ * Build a "read one PR by id" command (`params.pull_request_id`). OPTIONAL
+ * per provider: only a provider whose find (list) response does not carry
+ * the full description declares it (Azure DevOps truncates list
+ * descriptions; GitHub and Bitbucket list responses carry the full body).
+ * `mapResponse(body)` -> { id, title, body, url }. Check
+ * providerImplementsAction(provider, 'get-pull-request') before calling.
+ */
+export function buildGetPrCommand(params) {
+    return buildVcsCommand('get-pull-request', params);
+}
+
+/** Whether `provider`'s descriptor declares a builder for `action`. */
+export function providerImplementsAction(provider, action) {
+    const impl = getVcsProvider(provider);
+    return !!(impl && impl.builders && typeof impl.builders[action] === 'function');
 }
 
 /**
@@ -315,6 +344,34 @@ export function getProviderTextLimits(provider) {
         descriptionMaxLength: Number.isInteger(impl.descriptionMaxLength) ? impl.descriptionMaxLength : null,
         commentMaxLength: Number.isInteger(impl.commentMaxLength) ? impl.commentMaxLength : null,
     };
+}
+
+/** A comment link is used only when it is a plain https URL (no spaces,
+ *  quotes, brackets or braces) of sane length, so it is safe inside a
+ *  markdown link target and can never spell a credential placeholder. */
+const SAFE_COMMENT_URL_RE = /^https:\/\/[^\s()<>[\]{}"'`\\]+$/;
+export const COMMENT_URL_MAX_LENGTH = 300;
+
+/**
+ * The browser link of one PR comment, through the provider descriptor's
+ * optional commentWebUrl hook: `response` is the comment create/update
+ * response or a list-comments item, `ref` its comment_ref, `prUrl` the PR's
+ * web URL. Returns null when the provider has no hook, the hook throws or
+ * answers nothing usable (see SAFE_COMMENT_URL_RE). Never throws.
+ * @param {string} provider
+ * @param {{ response?: unknown, ref?: unknown, prUrl?: string|null }} opts
+ * @returns {string|null}
+ */
+export function commentWebUrlFor(provider, { response = null, ref = null, prUrl = null } = {}) {
+    let url = null;
+    try {
+        const impl = getVcsProvider(provider);
+        if (!impl || typeof impl.commentWebUrl !== 'function') return null;
+        url = impl.commentWebUrl({ response, ref, prUrl: typeof prUrl === 'string' ? prUrl : null });
+    } catch {
+        return null;
+    }
+    return typeof url === 'string' && url.length <= COMMENT_URL_MAX_LENGTH && SAFE_COMMENT_URL_RE.test(url) ? url : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -769,6 +826,8 @@ export function parseProviderRepoRef(remoteUrl) {
 export const VCSModule = {
     buildCreatePrCommand,
     buildFindPrCommand,
+    buildGetPrCommand,
+    providerImplementsAction,
     buildUpdatePrCommand,
     parseProviderRepoRef,
     buildCommentCommand,
@@ -776,6 +835,7 @@ export const VCSModule = {
     buildUpdateCommentCommand,
     buildDeleteCommentCommand,
     getProviderTextLimits,
+    commentWebUrlFor,
     classifyFailure,
     toGitVerdict,
     toDoltVerdict,

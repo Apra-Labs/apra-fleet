@@ -356,6 +356,73 @@ If the fleet server is running, uninstall aborts and tells you to re-run with
 tree, and ends with a "Kept (intentionally)" list (`data/`, `fleet.key`, user workflows).
 Full detail: [docs/features/uninstall.md](features/uninstall.md).
 
+## Upgrade a member host (a full install refuses there)
+
+A host whose data dir (`APRA_FLEET_DATA_DIR`, else `<home>/.apra-fleet/data`)
+holds `member-install.json` is a fleet member host. A full install (no
+`--member`) ends by removing that marker, after which the fleet treats every
+member sharing that data dir as `full-install-running` and they lose their
+KB/code tools. So a full install there refuses before stopping or writing
+anything, exits non-zero and prints `E-MEMBER-HOST-FULL-INSTALL` with the marker
+path, its recorded version and port, and the supported upgrade paths:
+
+- from the orchestrator: `update_member {member_id, fleet_install: "auto"}`;
+- or on the host: `apra-fleet install --member --force` (keeps the marker and
+  the recorded port; the marker is rewritten with the new version).
+
+`apra-fleet update` from 0.4.6 on a member host does the latter for you. A 0.4.5 member
+host cannot: its `update` runs a full install, which the new guard refuses (detached, so
+it only shows in `apra-fleet status`; nothing is upgraded and the old install keeps
+running). Upgrade 0.4.5 member hosts with `update_member fleet_install auto` or
+`apra-fleet install --member --force`. A bd on PATH outside the pinned major.minor does
+not fail a member install: it completes, the output, the `update_member` result and
+`apra-fleet status` carry `E-BD-VERSION-MISMATCH` with the fix command, and sprints refuse
+that member until bd is fixed (a full install still exits 1). To convert a
+member host to a full install on purpose, add `--convert-member-host`; the
+install then removes the marker and says so. The check is per data dir: a full
+install into a different `APRA_FLEET_DATA_DIR` (a sandbox or clean-prefix
+install) is not affected.
+
+## Deploying onto a member host
+
+A deploy playbook must not run a plain full install on a member host. The
+deploy step detects the host type with `node scripts/deploy-install.mjs
+--member-host-check`, takes the member path (`install --member --force`) when
+the marker is present, and verifies with `--verify-member-host`: the marker
+version must equal the first line of `--version`, and `/health` on the marker's
+port must answer. Both helpers run on POSIX and Windows behind the one
+`deploy-install.mjs*` permission prefix, so no broad shell permission is needed.
+
+## bd and dolt version pin
+
+The installer pins the beads tools (`bd`, `dolt`) to a `major.minor`, defined in
+`src/cli/beads-pin.ts`. Comparison is equality on major.minor only; output the
+installer cannot parse counts as a mismatch.
+
+- A `bd` found on PATH that is off the pin is reported as `version-mismatch` and
+  never modified (it is not ours). A stale `bd` in the fleet `BIN_DIR` is
+  replaced and re-verified.
+- A `dolt` in `BIN_DIR` of the wrong version is replaced; if that fails it is
+  reported loudly rather than skipped.
+- An install with an off-pin `bd` exits 1, and the last stderr line carries the
+  found version, the expected version and the fix. (The same check exists in the
+  apra-pm installer.)
+
+The same pin is enforced at run time, so a drifted tool cannot corrupt a shared
+beads database:
+
+- The sprint engine verifies the pin on the backlog member and every member
+  (including set-up members) before any set-up or pull, when the runner enables
+  `checkToolVersions`. It names every offending member and fails with
+  `VERSION_MISMATCH`; a missing `bd` stays `MISSING_TOOL`. The engine's copy of
+  the pin is drift-guarded by a test against `beads-pin.ts`, so the two cannot
+  diverge silently.
+- The supervisor's beads view runs the same verification before any pull. A pass
+  is cached per member for the supervisor's lifetime; a failure is never cached,
+  records the error and makes a sprint launch return 503. Consequence: a `bd`
+  upgraded on the backlog member after the first pass is not re-checked before
+  later pulls; the sprint-start check still catches it at launch.
+
 ## Replace a full install on a member
 
 A fleet member machine needs a **member install only** (`apra-fleet install
@@ -389,30 +456,59 @@ and `<provider>` with the member's LLM provider (`claude`, `agy`, `codex`,
 downloaded from the release page) for this OS/arch, normally
 `<home>/.apra-fleet/staging/apra-fleet` (`apra-fleet.exe` on Windows).
 
-a. Back up the data directory AND the signing key, which lives outside `data/`:
+Pre-check (before the numbered steps). Look for a running fleet-sprint
+   supervisor or sprint with the STAGED binary (the installed one may be too old
+   to say): `'<staged>' fleet-se-check` prints `FLEET_SE supervisor ...` or
+   `FLEET_SE sprint ...` lines when something runs. If it does, stop its sprints, then stop it, and
+   restart it after the replacement (it is not restarted for you; a running
+   supervisor also makes every install, including a rollback, refuse with
+   `E-FLEET-SE-RUNNING`):
+
+   ```bash
+   curl -X POST http://localhost:<port>/api/shutdown -H "Content-Type: application/json" -d "{}"
+   ```
+
+0. Stop the server with the INSTALLED binary and check that it is down (a live
+   server makes the backup torn). `status` must show `State:    stopped`:
+
+   ```bash
+   '<home>/.apra-fleet/bin/apra-fleet' stop
+   '<home>/.apra-fleet/bin/apra-fleet' status
+   ```
+
+   ```powershell
+   & '<home>\.apra-fleet\bin\apra-fleet.exe' stop
+   & '<home>\.apra-fleet\bin\apra-fleet.exe' status
+   ```
+
+a. Back up the data directory, the signing key (which lives outside `data/`) AND
+   the old binary (step b deletes it; a rollback reinstalls from this copy):
 
    ```bash
    # posix (Linux, macOS)
    cp -R '<home>/.apra-fleet/data' '<home>/.apra-fleet-data.full-install.bak'
    cp '<home>/.apra-fleet/fleet.key' '<home>/.apra-fleet-data.full-install.bak/'
+   cp '<home>/.apra-fleet/bin/apra-fleet' '<home>/.apra-fleet-data.full-install.bak/'
    ```
 
    ```powershell
    # Windows (PowerShell)
    Copy-Item -Recurse -LiteralPath '<home>\.apra-fleet\data' -Destination '<home>\.apra-fleet-data.full-install.bak'
    Copy-Item -LiteralPath '<home>\.apra-fleet\fleet.key' -Destination '<home>\.apra-fleet-data.full-install.bak\'
+   Copy-Item -LiteralPath '<home>\.apra-fleet\bin\apra-fleet.exe' -Destination '<home>\.apra-fleet-data.full-install.bak\'
    ```
 
-b. Uninstall with the INSTALLED binary (old full installs have it). This stops
-   the server and removes the service unit or scheduled task, the binary, hooks,
+b. Uninstall with the BACKUP copy of the old binary from step a, not the
+   installed one (Windows cannot delete a running exe, so the installed binary
+   cannot uninstall itself). This stops the server and removes the service unit or scheduled task, the binary, hooks,
    skills, agents and the user-scope MCP registration; it keeps `data/`:
 
    ```bash
-   '<home>/.apra-fleet/bin/apra-fleet' uninstall --force --yes
+   chmod +x '<home>/.apra-fleet-data.full-install.bak/apra-fleet' && '<home>/.apra-fleet-data.full-install.bak/apra-fleet' uninstall --force --yes
    ```
 
    ```powershell
-   & '<home>\.apra-fleet\bin\apra-fleet.exe' uninstall --force --yes
+   & '<home>\.apra-fleet-data.full-install.bak\apra-fleet.exe' uninstall --force --yes
    ```
 
 c. Move the old data aside (the backup from step a stays as the rollback copy):
@@ -466,7 +562,10 @@ f. On the orchestrator, for every member on that Unix user run `update_member`
 Run `apra-fleet uninstall --force --yes` for the member install, restore the
 backed-up data directory (`<home>/.apra-fleet-data.full-install.bak` back to
 `<home>/.apra-fleet/data`, plus `fleet.key` to `<home>/.apra-fleet/fleet.key`),
-and re-run the old full installer.
+then reinstall the PREVIOUS version from the binary copy in the backup:
+`'<home>/.apra-fleet-data.full-install.bak/apra-fleet' install --llm <provider> --force`
+(`apra-fleet.exe` on Windows). If the failure came before step b, just run
+`'<home>/.apra-fleet/bin/apra-fleet' start`.
 
 ### Evidence
 

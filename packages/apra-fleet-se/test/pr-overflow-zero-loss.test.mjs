@@ -219,6 +219,32 @@ function visibleDescription(body) {
     return body.slice(0, at).trimEnd();
 }
 
+const PR_WEB_URLS = {
+    github: 'https://github.com/acme/widgets/pull/42',
+    'azure-devops': 'https://dev.azure.com/acme/proj/_git/widgets/pullrequest/7',
+    bitbucket: 'https://bitbucket.org/acme/widgets/pull-requests/9',
+};
+
+/** The browser link of the fake's engine comment `id` (the fakes answer no
+ *  html link, so each provider's fallback anchor applies). */
+function commentLink(provider, id) {
+    if (provider === 'github') return `${PR_WEB_URLS.github}#issuecomment-${id}`;
+    if (provider === 'bitbucket') return `${PR_WEB_URLS.bitbucket}#comment-${id}`;
+    return `${PR_WEB_URLS['azure-devops']}?_a=overview&discussionId=${id}`;
+}
+
+/** The linked pointer line the description must end with: a markdown link
+ *  to every engine comment, or to the first one plus the count. */
+function linkedPointerFor(fake) {
+    const ids = [...fake.comments.entries()]
+        .map(([id, body]) => ({ id, parsed: parseOverflowComment(body) }))
+        .filter((c) => c.parsed && !c.parsed.superseded)
+        .sort((a, b) => a.parsed.index - b.parsed.index)
+        .map((c) => c.id);
+    const urls = ids.map((id) => commentLink(fake.provider, id));
+    return prBody.overflowLinkedPointer(urls, prBody.OVERFLOW_POINTER_RESERVE);
+}
+
 const ASSESSMENT = Object.freeze({
     value: 'v', risk: 'r', default_path_changes: 'none', blast_radius: 'b', upgrade_impact: 'none', proof: 'p',
     recommendation: 'merge_after_proof', reason: 'needs a live run',
@@ -235,7 +261,7 @@ describe('zero reviewer-note loss per provider with a 20k-character final review
             const body = fake.pr.body;
 
             assert.ok(body.length <= descriptionMaxLength, `${provider}: description ${body.length} > ${descriptionMaxLength}`);
-            assert.ok(body.startsWith('## Sprint verdict: PASS'), 'the description starts with the verdict');
+            assert.ok(body.startsWith('<!-- fleet-sprint:pr-block v1 -->\n## Sprint verdict: PASS'), 'the description starts with the verdict');
             assert.ok(body.indexOf('### Merge assessment') < body.indexOf('### Reviewer notes'), 'merge assessment before the notes');
             assert.deepEqual(parseRunHistory(body).map((e) => e.run), ['run-1'], 'run-history marker block intact');
             assert.ok(body.trimEnd().endsWith('-->'), 'the hidden marker block closes the body');
@@ -254,7 +280,7 @@ describe('zero reviewer-note loss per provider with a 20k-character final review
             }
             assert.deepEqual(comments.map((c) => c.parsed.index), comments.map((_, i) => i + 1));
             const visible = visibleDescription(body);
-            assert.ok(visible.endsWith(`Reviewer notes continued in ${comments.length} comment(s) below.`), visible.slice(-200));
+            assert.ok(visible.endsWith(linkedPointerFor(fake)), visible.slice(-400));
             const joined = descriptionNotes(body) + comments.map((c) => c.parsed.text).join('');
             assert.equal(joined.length, full.length, `${provider}: zero characters dropped`);
             assert.equal(joined, full, `${provider}: description + comments concatenate to the full sanitized notes`);
@@ -301,7 +327,7 @@ describe('a failed comment post never fails the sprint', () => {
         assert.deepEqual(result, { pushed: true }, 'the publish phase completes normally');
         assert.ok(logs.some((l) => /WARNING: could not post reviewer-notes overflow comment 1 of \d+ on PR https:\/\/dev\.azure\.com\/acme\/proj\/_git\/widgets\/pullrequest\/7/.test(l)), logs.join('\n'));
         const visible = visibleDescription(fake.pr.body);
-        assert.match(visible, /Reviewer notes continued: \d+ characters did not fit this description and could not be posted as PR comments -- the full notes are in the sprint run log\.$/);
+        assert.match(visible, /Sprint text continued: \d+ characters did not fit this description and could not be posted as PR comments -- the full text is in the sprint run log\.$/);
         assert.ok(fake.pr.body.length <= getProviderTextLimits('azure-devops').descriptionMaxLength);
         assert.deepEqual(parseRunHistory(fake.pr.body).map((e) => e.run), ['run-1']);
         assert.ok(logs.some((l) => l.includes(sanitizePrMarkdown(notes))), 'the full notes are in the run log');
@@ -347,7 +373,7 @@ describe('the abort PR path uses the same overflow behaviour', () => {
         });
         assert.equal(result.reason, 'aborted-pr-created', JSON.stringify(result));
         const body = fake.pr.body;
-        assert.ok(body.startsWith('## Sprint verdict: ABORTED'));
+        assert.ok(body.startsWith('<!-- fleet-sprint:pr-block v1 -->\n## Sprint verdict: ABORTED'));
         assert.ok(body.length <= getProviderTextLimits('azure-devops').descriptionMaxLength);
         const comments = fake.overflowComments();
         assert.ok(comments.length >= 1, 'abort details overflow into comments');
@@ -371,7 +397,7 @@ describe('github: a final review past the 60000-character description limit', ()
         const body = fake.pr.body;
 
         assert.ok(body.length <= descriptionMaxLength, `description ${body.length} > ${descriptionMaxLength}`);
-        assert.ok(body.startsWith('## Sprint verdict: PASS'), 'the description starts with the verdict');
+        assert.ok(body.startsWith('<!-- fleet-sprint:pr-block v1 -->\n## Sprint verdict: PASS'), 'the description starts with the verdict');
         const ma = body.indexOf('### Merge assessment');
         assert.ok(ma > 0 && ma < body.indexOf('### Reviewer notes'), 'merge assessment right after the verdict, before the notes');
         assert.deepEqual(parseRunHistory(body).map((e) => e.run), ['run-1'], 'run-history marker block intact');
@@ -383,7 +409,7 @@ describe('github: a final review past the 60000-character description limit', ()
             assert.equal(c.parsed.total, run1.length);
         }
         assert.deepEqual(run1.map((c) => c.parsed.index), run1.map((_, i) => i + 1), 'chunks in order');
-        assert.ok(visibleDescription(body).endsWith(`Reviewer notes continued in ${run1.length} comment(s) below.`));
+        assert.ok(visibleDescription(body).endsWith(linkedPointerFor(fake)), visibleDescription(body).slice(-400));
         const joined = descriptionNotes(body) + run1.map((c) => c.parsed.text).join('');
         assert.equal(joined, full, 'description + comments concatenate to the full sanitized notes');
         assert.ok(logs.some((l) => l.includes(full)), 'the full notes are in the run log');
@@ -462,7 +488,7 @@ describe('a partial overflow-comment post failure', () => {
         assert.deepEqual(result, { pushed: true });
         assert.ok(logs.some((l) => /WARNING: could not post reviewer-notes overflow comment 2 of \d+/.test(l)), logs.join('\n'));
         const visible = visibleDescription(fake.pr.body);
-        assert.match(visible, /Reviewer notes continued: \d+ characters did not fit this description; 1 of \d+ overflow comment\(s\) were posted and \d+ could not be -- the rest of the notes are in the sprint run log\.$/);
+        assert.match(visible, /Sprint text continued: \d+ characters did not fit this description; 1 of \d+ overflow comment\(s\) were posted and \d+ could not be -- the rest is in the sprint run log\.$/);
         assert.ok(fake.pr.body.length <= getProviderTextLimits('bitbucket').descriptionMaxLength);
     });
 });

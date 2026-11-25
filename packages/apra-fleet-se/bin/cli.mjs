@@ -188,6 +188,8 @@ export function buildOptionsSpec() {
         // Reviewer KB demotion loop switch: on (default) or off. Forwarded as the
         // runner's kb_demotion_loop arg, which rejects any other value loudly.
         'kb-demotion-loop': { type: 'string' },
+        'tier-policy': { type: 'string' },
+        'tier-overrides': { type: 'string' },
         // --ci-gate is DELIBERATELY NOT WIRED (2026-10-01): the runner's
         // ci_gate arg is disabled until the CI-as-quality-resource epic
         // (apra-fleet-dv8i) designs the flow -- see fleet-sprint/sprint-args.mjs.
@@ -254,6 +256,9 @@ Options:
                                Reviewer KB demotion loop (default: on). 'off' offers the reviewer no
                                demotion candidates and issues no kb_demote; the log says so. Any
                                other value is rejected.
+      --tier-policy <balanced|economy|quality>
+                               Model tier policy preset (default: balanced). Invalid values are rejected.
+      --tier-overrides <json>  JSON object of policy overrides, e.g. '{"premiumCapPct":5}'. Optional.
   -h, --help                   Show this help message.
 `.trim();
 
@@ -370,7 +375,7 @@ export async function resolveRoleMapWithWarnings(rawValue, deps = {}) {
  * }} opts
  * @returns {object}
  */
-export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goal, maxCycles, requirementsFile, roleMap, roleMapWarnings, budget, dispatchTimeoutS, usageLimitMaxWaitS, usageLimitMaxReprobes, serviceUrl, runId, expectBeads, skipRegression, kbDemotionLoop, ciGate, decisionNotify }) {
+export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goal, maxCycles, requirementsFile, roleMap, roleMapWarnings, budget, dispatchTimeoutS, usageLimitMaxWaitS, usageLimitMaxReprobes, serviceUrl, runId, expectBeads, skipRegression, kbDemotionLoop, tierPolicy, tierOverrides, ciGate, decisionNotify }) {
     const args = {
         target_issues: targetIssues,
         members,
@@ -404,6 +409,9 @@ export function buildRunnerArgs({ targetIssues, members, branch, baseBranch, goa
     if (skipRegression === true) args.skip_regression = true;
     // Forwarded verbatim when set; validateArgs rejects anything but on/off.
     if (kbDemotionLoop !== undefined) args.kb_demotion_loop = kbDemotionLoop;
+    // Forwarded verbatim; validateArgs resolves and rejects invalid values.
+    if (tierPolicy !== undefined) args.tier_policy = tierPolicy;
+    if (tierOverrides !== undefined) args.tier_overrides = tierOverrides;
     // The raw --expect-beads JSON, forwarded verbatim; runner.js's
     // validateArgs() parses it (validateExpectBeads) and rejects bad JSON.
     if (expectBeads !== undefined) args.expect_beads = expectBeads;
@@ -1232,6 +1240,8 @@ async function main() {
                 decisionNotify: (values['decision-notify'] || process.env.FLEET_SPRINT_DECISION_NOTIFY || '').trim() || undefined,
                 skipRegression: Boolean(values['skip-regression']),
                 kbDemotionLoop: values['kb-demotion-loop'],
+                tierPolicy: values['tier-policy'],
+                tierOverrides: values['tier-overrides'],
                 // ciGate: values['ci-gate'],  -- not wired (apra-fleet-dv8i)
             }),
             // apra-fleet-eft.75.1: wires this already-connected mcpClient

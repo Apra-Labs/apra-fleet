@@ -28,7 +28,8 @@ and an explicit "Rules" section (hard constraints -- e.g. `doer.md`: "NEVER
 close type=feature or type=bug issues"; `reviewer.md`: "NEVER close
 issues -- only the doer closes tasks"). Closure of a verify-set bead -- a
 parent of ANY issue_type (feature, bug, or task-with-children) whose children
-are all closed while it is still open -- is `integ-test-runner`'s job, not the
+are all closed while it is still open, or a childless bead labelled
+`needs-live-evidence` with no unmet prerequisite -- is `integ-test-runner`'s job, not the
 doer's or reviewer's; this is not restricted to `type=feature`. These files
 are the authoritative, human-readable source of truth for what each role
 actually does when dispatched -- `docs/overview.md`'s role summaries are

@@ -37,7 +37,8 @@ describe('execute-command: long_running OS warning', () => {
   beforeEach(() => {
     backupAndResetRegistry();
     vi.clearAllMocks();
-    mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+    // A launch counts only once the script printed the readiness marker.
+    mockExecCommand.mockResolvedValue({ stdout: 'FLEET_TASK_READY\n', stderr: '', code: 0 });
   });
 
   afterEach(() => {
@@ -47,7 +48,7 @@ describe('execute-command: long_running OS warning', () => {
   it('launches (no OS warning, no hard-fail) when long_running on a Windows member', async () => {
     const member = makeTestAgent({ os: 'windows' });
     addAgent(member);
-    mockExecCommand.mockResolvedValue({ stdout: 'TASK_PID:4242\n', stderr: '', code: 0 });
+    mockExecCommand.mockResolvedValue({ stdout: 'TASK_PID:4242\nFLEET_TASK_READY\n', stderr: '', code: 0 });
 
     const result = await executeCommand({
       member_id: member.id,
@@ -77,7 +78,7 @@ describe('execute-command: long_running OS warning', () => {
   it('registers a task id when long_running on a Windows member', async () => {
     const member = makeTestAgent({ os: 'windows' });
     addAgent(member);
-    mockExecCommand.mockResolvedValue({ stdout: 'TASK_PID:4242\n', stderr: '', code: 0 });
+    mockExecCommand.mockResolvedValue({ stdout: 'TASK_PID:4242\nFLEET_TASK_READY\n', stderr: '', code: 0 });
 
     const result = await executeCommand({
       member_id: member.id,

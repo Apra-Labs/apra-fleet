@@ -202,6 +202,14 @@
  *                                         //   classification-only provider
  *                                         //   (generic-git, dolt) has no PR
  *                                         //   text and declares neither.
+ *     commentWebUrl: ({ response, ref, prUrl }) => string|null  // OPTIONAL;
+ *                                         //   the browser link of one PR
+ *                                         //   comment, from the comment
+ *                                         //   create/update response or a
+ *                                         //   list-comments item (`response`),
+ *                                         //   its `ref`, and the PR's web
+ *                                         //   URL; null when unknown. The
+ *                                         //   overflow pointer links to it.
  *     httpFailureHint: (statusOrCtx) => string|{ hint, remedy }  // OPTIONAL;
  *                                         //   REST failure explanation.
  *                                         //   Called with a bare status
@@ -233,26 +241,39 @@
  *       remedy?: (ctx) => string          //   === false). With it, the VCS
  *     }                                   //   preflight (vcs-auth.mjs
  *                                         //   createVcsAuthPreflightCallback)
- *                                         //   runs git ls-remote AND `build`'s
- *                                         //   REST command through
- *                                         //   vcs_credential_exec with the
- *                                         //   provider label (params: repoRef,
- *                                         //   token = the {{vcs_token_inline}}
- *                                         //   placeholder, os, shell) -- the
- *                                         //   exact credential Publish PR
- *                                         //   reads -- and, when
- *                                         //   expectedUsername is set, checks
- *                                         //   the helper's username= line
+ *                                         //   judges two channels by function:
+ *                                         //   git -- ls-remote origin through
+ *                                         //   ONLY the provider-labelled fleet
+ *                                         //   helper (host helper chain reset);
+ *                                         //   PR -- `build`'s REST command
+ *                                         //   through vcs_credential_exec with
+ *                                         //   the provider label (params:
+ *                                         //   repoRef, token = the
+ *                                         //   {{vcs_token_inline}} placeholder,
+ *                                         //   os, shell), the exact credential
+ *                                         //   Publish PR reads. ok only if both
+ *                                         //   pass; "No PR" is predicted only
+ *                                         //   when the PR channel fails. A
+ *                                         //   status inside
+ *                                         //   interpret.successStatusRange
+ *                                         //   whose body is an HTML sign-in
+ *                                         //   page is still a refusal
+ *                                         //   (classifyPrResponseBody below,
+ *                                         //   shared by every provider).
+ *                                         //   expectedUsername is the
+ *                                         //   PREFERRED helper username= line
  *                                         //   (read member-side, token line
- *                                         //   never printed). ok only if all
- *                                         //   pass. A REST refusal is worded
- *                                         //   via httpFailureHint(ctx);
+ *                                         //   never printed): a different one
+ *                                         //   is one WARN, never a failure. A
+ *                                         //   REST refusal is worded via
+ *                                         //   httpFailureHint(ctx);
  *                                         //   `remedy(ctx)` (ctx:
  *                                         //   availableSecrets, memberName,
- *                                         //   repoRef, local) words the fix
- *                                         //   for every other failure. Omit it
- *                                         //   and the preflight probes with
- *                                         //   git ls-remote only, as before.
+ *                                         //   repoRef, local, secretName) words
+ *                                         //   the fix for every other failure.
+ *                                         //   Omit it and the preflight probes
+ *                                         //   with host-chain git ls-remote
+ *                                         //   only, as before.
  *     findBeforeCreate: boolean,          // OPTIONAL; create is not an upsert.
  *                                         //   raiseVcsPrForMember runs
  *                                         //   find-pull-request first and
@@ -484,6 +505,9 @@ export function registerVcsProvider(impl) {
     if (impl.httpFailureHint != null && typeof impl.httpFailureHint !== 'function') {
         throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a non-function httpFailureHint.`);
     }
+    if (impl.commentWebUrl != null && typeof impl.commentWebUrl !== 'function') {
+        throw new Error(`ERROR: VCSModule: provider "${impl.name}" has a non-function commentWebUrl.`);
+    }
     if (impl.credentialProbe != null) {
         const probe = impl.credentialProbe;
         if (typeof probe !== 'object' || typeof probe.build !== 'function') {
@@ -700,6 +724,102 @@ export function resolveVcsAuthProviderForHost(host) {
         if (typeof matcher === 'function' && matcher(host)) return provider;
     }
     return null;
+}
+
+// -----------------------------------------------------------------------------
+// Provider-neutral PR response rule.
+//
+// A 2xx status alone does not prove a PR REST call did what it was asked to:
+// a server (or a proxy in front of it) can answer an unauthenticated request
+// with a 2xx HTML sign-in page -- e.g. HTTP 203 Non-Authoritative Information
+// carrying a login form -- so "status in successStatusRange" read as "PR
+// created" even though nothing was created. The rule below applies to every
+// provider alike (never one copy per descriptor): a 2xx whose body is an HTML
+// page or a sign-in page is an AUTH failure, and a 2xx whose body cannot be
+// read as the expected JSON (no PR id/URL for a create, non-JSON text for a
+// find/get/update) is a typed unexpected-response failure.
+// -----------------------------------------------------------------------------
+
+/** Typed reason for a 2xx PR response whose body is a sign-in/HTML page. */
+export const PR_RESPONSE_SIGN_IN = 'pr-response-sign-in';
+/** Typed reason for a 2xx PR response whose body maps to no PR (or is not JSON). */
+export const PR_RESPONSE_UNMAPPED = 'pr-response-unmapped';
+
+// The comment group is unambiguous (no overlapping lazy quantifier), and the
+// inspected text is capped, so a hostile body cannot cause backtracking blowup.
+const HTML_START_RE = /^(?:<\?xml[^>]*>\s*)?(?:<!--(?:[^-]|-(?!->))*-->\s*)*<(?:!doctype\s+html|html[\s>])/i;
+const HTML_INSPECT_LIMIT = 2048;
+const SIGN_IN_MARKER_RE = /\bsign[\s-]?in\b|\bsignin\b|\blog[\s-]?in\b|login\.microsoftonline\.com|_signin|id="?loginform|\bauthenticate to continue\b/i;
+
+/**
+ * Whether a response body is an HTML page or a sign-in page.
+ * @param {string} bodyText
+ * @returns {{ html: boolean, signIn: boolean }}
+ */
+export function classifyPrResponseBody(bodyText) {
+    const text = String(bodyText ?? '').slice(0, HTML_INSPECT_LIMIT).trim();
+    const html = HTML_START_RE.test(text);
+    const signIn = html || (text !== '' && SIGN_IN_MARKER_RE.test(text) && !/^[[{]/.test(text));
+    return { html, signIn };
+}
+
+// Token-shaped text: provider token prefixes, JWTs, Authorization schemes,
+// key=value credentials, and any long opaque run of token alphabet.
+const TOKEN_SHAPED_RES = [
+    /\b(?:Bearer|Basic|token)\s+[A-Za-z0-9._~+/=-]{8,}/gi,
+    /\b(?:access_token|refresh_token|id_token|token|password|passwd|pwd|secret|api[_-]?key|sig|code)=([^&\s"'<>]+)/gi,
+    /\b(?:gh[pousr]_|github_pat_|glpat-|ATBB|ATATT|ATCTT|xox[abprs]-)[A-Za-z0-9_=-]{6,}/g,
+    /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}(?:\.[A-Za-z0-9_-]*)?/g,
+    /[A-Za-z0-9_+=-]{32,}/g,
+];
+
+/**
+ * A short, log-safe excerpt of a response body: whitespace collapsed,
+ * non-ASCII/control characters replaced, URL userinfo redacted (through the
+ * caller's `redactUrl`, so the one URL-redaction rule is reused), every
+ * token-shaped run replaced with `***`, then cut to `max` characters.
+ * @param {string} bodyText
+ * @param {{ max?: number, redactUrl?: (s: string) => string }} [opts]
+ * @returns {string}
+ */
+export function prResponseExcerpt(bodyText, { max = 200, redactUrl } = {}) {
+    let text = String(bodyText ?? '');
+    if (typeof redactUrl === 'function') text = redactUrl(text);
+    text = text.replace(/[^\x20-\x7e]+/g, ' ').replace(/\s+/g, ' ').trim();
+    for (const re of TOKEN_SHAPED_RES) {
+        text = text.replace(re, (m, value) => (typeof value === 'string' ? m.slice(0, m.length - value.length) + '***' : '***'));
+    }
+    const limit = Math.max(0, Math.min(200, Number(max) || 0));
+    return text.length > limit ? `${text.slice(0, Math.max(0, limit - 3))}...` : text;
+}
+
+/**
+ * The typed failure for a 2xx PR response that did not do what it was asked:
+ * `{ authFailure, reason, message, excerpt }`. `what` names the call
+ * (e.g. 'create-pull-request'); the message carries the status and the
+ * log-safe body excerpt, never the raw body.
+ * @param {{ status: number|null, bodyText: string, what: string, redactUrl?: (s: string) => string }} ctx
+ * @returns {{ authFailure: boolean, reason: string, message: string, excerpt: string }}
+ */
+export function unmappedPrResponseFailure({ status, bodyText, what, redactUrl }) {
+    const { html, signIn } = classifyPrResponseBody(bodyText);
+    const excerpt = prResponseExcerpt(bodyText, { redactUrl });
+    const shown = excerpt ? `: ${excerpt}` : ' (empty body)';
+    const statusText = `HTTP ${status ?? '(unknown)'}`;
+    if (signIn) {
+        return {
+            authFailure: true,
+            reason: PR_RESPONSE_SIGN_IN,
+            message: `${what} answered ${statusText} with ${html ? 'an HTML' : 'a'} sign-in page instead of a pull request -- the request was not authenticated, so nothing was done (${PR_RESPONSE_SIGN_IN})${shown}`,
+            excerpt,
+        };
+    }
+    return {
+        authFailure: false,
+        reason: PR_RESPONSE_UNMAPPED,
+        message: `${what} answered ${statusText} but the response does not identify a pull request, so it cannot be treated as done (${PR_RESPONSE_UNMAPPED})${shown}`,
+        excerpt,
+    };
 }
 
 for (const impl of BUILT_IN_PROVIDERS) registerVcsProvider(impl);

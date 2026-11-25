@@ -13,6 +13,8 @@
  * CLI is invoked.
  */
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach, afterAll } from 'vitest';
+import { claudeProcessKillDenyRules, agyProcessKillDenyRules } from '../src/services/process-kill-rules.js';
+import { agyCommandRules } from '../src/providers/agy.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -145,9 +147,9 @@ describe.skipIf(process.platform === 'win32')('compose_permissions -- per-folder
     expect(JSON.stringify(settings)).not.toContain('apra-fleet-member');
     expect(JSON.stringify(settings)).not.toMatch(/"disabled"/);
     // Deny rules are exactly the complement of the member allowlist.
-    expect(settings.permissions.deny).toEqual(MEMBER_DENIED_TOOLS.map(t => `mcp__apra-fleet__${t}`));
+    expect(settings.permissions.deny).toEqual([...MEMBER_DENIED_TOOLS.map(t => `mcp__apra-fleet__${t}`), ...claudeProcessKillDenyRules()]);
     expect(new Set(settings.permissions.deny.map((r: string) => r.replace('mcp__apra-fleet__', '')))).toEqual(
-      new Set(['register_member', 'execute_prompt', 'remove_member', ...MEMBER_DENIED_TOOLS]),
+      new Set(['register_member', 'execute_prompt', 'remove_member', ...MEMBER_DENIED_TOOLS, ...claudeProcessKillDenyRules()]),
     );
     for (const allowed of MEMBER_ALLOWED_TOOLS) expect(settings.permissions.deny).not.toContain(`mcp__apra-fleet__${allowed}`);
     expect(JSON.stringify(settings.permissions.deny)).not.toContain('deepwiki');
@@ -221,7 +223,7 @@ describe.skipIf(process.platform === 'win32')('compose_permissions -- per-folder
     expect(result).toContain('Permissions composed');
 
     const grants = readJson(projectFile).permissionGrants.permissionGrants;
-    expect(grants.deny).toEqual(MEMBER_DENIED_TOOLS.map(t => `mcp(apra-fleet/${t})`));
+    expect(grants.deny).toEqual([...MEMBER_DENIED_TOOLS.map(t => `mcp(apra-fleet/${t})`), ...agyProcessKillDenyRules(agyCommandRules)]);
     expect(JSON.stringify(grants.deny)).not.toContain('deepwiki');
 
     // Member MCP entry is written for agy to point at member endpoint; legacy is pruned.

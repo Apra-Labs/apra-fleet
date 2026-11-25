@@ -341,6 +341,11 @@ function buildRepairPrompt(errorsText, initialPrompt) {
  *   explicitly sends `resume: false` unless the caller sets this option, so that
  *   workflow-authored prompts are self-contained by default and don't silently inherit
  *   state from a prior session. (F10 / apra-fleet-unw.3)
+ * @property {(resolved: { resolved_tier: string|null, resolved_model: string|null }) => void} [onResolvedTier]
+ *   Optional best-effort callback invoked with the tier and concrete model execute_prompt
+ *   reported it resolved (structuredContent.resolved_tier / resolved_model), once per
+ *   dispatch attempt that returned a result. Values are null when the result carries none.
+ *   A throwing callback is logged and ignored. Pricing uses resolved_tier when present.
  * @property {(sessionId: string, meta: { member?: string, agent?: string, usage?: object }) => void} [onSessionId]
  *   Optional best-effort callback invoked with the resumable session id that execute_prompt
  *   promoted into structuredContent.sessionId (apra-fleet-eft.78.1), on a non-error dispatch
@@ -349,6 +354,13 @@ function buildRepairPrompt(errorsText, initialPrompt) {
  *   can resume the same role's session across rounds via `resume: <id>`. Never fires when the
  *   provider returns no session id (a capability signal, not a provider-name check); a throwing
  *   callback is caught and never breaks the dispatch. (apra-fleet-eft.78.3)
+ * @property {(model: string|null, meta: { member?: string, agent?: string, source?: ('reported'|'resolved'|null) }) => void} [onModelId]
+ *   Optional best-effort callback invoked once per settled execute_prompt call (success or
+ *   typed failure) with the model id the server reports in structuredContent.model (the
+ *   provider-reported id when the provider named one, else the resolved id; meta.source says which),
+ *   or null when it reports none (older server, provider without it). A throwing callback is
+ *   caught and never breaks the dispatch. The same id rides on AgentDispatchError.details.model
+ *   and in the onSessionId meta.
  * @property {number} [timeoutMs] - Client-side McpClient.request() timeout override (ms),
  *   passed through to ApraFleet.executePrompt. Not sent to the server. When omitted, a
  *   default is derived from timeout_s/max_total_s (see deriveTimeoutMs in
@@ -1274,6 +1286,21 @@ export class FleetWorkflow extends EventEmitter {
                 // predate this field.
                 const structured = result && result.structuredContent;
                 const reportedUsage = (structured && structured.usage) || result.usage;
+                // The concrete model id the server ran this dispatch on (absent on an
+                // older server / a provider that reports none). Surfaced through
+                // opts.onModelId on success AND failure, and on AgentDispatchError
+                // details.model, so callers can log which model actually served it.
+                const reportedModel = structured && typeof structured.model === 'string' && structured.model ? structured.model : null;
+                // 'reported' = the provider named the model that ran; 'resolved' = the
+                // id/alias the server mapped the tier to (provider reported none).
+                const reportedModelSource = reportedModel && structured && (structured.modelSource === 'reported' || structured.modelSource === 'resolved') ? structured.modelSource : null;
+                if (typeof opts.onModelId === 'function') {
+                    try {
+                        opts.onModelId(reportedModel, { member: opts.member_name || opts.member_id, agent: opts.agentType, source: reportedModelSource });
+                    } catch (cbErr) {
+                        console.error(`[Agent onModelId] callback threw (non-fatal): ${cbErr && cbErr.message ? cbErr.message : cbErr}`);
+                    }
+                }
                 // A successful dispatch whose session refused tool calls that
                 // must never be granted (Claude auto mode: classifier or deny
                 // rule). The reply is complete; this is a warning only.
@@ -1290,7 +1317,23 @@ export class FleetWorkflow extends EventEmitter {
                 const hasRealUsage = !!(reportedUsage && typeof reportedUsage.total_tokens === 'number');
                 result.usage = hasRealUsage ? reportedUsage : null;
 
-                const cost = hasRealUsage ? await this._resolveCost(opts, result.usage, budget) : null;
+                // resolved_tier / resolved_model: what execute_prompt actually ran
+                // (present on a result that reached model resolution, success or
+                // failure). Report them to the caller's best-effort hook, and
+                // price at the resolved tier when one is present.
+                const resolvedTier = structured && typeof structured.resolved_tier === 'string' ? structured.resolved_tier : null;
+                if (typeof opts.onResolvedTier === 'function') {
+                    try {
+                        opts.onResolvedTier({
+                            resolved_tier: resolvedTier,
+                            resolved_model: structured && typeof structured.resolved_model === 'string' ? structured.resolved_model : null,
+                        });
+                    } catch (cbErr) {
+                        console.error(`[Agent onResolvedTier] callback threw (non-fatal): ${cbErr && cbErr.message ? cbErr.message : cbErr}`);
+                    }
+                }
+                const pricingOpts = resolvedTier ? { ...opts, model: resolvedTier } : opts;
+                const cost = hasRealUsage ? await this._resolveCost(pricingOpts, result.usage, budget) : null;
                 if (cost !== null) {
                     budget._spent += cost;
                 }
@@ -1334,7 +1377,7 @@ export class FleetWorkflow extends EventEmitter {
                     // result forwards its permissionDenied block the same way, and
                     // dispatched:false (nothing was sent to the member) is kept so a
                     // caller can tell a setup-time failure from one where the agent ran.
-                    throw new AgentDispatchError(`[Workflow Error] Agent dispatch failed (${structured.reason || 'unknown'}): ${text}`, { details: { text, reason: structured.reason, member: opts.member_name || opts.member_id, ...(structured.usageLimit ? { usageLimit: structured.usageLimit } : {}), ...(structured.permissionDenied ? { permissionDenied: structured.permissionDenied } : {}), ...(structured.sessionId ? { sessionId: structured.sessionId } : {}), ...(structured.dispatched === false ? { dispatched: false } : {}) } });
+                    throw new AgentDispatchError(`[Workflow Error] Agent dispatch failed (${structured.reason || 'unknown'}): ${text}`, { details: { text, reason: structured.reason, member: opts.member_name || opts.member_id, ...(structured.usageLimit ? { usageLimit: structured.usageLimit } : {}), ...(structured.permissionDenied ? { permissionDenied: structured.permissionDenied } : {}), ...(structured.sessionId ? { sessionId: structured.sessionId } : {}), ...(reportedModel ? { model: reportedModel, modelSource: reportedModelSource } : {}), ...(structured.dispatched === false ? { dispatched: false } : {}) } });
                 }
 
                 // A fleet TOOL/TRANSPORT failure that carries no
@@ -1394,7 +1437,7 @@ export class FleetWorkflow extends EventEmitter {
                     && typeof opts.onSessionId === 'function'
                 ) {
                     try {
-                        opts.onSessionId(structured.sessionId, { member: opts.member_name || opts.member_id, agent: opts.agentType, usage: result.usage });
+                        opts.onSessionId(structured.sessionId, { member: opts.member_name || opts.member_id, agent: opts.agentType, usage: result.usage, ...(reportedModel ? { model: reportedModel, modelSource: reportedModelSource } : {}) });
                     } catch (cbErr) {
                         console.error(`[Agent onSessionId] callback threw (non-fatal): ${cbErr && cbErr.message ? cbErr.message : cbErr}`);
                     }
