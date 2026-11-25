@@ -23,7 +23,7 @@ import fs from 'node:fs';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { createSupervisor, DEFAULT_SERVICE_PORT, DEFAULT_SERVICE_HOST, SUPERVISOR_ALLOWED_HOSTS_ENV, readJsonBody, sendJson } from '../src/supervisor/server.mjs';
 import { createLedger, defaultDataDir as defaultSupervisorDataDir } from '../src/supervisor/ledger.mjs';
-import { detachSupervisor } from '../src/supervisor/detach.mjs';
+import { detachSupervisor as realDetachSupervisor, resolveLaunchMode } from '../src/supervisor/detach.mjs';
 import { createHeartbeat, resolveHeartbeatIntervalMs } from '../src/supervisor/heartbeat.mjs';
 import { createHistory, HISTORY_EVENTS } from '../src/supervisor/history.mjs';
 import { createSpawner } from '../src/supervisor/spawner.mjs';
@@ -67,7 +67,14 @@ const SERVE_USAGE = `
 Usage: node "${fileURLToPath(import.meta.url)}" [options]
 
 Starts the always-on fleet-sprint supervisor. Runs until POST /api/shutdown or a
-termination signal (Ctrl-C / SIGTERM).
+termination signal.
+
+Launch mode: started from an interactive console (stdin or stdout is a
+terminal) and given neither --detach nor --foreground, it DETACHES by default,
+exactly as with --detach, so the supervisor survives that console closing.
+With no terminal on either stream (systemd, launchd, a scheduled task, a
+service wrapper, CI, a parent process holding pipes) it runs in the foreground,
+as service managers expect.
 
 Options:
       --port <port>         HTTP service port for the supervisor API. Default: ${DEFAULT_SERVICE_PORT}.
@@ -96,6 +103,11 @@ Options:
                             the child it started, prints the reason and the log
                             path (<dataDir>/logs/supervisor-launch.log) and exits
                             non-zero. All other options are passed through.
+                            This is the default on an interactive console.
+      --foreground          Run in the foreground of this process even on an
+                            interactive console (e.g. for debugging); it then
+                            stops when that console closes (Ctrl-C / SIGTERM /
+                            hangup). Cannot be combined with --detach.
   -h, --help                Show this help message.
 
 Environment:
@@ -203,8 +215,9 @@ export function composeBeforeLaunch({ memberOverlapGuard, scopeGuard }) {
 }
 
 export function parseServeArgs(argv) {
+    let parsed;
     try {
-        return parseArgs({
+        parsed = parseArgs({
             args: argv,
             options: {
                 port: { type: 'string' },
@@ -212,6 +225,7 @@ export function parseServeArgs(argv) {
                 'allowed-host': { type: 'string', multiple: true },
                 'beads-dir': { type: 'string' },
                 detach: { type: 'boolean' },
+                foreground: { type: 'boolean' },
                 help: { type: 'boolean', short: 'h' },
             },
             strict: true,
@@ -220,6 +234,10 @@ export function parseServeArgs(argv) {
     } catch (err) {
         throw new Error(`Invalid command-line arguments: ${err.message}\n\n${SERVE_USAGE}`);
     }
+    if (parsed.values.detach && parsed.values.foreground) {
+        throw new Error(`Invalid command-line arguments: --detach and --foreground cannot be used together\n\n${SERVE_USAGE}`);
+    }
+    return parsed;
 }
 
 /**
@@ -251,6 +269,34 @@ export async function serveMain(argv = process.argv.slice(2), deps = {}) {
         return { exitCode: 0 };
     }
 
+    // Launch mode (detach.mjs resolveLaunchMode): --detach, or no flag on an
+    // interactive console, makes this process only the launcher; the real
+    // supervisor is the detached child (same entry point, run --foreground).
+    // The streams/platform are injectable; an in-process caller that injects
+    // none (a test driving serveMain) is never treated as a console launch.
+    const launchStreams = deps.stdio ?? (isMainModule() ? { stdin: process.stdin, stdout: process.stdout } : {});
+    const launch = resolveLaunchMode({
+        detach: values.detach, foreground: values.foreground,
+        stdin: launchStreams.stdin, stdout: launchStreams.stdout,
+        platform: deps.platform ?? process.platform,
+    });
+    if (launch.mode === 'detach') {
+        const detachPort = values.port !== undefined ? Number(values.port) : DEFAULT_SERVICE_PORT;
+        if (!Number.isInteger(detachPort) || detachPort < 1 || detachPort > 65535) {
+            console.error(`Error: --port must be a valid TCP port number, got "${values.port}".`);
+            return { exitCode: 1 };
+        }
+        if (launch.reason === 'interactive-console') {
+            console.log(`[fleet-se serve] interactive console detected (${launch.platform}): starting the supervisor detached so it survives this console closing; pass --foreground to keep it attached.`);
+        }
+        const detachSupervisor = deps.detachSupervisor ?? realDetachSupervisor;
+        const { exitCode } = await detachSupervisor({
+            argv, scriptPath: fileURLToPath(import.meta.url), dataDir: defaultSupervisorDataDir(),
+            port: detachPort, host: values.host,
+        });
+        return { exitCode };
+    }
+
     // Installed before anything else logs: every console.log/warn/error from
     // this point on (including the seam-construction comments' own
     // console.error calls below) is timestamped (local time, not UTC) and
@@ -259,21 +305,6 @@ export async function serveMain(argv = process.argv.slice(2), deps = {}) {
     // unaffected). This is the supervisor's own equivalent of spawner.mjs's
     // per-sprint-child raw log; a dashboard link to GET /supervisor/log is
     // registered further down, once `supervisor` exists.
-    // --detach: this process is only the launcher; the real supervisor is the
-    // detached child (same entry point, flag removed).
-    if (values.detach) {
-        const detachPort = values.port !== undefined ? Number(values.port) : DEFAULT_SERVICE_PORT;
-        if (!Number.isInteger(detachPort) || detachPort < 1 || detachPort > 65535) {
-            console.error(`Error: --port must be a valid TCP port number, got "${values.port}".`);
-            return { exitCode: 1 };
-        }
-        const { exitCode } = await detachSupervisor({
-            argv, scriptPath: fileURLToPath(import.meta.url), dataDir: defaultSupervisorDataDir(),
-            port: detachPort, host: values.host,
-        });
-        return { exitCode };
-    }
-
     const selfLog = installSelfLogTee();
     process.once('exit', () => selfLog.stop());
     // Final synchronous exit line (cause + exit code) on every observable exit
