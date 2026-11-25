@@ -1200,6 +1200,19 @@ export function createSprintController(deps = {}) {
     // pre-existing fields; no lean ref marker or string table anywhere. The
     // live child's full state tree only with opts.full (GET ?full=1),
     // resolved by resolveChildState().
+    // Additive terminal fields from a persisted terminal run state: `analysis`
+    // ({ text, generatedAt } from the sprint-analysis extension namespace, null
+    // for older runs) and `result` (the run's verdict/status/notes).
+    function terminalAnalysisFields(st) {
+        if (!st || typeof st !== 'object') return {};
+        const ns = st.extensions && typeof st.extensions === 'object' ? st.extensions['sprint-analysis'] : null;
+        const analysis = ns && typeof ns === 'object' && typeof ns.text === 'string'
+            ? { text: ns.text, generatedAt: ns.generatedAt ?? null }
+            : null;
+        const res = st.result && typeof st.result === 'object' ? st.result : null;
+        return { analysis, result: res ? { ...res } : null };
+    }
+
     async function getSprint(id, opts = {}) {
         const full = Boolean(opts && opts.full);
         const reservation = ledger.get(id);
@@ -1222,6 +1235,7 @@ export function createSprintController(deps = {}) {
                 return {
                     ...buildSprintSummary({ sprintId: id, live: false, runSummary: runSummaryFromState(terminalState), reservation }),
                     sprintId: id, live: false, terminal: true, state: terminalState,
+                    ...terminalAnalysisFields(terminalState),
                     ...(resultStatus ? { resultStatus } : {}),
                     ...(warnings.length > 0 ? { warnings } : {}),
                 };
@@ -1249,11 +1263,16 @@ export function createSprintController(deps = {}) {
             // for auth failure) so they stay visible after the reservation release.
             const fin = history.forSprint(id).filter((e) => e.event === HISTORY_EVENTS.FINISHED).pop();
             const warnings = fin && Array.isArray(fin.warnings) ? fin.warnings : [];
+            // The persisted terminal state outlives the ledger release: read it
+            // by run id (the sprint id) for analysis + result.
+            let persisted = null;
+            try { persisted = hasTerminalState(id, reservation?.branch ?? null); } catch { persisted = null; }
             return {
                 // Known only from history: no run summary; status is the
                 // latest history event's name.
                 ...buildSprintSummary({ sprintId: id, live: false, runSummary: null, reservation, status: latest.event ?? null }),
                 sprintId: id, live: false, history: history.forSprint(id), latest,
+                ...terminalAnalysisFields(persisted),
                 ...(fin && fin.resultStatus ? { resultStatus: fin.resultStatus } : {}),
                 ...(warnings.length > 0 ? { warnings } : {}),
             };
@@ -1307,7 +1326,16 @@ export function createSprintController(deps = {}) {
         if (!reservation) throw new ApiError(404, `no live sprint '${id}'`);
         const port = resolvePort(reservation.childPid ?? null);
         if (port == null) throw new ApiError(409, `sprint '${id}' has no reachable child (port unknown)`);
-        const out = await proxyAction(port, 'decisions', 'answer', { decisionId, answer: body.answer });
+        let out;
+        try {
+            out = await proxyAction(port, 'decisions', 'answer', { decisionId, answer: body.answer });
+        } catch (err) {
+            // Transport failure: the child may already have recorded the answer.
+            const msg = err && err.message ? err.message : String(err);
+            const check = `the answer may already be recorded; check GET /api/sprints/${id} pendingDecisions before retrying`;
+            if (/timed out|ETIMEDOUT/i.test(msg)) throw new ApiError(504, `decision answer timed out waiting for the sprint child (${msg}); ${check}`);
+            throw new ApiError(502, `decision answer could not reach the sprint child (${msg}); ${check}`);
+        }
         if (out.statusCode === 404) throw new ApiError(404, `no pending decision '${decisionId}' in sprint '${id}'`);
         if (out.statusCode === 400) throw new ApiError(400, (out.body && out.body.error) || 'bad decision answer', 'answer');
         if (out.statusCode !== 200) throw new ApiError(409, (out.body && out.body.error) || `decision answer failed (${out.statusCode})`);

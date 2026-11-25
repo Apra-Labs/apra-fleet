@@ -666,6 +666,17 @@ paths:
                       state: { type: object, description: the persisted terminal run state }
                       resultStatus: { type: string }
                       warnings: { type: array, items: { type: string } }
+                      analysis:
+                        type: object
+                        nullable: true
+                        description: the sprint-analysis text from the persisted terminal run state ({text, generatedAt}); null for runs that predate it
+                        properties:
+                          text: { type: string }
+                          generatedAt: { type: string, nullable: true }
+                      result:
+                        type: object
+                        nullable: true
+                        description: the run's result from the terminal state (status, verdict, notes, warnings)
                   - type: object
                     description: sprint known only from history (status is the latest history event name)
                     allOf:
@@ -685,6 +696,17 @@ paths:
                         type: array
                         items: { type: string }
                         description: present when non-empty; the reasons behind success-with-warnings
+                      analysis:
+                        type: object
+                        nullable: true
+                        description: present when the persisted terminal run state still exists after the ledger release: the sprint-analysis text ({text, generatedAt}); null for runs that predate it
+                        properties:
+                          text: { type: string }
+                          generatedAt: { type: string, nullable: true }
+                      result:
+                        type: object
+                        nullable: true
+                        description: the run's result from the terminal state (status, verdict, notes, warnings)
         "404":
           description: no sprint with this id is live or in history
           content:
@@ -723,6 +745,45 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+
+  /api/sprints/{id}/decisions/{decisionId}:
+    post:
+      tags: [sprints]
+      summary: Answer a pending decision (proxied to the child)
+      description: >
+        Returns once the child has recorded the answer. A 504 (child did not
+        answer in time) or 502 (child unreachable) does not mean the answer was
+        lost: it may already be recorded; check GET /api/sprints/{id}
+        pendingDecisions before retrying.
+      parameters:
+        - $ref: "#/components/parameters/SprintId"
+        - { name: decisionId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [answer]
+              properties:
+                answer: { type: string }
+      responses:
+        "200":
+          description: answer recorded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sprintId: { type: string }
+                  decisionId: { type: string }
+                  status: { type: string }
+                  released: { type: array, items: { type: string } }
+        "400": { description: bad body or answer, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "404": { description: unknown sprint or no such pending decision, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "409": { description: no reachable child, or unexpected child failure, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "502": { description: child unreachable (connection refused/reset); the answer may already be recorded, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "504": { description: child did not answer in time; the answer may already be recorded, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
 
   # ---------------------------------------------------------------------
   # Reservation force-release (reconcile.mjs)

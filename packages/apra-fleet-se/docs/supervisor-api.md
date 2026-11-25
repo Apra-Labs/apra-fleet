@@ -495,6 +495,16 @@ is unchanged (a PASS stays PASS) and `success-with-warnings` is a success, not
 a failure. `warnings` is omitted when empty. Terminal sprints are not listed
 by `GET /api/sprints` (live only); read them by id.
 
+## GET /api/sprints/:id: `analysis` and `result` (finished sprints)
+
+A finished sprint also returns `analysis` and `result` from its persisted
+terminal run state, both while the ledger reservation is held and after it is
+released (the history branch reads the same `old_runs/<runId>.json`).
+`analysis` is `{text, generatedAt}` (the `sprint-analysis` extension
+namespace) or `null` for older runs without it; it is never an error. `result`
+is the run's result object (status, verdict, notes, warnings). Both are
+additive: no existing field changes.
+
 ## Pending decisions
 
 A sprint that is waiting on an operator decision (see
@@ -515,7 +525,10 @@ A sprint that is waiting on an operator decision (see
   `400` (field `body` or `answer`): body not an object, or `answer` missing,
   empty or too long (also a child-side rejection of the answer). `404`: unknown
   sprint, or no pending decision with that id. `409`: the sprint has no
-  reachable child, or the child answered with an unexpected failure.
+  reachable child, or the child answered with an unexpected failure. `504`:
+  the child did not answer in time; `502`: the child could not be reached
+  (connection refused/reset). For both, the answer may already be recorded:
+  check `GET /api/sprints/:id` `pendingDecisions` before retrying.
 - `POST /sprints/:id/live/extensions/:extId/actions/:actionId` is the generic
   proxy route to the child's extension action endpoint (the dashboard uses it
   for the decisions `answer` action).
