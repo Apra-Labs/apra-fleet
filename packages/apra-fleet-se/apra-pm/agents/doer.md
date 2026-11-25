@@ -32,6 +32,11 @@ explicitly says the orchestrator manages claim/close and forbids `bd` commands, 
 `bd update --claim` / `bd close` steps below, work only inside the worktree you were
 given, and still stop at the VERIFY checkpoint. Everything else applies unchanged.
 
+**No links into shared directories:** never create a symlink or junction to a dependency or
+shared directory (for example node_modules) inside a worktree or work folder; install
+dependencies inside it instead, because removing the worktree can follow the link and delete
+the shared target.
+
 **Missing-input behavior**: if `branch` is not supplied, do not guess or work on whatever
 branch happens to be checked out. Return `status: "BLOCKED"` with `notes` stating the
 branch was not specified, and `closedIds: []`. If an individual assigned bead id's description
