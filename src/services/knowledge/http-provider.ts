@@ -608,7 +608,7 @@ export class HttpKbProvider implements MemoryProvider {
         if (secretName === undefined) {
           throw new KbHttpAuthError(
             undefined, 'rejected',
-            'the KB server rejected the literal token stored in the KB config (HTTP 401).',
+            `the KB server rejected the literal token stored in the KB config (HTTP 401). Server response: ${err instanceof Error ? err.message : String(err)}`,
           );
         }
         if (attempt >= attempts) {

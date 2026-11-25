@@ -314,7 +314,11 @@ KB is refused with a typed error naming the tool. Ordering invariant: `mergeSpli
 bible (CONFIRMED) half comes first, then the member's own captures not already in
 it, and a `limit` is applied after the merge, so a limited mixed `kb_list` or
 `kb_query` result starts with (is a superset of) the limited CONFIRMED-only
-result. The tool descriptions, the memory-contract bindings and spec, and a
+result. A member `kb_query` with no explicit limit is ordered bible view rows,
+then global CONFIRMED rows (title de-duplicated against the view, exactly the
+CONFIRMED-only set), then the member's own repo captures, then its own global
+captures, and the cap (6) is applied last, so the mixed result still contains
+every CONFIRMED-only row. The tool descriptions, the memory-contract bindings and spec, and a
 wording test must all describe this scope together.
 
 **Member `flagged_only` and the global KB.** The global half of a member

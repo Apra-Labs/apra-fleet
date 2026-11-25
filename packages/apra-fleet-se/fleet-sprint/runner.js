@@ -60,7 +60,7 @@ import { resolveMemberTarget, resolveMemberOs, clearMemberOsCache } from './memb
 import { createMemberCall, buildRemoteCallCommand, MemberCallError, MEMBER_CALL_ARGS_DIR } from './member-call.mjs';
 import { createDispatchAccounting } from './dispatch-accounting.mjs';
 import { lowerQuality, logLowerQualityWarn } from './lower-quality.mjs';
-import { createMemberInitProbe, createMemberVerifiedLookup, MEMBER_INIT_LOG_PREFIX, MEMBER_INIT_STATE_NAMESPACE } from './member-init-probe.mjs';
+import { createMemberInitProbe, MEMBER_INIT_LOG_PREFIX, MEMBER_INIT_STATE_NAMESPACE } from './member-init-probe.mjs';
 import { createSprintState, sprintScopedFleetApi, resolveSettleShellWith } from './sprint-state.mjs';
 // apra-fleet-3swo.6.10: the per-member git/dolt sync brackets, moved verbatim
 // out of this file into ./member-sync.mjs (see that module's header for the
@@ -1734,8 +1734,8 @@ async function runSprintCycle(context) {
     // uses; the orchestrator callTool only reads member_detail. Never blocks:
     // a probe that throws leaves every member unverified and the sprint goes
     // on. Records land in sprint state (sprintState.memberInit), on the
-    // context (context.memberInit + context.isMemberVerified, read by the
-    // KNOWLEDGE BANK injection) and in the published viewer state.
+    // context (context.memberInit) and in the published viewer state. The
+    // KNOWLEDGE BANK injection does not read them: it is on for every member.
     // context.memberInitProbe is the test seam.
     const kbListTools = canMemberCall
         ? (member) => {
@@ -1773,7 +1773,6 @@ async function runSprintCycle(context) {
     }
     sprintState.memberInit.splice(0, sprintState.memberInit.length, ...memberInitRecords);
     context.memberInit = sprintState.memberInit;
-    context.isMemberVerified = createMemberVerifiedLookup(() => sprintState.memberInit);
     // Banner WARN at init (the per-member WARN lines come from the probe).
     logLowerQualityWarn(log, MEMBER_INIT_LOG_PREFIX, sprintState.memberInit, 'init');
     if (typeof publishState === 'function') {

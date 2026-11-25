@@ -12,7 +12,7 @@ import { kbList } from '../../src/tools/kb-list.js';
 import { kbSessionPrime } from '../../src/tools/kb-session-prime.js';
 import { kbContext } from '../../src/tools/kb-context.js';
 import { kbPromote } from '../../src/tools/kb-promote.js';
-import { getKbProviders } from '../../src/services/knowledge/kb-providers.js';
+import { getKbProviders, getGlobalKbProvider } from '../../src/services/knowledge/kb-providers.js';
 import { requireSqliteProject } from '../../src/services/knowledge/require-sqlite-project.js';
 import { computeFileHash } from '../../src/services/knowledge/file-hash.js';
 import { makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from '../test-helpers.js';
@@ -496,5 +496,34 @@ describe('MEMBER mixed-tier reads with a limit are a superset of the CONFIRMED-o
     const out = JSON.parse(await as(memberC, () => kbList({ confidence: [...MIXED], limit: 2 })));
     expect(ids(out.results)).toEqual(BIBLE_IDS().sort().slice(0, 2));
     expect(ids(out.results)).not.toContain(firstOwn);
+  });
+});
+
+describe('kb_query in a MEMBER session: default read with a global CONFIRMED row and many own captures', () => {
+  const GW = 'gizmoquuxmix';
+  it('the mixed default result contains every row of the CONFIRMED-only result', async () => {
+    const globalKb = await getGlobalKbProvider();
+    const { id: globalId } = await globalKb.capture({
+      type: 'knowledge', title: `Gizmoquux global confirmed fact ${RUN}`,
+      summary: `The ${GW} stage is confirmed globally.`, content: `The ${GW} stage is confirmed globally.`,
+      source_files: ['src/sprocket.ts'], symbols: ['gizmoGlobal'], tags: [],
+      flagged_for_review: false, author: 'doer', source: 'session', confidence: 'CONFIRMED',
+    } as Parameters<typeof globalKb.capture>[0]);
+    await globalKb.promote(globalId, 'Checked src/sprocket.ts: the stage batches work per tick, as stated.');
+    // More own captures than the member default cap (6).
+    for (let i = 0; i < 8; i++) {
+      await as(memberA, () => kbCapture({
+        type: 'knowledge', title: `Gizmoquux own capture ${i} ${RUN}`,
+        summary: `Own ${i}: the ${GW} stage batches work per tick.`,
+        content: `Own ${i}: the ${GW} stage batches work per tick.`,
+        source_files: ['src/sprocket.ts'], symbols: [`gizmoOwn${i}`],
+      } as Parameters<typeof kbCapture>[0]));
+    }
+    const confirmed = ids(JSON.parse(await as(memberA, () => kbQuery({ query: GW, confidence: ['CONFIRMED'] }))).l1_results);
+    expect(confirmed).toContain(globalId);
+    const mixed = ids(JSON.parse(await as(memberA, () => kbQuery({ query: GW, confidence: [...MIXED] }))).l1_results);
+    expect(mixed).toEqual(expect.arrayContaining(confirmed));
+    expect(mixed.slice(0, confirmed.length)).toEqual(confirmed);
+    expect(mixed.length).toBeLessThanOrEqual(6);
   });
 });
