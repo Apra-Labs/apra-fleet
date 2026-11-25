@@ -677,8 +677,9 @@ export const DOLT_SYNC_MAX_TOTAL_S = 2700;
 export const DOLT_SYNC_HEARTBEAT_S = 30;
 /** Client-side wait headroom past total limit + silence limit. */
 const DOLT_SYNC_CLIENT_GRACE_MS = 60_000;
-/** The failure text of an output-silence (inactivity) timeout kill. */
-const STEP_TIMED_OUT_RE = /\btimed out\b/i;
+/** The fleet server's failure text when it ended a command on its timeout
+ *  (not git's own "Connection timed out"). */
+const STEP_TIMED_OUT_RE = /\bCommand timed out after\b/i;
 
 /**
  * Delay before transient retry #`attempt` (1-based): base * 2^(attempt-1),
@@ -2140,7 +2141,7 @@ export async function doltPushAfter(member, opts = {}) {
     // doltPullBefore. `remoteTipFingerprint` is accepted for call-site parity
     // with doltPullBefore but has nothing to switch off on the push side any
     // more: a push never probes and never records (it only forgets).
-    const { command, pushBeads = true, log = () => {}, maxTransientRetries, mutex, sprintId, checkSyncRemoteConfigured, onAuthFailure, sleep, backoffBaseMs, timeoutS, maxTotalS, settle, renewIntervalMs = DOLT_MUTEX_RENEW_INTERVAL_MS, spawnOutageBudgetMs, now, memberTarget, lockProbeAfterMs, lockProbeTimer, maxRaceReconciles, random = Math.random } = opts;
+    const { command, pushBeads = true, log = () => {}, maxTransientRetries, mutex, sprintId, checkSyncRemoteConfigured, onAuthFailure, sleep, backoffBaseMs, timeoutS, maxTotalS, settle, renewIntervalMs = DOLT_MUTEX_RENEW_INTERVAL_MS, spawnOutageBudgetMs, now, memberTarget, lockProbeAfterMs, lockProbeTimer, maxRaceReconciles, random = Math.random, abandonedHoldMs } = opts;
     // Bounded race-reconcile loop (see doltPushGuarded): cycle count and the
     // jittered wait before each cycle, drawn from the injectable `sleep`.
     const raceMaxReconciles = Number.isInteger(maxRaceReconciles) && maxRaceReconciles > 0 ? maxRaceReconciles : DOLT_PUSH_RACE_MAX_RECONCILES;
@@ -2237,10 +2238,28 @@ export async function doltPushAfter(member, opts = {}) {
             // running on the member and could still publish once the lock
             // frees. Releasing the mutex now would let another writer push
             // concurrently with it, so the mutex (and its lease renewal) is
-            // held until that command ends -- bounded by its own command
-            // timeout -- while this call returns immediately.
-            log(`[Dolt] D-push for member '${member}' stopped waiting for a sync command that is still running on the member; keeping the push mutex until that command ends so it cannot publish concurrently with another writer.`);
-            Promise.allSettled(abandonedAttempts).then(releaseMutex);
+            // held until that command ends -- while this call returns
+            // immediately. BOUNDED: the heartbeat wrapper keeps that command
+            // alive up to the total limit even while bd only waits on the
+            // lock, so the hold is capped at the silence limit + grace (the
+            // bound before the heartbeat existed); past it the mutex is
+            // released with a loud line. A late publish by the abandoned
+            // command is then a remote that moved, which the next push's
+            // landed check and race reconcile already handle.
+            const holdMs = Number(abandonedHoldMs) > 0
+                ? Number(abandonedHoldMs)
+                : (Number(timeoutS) > 0 ? Number(timeoutS) : DOLT_STEP_TIMEOUT_S) * 1000 + DOLT_SYNC_CLIENT_GRACE_MS;
+            log(`[Dolt] D-push for member '${member}' stopped waiting for a sync command that is still running on the member; keeping the push mutex until that command ends (at most ${Math.round(holdMs / 1000)}s) so it cannot publish concurrently with another writer.`);
+            let holdTimer = null;
+            const bounded = new Promise((resolve) => {
+                holdTimer = setTimeout(() => {
+                    log(`[Dolt] D-push for member '${member}': the abandoned sync command is STILL running on the member after ${Math.round(holdMs / 1000)}s (blocked behind the beads lock holder named above); releasing the push mutex now so other writers are not blocked. That command may still publish once the lock frees -- stop the lock holder on that member.`);
+                    resolve();
+                }, holdMs);
+                if (holdTimer && typeof holdTimer.unref === 'function') holdTimer.unref();
+            });
+            Promise.race([Promise.allSettled(abandonedAttempts), bounded])
+                .then(() => { clearTimeout(holdTimer); return releaseMutex(); });
         } else {
             await releaseMutex();
         }

@@ -53,6 +53,27 @@ export const NON_INTERACTIVE_GIT_ENV = Object.freeze([
     Object.freeze(['GCM_INTERACTIVE', 'never']),
 ]);
 
+/**
+ * Stalled-transfer abort for the git HTTP(S) transport bd's Dolt shells out
+ * to: git aborts a transfer that moves fewer than LIMIT bytes/s for TIME
+ * seconds ("Operation too slow", classified transient). A slow transfer that
+ * keeps moving is untouched, so the heartbeat wrapper (withSyncHeartbeat)
+ * only ever keeps a PROGRESSING transfer alive. SSH remotes are not covered
+ * by these variables (a stalled ssh transfer still runs to the total limit).
+ */
+export const GIT_STALL_ABORT_ENV = Object.freeze([
+    Object.freeze(['GIT_HTTP_LOW_SPEED_LIMIT', '1000']),
+    Object.freeze(['GIT_HTTP_LOW_SPEED_TIME', '300']),
+]);
+
+/** The env every bd sync command carries on `os`, in emission order
+ *  (GOMAXPROCS last on Windows). */
+function bdSyncEnvFor(os) {
+    const env = [...NON_INTERACTIVE_GIT_ENV, ...GIT_STALL_ABORT_ENV];
+    if (os === 'windows') env.push(['GOMAXPROCS', WINDOWS_BD_GOMAXPROCS]);
+    return env;
+}
+
 /** The POSIX target (a resolved linux member with no recorded shell). */
 export const POSIX_MEMBER_TARGET = Object.freeze({ os: 'linux', shell: '' });
 
@@ -81,10 +102,11 @@ export function normalizeMemberTarget(target) {
 /**
  * The command string to issue for a bd sync command on a member.
  *
- *   linux / macOS          -> `GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never cmd`
- *   windows + gitbash      -> `GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never GOMAXPROCS=1 cmd`
- *   windows + PowerShell   -> `$env:GIT_TERMINAL_PROMPT='0'; $env:GCM_INTERACTIVE='never'; $env:GOMAXPROCS='1'; cmd`
+ *   linux / macOS          -> `GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never <stall env> cmd`
+ *   windows + gitbash      -> `GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never <stall env> GOMAXPROCS=1 cmd`
+ *   windows + PowerShell   -> `$env:GIT_TERMINAL_PROMPT='0'; $env:GCM_INTERACTIVE='never'; <stall env>; $env:GOMAXPROCS='1'; cmd`
  *     (any other shell)
+ *   (<stall env> = GIT_STALL_ABORT_ENV in the same form)
  *   unresolved (empty OS)  -> `cmd`, unchanged
  *
  * The PowerShell form is ASSIGNMENT statements with single-quoted values, not
@@ -97,8 +119,7 @@ export function normalizeMemberTarget(target) {
 export function bdSyncCommandFor(cmd, target) {
     const { os, shell } = normalizeMemberTarget(target);
     if (!os) return cmd;
-    const env = NON_INTERACTIVE_GIT_ENV.slice();
-    if (os === 'windows') env.push(['GOMAXPROCS', WINDOWS_BD_GOMAXPROCS]);
+    const env = bdSyncEnvFor(os);
     if (os === 'windows' && shell !== 'gitbash') {
         return `${env.map(([name, value]) => `$env:${name}='${value}'; `).join('')}${cmd}`;
     }
@@ -190,8 +211,7 @@ export function withSyncHeartbeat(cmd, target, { intervalS, capS }) {
     const interval = wholeSeconds(intervalS);
     const cap = wholeSeconds(capS);
     if (os === 'windows' && shell !== 'gitbash') {
-        const env = NON_INTERACTIVE_GIT_ENV.slice();
-        env.push(['GOMAXPROCS', WINDOWS_BD_GOMAXPROCS]);
+        const env = bdSyncEnvFor(os);
         const [exe, ...args] = tokens;
         const argList = args.length > 0 ? ` -ArgumentList @(${args.map((a) => `'${a}'`).join(',')})` : '';
         return [
@@ -248,5 +268,9 @@ export function unwrapSyncHeartbeat(cmdStr) {
  */
 export function stripSyncHeartbeat(text) {
     if (typeof text !== 'string' || !text.includes(SYNC_HEARTBEAT_PREFIX)) return text;
-    return text.split(/\r?\n/).filter((line) => !line.includes(SYNC_HEARTBEAT_PREFIX)).join('\n');
+    // Only the heartbeat token (and its own line end) goes: a partial bd line
+    // the heartbeat landed in the middle of is kept whole.
+    return text.replace(HEARTBEAT_TOKEN_RE, '');
 }
+
+const HEARTBEAT_TOKEN_RE = new RegExp(`${SYNC_HEARTBEAT_PREFIX.replace(/[[\]]/g, '\\$&')} \\d+s(?:\\r?\\n)?`, 'g');

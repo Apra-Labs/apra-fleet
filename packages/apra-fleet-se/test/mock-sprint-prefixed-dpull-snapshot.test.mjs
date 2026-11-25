@@ -37,7 +37,7 @@ const SYNC_REMOTE = 'git+https://example.invalid/org/beads.git';
 const LS_REMOTE_RE = / ls-remote https:\/\/example\.invalid\/org\/beads\.git refs\/dolt\/data$/;
 // The gitbash prefix bdSyncCommandFor builds: the non-interactive git env,
 // then the Windows GOMAXPROCS bound.
-const PREFIX_RE = /^GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never GOMAXPROCS=1 /;
+const PREFIX_RE = /^GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never GIT_HTTP_LOW_SPEED_LIMIT=1000 GIT_HTTP_LOW_SPEED_TIME=300 GOMAXPROCS=1 /;
 
 const exit0 = (stdout = '') => ({
     content: [{ type: 'text', text: `Exit code: 0\n${stdout}` }],

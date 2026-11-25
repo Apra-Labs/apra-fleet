@@ -156,6 +156,52 @@ describe('watchdog through the entry points', () => {
         assert.deepStrictEqual(events, ['acquire', 'release'], 'released once the abandoned push ended');
     });
 
+    test('D-push held by a foreign process: an abandoned push that never ends does not hold the mutex past the bound', async () => {
+        // The heartbeat keeps the abandoned (lock-blocked) command alive up to
+        // the total limit, so the mutex hold is bounded separately.
+        const target = { os: 'linux', shell: '' };
+        let clock = 0;
+        const timer = fakeTimer();
+        const logs = [];
+        const m = scriptedMember({ target, op: 'push', script: ['hang'], probeOutput: 'HOLDER\t9001\t3600\t.beads/dolt.gate.lock\tbd dolt push --stale\n' });
+        const events = [];
+        const mutex = {
+            acquire: async () => { events.push('acquire'); return { token: 't1' }; },
+            release: async () => { events.push('release'); },
+        };
+        const push = doltPushAfter('lin', { command: m.command, memberTarget: target, mutex, now: () => clock, lockProbeTimer: timer, abandonedHoldMs: 40, log: (l) => logs.push(l) }).then(() => null, (e) => e);
+        await flush();
+        clock = 61_000;
+        timer.fireArmed();
+        const err = await push;
+        assert.ok(err instanceof DoltLockHeldError, `got ${err && err.name}`);
+        assert.deepStrictEqual(events, ['acquire'], 'held while within the bound');
+        await new Promise((r) => setTimeout(r, 150));
+        await flush();
+        assert.deepStrictEqual(events, ['acquire', 'release'], 'released at the bound although the abandoned push never ended');
+        assert.ok(logs.some((l) => /STILL running on the member after .* releasing the push mutex/.test(l)), logs.join('\n'));
+        m.releaseAll();
+        await flush();
+        assert.deepStrictEqual(events, ['acquire', 'release'], 'never released twice');
+    });
+
+    test('the default bound is the silence limit plus grace, not the total limit', async () => {
+        const target = { os: 'linux', shell: '' };
+        const timer = fakeTimer();
+        const logs = [];
+        const m = scriptedMember({ target, op: 'push', script: ['hang'], probeOutput: 'HOLDER\t9001\t3600\t.beads/dolt.gate.lock\tbd dolt push --stale\n' });
+        const mutex = { acquire: async () => ({ token: 't1' }), release: async () => {} };
+        let clock = 0;
+        const push = doltPushAfter('lin', { command: m.command, memberTarget: target, mutex, now: () => clock, lockProbeTimer: timer, log: (l) => logs.push(l) }).then(() => null, (e) => e);
+        await flush();
+        clock = 61_000;
+        timer.fireArmed();
+        await push;
+        assert.ok(logs.some((l) => /keeping the push mutex until that command ends \(at most 660s\)/.test(l)), logs.join('\n'));
+        m.releaseAll();
+        await flush();
+    });
+
     test('fast D-push and D-pull: no probe, watchdog disarmed', async () => {
         const target = { os: 'darwin', shell: '' };
         for (const op of ['pull', 'push']) {
