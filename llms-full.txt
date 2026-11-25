@@ -3530,26 +3530,37 @@ commits only the tables it resolved; cleanly merged tables (notably the
 dependency table holding parent-child and `blocks` edges) keep the local copy.
 The next push can then silently revert other clones' links. Defences:
 
+- Every engine `bd dolt pull` is bracketed: the pulling clone's in-scope
+  parent-child and `blocks` links are read just before and just after it. A
+  link present before and missing after (both endpoints still present) is
+  owed by that clone and restored before its next push (and, on the backlog
+  clone, on the next scope read). A link that disappeared between two reads
+  with no pull in between was removed on purpose (an agent retargeting an
+  edge, breaking a cycle or reparenting a bead) and is never restored.
+- Because `bd` reports a pull conflict only on stderr, a clean pull carrying
+  another clone's deliberate removal looks like a lossy one. So before every
+  push the engine also reads the pushing clone and records each link it lost
+  since its previous read with no pull in between, in a run-wide
+  agent-removal record shared by all members. Links the engine removes
+  through its own `bd dep remove` / `bd update --parent` go on it too. No
+  pull comparison on any clone restores a link on the record; a link comes
+  off it when it is deliberately re-added. This costs one `bd list` read per
+  push while the sprint scope is known.
 - Before a push publishes a reconcile pull, the engine commits the merged
   working set and runs a link verification (both parent-child and `blocks`
-  edges must survive). A failed restore issues no push and leaves the member
-  owing a verification before its next first push.
+  edges must survive). The same commit and verification run before the
+  first push of a member whose pre-dispatch or launch pull merged remote
+  changes, even when that push fast-forwards. A failed restore issues no
+  push and leaves the member owing a verification before its next first
+  push.
 - `apra-fleet install` and sprint launch print a warning while the pinned `bd`
   is a version that can drop links. The install-side and engine-side version
   constants are kept in step by a test. Until a fixed `bd` is verified, the
   warning prints on every install and launch.
-- Known gap: the verification runs only inside the push path's reconcile
-  pulls. A conflicted pre-dispatch pull that `bd` auto-merges can leave merged
-  dependency rows uncommitted, and the later fast-forward push neither commits
-  nor verifies on that path.
-- Known gap: the `blocks`-edge restore only treats an edge as a deliberate
-  removal when the engine's own command wrapper issued the `bd dep remove`.
-  Removals an agent makes in its own session (the planner retargeting an edge
-  or breaking a cycle) are not recorded, so the next snapshot or pre-push
-  verification can re-add them: a retarget is silently undone, and a
-  re-added cycle edge is refused by `bd`, which stops the push. The intended
-  fix is to restore only links that a pull dropped (diff the link set before
-  and after the pull), not links that merely vanished from a snapshot.
+- Known gap: a removal made on a clone the engine never reads (an operator
+  checkout outside the sprint) is not on the agent-removal record, so when a
+  sprint member pulls it, the engine restores the link. Re-remove it from a
+  sprint member, or make the change before the sprint starts.
 
 ### Flattened-remote recovery
 

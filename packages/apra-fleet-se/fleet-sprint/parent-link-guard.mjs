@@ -1,62 +1,74 @@
 // parent-link-guard.mjs -- keeps the sprint's view of parenthood stable
-// within a run (a merge loss never turns a parent into a leaf) and detects parent-child links that vanished from the beads DB
-// without this run removing them.
+// within a run and restores parent-child and blocks links that a CONFLICTED
+// beads pull dropped -- and only those.
 //
-// WHY: a beads merge (a conflicting `bd dolt pull`, run by a sprint member OR
-// by an operator on any clone sharing the remote) can auto-resolve by keeping
-// one side's dependency table wholesale, silently DELETING parent-child edges.
-// From then on the engine's BFS scope no longer reaches the descendants: the
-// root looks like a childless leaf and is dispatched to a doer, nothing is
-// verify-routed, the closed count never moves and the run stalls. The guard
-// must hold whoever ran the merge.
+// WHY: a conflicting `bd dolt pull` on the pinned bd auto-resolves and can
+// keep one side's dependency table wholesale, silently DELETING parent-child
+// and blocks edges. A lost parent link turns a parent into a childless leaf
+// (it is dispatched to a doer and the run stalls); a lost blocks edge releases
+// a bead before its prerequisite is done.
 //
-// This module is PURE (no command calls). createBeadsScope (beads-scope.mjs)
-// owns the ledger, feeds it every fresh full-DB snapshot, issues the restore
-// commands through the normal command path, and logs/throws.
+// WHAT IS RESTORED: agents legitimately remove links on their own clones
+// (the planner retargets or reverses a blocks edge to break a cycle, an agent
+// reparents a bead), so a link that is simply missing from a later read is
+// NOT evidence of a loss. The only evidence is a pull: every engine
+// `bd dolt pull` goes through createBeadsScope's command wrapper, which reads
+// the pulling clone immediately BEFORE the pull and immediately AFTER it. A
+// link present before and missing after, with both endpoints still present,
+// is a restore candidate: it becomes OWED by that member (notePull). The
+// pinned bd gives the engine no reliable "this pull hit a conflict" signal
+// (its notice goes to stderr, which the command seam does not return on
+// success), so every pull is compared -- and a clean pull that merely
+// carries ANOTHER clone's deliberate removal looks the same. That is what
+// the run-wide AGENT-REMOVAL RECORD is for:
+//   - every read of a clone (the pull bracket's reads and the read the engine
+//     takes before every push) is compared with that clone's previous read;
+//     a link that clone lost with no pull in between was removed on that
+//     clone on purpose (an agent, an operator in that checkout, or this
+//     run), and goes on the record (noteRead). Its loss is never restored.
+//   - a link this run removes through its own command path (`bd dep remove`,
+//     `bd update --parent`) goes on the record as well.
+//   - the record is shared by every clone and kept for the whole run, so a
+//     pull comparison on ANY clone skips a link on it: a removal the planner
+//     made on one member and pushed is not restored when another member
+//     pulls it.
+//   - a link comes off the record when it is deliberately re-added: present
+//     in a read of a clone whose previous read (no pull in between) lacked
+//     it, or re-added by this run (`bd dep add`, `bd update --parent`).
+//   - GAP: a removal made on a clone the engine never reads (an operator
+//     checkout outside the run) is not on the record; when a sprint member
+//     pulls it, it is restored.
+// Nothing else is ever restored:
+//   - a link removed between two reads with no pull in between is forgotten
+//     by the ledger (and recorded as above);
+//   - a link an agent removes after a pull is never compared to that pull;
+//   - a link removed by the engine itself through the command path cancels
+//     any owed restore of it.
 //
-// Rules:
-//   - Every in-scope parent-child edge seen in a snapshot is recorded
-//     (child -> parent), as is every in-scope id seen.
-//   - Edges this run itself changes through the command path (`bd update
-//     <child> --parent <p>`, `bd dep remove|rm <child> <parent>`) are noted:
-//     a removal is never "restored".
-//   - An edge VANISHED when both its child and its parent are still in the
-//     DB, the child now has NO parent, and this run did not remove it.
-//   - An edge whose child or parent is no longer in the DB at all was
-//     DELETED, not dropped by a merge (`bd delete` removes the issue and
-//     every edge touching it): it is dropped from the ledger and reported
-//     for a WARN, never restored.
-//   - A child that now has a DIFFERENT parent was MOVED, not dropped (an
-//     agent may legitimately reparent on its own clone): the recorded edge
-//     follows it and is never restored.
-//   - EXCEPT a child now back under a parent it was moved AWAY from this run
-//     (an edge this run removed, or the parent recorded before the current
-//     edge): that is a lossy merge keeping the older side, a REVERT. It is
-//     restored like a vanished edge, with an ERROR naming both parents.
-//   - A bead is a known parent while some recorded edge still points at it.
-//     A vanished edge stays recorded (and is restored), so a merge loss can
-//     never make a parent look like a leaf; a parent whose children were all
-//     deleted or moved away stops being a parent and is routed by the
-//     ordinary leaf/verify rules instead of sitting open for the whole run.
+// Rules for the recorded (scope) view:
+//   - Every in-scope parent-child edge seen in a backlog snapshot is recorded
+//     (child -> parent), as is every in-scope id seen, and every in-scope
+//     blocks edge (either endpoint in scope; A blocked-by B).
+//   - A recorded edge whose child or parent is no longer in the DB was
+//     DELETED (`bd delete` removes the issue and every edge touching it): it
+//     is dropped from the ledger and reported for a WARN, never restored.
+//   - A recorded edge the snapshot lacks otherwise is forgotten (moved or
+//     removed) unless the backlog member owes it, in which case it is
+//     restored with an ERROR line (a child back under another parent is a
+//     revert and the ERROR names both parents).
+//   - A bead is a known parent while some recorded edge still points at it;
+//     an owed edge stays recorded until it is restored.
 //   - An id once in scope stays in scope.
 //
-// BLOCKS EDGES (same merge loss, same rules): a lossy `bd dolt pull` keeps
-// one side's dependency table wholesale, so it drops `blocks` edges exactly
-// like parent-child ones -- and a dropped blocks edge silently releases a
-// bead before its prerequisite is done. Every in-scope blocks edge (either
-// endpoint in scope; A blocked-by B) seen in a snapshot is recorded too:
-//   - one this run removed through the command path (`bd dep remove|rm`,
-//     including the pre-sprint blocks-cycle auto-repair) is never restored;
-//   - one whose endpoint was deleted is forgotten with a WARN;
-//   - one that vanished otherwise is restored with `bd dep add <A> <B>` and
-//     an ERROR line.
-//
 // INVARIANT H5 (enforced together with beads-scope.mjs and dolt-sync.mjs):
-// an in-scope parent-child or blocks link this run did not remove is never
-// absent from what a beads push publishes. This module decides which links
-// are owed; beads-scope.mjs restores them (on every fresh snapshot and, via
-// verifyLinksBeforePush, on the pushing clone after each reconcile pull);
-// dolt-sync.mjs doltPushAfter refuses to push until that verify succeeded.
+// a link a conflicted pull dropped is never absent from what a beads push
+// publishes. This module decides which links are owed; beads-scope.mjs
+// brackets every pull, reads every pushing clone, and restores them (on the backlog's next fresh
+// snapshot and, via verifyLinksBeforePush, on the pushing clone before its
+// push); dolt-sync.mjs doltPushAfter commits the merged working set and runs
+// that verify before the first push of a member whose pull merged remote
+// changes, and after every reconcile pull, and refuses to push until it
+// succeeded.
 //
 // ASCII only.
 
@@ -74,7 +86,6 @@ export class ParentLinkRestoreError extends Error {
     }
 }
 
-const edgeKey = (child, parent) => `${child}\u0000${parent}`;
 const hasParent = (b) => b && b.parent !== undefined && b.parent !== null && b.parent !== '';
 
 // `bd update <id> ... --parent <p>` / `--parent=<p>` / `--parent ""` (removal).
@@ -184,19 +195,37 @@ export function formatDroppedEdgeLog({ child, parent, reason }) {
         '(deleted). This is not a lost link, so it is not restored.';
 }
 
+
+const pcKey = (child, parent) => `pc\u0000${child}\u0000${parent}`;
+const blocksKey = (blocked, blocker) => `b\u0000${blocked}\u0000${blocker}`;
+
 /**
  * The per-run ledger. All state lives in the closure; nothing is persisted.
  */
 export function createParentLinkLedger() {
-    /** child -> parent, for every in-scope edge seen. */
+    /** child -> parent, for every in-scope parent-child edge seen. */
     const edges = new Map();
-    /** edgeKey(child, parent) for every edge this run removed or moved away from. */
-    const removedByRun = new Set();
     const knownScope = new Set();
-    /** child -> the parent recorded before its current edge (moved away from this run). */
-    const earlierParent = new Map();
-    /** edgeKey(blocked, blocker) -> { blocked, blocker } for every in-scope blocks edge seen. */
+    /** blocksKey(blocked, blocker) -> { blocked, blocker } for every in-scope blocks edge seen. */
     const blocks = new Map();
+    /**
+     * member -> Map(key -> edge): links a CONFLICTED pull on that member's
+     * clone dropped (present right before the pull, missing right after,
+     * both endpoints still present). Only these are ever restored.
+     */
+    const pullLosses = new Map();
+    /**
+     * member -> Map(key -> edge): that clone's in-scope links at its last
+     * read (noteRead / notePull). Dropped when a pull on it could not be
+     * bracketed, so a loss across that pull is never mistaken for a
+     * deliberate removal.
+     */
+    const lastRead = new Map();
+    /**
+     * key -> edge: the run-wide AGENT-REMOVAL RECORD (see the header). Links
+     * removed on purpose on some clone; no pull comparison restores them.
+     */
+    const agentRemovals = new Map();
 
     /**
      * Record a snapshot's in-scope edges and ids.
@@ -209,142 +238,252 @@ export function createParentLinkLedger() {
             if (!b) continue;
             for (const blocker of blocksPrereqsOf(b)) {
                 if (!scopeIds.has(b.id) && !scopeIds.has(blocker)) continue;
-                blocks.set(edgeKey(b.id, blocker), { blocked: b.id, blocker });
+                blocks.set(blocksKey(b.id, blocker), { blocked: b.id, blocker });
             }
             if (!hasParent(b) || !scopeIds.has(b.id)) continue;
             edges.set(b.id, b.parent);
         }
     }
 
+    /** Every in-scope link of one clone read, keyed: parent-child (child in scope), blocks (either endpoint in scope). */
+    function linksOf(allBeads) {
+        const out = new Map();
+        for (const b of (allBeads || [])) {
+            if (!b || b.id === undefined || b.id === null) continue;
+            if (hasParent(b) && knownScope.has(b.id)) {
+                out.set(pcKey(b.id, b.parent), { kind: 'parent-child', child: b.id, parent: b.parent });
+            }
+            for (const blocker of blocksPrereqsOf(b)) {
+                if (!knownScope.has(b.id) && !knownScope.has(blocker)) continue;
+                out.set(blocksKey(b.id, blocker), { kind: 'blocks', blocked: b.id, blocker });
+            }
+        }
+        return out;
+    }
+
+    const idsOf = (allBeads) => {
+        const ids = new Set();
+        for (const b of (allBeads || [])) if (b && b.id !== undefined && b.id !== null) ids.add(b.id);
+        return ids;
+    };
+
+    /** Whether `edge` is present in a by-id view of one clone. */
+    function isPresent(edge, byId) {
+        const bead = byId.get(edge.kind === 'blocks' ? edge.blocked : edge.child);
+        if (!bead) return false;
+        return edge.kind === 'blocks' ? blocksPrereqsOf(bead).includes(edge.blocker) : bead.parent === edge.parent;
+    }
+
+    const keyOf = (edge) => (edge.kind === 'blocks' ? blocksKey(edge.blocked, edge.blocker) : pcKey(edge.child, edge.parent));
+    const endsOf = (edge) => (edge.kind === 'blocks' ? [edge.blocked, edge.blocker] : [edge.child, edge.parent]);
+
     /**
-     * Note a parent-child change this run made through the command path.
+     * One read of `member`'s clone with NO pull since its previous read
+     * (the pull bracket's before-read, or the read taken before a push).
+     * Every in-scope link the previous read had and this one lacks, with
+     * both endpoints still present and not owed by a pull on this clone,
+     * was removed on purpose on that clone: it goes on the run-wide
+     * agent-removal record. Every link this read has and the previous one
+     * lacked was (re-)added on purpose: it comes off the record. The first
+     * read of a clone only sets its baseline.
+     * @returns {object[]} the links newly put on the record
+     */
+    function noteRead(member, allBeads) {
+        if (knownScope.size === 0) return [];
+        const now = linksOf(allBeads);
+        const prev = lastRead.get(member);
+        const recorded = [];
+        if (prev) {
+            const ids = idsOf(allBeads);
+            const owed = pullLosses.get(member);
+            for (const [key, edge] of prev) {
+                if (now.has(key) || (owed && owed.has(key))) continue;
+                const [a, b] = endsOf(edge);
+                if (!ids.has(a) || !ids.has(b)) continue;
+                if (!agentRemovals.has(key)) {
+                    agentRemovals.set(key, edge);
+                    recorded.push({ ...edge });
+                }
+            }
+            for (const key of now.keys()) if (!prev.has(key)) agentRemovals.delete(key);
+        }
+        lastRead.set(member, now);
+        return recorded;
+    }
+
+    /** Forget `member`'s last read: a pull on it could not be bracketed, so the next read only sets a new baseline. */
+    function forgetRead(member) { lastRead.delete(member); }
+
+    /**
+     * One pull on `member`'s clone: `before` is that clone read immediately
+     * before the pull, `after` immediately after it. `before` is first noted
+     * as a read (removals since the clone's previous read are deliberate).
+     * Every in-scope link present before and missing after, with both
+     * endpoints still in the clone and not on the agent-removal record, is
+     * a restore candidate and becomes owed by that member. Links an agent
+     * removed before the pull are absent from `before`; links removed after
+     * it are never compared -- neither is owed. `after` null (the clone could
+     * not be read after the pull) owes every in-scope link of `before` not
+     * on the record: a verify restores only those still missing.
+     * @returns {object[]} the newly owed links
+     */
+    function notePull(member, before, after) {
+        if (knownScope.size === 0) return [];
+        noteRead(member, before);
+        const pre = linksOf(before);
+        const post = after ? linksOf(after) : new Map();
+        const present = idsOf(after || before);
+        const lost = [];
+        for (const [key, edge] of pre) {
+            if (post.has(key) || agentRemovals.has(key)) continue;
+            const [a, b] = endsOf(edge);
+            if (!present.has(a) || !present.has(b)) continue;
+            lost.push(edge);
+        }
+        if (after) lastRead.set(member, post);
+        else lastRead.delete(member);
+        if (lost.length === 0) return [];
+        if (!pullLosses.has(member)) pullLosses.set(member, new Map());
+        const owed = pullLosses.get(member);
+        for (const edge of lost) owed.set(keyOf(edge), edge);
+        return lost.map((e) => ({ ...e }));
+    }
+
+    /** Drop owed links matching `pred` on every member. */
+    function forgetOwed(pred) {
+        for (const owed of pullLosses.values()) {
+            for (const [key, edge] of owed) if (pred(edge)) owed.delete(key);
+        }
+    }
+
+    /**
+     * Note a link change this run made through the command path: the run's
+     * own change supersedes any owed restore of the links it touches, a link
+     * it removes goes on the agent-removal record, and a link it (re-)adds
+     * comes off it.
      * @param {ReturnType<typeof parseRunEdgeChange>} change
      */
     function noteRunEdgeChange(change) {
         if (!change) return;
         if (change.kind === 'add') {
-            // The run (re)added `a` blocked-by `b`: it no longer counts as removed.
-            removedByRun.delete(edgeKey(change.a, change.b));
+            agentRemovals.delete(blocksKey(change.a, change.b));
             return;
         }
         if (change.kind === 'reparent') {
-            const prev = edges.get(change.child);
-            if (prev !== undefined && prev !== change.parent) {
-                removedByRun.add(edgeKey(change.child, prev));
-                earlierParent.set(change.child, prev);
+            // A deliberate move cancels owed links to any OTHER parent; an
+            // owed link to this same parent stays owed elsewhere (this is
+            // the same link, restored here).
+            forgetOwed((e) => e.kind === 'parent-child' && e.child === change.child && e.parent !== change.parent);
+            const old = edges.get(change.child);
+            if (old !== undefined && old !== change.parent) {
+                agentRemovals.set(pcKey(change.child, old), { kind: 'parent-child', child: change.child, parent: old });
             }
             if (change.parent) {
+                agentRemovals.delete(pcKey(change.child, change.parent));
                 edges.set(change.child, change.parent);
-                removedByRun.delete(edgeKey(change.child, change.parent));
-            } else {
-                edges.delete(change.child);
-            }
+            } else edges.delete(change.child);
             return;
         }
-        // `bd dep remove a b`: either direction may be the child, and the
-        // removed dependency may be a blocks edge rather than the parent
-        // link (the pre-sprint blocks-cycle auto-repair). Only mark the pair:
-        // if the parent link is then found gone, this run removed it and it
-        // is not restored (reconcile then forgets it).
-        removedByRun.add(edgeKey(change.a, change.b));
-        removedByRun.add(edgeKey(change.b, change.a));
+        // `bd dep remove a b`: either direction, either kind.
+        const pair = (x, y) => (x === change.a && y === change.b) || (x === change.b && y === change.a);
+        forgetOwed((e) => (e.kind === 'blocks' ? pair(e.blocked, e.blocker) : pair(e.child, e.parent)));
+        for (const [x, y] of [[change.a, change.b], [change.b, change.a]]) {
+            agentRemovals.set(blocksKey(x, y), { kind: 'blocks', blocked: x, blocker: y });
+            if (edges.get(x) === y) agentRemovals.set(pcKey(x, y), { kind: 'parent-child', child: x, parent: y });
+        }
     }
 
     /**
-     * Classify every recorded edge against a fresh snapshot, without
-     * changing the ledger.
-     * @param {object[]} allBeads
+     * The links `member` owes that `allBeads` (a read of that member's
+     * clone) still lacks, read-only. An owed link whose endpoint is gone is
+     * not owed any more; one already present needs nothing.
      */
-    function classify(allBeads) {
+    function owedMissing(member, allBeads) {
+        const owed = pullLosses.get(member);
+        if (!owed || owed.size === 0) return [];
         const byId = new Map();
         for (const b of (allBeads || [])) if (b && b.id !== undefined && b.id !== null) byId.set(b.id, b);
-        const vanished = [];
+        const out = [];
+        for (const [key, edge] of owed) {
+            if (agentRemovals.has(key)) continue;
+            const a = edge.kind === 'blocks' ? edge.blocked : edge.child;
+            const b = edge.kind === 'blocks' ? edge.blocker : edge.parent;
+            if (!byId.has(a) || !byId.has(b) || isPresent(edge, byId)) continue;
+            const bead = byId.get(a);
+            if (edge.kind === 'parent-child' && hasParent(bead)) out.push({ ...edge, revertedFrom: bead.parent });
+            else out.push({ ...edge });
+        }
+        return out;
+    }
+
+    /** `member` is paid up: its owed links were restored or are present again. */
+    function settleOwed(member) { pullLosses.delete(member); }
+
+    /**
+     * Reconcile the ledger with a fresh snapshot of `member` (the backlog
+     * clone). A recorded link the snapshot lacks is FORGOTTEN -- an agent or
+     * this run removed or moved it -- unless a conflicted pull on `member`
+     * dropped it, in which case it is returned as vanished for the caller to
+     * restore. Links with a deleted endpoint are dropped and reported for a
+     * WARN.
+     * @param {object[]} allBeads
+     * @param {string} [member]
+     */
+    function reconcile(allBeads, member) {
+        const byId = new Map();
+        for (const b of (allBeads || [])) if (b && b.id !== undefined && b.id !== null) byId.set(b.id, b);
+        const owedNow = member === undefined ? [] : owedMissing(member, allBeads);
+        const owedKeys = new Set(owedNow.map((e) => (e.kind === 'blocks' ? blocksKey(e.blocked, e.blocker) : pcKey(e.child, e.parent))));
         const dropped = [];
         const moved = [];
-        const removed = [];
-        for (const [child, parent] of edges) {
+        for (const [child, parent] of [...edges]) {
             const bead = byId.get(child);
             const parentPresent = byId.has(parent);
             if (!bead || !parentPresent) {
                 const reason = !bead && !parentPresent ? 'both-missing' : (!bead ? 'child-missing' : 'parent-missing');
                 dropped.push({ child, parent, reason });
+                edges.delete(child);
                 continue;
             }
-            if (hasParent(bead)) {
-                if (bead.parent === parent) continue;
-                if (removedByRun.has(edgeKey(child, bead.parent)) || earlierParent.get(child) === bead.parent) {
-                    vanished.push({ child, parent, revertedFrom: bead.parent });
-                } else {
-                    moved.push({ child, from: parent, to: bead.parent });
-                }
-                continue;
-            }
-            if (removedByRun.has(edgeKey(child, parent))) { removed.push({ child, parent }); continue; }
-            vanished.push({ child, parent });
+            if (bead.parent === parent || owedKeys.has(pcKey(child, parent))) continue;
+            if (hasParent(bead)) moved.push({ child, from: parent, to: bead.parent });
+            // Moved (re-recorded by observe() when in scope) or removed by an agent/the run: forgotten.
+            edges.delete(child);
         }
-        const vanishedBlocks = [];
         const droppedBlocks = [];
-        const removedBlocks = [];
-        for (const [key, { blocked, blocker }] of blocks) {
+        for (const [key, { blocked, blocker }] of [...blocks]) {
             const bead = byId.get(blocked);
             const blockerPresent = byId.has(blocker);
             if (!bead || !blockerPresent) {
                 const reason = !bead && !blockerPresent ? 'both-missing' : (!bead ? 'blocked-missing' : 'blocker-missing');
-                droppedBlocks.push({ kind: 'blocks', blocked, blocker, reason, key });
+                droppedBlocks.push({ kind: 'blocks', blocked, blocker, reason });
+                blocks.delete(key);
                 continue;
             }
-            if (blocksPrereqsOf(bead).includes(blocker)) continue;
-            if (removedByRun.has(key)) { removedBlocks.push({ key }); continue; }
-            vanishedBlocks.push({ kind: 'blocks', blocked, blocker });
+            if (blocksPrereqsOf(bead).includes(blocker) || owedKeys.has(key)) continue;
+            blocks.delete(key);
         }
-        return { vanished, dropped, moved, removed, vanishedBlocks, droppedBlocks, removedBlocks };
-    }
-
-    /**
-     * Reconcile the ledger with a fresh snapshot. Edges with a deleted
-     * endpoint, edges whose child moved to another parent and edges this
-     * run itself removed are forgotten (their old parent stops being a
-     * parent once no recorded edge points at it). Returns the vanished
-     * edges the caller must restore and the dropped ones it must WARN about,
-     * for parent-child edges and for blocks edges alike.
-     * @param {object[]} allBeads
-     * @returns {{ vanished: Array<{child: string, parent: string}>, dropped: Array<{child: string, parent: string, reason: string}>, moved: Array<{child: string, from: string, to: string}>, vanishedBlocks: Array<{kind: 'blocks', blocked: string, blocker: string}>, droppedBlocks: Array<{kind: 'blocks', blocked: string, blocker: string, reason: string}> }}
-     */
-    function reconcile(allBeads) {
-        const { vanished, dropped, moved, removed, vanishedBlocks, droppedBlocks, removedBlocks } = classify(allBeads);
-        for (const d of droppedBlocks) blocks.delete(d.key);
-        for (const r of removedBlocks) blocks.delete(r.key);
-        for (const d of dropped) edges.delete(d.child);
-        // A moved child is re-recorded under its new parent by observe() when in scope.
-        for (const m of moved) {
-            edges.delete(m.child);
-            earlierParent.set(m.child, m.from);
-        }
-        for (const r of removed) edges.delete(r.child);
-        return {
-            vanished, dropped, moved,
-            vanishedBlocks,
-            droppedBlocks: droppedBlocks.map(({ key, ...rest }) => rest),
-        };
+        const vanished = owedNow.filter((e) => e.kind === 'parent-child').map(({ kind, ...rest }) => rest);
+        const vanishedBlocks = owedNow.filter((e) => e.kind === 'blocks');
+        return { vanished, dropped, moved, vanishedBlocks, droppedBlocks };
     }
 
     return {
         observe,
+        notePull,
+        noteRead,
+        forgetRead,
+        /** The run-wide agent-removal record (links removed on purpose on some clone) -- diagnostics/tests. */
+        agentRemovalLinks: () => [...agentRemovals.values()].map((e) => ({ ...e })),
         noteRunEdgeChange,
         reconcile,
-        /** Recorded edges to restore: vanished (both endpoints present, child parentless, not removed by this run) or reverted onto a parent the child was moved away from. Read-only. */
-        findVanished: (allBeads) => classify(allBeads).vanished,
-        /**
-         * Every recorded link of either kind owed back to `allBeads`, read-only:
-         * parent-child edges tagged kind 'parent-child', blocks edges kind
-         * 'blocks'. Used by the verify-before-push check on the pushing clone.
-         */
-        findVanishedLinks: (allBeads) => {
-            const c = classify(allBeads);
-            return [...c.vanished.map((e) => ({ kind: 'parent-child', ...e })), ...c.vanishedBlocks];
-        },
-        /** Whether any link (parent-child or blocks) is recorded -- nothing to verify when false. */
-        hasRecordedLinks: () => edges.size > 0 || blocks.size > 0,
+        settleOwed,
+        /** The links `member` owes that a read of its clone still lacks (read-only), each tagged kind 'parent-child' or 'blocks'. */
+        findVanishedLinks: (member, allBeads) => owedMissing(member, allBeads),
+        /** Whether `member` owes any link (a conflicted pull on its clone dropped one not yet restored). */
+        hasOwedLinks: (member) => (pullLosses.get(member)?.size ?? 0) > 0,
+        /** Whether any id is in the run's scope -- pulls are only compared once it is. */
+        hasScope: () => knownScope.size > 0,
         /** Every recorded blocks edge -- diagnostics/tests. */
         knownBlocksEdges: () => [...blocks.values()].map((e) => ({ ...e })),
         /** Every bead some recorded edge still points at. */

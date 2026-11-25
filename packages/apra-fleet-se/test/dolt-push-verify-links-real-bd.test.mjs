@@ -23,15 +23,19 @@
 // does not -- see the falsifiability note).
 //
 // The read-and-restore half of the guard (ERROR lines, `bd update --parent`
-// and `bd dep add` before the push) needs links that are missing from the
-// pushing clone's READ, which the pinned bd does not produce on its own here.
-// Cases 2 and 3 therefore keep the real clones and the real conflicted pull
-// and inject the lossy result through the command seam: right after B's real
-// reconcile pull, the seam really removes both links from B's clone (a direct
-// bd call in B, invisible to the engine's ledger, like a merge that dropped
-// them). Case 2 asserts the ERROR lines, the restores before the push, and
-// both links on A afterwards; case 3 stubs ONLY the two restore commands to
-// fail and asserts no push is issued and the typed error names both edges.
+// and `bd dep add` before the push) restores only links a pull DROPPED: links
+// the pulling clone held just before the pull and lacks just after it (the
+// pull bracket in beads-scope.mjs). The pinned bd does not produce such a
+// loss on its own here. Cases 2 and 3 therefore keep the real clones and the
+// real conflicted pull and inject the lossy result through the command seam:
+// right after B's real reconcile pull, the seam really removes two links B
+// held before the pull -- X's parent link (X -> P) and the blocks edge
+// "Z blocked by X", both published before B bootstrapped -- from B's clone (a
+// direct bd call in B, invisible to the engine's ledger, like a merge that
+// dropped them). Case 2 asserts the ERROR lines, the restores before the
+// push, and both links on A afterwards; case 3 stubs ONLY the two restore
+// commands to fail and asserts no push is issued and the typed error names
+// both edges.
 //
 // Falsifiability: removing the verify call from doltPushAfter's reconcile
 // path (verifyLinksBeforePush after the reconcile pull) makes case 1 fail (A
@@ -158,6 +162,10 @@ async function buildScenario() {
     // X and Y sit under P from the start, so their blocks edge is in the sprint scope.
     ids.X = (await runOrThrow(sb, `bd create "X" -t task --parent ${ids.P} --silent`, A)).split(/\s+/).pop();
     ids.Y = (await runOrThrow(sb, `bd create "Y" -t task --parent ${ids.P} --silent`, A)).split(/\s+/).pop();
+    // Z blocked by X: a link every clone holds from the start (cases 2 and 3
+    // drop it, with X -> P, in B's reconcile pull).
+    ids.Z = (await runOrThrow(sb, `bd create "Z" -t task --parent ${ids.P} --silent`, A)).split(/\s+/).pop();
+    await runOrThrow(sb, `bd dep add ${ids.Z} ${ids.X}`, A);
     await runOrThrow(sb, 'bd dolt push', A);
     fs.mkdirSync(B);
     await runOrThrow(sb, `git clone -q "${url}" .`, B);
@@ -261,8 +269,8 @@ describe('verify-before-push against a real conflicted bd pull', { skip: SKIP, c
                 if (member !== 'B' || injected) return;
                 injected = true;
                 await runOrThrow(sb, 'bd dolt commit', sb.dirs.B);
-                await runOrThrow(sb, `bd update ${ids.C} --parent ""`, sb.dirs.B);
-                await runOrThrow(sb, `bd dep remove ${ids.X} ${ids.Y}`, sb.dirs.B);
+                await runOrThrow(sb, `bd update ${ids.X} --parent ""`, sb.dirs.B);
+                await runOrThrow(sb, `bd dep remove ${ids.Z} ${ids.X}`, sb.dirs.B);
             },
         });
         await seedLedger(eng, ids);
@@ -272,13 +280,13 @@ describe('verify-before-push against a real conflicted bd pull', { skip: SKIP, c
         assert.ok(injected, 'the reconcile pull ran on B');
 
         const errors = eng.logs.filter((l) => l.startsWith('ERROR:'));
-        assert.ok(errors.some((l) => l.includes('parent-child link vanished') && l.includes(`'${ids.C}'`) && l.includes(`'${ids.P}'`)), errors.join('\n'));
-        assert.ok(errors.some((l) => l.includes('blocks link vanished') && l.includes(`'${ids.X}'`) && l.includes(`'${ids.Y}'`)), errors.join('\n'));
+        assert.ok(errors.some((l) => l.includes('parent-child link vanished') && l.includes(`'${ids.X}'`) && l.includes(`'${ids.P}'`)), errors.join('\n'));
+        assert.ok(errors.some((l) => l.includes('blocks link vanished') && l.includes(`'${ids.Z}'`) && l.includes(`'${ids.X}'`)), errors.join('\n'));
 
         const idx = (re, from = 0) => eng.calls.findIndex((c, i) => i >= from && c.member === 'B' && re.test(c.cmd));
         const pull = idx(/bd dolt pull/);
-        const restoreParent = idx(new RegExp(`^bd update ${ids.C} --parent ${ids.P}$`));
-        const restoreBlocks = idx(new RegExp(`^bd dep add ${ids.X} ${ids.Y}$`));
+        const restoreParent = idx(new RegExp(`^bd update ${ids.X} --parent ${ids.P}$`));
+        const restoreBlocks = idx(new RegExp(`^bd dep add ${ids.Z} ${ids.X}$`));
         const rePush = idx(/bd dolt push/, pull + 1);
         const trace = eng.calls.map((c) => `${c.member}: ${c.cmd}`).join('\n');
         assert.ok(pull >= 0 && restoreParent > pull && restoreParent < rePush, trace);
@@ -286,23 +294,25 @@ describe('verify-before-push against a real conflicted bd pull', { skip: SKIP, c
 
         await runOrThrow(sb, 'bd dolt pull', sb.dirs.A);
         const onA = await linksOf(sb, sb.dirs.A);
-        assert.equal(onA.parentOf.get(ids.C), ids.P, 'C -> P present on A');
-        assert.ok(onA.blocks.has(`${ids.X}>${ids.Y}`), 'X blocked-by Y present on A');
+        assert.equal(onA.parentOf.get(ids.X), ids.P, 'X -> P present on A');
+        assert.ok(onA.blocks.has(`${ids.Z}>${ids.X}`), 'Z blocked-by X present on A');
+        assert.equal(onA.parentOf.get(ids.C), ids.P, 'C -> P (merged by the conflicted pull) present on A');
+        assert.ok(onA.blocks.has(`${ids.X}>${ids.Y}`), 'X blocked-by Y (merged by the conflicted pull) present on A');
     });
 
     test('a failing restore issues no push and the typed error names both edges', { timeout: budget }, async () => {
         const { sb, ids } = await buildScenario();
         sandboxes.push(sb.root);
         let injected = false;
-        const isRestore = (cmd) => cmd === `bd update ${ids.C} --parent ${ids.P}` || cmd === `bd dep add ${ids.X} ${ids.Y}`;
+        const isRestore = (cmd) => cmd === `bd update ${ids.X} --parent ${ids.P}` || cmd === `bd dep add ${ids.Z} ${ids.X}`;
         const eng = await engineFor(sb, ids, {
             failCommand: (cmd, member) => member === 'B' && isRestore(cmd),
             afterPull: async (member) => {
                 if (member !== 'B' || injected) return;
                 injected = true;
                 await runOrThrow(sb, 'bd dolt commit', sb.dirs.B);
-                await runOrThrow(sb, `bd update ${ids.C} --parent ""`, sb.dirs.B);
-                await runOrThrow(sb, `bd dep remove ${ids.X} ${ids.Y}`, sb.dirs.B);
+                await runOrThrow(sb, `bd update ${ids.X} --parent ""`, sb.dirs.B);
+                await runOrThrow(sb, `bd dep remove ${ids.Z} ${ids.X}`, sb.dirs.B);
             },
         });
         await seedLedger(eng, ids);
@@ -310,8 +320,8 @@ describe('verify-before-push against a real conflicted bd pull', { skip: SKIP, c
 
         await assert.rejects(() => doltPushAfter('B', pushOptsFor(eng)), (err) => {
             assert.ok(err instanceof ParentLinkRestoreError, `${err && err.name}: ${err && err.message}`);
-            assert.match(err.message, new RegExp(`parent-child link '${ids.C}' -> parent '${ids.P}'`));
-            assert.match(err.message, new RegExp(`blocks link '${ids.X}' blocked by '${ids.Y}'`));
+            assert.match(err.message, new RegExp(`parent-child link '${ids.X}' -> parent '${ids.P}'`));
+            assert.match(err.message, new RegExp(`blocks link '${ids.Z}' blocked by '${ids.X}'`));
             assert.deepEqual(err.edges.map((e) => e.kind).sort(), ['blocks', 'parent-child']);
             return true;
         });

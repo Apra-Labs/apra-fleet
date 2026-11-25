@@ -1883,6 +1883,15 @@ export async function doltPullBefore(member, opts = {}) {
     // the earlier one can only cost one redundant future pull.
     if (observedTip && probeUrl) setLastSyncedTip(member, observedTip, probeUrl);
 
+    // PULL BRACKET (invariant H5): this pull really ran, so it may have merged
+    // remote changes -- and a conflicted merge on the pinned bd can leave the
+    // merged links uncommitted in the working set or drop them. The member
+    // now owes a commit of the merged working set plus a link verify before
+    // its FIRST push, even one that fast-forwards with no reconcile (see
+    // doltPushAfter's `verifyLinks`). A pull skipped above merged nothing and
+    // owes neither.
+    if (!membersOwingLinkVerify.has(member)) membersOwingLinkVerify.set(member, 'after an earlier beads pull merged remote changes');
+
     return { ok: true, member };
 }
 
@@ -2104,8 +2113,8 @@ export async function preflightBeadsHealthGate(member, opts = {}) {
  *
  * `opts.verifyLinks(member)` is the optional VERIFY-BEFORE-PUSH hook
  * (beadsScope.verifyLinksBeforePush, wired through git-sync.mjs). Invariant
- * H5: an in-scope parent-child or blocks link this run did not remove is
- * never absent from what a beads push publishes. A conflicted reconcile
+ * H5: a parent-child or blocks link a conflicted pull dropped is never
+ * absent from what a beads push publishes. A conflicted reconcile
  * `bd dolt pull` on the pinned bd can leave the merged links uncommitted
  * in the working set (so the push publishes a commit without them) or drop
  * them outright, so after EVERY reconcile pull in this push path (each race
@@ -2117,19 +2126,29 @@ export async function preflightBeadsHealthGate(member, opts = {}) {
  * (ParentLinkRestoreError) propagates; the member is then remembered as
  * owing a verify, so its next doltPushAfter runs the hook before its FIRST
  * push too (the lossy merge is already in its local clone and a plain push
- * would publish it). Without the option this function behaves exactly as
- * before.
+ * would publish it). The same commit + verify runs before the FIRST push of
+ * a member whose pull in doltPullBefore (pre-dispatch or the launch gate)
+ * really ran, even when that push fast-forwards with no reconcile: the
+ * merge that pull made is in the working set. The hook restores only links
+ * a conflicted pull dropped on that clone (beads-scope.mjs pull bracket), so
+ * links an agent removed after the pull are not restored. Without the
+ * option this function behaves exactly as before.
  *
  * @param {string} member
  * @param {{ command: Function, pushBeads?: boolean, log?: Function, maxTransientRetries?: number, mutex?: { acquire: Function, release: Function }, sprintId?: string, checkSyncRemoteConfigured?: Function, onAuthFailure?: Function, settle?: () => Promise<{ ok: boolean, resolvedTables?: string[] }>, verifyLinks?: (member: string) => Promise<unknown> }} opts
  * @returns {Promise<{ ok: true, member: string, pushed: boolean, reconciled: boolean, skipped?: true, reason?: 'no-remote', recovered?: true, settledTables?: string[] }>}
  */
 /**
- * Members whose last verify-before-push failed (see doltPushAfter's
- * `verifyLinks`): their clone may still lack a link, so their next push
- * verifies before the first push attempt as well.
+ * Members that owe a commit of the merged working set plus a link verify
+ * before their next push attempt (see doltPushAfter's `verifyLinks`), with
+ * why: a pull in doltPullBefore merged remote changes into the clone, or
+ * the member's last verify-before-push failed (its clone may still lack a
+ * link). Paid off by the first verify that succeeds.
  */
-const membersOwingLinkVerify = new Set();
+const membersOwingLinkVerify = new Map();
+
+/** Forget every owed link verify (tests). */
+export function clearMembersOwingLinkVerify() { membersOwingLinkVerify.clear(); }
 
 /** The commit doltPushAfter's verify-before-push issues before reading links (see verifyLinksBeforePush there). */
 export const DOLT_COMMIT_MERGED_WORKING_SET_CMD = 'bd dolt commit -m "fleet-sprint: commit merged working set before push"';
@@ -2333,34 +2352,36 @@ export async function doltPushAfter(member, opts = {}) {
      * in-scope link on this clone. A throw aborts the push (no push command
      * is issued after it) and leaves the member owing a verify.
      */
-    async function verifyLinksBeforePush(when) {
+    async function verifyLinksBeforePush(when, { commitWorkingSet = true } = {}) {
         if (typeof verifyLinks !== 'function') return;
         try {
-            // First COMMIT the merged working set. Measured on the pinned bd
-            // (1.3.x, embedded): after a conflicted `bd dolt pull` that
-            // auto-merges, the merged dependency rows (parent-child AND blocks
-            // links) sit in the clone's working set UNCOMMITTED -- `bd list`
-            // on this clone shows every link, yet `bd dolt push` publishes
-            // only the commit, which lacks them, so every other clone loses
-            // them on its next pull. A link read alone can never see that
-            // loss; committing first makes what is pushed equal what is read.
-            // A clean working set answers "Nothing to commit." with exit 0.
-            const commit = await runDoltStep({
-                command, member, cmd: DOLT_COMMIT_MERGED_WORKING_SET_CMD,
-                label: `D-push commit of the merged working set for '${member}'`, log, maxTransientRetries, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now, memberTarget, lockProbeAfterMs, lockProbeTimer, onAbandonedAttempt,
-            });
-            if (!commit.ok) {
-                const typed = typedStepError(member, 'commit of the merged working set before push', commit);
-                throw typed || new ParentLinkRestoreError(
-                    `ERROR: could not commit member '${member}' merged beads working set before its push: ${commit.error}. ` +
-                    'Links a conflicted pull merged into the working set would not be published, so the push is aborted; ' +
-                    `commit it by hand with '${DOLT_COMMIT_MERGED_WORKING_SET_CMD}' on that clone, or let the next push retry.`,
-                    { edges: [] },
-                );
+            if (commitWorkingSet) {
+                // First COMMIT the merged working set. Measured on the pinned bd
+                // (1.3.x, embedded): after a conflicted `bd dolt pull` that
+                // auto-merges, the merged dependency rows (parent-child AND blocks
+                // links) sit in the clone's working set UNCOMMITTED -- `bd list`
+                // on this clone shows every link, yet `bd dolt push` publishes
+                // only the commit, which lacks them, so every other clone loses
+                // them on its next pull. A link read alone can never see that
+                // loss; committing first makes what is pushed equal what is read.
+                // A clean working set answers "Nothing to commit." with exit 0.
+                const commit = await runDoltStep({
+                    command, member, cmd: DOLT_COMMIT_MERGED_WORKING_SET_CMD,
+                    label: `D-push commit of the merged working set for '${member}'`, log, maxTransientRetries, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now, memberTarget, lockProbeAfterMs, lockProbeTimer, onAbandonedAttempt,
+                });
+                if (!commit.ok) {
+                    const typed = typedStepError(member, 'commit of the merged working set before push', commit);
+                    throw typed || new ParentLinkRestoreError(
+                        `ERROR: could not commit member '${member}' merged beads working set before its push: ${commit.error}. ` +
+                        'Links a conflicted pull merged into the working set would not be published, so the push is aborted; ' +
+                        `commit it by hand with '${DOLT_COMMIT_MERGED_WORKING_SET_CMD}' on that clone, or let the next push retry.`,
+                        { edges: [] },
+                    );
+                }
             }
             await verifyLinks(member);
         } catch (err) {
-            membersOwingLinkVerify.add(member);
+            membersOwingLinkVerify.set(member, 'an earlier verify for this member failed');
             log(`[Dolt] D-push for member '${member}' ABORTED ${when}: the beads links could not be verified/restored, so the push is not issued and nothing lossy is published. ${(err && err.message) || err}`);
             throw err;
         }
@@ -2368,8 +2389,14 @@ export async function doltPushAfter(member, opts = {}) {
     }
 
     async function doltPushGuarded() {
-    if (membersOwingLinkVerify.has(member)) {
-        await verifyLinksBeforePush('before its first push (an earlier verify for this member failed)');
+    if (membersOwingLinkVerify.has(member) && typeof verifyLinks === 'function') {
+        await verifyLinksBeforePush(`before its first push (${membersOwingLinkVerify.get(member)})`);
+    } else {
+        // Every push reads the pushing clone first, even with nothing owed:
+        // a link it lost since its last read with no pull in between was
+        // removed on purpose there, and the hook records it run-wide so no
+        // other clone's pull comparison restores it (beads-scope.mjs).
+        await verifyLinksBeforePush('before its first push', { commitWorkingSet: false });
     }
     let push = await runDoltStep({
         command, member, cmd: 'bd dolt push',

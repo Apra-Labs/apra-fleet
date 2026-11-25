@@ -88,6 +88,9 @@ import {
     formatVanishedBlocksLog, formatDroppedBlocksLog, restoreCommandFor, describeEdge,
 } from './parent-link-guard.mjs';
 
+/** A logical `bd dolt pull` -- the one command whose links the scope brackets (see wrapCommand). */
+const BD_DOLT_PULL_RE = /^bd\s+dolt\s+pull\b/i;
+
 /**
  * `bd` subcommands that can never change beads state, so they must not drop a
  * cached full-DB snapshot. Anything else starting with `bd` is conservatively
@@ -1060,11 +1063,12 @@ export function createBeadsScope(opts = {}) {
     let command = null; // installed by wrapCommand(); see fetchAllBeadsShared
 
     // STABLE PARENTHOOD (parent-link-guard.mjs): every in-scope
-    // parent-child edge and scope id this run has seen, plus the edges this
-    // run itself changed. Fed by every fresh full-DB snapshot
-    // (fetchAllBeadsShared) and by the command wrapper. A backlog D-pull
-    // drops the snapshot (clause (b) above), so the first beads read after
-    // every D-pull is a fresh snapshot and runs the vanished-link check.
+    // parent-child/blocks edge and scope id this run has seen, plus the
+    // links a conflicted pull dropped on each clone (owed). Fed by every
+    // fresh full-DB snapshot (fetchAllBeadsShared) and by the command
+    // wrapper, which brackets every `bd dolt pull`. A backlog D-pull drops
+    // the snapshot (clause (b) above), so the first beads read after every
+    // D-pull is a fresh snapshot and restores what that pull owes.
     const parentLinks = createParentLinkLedger();
 
     /** Drop the shared snapshot. Cheap and idempotent. */
@@ -1099,19 +1103,28 @@ export function createBeadsScope(opts = {}) {
                 ? cmdOpts.logicalCommand
                 : cmdStr;
             const mutating = isBeadsMutatingCommand(logical);
+            const pullMember = cmdOpts && cmdOpts.member_name;
+            const isPull = typeof logical === 'string' && BD_DOLT_PULL_RE.test(logicalBdCommand(logical)) && parentLinks.hasScope();
+            const bracket = isPull ? await readLinksBeforePull(rawCommand, pullMember) : null;
             let result;
+            let settled = false;
             try {
                 result = await rawCommand(cmdStr, cmdOpts);
+                settled = true;
             } finally {
+                // A pull that could not be bracketed (or threw) leaves no
+                // trustworthy baseline: the clone's next read only sets one.
+                if (isPull && (!bracket || !settled)) parentLinks.forgetRead(pullMember);
                 // In a finally: a mutation that THROWS may still have changed
                 // beads state on the member, so the snapshot is dropped either way.
                 if (mutating) {
                     invalidateAllBeadsCache();
-                    // A parent-child change this run made (attempted) is never
-                    // later "restored" as a vanished link.
+                    // A link change this run made (attempted) cancels any owed
+                    // restore of that link.
                     parentLinks.noteRunEdgeChange(parseRunEdgeChange(logicalBdCommand(logical)));
                 }
             }
+            if (bracket && settled) await noteLinksAfterPull(rawCommand, pullMember, bracket, result);
             if (typeof cmdStr === 'string' && onCommand) {
                 onCommand(logicalBdCommand(typeof logical === 'string' ? logical : cmdStr), cmdOpts);
             }
@@ -1119,6 +1132,64 @@ export function createBeadsScope(opts = {}) {
         };
         command = wrapped;
         return wrapped;
+    }
+
+    /** Read one clone's rows for the link comparison (never through the wrapper: no invalidation, no recursion). */
+    async function readCloneRows(rawCommand, member) {
+        const res = await rawCommand(FULL_DB_BRIEF_FETCH_CMD, { member_name: member, silent: true, failSoft: true });
+        if (res && typeof res === 'object' && res.ok === false) throw new Error(res.error || 'command failed');
+        const rows = parseBdJson(res && typeof res === 'object' ? res.output : res, FULL_DB_BRIEF_FETCH_CMD);
+        return Array.isArray(rows) ? rows : [];
+    }
+
+    /**
+     * PULL BRACKET, first half (parent-link-guard.mjs, "WHAT IS RESTORED"):
+     * the pulling clone's links immediately before its `bd dolt pull`.
+     * Always a real read, even on the backlog clone: a cached snapshot can
+     * predate an agent's edit on that clone in the same phase, which would
+     * then look like a loss. A failed read leaves this pull unbracketed,
+     * with a WARN: nothing it drops can be told apart from an agent's
+     * removal.
+     */
+    async function readLinksBeforePull(rawCommand, member) {
+        try {
+            return { before: await readCloneRows(rawCommand, member) };
+        } catch (err) {
+            log(`WARN: could not read the beads links of member '${member}' before its beads pull (${(err && err.message) || err}); ` +
+                'links that pull might drop cannot be told apart from deliberate removals, so none of them will be restored.');
+            return null;
+        }
+    }
+
+    /**
+     * PULL BRACKET, second half: read the clone again and owe every in-scope
+     * link present before and missing after that is not on the run-wide
+     * agent-removal record (parent-link-guard.mjs). Every pull is compared:
+     * the pinned bd reports a conflict only on stderr, which the command
+     * seam does not return on success, so a clean pull cannot be told apart
+     * from a lossy one -- the record is what keeps another clone's
+     * deliberate removal from being restored. A pull that failed leaves no
+     * trustworthy baseline. If the after-read fails, every link the clone
+     * held before the pull is owed (the verify restores only those still
+     * missing).
+     */
+    async function noteLinksAfterPull(rawCommand, member, bracket, result) {
+        if (result && typeof result === 'object' && result.ok === false) {
+            parentLinks.forgetRead(member);
+            return;
+        }
+        let after = null;
+        try {
+            after = await readCloneRows(rawCommand, member);
+        } catch (err) {
+            log(`ERROR: could not read the beads links of member '${member}' after its beads pull (${(err && err.message) || err}); ` +
+                'every link it held before the pull is owed and is verified before its next beads push.');
+        }
+        const lost = parentLinks.notePull(member, bracket.before, after);
+        for (const edge of lost) {
+            log(`WARN: a beads pull on member '${member}' dropped the ${describeEdge(edge)}, which no clone removed on purpose; ` +
+                `it is restored before that clone's next beads push${member === getBacklogMember() ? ' and on the next beads read' : ''}.`);
+        }
     }
 
     /**
@@ -1216,12 +1287,14 @@ export function createBeadsScope(opts = {}) {
     }
 
     /**
-     * The vanished-link check on a FRESH snapshot: every in-scope edge this
-     * run recorded whose child AND parent are still in the DB, whose child now
-     * has no parent, and that this run did not remove, is restored through the normal command
-     * path (`bd update <child> --parent <parent>`) with an ERROR line naming
-     * child and parent. Recorded in-scope BLOCKS edges get the same treatment
-     * (`bd dep add <blocked> <blocker>`). The returned snapshot carries the
+     * The vanished-link check on a FRESH snapshot: every link a conflicted
+     * pull on the backlog clone dropped (the pull bracket in wrapCommand,
+     * see parent-link-guard.mjs) whose endpoints are still in the DB and that
+     * is still missing is restored through the normal command path
+     * (`bd update <child> --parent <parent>`, `bd dep add <blocked> <blocker>`)
+     * with an ERROR line naming it. A recorded link that is missing for any
+     * other reason -- an agent or this run removed or moved it -- is
+     * forgotten, never restored. The returned snapshot carries the
      * restored links, so this phase's readers see the run's true structure
      * without a second full fetch. A failed restore is logged and THROWN
      * (ParentLinkRestoreError): continuing on a scope that lost its
@@ -1229,16 +1302,17 @@ export function createBeadsScope(opts = {}) {
      * An edge with a DELETED endpoint (child or parent no longer in the DB)
      * is not a lost link: it is forgotten with a WARN naming it and why,
      * never restored. A child moved to another parent is simply followed,
-     * unless it is back under a parent it was moved away from this run: that
-     * revert is restored like a vanished edge.
+     * unless the conflicted pull moved it (the link to its pre-pull parent is
+     * owed): that revert is restored like a vanished edge.
      *
-     * Invariant H5 (see parent-link-guard.mjs): an in-scope parent-child or
-     * blocks link this run did not remove is never absent from what a beads
-     * push publishes -- this read-side restore is one half; the other is
-     * verifyLinksBeforePush below, run inside doltPushAfter.
+     * Invariant H5 (see parent-link-guard.mjs): a link a conflicted pull
+     * dropped is never absent from what a beads push publishes -- this
+     * read-side restore is one half; the other is verifyLinksBeforePush
+     * below, run inside doltPushAfter.
      */
     async function restoreVanishedParentLinks(beads) {
-        const { vanished, dropped, vanishedBlocks, droppedBlocks } = parentLinks.reconcile(beads);
+        const backlogMember = getBacklogMember();
+        const { vanished, dropped, vanishedBlocks, droppedBlocks } = parentLinks.reconcile(beads, backlogMember);
         for (const drop of dropped) log(formatDroppedEdgeLog(drop));
         for (const drop of droppedBlocks) log(formatDroppedBlocksLog(drop));
         if (vanished.length === 0 && vanishedBlocks.length === 0) return beads;
@@ -1261,6 +1335,7 @@ export function createBeadsScope(opts = {}) {
                 throw new ParentLinkRestoreError(message, { edges: allVanished });
             }
         }
+        parentLinks.settleOwed(backlogMember);
         const restoredParent = new Map(vanished.map((e) => [e.child, e.parent]));
         const restoredBlocks = new Map();
         for (const e of vanishedBlocks) {
@@ -1283,46 +1358,72 @@ export function createBeadsScope(opts = {}) {
     }
 
     /**
-     * VERIFY BEFORE PUSH (invariant H5, see parent-link-guard.mjs): an
-     * in-scope parent-child or blocks link this run did not remove is never
-     * absent from what a beads push publishes.
+     * VERIFY BEFORE PUSH (invariant H5, see parent-link-guard.mjs): a link a
+     * pull dropped, that no clone removed on purpose, is never absent from
+     * what a beads push publishes.
      *
      * doltPushAfter (dolt-sync.mjs) calls this through its `verifyLinks`
-     * option after every reconcile `bd dolt pull` inside the push path and
-     * BEFORE the re-push: a conflicted pull on the pinned bd can keep the
-     * local dependencies table wholesale and drop other clones' links, and
-     * the re-push would publish that loss before any snapshot read could
-     * notice it. This reads the PUSHING clone (`member`, not the backlog
-     * member), restores every recorded link it lacks through the normal
-     * command path on that clone, and only then returns. Any restore that
-     * fails -- or a read that fails, since an unverified clone must not be
-     * published either -- throws ParentLinkRestoreError naming every
-     * vanished edge and the manual fix, and doltPushAfter then issues no
-     * push. The run's ledger is not changed (it is only read): the pushing
-     * clone may be a doer's clone, and the ledger follows the backlog view.
+     * option before EVERY push attempt of a member: after committing the
+     * merged working set before the first push of a member whose earlier
+     * pull merged remote changes, after every reconcile `bd dolt pull` inside
+     * the push path (BEFORE the re-push), and otherwise as a plain read
+     * before the push. It reads the PUSHING clone (`member`) and:
+     *   1. notes the read in the ledger (noteRead): a link that clone lost
+     *      since its previous read with no pull in between was removed on
+     *      purpose there, and goes on the run-wide agent-removal record, so
+     *      no other clone's pull comparison restores it once this push
+     *      publishes the removal;
+     *   2. restores every link that member OWES (dropped by a pull on that
+     *      clone, per the pull bracket in wrapCommand, and not on the
+     *      record) and is still missing, through the normal command path on
+     *      that clone, and only then returns.
+     * A link an agent removed -- before or after the pull, on this clone or
+     * another one the engine reads -- is not owed and is left alone, so a
+     * retarget, reversal or cycle-break published by the push stays as the
+     * agent made it. Any restore that fails -- or, while the member owes a
+     * link, a read that fails, since an unverified clone must not be
+     * published -- throws ParentLinkRestoreError naming every owed edge and
+     * the manual fix, and doltPushAfter then issues no push; the links stay
+     * owed. A failed read with nothing owed only WARNs (the clone's next read
+     * sets a new baseline) and the push goes ahead.
      *
-     * Issues no command at all while the ledger records no link.
+     * Issues no command at all while no id is in the run's scope.
      *
      * @param {string} member - the clone that is about to push
      * @returns {Promise<{ checked: boolean, restored: object[] }>}
      */
     async function verifyLinksBeforePush(member) {
-        if (!parentLinks.hasRecordedLinks()) return { checked: false, restored: [] };
+        if (!parentLinks.hasScope()) return { checked: false, restored: [] };
         if (!command) {
             throw new Error('beadsScope.verifyLinksBeforePush(): wrapCommand() must be installed before any beads read');
         }
+        const owes = parentLinks.hasOwedLinks(member);
         let beads;
         try {
             beads = parseBdJson(await command(FULL_DB_BRIEF_FETCH_CMD, { member_name: member, silent: true }), FULL_DB_BRIEF_FETCH_CMD);
         } catch (err) {
+            parentLinks.forgetRead(member);
+            if (!owes) {
+                log(`WARN: could not read the beads links of member '${member}' before its beads push (${(err && err.message) || err}); ` +
+                    'links it removed on purpose since its last read are not recorded, so another clone may restore them after pulling this push.');
+                return { checked: false, restored: [] };
+            }
             const message = `ERROR: could not read the beads links of member '${member}' to verify them before a beads push: ` +
                 `${(err && err.message) || err}. The push is aborted so a clone that may have lost links is never published; ` +
                 'the next push of this member verifies again.';
             log(message);
             throw new ParentLinkRestoreError(message, { edges: [], cause: err });
         }
-        const vanished = parentLinks.findVanishedLinks(Array.isArray(beads) ? beads : []);
-        if (vanished.length === 0) return { checked: true, restored: [] };
+        const rows = Array.isArray(beads) ? beads : [];
+        for (const edge of parentLinks.noteRead(member, rows)) {
+            log(`[beads-links] member '${member}' removed the ${describeEdge(edge)} on purpose; it is not restored by any clone's pull for the rest of this run.`);
+        }
+        if (!owes) return { checked: true, restored: [] };
+        const vanished = parentLinks.findVanishedLinks(member, rows);
+        if (vanished.length === 0) {
+            parentLinks.settleOwed(member);
+            return { checked: true, restored: [] };
+        }
         const failures = [];
         for (const edge of vanished) {
             log(`${edge.kind === 'blocks' ? formatVanishedBlocksLog(edge) : formatVanishedEdgeLog(edge)} (member '${member}', before its beads push)`);
@@ -1340,6 +1441,7 @@ export function createBeadsScope(opts = {}) {
             log(message);
             throw new ParentLinkRestoreError(message, { edges: vanished });
         }
+        parentLinks.settleOwed(member);
         return { checked: true, restored: vanished };
     }
 
