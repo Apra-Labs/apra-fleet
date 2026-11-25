@@ -1889,15 +1889,13 @@ async function runSprintCycle(context) {
     // handler can seal the bible commit: an aborted sprint commits nothing
     // further to the bible.
     context.kbWork = kbWork;
-    // Engine-side KNOWLEDGE BANK injection: skipped for a member whose own
-    // fleet MCP was verified at sprint init (context.isMemberVerified, set by
-    // the init probe above), applied to every other member.
+    // Engine-side KNOWLEDGE BANK injection: applied to every dispatched member
+    // (the maintainer is the knowledge source; a member's own KB is not primed).
     if (typeof validated.goal === 'string' && validated.goal.trim() && !isPriorityTierToken(validated.goal.trim())) {
         kbSprintContext.goals = [validated.goal.trim()];
     }
     kbInjection = context.kbInjection ?? createKbInjection({
         kbWork,
-        isMemberVerified: (name) => (typeof context.isMemberVerified === 'function' ? context.isMemberVerified(name) : false),
         // Deploy targets: the file paths named in the runbook the role follows
         // (deploy.md for the deployer, the playbooks for the test runners).
         deployTargets: async (memberName, role) => {

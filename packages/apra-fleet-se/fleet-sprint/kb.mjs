@@ -2603,11 +2603,10 @@ export function createKbPrimingClient(opts = {}) {
     // KB audit 2026-08-11: primeAll() used to `await callTool(...)` and throw
     // the result away, on the assumption that priming "warms" something the
     // role's own Step 0 would later read. It does not: prime is a pure read,
-    // and the role CANNOT repeat it -- a member-dispatched subagent has the
-    // fleet MCP server disabled (src/providers/claude.ts
-    // composePermissionConfig), so every contract's Step 0 kb_session_prime is
-    // unreachable there. Nothing consumed the knowledge and nothing could, which
-    // is why six sprints retrieved zero entries. Retaining the result is what
+    // and a member's own KB is not where priming imports the bible (only
+    // each repository's kb_maintainer is primed), so a role's own Step 0
+    // kb_session_prime does not see this knowledge. Nothing consumed the
+    // knowledge, which is why six sprints retrieved zero entries. Retaining the result is what
     // lets kbKnowledgeBlock() hand it to the role in its dispatch prompt --
     // the same shape of fix that made kb_promotions reachable.
     const knowledge = new Map();
@@ -2787,14 +2786,13 @@ export function createKbPrimingClient(opts = {}) {
  * block, shared by the doer and reviewer dispatch prompts.
  *
  * WHY THIS EXISTS AT ALL. Every role contract's Step 0 tells the role to call
- * kb_session_prime itself. On a fleet-member dispatch it cannot: the member's
- * composed permission config disables the apra-fleet MCP server outright
- * (src/providers/claude.ts composePermissionConfig), so the tool is not merely
- * unlisted, it is unreachable. That is the same wall kb_promotions hit, and
- * this is the same fix -- the engine performs the read and hands the result
- * over as prompt content. Step 0 stays correct for the OTHER execution path
- * (an apra-pm orchestrator session running these contracts as local subagents,
- * where the MCP server is present), so both paths now get knowledge.
+ * kb_session_prime itself, but priming imports the bible and reads only on each
+ * repository's kb_maintainer: a dispatched member's own KB is not primed, so a
+ * non-maintainer member (notably a remote one on another host) would get no
+ * knowledge. The engine therefore performs the read on the maintainer and
+ * hands the result over as prompt content for EVERY dispatched member. Step 0
+ * stays correct for the OTHER execution path (an apra-pm orchestrator session
+ * running these contracts as local subagents), so both paths get knowledge.
  *
  * Only CONFIRMED, undisputed entries are rendered (isInjectableKbEntry) --
  * every caller's source is already filtered, and this is the last chokepoint

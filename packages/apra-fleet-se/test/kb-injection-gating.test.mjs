@@ -140,23 +140,43 @@ describe('KNOWLEDGE BANK block shape (b4g.19.2)', () => {
     });
 });
 
-describe('verified-member injection gating (b4g.18.3)', () => {
+describe('injection for every dispatched member (kb-inject-all)', () => {
     const ctx = { beadTitles: [{ title: 'gating topic' }] };
     const records = [
         { member: 'doer-1', verified: true },
         { member: 'rev-1', verified: false },
     ];
     const lookup = createMemberVerifiedLookup(() => records);
+    // doer-1 is a verified REMOTE member that is not the repo kb_maintainer.
+    const remoteVerified = (name) => name === 'doer-1' || lookup(name);
 
-    test('a verified member gets no block; an unverified member and one with no init record do', async () => {
+    test('a verified member, an unverified member and one with no init record all get the block', async () => {
         const kb = fakeKb({ query: [entry('c1', 'known thing')] });
         const inj = injection({ kb, verified: lookup });
-        assert.deepEqual(await inj.blockFor({ role: 'doer', member: 'doer-1', context: ctx }), []);
-        assert.equal(kb.calls.length, 0, 'a verified member costs no kb read');
+        const verifiedBlock = await inj.blockFor({ role: 'doer', member: 'doer-1', context: ctx });
+        assert.equal(verifiedBlock.length, 1);
+        assert.match(verifiedBlock[0], /KNOWLEDGE BANK/);
+        assert.ok(verifiedBlock[0].includes('known thing'));
         const unverified = await inj.blockFor({ role: 'reviewer', member: 'rev-1', context: ctx });
         assert.match(unverified[0], /KNOWLEDGE BANK/);
         const noRecord = await inj.blockFor({ role: 'doer', member: 'agy-1', context: ctx });
         assert.match(noRecord[0], /KNOWLEDGE BANK/);
+        for (const m of ['doer-1', 'rev-1', 'agy-1', 'maint']) assert.equal(inj.shouldInject(m), true, m);
+    });
+
+    test('a verified remote non-maintainer member gets the maintainer block for doer and reviewer; the maintainer too', async () => {
+        const kb = fakeKb({ query: [entry('c1', 'maintainer fact one'), entry('c2', 'maintainer fact two')] });
+        const inj = injection({ kb, verified: remoteVerified });
+        assert.equal(inj.shouldInject('doer-1'), true);
+        for (const role of ['doer', 'reviewer']) {
+            const blocks = await inj.blockFor({ role, member: 'doer-1', context: ctx });
+            assert.equal(blocks.length, 1, `${role} gets one block`);
+            assert.ok(blocks[0].includes('maintainer fact one') && blocks[0].includes('maintainer fact two'));
+        }
+        const own = await inj.blockFor({ role: 'doer', member: 'maint', context: ctx });
+        assert.equal(own.length, 1);
+        assert.ok(own[0].includes('maintainer fact one'));
+        for (const c of kb.calls) assert.equal(c.member, 'maint');
     });
 
     test('block content arrives via memberCall on the repository kb_maintainer, never the dispatched member', async () => {
@@ -166,17 +186,15 @@ describe('verified-member injection gating (b4g.18.3)', () => {
         for (const c of kb.calls) assert.equal(c.member, 'maint', `${c.name} must run on the kb_maintainer`);
     });
 
-    test('a doer prompt carries the gated block: absent when verified, present when not', async () => {
+    test('a doer prompt carries the block whether or not the member is verified', async () => {
         const kb = fakeKb({ query: [entry('c1', 'known thing')] });
         const inj = injection({ kb, verified: lookup });
-        const verifiedPrompt = buildDoerPrompt({ beadIds: ['x-1'], branch: 'b', feedback: null, kbBlock: await inj.blockFor({ role: 'doer', member: 'doer-1', context: ctx }) });
-        const unverifiedPrompt = buildDoerPrompt({ beadIds: ['x-1'], branch: 'b', feedback: null, kbBlock: await inj.blockFor({ role: 'doer', member: 'rev-1', context: ctx }) });
-        assert.ok(!verifiedPrompt.includes('KNOWLEDGE BANK'));
-        assert.ok(unverifiedPrompt.includes('KNOWLEDGE BANK') && unverifiedPrompt.includes('known thing'));
+        for (const member of ['doer-1', 'rev-1']) {
+            const prompt = buildDoerPrompt({ beadIds: ['x-1'], branch: 'b', feedback: null, kbBlock: await inj.blockFor({ role: 'doer', member, context: ctx }) });
+            assert.ok(prompt.includes('KNOWLEDGE BANK') && prompt.includes('known thing'), member);
+        }
     });
 
-    // The REAL init probe decides verified-ness: opencode / agy are unverified
-    // although their MEMBER session lists the kb tools.
     for (const [provider, reason] of [['opencode', 'no-per-tool-deny'], ['agy', 'no-per-project-mcp']]) {
         test(`${provider} member: its MEMBER session lists the kb tools yet the prompt still gets the block`, async () => {
             const name = provider === 'opencode' ? 'oc-1' : 'agy-1';
@@ -204,23 +222,6 @@ describe('verified-member injection gating (b4g.18.3)', () => {
             assert.ok(block.includes('known thing'));
         });
     }
-
-    test('revert check: an always-inject or never-inject gate fails the gating assertions', async () => {
-        const run = async (verifiedFn) => {
-            const inj = injection({ kb: fakeKb({ query: [entry('c1', 'known thing')] }), verified: verifiedFn });
-            return {
-                verifiedBlock: await inj.blockFor({ role: 'doer', member: 'doer-1', context: ctx }),
-                unverifiedBlock: await inj.blockFor({ role: 'doer', member: 'rev-1', context: ctx }),
-            };
-        };
-        const real = await run(lookup);
-        assert.equal(real.verifiedBlock.length, 0);
-        assert.equal(real.unverifiedBlock.length, 1);
-        const always = await run(() => false);   // gate removed: always inject
-        const never = await run(() => true);     // gate removed: never inject
-        assert.notEqual(always.verifiedBlock.length, 0, 'always-inject injects for a verified member');
-        assert.equal(never.unverifiedBlock.length, 0, 'never-inject skips an unverified member');
-    });
 });
 
 describe('engine-supplied hint sources and priority-tier goals (b4g.19.1)', () => {
