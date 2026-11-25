@@ -2803,7 +2803,7 @@
       "confidence": "CONFIRMED",
       "updated_at": "2026-11-22T20:36:30.978Z",
       "source_file_hashes": {
-        "packages/apra-fleet-se/fleet-sprint/git-sync.mjs": "9c16cb8cc43e8fddcd847cf6fa7f0f7eb72d1bcc",
+        "packages/apra-fleet-se/fleet-sprint/git-sync.mjs": "b1b25cc3f8cab5fe95a04d339c25962a16b20268",
         "packages/apra-fleet-se/fleet-sprint/kb.mjs": "41f6e273087e48bc4a34fbbe77b3cbfb59ac66e9",
         "packages/apra-fleet-se/test/mock-sprint-kb-final-head-recheck.test.mjs": "310f907df46b9d3f661f9240ccfc4f6afcacc40e"
       }
