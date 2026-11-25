@@ -228,7 +228,7 @@ export const executePromptSchema = z.object({
 
 export type ExecutePromptInput = z.infer<typeof executePromptSchema>;
 
-function buildFailureMessage(agentName: string, result: SSHExecResult, provider: ProviderAdapter, parsed?: ParsedResponse): string {
+export function buildFailureMessage(agentName: string, memberKind: 'local' | 'remote', result: SSHExecResult, provider: ProviderAdapter, parsed?: ParsedResponse): string {
   const output = result.stderr || result.stdout;
   // apra-fleet-p4f.2: prefer the already-parsed structured signal over the
   // stderr/stdout regex scan -- a max_turns-exhausted transcript can still
@@ -240,7 +240,7 @@ function buildFailureMessage(agentName: string, result: SSHExecResult, provider:
 ${output}`;
   }
   return category === 'auth'
-    ? authErrorAdvice(agentName)
+    ? authErrorAdvice(agentName, memberKind)
     : `[FAIL] Prompt failed on "${agentName}":
 ${output}`;
 }
@@ -2116,7 +2116,7 @@ async function executePromptImpl(input: ExecutePromptInput, extra: any, tap: { m
         ? 'max_turns'
         : provider.classifyError(result.stderr || result.stdout);
       return {
-        text: buildFailureMessage(agent.friendlyName, result, provider, parsed),
+        text: buildFailureMessage(agent.friendlyName, agent.agentType === 'local' ? 'local' : 'remote', result, provider, parsed),
         structuredContent: {
           isError: true,
           reason: failureCategory === 'max_turns'

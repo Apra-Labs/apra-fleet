@@ -30,7 +30,17 @@ export function isRetryable(category: PromptErrorCategory): boolean {
   return category === 'server' || category === 'overloaded';
 }
 
-export function authErrorAdvice(agentName: string): string {
+export type MemberKind = 'local' | 'remote';
+
+/**
+ * Auth-failure advice, member-kind aware: provision_llm_auth skips local
+ * members (they share the host's own credentials), so for a local member only
+ * an interactive login in the LLM CLI on this host helps.
+ */
+export function authErrorAdvice(agentName: string, memberKind: MemberKind = 'remote'): string {
+  if (memberKind === 'local') {
+    return `Authentication failed on "${agentName}". This is a local member that uses this host's own credentials: log in again interactively in the LLM CLI on this host (for Claude: run /login), then retry.`;
+  }
   return `Authentication failed on "${agentName}". Run /login to refresh your credentials, then run provision_llm_auth to deploy them to this agent.`;
 }
 
