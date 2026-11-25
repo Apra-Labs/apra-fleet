@@ -33,6 +33,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { FLEET_DIR } from '../paths.js';
 import { enforceOwnerOnly } from '../utils/file-permissions.js';
 import { escapeShellArg } from '../utils/shell-escape.js';
+import { createStreamRedactor, TOKEN_REDACTION } from '../utils/redact-secret.js';
 import { OPERATOR_SCOPE_URL, operatorAuthRecordPath } from '../services/operator-auth-record.js';
 
 export { OPERATOR_SCOPE_URL };
@@ -60,10 +61,13 @@ export interface OperatorIo {
    */
   selfCommand?: string[];
   /**
-   * Runs `exec`'s child with `env` and inherited stdio; resolves to its exit
-   * code. Default: child_process.spawn, no shell.
+   * Runs `exec`'s child with `env` (stdin inherited); every stdout/stderr
+   * chunk goes to `onStdout`/`onStderr`, which redact the token before
+   * printing. Resolves to the exit code once both streams are drained.
+   * Default: child_process.spawn, no shell.
    */
-  runChild?: (command: string, args: string[], env: NodeJS.ProcessEnv) => Promise<number>;
+  runChild?: (command: string, args: string[], env: NodeJS.ProcessEnv,
+    onStdout: (chunk: Buffer | string) => void, onStderr: (chunk: Buffer | string) => void) => Promise<number>;
 }
 
 export interface OperatorRecord {
@@ -238,9 +242,12 @@ function defaultIo(io: OperatorIo): Required<Omit<OperatorIo, 'selfCommand'>> & 
 }
 
 /** No shell: the command and its arguments are passed as an argv array, never parsed. */
-function spawnChild(command: string, args: string[], env: NodeJS.ProcessEnv): Promise<number> {
+function spawnChild(command: string, args: string[], env: NodeJS.ProcessEnv,
+  onStdout: (chunk: Buffer | string) => void, onStderr: (chunk: Buffer | string) => void): Promise<number> {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: 'inherit', env, shell: false });
+    const child = spawn(command, args, { stdio: ['inherit', 'pipe', 'pipe'], env, shell: false });
+    child.stdout?.on('data', onStdout);
+    child.stderr?.on('data', onStderr);
     child.on('error', err => reject(new OperatorAuthError(`apra-fleet: could not start '${command}': ${err.message}`)));
     child.on('close', (code, signal) => resolve(code ?? (signal ? 1 : 0)));
   });
@@ -337,8 +344,12 @@ the App configured by setup_git_app, re-minted 5 minutes before it expires.
   exec       Run <command> with GH_TOKEN set to a fresh token in its
              environment only (gh cannot use a git helper):
                apra-fleet operator-auth exec -- gh pr list
-             The token is never printed; the exit code is the command's.
-             <command> runs directly, not through a shell.`;
+             The token is never printed: the command's output is piped
+             back with the token redacted (so gh sees no terminal on
+             stdout/stderr). The exit code is the command's. <command> runs
+             directly, not through a shell; on Windows a .cmd/.bat shim
+             (e.g. npm) needs an explicit 'cmd /c':
+               apra-fleet operator-auth exec -- cmd /c npm run release`;
 
 /** The command that runs this fleet binary: [binary] under SEA, [node, script] otherwise. */
 export function resolveSelfCommand(): string[] {
@@ -598,7 +609,18 @@ export async function runOperatorAuth(argv: string[], io: OperatorIo = {}): Prom
         return 2;
       }
       const { token } = await getOperatorToken(labelFrom(parsed.flags), d.now);
-      return await d.runChild(childArgv[0], childArgv.slice(1), { ...process.env, GH_TOKEN: token });
+      // The child's output is piped back through an exact-value redactor, so
+      // a child that prints GH_TOKEN (e.g. `gh auth token`) shows only the
+      // marker; output streams as it arrives.
+      const out = createStreamRedactor(token, TOKEN_REDACTION, d.stdout);
+      const err = createStreamRedactor(token, TOKEN_REDACTION, d.stderr);
+      try {
+        return await d.runChild(childArgv[0], childArgv.slice(1), { ...process.env, GH_TOKEN: token },
+          c => out.push(c), c => err.push(c));
+      } finally {
+        out.end();
+        err.end();
+      }
     }
     d.stderr(`apra-fleet operator-auth: unknown subcommand '${sub}'.\n\n${OPERATOR_AUTH_USAGE}\n`);
     return 2;

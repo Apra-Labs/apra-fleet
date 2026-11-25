@@ -282,7 +282,8 @@ Design notes for `operator-auth github` / `git-credential`:
 - With no `--repos`, the token covers the whole installation (the repositories
   field is omitted from the mint request).
 - Fleet never hands the token to a caller: `operator-auth exec` puts it only in
-  its child's environment, and `git-credential` answers only git.
+  its child's environment and redacts it from the child's output, and
+  `git-credential` answers only git.
 - Trust boundary: a member process runs as the same OS user as the operator, so
   it can still read the App key under the fleet data dir or run
   `git-credential` / `operator-auth exec` itself. The member reset above stops
@@ -292,8 +293,10 @@ Design notes for `operator-auth github` / `git-credential`:
 #### Operator credentials
 
 `gh` has no helper hook. For gh in your shell or unattended automation, run it
-through fleet, which sets a fresh `GH_TOKEN` in gh's environment only (never
-printed; the exit code is gh's; no shell parses the command):
+through fleet, which sets a fresh `GH_TOKEN` in gh's environment only. gh's
+output is piped back with that token redacted (so `exec -- gh auth token`
+prints only the marker), the exit code is gh's, and no shell parses the
+command: on Windows a `.cmd` shim such as npm needs an explicit `cmd /c`.
 
 ```bash
 apra-fleet operator-auth exec -- gh pr list

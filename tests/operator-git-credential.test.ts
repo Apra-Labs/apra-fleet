@@ -217,6 +217,33 @@ describe('operator git-credential helper', () => {
     expect(b.out.join('') + b.err.join('')).toBe('');
   });
 
+  it('exec redacts the token in the child output: gh-auth-token-style stdout, and a token split across chunks on stderr', async () => {
+    const MARK = '[REDACTED:vcs_token]';
+    const a = io();
+    const runChild = async (_c: string, _a: string[], env: NodeJS.ProcessEnv,
+      onStdout: (c: Buffer | string) => void, onStderr: (c: Buffer | string) => void) => {
+      const t = env.GH_TOKEN!;
+      onStdout(Buffer.from(`${t}\n`)); // what `gh auth token` prints
+      onStderr('GH_TOKEN=' + t.slice(0, 5));
+      onStderr(Buffer.from(t.slice(5) + ' done\n'));
+      return 0;
+    };
+    expect(await runOperatorAuth(['exec', '--', 'gh', 'auth', 'token'], { ...a.io, runChild })).toBe(0);
+    expect(a.out.join('')).toBe(`${MARK}\n`);
+    expect(a.err.join('')).toBe(`GH_TOKEN=${MARK} done\n`);
+    expect(a.out.join('') + a.err.join('')).not.toContain(minted[0]);
+  });
+
+  it('exec redacts a real child that echoes GH_TOKEN on stdout and stderr', async () => {
+    const MARK = '[REDACTED:vcs_token]';
+    const a = io();
+    const script = 'process.stdout.write(process.env.GH_TOKEN + "\\n"); process.stderr.write("tok:" + process.env.GH_TOKEN)';
+    const { runChild: _omit, ...aio } = a.io as typeof a.io & { runChild?: unknown };
+    expect(await runOperatorAuth(['exec', '--', process.execPath, '-e', script], aio)).toBe(0);
+    expect(a.out.join('')).toBe(`${MARK}\n`);
+    expect(a.err.join('')).toBe(`tok:${MARK}`);
+  });
+
   it('exec without a command after -- is a usage error and mints nothing', async () => {
     const before = mints;
     for (const argv of [['exec'], ['exec', '--'], ['exec', 'gh']]) {
