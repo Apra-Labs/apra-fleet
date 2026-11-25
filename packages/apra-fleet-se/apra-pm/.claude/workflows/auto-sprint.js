@@ -2607,8 +2607,7 @@ function shellMaxTurns(cmds) {
 // refused cleanup is never swallowed by the callers' `|| true`.
 function logWorktreeRefusals(res) {
   for (const o of (res && res.outputs) || []) {
-    for (const line of String(o || '').split('
-')) {
+    for (const line of String(o || '').split(/\r?\n/)) {
       if (line.includes('WORKTREE_CLEANUP_REFUSED')) log(line.trim());
     }
   }
