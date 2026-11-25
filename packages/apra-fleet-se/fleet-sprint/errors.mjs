@@ -478,7 +478,9 @@ export const BEADS_FLATTEN_RECOVERY_FAILED_CODE = 'BEADS_FLATTEN_RECOVERY_FAILED
  * history with it (beads-flatten-recovery.mjs) found local work the rewritten
  * remote does not hold, so it REFUSED: the clone was put back exactly as it
  * was and nothing was replayed. `details.localOnly` lists
- * `{ id, reason, localUpdatedAt, freshUpdatedAt }`, `details.exportPath` the
+ * `{ id, kind, reason, localUpdatedAt?, freshUpdatedAt?, items?, unverified? }`
+ * (kind: absent | changed | dependency | label | comment | deleted),
+ * `details.exportPath` the
  * pre-recovery export of the clone. A DoltSyncError subtype (kind
  * 'unrelated-history'), so every existing DoltSyncError handler applies.
  */

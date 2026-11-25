@@ -15,6 +15,11 @@ import { fileURLToPath } from 'node:url';
 
 import {
     findLocalOnlyWork,
+    classifyLocalWork,
+    syncBoundary,
+    findFreshOnlyIds,
+    parseHistoryProbe,
+    lastChangeMs,
     parseBeadsExport,
     parseExportCount,
     pickLeftoverBackup,
@@ -56,13 +61,13 @@ function decodePs(cmd) {
 // Simulated member work folder.
 // entries: top-level name -> { db?: { records, unrelated }, files: Map }
 // ---------------------------------------------------------------------------
-function makeMember({ local, remote, failOn = {}, entries } = {}) {
+function makeMember({ local, remote, failOn = {}, entries, knownHistory } = {}) {
     const fsx = new Map();
     if (entries) {
         for (const [k, v] of Object.entries(entries)) fsx.set(k, v);
     } else {
         fsx.set('.beads', {
-            db: { records: local, unrelated: true, original: true },
+            db: { records: local, unrelated: true, original: true, history: new Set(knownHistory || (local || []).map((r) => r.id).filter(Boolean)) },
             files: new Map([['config.yaml', ''], ['config.local.yaml', `sync.remote: "${REMOTE}"\n`]]),
         });
     }
@@ -132,6 +137,14 @@ function makeMember({ local, remote, failOn = {}, entries } = {}) {
             const mems = beads.db.records.length - issues;
             return ok(`Exported ${issues} issues and ${mems} memories to ${m[1]}`);
         }
+        if ((m = /^bd --db (\S+) --readonly --json history (\S+) --limit 1$/.exec(text))) {
+            const dir = fsx.get(m[1]);
+            if (!dir || !dir.db) return bad(`no beads database at ${m[1]}`);
+            // Like the real bd: a lock file appears next to the --db directory.
+            fsx.set(`${m[1]}.gate.lock`, { files: new Map() });
+            const known = dir.db.history ? dir.db.history.has(m[2]) : dir.db.records.some((r) => r.id === m[2]);
+            return ok(known ? JSON.stringify([{ CommitHash: 'c1', Issue: { id: m[2] } }], null, 2) : 'null');
+        }
         if (text === 'bd bootstrap --dry-run --json') {
             const beads = fsx.get('.beads');
             const remoteSet = beads && beads.files.has('config.local.yaml');
@@ -182,7 +195,7 @@ describe('findLocalOnlyWork (pure comparison)', () => {
         const local = [issue('a', '2026-01-02T00:00:00Z'), issue('b', '2026-01-01T00:00:00Z'), issue('c', '2026-01-01T00:00:00Z')];
         const fresh = [issue('a', '2026-01-01T00:00:00Z'), issue('b', '2026-01-01T00:00:00Z'), issue('c', '2026-01-05T00:00:00Z')];
         const out = findLocalOnlyWork(local, fresh);
-        assert.deepEqual(out, [{ id: 'a', reason: 'newer', localUpdatedAt: '2026-01-02T00:00:00Z', freshUpdatedAt: '2026-01-01T00:00:00Z' }]);
+        assert.deepEqual(out, [{ id: 'a', kind: 'changed', reason: 'newer', localUpdatedAt: '2026-01-02T00:00:00Z', freshUpdatedAt: '2026-01-01T00:00:00Z' }]);
     });
 
     test('timestamps compare as instants, not strings', () => {
@@ -201,6 +214,85 @@ describe('findLocalOnlyWork (pure comparison)', () => {
 
     test('nothing local -> nothing local-only', () => {
         assert.deepEqual(findLocalOnlyWork([], [issue('a', '2026-01-01T00:00:00Z')]), []);
+    });
+
+    // The pinned bd does not bump updated_at for these: compared directly.
+    const T0 = '2026-01-01T00:00:00Z';
+    const dep = (on, type = 'blocks') => ({ issue_id: 'a', depends_on_id: on, type, created_at: '2026-01-02T00:00:00Z', created_by: 'x', metadata: '{}' });
+    const comment = (id, text) => ({ id, issue_id: 'a', author: 'x', text, created_at: '2026-01-02T00:00:00Z' });
+    const withFields = (base, fields) => ({ ...base, ...fields });
+
+    test('a dependency add with an unchanged updated_at is local work of kind dependency', () => {
+        const out = findLocalOnlyWork([withFields(issue('a', T0), { dependencies: [dep('b')], dependency_count: 1 })], [issue('a', T0)]);
+        assert.deepEqual(out, [{ id: 'a', kind: 'dependency', reason: 'dependency', items: ['b (blocks)'] }]);
+    });
+
+    test('a label add with an unchanged updated_at is local work of kind label', () => {
+        const out = findLocalOnlyWork([withFields(issue('a', T0), { labels: ['area:x', 'keep'] })], [withFields(issue('a', T0), { labels: ['keep'] })]);
+        assert.deepEqual(out, [{ id: 'a', kind: 'label', reason: 'label', items: ['area:x'] }]);
+    });
+
+    test('a comment add with an unchanged updated_at is local work of kind comment', () => {
+        const out = findLocalOnlyWork(
+            [withFields(issue('a', T0), { comments: [comment('c-1', 'old'), comment('c-2', 'new')], comment_count: 2 })],
+            [withFields(issue('a', T0), { comments: [comment('c-1', 'old')], comment_count: 1 })],
+        );
+        assert.deepEqual(out, [{ id: 'a', kind: 'comment', reason: 'comment', items: ['c-2'] }]);
+    });
+
+    test('a fresh-only id the clone history knew is local work of kind deleted', () => {
+        const out = findLocalOnlyWork([issue('a', T0)], [issue('a', T0), issue('gone', T0)], { locallyDeleted: ['gone'] });
+        assert.deepEqual(out, [{ id: 'gone', kind: 'deleted', reason: 'deleted' }]);
+        assert.deepEqual(findLocalOnlyWork([issue('a', T0)], [issue('a', T0), issue('gone', T0)]), [], 'a remote-only bead the history did not know is not work');
+    });
+
+    test('identical records (derived counts and sub-list order aside) are not work; a removal is not counted', () => {
+        const local = withFields(issue('a', T0), { labels: ['x', 'y'], dependencies: [dep('b')], dependent_count: 0 });
+        const fresh = withFields(issue('a', T0), { labels: ['y', 'x', 'z'], dependencies: [dep('b'), dep('c')], dependent_count: 3 });
+        assert.deepEqual(findLocalOnlyWork([local], [fresh]), []);
+    });
+
+    test('findFreshOnlyIds lists remote-only issue ids, never memories', () => {
+        assert.deepEqual(findFreshOnlyIds([issue('a', T0)], [issue('a', T0), issue('b', T0), memory('m', 'v')]), ['b']);
+    });
+
+    test('parseHistoryProbe: entries, null, empty and garbage', () => {
+        assert.equal(parseHistoryProbe('[\n  {"CommitHash": "x"}\n]'), true);
+        assert.equal(parseHistoryProbe('null\n'), false);
+        assert.equal(parseHistoryProbe('[]'), false);
+        assert.equal(parseHistoryProbe(''), null);
+        assert.equal(parseHistoryProbe('Error: no database'), null);
+    });
+});
+
+describe('pruned beads (bd prune ran before the rewrite)', () => {
+    const closed = (id, ts, extra = {}) => ({ _type: 'issue', id, title: id, status: 'closed', updated_at: ts, closed_at: ts, ...extra });
+    const SYNCED = issue('s-1', '2026-03-01T00:00:00Z');
+
+    test('the sync boundary is the newest change among identical records', () => {
+        assert.equal(syncBoundary([SYNCED, issue('x', '2026-04-01T00:00:00Z')], [SYNCED, issue('x', '2026-03-15T00:00:00Z')]), Date.parse('2026-03-01T00:00:00Z'));
+        assert.equal(syncBoundary([issue('x', '2026-04-01T00:00:00Z')], []), -Infinity);
+    });
+
+    test('a closed bead older than the boundary and absent from the remote is pruned, not local work', () => {
+        const r = classifyLocalWork([SYNCED, closed('old', '2026-01-01T00:00:00Z')], [SYNCED]);
+        assert.deepEqual(r.work, []);
+        assert.deepEqual(r.pruned, ['old']);
+    });
+
+    test('a closed bead changed after the boundary (unpushed) is local work', () => {
+        const changed = closed('old', '2026-01-01T00:00:00Z', { comments: [{ id: 'c-9', text: 'late', created_at: '2026-03-02T00:00:00Z' }] });
+        const r = classifyLocalWork([SYNCED, changed], [SYNCED]);
+        assert.deepEqual(r.work.map((w) => [w.id, w.kind]), [['old', 'absent']]);
+        assert.deepEqual(r.pruned, []);
+        assert.equal(lastChangeMs(changed), Date.parse('2026-03-02T00:00:00Z'));
+    });
+
+    test('open, pinned, unreadable-timestamp or boundary-less absent beads stay local work', () => {
+        const old = '2026-01-01T00:00:00Z';
+        const local = [SYNCED, issue('open-old', old), closed('pinned', old, { pinned: true }), closed('bad', old, { closed_at: 'garbage' })];
+        assert.deepEqual(classifyLocalWork(local, [SYNCED]).work.map((w) => w.id), ['open-old', 'pinned', 'bad']);
+        assert.deepEqual(classifyLocalWork([closed('old', old)], []).work.map((w) => w.id), ['old'], 'no identical record: no boundary');
     });
 });
 
@@ -223,6 +315,9 @@ describe('export parsing', () => {
         assert.equal(pickLeftoverBackup(['.beads', `${FLATTEN_PENDING_PREFIX}1`]).hasBeads, true);
         assert.equal(pickLeftoverBackup([`${FLATTEN_BACKUP_PREFIX}1`]).backup, `${FLATTEN_BACKUP_PREFIX}1`);
         assert.equal(pickLeftoverBackup(['.beads', `${FLATTEN_BACKUP_PREFIX}1`]).backup, null, 'a finished backup next to a live .beads is left alone');
+        // A bd lock file sharing the prefix is never taken for a backup.
+        assert.deepEqual(pickLeftoverBackup(['.beads', `${FLATTEN_PENDING_PREFIX}20261125T000000000Z.gate.lock`]), { backup: null, pending: false, hasBeads: true });
+        assert.equal(pickLeftoverBackup([`${FLATTEN_BACKUP_PREFIX}1Z.gate.lock`]).backup, null);
     });
 });
 
@@ -370,6 +465,90 @@ describe('recoverFlattenedClone: failures before anything destructive', () => {
         );
         assert.ok(!member.texts().includes('bd bootstrap --yes'));
         assert.equal(member.fsx.get('.beads').db.original, true);
+    });
+});
+
+describe('recoverFlattenedClone: every kind of unpushed local work is refused', () => {
+    const T = '2026-11-20T10:00:00Z';
+    const base = [issue('p-1', T), issue('p-2', T), issue('p-3', T)];
+    const plus = (id, fields) => base.map((r) => (r.id === id ? { ...r, ...fields } : r));
+    const cases = [
+        ['dependency', plus('p-1', { dependencies: [{ issue_id: 'p-1', depends_on_id: 'p-2', type: 'blocks', created_at: T }] }), base, {}, /dependency add/],
+        ['label', plus('p-1', { labels: ['area:x'] }), base, {}, /label add/],
+        ['comment', plus('p-1', { comments: [{ id: 'c-1', issue_id: 'p-1', author: 'a', text: 'hi', created_at: T }] }), base, {}, /comment add/],
+        ['deleted', base.filter((r) => r.id !== 'p-3'), base, { knownHistory: ['p-1', 'p-2', 'p-3'] }, /local delete/],
+    ];
+    for (const [kind, local, remote, extra, summary] of cases) {
+        test(`only a ${kind} is unpushed: REFUSED naming the kind, the clone left intact`, async () => {
+            const member = makeMember({ local, remote, ...extra });
+            const original = member.fsx.get('.beads');
+            await assert.rejects(
+                () => recoverFlattenedClone({ command: member.command, member: 'm1', shell: posix }),
+                (err) => {
+                    assert.ok(err instanceof BeadsFlattenRecoveryRefusedError, err && err.stack);
+                    assert.deepEqual(err.details.localOnly.map((w) => w.kind), [kind]);
+                    assert.match(err.message, summary);
+                    assert.ok(!/no local-only work found/.test(err.message), err.message);
+                    assert.equal(err.details.restored, true);
+                    return true;
+                },
+            );
+            assert.strictEqual(member.fsx.get('.beads'), original, 'the original .beads is back in place');
+            assert.deepEqual([...member.fsx.keys()], ['.beads']);
+            assert.ok(!member.texts().includes('bd status --json'), 'never reached the success re-check');
+        });
+    }
+
+    test('no unpushed work at all: re-bootstrapped; a bead new on the remote is probed once and not counted', async () => {
+        const member = makeMember({ local: base, remote: [...base, issue('p-new', T)] });
+        const logs = [];
+        const res = await recoverFlattenedClone({ command: member.command, member: 'm1', shell: posix, log: (l) => logs.push(l) });
+        assert.equal(res.recovered, true);
+        const probes = member.texts().filter((t) => /history/.test(t));
+        assert.equal(probes.length, 1);
+        assert.match(probes[0], new RegExp(`^bd --db ${FLATTEN_PENDING_PREFIX}\\S+ --readonly --json history p-new --limit 1$`));
+        assert.ok(logs.some((l) => l.includes('no local-only work found')), logs.join('\n'));
+        assert.deepEqual([...member.fsx.keys()].sort(), ['.beads', res.backup].sort(), 'the probe lock file was dropped');
+    });
+
+    test('a clone holding only closed beads the remote pruned is re-bootstrapped', async () => {
+        const old = '2026-01-01T00:00:00Z';
+        const pruned = { _type: 'issue', id: 'p-old', title: 'old', status: 'closed', updated_at: old, closed_at: old };
+        const member = makeMember({ local: [...base, pruned], remote: base });
+        const logs = [];
+        const res = await recoverFlattenedClone({ command: member.command, member: 'm1', shell: posix, log: (l) => logs.push(l) });
+        assert.equal(res.recovered, true);
+        assert.ok(logs.some((l) => /1 closed bead\(s\) the remote pruned/.test(l)), logs.join('\n'));
+    });
+
+    test('a pruned-looking closed bead changed locally after the last sync is refused', async () => {
+        const later = '2026-11-21T10:00:00Z';
+        const changed = { _type: 'issue', id: 'p-old', title: 'old', status: 'closed', updated_at: later, closed_at: '2026-01-01T00:00:00Z' };
+        const member = makeMember({ local: [...base, changed], remote: base });
+        await assert.rejects(
+            () => recoverFlattenedClone({ command: member.command, member: 'm1', shell: posix }),
+            (err) => err instanceof BeadsFlattenRecoveryRefusedError && err.details.localOnly.map((w) => w.id).join() === 'p-old',
+        );
+        assert.equal(member.fsx.get('.beads').db.original, true);
+    });
+
+    test('a history probe that fails aborts the recovery and puts the clone back', async () => {
+        const member = makeMember({ local: base, remote: [...base, issue('p-new', T)], failOn: { '--readonly --json history': 'database locked' } });
+        await assert.rejects(
+            () => recoverFlattenedClone({ command: member.command, member: 'm1', shell: posix }),
+            (err) => err instanceof BeadsFlattenRecoveryFailedError && err.details.step === 'probe-deletes' && err.details.restored === true,
+        );
+        assert.equal(member.fsx.get('.beads').db.original, true);
+        assert.deepEqual([...member.fsx.keys()], ['.beads']);
+    });
+
+    test('a remote-only id unsafe for a command string is never probed and counts as an unverified delete', async () => {
+        const member = makeMember({ local: base, remote: [...base, issue("p-4'; rm -rf x", T)] });
+        await assert.rejects(
+            () => recoverFlattenedClone({ command: member.command, member: 'm1', shell: posix }),
+            (err) => err instanceof BeadsFlattenRecoveryRefusedError && err.details.localOnly[0].kind === 'deleted' && err.details.localOnly[0].unverified === true,
+        );
+        assert.ok(!member.texts().some((t) => /history/.test(t)));
     });
 });
 

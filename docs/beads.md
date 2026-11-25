@@ -128,9 +128,17 @@ export, read back with a count check, rename the old clone (never delete),
 seed config, dry-run bootstrap that must plan a sync, bootstrap, export the
 fresh clone and compare. Any failure after the rename restores the original,
 and a backup left by a crash is restored first. A clone holding work that is
-absent from the remote is refused intact, never overwritten. Caveat: every id
-missing from the remote counts as local-only work, so a remote rebuilt after
-pruning closed beads would cause other clones to be refused.
+absent from the remote is refused intact, never overwritten. The comparison
+is a full record diff, because the failing pull has already moved the
+remote-tracking ref and `bd diff` ignores labels. An unpushed bead or field
+change, dependency add, label add or comment add refuses the recovery, and so
+does a delete of a bead the remote still holds (a remote-only id the old
+clone's own history knew; one read-only `bd --db` probe per such id). The
+refusal names the kind of work found. Closed beads the remote pruned before
+the rebuild are not local work when their last change is older than the
+clone's last sync (the newest record both sides hold identically). A closed
+bead changed after that point still refuses. Removing a label, dependency or
+comment cannot be told apart from another clone's add, so it is not counted.
 
 ---
 
