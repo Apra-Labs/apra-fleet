@@ -28,6 +28,8 @@ const FRESH_TOKEN = 'ghs_FRESHmintedTOKEN111';
 let root: string;
 let home: string;
 let globalConfig: string;
+let systemConfig: string;
+const SYSTEM_HELPER = 'system-stub-helper';
 let legacyValue: string;
 let selfCommand: string[];
 let savedEnv: Record<string, string | undefined>;
@@ -87,10 +89,18 @@ beforeAll(() => {
   fs.mkdirSync(home, { recursive: true });
   globalConfig = path.join(root, 'gitconfig');
   fs.writeFileSync(globalConfig, '');
-  savedEnv = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL };
+  // A temp system config holding a generic helper, standing in for the
+  // credential.helper a Git for Windows install sets system-wide.
+  systemConfig = path.join(root, 'gitconfig-system');
+  fs.writeFileSync(systemConfig, `[credential]\n\thelper = ${SYSTEM_HELPER}\n`);
+  savedEnv = {
+    HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE,
+    GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL, GIT_CONFIG_SYSTEM: process.env.GIT_CONFIG_SYSTEM,
+  };
   process.env.HOME = home;
   process.env.USERPROFILE = home;
   process.env.GIT_CONFIG_GLOBAL = globalConfig;
+  process.env.GIT_CONFIG_SYSTEM = systemConfig;
 
   // The legacy helper exactly as 0.4.5 and older wrote it (docs/design-git-auth.md).
   const stem = '.fleet-git-credential-github';
@@ -200,5 +210,55 @@ describe('operator-auth github on an upgraded host with a stale legacy global he
     const b = io('protocol=https\nhost=github.com\n\n');
     expect(await runGitCredential(['get'], b.io)).not.toBe(0);
     expect(b.err.join('')).toContain('apra-fleet operator-auth github');
+  });
+});
+
+/** Replace the temp global helper key with `values` and drop the operator record. */
+function resetGlobal(values: string[]): void {
+  fs.writeFileSync(globalConfig, '');
+  for (const v of values) execFileSync('git', ['config', '--global', '--add', OPERATOR_HELPER_KEY, v]);
+  fs.rmSync(RECORD_PATH, { force: true });
+}
+
+describe('operator-auth github keeps an empty reset entry ahead of the fleet helper', () => {
+  it('6: reset + legacy only: the reset stays first, the fleet helper follows, a rerun is byte-identical, --remove clears both', async () => {
+    resetGlobal(['', legacyValue]);
+    const a = io();
+    expect(await runOperatorAuth(['github'], a.io)).toBe(0);
+    const values = getAll();
+    expect(values).toHaveLength(2);
+    expect(values[0]).toBe('');
+    expect(values[1]).toContain('git-credential --label github');
+    // The system helper is reset for github.com, so nothing is asked first.
+    expect(a.out.join('')).not.toMatch(/asked before it/);
+
+    const configBefore = fs.readFileSync(globalConfig);
+    const recordBefore = fs.readFileSync(RECORD_PATH);
+    const b = io();
+    expect(await runOperatorAuth(['github'], b.io)).toBe(0);
+    expect(fs.readFileSync(globalConfig).equals(configBefore)).toBe(true);
+    expect(fs.readFileSync(RECORD_PATH).equals(recordBefore)).toBe(true);
+    expect(b.out.join('')).toContain('nothing changed');
+
+    const c = io();
+    expect(await runOperatorAuth(['github', '--remove'], c.io)).toBe(0);
+    expect(getAll()).toEqual([]);
+  });
+
+  it('7: a foreign value with no reset keeps its place after a reset put first, ahead of the fleet helper', async () => {
+    resetGlobal([FOREIGN]);
+    const a = io();
+    expect(await runOperatorAuth(['github'], a.io)).toBe(0);
+    const values = getAll();
+    expect(values.slice(0, 2)).toEqual(['', FOREIGN]);
+    expect(values).toHaveLength(3);
+    expect(values[2]).toContain('git-credential --label github');
+    // Only the foreign URL-scoped value is asked first; the system one is reset.
+    expect(a.out.join('')).toMatch(/Note: 1 other helper\(s\) are asked before it/);
+
+    const c = io();
+    expect(await runOperatorAuth(['github', '--remove'], c.io)).toBe(0);
+    // Only what setup added goes: the helper and the reset it put first.
+    expect(getAll()).toEqual([FOREIGN]);
   });
 });
