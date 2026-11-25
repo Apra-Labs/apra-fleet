@@ -45,7 +45,7 @@ function link(target, linkPath) {
 }
 
 function setup() {
-  const sandbox = realpathSync(mkdtempSync(join(tmpdir(), 'wt-link-guard-')));
+  const sandbox = realpathSync.native(mkdtempSync(join(tmpdir(), 'wt-link-guard-')));
   const repo = fwd(join(sandbox, 'repo'));
   mkdirSync(repo);
   git(repo, 'init', '-q');
@@ -67,7 +67,20 @@ function cleanup(ctx, links) {
   rmSync(ctx.sandbox, { recursive: true, force: true });
 }
 
-const registered = (ctx) => fwd(git(ctx.repo, 'worktree', 'list', '--porcelain')).includes(ctx.wt);
+// Normalise like-for-like (native realpath expands 8.3 names; lowercase on Windows) so a casing or
+// short-name difference between git's output and the test's path cannot hide a registered worktree.
+const norm = (p) => {
+  let q = p;
+  try { q = realpathSync.native(p); } catch { /* removed or not resolvable: compare lexically */ }
+  q = fwd(q);
+  return process.platform === 'win32' ? q.toLowerCase() : q;
+};
+const registered = (ctx) => {
+  const want = norm(ctx.wt);
+  return git(ctx.repo, 'worktree', 'list', '--porcelain').split(/\r?\n/)
+    .filter((l) => l.startsWith('worktree '))
+    .some((l) => norm(l.slice('worktree '.length)) === want);
+};
 const bash = (cmd) => run('bash', ['-c', cmd]);
 
 test('worktree holding a link to an outside dir is refused, left registered, target intact; control removes it', () => {

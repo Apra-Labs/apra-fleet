@@ -1433,7 +1433,7 @@ function gitExcludeSucceeded(result) {
 // `wtPath` ONLY when it holds no symlink or junction whose resolved target is OUTSIDE the
 // worktree. A `node -e` lstat walk (paths via process.argv, never interpolated into JS source)
 // never descends into a link; on Windows Node reports junctions as symbolic links from lstat,
-// so one check covers both. Each link is resolved (realpath; a dangling link falls back to its
+// so one check covers both. Each link is resolved (native realpath, so 8.3 short names and casing compare like-for-like; a dangling link falls back to its
 // lexical target): a target inside the worktree (npm workspace links under node_modules/@scope,
 // POSIX node_modules/.bin) is harmless and allowed; a target outside it prints one
 // WORKTREE_CLEANUP_REFUSED line naming each such link and target and exits 1, so the forced git
@@ -1444,10 +1444,10 @@ function safeWorktreeRemoveCmd(repoPath, wtPath) {
   const js =
     `const fs=require('fs'),p=require('path');` +
     `const root=process.argv[1];const found=[];` +
-    `let rr=root;try{rr=fs.realpathSync(root);}catch(e){}` +
+    `let rr=root;try{rr=fs.realpathSync.native(root);}catch(e){}` +
     `const lc=s=>process.platform==='win32'?s.toLowerCase():s;` +
     `function inside(t){const a=lc(t),b=lc(rr);return a===b||a.startsWith(b.endsWith(p.sep)?b:b+p.sep);}` +
-    `function target(f){try{return fs.realpathSync(f);}catch(e){}` +
+    `function target(f){try{return fs.realpathSync.native(f);}catch(e){}` +
       `try{return p.resolve(p.dirname(f),fs.readlinkSync(f));}catch(e){}return null;}` +
     `function note(f){const t=target(f);if(t!==null&&inside(t))return;found.push(f+' -> '+(t===null?'?':t));}` +
     `function walk(d){let es;try{es=fs.readdirSync(d,{withFileTypes:true});}catch(e){return;}` +
