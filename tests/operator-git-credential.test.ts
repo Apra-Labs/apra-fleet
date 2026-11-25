@@ -23,6 +23,10 @@ vi.mock('node:child_process', async (importOriginal) => {
       spawned.push([file, ...(args ?? [])]);
       return (actual.execFileSync as (...a: unknown[]) => unknown)(file, args, opts);
     }) as typeof actual.execFileSync,
+    spawn: ((file: string, args?: readonly string[], opts?: unknown) => {
+      spawned.push([file, ...(args ?? [])]);
+      return (actual.spawn as (...a: unknown[]) => unknown)(file, args, opts);
+    }) as typeof actual.spawn,
   };
 });
 
@@ -127,7 +131,7 @@ afterEach(() => {
 });
 
 describe('operator git-credential helper', () => {
-  it('needs the operator record: git-credential and operator-auth token exit non-zero naming the setup command', async () => {
+  it('needs the operator record: git-credential and operator-auth exec exit non-zero naming the setup command', async () => {
     fs.rmSync(RECORD_PATH, { force: true });
     const a = io(GET_GITHUB);
     expect(await runGitCredential(['get'], a.io)).not.toBe(0);
@@ -135,7 +139,9 @@ describe('operator git-credential helper', () => {
     expect(a.err.join('')).toContain('apra-fleet operator-auth github');
 
     const b = io();
-    expect(await runOperatorAuth(['token'], b.io)).not.toBe(0);
+    const runChild = vi.fn(async () => 0);
+    expect(await runOperatorAuth(['exec', '--', 'gh', 'pr', 'list'], { ...b.io, runChild })).not.toBe(0);
+    expect(runChild).not.toHaveBeenCalled();
     expect(b.out.join('')).toBe('');
     expect(b.err.join('')).toContain('apra-fleet operator-auth github');
     expect(mints).toBe(0);
@@ -190,17 +196,43 @@ describe('operator git-credential helper', () => {
     expect(mints).toBe(0);
   });
 
-  it('5: operator-auth token prints only the token, and a new one after expiry', async () => {
+  it('5: operator-auth exec gives the child GH_TOKEN in its env only; nothing is printed or returned; a new token after expiry', async () => {
+    const seen: Array<{ command: string; args: string[]; token: string | undefined }> = [];
+    const runChild = async (command: string, args: string[], env: NodeJS.ProcessEnv) => {
+      seen.push({ command, args, token: env.GH_TOKEN });
+      return 7;
+    };
     const a = io();
-    expect(await runOperatorAuth(['token'], a.io)).toBe(0);
-    expect(a.out.join('')).toBe(`${minted[0]}\n`);
-    expect(a.err.join('')).toBe('');
+    // The child's exit code is the only result; flags after `--` are the child's.
+    expect(await runOperatorAuth(['exec', '--', 'gh', 'pr', 'list', '--label', 'x'], { ...a.io, runChild })).toBe(7);
+    expect(seen).toEqual([{ command: 'gh', args: ['pr', 'list', '--label', 'x'], token: minted[0] }]);
+    expect(a.out.join('') + a.err.join('')).toBe('');
+    expect(process.env.GH_TOKEN).not.toBe(minted[0]);
 
     clock = T0 + HOUR - REFRESH_MARGIN_MS + 1_000;
     const b = io();
-    expect(await runOperatorAuth(['token'], b.io)).toBe(0);
+    expect(await runOperatorAuth(['exec', '--', 'gh'], { ...b.io, runChild })).toBe(7);
     expect(mints).toBe(2);
-    expect(b.out.join('')).toBe(`${minted[1]}\n`);
+    expect(seen[1].token).toBe(minted[1]);
+    expect(b.out.join('') + b.err.join('')).toBe('');
+  });
+
+  it('exec without a command after -- is a usage error and mints nothing', async () => {
+    const before = mints;
+    for (const argv of [['exec'], ['exec', '--'], ['exec', 'gh']]) {
+      const a = io();
+      const runChild = vi.fn(async () => 0);
+      expect(await runOperatorAuth(argv, { ...a.io, runChild })).toBe(2);
+      expect(runChild).not.toHaveBeenCalled();
+      expect(a.err.join('')).toContain("after '--'");
+    }
+    expect(mints).toBe(before);
+  });
+
+  it('the token subcommand is gone', async () => {
+    const a = io();
+    expect(await runOperatorAuth(['token'], a.io)).toBe(2);
+    expect(a.out.join('')).toBe('');
   });
 
   it('6: the cache is owner-only and the token never reaches argv, stderr or logs', async () => {
@@ -211,8 +243,15 @@ describe('operator git-credential helper', () => {
     try {
       const a = io(GET_GITHUB);
       expect(await runGitCredential(['get'], a.io)).toBe(0);
+      // A real child (default spawn, no shell) receives the token in its env
+      // and reports only whether it matched, through a file.
+      const marker = path.join(tmp, 'child-saw-token');
       const b = io();
-      expect(await runOperatorAuth(['token'], b.io)).toBe(0);
+      const childScript = 'require("fs").writeFileSync(process.argv[1], process.env.GH_TOKEN === undefined ? "unset" : "len=" + process.env.GH_TOKEN.length)';
+      const { runChild: _omit, ...bio } = b.io as typeof b.io & { runChild?: unknown };
+      expect(await runOperatorAuth(['exec', '--', process.execPath, '-e', childScript, marker], bio)).toBe(0);
+      expect(fs.readFileSync(marker, 'utf8')).toBe(`len=${minted[0].length}`);
+      expect(b.out.join('')).toBe('');
       // Re-run setup too: it spawns git/sh/powershell.
       const c = io();
       expect(await runOperatorAuth(['github'], c.io)).toBe(0);

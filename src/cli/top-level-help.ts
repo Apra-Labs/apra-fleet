@@ -38,7 +38,7 @@ Usage:
   apra-fleet auth --api-key [--llm <provider>] secret.<name>  Resolve API key from persistent credential store
   apra-fleet operator-auth github [--label <l>] [--access <level>] [--repos o/n,...]  Give host git a self-refreshing GitHub App token (see 'operator-auth --help')
   apra-fleet operator-auth github --remove [--label <l>]  Undo operator-auth github
-  apra-fleet operator-auth token [--label <l>]   Print a fresh token for gh: GH_TOKEN="$(apra-fleet operator-auth token)" gh ...
+  apra-fleet operator-auth exec [--label <l>] -- <cmd> [args]  Run <cmd> (e.g. gh) with a fresh GH_TOKEN in its env only
   apra-fleet git-credential [--label <l>] get     git credential helper registered by operator-auth github
   apra-fleet kb directives                            List pending + active user-directives
   apra-fleet kb approve-directive <id>                 Activate a pending directive proposal (human-only)

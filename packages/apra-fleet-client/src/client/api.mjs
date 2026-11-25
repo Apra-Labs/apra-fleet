@@ -742,8 +742,8 @@
  *   keeps ONE login per OS user, so this replaces the token every other process of that user
  *   runs gh with. Default: only for label "github" on a remote member no other registered
  *   member shares; otherwise skipped and metadata.ghCliAuth says why. true: always; false: never. A gh login
- *   made this way is not refreshed; for unattended operator automation use `apra-fleet operator-auth token`
- *   and run gh with GH_TOKEN from it.
+ *   made this way is not refreshed; for unattended operator automation run gh as
+ *   `apra-fleet operator-auth exec -- gh ...`.
  * @property {string} [email] - OPTIONAL Bitbucket account email. Ignored for authentication
  *   (git uses the fixed token username x-bitbucket-api-token-auth, REST uses a Bearer token);
  *   kept only as metadata if given.

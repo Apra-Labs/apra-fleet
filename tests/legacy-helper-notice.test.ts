@@ -16,7 +16,7 @@ describe('describeLegacyGlobalKey operator-auth fix', () => {
     const line = describeLegacyGlobalKey(r);
     expect(line).toContain('[WARN] Upgrade');
     expect(line).toContain('apra-fleet operator-auth github');
-    expect(line).toContain('apra-fleet operator-auth token');
+    expect(line).toContain('apra-fleet operator-auth exec -- gh');
   });
 
   it('removed notice names operator-auth github', () => {

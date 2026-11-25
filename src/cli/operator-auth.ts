@@ -14,9 +14,10 @@
  *       credential.https://github.com.helper key (0.4.5 and older), and
  *       registers the git-credential helper above for that key. Idempotent.
  *
- *   apra-fleet operator-auth token [--label <l>]
- *       Prints a fresh token (same mint and cache) on stdout only, for gh:
- *       GH_TOKEN="$(apra-fleet operator-auth token)" gh ...
+ *   apra-fleet operator-auth exec [--label <l>] -- <cmd> [args...]
+ *       Runs <cmd> with GH_TOKEN set to a fresh token (same mint and cache) in
+ *       that child's environment only, for gh. The token is never printed or
+ *       returned to the caller: only the child's exit code comes back.
  *
  * Reads only files (git-config.json, the App key, the operator record): no
  * fleet server needs to be running. The token is written only to stdout (and
@@ -28,7 +29,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { FLEET_DIR } from '../paths.js';
 import { enforceOwnerOnly } from '../utils/file-permissions.js';
 import { escapeShellArg } from '../utils/shell-escape.js';
@@ -58,6 +59,11 @@ export interface OperatorIo {
    * (SEA: [binary]; node: [node, script]). Default: resolved from this process.
    */
   selfCommand?: string[];
+  /**
+   * Runs `exec`'s child with `env` and inherited stdio; resolves to its exit
+   * code. Default: child_process.spawn, no shell.
+   */
+  runChild?: (command: string, args: string[], env: NodeJS.ProcessEnv) => Promise<number>;
 }
 
 export interface OperatorRecord {
@@ -222,12 +228,22 @@ function labelFrom(flags: Record<string, string | true>): string {
 
 function defaultIo(io: OperatorIo): Required<Omit<OperatorIo, 'selfCommand'>> & { selfCommand?: string[] } {
   return {
+    runChild: io.runChild ?? spawnChild,
     readStdin: io.readStdin ?? readProcessStdin,
     stdout: io.stdout ?? (s => { process.stdout.write(s); }),
     stderr: io.stderr ?? (s => { process.stderr.write(s); }),
     now: io.now ?? Date.now,
     selfCommand: io.selfCommand,
   };
+}
+
+/** No shell: the command and its arguments are passed as an argv array, never parsed. */
+function spawnChild(command: string, args: string[], env: NodeJS.ProcessEnv): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: 'inherit', env, shell: false });
+    child.on('error', err => reject(new OperatorAuthError(`apra-fleet: could not start '${command}': ${err.message}`)));
+    child.on('close', (code, signal) => resolve(code ?? (signal ? 1 : 0)));
+  });
 }
 
 function readProcessStdin(): Promise<string> {
@@ -302,7 +318,7 @@ export async function runGitCredential(argv: string[], io: OperatorIo = {}): Pro
 
 export const OPERATOR_AUTH_USAGE = `apra-fleet operator-auth github [--label <label>] [--access <level>] [--repos owner/name,...]
 apra-fleet operator-auth github --remove [--label <label>]
-apra-fleet operator-auth token [--label <label>]
+apra-fleet operator-auth exec [--label <label>] -- <command> [args...]
 
 Gives git and gh on THIS host (your shell, cron, hooks) a GitHub credential
 that never goes stale: a GitHub App installation token minted on demand from
@@ -318,12 +334,11 @@ the App configured by setup_git_app, re-minted 5 minutes before it expires.
              use it.
              Running it again changes nothing.
   --remove   Undo: remove the helper this command added and its record.
-  token      Print a fresh token on stdout (nothing else). gh cannot use a
-             git helper, so run gh with the token taken per invocation:
-               GH_TOKEN="$(apra-fleet operator-auth token)" gh pr list
-             PowerShell:
-               $env:GH_TOKEN = apra-fleet operator-auth token; gh pr list
-             Never store the token: it expires within an hour.`;
+  exec       Run <command> with GH_TOKEN set to a fresh token in its
+             environment only (gh cannot use a git helper):
+               apra-fleet operator-auth exec -- gh pr list
+             The token is never printed; the exit code is the command's.
+             <command> runs directly, not through a shell.`;
 
 /** The command that runs this fleet binary: [binary] under SEA, [node, script] otherwise. */
 export function resolveSelfCommand(): string[] {
@@ -542,7 +557,7 @@ async function operatorAuthGithub(flags: Record<string, string | true>, d: Retur
     values = gitGetAll(OPERATOR_HELPER_KEY);
   }
 
-  // (a) the record git-credential and `operator-auth token` read on every
+  // (a) the record git-credential and `operator-auth exec` read on every
   // mint, written last so a rerun computes the same record and writes nothing.
   const record: OperatorRecord = { label, access, repos, helper, ...(resetAdded ? { resetAdded: true } : {}) };
   if (JSON.stringify(previous) !== JSON.stringify(record)) {
@@ -559,24 +574,31 @@ async function operatorAuthGithub(flags: Record<string, string | true>, d: Retur
     d.stdout(`[WARN] ${ahead} other helper(s) are still asked before it for https://github.com (git uses the first that answers, so a stale one keeps failing). Remove them with 'git config --global --edit' (or 'git config --system --edit'), then re-run '${OPERATOR_SETUP_COMMAND}'.\n`);
   }
   d.stdout(`git: tokens are minted on demand and refreshed before they expire.\n`
-    + `gh: run it with a token per invocation, e.g. GH_TOKEN="$(apra-fleet operator-auth token${label === DEFAULT_OPERATOR_LABEL ? '' : ` --label ${label}`})" gh ...\n`);
+    + `gh: run it through fleet, e.g. apra-fleet operator-auth exec${label === DEFAULT_OPERATOR_LABEL ? '' : ` --label ${label}`} -- gh pr list\n`);
   return 0;
 }
 
 export async function runOperatorAuth(argv: string[], io: OperatorIo = {}): Promise<number> {
   const d = defaultIo(io);
   try {
-    const parsed = parseArgs(argv, ['label', 'access', 'repos']);
+    // Everything after `--` belongs to exec's child, never to our flags.
+    const dashes = argv.indexOf('--');
+    const childArgv = dashes >= 0 ? argv.slice(dashes + 1) : [];
+    const parsed = parseArgs(dashes >= 0 ? argv.slice(0, dashes) : argv, ['label', 'access', 'repos']);
     const sub = parsed.positional[0];
     if (parsed.flags.help || sub === undefined || sub === 'help') {
       d.stdout(OPERATOR_AUTH_USAGE + '\n');
       return sub === undefined && !parsed.flags.help ? 2 : 0;
     }
     if (sub === 'github') return await operatorAuthGithub(parsed.flags, d);
-    if (sub === 'token') {
+    if (sub === 'exec') {
+      if (dashes < 0 || childArgv.length === 0) {
+        d.stderr(`apra-fleet operator-auth exec: give the command after '--', e.g. apra-fleet operator-auth exec -- gh pr list
+`);
+        return 2;
+      }
       const { token } = await getOperatorToken(labelFrom(parsed.flags), d.now);
-      d.stdout(`${token}\n`);
-      return 0;
+      return await d.runChild(childArgv[0], childArgv.slice(1), { ...process.env, GH_TOKEN: token });
     }
     d.stderr(`apra-fleet operator-auth: unknown subcommand '${sub}'.\n\n${OPERATOR_AUTH_USAGE}\n`);
     return 2;

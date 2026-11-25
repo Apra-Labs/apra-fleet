@@ -176,7 +176,7 @@ describe('operator-auth github on an upgraded host with a stale legacy global he
     expect(ours).toHaveLength(1);
     helperValue = ours[0];
     expect(a.out.join('')).toMatch(/Removed 1 legacy fleet helper value/);
-    expect(a.out.join('')).toContain('GH_TOKEN=');
+    expect(a.out.join('')).toContain('apra-fleet operator-auth exec -- gh');
   });
 
   it('2: a second run leaves the global config and the record byte-identical', async () => {

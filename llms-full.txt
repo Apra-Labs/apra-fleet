@@ -2539,16 +2539,22 @@ Design notes for `operator-auth github` / `git-credential`:
   `provision_vcs_auth`.
 - With no `--repos`, the token covers the whole installation (the repositories
   field is omitted from the mint request).
-- `operator-auth token` prints only the token, so it is safe in command
-  substitution.
+- Fleet never hands the token to a caller: `operator-auth exec` puts it only in
+  its child's environment, and `git-credential` answers only git.
+- Trust boundary: a member process runs as the same OS user as the operator, so
+  it can still read the App key under the fleet data dir or run
+  `git-credential` / `operator-auth exec` itself. The member reset above stops
+  silent fallthrough to the operator token, not a deliberate same-user read.
+  For a hard boundary, run members as another OS user or on another host.
 
 #### Operator credentials
 
-`gh` has no helper hook. For gh in your shell or unattended automation, set
-`GH_TOKEN` from a fresh token per invocation:
+`gh` has no helper hook. For gh in your shell or unattended automation, run it
+through fleet, which sets a fresh `GH_TOKEN` in gh's environment only (never
+printed; the exit code is gh's; no shell parses the command):
 
 ```bash
-GH_TOKEN=$(apra-fleet operator-auth token) gh pr list
+apra-fleet operator-auth exec -- gh pr list
 ```
 
 A gh login made by `provision_vcs_auth` (`gh_login: true`) is a snapshot and is not
