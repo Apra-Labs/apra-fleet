@@ -25,6 +25,7 @@ import { DISPOSABLE_FLAG, disposableRefusal } from './lib/opt-in.mjs';
 import { QUOTE_LED_CASES, verifyEcho, memberWorkFolder } from './lib/commands.mjs';
 import { PASS_IDS, REFUSAL_CODE, compareSnapshots, planPasses, resolveBaseline } from './lib/scenarios.mjs';
 import { assertInside, resolveSandbox, sandboxEnv } from './lib/sandbox.mjs';
+import { guardedReinstallCommand, listBackupsCommand, pickNewestBackup, restoreChecks, rollbackCommand, rollbackSucceeded } from './lib/rollback.mjs';
 import { buildReport } from './lib/report.mjs';
 import { resolveLatestRelease, releaseAssetUrl } from '../fresh-install/lib/baseline.mjs';
 
@@ -155,13 +156,24 @@ async function realRun(o) {
     rec(pass, `${pass.toLowerCase()}-supervisor-stopped`, 'POST /api/shutdown', /FLEET_SE supervisor/.test(r.text) ? 1 : 0, '', r.text.slice(-200));
   };
   const replaceFull = () => call('update_member', { member_id: memberId, fleet_install: 'replace-full' });
-  const refusalStep = (pass, id, r, before, after) => {
+  const refusalStep = (pass, id, r, before, after, cmd = 'refusal under a running supervisor') => {
     const code = r.text.includes(REFUSAL_CODE) ? REFUSAL_CODE : 'NOT-REFUSED';
-    rec(pass, `${id}-refused`, 'refusal under a running supervisor', 0, code, r.text.slice(0, 200));
+    rec(pass, `${id}-refused`, cmd, 0, code, r.text.slice(0, 200));
     const cmp = compareSnapshots(before, after);
     rec(pass, `${id}-unchanged`, 'snapshot compare', 0, cmp.unchanged ? 'UNCHANGED' : 'CHANGED', cmp.diffs.join('; '));
   };
-  const rollbackCmd = `B="$HOME/.apra-fleet-data.full-install.bak"; "$HOME/.apra-fleet/bin/apra-fleet.exe" uninstall --force --yes; rm -rf "${MH}/data"; cp -R "$B/data" "${MH}/data" 2>/dev/null || cp -R "$B" "${MH}/data"; cp "$B/fleet.key" "${MH}/fleet.key"; "$B/apra-fleet.exe" install --llm none --force`;
+  // The snapshot taken right before each replace-full (after the release
+  // baseline was installed): RB checks its rollback against RF's, RBS against
+  // RFS's -- equality, not mere presence.
+  const preReplaceBy = {};
+  const findBackup = async (pass) => {
+    const cmd = listBackupsCommand();
+    const r = await exec(cmd, 60);
+    const backup = pickNewestBackup(r.text);
+    rec(pass, `${pass.toLowerCase()}-backup`, cmd, backup ? 0 : 1, '', backup ?? r.text.slice(0, 200));
+    if (!backup) throw new Error('no replace-full backup found on the member; the rollback has nothing to restore from');
+    return backup;
+  };
 
   const passes = o.passList;
   for (const pass of passes) {
@@ -177,6 +189,7 @@ async function realRun(o) {
         if (!baseline.tag || !baseline.asset) throw new Error('no usable release baseline');
         await installBaselineOnMember(pass);
         const pre = await snapshot();
+        preReplaceBy[pass] = pre;
         if (pass === 'RFS') {
           await startSupervisor('RFS');
           const refused = await replaceFull();
@@ -195,23 +208,27 @@ async function realRun(o) {
           rec('RF', 'rf-tools', 'call --list-tools', 0, ok ? 'TOOLS-OK' : 'TOOLS-WRONG', t.text.slice(0, 200));
         }
       } else if (pass === 'RB' || pass === 'RBS') {
-        const pre = await snapshot();
+        const lc = pass.toLowerCase();
+        const backup = await findBackup(pass);
         if (pass === 'RBS') {
+          // The refusal attempt runs ONLY the guarded step (the backup binary's
+          // reinstall): the uninstall and data restore that precede it in the
+          // full rollback are not guarded and would destroy state.
+          const pre = await snapshot();
           await startSupervisor('RBS');
-          const refused = await exec(rollbackCmd, 300);
-          refusalStep('RBS', 'rbs', refused, pre, await snapshot());
+          const probe = guardedReinstallCommand(backup);
+          const refused = await exec(probe, 300);
+          refusalStep('RBS', 'rbs', refused, pre, await snapshot(), probe);
           await stopSupervisor('RBS');
         }
-        const r = await exec(rollbackCmd, 600);
+        const cmd = rollbackCommand(backup);
+        const r = await exec(cmd, 600);
+        rec(pass, `${lc}-rollback`, cmd, rollbackSucceeded(r) ? 0 : 1, '', r.text.slice(-300));
         const post = await snapshot();
-        rec(pass, pass === 'RB' ? 'rb-rollback' : 'rbs-rollback', 'documented Rollback steps', r.isError ? 1 : 0, '', r.text.slice(-200));
-        const relVersion = baseline.tag.replace(/^v/, '');
-        const vOk = post.binaryVersion.includes(relVersion);
-        rec(pass, pass === 'RB' ? 'rb-version' : 'rbs-version', 'member --version', 0, vOk ? 'MATCH' : 'MISMATCH', post.binaryVersion);
-        if (pass === 'RB') {
-          rec('RB', 'rb-data', 'data dir listing', 0, post.dataListing.length ? 'MATCH' : 'MISMATCH', post.dataListing.join(','));
-          rec('RB', 'rb-key', 'fleet.key hash', 0, post.fleetKeySha256 ? 'MATCH' : 'MISMATCH', post.fleetKeySha256);
-        }
+        const checks = restoreChecks({ preReplace: preReplaceBy[pass === 'RB' ? 'RF' : 'RFS'], post, releaseVersion: baseline.tag });
+        rec(pass, `${lc}-version`, 'member --version', 0, checks.version.keyline, checks.version.detail);
+        rec(pass, `${lc}-data`, 'data dir listing vs before replace-full', 0, checks.data.keyline, checks.data.detail);
+        rec(pass, `${lc}-key`, 'fleet.key hash vs before replace-full', 0, checks.key.keyline, checks.key.detail);
       }
     } catch (e) {
       driverErrors[pass] = e.message;

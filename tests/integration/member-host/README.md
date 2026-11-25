@@ -23,6 +23,17 @@ rollback paths from the latest release, on a disposable Windows VM.
 
 Passes: Q (quote-led commands), RF (replace-full), RB (rollback), RFS / RBS
 (same with a supervisor running: refuse with E-FLEET-SE-RUNNING, change
-nothing, then succeed once it is stopped). A stale or missing release baseline
-is INCONCLUSIVE (exit 3), never PASS. Every spawned process gets HOME,
+nothing, then succeed once it is stopped).
+
+The rollback (`lib/rollback.mjs`) restores from the newest
+`$HOME/.apra-fleet-replace-backup-*` that replace-full made (data/, fleet.key,
+old binary): uninstall, restore data/ and fleet.key, reinstall the old binary,
+each step gated on the previous one (`&&`) and ending in `ROLLBACK-OK`. RB and
+RBS then require the data dir listing and fleet.key hash to EQUAL the snapshot
+taken right before that pass's replace-full. RBS's refusal attempt runs only
+the guarded step (the old binary's reinstall) with the supervisor running, so
+an unguarded uninstall or data restore can never run during the attempt that
+must prove nothing changed.
+
+A stale or missing release baseline is INCONCLUSIVE (exit 3), never PASS. Every spawned process gets HOME,
 USERPROFILE and GIT_CONFIG_GLOBAL pointed at a temp sandbox.

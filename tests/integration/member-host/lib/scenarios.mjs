@@ -34,14 +34,15 @@ export const PASSES = Object.freeze([
   },
   {
     id: 'RB', title: 'forced rollback from the RF end state',
-    expected: 'the documented rollback restores the release version, the data dir and fleet.key',
+    expected: 'the documented rollback restores the release version, and the data dir listing and fleet.key hash recorded before replace-full',
     refusalKeepsState: false,
     requires: 'RF',
     steps: [
-      { id: 'rb-rollback', title: 'documented Rollback steps run', expect: { exit: 0 } },
+      { id: 'rb-backup', title: 'the replace-full backup (data/, fleet.key, old binary) is found on the member', expect: { exit: 0 } },
+      { id: 'rb-rollback', title: 'documented Rollback steps run, each gated on the previous one', expect: { exit: 0 } },
       { id: 'rb-version', title: 'member reports the release version again', expect: { exit: 0, keyline: '^MATCH$' } },
-      { id: 'rb-data', title: 'data dir listing restored', expect: { exit: 0, keyline: '^MATCH$' } },
-      { id: 'rb-key', title: 'fleet.key hash restored', expect: { exit: 0, keyline: '^MATCH$' } },
+      { id: 'rb-data', title: 'data dir listing equals the one taken before replace-full', expect: { exit: 0, keyline: '^MATCH$' } },
+      { id: 'rb-key', title: 'fleet.key hash equals the one taken before replace-full', expect: { exit: 0, keyline: '^MATCH$' } },
     ],
   },
   {
@@ -59,16 +60,19 @@ export const PASSES = Object.freeze([
   },
   {
     id: 'RBS', title: 'rollback with a supervisor running',
-    expected: `rollback refuses with ${REFUSAL_CODE} and makes no destructive change; after the supervisor is stopped it succeeds`,
+    expected: `the rollback's guarded reinstall (run alone, so nothing before it can destroy state) refuses with ${REFUSAL_CODE} and makes no destructive change; after the supervisor is stopped the full gated rollback succeeds and restores the release version, the data dir and fleet.key`,
     refusalKeepsState: true,
     requires: 'RFS',
     steps: [
+      { id: 'rbs-backup', title: 'the replace-full backup (data/, fleet.key, old binary) is found on the member', expect: { exit: 0 } },
       { id: 'rbs-supervisor-started', title: 'fleet-sprint supervisor running on the member host', expect: { exit: 0 } },
-      { id: 'rbs-refused', title: `rollback reinstall refused with ${REFUSAL_CODE}`, expect: { exit: 0, keyline: `^${REFUSAL_CODE}$` } },
+      { id: 'rbs-refused', title: `the rollback's guarded reinstall, run alone, refused with ${REFUSAL_CODE}`, expect: { exit: 0, keyline: `^${REFUSAL_CODE}$` } },
       { id: 'rbs-unchanged', title: 'binary version, data dir listing and fleet.key hash unchanged after the refusal', expect: { exit: 0, keyline: '^UNCHANGED$' } },
       { id: 'rbs-supervisor-stopped', title: 'supervisor stopped', expect: { exit: 0 } },
-      { id: 'rbs-rollback', title: 'rollback succeeds after the supervisor is stopped', expect: { exit: 0 } },
+      { id: 'rbs-rollback', title: 'full rollback succeeds after the supervisor is stopped, each step gated on the previous one', expect: { exit: 0 } },
       { id: 'rbs-version', title: 'member reports the release version again', expect: { exit: 0, keyline: '^MATCH$' } },
+      { id: 'rbs-data', title: 'data dir listing equals the one taken before replace-full', expect: { exit: 0, keyline: '^MATCH$' } },
+      { id: 'rbs-key', title: 'fleet.key hash equals the one taken before replace-full', expect: { exit: 0, keyline: '^MATCH$' } },
     ],
   },
 ]);

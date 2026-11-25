@@ -9,8 +9,13 @@ import {
   PASS_IDS, PASSES, REFUSAL_CODE, buildChecklist, compareSnapshots, planPasses, resolveBaseline,
 } from './integration/member-host/lib/scenarios.mjs';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { buildReport } from './integration/member-host/lib/report.mjs';
+import {
+  ROLLBACK_OK, guardedReinstallCommand, listBackupsCommand, pickNewestBackup, restoreChecks, rollbackCommand, rollbackSteps, rollbackSucceeded,
+} from './integration/member-host/lib/rollback.mjs';
 
 const pins = JSON.parse(JSON.stringify({
   baselines: {
@@ -141,5 +146,139 @@ describe('driver spawns every process with the sandbox env', () => {
     expect(calls.length).toBeGreaterThan(0);
     for (const c of calls) expect(c, c).toMatch(/\benv\b/);
     expect(src).toMatch(/const env = sandboxEnv\(process\.env, sb\)/);
+  });
+});
+
+describe('rollback (RB / RBS)', () => {
+  const B = '/c/Users/fleetmember/.apra-fleet-replace-backup-20261125T010203Z';
+  const snap = (over: Record<string, unknown> = {}) => ({ binaryVersion: 'apra-fleet 0.4.5', fleetKeySha256: 'k1', dataListing: ['agents.json', 'kb'], ...over });
+
+  it('finds the newest replace-full backup and ignores anything else', () => {
+    expect(listBackupsCommand()).toMatch(/^ls -1dt \$HOME\/\.apra-fleet-replace-backup-\* /);
+    expect(pickNewestBackup(`${B}\n/c/Users/fleetmember/.apra-fleet-replace-backup-20261124T000000Z\n`)).toBe(B);
+    expect(pickNewestBackup(`ls: cannot access\n${B}/\r\n`)).toBe(B);
+    expect(pickNewestBackup('')).toBeNull();
+    expect(pickNewestBackup("/c/Users/x/.apra-fleet-replace-backup-a'b")).toBeNull();
+    expect(() => rollbackCommand("/tmp/x'; rm -rf /")).toThrow(/unexpected backup path/);
+  });
+
+  it('follows the documented order and gates every step on the previous one', () => {
+    const steps = rollbackSteps(B);
+    expect(steps[0]).toMatch(/apra-fleet\.exe" uninstall --force --yes$/);
+    expect(steps[1]).toBe('rm -rf "$HOME/.apra-fleet/data"');
+    expect(steps[2]).toBe(`cp -R '${B}/data' "$HOME/.apra-fleet/data"`);
+    expect(steps[3]).toBe(`cp '${B}/fleet.key' "$HOME/.apra-fleet/fleet.key"`);
+    expect(steps[4]).toBe(guardedReinstallCommand(B));
+    const cmd = rollbackCommand(B);
+    expect(cmd).toBe(`${steps.join(' && ')} && echo ${ROLLBACK_OK}`);
+    expect(cmd).not.toMatch(/;/);
+  });
+
+  it('the RBS refusal attempt is the guarded reinstall ALONE: no uninstall, no data removal or restore', () => {
+    const probe = guardedReinstallCommand(B);
+    expect(probe).toBe(`chmod +x '${B}/apra-fleet.exe' && '${B}/apra-fleet.exe' install --llm none --force`);
+    expect(probe).not.toMatch(/uninstall|rm -rf|cp /);
+  });
+
+  it('success needs both a clean exit and the final marker (a mid-chain failure is never masked)', () => {
+    expect(rollbackSucceeded({ isError: false, text: `installed\n${ROLLBACK_OK}\n` })).toBe(true);
+    expect(rollbackSucceeded({ isError: true, text: `${ROLLBACK_OK}\n` })).toBe(false);
+    expect(rollbackSucceeded({ isError: false, text: 'uninstall failed' })).toBe(false);
+    expect(rollbackSucceeded(null)).toBe(false);
+  });
+
+  it('data and key are MATCH only when EQUAL to the snapshot taken before replace-full', () => {
+    const pre = snap();
+    const ok = restoreChecks({ preReplace: pre, post: snap(), releaseVersion: 'v0.4.5' });
+    expect([ok.version.keyline, ok.data.keyline, ok.key.keyline]).toEqual(['MATCH', 'MATCH', 'MATCH']);
+    // A rollback that kept the candidate's data or key: non-empty but different.
+    const kept = restoreChecks({ preReplace: pre, post: snap({ dataListing: ['agents.json', 'kb', 'member-install.json'], fleetKeySha256: 'k2' }), releaseVersion: 'v0.4.5' });
+    expect(kept.data.keyline).toBe('MISMATCH');
+    expect(kept.data.detail).toMatch(/member-install\.json/);
+    expect(kept.key.keyline).toBe('MISMATCH');
+    expect(restoreChecks({ preReplace: pre, post: snap({ binaryVersion: 'apra-fleet 0.5.0' }), releaseVersion: 'v0.4.5' }).version.keyline).toBe('MISMATCH');
+  });
+
+  it('no pre-replace snapshot, or an empty one, can never MATCH', () => {
+    const none = restoreChecks({ preReplace: null, post: snap(), releaseVersion: 'v0.4.5' });
+    expect([none.data.keyline, none.key.keyline]).toEqual(['MISMATCH', 'MISMATCH']);
+    const empty = restoreChecks({ preReplace: snap({ dataListing: [], fleetKeySha256: '' }), post: snap({ dataListing: [], fleetKeySha256: '' }), releaseVersion: 'v0.4.5' });
+    expect([empty.data.keyline, empty.key.keyline]).toEqual(['MISMATCH', 'MISMATCH']);
+  });
+
+  it('RB and RBS both check version, data and key; RBS proves the refusal changed nothing first', () => {
+    const ids = (id: string) => PASSES.find((p: { id: string }) => p.id === id)!.steps.map((s: { id: string }) => s.id);
+    expect(ids('RB')).toEqual(['rb-backup', 'rb-rollback', 'rb-version', 'rb-data', 'rb-key']);
+    expect(ids('RBS')).toEqual(['rbs-backup', 'rbs-supervisor-started', 'rbs-refused', 'rbs-unchanged', 'rbs-supervisor-stopped', 'rbs-rollback', 'rbs-version', 'rbs-data', 'rbs-key']);
+  });
+
+  it('the driver wires them: guarded probe under the supervisor, gated rollback after, checks against the pre-replace snapshot', () => {
+    const src = fs.readFileSync(path.join(__dirname, 'integration', 'member-host', 'run.mjs'), 'utf8');
+    expect(src).not.toMatch(/full-install\.bak/);
+    expect(src).toMatch(/preReplaceBy\[pass\] = pre;/);
+    expect(src).toMatch(/restoreChecks\(\{ preReplace: preReplaceBy\[pass === 'RB' \? 'RF' : 'RFS'\]/);
+    const start = src.indexOf("await startSupervisor('RBS')");
+    const probe = src.indexOf('guardedReinstallCommand(backup)', start);
+    const stop = src.indexOf("await stopSupervisor('RBS')", start);
+    const full = src.indexOf('rollbackCommand(backup)', start);
+    expect(start).toBeGreaterThan(0);
+    expect(probe).toBeGreaterThan(start);
+    expect(stop).toBeGreaterThan(probe);
+    expect(full).toBeGreaterThan(stop);
+    expect(src).toMatch(/rollbackSucceeded\(r\) \? 0 : 1/);
+  });
+});
+
+describe('rollback command on a real bash, in a temp HOME with stub binaries', () => {
+  const posixHost = process.platform === 'linux' || process.platform === 'darwin';
+
+  const setup = (uninstallExit: number) => {
+    const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'member-host-rb-')));
+    const mh = path.join(home, '.apra-fleet');
+    const backup = path.join(home, '.apra-fleet-replace-backup-20261125T000000Z');
+    fs.mkdirSync(path.join(mh, 'bin'), { recursive: true });
+    fs.mkdirSync(path.join(mh, 'data'), { recursive: true });
+    fs.writeFileSync(path.join(mh, 'data', 'member-install.json'), '{}');
+    fs.writeFileSync(path.join(mh, 'fleet.key'), 'candidate-key');
+    fs.writeFileSync(path.join(mh, 'bin', 'apra-fleet.exe'), `#!/bin/sh\necho "uninstall $*" >> "$HOME/calls.log"\nexit ${uninstallExit}\n`, { mode: 0o755 });
+    fs.mkdirSync(path.join(backup, 'data'), { recursive: true });
+    fs.writeFileSync(path.join(backup, 'data', 'agents.json'), '[]');
+    fs.writeFileSync(path.join(backup, 'fleet.key'), 'release-key');
+    fs.writeFileSync(path.join(backup, 'apra-fleet.exe'), '#!/bin/sh\necho "reinstall $*" >> "$HOME/calls.log"\n', { mode: 0o644 });
+    return { home, mh, backup };
+  };
+  const runIn = (home: string, cmd: string) => {
+    const env = { ...process.env, HOME: home };
+    expect(env.HOME.startsWith(fs.realpathSync(os.tmpdir()))).toBe(true);
+    return spawnSync('bash', ['-c', cmd], { env, encoding: 'utf8' });
+  };
+
+  it.skipIf(!posixHost)('runs every step in order and restores data/ and fleet.key from the backup', () => {
+    const { home, mh, backup } = setup(0);
+    try {
+      const r = runIn(home, rollbackCommand(backup));
+      expect(r.status, r.stderr).toBe(0);
+      expect(rollbackSucceeded({ isError: false, text: r.stdout })).toBe(true);
+      expect(fs.readdirSync(path.join(mh, 'data'))).toEqual(['agents.json']);
+      expect(fs.readFileSync(path.join(mh, 'fleet.key'), 'utf8')).toBe('release-key');
+      expect(fs.readFileSync(path.join(home, 'calls.log'), 'utf8')).toBe('uninstall uninstall --force --yes\nreinstall install --llm none --force\n');
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(!posixHost)('a failing first step stops the chain: data/ and fleet.key untouched, no reinstall, no success marker', () => {
+    const { home, mh, backup } = setup(3);
+    try {
+      const r = runIn(home, rollbackCommand(backup));
+      expect(r.status).toBe(3);
+      expect(rollbackSucceeded({ isError: true, text: r.stdout })).toBe(false);
+      expect(r.stdout).not.toContain(ROLLBACK_OK);
+      expect(fs.readdirSync(path.join(mh, 'data'))).toEqual(['member-install.json']);
+      expect(fs.readFileSync(path.join(mh, 'fleet.key'), 'utf8')).toBe('candidate-key');
+      expect(fs.readFileSync(path.join(home, 'calls.log'), 'utf8')).toBe('uninstall uninstall --force --yes\n');
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
   });
 });
