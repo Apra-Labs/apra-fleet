@@ -16,6 +16,7 @@ import { buildReport } from './integration/member-host/lib/report.mjs';
 import {
   ROLLBACK_OK, guardedReinstallCommand, listBackupsCommand, pickNewestBackup, restoreChecks, rollbackCommand, rollbackSteps, rollbackSucceeded,
 } from './integration/member-host/lib/rollback.mjs';
+import { baselineInstallArgs, supervisorStartCommand, supervisorStartOutcome, SUPERVISOR_ENTRY } from './integration/member-host/lib/commands.mjs';
 
 const pins = JSON.parse(JSON.stringify({
   baselines: {
@@ -302,6 +303,45 @@ describe('rollback command on a real bash, in a temp HOME with stub binaries', (
       expect(fs.readdirSync(path.join(mh, 'data'))).toEqual(['member-install.json']);
       expect(fs.readFileSync(path.join(mh, 'fleet.key'), 'utf8')).toBe('candidate-key');
       expect(fs.readFileSync(path.join(home, 'calls.log'), 'utf8')).toBe('uninstall uninstall --force --yes\n');
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('member-host baseline install and supervisor start (RFS / RBS)', () => {
+  const runSrc = () => fs.readFileSync(path.join(__dirname, 'integration', 'member-host', 'run.mjs'), 'utf8');
+
+  it('RFS and RBS install the baseline WITH the workflow runtime; RF and RB keep the core-only install', () => {
+    expect(baselineInstallArgs('RFS')).toEqual([]);
+    expect(baselineInstallArgs('RBS')).toEqual([]);
+    expect(baselineInstallArgs('RF')).toEqual(['--workflows', 'none']);
+    expect(baselineInstallArgs('RB')).toEqual(['--workflows', 'none']);
+    expect(() => baselineInstallArgs('Q')).toThrow(/installs no baseline/);
+  });
+
+  it('the driver builds the baseline install from baselineInstallArgs, never a hard-coded --workflows none', () => {
+    const src = runSrc();
+    expect(src).toMatch(/baselineInstallArgs\(pass\)/);
+    expect(src).not.toMatch(/install --workflows none`/);
+  });
+
+  it('the supervisor-started step reports the missing serve.mjs path instead of a generic exit 1', () => {
+    expect(supervisorStartCommand('/m/bin/apra-fleet.exe')).toContain(`[ ! -f "${SUPERVISOR_ENTRY}" ]`);
+    const out = supervisorStartOutcome(`SUPERVISOR-ENTRY-MISSING: ${SUPERVISOR_ENTRY} does not exist on the member (x)\n`);
+    expect(out.exit).toBe(1);
+    expect(out.observed).toContain('workflows/fleet-sprint/bin/serve.mjs');
+    expect(supervisorStartOutcome('FLEET_SE supervisor running pid 1')).toMatchObject({ exit: 0 });
+    expect(supervisorStartOutcome('no supervisor').exit).toBe(1);
+  });
+
+  it.skipIf(!(process.platform === 'linux' || process.platform === 'darwin'))('on a real bash with no serve.mjs the command exits non-zero naming the path', () => {
+    const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'member-host-sup-')));
+    try {
+      const r = spawnSync('bash', ['-c', supervisorStartCommand('/nonexistent/apra-fleet.exe')], { env: { ...process.env, HOME: home }, encoding: 'utf8' });
+      expect(r.status).toBe(1);
+      expect(r.stdout).toContain('.apra-fleet/workflows/fleet-sprint/bin/serve.mjs');
+      expect(supervisorStartOutcome(r.stdout).observed).toContain('SUPERVISOR-ENTRY-MISSING');
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
     }

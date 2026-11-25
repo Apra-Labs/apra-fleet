@@ -46,3 +46,45 @@ export function memberWorkFolder(info) {
   const home = info && info.home ? String(info.home) : `C:\\Users\\${info && info.user}`;
   return `${gitBashPath(home)}/work`;
 }
+
+/**
+ * The install arguments for the baseline (the previous release) a pass puts
+ * on the member before replace-full. The supervisor passes (RFS, and RBS, which
+ * rolls back from the RFS backup) need the fleet-sprint runtime the default
+ * install ships (~/.apra-fleet/workflows/fleet-sprint/bin/serve.mjs), so they
+ * install WITHOUT --workflows none; RF/RB never start a supervisor and keep
+ * the core-only install.
+ */
+export function baselineInstallArgs(pass) {
+  switch (pass) {
+    case 'RFS':
+    case 'RBS':
+      return [];
+    case 'RF':
+    case 'RB':
+      return ['--workflows', 'none'];
+    default:
+      throw new Error(`pass ${pass} installs no baseline`);
+  }
+}
+
+export const SUPERVISOR_ENTRY = '$HOME/.apra-fleet/workflows/fleet-sprint/bin/serve.mjs';
+export const SUPERVISOR_MISSING_MARKER = 'SUPERVISOR-ENTRY-MISSING';
+
+/**
+ * Starts the fleet-sprint supervisor on the member and asks the fleet whether
+ * it is running. When the entry script is absent (a core-only install) the
+ * command says so, naming the path, instead of a generic failure.
+ */
+export function supervisorStartCommand(fleetBin) {
+  return `if [ ! -f "${SUPERVISOR_ENTRY}" ]; then echo "${SUPERVISOR_MISSING_MARKER}: ${SUPERVISOR_ENTRY} does not exist on the member (the install shipped no fleet-sprint runtime; install without --workflows none)"; exit 1; fi; ` +
+    `nohup node "${SUPERVISOR_ENTRY}" > "$HOME/supervisor.log" 2>&1 & sleep 8; "${fleetBin}" fleet-se-check`;
+}
+
+/** The record fields for the supervisor-started step: exit 0 only when the fleet reports it running; a missing entry script is reported with its path. */
+export function supervisorStartOutcome(text) {
+  const t = String(text ?? '');
+  const missing = t.split(/\r?\n/).find(l => l.includes(SUPERVISOR_MISSING_MARKER));
+  if (missing) return { exit: 1, observed: missing.trim() };
+  return { exit: /FLEET_SE supervisor/.test(t) ? 0 : 1, observed: t.slice(-200) };
+}

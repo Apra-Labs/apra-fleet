@@ -22,7 +22,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DISPOSABLE_FLAG, disposableRefusal } from './lib/opt-in.mjs';
-import { QUOTE_LED_CASES, verifyEcho, memberWorkFolder } from './lib/commands.mjs';
+import { QUOTE_LED_CASES, verifyEcho, memberWorkFolder, baselineInstallArgs, supervisorStartCommand, supervisorStartOutcome } from './lib/commands.mjs';
 import { PASS_IDS, REFUSAL_CODE, compareSnapshots, planPasses, resolveBaseline } from './lib/scenarios.mjs';
 import { assertInside, resolveSandbox, sandboxEnv } from './lib/sandbox.mjs';
 import { guardedReinstallCommand, listBackupsCommand, pickNewestBackup, restoreChecks, rollbackCommand, rollbackSucceeded } from './lib/rollback.mjs';
@@ -144,12 +144,14 @@ async function realRun(o) {
     }
     const sshOpts = ['-i', info.keyPath, '-o', 'StrictHostKeyChecking=no', '-o', `UserKnownHostsFile=${path.join(sb.keyDir, 'known_hosts')}`, '-o', 'IdentitiesOnly=yes'];
     const put = run('scp', [...sshOpts, local, `${info.user}@127.0.0.1:baseline-installer.exe`]);
-    const r = put.code === 0 ? await exec(`chmod +x "$HOME/baseline-installer.exe" && "$HOME/baseline-installer.exe" install --workflows none`, 600) : { isError: true, text: put.out };
-    rec(pass, `${pass.toLowerCase()}-baseline-installed`, 'baseline install --workflows none', r.isError ? 1 : 0, '', r.text.slice(-200));
+    const installArgs = ['install', ...baselineInstallArgs(pass)].join(' ');
+    const r = put.code === 0 ? await exec(`chmod +x "$HOME/baseline-installer.exe" && "$HOME/baseline-installer.exe" ${installArgs}`, 600) : { isError: true, text: put.out };
+    rec(pass, `${pass.toLowerCase()}-baseline-installed`, `baseline ${installArgs}`, r.isError ? 1 : 0, '', r.text.slice(-200));
   };
   const startSupervisor = async pass => {
-    const r = await exec(`nohup node "$HOME/.apra-fleet/workflows/fleet-sprint/bin/serve.mjs" > "$HOME/supervisor.log" 2>&1 & sleep 8; "${MH}/bin/apra-fleet.exe" fleet-se-check`, 60);
-    rec(pass, `${pass.toLowerCase()}-supervisor-started`, 'start fleet-sprint supervisor', /FLEET_SE supervisor/.test(r.text) ? 0 : 1, '', r.text.slice(-200));
+    const r = await exec(supervisorStartCommand(`${MH}/bin/apra-fleet.exe`), 60);
+    const out = supervisorStartOutcome(r.text);
+    rec(pass, `${pass.toLowerCase()}-supervisor-started`, 'start fleet-sprint supervisor', out.exit, '', out.observed);
   };
   const stopSupervisor = async pass => {
     const r = await exec(`curl -s -X POST http://localhost:8787/api/shutdown -H "Content-Type: application/json" -d "{}"; sleep 5; "${MH}/bin/apra-fleet.exe" fleet-se-check`, 60);
