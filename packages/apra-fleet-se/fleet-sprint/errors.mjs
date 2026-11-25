@@ -415,6 +415,50 @@ export function isDoltCredentialFailure(err) {
     return false;
 }
 
+/** Stable error code of SupervisorUnreachableError. */
+export const SUPERVISOR_UNREACHABLE_CODE = 'SUPERVISOR_UNREACHABLE';
+
+/**
+ * The fleet-sprint supervisor's HTTP service (dolt push mutex, child-id
+ * allocator) could not be reached: either every connection attempt was
+ * refused for the whole wait budget, or the connection failed at the
+ * transport level (reset / hang-up). Infrastructure, never a credential
+ * failure -- the remedy names the supervisor so the operator does not chase
+ * a remote or credential that is fine.
+ *
+ * @property {string} serviceUrl - the supervisor URL that did not answer
+ */
+export class SupervisorUnreachableError extends WorkflowError {
+    /**
+     * @param {string} serviceUrl
+     * @param {{ detail?: string, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(serviceUrl, opts = {}) {
+        const { detail, details, cause } = opts;
+        super(
+            `The fleet-sprint supervisor at ${serviceUrl} is not answering${detail ? ` (${detail})` : ''} -- start it (see the fleet-supervisor skill) and re-run.`,
+            { code: SUPERVISOR_UNREACHABLE_CODE, details: { serviceUrl, ...details }, cause },
+        );
+        this.name = 'SupervisorUnreachableError';
+        this.serviceUrl = serviceUrl;
+    }
+}
+
+/**
+ * True when `err` (or an error on its `cause` chain) is a
+ * SupervisorUnreachableError.
+ * @param {unknown} err
+ * @returns {boolean}
+ */
+export function isSupervisorUnreachableFailure(err) {
+    const seen = new Set();
+    for (let e = err; e && typeof e === 'object' && !seen.has(e); e = e.cause) {
+        seen.add(e);
+        if (e instanceof SupervisorUnreachableError) return true;
+    }
+    return false;
+}
+
 /** Stable error code of DoltWindowsSpawnLimitError. */
 export const DOLT_WINDOWS_SPAWN_LIMIT_CODE = 'DOLT_WINDOWS_SPAWN_LIMIT';
 
