@@ -78,8 +78,12 @@ function dropPackLifecycleScripts(pkgJsonPath) {
 
 function npm(args, cwd) {
   // shell:true resolves the npm.cmd shim on Windows; every argument here is
-  // either a literal or a path we quote ourselves.
-  const quoted = args.map((a) => (/[\s"]/.test(a) ? `"${a.replace(/"/g, '\\"')}"` : a));
+  // either a literal or a path we quote ourselves. A double quote cannot be
+  // quoted safely for both cmd.exe and sh, so refuse it loudly.
+  const quoted = args.map((a) => {
+    if (a.includes('"')) throw new Error(`pack-stripped: refusing npm argument containing a double quote: ${a}`);
+    return /\s/.test(a) ? `"${a}"` : a;
+  });
   return execFileSync('npm', quoted, {
     cwd,
     encoding: 'utf-8',
