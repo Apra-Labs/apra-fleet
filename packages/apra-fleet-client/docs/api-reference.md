@@ -923,6 +923,13 @@ order. Options: `member_id?`, `member_name?`, `role?`
 `grant_reason?`, `dry_run?`. `dry_run: true` returns the composed allow list
 (role/tags + detected stacks, + the ledger when `project_folder` is given) as
 JSON text `{"dry_run":true,"mode","stacks","allow"}` and writes nothing.
+For a claude member, `grant` mode merges the grants into the existing
+`.claude/settings.local.json` allow list; when that file is missing/empty,
+not valid JSON, or has no `permissions.allow` list, the base role profile
+(`base-dev`/`base-reviewer`, plus detected stacks and ledger) is re-seeded
+first and the grants are merged onto it, and the response says so (a
+`Base profile re-seeded (... cause: missing|unparseable|no_allow_list)`
+line) instead of silently writing a grant-only allow list.
 Provide at least one of `role` or `tags`; `tags` containing
 `"doer"`/`"reviewer"` sets the primary mode and wins over `role`. Each
 `grant` entry is checked against the `NEVER_AUTO_GRANT` denylist, which is
