@@ -639,6 +639,14 @@ describe('Publish PR: a relaunch rewrites the existing PR for the new verdict', 
         assert.ok(logs.some((m) => m.includes('already exists') && m.includes('updated its fleet block') && m.includes('(PASS)')), JSON.stringify(logs));
     });
 
+    test('a raised PR logs its URL and "<sprint-branch> -> <base-branch>"; the update line names both too', async () => {
+        const gh = fakeGitHub();
+        const first = await publish({ gh, verdict: 'PASS', notes: 'ok', runId: 'run-log-1', member: 'pub-log' });
+        assert.ok(first.logs.some((m) => m.includes('https://github.com/acme/widgets/pull/42') && m.includes('feat/x -> main')), JSON.stringify(first.logs));
+        const second = await publish({ gh, verdict: 'PASS', notes: 'ok', runId: 'run-log-2', member: 'pub-log' });
+        assert.ok(second.logs.some((m) => m.includes('already exists') && m.includes('feat/x') && m.includes("-> 'main'")), JSON.stringify(second.logs));
+    });
+
     test('the Harvest cost block reaches the created PR body', async () => {
         const gh = fakeGitHub();
         await publish({ gh, verdict: 'PASS', notes: 'ok', runId: 'run-c', member: 'pub-cost', costAnalysis: 'Tracked spend (priced dispatches only): $2.5000.' });
