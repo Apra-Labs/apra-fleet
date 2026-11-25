@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { KB_REMOVED_SCOPE_KEYS_SHAPE } from '../services/knowledge/kb-removed-scope-keys.js';
 import {
-  getSelfReadKb, getMemberSplitRead, mergeSplitById, memberOwnerTag, resolveKbAnchor, type KbAnchor, type MemberSplitRead,
+  getSelfReadKb, getMemberSplitRead, mergeSplitById, memberOwnerTag, filterOtherMembersUnconfirmed, resolveKbAnchor, type KbAnchor, type MemberSplitRead,
 } from '../services/knowledge/kb-self.js';
 import { HttpKbProvider, KbHttpUnsupportedError } from '../services/knowledge/http-provider.js';
 import { SqliteProvider } from '../services/knowledge/sqlite-provider.js';
@@ -326,7 +326,13 @@ export async function kbQuery(input: KbQueryInput, anchor?: KbAnchor): Promise<s
     // sqlite provider filters in SQL, a remote KB server predating the
     // flagged_only parameter ignores it and answers with a plain listing.
     const projectFlagged = (await providers.project.query(flaggedOpts)).results.filter(isFlagged);
-    const globalFlagged = (await providers.global.query(flaggedOpts)).results.filter(isFlagged);
+    // The global KB is shared by every member and kb_capture tags a member's
+    // global capture with its own member:<id>, so a MEMBER session drops other
+    // members' non-CONFIRMED flagged entries here (own and untagged stay).
+    const globalFlagged = filterOtherMembersUnconfirmed(
+      (await providers.global.query(flaggedOpts)).results.filter(isFlagged),
+      anchor,
+    );
 
     const seen = new Set(projectFlagged.map(e => e.id));
     const merged = [
