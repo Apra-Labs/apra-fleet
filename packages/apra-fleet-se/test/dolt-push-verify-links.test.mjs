@@ -184,6 +184,19 @@ test('a failing restore aborts the push: no re-push is issued and the typed erro
     assert.ok(h.logs.some((l) => /ABORTED after reconcile pull 1/.test(l)), h.logs.join('\n'));
 });
 
+test('a blocks restore bd refuses as a cycle is WARNed and skipped: the parent link is still restored and the re-push goes out', async () => {
+    const h = await buildHarness({ pushes: ['reject', 'ok'], cycleOn: (a, b) => a === 'X' && b === 'Y' });
+    const res = await doltPushAfter('writer-b', pushOpts(h));
+    assert.equal(res.pushed, true);
+    assert.equal(h.db.beads.find((b) => b.id === 'C').parent, 'P');
+    assert.ok(h.logs.some((l) => l.startsWith("WARN: blocks link 'X' blocked by 'Y' was not restored") && /cycle/.test(l)), h.logs.join('\n'));
+    assert.equal(h.all(/^bd dolt push/).length, 2, h.calls.map((c) => c.cmd).join('\n'));
+    // Forgotten: the next push neither retries nor fails on it.
+    h.calls.length = 0;
+    await doltPushAfter('writer-b', pushOpts(h));
+    assert.equal(h.all(/^bd dep add X Y$/).length, 0, h.calls.map((c) => c.cmd).join('\n'));
+});
+
 test('after an aborted push the member owes a verify: its next push verifies BEFORE the first push attempt', async () => {
     const h = await buildHarness({ pushes: ['reject', 'ok'], failRestore: true });
     await assert.rejects(() => doltPushAfter('writer-owing', pushOpts(h)), ParentLinkRestoreError);

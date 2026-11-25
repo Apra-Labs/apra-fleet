@@ -463,6 +463,21 @@ describe('parent-link guard: blocks edges', () => {
         assert.deepEqual(h.commandLog.filter((c) => c.startsWith('bd dep add')), []);
     });
 
+    test('a dropped blocks edge whose restore bd refuses as a cycle (reversed outside the run) is WARNed and forgotten, not fatal', async () => {
+        const h = buildHarness({ beads: BLOCKS_TREE, cycleOn: (a, b) => a === 'task-x' && b === 'task-y' });
+        await h.scope.fetchAllBeadsShared();
+        await h.conflictedPull(() => { h.dropBlocks('task-x', 'task-y'); h.addBlocks('task-y', 'task-x'); });
+        h.phase('Develop C1 R2');
+        const after = await h.scope.fetchAllBeadsShared();
+        assert.ok(h.logs.some((l) => l.startsWith("WARN: blocks link 'task-x' blocked by 'task-y' was not restored")), h.logs.join('\n'));
+        assert.ok(!after.find((b) => b.id === 'task-x').dependencies?.some((d) => d.depends_on_id === 'task-y'), 'the snapshot does not claim the refused edge');
+        // Forgotten: the next snapshot tries no restore.
+        h.commandLog.length = 0;
+        h.phase('Develop C1 R3');
+        await h.scope.fetchAllBeadsShared();
+        assert.deepEqual(h.commandLog.filter((c) => c.startsWith('bd dep add')), []);
+    });
+
     test('a failed blocks restore is loud: ERROR line and a ParentLinkRestoreError naming the edge', async () => {
         const h = buildHarness({ beads: BLOCKS_TREE, failRestore: true });
         await h.scope.fetchAllBeadsShared();

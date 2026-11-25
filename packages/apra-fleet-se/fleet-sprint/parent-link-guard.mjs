@@ -156,6 +156,18 @@ export function formatDroppedBlocksLog({ blocked, blocker, reason }) {
         '(deleted). This is not a lost link, so it is not restored.';
 }
 
+/** bd refused a blocks restore because the edge would close a dependency cycle. */
+export function isCycleRefusal(edge, reason) {
+    return !!edge && edge.kind === 'blocks' && /would create a (?:dependency )?cycle/i.test(String(reason || ''));
+}
+
+/** The WARN line for a vanished blocks edge whose restore bd refused as a cycle. */
+export function formatCycleSkippedBlocksLog({ blocked, blocker }, reason) {
+    return `WARN: blocks link '${blocked}' blocked by '${blocker}' was not restored: bd refused it because the current graph ` +
+        `would then hold a dependency cycle (${String(reason || '').trim()}). Someone reversed or replaced that edge since; ` +
+        'the current graph is kept and the link is no longer tracked.';
+}
+
 /** The restore command for one vanished edge of either kind. */
 export function restoreCommandFor(edge) {
     return edge.kind === 'blocks'
@@ -426,6 +438,12 @@ export function createParentLinkLedger() {
     /** `member` is paid up: its owed links were restored or are present again. */
     function settleOwed(member) { pullLosses.delete(member); }
 
+    /** Stop tracking one blocks edge anywhere (owed and recorded), e.g. one whose restore bd refused as a cycle. */
+    function forgetBlocksEdge(blocked, blocker) {
+        forgetOwed((e) => e.kind === 'blocks' && e.blocked === blocked && e.blocker === blocker);
+        blocks.delete(blocksKey(blocked, blocker));
+    }
+
     /**
      * Reconcile the ledger with a fresh snapshot of `member` (the backlog
      * clone). A recorded link the snapshot lacks is FORGOTTEN -- an agent or
@@ -485,6 +503,7 @@ export function createParentLinkLedger() {
         noteRunEdgeChange,
         reconcile,
         settleOwed,
+        forgetBlocksEdge,
         /** The links `member` owes that a read of its clone still lacks (read-only), each tagged kind 'parent-child' or 'blocks'. */
         findVanishedLinks: (member, allBeads) => owedMissing(member, allBeads),
         /** Whether `member` owes any link (a conflicted pull on its clone dropped one not yet restored). */

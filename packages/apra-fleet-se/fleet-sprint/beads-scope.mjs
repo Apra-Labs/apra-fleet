@@ -86,6 +86,7 @@ import { logicalBdCommand } from './bd-sync-command.mjs';
 import {
     createParentLinkLedger, parseRunEdgeChange, formatVanishedEdgeLog, formatDroppedEdgeLog, formatRestoreFailure, ParentLinkRestoreError,
     formatVanishedBlocksLog, formatDroppedBlocksLog, restoreCommandFor, describeEdge,
+    isCycleRefusal, formatCycleSkippedBlocksLog,
 } from './parent-link-guard.mjs';
 
 /** A logical `bd dolt pull` -- the one command whose links the scope brackets (see wrapCommand). */
@@ -1377,6 +1378,7 @@ export function createBeadsScope(opts = {}) {
         for (const drop of droppedBlocks) log(formatDroppedBlocksLog(drop));
         if (vanished.length === 0 && vanishedBlocks.length === 0) return beads;
         const allVanished = [...vanished.map((e) => ({ kind: 'parent-child', ...e })), ...vanishedBlocks];
+        const skippedBlocks = new Set();
         for (const edge of allVanished) {
             log(edge.kind === 'blocks' ? formatVanishedBlocksLog(edge) : formatVanishedEdgeLog(edge));
             const label = restoreCommandFor(edge);
@@ -1386,6 +1388,12 @@ export function createBeadsScope(opts = {}) {
                 if (res && typeof res === 'object' && res.ok === false) failure = res.error || 'command failed';
             } catch (err) {
                 failure = (err && err.message) || String(err);
+            }
+            if (failure && isCycleRefusal(edge, failure)) {
+                log(formatCycleSkippedBlocksLog(edge, failure));
+                parentLinks.forgetBlocksEdge(edge.blocked, edge.blocker);
+                skippedBlocks.add(`${edge.blocked}\u0000${edge.blocker}`);
+                continue;
             }
             if (failure) {
                 const message = edge.kind === 'blocks'
@@ -1399,6 +1407,7 @@ export function createBeadsScope(opts = {}) {
         const restoredParent = new Map(vanished.map((e) => [e.child, e.parent]));
         const restoredBlocks = new Map();
         for (const e of vanishedBlocks) {
+            if (skippedBlocks.has(`${e.blocked}\u0000${e.blocker}`)) continue;
             if (!restoredBlocks.has(e.blocked)) restoredBlocks.set(e.blocked, []);
             restoredBlocks.get(e.blocked).push(e.blocker);
         }
@@ -1483,6 +1492,7 @@ export function createBeadsScope(opts = {}) {
             return { checked: true, restored: [] };
         }
         const failures = [];
+        const skipped = [];
         for (const edge of vanished) {
             log(`${edge.kind === 'blocks' ? formatVanishedBlocksLog(edge) : formatVanishedEdgeLog(edge)} (member '${member}', before its beads push)`);
             let failure = null;
@@ -1492,6 +1502,12 @@ export function createBeadsScope(opts = {}) {
             } catch (err) {
                 failure = (err && err.message) || String(err);
             }
+            if (failure && isCycleRefusal(edge, failure)) {
+                log(`${formatCycleSkippedBlocksLog(edge, failure)} (member '${member}', before its beads push)`);
+                parentLinks.forgetBlocksEdge(edge.blocked, edge.blocker);
+                skipped.push(edge);
+                continue;
+            }
             if (failure) failures.push({ edge, reason: failure });
         }
         if (failures.length > 0) {
@@ -1500,7 +1516,7 @@ export function createBeadsScope(opts = {}) {
             throw new ParentLinkRestoreError(message, { edges: vanished });
         }
         parentLinks.settleOwed(member);
-        return { checked: true, restored: vanished };
+        return { checked: true, restored: vanished.filter((e) => !skipped.includes(e)) };
     }
 
     /**
