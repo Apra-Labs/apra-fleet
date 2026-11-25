@@ -50,6 +50,7 @@ import { createBacklog, registerBacklogRoutes } from '../src/supervisor/backlog.
 // constructing the real dashboard below (instead of the inert stub) is what
 // actually wires the Launch Sprint form onto the page.
 import { createDashboard, registerDashboardRoutes } from '../src/supervisor/dashboard.mjs';
+import { createBeadsPushedProbe } from '../src/supervisor/beads-pushed-check.mjs';
 import { createSprintController, registerSprintRoutes, defaultMemberOverlapGuard, ApiError } from '../src/supervisor/api.mjs';
 import { createScopeGuard, formatScopeConflict, formatMissingRoots } from '../src/supervisor/scope-overlap.mjs';
 import { listFleetMembers, executeFleetCommand, registerFleetMember, updateFleetMember } from '../src/supervisor/fleet-members.mjs';
@@ -671,6 +672,7 @@ export async function serveMain(argv = process.argv.slice(2), deps = {}) {
         beforeLaunch,
         beadsIdentity,
         backlogMember,
+        checkBeadsPushed: createBeadsPushedProbe({ cwd: repoRoot }),
     });
     registerSprintRoutes(supervisor, sprintController);
 

@@ -1673,30 +1673,60 @@ export function parseBdDiffPending(output) {
 const SAFE_DOLT_BRANCH_RE = /^[A-Za-z0-9._/-]+$/;
 
 /**
- * Does `member`'s clone still hold changes its Dolt remote-tracking branch
+ * Does a beads clone still hold changes its Dolt remote-tracking branch
  * lacks? Reads the current branch from `bd vc status --json`, then diffs
- * remotes/origin/<branch> against it. Never throws.
+ * remotes/origin/<branch> against it. Transport-agnostic: `runBd` runs one bd
+ * command line (e.g. `bd vc status --json`) wherever the clone lives and
+ * resolves `{ ok, output, error? }` (or the raw output text). Never throws.
+ * Uncommitted working-set changes reported by `bd vc status` count as pending.
+ * @param {(cmd: string, label: string) => Promise<{ok?: boolean, output?: string, error?: string}|string>} runBd
  * @returns {Promise<{ pending: boolean|null, why?: string }>}
  */
-async function readUnpushedDoltChanges(member, { command }) {
+export async function readUnpushedWith(runBd) {
     let branch = null;
+    let uncommitted = false;
     try {
-        const res = await command('bd vc status --json', { member_name: member, silent: true, failSoft: true, label: `D-push landed check: branch read for '${member}'`, timeout_s: DOLT_TIP_PROBE_TIMEOUT_S });
+        const res = await runBd('bd vc status --json', 'branch read');
         if (res && res.ok !== false) {
             const parsed = JSON.parse(String((typeof res === 'object' ? res.output : res) || ''));
             if (parsed && typeof parsed.branch === 'string') branch = parsed.branch;
+            uncommitted = hasUncommittedChanges(parsed);
         }
     } catch { /* unknown branch -> inconclusive below */ }
+    if (uncommitted) return { pending: true, why: 'uncommitted working-set changes' };
     if (!branch || !SAFE_DOLT_BRANCH_RE.test(branch)) return { pending: null, why: 'could not read the clone\'s Dolt branch' };
     let res;
     try {
-        res = await command(`bd diff remotes/origin/${branch} ${branch} --json`, { member_name: member, silent: true, failSoft: true, label: `D-push landed check: unpushed-change read for '${member}'`, timeout_s: DOLT_TIP_PROBE_TIMEOUT_S });
+        res = await runBd(`bd diff remotes/origin/${branch} ${branch} --json`, 'unpushed-change read');
     } catch (err) {
         return { pending: null, why: `bd diff threw: ${(err && err.message) || err}` };
     }
     if (!res || res.ok === false) return { pending: null, why: `bd diff failed: ${res ? res.error : 'no result'}` };
     const pending = parseBdDiffPending(typeof res === 'object' ? res.output : res);
     return pending === null ? { pending: null, why: 'bd diff output was not recognized' } : { pending };
+}
+
+/**
+ * Does a parsed `bd vc status --json` report uncommitted working-set changes?
+ * Accepts the field spellings bd uses (`uncommitted`, `changes`, `staged`,
+ * `working`, `dirty`): a non-empty array, a positive number or `true`.
+ */
+export function hasUncommittedChanges(parsed) {
+    if (!parsed || typeof parsed !== 'object') return false;
+    for (const key of ['uncommitted', 'changes', 'staged', 'working', 'dirty']) {
+        const v = parsed[key];
+        if (v === true) return true;
+        if (typeof v === 'number' && v > 0) return true;
+        if (Array.isArray(v) && v.length > 0) return true;
+    }
+    return false;
+}
+
+async function readUnpushedDoltChanges(member, { command }) {
+    return readUnpushedWith((cmd, what) => command(cmd, {
+        member_name: member, silent: true, failSoft: true,
+        label: `D-push landed check: ${what} for '${member}'`, timeout_s: DOLT_TIP_PROBE_TIMEOUT_S,
+    }));
 }
 
 /**

@@ -53,6 +53,7 @@ import { isDeterministicTerminalReason, HISTORY_EVENTS } from './history.mjs';
 import { defaultHasTerminalState } from './watchdog.mjs';
 import { terminalInfoFromState, terminalInfoFromHistory } from './pr-not-opened.mjs';
 import { toBeadsSummary } from './beads-identity.mjs';
+import { unpushedBeadsMessage, UNPUSHED_BEADS_REMEDY } from './beads-pushed-check.mjs';
 import { fleetMembersUnavailableReason, fleetMembersStoppedByUserReason } from './fleet-members.mjs';
 
 /** This module's own on-disk path -- the default build-version stamp's source (see defaultBuildVersion() below). */
@@ -433,6 +434,10 @@ export function defaultBuildVersion() {
  *     Called once at controller creation to stamp what this process is
  *     running, and again on every launch() to read what's on disk now --
  *     see launch()'s buildVersionWarning below.
+ *   checkBeadsPushed?: () => Promise<{ pending: boolean|null, why?: string }>,
+ *     Unpushed-beads launch preflight (see beads-pushed-check.mjs): pending
+ *     true -> 409 with the push remedy; null -> launch proceeds with a
+ *     warning; absent -> no check.
  *   beadsIdentity?: { get: () => object|null },
  *     src/supervisor/beads-identity.mjs's createBeadsIdentityState() handle.
  *     When present, launch() records toBeadsSummary(get()) as the ledger
@@ -461,6 +466,9 @@ export function createSprintController(deps = {}) {
     const proxyAction = deps.proxyAction ?? proxyChildAction;
     const roleMapResolver = deps.resolveRoleMap ?? resolveRoleMap;
     const beadsIdentity = deps.beadsIdentity ?? null;
+    // Launch preflight: () => Promise<{ pending: boolean|null, why?: string }>.
+    // Absent (tests, older wiring) -> no unpushed-beads check.
+    const checkBeadsPushed = typeof deps.checkBeadsPushed === 'function' ? deps.checkBeadsPushed : null;
     const backlogMemberHandle = deps.backlogMember && typeof deps.backlogMember.get === 'function' ? deps.backlogMember : null;
     const beadsSummaryForLaunch = () => {
         if (!beadsIdentity || typeof beadsIdentity.get !== 'function') return null;
@@ -797,6 +805,27 @@ export function createSprintController(deps = {}) {
             }
         }
 
+        // Unpushed-beads preflight: a launch while the supervisor's beads clone
+        // holds changes the Dolt remote lacks makes the target member plan from
+        // stale scope. Definitely unpushed -> 409 with the remedy; inconclusive
+        // -> proceed with one loud warning. Runs before any reservation/spawn.
+        let beadsPushWarning = null;
+        if (checkBeadsPushed) {
+            let outcome;
+            try {
+                outcome = await checkBeadsPushed();
+            } catch (err) {
+                outcome = { pending: null, why: `the probe threw: ${(err && err.message) || err}` };
+            }
+            if (outcome && outcome.pending === true) {
+                throw new ApiError(409, unpushedBeadsMessage(), 'beads');
+            }
+            if (!outcome || outcome.pending !== false) {
+                beadsPushWarning = `could not verify that the local beads clone is pushed (${(outcome && outcome.why) || 'unknown reason'}); launching anyway -- if scope looks stale on the target member, run \`${UNPUSHED_BEADS_REMEDY}\` in the supervisor's beads folder.`;
+                console.warn(`[supervisor] WARNING: ${beadsPushWarning}`);
+            }
+        }
+
         // eft.5.2 seam: reject overlapping launches (409) BEFORE spawning a child.
         await beforeLaunch({ members: union, issueRoots, membersList: membersListRaw });
 
@@ -894,7 +923,8 @@ export function createSprintController(deps = {}) {
             tierPolicy,
             tierOverrides: tierOverrides ?? null,
             buildVersionWarning,
-            warnings: aliasWarnings,
+            ...(beadsPushWarning ? { beadsPushWarning } : {}),
+            warnings: beadsPushWarning ? [...aliasWarnings, beadsPushWarning] : aliasWarnings,
         };
     }
 
