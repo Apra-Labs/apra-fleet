@@ -594,7 +594,7 @@ function memberNameOf(member) {
  *   abortRebase?: (memberName: string) => Promise<any>,
  *   bibleBase?: (memberName: string) => Promise<{ baseBranch: string, baseCommit: string }|null>,
  *   canResetCheckout?: (memberName: string, bibleFile: string) => Promise<{ safe: boolean, reason?: string }>,
- *   checkedOutBranch?: (memberName: string) => Promise<{ branch: string|null, sprintBranch: string|null }>,
+ *   checkedOutBranch?: (memberName: string) => Promise<{ branch: string|null, sprintBranch: string|null, unreachable?: boolean, error?: string, host?: string }>,
  *   bibleUnpushed?: (memberName: string, bibleFile: string) => Promise<{ unpushed: boolean|null, reason?: string }>,
  *   unpushedOnlyBible?: (memberName: string, bibleFile: string) => Promise<{ onlyBible: boolean, reason?: string }>,
  *   listTools?: (member: object) => Promise<any>,
@@ -1205,6 +1205,25 @@ export function createKbWorkClient(opts = {}) {
     }
 
     /**
+     * The shared "what was found" text for a maintainer whose checked-out
+     * branch is not the sprint branch, so the bible-commit guard WARN and the
+     * PR-body KB section cannot drift. the first argument is checkedOutBranch's answer (or
+     * null), readError is a thrown error's text. Returns { unreachable, text }:
+     * an unreachable maintainer is named as unreachable (member, host when
+     * known, error) and never as an unreadable branch.
+     */
+    function describeBranchRead(maintainer, r, readError) {
+        const found = r && typeof r.branch === 'string' && r.branch ? r.branch : null;
+        if (found) return { unreachable: false, text: `'${found}'` };
+        const detail = (r && typeof r.error === 'string' && r.error) || readError || '';
+        if (readError || (r && r.unreachable === true)) {
+            const host = r && typeof r.host === 'string' && r.host ? `${r.host}: ` : '';
+            return { unreachable: true, text: `could not be reached (${host}${detail || 'the command failed'})` };
+        }
+        return { unreachable: false, text: `an unreadable branch${detail ? ` (${detail})` : ''}` };
+    }
+
+    /**
      * True when the maintainer's checked-out branch is the sprint branch.
      * Checked before the first G-pull of a bible commit and before every
      * reset onto the remote tip, so no pull, reset --hard, commit or push
@@ -1215,19 +1234,22 @@ export function createKbWorkClient(opts = {}) {
      */
     async function onSprintBranch(maintainer, repo, count, what = 'confirmation') {
         if (typeof checkedOutBranch !== 'function') return true;
-        let found = null;
-        let sprintBranch = null;
+        let r = null;
         let readError = null;
         try {
-            const r = await checkedOutBranch(maintainer);
-            found = r && typeof r.branch === 'string' && r.branch ? r.branch : null;
-            sprintBranch = r && typeof r.sprintBranch === 'string' && r.sprintBranch ? r.sprintBranch : null;
+            r = await checkedOutBranch(maintainer);
         } catch (err) {
             readError = errText(err);
         }
+        const found = r && typeof r.branch === 'string' && r.branch ? r.branch : null;
+        const sprintBranch = r && typeof r.sprintBranch === 'string' && r.sprintBranch ? r.sprintBranch : null;
         if (found && sprintBranch && found === sprintBranch) return true;
-        const foundText = found ? `'${found}'` : `an unreadable branch${readError ? ` (${readError})` : ''}`;
-        log(`[kb-work] WARN: maintainer '${maintainer}' (${repo}) has ${foundText} checked out, not the sprint branch '${sprintBranch || 'unknown'}' -- no pull, bible commit, push or reset is made there; ${count} ${what}(s) stay queued for the next round`);
+        const d = describeBranchRead(maintainer, r, readError);
+        if (d.unreachable) {
+            log(`[kb-work] WARN: maintainer '${maintainer}' (${repo}) ${d.text} -- no pull, bible commit, push or reset is made; ${count} ${what}(s) stay queued for the next round`);
+            return false;
+        }
+        log(`[kb-work] WARN: maintainer '${maintainer}' (${repo}) has ${d.text} checked out, not the sprint branch '${sprintBranch || 'unknown'}' -- no pull, bible commit, push or reset is made there; ${count} ${what}(s) stay queued for the next round`);
         return false;
     }
 
@@ -1604,19 +1626,20 @@ export function createKbWorkClient(opts = {}) {
             };
             try {
                 if (typeof checkedOutBranch === 'function') {
-                    let found = null;
-                    let sprintBranch = null;
+                    let r = null;
                     let readError = null;
                     try {
-                        const r = await checkedOutBranch(m.member);
-                        found = r && typeof r.branch === 'string' && r.branch ? r.branch : null;
-                        sprintBranch = r && typeof r.sprintBranch === 'string' && r.sprintBranch ? r.sprintBranch : null;
+                        r = await checkedOutBranch(m.member);
                     } catch (err) {
                         readError = errText(err);
                     }
+                    const found = r && typeof r.branch === 'string' && r.branch ? r.branch : null;
+                    const sprintBranch = r && typeof r.sprintBranch === 'string' && r.sprintBranch ? r.sprintBranch : null;
                     if (!(found && sprintBranch && found === sprintBranch)) {
-                        const foundText = found ? `'${found}'` : `an unreadable branch${readError ? ` (${readError})` : ''}`;
-                        fail(`${foundText} is checked out, not the sprint branch '${sprintBranch || 'unknown'}'`);
+                        const d = describeBranchRead(m.member, r, readError);
+                        fail(d.unreachable
+                            ? `maintainer '${m.member}' ${d.text}`
+                            : `${d.text} is checked out, not the sprint branch '${sprintBranch || 'unknown'}'`);
                         continue;
                     }
                 }
