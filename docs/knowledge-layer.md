@@ -638,7 +638,10 @@ On the server machine, generate a token and start the server:
 
 ```bash
 node dist/index.js kb-server --generate-token
-# Prints: KB server token: <64-hex-chars>
+# Writes <fleet dir>/knowledge/kb-server.token (encrypted, mode 0600), prints
+#   KB server token: <64-hex-chars>
+#   Token file written: <absolute path>
+# and exits; it does not start the server.
 node dist/index.js kb-server
 # Prints: KB server listening on port 7878
 ```
@@ -981,6 +984,12 @@ applies to every repo the fleet install serves; there is no per-repo provider.
 ```
 
 All data is local. No token. `kb_sync` is a no-op.
+
+Schema migration at open tolerates only a "duplicate column name" error (a
+column already added). Any other failure (a read-only or locked database file,
+for example) aborts the open with an error naming the absolute database path;
+the provider resets its handle so a later open retries instead of reusing a
+half-initialised connection.
 
 ### HTTP (central server)
 
@@ -1349,7 +1358,8 @@ token. Regenerate on the server:
 node dist/index.js kb-server --generate-token
 ```
 
-Then re-run `kb_setup` on each client with the new token.
+Then restart `kb-server` (it reads the token only at start; the command above
+no longer restarts it) and re-run `kb_setup` on each client with the new token.
 
 **Named secret** (`token={{secret.NAME}}`): the error is `E-KB-HTTP-AUTH` and
 names the secret and the reason (`missing`, `expired`, `unreadable` or

@@ -186,13 +186,6 @@ describe('kb_query in a MEMBER session with a mixed tier list', () => {
     expect(ids(three.l1_results).sort()).toEqual(['bible-e1', dup, e2].sort());
   });
 
-  it('expand_related keeps the per-repo half owner-tag filtered', async () => {
-    const out = JSON.parse(await as(memberA, () => kbQuery({ query: WORD, confidence: [...MIXED], expand_related: true })));
-    expect(Array.isArray(out.related_claims)).toBe(true);
-    for (const e of out.related_claims as Array<{ confidence: string; tags: string[] }>) {
-      expect(e.confidence === 'CONFIRMED' || e.tags.includes(`member:${memberA}`)).toBe(true);
-    }
-  });
 });
 
 describe('kb_list in a MEMBER session with a mixed tier list', () => {
@@ -446,5 +439,73 @@ describe('MEMBER mixed-tier reads keep the caller\'s own CONFIRMED-in-DB capture
     expect(out.missing).toEqual([F5]);
     // The default member read agrees.
     expect(JSON.parse(await as(memberA, () => kbContext({ files: [F4, F5] })))).toEqual(out);
+  });
+});
+
+// expand_related on a MEMBER mixed-tier read: the per-repo half is owner-tag
+// filtered, so the related claims are the caller's own linked entries, never
+// another member's. The fixture seeds REAL refines edges (AUDN: same symbol and
+// file, different content, links the new entry to its predecessor) so
+// related_claims is non-empty and a leak would show. A bible entry can carry no
+// edge here: the checkout bible view imports verbatim, with no AUDN and no links.
+describe('kb_query expand_related in a MEMBER session with a mixed tier list', () => {
+  const WORD3 = 'cogwheel';
+  const SYM = 'cogwheelShared';
+  const FILE = 'src/cogwheel.ts';
+  // Only aTop's content carries this word: the query hits aTop alone, so its
+  // linked entries are NOT among the hits (relatedClaims never echoes a hit).
+  const TOP_WORD = 'zephyrflange';
+  let aBase: string; // A's INFERRED capture (linked to by A's top hit)
+  let aTop: string; // A's second capture on the same symbol: refines aBase
+  let aConf: string; // A's capture promoted to CONFIRMED in the per-repo DB, refined by aTop2
+  let aTop2: string;
+  let bLinked: string; // B's INFERRED capture on the same symbol: refines an A entry
+
+  const cap = async (member: string, title: string, content: string): Promise<string> => {
+    const out = JSON.parse(await as(member, () => kbCapture({
+      type: 'knowledge', title, summary: `${title}: the ${WORD3} stage meshes on each tick.`,
+      content, source_files: [FILE], symbols: [SYM],
+    } as Parameters<typeof kbCapture>[0])));
+    return out.id as string;
+  };
+
+  beforeAll(async () => {
+    fs.writeFileSync(path.join(repo, 'src', 'cogwheel.ts'), 'export const cog = 1;\n');
+    aBase = await cap(memberA, 'Cogwheel alpha base fact', `Cogwheel alpha base fact: the ${WORD3} stage meshes each tick, first observation.`);
+    aTop = await cap(memberA, `Cogwheel alpha follow-up fact ${TOP_WORD}`, `Cogwheel alpha follow-up fact: the ${WORD3} stage meshes each tick, second observation.`);
+    bLinked = await cap(memberB, 'Cogwheel bravo foreign fact', `Cogwheel bravo foreign fact: the ${WORD3} stage meshes each tick, bravo observation.`);
+    const db = requireSqliteProject((await getKbProviders(repo)).project, 'test');
+    // Assert the edges really exist, so the test cannot pass on an empty graph.
+    const raw = (db as unknown as { getDb(): { prepare(s: string): { all(): Array<{ from_id: string; to_id: string }>; run(...a: string[]): unknown } } }).getDb();
+    // AUDN links one new entry to one predecessor; pin B's foreign entry to the
+    // top hit explicitly, so a leak of another member's edge would show.
+    raw.prepare("INSERT OR IGNORE INTO links (from_id, to_id, link_type) VALUES (?, ?, 'refines')").run(bLinked, aTop);
+    raw.prepare("INSERT OR IGNORE INTO links (from_id, to_id, link_type) VALUES (?, ?, 'refines')").run(aTop, aBase);
+    const links = raw.prepare("SELECT from_id, to_id FROM links WHERE link_type = 'refines'").all();
+    const edge = (x: string, y: string) => links.some(l => (l.from_id === x && l.to_id === y) || (l.from_id === y && l.to_id === x));
+    expect(edge(aTop, aBase)).toBe(true);
+    expect(edge(aTop, bLinked)).toBe(true);
+  });
+
+  const related = async (member: string) => {
+    const out = JSON.parse(await as(member, () => kbQuery({ query: member === memberA ? TOP_WORD : WORD3, confidence: [...MIXED], expand_related: true, limit: 20 })));
+    return { l1: ids(out.l1_results), related: out.related_claims as Array<{ id: string; confidence: string; tags?: string[] }> };
+  };
+
+  it('returns the caller\'s own linked entries and never another member\'s', async () => {
+    const { l1, related: rel } = await related(memberA);
+    expect(l1).toEqual([aTop]);
+    // Non-vacuous: the graph has edges, so related_claims has the own entries.
+    expect(rel.length).toBeGreaterThan(0);
+    expect(ids(rel)).toEqual(expect.arrayContaining([aBase]));
+    expect(ids(rel)).not.toContain(bLinked);
+    for (const e of rel) expect(e.confidence === 'CONFIRMED' || e.tags?.includes(`member:${memberA}`)).toBe(true);
+  });
+
+  it('member B never sees member A\'s linked entries', async () => {
+    const { related: rel } = await related(memberB);
+    // B's hits are its own capture; its link to A's top hit is A's entry, filtered out.
+    expect(ids(rel)).not.toContain(aBase);
+    expect(ids(rel)).not.toContain(aTop);
   });
 });

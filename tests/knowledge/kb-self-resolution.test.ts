@@ -1,4 +1,21 @@
 import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest';
+import { exec } from 'node:child_process';
+
+// A REMOTE member's checkout bible is read over the member transport. Stub that
+// transport with a strategy that runs the exact commands the bible view builds
+// in a real local shell, against a temp folder standing in for the member's host
+// (same approach as kb-remote-member-bible-view.test.ts). Local members never
+// reach it.
+vi.mock('../../src/services/strategy.js', () => ({
+  getStrategy: () => ({
+    execCommand: (command: string) => new Promise((resolve, reject) => {
+      exec(command, { shell: '/bin/sh' }, (err, stdout, stderr) => {
+        if (err && typeof err.code !== 'number') { reject(new Error(`spawn /bin/sh ${String(err.code)}`)); return; }
+        resolve({ stdout, stderr, code: err ? (err.code as number) : 0 });
+      });
+    }),
+  }),
+}));
 
 // kb (self) resolution end to end over REAL HTTP: the real createHttpTransport,
 // the real registerAllTools per session, a real MCP SDK client, real kb_*
@@ -58,9 +75,9 @@ function register(key: string, workFolder: string): void {
   folders[key] = workFolder;
 }
 
-function registerRemote(key: string, gitRepos: string[]): void {
+function registerRemote(key: string, gitRepos: string[], workFolder = `/home/testuser/kb-self-${key}-${RUN}`): void {
   const agent = makeTestAgent({
-    friendlyName: `kb-self-${key}-${RUN}`, workFolder: `/home/testuser/kb-self-${key}-${RUN}`, gitRepos,
+    friendlyName: `kb-self-${key}-${RUN}`, workFolder, gitRepos, os: 'linux',
   });
   addAgent(agent);
   members[key] = agent.id;
@@ -111,7 +128,18 @@ beforeAll(async () => {
   register('plain', plain);
   register('noremote', gitRepo('noremote', false));
   // Remote members: the work folder is on another host (it does not exist here).
-  registerRemote('remote', [remoteFor('remote')]);
+  // The stand-in host folder of the 'remote' member holds its checkout bible.
+  const remoteHost = path.join(scratch, 'remote-host');
+  fs.mkdirSync(path.join(remoteHost, '.fleet'), { recursive: true });
+  fs.writeFileSync(path.join(remoteHost, '.fleet', 'kb-canonical.json'), JSON.stringify({
+    version: 2,
+    entries: [{
+      id: 'remote-bible-1', type: 'knowledge', title: 'Remote bible confirmed fact',
+      summary: 'Remote bible confirmed fact: the remote gateway is confirmed to retry.',
+      symbols: [], source_files: ['src/remote.ts'], confidence: 'CONFIRMED', updated_at: '2026-09-01T00:00:00.000Z',
+    }],
+  }), 'utf-8');
+  registerRemote('remote', [remoteFor('remote')], remoteHost);
   registerRemote('remotenone', []);
   handle = await createHttpTransport({ registerTools: registerAllTools, preferredPort: 0 });
 }, 30_000);
@@ -289,6 +317,29 @@ describe('kb (self): a REMOTE member session resolves the KB from its single kno
     // A local member on a different origin does not see it.
     const alphaHits = await callJson(await connect(members.alpha), 'kb_query', { query: 'gateway retries idempotent', confidence: ALL_TIERS });
     expect(alphaHits.l1_results.map((e: { id: string }) => e.id)).not.toContain(id);
+  });
+
+  it.skipIf(process.platform === 'win32')('a remote member\'s mixed-tier kb_query and kb_list return the bible CONFIRMED set plus its own captures, never another member\'s', async () => {
+    const seedDir = gitRepo('remotemixed', false);
+    execFileSync('git', ['remote', 'add', 'origin', remoteFor('remote')], { cwd: seedDir });
+    const providers = await getKbProviders(seedDir);
+    const seed = async (owner: string, title: string, symbol: string): Promise<string> => (await providers.project.capture({
+      type: 'knowledge', title, summary: `${title} gatewaymix batches.`, content: `${title} gatewaymix batches.`,
+      source_files: ['src/remotemixed.ts'], symbols: [symbol], tags: [`member:${owner}`], content_hash: '', content_hash_type: 'sha256',
+      flagged_for_review: false, author: 'test', source: 'session', confidence: 'INFERRED',
+    } as any)).id;
+    const own = await seed(members.remote, 'Gatewaymix remote own capture', 'gwMixOwn');
+    const foreign = await seed(members.alpha, 'Gatewaymix other member capture', 'gwMixForeign');
+
+    const remote = await connect(members.remote);
+    const hits = await callJson(remote, 'kb_query', { query: 'gatewaymix OR remote bible confirmed', confidence: ALL_TIERS, limit: 20 });
+    const queried = hits.l1_results.map((e: { id: string }) => e.id);
+    expect(queried).toEqual(expect.arrayContaining(['remote-bible-1', own]));
+    expect(queried).not.toContain(foreign);
+    const listed = await callJson(remote, 'kb_list', { confidence: ALL_TIERS });
+    const listedIds = listed.results.map((e: { id: string }) => e.id);
+    expect(listedIds).toEqual(expect.arrayContaining(['remote-bible-1', own]));
+    expect(listedIds).not.toContain(foreign);
   });
 
   it('a remote member with no known origin remote gets E-SELF-NO-REMOTE with the update_member remediation', async () => {

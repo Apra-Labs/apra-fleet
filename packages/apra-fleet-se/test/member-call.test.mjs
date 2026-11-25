@@ -366,6 +366,32 @@ describe('memberCall --kb-maintainer capability gate (remote)', () => {
         assert.strictEqual(order.length, before);
     });
 
+    test('inconclusive probe + call failing for another reason is not cached as supported: next call probes again', async () => {
+        const order = [];
+        const mc = createMemberCall({
+            fleetApi: makeFleetApi(order, {
+                probeText: 'bash: apra-fleet: command not found', probeError: true,
+                execText: 'ssh: connection reset by peer', execError: true,
+            }),
+            resolveTarget: linux,
+        });
+        await assert.rejects(() => mc.memberCall(remote, 'kb_promote', { id: 'e1', reason: 'r' }, { kbMaintainer: true }), (e) => e instanceof MemberCallError && !isTooOld(e));
+        assert.strictEqual(order.filter(e => e.op === 'probe').length, 1);
+        await assert.rejects(() => mc.memberCall(remote, 'kb_promote', { id: 'e2', reason: 'r' }, { kbMaintainer: true }), MemberCallError);
+        assert.strictEqual(order.filter(e => e.op === 'probe').length, 2, 'the member was probed again');
+    });
+
+    test('inconclusive probe + successful call caches supported: next call does not re-probe', async () => {
+        const order = [];
+        const mc = createMemberCall({
+            fleetApi: makeFleetApi(order, { probeText: 'bash: apra-fleet: command not found', probeError: true }),
+            resolveTarget: linux,
+        });
+        await mc.memberCall(remote, 'kb_promote', { id: 'e1', reason: 'r' }, { kbMaintainer: true });
+        await mc.memberCall(remote, 'kb_promote', { id: 'e2', reason: 'r' }, { kbMaintainer: true });
+        assert.strictEqual(order.filter(e => e.op === 'probe').length, 1);
+    });
+
     test('a capable member is probed once per member per factory; a call without the grant never probes', async () => {
         const order = [];
         const mc = createMemberCall({ fleetApi: makeFleetApi(order), resolveTarget: linux });
