@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "dfb66cdb8c3edd97b3eeef1c6639abb5e8450e2a",
     "branch": "main",
-    "entry_count": 220
+    "entry_count": 221
   },
   "entries": [
     {
@@ -2801,6 +2801,27 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-30T23:07:12.100Z"
+    },
+    {
+      "id": "976bb7cc-ec9b-400f-88c6-69cdab551bb3",
+      "type": "knowledge",
+      "title": "bd --db <dir> leaves <dir>.gate.lock beside the directory (embedded mode)",
+      "summary": "On bd 1.3.0 embedded mode, any `bd --db <dir> ...` call (even --readonly history) creates a lock file named `<dir>.gate.lock` next to the directory. Flatten recovery deletes it after its history checks, and pickLeftoverBackup only accepts exact <prefix><stamp> names so the lock is never taken for a backup.",
+      "symbols": [
+        "recoverFlattenedClone",
+        "pickLeftoverBackup",
+        "BD_DB_LOCK_SUFFIX"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/beads-flatten-recovery.mjs",
+        "packages/apra-fleet-se/test/beads-flatten-recovery-real-bd.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-25T10:45:13.390Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/beads-flatten-recovery.mjs": "85ee0163d92ed5288b25a1d4bef3a5b7711ed4dd",
+        "packages/apra-fleet-se/test/beads-flatten-recovery-real-bd.test.mjs": "cb9acc0d73068a5228f477fa468af585ae6e5e6d"
+      }
     },
     {
       "id": "98dd92b2-2606-4baa-8d60-fd3cd3dc78a0",
