@@ -26,6 +26,7 @@ import {
     clearTipProbeFailures,
 } from '../fleet-sprint/dolt-sync.mjs';
 import { DoltSyncTimeLimitError } from '../fleet-sprint/errors.mjs';
+import { FleetWorkflow } from '@apralabs/apra-fleet-workflow';
 
 beforeEach(() => {
     invalidateSyncRemoteCache();
@@ -194,6 +195,30 @@ test('the D-push is issued under the heartbeat with a client wait past total lim
     assert.ok(cmd.includes(SYNC_HEARTBEAT_PREFIX), `the push is wrapped: ${cmd}`);
     assert.equal(opts.timeout_s, 600, 'the silence limit is unchanged');
     assert.ok(opts.timeoutMs >= (2700 + 600) * 1000, `client wait ${opts.timeoutMs}ms outlasts total + silence`);
+});
+
+test('through FleetWorkflow.command the push payload carries the long client wait', async () => {
+    const payloads = [];
+    const ok = { content: [{ type: 'text', text: 'Exit code: 0\n' }], structuredContent: { exitCode: 0, stdout: '', stderr: '' } };
+    let pushed = 0;
+    const api = {
+        async executePrompt() { throw new Error('not used'); },
+        async executeCommand(payload) {
+            payloads.push(payload);
+            if (payload.command.includes(' ls-remote ')) {
+                const sha = (pushed > 0 ? 'b' : 'a').repeat(40);
+                return { content: [{ type: 'text', text: '' }], structuredContent: { exitCode: 0, stdout: `${sha}\trefs/dolt/data\n`, stderr: '' } };
+            }
+            if (logicalBdCommand(payload.command) === 'bd dolt push') pushed += 1;
+            return ok;
+        },
+    };
+    const wf = new FleetWorkflow(api);
+    await doltPushAfter('m1', { command: (c, o) => wf.command(c, o), checkSyncRemoteConfigured: async () => true, memberTarget: LINUX, lockProbeAfterMs: 0, sleep: async () => {} });
+    const push = payloads.find((p) => logicalBdCommand(p.command) === 'bd dolt push');
+    assert.ok(push, 'a push was sent');
+    assert.equal(push.timeout_s, 600);
+    assert.ok(push.timeoutMs >= (2700 + 600) * 1000, `client wait ${push.timeoutMs}ms reaches the fleet API`);
 });
 
 test('a timed-out D-push that landed is not retried', async () => {

@@ -831,7 +831,7 @@ function lockHeldSyncError(member, operation, step) {
 /** Remedy text of the typed total-time-limit sync failure. */
 export const DOLT_SYNC_TIME_LIMIT_REMEDY =
     'Remedy: shrink the beads Dolt store with beads maintenance (garbage-collect, prune closed issues, flatten history) so a sync '
-    + 'transfers less, then re-run the sync; or raise the sync total-time limit (maxTotalS) for runs on this link.';
+    + 'transfers less, then re-run the sync.';
 
 /**
  * The typed terminal error for a step that ran out of its total time limit
