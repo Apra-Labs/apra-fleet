@@ -56,7 +56,18 @@ function buildHarness({ beads, targetIssues = ['root'], failRestore = false, res
         if (rm) {
             const bead = db.beads.find((b) => b.id === rm[1]);
             if (bead && bead.parent === rm[2]) delete bead.parent;
+            if (bead && Array.isArray(bead.dependencies)) {
+                bead.dependencies = bead.dependencies.filter((d) => !(d.type === 'blocks' && d.depends_on_id === rm[2]));
+            }
             return '';
+        }
+        const add = /^bd dep add (\S+) (\S+)$/.exec(cmd);
+        if (add) {
+            if (restoreThrows) throw new Error('member unreachable');
+            if (failRestore) return opts.failSoft ? { ok: false, output: '', error: 'Error: issue not found' } : '';
+            const bead = db.beads.find((b) => b.id === add[1]);
+            bead.dependencies = [...(bead.dependencies || []), { issue_id: add[1], depends_on_id: add[2], type: 'blocks' }];
+            return opts.failSoft ? { ok: true, output: '', error: null } : '';
         }
         return '';
     };
@@ -64,7 +75,12 @@ function buildHarness({ beads, targetIssues = ['root'], failRestore = false, res
     const phase = scope.wrapPhase((title) => title);
     /** An edge dropped OUTSIDE this run (a beads merge on another clone). */
     const dropEdgeExternally = (child) => { delete db.beads.find((b) => b.id === child).parent; };
-    return { scope, db, command, phase, commandLog, logs, dropEdgeExternally };
+    /** A blocks edge dropped OUTSIDE this run (a beads merge keeping the other side's dependencies table). */
+    const dropBlocksExternally = (blocked, blocker) => {
+        const bead = db.beads.find((b) => b.id === blocked);
+        bead.dependencies = (bead.dependencies || []).filter((d) => !(d.type === 'blocks' && d.depends_on_id === blocker));
+    };
+    return { scope, db, command, phase, commandLog, logs, dropEdgeExternally, dropBlocksExternally };
 }
 
 const TREE = [
@@ -316,5 +332,99 @@ describe('parent-link guard: reverted reparents', () => {
         assert.ok(h.logs.some((l) => l.startsWith('ERROR: parent-child link reverted') && l.includes("'leaf-b1'")), h.logs.join('\n'));
         assert.ok(!ready.includes('feat-a'), `feat-a keeps its moved-in child: never a leaf (${ready})`);
         assert.equal(h.db.beads.find((b) => b.id === 'leaf-b1').parent, 'feat-a');
+    });
+});
+
+// Blocks edges (A blocked-by B) ride the same ledger: a lossy merge drops them
+// exactly like parent links, and a dropped one releases A before B is done.
+const BLOCKS_TREE = [
+    { id: 'root', status: 'open', issue_type: 'bug' },
+    { id: 'task-x', parent: 'root', status: 'open', issue_type: 'task', dependencies: [{ issue_id: 'task-x', depends_on_id: 'task-y', type: 'blocks' }] },
+    { id: 'task-y', parent: 'root', status: 'open', issue_type: 'task' },
+    { id: 'task-z', parent: 'root', status: 'open', issue_type: 'task', dependencies: [{ issue_id: 'task-z', depends_on_id: 'task-y', type: 'blocks' }] },
+    { id: 'outsider', status: 'open', issue_type: 'task' },
+    { id: 'outsider-2', status: 'open', issue_type: 'task', dependencies: [{ issue_id: 'outsider-2', depends_on_id: 'outsider', type: 'blocks' }] },
+];
+
+describe('parent-link guard: blocks edges', () => {
+    test('a vanished blocks edge is reported with an ERROR and restored with bd dep add', async () => {
+        const h = buildHarness({ beads: BLOCKS_TREE });
+        await h.scope.fetchAllBeadsShared();
+        h.dropBlocksExternally('task-x', 'task-y');
+        h.phase('Develop C1 R2');
+        const after = await h.scope.fetchAllBeadsShared();
+
+        assert.deepEqual(h.commandLog.filter((c) => c.startsWith('bd dep add')), ['bd dep add task-x task-y']);
+        const errors = h.logs.filter((l) => l.startsWith('ERROR: blocks link vanished'));
+        assert.equal(errors.length, 1, h.logs.join('\n'));
+        assert.ok(errors[0].includes("'task-x'") && errors[0].includes("'task-y'"), errors[0]);
+        assert.ok(h.db.beads.find((b) => b.id === 'task-x').dependencies.some((d) => d.depends_on_id === 'task-y' && d.type === 'blocks'));
+        assert.ok(after.find((b) => b.id === 'task-x').dependencies.some((d) => d.depends_on_id === 'task-y' && d.type === 'blocks'),
+            'this phase snapshot already carries the restored blocks edge');
+    });
+
+    test('a blocks edge this run removed (bd dep remove, e.g. the cycle auto-repair) is NOT restored', async () => {
+        const h = buildHarness({ beads: BLOCKS_TREE });
+        await h.scope.fetchAllBeadsShared();
+        await h.command('bd dep remove task-x task-y', { member_name: 'backlog-member' });
+        h.phase('Plan C2 R1');
+        await h.scope.fetchAllBeadsShared();
+        assert.deepEqual(h.commandLog.filter((c) => c.startsWith('bd dep add')), []);
+        assert.ok(!h.logs.some((l) => l.includes('blocks link')), h.logs.join('\n'));
+        assert.ok(!h.scope.knownParentIds().has('task-y'));
+    });
+
+    test('a blocks edge whose endpoint was deleted is dropped with a WARN, never restored', async () => {
+        const h = buildHarness({ beads: BLOCKS_TREE });
+        await h.scope.fetchAllBeadsShared();
+        h.db.beads = h.db.beads.filter((b) => b.id !== 'task-y');
+        h.db.beads.find((b) => b.id === 'task-x').dependencies = [];
+        h.db.beads.find((b) => b.id === 'task-z').dependencies = [];
+        h.phase('Develop C1 R2');
+        await h.scope.fetchAllBeadsShared();
+        assert.deepEqual(h.commandLog.filter((c) => c.startsWith('bd dep add')), []);
+        const warns = h.logs.filter((l) => l.startsWith('WARN: blocks link'));
+        assert.equal(warns.length, 2, h.logs.join('\n'));
+        assert.ok(warns.every((w) => w.includes("the blocker 'task-y' is") && w.includes('deleted')), warns.join('\n'));
+        // Forgotten: a later snapshot does not WARN again.
+        h.phase('Develop C1 R3');
+        await h.scope.fetchAllBeadsShared();
+        assert.equal(h.logs.filter((l) => l.startsWith('WARN: blocks link')).length, 2);
+    });
+
+    test('an out-of-scope blocks edge is not tracked', async () => {
+        const h = buildHarness({ beads: BLOCKS_TREE });
+        await h.scope.fetchAllBeadsShared();
+        h.dropBlocksExternally('outsider-2', 'outsider');
+        h.phase('Develop C1 R2');
+        await h.scope.fetchAllBeadsShared();
+        assert.deepEqual(h.commandLog.filter((c) => c.startsWith('bd dep add')), []);
+    });
+
+    test('a failed blocks restore is loud: ERROR line and a ParentLinkRestoreError naming the edge', async () => {
+        const h = buildHarness({ beads: BLOCKS_TREE, failRestore: true });
+        await h.scope.fetchAllBeadsShared();
+        h.dropBlocksExternally('task-z', 'task-y');
+        h.phase('Develop C1 R2');
+        await assert.rejects(() => h.scope.fetchAllBeadsShared(), (err) => {
+            assert.ok(err instanceof ParentLinkRestoreError, String(err));
+            assert.deepEqual(err.edges, [{ kind: 'blocks', blocked: 'task-z', blocker: 'task-y' }]);
+            assert.match(err.message, /blocks link 'task-z' blocked by 'task-y'/);
+            assert.match(err.message, /bd dep add task-z task-y/);
+            return true;
+        });
+        assert.ok(h.logs.some((l) => l.startsWith('ERROR: could not restore vanished beads link')), h.logs.join('\n'));
+    });
+
+    test('ledger: parseRunEdgeChange reads bd dep add; a run re-add clears an earlier run removal', () => {
+        assert.deepEqual(parseRunEdgeChange('bd dep add a b'), { kind: 'add', a: 'a', b: 'b' });
+        const ledger = createParentLinkLedger();
+        const beads = [{ id: 'a', dependencies: [{ depends_on_id: 'b', type: 'blocks' }] }, { id: 'b' }];
+        ledger.observe(beads, new Set(['a', 'b']));
+        ledger.noteRunEdgeChange(parseRunEdgeChange('bd dep remove a b'));
+        const lossy = [{ id: 'a' }, { id: 'b' }];
+        assert.deepEqual(ledger.findVanishedLinks(lossy), [], 'run-removed: not owed');
+        ledger.noteRunEdgeChange(parseRunEdgeChange('bd dep add a b'));
+        assert.deepEqual(ledger.findVanishedLinks(lossy), [{ kind: 'blocks', blocked: 'a', blocker: 'b' }], 'run re-added it: owed again');
     });
 });

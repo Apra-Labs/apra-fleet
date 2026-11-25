@@ -40,9 +40,31 @@
 //     ordinary leaf/verify rules instead of sitting open for the whole run.
 //   - An id once in scope stays in scope.
 //
+// BLOCKS EDGES (same merge loss, same rules): a lossy `bd dolt pull` keeps
+// one side's dependency table wholesale, so it drops `blocks` edges exactly
+// like parent-child ones -- and a dropped blocks edge silently releases a
+// bead before its prerequisite is done. Every in-scope blocks edge (either
+// endpoint in scope; A blocked-by B) seen in a snapshot is recorded too:
+//   - one this run removed through the command path (`bd dep remove|rm`,
+//     including the pre-sprint blocks-cycle auto-repair) is never restored;
+//   - one whose endpoint was deleted is forgotten with a WARN;
+//   - one that vanished otherwise is restored with `bd dep add <A> <B>` and
+//     an ERROR line.
+//
+// INVARIANT H5 (enforced together with beads-scope.mjs and dolt-sync.mjs):
+// an in-scope parent-child or blocks link this run did not remove is never
+// absent from what a beads push publishes. This module decides which links
+// are owed; beads-scope.mjs restores them (on every fresh snapshot and, via
+// verifyLinksBeforePush, on the pushing clone after each reconcile pull);
+// dolt-sync.mjs doltPushAfter refuses to push until that verify succeeded.
+//
 // ASCII only.
 
-/** Thrown when a vanished parent-child link could not be restored. */
+/**
+ * Thrown when a vanished parent-child or blocks link could not be restored
+ * (or the links could not be verified before a push). `edges` lists every
+ * vanished edge, each tagged `kind: 'parent-child'` or `kind: 'blocks'`.
+ */
 export class ParentLinkRestoreError extends Error {
     constructor(message, { edges = [], cause } = {}) {
         super(message);
@@ -59,13 +81,15 @@ const hasParent = (b) => b && b.parent !== undefined && b.parent !== null && b.p
 const UPDATE_PARENT_RE = /^bd\s+update\s+(\S+)\b.*?\s--parent(?:=|\s+)(?:"([^"]*)"|'([^']*)'|(\S*))/i;
 // `bd dep remove|rm <a> <b>` -- drops whatever edge joins the two.
 const DEP_REMOVE_RE = /^bd\s+dep\s+(?:remove|rm)\s+(\S+)\s+(\S+)/i;
+// `bd dep add <a> <b>` -- (re)adds the edge `a` blocked-by `b`.
+const DEP_ADD_RE = /^bd\s+dep\s+add\s+(\S+)\s+(\S+)/i;
 
 /**
  * Parse a LOGICAL bd command (env prefix already stripped) for a
  * parent-child change it makes.
  *
  * @param {string} cmd
- * @returns {{ kind: 'reparent', child: string, parent: string } | { kind: 'remove', a: string, b: string } | null}
+ * @returns {{ kind: 'reparent', child: string, parent: string } | { kind: 'remove', a: string, b: string } | { kind: 'add', a: string, b: string } | null}
  *   reparent with parent '' means "parent removed".
  */
 export function parseRunEdgeChange(cmd) {
@@ -78,7 +102,54 @@ export function parseRunEdgeChange(cmd) {
     }
     const rm = DEP_REMOVE_RE.exec(text);
     if (rm) return { kind: 'remove', a: rm[1], b: rm[2] };
+    const add = DEP_ADD_RE.exec(text);
+    if (add) return { kind: 'add', a: add[1], b: add[2] };
     return null;
+}
+
+/** A bead's blocks prerequisites (ids it is blocked by), across bd's dependency shapes. */
+export function blocksPrereqsOf(bead) {
+    const deps = bead && Array.isArray(bead.dependencies) ? bead.dependencies : [];
+    const out = [];
+    for (const d of deps) {
+        if (typeof d === 'string') { if (d) out.push(d); continue; }
+        if (!d || typeof d !== 'object') continue;
+        const type = d.type ?? d.dependency_type;
+        if (type !== undefined && type !== 'blocks') continue;
+        const id = d.depends_on_id ?? d.id;
+        if (id !== undefined && id !== null && id !== '') out.push(String(id));
+    }
+    return out;
+}
+
+/** The ERROR line for one vanished blocks edge that is being restored. */
+export function formatVanishedBlocksLog({ blocked, blocker }) {
+    return `ERROR: blocks link vanished from the beads database: '${blocked}' is no longer blocked by '${blocker}', ` +
+        'and this run did not remove it (a beads merge or another writer dropped it). ' +
+        `Restoring it with 'bd dep add ${blocked} ${blocker}'.`;
+}
+
+/** The WARN line for one recorded blocks edge dropped because an endpoint was deleted. */
+export function formatDroppedBlocksLog({ blocked, blocker, reason }) {
+    const gone = reason === 'blocker-missing' ? `the blocker '${blocker}' is`
+        : reason === 'blocked-missing' ? `the blocked bead '${blocked}' is`
+            : `both '${blocked}' and '${blocker}' are`;
+    return `WARN: blocks link '${blocked}' blocked by '${blocker}' is no longer tracked: ${gone} no longer in the beads database ` +
+        '(deleted). This is not a lost link, so it is not restored.';
+}
+
+/** The restore command for one vanished edge of either kind. */
+export function restoreCommandFor(edge) {
+    return edge.kind === 'blocks'
+        ? `bd dep add ${edge.blocked} ${edge.blocker}`
+        : `bd update ${edge.child} --parent ${edge.parent}`;
+}
+
+/** A short human name for one edge of either kind. */
+export function describeEdge(edge) {
+    return edge.kind === 'blocks'
+        ? `blocks link '${edge.blocked}' blocked by '${edge.blocker}'`
+        : `parent-child link '${edge.child}' -> parent '${edge.parent}'`;
 }
 
 /** The ERROR line for one vanished (or reverted) edge that is being restored. */
@@ -124,6 +195,8 @@ export function createParentLinkLedger() {
     const knownScope = new Set();
     /** child -> the parent recorded before its current edge (moved away from this run). */
     const earlierParent = new Map();
+    /** edgeKey(blocked, blocker) -> { blocked, blocker } for every in-scope blocks edge seen. */
+    const blocks = new Map();
 
     /**
      * Record a snapshot's in-scope edges and ids.
@@ -133,6 +206,11 @@ export function createParentLinkLedger() {
     function observe(allBeads, scopeIds) {
         for (const id of scopeIds) knownScope.add(id);
         for (const b of (allBeads || [])) {
+            if (!b) continue;
+            for (const blocker of blocksPrereqsOf(b)) {
+                if (!scopeIds.has(b.id) && !scopeIds.has(blocker)) continue;
+                blocks.set(edgeKey(b.id, blocker), { blocked: b.id, blocker });
+            }
             if (!hasParent(b) || !scopeIds.has(b.id)) continue;
             edges.set(b.id, b.parent);
         }
@@ -144,6 +222,11 @@ export function createParentLinkLedger() {
      */
     function noteRunEdgeChange(change) {
         if (!change) return;
+        if (change.kind === 'add') {
+            // The run (re)added `a` blocked-by `b`: it no longer counts as removed.
+            removedByRun.delete(edgeKey(change.a, change.b));
+            return;
+        }
         if (change.kind === 'reparent') {
             const prev = edges.get(change.child);
             if (prev !== undefined && prev !== change.parent) {
@@ -199,7 +282,22 @@ export function createParentLinkLedger() {
             if (removedByRun.has(edgeKey(child, parent))) { removed.push({ child, parent }); continue; }
             vanished.push({ child, parent });
         }
-        return { vanished, dropped, moved, removed };
+        const vanishedBlocks = [];
+        const droppedBlocks = [];
+        const removedBlocks = [];
+        for (const [key, { blocked, blocker }] of blocks) {
+            const bead = byId.get(blocked);
+            const blockerPresent = byId.has(blocker);
+            if (!bead || !blockerPresent) {
+                const reason = !bead && !blockerPresent ? 'both-missing' : (!bead ? 'blocked-missing' : 'blocker-missing');
+                droppedBlocks.push({ kind: 'blocks', blocked, blocker, reason, key });
+                continue;
+            }
+            if (blocksPrereqsOf(bead).includes(blocker)) continue;
+            if (removedByRun.has(key)) { removedBlocks.push({ key }); continue; }
+            vanishedBlocks.push({ kind: 'blocks', blocked, blocker });
+        }
+        return { vanished, dropped, moved, removed, vanishedBlocks, droppedBlocks, removedBlocks };
     }
 
     /**
@@ -207,12 +305,15 @@ export function createParentLinkLedger() {
      * endpoint, edges whose child moved to another parent and edges this
      * run itself removed are forgotten (their old parent stops being a
      * parent once no recorded edge points at it). Returns the vanished
-     * edges the caller must restore and the dropped ones it must WARN about.
+     * edges the caller must restore and the dropped ones it must WARN about,
+     * for parent-child edges and for blocks edges alike.
      * @param {object[]} allBeads
-     * @returns {{ vanished: Array<{child: string, parent: string}>, dropped: Array<{child: string, parent: string, reason: string}>, moved: Array<{child: string, from: string, to: string}> }}
+     * @returns {{ vanished: Array<{child: string, parent: string}>, dropped: Array<{child: string, parent: string, reason: string}>, moved: Array<{child: string, from: string, to: string}>, vanishedBlocks: Array<{kind: 'blocks', blocked: string, blocker: string}>, droppedBlocks: Array<{kind: 'blocks', blocked: string, blocker: string, reason: string}> }}
      */
     function reconcile(allBeads) {
-        const { vanished, dropped, moved, removed } = classify(allBeads);
+        const { vanished, dropped, moved, removed, vanishedBlocks, droppedBlocks, removedBlocks } = classify(allBeads);
+        for (const d of droppedBlocks) blocks.delete(d.key);
+        for (const r of removedBlocks) blocks.delete(r.key);
         for (const d of dropped) edges.delete(d.child);
         // A moved child is re-recorded under its new parent by observe() when in scope.
         for (const m of moved) {
@@ -220,7 +321,11 @@ export function createParentLinkLedger() {
             earlierParent.set(m.child, m.from);
         }
         for (const r of removed) edges.delete(r.child);
-        return { vanished, dropped, moved };
+        return {
+            vanished, dropped, moved,
+            vanishedBlocks,
+            droppedBlocks: droppedBlocks.map(({ key, ...rest }) => rest),
+        };
     }
 
     return {
@@ -229,6 +334,19 @@ export function createParentLinkLedger() {
         reconcile,
         /** Recorded edges to restore: vanished (both endpoints present, child parentless, not removed by this run) or reverted onto a parent the child was moved away from. Read-only. */
         findVanished: (allBeads) => classify(allBeads).vanished,
+        /**
+         * Every recorded link of either kind owed back to `allBeads`, read-only:
+         * parent-child edges tagged kind 'parent-child', blocks edges kind
+         * 'blocks'. Used by the verify-before-push check on the pushing clone.
+         */
+        findVanishedLinks: (allBeads) => {
+            const c = classify(allBeads);
+            return [...c.vanished.map((e) => ({ kind: 'parent-child', ...e })), ...c.vanishedBlocks];
+        },
+        /** Whether any link (parent-child or blocks) is recorded -- nothing to verify when false. */
+        hasRecordedLinks: () => edges.size > 0 || blocks.size > 0,
+        /** Every recorded blocks edge -- diagnostics/tests. */
+        knownBlocksEdges: () => [...blocks.values()].map((e) => ({ ...e })),
         /** Every bead some recorded edge still points at. */
         knownParentIds: () => new Set(edges.values()),
         /** Every id seen in scope this run (monotone). */

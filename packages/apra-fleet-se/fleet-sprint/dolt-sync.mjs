@@ -90,6 +90,7 @@ import { bdSyncCommandFor, normalizeMemberTarget, UNRESOLVED_MEMBER_TARGET } fro
 import { buildLockHolderProbe, parseLockHolderProbe, describeLockProcess } from './beads-lock-probe.mjs';
 import { classifyFailure, toDoltVerdict, commandBinary } from './vcs-module.mjs';
 import { buildSettleCallback } from './dolt-settle.mjs';
+import { ParentLinkRestoreError } from './parent-link-guard.mjs';
 
 // ---------------------------------------------------------------------------
 // Dolt sync brackets: D-pull / D-push
@@ -2043,16 +2044,44 @@ export async function preflightBeadsHealthGate(member, opts = {}) {
  * surfaced as BEADS_SYNC_CONFLICT; when absent the divergence propagates
  * immediately (pre-settle behavior).
  *
+ * `opts.verifyLinks(member)` is the optional VERIFY-BEFORE-PUSH hook
+ * (beadsScope.verifyLinksBeforePush, wired through git-sync.mjs). Invariant
+ * H5: an in-scope parent-child or blocks link this run did not remove is
+ * never absent from what a beads push publishes. A conflicted reconcile
+ * `bd dolt pull` on the pinned bd can leave the merged links uncommitted
+ * in the working set (so the push publishes a commit without them) or drop
+ * them outright, so after EVERY reconcile pull in this push path (each race
+ * cycle and the second, auth-shaped reconcile) and BEFORE the re-push this
+ * function first commits the merged working set
+ * (DOLT_COMMIT_MERGED_WORKING_SET_CMD), then runs the hook, which restores
+ * any link still missing on this clone. When it throws (a restore failed, or the links
+ * could not be read) NO re-push is issued and that typed error
+ * (ParentLinkRestoreError) propagates; the member is then remembered as
+ * owing a verify, so its next doltPushAfter runs the hook before its FIRST
+ * push too (the lossy merge is already in its local clone and a plain push
+ * would publish it). Without the option this function behaves exactly as
+ * before.
+ *
  * @param {string} member
- * @param {{ command: Function, pushBeads?: boolean, log?: Function, maxTransientRetries?: number, mutex?: { acquire: Function, release: Function }, sprintId?: string, checkSyncRemoteConfigured?: Function, onAuthFailure?: Function, settle?: () => Promise<{ ok: boolean, resolvedTables?: string[] }> }} opts
+ * @param {{ command: Function, pushBeads?: boolean, log?: Function, maxTransientRetries?: number, mutex?: { acquire: Function, release: Function }, sprintId?: string, checkSyncRemoteConfigured?: Function, onAuthFailure?: Function, settle?: () => Promise<{ ok: boolean, resolvedTables?: string[] }>, verifyLinks?: (member: string) => Promise<unknown> }} opts
  * @returns {Promise<{ ok: true, member: string, pushed: boolean, reconciled: boolean, skipped?: true, reason?: 'no-remote', recovered?: true, settledTables?: string[] }>}
  */
+/**
+ * Members whose last verify-before-push failed (see doltPushAfter's
+ * `verifyLinks`): their clone may still lack a link, so their next push
+ * verifies before the first push attempt as well.
+ */
+const membersOwingLinkVerify = new Set();
+
+/** The commit doltPushAfter's verify-before-push issues before reading links (see verifyLinksBeforePush there). */
+export const DOLT_COMMIT_MERGED_WORKING_SET_CMD = 'bd dolt commit -m "fleet-sprint: commit merged working set before push"';
+
 export async function doltPushAfter(member, opts = {}) {
     // `maxTransientRetries` is deliberately NOT defaulted here -- see
     // doltPullBefore. `remoteTipFingerprint` is accepted for call-site parity
     // with doltPullBefore but has nothing to switch off on the push side any
     // more: a push never probes and never records (it only forgets).
-    const { command, pushBeads = true, log = () => {}, maxTransientRetries, mutex, sprintId, checkSyncRemoteConfigured, onAuthFailure, sleep, backoffBaseMs, timeoutS, settle, renewIntervalMs = DOLT_MUTEX_RENEW_INTERVAL_MS, spawnOutageBudgetMs, now, memberTarget, lockProbeAfterMs, lockProbeTimer, maxRaceReconciles, random = Math.random } = opts;
+    const { command, pushBeads = true, log = () => {}, maxTransientRetries, mutex, sprintId, checkSyncRemoteConfigured, onAuthFailure, sleep, backoffBaseMs, timeoutS, settle, renewIntervalMs = DOLT_MUTEX_RENEW_INTERVAL_MS, spawnOutageBudgetMs, now, memberTarget, lockProbeAfterMs, lockProbeTimer, maxRaceReconciles, random = Math.random, verifyLinks } = opts;
     // Bounded race-reconcile loop (see doltPushGuarded): cycle count and the
     // jittered wait before each cycle, drawn from the injectable `sleep`.
     const raceMaxReconciles = Number.isInteger(maxRaceReconciles) && maxRaceReconciles > 0 ? maxRaceReconciles : DOLT_PUSH_RACE_MAX_RECONCILES;
@@ -2240,7 +2269,50 @@ export async function doltPushAfter(member, opts = {}) {
         return result;
     }
 
+    /**
+     * Invariant H5 (see the `verifyLinks` note above): after a pull inside
+     * this push path and before the next push, restore every vanished
+     * in-scope link on this clone. A throw aborts the push (no push command
+     * is issued after it) and leaves the member owing a verify.
+     */
+    async function verifyLinksBeforePush(when) {
+        if (typeof verifyLinks !== 'function') return;
+        try {
+            // First COMMIT the merged working set. Measured on the pinned bd
+            // (1.3.x, embedded): after a conflicted `bd dolt pull` that
+            // auto-merges, the merged dependency rows (parent-child AND blocks
+            // links) sit in the clone's working set UNCOMMITTED -- `bd list`
+            // on this clone shows every link, yet `bd dolt push` publishes
+            // only the commit, which lacks them, so every other clone loses
+            // them on its next pull. A link read alone can never see that
+            // loss; committing first makes what is pushed equal what is read.
+            // A clean working set answers "Nothing to commit." with exit 0.
+            const commit = await runDoltStep({
+                command, member, cmd: DOLT_COMMIT_MERGED_WORKING_SET_CMD,
+                label: `D-push commit of the merged working set for '${member}'`, log, maxTransientRetries, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now, memberTarget, lockProbeAfterMs, lockProbeTimer, onAbandonedAttempt,
+            });
+            if (!commit.ok) {
+                const typed = typedStepError(member, 'commit of the merged working set before push', commit);
+                throw typed || new ParentLinkRestoreError(
+                    `ERROR: could not commit member '${member}' merged beads working set before its push: ${commit.error}. ` +
+                    'Links a conflicted pull merged into the working set would not be published, so the push is aborted; ' +
+                    `commit it by hand with '${DOLT_COMMIT_MERGED_WORKING_SET_CMD}' on that clone, or let the next push retry.`,
+                    { edges: [] },
+                );
+            }
+            await verifyLinks(member);
+        } catch (err) {
+            membersOwingLinkVerify.add(member);
+            log(`[Dolt] D-push for member '${member}' ABORTED ${when}: the beads links could not be verified/restored, so the push is not issued and nothing lossy is published. ${(err && err.message) || err}`);
+            throw err;
+        }
+        membersOwingLinkVerify.delete(member);
+    }
+
     async function doltPushGuarded() {
+    if (membersOwingLinkVerify.has(member)) {
+        await verifyLinksBeforePush('before its first push (an earlier verify for this member failed)');
+    }
     let push = await runDoltStep({
         command, member, cmd: 'bd dolt push',
         label: `D-push for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now, memberTarget, lockProbeAfterMs, lockProbeTimer, onAbandonedAttempt,
@@ -2352,6 +2424,10 @@ export async function doltPushAfter(member, opts = {}) {
             );
         }
 
+        // H5: the reconcile pull may have dropped links; restore them on
+        // this clone BEFORE the re-push publishes the merge.
+        await verifyLinksBeforePush(`after reconcile pull ${reconcileCycles}`);
+
         // The remote moved under the rejected push (that is why it was
         // rejected), so the landed check's pre-push tip is re-read now:
         // compared against the stale one, another writer's push would read
@@ -2442,6 +2518,9 @@ export async function doltPushAfter(member, opts = {}) {
                 { member, doltOutput: secondReconcile.error },
             );
         }
+
+        // H5: same verify as every reconcile cycle above.
+        await verifyLinksBeforePush('after the second reconcile pull');
 
         landedCheck = await beginDoltPushLandedCheck(member, { command, log });
         push = await runDoltStep({

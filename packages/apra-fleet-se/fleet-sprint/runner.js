@@ -2151,6 +2151,9 @@ async function runSprintCycle(context) {
         onAuthFailure, resolveMemberProvider: resolveMemberVcsProvider, ensureVcsAuthFresh,
         warnWorkflowsPermissionMissing,
         syncMemberBefore, syncMemberAfter, syncMemberAfterOrdered, isNoMutationDispatchFailure,
+        // Verify-before-push (invariant H5, parent-link-guard.mjs): every
+        // D-push restores links a reconcile pull dropped before re-pushing.
+        verifyLinks: (member) => beadsScope.verifyLinksBeforePush(member),
     });
     // Local alias so this file's dispatch brackets keep their existing shape:
     // withGitSync member, pushCode, dispatch thunk, options.
