@@ -3,7 +3,9 @@ import { z } from 'zod';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getProvider } from '../providers/index.js';
-import { getAgentOS, getAgentShell } from '../utils/agent-helpers.js';
+import { getAgentOS, getAgentShell, getStoredPid } from '../utils/agent-helpers.js';
+import { inFlightAgents } from '../services/in-flight-agents.js';
+import { parseFleetProcessCheck } from '../services/session-status.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { updateAgent } from '../services/registry.js';
 import type { Agent } from '../types.js';
@@ -243,7 +245,23 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
     lastLlmActivityAt: agent.lastLlmActivityAt ?? null,
   };
 
-  if (agent.llmProvider === 'none' || !provider.processName) {
+  // Busy has two sources, reported in session.statusSource with the pid that
+  // produced it (session.busyPid, null when none was captured):
+  //   'in-flight-dispatch' -- this server has an execute_prompt running for the
+  //                           member (inFlightAgents; pid = the stored dispatch pid);
+  //   'fleet-process'      -- the member-side probe found a fleet-launched CLI
+  //                           process (fleetProcessCheck: dispatch marker plus this
+  //                           member's session id or quoted work folder), e.g. a
+  //                           dispatch started by another fleet server.
+  // Both are null when the member is not busy. Unrelated processes of the
+  // same CLI name never count as busy.
+  session.statusSource = null;
+  session.busyPid = null;
+  if (inFlightAgents.has(agent.id)) {
+    session.status = 'busy';
+    session.statusSource = 'in-flight-dispatch';
+    session.busyPid = getStoredPid(agent.id) ?? null;
+  } else if (agent.llmProvider === 'none' || !provider.processName) {
     session.status = 'idle';
   } else {
     try {
@@ -251,13 +269,12 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
         cmds.fleetProcessCheck(agent.workFolder, agent.sessionId, provider.processName),
         10000,
       );
-      const output = busyCheck.stdout.trim().toLowerCase();
-      if (output.includes('fleet-busy')) {
+      const probe = parseFleetProcessCheck(busyCheck.stdout);
+      if (probe.state === 'fleet-busy') {
         session.status = 'busy';
-        if (agent.lastLlmActivityAt) {
-          session.idleSecs = Math.round((Date.now() - new Date(agent.lastLlmActivityAt).getTime()) / 1000);
-        }
-      } else if (output.includes('other-busy')) {
+        session.statusSource = 'fleet-process';
+        session.busyPid = probe.pid ?? null;
+      } else if (probe.state === 'other-busy') {
         session.status = `idle (unrelated ${provider.name} processes running)`;
       } else {
         session.status = 'idle';
@@ -265,6 +282,9 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
     } catch {
       session.status = 'unknown';
     }
+  }
+  if (session.status === 'busy' && agent.lastLlmActivityAt) {
+    session.idleSecs = Math.round((Date.now() - new Date(agent.lastLlmActivityAt).getTime()) / 1000);
   }
   result.session = session;
 
@@ -346,7 +366,8 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
   const connStatus = 'online';
   const authStr = Array.isArray(cli.auth) ? (cli.auth as string[]).join(', ') : String(cli.auth);
   const sessId = agent.sessionId ? agent.sessionId.substring(0, 8) + '...' : 'none';
-  const sessStatus = String(session.status ?? 'unknown');
+  const sessStatus = String(session.status ?? 'unknown')
+    + (session.statusSource ? ` via ${session.statusSource}${session.busyPid != null ? ` pid=${session.busyPid}` : ''}` : '');
 
   const icon = agent.icon ?? DEFAULT_ICON;
   const userStr = agent.username ? ` | user=${agent.username}` : '';

@@ -433,6 +433,18 @@ session (`session.id`, the current session ID or `null`), work folder
 
 `fleetMcp` (`{state, reason?, version?, checkedAt, detail?, unverified?, fleetInstalledAt?, installFailure?, beads?, port?, portSource?, replacedFullInstall?, manualInstall?, sameCoreFallback?}` or `null`) is the last recorded status of the member's own apra-fleet MCP server; `fleetInstalledAt` is the ISO 8601 time this fleet's own install last succeeded on the member (absent if it never did). `installFailure` (`{reason, detail?}`) is set when a requested upgrade failed before the member was touched and the older install stayed in use (also named in `detail`; `fleetMcpFix` then carries the upgrade fix even when `available`). `fleetMcpFix` (`string` or `null`) is a one-line operator fix, present when `fleetMcp` is `unavailable` or `unverified` and `null` when the member's KB/code tools are usable; the text output prints it as a `fleetMcp fix:` line. `beads` (`{state: "missing"|"broken"|"version-mismatch", detail, fix}`) is present only when the bd CLI is not usable on a remote member (neither on its PATH nor in `<home>/.apra-fleet/bin`), or runs but is off the pinned major.minor (`version-mismatch`, `E-BD-VERSION-MISMATCH`; re-probed on every refresh); it is independent of `state`, and the text output prints it as `bd=` and `bd fix:` lines. `port` is the remote member install's port from its member-install marker (`portSource` `"marker"`, or `"default"` when the install recorded none). `replacedFullInstall` (`{previousVersion, removed, backupPath}`) is set by the probe that replaced a full install with a member install (`fleet_install` `"replace-full"`): the replaced version, what was removed or moved, and the timestamped backup directory on the member. `manualInstall` (`string`) is set when a requested apra-fleet install/upgrade on the member did not happen (any install reason, e.g. `no-matching-release`): the OS-correct manual steps (anonymous release download URL, SHA-256 check against the release SHA256SUMS, member-mode install, then `update_member`). `sameCoreFallback` (`{tag, wantedBuild, why}`) is set when no release carries the exact orchestrator build and the member had no apra-fleet or an older core, so the signed stable release of the same core was installed instead (a NOTICE in the register/update result); never across cores.
 
+`session.status` is `busy`, `idle`, `idle (unrelated <cli> processes running)` or `unknown`
+(probe failed). `session.statusSource` names the signal that produced `busy` and is `null`
+otherwise: `"in-flight-dispatch"` (this server has an `execute_prompt` running for the member) or
+`"fleet-process"` (the member-side probe found a fleet-launched CLI process: its command line
+carries the dispatch prompt file `.fleet-task.md` plus the member's session id or its quoted work
+folder -- e.g. a dispatch started by another fleet server). `session.busyPid` is the pid behind
+that signal (the stored dispatch pid, or the matched process), `null` when none was captured.
+Processes of the same CLI name that fleet did not launch (an operator's own session in the work
+folder, a sibling folder sharing the path prefix, a provider helper carrying the workspace path)
+never make a member busy. The compact output prints it as `session=<id> (busy via <source>
+pid=<pid>)`. `list_members` reports no busy state; use `member_detail` or `fleet_status`.
+
 Returns a plain multi-line text summary for `"compact"`, or the structured
 `MemberDetailResult` object for `"json"` -- `server_version`, `name`, `icon`,
 `id`, `type`, `host`, `username?`, `os`, `shell?`, `folder`,

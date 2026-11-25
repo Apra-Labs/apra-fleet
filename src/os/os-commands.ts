@@ -15,6 +15,17 @@ export const GIT_LS_REMOTE_OK_MARKER = 'FLEET_GIT_LS_REMOTE_OK';
  */
 export const FLEET_ENV_MARKER = 'apra-fleet-managed';
 
+/**
+ * The prompt file every execute_prompt dispatch names in the CLI instruction
+ * ("Your task is described in .fleet-task.md ..."), so it appears in the argv
+ * of both the dispatched CLI process and its wrapper shell. fleetProcessCheck
+ * keys on it to tell a fleet-launched CLI apart from any other process of the
+ * same name (an operator's own interactive session, a provider helper that
+ * carries the workspace path, ...). Must equal promptFileName in
+ * src/tools/execute-prompt.ts (guarded by tests/member-detail-status.test.ts).
+ */
+export const FLEET_TASK_PROMPT_FILE = '.fleet-task.md';
+
 export interface UnsetEnvOptions {
   /**
    * Remove EVERY `export NAME=` profile line, marked or not. Only for an
@@ -86,6 +97,13 @@ export interface OsCommands {
   disk(folder: string): string;
 
   // --- Process check ---
+  /**
+   * Member-side probe for a fleet-launched CLI process. Prints exactly one of:
+   * `idle` (no process of that name), `fleet-busy <pid>` (a process whose argv
+   * carries the fleet dispatch marker FLEET_TASK_PROMPT_FILE AND either the
+   * session id or the exact, quoted work folder), or `other-busy` (only
+   * unrelated processes of that name -- reported idle by callers).
+   */
   fleetProcessCheck(folder: string, sessionId?: string, processName?: string): string;
 
   // --- Generic agent CLI (provider-agnostic) ---

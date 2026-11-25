@@ -126,6 +126,8 @@ Before dispatching any work:
 
 Do not dispatch to a busy member. If busy, wait or re-check `member_detail`.
 
+`member_detail` names why a member is busy: `session.statusSource` is `in-flight-dispatch` (a fleet dispatch from this server is running) or `fleet-process` (a fleet-launched CLI process for this member is alive on the host), with `session.busyPid`. To confirm a `fleet-process` busy by hand, probe that pid with `execute_command` on the member (POSIX: `ps -o pid=,args= -p <pid>`; Windows: `Get-CimInstance Win32_Process -Filter "ProcessId=<pid>" | Select-Object ProcessId,CommandLine`): a fleet dispatch's command line names `.fleet-task.md`. Other processes of the same CLI name (your own interactive session in that folder) never count as busy.
+
 ## File Transfer
 
 Both `send_files` and `receive_files` are batch operations  -  always transfer all files in a single call, never one file per call.
