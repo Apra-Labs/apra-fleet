@@ -760,6 +760,35 @@
       }
     },
     {
+      "id": "29487f1f-2037-47f2-b8e0-a66db49ba41e",
+      "type": "knowledge",
+      "title": "kb_bible_commit builds from the bible committed at HEAD and trusts only the blob it committed",
+      "summary": "In a git work tree, kbBibleCommit reads its base bible from HEAD via readCommittedBibleBlob (hash-checked; none committed = empty bible), never the work-tree file. A differing work-tree bible is ignored (logged) and overwritten on write. It records a trusted blob only after a commit, and only when HEAD's blob equals the id of the bytes written.",
+      "symbols": [
+        "kbBibleCommit",
+        "readCommitBaseDocument",
+        "committedOwnBibleMatching",
+        "parseBibleDocumentText",
+        "BIBLE_RULES_REVISION"
+      ],
+      "source_files": [
+        "src/tools/kb-bible-commit.ts",
+        "src/tools/kb-import.ts",
+        "src/tools/kb-export.ts",
+        "src/services/knowledge/bible-rules.ts",
+        "tests/knowledge/kb-bible-commit-worktree-drift.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-22T15:32:12.109Z",
+      "source_file_hashes": {
+        "src/services/knowledge/bible-rules.ts": "6be475869f42004dae5c10598680d0d9f20fcfc4",
+        "src/tools/kb-bible-commit.ts": "a65c27f1551df51f6891d36c7d04ed72d6803d36",
+        "src/tools/kb-export.ts": "c6a6f23af469cc8969864b46bdb8f8ac637de6b7",
+        "src/tools/kb-import.ts": "ea4858060b85621ef8d18eb7fb31c34d678a73a7",
+        "tests/knowledge/kb-bible-commit-worktree-drift.test.ts": "f12fe59c582f5253ae6df30d78a584007951cc0f"
+      }
+    },
+    {
       "id": "2b244307-8635-4406-904f-6a2290d54490",
       "type": "learning",
       "title": "check-generic-boundary tokenizer treats slash-star inside a template literal as a comment",
@@ -895,6 +924,37 @@
       }
     },
     {
+      "id": "2f7f24ab-95d6-4b13-acf7-5f0b27b963a9",
+      "type": "knowledge",
+      "title": "Engine refuses kb_bible_commit unless the maintainer's kb_capabilities fleet_build.bible_rules is high enough",
+      "summary": "kb_capabilities carries fleet_build {version, bible_rules}. createKbWorkClient.commitRepo reads it on the kb_maintainer before every bible commit and refuses a revision below REQUIRED_MAINTAINER_BIBLE_RULES, a missing one, or an unreadable answer, keeping the queue and logging a WARNING.",
+      "symbols": [
+        "BIBLE_RULES_REVISION",
+        "fleetBuild",
+        "REQUIRED_MAINTAINER_BIBLE_RULES",
+        "fleetBuildOf",
+        "maintainerBuildGap",
+        "commitRepo",
+        "kbCapabilitiesResult"
+      ],
+      "source_files": [
+        "src/services/knowledge/bible-rules.ts",
+        "src/tools/kb-capabilities.ts",
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs",
+        "packages/apra-fleet-se/test/helpers/kb-maintainer-fakes.mjs",
+        "tests/knowledge/kb-capabilities-tool.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-22T10:49:16.367Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "41f6e273087e48bc4a34fbbe77b3cbfb59ac66e9",
+        "packages/apra-fleet-se/test/helpers/kb-maintainer-fakes.mjs": "9d6fd51813a107db9ef86f14bd3698a5b3a548e8",
+        "src/services/knowledge/bible-rules.ts": "6be475869f42004dae5c10598680d0d9f20fcfc4",
+        "src/tools/kb-capabilities.ts": "8d4680b17b5894d503df0ae1b5c0724181dc586f",
+        "tests/knowledge/kb-capabilities-tool.test.ts": "fc9167f427872ee36e10da00cd4bd26edaa18c2d"
+      }
+    },
+    {
       "id": "2ffc0a85-7607-49d0-9e9a-f3ca9b8cfbb4",
       "type": "learning",
       "title": "execute_command's input schema is not zod .strict(), unlike execute_prompt's, so a removed field silently strips instead of rejecting",
@@ -929,6 +989,26 @@
         "packages/apra-fleet-se/apra-pm/agents/schemas/doer-output.json": "58fffe7c86aa875100bc8b66769c43a462cc3111",
         "packages/apra-fleet-se/apra-pm/test/auto-sprint-schemas-drift.test.mjs": "eaca88fa5ff10f41b4acd11099776d9e78415b0e",
         "packages/apra-fleet-se/test/golden-transcript.test.mjs": "9ec222f8856aa6a5935b49d144ae6caf2fd05ee9"
+      }
+    },
+    {
+      "id": "31c92717-bded-496b-8a7b-a5f511e028f3",
+      "type": "learning",
+      "title": "New fleet-sprint modules must be registered in guarded-modules.mjs",
+      "summary": "guarded-modules-coverage.test.mjs fails when any *.mjs/*.js under packages/apra-fleet-se/fleet-sprint/ is not listed in GUARDED_MODULES or GUARD_REGISTRATION_EXEMPT, so add a new module there in the same change.",
+      "symbols": [
+        "GUARDED_MODULES",
+        "GUARD_REGISTRATION_EXEMPT"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/guarded-modules.mjs",
+        "packages/apra-fleet-se/test/guarded-modules-coverage.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-22T10:49:19.979Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/guarded-modules.mjs": "3d8ee9355d2eb103d8f45df98dc553b6c51df32b",
+        "packages/apra-fleet-se/test/guarded-modules-coverage.test.mjs": "c38865f8485acc15aefb765864ba60822b3d81c7"
       }
     },
     {
@@ -2661,6 +2741,30 @@
       }
     },
     {
+      "id": "91012fab-e16a-43d9-8233-aec2bd5090f8",
+      "type": "knowledge",
+      "title": "kb_session_prime cold-seed reads only the bible committed at HEAD",
+      "summary": "The project-bible cold-seed in kbSessionPrime gets its text from committedColdSeedBible: readCommittedBibleBlob(repoRoot, 'HEAD'), hash-checked. No committed copy or a failed verification seeds nothing (logWarn names the reason). A work-tree file that differs from HEAD is ignored and the committed copy is seeded.",
+      "symbols": [
+        "committedColdSeedBible",
+        "kbSessionPrime",
+        "readCommittedBibleBlob",
+        "buildView"
+      ],
+      "source_files": [
+        "src/tools/kb-session-prime.ts",
+        "tests/knowledge/kb-session-prime.test.ts",
+        "src/services/knowledge/member-bible-view.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-22T15:32:08.449Z",
+      "source_file_hashes": {
+        "src/services/knowledge/member-bible-view.ts": "dcc07c3ed11bccf65f2472d7a3e913fe879f51a6",
+        "src/tools/kb-session-prime.ts": "42304d0bf9c0e9fbc4bdf4997cd4beaa98708326",
+        "tests/knowledge/kb-session-prime.test.ts": "fe05ca2b1fbbdbc27bb524328646ed433aaef35c"
+      }
+    },
+    {
       "id": "919a3f50-dcb3-4ee9-91d1-767fd503a3b8",
       "type": "knowledge",
       "title": "A directly launched sprint's deployer self-id is the branch name, not a ledger uuid",
@@ -2680,6 +2784,29 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:33.791Z"
+    },
+    {
+      "id": "92bedcfe-94f0-41c8-837a-4e834da8427f",
+      "type": "learning",
+      "title": "Mock-sprint KB fakes: seed INFERRED entries inside the sprint and answer the bibleUnpushed git probe",
+      "summary": "promotionCandidates only offers INFERRED entries whose created_at is at or after the sprint start, so a fake KB entry seeded before runDevelopLoopScenario is never offered. A kb_bible_commit answering committed:false goes through bibleUnpushed (git status/log/diff), so a mock must answer those commands or the skip handling never runs.",
+      "symbols": [
+        "bibleUnpushed",
+        "bibleAttempt",
+        "promotionCandidates"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/git-sync.mjs",
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs",
+        "packages/apra-fleet-se/test/mock-sprint-kb-final-head-recheck.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-22T20:36:30.978Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/git-sync.mjs": "b1b25cc3f8cab5fe95a04d339c25962a16b20268",
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "41f6e273087e48bc4a34fbbe77b3cbfb59ac66e9",
+        "packages/apra-fleet-se/test/mock-sprint-kb-final-head-recheck.test.mjs": "310f907df46b9d3f661f9240ccfc4f6afcacc40e"
+      }
     },
     {
       "id": "93bbfb5a-0681-45d2-9024-ecf14c44a479",
@@ -2772,6 +2899,29 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:32.234Z"
+    },
+    {
+      "id": "9a125191-7853-43a6-ae23-30ac3e5680a6",
+      "type": "knowledge",
+      "title": "Bible merge driver string is guarded against a stale install path",
+      "summary": "buildBibleMergeDriverCommand registers a POSIX sh guard: it checks every recorded path with [ -f ], runs the CLI, and on missing paths or sh exit 126/127 falls back to git merge-file with conflict markers plus a message naming kb_setup, then exits 1. installBibleMergeDriver re-registers a differing driver and returns repairedFrom.",
+      "symbols": [
+        "buildBibleMergeDriverCommand",
+        "installBibleMergeDriver",
+        "BIBLE_MERGE_DRIVER_STALE_MESSAGE"
+      ],
+      "source_files": [
+        "src/cli/kb-merge-driver.ts",
+        "src/tools/kb-setup.ts",
+        "tests/knowledge/kb-bible-merge-driver.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-22T11:07:00.549Z",
+      "source_file_hashes": {
+        "src/cli/kb-merge-driver.ts": "cb44162c5dfe39b177f783dc8e8526e25a8bdd59",
+        "src/tools/kb-setup.ts": "d1e12f8ea1553555a5613c6ec33cec2b6a318067",
+        "tests/knowledge/kb-bible-merge-driver.test.ts": "36b5005e32482dfebae733bcc242fded39f8ca85"
+      }
     },
     {
       "id": "9af40daa-2521-430a-a529-7db25d27da87",
@@ -3082,6 +3232,30 @@
         "packages/apra-fleet-se/fleet-sprint/member-provisioning.mjs": "0dffb028188c744e0bcc172691eb9fc79bfb354b",
         "scripts/check-ascii-only.mjs": "41b4a29f5da8bab14176874fe7ae5e973f7e2d56",
         "tests/ascii-only-gate.test.ts": "c039aafa21aff35c2f4d50769bb8f72c91be7674"
+      }
+    },
+    {
+      "id": "aab21b69-5485-43fd-b9f3-9bf4fa0f62bb",
+      "type": "knowledge",
+      "title": "kb_promote stamps the basis at HEAD but keeps the old hash for dirty or untracked files",
+      "summary": "SqliteProvider.promote stamps source_file_hashes from the git blob at HEAD only for cited files whose work-tree content equals HEAD. A file with an uncommitted edit or no blob at HEAD keeps its previous basis hash and is reported in unstamped_files, so a capture against uncommitted work is admitted once committed.",
+      "symbols": [
+        "promote",
+        "headBasisFor",
+        "reviveAfterRestamp",
+        "describeBasisDrift"
+      ],
+      "source_files": [
+        "src/services/knowledge/sqlite-provider.ts",
+        "src/services/knowledge/bible-basis-filter.ts",
+        "tests/knowledge/kb-bible-commit.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-22T20:36:34.512Z",
+      "source_file_hashes": {
+        "src/services/knowledge/bible-basis-filter.ts": "a06bae05cb1825115cf8249b10257975abe6c674",
+        "src/services/knowledge/sqlite-provider.ts": "c8f57fb87eb24391e03c2806936b60bc937c159f",
+        "tests/knowledge/kb-bible-commit.test.ts": "7c0e78838b793e3591784074e8d3ca9f8e077840"
       }
     },
     {
@@ -3588,6 +3762,32 @@
         "src/cli/kb-profile.ts": "2ae2abf6f3c4a62e3ca10f3013fedcd43103bb24",
         "src/services/tool-registry.ts": "05e3d5e04b949b3bfefef7693c230e59da947f02",
         "tests/kb-tool-profile-e2e.test.ts": "949f75c916529d89cd7b80d5433042449935d31a"
+      }
+    },
+    {
+      "id": "cb356223-9df5-49ca-a74f-b179a35866e0",
+      "type": "knowledge",
+      "title": "basis_mismatch bible skips are re-verified by the next reviewer, not just retried",
+      "summary": "createKbWorkClient records each kb_bible_commit basis_mismatch skip in reverifyPending and offers it to the next reviewer as a reverify:true row (rendered by kbPromotionBlock as its own block). kb_promotions re-stamps via kb_promote; kb_discards drops via dropFromBible without kb_invalidate.",
+      "symbols": [
+        "createKbWorkClient",
+        "kbPromotionBlock",
+        "kbReverifyBlock",
+        "dropFromBible",
+        "recheckSprintBible",
+        "expireReverification"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/final-review.mjs",
+        "packages/apra-fleet-se/test/kb-bible-commit-round.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-22T20:36:27.365Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "41f6e273087e48bc4a34fbbe77b3cbfb59ac66e9",
+        "packages/apra-fleet-se/fleet-sprint/phases/final-review.mjs": "1b26c88531cfa3021e26a2d3ccf72db71e73b969",
+        "packages/apra-fleet-se/test/kb-bible-commit-round.test.mjs": "58fa49455f60d0f2c72910a2552ff7333e708528"
       }
     },
     {

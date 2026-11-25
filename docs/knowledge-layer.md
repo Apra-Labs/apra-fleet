@@ -494,7 +494,17 @@ The SQLite database is one developer's private, warm working memory. The
 - A folder that is not a git work tree fails with `E-BIBLE-BASIS-NOT-GIT`. An
   entry citing no files is skipped as `no_source_files` (distinct from
   `basis_mismatch`); the engine keeps `basis_mismatch` ids queued for a
-  bounded number of rounds because a transient mismatch can clear.
+  bounded number of rounds because a transient mismatch can clear, and offers
+  each one to the next reviewer as a re-verification candidate naming the
+  changed cited files: a CONFIRM re-promotes it (kb_promote re-stamps the
+  basis at HEAD) and the next bible commit merges it; a refusal, or no verdict
+  by the end of the retries (the final review at the latest), drops it with a
+  WARN naming the id, the changed files and how to retrieve it. A dropped
+  entry stays CONFIRMED in the maintainer's KB and is listed in the sprint
+  analysis. Before the final review the engine also re-sends every id this
+  sprint's bible commits merged, so an entry a later code commit drifted is
+  re-verified the same way (or withdrawn from the branch bible) and the PR
+  head carries no drifted sprint entry.
 - With `scope='global'` it exports the GLOBAL KB to
   `.fleet/kb-canonical-global.json` (committed in the platform repo so the
   installer can distribute team-wide conventions).
@@ -827,7 +837,11 @@ git config `merge.apra-fleet-kb-bible.driver` and a line in the clone's
 `info/attributes`), so a local merge or rebase of two branches that both
 changed `.fleet/kb-canonical.json` merges it by entry id, tombstone-aware. The
 step reports `Registered the knowledge bible merge driver ...` or `Skipped
-bible merge driver: <reason>`. Rules and the hosted-merge fallback:
+bible merge driver: <reason>`. The driver records absolute paths; when a
+re-run finds a registered driver command that differs from the current
+install's (apra-fleet moved or was reinstalled), it re-registers it and the
+step reports `Repaired the knowledge bible merge driver ...; previous driver
+command: <old>`. A re-run with a current registration changes nothing. Rules and the hosted-merge fallback:
 `packages/apra-fleet-se/docs/kb-canonical-merge.md`.
 
 ### 5. KB tool profiles (which kb_* tools interactive sessions see)
@@ -1376,6 +1390,16 @@ trying them.
   `demote` and `withdraw`. The sample kb-server imports this same constant, so
   the local answer and the reference server answer cannot drift apart.
 - **Any other provider**: a loud error, never a guessed answer.
+- **`fleet_build`**: both answers also carry `{version, bible_rules}` -- the
+  answering fleet server's own version string and the integer revision of the
+  bible format and `kb_bible_commit` rules it implements
+  (`BIBLE_RULES_REVISION`, `src/services/knowledge/bible-rules.ts`). The
+  sprint engine reads it on a repository's kb_maintainer before every bible
+  commit and refuses (WARN, ids stay queued) a revision below
+  `REQUIRED_MAINTAINER_BIBLE_RULES` or a missing/unreadable one, because the
+  commit runs in that member's installed server, which can be older than the
+  sprint's source. Member-init logs each maintainer's build. Bump both
+  constants together with every bible-format or tombstone-rule change.
 - **Errors** follow the route-gating rules: a 404/501 or empty body means the
   default capability set; a partly typed body is `E-KB-HTTP-UNSUPPORTED`; a
   5xx/429 is `E-KB-HTTP-UNREACHABLE`.

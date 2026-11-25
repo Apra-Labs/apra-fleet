@@ -16,7 +16,7 @@
         },
         "reason": {
           "type": "string",
-          "description": "Reason for promotion (appended to content as evidence trail)"
+          "description": "Reason for promotion: the evidence you checked (appended to content as evidence trail). Promoting an already-CONFIRMED entry is an explicit re-verification: when its stored basis no longer matches the cited files at HEAD, the basis is re-stamped at HEAD and the result reports rebased: true."
         },
         "repo_path": {
           "description": "REMOVED -- do not pass. A call carrying it fails with E-SCOPE-KEY-REMOVED; the KB is always the calling session's own."

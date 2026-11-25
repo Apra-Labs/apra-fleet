@@ -5,7 +5,7 @@ import { runDevelopLoopScenario, withScenarioMarkers, defaultMockCallTool, mockC
 import { scaledTimeout } from './helpers/scaled-timeout.mjs';
 import { createKbWorkClient, KB_DEMOTION_READ_LIMIT, KB_MAX_DEMOTION_CANDIDATES } from '../fleet-sprint/kb.mjs';
 import { createKbMaintainerSelector } from '../fleet-sprint/kb-maintainer.mjs';
-import { ALL_KB_ROUTES } from './helpers/kb-maintainer-fakes.mjs';
+import { ALL_KB_ROUTES, CURRENT_FLEET_BUILD } from './helpers/kb-maintainer-fakes.mjs';
 
 // =============================================================================
 // kb_maintainer write routing, end to end with fakes.
@@ -64,7 +64,7 @@ function createFakeFleet({ failOwnScopeQuery = false } = {}) {
         switch (tool) {
             case 'kb_stats': return { entries: kb.length };
             // A current server's local SQLite KB serves every contract route.
-            case 'kb_capabilities': return { contract: 'v1', routes: [...ALL_KB_ROUTES], branch_aware: false };
+            case 'kb_capabilities': return { contract: 'v1', routes: [...ALL_KB_ROUTES], branch_aware: false, fleet_build: { ...CURRENT_FLEET_BUILD } };
             case 'kb_import': return { imported: 0 };
             case 'kb_session_prime': return { top_entries: [] };
             case 'kb_export': return { exported: kb.filter((e) => e.confidence === 'CONFIRMED').length };

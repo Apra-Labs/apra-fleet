@@ -2670,8 +2670,10 @@ async function runSprintCycle(context) {
         // so the one holding this sprint's captures -- and best-effort: a
         // cold KB must not fail the review.
         const kbCandidates = await kbWork.promotionCandidates(reviewerPool[0]);
-        if (kbCandidates.length > 0) {
-            log(`[kb-work] offering ${kbCandidates.length} INFERRED entr(ies) to the reviewer for promotion.`);
+        // Re-verification rows (reverify: true) are logged by kbWork itself.
+        const kbInferredCount = kbCandidates.filter((e) => !(e && e.reverify === true)).length;
+        if (kbInferredCount > 0) {
+            log(`[kb-work] offering ${kbInferredCount} INFERRED entr(ies) to the reviewer for promotion.`);
         }
         // No demotion candidates here: they are offered at the FINAL review
         // only (see phases/final-review.mjs and kbWork.demotionCandidates).

@@ -334,10 +334,17 @@ const LOCAL_KB_CAPABILITIES = {
   branch_aware: false,
   query_filters: ['files', 'symbols'],
 };
+// Both answers also carry fleet's own fleet_build ({version, bible_rules}),
+// checked for shape and then left out of the comparison (version is volatile).
 function assertLocalCapabilities(parsed) {
-  return JSON.stringify(parsed) === JSON.stringify(LOCAL_KB_CAPABILITIES)
+  const build = parsed && parsed.fleet_build;
+  if (!build || typeof build.version !== 'string' || !Number.isInteger(build.bible_rules)) {
+    return `expected a fleet_build {version, bible_rules}, got ${JSON.stringify(build)}`;
+  }
+  const { fleet_build: _build, ...rest } = parsed;
+  return JSON.stringify(rest) === JSON.stringify(LOCAL_KB_CAPABILITIES)
     ? null
-    : `expected ${JSON.stringify(LOCAL_KB_CAPABILITIES)}, got ${JSON.stringify(parsed)}`;
+    : `expected ${JSON.stringify(LOCAL_KB_CAPABILITIES)}, got ${JSON.stringify(rest)}`;
 }
 
 // kb_bible_commit over an http project KB: skipped, with nothing merged,

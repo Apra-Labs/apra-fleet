@@ -725,7 +725,10 @@ entries are skipped and listed in `skipped` with reason
 `not_confirmed_or_unknown`; a CONFIRMED id that fails the same basis rule
 `kb_export` applies (a cited file changed or absent at the repo's HEAD commit --
 uncommitted edits never change the verdict -- or no basis) is skipped
-with reason `basis_mismatch` and any existing bible entry for it is kept; a
+with reason `basis_mismatch` and any existing bible entry for it is kept (the
+skip carries `changed_files: [{path, reason}]`, reason `changed`, `absent` or
+`no_basis`, naming each file behind the mismatch; re-verifying the entry with
+`kbPromote` re-stamps its basis at HEAD); a
 CONFIRMED id citing no source file is skipped with its own reason
 `no_source_files` (its existing bible entry is kept too); no mergeable ids or an unchanged
 entry set (nothing merged, nothing removed) makes no commit. Re-running with the same ids after resetting to a
@@ -815,6 +818,28 @@ Result JSON: `{l1_results, l2_expanded, related_claims?}`, or
 `{flagged_entries, total, note}` with `flagged_only`; member-session defaults
 as described above.
 
+#### `kbPromote(options: KbPromoteOptions)`
+
+Calls `kb_promote` -- raises an entry one tier (UNVERIFIED -> INFERRED ->
+CONFIRMED). Options: `id` (required), `reason` (the evidence checked, appended
+to the entry content as the audit trail; the server refuses a promotion without
+a non-trivial reason). In a git work tree the entry's source-file basis is
+stamped from the cited files at the HEAD commit; a file with no blob at HEAD or
+whose work tree differs from HEAD is not stamped, keeps its previous hash and
+is listed in `unstamped_files` (so an uncommitted edit never enters the basis). On an already-CONFIRMED entry the call is an explicit
+re-verification: a basis that drifted from HEAD is re-stamped (`rebased: true`)
+so a following `kbBibleCommit` admits it; otherwise nothing changes
+(`rebased: false`). A member session is served `kb_promote` only with the
+kb_maintainer grant. Over a remote (http) KB a server whose reply carries no
+`basis_stamped` leaves the basis as it was, stated in `basis_stamp_unsupported`.
+Like `kbExport` / `kbBibleCommit`, the removed scope keys (`repo_path`, `repo`,
+`repo_remote_url`) are refused client-side with `E-SCOPE-KEY-REMOVED` before
+anything is sent.
+
+Result JSON (`KbPromoteResult`): `{id, previous_confidence, new_confidence,
+basis_stamped?, rebased?, previous_basis_files_changed?, unstamped_files?,
+basis_stamp_unsupported?}`.
+
 #### `kbDemote(options: KbDemoteOptions)`
 
 Calls `kb_demote` -- withdraws trust from a CONFIRMED entry, lowering it to
@@ -852,7 +877,12 @@ body passed through as sent (unknown route names and extra fields kept; a
 server that does not serve the route yields the default set (`capture`,
 `query`, `promote`, `context`, `prime`, `invalidate`, `feedback`, `list` --
 no `demote` or `withdraw`). Over a local SQLite KB it is the set the sample
-kb-server answers. Extract with `parseToolJson()`.
+kb-server answers. Both answers also carry fleet's own
+`fleet_build: {version: string, bible_rules: number}` -- the build of the
+fleet server answering (not of the KB server) and the revision of the bible
+format and `kb_bible_commit` rules it implements; a caller about to run
+`kb_bible_commit` on a member refuses a missing or lower `bible_rules` than it
+requires. Extract with `parseToolJson()`.
 
 #### `composePermissions(options: ComposePermissionsOptions)`
 

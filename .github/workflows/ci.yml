@@ -123,6 +123,11 @@ jobs:
       # every workspace suite, and apra-pm, each exactly once.
       - name: Run tests
         run: npm test
+        env:
+          # Per-suite wall clock (script default: 25 min Windows, 20 min
+          # elsewhere). Windows vitest already takes ~23 min. The 60 min job
+          # timeout still bounds the step.
+          APRA_TEST_TIMEOUT_MS: '2400000'
 
       # Real-bd coverage for f34's topology subtests, which no-op under the
       # default replay mode "Run tests" uses. Scoped to this file, not the

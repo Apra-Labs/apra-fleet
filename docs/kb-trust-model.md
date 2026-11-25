@@ -287,14 +287,30 @@ retire CONFIRMED entries:
   away with nothing ever pushed for review to see. The no-path import is
   therefore gated on a trust anchor outside the checkout. The hub-side
   per-repo KB database (table `trusted_bible_blobs`) records the git blob id
-  of every bible the maintainer side writes or imports: `kb_bible_commit`, and
-  `kb_import` from a FULL session or the kb_maintainer session. A member
-  session without the grant only reads that record. When the blob id of the
-  committed bible is not recorded, the import fails with
+  of every COMMITTED bible the maintainer side writes or imports:
+  `kb_bible_commit`, and `kb_import` from a FULL session or the kb_maintainer
+  session. A member session without the grant only reads that record. When
+  the blob id of the committed bible is not recorded, the import fails with
   `E-KB-MAINTAINER-REQUIRED` naming the unrecorded blob, and nothing is
   imported. It refuses rather than clamping CONFIRMED entries to a lower tier,
   because a clamped row would occupy its id and the import's id-exists skip
   would then keep the genuine CONFIRMED entry out later.
+- The maintainer's work tree is never a source of trust. A doer sharing the
+  maintainer folder can hand-edit `.fleet/kb-canonical.json`, so:
+  `kb_bible_commit` builds the new bible from the bible committed at `HEAD`
+  (hash-verified blob; none committed is an empty bible) plus the queued ids,
+  demotions, withdrawals and restores only -- a work-tree file that differs
+  from `HEAD` is ignored (logged) and overwritten when the call writes -- and
+  it records only the blob it committed, when `HEAD` holds exactly the bytes
+  it wrote (no commit, nothing recorded). A grant `kb_import` without `ref`
+  records the file it reads only when its bytes are the bible committed at
+  `HEAD` (it records that `HEAD` blob); a work-tree or explicit-`path` file
+  that differs from `HEAD` is still imported at bible confidence by that
+  grant session, but never recorded as trusted. `kb_session_prime`'s
+  cold-seed (bible entries reach prompts as CONFIRMED on a cold KB) reads the
+  bible committed at `HEAD` too (hash-verified): a work-tree file that differs
+  is ignored (logged), and with no committed copy, or a failed verification,
+  nothing is seeded (logged with the reason).
 - The object store is member-writable too: a replace ref
   (`git replace <trusted> <forged>`), an overwritten loose object, an
   alternates entry or a crafted pack can make git return other bytes for a
@@ -335,10 +351,11 @@ retire CONFIRMED entries:
   grant session itself. Both are known limits: the grant is a routing guard
   that keeps agent sessions off the CONFIRMED-minting paths, not a security
   boundary against a process running as the member's user.
-- A grant import or `kb_bible_commit` without `ref` (for example an explicit
-  `path` import by the reconciler) trusts the file it reads, exactly as every
-  other kb_maintainer write already is. A member session without the grant
-  can no longer get a bible imported at CONFIRMED that the maintainer side did
-  not write or import. A local process with access to the hub (which can open
+- A member session without the grant cannot get a bible imported at
+  CONFIRMED that the maintainer side did not commit or import from a
+  committed copy, and an uncommitted work-tree edit in the maintainer folder
+  is never recorded as trusted (see above). What a commit on `HEAD` holds is
+  trusted once the maintainer side commits or imports it: a process that can
+  commit in the maintainer checkout is outside this model. A local process with access to the hub (which can open
   a FULL session or write the database file) is outside this model, as for
   the grant itself.

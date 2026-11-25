@@ -122,8 +122,16 @@ A local `git merge`, `git rebase` or `git cherry-pick` of two bible-changing
 branches then resolves the bible by id. On a genuine conflict the driver prints
 the conflicting ids, leaves git's own line merge with conflict markers in the
 file and exits 1, so git reports the conflict as usual. Re-run kb_setup after
-moving or reinstalling apra-fleet: the driver records an absolute path. A clone
-where the driver is not registered falls back to git's line merge.
+moving or reinstalling apra-fleet: the driver records an absolute path, and a
+re-run replaces a registration that differs from the current install's (its
+step reports `Repaired the knowledge bible merge driver` with the previous
+command). The
+registered command is guarded: when a recorded path is gone or sh cannot start
+it (exit 126/127), it falls back to git's own 3-way line merge
+(`git merge-file`, conflict markers with both sides), prints a message naming
+kb_setup as the repair and exits 1 -- a stale driver never leaves the bible
+silently as ours. A clone where the driver is not registered falls back to
+git's line merge.
 
 **Hosted merges cannot run it.** A pull request merged on the git server uses
 the server's own merge, which never runs a local driver. When the server
@@ -137,7 +145,7 @@ check the result with `node scripts/check-kb-canonical.mjs`.
 `node scripts/check-kb-canonical.mjs [path]` (repository root; default
 `.fleet/kb-canonical.json`, also `npm run check:kb-canonical`) rejects a bible
 no writer would produce: unexpected or missing envelope keys, a wrong format
-version, a provenance `entry_count` that does not match the entries, duplicate
+version, duplicate
 or unsorted entry or tombstone ids, an id that is both an entry and a
 tombstone, a tombstone whose reason is unknown or whose keys do not fit that
 reason, and a file not in the exporter's serialization (2-space JSON,

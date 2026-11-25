@@ -157,7 +157,7 @@ describe('capture -> promote -> bible commit -> export round trip', () => {
     commitFile(maint, CITED, 'export function citedFn() { return 2; }\n', 'change cited file');
     const res = await bibleCommitAndPush([id]);
     expect(res.merged).toEqual([]);
-    expect(res.skipped).toEqual([{ id, reason: 'basis_mismatch' }]);
+    expect(res.skipped).toEqual([{ id, reason: 'basis_mismatch', changed_files: [{ path: CITED, reason: 'changed' }] }]);
     await kbExport({}, { folder: maint });
     expect(bibleEntries(maint).map(e => e.id)).not.toContain(id);
     // The stored basis is not refreshed behind the evidence's back.
@@ -190,7 +190,7 @@ describe('capture -> promote -> bible commit -> export round trip', () => {
     // The peer cannot publish it: its HEAD content is not what was verified.
     const peerCommit = JSON.parse(await kbBibleCommit({ ids: [id], baseBranch: 'main', baseCommit: headOf(peer) }, { folder: peer }));
     expect(peerCommit.merged).toEqual([]);
-    expect(peerCommit.skipped).toEqual([{ id, reason: 'basis_mismatch' }]);
+    expect(peerCommit.skipped).toEqual([{ id, reason: 'basis_mismatch', changed_files: [{ path: CITED, reason: 'changed' }] }]);
     git(peer, ['checkout', '--quiet', '-b', 'kb-branch', c0]);
     commitFile(peer, CITED, 'export function citedFn() { return 3; }\n', 'peer branch: diverged cited file');
     await kbExport({}, { folder: peer });

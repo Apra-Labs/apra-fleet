@@ -381,7 +381,8 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
         return jsonResponse(res, 200, { results, total: results.length });
       }
 
-      // POST /api/kb/promote  {id, reason} -> {id, previous_confidence, new_confidence}
+      // POST /api/kb/promote  {id, reason} -> {id, previous_confidence, new_confidence,
+      //   basis_stamped?, rebased?, previous_basis_files_changed?, unstamped_files?}
       // Same reply shape as the kb_promote tool. An unknown id is 404
       // ENTRY_NOT_FOUND (the code an optional id route such as demote needs
       // for "entry unknown" rather than "route not served"); any
@@ -401,6 +402,10 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
             id: result.id,
             previous_confidence: result.confidence_before,
             new_confidence: result.confidence_after,
+            ...(result.basis_stamped !== undefined ? { basis_stamped: result.basis_stamped } : {}),
+            ...(result.rebased !== undefined ? { rebased: result.rebased } : {}),
+            ...(result.previous_basis_files_changed !== undefined ? { previous_basis_files_changed: result.previous_basis_files_changed } : {}),
+            ...(result.unstamped_files !== undefined ? { unstamped_files: result.unstamped_files } : {}),
           });
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);

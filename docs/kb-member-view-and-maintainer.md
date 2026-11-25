@@ -224,7 +224,7 @@ bible export. It merges at entry level, not by regenerating the bible:
   bible-changing branches conflict on merge. Older readers only read
   `provenance.branch`, so the format is safe in both directions; the
   validator (`scripts/check-kb-canonical.mjs`, part of `npm test` and CI)
-  still accepts the legacy `commit` and `entry_count` keys.
+  still accepts the legacy `commit` and `entry_count` keys without validating their values.
 - The commit is local, scoped to the bible file, with the `pm-kb` identity. It
   never pushes. `kb_export` gained the same `baseBranch`/`baseCommit` inputs.
 

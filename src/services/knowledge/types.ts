@@ -329,6 +329,50 @@ export interface RetireOptions {
   keepConfirmed?: boolean;
 }
 
+/** A cited file promote() did not stamp from HEAD, and why (see PromoteResult). */
+export interface PromoteUnstampedFile {
+  path: string;
+  reason: 'absent_at_head' | 'uncommitted_edit';
+}
+
+/**
+ * What a promote did. Besides the confidence change, a promote stamps the
+ * entry's source-file basis from the cited files at the repository's HEAD
+ * commit (the content the promoter verified), so a later kb_bible_commit
+ * admits it against the same HEAD:
+ *  - basis_stamped: true when the basis was (re)written from HEAD. False when
+ *    no HEAD basis can be read here (no repo anchor, an anchor absent on this
+ *    host, a folder that is not a git work tree), when no cited file could be
+ *    stamped (see unstamped_files), or for a CONFIRMED entry whose basis
+ *    already matches HEAD (nothing to re-stamp).
+ *  - rebased: present for an already-CONFIRMED entry; true when its basis had
+ *    drifted from HEAD and this promote (an explicit re-verification) re-stamped
+ *    it, false when the basis already matched.
+ *  - previous_basis_files_changed: cited files whose stored basis was missing
+ *    or differed from HEAD before this promote (empty when none did).
+ *  - unstamped_files: cited files that were NOT stamped and kept their previous
+ *    basis hash: absent_at_head (no blob at HEAD -- untracked, never committed,
+ *    or not repo-relative) or uncommitted_edit (the work tree differs from
+ *    HEAD). Such an entry is admitted by kb_bible_commit once its previous
+ *    basis matches HEAD (for example after the edit it was captured against is
+ *    committed), or re-stamped by a later promote. Present whenever a HEAD
+ *    basis was readable.
+ *  - basis_stamp_unsupported: http KB only -- an E-KB-HTTP-UNSUPPORTED message
+ *    when the KB server's promote reply carries no basis_stamped at all, so a
+ *    caller is told explicitly that the basis was not re-based.
+ */
+
+export interface PromoteResult {
+  id: string;
+  confidence_before: Confidence;
+  confidence_after: Confidence;
+  basis_stamped?: boolean;
+  rebased?: boolean;
+  previous_basis_files_changed?: string[];
+  unstamped_files?: PromoteUnstampedFile[];
+  basis_stamp_unsupported?: string;
+}
+
 export interface MemoryProvider {
   init(): Promise<void>;
   capture(input: KBEntryInput): Promise<{ id: string; audn_decision: AudnDecision }>;
@@ -348,7 +392,7 @@ export interface MemoryProvider {
   // gets, so existence is never disclosed. Declared here (not only on
   // SqliteProvider) because the kb_promote/kb_demote tools pass it through the
   // MemoryProvider-typed project provider.
-  promote(id: string, reason?: string, opts?: { ownerTag?: string }): Promise<{ id: string; confidence_before: Confidence; confidence_after: Confidence }>;
+  promote(id: string, reason?: string, opts?: { ownerTag?: string }): Promise<PromoteResult>;
   // kb_demote: CONFIRMED -> INFERRED. `reason` is REQUIRED (unlike promote's,
   // which is optional for backwards compatibility): withdrawing trust is only
   // useful if why is recorded. evidenceFiles are REQUIRED (at least one), each
