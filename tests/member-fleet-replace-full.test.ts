@@ -43,11 +43,12 @@ function agentFor(p: Platform): Agent {
 }
 
 type MarkerMode = 'absent' | 'present' | 'timeout';
-type Step = 'supervisor-check' | 'stop' | 'stop-check' | 'backup' | 'uninstall' | 'supervisor' | 'move-data' | 'install';
+type Step = 'supervisor-check' | 'stop' | 'stop-check' | 'backup' | 'exe-check' | 'uninstall' | 'supervisor' | 'move-data' | 'install';
 
 /** Classify a decoded member command as one of the replacement's destructive steps. */
 function stepOf(c: string): Step | null {
   if (/' 'fleet-se-check'/.test(c)) return 'supervisor-check';
+  if (c.includes('__APRA_FLEET_EXE_LOCKED__')) return 'exe-check';
   if (/apra-fleet(\.exe)?' stop(;|$| )/.test(c)) return 'stop';
   if (/apra-fleet(\.exe)?' status(;|$| )/.test(c)) return 'stop-check';
   if (c.includes('.apra-fleet-replace-backup-') && c.includes('fleet.key') && !c.includes('uninstall')) return 'backup';
@@ -58,7 +59,7 @@ function stepOf(c: string): Step | null {
   return null;
 }
 
-function harness(p: Platform, opts: { marker?: MarkerMode; failStep?: Step; serverStaysUp?: boolean; supervisorLine?: string } = {}) {
+function harness(p: Platform, opts: { marker?: MarkerMode; failStep?: Step; serverStaysUp?: boolean; supervisorLine?: string; exeLocked?: boolean } = {}) {
   const log: string[] = [];
   const events: string[] = [];
   const w = { installed: OLD as string | null, marker: opts.marker ?? 'absent' as MarkerMode };
@@ -73,6 +74,7 @@ function harness(p: Platform, opts: { marker?: MarkerMode; failStep?: Step; serv
         if (step === opts.failStep) return { stdout: '', stderr: `${step} broke`, code: 1 };
         // The installed (old) binary's status never carries a Supervisor line; the staged fleet-se-check does the detecting.
         if (step === 'supervisor-check') return ok('FLEET_SE_CHECK ok\n' + (opts.supervisorLine ?? ''));
+        if (step === 'exe-check') return ok(opts.exeLocked ? '__APRA_FLEET_EXE_LOCKED__ The process cannot access the file because it is being used by another process.\n' : '__APRA_FLEET_EXE_FREE__\n');
         if (step === 'stop-check') return ok(opts.serverStaysUp ? 'apra-fleet status\n  State:    running\n' : 'apra-fleet status\n  State:    stopped\n');
         if (step === 'uninstall') w.installed = null;
         if (step === 'install') { w.installed = ORCH; w.marker = 'present'; return ok('installed'); }
@@ -100,7 +102,7 @@ function harness(p: Platform, opts: { marker?: MarkerMode; failStep?: Step; serv
   return { deps, log, events, w };
 }
 
-const destructive = (events: string[]) => events.filter(e => !e.startsWith('transfer:') && e !== 'stop' && e !== 'stop-check' && e !== 'supervisor-check');
+const destructive = (events: string[]) => events.filter(e => !e.startsWith('transfer:') && e !== 'stop' && e !== 'stop-check' && e !== 'supervisor-check' && e !== 'exe-check');
 
 describe('replace-full: full command sequence per OS', () => {
   it('linux: stage, backup (data + fleet.key), uninstall, supervisor stop/disable, move data, member install', async () => {

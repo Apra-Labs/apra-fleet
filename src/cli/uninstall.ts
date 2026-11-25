@@ -9,6 +9,7 @@ import type { LlmProvider } from '../types.js';
 import { isApraFleetRunning } from './install.js';
 import { getServiceManager } from '../services/service-manager/index.js';
 import {
+  SUPERVISOR_WINDOWS_TASK_NAME,
   cleanupSupervisorService,
   type SupervisorCleanupResult,
   type SupervisorRegistration,
@@ -310,10 +311,20 @@ export interface UninstallDeps {
   spawnDetached?: (cmd: string, args: string[]) => void;
   /** Pause between removal retries. Default: a short synchronous wait. */
   sleep?: (ms: number) => void;
+  /** Host platform. Default: process.platform. */
+  platform?: NodeJS.Platform;
+  /**
+   * Whether another process holds `p` open so it cannot be deleted: returns the
+   * error that says so (EBUSY/EPERM/EACCES), or null when it is free or absent.
+   * Never modifies the file. Default: an exclusive read-write open, closed at once.
+   */
+  probeLocked?: (p: string) => NodeJS.ErrnoException | null;
 }
 
 const REMOVE_ATTEMPTS = 3;
 const REMOVE_RETRY_MS = 150;
+/** Pause between exe-lock probes: a just-stopped server needs a moment to exit. */
+const LOCK_RETRY_MS = 500;
 
 function defaultRemove(p: string): void {
   fs.rmSync(p, { recursive: true, force: true });
@@ -326,6 +337,32 @@ function defaultSpawnDetached(cmd: string, args: string[]): void {
 
 function defaultSleep(ms: number): void {
   try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch { /* best effort */ }
+}
+
+const LOCK_CODES = new Set(['EBUSY', 'EPERM', 'EACCES']);
+
+/**
+ * Windows maps a running executable's image, so opening it for write fails
+ * with a sharing violation (EBUSY) while any process runs it -- the same
+ * condition that makes its deletion fail. The open neither truncates nor
+ * changes the file.
+ */
+function defaultProbeLocked(p: string): NodeJS.ErrnoException | null {
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(p, 'r+');
+    return null;
+  } catch (e) {
+    const err = e as NodeJS.ErrnoException;
+    return err && LOCK_CODES.has(err.code ?? '') ? err : null;
+  } finally {
+    if (typeof fd === 'number') { try { fs.closeSync(fd); } catch { /* best effort */ } }
+  }
+}
+
+/** The installed Windows executable apra-fleet deletes on a full uninstall. */
+export function installedWindowsExe(): string {
+  return path.join(BIN_DIR, 'apra-fleet.exe');
 }
 
 interface RemovalFailure {
@@ -500,6 +537,39 @@ Options:
     }
   }
 
+  // (3b) Windows full uninstall: decide BEFORE the first removal whether the
+  // installed exe can be deleted. Another process running it (a server not
+  // stopped above, or a fleet-sprint supervisor) would otherwise leave the
+  // host half-uninstalled: service, workflows, skills and settings gone, the
+  // exe still there. Probed after the --force stop, which releases the
+  // server's handle, and retried briefly while that process exits. When the
+  // locked exe is this process itself, the deferred delete below handles it.
+  const platform = deps.platform ?? process.platform;
+  if (!dryRun && isFullUninstall && platform === 'win32') {
+    const exe = installedWindowsExe();
+    if (fs.existsSync(exe) && !sameWin32Path(exe, process.execPath)) {
+      const probe = deps.probeLocked ?? defaultProbeLocked;
+      const sleep = deps.sleep ?? defaultSleep;
+      let locked: NodeJS.ErrnoException | null = null;
+      for (let i = 0; i < REMOVE_ATTEMPTS; i++) {
+        locked = probe(exe);
+        if (!locked) break;
+        if (i < REMOVE_ATTEMPTS - 1) sleep(LOCK_RETRY_MS);
+      }
+      if (locked) {
+        console.error(`\nError: ${exe} is in use by another process (${locked.code ?? 'locked'}), so it cannot be removed.`);
+        console.error('  Nothing was uninstalled: no service, workflow, skill, hook or setting was touched.');
+        if (serverRunning) console.error('  The apra-fleet server was stopped above; bring it back with: apra-fleet start');
+        console.error('  The likely holder is a running apra-fleet server or fleet-sprint supervisor started from that exe. Stop it, then re-run the uninstall:');
+        console.error(`    - the server:     & '${exe.replace(/'/g, "''")}' stop`);
+        console.error('    - the supervisor: stop its sprints, then POST /api/shutdown on its port (Content-Type application/json, body {}),');
+        console.error(`                      and if it runs as the ${SUPERVISOR_WINDOWS_TASK_NAME} scheduled task: schtasks /End /TN ${SUPERVISOR_WINDOWS_TASK_NAME}`);
+        process.exit(1);
+        return;
+      }
+    }
+  }
+
   // (4) Remove the service unit (idempotent -- tolerates "not installed"),
   // only on a full uninstall: a partial one leaves the service registered.
   if (!dryRun && isFullUninstall) {
@@ -660,7 +730,7 @@ Options:
 
     // Windows: the running exe cannot be unlinked. When that is the ONLY
     // failure, hand BIN_DIR's removal to a detached process that waits for us.
-    const lockedExeOnly = process.platform === 'win32'
+    const lockedExeOnly = platform === 'win32'
       && removalFailures.length > 0
       && removalFailures.every(f => sameWin32Path(f.path, process.execPath) && (errCode(f.error) === 'EPERM' || errCode(f.error) === 'EBUSY'));
     if (lockedExeOnly) {

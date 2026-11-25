@@ -132,7 +132,13 @@ export type FleetInstallUnavailableReason =
   /** replace-full refused before anything changed: a fleet-sprint supervisor
    *  is running on the member (an install over it would refuse mid-way, and a
    *  rollback could be refused by E-FLEET-SE-RUNNING). */
-  | 'fleet-se-running';
+  | 'fleet-se-running'
+  /** replace-full refused before the uninstall: another process holds the
+   *  member's installed Windows executable open, so the uninstall could not
+   *  delete it and would leave the install half-removed. Nothing was
+   *  uninstalled; the server stopped in step 0 is restarted by the detail's
+   *  commands. */
+  | 'exe-locked';
 
 /** What the probe observed about the member's current install. */
 export type MemberFleetProbe =
@@ -895,6 +901,33 @@ export function buildFullInstallReplaceHint(opts: {
  *  (full) install with a member install. Never implied by "auto". */
 export const REPLACE_FULL_INSTALL = 'replace-full';
 
+/** Tags the Windows exe-check step prints: the installed exe can be deleted, or another process holds it. */
+export const EXE_FREE_SENTINEL = '__APRA_FLEET_EXE_FREE__';
+export const EXE_LOCKED_SENTINEL = '__APRA_FLEET_EXE_LOCKED__';
+
+/**
+ * Windows member: whether the installed exe at `bin` can be deleted, decided
+ * before the uninstall. Windows maps a running executable, so an exclusive
+ * read-write open fails with a sharing violation while any process runs it --
+ * exactly when its deletion fails. The open neither truncates nor changes the
+ * file. Prints EXE_FREE_SENTINEL (also when the exe is absent: nothing to
+ * delete) or EXE_LOCKED_SENTINEL plus the reason, and exits 0 either way.
+ * A Git Bash member opens it read-write with the shell's own redirection
+ * (`3<>`, guarded by `[ -f ]` because it would create a missing file).
+ */
+export function buildExeLockProbe(bin: string, targetOs: TargetOS, shell: MemberShell): string {
+  const ps = psQuote(bin);
+  const px = posixQuote(bin);
+  return memberCommandFor(targetOs, shell, {
+    posix:
+      `if [ -f ${px} ]; then if ( exec 3<>${px} ) 2>/dev/null; then printf '%s\\n' '${EXE_FREE_SENTINEL}'; ` +
+      `else printf '%s\\n' '${EXE_LOCKED_SENTINEL} the file is open in another process'; fi; else printf '%s\\n' '${EXE_FREE_SENTINEL}'; fi`,
+    powershell:
+      `if (Test-Path -LiteralPath ${ps} -PathType Leaf) { try { $s = [System.IO.File]::Open(${ps}, 'Open', 'ReadWrite', 'None'); $s.Close(); Write-Output '${EXE_FREE_SENTINEL}' } ` +
+      `catch { Write-Output ('${EXE_LOCKED_SENTINEL} ' + $_.Exception.Message) } } else { Write-Output '${EXE_FREE_SENTINEL}' }`,
+  });
+}
+
 /** Tag the linux supervisor step prints when it moved a unit file into the backup. */
 export const SUPERVISOR_MOVED_SENTINEL = '__APRA_FLEET_SUPERVISOR_MOVED__';
 
@@ -908,7 +941,7 @@ export interface ReplacedFullInstall {
   backupPath: string;
 }
 
-export type ReplaceStepName = 'supervisor-check' | 'stop' | 'stop-check' | 'backup' | 'uninstall' | 'supervisor' | 'move-data' | 'install';
+export type ReplaceStepName = 'supervisor-check' | 'stop' | 'stop-check' | 'backup' | 'exe-check' | 'uninstall' | 'supervisor' | 'move-data' | 'install';
 
 export interface ReplaceFullInstallPlan {
   backupDir: string;
@@ -992,6 +1025,7 @@ export function buildReplaceFullInstallPlan(opts: {
         `New-Item -ItemType Directory -Force -Path ${q(backupDir)} | Out-Null; Copy-Item -Recurse -LiteralPath ${q(data)} -Destination ${q(backupData)}; Copy-Item -LiteralPath ${q(bin)} -Destination ${q(backupBin)}; if (Test-Path -LiteralPath ${q(key)} -PathType Leaf) { Copy-Item -LiteralPath ${q(key)} -Destination ${q(backupKey)} }`,
       ),
     },
+    ...(targetOs === 'windows' ? [{ name: 'exe-check' as const, command: buildExeLockProbe(bin, targetOs, shell) }] : []),
     {
       name: 'uninstall',
       command: cmd(
@@ -1050,6 +1084,7 @@ export function buildReplaceFullInstallPlan(opts: {
     stop: [restart],
     'stop-check': [restart],
     backup: [restart],
+    'exe-check': [restart],
     uninstall: dataInPlace,
     supervisor: dataInPlace,
     'move-data': dataInPlace,
@@ -1078,6 +1113,7 @@ const REPLACE_STEP_LABEL: Record<ReplaceStepName, string> = {
   stop: 'step 0 (stop the member server)',
   'stop-check': 'step 0 (verify the member server is down)',
   backup: 'step 1 (back up data and fleet.key)',
+  'exe-check': 'step 1b (check that no other process holds the installed Windows executable)',
   uninstall: 'step 2 (uninstall with the backup copy of the installed binary)',
   supervisor: 'step 3 (stop and disable the fleet-supervisor user unit)',
   'move-data': 'step 4 (move data aside)',
@@ -1158,6 +1194,12 @@ async function replaceFullInstall(
         detail: `replacing the full install was refused at ${label}: ${why}. Nothing was removed or backed up; the apra-fleet ${previousVersion} full install is unchanged (if its server is down, bring it back with: ${plan.rollbackFor[name].join('; ')}). Stop the member's apra-fleet server by hand (${binForHint} stop, and check ${binForHint} status), then run update_member {member_id, fleet_install: "replace-full"} again`,
       };
     }
+    if (name === 'exe-check') {
+      return {
+        state: 'unavailable', reason: 'exe-locked', version: previousVersion,
+        detail: `replacing the full install was refused at ${label}: ${why}. Nothing was uninstalled or removed; the apra-fleet ${previousVersion} full install is intact and the backup taken in step 1 is at ${plan.backupDir}. Its server was stopped in step 0; bring it back with: ${plan.rollbackFor[name].join('; ')}. Another process (a server or fleet-sprint supervisor started from ${binForHint}) holds the executable, so its uninstall could not delete it; stop that process, then run update_member {member_id, fleet_install: "replace-full"} again`,
+      };
+    }
     const detail = name === 'backup'
       ? `replacing the full install failed at ${label}: ${why}. Nothing was removed and the apra-fleet ${previousVersion} full install is intact, but its server was stopped in step 0; bring it back with: ${plan.rollbackFor[name].join('; ')}`
       : `replacing the full install failed at ${label}: ${why}. The backup is at ${plan.backupDir}. To roll back (reinstalls apra-fleet ${previousVersion} from the backup copy of its binary, not the newly staged installer), run on the member: ${plan.rollbackFor[name].join('; ')}. If the reinstall is refused with E-FLEET-SE-RUNNING, a fleet-sprint supervisor was started meanwhile: stop its sprints, then it (${supervisorStopHint('')}), and rerun the reinstall`;
@@ -1181,6 +1223,12 @@ async function replaceFullInstall(
       if (found.length > 0) {
         return failedAt(step.name, `fleet-sprint work is running on the member (${found.join('; ')})`);
       }
+    }
+    if (step.name === 'exe-check' && !r.stdout.includes(EXE_FREE_SENTINEL)) {
+      const tagged = r.stdout.split(/\r?\n/).map(l => l.trim()).find(l => l.startsWith(EXE_LOCKED_SENTINEL));
+      return failedAt(step.name, tagged
+        ? `the installed executable ${binForHint} is in use by another process (${tagged.slice(EXE_LOCKED_SENTINEL.length).trim() || 'locked'})`
+        : `the check could not confirm that ${binForHint} can be deleted (it printed: ${r.stdout.trim().slice(-200) || '<empty>'})`);
     }
     if (step.name === 'stop-check' && !/State:\s+stopped/i.test(r.stdout)) {
       return failedAt(step.name, `the server is not reported stopped after stop (status said: ${r.stdout.trim().slice(-200) || '<empty>'})`);
@@ -1394,7 +1442,7 @@ export function buildManualInstallSteps(opts: {
 }): string {
   const { home, targetOs, shell, provider, arch, orchestratorVersion, reason } = opts;
   const finish = 'then on the orchestrator run update_member {member_id, fleet_install: "auto"} so the fleet self-registers the member into that install and verifies it';
-  if (reason === 'full-install-running' || reason === 'replace-failed' || reason === 'stop-failed' || reason === 'fleet-se-running') {
+  if (reason === 'full-install-running' || reason === 'replace-failed' || reason === 'stop-failed' || reason === 'fleet-se-running' || reason === 'exe-locked') {
     return `follow the owner steps in the reason above, ${finish}.`;
   }
   if (!home || reason === 'home-unresolved' || reason === 'probe-failed') {
@@ -1708,6 +1756,7 @@ export const FLEET_MCP_FIX: Record<FleetMcpUnavailableReason | FleetMcpProviderR
   'transfer-failed': 'Check file transfer to the member works (disk space, permissions), then run update_member with fleet_install "auto".',
   'install-failed': 'Run the apra-fleet installer on the member by hand and read its error, then member_detail with refresh:true.',
   'fleet-se-running': 'A fleet-sprint supervisor is running on the member, so the full install was left untouched; stop its sprints, then the supervisor (POST /api/shutdown with Content-Type application/json and body {}), run update_member {member_id, fleet_install: "replace-full"} again, then restart the supervisor.',
+  'exe-locked': 'Another process on the Windows member (an apra-fleet server or fleet-sprint supervisor started from the installed executable) holds that executable, so the full install was left installed; restart its server with the command in the detail if needed, stop that process, then run update_member {member_id, fleet_install: "replace-full"} again.',
   'stop-failed': 'The member apra-fleet server could not be stopped, so the full install was left untouched; stop it on the member with the installed binary (stop, then status), then run update_member {member_id, fleet_install: "replace-full"} again.',
   'replace-failed': 'The full-install replacement stopped at the step named in the detail; run the rollback commands in the detail (if listed; they restore the consistent data copy, the backup only as a last resort), fix the cause, then run update_member {member_id, fleet_install: "replace-full"} again.',
   'install-unverified': 'Run update_member {member_id, fleet_install: "auto"} to upgrade apra-fleet on the member to the orchestrator version, then member_detail with refresh:true.',
@@ -2215,7 +2264,7 @@ type Unavailable = (reason: FleetMcpUnavailableReason, detail?: string, extra?: 
  * older install there is intact and stays in use (reported, never silent).
  */
 const INSTALL_FAIL_CLOSED: ReadonlySet<string> = new Set([
-  'install-failed', 'install-unverified', 'full-install-running', 'probe-failed', 'home-unresolved', 'replace-failed', 'stop-failed', 'fleet-se-running',
+  'install-failed', 'install-unverified', 'full-install-running', 'probe-failed', 'home-unresolved', 'replace-failed', 'stop-failed', 'fleet-se-running', 'exe-locked',
 ]);
 
 /** One line naming a failed upgrade and the older install still in use. */
