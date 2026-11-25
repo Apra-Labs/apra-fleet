@@ -15,6 +15,10 @@ import {
 import { BEADS_PACKAGE, BEADS_VERSION } from '../src/cli/beads-pin.js';
 import { DOLT_VERSION } from '../src/cli/dolt-install.js';
 
+// Every seam call stubs the PATH dolt probe (no shadowing dolt), so no test
+// reaches a dolt on the host's PATH.
+const setDoltDeps = (o: any) => _setDoltStepDeps({ probePathDolt: () => null, ...o });
+
 // End-to-end coverage of the installer's bd / dolt version pin with REAL fake
 // executables: a fake `bd` placed first on PATH and a fake `dolt` in the
 // sandbox BIN_DIR, run for real through child_process. Same harness style as
@@ -216,7 +220,7 @@ afterEach(() => {
 
 /** Dolt step seam: verify runs the REAL fake dolt in BIN_DIR; the download rewrites it as the pinned version. */
 function doltSeam(downloads: string[]) {
-  _setDoltStepDeps({
+  setDoltDeps({
     verifyDolt: (async (p: string) => {
       const out = String(realCp.execFileSync(p, ['version'], { encoding: 'utf-8', shell: process.platform === 'win32' }));
       return { version: /(\d+\.\d+\.\d+)/.exec(out)?.[1] ?? out.trim(), serverOk: true };

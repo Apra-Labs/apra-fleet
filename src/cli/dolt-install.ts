@@ -459,6 +459,9 @@ export async function verifyDolt(
   }
 }
 
+/** Upper bound for each PATH dolt probe call (locate, then `version`). */
+const PATH_DOLT_PROBE_TIMEOUT_MS = 15_000;
+
 export interface PathDoltProbe {
   location: string;
   version: string;
@@ -473,7 +476,13 @@ export interface PathDoltProbe {
 export function probePathDolt(
   fleetDoltPath: string,
   exec: (file: string, args: string[]) => string = (file, args) =>
-    execFileSync(file, args, { stdio: 'pipe', encoding: 'utf-8', shell: false }) as string,
+    execFileSync(file, args, {
+      stdio: 'pipe',
+      encoding: 'utf-8',
+      shell: false,
+      windowsHide: true,
+      timeout: PATH_DOLT_PROBE_TIMEOUT_MS,
+    }) as string,
 ): PathDoltProbe | null {
   const norm = (p: string) => (process.platform === 'win32' ? path.resolve(p).toLowerCase() : path.resolve(p));
   try {

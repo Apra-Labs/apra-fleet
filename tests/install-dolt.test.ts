@@ -10,6 +10,10 @@ import {
   _resetDoltStepDeps,
 } from '../src/cli/install.js';
 
+// Every seam call stubs the PATH dolt probe (no shadowing dolt) unless the test
+// passes its own, so no test reaches the host's real `where`/`which dolt`.
+const setDoltDeps = (o: any) => _setDoltStepDeps({ probePathDolt: () => null, ...o });
+
 // apra-fleet-ire.4 -- vitest coverage for how install.ts's dolt CLI install
 // step (wired in apra-fleet-ire.3) behaves end-to-end: graceful degradation
 // on a download failure, idempotence (zero download calls) when a working
@@ -92,7 +96,7 @@ describe('dolt CLI install step wiring (apra-fleet-ire.4)', () => {
   it('degrades gracefully: a download failure warns (not throws) and the summary reports "not available"', async () => {
     const downloadAndExtractDolt = vi.fn().mockRejectedValue(new Error('network unreachable'));
     const verifyDolt = vi.fn();
-    _setDoltStepDeps({ downloadAndExtractDolt, verifyDolt } as any);
+    setDoltDeps({ downloadAndExtractDolt, verifyDolt } as any);
 
     await expect(runInstall([])).resolves.toBeUndefined();
 
@@ -110,7 +114,7 @@ describe('dolt CLI install step wiring (apra-fleet-ire.4)', () => {
     makeFsMock(true); // a dolt binary already exists at DOLT_PATH
     const downloadAndExtractDolt = vi.fn();
     const verifyDolt = vi.fn().mockResolvedValue({ version: '2.2.0', serverOk: true });
-    _setDoltStepDeps({ downloadAndExtractDolt, verifyDolt } as any);
+    setDoltDeps({ downloadAndExtractDolt, verifyDolt } as any);
 
     await runInstall([]);
 
@@ -128,7 +132,7 @@ describe('dolt CLI install step wiring (apra-fleet-ire.4)', () => {
     const verifyDolt = vi.fn()
       .mockRejectedValueOnce(new Error('dolt: command not found')) // initial already-installed check fails
       .mockResolvedValueOnce({ version: '2.2.0', serverOk: true }); // post-(re)download check succeeds
-    _setDoltStepDeps({ downloadAndExtractDolt, verifyDolt } as any);
+    setDoltDeps({ downloadAndExtractDolt, verifyDolt } as any);
 
     await runInstall([]);
 
@@ -140,7 +144,7 @@ describe('dolt CLI install step wiring (apra-fleet-ire.4)', () => {
   });
 
   it('prints contiguous [n/total] step labels with the dolt step included', async () => {
-    _setDoltStepDeps({
+    setDoltDeps({
       downloadAndExtractDolt: vi.fn().mockResolvedValue(DOLT_PATH),
       verifyDolt: vi.fn().mockResolvedValue({ version: '2.2.0', serverOk: true }),
     } as any);
@@ -173,7 +177,7 @@ describe('dolt CLI install step wiring (apra-fleet-ire.4)', () => {
   it('never fails the install, and never leaves the step counter mid-sequence, when verifyDolt itself rejects', async () => {
     const downloadAndExtractDolt = vi.fn().mockResolvedValue(DOLT_PATH);
     const verifyDolt = vi.fn().mockRejectedValue(new Error('dolt sql-server crashed'));
-    _setDoltStepDeps({ downloadAndExtractDolt, verifyDolt } as any);
+    setDoltDeps({ downloadAndExtractDolt, verifyDolt } as any);
 
     await expect(runInstall([])).resolves.toBeUndefined();
 
@@ -192,7 +196,7 @@ describe('dolt CLI install step wiring (apra-fleet-ire.4)', () => {
       makeFsMock(true);
       const downloadAndExtractDolt = vi.fn();
       const verifyDolt = vi.fn().mockResolvedValue({ version: '2.2.0', serverOk: true });
-      _setDoltStepDeps({ downloadAndExtractDolt, verifyDolt, probePathDolt } as any);
+      setDoltDeps({ downloadAndExtractDolt, verifyDolt, probePathDolt } as any);
       await runInstall([]);
       return {
         downloadAndExtractDolt,
