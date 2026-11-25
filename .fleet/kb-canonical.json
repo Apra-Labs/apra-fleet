@@ -1,9 +1,7 @@
 {
   "version": 3,
   "provenance": {
-    "commit": "1287ce0ed7581a5c309496eef58169481041a351",
-    "branch": "main",
-    "entry_count": 218
+    "branch": "main"
   },
   "entries": [
     {
@@ -2902,7 +2900,7 @@
       "updated_at": "2026-11-25T10:28:28.076Z",
       "source_file_hashes": {
         "memory-contract/v1/taxonomy.json": "c884fff3dbdf3132cadc13761a5c0c70c0a58642",
-        "src/services/knowledge/http-provider.ts": "54b70cea4be7da5651f6963b3dbc84bcac482f74",
+        "src/services/knowledge/http-provider.ts": "7b266ff653234bb93bce83c104c275cb216a3e68",
         "tests/knowledge/kb-http-error-mapping.test.ts": "8cd14c4e56834bfd554a12eae8e93ab0530bc69d"
       }
     },
