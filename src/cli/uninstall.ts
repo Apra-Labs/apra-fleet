@@ -33,7 +33,7 @@ import { BUILTIN_WORKFLOW_NAMES } from './workflow-assets.js';
 import { claudePluginsDir, isApraFleetStatusLine, uninstallClaudeMod } from './claude-mod.js';
 
 function run(cmd: string, opts?: Record<string, unknown>): void {
-  const shellOpt = process.platform === 'win32' ? { shell: 'cmd.exe' } : {};
+  const shellOpt = process.platform === 'win32' ? { shell: windowsExecutable('cmd.exe') } : {};
   execSync(cmd, { stdio: 'inherit', windowsHide: true, ...shellOpt, ...opts });
 }
 

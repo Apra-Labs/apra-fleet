@@ -1,6 +1,7 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { spawn, execSync } from 'node:child_process';
+import { windowsExecutable } from '../os/windows-executable.js';
 import { logError } from '../utils/log-helpers.js';
 
 /**
@@ -37,7 +38,7 @@ function findBrowserOpener(): { cmd: string; args: string[] } | null {
     // mirrors hasInteractiveDesktop() in auth-socket.ts so the caller falls
     // through to the manual CLI instruction instead of spawning a no-op opener.
     if (process.env.SESSIONNAME !== 'Console') return null;
-    return { cmd: 'cmd', args: ['/c', 'start', ''] };
+    return { cmd: windowsExecutable('cmd.exe'), args: ['/c', 'start', ''] };
   }
   // Linux / BSD: needs a display and xdg-open
   if (!process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) return null;

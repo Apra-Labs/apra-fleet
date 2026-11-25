@@ -61,6 +61,9 @@ function directSpawn(): void {
     detached: true,
     windowsHide: true,
     stdio: ['ignore', logFd, logFd],
+    // Never the folder 'apra-fleet start' was run from: a bare-name lookup in
+    // the server would search it first. The data dir is ensured owner-only above.
+    cwd: FLEET_DIR,
   });
   child.unref();
   fs.closeSync(logFd);

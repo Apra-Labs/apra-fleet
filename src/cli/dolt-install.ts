@@ -18,6 +18,7 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import net from 'node:net';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
+import { windowsExecutable } from '../os/windows-executable.js';
 
 export const DOLT_VERSION = 'v2.2.0';
 const DOLT_RELEASE_BASE = `https://github.com/dolthub/dolt/releases/download/${DOLT_VERSION}`;
@@ -351,7 +352,7 @@ export async function killChild(child: ChildProcess, opts: KillChildOpts = {}): 
     // there is no tree to kill); Windows falls back to taskkill /T.
     if (platform === 'win32') {
       try {
-        (opts.execFileSync ?? execFileSync)('taskkill', ['/F', '/T', '/PID', String(child.pid)], { stdio: 'ignore', windowsHide: true, timeout: 10_000 });
+        (opts.execFileSync ?? execFileSync)(windowsExecutable('taskkill'), ['/F', '/T', '/PID', String(child.pid)], { stdio: 'ignore', windowsHide: true, timeout: 10_000 });
       } catch { /* denied: reported below */ }
       if (await waitForExit(child, waitMs)) return;
     }

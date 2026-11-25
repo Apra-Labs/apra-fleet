@@ -151,6 +151,9 @@ export function searchWindowsPath(
   return { found: undefined, searched };
 }
 
+/** Inbox System32 tools the fleet server and CLI spawn by name. */
+const SYSTEM32_TOOLS = new Set(['taskkill', 'tasklist', 'schtasks', 'whoami']);
+
 /** Preferred absolute locations for a program, checked before PATH. */
 export function preferredWindowsLocations(name: string, deps: WindowsExecutableDeps): string[] {
   const base = baseProgramName(name).toLowerCase();
@@ -158,6 +161,10 @@ export function preferredWindowsLocations(name: string, deps: WindowsExecutableD
   const rootOk = root !== '' && isAbsoluteWindowsPath(root);
   if (base === 'powershell') {
     return rootOk ? [path.win32.join(root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')] : [];
+  }
+  if (SYSTEM32_TOOLS.has(base)) {
+    // Inbox Windows tools: %SystemRoot%\System32 first, so an earlier PATH entry cannot shadow them.
+    return rootOk ? [path.win32.join(root, 'System32', `${base}.exe`)] : [];
   }
   if (base === 'cmd') {
     const out: string[] = [];

@@ -1,4 +1,5 @@
 import { spawn, execSync, execFileSync } from 'node:child_process';
+import { windowsExecutable } from '../os/windows-executable.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -55,7 +56,7 @@ export const KILL_TREE_TIMEOUT_MS = 10_000;
 export function killLocalProcessTree(pid: number, posixKillCommand: string, shell?: string): void {
   try {
     if (process.platform === 'win32') {
-      execFileSync('taskkill.exe', ['/F', '/T', '/PID', String(pid)], {
+      execFileSync(windowsExecutable('taskkill.exe'), ['/F', '/T', '/PID', String(pid)], {
         stdio: 'ignore', windowsHide: true, timeout: KILL_TREE_TIMEOUT_MS,
       });
     } else {

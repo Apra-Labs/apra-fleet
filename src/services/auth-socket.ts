@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import { promises as fsPromises } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn, execSync, ChildProcess } from 'node:child_process';
+import { spawn, execSync, execFileSync, ChildProcess } from 'node:child_process';
 import { FLEET_DIR } from '../paths.js';
 import { encryptPassword } from '../utils/crypto.js';
 import { logError } from '../utils/log-helpers.js';
@@ -51,7 +51,7 @@ function killProcess(pid: number): void {
   if (!pid) return;
   try {
     if (process.platform === 'win32') {
-      execSync(`taskkill /F /PID ${pid}`, { stdio: 'ignore', windowsHide: true });
+      execFileSync(windowsExecutable('taskkill'), ['/F', '/PID', String(pid)], { stdio: 'ignore', windowsHide: true });
     } else {
       process.kill(pid, 'SIGTERM');
     }

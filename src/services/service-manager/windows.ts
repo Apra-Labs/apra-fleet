@@ -1,4 +1,5 @@
 import { execFileSync, spawn } from 'node:child_process';
+import { windowsExecutable } from '../../os/windows-executable.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { RegisterResult, ServiceManager, ServiceStatus, StopOptions } from './types.js';
@@ -60,7 +61,7 @@ function quietExec(cmd: string, args: string[]): Buffer {
   return execFileSync(cmd, args, QUIET);
 }
 
-const defaultSchtasksRunner: SchtasksRunner = (args) => quietExec('schtasks', args);
+const defaultSchtasksRunner: SchtasksRunner = (args) => quietExec(windowsExecutable('schtasks'), args);
 const defaultRegRunner: RegRunner = (args) => quietExec('reg', args);
 
 /**
@@ -140,7 +141,7 @@ function xmlUnescape(s: string): string {
  * "any user" and needs elevation (verified in a Windows Sandbox spike, Win10 19041).
  */
 export function resolveTaskUserId(
-  whoami: () => string = () => decodeSchtasks(quietExec('whoami', [])),
+  whoami: () => string = () => decodeSchtasks(quietExec(windowsExecutable('whoami'), [])),
 ): string {
   return currentWindowsUser(whoami);
 }
@@ -693,7 +694,7 @@ export class WindowsServiceManager implements ServiceManager {
         if (fs.existsSync(launcher)) {
           this.spawnDetached(wscriptPath(this.env), ['//B', '//Nologo', '//E:JScript', launcher]);
         } else {
-          this.spawnDetached('cmd.exe', ['/d', '/s', '/c', `""${this.wrapperPath}""`], true);
+          this.spawnDetached(windowsExecutable('cmd.exe'), ['/d', '/s', '/c', `""${this.wrapperPath}""`], true);
         }
         return;
       }
@@ -715,7 +716,7 @@ export class WindowsServiceManager implements ServiceManager {
     }
     // Detached so schtasks /run does not block the installer (on some Windows
     // versions it waits for the launched process).
-    this.spawnDetached('schtasks', ['/run', '/tn', WINDOWS_TASK_NAME]);
+    this.spawnDetached(windowsExecutable('schtasks'), ['/run', '/tn', WINDOWS_TASK_NAME]);
   }
 
   async stop(opts?: StopOptions): Promise<boolean> {
@@ -746,7 +747,7 @@ export class WindowsServiceManager implements ServiceManager {
       }
     }
     return gracefulStopByServerJson((pid) => {
-      try { quietExec('taskkill', ['/F', '/PID', String(pid)]); } catch {}
+      try { quietExec(windowsExecutable('taskkill'), ['/F', '/PID', String(pid)]); } catch {}
     });
   }
 
