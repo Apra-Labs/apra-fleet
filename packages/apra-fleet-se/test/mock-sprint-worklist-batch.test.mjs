@@ -146,6 +146,11 @@ test('mock sprint (mode i): a mixed-tier round batches each tier separately -- a
             reviewerHandler: approveReviewer,
             doerHandler: closeAllDoer,
             doerWorklistMode: 'batch',
+            // One premium of three counted tasks is over the balanced
+            // premium cap (floor(20% x 3) = 0), so the premium-cap gate would
+            // re-plan first. This scenario is about batching by tier, not the
+            // cap: run it under quality (no cap).
+            tierPolicy: 'quality',
         });
 
         check(!scenario.error, `Scenario should not error: ${scenario.error ? scenario.error.message : ''}`);

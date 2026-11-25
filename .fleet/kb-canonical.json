@@ -1,11 +1,35 @@
 {
   "version": 3,
   "provenance": {
-    "commit": "962e202f8b5910fdecf6f82a46102a798f5cc4f2",
-    "branch": "main",
-    "entry_count": 212
+    "branch": "main"
   },
   "entries": [
+    {
+      "id": "0077b24d-29fe-4f72-94df-0cd6a9e65f90",
+      "type": "knowledge",
+      "title": "Per-run role tiers come from roleTierTable(policy); the reviewer round overrides via bindings.fixedTier",
+      "summary": "runner.js sets dispatchCtx.fixedRoleTier = roleTierTable(tierPolicy) instead of the quality-only FIXED_ROLE_TIER; dispatch-role.mjs resolveModelTier honours bindings.fixedTier, which dispatchReview passes as the per-round reviewer tier.",
+      "symbols": [
+        "roleTierTable",
+        "resolveModelTier",
+        "dispatchReview",
+        "FIXED_ROLE_TIER"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/tier-policy.mjs",
+        "packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/fleet-sprint/phases/review.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-24T04:59:03.713Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/dispatch-role.mjs": "5486973539915eb92bfadf46299ae057cc60ffe0",
+        "packages/apra-fleet-se/fleet-sprint/phases/review.mjs": "c243db271b918be37dc82611dc276e4609123d5d",
+        "packages/apra-fleet-se/fleet-sprint/runner.js": "99119bc32f6ed50d00bece21dc4da768f66b47d2",
+        "packages/apra-fleet-se/fleet-sprint/tier-policy.mjs": "e531df63e419054930228b056e0674287b4307de"
+      }
+    },
     {
       "id": "0349a241-9b26-47c6-91d5-2bd998154430",
       "type": "knowledge",
@@ -90,6 +114,30 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:15.988Z"
+    },
+    {
+      "id": "0b87931a-f912-416c-b03e-5fd4c26ac6ee",
+      "type": "knowledge",
+      "title": "execute_prompt resolved_tier/resolved_model are attached by a wrapper around executePromptCore",
+      "summary": "executePrompt is now a thin wrapper: executePromptCore writes into a mutable PromptResolution object after model resolution, and the wrapper merges resolved_tier/resolved_model into structuredContent of any returned object result. Early returns before resolution and thrown errors carry neither field.",
+      "symbols": [
+        "executePrompt",
+        "executePromptCore",
+        "PromptResolution",
+        "resolveModelForTier"
+      ],
+      "source_files": [
+        "src/tools/execute-prompt.ts",
+        "tests/execute-prompt-resolved-tier.test.ts",
+        "packages/apra-fleet-client/src/client/api.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-24T03:19:38.005Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-client/src/client/api.mjs": "ed0eefe7dfe92f0145638204f3fcaf69eb35308b",
+        "src/tools/execute-prompt.ts": "2cdef64e525797cb388accb76fac8e7f8e7ce50d",
+        "tests/execute-prompt-resolved-tier.test.ts": "00e75945d536faaf095126af2c944a8c259a3203"
+      }
     },
     {
       "id": "0c2d907a-bee5-4324-b61e-6ee0e2bc4b74",
@@ -2478,6 +2526,32 @@
       }
     },
     {
+      "id": "8b15e895-7b5b-4fb7-ae8f-18bfcfcead1e",
+      "type": "knowledge",
+      "title": "Premium-cap gate runs after Plan via runReplanPhase premiumCap option and holds Develop on a decision",
+      "summary": "runner.js calls tier-cap.mjs runPremiumCapGate right after runPlanPhase. Over the cap it re-plans through phases/replan.mjs runReplanPhase with a premiumCap option (max 2 per sprint on sprintState.premiumCap), then raises one recordPendingDecision and awaits decisionWait.awaitAnswer before Execution Prep.",
+      "symbols": [
+        "runPremiumCapGate",
+        "countPremiumCap",
+        "runReplanPhase",
+        "recordPendingDecision"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/tier-cap.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/fleet-sprint/phases/replan.mjs",
+        "packages/apra-fleet-se/test/mock-sprint-premium-cap.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-24T03:42:39.673Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/phases/replan.mjs": "3a73bf79af1ac64dfc287ff067b8329a25e914c6",
+        "packages/apra-fleet-se/fleet-sprint/runner.js": "9d27bb9425c1e1c55fd7d6326005471e62843f3a",
+        "packages/apra-fleet-se/fleet-sprint/tier-cap.mjs": "aaa7b0e3ed3d909a65135837e94f0ceec80765be",
+        "packages/apra-fleet-se/test/mock-sprint-premium-cap.test.mjs": "af228900acc500b838efd3920a02572de326a9f3"
+      }
+    },
+    {
       "id": "8be9cb68-4270-4a68-bd98-1f7e6ca74d47",
       "type": "learning",
       "title": "Root npm test can be narrowed to specific vitest files via APRA_TEST_SUITES_JSON",
@@ -3670,6 +3744,33 @@
       }
     },
     {
+      "id": "d9d21654-e8f4-46ed-948d-13593e25ca2e",
+      "type": "knowledge",
+      "title": "Tier escalation is recorded as tierEscalatedFrom, never by rewriting metadata.model",
+      "summary": "tier-escalation.mjs escalates a reopened or verify-failed bead one tier up, once per sprint, by writing metadata tierEscalatedFrom=<original> and holding the escalation on the run context; effectiveBeadTier derives the running tier. metadata.model is never rewritten by the engine.",
+      "symbols": [
+        "applyEscalations",
+        "effectiveBeadTier",
+        "holdTierEscalations",
+        "isVerifyFailureOutcome",
+        "planEscalations"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/tier-escalation.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/review.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/develop.mjs",
+        "packages/apra-fleet-se/fleet-sprint/tier-cap.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-24T04:59:07.355Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/phases/develop.mjs": "30916e330142da27cb3aaea381221699b0b6d77a",
+        "packages/apra-fleet-se/fleet-sprint/phases/review.mjs": "c243db271b918be37dc82611dc276e4609123d5d",
+        "packages/apra-fleet-se/fleet-sprint/tier-cap.mjs": "aaa7b0e3ed3d909a65135837e94f0ceec80765be",
+        "packages/apra-fleet-se/fleet-sprint/tier-escalation.mjs": "d65b7a3ed7c01949238cbdc510683a5efa3d1b51"
+      }
+    },
+    {
       "id": "da7d0105-e454-43d0-b12f-c27d00e7f337",
       "type": "learning",
       "title": "libuv reads NoDefaultCurrentDirectoryInExePath from the parent env, not the spawn env option",
@@ -3856,6 +3957,32 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:53.820Z"
+    },
+    {
+      "id": "e056ec8a-d82f-4cd1-ba03-a891ce012cf8",
+      "type": "knowledge",
+      "title": "runner.js FIXED_ROLE_TIER is derived from tier-policy.mjs quality preset and exported for test pins",
+      "summary": "FIXED_ROLE_TIER in fleet-sprint/runner.js is no longer an object literal: it is fixedRoleTierTable(resolveTierPolicy('quality')) from tier-policy.mjs, exported. Test pins must import it, not scan runner.js source with objectLiteralFor.",
+      "symbols": [
+        "FIXED_ROLE_TIER",
+        "fixedRoleTierTable",
+        "resolveTierPolicy",
+        "roleTier"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/tier-policy.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/test/helpers/dispatch-role-harness.mjs",
+        "packages/apra-fleet-se/test/planning-role-dispatch-pins.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-23T01:31:50.655Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/runner.js": "852051113b13ac6ae19ad1a1ce60a660c99a3c7d",
+        "packages/apra-fleet-se/fleet-sprint/tier-policy.mjs": "4aa97491b005c9bc128b00f0c9ded48ba2fea4ed",
+        "packages/apra-fleet-se/test/helpers/dispatch-role-harness.mjs": "bdc5c2d09123cb30d364e417e75a1580c6c595fd",
+        "packages/apra-fleet-se/test/planning-role-dispatch-pins.test.mjs": "8464f035e95b7aefef1b49928a91dc0e2855ba1f"
+      }
     },
     {
       "id": "e078ec0e-b747-4274-a82b-4155c342928b",

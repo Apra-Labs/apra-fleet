@@ -1788,7 +1788,7 @@ const PLAN_REVIEW_SCHEMA = {
           },
           "kind": {
             "type": "string",
-            "description": "Which quality criterion failed, as a closed vocabulary mirroring the numbered criteria in the prose contract's Step 2. Use other only when no listed kind fits, and explain it in detail.",
+            "description": "Which quality criterion failed, as a closed vocabulary mirroring the numbered criteria in the prose contract's Step 2. tier_cap, tier_reason, tier_split and lane_tier are the model tier policy criterion: premium cap exceeded, a premium bead with a missing or invalid tierReason or a bead with an uncited hard-criterion signal, a premium bead with separable non-hard work, and a lane whose work beads carry mixed tiers. Use other only when no listed kind fits, and explain it in detail.",
             "enum": [
               "coverage",
               "missing_test_task",
@@ -1801,6 +1801,10 @@ const PLAN_REVIEW_SCHEMA = {
               "ready_work",
               "model_metadata",
               "lane_cohesion",
+              "tier_cap",
+              "tier_reason",
+              "tier_split",
+              "lane_tier",
               "other"
             ]
           },

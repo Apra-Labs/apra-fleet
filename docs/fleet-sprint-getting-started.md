@@ -433,7 +433,8 @@ POST http://127.0.0.1:8787/api/sprints
   "budget":  25,                      // optional: USD ceiling for the run
   "requirementsFile": "docs/checkout-v2-requirements.md",  // optional, see Section 5
   "phases":  {"regression": "skip"},  // optional: skip the regression pass this once
-  "kbDemotionLoop": "off"             // optional: turn the reviewer KB demotion loop off ("on" is the default)
+  "kbDemotionLoop": "off",            // optional: turn the reviewer KB demotion loop off ("on" is the default)
+  "tierPolicy": "quality"             // optional: balanced (default) | economy | quality; see docs/fleet-sprint-tier-policy.md
 }
 ```
 
