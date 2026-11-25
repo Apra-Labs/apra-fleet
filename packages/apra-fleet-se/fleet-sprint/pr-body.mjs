@@ -915,6 +915,11 @@ export function normalizeRecommendationForVerdict(verdictResult) {
  *   `previousHadOverflow` says whether `previousBody` pointed at overflow
  *   comments (so a relaunch knows to clean them up).
  */
+// One-line pointer to the sprint analysis. Never the analysis text itself
+// (provider description limits): the full analysis lives in the run record and
+// is read from the supervisor's GET /api/sprints/<id> `analysis` field.
+export const ANALYSIS_POINTER_LINE = '- **Analysis:** the full sprint analysis is kept in the run record (supervisor `GET /api/sprints/<id>`, `analysis` field), not in this description.';
+
 export function buildSprintPrBody({
     verdict, goal, branch, baseBranch, runId, now = new Date(),
     notes, notesHeading = 'Reviewer notes', mergeAssessment, mergeAssessmentIncomplete, sections = [],
@@ -944,6 +949,7 @@ export function buildSprintPrBody({
         goal ? `- **Goal:** ${inline(goal)}` : null,
         `- **Branch:** ${codeSpan(inline(branch))}${baseBranch ? ` -> ${codeSpan(inline(baseBranch))}` : ''}`,
         `- **Run:** ${codeSpan(run)} (${stamp})`,
+        ANALYSIS_POINTER_LINE,
         '',
     ].filter((l) => l !== null);
 
