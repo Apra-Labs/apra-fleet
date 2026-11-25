@@ -29,7 +29,7 @@ import {
 } from './helpers/mock-sprint-harness.mjs';
 import { invalidateSyncRemoteCache, clearLastSyncedTip, clearTipProbeFailures } from '../fleet-sprint/dolt-sync.mjs';
 import { clearMemberOsCache } from '../fleet-sprint/runner.js';
-import { logicalBdCommand } from '../fleet-sprint/bd-sync-command.mjs';
+import { logicalBdCommand, unwrapSyncHeartbeat } from '../fleet-sprint/bd-sync-command.mjs';
 
 const BACKLOG_MEMBER = 'local';
 const INTEG_MEMBER = 'integ';
@@ -37,7 +37,7 @@ const SYNC_REMOTE = 'git+https://example.invalid/org/beads.git';
 const LS_REMOTE_RE = / ls-remote https:\/\/example\.invalid\/org\/beads\.git refs\/dolt\/data$/;
 // The gitbash prefix bdSyncCommandFor builds: the non-interactive git env,
 // then the Windows GOMAXPROCS bound.
-const PREFIX_RE = /^GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never GOMAXPROCS=1 /;
+const PREFIX_RE = /^GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never GIT_HTTP_LOW_SPEED_LIMIT=1000 GIT_HTTP_LOW_SPEED_TIME=300 GOMAXPROCS=1 /;
 
 const exit0 = (stdout = '') => ({
     content: [{ type: 'text', text: `Exit code: 0\n${stdout}` }],
@@ -73,7 +73,7 @@ test('a gitbash backlog member: after Integ Test closes a verify bead and files 
             if (/^bd config get sync\.remote/.test(logical)) return exit0(JSON.stringify({ key: 'sync.remote', value: SYNC_REMOTE }));
             if (LS_REMOTE_RE.test(command)) return exit0(`${state.tip}\trefs/dolt/data\n`);
             if (logical === 'bd dolt pull') {
-                state.pulls.push({ member, phase: state.phase, command });
+                state.pulls.push({ member, phase: state.phase, command: unwrapSyncHeartbeat(command) });
                 if (member === BACKLOG_MEMBER && state.pending.length > 0) {
                     const queued = state.pending.splice(0);
                     for (const apply of queued) await apply();
