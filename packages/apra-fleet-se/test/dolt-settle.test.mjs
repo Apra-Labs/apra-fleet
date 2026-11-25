@@ -1,4 +1,5 @@
 import { test } from 'node:test';
+import { BEADS_VERSION as ENGINE_BEADS_VERSION, BEADS_PACKAGE as ENGINE_BEADS_PACKAGE, DOLT_VERSION as ENGINE_DOLT_VERSION } from '../fleet-sprint/tool-version-pin.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -194,6 +195,21 @@ test('DOLT_VERSION matches src/cli/dolt-install.ts pin (drift guard)', () => {
     const match = source.match(/export const DOLT_VERSION = '([^']+)'/);
     check(match, 'dolt-install.ts still exports a DOLT_VERSION constant in the expected shape');
     assert.equal(DOLT_VERSION, match[1], 'dolt-settle.mjs DOLT_VERSION must equal dolt-install.ts DOLT_VERSION -- a pin bump that touches one file and not the other must fail this test');
+});
+
+// The engine's bd pin (fleet-sprint/tool-version-pin.mjs, used by the
+// sprint-start version check on every member) must equal the product's
+// src/cli/beads-pin.ts BEADS_VERSION. tests/apra-pm-beads-pin.test.ts also
+// scans the engine file's @beads/bd@X.Y.Z literal; this guard names it
+// explicitly so a rewrite of that literal cannot slip past.
+test('engine BEADS_VERSION matches src/cli/beads-pin.ts pin (drift guard)', () => {
+    const pinTsPath = path.join(__dirname, '..', '..', '..', 'src', 'cli', 'beads-pin.ts');
+    const source = fs.readFileSync(pinTsPath, 'utf-8');
+    const match = source.match(/export const BEADS_VERSION = '([^']+)'/);
+    check(match, 'beads-pin.ts still exports a BEADS_VERSION constant in the expected shape');
+    assert.equal(ENGINE_BEADS_VERSION, match[1], 'tool-version-pin.mjs BEADS_VERSION must equal src/cli/beads-pin.ts BEADS_VERSION -- a pin bump that touches one file and not the other must fail this test');
+    assert.equal(ENGINE_BEADS_PACKAGE, `@beads/bd@${match[1]}`);
+    assert.equal(ENGINE_DOLT_VERSION, DOLT_VERSION, 'the engine dolt pin is dolt-settle.mjs DOLT_VERSION, never a third literal');
 });
 
 // ---------------------------------------------------------------------------
@@ -431,8 +447,8 @@ function makeSettleFixture({
             return { ok: true, output: '', error: null };
         }
 
-        // Step 6: republish. Matched on the suffix: on a Windows member the
-        // string carries a GOMAXPROCS assignment ahead of bd.
+        // Step 6: republish. Matched on the suffix: the string carries the
+        // non-interactive git env (and GOMAXPROCS on Windows) ahead of bd.
         if (cmd.endsWith('bd dolt pull')) { state.syncCommands.push(cmd); return { ok: true, output: '', error: null }; }
         if (cmd.endsWith('bd dolt push')) {
             state.syncCommands.push(cmd);
@@ -458,8 +474,10 @@ test('settleDoltConflicts: resolves a single-row issues conflict end to end, tea
     check(state.merged, 'DOLT_MERGE must have been called');
     check(state.committed, 'DOLT_COMMIT must have been called');
     assert.deepEqual(state.resolvedTables, ['issues']);
-    // A Windows (PowerShell) member republishes with a bounded GOMAXPROCS.
-    assert.deepEqual(state.syncCommands, ["$env:GOMAXPROCS='1'; bd dolt pull", "$env:GOMAXPROCS='1'; bd dolt push"]);
+    // A Windows (PowerShell) member republishes with the non-interactive git
+    // env and a bounded GOMAXPROCS, as $env: assignments.
+    const pwsh = "$env:GIT_TERMINAL_PROMPT='0'; $env:GCM_INTERACTIVE='never'; $env:GOMAXPROCS='1'; ";
+    assert.deepEqual(state.syncCommands, [`${pwsh}bd dolt pull`, `${pwsh}bd dolt push`]);
 });
 
 test('settleDoltConflicts: resolves multiple conflicted tables with no allowlist (total, not gated)', async () => {

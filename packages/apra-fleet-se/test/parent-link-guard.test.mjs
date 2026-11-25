@@ -38,7 +38,8 @@ function buildHarness({ beads, targetIssues = ['root'], failRestore = false, res
     });
     const rawCommand = async (cmd, opts = {}) => {
         commandLog.push(cmd);
-        if (/^bd list --all/.test(cmd)) return JSON.stringify(db.beads);
+        const byId = /--id "([^"]+)"/.exec(cmd);
+        if (/^bd list --all/.test(cmd)) return JSON.stringify(byId ? db.beads.filter((b) => byId[1].split(',').includes(b.id)) : db.beads);
         if (/^bd list --ready/.test(cmd)) {
             const parents = new Set(db.beads.filter((b) => b.parent).map((b) => b.parent));
             return JSON.stringify(db.beads.filter((b) => b.status === 'open' && !parents.has(b.id)));
@@ -98,7 +99,7 @@ describe('parent-link guard: vanished parent-child links', () => {
         assert.equal(h.db.beads.find((b) => b.id === 'leaf-a1').parent, 'feat-a');
         assert.equal(after.find((b) => b.id === 'feat-a').parent, 'root');
         assert.equal(after.find((b) => b.id === 'leaf-a1').parent, 'feat-a');
-        assert.equal(h.commandLog.filter((c) => c.startsWith('bd list --all')).length, 2);
+        assert.equal(h.commandLog.filter((c) => c.startsWith('bd list --all') && !/ --id /.test(c)).length, 2);
         const scoped = (await h.scope.bdListScoped('')).map((b) => b.id).sort();
         assert.deepEqual(scoped, ['feat-a', 'feat-b', 'leaf-a1', 'leaf-b1', 'root']);
     });

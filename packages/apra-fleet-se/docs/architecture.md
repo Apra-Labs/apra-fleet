@@ -1644,7 +1644,8 @@ The approach was a strangler-fig extraction, not a rewrite:
   is a closed vocabulary mirroring the plan-reviewer's numbered quality
   criteria (`coverage`, `missing_test_task`, `acceptance_criteria`,
   `task_size`, `dependency_wiring`, `scope_creep`, `duplicate_work`,
-  `feasibility`, `ready_work`, `model_metadata`, `lane_cohesion`, `other`).
+  `feasibility`, `ready_work`, `model_metadata`, `lane_cohesion`, `tier_cap`,
+  `tier_reason`, `tier_split`, `lane_tier`, `other`).
   `findings` is populated on every `CHANGES_NEEDED` verdict; an **empty**
   array on `CHANGES_NEEDED` is the explicit "the objection is plan-wide,
   names no individual bead" signal, distinct from a verdict that predates

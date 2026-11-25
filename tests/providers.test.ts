@@ -8,6 +8,7 @@ import { buildResumeFlag, buildSessionIdFlag, buildForkFlag, isMaxTurnsResponse 
 import { isMaxTurnsSignal, parseClaudeResetTime } from '../src/providers/claude.js';
 import type { SSHExecResult } from '../src/types.js';
 import { MEMBER_DENIED_TOOLS } from '../src/services/member-tool-allowlist.js';
+import { claudeProcessKillDenyRules } from '../src/services/process-kill-rules.js';
 
 // --- Helpers -----------------------------------------------------------------
 
@@ -419,10 +420,13 @@ describe('ClaudeProvider', () => {
     }
   });
 
-  it('composePermissionConfig denies exactly the complement of the member allowlist on apra-fleet', () => {
+  it('composePermissionConfig denies exactly the complement of the member allowlist on apra-fleet, plus process-killing commands', () => {
     const [settings] = p.composePermissionConfig('doer', ['Read']) as [{ permissions: { allow: string[]; deny: string[] } }];
     expect(settings.permissions.allow).toEqual(['Read']);
-    expect(settings.permissions.deny).toEqual(MEMBER_DENIED_TOOLS.map(t => `mcp__apra-fleet__${t}`));
+    expect(settings.permissions.deny).toEqual([
+      ...MEMBER_DENIED_TOOLS.map(t => `mcp__apra-fleet__${t}`),
+      ...claudeProcessKillDenyRules(),
+    ]);
     expect(settings.permissions.deny.some(r => r.includes('deepwiki'))).toBe(false);
     expect(settings.permissions.deny).not.toContain('mcp__apra-fleet__kb_query');
   });

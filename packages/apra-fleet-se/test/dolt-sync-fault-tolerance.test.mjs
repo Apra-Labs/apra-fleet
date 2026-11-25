@@ -12,7 +12,7 @@ import {
     clearLastSyncedTip,
     clearTipProbeFailures,
 } from '../fleet-sprint/dolt-sync.mjs';
-import { DoltDivergedError, DoltSyncError } from '../fleet-sprint/errors.mjs';
+import { DoltDivergedError, DoltSyncError, DoltPushRaceError } from '../fleet-sprint/errors.mjs';
 
 // =============================================================================
 // apra-fleet-417.3.1 -- fault-tolerant dolt sync: classification, bounded retry
@@ -170,19 +170,22 @@ test('apra-fleet-spp.4: reconcile-then-auth re-push surfaces the auth DoltSyncEr
     clearDegradedSyncRecords();
 });
 
-test('apra-fleet-spp.4 negative: reconcile-then-still-diverged re-push still surfaces DoltDivergedError', async () => {
+test('apra-fleet-spp.4 negative: reconcile-then-still-rejected re-push is a race, never folded into the auth terminal', async () => {
     clearDegradedSyncRecords();
     const { command } = makeCommandMock({
-        // Both the initial push and the re-push after reconcile are genuine
-        // non-fast-forward rejections -- real divergence must still abort.
-        'bd dolt push': [fail(REAL_DIVERGENCE_STDERR), fail(REAL_DIVERGENCE_STDERR)],
+        // Every push is a genuine non-fast-forward rejection and every
+        // reconcile pull merges cleanly: the remote kept moving. Since the
+        // bounded race loop, exhaustion is the typed DoltPushRaceError (a
+        // busy remote, not a data conflict); it must still never read as auth.
+        'bd dolt push': [fail(REAL_DIVERGENCE_STDERR)],
         'bd dolt pull': [OK],
     });
     await assert.rejects(
         () => doltPushAfter('fleet-mac', { command, checkSyncRemoteConfigured: remoteConfigured, sleep: async () => {} }),
         (err) => {
-            assert.ok(err instanceof DoltDivergedError, 'a genuine post-reconcile divergence must still throw DoltDivergedError');
-            assert.match(err.message, /still rejected after one reconcile pull/);
+            assert.ok(err instanceof DoltPushRaceError, 'a push still rejected after every reconcile is the typed race error');
+            assert.equal(err.details.kind, 'remote-race');
+            assert.doesNotMatch(err.message, /CREDENTIALS/);
             return true;
         },
     );

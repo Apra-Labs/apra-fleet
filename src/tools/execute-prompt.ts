@@ -88,7 +88,13 @@ export function toStructuredUsage(u: TokenUsage): StructuredUsage {
 
 export interface ExecutePromptStructured {
   isError?: boolean;
-  reason?: 'busy' | 'reserved' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'orphan_recovery_timeout' | 'workspace_not_trusted' | 'auth' | 'server' | 'overloaded' | 'insufficient_context_headroom' | 'budget_exhausted' | 'session_not_found' | 'fork_unsupported' | 'stalled' | 'agent_never_started' | 'max_total_time' | 'preflight_offline' | 'preflight_auth_missing' | 'preflight_auth_expired' | 'usage_limit' | 'permission_denied' | 'secret_delivery_unavailable';
+  reason?: 'busy' | 'reserved' | 'dispatch_failed' | 'nonzero_exit' | 'max_turns_exhausted' | 'empty_response' | 'orphan_recovery_timeout' | 'workspace_not_trusted' | 'auth' | 'server' | 'overloaded' | 'insufficient_context_headroom' | 'budget_exhausted' | 'session_not_found' | 'fork_unsupported' | 'stalled' | 'agent_never_started' | 'max_total_time' | 'preflight_offline' | 'preflight_auth_missing' | 'preflight_auth_expired' | 'usage_limit' | 'permission_denied' | 'secret_delivery_unavailable'
+    // Early rejections (no LLM invoked unless noted): secret token in prompt,
+    // invalid argument combinations (fork vs session_id/resume), bad
+    // substitutions, provider none, named agent file missing, and interactive-
+    // session delivery/timeout/death failures (interactive_failed: the prompt may
+    // have been delivered, so it carries no dispatched:false).
+    | 'secret_in_prompt' | 'invalid_arguments' | 'substitution_failed' | 'provider_none' | 'agent_file_not_found' | 'interactive_failed';
   // The LLM's actual reply text on success. Callers that dispatch execute_prompt
   // via an MCP client only ever see structuredContent (the content array is
   // dropped when structuredContent is also present) -- this field exists so the
@@ -96,6 +102,15 @@ export interface ExecutePromptStructured {
   response?: string;
   usage?: StructuredUsage;
   sessionId?: string;
+  /** The model id the dispatch ran on: the id the provider reported when it
+   *  named one (modelSource 'reported'), else the id handed to the provider
+   *  CLI after tier mapping (modelSource 'resolved'). Present on every result produced once the model
+   *  was resolved -- success and typed failures (usage_limit,
+   *  max_turns_exhausted, ...); absent on results returned before that
+   *  (busy, reserved, preflight). */
+  model?: string;
+  /** Whether `model` was reported by the provider or is only the resolved id/alias. */
+  modelSource?: 'reported' | 'resolved';
   /** Present on an 'insufficient_context_headroom' rejection (apra-fleet-eft.81.1). */
   detail?: { demand: number; headroom: number; window: number };
   /** Present on a successful dispatch that fits but lands inside the session's
@@ -137,6 +152,14 @@ export interface ExecutePromptStructured {
    *  they could not be read (e.g. an older member install without
    *  query_errors) -- never an empty list then. No action is taken on them. */
   toolErrors?: ToolErrorsReport;
+  /** The tier that actually ran (cheap|standard|premium): the member's model_tiers
+   *  key that supplied resolved_model. Equals the requested tier keyword ('standard'
+   *  when model omitted) unless the member lacks that tier and fell back to another,
+   *  in which case it names the fallback tier. null when the caller passed a literal
+   *  model id. Present on every result that got as far as model resolution. */
+  resolved_tier?: 'cheap' | 'standard' | 'premium' | null;
+  /** Concrete model string actually passed to the provider. */
+  resolved_model?: string;
   [key: string]: unknown;
 }
 
@@ -387,13 +410,35 @@ async function deletePromptFile(agent: Agent, strategy: AgentStrategy, promptFil
   }
 }
 
-export function resolveModelForTier(agent: Agent, tier: string, provider: ProviderAdapter): string {
+type ModelTier = 'cheap' | 'standard' | 'premium';
+const MODEL_TIERS: readonly ModelTier[] = ['cheap', 'standard', 'premium'];
+
+/**
+ * The model a tier request resolves to on a member, and the tier that model
+ * actually belongs to. A member whose model_tiers lacks the requested tier
+ * falls back to standard, then cheap, then its first configured model; `tier`
+ * then names the fallback (null when that first model sits under a key that
+ * is not a tier name), so a caller can see the request was not honoured.
+ */
+export function resolveTierForMember(agent: Agent, tier: string, provider: ProviderAdapter): { tier: ModelTier | null; model: string } {
   const memberTiers = agent.modelTiers;
   if (memberTiers) {
     const t = tier as keyof typeof memberTiers;
-    return memberTiers[t] ?? memberTiers.standard ?? memberTiers.cheap ?? Object.values(memberTiers).filter(Boolean)[0] as string;
+    if (memberTiers[t]) return { tier: tier as ModelTier, model: memberTiers[t] as string };
+    if (memberTiers.standard) return { tier: 'standard', model: memberTiers.standard };
+    if (memberTiers.cheap) return { tier: 'cheap', model: memberTiers.cheap };
+    const first = Object.entries(memberTiers).find(([, v]) => Boolean(v));
+    const key = first ? first[0] : null;
+    return {
+      tier: key && (MODEL_TIERS as readonly string[]).includes(key) ? key as ModelTier : null,
+      model: (first ? first[1] : undefined) as string,
+    };
   }
-  return provider.modelForTier(tier as 'cheap' | 'standard' | 'premium');
+  return { tier: tier as ModelTier, model: provider.modelForTier(tier as ModelTier) };
+}
+
+export function resolveModelForTier(agent: Agent, tier: string, provider: ProviderAdapter): string {
+  return resolveTierForMember(agent, tier, provider).model;
 }
 
 /**
@@ -615,7 +660,7 @@ async function executePromptInteractive(
   input: ExecutePromptInput,
   workspaceId: string,
   heuristicWarningSuffix: string,
-): Promise<string> {
+): Promise<string | ExecutePromptResult> {
   const timeoutS = input.timeout_s ?? 300;
   const scope = new LogScope('execute_prompt', `[interactive] timeout=${timeoutS}s ${truncateForLog(maskSecrets(input.prompt))}`, agent);
 
@@ -623,7 +668,10 @@ async function executePromptInteractive(
   const parsed = JSON.parse(sendResult);
   if (parsed.error) {
     scope.abort(`send failed: ${parsed.error}`);
-    return `[FAIL] Failed to deliver prompt to "${agent.friendlyName}" (interactive session): ${parsed.error}`;
+    return {
+      text: `[FAIL] Failed to deliver prompt to "${agent.friendlyName}" (interactive session): ${parsed.error}`,
+      structuredContent: { isError: true, reason: 'interactive_failed', dispatched: false },
+    };
   }
 
   try {
@@ -635,7 +683,10 @@ async function executePromptInteractive(
   } catch (err: any) {
     if (err instanceof InteractiveSessionDiedError) {
       scope.abort(err.message);
-      return `[ERROR] "${agent.friendlyName}"'s interactive claude process died while this dispatch was waiting for a response (${err.message}). The prompt was delivered but nothing will ever answer it -- re-launch the member (re-run register_member) before retrying.`;
+      return {
+        text: `[ERROR] "${agent.friendlyName}"'s interactive claude process died while this dispatch was waiting for a response (${err.message}). The prompt was delivered but nothing will ever answer it -- re-launch the member (re-run register_member) before retrying.`,
+        structuredContent: { isError: true, reason: 'interactive_failed' },
+      };
     }
     scope.abort(`interactive timeout: ${err.message}`);
     // apra-fleet-eft.74.2: self-heal on interactive-route timeout. A session
@@ -653,7 +704,10 @@ async function executePromptInteractive(
       sessionRegistry.unregister(workspaceId, agent.id);
       scope.info(`[interactive] timed-out session for "${agent.friendlyName}" has no verifiable live pid (pid=${timedOutPid ?? 'none'}) -- evicting so the next dispatch falls back to subprocess`);
     }
-    return `[FAIL] Timed out waiting for "${agent.friendlyName}" to respond (interactive session, ${timeoutS}s). The prompt was delivered; the member may still respond late, but this call has given up waiting.`;
+    return {
+      text: `[FAIL] Timed out waiting for "${agent.friendlyName}" to respond (interactive session, ${timeoutS}s). The prompt was delivered; the member may still respond late, but this call has given up waiting.`,
+      structuredContent: { isError: true, reason: 'interactive_failed' },
+    };
   }
 }
 
@@ -740,18 +794,57 @@ export async function withToolErrors(
 export async function executePrompt(input: ExecutePromptInput, extra?: any): Promise<string | ExecutePromptResult> {
   const startedAt = Date.now();
   const track: DispatchTrack = {};
-  const result = await runExecutePrompt(input, extra, track);
+  const result = await executePromptResolved(input, extra, track);
   return withToolErrors(result, track.agent, agent =>
     toolErrorsAfterDispatch(agent, startedAt, { maxTotalS: input.max_total_s, timeoutS: input.timeout_s }, extra?.signal));
 }
 
-async function runExecutePrompt(input: ExecutePromptInput, extra: any, track: DispatchTrack): Promise<string | ExecutePromptResult> {
+/** Output-only: the tier that actually ran and the concrete model passed to the provider. */
+interface PromptResolution { resolved_tier?: 'cheap' | 'standard' | 'premium' | null; resolved_model?: string }
+
+/**
+ * The concrete model id a dispatch ran on (after tier mapping) is stamped onto
+ * every structuredContent produced once it was resolved -- success and typed
+ * failures alike -- so callers can see which model actually served a dispatch.
+ * resolved_tier/resolved_model report the tier that actually ran (after any
+ * model_tiers fallback) and the model passed to the provider. Results returned
+ * before resolution carry none.
+ */
+async function executePromptResolved(input: ExecutePromptInput, extra: any, track: DispatchTrack): Promise<string | ExecutePromptResult> {
+  const resolution: PromptResolution = {};
+  const tap: { model?: string; reportedModel?: string } = {};
+  let result = await executePromptImpl(input, extra, tap, resolution, track);
+  if (typeof result === 'object' && result !== null && resolution.resolved_model !== undefined) {
+    result = {
+      ...result,
+      structuredContent: {
+        ...(result.structuredContent ?? {}),
+        resolved_tier: resolution.resolved_tier ?? null,
+        resolved_model: resolution.resolved_model,
+      },
+    };
+  }
+  if (tap.model && result && typeof result === 'object' && result.structuredContent
+      && result.structuredContent.model === undefined) {
+    // Prefer the id the provider itself reported; fall back to the id/alias
+    // this server resolved and handed to the CLI, and say which it is.
+    const model = tap.reportedModel ?? tap.model;
+    const modelSource = tap.reportedModel ? 'reported' : 'resolved';
+    return { ...result, structuredContent: { ...result.structuredContent, model, modelSource } };
+  }
+  return result;
+}
+
+async function executePromptImpl(input: ExecutePromptInput, extra: any, tap: { model?: string; reportedModel?: string }, resolution: PromptResolution, track: DispatchTrack): Promise<string | ExecutePromptResult> {
   // GitHub #563: max_total_s is measured from HERE, handler entry -- cloud
   // readiness, preflight and agent provisioning are all charged to it, since
   // the client's own deadline (max_total_s + a fixed grace) starts at the call.
   const handlerStartedAt = Date.now();
   if (hasSecretToken(input.prompt)) {
-    return 'error: execute_prompt prompt contains {{secret.NAME}} token. Secrets must never be passed to LLM prompts. Use execute_command with {{secret.NAME}} instead.';
+    return {
+      text: 'error: execute_prompt prompt contains {{secret.NAME}} token. Secrets must never be passed to LLM prompts. Use execute_command with {{secret.NAME}} instead.',
+      structuredContent: { isError: true, reason: 'secret_in_prompt', dispatched: false },
+    };
   }
 
   // apra-fleet-3swo.42: normalise `fork` ONCE, here, before any predicate is
@@ -784,17 +877,25 @@ async function runExecutePrompt(input: ExecutePromptInput, extra: any, track: Di
   const forkRequested = forkArg === true || typeof forkArg === 'string';
   if (forkRequested) {
     if (input.session_id !== undefined) {
-      return 'error: execute_prompt cannot set both "fork" and "session_id" -- session_id is resume shorthand, and fork branches a new session instead of resuming. Specify only one.';
+      return {
+        text: 'error: execute_prompt cannot set both "fork" and "session_id" -- session_id is resume shorthand, and fork branches a new session instead of resuming. Specify only one.',
+        structuredContent: { isError: true, reason: 'invalid_arguments', dispatched: false },
+      };
     }
     if (input.resume !== true) {
-      return 'error: execute_prompt cannot set both "fork" and a non-default "resume" -- fork branches a new session instead of resuming. Specify only one.';
+      return {
+        text: 'error: execute_prompt cannot set both "fork" and a non-default "resume" -- fork branches a new session instead of resuming. Specify only one.',
+        structuredContent: { isError: true, reason: 'invalid_arguments', dispatched: false },
+      };
     }
   }
 
   // Validate substitution keys before any I/O or member resolution.
   if (input.substitutions !== undefined) {
     const keyCheck = validateSubstitutionKeys('execute_prompt', input.substitutions);
-    if (!keyCheck.ok) return keyCheck.error;
+    if (!keyCheck.ok) {
+      return { text: keyCheck.error, structuredContent: { isError: true, reason: 'substitution_failed', dispatched: false } };
+    }
   }
 
   // Apply substitutions to the prompt string (or emit heuristic warning when omitted).
@@ -803,7 +904,9 @@ async function runExecutePrompt(input: ExecutePromptInput, extra: any, track: Di
 
   if (input.substitutions !== undefined) {
     const result = applySubstitutions('execute_prompt', [{ label: 'prompt', content: input.prompt }], input.substitutions);
-    if (!result.ok) return result.error;
+    if (!result.ok) {
+      return { text: result.error, structuredContent: { isError: true, reason: 'substitution_failed', dispatched: false } };
+    }
     renderedPrompt = result.outputs[0];
   } else {
     const warnResult = applySubstitutions('execute_prompt', [{ label: 'prompt', content: input.prompt }], undefined);
@@ -814,6 +917,16 @@ async function runExecutePrompt(input: ExecutePromptInput, extra: any, track: Di
 
   const promptFileName = `.fleet-task.md`;
 
+  // Neither member_id nor member_name: typed invalid_arguments. A member that
+  // is not found keeps its bare 'Member "x" not found.' text -- workflow
+  // clients map exactly that text to MemberNotFoundError, which a structured
+  // isError would turn into a generic AgentDispatchError.
+  if (!input.member_id && !input.member_name) {
+    return {
+      text: 'Error: provide either member_id (UUID) or member_name (friendly name).',
+      structuredContent: { isError: true, reason: 'invalid_arguments', dispatched: false },
+    };
+  }
   const agentOrError = resolveMember(input.member_id, input.member_name);
   if (typeof agentOrError === 'string') return agentOrError;
   let agent: Agent;
@@ -903,7 +1016,10 @@ async function runExecutePrompt(input: ExecutePromptInput, extra: any, track: Di
   // state is entered, rather than relying on NoneProvider's methods to throw
   // deeper in either dispatch path.
   if (agent.llmProvider === 'none') {
-    return `[FAIL] "${agent.friendlyName}" has no LLM provider (llm_provider: "none") -- it is a plain command executor. Use execute_command instead.`;
+    return {
+      text: `[FAIL] "${agent.friendlyName}" has no LLM provider (llm_provider: "none") -- it is a plain command executor. Use execute_command instead.`,
+      structuredContent: { isError: true, reason: 'provider_none', dispatched: false },
+    };
   }
 
   // Claim the busy lock BEFORE the preflight await, not after (as it
@@ -1180,25 +1296,36 @@ async function runExecutePrompt(input: ExecutePromptInput, extra: any, track: Di
 
   const tiers = provider.modelTiers();
   let resolvedModel = input.model || 'standard';
+  // resolvedTier is the tier that actually runs: with member model_tiers, the
+  // key that supplied the model (a fallback names the fallback tier, never the
+  // request), so the caller can see and price a downgrade.
   let resolvedTier: 'cheap' | 'standard' | 'premium' | undefined;
+  const fromMemberTiers = (tier: ModelTier): string => {
+    const r = resolveTierForMember(agent, tier, provider);
+    resolvedTier = r.tier ?? undefined;
+    return r.model;
+  };
   if (resolvedModel === 'cheap') {
     resolvedTier = 'cheap';
     resolvedModel = agent.modelTiers
-      ? resolveModelForTier(agent, 'cheap', provider)
+      ? fromMemberTiers('cheap')
       : agent.modelCheap || getModelOverride(provider.name, 'cheap') || tiers.cheap;
   } else if (resolvedModel === 'standard') {
     resolvedTier = 'standard';
     resolvedModel = agent.modelTiers
-      ? resolveModelForTier(agent, 'standard', provider)
+      ? fromMemberTiers('standard')
       : agent.modelStandard || getModelOverride(provider.name, 'standard') || tiers.standard;
   } else if (resolvedModel === 'premium') {
     resolvedTier = 'premium';
     resolvedModel = agent.modelTiers
-      ? resolveModelForTier(agent, 'premium', provider)
+      ? fromMemberTiers('premium')
       : agent.modelPremium || getModelOverride(provider.name, 'premium') || tiers.premium;
   } else {
     resolvedModel = tiers[resolvedModel as keyof typeof tiers] ?? resolvedModel;
   }
+  resolution.resolved_tier = resolvedTier ?? null;
+  resolution.resolved_model = resolvedModel;
+  tap.model = resolvedModel;
 
   const scope = new LogScope('execute_prompt', `[${resolvedModel}] resume=${input.resume} fork=${input.fork} timeout=${input.timeout_s ?? 300}s ${truncateForLog(maskSecrets(input.prompt), getLogPreviewChars())}`, agent);
 
@@ -1525,7 +1652,10 @@ async function runExecutePrompt(input: ExecutePromptInput, extra: any, track: Di
         inFlightAgents.delete(agent.id);
         stallDetector.remove(agent.id);
         writeStatusline(new Map([[agent.id, 'idle']]));
-        return `execute_prompt: agent "${input.agent}" not found.\n\nExpected at:\n  ${projPath.replace(/\\/g, '/')}\n  ${userPath.replace(/\\/g, '/')}`;
+        return {
+          text: `execute_prompt: agent "${input.agent}" not found.\n\nExpected at:\n  ${projPath.replace(/\\/g, '/')}\n  ${userPath.replace(/\\/g, '/')}`,
+          structuredContent: { isError: true, reason: 'agent_file_not_found', dispatched: false },
+        };
       }
     } else {
       // Canonical PM role agents (planner/doer/reviewer/plan-reviewer/...) are
@@ -1564,7 +1694,10 @@ async function runExecutePrompt(input: ExecutePromptInput, extra: any, track: Di
         inFlightAgents.delete(agent.id);
         stallDetector.remove(agent.id);
         writeStatusline(new Map([[agent.id, 'idle']]));
-        return `execute_prompt: agent "${input.agent}" not found on "${agent.friendlyName}".\n\nExpected at:\n  ${resolvedWorkFolder}/${dirs.project}\n  ~/${dirs.home}`;
+        return {
+          text: `execute_prompt: agent "${input.agent}" not found on "${agent.friendlyName}".\n\nExpected at:\n  ${resolvedWorkFolder}/${dirs.project}\n  ~/${dirs.home}`,
+          structuredContent: { isError: true, reason: 'agent_file_not_found', dispatched: false },
+        };
       }
     }
   }
@@ -1905,6 +2038,7 @@ async function runExecutePrompt(input: ExecutePromptInput, extra: any, track: Di
   const parseDispatch = (r: SSHExecResult): ParsedResponse => {
     const p = provider.parseResponse(r, parseCtx);
     _epParsedSid = p.sessionId;
+    if (p.reportedModel) tap.reportedModel = p.reportedModel;
     if (typeof p.sessionCostUsd === 'number') {
       const landedOn = p.sessionId ?? (lastAttemptContinues && !forkDescriptor ? lastAttemptContinues : undefined);
       const cost = dispatchCostFromCumulative(p.sessionCostUsd, landedOn, lastAttemptContinues);

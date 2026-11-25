@@ -18,7 +18,9 @@ import {
   convertClaudeAllowToAgyPermissions,
   formatAgyPermissionRules,
   detectAgyPermissionDenial,
+  agyCommandRules,
 } from '../src/providers/agy.js';
+import { agyProcessKillDenyRules } from '../src/services/process-kill-rules.js';
 import type { Agent } from '../src/types.js';
 
 const agy = new AgyProvider();
@@ -74,10 +76,11 @@ describe('Windows command grants', () => {
     expect(conv(['Bash(*)'], win)).toEqual(['command(*)']);
   });
 
-  it('writes no command deny rules and no ask list', () => {
+  it('writes no ask list; its only command deny rules are the process-killing ones', () => {
     const cfg = compose('windows', 'doer');
     expect(Object.keys(cfg.permissionGrants.permissionGrants).sort()).toEqual(['allow', 'deny']);
-    expect((cfg.permissionGrants.permissionGrants.deny as string[]).every(r => r.startsWith('mcp('))).toBe(true);
+    const killDeny = new Set(agyProcessKillDenyRules(agyCommandRules));
+    expect((cfg.permissionGrants.permissionGrants.deny as string[]).every(r => r.startsWith('mcp(') || killDeny.has(r))).toBe(true);
   });
 });
 

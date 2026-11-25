@@ -70,10 +70,17 @@ const EMPTY_REMOTE = [
  *  output means this ISN'T evidence of a dead remote, and the classifier
  *  must fall through to the TRANSIENT check below instead. A genuinely
  *  dead/misconfigured remote (no fork/exec line present) is unaffected and
- *  still classifies here exactly as before. */
+ *  still classifies here exactly as before.
+ *
+ *  The same wrapper text also carries git's credential-prompt refusal
+ *  ("could not read Username for" / "terminal prompts disabled") when bd runs
+ *  git non-interactively and the credential helper would have prompted. Git
+ *  reached the remote and asked for a credential, so the remote is not dead:
+ *  such output must fall through to the AUTH check below, not be filed as a
+ *  permanent "unreachable/misconfigured remote". */
 const REMOTE_UNREACHABLE = [
-    /^(?![\s\S]*fork\/exec)[\s\S]*could not be accessed/i,
-    /^(?![\s\S]*fork\/exec)[\s\S]*failed to get remote db/i,
+    /^(?![\s\S]*fork\/exec)(?![\s\S]*(?:could not read (?:Username|Password) for|terminal prompts disabled))[\s\S]*could not be accessed/i,
+    /^(?![\s\S]*fork\/exec)(?![\s\S]*(?:could not read (?:Username|Password) for|terminal prompts disabled))[\s\S]*failed to get remote db/i,
     /stat [^:]+: no such file or directory/i,
 ];
 

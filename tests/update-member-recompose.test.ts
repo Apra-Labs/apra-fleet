@@ -59,7 +59,7 @@ const settingsWrites = () => mockExecCommand.mock.calls.filter(([c]) => c.starts
 
 interface World { installed: string | null; log: string[]; autostartFails?: boolean; serverDown?: boolean }
 
-const plain = (cmd: string): string => (cmd.includes('-EncodedCommand') ? decodePowerShellEncodedCommand(cmd) : cmd);
+const plain = (cmd: string): string => decodePowerShellEncodedCommand(cmd);
 
 /** A fake member: answers the install/version/marker/register probes. */
 function fakeDeps(world: World): MemberFleetMcpDeps {

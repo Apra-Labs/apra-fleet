@@ -83,14 +83,14 @@ import {
 // are module-local consts inside two test files, and importing them would only
 // prove this table agrees with another table. Reading runner.js directly proves
 // the table describes the RUNNER. A first test below still ties the two
-// together structurally: the dispatch anchors used here must be exactly the 22
+// together structurally: the dispatch anchors used here must be exactly the 24
 // anchors the pin files use, so a dispatch that is pinned but missing from the
 // policy table -- or a policy row anchored somewhere the pins do not look --
 // fails immediately.
 //
 // WHAT IS DELIBERATELY NOT ASSERTED HERE: anything the pin files already own
 // as a cross-cutting invariant (that sprint_id comes from the one dispatch
-// wrapper, that exactly 22 dispatch sites exist, ...). This file asserts the
+// wrapper, that exactly 24 dispatch sites exist, ...). This file asserts the
 // TABLE, not the runner.
 // =============================================================================
 
@@ -108,7 +108,7 @@ const PIN_FILES = [
     // (apra-fleet-3swo.28) so execution-role-dispatch-pins.test.mjs can read
     // its length without re-importing (and re-running) this test file --
     // planning-role-dispatch-pins.test.mjs no longer contains any `anchor:`
-    // literals directly, so both must be scanned to recover all 22 anchors.
+    // literals directly, so both must be scanned to recover all 24 anchors.
     path.join(__dirname, 'helpers', 'planning-ladders.mjs'),
     path.join(__dirname, 'planning-role-dispatch-pins.test.mjs'),
     // apra-fleet-3swo.5.7: the execution-side pin TABLE moved into its own
@@ -691,11 +691,11 @@ describe('role policy table: shape', () => {
 // (2) Coverage: the table's dispatches are exactly the pinned dispatches.
 // -----------------------------------------------------------------------------
 describe('role policy table: coverage against the behaviour pins', () => {
-    test('the table describes all 22 dispatches, anchored on exactly the anchors the two pin files use', () => {
+    test('the table describes all 24 dispatches, anchored on exactly the anchors the two pin files use', () => {
         const rows = dispatchRows();
-        assert.strictEqual(rows.length, 22, `Expected 22 dispatch policies, found ${rows.length}.`);
+        assert.strictEqual(rows.length, 24, `Expected 24 dispatch policies, found ${rows.length}.`);
 
-        // apra-fleet-3swo.5.3: the 22 dispatches are now covered on TWO sides.
+        // apra-fleet-3swo.5.3: the 24 dispatches are now covered on TWO sides.
         // A still-inline dispatch is covered by a source ANCHOR (unchanged);
         // an engine-served one is covered by an entry in ENGINE_DISPATCHES,
         // the planning pin file's behavioural pin table. Neither side may drop
@@ -752,7 +752,7 @@ describe('role policy table: coverage against the behaviour pins', () => {
 
     test('allDispatchPolicies() enumerates each dispatch once', () => {
         const all = allDispatchPolicies();
-        assert.strictEqual(all.length, 22, `allDispatchPolicies() must return all 22 dispatches, got ${all.length}.`);
+        assert.strictEqual(all.length, 24, `allDispatchPolicies() must return all 24 dispatches, got ${all.length}.`);
         assert.strictEqual(new Set(all).size, all.length, 'No dispatch may be enumerated twice.');
     });
 });
@@ -767,7 +767,7 @@ describe('role policy table: per-dispatch fields match runner.js', () => {
             [],
             'a dispatch has an INLINE runner.js call site again -- this section must cover it rather than iterating nothing.'
         );
-        assert.strictEqual(dispatchRows().length, 22, 'All 22 dispatches must still be described.');
+        assert.strictEqual(dispatchRows().length, 24, 'All 24 dispatches must still be described.');
     });
     for (const row of dispatchRows().filter((r) => !r.engine)) {
         test(`${row.name}: member, model, turn budget, timeouts, bracket, watchdog, KB source and schema`, () => {
@@ -1117,7 +1117,6 @@ const STEP_EVIDENCE = {
     'verify-streak-closed': { scope: 'region', pattern: () => /verifyDoerStreakClosed\(\{/ },
     'invalidate-beads-cache': { scope: 'region', pattern: () => /invalidateAllBeadsCache\(\)/ },
     'reviewer-contract-guard': { scope: 'global', pattern: () => /isReviewerContractViolation\(verdict\)/ },
-    'clear-round-session': { scope: 'global', pattern: (p) => new RegExp(`roundSessions\\.clear\\('${p.member.role}'\\)`) },
     'select-streaks-validate': { scope: 'region', pattern: () => /selectStreaks\(streakCandidate/ },
     'kb-apply': {
         scope: 'global',
@@ -1306,7 +1305,7 @@ describe('role policy table: every named variance is expressed as data', () => {
             armed.map((p) => `${p.role}:${p.kind}`).sort(),
             [
                 'planner:main', 'planner:max-turns-resume',
-                'scoped-replan-planner:main',
+                'scoped-replan-planner:main', 'scoped-replan-planner:max-turns-resume',
                 'deployer:main', 'deployer:max-turns-resume',
                 'integ-test-runner:main', 'integ-test-runner:max-turns-resume',
                 'regression-test-runner:main', 'regression-test-runner:max-turns-resume',
@@ -1658,10 +1657,11 @@ function expectedMember(ctx, member) {
 const ROLE_CALL_OPTS_BINDINGS = BINDINGS;
 
 /** What the engine must resolve a policy's `model` to. */
-function expectedModel(ctx, model) {
+function expectedModel(ctx, model, mainModel = null) {
     if (!model) return null;
     if (model.kind === 'fixed') return ctx.fixedRoleTier[model.key];
-    if (model.kind === 'inherited') return null;
+    // A resume continues on the tier its main dispatch was priced at.
+    if (model.kind === 'inherited') return mainModel ? expectedModel(ctx, mainModel) : null;
     return ROLE_CALL_OPTS_BINDINGS[model.binding] ?? null;
 }
 
@@ -1692,7 +1692,7 @@ describe('role policy table: migrated roles re-derived by running the engine', (
                 const o = dispatch.options;
 
                 assert.strictEqual(o.member_name, expectedMember(ctx, p.member), `${row.name}: member resolution.`);
-                assert.strictEqual(o.model ?? null, expectedModel(ctx, p.model), `${row.name}: model tier resolution.`);
+                assert.strictEqual(o.model ?? null, expectedModel(ctx, p.model, ROLE_POLICIES[role].model), `${row.name}: model tier resolution.`);
 
                 // The turn VALUE the row records must be the engine's own
                 // named base times the recorded multiplier -- the same proof

@@ -171,7 +171,28 @@ export interface ExecuteCommandResult {
  * the hard total-time cap, 'transport_error' any other rejection from the
  * strategy (connection refused/reset, ssh channel failure, ...).
  */
-export type ExecuteCommandFailureReason = 'timeout' | 'max_total_time' | 'transport_error';
+export type ExecuteCommandFailureReason = 'timeout' | 'max_total_time' | 'transport_error' | 'launch_failed';
+
+/**
+ * Printed by a long_running launch script only after the task wrapper has
+ * started on the member (its task.pid exists, or its status.json already
+ * reports a finished task). A launch without it is a failed launch.
+ */
+export const TASK_READY_MARKER = 'FLEET_TASK_READY';
+
+/**
+ * How long a long_running launch script waits for the wrapper to start. The
+ * wait prints nothing, so it stays well inside the inactivity timeout
+ * (timeout_s) that the launch command itself runs under; capped at 30s.
+ */
+export function launchReadyPollMs(timeoutS: number): number {
+  return Math.round(Math.min(30_000, Math.max(1_000, timeoutS * 1000 * 0.75)));
+}
+
+/** True when a long_running launch exited 0 and confirmed the task started. */
+export function launchSucceeded(result: { code: number; stdout: string }): boolean {
+  return result.code === 0 && new RegExp(`^${TASK_READY_MARKER}\\r?$`, 'm').test(result.stdout ?? '');
+}
 
 /** Classify a rejection from strategy.execCommand into a failure reason. */
 export function classifyExecFailure(err: unknown): ExecuteCommandFailureReason {
@@ -317,6 +338,7 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
     // wrapper is always PowerShell (run.ps1), the POSIX one always bash.
     const gitEnv = vcsGitEnvPrefix(agent, agentOsVal === 'windows' ? getOsCommands('windows', 'powershell5') : cmds);
 
+    const readyPollMs = launchReadyPollMs(input.timeout_s ?? 120);
     let launchCmd: string;
     if (agentOsVal === 'windows') {
       // Detached spawn via WMI (Invoke-CimMethod Win32_Process.Create): the
@@ -364,6 +386,15 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
         // by monitor_task -- nothing reads this value off this channel, so
         // it exists solely as human-readable launch confirmation.
         `Write-Output "TASK_PID:$($result.ProcessId)"`,
+        // Readiness: return only once the wrapper has started -- its task.pid
+        // exists, or (a task fast enough to have already finished, which
+        // deletes task.pid) its status.json no longer says running. Bounded;
+        // on timeout the launched process is stopped and the launch fails.
+        `$deadline = (Get-Date).AddMilliseconds(${readyPollMs})`,
+        `$ready = $false`,
+        `while ((Get-Date) -lt $deadline) { if (Test-Path "${taskDir}\\task.pid") { $ready = $true; break }; if ((Test-Path "${taskDir}\\status.json") -and ((Get-Content "${taskDir}\\status.json" -Raw) -notmatch '"status":"running"')) { $ready = $true; break }; Start-Sleep -Milliseconds 200 }`,
+        `if (-not $ready) { Stop-Process -Id $result.ProcessId -Force -ErrorAction SilentlyContinue; Write-Error "task wrapper did not start within ${readyPollMs}ms (no task.pid in ${taskDir})"; exit 1 }`,
+        `Write-Output "${TASK_READY_MARKER}"`,
       ].join('; '));
     } else {
       const wrapperScript = generateTaskWrapper({
@@ -375,14 +406,26 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
       });
       const scriptB64 = Buffer.from(wrapperScript).toString('base64');
 
-      // Create task dir, decode + write wrapper script, chmod, launch with nohup
+      // Create task dir, decode + write wrapper script, chmod -- in the
+      // FOREGROUND, so a failure there fails the launch (a trailing `&` on the
+      // whole && chain used to background it and swallow the error). Only the
+      // nohup launch itself is backgrounded; then a bounded poll waits for the
+      // wrapper's task.pid (or a finished status.json -- the wrapper deletes
+      // task.pid on completion) before printing the readiness marker.
+      const d = `~/.fleet-tasks/${taskId}`;
+      const pollIterations = Math.max(1, Math.ceil(readyPollMs / 200));
       launchCmd = cmds.wrapInWorkFolder(
         folder,
         // umask 077: run.sh embeds the resolved command (credentials included).
-        `umask 077 && mkdir -p ~/.fleet-tasks/${taskId} && ` +
-        `printf '%s' '${scriptB64}' | base64 -d > ~/.fleet-tasks/${taskId}/run.sh && ` +
-        `chmod +x ~/.fleet-tasks/${taskId}/run.sh && ` +
-        `nohup bash ~/.fleet-tasks/${taskId}/run.sh > /dev/null 2>&1 & echo $!`,
+        `umask 077 && mkdir -p ${d} && ` +
+        `printf '%s' '${scriptB64}' | base64 -d > ${d}/run.sh && ` +
+        `chmod +x ${d}/run.sh || { echo "could not write the task wrapper to ${d}" >&2; exit 1; }; ` +
+        `nohup bash ${d}/run.sh > /dev/null 2>&1 & ` +
+        `FLEET_TASK_LAUNCH_PID=$!; echo "TASK_PID:$FLEET_TASK_LAUNCH_PID"; ` +
+        `i=0; while [ "$i" -lt ${pollIterations} ]; do ` +
+        `if [ -f ${d}/task.pid ] || { [ -f ${d}/status.json ] && ! grep -q '"status":"running"' ${d}/status.json; }; then echo ${TASK_READY_MARKER}; exit 0; fi; ` +
+        `sleep 0.2; i=$((i+1)); done; ` +
+        `kill "$FLEET_TASK_LAUNCH_PID" 2>/dev/null; echo "task wrapper did not start within ${readyPollMs}ms (no task.pid in ${d})" >&2; exit 1`,
       );
     }
 
@@ -394,11 +437,22 @@ export async function executeCommand(input: ExecuteCommandInput, extra?: any): P
       const launchResult = await strategy.execCommand(launchCmd, timeoutMs, undefined, onPidCaptured);
       touchAgent(agent.id);
       releaseBusy();
-      // Redact credential values from any output returned by the launch command (H2)
-      const launchOutput = credentials.length > 0
-        ? redactOutput(launchResult.stdout + launchResult.stderr, credentials)
-        : '';
-      void launchOutput; // output not surfaced to caller; redaction is a safety measure
+      // A launch counts only when the script exited 0 AND printed the
+      // readiness marker (printed after task.pid appeared). Anything else --
+      // a nonzero exit, a Win32_Process.Create failure, a wrapper that never
+      // started -- is a typed launch failure, never a task_id success text.
+      if (!launchSucceeded(launchResult)) {
+        const raw = (launchResult.stderr || '').trim() || (launchResult.stdout || '').trim()
+          || `launch command exited with code ${launchResult.code} without confirming the task started`;
+        // Redact credential values from any surfaced launch output (H2).
+        const detail = capForLog(credentials.length > 0 ? redactOutput(raw, credentials) : raw);
+        scope.fail(`launch exit=${launchResult.code}`);
+        return execFailureResult(
+          `Failed to launch task on "${agent.friendlyName}" (exit ${launchResult.code}): the task did not start.\n${detail}`,
+          'launch_failed',
+          detail,
+        );
+      }
       const legacySuffix = legacyWarnings.length > 0 ? `\n${legacyWarnings.join('\n')}` : '';
       return `${longRunningOsWarning}Task launched: task_id=${taskId}\nUse monitor_task to track progress.${legacySuffix}`;
     } catch (err: any) {

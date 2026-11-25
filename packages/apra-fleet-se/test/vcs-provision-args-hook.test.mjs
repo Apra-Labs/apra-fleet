@@ -18,11 +18,13 @@ const AZ_REMOTE = 'https://dev.azure.com/apralabs/e2e-fleet-testing/_git/fleet-e
 const GH_REMOTE = 'https://github.com/acme/widgets.git';
 
 // apra-fleet-d1pk.3: a non-re-mintable provider's member (Azure DevOps here)
-// is probed with `git ls-remote origin` before any provisioning. These tests
-// pin the PROVISIONING arguments, so the probe always fails: the remote member
-// then gets its one non-interactive provision attempt.
+// is probed (git ls-remote origin through its labelled helper, plus the REST
+// repository probe through vcs_credential_exec) before any provisioning.
+// These tests pin the PROVISIONING arguments, so the probe always fails: the
+// remote member then gets its one non-interactive provision attempt.
 const PROBE_FAILED = { ok: false, output: '', error: 'fatal: Authentication failed' };
-const isProbe = (cmd) => cmd.includes('git ls-remote origin');
+const isProbe = (cmd) => cmd.includes('ls-remote origin');
+const REST_401 = { content: [{ text: '[OK]' }], structuredContent: { ok: true, reason: 'ok', exitCode: 0, stdout: '\n401', stderr: '' } };
 
 const remoteCommandFor = (url) => async (cmd) => (
     cmd === 'git remote get-url origin'
@@ -42,6 +44,8 @@ function makeCallTool({ provider, secrets, onProvision }) {
         callTool: async (name, args) => {
             if (name === 'member_detail') return memberDetail(provider);
             if (name === 'credential_store_list') return credentialList(secrets);
+            // The preflight's REST credential probe: not a provisioning call.
+            if (name === 'vcs_credential_exec') return REST_401;
             calls.push({ name, args });
             if (name === 'provision_vcs_auth') {
                 return onProvision

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
-import { execSync } from 'node:child_process';
+import { execSync, execFileSync } from 'node:child_process';
 import { runInstall, _setSeaOverride, _setManifestOverride, MEMBER_INSTALL_NEXT_STEP, resolveMemberInstallPort } from '../src/cli/install.js';
 import { _setPortHolderProbeOverride, PORT_HELD_BY_OTHER_USER_CODE } from '../src/services/port-holder.js';
 
@@ -94,6 +94,8 @@ beforeEach(() => {
   vi.spyOn(console, 'log').mockImplementation(() => {});
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   vi.spyOn(console, 'error').mockImplementation(() => {});
+  // The Beads step checks bd --version against the pin; answer with a pinned bd.
+  vi.mocked(execFileSync).mockImplementation(((cmd: string) => (String(cmd).endsWith('bd') ? 'bd version 1.3.0 (test)\n' : '')) as any);
   process.exitCode = undefined;
   mockPortInUse.mockResolvedValue(false);
   _setPortHolderProbeOverride(null);
@@ -106,6 +108,19 @@ afterEach(() => {
 });
 
 describe('install --member', () => {
+  it('an off-pin bd on PATH does not fail a member install: exit 0, and the last stderr line carries the code, found, expected and fix', async () => {
+    vi.mocked(execFileSync).mockImplementation(((cmd: string) => (String(cmd).endsWith('bd') ? 'bd version 1.0.4 (old)\n' : '')) as any);
+    await runInstall(['--transport', 'http', '--member']);
+    // A non-zero exit would make the orchestrator report install-failed and strip the member's fleet tools.
+    expect(process.exitCode ?? 0).toBe(0);
+    const lastErr = vi.mocked(console.error).mock.calls.at(-1)?.join(' ') ?? '';
+    expect(lastErr).toContain('E-BD-VERSION-MISMATCH');
+    expect(lastErr).toContain('found 1.0.4 (PATH)');
+    expect(lastErr).toContain('expected 1.3');
+    expect(lastErr).toContain('Fix: install the pinned');
+    expect(vi.mocked(console.log).mock.calls.flat().join('\n')).toContain('installed successfully');
+  });
+
   it('installs no skills and no workflows', async () => {
     await runInstall(['--transport', 'http', '--member']);
     const w = writtenPaths();
@@ -186,6 +201,10 @@ describe('install --member', () => {
   it('install step labels are sequential: no duplicate or skipped numbers', async () => {
     for (const args of [['--member'], ['--skill', 'none']]) {
       vi.mocked(console.log).mockClear();
+      // Each run starts on a host with no member install: the full install in
+      // the second iteration would otherwise (correctly) refuse on the marker
+      // the first iteration's member install left behind.
+      for (const k of [...files.keys()]) if (k.endsWith('/member-install.json')) files.delete(k);
       await runInstall(['--transport', 'http', ...args]);
       const out = vi.mocked(console.log).mock.calls.flat().join('\n');
       const labels = [...out.matchAll(/^\s*\[(\d+)\/(\d+)\]/gm)].map(m => [Number(m[1]), Number(m[2])]);

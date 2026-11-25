@@ -169,7 +169,7 @@ describe('execute_command: {{secret.NAME}} token resolution', () => {
 
     const member = makeTestAgent({ os: 'linux' });
     addAgent(member);
-    mockExecCommand.mockResolvedValue({ stdout: '', stderr: '', code: 0 });
+    mockExecCommand.mockResolvedValue({ stdout: 'TASK_PID:4242\nFLEET_TASK_READY\n', stderr: '', code: 0 });
 
     const result = resultText(await executeCommand({
       member_id: member.id,

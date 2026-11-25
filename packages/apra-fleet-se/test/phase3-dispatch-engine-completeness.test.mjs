@@ -49,6 +49,7 @@ import {
     authError,
     cancelledError,
     turnExhaustionError,
+    unmappableRefusalError,
     REJECTED_CANDIDATE,
     ACCEPTED_CANDIDATE,
 } from './helpers/dispatch-role-harness.mjs';
@@ -191,13 +192,16 @@ function callOptsFor(role, over = {}) {
  * including a thrown error, which for several variances below IS the
  * observation (a catch-all that stops swallowing, a missing policy row).
  */
-async function observe(role, { policies, responses = [], healed = false, steps, opts: over } = {}) {
+async function observe(role, { policies, responses = [], healed = false, steps, opts: over, refusalHook = false } = {}) {
     const { ctx, rec } = createRecordingCtx({
         responses,
         healed,
         ...(policies ? { policies } : {}),
         ...(steps ? { steps } : {}),
     });
+    if (refusalHook) {
+        ctx.onPermissionDenied = async () => ({ healed: false, step: 'no_progress', composeRole: role, grants: [], rejectedGrants: [], reason: 'no grant maps to the refused call' });
+    }
     let outcome = null;
     let thrown = null;
     try {
@@ -220,9 +224,13 @@ async function driveEveryDispatch() {
     for (const dispatch of allDispatchPolicies()) {
         const { role, kind } = driverFor(dispatch);
         let responses = [];
-        if (kind === 'max-turns-resume') responses = [turnExhaustionError()];
+        // A row that never resumes on turn exhaustion (the scoped re-plan rows)
+        // reaches its resume-only secondary through an unmappable refusal.
+        const refusalOnly = kind === 'max-turns-resume' && !ROLE_POLICIES[role].retry.maxTurnsResume;
+        if (refusalOnly) responses = [unmappableRefusalError()];
+        else if (kind === 'max-turns-resume') responses = [turnExhaustionError()];
         else if (kind === 'semantic-repair-re-ask') responses = [REJECTED_CANDIDATE, ACCEPTED_CANDIDATE];
-        const { ctx, rec } = await observe(role, { responses });
+        const { ctx, rec } = await observe(role, { responses, refusalHook: refusalOnly });
         const recorded = rec.dispatches[kind === 'main' ? 0 : 1];
         assert.ok(
             recorded,

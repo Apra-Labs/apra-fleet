@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
     buildSprintPrBody as buildSprintPrBodyParts, buildSprintPrTitle, parseRunHistory, sanitizePrMarkdown,
-    RUN_HISTORY_MAX_ENTRIES, RUN_HISTORY_MARKER, fitSectionsToBudget, NOTES_CONTINUED_MARKER,
+    RUN_HISTORY_MAX_ENTRIES, RUN_HISTORY_MARKER, fitSectionsToBudget, NOTES_CONTINUED_MARKER, OVERFLOW_POINTER_RESERVE, MERGE_ASSESSMENT_CONTINUED_MARKER,
 } from '../fleet-sprint/pr-body.mjs';
 import {
     buildCreatePrCommand as rawBuildCreatePrCommand, buildFindPrCommand, buildUpdatePrCommand as rawBuildUpdatePrCommand, PR_DESCRIPTION_MAX_LENGTH,
@@ -55,6 +55,7 @@ const NOTES = [
 const NOW = new Date('2026-10-01T09:30:00Z');
 
 const EXPECTED_BODY = [
+    '<!-- fleet-sprint:pr-block v1 -->',
     '## Sprint verdict: PASS',
     '',
     '- **Goal:** Ship the widget store',
@@ -86,6 +87,7 @@ const EXPECTED_BODY = [
     '<!-- fleet-sprint:run-history v1',
     '[{"run":"run-2","date":"2026-10-01T09:30Z","verdict":"PASS"}]',
     '-->',
+    '<!-- /fleet-sprint:pr-block v1 -->',
 ].join('\n');
 
 function sampleBody(extra = {}) {
@@ -179,7 +181,7 @@ describe('sprint PR body (markdown)', () => {
             maxLength: 3500,
         });
         const b = parts.body;
-        assert.ok(b.startsWith('## Sprint verdict: FAIL'), b.slice(0, 80));
+        assert.ok(b.startsWith('<!-- fleet-sprint:pr-block v1 -->\n## Sprint verdict: FAIL'), b.slice(0, 80));
         const iv = b.indexOf('## Sprint verdict');
         const ia = b.indexOf('### Merge assessment');
         const in_ = b.indexOf('### Reviewer notes');
@@ -219,7 +221,7 @@ describe('run history marker round-trip', () => {
             { run: 'run-1', date: '2026-09-22T08:00Z', verdict: 'ABORTED' },
         ]);
         assert.ok(run3.includes('### Previous runs\n\n- `run-2` (2026-09-23T08:00Z): FAIL\n- `run-1` (2026-09-22T08:00Z): ABORTED'));
-        assert.ok(run3.startsWith('## Sprint verdict: PASS'));
+        assert.ok(run3.startsWith('<!-- fleet-sprint:pr-block v1 -->\n## Sprint verdict: PASS'));
     });
 
     test('an old body WITHOUT the marker (pre-format PR) is rewritten cleanly with a fresh history', () => {
@@ -391,7 +393,8 @@ const ASSESSMENT = Object.freeze({
 
 /** The exact run-history marker block a body built at NOW for `run` ends with. */
 function markerBlock(run, verdict = 'PASS') {
-    return `<!-- ${RUN_HISTORY_MARKER}\n${JSON.stringify([{ run, date: '2026-10-01T09:30Z', verdict }])}\n-->`;
+    // The run-history block, then the fleet block's closing marker.
+    return `<!-- ${RUN_HISTORY_MARKER}\n${JSON.stringify([{ run, date: '2026-10-01T09:30Z', verdict }])}\n-->\n<!-- /fleet-sprint:pr-block v1 -->`;
 }
 
 describe('sprint PR body: Merge assessment section', () => {
@@ -433,17 +436,27 @@ describe('sprint PR body: Merge assessment section', () => {
         assert.ok(section.includes('- **Recommendation:** (not given) --'), 'an unknown recommendation is never rendered as if valid');
     });
 
-    test('an oversized assessment is clipped within the budget; body <= PR_DESCRIPTION_MAX_LENGTH and the run-history marker block is intact', () => {
+    test('an oversized assessment keeps its first lines and goes whole to the overflow comments; body <= PR_DESCRIPTION_MAX_LENGTH and the run-history marker block is intact', () => {
         const huge = Object.fromEntries(Object.keys(ASSESSMENT).map((k) => [k, `${k} `.repeat(3000)]));
         huge.recommendation = 'do_not_merge';
         const longNotes = Array.from({ length: 400 }, (_, i) => `- finding ${i}: ${'x'.repeat(30)}`).join('\n');
-        const body = sampleBody({ mergeAssessment: huge, notes: longNotes, costAnalysis: 'c'.repeat(2000) });
+        const parts = buildSprintPrBodyParts({
+            verdict: 'PASS', goal: 'Ship the widget store', branch: 'feat/widgets', baseBranch: 'main', runId: 'run-2', now: NOW,
+            details: ['Regression pass: skipped by launch option -- not run this sprint.'],
+            mergeAssessment: huge, notes: longNotes, costAnalysis: 'c'.repeat(2000),
+        });
+        const body = parts.body;
         assert.ok(body.length <= PR_DESCRIPTION_MAX_LENGTH, `body length ${body.length} exceeds ${PR_DESCRIPTION_MAX_LENGTH}`);
         assert.ok(body.endsWith('\n' + markerBlock('run-2')), `the marker block must close the body verbatim:\n${body.slice(-300)}`);
         const section = body.slice(body.indexOf('### Merge assessment'), body.indexOf('### Reviewer notes'));
-        assert.ok(section.includes('- **Recommendation:** `do_not_merge`'), 'the recommendation line survives clipping');
-        assert.ok(section.includes('[... truncated ...]'), 'an oversized field is visibly clipped');
-        assert.ok(section.length < 3000, `section length ${section.length}`);
+        assert.ok(section.includes('- **Recommendation:** `do_not_merge`'), 'the recommendation line stays in the description');
+        assert.ok(section.includes(MERGE_ASSESSMENT_CONTINUED_MARKER), 'the cut section says the full assessment is in the comments');
+        assert.ok(section.length < 1600, `section length ${section.length}`);
+        assert.ok(!/truncated to fit/.test(body), 'nothing in the description is truncated to fit');
+        assert.ok(parts.overflowSections.some((x) => x.id === 'merge-assessment'));
+        assert.ok(parts.overflowText.includes('- **Recommendation:** `do_not_merge`'), 'the recommendation line is in the comments');
+        assert.ok(parts.overflowText.includes(`- **Risk:** ${'risk '.repeat(3000).trim()}`), 'every field is in the comments in full');
+        assert.ok(parts.comments.length >= 1);
         assert.ok(body.includes('Do NOT auto-merge'), 'the human-review line always survives');
     });
 
@@ -464,22 +477,29 @@ describe('sprint PR body: Merge assessment section', () => {
         assert.ok(body.includes('### Merge assessment') && body.includes('### Reviewer notes'));
     });
 
-    test('extra sections render after the notes when they fit, and the lower priority one is clipped first', () => {
+    test('extra sections render after the notes when they fit, and the lower priority one moves to the overflow comments first', () => {
         const fit = sampleBody({ sections: [{ id: 'a', priority: 60, heading: 'Extra A', text: 'alpha' }] });
         assert.ok(fit.includes('Follow-ups') && fit.indexOf('### Extra A\n\nalpha') > fit.indexOf('### Reviewer notes'));
         assert.ok(fit.indexOf('### Extra A') < fit.indexOf('### Details'));
-        // Room for the high priority section (text + heading) but not both.
-        const limit = EXPECTED_BODY.length + 450;
-        const tight = sampleBody({
+        // Room for the high priority section (text + heading) plus the
+        // overflow pointer line, but not both sections.
+        const limit = EXPECTED_BODY.length + 450 + OVERFLOW_POINTER_RESERVE;
+        const parts = buildSprintPrBodyParts({
+            verdict: 'PASS', goal: 'Ship the widget store', branch: 'feat/widgets', baseBranch: 'main', runId: 'run-2', now: NOW, notes: NOTES,
+            details: ['Regression pass: skipped by launch option -- not run this sprint.'],
             maxLength: limit,
             sections: [
                 { id: 'hi', priority: 70, heading: 'High', text: 'h'.repeat(400) },
                 { id: 'lo', priority: 20, heading: 'Low', text: 'l'.repeat(400) },
             ],
         });
+        const tight = parts.body;
         assert.ok(tight.length <= limit, `length ${tight.length}`);
         assert.ok(tight.includes('h'.repeat(400)), 'the higher priority section keeps its full text');
-        assert.ok(!tight.includes('l'.repeat(400)), 'the lower priority section is the one clipped');
+        assert.ok(!tight.includes('l'.repeat(400)), 'the lower priority section is the one that does not fit');
+        assert.ok(!/truncated to fit/.test(tight), 'no section is truncated to fit');
+        assert.deepEqual(parts.overflowSections.map((x) => x.heading), ['Low']);
+        assert.ok(parts.overflowText.includes(`### Low\n\n${'l'.repeat(400)}`), 'the whole section goes to the overflow comments');
     });
 });
 
@@ -612,11 +632,11 @@ describe('Publish PR: a relaunch rewrites the existing PR for the new verdict', 
         const { logs } = await publish({ gh, verdict: 'PASS', notes: 'All good.\n- verified', runId: 'run-2', member: 'pub-fail-pass' });
         assert.deepEqual(gh.calls, ['POST', 'POST', 'GET', 'PATCH']);
         assert.equal(gh.pr.title, 'fleet-sprint [PASS]: feat/x');
-        assert.ok(gh.pr.body.startsWith('## Sprint verdict: PASS'));
+        assert.ok(gh.pr.body.startsWith('<!-- fleet-sprint:pr-block v1 -->\n## Sprint verdict: PASS'));
         assert.ok(gh.pr.body.includes('All good.\n- verified'));
         assert.ok(!gh.pr.body.includes('bead 1 open'), 'the old run\'s notes are replaced, not appended');
         assert.deepEqual(parseRunHistory(gh.pr.body).map((e) => `${e.run}:${e.verdict}`), ['run-2:PASS', 'run-1:FAIL']);
-        assert.ok(logs.some((m) => m.includes('already exists') && m.includes('updated its title and body') && m.includes('(PASS)')), JSON.stringify(logs));
+        assert.ok(logs.some((m) => m.includes('already exists') && m.includes('updated its fleet block') && m.includes('(PASS)')), JSON.stringify(logs));
     });
 
     test('the Harvest cost block reaches the created PR body', async () => {
@@ -630,7 +650,7 @@ describe('Publish PR: a relaunch rewrites the existing PR for the new verdict', 
         await publish({ gh, verdict: 'PASS', notes: 'fine', runId: 'run-a', member: 'pub-pass-fail' });
         await publish({ gh, verdict: 'FAIL', notes: 'regressed', runId: 'run-b', member: 'pub-pass-fail' });
         assert.equal(gh.pr.title, 'fleet-sprint [FAIL]: feat/x');
-        assert.ok(gh.pr.body.startsWith('## Sprint verdict: FAIL'));
+        assert.ok(gh.pr.body.startsWith('<!-- fleet-sprint:pr-block v1 -->\n## Sprint verdict: FAIL'));
         assert.deepEqual(parseRunHistory(gh.pr.body).map((e) => e.verdict), ['FAIL', 'PASS']);
     });
 
@@ -690,7 +710,7 @@ describe('finalizeAbort: an abort on a branch with an existing PR rewrites it as
         assert.equal(result.reason, 'already-exists');
         assert.deepEqual(gh.calls, ['POST', 'POST', 'GET', 'PATCH']);
         assert.equal(gh.pr.title, 'fleet-sprint [ABORTED]: feat/x');
-        assert.ok(gh.pr.body.startsWith('## Sprint verdict: ABORTED'));
+        assert.ok(gh.pr.body.startsWith('<!-- fleet-sprint:pr-block v1 -->\n## Sprint verdict: ABORTED'));
         assert.ok(gh.pr.body.includes('### Abort details') && gh.pr.body.includes('- Error code: SPRINT_PLAN_REJECTED'));
         assert.deepEqual(parseRunHistory(gh.pr.body).map((e) => `${e.run}:${e.verdict}`), ['run-abort:ABORTED', 'run-ok:PASS']);
         assert.ok(logs.some((m) => m.includes('updated the existing PR') && m.includes('(ABORTED)')), JSON.stringify(logs));

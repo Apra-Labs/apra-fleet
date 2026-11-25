@@ -32,7 +32,7 @@ import {
 import { ApraFleet } from '@apralabs/apra-fleet-client';
 import { resolveProvider, capabilities as vcsCapabilities } from './vcs-module.mjs';
 import { raiseVcsPrForMember, PR_SKIPPED_NO_MCP_CLIENT } from './vcs-auth.mjs';
-import { buildSprintPrBody, buildKbChangesSection } from './pr-body.mjs';
+import { buildSprintPrBody, buildKbChangesSection, sprintPrTitleFor, SECTION_PRIORITY } from './pr-body.mjs';
 import {
     findDoltDivergedCause, runGitStep, sanitizePrText, stageCommandBodyMemberSide, SAFE_TEXT_RE,
 } from './runner.js';
@@ -414,6 +414,61 @@ export function isTypedAbortError(err) {
     return typeof err.message === 'string' && err.message.startsWith('Pre-sprint validation failed:');
 }
 
+/**
+ * The [ABORTED] PR body sections on the run's work, from a typed abort's
+ * details (StalledSprintError carries them): "Still open or deferred at
+ * goal" (open, deferred, and reopened-then-closed beads), "Work closed this
+ * run" (ids, with titles when known) and "Last reviewer verdict" (verdict and
+ * notes). Each section is built only from data the details actually carry;
+ * a missing field omits its section, never a fabricated claim. The text is
+ * untrusted and sanitized by buildSprintPrBody like the reviewer notes.
+ * @param {unknown} details
+ * @returns {Array<{ id: string, priority: number, heading: string, text: string, placement: string }>}
+ */
+export function buildAbortWorkSections(details) {
+    const d = details && typeof details === 'object' && !Array.isArray(details) ? details : {};
+    const ids = (v) => (Array.isArray(v) ? v.filter((x) => typeof x === 'string' && x) : null);
+    const sections = [];
+    const open = ids(d.openAtGoalIds);
+    const deferred = ids(d.deferredAtGoal);
+    const reopened = ids(d.reopenedThenClosed);
+    if (open || deferred || reopened) {
+        const lines = [
+            ...(open || []).map((id) => `- ${id}: still open`),
+            ...(deferred || []).map((id) => `- ${id}: deferred (not done; never dispatched)`),
+            ...(reopened || []).map((id) => `- ${id}: closed again after a reviewer reopened it this run`),
+        ];
+        sections.push({
+            id: 'abort-still-open', priority: SECTION_PRIORITY.abortStillOpen, heading: 'Still open or deferred at goal',
+            text: lines.length > 0 ? lines.join('\n') : 'Nothing is open or deferred at goal priority, and no bead was reopened then closed this run.',
+            placement: 'after-merge-assessment',
+        });
+    }
+    if (Array.isArray(d.closedThisRun)) {
+        const closed = d.closedThisRun
+            .map((c) => (typeof c === 'string' ? { id: c } : c))
+            .filter((c) => c && typeof c.id === 'string' && c.id);
+        sections.push({
+            id: 'abort-closed-work', priority: SECTION_PRIORITY.abortClosedWork, heading: 'Work closed this run',
+            text: closed.length > 0
+                ? closed.map((c) => `- ${c.id}${typeof c.title === 'string' && c.title.trim() ? `: ${c.title.trim()}` : ''}`).join('\n')
+                : 'No bead was closed this run.',
+            placement: 'after-merge-assessment',
+        });
+    }
+    const review = d.lastReview && typeof d.lastReview === 'object' ? d.lastReview : null;
+    if (review && typeof review.verdict === 'string' && review.verdict) {
+        const where = [typeof review.site === 'string' ? review.site : null, review.cycle !== undefined && review.cycle !== null ? `cycle ${review.cycle}` : null].filter(Boolean).join(', ');
+        const notes = typeof review.notes === 'string' ? review.notes.trim() : '';
+        sections.push({
+            id: 'abort-last-review', priority: SECTION_PRIORITY.abortLastReview, heading: 'Last reviewer verdict',
+            text: `**${review.verdict}**${where ? ` (${where})` : ''}${notes ? `\n\n${notes}` : ''}`,
+            placement: 'after-merge-assessment',
+        });
+    }
+    return sections;
+}
+
 // ---------------------------------------------------------------------------
 // Abort-path PR publish
 // ---------------------------------------------------------------------------
@@ -600,7 +655,10 @@ export async function finalizeAbort({ error, branch, baseBranch, member, command
         // records; rendered as the "Set aside this run" section.
         setAside: error && Array.isArray(error.setAside) ? error.setAside : [],
         waited: error && Array.isArray(error.waited) ? error.waited : [],
-        sections: kbChangesSection ? [kbChangesSection] : [],
+        // What the run did and what it left (a StalledSprintError, or any
+        // typed abort whose details carry the same fields), above the abort
+        // details so the error message is never the only explanation.
+        sections: [...buildAbortWorkSections(error && error.details), ...(kbChangesSection ? [kbChangesSection] : [])],
         previousBody,
         ...(limits.descriptionMaxLength ? { maxLength: limits.descriptionMaxLength } : {}),
         ...(limits.commentMaxLength ? { commentMaxLength: limits.commentMaxLength } : {}),
@@ -641,10 +699,18 @@ export async function finalizeAbort({ error, branch, baseBranch, member, command
         // by shelling out to `member`, which may be backlogMember and
         // have no git checkout of its own to read a remote from.
         remoteUrlOverride: originUrl,
-        updateExisting: ({ body: oldBody }, limits) => ({ title: prTitle, body: buildAbortBody(oldBody, limits) }),
+        // Only fleet's own block of the description is rewritten, and the
+        // [ABORTED] title only replaces a fleet-written title -- never a human
+        // one; the abort status is in the block.
+        updateExisting: ({ title: oldTitle, body: oldBody }, limits) => ({ title: sprintPrTitleFor(oldTitle, prTitle), body: buildAbortBody(oldBody, limits) }),
     });
     if (lastAbortBody && lastAbortBody.overflow) {
         log(`finalizeAbort: [Publish Abort PR] abort details are ${lastAbortBody.notes.length} characters; ${lastAbortBody.overflow.length} did not fit the PR description and continue in ${lastAbortBody.comments.length} PR comment(s)${lastAbortBody.notPosted ? ` (${lastAbortBody.notPosted} characters past the comment ceiling are not posted)` : ''}. Full abort details:\n${lastAbortBody.notes}`);
+    }
+    // Sections that did not fit the description go to the PR comments whole;
+    // the run log keeps them in full too, for when the comments cannot be posted.
+    if (lastAbortBody && lastAbortBody.overflowSections && lastAbortBody.overflowSections.length) {
+        log(`finalizeAbort: [Publish Abort PR] section(s) that did not fit the PR description continue in the PR comments: ${lastAbortBody.overflowSections.map((s) => s.heading).join(', ')}. Full overflow text (${lastAbortBody.overflowText.length} characters):\n${lastAbortBody.overflowText}`);
     }
 
     if (!prResult.ok) {

@@ -28,10 +28,13 @@ import { transformAgentForOpenCode, transformAgentForAgy, transformAgentForClaud
 import { FLEET_DIR } from '../paths.js';
 import { extractWorkflowSubsystemAssets } from './workflow-assets.js';
 import { downloadAndExtractDolt, verifyDolt } from './dolt-install.js';
-import { installBeads, type BeadsInstallDeps } from './beads-install.js';
+import { installBeads, beadsMismatchLines, type BeadsInstallDeps, type BeadsInstallResult } from './beads-install.js';
+import { DOLT_VERSION } from './dolt-install.js';
+import { checkPinnedVersion } from './version-pin.js';
 import {
   classifyRunningServer, relevantServerPids, getInstallDataDir, memberForceMayStop, fullInstallRefusalText, selfInvocationLines,
   writeMemberInstallMarker, clearMemberInstallMarker, recordFullInstallPort, FORCE_STOP_FULL_INSTALL_FLAG,
+  CONVERT_MEMBER_HOST_FLAG, MEMBER_HOST_FULL_INSTALL_CODE, readMemberInstallMarker, memberHostRefusalText,
 } from './install-guard.js';
 import { detectRunningFleetSe, fleetSeRefusalText, fleetSeRerunArgs, realFleetSeProbes, IGNORE_RUNNING_SPRINTS_FLAG, type FleetSeProbes } from './fleet-se-guard.js';
 import { writeServiceNotice, appendServiceNotice, clearServiceNoticeContaining, SERVICE_NOTICE_PATH } from '../services/service-notice.js';
@@ -88,6 +91,18 @@ function beadsStepDeps(): BeadsInstallDeps {
     chmodSync: (p, mode) => fs.chmodSync(p, mode),
   };
 }
+
+/** This host's name for the [!] lines; never throws. */
+function installHostName(): string {
+  try {
+    const h = typeof os.hostname === 'function' ? os.hostname() : '';
+    return h || 'this host';
+  } catch {
+    return 'this host';
+  }
+}
+
+export { beadsMismatchLines };
 
 function doltStepEnabled(): boolean {
   if (process.env.NODE_ENV !== 'test') return true;
@@ -1385,6 +1400,10 @@ Options:
   --force-stop-full-install
                           With --member --force: also stop a running server that was not started
                           by a member install (e.g. a full install on a shared machine).
+  --convert-member-host   Without --member: install a full install over a fleet member host (one
+                          whose data dir holds member-install.json), removing the member install.
+                          Without it a full install there refuses (E-MEMBER-HOST-FULL-INSTALL);
+                          upgrade a member host with install --member --force instead.
   --port <n>              With --member: the port this member install's server listens on
                           (default: APRA_FLEET_PORT, else the port a previous member install
                           recorded, else 7523). Recorded in the member-install marker; use a
@@ -1506,7 +1525,7 @@ Options:
   }
 
   const knownFlagPrefixes = ['--llm=', '--skill=', '--transport=', '--workflows=', '--port='];
-  const knownFlagExact = new Set(['--member', '--llm', '--skill', '--no-skill', '--workflows', '--force', FORCE_STOP_FULL_INSTALL_FLAG, IGNORE_RUNNING_SPRINTS_FLAG, '--transport', '--port', '--help', '-h']);
+  const knownFlagExact = new Set(['--member', '--llm', '--skill', '--no-skill', '--workflows', '--force', FORCE_STOP_FULL_INSTALL_FLAG, CONVERT_MEMBER_HOST_FLAG, IGNORE_RUNNING_SPRINTS_FLAG, '--transport', '--port', '--help', '-h']);
   for (const a of args) {
     if (knownFlagExact.has(a)) continue;
     if (knownFlagPrefixes.some(p => a.startsWith(p))) continue;
@@ -1528,6 +1547,25 @@ Options:
     process.exit(1);
   }
   const memberPort = memberPortChoice.port;
+
+  // Member-host guard: a full install clears the member-install marker, which
+  // silently turns a fleet member host into a full install. Refuse before
+  // anything is stopped or written unless the conversion is explicit. Scoped to
+  // the targeted data dir, so an isolated APRA_FLEET_DATA_DIR is unaffected.
+  const convertMemberHost = args.includes(CONVERT_MEMBER_HOST_FLAG);
+  const memberMarker = memberMode ? null : readMemberInstallMarker();
+  if (memberMarker && !convertMemberHost) {
+    const rerunArgs = ['install', '--member', ...args.filter(a => a !== '--member' && a !== '--force'
+      && a !== CONVERT_MEMBER_HOST_FLAG && a !== IGNORE_RUNNING_SPRINTS_FLAG), '--force'];
+    const text = memberHostRefusalText(memberMarker, selfInvocationLines({
+      platform: process.platform, execPath: process.execPath, scriptPath: process.argv[1], sea: isSea(), args: rerunArgs,
+    }));
+    console.error(text);
+    // apra-fleet update runs install detached with no console: persist it.
+    writeServiceNotice(text.trim(), undefined, new Date(), Boolean(process.stderr.isTTY));
+    process.exit(1);
+    return;
+  }
 
   const installFleet = skillMode === 'fleet' || skillMode === 'pm' || skillMode === 'all';
   const installPm = skillMode === 'pm' || skillMode === 'all';
@@ -1578,6 +1616,7 @@ Options:
   // obsolete and must not be shown after this install succeeds. All OSes --
   // only the Windows service manager clears notices on registration.
   clearServiceNoticeContaining('E-FLEET-SE-RUNNING');
+  clearServiceNoticeContaining(MEMBER_HOST_FULL_INSTALL_CODE);
 
   const serviceStep = isSea() && transport === 'http';
   // A member install exists to leave an auto-starting server behind. With no
@@ -2205,33 +2244,56 @@ ${manualStopHint(pidsAfterStop)}
   // Mirrors the Beads install step immediately below: already-installed check
   // first, download+extract+verify otherwise. NON-FATAL, same as Beads -- a
   // missing/broken dolt must never fail "apra-fleet install".
+  // Version pin: an existing BIN_DIR dolt whose major.minor differs from
+  // DOLT_VERSION is replaced with the pinned download (BIN_DIR is fleet-owned)
+  // and re-verified; a replacement that fails or still mismatches is reported
+  // loudly with found/expected/fix, never as a silent skip.
   const doltStep = serviceStep ? totalSteps - 3 : totalSteps - 2;
   console.log(`  [${doltStep}/${totalSteps}] Installing Dolt CLI...`);
   let doltVersion = 'not available';
   if (doltStepEnabled()) {
+    const doltBinaryName = process.platform === 'win32' ? 'dolt.exe' : 'dolt';
+    const doltPath = path.join(BIN_DIR, doltBinaryName);
+    const doltFix = `re-run the install with network access so the pinned dolt ${DOLT_VERSION} is downloaded into ${BIN_DIR} (or remove ${doltPath} first)`;
+    let staleDolt: string | null = null;
     try {
-      const doltBinaryName = process.platform === 'win32' ? 'dolt.exe' : 'dolt';
-      const doltPath = path.join(BIN_DIR, doltBinaryName);
       let installed = false;
       // Check if already installed
       if (fs.existsSync(doltPath)) {
         try {
           const result = await doltStepDeps.verifyDolt(doltPath);
-          doltVersion = result.version;
-          installed = true;
+          const check = checkPinnedVersion(result.version, DOLT_VERSION);
+          if (check.ok) {
+            doltVersion = result.version;
+            installed = true;
+          } else {
+            staleDolt = check.found;
+            console.log(`  - ${doltPath} reports dolt ${check.found}, expected ${check.expected}.x -- replacing it with the pinned download`);
+          }
         } catch {
           // existing binary is broken/unusable -- fall through and (re)download
         }
       }
       if (!installed) {
-        // not installed (or broken) -- download and verify it
+        // not installed (or broken, or the wrong version) -- download and verify it
         const extractedPath = await doltStepDeps.downloadAndExtractDolt(BIN_DIR);
         const result = await doltStepDeps.verifyDolt(extractedPath);
+        const check = checkPinnedVersion(result.version, DOLT_VERSION);
+        if (!check.ok) throw new Error(`the downloaded dolt reports ${check.found}, expected ${check.expected}`);
         doltVersion = result.version;
       }
     } catch (err) {
-      // non-fatal: warn but don't fail the install
-      console.warn(`  Dolt install skipped -- ${(err as Error).message}`);
+      const why = (err as Error).message;
+      if (staleDolt) {
+        // A wrong-version dolt is left in BIN_DIR: say so loudly, never "skipped".
+        const expected = DOLT_VERSION.replace(/^v/, '');
+        console.warn(`  [!] Dolt version mismatch on ${installHostName()}: found ${staleDolt} at ${doltPath}, expected ${expected} (pinned major.minor); replacing it failed: ${why}`);
+        console.warn(`  [!] Fix: ${doltFix}`);
+        doltVersion = `MISMATCH -- found ${staleDolt}, expected ${expected}. Fix: ${doltFix}`;
+      } else {
+        // non-fatal: warn but don't fail the install
+        console.warn(`  Dolt install skipped -- ${why}`);
+      }
     }
   }
 
@@ -2251,6 +2313,11 @@ ${manualStopHint(pidsAfterStop)}
     console.warn(`  [!] Beads (bd) NOT installed: ${beadsResult.reason}`);
     console.warn(`  [!] Fix: ${beadsResult.fix}`);
     console.warn('  - Beads install skipped - sprint work on this machine needs bd and will fail until it is installed');
+  } else if (beadsResult.state === 'version-mismatch') {
+    // LOUD (a bd of another major.minor can migrate the shared beads database
+    // one way and lock out every other clone). A full install then exits 1
+    // (set after every other step finishes); a member install completes.
+    for (const line of beadsMismatchLines(beadsResult, installHostName())) console.warn(`  [!] ${line}`);
   }
 
   // --- KB + code intelligence setup step ---
@@ -2461,10 +2528,17 @@ ${restartHint}
   }
 
   // --- Done ---
-  if (!memberMode) clearMemberInstallMarker();
+  if (!memberMode) {
+    clearMemberInstallMarker();
+    if (memberMarker) {
+      console.log(`\n  Converted this fleet member host to a full install (${CONVERT_MEMBER_HOST_FLAG}): removed the member-install marker ${memberMarker.path}.`);
+    }
+  }
   const beadsVersion = beadsResult.state === 'missing'
     ? `not available -- ${beadsResult.reason}. Fix: ${beadsResult.fix}`
-    : `${beadsResult.version}${beadsResult.location === 'bin-dir' ? ` (${beadsResult.binPath})` : ''}`;
+    : beadsResult.state === 'version-mismatch'
+      ? `MISMATCH -- found ${beadsResult.found} (${beadsResult.where}), expected ${beadsResult.expected}. Fix: ${beadsResult.fix}`
+      : `${beadsResult.version}${beadsResult.location === 'bin-dir' ? ` (${beadsResult.binPath})` : ''}`;
 
   const clientName = llm === 'claude' ? 'Claude Code' : paths.name;
   // A member install touched no user-scope settings or MCP registration, so it
@@ -2496,6 +2570,17 @@ Apra Fleet ${serverVersion} installed successfully for ${paths.name}.
 
 ${instructions}${forceNote}${accessNote}
 `);
+
+  if (beadsResult.state === 'version-mismatch') {
+    // Last line on stderr, so a caller that keeps only the output tail (the
+    // member fleet_install path) still names the mismatch. The install itself
+    // is complete. A member install exits 0 so the member keeps its fleet
+    // tools (the orchestrator reads the code above and reports the mismatch
+    // and fix); a full install exits 1. The sprint-start and supervisor checks
+    // still stop sprints on an off-pin bd, and 'apra-fleet status' warns.
+    console.error(`[!] ${beadsMismatchLines(beadsResult, installHostName()).join(' ')}`);
+    if (!memberMode) process.exitCode = 1;
+  }
 
   if (llm === 'claude' && installPm) {
     console.log('  /auto-sprint BD-1              (native workflow, current branch)');

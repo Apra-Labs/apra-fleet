@@ -43,7 +43,8 @@ import { promisify } from 'node:util';
 import { EventEmitter } from 'node:events';
 import http from 'node:http';
 import { escapeHtml } from '@apralabs/apra-fleet-workflow/viewer/html-utils';
-import { WATCHDOG_STATUS } from './watchdog.mjs';
+import { WATCHDOG_STATUS, defaultHasTerminalState } from './watchdog.mjs';
+import { terminalInfoFromState } from './pr-not-opened.mjs';
 import { renderLaunchFormHtml, formatLaunchError } from './launch-form.mjs';
 import { renderBacklogPanelHtml, normalizeBead, expandScopeInMemory, buildChildIndex } from './backlog.mjs';
 // apra-fleet-72o0 (dashboard follow-up): the claimed-scope count needs CLOSED
@@ -245,6 +246,17 @@ function renderSprintProgressHtml(progress, nowMs) {
 }
 
 /**
+ * "PR not opened: <reason>" marker (reason HTML-escaped); empty string when the
+ * PR opened. Self-contained so SPRINT_STACK_LIVE_SCRIPT can embed it verbatim.
+ * @param {{ reason: string }|null|undefined} prNotOpened
+ * @returns {string}
+ */
+export function renderPrNotOpenedHtml(prNotOpened) {
+    if (!prNotOpened || typeof prNotOpened.reason !== 'string') return '';
+    return '<span class="pr-not-opened" style="color: #f59e0b; font-size: 12px;">PR not opened: ' + escapeHtml(prNotOpened.reason) + '</span>';
+}
+
+/**
  * Renders one running sprint's section.
  * @param {SprintView} view
  * @param {number} [nowMs] - pinned "now" for the progress "as of" label; defaults to Date.now()
@@ -304,6 +316,8 @@ export function renderSprintSection(view, nowMs) {
         '<div style="display:flex; align-items:center; gap: 10px; flex-wrap: wrap;">' +
         '<strong style="font-size: 14px;">' + sprintId + '</strong>' +
         statusBadge(view.status) +
+        (view.verdict ? '<span class="sprint-verdict" style="font-size: 12px; color: #d4d4d8;">' + escapeHtml(view.verdict) + '</span>' : '') +
+        renderPrNotOpenedHtml(view.prNotOpened) +
         '<a href="' + liveHref + '" target="_blank" rel="noopener" style="margin-left:auto; font-size: 12px;">Open live view</a>' +
         '<a href="' + logHref + '" target="_blank" rel="noopener" style="font-size: 12px;">Raw log</a>' +
         // apra-fleet-3i3.1: kills the still-live child AND releases the
@@ -784,6 +798,7 @@ const SPRINT_STACK_LIVE_SCRIPT = `
     ${renderProgressBarHtml.toString()}
     ${formatSummaryAge.toString()}
     ${renderSprintProgressHtml.toString()}
+    ${renderPrNotOpenedHtml.toString()}
     ${renderSprintSection.toString()}
     ${renderBeadsFreshnessHtml.toString()}
 
@@ -1052,6 +1067,8 @@ export function renderIndexPageHtml(views, backlogHtml, launchFormHtml, opts = {
  * @property {Array<{ name: string, role: string|null }>} members
  * @property {string|null} base - (apra-fleet-p2to.3.1) the sprint's launch `--base` branch, as recorded on the ledger entry
  * @property {number|null} baseDrift - (apra-fleet-p2to.3.1) commits on `base` not yet reachable from `branch`; `null` when unknown (see computeBaseDrift())
+ * @property {string|null} [verdict] - the sprint's terminal verdict when it has already reached a terminal state; absent otherwise
+ * @property {{ reason: string }|null} [prNotOpened] - set only when the branch was pushed but the PR was skipped; absent when the PR opened
  * @property {string|null} beadsPrefix - the beads prefix recorded on the ledger entry at launch (`beads.prefix`, beads-identity.mjs); null when absent
  */
 
@@ -1087,6 +1104,8 @@ export function buildStatePayload(views, opts = {}) {
             base: v.base ?? null,
             baseDrift: v.baseDrift ?? null,
             beadsPrefix: v.beadsPrefix ?? null,
+            ...(v.verdict ? { verdict: v.verdict } : {}),
+            ...(v.prNotOpened ? { prNotOpened: v.prNotOpened } : {}),
         })),
     };
 }
@@ -1298,6 +1317,9 @@ export function createDashboard(deps = {}) {
     // apra-fleet-72o0 note on the import above for why this must NOT be
     // backlog.mjs's bdListAllBeads().
     const listAllBeads = deps.listAllBeads ?? bdListAllBeadsWithClosed;
+    // Persisted terminal run-state lookup (verdict + PR-not-opened marker for a
+    // sprint that already finished); injectable for tests.
+    const hasTerminalState = deps.hasTerminalState ?? defaultHasTerminalState;
     // apra-fleet-3i3.2: best-effort per-sprint metadata (branch/goal/member
     // roles). Defaults to reading branch/goal straight off the ledger entry
     // (which now persists them -- see ledger.mjs) when the caller injects
@@ -1500,6 +1522,14 @@ export function createDashboard(deps = {}) {
 
             const progress = await summaryPulls.get(entry.sprintId);
 
+            let terminal = null;
+            try {
+                const st = hasTerminalState(entry.sprintId, entry.branch ?? null);
+                if (st && typeof st === 'object') terminal = terminalInfoFromState(st);
+            } catch (err) {
+                logError(`[dashboard] terminal-state lookup failed for sprint '${entry.sprintId}':`, err);
+            }
+
             return {
                 sprintId: entry.sprintId,
                 branch,
@@ -1512,9 +1542,13 @@ export function createDashboard(deps = {}) {
                 base,
                 baseDrift,
                 beadsPrefix: entry.beads && entry.beads.prefix ? entry.beads.prefix : null,
+                ...(terminal && terminal.verdict ? { verdict: terminal.verdict } : {}),
+                ...(terminal && terminal.prNotOpened ? { prNotOpened: terminal.prNotOpened } : {}),
             };
         }));
-        return built.filter((v) => v.status !== WATCHDOG_STATUS.FINISHED);
+        // A finished sprint leaves the live stack -- except one whose PR was
+        // not opened, which stays visible (verdict + reason) while it holds a row.
+        return built.filter((v) => v.status !== WATCHDOG_STATUS.FINISHED || v.prNotOpened);
     }
 
     return {

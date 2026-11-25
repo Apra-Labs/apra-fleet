@@ -80,6 +80,24 @@ export function assertSafeFileLine(line) {
 }
 
 /**
+ * True when a member home directory can be embedded in a labelled git probe:
+ * no '$', backtick, double quote or control character (single quotes are
+ * escaped by the builders).
+ * @param {string} home
+ * @returns {boolean}
+ */
+export function isEmbeddableHome(home) {
+  const bq = String.fromCharCode(96);
+  // eslint-disable-next-line no-control-regex
+  return home.length > 0 && !/[\x00-\x1f\x7f"$]/.test(home) && !home.includes(bq);
+}
+
+/** POSIX single-quote one word: ' becomes '\''. */
+export function posixSingleQuote(s) {
+  return `'${String(s).replace(/'/g, `'\\''`)}'`;
+}
+
+/**
  * POSIX command primitives. Also the base class the Git-for-Windows bash
  * implementation extends -- a gitbash member receives bash strings, so the
  * whole surface below is correct for it apart from genuinely Windows-native
@@ -290,6 +308,85 @@ export class SePosixCommands {
    */
   gitLsRemoteProbe() {
     return this.wrapForMember('GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git ls-remote origin HEAD');
+  }
+
+  /**
+   * Print the member's home directory in the form git on that member uses
+   * for a credential helper path (no trailing newline on POSIX). Run once,
+   * before gitLsRemoteLabelledProbe, so the probe itself carries an absolute
+   * path resolved in JavaScript and no shell expansion at all. Overridden
+   * for gitbash (git.exe needs the Windows form) and PowerShell.
+   * @returns {string}
+   */
+  memberHomeProbe() {
+    return this.wrapForMember(`printf '%s' "$HOME"`);
+  }
+
+  /**
+   * Validate and normalise the home directory memberHomeProbe printed, for
+   * a git helper path. Throws on anything that is not an absolute path or
+   * that carries a character this layer refuses to embed ($, backtick,
+   * double quote, control characters).
+   * @param {string} home
+   * @returns {string} absolute home, no trailing slash
+   */
+  gitHelperHome(home) {
+    const h = String(home ?? '').replace(/[\r\n]+$/, '');
+    if (!h.startsWith('/') || !isEmbeddableHome(h)) {
+      throw new Error(`Refusing to build a labelled git probe for unusable member home '${h}' (expected an absolute POSIX path with no '$', backtick, double quote or control character).`);
+    }
+    return h.length > 1 ? h.replace(/\/+$/, '') : h;
+  }
+
+  /**
+   * File name of the fleet-labelled git credential helper for `label`:
+   * member-scoped (`.fleet-git-credential-<label>.<memberId>`) when a member
+   * id is given, else the shared legacy file. Same resolution as
+   * credentialHelperPath, without the home prefix.
+   * @param {string} label validated
+   * @param {string} [memberId] validated
+   * @returns {string}
+   */
+  credentialHelperFileName(label, memberId) {
+    if (!/^[A-Za-z0-9._-]+$/.test(String(label))) {
+      throw new Error(`Refusing to build a credential helper file name for unsafe VCS credential label '${label}' (allowed: letters, digits, '.', '_', '-').`);
+    }
+    if (memberId !== undefined && memberId !== null && memberId !== '') {
+      if (!/^[A-Za-z0-9_-]+$/.test(String(memberId))) {
+        throw new Error(`Refusing to build a credential helper path for unsafe member id '${memberId}' (allowed: letters, digits, '_', '-').`);
+      }
+      return `.fleet-git-credential-${label}.${memberId}${this.credentialHelperSuffix}`;
+    }
+    return `.fleet-git-credential-${label}${this.credentialHelperSuffix}`;
+  }
+
+  /**
+   * Non-interactive `git ls-remote origin HEAD` judged through ONLY the
+   * fleet-labelled credential helper: `-c credential.helper=` resets the
+   * helper list git collected from every config scope (a system credential
+   * manager, a global store, the dispatch's own GIT_CONFIG_PARAMETERS), then
+   * the labelled helper file is the one helper left. Prompting is off
+   * (GIT_TERMINAL_PROMPT=0, GCM_INTERACTIVE=never, empty askpass), so a dead
+   * helper fails instead of waiting on a terminal or a dialog.
+   *
+   * `home` is the member home memberHomeProbe printed, resolved in
+   * JavaScript: the command relies on no shell expansion at all. The helper
+   * value is `!'<path>'` (git runs a `!` value through its shell, so the
+   * quoted path may hold spaces), and the whole -c argument is single-quoted
+   * again for the member shell.
+   * Caller: vcs-auth.mjs createVcsAuthPreflightCallback (git channel).
+   * @param {string} label
+   * @param {string} [memberId] - set only for a member-scoped helper
+   * @param {string} home
+   * @returns {{ command: string, descriptor: string }}
+   */
+  gitLsRemoteLabelledProbe(label, memberId, home) {
+    const descriptor = `${this.gitHelperHome(home)}/${this.credentialHelperFileName(label, memberId)}`;
+    const helperArg = posixSingleQuote(`credential.helper=!${posixSingleQuote(descriptor)}`);
+    return {
+      command: this.wrapForMember(`GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never GIT_ASKPASS= SSH_ASKPASS= git -c credential.helper= -c core.askPass= -c ${helperArg} ls-remote origin HEAD`),
+      descriptor,
+    };
   }
 
   /**

@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { runDevelopLoopScenario, withScenarioMarkers } from './helpers/mock-sprint-harness.mjs';
+import { logicalBdCommand } from '../fleet-sprint/bd-sync-command.mjs';
 
 // =============================================================================
 // End-to-end pin for the false "D-push landed" bug. A post-dispatch D-push
@@ -54,7 +55,10 @@ const TRANSPORT_RESULT = {
  */
 function sharedDoltRemote(push) {
     const state = { tip: 'a'.repeat(40), pushes: 0, minted: 0 };
-    const onCommand = ({ command }) => {
+    const onCommand = ({ command: wire }) => {
+        // Matched on the LOGICAL command: the engine prefixes bd sync commands
+        // with the non-interactive git env (bd-sync-command.mjs).
+        const command = logicalBdCommand(wire);
         if (/^bd config get sync\.remote/.test(command)) return exit0(JSON.stringify({ key: 'sync.remote', value: SYNC_REMOTE }));
         if (LS_REMOTE_RE.test(command)) return exit0(`${state.tip}\trefs/dolt/data\n`);
         if (command === 'bd dolt pull') return exit0('Pull complete.\n');
@@ -84,7 +88,7 @@ async function runScenario(tag, push) {
         onCommand: remote.onCommand,
         activityEnds,
     });
-    const pushEnds = activityEnds.filter((e) => e.command === 'bd dolt push');
+    const pushEnds = activityEnds.filter((e) => logicalBdCommand(e.command) === 'bd dolt push');
     return { scenario, remote, pushEnds };
 }
 

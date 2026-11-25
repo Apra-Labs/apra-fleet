@@ -165,7 +165,10 @@ describe('raiseVcsPrForMember (fleet-sprint/vcs-auth.mjs)', () => {
         const res = await raiseVcsPrForMember({
             fleetApi, command, member: 'fleet-raise-pr-falsify', base: 'main', head: 'feat/x', title: 't', body: 'b', logPrefix: 'test',
         });
-        assert.equal(res.ok, true);
+        // A 2xx that maps to no PR URL is a typed failure, never ok:true
+        // with prUrl null (vcs-providers/index.mjs unmappedPrResponseFailure).
+        assert.equal(res.ok, false);
+        assert.equal(res.reason, 'pr-response-unmapped');
         assert.notEqual(res.prUrl, 'https://github.com/acme/widgets/pull/42', 'a response missing the real url field must NOT yield the expected prUrl -- if it does, the mapping assertion above is not exercising real behavior');
         assert.equal(res.prUrl, null);
     });
