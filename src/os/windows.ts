@@ -50,6 +50,30 @@ export function wrapPowerShellEncoded(psScript: string): string {
   return `powershell -EncodedCommand ${encoded}`;
 }
 
+/**
+ * PowerShell: remove from the global key `keyLiteral` (the key text, already
+ * '-doubled for a single-quoted literal) ONLY the value equal to `valueExpr`
+ * (a PowerShell expression) -- fleet's legacy helper path -- then the empty
+ * reset entry when no non-empty value is left. Any other value stays. Values
+ * are counted, never echoed. Ends with exit code 0 and one FLEET_LEGACY_HELPER
+ * line. The PowerShell counterpart of posixLegacyHelperUnset (linux.ts).
+ */
+export function powershellLegacyHelperUnset(keyLiteral: string, valueExpr: string): string {
+  return `$fk = '${keyLiteral}'; $fv = ${valueExpr}; `
+    + `$fall = @(git config --global --get-all $fk 2>$null); `
+    + `$fn = @($fall | Where-Object { $_ -ceq $fv }).Count; `
+    + `if ($fn -gt 0) { `
+    + `$fre = '^' + ($fv -replace '([\\[\\]\\\\.*^$+?(){}|])','\\$1') + '$'; `
+    + `git config --global --unset-all $fk $fre 2>$null; `
+    + `if ($LASTEXITCODE -eq 0) { `
+    + `$fkept = @(git config --global --get-all $fk 2>$null | Where-Object { $_ -ne '' }).Count; $fr = 0; `
+    + `if ($fkept -eq 0) { git config --global --unset-all $fk '^$' 2>$null; if ($LASTEXITCODE -eq 0) { $fr = 1 } }; `
+    + `"FLEET_LEGACY_HELPER removed=$fn kept=$fkept reset_removed=$fr" `
+    + `} else { 'FLEET_LEGACY_HELPER failed=1' } `
+    + `} else { $fkept = @($fall | Where-Object { $_ -ne '' }).Count; "FLEET_LEGACY_HELPER removed=0 kept=$fkept reset_removed=0" }; `
+    + `$global:LASTEXITCODE = 0`;
+}
+
 // The member's own fleet bin dir, APPENDED (see linux.ts FLEET_BIN_PATH_POSIX).
 export const FLEET_BIN_PATH_WINDOWS = '$env:USERPROFILE\\.apra-fleet\\bin';
 const CLI_PATH = '$env:Path = "$env:USERPROFILE\\.local\\bin;$env:Path;' + FLEET_BIN_PATH_WINDOWS + '"; \'ANTIGRAVITY_SOURCE_METADATA\',\'CLAUDE_SOURCE_METADATA\',\'COPILOT_SOURCE_METADATA\',\'CODEX_SOURCE_METADATA\' | ForEach-Object { Remove-Item "env:$_" -ErrorAction SilentlyContinue }; ';
@@ -405,19 +429,7 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
     // value is left; any other value stays. Values are counted, never echoed.
     // Always ends with exit code 0 and one FLEET_LEGACY_HELPER line.
     return `Remove-Item -LiteralPath "$env:USERPROFILE\\${stem}.bat" -Force -ErrorAction SilentlyContinue; `
-      + `$fk = '${key}'; $fv = ($env:USERPROFILE -replace '\\\\','/') + '/${stem}.bat'; `
-      + `$fall = @(git config --global --get-all $fk 2>$null); `
-      + `$fn = @($fall | Where-Object { $_ -ceq $fv }).Count; `
-      + `if ($fn -gt 0) { `
-      + `$fre = '^' + ($fv -replace '([\\[\\]\\\\.*^$+?(){}|])','\\$1') + '$'; `
-      + `git config --global --unset-all $fk $fre 2>$null; `
-      + `if ($LASTEXITCODE -eq 0) { `
-      + `$fkept = @(git config --global --get-all $fk 2>$null | Where-Object { $_ -ne '' }).Count; $fr = 0; `
-      + `if ($fkept -eq 0) { git config --global --unset-all $fk '^$' 2>$null; if ($LASTEXITCODE -eq 0) { $fr = 1 } }; `
-      + `"FLEET_LEGACY_HELPER removed=$fn kept=$fkept reset_removed=$fr" `
-      + `} else { 'FLEET_LEGACY_HELPER failed=1' } `
-      + `} else { $fkept = @($fall | Where-Object { $_ -ne '' }).Count; "FLEET_LEGACY_HELPER removed=0 kept=$fkept reset_removed=0" }; `
-      + `$global:LASTEXITCODE = 0`;
+      + powershellLegacyHelperUnset(key, `($env:USERPROFILE -replace '\\\\','/') + '/${stem}.bat'`);
   }
 
   gitCredentialEnvPrefix(helpers: GitCredentialHelperRegistration[], memberId: string): string {

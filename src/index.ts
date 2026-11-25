@@ -159,6 +159,17 @@ ${m.KB_SERVER_USAGE}`);
     console.error(`Error: unknown kb subcommand '${subCmd}'`);
     process.exit(1);
   }
+} else if (arg === 'git-credential') {
+  // git credential helper: stdout carries ONLY the protocol lines.
+  import('./cli/operator-auth.js')
+    .then(m => m.runGitCredential(process.argv.slice(3)))
+    .then(code => process.exit(code))
+    .catch(err => { process.stderr.write(`apra-fleet git-credential failed: ${err.message}\n`); process.exit(1); });
+} else if (arg === 'operator-auth') {
+  import('./cli/operator-auth.js')
+    .then(m => m.runOperatorAuth(process.argv.slice(3)))
+    .then(code => process.exit(code))
+    .catch(err => { process.stderr.write(`apra-fleet operator-auth failed: ${err.message}\n`); process.exit(1); });
 } else if (arg === 'watch') {
   import('./cli/watch.js')
     .then(m => m.runWatch(process.argv.slice(3)))
