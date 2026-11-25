@@ -54,7 +54,7 @@ test('mock sprint: all members share one beads identity -> sprint proceeds and l
         // The probes run first -- the bd/dolt version pin on every member,
         // then the identity probes, orchestrator first -- and precede every
         // mutating bd command.
-        const first = r.commandLogDetailed.slice(0, 10);
+        const first = r.commandLogDetailed.filter((c) => !/\.apra-fleet[\/]bin[\/]dolt/.test(c.command)).slice(0, 10);
         check(first[0].command === 'bd --version' && first[0].member === 'orch' && first[2].command === 'bd --version' && first[2].member === 'm2',
             `expected the version pin probes first, got ${JSON.stringify(first.slice(0, 4))}`);
         check(first[4].command === 'bd where --json' && first[4].member === 'orch', `expected the orchestrator's bd where after the version probes, got ${JSON.stringify(first[4])}`);

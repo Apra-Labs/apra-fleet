@@ -97,6 +97,8 @@ describe('preflightCheck', () => {
     expect(result.connectivity).toBe(true);
     expect(result.authValid).toBe(true);
     expect(mockTestConnection).not.toHaveBeenCalled();
+    // No probe at all: this early return is why the remote-only auth reasons may name provision_llm_auth.
+    expect(mockExecCommand).not.toHaveBeenCalled();
   });
 
   // ---- Connectivity failures ----
@@ -156,6 +158,7 @@ describe('preflightCheck', () => {
     expect(result.authValid).toBe(false);
     expect(result.code).toBe('auth_expired');
     expect(result.reason).toContain('expired');
+    expect(result.reason).toContain('provision_llm_auth');
   });
 
   // ---- R2-F4: OAuth expired but API key present = pass ----

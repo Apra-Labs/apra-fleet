@@ -1011,7 +1011,7 @@ const BEADS_IDENTITY_PROBE_KEYS = [
     ['repoRemote', /^git remote get-url origin$/],
     // The sprint-start tool version pin probes (same override map).
     ['bdVersion', /^bd --version$/],
-    ['doltVersion', /^dolt version$/],
+    ['doltVersion', /^(?:& )?(?:dolt|"[^"]*[\/]\.apra-fleet[\/]bin[\/]dolt(?:\.exe)?") version$/],
 ];
 
 /**

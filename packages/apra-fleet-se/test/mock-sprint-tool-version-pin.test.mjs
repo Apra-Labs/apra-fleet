@@ -50,7 +50,7 @@ function assertStoppedAtPreflight(r, { member, found }) {
     check(bad.length === 0, `expected NO beads set-up or sync command on any member, got: ${JSON.stringify(bad)}`);
     check(r.dispatched.length === 0, `expected no role dispatch, got ${r.dispatched.length}`);
     // The version probes are the first commands of the run.
-    const first = r.commandLog.slice(0, 2);
+    const first = r.commandLog.filter((c) => !/\.apra-fleet[\/]bin[\/]dolt/.test(c)).slice(0, 2);
     check(first[0] === 'bd --version' && first[1] === 'dolt version', `expected the version probes first, got ${JSON.stringify(r.commandLog.slice(0, 4))}`);
 }
 

@@ -158,7 +158,8 @@ export function synthesizeBdWhere(cmd, cwd) {
 // another version overrides it through the mock-sprint harness's
 // `beadsIdentity` option (keys bdVersion / doltVersion).
 const isBdVersionCommand = (cmd) => /^\s*bd\s+--version\s*$/.test(cmd);
-const isDoltVersionCommand = (cmd) => /^\s*dolt\s+version\s*$/.test(cmd);
+// Also the fleet-owned dolt probe (`"<member home>/.apra-fleet/bin/dolt" version`, with the PowerShell call operator on Windows members).
+const isDoltVersionCommand = (cmd) => /^\s*(?:&\s*)?(?:dolt|"[^"]*[\/]\.apra-fleet[\/]bin[\/]dolt(?:\.exe)?")\s+version\s*$/.test(cmd);
 
 export function synthesizeToolVersion(cmd) {
     if (isBdVersionCommand(cmd)) return { err: null, stdout: `bd version ${BEADS_VERSION} (mock)\n`, stderr: '' };
