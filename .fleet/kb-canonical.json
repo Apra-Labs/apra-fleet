@@ -1,7 +1,9 @@
 {
   "version": 3,
   "provenance": {
-    "branch": "main"
+    "commit": "1287ce0ed7581a5c309496eef58169481041a351",
+    "branch": "main",
+    "entry_count": 218
   },
   "entries": [
     {
@@ -2730,6 +2732,31 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-30T23:07:12.100Z"
+    },
+    {
+      "id": "981c940f-28c3-41cb-87bb-36156857ea97",
+      "type": "knowledge",
+      "title": "KB http provider: read 5xx is UNREACHABLE, SERVER-ERROR is writes-only",
+      "summary": "HttpKbProvider.answeredError maps any 5xx/429 answering a read (query, context, prime, list) to E-KB-HTTP-UNREACHABLE; only a write's non-503 5xx is E-KB-HTTP-SERVER-ERROR. A 429 carries rateLimit {retryAfter} and a rate-limited message.",
+      "symbols": [
+        "HttpKbProvider.answeredError",
+        "KbHttpUnreachableError",
+        "KbHttpServerError",
+        "serverUnavailableError",
+        "retryAfterOf"
+      ],
+      "source_files": [
+        "src/services/knowledge/http-provider.ts",
+        "memory-contract/v1/taxonomy.json",
+        "tests/knowledge/kb-http-error-mapping.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-25T10:28:28.076Z",
+      "source_file_hashes": {
+        "memory-contract/v1/taxonomy.json": "c884fff3dbdf3132cadc13761a5c0c70c0a58642",
+        "src/services/knowledge/http-provider.ts": "54b70cea4be7da5651f6963b3dbc84bcac482f74",
+        "tests/knowledge/kb-http-error-mapping.test.ts": "8cd14c4e56834bfd554a12eae8e93ab0530bc69d"
+      }
     },
     {
       "id": "98dd92b2-2606-4baa-8d60-fd3cd3dc78a0",
