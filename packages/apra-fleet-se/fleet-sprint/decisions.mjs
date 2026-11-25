@@ -428,9 +428,12 @@ export function namedFindingIds(verdict, extractContestedBeadIds) {
 // narration and never refuses the waiver: refusing it would re-reject the
 // same verdict every round and end in a plan rejection instead of the
 // decision wait.
-export function onlyDecisionSetAsideFindings(verdict, sprintState, extractContestedBeadIds) {
+export function onlyDecisionSetAsideFindings(verdict, sprintState, extractContestedBeadIds, extraHeldIds = null) {
     if (!verdict || verdict.dispatchFailed) return false;
     const held = decisionSetAsideEntries(sprintState);
+    // Beads held by an OPEN decision/human bead in scope (operatorHeldBeadIds),
+    // not only the ones this run's sprintState set aside.
+    if (extraHeldIds) for (const id of extraHeldIds) if (!held.has(id)) held.set(id, { kind: 'open-decision-bead' });
     if (held.size === 0) return false;
     if (!Array.isArray(verdict.findings)) return false;
     const named = namedFindingIds(verdict, extractContestedBeadIds);
@@ -570,4 +573,125 @@ export async function applyPlannerDecision({ value, sprintState, command, member
         raisedBy: `planner (${site})`,
         cycle, round, command, member, scopeBeads, log,
     });
+}
+
+// ---------------------------------------------------------------------------
+// Operator-blocked planning (planner BLOCKED, open decision gates)
+// ---------------------------------------------------------------------------
+
+/**
+ * The decision request filed when a planner returns status BLOCKED without a
+ * usable decision object of its own: the question is the planner's notes, the
+ * bead is the first in-scope target issue, and the options are the two ways an
+ * operator can unblock planning.
+ *
+ * @param {{ notes?: string }|null|undefined} report parsed planner result
+ * @param {string[]} targetIssues the sprint's target issue ids
+ * @returns {{ ok: true, decision: object } | { ok: false, reason: string }}
+ */
+export function plannerBlockedDecisionRequest(report, targetIssues) {
+    const notes = report && typeof report.notes === 'string' ? report.notes.trim() : '';
+    const beadId = Array.isArray(targetIssues) ? targetIssues.find((id) => typeof id === 'string' && id) : undefined;
+    return validateDecisionRequest({
+        beadId,
+        question: notes || 'The planner reported that planning is blocked on an operator input but gave no detail.',
+        options: [
+            { id: 'answer', text: 'Answer the question above (reply with the answer); planning then runs again with it.' },
+            { id: 'drop', text: 'Drop the blocked scope from this sprint (say which beads); planning then runs again without it.' },
+        ],
+        recommendation: 'answer, because planning cannot go on without the missing input.',
+    });
+}
+
+/** True for a bead that is itself an operator decision gate (decision type or human label). */
+function isDecisionGateBead(b) {
+    if (!b) return false;
+    if (b.issue_type === 'decision') return true;
+    return Array.isArray(b.labels) && b.labels.includes(DECISION_BEAD_LABEL);
+}
+
+function depTargets(b, types) {
+    const deps = b && Array.isArray(b.dependencies) ? b.dependencies : [];
+    const out = [];
+    for (const d of deps) {
+        if (!d || typeof d !== 'object') continue;
+        const type = d.type ?? d.dependency_type;
+        if (type !== undefined && !types.includes(type)) continue;
+        const id = d.depends_on_id ?? d.id;
+        if (id !== undefined && id !== null && id !== '') out.push(String(id));
+    }
+    return out;
+}
+
+/**
+ * The ids of in-scope beads held by an OPEN operator decision gate: beads a
+ * sprintState decision set-aside names, beads an open decision/human bead was
+ * discovered from, beads blocked (blocks edge, directly or transitively) by
+ * an open gate or a held bead, and any parent whose open children are all
+ * held. Gate beads themselves are not included.
+ *
+ * @param {Array<object>} scopeBeads in-scope beads, any status
+ * @param {object} [sprintState]
+ * @returns {{ gateIds: Set<string>, heldIds: Set<string> }}
+ */
+export function operatorHeldBeadIds(scopeBeads, sprintState) {
+    const scope = Array.isArray(scopeBeads) ? scopeBeads.filter((b) => b && b.id !== undefined && b.id !== null) : [];
+    const open = scope.filter((b) => b.status !== 'closed');
+    const gateIds = new Set(open.filter(isDecisionGateBead).map((b) => String(b.id)));
+    const held = new Set(decisionSetAsideEntries(sprintState).keys());
+    for (const g of open.filter(isDecisionGateBead)) {
+        for (const id of depTargets(g, ['discovered-from', 'blocks', 'related'])) held.add(id);
+    }
+    for (const id of gateIds) held.delete(id);
+    // Beads blocked by a gate or by a held bead.
+    for (const [id] of openBlocksDependents([...gateIds, ...held], open)) held.add(id);
+    for (const id of gateIds) held.delete(id);
+    // A parent whose open children are all held is held (to a fixpoint).
+    const children = new Map();
+    for (const b of open) {
+        const parent = b.parent ?? depTargets(b, ['parent-child'])[0];
+        if (parent === undefined || parent === null || parent === '') continue;
+        const key = String(parent);
+        if (!children.has(key)) children.set(key, []);
+        children.get(key).push(String(b.id));
+    }
+    for (let changed = true; changed;) {
+        changed = false;
+        for (const [parent, kids] of children) {
+            if (held.has(parent) || gateIds.has(parent)) continue;
+            if (!open.some((b) => String(b.id) === parent)) continue;
+            if (kids.every((k) => held.has(k) || gateIds.has(k))) { held.add(parent); changed = true; }
+        }
+    }
+    return { gateIds, heldIds: held };
+}
+
+/**
+ * Pure: true when the in-scope open work is non-empty and every open work bead
+ * is held by an open operator decision gate (decision/human beads themselves,
+ * and deferred beads, are not work). A planner dispatched against such a scope
+ * can only come back BLOCKED.
+ *
+ * @param {Array<object>} scopeBeads
+ * @param {object} [sprintState]
+ * @returns {{ gated: boolean, heldIds: string[], gateIds: string[] }}
+ */
+export function allRemainingWorkOperatorGated(scopeBeads, sprintState) {
+    const { gateIds, heldIds } = operatorHeldBeadIds(scopeBeads, sprintState);
+    const work = (Array.isArray(scopeBeads) ? scopeBeads : [])
+        .filter((b) => b && b.id !== undefined && b.status !== 'closed' && b.status !== 'deferred' && !gateIds.has(String(b.id)));
+    const gated = work.length > 0 && work.every((b) => heldIds.has(String(b.id)));
+    return { gated, heldIds: [...heldIds], gateIds: [...gateIds] };
+}
+
+/**
+ * The planner feedback after an operator answered the question that blocked
+ * planning. Generic text only.
+ * @param {Array<{ question?: string, answer?: string }>} answers
+ * @returns {string}
+ */
+export function plannerFeedbackAfterAnswer(answers) {
+    const list = Array.isArray(answers) ? answers : [];
+    const parts = list.map((a) => `Question: ${a && a.question ? a.question : '(not recorded)'}\nOperator answer: ${a && a.answer ? a.answer : '(none)'}`);
+    return `An operator answered the question that blocked planning. Plan again using the answer.\n\n${parts.join('\n\n')}`;
 }

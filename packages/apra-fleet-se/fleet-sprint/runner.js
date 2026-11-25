@@ -3832,6 +3832,7 @@ async function runSprintCycle(context) {
                 updateDashboard,
                 bdListScoped,
                 tierPolicy,
+                decisionWait,
             });
         } catch (err) {
             if (!(err instanceof SprintPlanRejectedError)) throw err;
