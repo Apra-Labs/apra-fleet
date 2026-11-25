@@ -60,7 +60,7 @@ import {
     hasBeadsDatabase,
 } from './beads-identity.mjs';
 import { BeadsIdentityError, BEADS_IDENTITY_FAILURE_REASONS, VCS_FAILURE_KINDS, DoltUnrelatedHistoryError } from './errors.mjs';
-import { syncBefore as doltSyncBefore } from './dolt-sync.mjs';
+import { syncBefore as doltSyncBefore, preflightBeadsHealthGate } from './dolt-sync.mjs';
 import { recoverFlattenedClone, restoreLeftoverFlattenBackup, resolveRecoveryShell } from './beads-flatten-recovery.mjs';
 import { classifyFailure, commandBinary } from './vcs-module.mjs';
 import { BEADS_PACKAGE, BEADS_VERSION, DOLT_VERSION, TOOL_VERSION_PROBES, checkPinnedVersion, majorMinor, bdConflictedPullAffected, bdConflictedPullWarningText } from './tool-version-pin.mjs';
@@ -779,9 +779,14 @@ function assertMatches(member, expected, actual, cmp) {
  *   expected?: object|null, prober?: object, timeoutS?: number,
  *   setupMembers?: string[], ensureVcsAuth?: (member: string) => Promise<void>,
  *   memberShell?: (member: string) => Promise<object>,
- *   onAuthFailure?: Function, pullBeads?: Function,
+ *   onAuthFailure?: Function, pullBeads?: Function, launchPull?: Function,
  *   setupTimeoutS?: number, checkToolVersions?: boolean,
  * }} opts
+ *   `launchPull` (test seam, default DoltSync's preflightBeadsHealthGate) is
+ *   the one launch pull every non-backlog beads-reading member that already
+ *   has a database and the expected sync.remote gets, so a flattened remote
+ *   is recovered (or refused, naming the member) at launch, not at first
+ *   dispatch. It needs `memberShell` (the recovery command primitives).
  *   `checkToolVersions` first runs verifyPinnedToolVersions on every member
  *   (backlog, members and setupMembers) and throws VERSION_MISMATCH before
  *   any identity probe or set-up; the runner always sets it.
@@ -797,7 +802,7 @@ function assertMatches(member, expected, actual, cmp) {
  *   `unresolved: string[]` (the compared fields it could not report). A
  *   member with no beads database at all has NO entry -- only a warning.
  */
-export async function verifyBeadsIdentity({ command, log = () => {}, publishState, backlogMember, members, expected = null, prober, timeoutS, setupMembers, memberShell, ensureVcsAuth, onAuthFailure, pullBeads, setupTimeoutS, checkToolVersions = false }) {
+export async function verifyBeadsIdentity({ command, log = () => {}, publishState, backlogMember, members, expected = null, prober, timeoutS, setupMembers, memberShell, ensureVcsAuth, onAuthFailure, pullBeads, launchPull, setupTimeoutS, checkToolVersions = false }) {
     if (typeof backlogMember !== 'string' || !backlogMember) {
         throw new TypeError('verifyBeadsIdentity: backlogMember must be a non-empty string');
     }
@@ -934,6 +939,51 @@ export async function verifyBeadsIdentity({ command, log = () => {}, publishStat
         return again;
     }
 
+    // Launch pull for a member that already has a database AND the expected
+    // sync.remote (ensureSetUp returns such a member untouched, so nothing
+    // else would pull it before its first dispatch). It goes through the same
+    // gate the backlog member's health gate uses, with the flattened-remote
+    // recovery primitives: a remote with no common ancestor is re-bootstrapped
+    // here (backup kept), or the launch is refused naming the member
+    // (BeadsFlattenRecoveryRefusedError, clone untouched). A healthy member
+    // costs only the pull. Members ensureSetUp just set up already pulled.
+    async function launchPullMember(member, probed) {
+        if (member === backlogMember || typeof memberShell !== 'function') return probed;
+        if (setupSet && !setupSet.has(member)) return probed;
+        if (result.setUp.includes(member)) return probed;
+        const url = String((expectedIdentity && expectedIdentity.syncRemote) || '').trim();
+        if (!url || !hasBeadsDatabase(probed.identity)) return probed;
+        if (normalizeRemoteUrl(String(probed.identity.syncRemote || '')) !== normalizeRemoteUrl(url)) return probed;
+        assertMatches(member, expectedIdentity, probed.identity, compareIdentity(expectedIdentity, probed.identity, { skipUnresolved: true }));
+        if (typeof ensureVcsAuth === 'function') {
+            try {
+                await ensureVcsAuth(member);
+            } catch (err) {
+                log(`[beads-identity] could not refresh the VCS credential for member '${member}' before its launch pull (continuing): ${err && err.message ? err.message : err}`);
+            }
+        }
+        log(`[beads-identity] member '${member}' has a beads database on the expected remote; pulling it at launch (a flattened remote is recovered here, not at its first dispatch).`);
+        const pulled = await (launchPull || preflightBeadsHealthGate)(member, {
+            command,
+            log,
+            fatal: true,
+            onAuthFailure,
+            flattenRecovery: memberShell,
+            checkSyncRemoteConfigured: async () => true,
+            remoteTipFingerprint: false,
+        });
+        if (!pulled || !pulled.recovered) return probed;
+        p.forget(member);
+        const again = await p.probe(member);
+        assertBdPresent(member, again);
+        if (!hasBeadsDatabase(again.identity)) {
+            throw setupFailed(member, `still reports no beads database after its flattened-remote recovery at launch ('${BEADS_IDENTITY_PROBES.where}' -> ${probeDetail(again, 'where')})`,
+                setupFix(url), { step: 'verify', url });
+        }
+        result.setUp.push(member);
+        return again;
+    }
+
     // A member with no beads database may be one whose flattened-remote
     // recovery was interrupted (its original .beads renamed aside): put it
     // back before anything else reads or sets up that member. Only on this
@@ -967,6 +1017,7 @@ export async function verifyBeadsIdentity({ command, log = () => {}, publishStat
         assertBdPresent(member, probed);
         probed = await restoreLeftover(member, probed);
         if (expectedIdentity || !probed.identity.beadsDir) probed = await ensureSetUp(member, probed);
+        probed = await launchPullMember(member, probed);
         settle(member, probed, !!expectedIdentity);
     }
 

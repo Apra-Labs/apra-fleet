@@ -615,13 +615,21 @@ describe('verifyBeadsIdentity: member beads set-up', () => {
         assert.deepEqual(res.setUp, ['m1']);
     });
 
-    test('an existing matching DB is left untouched: zero set-up commands, no credential call', async () => {
+    test('an existing matching DB is not set up: zero set-up commands, one launch pull (credential refreshed for it)', async () => {
         const m1 = statefulMember({ ws: 'db', sync: REMOTE, origin: REMOTE });
         const h = setupHarness(m1);
         const res = await verify(h);
         assert.equal(setupCalls(h.calls).length, 0);
-        assert.ok(!h.order.includes('vcs:m1'));
+        assert.equal(h.calls.filter((c) => c.opts.member_name === 'm1' && c.cmd === DOLT_PULL).length, 1);
         assert.deepEqual(res.setUp, []);
+    });
+
+    test('a member without a DB still goes through the set-up path, not the launch pull', async () => {
+        const m1 = statefulMember({ ws: 'none' });
+        const h = setupHarness(m1);
+        const res = await verify(h, { launchPull: async () => assert.fail('launch pull must not run for a member being set up') });
+        assert.deepEqual(res.setUp, ['m1']);
+        assert.ok(setupCalls(h.calls).includes(BEADS_SETUP_COMMANDS.bootstrap));
     });
 
     test('a mismatching existing DB still fails as a MISMATCH, with no set-up attempted', async () => {
