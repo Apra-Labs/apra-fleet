@@ -193,7 +193,7 @@ export async function registerMember(input: RegisterMemberInput, opts: RegisterM
     if (!input.username) return '❌ "username" is required for remote members. Member was NOT registered.';
     if (!input.auth_type) return '❌ "auth_type" is required for remote members. Member was NOT registered.';
     // Key auth needs a key: without one registration would succeed and every SSH call fail later.
-    if (input.auth_type === 'key' && !input.key_path) return '❌ "key_path" is required when auth_type is "key". Member was NOT registered.';
+    if (input.auth_type === 'key' && !input.key_path) return '[ERR] "key_path" is required when auth_type is "key". Member was NOT registered.';
   }
 
   // unreservable is reserved for members that never receive a real agent
