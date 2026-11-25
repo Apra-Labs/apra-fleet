@@ -32,8 +32,9 @@ import { execFileSync } from 'node:child_process';
 import { FLEET_DIR } from '../paths.js';
 import { enforceOwnerOnly } from '../utils/file-permissions.js';
 import { escapeShellArg } from '../utils/shell-escape.js';
+import { OPERATOR_SCOPE_URL, operatorAuthRecordPath } from '../services/operator-auth-record.js';
 
-export const OPERATOR_SCOPE_URL = 'https://github.com';
+export { OPERATOR_SCOPE_URL };
 export const OPERATOR_HELPER_KEY = `credential.${OPERATOR_SCOPE_URL}.helper`;
 export const OPERATOR_SETUP_COMMAND = 'apra-fleet operator-auth github';
 export const DEFAULT_OPERATOR_LABEL = 'github';
@@ -89,7 +90,7 @@ interface TokenCache {
 class OperatorAuthError extends Error {}
 
 function recordPath(): string {
-  return path.join(FLEET_DIR, 'operator-auth.json');
+  return operatorAuthRecordPath();
 }
 
 /** Cache file of the token minted for `label` (owner-only). */

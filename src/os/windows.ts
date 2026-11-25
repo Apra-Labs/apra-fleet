@@ -2,7 +2,7 @@ import { defaultWindowsPidWrapper } from './windows-wrapper.js';
 export { defaultWindowsPidWrapper as pidWrapWindows };
 ﻿import { execFileSync } from 'node:child_process';
 import type { OsCommands, ProviderAdapter, PromptOptions, UnsetEnvOptions } from './os-commands.js';
-import { escapeWindowsArg, sanitizeSessionId, GIT_LS_REMOTE_OK_MARKER, gitCredentialHelperStem, groupGitCredentialHelpers, gitHelperParamWord } from './os-commands.js';
+import { escapeWindowsArg, sanitizeSessionId, GIT_LS_REMOTE_OK_MARKER, gitCredentialHelperStem, groupGitCredentialHelpers, gitHelperParamWord, gitResetParamWords } from './os-commands.js';
 import type { GitCredentialHelperRegistration } from './os-commands.js';
 import { escapeBatchMetachars, escapePowerShellArgInner } from '../utils/shell-escape.js';
 import { boundChildEnv, describeBoundedEnv } from './child-env-bound.js';
@@ -432,9 +432,12 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
       + powershellLegacyHelperUnset(key, `($env:USERPROFILE -replace '\\\\','/') + '/${stem}.bat'`);
   }
 
-  gitCredentialEnvPrefix(helpers: GitCredentialHelperRegistration[], memberId: string): string {
+  gitCredentialEnvPrefix(helpers: GitCredentialHelperRegistration[], memberId: string, resetScopes?: string[]): string {
     const groups = groupGitCredentialHelpers(helpers, memberId);
-    if (groups.length === 0) return '';
+    const resets = gitResetParamWords(resetScopes);
+    if (groups.length === 0) {
+      return resets.length === 0 ? '' : `$env:GIT_CONFIG_PARAMETERS = "${resets.join(' ')}"; `;
+    }
     // GIT_CONFIG_PARAMETERS (not GIT_CONFIG_COUNT/KEY/VALUE): PowerShell and
     // .NET DELETE a variable assigned an empty string, so the empty value that
     // resets git's inherited helper list cannot be an env var of its own --
@@ -443,7 +446,7 @@ $merged | ConvertTo-Json -Depth 99 | Set-Content -Path $p -NoNewline;
     // (see gitHelperParamWord) so an apostrophe or a space in it works. Scopes
     // and file names are validated to a charset needing no escaping inside a
     // PowerShell double-quoted string.
-    const words: string[] = [];
+    const words: string[] = [...resets];
     for (const g of groups) {
       words.push(`'credential.${g.scopeUrl}.helper='`);
       for (const stem of g.stems) words.push(gitHelperParamWord(g.scopeUrl, '$($fleetGitH)', `${stem}.bat`));

@@ -20,7 +20,15 @@ import { FLEET_DIR } from './test-helpers.js';
 import { runGitCredential, runOperatorAuth, operatorTokenCachePath, OPERATOR_HELPER_KEY } from '../src/cli/operator-auth.js';
 
 const GIT_CONFIG_PATH = path.join(FLEET_DIR, 'git-config.json');
-const RECORD_PATH = path.join(FLEET_DIR, 'operator-auth.json');
+// The operator record lives in a per-file temp dir, never the shared test
+// FLEET_DIR: its presence changes every local member's dispatch prefix
+// (vcs-git-env.ts), which other test files running in parallel assert on.
+const recordState = vi.hoisted(() => ({ path: '' }));
+vi.mock('../src/services/operator-auth-record.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/services/operator-auth-record.js')>()),
+  operatorAuthRecordPath: () => recordState.path,
+}));
+let RECORD_PATH = '';
 const FOREIGN = '!gh auth git-credential';
 const STALE_TOKEN = 'ghs_STALElegacyTOKEN000';
 const FRESH_TOKEN = 'ghs_FRESHmintedTOKEN111';
@@ -85,6 +93,8 @@ function shellWords(s: string): string[] {
 
 beforeAll(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'op-legacy-'));
+  RECORD_PATH = path.join(root, 'operator-auth.json');
+  recordState.path = RECORD_PATH;
   home = path.join(root, process.platform === 'win32' ? 'home dir' : "home dir's");
   fs.mkdirSync(home, { recursive: true });
   globalConfig = path.join(root, 'gitconfig');

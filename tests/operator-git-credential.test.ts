@@ -29,7 +29,15 @@ vi.mock('node:child_process', async (importOriginal) => {
 import { runGitCredential, runOperatorAuth, operatorTokenCachePath, REFRESH_MARGIN_MS } from '../src/cli/operator-auth.js';
 
 const GIT_CONFIG_PATH = path.join(FLEET_DIR, 'git-config.json');
-const RECORD_PATH = path.join(FLEET_DIR, 'operator-auth.json');
+// The operator record lives in a per-file temp dir, never the shared test
+// FLEET_DIR: its presence changes every local member's dispatch prefix
+// (vcs-git-env.ts), which other test files running in parallel assert on.
+const recordState = vi.hoisted(() => ({ path: '' }));
+vi.mock('../src/services/operator-auth-record.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/services/operator-auth-record.js')>()),
+  operatorAuthRecordPath: () => recordState.path,
+}));
+let RECORD_PATH = '';
 const HOUR = 60 * 60 * 1000;
 const T0 = Date.parse('2026-01-01T00:00:00Z');
 
@@ -60,6 +68,8 @@ const GET_GITHUB = 'protocol=https\nhost=github.com\n\n';
 
 beforeAll(() => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'op-git-cred-'));
+  RECORD_PATH = path.join(tmp, 'operator-auth.json');
+  recordState.path = RECORD_PATH;
   savedEnv = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL };
   process.env.HOME = tmp;
   process.env.USERPROFILE = tmp;
