@@ -167,11 +167,12 @@ describe('rollback (RB / RBS)', () => {
     expect(steps[0]).toMatch(/apra-fleet\.exe" uninstall --force --yes$/);
     expect(steps[1]).toBe('rm -rf "$HOME/.apra-fleet/data"');
     expect(steps[2]).toBe(`cp -R '${B}/data' "$HOME/.apra-fleet/data"`);
-    expect(steps[3]).toBe(`cp '${B}/fleet.key' "$HOME/.apra-fleet/fleet.key"`);
+    expect(steps[3]).toBe(`if [ -e '${B}/fleet.key' ]; then cp '${B}/fleet.key' "$HOME/.apra-fleet/fleet.key"; else rm -f "$HOME/.apra-fleet/fleet.key"; fi`);
     expect(steps[4]).toBe(guardedReinstallCommand(B));
     const cmd = rollbackCommand(B);
     expect(cmd).toBe(`${steps.join(' && ')} && echo ${ROLLBACK_OK}`);
-    expect(cmd).not.toMatch(/;/);
+    // The only ';' are inside the conditional fleet.key step.
+    expect(cmd.replace(steps[3], '')).not.toMatch(/;/);
   });
 
   it('the RBS refusal attempt is the guarded reinstall ALONE: no uninstall, no data removal or restore', () => {
@@ -203,7 +204,17 @@ describe('rollback (RB / RBS)', () => {
     const none = restoreChecks({ preReplace: null, post: snap(), releaseVersion: 'v0.4.5' });
     expect([none.data.keyline, none.key.keyline]).toEqual(['MISMATCH', 'MISMATCH']);
     const empty = restoreChecks({ preReplace: snap({ dataListing: [], fleetKeySha256: '' }), post: snap({ dataListing: [], fleetKeySha256: '' }), releaseVersion: 'v0.4.5' });
-    expect([empty.data.keyline, empty.key.keyline]).toEqual(['MISMATCH', 'MISMATCH']);
+    expect(empty.data.keyline).toBe('MISMATCH');
+    expect(restoreChecks({ preReplace: null, post: snap({ fleetKeySha256: '' }), releaseVersion: 'v0.4.5' }).key.keyline).toBe('MISMATCH');
+  });
+
+  it('fleet.key absent before replace and absent after rollback is a MATCH; any other absence mix is a MISMATCH', () => {
+    const key = (pre: string, post: string) => restoreChecks({ preReplace: snap({ fleetKeySha256: pre }), post: snap({ fleetKeySha256: post }), releaseVersion: 'v0.4.5' }).key.keyline;
+    expect(key('', '')).toBe('MATCH');
+    expect(key('', 'k2')).toBe('MISMATCH');
+    expect(key('k1', '')).toBe('MISMATCH');
+    expect(key('k1', 'k2')).toBe('MISMATCH');
+    expect(key('k1', 'k1')).toBe('MATCH');
   });
 
   it('RB and RBS both check version, data and key; RBS proves the refusal changed nothing first', () => {
@@ -261,6 +272,20 @@ describe('rollback command on a real bash, in a temp HOME with stub binaries', (
       expect(rollbackSucceeded({ isError: false, text: r.stdout })).toBe(true);
       expect(fs.readdirSync(path.join(mh, 'data'))).toEqual(['agents.json']);
       expect(fs.readFileSync(path.join(mh, 'fleet.key'), 'utf8')).toBe('release-key');
+      expect(fs.readFileSync(path.join(home, 'calls.log'), 'utf8')).toBe('uninstall uninstall --force --yes\nreinstall install --llm none --force\n');
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(!posixHost)('a backup without fleet.key: the chain is intact, succeeds, and the candidate key is dropped', () => {
+    const { home, mh, backup } = setup(0);
+    fs.rmSync(path.join(backup, 'fleet.key'));
+    try {
+      const r = runIn(home, rollbackCommand(backup));
+      expect(r.status, r.stderr).toBe(0);
+      expect(rollbackSucceeded({ isError: false, text: r.stdout })).toBe(true);
+      expect(fs.existsSync(path.join(mh, 'fleet.key'))).toBe(false);
       expect(fs.readFileSync(path.join(home, 'calls.log'), 'utf8')).toBe('uninstall uninstall --force --yes\nreinstall install --llm none --force\n');
     } finally {
       fs.rmSync(home, { recursive: true, force: true });

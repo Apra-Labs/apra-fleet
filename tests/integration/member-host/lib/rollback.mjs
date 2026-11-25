@@ -58,7 +58,11 @@ export function rollbackSteps(backupDir) {
     `"${mh}/bin/apra-fleet.exe" uninstall --force --yes`,
     `rm -rf "${mh}/data"`,
     `cp -R '${b}/data' "${mh}/data"`,
-    `cp '${b}/fleet.key' "${mh}/fleet.key"`,
+    // fleet.key is created lazily, so the replace-full backup holds one only if
+    // the member had it (the product backup step is conditional the same way).
+    // Present: restore it. Absent: the member had none before replace, so drop
+    // the candidate's -- either way the step succeeds and the chain goes on.
+    `if [ -e '${b}/fleet.key' ]; then cp '${b}/fleet.key' "${mh}/fleet.key"; else rm -f "${mh}/fleet.key"; fi`,
     guardedReinstallCommand(b),
   ];
 }
@@ -76,8 +80,11 @@ export function rollbackSucceeded(result) {
  * Restore checks after a rollback, against the snapshot taken right before
  * replace-full (preReplace): the release version, the SAME data dir listing
  * and the SAME fleet.key hash. A missing pre-replace snapshot, or an empty
- * listing / hash on it, is a MISMATCH -- a rollback can only be shown to
- * restore what was recorded before.
+ * data listing on it, is a MISMATCH -- a rollback can only be shown to restore
+ * what was recorded before. An empty fleet.key hash means the key was ABSENT
+ * (it is created lazily): absent before and absent after is a MATCH; absent
+ * before but present after, or present before but absent/different after, is
+ * a MISMATCH.
  */
 export function restoreChecks({ preReplace, post, releaseVersion }) {
   const version = String(post?.binaryVersion ?? '');
@@ -98,10 +105,12 @@ export function restoreChecks({ preReplace, post, releaseVersion }) {
     keyline: dataOk ? 'MATCH' : 'MISMATCH',
     detail: dataOk ? got.join(',') : `before replace-full: [${want.join(',')}]; after rollback: [${got.join(',')}]`,
   };
-  const keyOk = !!preReplace.fleetKeySha256 && preReplace.fleetKeySha256 === post?.fleetKeySha256;
+  const keyBefore = String(preReplace.fleetKeySha256 ?? '');
+  const keyAfter = String(post?.fleetKeySha256 ?? '');
+  const keyOk = keyBefore === keyAfter;
   out.key = {
     keyline: keyOk ? 'MATCH' : 'MISMATCH',
-    detail: keyOk ? post.fleetKeySha256 : `before replace-full: ${preReplace.fleetKeySha256 || '(none)'}; after rollback: ${post?.fleetKeySha256 || '(none)'}`,
+    detail: keyOk ? (keyAfter || '(absent before and after)') : `before replace-full: ${preReplace.fleetKeySha256 || '(none)'}; after rollback: ${post?.fleetKeySha256 || '(none)'}`,
   };
   return out;
 }
