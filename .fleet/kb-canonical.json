@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "dfb66cdb8c3edd97b3eeef1c6639abb5e8450e2a",
     "branch": "main",
-    "entry_count": 221
+    "entry_count": 222
   },
   "entries": [
     {
@@ -2843,6 +2843,30 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:32.234Z"
+    },
+    {
+      "id": "9a70c23f-e8d3-4155-b681-a031d7db6b4e",
+      "type": "knowledge",
+      "title": "Link guard needs a per-clone baseline read before an agent edits",
+      "summary": "The agent-removal record in parent-link-guard.mjs only records a removal when the clone has an earlier read (lastRead). Fresh backlog snapshots and beadsScope.ensureLinkBaseline (called by withGitSync before a dispatch that pushes beads) set that baseline.",
+      "symbols": [
+        "createParentLinkLedger",
+        "createBeadsScope",
+        "ensureLinkBaseline",
+        "withGitSync"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/parent-link-guard.mjs",
+        "packages/apra-fleet-se/fleet-sprint/beads-scope.mjs",
+        "packages/apra-fleet-se/fleet-sprint/git-sync.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-25T13:59:29.295Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/beads-scope.mjs": "dbbf833b9ff1c0927b4354c41cbdb08b19945032",
+        "packages/apra-fleet-se/fleet-sprint/git-sync.mjs": "26b8aee7190d9af80079474027b48001db8f4362",
+        "packages/apra-fleet-se/fleet-sprint/parent-link-guard.mjs": "e5e420c466fabc4cfc513e891e3b1697844c007c"
+      }
     },
     {
       "id": "9af40daa-2521-430a-a529-7db25d27da87",
