@@ -85,7 +85,7 @@
  * ASCII only.
  */
 
-import { DoltDivergedError, DoltSyncError, DoltWindowsSpawnLimitError, DoltLockHeldError, DoltPushRaceError, UnpublishedSchemaMigrationsError, DOLT_CREDENTIAL_REMEDY } from './errors.mjs';
+import { DoltDivergedError, DoltSyncError, DoltUnrelatedHistoryError, DoltWindowsSpawnLimitError, DoltLockHeldError, DoltPushRaceError, UnpublishedSchemaMigrationsError, DOLT_CREDENTIAL_REMEDY } from './errors.mjs';
 import { bdSyncCommandFor, normalizeMemberTarget, UNRESOLVED_MEMBER_TARGET } from './bd-sync-command.mjs';
 import { buildLockHolderProbe, parseLockHolderProbe, describeLockProcess } from './beads-lock-probe.mjs';
 import { classifyFailure, toDoltVerdict, commandBinary } from './vcs-module.mjs';
@@ -162,7 +162,7 @@ export function extractDoltRemoteUrl(output) {
  * apra-fleet-417.3.1), THEN diverged, THEN transient.
  *
  * @param {string} output - the raw stderr/stdout of the failed `bd dolt` command
- * @returns {'no-remote'|'empty-remote'|'remote-unreachable'|'auth'|'diverged'|'transient'|'unknown'}
+ * @returns {'no-remote'|'empty-remote'|'remote-unreachable'|'unrelated-history'|'auth'|'diverged'|'transient'|'unknown'}
  */
 export function classifyDoltFailure(output) {
     return toDoltVerdict(classifyFailure(output, { provider: 'dolt' }).kind);
@@ -820,6 +820,18 @@ function lockHeldSyncError(member, operation, step) {
  * @param {{ kind?: string, spawnLimit?: boolean, error: string }} step
  * @returns {DoltSyncError|null}
  */
+/**
+ * The typed error for a pull/push whose clone shares no history with the remote.
+ * Carries the raw output; never routed through settle.
+ * @returns {DoltUnrelatedHistoryError}
+ */
+function unrelatedHistoryError(member, operation, step) {
+    return new DoltUnrelatedHistoryError(
+        `[Dolt] D-${operation} for member '${member}' failed: the member's beads clone and the shared remote have NO common ancestor (independent histories -- e.g. a clone created by its own 'bd init', or a remote whose history was rewritten). This is not a mergeable conflict, so no settle was attempted. Raw: ${step.error}`,
+        { member, doltOutput: step.error, details: { operation } },
+    );
+}
+
 function typedStepError(member, operation, step) {
     if (step.kind === 'lock-held') return lockHeldSyncError(member, operation, step);
     if (step.spawnLimit) return windowsSpawnLimitSyncError(member, operation, step);
@@ -1827,6 +1839,14 @@ export async function doltPullBefore(member, opts = {}) {
             }
             throw diverged;
         }
+        if (pull.kind === 'unrelated-history') {
+            // No common ancestor: settle needs one, so the settle callback is
+            // deliberately NOT run. Recovery is a separate step; this only
+            // makes the condition detectable. The recorded fingerprint is
+            // forgotten so the next D-pull is unconditionally real.
+            clearLastSyncedTip(member);
+            throw unrelatedHistoryError(member, 'pull', pull);
+        }
         if (pull.kind === 'auth') {
             // apra-fleet-spp: a credential failure is its own class. It is NOT
             // a divergence (nothing conflicted) and must not be described as
@@ -2344,6 +2364,9 @@ export async function doltPushAfter(member, opts = {}) {
             log(`[Dolt] D-push for member '${member}' skipped: no dolt remote configured (bd-level sync.remote neutralized/absent; push failure treated as benign: ${push.error})`);
             return { ok: true, member, pushed: false, reconciled: false, skipped: true, reason: 'no-remote' };
         }
+        if (push.kind === 'unrelated-history') {
+            throw unrelatedHistoryError(member, 'push', push);
+        }
         if (push.kind === 'auth') {
             // apra-fleet-spp: the live 2026-08-02 fleet-mac failure. This used
             // to reach the reconcile ladder and end as DoltDivergedError
@@ -2654,6 +2677,7 @@ export function clearDegradedSyncRecords(member) {
  */
 export function classifySyncError(err) {
     if (err instanceof DoltDivergedError) return 'diverged';
+    if (err instanceof DoltUnrelatedHistoryError) return 'unrelated-history';
     const raw = err && err.doltOutput ? err.doltOutput : (err && err.message) || '';
     const kind = classifyDoltFailure(raw);
     return kind === 'unknown' && !(err instanceof DoltSyncError) ? 'error' : kind;
@@ -2691,6 +2715,10 @@ export const NEUTRAL_KIND_MAP = Object.freeze({
     'no-remote': 'no-store',
     'empty-remote': 'no-store',
     'remote-unreachable': 'store-unreachable',
+    // No common ancestor with the remote: not a mergeable conflict (settle
+    // cannot run), so never 'conflict-*'. The clone must be re-bootstrapped (or
+    // its local work republished); the store itself is reachable.
+    'unrelated-history': 'unknown',
     // A missing bd/dolt binary on the member (GitHub #616). The ADR taxonomy
     // has no environment-fault kind, and 'store-unreachable' would misreport a
     // reachable store, so it maps to 'unknown' -- explicitly, not by fallback.

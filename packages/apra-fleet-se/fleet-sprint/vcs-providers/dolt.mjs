@@ -23,7 +23,8 @@
  * PRECEDENCE (apra-fleet-spp / apra-fleet-417.3.1): no-remote, empty-remote
  * and remote-unreachable are checked first (each is a distinct benign/fatal
  * non-error condition that must win over a looser downstream pattern), THEN
- * auth, THEN diverged, THEN transient -- auth is deliberately checked BEFORE
+ * auth, THEN unrelated-history (no common ancestor; its text also says
+ * "diverged"), THEN diverged, THEN transient -- auth is deliberately checked BEFORE
  * diverged here (the OPPOSITE of GenericGitVCS/GitHubVCS's default
  * DIVERGED-before-AUTH order): a live incident (2026-08-02, fleet-mac) had a
  * `could not read Username for` credential failure misclassified as data
@@ -100,6 +101,16 @@ const AUTH_EXPIRED = [
     /Bad credentials/i,
 ];
 
+/** The clone and the remote share no commit ancestor. Text captured live from
+ *  the pinned bd (test/fixtures/dolt-unrelated-history/unrelated-history.txt):
+ *  "merge origin/main: Error 1105: no common ancestor ... no common merge base".
+ *  That text also says "have diverged", which DIVERGED matches, so this kind is
+ *  checked BEFORE diverged. Only the captured wording is matched. */
+const UNRELATED_HISTORY = [
+    /no common ancestor/i,
+    /no common merge base/i,
+];
+
 /** Verbatim DOLT_DIVERGED_PATTERNS. */
 const DIVERGED = [
     /conflict/i,
@@ -153,6 +164,7 @@ const PRECEDENCE = Object.freeze([
     K.REMOTE_UNREACHABLE,
     K.AUTH_EXPIRED,
     K.AUTH_DENIED,
+    K.UNRELATED_HISTORY,
     K.DIVERGED,
     K.TRANSIENT,
 ]);
@@ -166,6 +178,7 @@ export const DoltVCS = Object.freeze({
         [K.EMPTY_REMOTE]: EMPTY_REMOTE,
         [K.REMOTE_UNREACHABLE]: REMOTE_UNREACHABLE,
         [K.AUTH_EXPIRED]: AUTH_EXPIRED,
+        [K.UNRELATED_HISTORY]: UNRELATED_HISTORY,
         [K.DIVERGED]: DIVERGED,
         [K.TRANSIENT]: TRANSIENT,
     }),

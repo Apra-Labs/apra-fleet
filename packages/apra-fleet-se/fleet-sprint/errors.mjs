@@ -76,6 +76,7 @@ export const VCS_FAILURE_KINDS = Object.freeze({
     NO_REMOTE: 'NO_REMOTE',
     EMPTY_REMOTE: 'EMPTY_REMOTE',
     REMOTE_UNREACHABLE: 'REMOTE_UNREACHABLE',
+    UNRELATED_HISTORY: 'UNRELATED_HISTORY',
     UNSUPPORTED_OPERATION: 'UNSUPPORTED_OPERATION',
     MISSING_TOOL: 'MISSING_TOOL',
     UNKNOWN: 'UNKNOWN',
@@ -435,6 +436,34 @@ export class DoltWindowsSpawnLimitError extends DoltSyncError {
         super(message, { ...opts, details: { kind: 'transient', cause: 'windows-spawn-limit', ...opts.details } });
         this.name = 'DoltWindowsSpawnLimitError';
         this.code = DOLT_WINDOWS_SPAWN_LIMIT_CODE;
+    }
+}
+
+/** Stable error code of DoltUnrelatedHistoryError. */
+export const DOLT_UNRELATED_HISTORY_CODE = 'DOLT_UNRELATED_HISTORY';
+
+/** The failure kind DoltUnrelatedHistoryError carries in details.kind. */
+export const DOLT_UNRELATED_HISTORY_KIND = 'unrelated-history';
+
+/**
+ * A D-pull/D-push whose beads clone and the shared remote have NO common
+ * ancestor (independent histories: e.g. a clone created with its own `bd init`,
+ * or a remote whose history was rewritten). Not an ordinary divergence: a
+ * settle (merge) needs a common ancestor, so none is attempted. The raw output
+ * is in `doltOutput`; details.kind is 'unrelated-history' and details.operation
+ * is 'pull' | 'push'. A DoltSyncError subtype, so every existing DoltSyncError
+ * handler still applies -- and it is deliberately NOT a DoltDivergedError, so
+ * nothing treats it as a settle-able conflict.
+ */
+export class DoltUnrelatedHistoryError extends DoltSyncError {
+    /**
+     * @param {string} message
+     * @param {{ member?: string|null, doltOutput?: string|null, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(message, opts = {}) {
+        super(message, { ...opts, details: { kind: DOLT_UNRELATED_HISTORY_KIND, ...opts.details } });
+        this.name = 'DoltUnrelatedHistoryError';
+        this.code = DOLT_UNRELATED_HISTORY_CODE;
     }
 }
 

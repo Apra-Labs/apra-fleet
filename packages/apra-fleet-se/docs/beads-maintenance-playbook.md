@@ -152,6 +152,30 @@ git fetch origin refs/dolt/data
 git ls-tree -r -l FETCH_HEAD | awk '{s+=$4} END {print s}'
 ```
 
+## How the engine recognises the unrelated-history failure
+
+A clone whose Dolt history shares no ancestor with the remote fails
+`bd dolt pull` with (verbatim, pinned bd 1.3.0 / dolt 2.0.1; full capture in
+`test/fixtures/dolt-unrelated-history/unrelated-history.txt`, re-recorded by
+`record-unrelated-history.mjs` in a temp sandbox):
+
+```
+Error: merge origin/main: Error 1105: no common ancestor
+Local and remote Dolt histories have diverged. ... no common merge base.
+```
+
+The sync classifier reports this as its own kind, `unrelated-history`
+(checked before `diverged`, because the text also says "diverged"), and D-pull
+and D-push throw `DoltUnrelatedHistoryError` carrying the raw output without
+running settle (settle needs a common ancestor). Recovery is the manual
+re-bootstrap below.
+
+Observed on the pinned bd: `bd flatten --force` followed by
+`bd dolt remote reset-data origin --yes` did NOT by itself produce this error
+for a bootstrapped clone -- flatten keeps the original root commit, so a
+following `bd dolt pull` merged cleanly. The error does appear for a clone
+whose database was created by its own `bd init` (independent history).
+
 ## Recovering every other clone
 
 This is the mandatory follow-up step on **every other fleet member and
