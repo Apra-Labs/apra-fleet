@@ -108,7 +108,15 @@ one with no role. Unsigned loopback callers get the local operator as above.
 `launch()` in `api.mjs` runs these checks strictly in order; any failure
 short-circuits before anything downstream runs:
 
-1. **Request-shape validation** (`validateLaunchRequest`) -- `issue` is
+1. **Request-shape validation** (`validateLaunchRequest`) -- first, the body's
+   top-level keys are checked against one explicit allowlist (`issue`,
+   `target_issue`, `branch`, `base`, `base_branch`, `members`, `goal`,
+   `maxCycles`, `allowMissingMembers`, `requirementsFile`, `roleMap`, `budget`,
+   `phases`, `kbDemotionLoop`, `tierPolicy`, `tierOverrides`, `decisionNotify`,
+   `overrideRelaunchGate`); any other key -> `400` naming it (field = the key).
+   A known sprint/CLI argument the API does not take (e.g.
+   `azdevops_pat_secret_name`) gets a message saying the launch API does not
+   accept it. Then `issue` is
    comma-split by `splitIssueIds()` (trim, drop empties) and then EACH id is
    validated with `validateIssueId`; `branch`/`base` via `validateBranchName`
    (both imported from `fleet-sprint/runner.js` -- the SAME regexes the CLI

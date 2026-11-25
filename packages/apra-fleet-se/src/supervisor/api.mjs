@@ -450,6 +450,17 @@ export function defaultBuildVersion() {
  *     Absent (tests, older wiring) -> today's unpinned behaviour.
  * }} deps
  */
+// Every top-level key POST /api/sprints accepts (incl. aliases issue/target_issue,
+// base/base_branch). Anything else is a 400.
+const LAUNCH_FIELDS = new Set([
+    'issue', 'target_issue', 'branch', 'base', 'base_branch', 'members', 'goal',
+    'maxCycles', 'allowMissingMembers', 'requirementsFile', 'roleMap', 'budget',
+    'phases', 'kbDemotionLoop', 'tierPolicy', 'tierOverrides', 'decisionNotify',
+    'overrideRelaunchGate',
+]);
+// Known sprint/CLI arguments the launch API deliberately does not accept.
+const CLI_ONLY_LAUNCH_FIELDS = new Set(['azdevops_pat_secret_name']);
+
 export function createSprintController(deps = {}) {
     const { ledger, spawner } = deps;
     if (!ledger || typeof ledger.list !== 'function' || typeof ledger.get !== 'function' || typeof ledger.claim !== 'function') {
@@ -500,6 +511,20 @@ export function createSprintController(deps = {}) {
 
     /** Validate a launch request against the SHARED runner.js helpers. */
     function validateLaunchRequest(body) {
+        // Unknown top-level keys are a 400 naming the field(s): silently
+        // dropping them let a documented-looking override vanish with a 201.
+        if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+            throw new ApiError(400, 'request body must be a JSON object');
+        }
+        const unknownKeys = Object.keys(body).filter((k) => !LAUNCH_FIELDS.has(k));
+        if (unknownKeys.length > 0) {
+            const cli = unknownKeys.filter((k) => CLI_ONLY_LAUNCH_FIELDS.has(k));
+            const msg = cli.length > 0
+                ? `${cli.join(', ')}: a sprint/CLI argument that the supervisor launch API does not accept; it would never reach the sprint`
+                    + (unknownKeys.length > cli.length ? `; unknown launch field(s): ${unknownKeys.filter((k) => !CLI_ONLY_LAUNCH_FIELDS.has(k)).join(', ')}` : '')
+                : `unknown launch field(s): ${unknownKeys.join(', ')}; accepted fields: ${[...LAUNCH_FIELDS].join(', ')}`;
+            throw new ApiError(400, msg, unknownKeys.join(','));
+        }
         const rawIssue = body.issue ?? body.target_issue;
         const branch = body.branch;
         const base = body.base ?? body.base_branch;

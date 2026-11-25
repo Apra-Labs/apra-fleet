@@ -370,8 +370,20 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
+              description: >
+                Unknown top-level keys are rejected with 400 naming the field
+                (before any spawn or ledger claim); a sprint/CLI argument the
+                API does not take (e.g. azdevops_pat_secret_name) gets a
+                message saying the launch API does not accept it.
               required: [issue, branch, base, members]
               properties:
+                target_issue: { type: string, description: "alias of issue" }
+                base_branch: { type: string, description: "alias of base" }
+                kbDemotionLoop: { type: string, enum: ["on", "off"] }
+                decisionNotify:
+                  description: decision-notify config (object or JSON string); see supervisor-api.md
+                  oneOf: [ { type: object }, { type: string } ]
                 issue:
                   type: string
                   description: >
@@ -536,7 +548,9 @@ paths:
                       the launch.
         "400":
           description: >
-            request-shape validation failed, including (field roleMap) a
+            request-shape validation failed, including an unknown top-level
+            field (field = the key; azdevops_pat_secret_name says the launch
+            API does not accept it) and (field roleMap) a
             roleMap that gives both "backlog" and the deprecated
             "orchestrator" key with different values, the "@path" file
             form, or a backlog role (or its alias) naming a member other
