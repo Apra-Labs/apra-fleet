@@ -22,6 +22,20 @@ name: Regression - install/upgrade proof
 # stays false everywhere, so a capped or starved macOS job never cancels the
 # Linux and Windows jobs.
 #
+# Member-host decoupling: member-host-upgrade only needs the WINDOWS installer,
+# so it runs under `if: always() && !cancelled()` and downloads just that one
+# artifact -- a failed or starved macOS (or Linux) build leg no longer skips it.
+# If the Windows build leg produced no artifact it fails with a clear message.
+#
+# macOS retry: a job that never got a runner is not covered by timeout-minutes
+# (the cap only starts counting once a runner picks the job up), and a cap that
+# fires just fails the job. So a separate workflow, regression-macos-retry.yml,
+# listens for this workflow completing and, ONCE (run_attempt 1), reruns the
+# failed jobs when every failed or cancelled job ran on macOS. Limitation, stated
+# honestly: a starved job still sits in the queue for as long as GitHub leaves
+# it there (up to the 24 hour queue limit) before the run completes and the
+# retry can fire; the retry shortens the recovery, not the wait.
+#
 # Nightly only (schedule runs on the default branch) plus manual dispatch for
 # a specific branch: `gh workflow run regression.yml --ref <branch>`. It used
 # to run on every non-main push (~15 jobs incl. Windows/macOS each), which
@@ -223,6 +237,9 @@ jobs:
   member-host-upgrade:
     name: member-host-upgrade (windows-2022)
     needs: build-installer
+    # Independent of the macOS/Linux build legs: runs whenever the Windows leg
+    # produced its artifact (checked in the download step below).
+    if: always() && !cancelled()
     runs-on: windows-2022
     timeout-minutes: 60
     steps:
@@ -246,11 +263,21 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Download installer
+      - name: Download the Windows installer
+        id: download-installer
+        continue-on-error: true
         uses: actions/download-artifact@v4
         with:
           name: regression-apra-fleet-installer-win-x64.exe
           path: candidate
+
+      - name: Require the Windows installer artifact
+        shell: bash
+        run: |
+          if [ ! -f "candidate/apra-fleet-installer-win-x64.exe" ]; then
+            echo "::error::member-host-upgrade needs the artifact regression-apra-fleet-installer-win-x64.exe from the build-installer windows-2022 leg, and it is missing (that leg failed or was skipped); nothing was tested."
+            exit 1
+          fi
 
       - name: Set up the OpenSSH + Git Bash member host
         shell: pwsh
