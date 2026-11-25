@@ -2,6 +2,8 @@ import { execFileSync, spawn } from 'node:child_process';
 import { windowsExecutable } from '../../os/windows-executable.js';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
+import { FLEET_DIR } from '../../paths.js';
 import type { RegisterResult, ServiceManager, ServiceStatus, StopOptions } from './types.js';
 import { WINDOWS_TASK_NAME, SERVICE_ENV_MARKER } from './types.js';
 import { gracefulStopByServerJson } from './index.js';
@@ -84,8 +86,23 @@ function indent(text: string, by = '    '): string {
   return text.split('\n').map(l => by + l).join('\n');
 }
 
+/**
+ * Working folder for a detached launch from the CLI: the fleet data dir (as
+ * 'apra-fleet start' uses), else the user's home -- never the folder the
+ * install/start command was run from, which the Run-key fallback's wrapper
+ * (and the server it starts) would otherwise inherit.
+ */
+export function detachedLaunchCwd(dataDir: string = FLEET_DIR): string {
+  try {
+    if (fs.statSync(dataDir).isDirectory()) return dataDir;
+  } catch { /* missing: use home */ }
+  return os.homedir();
+}
+
 function defaultSpawnDetached(cmd: string, args: string[], verbatim = false): void {
-  const child = spawn(cmd, args, { detached: true, stdio: 'ignore', windowsHide: true, windowsVerbatimArguments: verbatim });
+  const child = spawn(cmd, args, {
+    detached: true, stdio: 'ignore', windowsHide: true, windowsVerbatimArguments: verbatim, cwd: detachedLaunchCwd(),
+  });
   child.unref();
 }
 

@@ -36,6 +36,7 @@ import { isSqliteProject, requireSqliteProject } from './require-sqlite-project.
 import { HttpKbProvider } from './http-provider.js';
 import type { SqliteProvider } from './sqlite-provider.js';
 import { gitExecutable } from '../../os/git-executable.js';
+import { FLEET_DIR } from '../../paths.js';
 
 /** Explicit KB anchor for in-process callers. Not exposed on any tool schema. */
 export interface KbAnchor {
@@ -224,6 +225,20 @@ function rootRepoTopLevel(root: string): string | null {
  *     deleted folder, a non-file URI): E-SELF-NO-WORKFOLDER.
  *   - Roots on this host but none in a git repository: E-SELF-NOT-A-REPO.
  */
+/** True when `folder` is the fleet data dir (FLEET_DIR); never throws. */
+function isFleetDataDir(folder: string): boolean {
+  try {
+    const norm = (p: string): string => {
+      let r = path.resolve(p);
+      try { r = fs.realpathSync.native(r); } catch { /* keep the resolved path */ }
+      return process.platform === 'win32' ? r.toLowerCase() : r;
+    };
+    return norm(folder) === norm(FLEET_DIR);
+  } catch {
+    return false;
+  }
+}
+
 function selectFullSessionFolder(): SelfSession {
   const roots = getSessionRoots();
   if (roots?.fetchError !== undefined) {
@@ -235,7 +250,21 @@ function selectFullSessionFolder(): SelfSession {
     );
   }
   if (!roots || roots.offered.length === 0) {
-    return { folder: process.cwd(), source: 'cwd', ...(roots ? { roots } : {}) };
+    const cwd = process.cwd();
+    // 'apra-fleet start' runs the server with its data dir as working folder
+    // (src/cli/start.ts), which is never a repository: say so instead of the
+    // generic "not a git repository" whose fix (restart the server in the
+    // repository) start can no longer do. Service-managed and stdio launches
+    // keep their own working folder and the fallback below.
+    if (isFleetDataDir(cwd)) {
+      throw new KbSelfError(
+        'E-SELF-NOT-A-REPO',
+        cwd,
+        `This is a FULL session (no member identity) and the client offered no MCP roots; the fleet server's working folder is its data dir '${cwd}' ('apra-fleet start' always runs it there), which is not a repository, so the session has no KB or code scope.`,
+        'Open the client in the repository so it offers MCP roots (it is then scoped to its first root inside a git repository with an origin remote), or call from a member session (?member=<id>) of a member registered on it.',
+      );
+    }
+    return { folder: cwd, source: 'cwd', ...(roots ? { roots } : {}) };
   }
   if (roots.folders.length === 0) {
     throw new KbSelfError(
