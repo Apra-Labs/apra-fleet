@@ -931,6 +931,9 @@ export function buildExeLockProbe(bin: string, targetOs: TargetOS, shell: Member
 /** Tag the linux supervisor step prints when it moved a unit file into the backup. */
 export const SUPERVISOR_MOVED_SENTINEL = '__APRA_FLEET_SUPERVISOR_MOVED__';
 
+/** Tag the supervisor restart prints when the task / unit file it would start no longer exists. */
+export const SUPERVISOR_GONE_SENTINEL = '__APRA_FLEET_SUPERVISOR_GONE__';
+
 /** What a successful replacement removed and where the backup is. */
 export interface ReplacedFullInstall {
   /** The replaced install's version. */
@@ -1036,14 +1039,21 @@ function buildSupervisorRestart(
   targetOs: TargetOS, shell: MemberShell, via: SupervisorRunVia | undefined, unit: string, backupUnit: string, unitDir: string,
 ): MemberCommandForms | null {
   if (via === 'task' && targetOs === 'windows') {
+    // The old binary's uninstall deletes this task (and workflows/, which a
+    // member install does not bring back) when the supervisor ran from the
+    // installed tree, so the task may be gone: say so instead of failing.
+    const ps =
+      `$t = Get-ScheduledTask -TaskName '${SUPERVISOR_TASK_NAME}' -ErrorAction SilentlyContinue; ` +
+      `if ($t) { schtasks.exe /Run /TN '${SUPERVISOR_TASK_NAME}' } else { Write-Output '${SUPERVISOR_GONE_SENTINEL}'; $global:LASTEXITCODE = 0 }`;
     return memberForms(targetOs, shell,
-      `MSYS_NO_PATHCONV=1 schtasks.exe /Run /TN ${SUPERVISOR_TASK_NAME}`,
-      `schtasks.exe /Run /TN '${SUPERVISOR_TASK_NAME}'`);
+      `powershell.exe -NoProfile -NonInteractive -EncodedCommand ${Buffer.from(ps, 'utf16le').toString('base64')}`,
+      ps);
   }
   if (via === 'unit' && targetOs === 'linux' && isPosixShell(targetOs, shell)) {
     const restore =
       `if [ -f ${posixQuote(backupUnit)} ] && [ ! -f ${posixQuote(unit)} ]; then mkdir -p ${posixQuote(unitDir)} && mv ${posixQuote(backupUnit)} ${posixQuote(unit)}; fi; ` +
-      `systemctl --user daemon-reload && systemctl --user enable ${SUPERVISOR_UNIT} && systemctl --user start ${SUPERVISOR_UNIT}`;
+      `if [ -f ${posixQuote(unit)} ]; then systemctl --user daemon-reload && systemctl --user enable ${SUPERVISOR_UNIT} && systemctl --user start ${SUPERVISOR_UNIT}; ` +
+      `else printf '%s\\n' '${SUPERVISOR_GONE_SENTINEL}'; fi`;
     return memberForms(targetOs, shell, restore, restore);
   }
   return null;
@@ -1413,13 +1423,17 @@ async function replaceFullInstall(
     const how = supervisor.via === 'task' ? `the ${SUPERVISOR_TASK_NAME} scheduled task` : supervisor.via === 'unit' ? `the ${SUPERVISOR_UNIT} user unit` : '';
     if (plan.supervisorRestart) {
       let failure: string | null = null;
+      let rrStdout = '';
       try {
         const rr = await deps.exec(agent, plan.supervisorRestart.command, MEMBER_CALL_TIMEOUT_MS);
+        rrStdout = rr.stdout ?? '';
         if (rr.code !== 0) failure = `exited ${rr.code}: ${(rr.stderr.trim() || rr.stdout.trim()).slice(-300)}`;
       } catch (err: unknown) {
         failure = err instanceof Error ? err.message : String(err);
       }
-      if (failure === null) {
+      if (failure === null && rrStdout.includes(SUPERVISOR_GONE_SENTINEL)) {
+        notes.push(`the idle fleet-sprint supervisor (port ${supervisor.port}) was stopped in step 0 and was NOT restarted: ${how} no longer exists. The full install's uninstall removed it together with the installed fleet-sprint (workflows/), and a member install does not carry fleet-sprint, so the supervisor went away with the full install. Nothing to run here; install fleet-sprint on this member again only if a supervisor is wanted`);
+      } else if (failure === null) {
         unitRestored = supervisor.via === 'unit';
         notes.push(`the idle fleet-sprint supervisor (port ${supervisor.port}) was stopped in step 0 and restarted after the install (${how})`);
       } else {

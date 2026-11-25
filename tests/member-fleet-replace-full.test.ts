@@ -51,7 +51,7 @@ function stepOf(c: string): Step | null {
   const nested = /powershell\.exe -NoProfile -NonInteractive -EncodedCommand (\S+)/.exec(c);
   const inner = nested ? Buffer.from(nested[1], 'base64').toString('utf16le') : c;
   if (inner.includes('__APRA_FLEET_SUPERVISOR_VIA__')) return 'supervisor-stop';
-  if (c.includes('schtasks.exe /Run') || c.includes('systemctl --user start fleet-supervisor')) return 'supervisor-restart';
+  if (inner.includes('schtasks.exe /Run') || c.includes('systemctl --user start fleet-supervisor')) return 'supervisor-restart';
   if (/' 'fleet-se-check'/.test(c)) return 'supervisor-check';
   if (c.includes('__APRA_FLEET_EXE_LOCKED__')) return 'exe-check';
   if (/apra-fleet(\.exe)?' stop(;|$| )/.test(c)) return 'stop';
@@ -64,7 +64,7 @@ function stepOf(c: string): Step | null {
   return null;
 }
 
-function harness(p: Platform, opts: { marker?: MarkerMode; failStep?: Step; serverStaysUp?: boolean; supervisorLine?: string; exeLocked?: boolean; supervisorSurvivesStop?: boolean; supervisorVia?: 'task' | 'unit' | 'manual' } = {}) {
+function harness(p: Platform, opts: { marker?: MarkerMode; failStep?: Step; serverStaysUp?: boolean; supervisorLine?: string; exeLocked?: boolean; supervisorSurvivesStop?: boolean; supervisorVia?: 'task' | 'unit' | 'manual'; supervisorGone?: boolean } = {}) {
   const log: string[] = [];
   const events: string[] = [];
   const w = { installed: OLD as string | null, marker: opts.marker ?? 'absent' as MarkerMode, checks: 0, supervisorUp: true };
@@ -90,7 +90,9 @@ function harness(p: Platform, opts: { marker?: MarkerMode; failStep?: Step; serv
         if (step === 'stop-check') return ok(opts.serverStaysUp ? 'apra-fleet status\n  State:    running\n' : 'apra-fleet status\n  State:    stopped\n');
         if (step === 'uninstall') w.installed = null;
         if (step === 'install') { w.installed = ORCH; w.marker = 'present'; return ok('installed'); }
-        if (step === 'supervisor') return ok('__APRA_FLEET_SUPERVISOR_MOVED__\n');
+        // supervisorGone models the old uninstall having already deleted the task / unit file.
+        if (step === 'supervisor') return ok(opts.supervisorGone ? '' : '__APRA_FLEET_SUPERVISOR_MOVED__\n');
+        if (step === 'supervisor-restart' && opts.supervisorGone) return ok('__APRA_FLEET_SUPERVISOR_GONE__\n');
         return ok('');
       }
       if (c.includes('member-install.json')) {
@@ -784,8 +786,9 @@ describe('9hyz: an idle fleet-sprint supervisor is stopped in step 0 and restart
       expect(stop).toContain("'http://localhost:8788/api/health'");
       // The task is ended BEFORE the graceful shutdown (it would respawn the supervisor).
       expect(stop.indexOf('schtasks.exe /End')).toBeLessThan(stop.indexOf('/api/shutdown'));
-      expect(h.log.find(c => stepOf(c) === 'supervisor-restart')).toContain(
-        p.shell === 'gitbash' ? 'MSYS_NO_PATHCONV=1 schtasks.exe /Run /TN ApraFleetSupervisor' : "schtasks.exe /Run /TN 'ApraFleetSupervisor'");
+      const restartCmd = flat([h.log.find(c => stepOf(c) === 'supervisor-restart')!])[0];
+      expect(restartCmd).toContain("Get-ScheduledTask -TaskName 'ApraFleetSupervisor'");
+      expect(restartCmd).toContain("schtasks.exe /Run /TN 'ApraFleetSupervisor'");
       if (r.state !== 'available') throw new Error('unreachable');
       expect(r.replaced?.notes).toEqual(['the idle fleet-sprint supervisor (port 8788) was stopped in step 0 and restarted after the install (the ApraFleetSupervisor scheduled task)']);
       // No POSIX expansion of a path in any member-bound command.
@@ -807,10 +810,42 @@ describe('9hyz: an idle fleet-sprint supervisor is stopped in step 0 and restart
     const unit = `${LINUX.home}/.config/systemd/user/fleet-supervisor.service`;
     expect(h.log.find(c => stepOf(c) === 'supervisor-restart')).toBe(
       `if [ -f '${backupDir}/fleet-supervisor.service' ] && [ ! -f '${unit}' ]; then mkdir -p '${LINUX.home}/.config/systemd/user' && mv '${backupDir}/fleet-supervisor.service' '${unit}'; fi; ` +
-      'systemctl --user daemon-reload && systemctl --user enable fleet-supervisor && systemctl --user start fleet-supervisor');
+      `if [ -f '${unit}' ]; then systemctl --user daemon-reload && systemctl --user enable fleet-supervisor && systemctl --user start fleet-supervisor; ` +
+      `else printf '%s\\n' '__APRA_FLEET_SUPERVISOR_GONE__'; fi`);
     if (r.state !== 'available') throw new Error('unreachable');
     expect(r.replaced?.notes?.[0]).toContain('stopped in step 0 and restarted after the install (the fleet-supervisor user unit)');
     // The unit file went back, so it is not reported as moved into the backup.
+    expect(r.replaced?.removed.join(' ')).not.toContain('unit file moved into the backup');
+  });
+
+  for (const p of [WINDOWS, GITBASH]) {
+    it(`${p.shell ?? p.os}: the old uninstall deleted the ApraFleetSupervisor task, so no restart is claimed; the note says the supervisor went away with the full install`, async () => {
+      const h = harness(p, { supervisorLine: IDLE, supervisorGone: true });
+      const r = await ensureMemberFleetInstall(agentFor(p), h.deps, { replaceFull: true });
+      expect(r).toMatchObject({ state: 'available', installed: true });
+      if (r.state !== 'available') throw new Error('unreachable');
+      const restartCmd = flat([h.log.find(c => stepOf(c) === 'supervisor-restart')!])[0];
+      // The restart is guarded by the task's existence, never a bare run of a deleted task.
+      expect(restartCmd).toContain("if ($t) { schtasks.exe /Run");
+      const notes = r.replaced?.notes ?? [];
+      expect(notes).toHaveLength(1);
+      expect(notes[0]).toContain('was NOT restarted');
+      expect(notes[0]).toContain('no longer exists');
+      expect(notes[0]).toContain('does not carry fleet-sprint');
+      expect(notes[0]).not.toContain('warning');
+      expect(notes[0]).not.toMatch(/schtasks/);
+    });
+  }
+
+  it('linux: the old uninstall already deleted the unit file, so step 3 moves nothing and no restart is claimed', async () => {
+    const h = harness(LINUX, { supervisorLine: IDLE, supervisorGone: true });
+    const r = await ensureMemberFleetInstall(agentFor(LINUX), h.deps, { replaceFull: true });
+    expect(r).toMatchObject({ state: 'available', installed: true });
+    if (r.state !== 'available') throw new Error('unreachable');
+    const restartCmd = h.log.find(c => stepOf(c) === 'supervisor-restart')!;
+    expect(restartCmd).toContain("if [ -f '" + `${LINUX.home}/.config/systemd/user/fleet-supervisor.service` + "' ]; then systemctl --user daemon-reload");
+    expect(r.replaced?.notes?.[0]).toContain('was NOT restarted');
+    expect(r.replaced?.notes?.[0]).toContain('no longer exists');
     expect(r.replaced?.removed.join(' ')).not.toContain('unit file moved into the backup');
   });
 
@@ -819,7 +854,7 @@ describe('9hyz: an idle fleet-sprint supervisor is stopped in step 0 and restart
     const r = await ensureMemberFleetInstall(agentFor(WINDOWS), h.deps, { replaceFull: true });
     expect(r).toMatchObject({ state: 'available', installed: true });
     if (r.state !== 'available') throw new Error('unreachable');
-    expect(r.replaced?.notes?.[0]).toMatch(/^warning: .*restarting it \(the ApraFleetSupervisor scheduled task\) failed \(exited 1: supervisor-restart broke\); restart it on the member with: schtasks\.exe \/Run \/TN 'ApraFleetSupervisor'$/);
+    expect(r.replaced?.notes?.[0]).toMatch(/^warning: .*restarting it \(the ApraFleetSupervisor scheduled task\) failed \(exited 1: supervisor-restart broke\); restart it on the member with: .*schtasks\.exe \/Run \/TN 'ApraFleetSupervisor'/);
   });
 
   it('a supervisor started by hand is stopped but not restarted by a guessed command; the note says so', async () => {
@@ -839,7 +874,8 @@ describe('9hyz: an idle fleet-sprint supervisor is stopped in step 0 and restart
     const detail = (r as { detail: string }).detail;
     expect(detail).toContain('step 0 (verify the fleet-sprint supervisor is down)');
     expect(detail).toContain('The member server was not stopped and nothing was removed or backed up');
-    expect(detail).toContain("Bring the supervisor back with: schtasks.exe /Run /TN 'ApraFleetSupervisor'");
+    expect(detail).toContain("Bring the supervisor back with: ");
+    expect(detail).toContain("schtasks.exe /Run /TN 'ApraFleetSupervisor'");
   });
 
   it('a live sprint refuses before the supervisor stop: no stop, shutdown, backup or uninstall command is sent', async () => {
