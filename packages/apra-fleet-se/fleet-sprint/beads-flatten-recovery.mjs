@@ -730,7 +730,7 @@ export async function recoverFlattenedClone({ command, member, shell, log = () =
  */
 export function longPathHint(text) {
     const s = String(text || '');
-    if (!/Filename too long|path too long|cannot lock ref[\s\S]*Unable to create/i.test(s)) return '';
+    if (!/Filename too long|path too long|cannot lock ref[\s\S]*Unable to create|update_ref failed for ref 'refs\/dolt\//i.test(s)) return '';
     return "; this looks like the Windows 260-character path limit (bd's dolt remote cache sits deep inside .beads): " +
         "on that member run 'git config --global core.longpaths true' (or use a shorter workFolder), then retry";
 }

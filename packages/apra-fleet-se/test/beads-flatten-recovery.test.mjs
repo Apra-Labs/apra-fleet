@@ -561,6 +561,7 @@ test('longPathHint names core.longpaths for a Windows MAX_PATH failure of dolt\'
     const maxPath = "Error 1105: error: cannot lock ref 'refs/dolt/remotes/origin/dolt/data/x': Unable to create 'C:\\w\\.beads\\embeddeddolt\\beads\\.dolt\\git-remote-cache\\ab\\repo.git/refs/dolt/remotes/origin/dolt/data/x.lock': Filename too long";
     assert.match(longPathHint(maxPath), /core\.longpaths true/);
     assert.match(longPathHint('fatal: cannot create directory: Filename too long'), /core\.longpaths/);
+    assert.match(longPathHint("Error 1105: unknown push error; addTableFiles, updateManifestAddFiles: fatal: update_ref failed for ref 'refs/dolt/blobstore/origin/dolt/data/x'"), /core\.longpaths/);
     assert.equal(longPathHint('Error: remote not found'), '');
     assert.equal(longPathHint(undefined), '');
 });
