@@ -971,6 +971,12 @@ applies to every repo the fleet install serves; there is no per-repo provider.
 
 All data is local. No token. `kb_sync` is a no-op.
 
+Schema migration at open tolerates only a "duplicate column name" error (a
+column already added). Any other failure (a read-only or locked database file,
+for example) aborts the open with an error naming the absolute database path;
+the provider resets its handle so a later open retries instead of reusing a
+half-initialised connection.
+
 ### HTTP (central server)
 
 ```json

@@ -189,6 +189,13 @@ maintainer's checkout is on the sprint branch. The engine guarantees it two ways
   is pulled, committed, pushed or reset; a warning names both branches and the
   ids stay queued.
 
+The warning (and the PR-body report of unreadable branches) distinguishes two
+causes, each naming the member, host and underlying error: the maintainer could
+not be reached at all, versus it was reached but its branch could not be read.
+A git command that exits non-zero on a reachable member is not the same as an
+unreachable one; the transport reports both as a failed result, so wording
+must not assume a failed result means "unreachable".
+
 Any change to branch ensuring or maintainer selection must preserve both.
 
 ## Round bible commit (kb_bible_commit)
