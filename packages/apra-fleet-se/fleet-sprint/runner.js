@@ -1549,8 +1549,9 @@ async function runSprintCycle(context) {
     // LLM-auth counterpart to onAuthFailure above, same precedence shape.
     // Dispatch-site catch handlers call this (via isAuthDispatchError(err))
     // before deciding whether to retry an otherwise non-retryable dispatch
-    // failure; it resolves true ("healed, retry once") or false ("not healed,
-    // abort").
+    // failure; it resolves { healed: true } ("retry once") or { healed: false,
+    // reason, cause, remedy } -- terminal: the ladder throws
+    // LlmAuthSelfHealFailedError with no further attempt.
     const onLlmAuthFailure = context.onLlmAuthFailure ?? (
         (args && typeof args.callTool === 'function')
             ? createLlmAuthSelfHealCallback({ callTool: args.callTool, log })

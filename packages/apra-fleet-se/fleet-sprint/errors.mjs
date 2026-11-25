@@ -612,6 +612,53 @@ export function isAuthDispatchError(err) {
     return AUTH_DISPATCH_RE.test(String(err?.message ?? ''));
 }
 
+// apra-fleet-3b8p.1: a failed LLM-auth self-heal is TERMINAL for the dispatch
+// ladder that attempted it. The heal (provision_llm_auth) already ran once;
+// when it did not confirm working credentials -- the call failed, the member
+// is local (only an interactive /login refreshes it), or the server's
+// post-deploy auth test failed (reason 'deployed_unverified', e.g. a revoked
+// OAuth token) -- no retry, backoff wait or later attempt can succeed, so the
+// ladder throws this error at once, naming the member, the cause and the fix.
+export const LLM_AUTH_SELF_HEAL_FAILED_CODE = 'LLM_AUTH_SELF_HEAL_FAILED';
+export const LLM_AUTH_SELF_HEAL_REMEDY = 'the owner must re-login with /login on the source machine, then re-run provision_llm_auth (or provision an API key)';
+
+/**
+ * Thrown by the dispatch retry ladder when an LLM-auth failure's one bounded
+ * self-heal did not heal it. Carries the member, the heal's cause (for a
+ * failed post-deploy auth test: the server's Auth test line verbatim) and
+ * the remedy. The message keeps the original dispatch error text, so a caller
+ * reading only `.message` still sees the auth failure itself.
+ *
+ * @property {string|null} member
+ * @property {string|null} roleLabel
+ * @property {string|null} reason - the heal outcome's reason (e.g. 'deployed_unverified')
+ * @property {string} healCause - why the heal did not heal
+ * @property {string} remedy
+ */
+export class LlmAuthSelfHealFailedError extends WorkflowError {
+    /**
+     * @param {string} message
+     * @param {{ member?: string|null, roleLabel?: string|null, reason?: string|null, healCause?: string, remedy?: string, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(message, opts = {}) {
+        const {
+            member = null, roleLabel = null, reason = null,
+            healCause = 'provision_llm_auth did not heal the LLM auth failure',
+            remedy = LLM_AUTH_SELF_HEAL_REMEDY, details, cause,
+        } = opts;
+        super(message, {
+            code: LLM_AUTH_SELF_HEAL_FAILED_CODE,
+            details: { member, roleLabel, healReason: reason, healCause, remedy, ...details },
+            cause,
+        });
+        this.member = member;
+        this.roleLabel = roleLabel;
+        this.reason = reason;
+        this.healCause = healCause;
+        this.remedy = remedy;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // apra-fleet-04g.6 -- infrastructure dispatch failures (NOT a test verdict)
 // ---------------------------------------------------------------------------

@@ -17,6 +17,8 @@ import {
     isDoltCredentialFailure,
     DOLT_CREDENTIAL_FAILURE_CLASS,
     DOLT_CREDENTIAL_REMEDY,
+    LlmAuthSelfHealFailedError,
+    LLM_AUTH_SELF_HEAL_REMEDY,
 } from './errors.mjs';
 import { AgentOutputError, AgentDispatchError, FleetTransportError, WorkflowError } from '@apralabs/apra-fleet-workflow';
 
@@ -546,6 +548,51 @@ async function runDegradeSteps(ctx, policy, err, errorClass) {
         }
         await hook({ policy, error: err, errorClass });
     }
+}
+
+/**
+ * Normalizes an onLlmAuthFailure() result to `{ healed: true }` or
+ * `{ healed: false, reason, cause, remedy }`. The callback's contract is the
+ * structured outcome (createLlmAuthSelfHealCallback); a bare boolean from an
+ * injected callback is still honoured. Anything else is NOT healed: a heal
+ * must say so explicitly before a dispatch is retried on it.
+ * @param {unknown} result
+ */
+function normalizeLlmAuthHealOutcome(result) {
+    if (result === true) return { healed: true };
+    if (result && typeof result === 'object' && result.healed === true) return { healed: true };
+    const o = result && typeof result === 'object' ? result : {};
+    return {
+        healed: false,
+        reason: typeof o.reason === 'string' && o.reason ? o.reason : 'not_healed',
+        cause: typeof o.cause === 'string' && o.cause ? o.cause : 'provision_llm_auth did not heal the LLM auth failure',
+        remedy: typeof o.remedy === 'string' && o.remedy ? o.remedy : LLM_AUTH_SELF_HEAL_REMEDY,
+    };
+}
+
+/**
+ * Runs the ladder's one bounded LLM-auth self-heal for `err`. Resolves true
+ * when the heal healed (the caller retries). When it did not, the heal is
+ * TERMINAL for this ladder: logs the cause and remedy, then throws
+ * LlmAuthSelfHealFailedError -- no success log, no backoff wait, no further
+ * attempt, on every ladder that enables authSelfHeal.
+ */
+async function healLlmAuthOrThrow(ctx, { member, roleLabel, err }) {
+    const outcome = normalizeLlmAuthHealOutcome(await ctx.onLlmAuthFailure({
+        member, label: `${roleLabel} dispatch`, error: err.message,
+    }));
+    if (outcome.healed) return true;
+    const message = `${roleLabel} dispatch threw a non-retryable error (auth): ${err.message} -- `
+        + `LLM auth self-heal failed for member '${member}': ${outcome.cause}. Not retrying. Remedy: ${outcome.remedy}.`;
+    ctx.log(message);
+    throw new LlmAuthSelfHealFailedError(message, {
+        member,
+        roleLabel,
+        reason: outcome.reason,
+        healCause: outcome.cause,
+        remedy: outcome.remedy,
+        cause: err,
+    });
 }
 
 // -----------------------------------------------------------------------------
@@ -1313,10 +1360,9 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
                 // An LLM-auth failure (unlike workspace trust, which self-heal
                 // cannot fix) gets one bounded self-heal attempt first.
                 if (retry.authSelfHeal && isAuthDispatchError(err) && typeof ctx.onLlmAuthFailure === 'function') {
-                    const healed = await ctx.onLlmAuthFailure({
-                        member, label: `${roleLabel} dispatch`, error: err.message,
-                    });
-                    if (healed) {
+                    // A heal that did not heal throws LlmAuthSelfHealFailedError
+                    // here: no success log, no backoff, no further attempt.
+                    if (await healLlmAuthOrThrow(ctx, { member, roleLabel, err })) {
                         ctx.log(`${roleLabel} dispatch: LLM auth self-heal succeeded -- retrying.`);
                         // retry.authSelfHealShortCircuits: the healed retry is
                         // this ladder's LAST word. A role whose dispatch is
@@ -1349,10 +1395,12 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
             // A ladder that does NOT abort on a non-retryable error still
             // self-heals an unhealed LLM-auth failure, because the SAME member
             // is dispatched again later in the cycle and would otherwise walk
-            // into the identical wall.
+            // into the identical wall. A heal that did NOT heal is terminal
+            // here too: healLlmAuthOrThrow throws the typed error before the
+            // generic backoff ladder below can spend another attempt on it.
             if (!completedButSyncFailed && !retry.abortOnNonRetryable && retry.authSelfHeal
                 && isAuthDispatchError(err) && typeof ctx.onLlmAuthFailure === 'function') {
-                await ctx.onLlmAuthFailure({ member, label: `${roleLabel} dispatch`, error: err.message });
+                await healLlmAuthOrThrow(ctx, { member, roleLabel, err });
             }
 
             // RUN-level control signals are not failures of this role at all,

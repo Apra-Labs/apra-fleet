@@ -52,6 +52,7 @@ import {
     sentinelNotePolicies,
 } from './helpers/dispatch-role-harness.mjs';
 import { dispatchRole } from '../fleet-sprint/dispatch-role.mjs';
+import { LlmAuthSelfHealFailedError } from '../fleet-sprint/errors.mjs';
 import { PLANNING_LADDERS } from './helpers/planning-ladders.mjs';
 import { EXECUTION_INLINE_LADDERS, EXECUTION_ENGINE_DISPATCHES } from './helpers/execution-ladders.mjs';
 
@@ -785,13 +786,19 @@ describe('execution-role dispatch: retry and degrade ladders', () => {
         assert.deepStrictEqual(p.degrade.neverSynthesizes, [true], 'deployed:true is what no degrade path may ever fabricate.');
         assert.strictEqual(p.degrade.verdictField, 'deployed', 'The deployer answers in `deployed`, not `verdict`.');
 
+        // A heal that does not heal is terminal (apra-fleet-3b8p.1): the typed
+        // error propagates instead of degrading to deployed:false.
         const authRun = createRecordingCtx({ responses: [authError()] });
-        await dispatchRole(authRun.ctx, 'deployer', ROLE_CALL_OPTS.deployer);
+        await assert.rejects(() => dispatchRole(authRun.ctx, 'deployer', ROLE_CALL_OPTS.deployer), LlmAuthSelfHealFailedError);
         assert.strictEqual(
             authRun.rec.authHeals.length,
             1,
             "An auth failure self-heals so the next cycle's deploy is not walled off identically."
         );
+        const healedDeploy = createRecordingCtx({ responses: [authError()], healed: true });
+        const healedDeployOutcome = await dispatchRole(healedDeploy.ctx, 'deployer', ROLE_CALL_OPTS.deployer);
+        assert.strictEqual(healedDeploy.rec.authHeals.length, 1);
+        assert.strictEqual(healedDeployOutcome.value.deployed, false, 'A healed auth failure on the single-attempt ladder still degrades.');
 
         const unrecognised = createRecordingCtx({ responses: [new TypeError('not a dispatch failure at all')] });
         await assert.rejects(
@@ -1095,13 +1102,18 @@ describe('execution-role dispatch: retry and degrade ladders', () => {
             );
         }
 
+        // A heal that does not heal is terminal (apra-fleet-3b8p.1): the typed
+        // error propagates rather than proceeding without a report.
         const authRun = createRecordingCtx({ responses: [authError()] });
-        await dispatchRole(authRun.ctx, 'harvester', ROLE_CALL_OPTS.harvester);
+        await assert.rejects(() => dispatchRole(authRun.ctx, 'harvester', ROLE_CALL_OPTS.harvester), LlmAuthSelfHealFailedError);
         assert.strictEqual(
             authRun.rec.authHeals.length,
             1,
             'The harvester still self-heals an auth failure: the same member and credentials are reused by the NEXT sprint.'
         );
+        const healedHarvest = createRecordingCtx({ responses: [authError()], healed: true });
+        await dispatchRole(healedHarvest.ctx, 'harvester', ROLE_CALL_OPTS.harvester);
+        assert.strictEqual(healedHarvest.rec.authHeals.length, 1, 'A healed auth failure on the single-attempt ladder still proceeds without a report.');
 
         const unrecognised = createRecordingCtx({ responses: [new TypeError('not a dispatch failure at all')] });
         await assert.rejects(
