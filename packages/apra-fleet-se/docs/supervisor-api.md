@@ -432,6 +432,55 @@ block, or no fleet client) is logged once at launch and recorded `failed` per
 decision without a repeated warning. See
 `docs/fleet-sprint-set-aside.md`.
 
+## GET /api/sprints/:id: the summary shape
+
+Every `GET /api/sprints/:id` response, and every `GET /api/sprints` row,
+carries the same stable top-level fields (`src/supervisor/sprint-summary.mjs`,
+`SprintSummary` in the OpenAPI file). Each is always present, `null` when
+unknown:
+
+| Field | Meaning | Source |
+|---|---|---|
+| `sprintId` | the sprint id | ledger / request |
+| `live` | `true` while a running child answered for this sprint | supervisor |
+| `status` | run status (`running`, `completed`, `failed`, ...); for a sprint known only from history, the latest history event name | child summary |
+| `phase` | current (or last) phase title, e.g. `Develop C1 R2` | child summary |
+| `phaseKind` | the title's name part in kebab case (`develop`, `final-review`, `ensure-sprint-branch`) | parsed from `phase` |
+| `cycle` | the `C<n>` number in the title | parsed from `phase` |
+| `maxCycles` | the launch's `maxCycles`; `null` when the launch did not set it (the engine default applies) | ledger |
+| `round` | the `R<n>` number in the title | parsed from `phase` |
+| `startedAt` | ISO-8601 run start (a plain string) | child summary |
+| `elapsedMs` | live milliseconds since start while running (recomputed on every read); the final duration once ended | child summary |
+| `durationMs` | equal to `elapsedMs` | child summary |
+| `cost` | total cost so far (USD) | child summary |
+| `tokens` | total tokens so far | child summary |
+| `pause` | `{status, reason, since, phase, group, resumeAt}` | child summary |
+| `prSourceBranch` | the sprint branch | ledger `branch` |
+| `prTargetBranch` | the PR target branch | ledger `base` |
+
+Where these come from (design choice): the child's small run summary
+(`GET /state?summary=1`, never lean-encoded) for a live sprint, or the summary
+persisted in the terminal run state for one that ended. The phase kind, cycle
+and round are parsed by the supervisor from the fleet-sprint phase title, so
+the workflow core never learns fleet-sprint vocabulary. `maxCycles` and the PR
+branches come from the ledger reservation, which records the launch's
+`maxCycles`, `branch` and `base`.
+
+No lean `{ "$ref": n }` marker and no `_strings` table appear anywhere in the
+default response. The live child's full state tree is returned only on
+explicit opt-in, `GET /api/sprints/:id?full=1` (or `full=true`), as `state`,
+with every ref marker resolved and no `_strings` table.
+
+Backward compatibility: the pre-existing top-level fields are unchanged
+(`live`, `pendingDecisions`, `decisionState`, `runState`; `terminal`, `state`,
+`resultStatus`, `warnings` on the terminal branch; `history`, `latest`,
+`resultStatus`, `warnings` on the history branch). The one change is that a
+LIVE sprint's response no longer carries the raw child `state` by default; a
+caller that reads it uses `?full=1` (the compatible path), and receives it
+resolved. `GET /api/sprints` rows keep `members`, `issueRoots`, `childPid`,
+`tierPolicy`, `tierOverrides`, `port`, `verdict` and `prNotOpened`; a row
+whose child cannot be reached keeps those with its run fields `null`.
+
 ## GET /api/sprints/:id: `resultStatus` and `warnings` (finished sprints)
 
 A finished sprint's own result status and warnings are lifted to the top level

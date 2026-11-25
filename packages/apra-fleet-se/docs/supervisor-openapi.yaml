@@ -338,8 +338,15 @@ paths:
                 properties:
                   sprints:
                     type: array
+                    description: >
+                      Each row carries every SprintSummary field (pulled from
+                      the child's GET /state?summary=1, or its persisted
+                      terminal state; null when the child cannot be reached)
+                      plus the reservation fields below.
                     items:
                       type: object
+                      allOf:
+                        - $ref: "#/components/schemas/SprintSummary"
                       required: [sprintId, members, issueRoots, childPid, port]
                       properties:
                         sprintId: { type: string }
@@ -613,9 +620,20 @@ paths:
   /api/sprints/{id}:
     get:
       tags: [sprints]
-      summary: Live child state if the sprint is running, else its historical record
+      summary: Stable sprint summary (live, terminal, or from history)
+      description: >
+        Every response carries the SprintSummary fields at the top level
+        (see supervisor-api.md "GET /api/sprints/:id: the summary shape"). No
+        lean ref marker and no _strings table appear in the default response.
+        The live child's full state tree is returned only with ?full=1,
+        resolved (ref markers expanded).
       parameters:
         - $ref: "#/components/parameters/SprintId"
+        - in: query
+          name: full
+          required: false
+          schema: { type: string, enum: ["1", "true"] }
+          description: live sprint only -- also return the child's full state tree as `state`, resolved
       responses:
         "200":
           description: OK
@@ -624,14 +642,34 @@ paths:
               schema:
                 oneOf:
                   - type: object
-                    required: [sprintId, live, state]
+                    description: live sprint
+                    allOf:
+                      - $ref: "#/components/schemas/SprintSummary"
+                    required: [sprintId, live, pendingDecisions]
                     properties:
                       sprintId: { type: string }
                       live: { type: boolean, enum: [true] }
+                      pendingDecisions: { type: array, items: { type: object } }
+                      decisionState: { type: string }
+                      runState: { type: string }
                       state:
                         type: object
-                        description: proxied verbatim from the child's own GET /state
+                        description: only with ?full=1 -- the child's GET /state with every ref marker resolved and no _strings table
                   - type: object
+                    description: ended sprint whose reservation is still held
+                    allOf:
+                      - $ref: "#/components/schemas/SprintSummary"
+                    required: [sprintId, live, terminal, state]
+                    properties:
+                      live: { type: boolean, enum: [false] }
+                      terminal: { type: boolean, enum: [true] }
+                      state: { type: object, description: the persisted terminal run state }
+                      resultStatus: { type: string }
+                      warnings: { type: array, items: { type: string } }
+                  - type: object
+                    description: sprint known only from history (status is the latest history event name)
+                    allOf:
+                      - $ref: "#/components/schemas/SprintSummary"
                     required: [sprintId, live, history, latest]
                     properties:
                       sprintId: { type: string }
@@ -1262,6 +1300,31 @@ components:
       required: true
       schema: { type: string }
   schemas:
+    SprintSummary:
+      type: object
+      description: >
+        The stable top-level sprint summary (src/supervisor/sprint-summary.mjs).
+        Every field is always present; null when unknown.
+      required: [sprintId, live, status, phase, phaseKind, cycle, maxCycles, round, startedAt, elapsedMs, durationMs, cost, tokens, pause, prSourceBranch, prTargetBranch]
+      properties:
+        sprintId: { type: string }
+        live: { type: boolean, description: "true while a running child answered for this sprint" }
+        status: { type: [string, "null"], description: "the run status (running, completed, failed, ...); for a sprint known only from history, the latest history event name" }
+        phase: { type: [string, "null"], description: "current (or last) phase title, e.g. Develop C1 R2" }
+        phaseKind: { type: [string, "null"], description: "the phase title's name part in kebab case, e.g. develop, final-review, ensure-sprint-branch" }
+        cycle: { type: [integer, "null"], description: "the C<n> number in the phase title" }
+        maxCycles: { type: [integer, "null"], description: "the launch's maxCycles; null when the launch did not set it (engine default applies)" }
+        round: { type: [integer, "null"], description: "the R<n> number in the phase title" }
+        startedAt: { type: [string, "null"], format: date-time, description: "ISO-8601 run start" }
+        elapsedMs: { type: [number, "null"], description: "live milliseconds since start while running; the final duration once ended" }
+        durationMs: { type: [number, "null"], description: "equal to elapsedMs" }
+        cost: { type: [number, "null"], description: "total cost so far (USD)" }
+        tokens: { type: [number, "null"], description: "total tokens so far" }
+        pause:
+          type: [object, "null"]
+          description: "the run's pause state {status, reason, since, phase, group, resumeAt}"
+        prSourceBranch: { type: [string, "null"], description: "the sprint branch (ledger branch)" }
+        prTargetBranch: { type: [string, "null"], description: "the PR target (ledger base)" }
     Error:
       type: object
       required: [error]

@@ -55,6 +55,8 @@ import { terminalInfoFromState, terminalInfoFromHistory } from './pr-not-opened.
 import { toBeadsSummary } from './beads-identity.mjs';
 import { unpushedBeadsMessage, UNPUSHED_BEADS_REMEDY } from './beads-pushed-check.mjs';
 import { fleetMembersUnavailableReason, fleetMembersStoppedByUserReason } from './fleet-members.mjs';
+import { resolveStringRefs } from '@apralabs/apra-fleet-workflow/viewer/lean-state';
+import { buildSprintSummary, runSummaryFromState } from './sprint-summary.mjs';
 
 /** This module's own on-disk path -- the default build-version stamp's source (see defaultBuildVersion() below). */
 const API_MODULE_PATH = fileURLToPath(import.meta.url);
@@ -380,6 +382,44 @@ export function proxyChildState(port, opts = {}) {
     });
 }
 
+/**
+ * Default child HTTP proxy: GET the child's small run summary
+ * (`/state?summary=1`, never lean-encoded) and JSON-parse it.
+ */
+export function proxyChildSummary(port, opts = {}) {
+    const host = opts.host ?? '127.0.0.1';
+    const timeoutMs = Number.isInteger(opts.timeoutMs) ? opts.timeoutMs : 2000;
+    return new Promise((resolve, reject) => {
+        const req = http.request({ host, port, path: '/state?summary=1', method: 'GET', timeout: timeoutMs }, (res) => {
+            const chunks = [];
+            res.on('data', (c) => chunks.push(c));
+            res.on('end', () => {
+                const body = Buffer.concat(chunks).toString('utf-8');
+                if (res.statusCode !== 200) { reject(new Error(`child /state?summary=1 answered ${res.statusCode}`)); return; }
+                try { resolve(body.length ? JSON.parse(body) : null); }
+                catch (err) { reject(new Error(`child /state?summary=1 returned invalid JSON: ${err.message}`)); }
+            });
+        });
+        req.on('timeout', () => { req.destroy(new Error('child /state?summary=1 timed out')); });
+        req.on('error', reject);
+        req.end();
+    });
+}
+
+/**
+ * A child `/state` payload with every lean `{ $ref }` marker expanded from its
+ * `_strings` table and the table itself dropped (the resolved full tree that
+ * GET /api/sprints/:id?full=1 returns). A payload without a table round-trips
+ * unchanged.
+ * @param {object|null} state
+ * @returns {object|null}
+ */
+export function resolveChildState(state) {
+    if (!state || typeof state !== 'object' || Array.isArray(state)) return state;
+    const { _strings: table, ...rest } = state;
+    return Array.isArray(table) ? resolveStringRefs(rest, table) : rest;
+}
+
 /** Default child HTTP proxy: POST the child's cooperative `/stop` endpoint. */
 export function proxyChildStop(port, opts = {}) {
     const host = opts.host ?? '127.0.0.1';
@@ -562,6 +602,7 @@ export function createSprintController(deps = {}) {
     const listMembers = deps.listMembers ?? (() => ({ members: [] }));
     const getBacklog = deps.getBacklog ?? (() => ({ tasks: [] }));
     const proxyState = deps.proxyState ?? proxyChildState;
+    const proxySummary = deps.proxySummary ?? proxyChildSummary;
     const proxyStop = deps.proxyStop ?? proxyChildStop;
     const proxyAction = deps.proxyAction ?? proxyChildAction;
     const roleMapResolver = deps.resolveRoleMap ?? resolveRoleMap;
@@ -1032,6 +1073,8 @@ export function createSprintController(deps = {}) {
             branch,
             base,
             goal: body.goal ?? null,
+            // GET /api/sprints reports it as maxCycles (null when omitted).
+            ...(body.maxCycles !== undefined ? { maxCycles: body.maxCycles } : {}),
             tierPolicy,
             tierOverrides: tierOverrides ?? null,
             // Which .beads this supervisor resolved at launch time (see
@@ -1101,10 +1144,9 @@ export function createSprintController(deps = {}) {
     // but the PR was skipped. The persisted terminal run-state is the source;
     // the FINISHED history event is the fallback. A sprint still running (or
     // whose PR opened) gets no marker. Never throws.
-    function terminalListFields(r) {
+    function terminalListFields(r, st) {
         try {
             let info = null;
-            const st = hasTerminalState(r.sprintId, r.branch ?? null);
             if (st && typeof st === 'object') {
                 info = terminalInfoFromState(st);
             } else {
@@ -1122,25 +1164,44 @@ export function createSprintController(deps = {}) {
     }
 
     // -- GET /api/sprints : every live sprint ---------------------------------
+    // Each row carries the same top-level summary fields as GET
+    // /api/sprints/:id (sprint-summary.mjs), pulled concurrently from each
+    // child's GET /state?summary=1 (or the persisted terminal state). A child
+    // that cannot be reached leaves its run fields null; the row stays.
     async function listSprints() {
         const freshness = ledger.getScopeFreshness();
-        return {
-            sprints: ledger.list().map((r) => ({
+        const sprints = await Promise.all(ledger.list().map(async (r) => {
+            let st = null;
+            try { st = hasTerminalState(r.sprintId, r.branch ?? null); } catch { st = null; }
+            const port = resolvePort(r.childPid ?? null) ?? null;
+            let runSummary = null;
+            if (st && typeof st === 'object') {
+                runSummary = runSummaryFromState(st);
+            } else if (port != null) {
+                try { runSummary = await proxySummary(port); } catch { runSummary = null; }
+            }
+            return {
+                ...buildSprintSummary({ sprintId: r.sprintId, live: !st && port != null, runSummary, reservation: r }),
                 sprintId: r.sprintId,
                 members: r.members,
                 issueRoots: r.issueRoots,
                 childPid: r.childPid ?? null,
                 tierPolicy: r.tierPolicy ?? null,
                 tierOverrides: r.tierOverrides ?? null,
-                port: resolvePort(r.childPid ?? null) ?? null,
-                ...terminalListFields(r),
-            })),
-            scopeFreshness: freshness,
-        };
+                port,
+                ...terminalListFields(r, st),
+            };
+        }));
+        return { sprints, scopeFreshness: freshness };
     }
 
     // -- GET /api/sprints/:id : live child state, else history ----------------
-    async function getSprint(id) {
+    // Default response: the stable summary (sprint-summary.mjs) plus the
+    // pre-existing fields; no lean ref marker or string table anywhere. The
+    // live child's full state tree only with opts.full (GET ?full=1),
+    // resolved by resolveChildState().
+    async function getSprint(id, opts = {}) {
+        const full = Boolean(opts && opts.full);
         const reservation = ledger.get(id);
         if (reservation) {
             // apra-fleet-2l4.1: check FIRST whether the engine has already
@@ -1159,6 +1220,7 @@ export function createSprintController(deps = {}) {
                 const resultStatus = res && typeof res === 'object' && typeof res.status === 'string' ? res.status : null;
                 const warnings = res && typeof res === 'object' && Array.isArray(res.warnings) ? res.warnings : [];
                 return {
+                    ...buildSprintSummary({ sprintId: id, live: false, runSummary: runSummaryFromState(terminalState), reservation }),
                     sprintId: id, live: false, terminal: true, state: terminalState,
                     ...(resultStatus ? { resultStatus } : {}),
                     ...(warnings.length > 0 ? { warnings } : {}),
@@ -1166,14 +1228,17 @@ export function createSprintController(deps = {}) {
             }
             const port = resolvePort(reservation.childPid ?? null);
             if (port != null) {
-                const state = await proxyState(port);
+                const runSummary = await proxySummary(port);
                 // pendingDecisions (full, untruncated) and the run state while
                 // paused for a decision, lifted from the child's decisions summary.
-                const { pendingDecisions, decisionState } = decisionsFromChildState(state);
+                const { pendingDecisions, decisionState } = decisionsFromChildState({ summary: runSummary });
+                const state = full ? resolveChildState(await proxyState(port)) : undefined;
                 return {
-                    sprintId: id, live: true, state, pendingDecisions,
+                    ...buildSprintSummary({ sprintId: id, live: true, runSummary, reservation }),
+                    sprintId: id, live: true, pendingDecisions,
                     ...(decisionState ? { decisionState } : {}),
                     ...(decisionState === 'paused-awaiting-decision' ? { runState: decisionState } : {}),
+                    ...(full ? { state } : {}),
                 };
             }
         }
@@ -1185,6 +1250,9 @@ export function createSprintController(deps = {}) {
             const fin = history.forSprint(id).filter((e) => e.event === HISTORY_EVENTS.FINISHED).pop();
             const warnings = fin && Array.isArray(fin.warnings) ? fin.warnings : [];
             return {
+                // Known only from history: no run summary; status is the
+                // latest history event's name.
+                ...buildSprintSummary({ sprintId: id, live: false, runSummary: null, reservation, status: latest.event ?? null }),
                 sprintId: id, live: false, history: history.forSprint(id), latest,
                 ...(fin && fin.resultStatus ? { resultStatus: fin.resultStatus } : {}),
                 ...(warnings.length > 0 ? { warnings } : {}),
@@ -1301,7 +1369,13 @@ export function registerSprintRoutes(supervisor, controller) {
 
     supervisor.route('GET', '/api/sprints/:id', async (req, res, ctx) => {
         try {
-            sendJson(res, 200, await controller.getSprint(ctx.params.id));
+            // ?full=1 (or full=true) opts into the live child's resolved state tree.
+            let full = false;
+            try {
+                const v = new URL(req.url, 'http://localhost').searchParams.get('full');
+                full = v === '1' || v === 'true';
+            } catch { full = false; }
+            sendJson(res, 200, await controller.getSprint(ctx.params.id, { full }));
         } catch (err) {
             if (!onApiError(res, err)) throw err;
         }
