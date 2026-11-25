@@ -5,11 +5,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import http from 'node:http';
 
 import { createLedger, LEDGER_FILENAME } from '../src/supervisor/ledger.mjs';
 import { createHistory, HISTORY_FILENAME } from '../src/supervisor/history.mjs';
 import { createSupervisor } from '../src/supervisor/server.mjs';
-import { createSprintController, registerSprintRoutes } from '../src/supervisor/api.mjs';
+import { createSprintController, registerSprintRoutes, LIST_SUMMARY_TIMEOUT_MS } from '../src/supervisor/api.mjs';
 import { SPRINT_SUMMARY_FIELDS, parsePhaseTitle } from '../src/supervisor/sprint-summary.mjs';
 
 // GET /api/sprints/:id and GET /api/sprints carry a stable, documented
@@ -124,11 +125,16 @@ describe('GET /api/sprints/:id stable summary shape', () => {
         assert.equal(json.decisionState, 'running');
     });
 
-    test('the default response has no ref marker and no _strings anywhere; ?full=1 returns the resolved tree', async () => {
+    test('the default response keeps `state`, resolved (no ref marker, no _strings anywhere); ?full=1 returns the same tree', async () => {
         const { get, sprintId } = await build();
         const def = await get(`/api/sprints/${sprintId}`);
         assert.deepEqual(findLeanMarkers(def.json), []);
-        assert.equal('state' in def.json, false);
+        // Upgrade safety: `state` was a required field of the live response
+        // before the summary existed; existing callers still read it.
+        assert.equal(def.json.state.startedAt, STARTED_AT);
+        assert.equal(def.json.state.tree[0].title, LONG);
+        assert.equal(def.json.state.tree[0].phases[0].title, LONG);
+        assert.equal(def.json.state.status, 'running');
 
         const full = await get(`/api/sprints/${sprintId}?full=1`);
         assert.equal(full.status, 200);
@@ -181,6 +187,57 @@ describe('GET /api/sprints/:id stable summary shape', () => {
         for (const f of SPRINT_SUMMARY_FIELDS) {
             assert.ok(section.includes(`\`${f}\``), `supervisor-api.md summary section does not document ${f}`);
             assert.ok(new RegExp(`\\n {8}${f}:`).test(schema), `supervisor-openapi.yaml SprintSummary does not document ${f}`);
+        }
+    });
+});
+
+describe('GET /api/sprints with a hung child', () => {
+    test('a child that accepts the summary request and never answers costs at most ~1s; its row keeps run fields null', async () => {
+        // The install guard gives the whole list call 1.5 s.
+        assert.ok(LIST_SUMMARY_TIMEOUT_MS <= 1000, `per-child summary budget ${LIST_SUMMARY_TIMEOUT_MS}ms`);
+        const sockets = new Set();
+        // Accepts, sends headers plus a trickle of body, never ends: neither the
+        // connect nor the socket idle timer alone would bound this.
+        const hung = http.createServer((req, res) => {
+            res.writeHead(200, { 'content-type': 'application/json' });
+            res.write(' ');
+            const t = setInterval(() => { res.write(' '); }, 200);
+            req.socket.on('close', () => clearInterval(t));
+        });
+        hung.on('connection', (s) => { sockets.add(s); s.on('close', () => sockets.delete(s)); });
+        await new Promise((r) => hung.listen(0, '127.0.0.1', r));
+        const hungPort = hung.address().port;
+        try {
+            const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'sprint-summary-hung-'));
+            dirs.push(dir);
+            const ledger = createLedger({ filePath: path.join(dir, LEDGER_FILENAME), now: () => STARTED_AT });
+            await ledger.start();
+            const history = createHistory({ filePath: path.join(dir, HISTORY_FILENAME), now: () => STARTED_AT });
+            await history.start();
+            await ledger.claim('hung-1', { members: ['alice'], issueRoots: ['R1'], childPid: 4242 });
+            // Default proxySummary (the real HTTP proxy) is used.
+            const controller = createSprintController({
+                ledger, history,
+                spawner: { spawnSprint: async () => ({ pid: 4242, port: hungPort }) },
+                listMembers: () => ({ members: [] }),
+                getBacklog: () => ({}),
+                hasTerminalState: () => null,
+                resolvePort: (pid) => (pid === 4242 ? hungPort : undefined),
+                getBuildVersion: () => null,
+            });
+            const t0 = Date.now();
+            const out = await controller.listSprints();
+            const took = Date.now() - t0;
+            assert.ok(took < 1400, `listSprints took ${took}ms with one hung child`);
+            assert.equal(out.sprints.length, 1);
+            const row = out.sprints[0];
+            assert.equal(row.sprintId, 'hung-1');
+            assert.equal(row.port, hungPort);
+            assert.equal(row.phase, null);
+            assert.equal(row.status, null);
+        } finally {
+            for (const s of sockets) s.destroy();
+            await new Promise((r) => hung.close(r));
         }
     });
 });

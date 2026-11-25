@@ -41,7 +41,7 @@ function fakeFleet(members) {
     };
 }
 
-async function build(dir, fleet) {
+async function build(dir, fleet, opts = {}) {
     const ledger = createLedger({ filePath: path.join(dir, LEDGER_FILENAME), now: () => '2026-11-25T00:00:00.000Z' });
     await ledger.start();
     const history = createHistory({ filePath: path.join(dir, HISTORY_FILENAME), now: () => '2026-11-25T01:00:00.000Z' });
@@ -63,6 +63,7 @@ async function build(dir, fleet) {
         ledger, history,
         listMembers: fleet.listMembers,
         releaseMemberReservation: fleet.releaseMemberReservation,
+        ...(opts.killPid ? { killPid: opts.killPid } : {}),
         logger: { log() {}, warn() {}, error() {} },
     });
     return { ledger, history, controller, reconciler, spawned };
@@ -170,8 +171,10 @@ describe('stale reservations -- force-release of a fleet-server-only holder', ()
         assert.equal(ev[0].event, HISTORY_EVENTS.FORCE_RELEASED);
         assert.deepEqual(ev[0].members, ['alice', 'bob']);
 
-        // Recorded as force-released, so the holder now counts as provably dead.
-        assert.equal(isProvablyDeadHolder('feat/old-branch', sys.ledger, sys.history).dead, true);
+        // Nothing was killed (the holder may be a live CLI sprint that
+        // re-reserves), so the event never proves the holder dead.
+        assert.equal(ev[0].serverOnly, true);
+        assert.equal(isProvablyDeadHolder('feat/old-branch', sys.ledger, sys.history).dead, false);
 
     });
 
@@ -181,5 +184,88 @@ describe('stale reservations -- force-release of a fleet-server-only holder', ()
         const sys = await build(dir, fleet);
         await assert.rejects(() => sys.reconciler.forceRelease('ghost'), (err) => err.code === 'SPRINT_NOT_FOUND');
         assert.deepEqual(fleet.calls, []);
+    });
+});
+
+describe('stale reservations -- a force-release proves the holder dead only when the kill landed', () => {
+    // Launch a sprint on alice, have it also hold alice on the fleet server,
+    // then force-release it through the reconciler with the given kill result.
+    async function forceReleasedHolder(killPid) {
+        const dir = await tmpDir();
+        const fleet = fakeFleet([{ name: 'alice', reservedBy: null }]);
+        const sys = await build(dir, fleet, { killPid });
+        const first = await sys.controller.launch(launchBody(['alice'], 'R1'));
+        fleet.members[0].reservedBy = first.sprintId;
+        const audit = await sys.reconciler.forceRelease(first.sprintId, { by: 'op' });
+        return { sys, fleet, holder: first.sprintId, audit };
+    }
+
+    test('kill failed (EPERM, killPid false): the child may be alive, so the next launch gets a 409 naming the holder', async () => {
+        const { sys, fleet, holder, audit } = await forceReleasedHolder(() => false);
+        assert.equal(audit.killed, false);
+        const ev = sys.history.forSprint(holder).filter((e) => e.event === HISTORY_EVENTS.FORCE_RELEASED);
+        assert.equal(ev.length, 1);
+        assert.equal(ev[0].killed, false);
+        assert.equal(isProvablyDeadHolder(holder, sys.ledger, sys.history).dead, false);
+
+        await assert.rejects(
+            () => sys.controller.launch(launchBody(['alice'], 'R2')),
+            (err) => err instanceof ApiError && err.status === 409 && err.message.includes(`'${holder}'`),
+        );
+        assert.deepEqual(fleet.calls, []);
+        assert.equal(fleet.members[0].reservedBy, holder);
+        assert.equal(sys.spawned.length, 1);
+    });
+
+    test('server-only holder force-released, then re-reserved by its live CLI sprint: the next launch gets a 409', async () => {
+        const dir = await tmpDir();
+        const fleet = fakeFleet([{ name: 'alice', reservedBy: 'cli-sprint-7' }]);
+        const sys = await build(dir, fleet, { killPid: () => true });
+        const audit = await sys.reconciler.forceRelease('cli-sprint-7', { by: 'op' });
+        assert.equal(audit.serverOnly, true);
+        assert.equal(fleet.members[0].reservedBy, null);
+        // The live CLI sprint re-reserves under the same id on its next resume.
+        fleet.members[0].reservedBy = 'cli-sprint-7';
+        fleet.calls.length = 0;
+
+        await assert.rejects(
+            () => sys.controller.launch(launchBody(['alice'])),
+            (err) => err instanceof ApiError && err.status === 409 && err.message.includes("'cli-sprint-7'"),
+        );
+        assert.deepEqual(fleet.calls, []);
+        assert.equal(fleet.members[0].reservedBy, 'cli-sprint-7');
+        assert.equal(sys.spawned.length, 0);
+    });
+
+    test('kill confirmed (killPid true): the holder is dead, the next launch releases it and reports staleReservationsReleased', async () => {
+        const { sys, fleet, holder, audit } = await forceReleasedHolder(() => true);
+        assert.equal(audit.killed, true);
+        assert.equal(sys.history.forSprint(holder).find((e) => e.event === HISTORY_EVENTS.FORCE_RELEASED).killed, true);
+
+        const warn = captureConsole('warn');
+        let out;
+        try { out = await sys.controller.launch(launchBody(['alice'], 'R2')); } finally { warn.restore(); }
+        assert.equal(sys.spawned.length, 2);
+        assert.deepEqual(fleet.calls, [{ member: 'alice', holder }]);
+        assert.deepEqual(out.staleReservationsReleased, [{ member: 'alice', holder, event: HISTORY_EVENTS.FORCE_RELEASED }]);
+    });
+
+    test('isProvablyDeadHolder: force-released counts only with killed true and not serverOnly; legacy events without the field do not', () => {
+        const ledger = { get: () => undefined };
+        const FR = HISTORY_EVENTS.FORCE_RELEASED;
+        const history = {
+            forSprint: (id) => ({
+                landed: [{ event: FR, killed: true }],
+                failed: [{ event: FR, killed: false }],
+                nochild: [{ event: FR }],
+                server: [{ event: FR, serverOnly: true }],
+                exitedThenFailed: [{ event: HISTORY_EVENTS.CHILD_EXITED }, { event: FR, killed: false }],
+            }[id] ?? []),
+        };
+        assert.deepEqual(isProvablyDeadHolder('landed', ledger, history), { dead: true, event: FR });
+        assert.deepEqual(isProvablyDeadHolder('failed', ledger, history), { dead: false });
+        assert.deepEqual(isProvablyDeadHolder('nochild', ledger, history), { dead: false });
+        assert.deepEqual(isProvablyDeadHolder('server', ledger, history), { dead: false });
+        assert.deepEqual(isProvablyDeadHolder('exitedThenFailed', ledger, history), { dead: true, event: HISTORY_EVENTS.CHILD_EXITED });
     });
 });

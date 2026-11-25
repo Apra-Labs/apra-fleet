@@ -829,7 +829,7 @@ describe('api -- GET /api/sprints and /api/sprints/:id', () => {
             proxySummary: async () => ({ status: 'running', phase: 'Develop C1 R2', startedAt: '2026-11-25T00:00:00.000Z', elapsedMs: 5, durationMs: 5, stats: { totalCost: 1.5, totalTokens: 10 } }),
             proxyState: async (port) => ({ port, status: 'running', tree: [] }),
         });
-        // Default: the stable summary, no state tree.
+        // Default: the stable summary plus the (pre-existing) state tree.
         const out = await controller.getSprint('s1');
         assert.equal(out.live, true);
         assert.equal(out.status, 'running');
@@ -837,8 +837,9 @@ describe('api -- GET /api/sprints and /api/sprints/:id', () => {
         assert.equal(out.cycle, 1);
         assert.equal(out.round, 2);
         assert.equal(out.cost, 1.5);
-        assert.equal('state' in out, false);
-        // Opt-in: the proxied /state tree (the compatible path for callers of state).
+        assert.equal(out.state.status, 'running');
+        assert.equal(out.state.port, 9200);
+        // ?full=1 keeps working and returns the same state tree.
         const fullOut = await controller.getSprint('s1', { full: true });
         assert.equal(fullOut.state.status, 'running');
         assert.equal(fullOut.state.port, 9200);

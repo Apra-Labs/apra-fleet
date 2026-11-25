@@ -231,6 +231,9 @@ export function createReconciler(deps = {}) {
             at: now(),
             ...(entry.launchedBy ? { launchedBy: entry.launchedBy } : {}),
             ...(audit.actor ? { stoppedBy: audit.actor } : {}),
+            // Recorded so the launch-time stale-holder rule can tell a
+            // confirmed kill from a failed one (EPERM) or no child at all.
+            ...(typeof killed === 'boolean' ? { killed } : {}),
         });
         return { ...recorded, childPid, killed, branch, base, goal };
     }
@@ -277,6 +280,9 @@ export function createReconciler(deps = {}) {
             issueRoots: [],
             at: now(),
             ...(audit.actor ? { stoppedBy: audit.actor } : {}),
+            // Nothing was killed: the holder may be a live CLI sprint that
+            // re-reserves, so this event never proves the holder dead.
+            serverOnly: true,
         });
         return {
             ...recorded,

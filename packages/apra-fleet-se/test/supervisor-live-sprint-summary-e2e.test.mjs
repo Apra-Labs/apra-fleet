@@ -140,6 +140,9 @@ describe('live mock sprint status over the supervisor API', () => {
 
         const one = await getJson(port, `/api/sprints/${SPRINT_ID}`);
         assert.deepEqual(findLeanMarkers(one.json), []);
+        // `state` stays in the default response, resolved to usable values.
+        assert.equal(typeof one.json.state.startedAt, 'string');
+        assert.equal(one.json.state.startedAt, one.json.startedAt);
 
         const list = await getJson(port, '/api/sprints');
         assert.equal(list.status, 200);

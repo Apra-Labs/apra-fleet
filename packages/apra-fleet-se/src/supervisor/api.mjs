@@ -229,16 +229,33 @@ function withoutReleasedHolders(raw, released) {
 /**
  * History events that prove a sprint id is no longer running: this
  * supervisor launched it and recorded its end (exit, finish, launch failure)
- * or released its reservation.
+ * or released its reservation after confirming the child gone.
+ * FORCE_RELEASED is NOT in this set: it proves death only when the kill is
+ * recorded as having landed (see isDeadHolderEvent).
  */
 const DEAD_HOLDER_EVENTS = new Set([
     HISTORY_EVENTS.ABORTED_BY_RESTART,
-    HISTORY_EVENTS.FORCE_RELEASED,
     HISTORY_EVENTS.AUTO_RELEASED,
     HISTORY_EVENTS.CHILD_EXITED,
     HISTORY_EVENTS.FINISHED,
     HISTORY_EVENTS.LAUNCH_FAILED,
 ]);
+
+/**
+ * True when one history event proves its sprint id dead. A FORCE_RELEASED
+ * event counts only when the ledger path recorded `killed === true` (the kill
+ * signal landed or the pid was already gone). A failed kill (EPERM), an entry
+ * with no child pid (`killed` absent), a legacy event without the field, and
+ * a fleet-server-only release (`serverOnly`, nothing killed; a live CLI
+ * sprint can re-reserve under the same id) never do.
+ * @param {object} e
+ * @returns {boolean}
+ */
+function isDeadHolderEvent(e) {
+    if (!e || typeof e !== 'object') return false;
+    if (e.event === HISTORY_EVENTS.FORCE_RELEASED) return e.killed === true && e.serverOnly !== true;
+    return DEAD_HOLDER_EVENTS.has(e.event);
+}
 
 /**
  * The stale-holder rule (docs/supervisor-api.md "Stale server-side
@@ -260,7 +277,7 @@ export function isProvablyDeadHolder(holderId, ledger, history) {
     if (!history || typeof history.forSprint !== 'function') return { dead: false };
     let events;
     try { events = history.forSprint(holderId); } catch { return { dead: false }; }
-    const hit = (events ?? []).filter((e) => e && DEAD_HOLDER_EVENTS.has(e.event)).pop();
+    const hit = (events ?? []).filter(isDeadHolderEvent).pop();
     return hit ? { dead: true, event: hit.event } : { dead: false };
 }
 
@@ -383,6 +400,13 @@ export function proxyChildState(port, opts = {}) {
 }
 
 /**
+ * Per-child budget for GET /api/sprints' summary fan-out. Below the install
+ * guard's 1.5 s budget for the whole list call, so one hung child cannot make
+ * the guard lose the supervisor's sprint list.
+ */
+export const LIST_SUMMARY_TIMEOUT_MS = 1000;
+
+/**
  * Default child HTTP proxy: GET the child's small run summary
  * (`/state?summary=1`, never lean-encoded) and JSON-parse it.
  */
@@ -390,18 +414,26 @@ export function proxyChildSummary(port, opts = {}) {
     const host = opts.host ?? '127.0.0.1';
     const timeoutMs = Number.isInteger(opts.timeoutMs) ? opts.timeoutMs : 2000;
     return new Promise((resolve, reject) => {
+        // Whole-request deadline (the socket `timeout` alone is an idle
+        // timer, which a slowly trickling child would never trip).
+        const deadline = setTimeout(() => {
+            reject(new Error('child /state?summary=1 timed out'));
+            req.destroy();
+        }, timeoutMs);
+        deadline.unref?.();
         const req = http.request({ host, port, path: '/state?summary=1', method: 'GET', timeout: timeoutMs }, (res) => {
             const chunks = [];
             res.on('data', (c) => chunks.push(c));
             res.on('end', () => {
                 const body = Buffer.concat(chunks).toString('utf-8');
+                clearTimeout(deadline);
                 if (res.statusCode !== 200) { reject(new Error(`child /state?summary=1 answered ${res.statusCode}`)); return; }
                 try { resolve(body.length ? JSON.parse(body) : null); }
                 catch (err) { reject(new Error(`child /state?summary=1 returned invalid JSON: ${err.message}`)); }
             });
         });
         req.on('timeout', () => { req.destroy(new Error('child /state?summary=1 timed out')); });
-        req.on('error', reject);
+        req.on('error', (err) => { clearTimeout(deadline); reject(err); });
         req.end();
     });
 }
@@ -1178,7 +1210,7 @@ export function createSprintController(deps = {}) {
             if (st && typeof st === 'object') {
                 runSummary = runSummaryFromState(st);
             } else if (port != null) {
-                try { runSummary = await proxySummary(port); } catch { runSummary = null; }
+                try { runSummary = await proxySummary(port, { timeoutMs: LIST_SUMMARY_TIMEOUT_MS }); } catch { runSummary = null; }
             }
             return {
                 ...buildSprintSummary({ sprintId: r.sprintId, live: !st && port != null, runSummary, reservation: r }),
@@ -1196,10 +1228,10 @@ export function createSprintController(deps = {}) {
     }
 
     // -- GET /api/sprints/:id : live child state, else history ----------------
-    // Default response: the stable summary (sprint-summary.mjs) plus the
-    // pre-existing fields; no lean ref marker or string table anywhere. The
-    // live child's full state tree only with opts.full (GET ?full=1),
-    // resolved by resolveChildState().
+    // Response: the stable summary (sprint-summary.mjs) plus the pre-existing
+    // fields, including the live child's state tree resolved by
+    // resolveChildState(); no lean ref marker or string table anywhere.
+    // opts.full (GET ?full=1) is accepted and returns the same response.
     // Additive terminal fields from a persisted terminal run state: `analysis`
     // ({ text, generatedAt } from the sprint-analysis extension namespace, null
     // for older runs) and `result` (the run's verdict/status/notes).
@@ -1213,8 +1245,7 @@ export function createSprintController(deps = {}) {
         return { analysis, result: res ? { ...res } : null };
     }
 
-    async function getSprint(id, opts = {}) {
-        const full = Boolean(opts && opts.full);
+    async function getSprint(id, _opts = {}) {
         const reservation = ledger.get(id);
         if (reservation) {
             // apra-fleet-2l4.1: check FIRST whether the engine has already
@@ -1242,17 +1273,18 @@ export function createSprintController(deps = {}) {
             }
             const port = resolvePort(reservation.childPid ?? null);
             if (port != null) {
-                const runSummary = await proxySummary(port);
+                // `state` stays in the default response (a documented,
+                // required field before the summary existed), resolved so it
+                // never carries a lean ref marker or the _strings table.
+                const [runSummary, rawState] = await Promise.all([proxySummary(port), proxyState(port)]);
                 // pendingDecisions (full, untruncated) and the run state while
                 // paused for a decision, lifted from the child's decisions summary.
                 const { pendingDecisions, decisionState } = decisionsFromChildState({ summary: runSummary });
-                const state = full ? resolveChildState(await proxyState(port)) : undefined;
                 return {
                     ...buildSprintSummary({ sprintId: id, live: true, runSummary, reservation }),
-                    sprintId: id, live: true, pendingDecisions,
+                    sprintId: id, live: true, state: resolveChildState(rawState), pendingDecisions,
                     ...(decisionState ? { decisionState } : {}),
                     ...(decisionState === 'paused-awaiting-decision' ? { runState: decisionState } : {}),
-                    ...(full ? { state } : {}),
                 };
             }
         }
@@ -1397,7 +1429,7 @@ export function registerSprintRoutes(supervisor, controller) {
 
     supervisor.route('GET', '/api/sprints/:id', async (req, res, ctx) => {
         try {
-            // ?full=1 (or full=true) opts into the live child's resolved state tree.
+            // ?full=1 (or full=true) is accepted; the live state tree is always returned resolved.
             let full = false;
             try {
                 const v = new URL(req.url, 'http://localhost').searchParams.get('full');

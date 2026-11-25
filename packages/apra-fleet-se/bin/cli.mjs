@@ -619,14 +619,36 @@ export function attachViewerErrorHandler(server, port, opts = {}) {
 // every reservation again when alignment refuses or throws, so a refused
 // launch leaves no reservation behind. Exported so the ordering is unit-
 // testable without a live server.
-export async function reserveThenAlign({ sprintReservation, align } = {}) {
+// The supervisor's default port (src/supervisor/server.mjs DEFAULT_SERVICE_PORT),
+// used in the refusal text only when this run was not given --service-url.
+const DEFAULT_SUPERVISOR_PORT = 8787;
+
+/**
+ * The force-release command printed in the launch refusal. Uses the
+ * supervisor URL this run was given (--service-url) or the default port with
+ * a note, `curl.exe` on Windows (PowerShell aliases `curl` to
+ * Invoke-WebRequest), and no request body (the route takes an empty one), so
+ * it pastes unchanged into cmd.exe, PowerShell and POSIX shells.
+ * @param {string} owner
+ * @param {{ serviceUrl?: string, platform?: string }} [opts]
+ * @returns {string}
+ */
+export function forceReleaseCommand(owner, { serviceUrl, platform = process.platform } = {}) {
+    const curl = platform === 'win32' ? 'curl.exe' : 'curl';
+    const configured = typeof serviceUrl === 'string' && serviceUrl.trim().length > 0;
+    const base = configured ? serviceUrl.trim().replace(/\/+$/, '') : `http://localhost:${DEFAULT_SUPERVISOR_PORT}`;
+    const portNote = configured ? '' : `; use the supervisor's --port if it is not ${DEFAULT_SUPERVISOR_PORT}`;
+    return `${curl} -s -X POST ${base}/api/reservations/${encodeURIComponent(owner)}/force-release -H "Content-Type: application/json" (if that sprint is a supervisor sprint${portNote})`;
+}
+
+export async function reserveThenAlign({ sprintReservation, align, serviceUrl, platform } = {}) {
     const { held, holders = {} } = await sprintReservation.reserveForLaunch();
     if (held.length > 0) {
         const detail = held.map((m) => {
             const owner = holders[m];
             const who = owner ? `sprint '${owner}'` : 'another sprint (holder id unknown)';
             const cmds = [`member_reservation {"member_name":"${m}","action":"force_release"}`];
-            if (owner) cmds.push(`curl -s -X POST http://localhost:8787/api/reservations/${encodeURIComponent(owner)}/force-release -H "Content-Type: application/json" -d '{}' (if that sprint is a supervisor sprint)`);
+            if (owner) cmds.push(forceReleaseCommand(owner, { serviceUrl, platform }));
             return `  - ${m}: held by ${who}. Release: ${cmds.join(' ; or ')}`;
         }).join('\n');
         return {
@@ -1051,7 +1073,7 @@ async function main() {
             });
     };
     process.once('SIGINT', onLaunchSigint);
-    const topology = await reserveThenAlign({ sprintReservation, align: () => prepareLaunchTopology({
+    const topology = await reserveThenAlign({ sprintReservation, serviceUrl, align: () => prepareLaunchTopology({
         members: topologyMembers,
         mode: syncedMode ? 'synced' : 'legacy',
         baseBranch,

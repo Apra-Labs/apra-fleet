@@ -601,7 +601,8 @@ paths:
             recovery: POST /api/reservations/<holder>/force-release, or the
             per-member member_reservation force_release form. Such a holder
             is released before the guard (and never causes a 409) only when
-            this supervisor's history records it as ended -- see
+            this supervisor's history records it as ended (a force-released
+            event counts only with killed: true, never serverOnly) -- see
             supervisor-api.md "Stale server-side reservations".
           content:
             application/json:
@@ -624,16 +625,16 @@ paths:
       description: >
         Every response carries the SprintSummary fields at the top level
         (see supervisor-api.md "GET /api/sprints/:id: the summary shape"). No
-        lean ref marker and no _strings table appear in the default response.
-        The live child's full state tree is returned only with ?full=1,
-        resolved (ref markers expanded).
+        lean ref marker and no _strings table appear in the response. A live
+        sprint also carries the child's state tree as `state`, resolved (ref
+        markers expanded); ?full=1 is accepted and returns the same.
       parameters:
         - $ref: "#/components/parameters/SprintId"
         - in: query
           name: full
           required: false
           schema: { type: string, enum: ["1", "true"] }
-          description: live sprint only -- also return the child's full state tree as `state`, resolved
+          description: accepted for compatibility; the live state tree is always returned resolved
       responses:
         "200":
           description: OK
@@ -645,7 +646,7 @@ paths:
                     description: live sprint
                     allOf:
                       - $ref: "#/components/schemas/SprintSummary"
-                    required: [sprintId, live, pendingDecisions]
+                    required: [sprintId, live, state, pendingDecisions]
                     properties:
                       sprintId: { type: string }
                       live: { type: boolean, enum: [true] }
@@ -654,7 +655,7 @@ paths:
                       runState: { type: string }
                       state:
                         type: object
-                        description: only with ?full=1 -- the child's GET /state with every ref marker resolved and no _strings table
+                        description: the child's GET /state with every ref marker resolved and no _strings table
                   - type: object
                     description: ended sprint whose reservation is still held
                     allOf:
@@ -1456,3 +1457,5 @@ components:
         logPath: { type: string, nullable: true, description: meaningful only for event=child-exited }
         terminalReason: { type: string, nullable: true, description: meaningful only for event=finished; the engine's own terminalReason verbatim }
         verdict: { type: string, nullable: true, description: meaningful only for event=finished }
+        killed: { type: boolean, description: "event=force-released only, present when the entry had a child pid: whether the kill landed. Only killed: true lets a later launch treat the holder as dead" }
+        serverOnly: { type: boolean, description: "event=force-released only: the holder was known only to the fleet server and nothing was killed" }

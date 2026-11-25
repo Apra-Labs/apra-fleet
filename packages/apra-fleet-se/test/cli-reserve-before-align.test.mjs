@@ -1,7 +1,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { reserveThenAlign, createViewerOrRelease } from '../bin/cli.mjs';
+import { reserveThenAlign, createViewerOrRelease, forceReleaseCommand } from '../bin/cli.mjs';
 import { createMemberReservationClient } from '../fleet-sprint/coordination.mjs';
 
 // Launch alignment stashes WIP and switches branches on members, so a launch
@@ -147,5 +147,22 @@ describe('launch reservation hygiene (viewer throw, holder in refusal)', () => {
         assert.match(res.message, /member_reservation \{"member_name":"carol","action":"force_release"\}/);
         assert.match(res.message, /\/api\/reservations\/sprint-xyz\/force-release/);
         assert.doesNotMatch(res.message, /alice/);
+    });
+
+    test('the release command uses the configured supervisor URL, curl.exe on Windows, and no shell-quoted body', async () => {
+        const server = fakeServer({ bob: 'sprint-xyz' });
+        const res = await reserveThenAlign({
+            sprintReservation: client(server, ['bob']),
+            align: async () => ({ ok: true }),
+            serviceUrl: 'http://127.0.0.1:9911/',
+            platform: 'win32',
+        });
+        assert.match(res.message, /curl\.exe -s -X POST http:\/\/127\.0\.0\.1:9911\/api\/reservations\/sprint-xyz\/force-release -H "Content-Type: application\/json"/);
+        assert.doesNotMatch(res.message, /localhost:8787/);
+        assert.doesNotMatch(res.message, /-d '/);
+
+        const posix = forceReleaseCommand('a/b', { platform: 'linux' });
+        assert.match(posix, /^curl -s -X POST http:\/\/localhost:8787\/api\/reservations\/a%2Fb\/force-release /);
+        assert.match(posix, /--port if it is not 8787/);
     });
 });

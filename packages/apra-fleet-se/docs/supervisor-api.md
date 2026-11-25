@@ -356,8 +356,14 @@ the holder). The rule `launch()` applies (`isProvablyDeadHolder()` in
 - A holder with no ledger entry is released ONLY when this supervisor's
   history records a terminal or release event for exactly that id
   (`child-exited`, `finished`, `launch-failed`, `auto-released`,
-  `aborted-by-restart`, `force-released`). The release is logged loudly
+  `aborted-by-restart`, or a `force-released` whose event records
+  `killed: true`). The release is logged loudly
   (`STALE RESERVATION RELEASED`, naming member and holder).
+- A `force-released` event alone does not prove the holder dead: one whose
+  kill failed (`killed: false`, e.g. EPERM), that had no child to kill
+  (`killed` absent), or that released a fleet-server-only holder
+  (`serverOnly: true`, nothing killed; a live CLI sprint re-reserves under
+  the same id) keeps the `409`.
 - Any other holder -- including one in the branch-name form, or a sprint
   launched directly from the CLI, which is live but never in this ledger --
   is NOT released: absence from the ledger alone never proves a holder
@@ -467,17 +473,16 @@ branches come from the ledger reservation, which records the launch's
 `maxCycles`, `branch` and `base`.
 
 No lean `{ "$ref": n }` marker and no `_strings` table appear anywhere in the
-default response. The live child's full state tree is returned only on
-explicit opt-in, `GET /api/sprints/:id?full=1` (or `full=true`), as `state`,
-with every ref marker resolved and no `_strings` table.
+response. A live sprint's response carries the child's state tree as `state`,
+with every ref marker resolved and no `_strings` table. `?full=1` (or
+`full=true`) is accepted and returns the same response.
 
 Backward compatibility: the pre-existing top-level fields are unchanged
-(`live`, `pendingDecisions`, `decisionState`, `runState`; `terminal`, `state`,
-`resultStatus`, `warnings` on the terminal branch; `history`, `latest`,
-`resultStatus`, `warnings` on the history branch). The one change is that a
-LIVE sprint's response no longer carries the raw child `state` by default; a
-caller that reads it uses `?full=1` (the compatible path), and receives it
-resolved. `GET /api/sprints` rows keep `members`, `issueRoots`, `childPid`,
+(`live`, `state`, `pendingDecisions`, `decisionState`, `runState`;
+`terminal`, `state`, `resultStatus`, `warnings` on the terminal branch;
+`history`, `latest`, `resultStatus`, `warnings` on the history branch). The
+summary fields are added alongside them; the live `state` now arrives with its
+ref markers resolved into plain values. `GET /api/sprints` rows keep `members`, `issueRoots`, `childPid`,
 `tierPolicy`, `tierOverrides`, `port`, `verdict` and `prNotOpened`; a row
 whose child cannot be reached keeps those with its run fields `null`.
 
