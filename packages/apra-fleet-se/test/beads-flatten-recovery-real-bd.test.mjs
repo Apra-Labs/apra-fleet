@@ -25,9 +25,19 @@
 // (the bead is read back with bd show on B); no backup or discarded clone is
 // left behind and nothing was deleted.
 //
+// Scenarios 3-6 (unpushed work the remote cannot show by id): after its last
+// push B ONLY (3) adds a dependency, (4) adds a label, (5) adds a comment, or
+// (6) deletes a bead the remote still holds. On the pinned bd none of these
+// bumps updated_at and a delete leaves no record, so each is caught by the
+// record diff / history probe of beads-flatten-recovery.mjs. The gate refuses,
+// the refusal names the kind, and B's .beads still shows the change.
+//
 // Falsifiability: removing the unrelated-history branch from the health gate
 // (the recovery call in preflightBeadsHealthGate) makes scenario 1 fail -- the
 // gate throws DoltUnrelatedHistoryError -- checked locally once by reverting it.
+// Reverting the detection in beads-flatten-recovery.mjs to the id/updated_at
+// comparison makes scenarios 3-5 fail (re-bootstrapped, the work dropped) --
+// checked locally once.
 //
 // Hermetic: HOME, USERPROFILE, GIT_CONFIG_GLOBAL and TMPDIR point into one temp
 // sandbox (asserted), removed afterwards; no network. Skips when no bd binary
@@ -38,7 +48,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { exec } from 'node:child_process';
+import { exec, spawnSync } from 'node:child_process';
 
 import {
     preflightBeadsHealthGate,
@@ -128,9 +138,10 @@ async function issueIds(sb, dir) {
 /**
  * A and B both create beads and push; then the remote is rewritten with an
  * independent history carrying A's full issue set (see the file header).
- * `unpushedOnB` creates one bead on B that is never pushed.
+ * `unpushedOnB` creates one bead on B that is never pushed. `onB(sb, ids)`
+ * then makes B's unpushed change (never pushed).
  */
-async function buildScenario({ unpushedOnB = false } = {}) {
+async function buildScenario({ unpushedOnB = false, onB = null } = {}) {
     const sb = createSandbox();
     const { A, A2, B } = sb.dirs;
     await runOrThrow(sb, 'git config --global user.name "Flatten Recovery"', sb.root);
@@ -144,14 +155,15 @@ async function buildScenario({ unpushedOnB = false } = {}) {
     await runOrThrow(sb, 'git commit -q --allow-empty -m init', A);
     await runOrThrow(sb, 'git push -q origin main', A);
     await runOrThrow(sb, 'bd init --prefix fr', A);
-    await createBead(sb, 'from A one', A);
-    await createBead(sb, 'from A two', A);
+    const ids = {};
+    ids.a1 = await createBead(sb, 'from A one', A);
+    ids.a2 = await createBead(sb, 'from A two', A);
     await runOrThrow(sb, 'bd dolt push', A);
 
     fs.mkdirSync(B);
     await runOrThrow(sb, `git clone -q "${url}" .`, B);
     await runOrThrow(sb, 'bd bootstrap --yes', B);
-    await createBead(sb, 'from B', B);
+    ids.b = await createBead(sb, 'from B', B);
     await runOrThrow(sb, 'bd dolt push', B);
     await runOrThrow(sb, 'bd dolt pull', A);
 
@@ -168,8 +180,17 @@ async function buildScenario({ unpushedOnB = false } = {}) {
 
     let unpushedId = null;
     if (unpushedOnB) unpushedId = await createBead(sb, 'unpushed on B', B);
-    return { sb, unpushedId };
+    if (onB) {
+        // One-second bd timestamps: B's change is strictly newer than B's
+        // last sync.
+        await pause(1100);
+        await onB(sb, ids);
+    }
+    return { sb, unpushedId, ids };
 }
+
+const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+const bdJson = async (sb, cmd, dir) => JSON.parse(await runOrThrow(sb, cmd, dir));
 
 function engineFor(sb) {
     const calls = [];
@@ -201,6 +222,16 @@ describe('flattened beads remote: sprint-launch recovery against real bd', { ski
     });
     after(() => {
         for (const root of sandboxes) fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+        // Nothing outlives the file: no sandbox directory, and (where ps
+        // exists) no process -- a dolt server included -- still running in one.
+        for (const root of sandboxes) assert.ok(!fs.existsSync(root), `sandbox ${root} was removed`);
+        if (process.platform !== 'win32') {
+            const ps = spawnSync('ps', ['-eo', 'args='], { encoding: 'utf8' });
+            if (!ps.error && ps.status === 0) {
+                const left = ps.stdout.split('\n').filter((l) => sandboxes.some((root) => l.includes(root)));
+                assert.deepEqual(left, [], 'no process left running in a sandbox');
+            }
+        }
     });
 
     test('the sandbox owns HOME, USERPROFILE and GIT_CONFIG_GLOBAL', () => {
@@ -264,5 +295,58 @@ describe('flattened beads remote: sprint-launch recovery against real bd', { ski
         assert.ok(!topLevel(sb.dirs.B).some((n) => n.startsWith(FLATTEN_PENDING_PREFIX) || n.startsWith(FLATTEN_BACKUP_PREFIX) || n.startsWith(FLATTEN_DISCARD_PREFIX)));
         assert.ok(fs.existsSync(path.join(sb.dirs.B, '.beads', FLATTEN_LOCAL_EXPORT)), 'the export the fix replays from is in .beads');
         assert.equal(eng.logs.filter((l) => l.startsWith(FLATTEN_RECOVERY_WARNING_PREFIX)).length, 0);
+    });
+
+    /** Run the gate on B, expect a refusal of `kind`; B's top level is unchanged. */
+    async function expectRefused(sb, { kind, summary, id }) {
+        const before = topLevel(sb.dirs.B).sort();
+        const idsBefore = await issueIds(sb, sb.dirs.B);
+        clearLastSyncedTip('B');
+        const eng = engineFor(sb);
+        await assert.rejects(() => preflightBeadsHealthGate('B', eng.gateOpts), (err) => {
+            assert.ok(err instanceof BeadsFlattenRecoveryRefusedError, `${err && err.name}: ${err && err.message}`);
+            assert.deepEqual(err.details.localOnly.map((w) => [w.id, w.kind]), [[id, kind]], err.message);
+            assert.match(err.message, summary);
+            assert.ok(!/no local-only work found/.test(err.message), err.message);
+            assert.equal(err.details.restored, true);
+            return true;
+        });
+        assert.deepEqual(await issueIds(sb, sb.dirs.B), idsBefore, 'the issue set is unchanged');
+        assert.deepEqual(topLevel(sb.dirs.B).sort(), before, 'no backup, pending or discarded clone left');
+        assert.equal(eng.logs.filter((l) => l.startsWith(FLATTEN_RECOVERY_WARNING_PREFIX)).length, 0);
+    }
+
+    test('only an unpushed dependency add: refused, the dependency still on B', { timeout: budget }, async () => {
+        const { sb, ids } = await buildScenario({ onB: (s, i) => runOrThrow(s, `bd dep add ${i.b} ${i.a1}`, s.dirs.B) });
+        sandboxes.push(sb.root);
+        await expectRefused(sb, { kind: 'dependency', summary: /1 dependency add/, id: ids.b });
+        const shown = await bdJson(sb, `bd show ${ids.b} --json`, sb.dirs.B);
+        const rec = Array.isArray(shown) ? shown[0] : shown;
+        assert.ok((rec.dependencies || []).some((d) => (d.depends_on_id || d.id) === ids.a1), JSON.stringify(rec));
+    });
+
+    test('only an unpushed label add: refused, the label still on B', { timeout: budget }, async () => {
+        const { sb, ids } = await buildScenario({ onB: (s, i) => runOrThrow(s, `bd label add ${i.a1} unpushed-label`, s.dirs.B) });
+        sandboxes.push(sb.root);
+        await expectRefused(sb, { kind: 'label', summary: /1 label add/, id: ids.a1 });
+        const labels = await runOrThrow(sb, `bd label list ${ids.a1} --json`, sb.dirs.B);
+        assert.ok(labels.includes('unpushed-label'), labels);
+    });
+
+    test('only an unpushed comment add: refused, the comment still on B', { timeout: budget }, async () => {
+        const { sb, ids } = await buildScenario({ onB: (s, i) => runOrThrow(s, `bd comments add ${i.a2} "unpushed comment"`, s.dirs.B) });
+        sandboxes.push(sb.root);
+        await expectRefused(sb, { kind: 'comment', summary: /1 comment add/, id: ids.a2 });
+        const comments = await runOrThrow(sb, `bd comments ${ids.a2} --json`, sb.dirs.B);
+        assert.ok(comments.includes('unpushed comment'), comments);
+    });
+
+    test('only an unpushed delete: refused, the bead still absent on B', { timeout: budget }, async () => {
+        const { sb, ids } = await buildScenario({ onB: (s, i) => runOrThrow(s, `bd delete ${i.a2} --force`, s.dirs.B) });
+        sandboxes.push(sb.root);
+        assert.ok(!(await issueIds(sb, sb.dirs.B)).includes(ids.a2), 'the delete happened on B');
+        await expectRefused(sb, { kind: 'deleted', summary: /1 local delete/, id: ids.a2 });
+        assert.ok(!(await issueIds(sb, sb.dirs.B)).includes(ids.a2), 'the deleted bead is still absent');
+        assert.ok((await issueIds(sb, sb.dirs.A2)).includes(ids.a2), 'the rewritten remote still holds it');
     });
 });
