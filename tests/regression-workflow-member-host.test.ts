@@ -14,6 +14,7 @@ import { parse } from 'yaml';
 
 const ROOT = path.join(__dirname, '..');
 const WORKFLOW = path.join(ROOT, '.github', 'workflows', 'regression.yml');
+const RETRY = path.join(ROOT, '.github', 'workflows', 'regression-macos-retry.yml');
 const DRIVER = path.join(ROOT, 'tests', 'integration', 'member-host', 'run.mjs');
 const PASSES = ['Q', 'RF', 'RB', 'RFS', 'RBS'];
 
@@ -65,10 +66,23 @@ describe('regression.yml: member-host upgrade job', () => {
     expect(upload?.if).toBe('always()');
   });
 
-  it('needs the installer build and downloads the candidate artifact', () => {
-    const job = entry![1] as Job & { needs?: unknown };
+  it('is ordered after the installer build but runs under always() and not cancelled(), so a failed macOS leg cannot skip it', () => {
+    const job = entry![1] as Job & { needs?: unknown; if?: string };
     expect(job.needs).toBe('build-installer');
-    expect((job.steps ?? []).some(s => /download-artifact/.test(s.uses ?? ''))).toBe(true);
+    expect(job.if).toMatch(/\balways\(\)/);
+    expect(job.if).toMatch(/!\s*cancelled\(\)/);
+  });
+
+  it('downloads only the Windows installer artifact and fails loudly when it is missing', () => {
+    const steps = entry![1].steps ?? [];
+    const downloads = steps.filter(s => /download-artifact/.test(s.uses ?? ''));
+    expect(downloads).toHaveLength(1);
+    expect(downloads[0].with?.name).toBe('regression-apra-fleet-installer-win-x64.exe');
+    expect(downloads[0].with?.pattern).toBeUndefined();
+    const check = steps.find(s => /apra-fleet-installer-win-x64\.exe/.test(s.run ?? '') && /exit 1/.test(s.run ?? ''));
+    expect(check, 'no step fails when the Windows artifact is missing').toBeTruthy();
+    expect(check!.run).toMatch(/::error::[^\n]*missing/);
+    expect(steps.indexOf(check!)).toBeGreaterThan(steps.indexOf(downloads[0]));
   });
 
   it('references harness files that exist on disk', () => {
@@ -101,6 +115,68 @@ describe('regression.yml: macOS runner cap and safety', () => {
     expect(raw).not.toMatch(/\bGITHUB_TOKEN\b/);
   });
 });
+
+describe('regression.yml: triggers', () => {
+  const on = (wf as unknown as { on: Record<string, unknown> }).on;
+  it('is nightly + manual only: schedule and workflow_dispatch, no push or pull_request trigger', () => {
+    expect(Object.keys(on).sort()).toEqual(['schedule', 'workflow_dispatch']);
+    expect(on).not.toHaveProperty('push');
+    expect(on).not.toHaveProperty('pull_request');
+    expect(on).not.toHaveProperty('pull_request_target');
+  });
+});
+
+describe('regression-macos-retry.yml', () => {
+  const rawRetry = fs.readFileSync(RETRY, 'utf8');
+  const rwf = parse(rawRetry) as {
+    name: string;
+    on: { workflow_run?: { workflows?: string[]; types?: string[] } } & Record<string, unknown>;
+    permissions?: Record<string, string>;
+    jobs: Record<string, Job & { if?: string; env?: Record<string, string> }>;
+  };
+  const jobs = Object.values(rwf.jobs);
+  const text = jobs.flatMap(j => (j.steps ?? []).map(s => `${s.run ?? ''} ${s.uses ?? ''}`)).join('\n');
+
+  it('triggers only on the completion of the regression workflow', () => {
+    expect(Object.keys(rwf.on)).toEqual(['workflow_run']);
+    expect(rwf.on.workflow_run!.workflows).toEqual([wf0Name()]);
+    expect(rwf.on.workflow_run!.types).toEqual(['completed']);
+  });
+
+  it('only acts on a first attempt that failed or was cancelled', () => {
+    for (const j of jobs) {
+      expect(j.if).toMatch(/workflow_run\.run_attempt\s*==\s*1\b/);
+      expect(j.if).toMatch(/conclusion == 'failure'/);
+      expect(j.if).toMatch(/conclusion == 'cancelled'/);
+    }
+  });
+
+  it('reruns the failed jobs once, and only when every failed job ran on macOS', () => {
+    expect(text.match(/gh run rerun/g)).toHaveLength(1);
+    expect(text).toMatch(/gh run rerun "\$RUN_ID" --failed/);
+    expect(text).toMatch(/startswith\("macos"\)/);
+    expect(text).toMatch(/non_mac"? -ne 0/);
+  });
+
+  it('grants actions: write and nothing broader, at workflow level and on every job', () => {
+    expect(rwf.permissions).toEqual({ actions: 'write' });
+    for (const j of jobs) expect((j as { permissions?: unknown }).permissions ?? { actions: 'write' }).toEqual({ actions: 'write' });
+  });
+
+  it('never checks out or runs code from the triggering run (fork-safe)', () => {
+    expect(text).not.toMatch(/actions\/checkout/);
+    expect(text).not.toMatch(/actions\/download-artifact/);
+    expect(rawRetry).not.toMatch(/head_sha|head_branch|pull_requests|\bnpm\b|\bnode\b/);
+  });
+
+  it('has a timeout-minutes cap', () => {
+    for (const j of jobs) expect(typeof j['timeout-minutes']).toBe('number');
+  });
+});
+
+function wf0Name(): string {
+  return (parse(raw) as { name: string }).name;
+}
 
 describe('member-host driver --plan', () => {
   const plan = () => {
