@@ -121,6 +121,41 @@ export class SprintPlanRejectedError extends WorkflowError {
     }
 }
 
+/** Stable code of SprintBlockedOnOperatorError. */
+export const SPRINT_BLOCKED_ON_OPERATOR_CODE = 'SPRINT_BLOCKED_ON_OPERATOR';
+/** The terminalReason a run that ended blocked on an operator is recorded under. */
+export const BLOCKED_ON_OPERATOR_TERMINAL_REASON = 'BLOCKED_ON_OPERATOR';
+
+/**
+ * Thrown when planning cannot go on until an operator answers a question (the
+ * planner reported BLOCKED, or every remaining in-scope bead is held by an
+ * open decision gate) and the run has no pause/resume channel to wait on. It
+ * is NOT a plan rejection and NOT a crash: an operator answering the decision
+ * is exactly what unblocks a relaunch.
+ *
+ * @property {string|null} question - the operator question
+ * @property {string[]} beadIds - the bead(s) the question holds
+ * @property {string|null} decisionBeadId - the decision bead filed for it, when one was
+ */
+export class SprintBlockedOnOperatorError extends WorkflowError {
+    /**
+     * @param {string} message
+     * @param {{ question?: string|null, beadIds?: string[], decisionBeadId?: string|null, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(message, opts = {}) {
+        const { question = null, beadIds = [], decisionBeadId = null, details, cause } = opts;
+        super(message, {
+            code: SPRINT_BLOCKED_ON_OPERATOR_CODE,
+            details: { question, beadIds, decisionBeadId, ...details },
+            cause,
+        });
+        this.name = 'SprintBlockedOnOperatorError';
+        this.question = question;
+        this.beadIds = beadIds;
+        this.decisionBeadId = decisionBeadId;
+    }
+}
+
 /**
  * apra-fleet-unw.17 (A5) -- thrown when the sprint's cycle loop detects N
  * consecutive cycles (default 2, per the pm skill mandate cited in the
@@ -415,6 +450,50 @@ export function isDoltCredentialFailure(err) {
     return false;
 }
 
+/** Stable error code of SupervisorUnreachableError. */
+export const SUPERVISOR_UNREACHABLE_CODE = 'SUPERVISOR_UNREACHABLE';
+
+/**
+ * The fleet-sprint supervisor's HTTP service (dolt push mutex, child-id
+ * allocator) could not be reached: either every connection attempt was
+ * refused for the whole wait budget, or the connection failed at the
+ * transport level (reset / hang-up). Infrastructure, never a credential
+ * failure -- the remedy names the supervisor so the operator does not chase
+ * a remote or credential that is fine.
+ *
+ * @property {string} serviceUrl - the supervisor URL that did not answer
+ */
+export class SupervisorUnreachableError extends WorkflowError {
+    /**
+     * @param {string} serviceUrl
+     * @param {{ detail?: string, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(serviceUrl, opts = {}) {
+        const { detail, details, cause } = opts;
+        super(
+            `The fleet-sprint supervisor at ${serviceUrl} is not answering${detail ? ` (${detail})` : ''} -- start it (see the fleet-supervisor skill) and re-run.`,
+            { code: SUPERVISOR_UNREACHABLE_CODE, details: { serviceUrl, ...details }, cause },
+        );
+        this.name = 'SupervisorUnreachableError';
+        this.serviceUrl = serviceUrl;
+    }
+}
+
+/**
+ * True when `err` (or an error on its `cause` chain) is a
+ * SupervisorUnreachableError.
+ * @param {unknown} err
+ * @returns {boolean}
+ */
+export function isSupervisorUnreachableFailure(err) {
+    const seen = new Set();
+    for (let e = err; e && typeof e === 'object' && !seen.has(e); e = e.cause) {
+        seen.add(e);
+        if (e instanceof SupervisorUnreachableError) return true;
+    }
+    return false;
+}
+
 /** Stable error code of DoltWindowsSpawnLimitError. */
 export const DOLT_WINDOWS_SPAWN_LIMIT_CODE = 'DOLT_WINDOWS_SPAWN_LIMIT';
 
@@ -610,6 +689,54 @@ export function isAuthDispatchError(err) {
     const reason = err?.details?.reason;
     if (reason === 'auth' || reason === 'preflight_auth_missing' || reason === 'preflight_auth_expired') return true;
     return AUTH_DISPATCH_RE.test(String(err?.message ?? ''));
+}
+
+// apra-fleet-3b8p.1: a failed LLM-auth self-heal is TERMINAL for the dispatch
+// ladder that attempted it. The heal (provision_llm_auth) already ran once;
+// when it did not confirm working credentials -- the call failed, the member
+// is local (only an interactive /login refreshes it), or the server's
+// post-deploy auth test failed (reason 'deployed_unverified', e.g. a revoked
+// OAuth token) -- no retry, backoff wait or later attempt can succeed, so the
+// ladder throws this error at once, naming the member, the cause and the fix.
+export const LLM_AUTH_SELF_HEAL_FAILED_CODE = 'LLM_AUTH_SELF_HEAL_FAILED';
+export const LLM_AUTH_SELF_HEAL_REMEDY = 'the owner must re-login with /login on the source machine, then re-run provision_llm_auth (or provision an API key)';
+
+/**
+ * Thrown by the dispatch retry ladder when an LLM-auth failure's one bounded
+ * self-heal did not heal it. Carries the member, the heal's cause (for a
+ * failed post-deploy auth test: the server's Auth test line verbatim) and
+ * the remedy. The message keeps the original dispatch error text, so a caller
+ * reading only `.message` still sees the auth failure itself.
+ *
+ * @property {string|null} member
+ * @property {string|null} roleLabel
+ * @property {string|null} reason - the heal outcome's reason (e.g. 'deployed_unverified')
+ * @property {string} healCause - why the heal did not heal
+ * @property {string} remedy
+ */
+export class LlmAuthSelfHealFailedError extends WorkflowError {
+    /**
+     * @param {string} message
+     * @param {{ member?: string|null, roleLabel?: string|null, reason?: string|null, healCause?: string, remedy?: string, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(message, opts = {}) {
+        const {
+            member = null, roleLabel = null, reason = null,
+            healCause = 'provision_llm_auth did not heal the LLM auth failure',
+            remedy = LLM_AUTH_SELF_HEAL_REMEDY, details, cause,
+        } = opts;
+        super(message, {
+            code: LLM_AUTH_SELF_HEAL_FAILED_CODE,
+            details: { member, roleLabel, healReason: reason, healCause, remedy, ...details },
+            cause,
+        });
+        this.name = 'LlmAuthSelfHealFailedError';
+        this.member = member;
+        this.roleLabel = roleLabel;
+        this.reason = reason;
+        this.healCause = healCause;
+        this.remedy = remedy;
+    }
 }
 
 // ---------------------------------------------------------------------------

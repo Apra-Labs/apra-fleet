@@ -1,7 +1,9 @@
 {
   "version": 3,
   "provenance": {
-    "branch": "main"
+    "commit": "dfb66cdb8c3edd97b3eeef1c6639abb5e8450e2a",
+    "branch": "main",
+    "entry_count": 218
   },
   "entries": [
     {
@@ -2585,6 +2587,32 @@
         "memory-contract/v1/tests/roundtrip-harness.mjs": "61747ee590c3fbd2887f463abcaeedd4cb35aa53",
         "tests/memory-contract-fixture-response-schema.test.ts": "c37f1bc61d88fd65ce4e7c59119bc0982a5f9999",
         "tests/memory-contract-roundtrip.test.ts": "38220f6659726814e031fd84e416010cb7fa429a"
+      }
+    },
+    {
+      "id": "8d3ac8fe-4d4c-4846-ad85-07a12c300524",
+      "type": "knowledge",
+      "title": "Supervisor launch preflight reuses dolt-sync readUnpushedWith via local bd exec",
+      "summary": "POST /api/sprints runs checkBeadsPushed (src/supervisor/beads-pushed-check.mjs) before the member-overlap guard. It refuses 409 when the beads clone is unpushed and only warns when the result is inconclusive. The reader is dolt-sync.mjs readUnpushedWith(runBd), shared with the D-push landed check.",
+      "symbols": [
+        "createBeadsPushedProbe",
+        "readUnpushedWith",
+        "hasUncommittedChanges",
+        "createSprintController"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/src/supervisor/beads-pushed-check.mjs",
+        "packages/apra-fleet-se/src/supervisor/api.mjs",
+        "packages/apra-fleet-se/fleet-sprint/dolt-sync.mjs",
+        "packages/apra-fleet-se/src/supervisor/lib/exec-bd.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-25T07:20:56.090Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/dolt-sync.mjs": "da026e276040f342b7d945c74200e489cc20c29e",
+        "packages/apra-fleet-se/src/supervisor/api.mjs": "d372fca3a6a791f869c9e29776515eadbe9e53a2",
+        "packages/apra-fleet-se/src/supervisor/beads-pushed-check.mjs": "a0fb3eb0bfa48f74d4c52a40622b81ccef87ab35",
+        "packages/apra-fleet-se/src/supervisor/lib/exec-bd.mjs": "1f416b6ab922fa972b6ce278941da105d424fd2a"
       }
     },
     {

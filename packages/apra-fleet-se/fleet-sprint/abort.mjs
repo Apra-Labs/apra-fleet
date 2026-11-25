@@ -26,7 +26,7 @@
 // a function body, never at module-evaluation time.
 import { CommandError, BudgetExceededError, CancelledError } from '@apralabs/apra-fleet-workflow';
 import {
-    SprintPlanRejectedError, StalledSprintError, ReviewerContractViolationError, GitDivergedError,
+    SprintPlanRejectedError, SprintBlockedOnOperatorError, StalledSprintError, ReviewerContractViolationError, GitDivergedError,
     UsageLimitWaitExhaustedError,
 } from './errors.mjs';
 import { ApraFleet } from '@apralabs/apra-fleet-client';
@@ -405,6 +405,7 @@ export function isTypedAbortError(err) {
     if (!err || err instanceof CancelledError) return false;
     if (err instanceof StalledSprintError) return true;
     if (err instanceof SprintPlanRejectedError) return true;
+    if (err instanceof SprintBlockedOnOperatorError) return true;
     if (err instanceof ReviewerContractViolationError) return true;
     if (err instanceof BudgetExceededError) return true;
     if (err instanceof GitDivergedError) return true;

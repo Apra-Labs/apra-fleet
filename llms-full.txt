@@ -569,6 +569,7 @@ third-party verticals.
 | fleet-sprint internals (cycle loop, stall detection, budget, topology) | [packages/apra-fleet-se/docs/architecture.md](packages/apra-fleet-se/docs/architecture.md) |
 | fleet-sprint agent role contracts | [packages/apra-fleet-se/docs/role-contracts.md](packages/apra-fleet-se/docs/role-contracts.md) |
 | fleet-supervisor skill (start/stop/restart/auto-start-on-boot, `serve.mjs --detach`, `apra-fleet status` Supervisor line, sprint launch via HTTP API) | [packages/apra-fleet-se/fleet-sprint/skills/fleet-supervisor/SKILL.md](packages/apra-fleet-se/fleet-sprint/skills/fleet-supervisor/SKILL.md) |
+| Engine resilience (operator-blocked planning, supervisor detach-by-default, LLM auth heal, unpushed-beads launch refusal) | [docs/engine-resilience-operator-blocks-and-supervisor.md](docs/engine-resilience-operator-blocks-and-supervisor.md) |
 | Scoped in-cycle replan findings threading, and the wrapper-injection role KB contract | [docs/scoped-replan-and-planner-kb-contract.md](docs/scoped-replan-and-planner-kb-contract.md) |
 | MCP client SDK overview (transports, `ApraFleet` API) | [packages/apra-fleet-client/docs/overview.md](packages/apra-fleet-client/docs/overview.md) |
 | MCP client SDK API reference | [packages/apra-fleet-client/docs/api-reference.md](packages/apra-fleet-client/docs/api-reference.md) |
@@ -1596,7 +1597,7 @@ Pre-check (before the numbered steps). Look for a running fleet-sprint
    `E-FLEET-SE-RUNNING`):
 
    ```bash
-   curl -X POST http://localhost:<port>/api/shutdown -H "Content-Type: application/json" -d "{}"
+   curl -X POST http://localhost:<port>/api/shutdown -H "Content-Type: application/json" -d '{}'
    ```
 
 0. Stop the server with the INSTALLED binary and check that it is down (a live

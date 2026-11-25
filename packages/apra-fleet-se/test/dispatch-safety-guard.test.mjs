@@ -592,7 +592,11 @@ const DOLT_SYNC_PATH = path.join(__dirname, '../fleet-sprint/dolt-sync.mjs');
 // 7 -> 8 (lock-holder watchdog): probeLockHolders()'s beads lock-holder probe,
 // run on the same member while a silent sync attempt is still in flight --
 // passes member_name: member.
-const EXPECTED_DOLT_SYNC_COMMAND_COUNT = 8;
+// 8 -> 7 (supervisor unpushed-beads launch preflight): readUnpushedDoltChanges()
+// became a thin wrapper over the transport-agnostic readUnpushedWith(runBd),
+// so its two reads (`bd vc status --json`, `bd diff ...`) now share ONE
+// command() call site inside the wrapper -- still member_name: member.
+const EXPECTED_DOLT_SYNC_COMMAND_COUNT = 7;
 
 test('every command() call site in dolt-sync.mjs passes member_name or member_id', () => {
     const { sites, violations } = checkPath(DOLT_SYNC_PATH);
