@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { collectOobApiKey } from '../services/auth-socket.js';
 import { decryptPassword } from '../utils/crypto.js';
-import { credentialSet } from '../services/credential-store.js';
+import { credentialSet, getTasksHoldingStaleSecret, staleTaskNotice } from '../services/credential-store.js';
 import { logLine } from '../utils/log-helpers.js';
 
 export const credentialStoreSetSchema = z.object({
@@ -33,5 +33,8 @@ export async function credentialStoreSet(input: CredentialStoreSetInput): Promis
     : input.members.split(',').map(s => s.trim()).filter(Boolean);
   const meta = credentialSet(input.name, plaintext, input.persist, input.network_policy, allowedMembers, input.ttl_seconds);
   logLine('credential_store_set', `name=${input.name} persist=${input.persist}`);
-  return `✓ ${meta.name} stored [${meta.scope}]. Use {{secret.${meta.name}}} in commands.`;
+  // Compared against the effective value after the write, so re-setting the
+  // same value or a session set shadowed by a persistent record warns nothing.
+  const notice = staleTaskNotice(meta.name, getTasksHoldingStaleSecret(meta.name));
+  return `✓ ${meta.name} stored [${meta.scope}]. Use {{secret.${meta.name}}} in commands.` + notice;
 }
