@@ -74,6 +74,22 @@
               "items": {
                 "type": "string"
               }
+            },
+            "fleet_build": {
+              "type": "object",
+              "properties": {
+                "version": {
+                  "type": "string"
+                },
+                "bible_rules": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "version",
+                "bible_rules"
+              ],
+              "additionalProperties": true
             }
           },
           "required": [

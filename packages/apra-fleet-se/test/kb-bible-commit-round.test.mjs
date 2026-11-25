@@ -1,9 +1,10 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { createKbWorkClient, KB_BIBLE_SKIP_RETRY_ROUNDS } from '../fleet-sprint/kb.mjs';
-import { selfMaintainer, currentServerKbWork } from './helpers/kb-maintainer-fakes.mjs';
+import { createKbWorkClient, KB_BIBLE_SKIP_RETRY_ROUNDS, REQUIRED_MAINTAINER_BIBLE_RULES } from '../fleet-sprint/kb.mjs';
+import { selfMaintainer, currentServerKbWork, currentServerListTools, kbCapabilitiesResult, ALL_KB_ROUTES, CURRENT_FLEET_BUILD } from './helpers/kb-maintainer-fakes.mjs';
 import { createSyncBrackets, createGitSync } from '../fleet-sprint/git-sync.mjs';
-import { syncMemberBefore, syncMemberAfter, syncMemberAfterOrdered, isNoMutationDispatchFailure } from '../fleet-sprint/runner.js';
+import { syncMemberBefore, syncMemberAfter, syncMemberAfterOrdered, isNoMutationDispatchFailure, buildReviewerPrompt, kbPromotionBlock } from '../fleet-sprint/runner.js';
+import { buildAnalysisText } from '../fleet-sprint/sprint-report.mjs';
 
 // =============================================================================
 // The review-round bible commit (createKbWorkClient.commitRound), with fakes:
@@ -309,7 +310,7 @@ describe('commitRound: the review-round bible commit on the kb_maintainer', () =
         assert.deepEqual(out, { committed: 0, pending: 1 });
         assert.deepEqual(client.pendingConfirmations(), ['e1']);
         assert.ok(logs.some((l) => /^\[kb-work\] WARN: bible commit for .* failed at publication check \(git failed in the test\) -- 1 confirmation\(s\) stay queued/.test(l)), logs.join('\n'));
-        assert.deepEqual(client.unpublishedBible(), { repos: [{ repo: REPO, count: 1 }], sealedReason: null });
+        assert.deepEqual(client.unpublishedBible(), { repos: [{ repo: REPO, count: 1 }], sealedReason: null, dropped: [] });
     });
 
     test('committed:false with no publication check wired keeps the ids queued with a WARN -- never assumed published', async () => {
@@ -1053,5 +1054,316 @@ describe('commitRound: a maintainer whose kb_bible_commit is skipped (http KB pr
 
         assert.deepEqual(out, { committed: 0, pending: 0 });
         assert.equal(events.slice(mark).filter((e) => e.ev === 'kb_bible_commit').length, 0);
+    });
+});
+
+// =============================================================================
+// The maintainer build gate: kb_bible_commit runs in the maintainer's
+// INSTALLED fleet server, which can be older than the sprint's source. Before
+// any bible commit the engine reads that server's fleet_build through
+// kb_capabilities; a bible_rules revision below REQUIRED_MAINTAINER_BIBLE_RULES,
+// or an unreadable build, refuses the commit with a WARN and keeps the queue.
+// =============================================================================
+
+describe('commitRound: the maintainer build gate', () => {
+    /** A maintainer whose kb_capabilities answer is `capabilities()` (a value, or a throw). */
+    function gateHarness(capabilities) {
+        const events = [];
+        const logs = [];
+        const memberCall = async (member, tool, args) => {
+            if (tool === 'kb_query') return { l1_results: offeredEntries.map((id) => ({ id })) };
+            events.push({ ev: tool, member: member.name, args });
+            if (tool === 'kb_capabilities') return capabilities();
+            if (tool === 'kb_bible_commit') {
+                return { content: [{ text: JSON.stringify({ path: '.fleet/kb-canonical.json', merged: args.ids, skipped: [], entry_count: args.ids.length, committed: true }) }] };
+            }
+            if (tool === 'kb_promote') return { id: args.id, previous_confidence: 'INFERRED', new_confidence: 'CONFIRMED' };
+            return {};
+        };
+        const client = createKbWorkClient({
+            memberCall,
+            listTools: currentServerListTools,
+            maintainers: selfMaintainer(MAINT, ['maint', 'reviewer-1']),
+            gPull: async (m) => { events.push({ ev: 'G-pull', member: m }); },
+            gPush: async (m) => { events.push({ ev: 'G-push', member: m }); },
+            abortRebase: async () => false,
+            bibleBase: async () => BASE,
+            bibleUnpushed: async () => ({ unpushed: false }),
+            log: (m) => logs.push(m),
+        });
+        const commits = () => events.filter((e) => e.ev === 'kb_bible_commit');
+        const gateWarns = () => logs.filter((l) => /WARN/.test(l) && /bible commit for .* refused on maintainer/.test(l));
+        return { client, events, logs, commits, gateWarns };
+    }
+    const capsWith = (fleetBuild) => kbCapabilitiesResult(ALL_KB_ROUTES, fleetBuild);
+    const OLD_BUILD = { version: 'v0.4.5_0ld0ld', bible_rules: REQUIRED_MAINTAINER_BIBLE_RULES - 1 };
+
+    test('an older maintainer build: no kb_bible_commit, a WARN naming the member, its build and the required build; the ids stay queued', async () => {
+        let caps = capsWith(OLD_BUILD);
+        const h = gateHarness(() => caps);
+        await confirm(h.client, ['e1', 'e2']);
+
+        const out = await h.client.commitRound('review C1');
+
+        assert.equal(h.commits().length, 0, 'memberCall never receives kb_bible_commit');
+        assert.ok(!h.events.some((e) => e.ev === 'G-pull' && h.events.indexOf(e) > h.events.findIndex((x) => x.ev === 'kb_capabilities')), 'no G-pull after the refusal');
+        assert.deepEqual(out, { committed: 0, pending: 2 });
+        assert.deepEqual(h.client.pendingConfirmations(), ['e1', 'e2'], 'the queue is retained');
+        const [warn] = h.gateWarns();
+        assert.ok(warn, h.logs.join('\n'));
+        assert.match(warn, /maintainer 'maint'/);
+        assert.ok(warn.includes(`v0.4.5_0ld0ld (bible_rules ${REQUIRED_MAINTAINER_BIBLE_RULES - 1})`), warn);
+        assert.ok(warn.includes(`required build: bible_rules >= ${REQUIRED_MAINTAINER_BIBLE_RULES}`), warn);
+        assert.match(warn, /update_member with fleet_install auto for member 'maint'/);
+
+        // The queue drains once the maintainer is upgraded (a refusal is not cached).
+        caps = capsWith(CURRENT_FLEET_BUILD);
+        assert.deepEqual(await h.client.commitRound('review C2'), { committed: 2, pending: 0 });
+        assert.equal(h.commits().length, 1);
+        assert.deepEqual(h.commits()[0].args.ids, ['e1', 'e2']);
+    });
+
+    test('a current build: kb_bible_commit is called as before, between G-pull and G-push', async () => {
+        const h = gateHarness(() => capsWith(CURRENT_FLEET_BUILD));
+        await confirm(h.client, ['e1']);
+
+        assert.deepEqual(await h.client.commitRound('review C1'), { committed: 1, pending: 0 });
+        const tail = h.events.slice(h.events.map((e) => e.ev).lastIndexOf('kb_promote') + 1).map((e) => e.ev);
+        assert.deepEqual(tail, ['kb_capabilities', 'G-pull', 'kb_bible_commit', 'G-push']);
+        assert.deepEqual(h.gateWarns(), []);
+    });
+
+    test('a newer build passes the gate too', async () => {
+        const h = gateHarness(() => capsWith({ version: 'v9.9.9', bible_rules: REQUIRED_MAINTAINER_BIBLE_RULES + 5 }));
+        await confirm(h.client, ['e1']);
+        assert.deepEqual(await h.client.commitRound('review C1'), { committed: 1, pending: 0 });
+        assert.equal(h.commits().length, 1);
+    });
+
+    for (const [label, caps] of [
+        ['no fleet_build in the answer (an older server)', () => capsWith(null)],
+        ['a non-integer bible_rules', () => capsWith({ version: 'v1', bible_rules: 'latest' })],
+        ['kb_capabilities throws (the tool is missing)', () => { throw new Error('unknown tool kb_capabilities'); }],
+        ['kb_capabilities answers an error result', () => ({ isError: true, content: [{ type: 'text', text: 'boom' }] })],
+    ]) {
+        test(`an unreadable build fails closed with a WARN: ${label}`, async () => {
+            const h = gateHarness(caps);
+            await confirm(h.client, ['e1']);
+
+            assert.deepEqual(await h.client.commitRound('review C1'), { committed: 0, pending: 1 });
+            assert.equal(h.commits().length, 0);
+            assert.deepEqual(h.client.pendingConfirmations(), ['e1']);
+            const [warn] = h.gateWarns();
+            assert.ok(warn, h.logs.join('\n'));
+            assert.match(warn, /the build could not be read/);
+            assert.match(warn, /treated as too old/);
+            assert.match(warn, /maintainer 'maint'/);
+        });
+    }
+});
+
+// =============================================================================
+// Re-verification of a basis_mismatch confirmation. kb_bible_commit skips a
+// CONFIRMED id whose cited files changed after it was confirmed (reason
+// basis_mismatch, changed_files [{path, reason}]). The engine offers it to the
+// NEXT reviewer as a re-verification candidate naming the changed files; a
+// CONFIRM re-promotes it on the maintainer (kb_promote re-stamps the basis at
+// HEAD) and the next bible commit merges it; a refusal drops it from the bible
+// queue loudly and retrievably, never deleting or demoting the entry.
+// =============================================================================
+describe('commitRound: a basis_mismatch confirmation is re-verified by the next reviewer', () => {
+    const DRIFTED = 'kb-drifted-x';
+    const CHANGED = { path: 'src/cache/keys.ts', reason: 'changed' };
+    const ENTRY = { id: DRIFTED, title: 'Cache keys carry the tenant id', summary: 'Every cache key starts with the tenant id.', source_files: [CHANGED.path], created_at: new Date().toISOString() };
+    const REVIEW_REASON = 'checked src/cache/keys.ts:12 at HEAD, the tenant prefix is still built there';
+
+    /**
+     * A maintainer whose kb_bible_commit skips DRIFTED with basis_mismatch
+     * until kb_promote re-stamps it (then merges it). Every kb_* write is
+     * recorded with the memberCall options it was sent with.
+     */
+    function reverifyHarness({ bibleSkipRetryRounds } = {}) {
+        const calls = [];
+        const logs = [];
+        const pull = { fail: false };
+        let restamped = false;
+        let inferred = [ENTRY];
+        const memberCall = async (member, tool, args, callOpts) => {
+            if (tool === 'kb_query') return { l1_results: inferred.map((e) => ({ ...e })) };
+            calls.push({ tool, member: member.name, args, kbMaintainer: !!(callOpts && callOpts.kbMaintainer) });
+            if (tool === 'kb_promote') {
+                if (args.id === DRIFTED && inferred.length === 0) {
+                    restamped = true;
+                    return { id: args.id, previous_confidence: 'CONFIRMED', new_confidence: 'CONFIRMED', rebased: true };
+                }
+                inferred = inferred.filter((e) => e.id !== args.id);
+                return { id: args.id, previous_confidence: 'INFERRED', new_confidence: 'CONFIRMED' };
+            }
+            if (tool === 'kb_bible_commit') {
+                const skipped = args.ids.filter((id) => id === DRIFTED && !restamped)
+                    .map((id) => ({ id, reason: 'basis_mismatch', changed_files: [CHANGED] }));
+                const merged = args.ids.filter((id) => !skipped.some((s) => s.id === id));
+                return { content: [{ text: JSON.stringify({ path: '.fleet/kb-canonical.json', merged, skipped, entry_count: merged.length, committed: merged.length > 0 }) }] };
+            }
+            return {};
+        };
+        const client = currentServerKbWork(createKbWorkClient, {
+            memberCall,
+            maintainers: selfMaintainer(MAINT, ['maint', 'reviewer-1']),
+            gPull: async () => { if (pull.fail) throw new Error('could not reach origin'); },
+            gPush: async () => {},
+            bibleBase: async () => BASE,
+            bibleUnpushed: async () => ({ unpushed: false }),
+            log: (m) => logs.push(m),
+            ...(bibleSkipRetryRounds === undefined ? {} : { bibleSkipRetryRounds }),
+        });
+        return { client, calls, logs, pull };
+    }
+
+    /** Round 1: the reviewer confirms DRIFTED (INFERRED -> CONFIRMED); its bible commit is skipped with basis_mismatch. */
+    async function confirmedThenSkipped(h) {
+        await h.client.promotionCandidates('reviewer-1');
+        await h.client.apply('reviewer', 'reviewer-1', { kb_promotions: [{ id: DRIFTED, reason: REASON }] });
+        await h.client.commitRound('review C1');
+        const commits = h.calls.filter((c) => c.tool === 'kb_bible_commit');
+        assert.deepEqual(commits.map((c) => c.args.ids), [[DRIFTED]], 'sanity: round 1 sent the confirmation and it was skipped');
+    }
+
+    test('the skipped id is offered to the next reviewer as a re-verification candidate naming the changed cited file', async () => {
+        const h = reverifyHarness();
+        await confirmedThenSkipped(h);
+
+        const candidates = await h.client.promotionCandidates('reviewer-1');
+        const row = candidates.find((e) => e.id === DRIFTED);
+        assert.ok(row && row.reverify === true, `the drifted id must be offered for re-verification; got ${JSON.stringify(candidates)}`);
+        assert.deepEqual(row.changed_files, [CHANGED]);
+
+        const prompt = buildReviewerPrompt({
+            beadIds: ['BD-1'], acceptanceCriteriaJson: '[]', baseBranch: 'main', mergeBaseSha: 'a'.repeat(40), branch: 'feat/x', kbCandidates: candidates,
+        });
+        const at = prompt.indexOf('KNOWLEDGE BANK -- re-verification candidates');
+        assert.ok(at >= 0, 'the reviewer prompt carries the re-verification block');
+        const block = prompt.slice(at);
+        assert.ok(block.includes(`"id": "${DRIFTED}"`), 'the block names the drifted id');
+        assert.ok(block.includes(`"path": "${CHANGED.path}"`), 'the block names the changed cited file');
+        assert.ok(block.includes('"reason": "changed"'), 'the block says why the file no longer matches');
+        assert.ok(h.logs.some((l) => l.includes('re-verification candidates offered') && l.includes(DRIFTED) && l.includes(CHANGED.path)), h.logs.join('\n'));
+    });
+
+    test('a reviewer CONFIRM re-promotes the id on the maintainer and the next bible commit carries and merges it', async () => {
+        const h = reverifyHarness();
+        await confirmedThenSkipped(h);
+        await h.client.promotionCandidates('reviewer-1');
+        const mark = h.calls.length;
+
+        await h.client.apply('reviewer', 'reviewer-1', { kb_promotions: [{ id: DRIFTED, reason: REVIEW_REASON }] });
+        const promote = h.calls.slice(mark).find((c) => c.tool === 'kb_promote' && c.args.id === DRIFTED);
+        assert.ok(promote, `kb_promote must be called for ${DRIFTED}; logs:\n${h.logs.join('\n')}`);
+        assert.equal(promote.member, 'maint', 'the re-stamp runs on the maintainer');
+        assert.equal(promote.kbMaintainer, true, 'as the kb_maintainer');
+        assert.deepEqual(promote.args, { id: DRIFTED, reason: REVIEW_REASON });
+
+        const out = await h.client.commitRound('review C2');
+        const next = h.calls.slice(mark).filter((c) => c.tool === 'kb_bible_commit');
+        assert.deepEqual(next.map((c) => c.args.ids), [[DRIFTED]], 'the next bible commit carries the re-verified id');
+        assert.deepEqual(out, { committed: 1, pending: 0 });
+        assert.deepEqual(h.client.pendingConfirmations(), []);
+        assert.deepEqual(h.client.unpublishedBible().dropped, []);
+    });
+
+    test('a reviewer refusal drops the id with a WARN naming it, the changed file and the retrieval hint -- no delete or demote', async () => {
+        const h = reverifyHarness();
+        await confirmedThenSkipped(h);
+        await h.client.promotionCandidates('reviewer-1');
+        const mark = h.calls.length;
+
+        await h.client.apply('reviewer', 'reviewer-1', { kb_discards: [{ id: DRIFTED, reason: 'src/cache/keys.ts:12 now keys by region, not tenant' }] });
+        const later = h.calls.slice(mark);
+        assert.deepEqual(later.filter((c) => ['kb_invalidate', 'kb_demote', 'kb_promote'].includes(c.tool)), [], 'no delete, demote or promote call for a refused re-verification');
+
+        const warn = h.logs.find((l) => /WARN: dropping kb-drifted-x/.test(l));
+        assert.ok(warn, h.logs.join('\n'));
+        assert.ok(warn.includes(CHANGED.path), 'the WARN names the changed file');
+        assert.match(warn, /NOT deleted or demoted/);
+        assert.match(warn, /retrieve it with kb_query \{files: \["src\/cache\/keys\.ts"\]/);
+        assert.match(warn, /maintainer 'maint'/);
+
+        await h.client.commitRound('review C2');
+        assert.ok(!h.calls.slice(mark).some((c) => c.tool === 'kb_bible_commit' && c.args.ids.includes(DRIFTED)), 'a refused id is never sent again');
+        assert.deepEqual(h.client.pendingConfirmations(), []);
+
+        const dropped = h.client.unpublishedBible().dropped;
+        assert.equal(dropped.length, 1);
+        assert.equal(dropped[0].id, DRIFTED);
+        assert.deepEqual(dropped[0].changed_files, [CHANGED]);
+        assert.equal(dropped[0].withdrawn, false, 'never in the branch bible, so nothing to withdraw');
+        const analysis = buildAnalysisText({
+            targetIssues: ['scope-1'], branch: 'feat/x', baseBranch: 'main', cyclesRun: 1,
+            closedCountHistory: [], highWaterClosedCount: 0, deployFailures: [], integFailures: [], rejectedNewTasks: [],
+            finalVerdictResult: { verdict: 'PASS', notes: '' }, finalClosedCount: 0, finalOpenAtGoalCount: 0,
+            kbBibleUnpublished: h.client.unpublishedBible(),
+        });
+        assert.match(analysis, /## KB bible/);
+        assert.match(analysis, /Dropped from the bible/);
+        assert.ok(analysis.includes(`${REPO}: ${DRIFTED} on maintainer 'maint'`), analysis);
+        assert.ok(analysis.includes(`${CHANGED.path} (changed)`), analysis);
+    });
+
+    test('with no verdict the id is dropped once the retry bound runs out, loudly and listed for the sprint report', async () => {
+        const h = reverifyHarness({ bibleSkipRetryRounds: 2 });
+        await confirmedThenSkipped(h);
+        await h.client.promotionCandidates('reviewer-1');
+        await h.client.apply('reviewer', 'reviewer-1', {});
+        await h.client.commitRound('review C2');
+        const warn = h.logs.find((l) => /WARN: dropping kb-drifted-x/.test(l));
+        assert.ok(warn, h.logs.join('\n'));
+        assert.match(warn, /basis_mismatch for 2 round\(s\) in a row and no reviewer re-verified it/);
+        assert.deepEqual(h.client.unpublishedBible().dropped.map((d) => d.id), [DRIFTED]);
+        assert.deepEqual(h.calls.filter((c) => ['kb_invalidate', 'kb_demote'].includes(c.tool)), []);
+    });
+
+    test('expireReverification drops every id still awaiting re-verification after the last review', async () => {
+        const h = reverifyHarness();
+        await confirmedThenSkipped(h);
+        assert.deepEqual(h.client.expireReverification('final review'), [DRIFTED]);
+        assert.ok(h.logs.some((l) => /WARN: dropping kb-drifted-x .*by the final review, the sprint's last review/.test(l)), h.logs.join('\n'));
+        assert.deepEqual(h.client.pendingConfirmations(), []);
+        assert.deepEqual(h.client.expireReverification('final review'), [], 'idempotent');
+    });
+
+    test('expireReverification keeps a re-verified id whose kb_promote is still queued behind a failed G-pull', async () => {
+        const h = reverifyHarness();
+        await confirmedThenSkipped(h);
+        await h.client.promotionCandidates('reviewer-1');
+        const mark = h.calls.length;
+
+        // The final review CONFIRMs it, but the flush's G-pull fails: the promote stays queued.
+        h.pull.fail = true;
+        await h.client.apply('reviewer', 'reviewer-1', { kb_promotions: [{ id: DRIFTED, reason: REVIEW_REASON }] });
+        assert.ok(!h.calls.slice(mark).some((c) => c.tool === 'kb_promote'), 'sanity: the promote did not run');
+
+        assert.deepEqual(h.client.expireReverification('final review'), [], 'a queued re-verify is not expired');
+        assert.ok(!h.logs.some((l) => /WARN: dropping kb-drifted-x/.test(l)), h.logs.join('\n'));
+
+        h.pull.fail = false;
+        const out = await h.client.commitRound('final review');
+        assert.ok(h.calls.slice(mark).some((c) => c.tool === 'kb_promote' && c.args.id === DRIFTED), 'the queued promote applies before the bible commit');
+        const commits = h.calls.slice(mark).filter((c) => c.tool === 'kb_bible_commit');
+        assert.deepEqual(commits.map((c) => c.args.ids), [[DRIFTED]]);
+        assert.deepEqual(out, { committed: 1, pending: 0 });
+        assert.deepEqual(h.client.unpublishedBible().dropped, [], 'nothing is reported dropped');
+    });
+
+    test('kbPromotionBlock renders the INFERRED and re-verification candidates as two blocks', () => {
+        const blocks = kbPromotionBlock([
+            { id: 'kb-inferred', title: 't', summary: 's', source_files: ['a.ts'] },
+            { id: DRIFTED, title: 't2', summary: 's2', source_files: [CHANGED.path], changed_files: [CHANGED], reverify: true },
+        ]);
+        assert.equal(blocks.length, 2);
+        assert.match(blocks[0], /^KNOWLEDGE BANK -- promotion candidates/);
+        assert.ok(blocks[0].includes('kb-inferred') && !blocks[0].includes(DRIFTED));
+        assert.match(blocks[1], /^KNOWLEDGE BANK -- re-verification candidates/);
+        assert.ok(blocks[1].includes(DRIFTED) && !blocks[1].includes('kb-inferred'));
+        assert.deepEqual(kbPromotionBlock([{ id: DRIFTED, changed_files: [CHANGED], reverify: true }]).length, 1, 'only the re-verification block when nothing is INFERRED');
     });
 });

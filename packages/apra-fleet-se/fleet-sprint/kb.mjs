@@ -27,7 +27,8 @@
 import { ROLES, wrapUntrustedBlock } from './contracts.mjs';
 import { toolErrorText } from './mcp-result.mjs';
 import { cleanQueryTerms } from './kb-hints.mjs';
-import { E_MEMBER_FLEET_TOO_OLD } from './member-call.mjs';
+import { E_MEMBER_FLEET_TOO_OLD, memberFleetUpgradeFix } from './member-call.mjs';
+import { readToolsList } from './tools-list.mjs';
 
 // Local, validated role constant -- mirrors runner.js's own roleConst()
 // pattern (kb.mjs does not import runner.js's private helper, to avoid a
@@ -358,6 +359,34 @@ export function buildBibleDemotionCandidateQuery(files) {
  * maintainer's project KB serves.
  */
 export const KB_CAPABILITIES_TOOL = 'kb_capabilities';
+
+/**
+ * The minimum bible rules revision a kb_maintainer's fleet server must report
+ * (kb_capabilities `fleet_build.bible_rules`) before the engine runs
+ * kb_bible_commit there. kb_bible_commit runs in the maintainer's INSTALLED
+ * server, which can be older than the sprint's source; an older build writes
+ * bibles (tombstones) the newer rules forbid, and its version string alone
+ * cannot order two builds of one core version. A lower or missing revision,
+ * or an unreadable answer, keeps the bible queue and WARNs (fail closed).
+ * Bumped together with the server's BIBLE_RULES_REVISION
+ * (src/services/knowledge/bible-rules.ts).
+ */
+export const REQUIRED_MAINTAINER_BIBLE_RULES = 2;
+
+/**
+ * The fleet_build ({version, bible_rules}) out of a kb_capabilities answer,
+ * or null when it carries no readable one.
+ */
+export function fleetBuildOf(caps) {
+    const b = caps && typeof caps === 'object' ? caps.fleet_build : null;
+    if (!b || typeof b !== 'object' || !Number.isInteger(b.bible_rules)) return null;
+    return { version: typeof b.version === 'string' && b.version ? b.version : 'unknown', bibleRules: b.bible_rules };
+}
+
+/** One phrase naming a build for a log line. */
+export function describeFleetBuild(build) {
+    return build ? `${build.version} (bible_rules ${build.bibleRules})` : 'unreadable';
+}
 
 /** The first 8 characters of a KB id, for log lines. */
 const kbId8 = (id) => String(id).slice(0, 8);
@@ -742,6 +771,30 @@ export function createKbWorkClient(opts = {}) {
         ? opts.bibleSkipRetryRounds
         : KB_BIBLE_SKIP_RETRY_ROUNDS;
     /**
+     * repo -> (id -> { id, changed_files: [{path, reason}] }): CONFIRMED ids
+     * kb_bible_commit skipped with basis_mismatch, awaiting a reviewer's
+     * re-verification. Each is offered to the next reviewer next to the
+     * promotion candidates (promotionCandidates); a CONFIRM re-promotes it on
+     * the maintainer (kb_promote re-stamps the basis at HEAD) and the next
+     * bible commit merges it, a refusal drops it (dropFromBible).
+     */
+    const reverifyPending = new Map();
+    /** repo -> Set of re-verification ids the latest promotionCandidates() call offered. */
+    const offeredReverify = new Map();
+    /**
+     * repo -> ids this sprint's bible commits merged (added or replaced on
+     * the sprint branch). recheckSprintBible() re-checks exactly these at the
+     * final head; a refused or unverifiable one is withdrawn from the branch
+     * bible so the branch never carries it with a drifted basis.
+     */
+    const sprintMerged = new Map();
+    /** id -> { title, summary, source_files } from the candidate reads, for the re-verification block. */
+    const entryDetails = new Map();
+    /** Confirmations dropped from the bible this sprint: [{ repo, id, why, changed_files, maintainer, withdrawn }]. */
+    const droppedFromBible = [];
+    /** Repositories a drop queued a withdrawal for during a bible commit: commitRound commits them again at once. */
+    const dropWithdrawalRepos = new Set();
+    /**
      * Repositories whose maintainer may hold bible retirements not yet in a
      * bible commit: a kb_invalidate discard was applied there since the last
      * successful kb_bible_commit. kb_bible_commit removes superseded and
@@ -894,6 +947,14 @@ export function createKbWorkClient(opts = {}) {
             accept: (p, res) => {
                 const parsed = parseResult(res);
                 if (parsed && typeof parsed === 'object') {
+                    // A re-verification CONFIRM promotes an entry that is
+                    // already CONFIRMED: kb_promote re-stamps its basis at
+                    // HEAD (rebased: true) or finds it matching already.
+                    // Either way the id goes back on the bible queue.
+                    if (p.reverify === true && parsed.new_confidence === 'CONFIRMED') {
+                        log(`[kb-work] kb_promote: ${p.id} re-verified${parsed.rebased === true ? ' -- basis re-stamped at HEAD' : ''}; queued for the next bible commit`);
+                        return true;
+                    }
                     if (parsed.new_confidence === 'CONFIRMED' && parsed.previous_confidence !== 'CONFIRMED') return true;
                     log(`[kb-work] kb_promote: ${p.id} not promoted (${parsed.previous_confidence} -> ${parsed.new_confidence})`);
                     return false;
@@ -1032,6 +1093,15 @@ export function createKbWorkClient(opts = {}) {
             if (op.kind === 'promote') {
                 if (!confirmations.has(repo)) confirmations.set(repo, new Set());
                 confirmations.get(repo).add(op.payload.id);
+                if (op.payload.reverify === true) {
+                    // A fresh basis: the retry bound starts over, and the id
+                    // is no longer awaiting re-verification (a new skip at
+                    // the next bible commit offers it again).
+                    const pendingRe = reverifyPending.get(repo);
+                    if (pendingRe) pendingRe.delete(op.payload.id);
+                    const rounds = skipRounds.get(repo);
+                    if (rounds) rounds.delete(op.payload.id);
+                }
             }
         }
         if (counts.captured || counts.promoted || counts.discarded) {
@@ -1232,6 +1302,74 @@ export function createKbWorkClient(opts = {}) {
         return false;
     }
 
+    /** The changed_files of a basis_mismatch skip as [{path, reason}] (bare path strings accepted). */
+    const driftOf = (skip) => (Array.isArray(skip && skip.changed_files) ? skip.changed_files : [])
+        .map((f) => (typeof f === 'string' ? { path: f, reason: 'changed' } : f))
+        .filter((f) => f && typeof f.path === 'string' && f.path.length > 0)
+        .map((f) => ({ path: f.path, reason: typeof f.reason === 'string' && f.reason ? f.reason : 'changed' }));
+    /** "a (changed), b (absent)" for a log line, or a placeholder when the tool named none. */
+    const describeDrift = (files) => (files.length > 0
+        ? files.map((f) => `${f.path} (${f.reason})`).join(', ')
+        : 'none named by kb_bible_commit');
+
+    /**
+     * Drop a CONFIRMED id from the bible queue after a reviewer refused its
+     * re-verification, or after the bounded retries ran out. Never deletes or
+     * demotes the entry: it stays in the maintainer's local KB. When this
+     * sprint already merged it into the branch bible (recheckSprintBible),
+     * a withdrawal is queued so the branch does not carry it with a drifted
+     * basis. Loud: a WARN names the id, the changed cited files and how to
+     * retrieve the entry, and the drop is listed by unpublishedBible() for
+     * the sprint report.
+     */
+    function dropFromBible(repo, id, why, changedFiles) {
+        const pending = confirmations.get(repo);
+        if (pending) { pending.delete(id); if (pending.size === 0) confirmations.delete(repo); }
+        const pendingRe = reverifyPending.get(repo);
+        if (pendingRe) { pendingRe.delete(id); if (pendingRe.size === 0) reverifyPending.delete(repo); }
+        const rounds = skipRounds.get(repo);
+        if (rounds) { rounds.delete(id); if (rounds.size === 0) skipRounds.delete(repo); }
+        const sel = selector();
+        const target = sel && typeof sel.getKbMaintainer === 'function' ? sel.getKbMaintainer(repo) : null;
+        const maintainer = (target && target.member) || 'unknown';
+        const detail = entryDetails.get(id);
+        const merged = sprintMerged.get(repo);
+        let withdrawn = false;
+        let withdrawNote = '';
+        if (merged && merged.has(id)) {
+            merged.delete(id);
+            const evidence = changedFiles.map((f) => f.path);
+            if (evidence.length === 0 && detail && Array.isArray(detail.source_files)) evidence.push(...detail.source_files);
+            if (evidence.length > 0) {
+                const note = `not re-verified at the sprint head after its cited files changed: ${why}`;
+                if (!withdrawalsPending.has(repo)) withdrawalsPending.set(repo, new Map());
+                withdrawalsPending.get(repo).set(id, { id, note, evidence_files: evidence });
+                const restores = restoresPending.get(repo);
+                if (restores) restores.delete(id);
+                withdrawnIds.add(id);
+                // Recorded like a final-review withdrawal, so the PR body's
+                // "KB changes on merge" names it as withdrawn by this run.
+                const rec = recordFor(repo);
+                const det = detailFor(rec);
+                rec.verdicts.set(id, 'demote');
+                if (detail && typeof detail.title === 'string') det.titles.set(id, detail.title);
+                det.notes.set(id, note);
+                withdrawn = true;
+                dropWithdrawalRepos.add(repo);
+                withdrawNote = '; this sprint had already added it to the branch bible, so a withdrawal is queued for the next bible commit and the branch will not carry it';
+            } else {
+                withdrawNote = '; WARNING: this sprint already added it to the branch bible and no cited file is known to withdraw it with -- the branch bible still carries it';
+            }
+        }
+        const title = detail && typeof detail.title === 'string' && detail.title ? ` "${detail.title}"` : '';
+        const files = changedFiles.map((f) => f.path);
+        const hint = files.length > 0
+            ? `kb_query {files: ${JSON.stringify(files)}, confidence: ["CONFIRMED"]} on maintainer '${maintainer}'`
+            : `kb_query {query: ${JSON.stringify(detail && detail.title ? detail.title : id)}, confidence: ["CONFIRMED"]} on maintainer '${maintainer}'`;
+        log(`[kb-work] WARN: dropping ${id}${title} from the bible queue for ${repo}: ${why}; cited files changed since its basis: ${describeDrift(changedFiles)}. The entry is NOT deleted or demoted -- it stays CONFIRMED in maintainer '${maintainer}''s local KB; retrieve it with ${hint}${withdrawNote}`);
+        droppedFromBible.push({ repo, id, why, changed_files: changedFiles.map((f) => ({ ...f })), maintainer, withdrawn });
+    }
+
     /**
      * Commit one repository's pending confirmations, withdrawals and
      * restores to the bible on its maintainer, in a single kb_bible_commit
@@ -1271,6 +1409,15 @@ export function createKbWorkClient(opts = {}) {
         }
         if (isBusy(maintainer)) {
             log(`[kb-work] WARN: maintainer '${maintainer}' is mid-dispatch -- ${load} for ${repo} stay queued for the next round's bible commit`);
+            return { committed: 0, pending: totalPending() };
+        }
+        // The bible commit runs in the maintainer's INSTALLED fleet server:
+        // refuse a build older than this engine requires (fail closed on an
+        // unreadable one) before any G-pull or kb_bible_commit.
+        const buildGap = await maintainerBuildGap(target.record, repo);
+        if (buildGap) {
+            const seen = buildGap.build ? describeFleetBuild(buildGap.build) : `unreadable -- the build could not be read (${buildGap.why}), treated as too old`;
+            log(`[kb-work] WARNING: bible commit for ${repo} refused on maintainer '${maintainer}': its fleet server build is ${seen}; required build: bible_rules >= ${REQUIRED_MAINTAINER_BIBLE_RULES} -- ${load} stay queued for the next round. Fix: ${memberFleetUpgradeFix(maintainer)}`);
             return { committed: 0, pending: totalPending() };
         }
         let release;
@@ -1355,6 +1502,7 @@ export function createKbWorkClient(opts = {}) {
                 const reason = typeof outcome.result.reason === 'string' && outcome.result.reason ? outcome.result.reason : 'no reason given';
                 confirmations.delete(repo);
                 skipRounds.delete(repo);
+                reverifyPending.delete(repo);
                 retirements.delete(repo);
                 const { withdrawnCount, restoredCount, restoredIds } = settleTombstoneWork(outcome.result);
                 const tombstoneNote = withdrawals.length + restoreIds.length > 0
@@ -1367,10 +1515,15 @@ export function createKbWorkClient(opts = {}) {
             // removed by it (kb_bible_commit drops them at every call).
             retirements.delete(repo);
             const skipped = Array.isArray(outcome.result.skipped) ? outcome.result.skipped : [];
-            // A skip whose cause can clear on its own (basis_mismatch: the cited
-            // files at the maintainer's HEAD differ from the recorded basis, e.g.
-            // the entry was captured against commits not pulled yet) stays queued
-            // and is offered again next round, for a bounded number of rounds.
+            // A skip whose cause can clear (basis_mismatch: the cited files at
+            // the maintainer's HEAD differ from the recorded basis -- the entry
+            // was captured against commits not pulled yet, or a later commit
+            // changed a file it cites) stays queued and is offered to the next
+            // reviewer for RE-VERIFICATION, with the changed files named: a
+            // CONFIRM re-stamps its basis at HEAD (kb_promote) and the next
+            // bible commit merges it; a refusal drops it. With no verdict it
+            // is retried for a bounded number of rounds, then dropped
+            // (dropFromBible: loud, retrievable, never deleted or demoted).
             // Any other skip (not CONFIRMED or unknown, no source files) cannot
             // change by retrying and leaves the queue. Merged ids leave it too.
             // A round can carry withdrawals or restores only, so pending may be absent.
@@ -1386,6 +1539,8 @@ export function createKbWorkClient(opts = {}) {
                 if (n >= skipRetryRounds) { exhausted.push({ ...x, rounds: n }); continue; }
                 rounds.set(x.id, n);
                 retained.push(x);
+                if (!reverifyPending.has(repo)) reverifyPending.set(repo, new Map());
+                reverifyPending.get(repo).set(x.id, { id: x.id, changed_files: driftOf(x) });
             }
             const keep = new Set(retained.map((x) => x.id));
             for (const id of ids) {
@@ -1397,17 +1552,31 @@ export function createKbWorkClient(opts = {}) {
             if (rounds.size === 0) skipRounds.delete(repo);
             const skippedIds = new Set(skipped.map((x) => x && x.id));
             const { withdrawnCount, restoredCount, restoredIds } = settleTombstoneWork(outcome.result);
-            const merged = Array.isArray(outcome.result.merged) ? outcome.result.merged.length
-                : ids.length - ids.filter((id) => skippedIds.has(id)).length;
+            const mergedIds = Array.isArray(outcome.result.merged)
+                ? outcome.result.merged.filter((id) => typeof id === 'string')
+                : ids.filter((id) => !skippedIds.has(id));
+            const merged = mergedIds.length;
+            // Remember what this sprint put on the branch bible (re-checked at
+            // the final head by recheckSprintBible); a merged id needs no
+            // re-verification any more.
+            if (mergedIds.length > 0) {
+                if (!sprintMerged.has(repo)) sprintMerged.set(repo, new Set());
+                const pendingRe = reverifyPending.get(repo);
+                for (const id of mergedIds) {
+                    sprintMerged.get(repo).add(id);
+                    if (pendingRe) pendingRe.delete(id);
+                }
+                if (pendingRe && pendingRe.size === 0) reverifyPending.delete(repo);
+            }
             const describe = (list) => list.map((x) => (x.reason ? `${x.id} (${x.reason})` : x.id)).join(', ');
             if (dropped.length > 0) {
                 log(`[kb-work] kb_bible_commit skipped ${dropped.length} id(s) for ${repo} that cannot succeed on a retry (dropped from the queue, with the reason the tool returned): ${describe(dropped)}`);
             }
             if (retained.length > 0) {
-                log(`[kb-work] kb_bible_commit skipped ${retained.length} id(s) for ${repo} for a reason that can clear (kept queued for the next round, at most ${skipRetryRounds} skipped rounds in a row): ${describe(retained)}`);
+                log(`[kb-work] kb_bible_commit skipped ${retained.length} id(s) for ${repo} for a reason that can clear (kept queued for the next round and offered to the next reviewer for re-verification, at most ${skipRetryRounds} skipped rounds in a row): ${retained.map((x) => `${x.id} (${x.reason}) [changed: ${describeDrift(driftOf(x))}]`).join(', ')}`);
             }
             for (const x of exhausted) {
-                log(`[kb-work] WARN: dropping ${x.id} from the bible queue for ${repo}: kb_bible_commit skipped it with reason ${x.reason || 'unknown'} for ${x.rounds} round(s) in a row`);
+                dropFromBible(repo, x.id, `kb_bible_commit skipped it with reason ${x.reason || 'unknown'} for ${x.rounds} round(s) in a row and no reviewer re-verified it`, driftOf(x));
             }
             // Bible entries the maintainer KB holds as superseded or invalidated
             // are removed by the tool at every call; name each one here so the
@@ -1421,10 +1590,10 @@ export function createKbWorkClient(opts = {}) {
             } else {
                 log(`[kb-work] bible commit for ${repo} on maintainer '${maintainer}': ${describeCounts(merged, withdrawnCount, restoredCount)}${restoredIdList(restoredIds)} ${outcome.pushed ? 'committed and pushed' : 'already in the bible -- nothing to push'}`);
             }
-            const confirmationsLeft = pending ? pending.size : 0;
+            const confirmationsLeft = (confirmations.get(repo) || new Set()).size;
             return {
                 committed: outcome.pushed ? merged + withdrawnCount + restoredCount : 0,
-                pending: confirmationsLeft + (pendingWithdrawals ? pendingWithdrawals.size : 0) + (pendingRestores ? pendingRestores.size : 0),
+                pending: confirmationsLeft + (withdrawalsPending.get(repo) || new Map()).size + (restoresPending.get(repo) || new Set()).size,
             };
         } finally {
             inFlight.delete(maintainer);
@@ -1528,7 +1697,11 @@ export function createKbWorkClient(opts = {}) {
         // cap the survivors -- see the method comment.
         const offered = [
             ...earlier,
-            ...results.filter((e) => isDemotableCandidate(e) && touchesChangedFiles(e)),
+            // An id offered for RE-VERIFICATION in this review (its bible
+            // commit was refused for a drifted basis) is judged there, never
+            // in both blocks at once.
+            ...results.filter((e) => isDemotableCandidate(e) && touchesChangedFiles(e)
+                && !(offeredReverify.get(target.repo) || new Set()).has(e.id)),
         ].slice(0, KB_MAX_DEMOTION_CANDIDATES);
         offeredDemotions.set(target.repo, new Set(offered.map((e) => e.id)));
         if (offered.length > 0) {
@@ -1692,6 +1865,35 @@ export function createKbWorkClient(opts = {}) {
         return (base || out.carried.length > 0 || out.unreadable.length > 0) ? out : null;
     }
 
+    /** JSON [member id, repo] -> the maintainer build once it passed the bible-commit gate (cached for the sprint). */
+    const maintainerBuildOk = new Map();
+
+    /**
+     * The bible-commit build gate: null when `record`'s fleet server reports a
+     * bible_rules revision at or above REQUIRED_MAINTAINER_BIBLE_RULES,
+     * otherwise { build, why } for the WARN (build null when it could not be
+     * read). Read through kb_capabilities on the maintainer's own session.
+     * Only a pass is cached: a too-old or unreadable build is re-read at the
+     * next round, so an upgrade mid-sprint lets the queue drain.
+     */
+    async function maintainerBuildGap(record, repo) {
+        const key = record && record.id ? JSON.stringify([record.id, repo || '']) : null;
+        if (key && maintainerBuildOk.has(key)) return null;
+        let caps;
+        try {
+            const res = await memberCall(record, KB_CAPABILITIES_TOOL, {}, KB_MAINTAINER_CALL);
+            if (isToolError(res)) return { build: null, why: `${KB_CAPABILITIES_TOOL} failed: ${toolErrorText(res)}` };
+            caps = parseResult(res);
+        } catch (err) {
+            return { build: null, why: `${KB_CAPABILITIES_TOOL} failed: ${errText(err)}` };
+        }
+        const build = fleetBuildOf(caps);
+        if (!build) return { build: null, why: `${KB_CAPABILITIES_TOOL} reported no fleet_build (a server older than the build gate)` };
+        if (build.bibleRules < REQUIRED_MAINTAINER_BIBLE_RULES) return { build, why: 'its bible rules are older than required' };
+        if (key) maintainerBuildOk.set(key, build);
+        return null;
+    }
+
     /** JSON [member id, repo] -> definite withdrawal-support answer: null (supported) or the gap (cached for the sprint). */
     const withdrawalSupport = new Map();
 
@@ -1717,14 +1919,10 @@ export function createKbWorkClient(opts = {}) {
         if (key && withdrawalSupport.has(key)) return withdrawalSupport.get(key);
         const settle = (gap) => { if (key) withdrawalSupport.set(key, gap); return gap; };
         if (typeof listTools !== 'function') return 'its tools cannot be listed (no member session channel)';
-        let tools;
-        try {
-            const list = parseResult(await listTools(record));
-            tools = Array.isArray(list) ? list : (list && Array.isArray(list.tools) ? list.tools : null);
-        } catch (err) {
-            return `its tools could not be listed (${errText(err)})`;
-        }
-        if (!tools) return 'its tools/list answer was unreadable';
+        const read = await readToolsList(listTools, record, { log, prefix: '[kb-work]', memberName: member || (record && record.name) });
+        if (read.error) return `its tools could not be listed (${errText(read.error)})`;
+        if (!read.tools) return 'its tools/list answer was unreadable';
+        const tools = read.tools;
         if (!tools.some((t) => t && t.name === KB_CAPABILITIES_TOOL)) {
             return settle(`its apra-fleet server does not offer ${KB_CAPABILITIES_TOOL} (older version; upgrade apra-fleet on that member)`);
         }
@@ -1975,8 +2173,23 @@ export function createKbWorkClient(opts = {}) {
             for (const repo of [...queues.keys()]) {
                 if (queues.get(repo).length > 0) await flush(repo);
             }
+            const perRepo = new Map();
+            dropWithdrawalRepos.clear();
             for (const repo of new Set([...confirmations.keys(), ...withdrawalsPending.keys(), ...restoresPending.keys(), ...retirements])) {
-                const r = await serialize(repo, () => commitRepo(repo));
+                perRepo.set(repo, await serialize(repo, () => commitRepo(repo)));
+            }
+            // A confirmation dropped DURING this round's bible commit (its
+            // retries ran out) that the sprint had already merged queued a
+            // withdrawal: commit it now, so the branch does not keep carrying
+            // the drifted entry until a later round that may never come.
+            for (const repo of [...dropWithdrawalRepos]) {
+                dropWithdrawalRepos.delete(repo);
+                if (!withdrawalsPending.has(repo) || sealedReason) continue;
+                const first = perRepo.get(repo) || { committed: 0, pending: 0 };
+                const again = await serialize(repo, () => commitRepo(repo));
+                perRepo.set(repo, { committed: first.committed + again.committed, pending: again.pending });
+            }
+            for (const r of perRepo.values()) {
                 out.committed += r.committed;
                 out.pending += r.pending;
             }
@@ -2024,7 +2237,84 @@ export function createKbWorkClient(opts = {}) {
         unpublishedBible() {
             const repos = [];
             for (const [repo, ids] of confirmations) if (ids.size > 0) repos.push({ repo, count: ids.size });
-            return { repos, sealedReason: sealedReason || confirmationsSealedReason };
+            return {
+                repos,
+                sealedReason: sealedReason || confirmationsSealedReason,
+                dropped: droppedFromBible.map((d) => ({ ...d, changed_files: d.changed_files.map((f) => ({ ...f })) })),
+            };
+        },
+        /**
+         * Confirmations dropped from the bible this sprint (a reviewer refused
+         * their re-verification, or the bounded retries ran out): [{ repo, id,
+         * why, changed_files: [{path, reason}], maintainer, withdrawn }]. Each
+         * entry stays in its maintainer's local KB; `withdrawn` is true when
+         * the sprint had already merged it into the branch bible and a
+         * withdrawal was queued to take it out again.
+         */
+        droppedConfirmations() {
+            return droppedFromBible.map((d) => ({ ...d, changed_files: d.changed_files.map((f) => ({ ...f })) }));
+        },
+        /**
+         * The sprint's last review has run: no later reviewer can re-verify
+         * an id still awaiting re-verification, so each one is dropped now
+         * (dropFromBible: a WARN naming it, its changed files and how to
+         * retrieve it; withdrawn from the branch bible when this sprint had
+         * merged it). Call it after the final review's verdicts are applied
+         * and before its bible commit. Returns the dropped ids. Never throws.
+         * @param {string} [label]
+         * @returns {string[]}
+         */
+        expireReverification(label = 'final review') {
+            const out = [];
+            for (const [repo, byId] of [...reverifyPending]) {
+                // A reviewer already re-verified an id whose kb_promote is
+                // still queued (its flush failed or the maintainer was busy):
+                // the bible commit applies it first, so it is not expired.
+                const queuedRe = new Set((queues.get(repo) || [])
+                    .filter((op) => op.kind === 'promote' && op.payload && op.payload.reverify === true)
+                    .map((op) => op.payload.id));
+                for (const r of [...byId.values()]) {
+                    if (queuedRe.has(r.id)) continue;
+                    dropFromBible(repo, r.id, `no reviewer re-verified it by the ${label}, the sprint's last review (retries exhausted)`, r.changed_files);
+                    out.push(r.id);
+                }
+            }
+            return out;
+        },
+        /**
+         * Re-check, at the branch's current head, every bible entry this
+         * sprint's bible commits merged. Call it after the sprint's last code
+         * commit and before the final review: the ids are re-sent to
+         * kb_bible_commit (which G-pulls first), so an entry whose cited
+         * files changed after it was committed comes back as a basis_mismatch
+         * skip and is offered to the final reviewer for re-verification
+         * (CONFIRM: re-stamped and re-merged with the fresh basis; refusal or
+         * no verdict within the retry bound: withdrawn from the branch bible
+         * with a WARN). An entry that still matches merges unchanged, so
+         * nothing drifted means no new bible commit. Ids withdrawn this
+         * sprint are not re-sent. A no-op once any bible commit is sealed.
+         * Never throws.
+         * @param {string} [label]
+         * @returns {Promise<{ checked: number, drifted: string[] }>}
+         */
+        async recheckSprintBible(label = 'final head') {
+            const out = { checked: 0, drifted: [] };
+            if (!active || sealedReason || confirmationsSealedReason) return out;
+            for (const [repo, ids] of [...sprintMerged]) {
+                const recheck = [...ids].filter((id) => !withdrawnIds.has(id));
+                if (recheck.length === 0) continue;
+                if (!confirmations.has(repo)) confirmations.set(repo, new Set());
+                for (const id of recheck) confirmations.get(repo).add(id);
+                out.checked += recheck.length;
+                log(`[kb-work] ${label}: re-checking ${recheck.length} bible entr(ies) this sprint committed for ${repo} against the branch head: ${recheck.join(', ')}`);
+                await serialize(repo, () => commitRepo(repo));
+                const drifted = [...(reverifyPending.get(repo) || new Map()).keys()].filter((id) => recheck.includes(id));
+                out.drifted.push(...drifted);
+                log(drifted.length > 0
+                    ? `[kb-work] ${label}: ${drifted.length} bible entr(ies) for ${repo} drifted after this sprint committed them and are offered to the final reviewer for re-verification: ${drifted.join(', ')}`
+                    : `[kb-work] ${label}: every bible entry this sprint committed for ${repo} still matches the branch head`);
+            }
+            return out;
         },
         /** Ids the final review withdrew this sprint (queued or committed), excluded from every later knowledge block. */
         withdrawnIds() {
@@ -2150,9 +2440,37 @@ export function createKbWorkClient(opts = {}) {
             // Replace (never accumulate) this review scope's offered set up
             // front, so a failed read leaves nothing offered from a prior round.
             offeredCandidates.set(target.repo, new Set());
+            offeredReverify.set(target.repo, new Set());
             // Writes still queued for this repository (a capture from this
             // very round) get their chance to land before the read.
             if (queues.has(target.repo)) await flush(target.repo);
+            // RE-VERIFICATION CANDIDATES ride along: CONFIRMED ids a bible
+            // commit skipped with basis_mismatch (a file they cite changed
+            // after they were confirmed). Each row is marked reverify: true
+            // and names the changed files; kbPromotionBlock renders them as
+            // their own block. Offered even when the INFERRED read fails.
+            const withReverify = (rows) => {
+                const pendingRe = reverifyPending.get(target.repo);
+                if (!pendingRe || pendingRe.size === 0) return rows;
+                const seen = new Set(rows.map((e) => e.id));
+                const extra = [];
+                for (const r of pendingRe.values()) {
+                    if (seen.has(r.id) || withdrawnIds.has(r.id)) continue;
+                    const d = entryDetails.get(r.id) || {};
+                    extra.push({
+                        id: r.id,
+                        ...(typeof d.title === 'string' ? { title: d.title } : {}),
+                        ...(typeof d.summary === 'string' ? { summary: d.summary } : {}),
+                        ...(Array.isArray(d.source_files) ? { source_files: [...d.source_files] } : {}),
+                        changed_files: r.changed_files.map((f) => ({ ...f })),
+                        reverify: true,
+                    });
+                }
+                if (extra.length === 0) return rows;
+                offeredReverify.set(target.repo, new Set(extra.map((e) => e.id)));
+                log(`[kb-work] re-verification candidates offered to the reviewer for ${target.repo}: ${extra.map((e) => `${e.id} [changed: ${describeDrift(e.changed_files)}]`).join(', ')}`);
+                return [...rows, ...extra];
+            };
             try {
                 const res = await memberCall(target.record, 'kb_query', {
                     tag: `member:${target.record.id}`,
@@ -2161,7 +2479,7 @@ export function createKbWorkClient(opts = {}) {
                 });
                 if (isToolError(res)) {
                     log(`[kb-work] kb_query for promotion candidates rejected on maintainer '${target.member}' (non-fatal): ${toolErrorText(res)}`);
-                    return [];
+                    return withReverify([]);
                 }
                 const parsed = parseResult(res);
                 const results = parsed && Array.isArray(parsed.l1_results) ? parsed.l1_results
@@ -2206,10 +2524,17 @@ export function createKbWorkClient(opts = {}) {
                 }
                 const offered = eligible.filter((e) => !unchanged.has(e.id)).slice(0, KB_MAX_PROMOTION_CANDIDATES);
                 offeredCandidates.set(target.repo, new Set(offered.map((e) => e.id)));
-                return offered;
+                for (const e of offered) {
+                    entryDetails.set(e.id, {
+                        ...(typeof e.title === 'string' ? { title: e.title } : {}),
+                        ...(typeof e.summary === 'string' ? { summary: e.summary } : {}),
+                        ...(Array.isArray(e.source_files) ? { source_files: [...e.source_files] } : {}),
+                    });
+                }
+                return withReverify(offered);
             } catch (err) {
                 log(`[kb-work] could not read promotion candidates from maintainer '${target.member}' (non-fatal): ${err.message}`);
-                return [];
+                return withReverify([]);
             }
         },
         /**
@@ -2473,14 +2798,27 @@ export function createKbWorkClient(opts = {}) {
                     // (Demotions are resolved against their OWN offered set in
                     // resolveDemotionVerdicts, never the promotion one.)
                     const offered = offeredCandidates.get(review.repo) || new Set();
+                    const reOffered = offeredReverify.get(review.repo) || new Set();
                     const inBlock = (kind, x, offeredSet) => {
                         if (offeredSet.has(x.id)) return true;
                         log(`[kb-work] refused -- ${role}: ${kind} ${x.id} not in this dispatch's candidate block`);
                         extraRefused += 1;
                         return false;
                     };
-                    for (const p of promotions) if (inBlock('promotion', p, offered)) enqueue(review.repo, 'promote', role, p);
-                    for (const d of discards) if (inBlock('discard', d, offered)) enqueue(review.repo, 'discard', role, d);
+                    // A re-verification candidate: CONFIRM re-promotes it
+                    // (kb_promote re-stamps the basis) and puts it back on
+                    // the bible queue; a refusal drops it from the bible
+                    // queue only -- never kb_invalidate, never a demote.
+                    for (const p of promotions) {
+                        if (reOffered.has(p.id)) enqueue(review.repo, 'promote', role, { ...p, reverify: true });
+                        else if (inBlock('promotion', p, offered)) enqueue(review.repo, 'promote', role, p);
+                    }
+                    for (const d of discards) {
+                        if (reOffered.has(d.id)) {
+                            const r = (reverifyPending.get(review.repo) || new Map()).get(d.id);
+                            dropFromBible(review.repo, d.id, `the ${role} refused its re-verification: ${d.reason}`, r ? r.changed_files : []);
+                        } else if (inBlock('discard', d, offered)) enqueue(review.repo, 'discard', role, d);
+                    }
                     repos.add(review.repo);
                 } else {
                     log(`[kb-work] WARN: no kb_maintainer for member '${producer}' (${role}) -- ${promotions.length} promotion(s) and ${discards.length} discard(s) dropped`);
@@ -2544,14 +2882,13 @@ export function createKbPrimingClient(opts = {}) {
      */
     async function importRefGap(target) {
         if (typeof opts.listTools !== 'function') return 'its tools cannot be listed (no member session channel)';
-        let tools;
-        try {
-            const list = parseResult(await opts.listTools(target));
-            tools = Array.isArray(list) ? list : (list && Array.isArray(list.tools) ? list.tools : null);
-        } catch (err) {
-            return `its tools could not be listed (${err && err.message ? err.message : String(err)})`;
-        }
-        if (!tools) return 'its tools/list answer was unreadable';
+        // Tolerant of every answer shape; an unparseable answer is retried
+        // once and then WARNed with the raw answer -- the caller WARNs the
+        // skip itself, so the import is never skipped silently.
+        const read = await readToolsList(opts.listTools, target, { log, prefix: '[kb-prime]', memberName: target && target.name });
+        if (read.error) return `its tools could not be listed (${read.error && read.error.message ? read.error.message : String(read.error)})`;
+        if (!read.tools) return 'its tools/list answer was unreadable';
+        const tools = read.tools;
         const imp = tools.find((t) => t && t.name === 'kb_import');
         const props = imp && imp.inputSchema && imp.inputSchema.properties;
         if (props && typeof props === 'object' && Object.prototype.hasOwnProperty.call(props, 'ref')) return null;
@@ -2955,6 +3292,54 @@ export function kbDemotionBlock(kbCandidates) {
 }
 
 export function kbPromotionBlock(kbCandidates) {
+    if (!Array.isArray(kbCandidates) || kbCandidates.length === 0) return [];
+    const reverify = kbCandidates.filter((e) => e && e.reverify === true);
+    const inferred = kbCandidates.filter((e) => !(e && e.reverify === true));
+    return [...kbInferredPromotionBlock(inferred), ...kbReverifyBlock(reverify)];
+}
+
+/**
+ * KNOWLEDGE BANK -- re-verification candidates: CONFIRMED entries the bible
+ * commit refused to publish because a file they cite changed after they were
+ * confirmed (kb_bible_commit basis_mismatch). Rendered by kbPromotionBlock
+ * next to the promotion candidates, in both reviewer prompts. A CONFIRM
+ * re-stamps the entry's basis at HEAD and publishes it; a refusal drops it
+ * from the bible without deleting or demoting it.
+ *
+ * @param {object[]} rows rows marked reverify: true, each naming changed_files [{path, reason}]
+ * @returns {string[]}
+ */
+export function kbReverifyBlock(rows) {
+    if (!Array.isArray(rows) || rows.length === 0) return [];
+    return [
+        'KNOWLEDGE BANK -- re-verification candidates. These entries are already CONFIRMED, but '
+        + 'a file each one cites changed after it was confirmed, so its recorded basis no longer '
+        + 'matches and it cannot be published to the knowledge bible as it is. `changed_files` '
+        + 'names each such file and why it no longer matches (changed, absent, or no recorded '
+        + 'basis). Check every claim against those files at the sprint branch HEAD. Do NOT call '
+        + 'any kb_* tool yourself: return your decisions in your structured output.\n'
+        + 'If the claim still holds at HEAD, list it in `kb_promotions` as {id, reason}, the '
+        + 'reason stating what you checked (at least 20 characters): its basis is re-recorded at '
+        + 'HEAD and it is published. If it no longer holds, list it in `kb_discards` as {id, '
+        + 'reason}, the reason stating what contradicts it: for these entries a discard only '
+        + 'keeps the entry out of the bible -- it is not deleted or demoted. An id you list in '
+        + 'neither is offered again at a later review, and dropped from the bible (with a '
+        + 'warning) if nobody re-verifies it. Never list the same id in both fields.\n'
+        + wrapUntrustedBlock('kb_bible_commit basis_mismatch skips', JSON.stringify(
+            rows.map((e) => ({
+                id: e.id,
+                ...(typeof e.title === 'string' ? { title: e.title } : {}),
+                ...(typeof e.summary === 'string' ? { summary: e.summary } : {}),
+                ...(Array.isArray(e.source_files) ? { source_files: e.source_files } : {}),
+                changed_files: Array.isArray(e.changed_files) ? e.changed_files : [],
+            })),
+            null,
+            2
+        )),
+    ];
+}
+
+function kbInferredPromotionBlock(kbCandidates) {
     if (!Array.isArray(kbCandidates) || kbCandidates.length === 0) return [];
     return [
         'KNOWLEDGE BANK -- promotion candidates. These entries were captured during this '

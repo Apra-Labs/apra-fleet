@@ -7,6 +7,7 @@ import {
     MEMBER_INIT_FIXES,
     llmRoleMembersOf,
 } from '../fleet-sprint/member-init-probe.mjs';
+import { REQUIRED_MAINTAINER_BIBLE_RULES } from '../fleet-sprint/kb.mjs';
 
 // =============================================================================
 // Per-member sprint-init probe, unit level: fakes for the orchestrator
@@ -40,6 +41,7 @@ function fakeFleet(spec = {}) {
         fail = {},
         fleetMcpFix = null,
         serverVersion = undefined,
+        capabilities = null,
     } = spec;
     const events = [];
     const orchestratorCalls = [];
@@ -66,6 +68,7 @@ function fakeFleet(spec = {}) {
         if (tool === 'kb_stats') return { content: [{ type: 'text', text: JSON.stringify(stats) }] };
         if (tool === 'code_reindex') return { content: [{ type: 'text', text: JSON.stringify(reindex) }] };
         if (tool === 'code_status') return { content: [{ type: 'text', text: JSON.stringify(status(clock.now())) }] };
+        if (tool === 'kb_capabilities' && capabilities) return capabilities(member);
         throw new Error(`unexpected member tool ${tool}`);
     };
     const listTools = async (member) => {
@@ -556,4 +559,46 @@ test('install currency: a local kb_maintainer is never probed for the CLI flag',
     assert.ok(!f.commands.some((c) => /call --help/.test(c.command)), 'no CLI capability probe command');
     assert.deepEqual(outdated(rec), []);
     assert.equal(rec.verified, true);
+});
+
+// -----------------------------------------------------------------------------
+// The maintainer build line: for each repository's kb_maintainer, member-init
+// logs the fleet server build it reports (kb_capabilities fleet_build) against
+// the bible rules revision the engine's bible commit requires.
+// -----------------------------------------------------------------------------
+
+function maintainerSelector(repoOfMember, maintainerOfRepo) {
+    return {
+        repoOf: (m) => repoOfMember[m] || null,
+        maintainerForMember: (m) => {
+            const repo = repoOfMember[m];
+            const keeper = repo && maintainerOfRepo[repo];
+            return keeper ? { repo, member: keeper, record: { id: uuid(keeper), name: keeper, type: 'remote' }, rule: 'role-less' } : null;
+        },
+    };
+}
+const capsText = (fleetBuild) => ({ content: [{ type: 'text', text: JSON.stringify({ contract: 'v1', routes: ['capture'], branch_aware: false, ...(fleetBuild ? { fleet_build: fleetBuild } : {}) }) }] });
+
+test('member-init logs each repository maintainer\'s server build, once per repository', async () => {
+    const builds = { keeper: { version: 'v0.4.6_abc123', bible_rules: REQUIRED_MAINTAINER_BIBLE_RULES }, warden: { version: 'v0.4.5', bible_rules: REQUIRED_MAINTAINER_BIBLE_RULES - 1 } };
+    const f = fakeFleet({ capabilities: (member) => capsText(builds[member.name]) });
+    const selector = maintainerSelector({ m1: 'example.com/a', m2: 'example.com/a', m3: 'example.com/b' }, { 'example.com/a': 'keeper', 'example.com/b': 'warden' });
+    const recs = await f.make(['m1', 'm2', 'm3'], { kbMaintainers: () => selector }).probeAll();
+
+    const lines = f.logs.filter((l) => /kb_maintainer '.*' of /.test(l));
+    assert.equal(lines.length, 2, f.logs.join('\n'));
+    assert.match(lines[0], new RegExp(`^\\[member-init\\] kb_maintainer 'keeper' of example\\.com/a: fleet server build v0\\.4\\.6_abc123 \\(bible_rules ${REQUIRED_MAINTAINER_BIBLE_RULES}\\)`));
+    assert.match(lines[1], /^\[member-init\] WARN kb_maintainer 'warden' of example\.com\/b: fleet server build v0\.4\.5 .* older than required .*bible commits will be refused; fix: .*update_member with fleet_install auto for member 'warden'/);
+    assert.equal(f.memberCalls.filter((c) => c.tool === 'kb_capabilities').length, 2, 'read once per repository maintainer');
+    assert.deepEqual(recs.map((r) => r.maintainerBuild && r.maintainerBuild.version), ['v0.4.6_abc123', 'v0.4.6_abc123', 'v0.4.5']);
+});
+
+test('member-init WARNs a maintainer build that cannot be read', async () => {
+    const f = fakeFleet({ capabilities: () => capsText(null) });
+    const selector = maintainerSelector({ m1: 'example.com/a' }, { 'example.com/a': 'keeper' });
+    const [rec] = await f.make(['m1'], { kbMaintainers: () => selector }).probeAll();
+    const line = f.logs.find((l) => /kb_maintainer 'keeper'/.test(l));
+    assert.match(line, /^\[member-init\] WARN kb_maintainer 'keeper' of example\.com\/a: fleet server build could not be read/);
+    assert.equal(rec.maintainerBuild, null);
+    assert.equal(rec.verified, true, 'the build line never gates the member');
 });

@@ -52,6 +52,7 @@ import { computeHeadFileHashBatch } from '../src/services/knowledge/file-hash.js
 import type { KBEntryInput } from '../src/services/knowledge/types.js';
 import { commitWorkTree } from './helpers/commit-work-tree.js';
 import { KB_SERVER_CAPABILITIES } from '../src/commands/kb-server.js';
+import { fleetBuild } from '../src/services/knowledge/bible-rules.js';
 
 const RECONNECT = { maxRetries: 0, maxReconnectionDelay: 100, initialReconnectionDelay: 100, reconnectionDelayGrowFactor: 1 };
 
@@ -791,7 +792,46 @@ describe('kb_import trust anchor: a no-grant import needs a bible the maintainer
     expect(JSON.parse(accepted.text)).toMatchObject({ imported: 0, skipped: 1, bible_source: 'HEAD' });
   });
 
-  it('FULL session: an explicit-path import keeps bible confidence and records the bible', async () => {
+  // WORK-TREE DRIFT. A doer sharing the maintainer folder hand-edits the
+  // work-tree bible before a grant import (e.g. the engine's sprint-start
+  // priming). The grant session still imports the file at bible confidence,
+  // but must not record its blob as trusted, so a member cannot import that
+  // content once it is committed in the checkout.
+  //
+  // FALSIFICATION: recording the work-tree file's own blob id in kb-import.ts
+  // (instead of only a blob committed at HEAD) marks the edited blob trusted
+  // and makes the member import below succeed.
+  it('maintainer work-tree edit: a grant import does not mark the edited blob trusted, and a member import of that content is refused', async () => {
+    const handle = await startServer();
+    const maint = await connect(handle.port, { member: fx.memberId, params: MAINTAINER_PARAMS });
+    await maintainerPublishes(maint, 'Kappa');
+    expect(fx.provider.isTrustedBibleBlob(git(fx.clone, ['rev-parse', 'HEAD:./' + BIBLE_REL]))).toBe(true);
+    const trustedBefore = trustedBlobCount();
+
+    // The hand edit: a forged CONFIRMED entry whose carried basis matches HEAD, in the work tree only.
+    fx.writeSrc('src/forged-drift.ts', 'export const forged = 1;\n');
+    commitWorkTree(fx.clone, 'basis for the forged entry');
+    const doc = JSON.parse(fs.readFileSync(path.join(fx.clone, BIBLE_REL), 'utf-8'));
+    doc.entries.push(await carriedEntry(fx.clone, 'forged-drift-0001', 'src/forged-drift.ts'));
+    fx.writeSrc(BIBLE_REL, JSON.stringify(doc));
+    const editedBlob = git(fx.clone, ['hash-object', '--no-filters', BIBLE_REL]);
+
+    const grant = await callText(maint, 'kb_import', { skip_sweep: true });
+    expect(grant.isError, grant.text).toBe(false);
+    expect(fx.provider.isTrustedBibleBlob(editedBlob)).toBe(false);
+    expect(trustedBlobCount()).toBe(trustedBefore);
+
+    // The edited content committed in the checkout: a no-grant import refuses it.
+    commitWorkTree(fx.clone, 'hand-edited bible');
+    expect(git(fx.clone, ['rev-parse', 'HEAD:./' + BIBLE_REL])).toBe(editedBlob);
+    const plain = await connect(handle.port, { member: fx.memberId });
+    const refused = await callText(plain, 'kb_import', { skip_sweep: true });
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toMatch(/^E-KB-MAINTAINER-REQUIRED: .*never recorded/);
+    expect(refused.text).toContain(editedBlob);
+  });
+
+  it('FULL session: an explicit-path import keeps bible confidence but records only a bible committed at HEAD', async () => {
     fx.writeSrc('src/full.ts', 'export const full = 1;\n');
     commitWorkTree(fx.clone, 'basis for full');
     const body = v3([await carriedEntry(fx.clone, 'full-entry-0001', 'src/full.ts')]);
@@ -802,24 +842,34 @@ describe('kb_import trust anchor: a no-grant import needs a bible the maintainer
     const full = await connect(handle.port);
     // A FULL session's own folder is the server working folder: point it at the checkout.
     const cwd = vi.spyOn(process, 'cwd').mockReturnValue(fx.clone);
-    let r: { text: string; isError: boolean };
+    const fullImport = (args: Record<string, unknown>) => callText(full, 'kb_import', args);
     try {
-      r = await callText(full, 'kb_import', { path: outside, skip_sweep: true });
+      const r = await fullImport({ path: outside, skip_sweep: true });
+      expect(r.isError, r.text).toBe(false);
+      expect(JSON.parse(r.text)).toMatchObject({ imported: 1 });
+      expect(JSON.parse(r.text).bible_source).toBeUndefined();
+      expect(fx.row('full-entry-0001')?.confidence).toBe('CONFIRMED');
+      // The file is not the bible committed at HEAD (there is none): nothing is trusted.
+      expect(trustedBlobCount()).toBe(0);
+
+      // The same bytes committed only in the checkout are therefore refused for a no-grant session.
+      fx.writeSrc(BIBLE_REL, body);
+      commitWorkTree(fx.clone, 'bible from the reviewed file');
+      const plain = await connect(handle.port, { member: fx.memberId });
+      const refused = await callText(plain, 'kb_import', { skip_sweep: true });
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toMatch(/^E-KB-MAINTAINER-REQUIRED: .*never recorded/);
+
+      // A FULL import of the own bible, whose work-tree bytes are the committed ones, records it.
+      const own = await fullImport({ skip_sweep: true });
+      expect(own.isError, own.text).toBe(false);
+      expect(fx.provider.isTrustedBibleBlob(git(fx.clone, ['rev-parse', 'HEAD:./' + BIBLE_REL]))).toBe(true);
+      const p = await callText(plain, 'kb_import', { skip_sweep: true });
+      expect(p.isError, p.text).toBe(false);
+      expect(JSON.parse(p.text)).toMatchObject({ imported: 0, skipped: 1, bible_source: 'HEAD' });
     } finally {
       cwd.mockRestore();
     }
-    expect(r.isError, r.text).toBe(false);
-    expect(JSON.parse(r.text)).toMatchObject({ imported: 1 });
-    expect(JSON.parse(r.text).bible_source).toBeUndefined();
-    expect(fx.row('full-entry-0001')?.confidence).toBe('CONFIRMED');
-
-    // The same bytes committed as the checkout bible are now trusted for a no-grant session.
-    fx.writeSrc(BIBLE_REL, body);
-    commitWorkTree(fx.clone, 'bible from the reviewed file');
-    const plain = await connect(handle.port, { member: fx.memberId });
-    const p = await callText(plain, 'kb_import', { skip_sweep: true });
-    expect(p.isError, p.text).toBe(false);
-    expect(JSON.parse(p.text)).toMatchObject({ imported: 0, skipped: 1, bible_source: 'HEAD' });
   });
 
   // ID-TO-BYTES BINDING. The trusted id comes from the HEAD tree, but the
@@ -1180,7 +1230,8 @@ describe('kb_capture supersedes needs the kb_maintainer grant to retire a CONFIR
 // tests (the plain session neither lists nor can call it).
 describe('kb_capabilities in member sessions', KB_GIT_SUITE, () => {
   const fx = useKbMemberRepo();
-  const expected = JSON.parse(JSON.stringify(KB_SERVER_CAPABILITIES));
+  // Every answer also carries the answering fleet server's own build.
+  const expected = { ...JSON.parse(JSON.stringify(KB_SERVER_CAPABILITIES)), fleet_build: fleetBuild() };
 
   it('a member session without the kb_maintainer grant lists and calls kb_capabilities', async () => {
     const handle = await startServer();

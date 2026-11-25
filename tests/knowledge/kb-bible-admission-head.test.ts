@@ -103,7 +103,7 @@ describe('bible admission reads cited files at HEAD, not the work tree', () => {
     const r = JSON.parse(await kbBibleCommit({ ids: [clean, dirtyOnly], ...BASE }, { folder: repo }));
 
     expect(r.merged).toEqual([clean]);
-    expect(r.skipped).toEqual([{ id: dirtyOnly, reason: 'basis_mismatch' }]);
+    expect(r.skipped).toEqual([{ id: dirtyOnly, reason: 'basis_mismatch', changed_files: [{ path: 'src/dirty.ts', reason: 'changed' }] }]);
     expect(bibleIds()).toEqual([clean]);
     // The work tree is left as it was: the dirty edits are still uncommitted.
     expect(git(repo, ['status', '--porcelain', '--', 'src']).trimEnd().split('\n').sort())
@@ -126,7 +126,7 @@ describe('bible admission reads cited files at HEAD, not the work tree', () => {
     const r = JSON.parse(await kbBibleCommit({ ids: [clean, dirtyOnly], ...BASE }, { folder: repo }));
 
     expect(r.merged).toEqual([dirtyOnly]);
-    expect(r.skipped).toEqual([{ id: clean, reason: 'basis_mismatch' }]);
+    expect(r.skipped).toEqual([{ id: clean, reason: 'basis_mismatch', changed_files: [{ path: 'src/clean.ts', reason: 'changed' }] }]);
   });
 
   it('a file absent at HEAD (untracked) is a mismatch even though it exists on disk', async () => {
@@ -137,7 +137,7 @@ describe('bible admission reads cited files at HEAD, not the work tree', () => {
     const r = JSON.parse(await kbBibleCommit({ ids: [id], ...BASE }, { folder: repo }));
 
     expect(r.merged).toEqual([]);
-    expect(r.skipped).toEqual([{ id, reason: 'basis_mismatch' }]);
+    expect(r.skipped).toEqual([{ id, reason: 'basis_mismatch', changed_files: [{ path: 'src/untracked.ts', reason: 'absent' }] }]);
   });
 });
 
