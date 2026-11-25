@@ -628,7 +628,10 @@ On the server machine, generate a token and start the server:
 
 ```bash
 node dist/index.js kb-server --generate-token
-# Prints: KB server token: <64-hex-chars>
+# Writes <fleet dir>/knowledge/kb-server.token (encrypted, mode 0600), prints
+#   KB server token: <64-hex-chars>
+#   Token file written: <absolute path>
+# and exits; it does not start the server.
 node dist/index.js kb-server
 # Prints: KB server listening on port 7878
 ```
