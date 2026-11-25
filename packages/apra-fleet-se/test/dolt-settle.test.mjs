@@ -1,5 +1,5 @@
 import { test } from 'node:test';
-import { BEADS_VERSION as ENGINE_BEADS_VERSION, BEADS_PACKAGE as ENGINE_BEADS_PACKAGE, DOLT_VERSION as ENGINE_DOLT_VERSION } from '../fleet-sprint/tool-version-pin.mjs';
+import { BEADS_VERSION as ENGINE_BEADS_VERSION, BEADS_PACKAGE as ENGINE_BEADS_PACKAGE, DOLT_VERSION as ENGINE_DOLT_VERSION, BEADS_CONFLICTED_PULL_FIXED_IN as ENGINE_BEADS_FIXED_IN, bdConflictedPullWarningText as engineWarningText } from '../fleet-sprint/tool-version-pin.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -210,6 +210,20 @@ test('engine BEADS_VERSION matches src/cli/beads-pin.ts pin (drift guard)', () =
     assert.equal(ENGINE_BEADS_VERSION, match[1], 'tool-version-pin.mjs BEADS_VERSION must equal src/cli/beads-pin.ts BEADS_VERSION -- a pin bump that touches one file and not the other must fail this test');
     assert.equal(ENGINE_BEADS_PACKAGE, `@beads/bd@${match[1]}`);
     assert.equal(ENGINE_DOLT_VERSION, DOLT_VERSION, 'the engine dolt pin is dolt-settle.mjs DOLT_VERSION, never a third literal');
+});
+
+// The affected-range constant (first bd release fixing the conflicted-pull link
+// loss) and its warning wording are mirrored between engine and product.
+test('engine BEADS_CONFLICTED_PULL_FIXED_IN and warning text match src/cli/beads-pin.ts (drift guard)', () => {
+    const pinTsPath = path.join(__dirname, '..', '..', '..', 'src', 'cli', 'beads-pin.ts');
+    const source = fs.readFileSync(pinTsPath, 'utf-8');
+    const match = source.match(/export const BEADS_CONFLICTED_PULL_FIXED_IN = '([^']+)'/);
+    check(match, 'beads-pin.ts still exports a BEADS_CONFLICTED_PULL_FIXED_IN constant in the expected shape');
+    assert.equal(ENGINE_BEADS_FIXED_IN, match[1], 'the engine and product affected-range constants must agree');
+    const tpl = source.match(/export function bdConflictedPullWarningText[\s\S]*?return `([^`]+)`/);
+    check(tpl, 'beads-pin.ts still exports bdConflictedPullWarningText');
+    const productText = tpl[1].replace('${version}', '1.3.0').replace('${BEADS_CONFLICTED_PULL_FIXED_IN}', match[1]);
+    assert.equal(engineWarningText('1.3.0'), productText);
 });
 
 // ---------------------------------------------------------------------------

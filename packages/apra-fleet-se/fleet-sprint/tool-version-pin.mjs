@@ -22,6 +22,37 @@ export const BEADS_PACKAGE = '@beads/bd@1.3.0';
 /** The bd version the engine supports ("1.3.0"), derived from BEADS_PACKAGE. */
 export const BEADS_VERSION = BEADS_PACKAGE.slice(BEADS_PACKAGE.lastIndexOf('@') + 1);
 
+/**
+ * First bd release believed to fix the conflicted-pull link loss: a plain
+ * `bd dolt pull` that hits a merge conflict auto-resolves and commits only the
+ * tables it resolved, so cleanly merged tables (dependencies: parent-child and
+ * blocks links) keep the local copy and the next push silently reverts other
+ * clones' links. Source: the project's operational note for bd 1.3.x, which
+ * names 1.4.0 as the fixed version. UNVERIFIED against the beads release notes
+ * (not reachable when this was written): until a release is confirmed fixed,
+ * every version below this one is treated as affected. Mirrors
+ * src/cli/beads-pin.ts BEADS_CONFLICTED_PULL_FIXED_IN; test/dolt-settle.test.mjs
+ * fails if the two disagree.
+ */
+export const BEADS_CONFLICTED_PULL_FIXED_IN = '1.4.0';
+
+/** True when `version` (any text holding x.y.z) is below BEADS_CONFLICTED_PULL_FIXED_IN. Unparseable -> false. */
+export function bdConflictedPullAffected(version) {
+    const parse = (s) => { const m = /(\d+)\.(\d+)\.(\d+)/.exec(String(s ?? '')); return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null; };
+    const v = parse(version);
+    const fixed = parse(BEADS_CONFLICTED_PULL_FIXED_IN);
+    if (!v) return false;
+    for (let i = 0; i < 3; i++) {
+        if (v[i] !== fixed[i]) return v[i] < fixed[i];
+    }
+    return false;
+}
+
+/** The warning text (no prefix), same wording as the installer's. */
+export function bdConflictedPullWarningText(version) {
+    return `bd ${version} is affected by a known issue: a conflicted dolt pull can silently drop parent-child and blocks links (fixed in bd ${BEADS_CONFLICTED_PULL_FIXED_IN}, unverified). Links are verified before push; after any conflicted pull check them (see skills/fleet/beads-conflict-resolution.md).`;
+}
+
 /** The dolt pin is dolt-settle.mjs's; re-exported, never duplicated. */
 export { DOLT_VERSION };
 

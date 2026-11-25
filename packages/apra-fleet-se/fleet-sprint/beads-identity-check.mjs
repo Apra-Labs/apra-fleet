@@ -56,7 +56,7 @@ import {
 import { BeadsIdentityError, BEADS_IDENTITY_FAILURE_REASONS, VCS_FAILURE_KINDS } from './errors.mjs';
 import { syncBefore as doltSyncBefore } from './dolt-sync.mjs';
 import { classifyFailure, commandBinary } from './vcs-module.mjs';
-import { BEADS_PACKAGE, BEADS_VERSION, DOLT_VERSION, TOOL_VERSION_PROBES, checkPinnedVersion, majorMinor } from './tool-version-pin.mjs';
+import { BEADS_PACKAGE, BEADS_VERSION, DOLT_VERSION, TOOL_VERSION_PROBES, checkPinnedVersion, majorMinor, bdConflictedPullAffected, bdConflictedPullWarningText } from './tool-version-pin.mjs';
 
 // Short: three cheap local reads per member. A member that cannot answer
 // `bd where` inside a minute is not a member this sprint should mutate.
@@ -307,6 +307,9 @@ export async function verifyPinnedToolVersions({ command, members, log = () => {
         );
     }
     for (const member of list) {
+        if (bdConflictedPullAffected(found[member].bd)) {
+            log(`${BEADS_IDENTITY_WARNING_PREFIX}member '${member}': ${bdConflictedPullWarningText(found[member].bd)}`);
+        }
         log(`[beads-identity] tool versions ok: ${member} bd ${found[member].bd}${found[member].dolt ? `, dolt ${found[member].dolt}` : ', dolt absent'}`);
     }
     return found;
