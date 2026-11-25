@@ -1231,7 +1231,7 @@ export function createSprintController(deps = {}) {
     // Response: the stable summary (sprint-summary.mjs) plus the pre-existing
     // fields, including the live child's state tree resolved by
     // resolveChildState(); no lean ref marker or string table anywhere.
-    // opts.full (GET ?full=1) is accepted and returns the same response.
+    // GET ?full=1 is accepted by the route and returns the same response.
     // Additive terminal fields from a persisted terminal run state: `analysis`
     // ({ text, generatedAt } from the sprint-analysis extension namespace, null
     // for older runs) and `result` (the run's verdict/status/notes).
@@ -1245,7 +1245,7 @@ export function createSprintController(deps = {}) {
         return { analysis, result: res ? { ...res } : null };
     }
 
-    async function getSprint(id, _opts = {}) {
+    async function getSprint(id) {
         const reservation = ledger.get(id);
         if (reservation) {
             // apra-fleet-2l4.1: check FIRST whether the engine has already
@@ -1429,13 +1429,9 @@ export function registerSprintRoutes(supervisor, controller) {
 
     supervisor.route('GET', '/api/sprints/:id', async (req, res, ctx) => {
         try {
-            // ?full=1 (or full=true) is accepted; the live state tree is always returned resolved.
-            let full = false;
-            try {
-                const v = new URL(req.url, 'http://localhost').searchParams.get('full');
-                full = v === '1' || v === 'true';
-            } catch { full = false; }
-            sendJson(res, 200, await controller.getSprint(ctx.params.id, { full }));
+            // ?full=1 (or full=true) is accepted and ignored: the live state
+            // tree is always returned, resolved.
+            sendJson(res, 200, await controller.getSprint(ctx.params.id));
         } catch (err) {
             if (!onApiError(res, err)) throw err;
         }

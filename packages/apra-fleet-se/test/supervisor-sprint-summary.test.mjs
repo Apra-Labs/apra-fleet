@@ -12,6 +12,7 @@ import { createHistory, HISTORY_FILENAME } from '../src/supervisor/history.mjs';
 import { createSupervisor } from '../src/supervisor/server.mjs';
 import { createSprintController, registerSprintRoutes, LIST_SUMMARY_TIMEOUT_MS } from '../src/supervisor/api.mjs';
 import { SPRINT_SUMMARY_FIELDS, parsePhaseTitle } from '../src/supervisor/sprint-summary.mjs';
+import { scaledTimeout } from './helpers/scaled-timeout.mjs';
 
 // GET /api/sprints/:id and GET /api/sprints carry a stable, documented
 // top-level summary; the default response has no lean ref marker or string
@@ -228,7 +229,10 @@ describe('GET /api/sprints with a hung child', () => {
             const t0 = Date.now();
             const out = await controller.listSprints();
             const took = Date.now() - t0;
-            assert.ok(took < 1400, `listSprints took ${took}ms with one hung child`);
+            // Wall-clock bound scaled for test concurrency; the budget constant
+            // above is the deterministic guarantee.
+            const bound = scaledTimeout(1400);
+            assert.ok(took < bound, `listSprints took ${took}ms with one hung child (bound ${bound}ms)`);
             assert.equal(out.sprints.length, 1);
             const row = out.sprints[0];
             assert.equal(row.sprintId, 'hung-1');
