@@ -38,6 +38,7 @@ import path from 'node:path';
 import { HTML_TEMPLATE } from '@apralabs/apra-fleet-workflow/viewer';
 import { getOldRunsDir, getTerminalRunStatePath } from '@apralabs/apra-fleet-workflow/viewer/run-state-paths';
 import { getFleetDataDir } from '@apralabs/apra-fleet-client/server-resolution';
+import { prefixHistoryPageHtml } from './proxy.mjs';
 
 /**
  * BOUNDARY-COMPAT (apra-fleet-eft.37.1/37.2): the legacy pre-rename terminal
@@ -247,7 +248,8 @@ export function createHistoryView(deps = {}) {
             sendPlain(res, 404, `No history for '${sprintId}'.`);
             return;
         }
-        const body = Buffer.from(html, 'utf-8');
+        // Forwarded path prefix (verified front requests only; '' otherwise).
+        const body = Buffer.from(prefixHistoryPageHtml(html, ctx?.auth?.base ?? ''), 'utf-8');
         res.writeHead(200, {
             'content-type': 'text/html; charset=utf-8',
             'content-length': body.length,

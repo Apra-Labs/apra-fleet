@@ -465,7 +465,7 @@ Pre-check (before the numbered steps). Look for a running fleet-sprint
    `E-FLEET-SE-RUNNING`):
 
    ```bash
-   curl -X POST http://localhost:<port>/api/shutdown -H "Content-Type: application/json" -d "{}"
+   curl -X POST http://localhost:<port>/api/shutdown -H "Content-Type: application/json" -d '{}'
    ```
 
 0. Stop the server with the INSTALLED binary and check that it is down (a live

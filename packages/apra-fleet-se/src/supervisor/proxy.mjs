@@ -53,6 +53,8 @@ import { getTerminalRunStatePath } from '@apralabs/apra-fleet-workflow/viewer/ru
 import { ADMITTED_REQUEST_STRIP_HEADERS } from '@apralabs/apra-fleet-workflow/viewer/request-guard';
 import { withTimestamps } from './log-timestamp.mjs';
 import { createChildPortResolver } from './child-port.mjs';
+import { prefixLocation, prefixRootUrls } from './base-path.mjs';
+import { FORWARDED_PREFIX_HEADER, IDENTITY_HEADER } from './auth.mjs';
 
 /** Hop-by-hop headers that must never be forwarded verbatim across a proxy. */
 const HOP_BY_HOP = Object.freeze([
@@ -103,6 +105,26 @@ export function rewriteChildHtml(html, prefix) {
 }
 
 /**
+ * A history page (the History view's HTML_TEMPLATE in history mode, or the
+ * compact read-only page) re-rooted under a forwarded prefix: the same
+ * client-call rewrite the live view gets (with the bare prefix, so those calls
+ * keep addressing the same supervisor paths they always did) plus any
+ * root-absolute href/src/action. The line holding the embedded frozen state
+ * (`renderState(<json>);`, one line: JSON.stringify never emits a raw newline)
+ * is left verbatim so user-authored text in it is never altered. Identity when
+ * `base` is empty.
+ * @param {string} html
+ * @param {string} base
+ * @returns {string}
+ */
+export function prefixHistoryPageHtml(html, base) {
+    if (!base || typeof html !== 'string') return html;
+    return html.split('\n').map((line) => (/^\s*renderState\(/.test(line)
+        ? line
+        : prefixRootUrls(rewriteChildHtml(line, base), base, { segments: false }))).join('\n');
+}
+
+/**
  * Copy request headers for the upstream call, dropping host/encoding/hop-by-hop
  * and the browser-origin/token headers: the supervisor's route() guard already
  * admitted this request against the SUPERVISOR's origin, and the child viewer
@@ -113,6 +135,10 @@ function upstreamRequestHeaders(req) {
     const headers = { ...req.headers };
     delete headers.host;
     for (const h of ADMITTED_REQUEST_STRIP_HEADERS) delete headers[h];
+    // The front's identity assertion and path prefix are for the supervisor
+    // alone; the child viewer never sees them.
+    delete headers[IDENTITY_HEADER];
+    delete headers[FORWARDED_PREFIX_HEADER];
     // SSE passthrough must stay uncompressed and unbuffered -- never let the
     // child gzip a stream we need to flush event-by-event.
     delete headers['accept-encoding'];
@@ -120,11 +146,15 @@ function upstreamRequestHeaders(req) {
     return headers;
 }
 
-/** Copy upstream response headers for the client, dropping encoding/hop-by-hop. */
-function downstreamResponseHeaders(upstreamHeaders) {
+/**
+ * Copy upstream response headers for the client, dropping encoding/hop-by-hop.
+ * A root-absolute Location is re-rooted under the forwarded prefix, if any.
+ */
+function downstreamResponseHeaders(upstreamHeaders, base = '') {
     const out = { ...upstreamHeaders };
     delete out['content-encoding'];
     for (const h of HOP_BY_HOP) delete out[h];
+    if (base && typeof out.location === 'string') out.location = prefixLocation(out.location, base);
     return out;
 }
 
@@ -144,13 +174,13 @@ function sendPlain(res, status, text) {
  * is written to the client as it arrives; a client disconnect destroys the
  * upstream request so the child sees the subscription drop.
  */
-function proxyStream({ host, port, childPath, req, res, logError }) {
+function proxyStream({ host, port, childPath, req, res, logError, base = '' }) {
     let settled = false;
     const upstream = http.request(
         { host, port, path: childPath, method: req.method || 'GET', headers: upstreamRequestHeaders(req) },
         (up) => {
             settled = true;
-            res.writeHead(up.statusCode || 502, downstreamResponseHeaders(up.headers));
+            res.writeHead(up.statusCode || 502, downstreamResponseHeaders(up.headers, base));
             // Flush headers immediately so an SSE client's connection opens
             // before the first event, not only once data starts flowing.
             if (typeof res.flushHeaders === 'function') res.flushHeaders();
@@ -349,7 +379,7 @@ export function createLiveProxy(deps = {}) {
     }
 
     /** Render + send the read-only historical view; 404 when no history exists. */
-    async function serveHistory(sprintId, res) {
+    async function serveHistory(sprintId, res, base = '') {
         let html = null;
         try {
             html = await renderHistory(sprintId);
@@ -360,7 +390,7 @@ export function createLiveProxy(deps = {}) {
             sendPlain(res, 404, `No live sprint or history for '${sprintId}'.`);
             return;
         }
-        const body = Buffer.from(html, 'utf-8');
+        const body = Buffer.from(prefixHistoryPageHtml(html, base), 'utf-8');
         res.writeHead(200, {
             'content-type': 'text/html; charset=utf-8',
             'content-length': body.length,
@@ -372,25 +402,27 @@ export function createLiveProxy(deps = {}) {
     async function handleBase(req, res, ctx) {
         const sprintId = ctx?.params?.id;
         if (!sprintId) { sendPlain(res, 400, 'missing sprint id in path'); return; }
+        // Forwarded path prefix (verified front requests only; '' otherwise).
+        const base = ctx?.auth?.base ?? '';
         const port = safeResolvePort(sprintId);
         if (!Number.isInteger(port)) {
-            await serveHistory(sprintId, res);
+            await serveHistory(sprintId, res, base);
             return;
         }
         proxyHtml({
             host, port, req, res,
-            prefix: livePrefixFor(sprintId),
+            prefix: base + livePrefixFor(sprintId),
             logError,
             // A live entry existed but the child is unreachable (raced with exit):
             // fall through to history rather than serve a dead proxy.
-            onConnectError: () => { serveHistory(sprintId, res).catch((e) => logError(e)); },
+            onConnectError: () => { serveHistory(sprintId, res, base).catch((e) => logError(e)); },
         });
     }
 
     // Subpath handlers proxy their fixed child endpoint. A request arriving after
     // the child is gone answers cleanly (no dead socket); the read-only history
     // page makes no such calls, so this only happens if a sprint ends mid-view.
-    function makeSubpath(childPathFor) {
+    function makeSubpath(childPathFor, onForwarded) {
         return async (req, res, ctx) => {
             const sprintId = ctx?.params?.id;
             if (!sprintId) { sendPlain(res, 400, 'missing sprint id in path'); return; }
@@ -399,13 +431,23 @@ export function createLiveProxy(deps = {}) {
                 sendPlain(res, 404, `sprint '${sprintId}' is no longer live`);
                 return;
             }
-            proxyStream({ host, port, childPath: childPathFor(ctx?.url), req, res, logError });
+            proxyStream({ host, port, childPath: childPathFor(ctx?.url), req, res, logError, base: ctx?.auth?.base ?? '' });
+            if (onForwarded) onForwarded(sprintId, ctx);
         };
+    }
+
+    // Audit (docs/supervisor-auth.md): who asked a sprint to stop, recorded
+    // on its reservation as `stoppedBy`. Best-effort -- never fails the stop.
+    function recordStoppedBy(sprintId, ctx) {
+        const actor = ctx?.auth?.actor;
+        if (!actor || !ledger || typeof ledger.recordStop !== 'function') return;
+        Promise.resolve().then(() => ledger.recordStop(sprintId, actor))
+            .catch((err) => logError('[proxy] recording stoppedBy failed for', sprintId, err));
     }
 
     const handleEvents = makeSubpath(() => '/events');
     const handleState = makeSubpath((url) => '/state' + (url && url.search ? url.search : ''));
-    const handleStop = makeSubpath(() => '/stop');
+    const handleStop = makeSubpath(() => '/stop', recordStoppedBy);
     // (apra-fleet-p2to.3.1) Proxy the child's own cooperative POST /pause and
     // /resume (apra-fleet-p2to.2.1, viewer/index.mjs), which forward to the
     // engine's requestPause()/requestResume() -- NEVER the kill+force-release
@@ -430,7 +472,7 @@ export function createLiveProxy(deps = {}) {
         }
         const childPath = '/extensions/' + encodeURIComponent(ctx?.params?.extId ?? '')
             + '/detail/' + encodeURIComponent(ctx?.params?.itemId ?? '');
-        proxyStream({ host, port, childPath, req, res, logError });
+        proxyStream({ host, port, childPath, req, res, logError, base: ctx?.auth?.base ?? '' });
     }
 
     async function handleActivityOutput(req, res, ctx) {
@@ -442,7 +484,7 @@ export function createLiveProxy(deps = {}) {
             return;
         }
         const childPath = '/activities/' + encodeURIComponent(ctx?.params?.activityId ?? '') + '/output';
-        proxyStream({ host, port, childPath, req, res, logError });
+        proxyStream({ host, port, childPath, req, res, logError, base: ctx?.auth?.base ?? '' });
     }
 
     // The generic extension action route (extension id + action id from the
@@ -457,7 +499,7 @@ export function createLiveProxy(deps = {}) {
         }
         const childPath = '/extensions/' + encodeURIComponent(ctx?.params?.extId ?? '')
             + '/actions/' + encodeURIComponent(ctx?.params?.actionId ?? '');
-        proxyStream({ host, port, childPath, req, res, logError });
+        proxyStream({ host, port, childPath, req, res, logError, base: ctx?.auth?.base ?? '' });
     }
 
     return {

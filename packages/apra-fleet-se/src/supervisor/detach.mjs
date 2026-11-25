@@ -13,6 +13,15 @@
 // bind time while an older process keeps answering /api/health. Only a health
 // reply whose `pid` is the CHILD's pid proves the new supervisor is up.
 //
+// Default launch mode: serve.mjs with neither --detach nor --foreground
+// detaches when stdin or stdout is a TTY (an interactive console launch, any
+// OS), because a foreground supervisor dies with its console (SIGHUP, or the
+// Windows console-close event, which exit-log.mjs deliberately honours). With
+// no TTY on either stream (systemd, launchd, schtasks, nssm, CI, a parent
+// process holding pipes) it stays in the foreground, so service-manager
+// recipes are unchanged. resolveLaunchMode() takes the streams and platform as
+// arguments so the decision is testable on any host.
+//
 // Failure policy (documented): on timeout, pid mismatch or early child exit
 // the launcher prints the reason and the log path, KILLS the child it spawned
 // (so no half-started supervisor is left behind), and returns a non-zero
@@ -31,6 +40,41 @@ export const DETACH_LOG_NAME = 'supervisor-launch.log';
 export function resolveDetachTimeoutMs(env = process.env) {
     const n = Number(env[DETACH_TIMEOUT_ENV]);
     return Number.isFinite(n) && n >= 100 ? Math.floor(n) : DEFAULT_DETACH_TIMEOUT_MS;
+}
+
+export const DETACH_FLAG = '--detach';
+export const FOREGROUND_FLAG = '--foreground';
+
+/** True when either stream is a terminal (an interactive console launch). */
+export function isInteractiveConsole({ stdin, stdout } = {}) {
+    return Boolean(stdin && stdin.isTTY) || Boolean(stdout && stdout.isTTY);
+}
+
+/**
+ * Decide how serve.mjs runs this invocation.
+ *
+ * @param {{ detach?: boolean, foreground?: boolean, stdin?: { isTTY?: boolean }|null,
+ *           stdout?: { isTTY?: boolean }|null, platform?: string }} opts
+ * @returns {{ mode: 'detach'|'foreground', reason: 'flag'|'interactive-console'|'non-interactive', platform: string }}
+ * @throws {Error} when both --detach and --foreground are given (a usage error).
+ */
+export function resolveLaunchMode({ detach = false, foreground = false, stdin = null, stdout = null, platform = process.platform } = {}) {
+    if (detach && foreground) {
+        throw new Error(`${DETACH_FLAG} and ${FOREGROUND_FLAG} cannot be used together`);
+    }
+    if (detach) return { mode: 'detach', reason: 'flag', platform };
+    if (foreground) return { mode: 'foreground', reason: 'flag', platform };
+    if (isInteractiveConsole({ stdin, stdout })) return { mode: 'detach', reason: 'interactive-console', platform };
+    return { mode: 'foreground', reason: 'non-interactive', platform };
+}
+
+/**
+ * The detached child's argv: the launcher's argv without --detach/--foreground,
+ * plus an explicit --foreground so the child never re-detaches whatever its
+ * stdio turns out to be.
+ */
+export function detachedChildArgs(argv) {
+    return [...stripDetachArgs(argv).filter((a) => a !== FOREGROUND_FLAG && !a.startsWith(`${FOREGROUND_FLAG}=`)), FOREGROUND_FLAG];
 }
 
 /** argv minus every --detach flag (the child must run in the foreground of its own process). */
@@ -75,7 +119,7 @@ export async function detachSupervisor(opts) {
     let child;
     let exited = null;
     try {
-        child = spawn(process.execPath, [scriptPath, ...stripDetachArgs(argv)], {
+        child = spawn(process.execPath, [scriptPath, ...detachedChildArgs(argv)], {
             detached: true,
             stdio: ['ignore', logFd, logFd],
             windowsHide: true,
