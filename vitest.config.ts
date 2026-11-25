@@ -40,7 +40,9 @@ const NODE_SQLITE_DEPENDENT_TESTS = [
 // takes 6-10 minutes: same workflow, job code-index-real-gitnexus, which
 // sets APRA_RUN_REAL_GITNEXUS=1.
 const NIGHTLY_ONLY_TESTS = [
-  ...(process.env.APRA_RUN_PACK_INSTALL === '1' ? [] : ['tests/undici-pack-install.test.ts']),
+  ...(process.env.APRA_RUN_PACK_INSTALL === '1'
+    ? []
+    : ['tests/undici-pack-install.test.ts', 'tests/integration/stripped-pack-install.test.ts']),
   ...(process.env.APRA_RUN_REAL_GITNEXUS === '1' ? [] : ['tests/code-index-corrupt-real-gitnexus.test.ts']),
 ];
 
