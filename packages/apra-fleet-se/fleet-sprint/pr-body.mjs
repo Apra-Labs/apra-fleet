@@ -918,7 +918,7 @@ export function normalizeRecommendationForVerdict(verdictResult) {
 // One-line pointer to the sprint analysis. Never the analysis text itself
 // (provider description limits): the full analysis lives in the run record and
 // is read from the supervisor's GET /api/sprints/<id> `analysis` field.
-export const ANALYSIS_POINTER_LINE = '- **Analysis:** the full sprint analysis is kept in the run record (supervisor `GET /api/sprints/<id>`, `analysis` field), not in this description.';
+export const ANALYSIS_POINTER_LINE = '- **Analysis:** kept in the run record (supervisor `GET /api/sprints/<id>`, `analysis`).';
 
 export function buildSprintPrBody({
     verdict, goal, branch, baseBranch, runId, now = new Date(),
