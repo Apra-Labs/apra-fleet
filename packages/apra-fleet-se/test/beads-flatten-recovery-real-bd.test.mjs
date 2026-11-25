@@ -31,13 +31,18 @@
 // bumps updated_at and a delete leaves no record, so each is caught by the
 // record diff / history probe of beads-flatten-recovery.mjs. The gate refuses,
 // the refusal names the kind, and B's .beads still shows the change.
+// Scenarios 7-8 (prune): A runs `bd prune` before the rewrite, so the rebuilt
+// remote lacks closed beads B still holds. A clean B is re-bootstrapped and
+// then reads the rebuilt remote's beads; a B that commented on such a closed
+// bead after its last pull is refused and left intact.
 //
 // Falsifiability: removing the unrelated-history branch from the health gate
 // (the recovery call in preflightBeadsHealthGate) makes scenario 1 fail -- the
 // gate throws DoltUnrelatedHistoryError -- checked locally once by reverting it.
 // Reverting the detection in beads-flatten-recovery.mjs to the id/updated_at
-// comparison makes scenarios 3-5 fail (re-bootstrapped, the work dropped) --
-// checked locally once.
+// comparison makes scenarios 3-5 fail (re-bootstrapped, the work dropped) and
+// the clean prune scenario 7 fail (refused: the pruned closed bead counts as
+// local work) -- checked locally once.
 //
 // Hermetic: HOME, USERPROFILE, GIT_CONFIG_GLOBAL and TMPDIR point into one temp
 // sandbox (asserted), removed afterwards; no network. Skips when no bd binary
@@ -138,10 +143,11 @@ async function issueIds(sb, dir) {
 /**
  * A and B both create beads and push; then the remote is rewritten with an
  * independent history carrying A's full issue set (see the file header).
- * `unpushedOnB` creates one bead on B that is never pushed. `onB(sb, ids)`
- * then makes B's unpushed change (never pushed).
+ * `unpushedOnB` creates one bead on B that is never pushed. `prune` closes
+ * one of A's beads, lets B pull it, and runs `bd prune` on A before the
+ * rewrite. `onB(sb, ids)` then makes B's unpushed change (never pushed).
  */
-async function buildScenario({ unpushedOnB = false, onB = null } = {}) {
+async function buildScenario({ unpushedOnB = false, prune = false, onB = null } = {}) {
     const sb = createSandbox();
     const { A, A2, B } = sb.dirs;
     await runOrThrow(sb, 'git config --global user.name "Flatten Recovery"', sb.root);
@@ -158,6 +164,14 @@ async function buildScenario({ unpushedOnB = false, onB = null } = {}) {
     const ids = {};
     ids.a1 = await createBead(sb, 'from A one', A);
     ids.a2 = await createBead(sb, 'from A two', A);
+    if (prune) {
+        ids.closed = await createBead(sb, 'closed on A, pruned later', A);
+        await runOrThrow(sb, `bd close ${ids.closed}`, A);
+        // bd timestamps have one-second resolution: the bead synced after
+        // the close must be strictly newer than it.
+        await pause(1100);
+        ids.a3 = await createBead(sb, 'from A three', A);
+    }
     await runOrThrow(sb, 'bd dolt push', A);
 
     fs.mkdirSync(B);
@@ -166,6 +180,7 @@ async function buildScenario({ unpushedOnB = false, onB = null } = {}) {
     ids.b = await createBead(sb, 'from B', B);
     await runOrThrow(sb, 'bd dolt push', B);
     await runOrThrow(sb, 'bd dolt pull', A);
+    if (prune) await runOrThrow(sb, 'bd prune --pattern "*" --force', A);
 
     // The rewrite: an independent database carrying A's issues, written over
     // the remote's data.
@@ -348,5 +363,30 @@ describe('flattened beads remote: sprint-launch recovery against real bd', { ski
         await expectRefused(sb, { kind: 'deleted', summary: /1 local delete/, id: ids.a2 });
         assert.ok(!(await issueIds(sb, sb.dirs.B)).includes(ids.a2), 'the deleted bead is still absent');
         assert.ok((await issueIds(sb, sb.dirs.A2)).includes(ids.a2), 'the rewritten remote still holds it');
+    });
+
+    test('prune before the rewrite: a clean clone that never received the prune is re-bootstrapped', { timeout: budget }, async () => {
+        const { sb, ids } = await buildScenario({ prune: true });
+        sandboxes.push(sb.root);
+        assert.ok((await issueIds(sb, sb.dirs.B)).includes(ids.closed), 'B still holds the closed bead');
+        assert.ok(!(await issueIds(sb, sb.dirs.A2)).includes(ids.closed), 'the rebuilt remote does not');
+        clearLastSyncedTip('B');
+        const eng = engineFor(sb);
+        const res = await preflightBeadsHealthGate('B', eng.gateOpts);
+        assert.equal(res.ok, true, JSON.stringify(res));
+        assert.equal(res.recovered, true, eng.logs.join('\n'));
+        assert.deepEqual(await issueIds(sb, sb.dirs.B), await issueIds(sb, sb.dirs.A2), 'B reads the rebuilt remote');
+        const warn = eng.logs.filter((l) => l.startsWith(FLATTEN_RECOVERY_WARNING_PREFIX));
+        assert.equal(warn.length, 1, eng.logs.join('\n'));
+        assert.match(warn[0], /1 closed bead\(s\) the remote pruned/);
+        await runOrThrow(sb, 'bd dolt pull', sb.dirs.B);
+    });
+
+    test('prune before the rewrite: a clone that changed a pruned closed bead after its last pull is refused intact', { timeout: budget }, async () => {
+        const { sb, ids } = await buildScenario({ prune: true, onB: (s, i) => runOrThrow(s, `bd comments add ${i.closed} "late note"`, s.dirs.B) });
+        sandboxes.push(sb.root);
+        await expectRefused(sb, { kind: 'absent', summary: /1 bead not on the remote/, id: ids.closed });
+        const comments = await runOrThrow(sb, `bd comments ${ids.closed} --json`, sb.dirs.B);
+        assert.ok(comments.includes('late note'), comments);
     });
 });
