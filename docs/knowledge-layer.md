@@ -310,10 +310,24 @@ and never shows another member's unconfirmed captures. One difference follows
 from the store, not the split: on the server the member's own promoted capture
 is part of the CONFIRMED set, so it arrives in the CONFIRMED half (and counts
 toward `kb_session_prime`'s cold-seed threshold). Any other non-sqlite per-repo
-KB is refused with a typed error naming the tool. Known limits: with a `limit`, a mixed `kb_list` sorts by id before
-limiting, so it is not guaranteed to be a superset of the CONFIRMED-only list at
-the same limit (`kb_query` keeps the bible half first). The tool descriptions, the memory-contract bindings and spec, and a
+KB is refused with a typed error naming the tool. Ordering invariant: `mergeSplitById` does not re-sort by id. The
+bible (CONFIRMED) half comes first, then the member's own captures not already in
+it, and a `limit` is applied after the merge, so a limited mixed `kb_list` or
+`kb_query` result starts with (is a superset of) the limited CONFIRMED-only
+result. The tool descriptions, the memory-contract bindings and spec, and a
 wording test must all describe this scope together.
+
+**Member `flagged_only` and the global KB.** The global half of a member
+`kb_query({flagged_only: true})` is passed through `filterOtherMembersUnconfirmed`
+(`kb-self.ts`), which drops non-CONFIRMED entries tagged with another member's
+`member:<id>`. CONFIRMED, untagged and the caller's own entries stay. FULL
+sessions are not filtered. `kb_capture` tags a member's global capture with its
+owner tag, so the filter covers every member capture.
+
+**Sprint KB injection.** The engine injects the KB block into every dispatched
+member's prompt, verified or not, remote or local. The block is always fetched
+from the kb_maintainer member, so a non-maintainer remote member still receives
+the project knowledge.
 
 ### Member-session tool calls
 
