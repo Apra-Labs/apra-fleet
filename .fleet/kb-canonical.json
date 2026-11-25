@@ -1,7 +1,9 @@
 {
   "version": 3,
   "provenance": {
-    "branch": "main"
+    "commit": "dfb66cdb8c3edd97b3eeef1c6639abb5e8450e2a",
+    "branch": "main",
+    "entry_count": 218
   },
   "entries": [
     {
@@ -1445,6 +1447,33 @@
         "src/cli/install.ts": "178687848782b1b1afbdb171bb3f374bd0250cf3",
         "src/cli/update.ts": "5994f872c18576277ec9cd2af5fd60c0db1dfd4b",
         "tests/install-member-host-guard.test.ts": "ccaac22fe855219149c1099f322c02376ece8828"
+      }
+    },
+    {
+      "id": "4ebfe1d3-32ca-45a2-a65b-2a87a0eb0451",
+      "type": "knowledge",
+      "title": "Health gate lists the backlog work folder every launch for a beads recovery backup",
+      "summary": "preflightBeadsHealthGate with flattenRecovery (runner.js passes memberSeCommands) first runs listDirectory('.') on the backlog member to restore a .beads.flatten-pending-* backup left by an interrupted recovery. That adds one `ls -1A -- '.'` before the gate's bd commands in every launch transcript.",
+      "symbols": [
+        "preflightBeadsHealthGate",
+        "restoreLeftoverFlattenBackup",
+        "verifyBeadsIdentity",
+        "setupMemberBeads",
+        "repair"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/dolt-sync.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/fleet-sprint/beads-identity-check.mjs",
+        "packages/apra-fleet-se/fleet-sprint/beads-flatten-recovery.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-25T07:54:02.692Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/beads-flatten-recovery.mjs": "39912907f01b3ab84f8b3ce1c240cce6c949bcdc",
+        "packages/apra-fleet-se/fleet-sprint/beads-identity-check.mjs": "b9fafdb63bc1601d2143235bb8cb4f7f006facd1",
+        "packages/apra-fleet-se/fleet-sprint/dolt-sync.mjs": "7357a8441d315941600b8819411869a289c08644",
+        "packages/apra-fleet-se/fleet-sprint/runner.js": "76de259a5916a4f8f229844f55f17dead831427e"
       }
     },
     {
