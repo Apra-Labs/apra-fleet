@@ -467,6 +467,52 @@ export class DoltUnrelatedHistoryError extends DoltSyncError {
     }
 }
 
+/** Stable error code of BeadsFlattenRecoveryRefusedError. */
+export const BEADS_FLATTEN_RECOVERY_REFUSED_CODE = 'BEADS_FLATTEN_RECOVERY_REFUSED';
+
+/** Stable error code of BeadsFlattenRecoveryFailedError. */
+export const BEADS_FLATTEN_RECOVERY_FAILED_CODE = 'BEADS_FLATTEN_RECOVERY_FAILED';
+
+/**
+ * The automatic recovery of a clone whose shared beads remote shares no
+ * history with it (beads-flatten-recovery.mjs) found local work the rewritten
+ * remote does not hold, so it REFUSED: the clone was put back exactly as it
+ * was and nothing was replayed. `details.localOnly` lists
+ * `{ id, reason, localUpdatedAt, freshUpdatedAt }`, `details.exportPath` the
+ * pre-recovery export of the clone. A DoltSyncError subtype (kind
+ * 'unrelated-history'), so every existing DoltSyncError handler applies.
+ */
+export class BeadsFlattenRecoveryRefusedError extends DoltSyncError {
+    /**
+     * @param {string} message
+     * @param {{ member?: string|null, doltOutput?: string|null, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(message, opts = {}) {
+        super(message, { ...opts, details: { kind: DOLT_UNRELATED_HISTORY_KIND, ...opts.details } });
+        this.name = 'BeadsFlattenRecoveryRefusedError';
+        this.code = BEADS_FLATTEN_RECOVERY_REFUSED_CODE;
+    }
+}
+
+/**
+ * The automatic recovery of an unrelated-history clone failed on a step
+ * (export, rename, bootstrap, ...). Every step after the clone's .beads was
+ * moved aside is undone before this is thrown; `details.step` names the
+ * failed step and `details.restored` whether the original .beads is back in
+ * place. A DoltSyncError subtype (kind 'unrelated-history').
+ */
+export class BeadsFlattenRecoveryFailedError extends DoltSyncError {
+    /**
+     * @param {string} message
+     * @param {{ member?: string|null, doltOutput?: string|null, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(message, opts = {}) {
+        super(message, { ...opts, details: { kind: DOLT_UNRELATED_HISTORY_KIND, ...opts.details } });
+        this.name = 'BeadsFlattenRecoveryFailedError';
+        this.code = BEADS_FLATTEN_RECOVERY_FAILED_CODE;
+    }
+}
+
 /** Stable error code of DoltLockHeldError. */
 export const DOLT_BEADS_LOCK_HELD_CODE = 'DOLT_BEADS_LOCK_HELD';
 

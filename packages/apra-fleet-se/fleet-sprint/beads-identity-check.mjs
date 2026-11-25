@@ -30,6 +30,12 @@
 //     preflight throws BEADS_SETUP_FAILED naming the member, the cause and
 //     the fix -- never a warning followed by dispatches whose `bd show`
 //     cannot find the sprint's issues.
+//   - a member whose set-up pull fails with UNRELATED HISTORY (its remote
+//     was flattened or rewritten) is re-bootstrapped from the remote, with
+//     a backup of its .beads kept -- or the preflight is REFUSED, clone
+//     untouched, when it holds local-only work (beads-flatten-recovery.mjs).
+//     A member with no database whose interrupted recovery left a backup
+//     behind gets that backup restored before anything else runs.
 //   - any other UNRESOLVED probe is a WARNING: a probe that failed, or answered
 //     something unparseable/empty, leaves that field out of the comparison.
 //     The warning names the member, the field, the probe, the error and the
@@ -53,8 +59,9 @@ import {
     normalizeRemoteUrl,
     hasBeadsDatabase,
 } from './beads-identity.mjs';
-import { BeadsIdentityError, BEADS_IDENTITY_FAILURE_REASONS, VCS_FAILURE_KINDS } from './errors.mjs';
+import { BeadsIdentityError, BEADS_IDENTITY_FAILURE_REASONS, VCS_FAILURE_KINDS, DoltUnrelatedHistoryError } from './errors.mjs';
 import { syncBefore as doltSyncBefore } from './dolt-sync.mjs';
+import { recoverFlattenedClone, restoreLeftoverFlattenBackup, resolveRecoveryShell } from './beads-flatten-recovery.mjs';
 import { classifyFailure, commandBinary } from './vcs-module.mjs';
 import { BEADS_PACKAGE, BEADS_VERSION, DOLT_VERSION, TOOL_VERSION_PROBES, checkPinnedVersion, majorMinor, bdConflictedPullAffected, bdConflictedPullWarningText } from './tool-version-pin.mjs';
 
@@ -680,6 +687,15 @@ export async function setupMemberBeads({ command, member, url, hasDb, memberShel
                 remoteTipFingerprint: false,
             });
         } catch (err) {
+            // A database whose history the remote does not share (the remote
+            // was flattened or rewritten): re-bootstrap it from the remote,
+            // keeping a backup -- refused (and thrown, clone untouched) when
+            // it holds local-only work. See beads-flatten-recovery.mjs.
+            const recoveryShell = err instanceof DoltUnrelatedHistoryError ? await resolveRecoveryShell(member, shell) : null;
+            if (recoveryShell) {
+                await recoverFlattenedClone({ command, member, shell: recoveryShell, log, timeoutS, doltOutput: err.doltOutput });
+                return issued;
+            }
             pullError = [err && err.message, err && err.doltOutput].filter(Boolean).join('\n') || String(err);
         }
         if (pullError) assertNoMigration('beads pull', { output: '', error: pullError });
@@ -813,6 +829,7 @@ export async function verifyBeadsIdentity({ command, log = () => {}, publishStat
 
     let backlogProbe = await p.probe(backlogMember);
     assertBdPresent(backlogMember, backlogProbe);
+    backlogProbe = await restoreLeftover(backlogMember, backlogProbe);
     const backlogHasDb = !!backlogProbe.identity.beadsDir;
 
     let expectedIdentity = expected;
@@ -917,6 +934,28 @@ export async function verifyBeadsIdentity({ command, log = () => {}, publishStat
         return again;
     }
 
+    // A member with no beads database may be one whose flattened-remote
+    // recovery was interrupted (its original .beads renamed aside): put it
+    // back before anything else reads or sets up that member. Only on this
+    // no-database path, so a healthy member gets no extra command.
+    async function restoreLeftover(member, probed) {
+        if (hasBeadsDatabase(probed.identity) || typeof memberShell !== 'function') return probed;
+        if (member !== backlogMember && setupSet && !setupSet.has(member)) return probed;
+        let shell = null;
+        try {
+            shell = await resolveRecoveryShell(member, memberShell);
+        } catch (err) {
+            log(`[beads-identity] could not resolve the shell of member '${member}' to look for a beads recovery backup: ${err && err.message ? err.message : err}`);
+        }
+        if (!shell) return probed;
+        const r = await restoreLeftoverFlattenBackup({ command, member, shell, log, timeoutS: setupTimeoutS });
+        if (!r.restored) return probed;
+        p.forget(member);
+        const again = await p.probe(member);
+        assertBdPresent(member, again);
+        return again;
+    }
+
     // The backlog member is only set up against a SUPPLIED expectation: when
     // the expectation is derived from it there is nothing to set it up from.
     if (expected) backlogProbe = await ensureSetUp(backlogMember, backlogProbe);
@@ -926,6 +965,7 @@ export async function verifyBeadsIdentity({ command, log = () => {}, publishStat
         if (member === backlogMember) continue;
         let probed = await p.probe(member);
         assertBdPresent(member, probed);
+        probed = await restoreLeftover(member, probed);
         if (expectedIdentity || !probed.identity.beadsDir) probed = await ensureSetUp(member, probed);
         settle(member, probed, !!expectedIdentity);
     }

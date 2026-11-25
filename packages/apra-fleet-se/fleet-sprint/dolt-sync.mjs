@@ -85,10 +85,11 @@
  * ASCII only.
  */
 
-import { DoltDivergedError, DoltSyncError, DoltUnrelatedHistoryError, DoltWindowsSpawnLimitError, DoltLockHeldError, DoltPushRaceError, UnpublishedSchemaMigrationsError, DOLT_CREDENTIAL_REMEDY } from './errors.mjs';
+import { DoltDivergedError, DoltSyncError, DoltUnrelatedHistoryError, DoltWindowsSpawnLimitError, DoltLockHeldError, DoltPushRaceError, UnpublishedSchemaMigrationsError, DOLT_CREDENTIAL_REMEDY, BEADS_FLATTEN_RECOVERY_REFUSED_CODE } from './errors.mjs';
 import { bdSyncCommandFor, normalizeMemberTarget, UNRESOLVED_MEMBER_TARGET } from './bd-sync-command.mjs';
 import { buildLockHolderProbe, parseLockHolderProbe, describeLockProcess } from './beads-lock-probe.mjs';
 import { classifyFailure, toDoltVerdict, commandBinary } from './vcs-module.mjs';
+import { recoverFlattenedClone, restoreLeftoverFlattenBackup, resolveRecoveryShell } from './beads-flatten-recovery.mjs';
 import { buildSettleCallback } from './dolt-settle.mjs';
 import { ParentLinkRestoreError } from './parent-link-guard.mjs';
 
@@ -1952,6 +1953,18 @@ async function publishMigrationsAndRetryPull(member, opts, firstErr) {
 }
 
 /**
+ * Re-bootstrap `member`'s clone after its pull failed with unrelated history
+ * (beads-flatten-recovery.mjs recoverFlattenedClone; refuses -- and throws --
+ * when the clone holds local-only work). The recorded remote tip is
+ * forgotten either way, so the next D-pull is real.
+ */
+async function recoverUnrelatedHistory(member, { command, log, shell, cause }) {
+    clearLastSyncedTip(member);
+    const rec = await recoverFlattenedClone({ command, member, shell, log, doltOutput: cause && cause.doltOutput });
+    return { ok: true, member, recovered: true, backup: rec.backup, totalIssues: rec.totalIssues };
+}
+
+/**
  * Pre-flight beads-health gate: the same D-pull probe as doltPullBefore(),
  * run before a sprint issues any mutating git or PR command, so a diverged
  * beads clone aborts the run before setup has changed anything.
@@ -1968,16 +1981,41 @@ async function publishMigrationsAndRetryPull(member, opts, firstErr) {
  * Any non-divergence outcome (DoltSyncError, or a benign skip) is passed
  * through unchanged -- it already carries doltPullBefore()'s own message.
  *
+ * FLATTENED REMOTE: with `opts.flattenRecovery` (the member's SE command
+ * primitives, or an async `(member) => primitives` resolver) the gate first
+ * restores a recovery backup an interrupted recovery left behind, and an
+ * unrelated-history pull (DoltUnrelatedHistoryError) is recovered by
+ * re-bootstrapping the clone (beads-flatten-recovery.mjs): success resolves
+ * `{ ok: true, recovered: true, backup }` and the launch continues; a clone
+ * holding local-only work is left as it was and
+ * BeadsFlattenRecoveryRefusedError is thrown. Without it the
+ * DoltUnrelatedHistoryError propagates unchanged.
+ *
  * @param {string} member
- * @param {{ command: Function, log?: Function, maxTransientRetries?: number, checkSyncRemoteConfigured?: Function }} opts
- * @returns {Promise<{ ok: true, member: string, skipped?: true, reason?: 'no-remote'|'empty-remote'|'already-fresh'|'remote-unchanged' }>}
+ * @param {{ command: Function, log?: Function, maxTransientRetries?: number, checkSyncRemoteConfigured?: Function, flattenRecovery?: object|Function }} opts
+ * @returns {Promise<{ ok: true, member: string, skipped?: true, recovered?: true, backup?: string, reason?: 'no-remote'|'empty-remote'|'already-fresh'|'remote-unchanged' }>}
  */
 export async function preflightBeadsHealthGate(member, opts = {}) {
-    const { command, log = () => {} } = opts;
+    const { command, log = () => {}, flattenRecovery } = opts;
+    // Flattened-remote recovery (beads-flatten-recovery.mjs), opt-in: a
+    // caller passes the member's SE command primitives (or a resolver).
+    const recoveryShell = flattenRecovery ? await resolveRecoveryShell(member, flattenRecovery) : null;
+    if (flattenRecovery && !recoveryShell) {
+        log(`[Beads Health] no command primitives could be resolved for member '${member}'; a flattened beads remote will not be recovered automatically.`);
+    }
+    if (recoveryShell) {
+        // A crash mid-recovery left the original clone aside: put it back
+        // before the pull reads anything.
+        const leftover = await restoreLeftoverFlattenBackup({ command, member, shell: recoveryShell, log });
+        if (leftover.restored) clearLastSyncedTip(member);
+    }
     try {
         try {
             return await doltPullBefore(member, opts);
         } catch (firstErr) {
+            if (recoveryShell && firstErr instanceof DoltUnrelatedHistoryError) {
+                return await recoverUnrelatedHistory(member, { command, log, shell: recoveryShell, cause: firstErr });
+            }
             if (!isUnpublishedMigrationPullFailure(firstErr)) throw firstErr;
             return await publishMigrationsAndRetryPull(member, opts, firstErr);
         }
@@ -3079,12 +3117,22 @@ export function flush(filter = {}) {
  * Windows) is the pre-shell-aware behavior, not a regression, for any
  * caller that has not resolved it.
  *
+ * UNRELATED HISTORY: with `opts.flattenRecovery` (the member's SE command
+ * primitives or a resolver, as preflightBeadsHealthGate takes it) repair()
+ * first restores a backup an interrupted recovery left behind, and when
+ * `opts.kind === 'unrelated-history'` (or `opts.cause` is a
+ * DoltUnrelatedHistoryError) it runs the flattened-remote recovery instead of
+ * settle (settle needs a common ancestor) -- the same routine the sprint
+ * launch uses. Resolves `{ repaired: true, result: { recovered, backup } }`,
+ * or `{ repaired: false, escalation: 'flatten-recovery-refused' |
+ * 'flatten-recovery-failed', result: { error } }`.
+ *
  * @param {string} member
- * @param {{ command?: Function, log?: Function, platform?: string, arch?: string, shell?: string, settle?: Function, [key: string]: any }} [opts]
+ * @param {{ command?: Function, log?: Function, platform?: string, arch?: string, shell?: string, settle?: Function, flattenRecovery?: object|Function, kind?: string, cause?: Error, [key: string]: any }} [opts]
  * @returns {Promise<{ repaired: boolean, escalation?: string, result?: object }>}
  */
 export async function repair(member, opts = {}) {
-    const { command, log = () => {}, platform, arch, shell = '' } = opts;
+    const { command, log = () => {}, platform, arch, shell = '', flattenRecovery, kind, cause } = opts;
     if (typeof command !== 'function') {
         return { repaired: false, escalation: 'not-configured: repair() requires an injected command() to run settle' };
     }
@@ -3092,6 +3140,24 @@ export async function repair(member, opts = {}) {
     // moves it off whatever tip we last observed, so drop both memos up front
     // (a repair must never be decided against, or leave behind, cached state).
     forgetMemberSyncState(member);
+    const unrelated = kind === 'unrelated-history' || cause instanceof DoltUnrelatedHistoryError;
+    if (flattenRecovery || unrelated) {
+        const recoveryShell = flattenRecovery ? await resolveRecoveryShell(member, flattenRecovery) : null;
+        if (!recoveryShell && unrelated) {
+            return { repaired: false, escalation: 'not-configured: an unrelated-history repair needs opts.flattenRecovery (the member command primitives)' };
+        }
+        try {
+            if (recoveryShell) await restoreLeftoverFlattenBackup({ command, member, shell: recoveryShell, log });
+            if (unrelated) {
+                const res = await recoverUnrelatedHistory(member, { command, log, shell: recoveryShell, cause });
+                return { repaired: true, result: res };
+            }
+        } catch (err) {
+            const refused = err && err.code === BEADS_FLATTEN_RECOVERY_REFUSED_CODE;
+            log(`[Dolt] repair() could not recover member '${member}' from its flattened beads remote: ${(err && err.message) || err}`);
+            return { repaired: false, escalation: refused ? 'flatten-recovery-refused' : 'flatten-recovery-failed', result: { error: (err && err.message) || String(err), details: err && err.details } };
+        }
+    }
     const settle = typeof opts.settle === 'function'
         ? opts.settle
         : buildSettleCallback(member, { command, log, platform, arch, shell });

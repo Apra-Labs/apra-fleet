@@ -636,8 +636,11 @@ describe('runner.js mock-level execution', () => {
         const PREFLIGHT_PROBE = 'git remote get-url origin';
         const firstGitIdx = spy.commandLog.findIndex((c, i) => i >= identityEnd && /^git /.test(c) && c !== PREFLIGHT_PROBE);
         assert.ok(firstGitIdx >= 0, 'expected at least one git command in the log');
+        // The gate lists the work folder for a beads recovery backup an
+        // interrupted flattened-remote recovery left behind.
+        const LEFTOVER_PROBE = "ls -1A -- '.'";
         for (const pre of spy.commandLog.slice(identityEnd, firstGitIdx)) {
-            if (pre === PREFLIGHT_PROBE) continue;
+            if (pre === PREFLIGHT_PROBE || pre === LEFTOVER_PROBE) continue;
             assert.match(
                 pre,
                 /^bd /,

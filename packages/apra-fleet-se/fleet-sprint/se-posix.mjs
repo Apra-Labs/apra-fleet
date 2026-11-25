@@ -428,6 +428,76 @@ export class SePosixCommands {
   }
 
   /**
+   * List the entry names of a work-folder-relative directory, one per line,
+   * hidden entries included ('.' and '..' excluded). Read-only.
+   * Caller: beads-flatten-recovery.mjs (finds a recovery backup of .beads).
+   * @param {string} relPath validated
+   * @returns {string}
+   */
+  listDirectory(relPath) {
+    const p = assertSafeRelativePath(relPath, 'directory path');
+    return this.wrapForMember(`ls -1A -- '${p}'`);
+  }
+
+  /**
+   * Rename a work-folder-relative file or directory. Fails (non-zero exit,
+   * nothing changed) when the source is missing or the destination already
+   * exists, so it can never merge into or replace an existing path.
+   * Caller: beads-flatten-recovery.mjs (moves .beads aside and back).
+   * @param {string} fromRel validated
+   * @param {string} toRel validated
+   * @returns {string}
+   */
+  renamePath(fromRel, toRel) {
+    const from = assertSafeRelativePath(fromRel, 'rename source');
+    const to = assertSafeRelativePath(toRel, 'rename destination');
+    return this.wrapForMember(`[ -e '${from}' ] && [ ! -e '${to}' ] && mv -- '${from}' '${to}'`);
+  }
+
+  /**
+   * Copy a work-folder-relative file when it exists; exit 0 and no change
+   * when it does not.
+   * Caller: beads-flatten-recovery.mjs (carries the beads config files into
+   * the re-bootstrapped .beads).
+   * @param {string} fromRel validated
+   * @param {string} toRel validated
+   * @returns {string}
+   */
+  copyFileIfPresent(fromRel, toRel) {
+    const from = assertSafeRelativePath(fromRel, 'copy source');
+    const to = assertSafeRelativePath(toRel, 'copy destination');
+    return this.wrapForMember(`if [ -e '${from}' ]; then cp -p -- '${from}' '${to}'; fi`);
+  }
+
+  /**
+   * Print a work-folder-relative file's content. Read-only; fails when the
+   * file is missing.
+   * Caller: beads-flatten-recovery.mjs (reads a `bd export` file).
+   * @param {string} relPath validated
+   * @returns {string}
+   */
+  readFile(relPath) {
+    const p = assertSafeRelativePath(relPath, 'file path');
+    return this.wrapForMember(`cat -- '${p}'`);
+  }
+
+  /**
+   * Delete a work-folder-relative directory tree, never erroring when it is
+   * absent.
+   * Caller: beads-flatten-recovery.mjs (drops a discarded fresh clone, only
+   * ever by its own generated name).
+   * @param {string} relPath validated
+   * @returns {string}
+   */
+  removeDirectory(relPath) {
+    const p = assertSafeRelativePath(relPath, 'directory path');
+    if (p === '.' || p.split('/').every((s) => s === '.' || s === '')) {
+      throw new Error(`Refusing to build a member command that removes the work folder itself ('${relPath}').`);
+    }
+    return this.wrapForMember(`rm -rf -- '${p}'`);
+  }
+
+  /**
    * A POSIX member has no PowerShell -- there is nothing this method could
    * correctly return (returning the script unchanged would hand a bash
    * interpreter raw PowerShell text and fail confusingly; inventing a bash

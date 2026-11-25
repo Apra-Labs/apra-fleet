@@ -2868,7 +2868,11 @@ async function runSprintCycle(context) {
     });
 
     const preflightSettleShell = await resolveSettleShell({ args, member: backlogMember, log, sprintState });
-    await gitSync.syncBeadsBefore(backlogMember, { readinessGate: true, settle: buildSettleCallback(backlogMember, { command, log, shell: preflightSettleShell }) });
+    // flattenRecovery: a clone whose beads remote was flattened (no common
+    // ancestor) is re-bootstrapped here, loudly, keeping a backup -- or the
+    // launch is refused when the clone holds unpushed work
+    // (beads-flatten-recovery.mjs). Commands built per member OS/shell.
+    await gitSync.syncBeadsBefore(backlogMember, { readinessGate: true, flattenRecovery: memberSeCommands, settle: buildSettleCallback(backlogMember, { command, log, shell: preflightSettleShell }) });
 
     // =======================
     // 0. Git Setup: ensure the sprint branch exists off base_branch

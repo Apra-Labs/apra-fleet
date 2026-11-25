@@ -1,0 +1,498 @@
+// Automatic recovery of a beads clone whose shared remote was flattened or
+// rewritten (no common ancestor): fleet-sprint/beads-flatten-recovery.mjs and
+// its callers (the launch health gate, the member beads set-up, repair()).
+//
+// A simulated member work folder interprets the member-bound command strings
+// -- POSIX and PowerShell (decoded from -EncodedCommand) -- so the tests assert
+// both what is issued, in which order, and what the folder looks like after.
+import { test, describe, after } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+
+import {
+    findLocalOnlyWork,
+    parseBeadsExport,
+    parseExportCount,
+    pickLeftoverBackup,
+    recoverFlattenedClone,
+    restoreLeftoverFlattenBackup,
+    FLATTEN_BACKUP_PREFIX,
+    FLATTEN_PENDING_PREFIX,
+    FLATTEN_DISCARD_PREFIX,
+    FLATTEN_LOCAL_EXPORT,
+    FLATTEN_RECOVERY_WARNING_PREFIX,
+} from '../fleet-sprint/beads-flatten-recovery.mjs';
+import { preflightBeadsHealthGate, repair } from '../fleet-sprint/dolt-sync.mjs';
+import { setupMemberBeads } from '../fleet-sprint/beads-identity-check.mjs';
+import {
+    BeadsFlattenRecoveryRefusedError,
+    BeadsFlattenRecoveryFailedError,
+    DoltUnrelatedHistoryError,
+    BEADS_FLATTEN_RECOVERY_REFUSED_CODE,
+} from '../fleet-sprint/errors.mjs';
+import { getSeCommands } from '../fleet-sprint/se-os-commands.mjs';
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const FIXTURE = fs.readFileSync(path.join(here, 'fixtures', 'dolt-unrelated-history', 'unrelated-history.txt'), 'utf8')
+    .split(/^---\r?\n/m).slice(1).join('---\n');
+const REMOTE = 'git+ssh://example.invalid/beads.git';
+
+const posix = getSeCommands({ os: 'linux', shell: 'bash' });
+const powershell = getSeCommands({ os: 'windows', shell: 'powershell' });
+
+const issue = (id, updatedAt) => ({ _type: 'issue', id, title: id, status: 'open', updated_at: updatedAt });
+const memory = (key, value) => ({ _type: 'memory', key, value });
+
+function decodePs(cmd) {
+    const m = /^powershell -EncodedCommand ([A-Za-z0-9+/=]+)$/.exec(cmd);
+    return m ? Buffer.from(m[1], 'base64').toString('utf16le') : null;
+}
+
+// ---------------------------------------------------------------------------
+// Simulated member work folder.
+// entries: top-level name -> { db?: { records, unrelated }, files: Map }
+// ---------------------------------------------------------------------------
+function makeMember({ local, remote, failOn = {}, entries } = {}) {
+    const fsx = new Map();
+    if (entries) {
+        for (const [k, v] of Object.entries(entries)) fsx.set(k, v);
+    } else {
+        fsx.set('.beads', {
+            db: { records: local, unrelated: true, original: true },
+            files: new Map([['config.yaml', ''], ['config.local.yaml', `sync.remote: "${REMOTE}"\n`]]),
+        });
+    }
+    const calls = [];
+    const split = (p) => {
+        const i = p.indexOf('/');
+        return i < 0 ? [p, null] : [p.slice(0, i), p.slice(i + 1)];
+    };
+    const jsonl = (records) => records.map((r) => JSON.stringify(r)).join('\n') + '\n';
+    const ok = (output = '') => ({ ok: true, output, error: null });
+    const bad = (error) => ({ ok: false, output: '', error });
+
+    const command = async (cmd, opts = {}) => {
+        assert.ok(opts.member_name, `every command names its member: ${cmd}`);
+        const text = decodePs(cmd) ?? cmd;
+        const dialect = decodePs(cmd) ? 'ps' : 'posix';
+        calls.push({ cmd, text, dialect });
+        for (const [needle, error] of Object.entries(failOn)) {
+            if (text.includes(needle)) return bad(error);
+        }
+        let m;
+        if ((m = /^ls -1A -- '(.+)'$/.exec(text)) || (m = /Get-ChildItem -LiteralPath '(.+?)' -Force -Name/.exec(text))) {
+            return ok([...fsx.keys()].join('\n'));
+        }
+        if ((m = /^\[ -e '(.+?)' \] && \[ ! -e '(.+?)' \] && mv -- '.+?' '.+?'$/.exec(text))
+            || (m = /Move-Item -LiteralPath '(.+?)' -Destination '(.+?)'/.exec(text))) {
+            const [from, to] = [m[1], m[2]];
+            if (!fsx.has(from) || fsx.has(to)) return bad(`rename ${from} -> ${to} refused`);
+            fsx.set(to, fsx.get(from));
+            fsx.delete(from);
+            return ok();
+        }
+        if ((m = /^mkdir -p -- '(.+?)' && \{ \[ -e '(.+?)' \]/.exec(text)) || (m = /New-Item -ItemType Directory -Force -Path '(.+?)'.*Test-Path -LiteralPath '(.+?)'/.exec(text))) {
+            if (!fsx.has(m[1])) fsx.set(m[1], { files: new Map() });
+            const [, f] = split(m[2]);
+            if (!fsx.get(m[1]).files.has(f)) fsx.get(m[1]).files.set(f, '');
+            return ok();
+        }
+        if ((m = /^if \[ -e '(.+?)' \]; then cp -p -- '.+?' '(.+?)'; fi$/.exec(text)) || (m = /Copy-Item -LiteralPath '(.+?)' -Destination '(.+?)'/.exec(text))) {
+            const [sd, sf] = split(m[1]);
+            const [dd, df] = split(m[2]);
+            const src = fsx.get(sd);
+            if (src && src.files.has(sf)) {
+                if (!fsx.has(dd)) return bad('no destination dir');
+                fsx.get(dd).files.set(df, src.files.get(sf));
+            }
+            return ok();
+        }
+        if ((m = /^cat -- '(.+)'$/.exec(text)) || (m = /Get-Content -LiteralPath '(.+?)' -Raw/.exec(text))) {
+            const [d, f] = split(m[1]);
+            const dir = fsx.get(d);
+            if (!dir || !dir.files.has(f)) return bad(`no such file ${m[1]}`);
+            return ok(dir.files.get(f));
+        }
+        if ((m = /^rm -rf -- '(.+)'$/.exec(text)) || (m = /Remove-Item -LiteralPath '(.+?)' -Recurse -Force/.exec(text))) {
+            fsx.delete(m[1]);
+            return ok();
+        }
+        if (/info\/exclude/.test(text)) return ok();
+        if ((m = /^bd export --all -o (.+)$/.exec(text))) {
+            const beads = fsx.get('.beads');
+            if (!beads || !beads.db) return bad('no beads database');
+            const [d, f] = split(m[1]);
+            if (!fsx.has(d)) return bad(`no dir ${d}`);
+            fsx.get(d).files.set(f, jsonl(beads.db.records));
+            const issues = beads.db.records.filter((r) => r._type !== 'memory').length;
+            const mems = beads.db.records.length - issues;
+            return ok(`Exported ${issues} issues and ${mems} memories to ${m[1]}`);
+        }
+        if (text === 'bd bootstrap --dry-run --json') {
+            const beads = fsx.get('.beads');
+            const remoteSet = beads && beads.files.has('config.local.yaml');
+            return ok(JSON.stringify(remoteSet ? { action: 'sync', sync_remote: REMOTE } : { action: 'init' }));
+        }
+        if (text === 'bd bootstrap --yes') {
+            fsx.get('.beads').db = { records: remote, unrelated: false, original: false };
+            return ok(`Synced database from ${REMOTE}`);
+        }
+        if (text === 'bd status --json') {
+            const beads = fsx.get('.beads');
+            return ok(JSON.stringify({ summary: { total_issues: beads.db.records.filter((r) => r._type !== 'memory').length } }));
+        }
+        if (/^bd dolt pull/.test(text)) {
+            const beads = fsx.get('.beads');
+            if (beads && beads.db && beads.db.unrelated) return bad(FIXTURE);
+            return ok('Pull complete.');
+        }
+        return ok();
+    };
+    return { command, calls, fsx, texts: () => calls.map((c) => c.text) };
+}
+
+const gateOpts = (member, logs, extra = {}) => ({
+    command: member.command,
+    log: (l) => logs.push(l),
+    checkSyncRemoteConfigured: async () => true,
+    remoteTipFingerprint: false,
+    sleep: async () => {},
+    ...extra,
+});
+
+const LOCAL_SAME = [issue('p-1', '2026-11-20T10:00:00Z'), issue('p-2', '2026-11-20T10:00:00Z'), memory('k', 'v')];
+const REMOTE_SAME = [issue('p-1', '2026-11-20T10:00:00Z'), issue('p-2', '2026-11-20T10:00:00Z'), memory('k', 'v')];
+
+function indexOfText(texts, pred, from = 0) {
+    for (let i = from; i < texts.length; i++) if (pred(texts[i])) return i;
+    return -1;
+}
+
+describe('findLocalOnlyWork (pure comparison)', () => {
+    test('an id absent from the fresh export is local-only work', () => {
+        const out = findLocalOnlyWork([issue('a', '2026-01-01T00:00:00Z'), issue('b', '2026-01-01T00:00:00Z')], [issue('a', '2026-01-01T00:00:00Z')]);
+        assert.deepEqual(out.map((w) => [w.id, w.reason]), [['b', 'absent']]);
+    });
+
+    test('a local updated_at newer than the fresh copy is local-only work; equal or older is not', () => {
+        const local = [issue('a', '2026-01-02T00:00:00Z'), issue('b', '2026-01-01T00:00:00Z'), issue('c', '2026-01-01T00:00:00Z')];
+        const fresh = [issue('a', '2026-01-01T00:00:00Z'), issue('b', '2026-01-01T00:00:00Z'), issue('c', '2026-01-05T00:00:00Z')];
+        const out = findLocalOnlyWork(local, fresh);
+        assert.deepEqual(out, [{ id: 'a', reason: 'newer', localUpdatedAt: '2026-01-02T00:00:00Z', freshUpdatedAt: '2026-01-01T00:00:00Z' }]);
+    });
+
+    test('timestamps compare as instants, not strings', () => {
+        assert.equal(findLocalOnlyWork([issue('a', '2026-01-01T01:00:00+01:00')], [issue('a', '2026-01-01T00:00:00Z')]).length, 0);
+    });
+
+    test('unreadable timestamps that differ count as local work (the safe direction)', () => {
+        assert.equal(findLocalOnlyWork([issue('a', 'garbage')], [issue('a', '2026-01-01T00:00:00Z')]).length, 1);
+        assert.equal(findLocalOnlyWork([issue('a', 'same')], [issue('a', 'same')]).length, 0);
+    });
+
+    test('memories: absent or changed value is local work', () => {
+        const out = findLocalOnlyWork([memory('x', '1'), memory('y', '2'), memory('z', '3')], [memory('x', '1'), memory('y', 'other')]);
+        assert.deepEqual(out.map((w) => [w.id, w.reason]), [['memory:y', 'changed'], ['memory:z', 'absent']]);
+    });
+
+    test('nothing local -> nothing local-only', () => {
+        assert.deepEqual(findLocalOnlyWork([], [issue('a', '2026-01-01T00:00:00Z')]), []);
+    });
+});
+
+describe('export parsing', () => {
+    test('every non-blank line must be a JSON object (a truncated read throws)', () => {
+        assert.equal(parseBeadsExport('{"id":"a"}\n\n{"id":"b"}\n').length, 2);
+        assert.throws(() => parseBeadsExport('{"id":"a"}\n{"id":"b'), /not JSON/);
+        assert.throws(() => parseBeadsExport('[1]'), /not a JSON object/);
+    });
+
+    test('the bd export count line', () => {
+        assert.equal(parseExportCount('Exported 2 issues and 1 memories to x'), 3);
+        assert.equal(parseExportCount('Exported 1 issue to x'), 1);
+        assert.equal(parseExportCount('nothing'), null);
+    });
+
+    test('pickLeftoverBackup', () => {
+        assert.deepEqual(pickLeftoverBackup(['.beads', 'src']), { backup: null, pending: false, hasBeads: true });
+        assert.equal(pickLeftoverBackup(['src', `${FLATTEN_PENDING_PREFIX}1`, `${FLATTEN_PENDING_PREFIX}2`]).backup, `${FLATTEN_PENDING_PREFIX}2`);
+        assert.equal(pickLeftoverBackup(['.beads', `${FLATTEN_PENDING_PREFIX}1`]).hasBeads, true);
+        assert.equal(pickLeftoverBackup([`${FLATTEN_BACKUP_PREFIX}1`]).backup, `${FLATTEN_BACKUP_PREFIX}1`);
+        assert.equal(pickLeftoverBackup(['.beads', `${FLATTEN_BACKUP_PREFIX}1`]).backup, null, 'a finished backup next to a live .beads is left alone');
+    });
+});
+
+for (const [dialect, shell] of [['POSIX', posix], ['PowerShell', powershell]]) {
+    describe(`health gate on a ${dialect} member`, () => {
+        test('unrelated history, no local-only work: export, rename, bootstrap in order; WARN names the backup; the launch continues', async () => {
+            const member = makeMember({ local: LOCAL_SAME, remote: REMOTE_SAME });
+            const logs = [];
+            const res = await preflightBeadsHealthGate('m1', gateOpts(member, logs, { flattenRecovery: async () => shell }));
+            assert.equal(res.ok, true);
+            assert.equal(res.recovered, true);
+            assert.ok(res.backup.startsWith(FLATTEN_BACKUP_PREFIX), res.backup);
+
+            const texts = member.texts();
+            const iExport = indexOfText(texts, (t) => t === `bd export --all -o .beads/${FLATTEN_LOCAL_EXPORT}`);
+            const iRename = indexOfText(texts, (t) => t.includes(`'.beads'`) && t.includes(FLATTEN_PENDING_PREFIX) && (t.includes('mv --') || t.includes('Move-Item')));
+            const iBoot = indexOfText(texts, (t) => t === 'bd bootstrap --yes');
+            assert.ok(iExport >= 0 && iRename > iExport && iBoot > iRename, `order export(${iExport}) < rename(${iRename}) < bootstrap(${iBoot})`);
+
+            const warn = logs.filter((l) => l.startsWith(FLATTEN_RECOVERY_WARNING_PREFIX));
+            assert.equal(warn.length, 1, logs.join('\n'));
+            assert.ok(warn[0].includes(`'m1'`) && warn[0].includes(res.backup) && /flattened/.test(warn[0]), warn[0]);
+
+            // The folder: a fresh .beads, the original kept as the backup.
+            assert.equal(member.fsx.get('.beads').db.original, false);
+            assert.equal(member.fsx.get(res.backup).db.original, true);
+            assert.ok(![...member.fsx.keys()].some((k) => k.startsWith(FLATTEN_PENDING_PREFIX) || k.startsWith(FLATTEN_DISCARD_PREFIX)));
+        });
+
+        test('local-only work: refused with the ids and the fix, original .beads renamed back, no bootstrap result kept', async () => {
+            const local = [...LOCAL_SAME, issue('p-3', '2026-11-21T10:00:00Z'), issue('p-1x', '2026-11-22T10:00:00Z')];
+            const remote = [...REMOTE_SAME, issue('p-1x', '2026-11-21T10:00:00Z')];
+            const member = makeMember({ local, remote });
+            const original = member.fsx.get('.beads');
+            const logs = [];
+            await assert.rejects(
+                () => preflightBeadsHealthGate('m1', gateOpts(member, logs, { flattenRecovery: shell })),
+                (err) => {
+                    assert.ok(err instanceof BeadsFlattenRecoveryRefusedError, err && err.stack);
+                    assert.equal(err.code, BEADS_FLATTEN_RECOVERY_REFUSED_CODE);
+                    assert.deepEqual(err.details.localOnly.map((w) => w.id).sort(), ['p-1x', 'p-3']);
+                    assert.ok(err.message.includes('p-3') && err.message.includes('p-1x'), err.message);
+                    assert.ok(err.message.includes(`.beads/${FLATTEN_LOCAL_EXPORT}`), err.message);
+                    assert.ok(/Fix:/.test(err.message) && /bd bootstrap --yes/.test(err.message), err.message);
+                    assert.equal(err.details.restored, true);
+                    return true;
+                },
+            );
+            assert.strictEqual(member.fsx.get('.beads'), original, 'the original .beads is back in place');
+            assert.equal(original.db.original, true);
+            assert.ok(original.files.has(FLATTEN_LOCAL_EXPORT), 'the export stays with the clone');
+            assert.deepEqual([...member.fsx.keys()], ['.beads'], 'no backup, pending or discarded fresh clone left');
+            const texts = member.texts();
+            const iBoot = indexOfText(texts, (t) => t === 'bd bootstrap --yes');
+            const iBack = indexOfText(texts, (t) => t.includes(FLATTEN_PENDING_PREFIX) && (t.includes(`'.beads'`)) && texts.indexOf(t) > iBoot && (t.includes('mv --') || t.includes('Move-Item')), iBoot + 1);
+            assert.ok(iBack > iBoot, 'the rename back comes after the bootstrap');
+            assert.equal(logs.filter((l) => l.startsWith(FLATTEN_RECOVERY_WARNING_PREFIX)).length, 0, 'no success warning');
+        });
+
+        test('bootstrap failure after the rename: the rename back is issued before the error propagates', async () => {
+            const member = makeMember({ local: LOCAL_SAME, remote: REMOTE_SAME, failOn: { 'bd bootstrap --yes': 'fatal: remote unreachable' } });
+            const original = member.fsx.get('.beads');
+            await assert.rejects(
+                () => preflightBeadsHealthGate('m1', gateOpts(member, [], { flattenRecovery: shell })),
+                (err) => err instanceof BeadsFlattenRecoveryFailedError && err.details.step === 'bootstrap' && err.details.restored === true,
+            );
+            const texts = member.texts();
+            const iBoot = indexOfText(texts, (t) => t === 'bd bootstrap --yes');
+            const iBack = indexOfText(texts, (t) => t.includes(FLATTEN_PENDING_PREFIX) && (t.includes('mv --') || t.includes('Move-Item')), iBoot + 1);
+            assert.ok(iBoot >= 0 && iBack > iBoot, 'rename back after the failed bootstrap');
+            assert.strictEqual(member.fsx.get('.beads'), original);
+            assert.deepEqual([...member.fsx.keys()], ['.beads']);
+        });
+
+        test('a leftover recovery backup with no .beads is restored before the pull', async () => {
+            const original = { db: { records: REMOTE_SAME, unrelated: false, original: true }, files: new Map() };
+            const member = makeMember({ entries: { src: { files: new Map() }, [`${FLATTEN_PENDING_PREFIX}20261125T000000000Z`]: original } });
+            const logs = [];
+            const res = await preflightBeadsHealthGate('m1', gateOpts(member, logs, { flattenRecovery: shell }));
+            assert.equal(res.ok, true);
+            const texts = member.texts();
+            const iRestore = indexOfText(texts, (t) => t.includes(FLATTEN_PENDING_PREFIX) && (t.includes('mv --') || t.includes('Move-Item')));
+            const iPull = indexOfText(texts, (t) => /^bd dolt pull/.test(t));
+            assert.ok(iRestore >= 0 && iPull > iRestore, `restore(${iRestore}) before pull(${iPull})`);
+            assert.strictEqual(member.fsx.get('.beads'), original);
+            assert.ok(logs.some((l) => l.startsWith(FLATTEN_RECOVERY_WARNING_PREFIX) && l.includes('interrupted')), logs.join('\n'));
+        });
+
+        test('member commands carry no shell variable expansion', async () => {
+            const member = makeMember({ local: LOCAL_SAME, remote: REMOTE_SAME });
+            await preflightBeadsHealthGate('m1', gateOpts(member, [], { flattenRecovery: shell }));
+            const shellCmds = member.calls.filter((c) => !/^bd /.test(c.cmd));
+            assert.ok(shellCmds.length >= 6, 'the recovery issued its file-system commands');
+            for (const c of shellCmds) {
+                if (dialect === 'PowerShell') {
+                    assert.equal(c.dialect, 'ps', `wrapped for PowerShell: ${c.cmd}`);
+                    for (const bad of ['$env:', '$HOME', '~/', String.fromCharCode(96)]) assert.ok(!c.text.includes(bad), `${bad} in ${c.text}`);
+                } else if (!/info\/exclude/.test(c.text)) {
+                    // ensureGitExcluded assigns and reads its own local variable only.
+                    assert.ok(!c.text.includes('$') && !c.text.includes('~/') && !c.text.includes(String.fromCharCode(96)), c.text);
+                }
+            }
+        });
+    });
+}
+
+describe('health gate without the recovery option', () => {
+    test('the unrelated-history error propagates unchanged and nothing is renamed', async () => {
+        const member = makeMember({ local: LOCAL_SAME, remote: REMOTE_SAME });
+        await assert.rejects(() => preflightBeadsHealthGate('m1', gateOpts(member, [])), (err) => err instanceof DoltUnrelatedHistoryError);
+        assert.ok(!member.texts().some((t) => /mv --|Move-Item|bootstrap/.test(t)));
+    });
+});
+
+describe('recoverFlattenedClone: failures before anything destructive', () => {
+    test('a local export that cannot be read back intact fails before the rename', async () => {
+        const member = makeMember({ local: LOCAL_SAME, remote: REMOTE_SAME });
+        const command = async (cmd, opts) => {
+            if (/^cat -- /.test(cmd)) return { ok: true, output: '{"_type":"issue","id":"p-1"}\n{"_type":"iss', error: null };
+            return member.command(cmd, opts);
+        };
+        await assert.rejects(
+            () => recoverFlattenedClone({ command, member: 'm1', shell: posix }),
+            (err) => err instanceof BeadsFlattenRecoveryFailedError && err.details.step === 'export' && err.details.restored === true,
+        );
+        assert.ok(!member.texts().some((t) => /mv --/.test(t)), 'never renamed');
+    });
+
+    test('a read-back count that differs from what bd exported fails before the rename', async () => {
+        const member = makeMember({ local: LOCAL_SAME, remote: REMOTE_SAME });
+        const command = async (cmd, opts) => {
+            if (/^cat -- /.test(cmd)) return { ok: true, output: '{"_type":"issue","id":"p-1"}\n', error: null };
+            return member.command(cmd, opts);
+        };
+        await assert.rejects(() => recoverFlattenedClone({ command, member: 'm1', shell: posix }), /read back 1 record\(s\) but bd exported 3/);
+        assert.ok(!member.texts().some((t) => /mv --/.test(t)));
+    });
+
+    test('a bootstrap that would not clone the remote is never run', async () => {
+        const member = makeMember({ local: LOCAL_SAME, remote: REMOTE_SAME });
+        member.fsx.get('.beads').files.delete('config.local.yaml');
+        await assert.rejects(
+            () => recoverFlattenedClone({ command: member.command, member: 'm1', shell: posix }),
+            (err) => err instanceof BeadsFlattenRecoveryFailedError && err.details.step === 'plan' && err.details.restored,
+        );
+        assert.ok(!member.texts().includes('bd bootstrap --yes'));
+        assert.equal(member.fsx.get('.beads').db.original, true);
+    });
+});
+
+describe('restoreLeftoverFlattenBackup', () => {
+    test('a pending backup next to an unverified fresh .beads: the fresh one is dropped and the original restored', async () => {
+        const original = { db: { records: LOCAL_SAME, original: true }, files: new Map() };
+        const member = makeMember({ entries: { '.beads': { db: { records: [], original: false }, files: new Map() }, [`${FLATTEN_PENDING_PREFIX}1`]: original } });
+        const r = await restoreLeftoverFlattenBackup({ command: member.command, member: 'm1', shell: posix });
+        assert.equal(r.restored, true);
+        assert.strictEqual(member.fsx.get('.beads'), original);
+        assert.deepEqual([...member.fsx.keys()], ['.beads']);
+    });
+
+    test('a healthy folder issues the listing only', async () => {
+        const member = makeMember({ local: LOCAL_SAME, remote: REMOTE_SAME });
+        const r = await restoreLeftoverFlattenBackup({ command: member.command, member: 'm1', shell: powershell });
+        assert.deepEqual(r, { checked: true, restored: false });
+        assert.equal(member.calls.length, 1);
+    });
+});
+
+describe('member beads set-up (existing database, pull through DoltSync)', () => {
+    test('an unrelated-history pull is recovered and the set-up succeeds', async () => {
+        const member = makeMember({ local: LOCAL_SAME, remote: REMOTE_SAME });
+        const logs = [];
+        const command = async (cmd, opts) => {
+            if (cmd === 'bd dolt remote list --json') return { ok: true, output: JSON.stringify([{ name: 'origin', url: REMOTE }]), error: null };
+            if (cmd === 'git rev-parse --show-prefix') return { ok: true, output: '\n', error: null };
+            return member.command(cmd, opts);
+        };
+        await setupMemberBeads({
+            command,
+            member: 'm2',
+            url: REMOTE,
+            hasDb: true,
+            memberShell: async () => posix,
+            pullBeads: async () => { throw new DoltUnrelatedHistoryError('pull failed', { member: 'm2', doltOutput: FIXTURE, details: { operation: 'pull' } }); },
+            log: (l) => logs.push(l),
+        });
+        assert.equal(member.fsx.get('.beads').db.original, false, 're-bootstrapped');
+        assert.ok(logs.some((l) => l.startsWith(FLATTEN_RECOVERY_WARNING_PREFIX) && l.includes(`'m2'`)), logs.join('\n'));
+    });
+
+    test('local-only work on the member: the typed refusal propagates and the clone is untouched', async () => {
+        const member = makeMember({ local: [...LOCAL_SAME, issue('p-9', '2026-11-23T00:00:00Z')], remote: REMOTE_SAME });
+        const original = member.fsx.get('.beads');
+        const command = async (cmd, opts) => {
+            if (cmd === 'bd dolt remote list --json') return { ok: true, output: JSON.stringify([{ name: 'origin', url: REMOTE }]), error: null };
+            if (cmd === 'git rev-parse --show-prefix') return { ok: true, output: '\n', error: null };
+            return member.command(cmd, opts);
+        };
+        await assert.rejects(
+            () => setupMemberBeads({
+                command, member: 'm2', url: REMOTE, hasDb: true, memberShell: async () => posix,
+                pullBeads: async () => { throw new DoltUnrelatedHistoryError('pull failed', { member: 'm2', doltOutput: FIXTURE }); },
+            }),
+            (err) => err instanceof BeadsFlattenRecoveryRefusedError && err.message.includes('p-9'),
+        );
+        assert.strictEqual(member.fsx.get('.beads'), original);
+    });
+});
+
+describe('repair()', () => {
+    test('kind unrelated-history runs the same recovery', async () => {
+        const member = makeMember({ local: LOCAL_SAME, remote: REMOTE_SAME });
+        const res = await repair('m1', { command: member.command, flattenRecovery: posix, kind: 'unrelated-history' });
+        assert.equal(res.repaired, true);
+        assert.equal(res.result.recovered, true);
+        assert.equal(member.fsx.get('.beads').db.original, false);
+    });
+
+    test('a refusal is reported, not thrown', async () => {
+        const member = makeMember({ local: [...LOCAL_SAME, issue('p-9', '2026-11-23T00:00:00Z')], remote: REMOTE_SAME });
+        const res = await repair('m1', { command: member.command, flattenRecovery: powershell, kind: 'unrelated-history' });
+        assert.equal(res.repaired, false);
+        assert.equal(res.escalation, 'flatten-recovery-refused');
+        assert.equal(member.fsx.get('.beads').db.original, true);
+    });
+
+    test('unrelated history without the command primitives is not configured', async () => {
+        const res = await repair('m1', { command: async () => ({ ok: true, output: '' }), kind: 'unrelated-history' });
+        assert.equal(res.repaired, false);
+        assert.match(res.escalation, /not-configured/);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// The new SE primitives on a real shell.
+// ---------------------------------------------------------------------------
+const tmpRoots = [];
+after(() => {
+    for (const d of tmpRoots) fs.rmSync(d, { recursive: true, force: true });
+});
+const hasBash = (() => { const r = spawnSync('bash', ['-c', 'true']); return !r.error && r.status === 0; })();
+
+describe('flatten-recovery primitives on bash', { skip: !hasBash && 'no bash on this host' }, () => {
+    const sh = (dir, cmd) => spawnSync('bash', ['-c', cmd], { cwd: dir, encoding: 'utf8' });
+    test('rename refuses a missing source and an existing destination; list, copy, read, remove work', () => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'flatten-prims-'));
+        tmpRoots.push(dir);
+        fs.mkdirSync(path.join(dir, '.beads'));
+        fs.writeFileSync(path.join(dir, '.beads', 'config.yaml'), 'a: 1\n');
+        assert.notEqual(sh(dir, posix.renamePath('.nope', '.x')).status, 0);
+        fs.mkdirSync(path.join(dir, '.taken'));
+        assert.notEqual(sh(dir, posix.renamePath('.beads', '.taken')).status, 0);
+        assert.ok(fs.existsSync(path.join(dir, '.beads', 'config.yaml')), 'nothing moved');
+        assert.equal(sh(dir, posix.renamePath('.beads', '.beads.flatten-pending-1')).status, 0);
+        assert.ok(sh(dir, posix.listDirectory('.')).stdout.split('\n').includes('.beads.flatten-pending-1'));
+        fs.mkdirSync(path.join(dir, '.beads'));
+        assert.equal(sh(dir, posix.copyFileIfPresent('.beads.flatten-pending-1/config.yaml', '.beads/config.yaml')).status, 0);
+        assert.equal(sh(dir, posix.copyFileIfPresent('.beads.flatten-pending-1/absent.yaml', '.beads/absent.yaml')).status, 0);
+        assert.ok(!fs.existsSync(path.join(dir, '.beads', 'absent.yaml')));
+        assert.equal(sh(dir, posix.readFile('.beads/config.yaml')).stdout, 'a: 1\n');
+        assert.equal(sh(dir, posix.removeDirectory('.beads.flatten-pending-1')).status, 0);
+        assert.ok(!fs.existsSync(path.join(dir, '.beads.flatten-pending-1')));
+    });
+
+    test('unsafe paths and the work folder itself are refused', () => {
+        for (const s of [posix, powershell]) {
+            assert.throws(() => s.renamePath('../x', '.y'));
+            assert.throws(() => s.readFile("a'b"));
+            assert.throws(() => s.removeDirectory('.'));
+            assert.throws(() => s.listDirectory('/etc'));
+        }
+    });
+});
