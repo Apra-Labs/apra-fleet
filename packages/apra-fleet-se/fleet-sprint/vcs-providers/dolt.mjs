@@ -78,10 +78,16 @@ const EMPTY_REMOTE = [
  *  git non-interactively and the credential helper would have prompted. Git
  *  reached the remote and asked for a credential, so the remote is not dead:
  *  such output must fall through to the AUTH check below, not be filed as a
- *  permanent "unreachable/misconfigured remote". */
+ *  permanent "unreachable/misconfigured remote".
+ *
+ *  Likewise git's low-speed abort of a STALLED transfer ("Operation too
+ *  slow. Less than N bytes/sec transferred the last M seconds", curl error
+ *  28, set off by the stall env every bd sync carries) arrives in the same
+ *  wrapper (confirmed live): the remote was reached and the transfer started,
+ *  so it falls through to TRANSIENT and is retried. */
 const REMOTE_UNREACHABLE = [
-    /^(?![\s\S]*fork\/exec)(?![\s\S]*(?:could not read (?:Username|Password) for|terminal prompts disabled))[\s\S]*could not be accessed/i,
-    /^(?![\s\S]*fork\/exec)(?![\s\S]*(?:could not read (?:Username|Password) for|terminal prompts disabled))[\s\S]*failed to get remote db/i,
+    /^(?![\s\S]*fork\/exec)(?![\s\S]*(?:could not read (?:Username|Password) for|terminal prompts disabled))(?![\s\S]*(?:operation too slow|curl (?:error )?28\b))[\s\S]*could not be accessed/i,
+    /^(?![\s\S]*fork\/exec)(?![\s\S]*(?:could not read (?:Username|Password) for|terminal prompts disabled))(?![\s\S]*(?:operation too slow|curl (?:error )?28\b))[\s\S]*failed to get remote db/i,
     /stat [^:]+: no such file or directory/i,
 ];
 
@@ -144,6 +150,8 @@ const TRANSIENT = [
     /unable to (access|connect)/i,
     /connection (timed out|reset|refused)/i,
     /operation timed out/i,
+    /operation too slow/i,
+    /curl (?:error )?28\b/i,
     /\btimed out\b/i,
     /\btimeout\b/i,
     /temporary failure/i,

@@ -617,6 +617,29 @@ export class DoltLockHeldError extends DoltSyncError {
     }
 }
 
+/** Stable error code of DoltSyncTimeLimitError. */
+export const DOLT_SYNC_TIME_LIMIT_CODE = 'DOLT_SYNC_TIME_LIMIT';
+
+/**
+ * A D-pull/D-push that was still running when its total time limit ran out
+ * (the heartbeat that keeps a long, silent transfer alive stops at the limit,
+ * then the silence timeout ends it). Not retried: the transfer is too large or
+ * too slow, and the same transfer would hit the same limit again. details.kind
+ * is 'time-limit'; details.limitS / details.elapsedS carry the numbers. A
+ * DoltSyncError subtype, so every existing DoltSyncError handler still applies.
+ */
+export class DoltSyncTimeLimitError extends DoltSyncError {
+    /**
+     * @param {string} message
+     * @param {{ member?: string|null, doltOutput?: string|null, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(message, opts = {}) {
+        super(message, { ...opts, details: { kind: 'time-limit', ...opts.details } });
+        this.name = 'DoltSyncTimeLimitError';
+        this.code = DOLT_SYNC_TIME_LIMIT_CODE;
+    }
+}
+
 /** The failure kind DoltPushRaceError carries in details.kind. */
 export const DOLT_PUSH_RACE_KIND = 'remote-race';
 

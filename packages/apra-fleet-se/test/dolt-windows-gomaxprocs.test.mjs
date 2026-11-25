@@ -9,7 +9,7 @@
 import { test, describe, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert';
 
-import { bdSyncCommandFor, WINDOWS_BD_GOMAXPROCS } from '../fleet-sprint/bd-sync-command.mjs';
+import { bdSyncCommandFor, WINDOWS_BD_GOMAXPROCS, unwrapSyncHeartbeat } from '../fleet-sprint/bd-sync-command.mjs';
 import {
     doltPullBefore,
     doltPushAfter,
@@ -23,9 +23,10 @@ import { DoltWindowsSpawnLimitError, DoltSyncError, DOLT_WINDOWS_SPAWN_LIMIT_COD
 import { stderrText } from './helpers/vcs-stderr-corpus.mjs';
 
 // Exact prefixes per member shell dialect.
-const POSIX = 'GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never ';
-const GITBASH = 'GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never GOMAXPROCS=1 ';
-const PWSH = "$env:GIT_TERMINAL_PROMPT='0'; $env:GCM_INTERACTIVE='never'; $env:GOMAXPROCS='1'; ";
+const STALL = 'GIT_HTTP_LOW_SPEED_LIMIT=1000 GIT_HTTP_LOW_SPEED_TIME=300 ';
+const POSIX = `GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never ${STALL}`;
+const GITBASH = `GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never ${STALL}GOMAXPROCS=1 `;
+const PWSH = "$env:GIT_TERMINAL_PROMPT='0'; $env:GCM_INTERACTIVE='never'; $env:GIT_HTTP_LOW_SPEED_LIMIT='1000'; $env:GIT_HTTP_LOW_SPEED_TIME='300'; $env:GOMAXPROCS='1'; ";
 
 // Exact strings per member OS/shell.
 const EXPECTED = [
@@ -52,7 +53,10 @@ const SYNC_REMOTE = 'git+https://example.com/org/repo.git';
 function recordingCommand(syncResult = () => ({ ok: true, output: '', error: null })) {
     const calls = [];
     let pushed = 0;
-    const command = async (cmd, opts) => {
+    const command = async (wire, opts) => {
+        // A sync step is issued inside the heartbeat wrapper; these checks
+        // are about the bd command inside it (the env prefix + bd).
+        const cmd = unwrapSyncHeartbeat(wire);
         calls.push({ cmd, member: opts && opts.member_name });
         if (cmd.includes('bd config get sync.remote')) {
             return { ok: true, output: JSON.stringify({ value: SYNC_REMOTE }), error: null };

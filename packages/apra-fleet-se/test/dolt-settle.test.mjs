@@ -490,7 +490,7 @@ test('settleDoltConflicts: resolves a single-row issues conflict end to end, tea
     assert.deepEqual(state.resolvedTables, ['issues']);
     // A Windows (PowerShell) member republishes with the non-interactive git
     // env and a bounded GOMAXPROCS, as $env: assignments.
-    const pwsh = "$env:GIT_TERMINAL_PROMPT='0'; $env:GCM_INTERACTIVE='never'; $env:GOMAXPROCS='1'; ";
+    const pwsh = "$env:GIT_TERMINAL_PROMPT='0'; $env:GCM_INTERACTIVE='never'; $env:GIT_HTTP_LOW_SPEED_LIMIT='1000'; $env:GIT_HTTP_LOW_SPEED_TIME='300'; $env:GOMAXPROCS='1'; ";
     assert.deepEqual(state.syncCommands, [`${pwsh}bd dolt pull`, `${pwsh}bd dolt push`]);
 });
 

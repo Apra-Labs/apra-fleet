@@ -85,8 +85,8 @@
  * ASCII only.
  */
 
-import { DoltDivergedError, DoltSyncError, DoltUnrelatedHistoryError, DoltWindowsSpawnLimitError, DoltLockHeldError, DoltPushRaceError, UnpublishedSchemaMigrationsError, DOLT_CREDENTIAL_REMEDY, BEADS_FLATTEN_RECOVERY_REFUSED_CODE } from './errors.mjs';
-import { bdSyncCommandFor, normalizeMemberTarget, UNRESOLVED_MEMBER_TARGET } from './bd-sync-command.mjs';
+import { DoltDivergedError, DoltSyncError, DoltUnrelatedHistoryError, DoltWindowsSpawnLimitError, DoltLockHeldError, DoltPushRaceError, DoltSyncTimeLimitError, UnpublishedSchemaMigrationsError, DOLT_CREDENTIAL_REMEDY, BEADS_FLATTEN_RECOVERY_REFUSED_CODE } from './errors.mjs';
+import { bdSyncCommandFor, normalizeMemberTarget, UNRESOLVED_MEMBER_TARGET, withSyncHeartbeat, stripSyncHeartbeat } from './bd-sync-command.mjs';
 import { buildLockHolderProbe, parseLockHolderProbe, describeLockProcess } from './beads-lock-probe.mjs';
 import { classifyFailure, toDoltVerdict, commandBinary } from './vcs-module.mjs';
 import { recoverFlattenedClone, restoreLeftoverFlattenBackup, resolveRecoveryShell } from './beads-flatten-recovery.mjs';
@@ -664,6 +664,25 @@ export function surfaceDoltFailureText(output) {
 // need a different budget can still override via opts.timeoutS.
 const DOLT_STEP_TIMEOUT_S = 600;
 
+// DOLT_STEP_TIMEOUT_S above is an OUTPUT-SILENCE limit, and `bd dolt push`
+// prints nothing while it uploads: a push after a clone rewrote its table-file
+// archive can upload hundreds of MB at well under 1 MB/s, legitimately silent
+// for longer than that limit. So every bd sync step is issued under a
+// heartbeat wrapper (withSyncHeartbeat, bd-sync-command.mjs) that prints a line
+// every DOLT_SYNC_HEARTBEAT_S while bd runs, up to a separate TOTAL limit
+// (DOLT_SYNC_MAX_TOTAL_S, override via opts.maxTotalS). Past it the heartbeat
+// stops, the silence limit ends the command, and the step fails with the
+// typed DoltSyncTimeLimitError -- never retried from zero.
+/** Default total time limit of one bd sync attempt, in seconds (45 min). */
+export const DOLT_SYNC_MAX_TOTAL_S = 2700;
+/** Heartbeat interval while a bd sync runs (capped at a quarter of the silence limit). */
+export const DOLT_SYNC_HEARTBEAT_S = 30;
+/** Client-side wait headroom past total limit + silence limit. */
+const DOLT_SYNC_CLIENT_GRACE_MS = 60_000;
+/** The fleet server's failure text when it ended a command on its timeout
+ *  (not git's own "Connection timed out"). */
+const STEP_TIMED_OUT_RE = /\bCommand timed out after\b/i;
+
 /**
  * Delay before transient retry #`attempt` (1-based): base * 2^(attempt-1),
  * capped at DOLT_BACKOFF_MAX_MS.
@@ -812,6 +831,30 @@ function lockHeldSyncError(member, operation, step) {
     );
 }
 
+/** Remedy text of the typed total-time-limit sync failure. */
+export const DOLT_SYNC_TIME_LIMIT_REMEDY =
+    'Remedy: shrink the beads Dolt store with beads maintenance (garbage-collect, prune closed issues, flatten history) so a sync '
+    + 'transfers less, then re-run the sync.';
+
+/**
+ * The typed terminal error for a step that ran out of its total time limit
+ * (runDoltStep's 'time-limit' kind).
+ *
+ * @param {string} member
+ * @param {string} operation
+ * @param {{ error: string, limitS?: number, elapsedS?: number }} step
+ * @returns {DoltSyncTimeLimitError}
+ */
+function timeLimitSyncError(member, operation, step) {
+    return new DoltSyncTimeLimitError(
+        `[Dolt] D-${operation} for member '${member}' did not finish within its ${step.limitS}s total time limit (${step.elapsedS}s elapsed): `
+        + 'the beads Dolt transfer is too large or too slow for this link (typically a push that re-uploads a whole table-file archive '
+        + 'after the clone rewrote it in a garbage-collect). Not retried: the same transfer would hit the same limit again. '
+        + `${DOLT_SYNC_TIME_LIMIT_REMEDY} Raw: ${step.error}`,
+        { member, doltOutput: step.error, details: { operation, limitS: step.limitS, elapsedS: step.elapsedS } },
+    );
+}
+
 /**
  * The typed terminal error a failed step maps to, or null for a generic
  * failure (the caller then throws its own DoltSyncError).
@@ -835,6 +878,7 @@ function unrelatedHistoryError(member, operation, step) {
 
 function typedStepError(member, operation, step) {
     if (step.kind === 'lock-held') return lockHeldSyncError(member, operation, step);
+    if (step.kind === 'time-limit') return timeLimitSyncError(member, operation, step);
     if (step.spawnLimit) return windowsSpawnLimitSyncError(member, operation, step);
     return null;
 }
@@ -999,14 +1043,22 @@ async function awaitSyncAttempt({ pending, command, member, target, label, log, 
  *
  * @returns {Promise<{ ok: boolean, output: string, error: string|null, kind?: 'no-remote'|'empty-remote'|'remote-unreachable'|'diverged'|'auth'|'transient'|'missing-tool'|'unknown', missingTool?: string }>}
  */
-async function runDoltStep({ command, member, cmd, label, log, maxTransientRetries, onAuthFailure, sleep = defaultSleep, backoffBaseMs = DOLT_BACKOFF_BASE_MS, timeoutS = DOLT_STEP_TIMEOUT_S, spawnOutageBudgetMs = DOLT_SPAWN_OUTAGE_BUDGET_MS, now = Date.now, memberTarget, lockProbeAfterMs = DOLT_LOCK_PROBE_AFTER_MS, lockProbeTimer, onAbandonedAttempt, expectedFailureKinds }) {
+async function runDoltStep({ command, member, cmd, label, log, maxTransientRetries, onAuthFailure, sleep = defaultSleep, backoffBaseMs = DOLT_BACKOFF_BASE_MS, timeoutS = DOLT_STEP_TIMEOUT_S, maxTotalS = DOLT_SYNC_MAX_TOTAL_S, spawnOutageBudgetMs = DOLT_SPAWN_OUTAGE_BUDGET_MS, now = Date.now, memberTarget, lockProbeAfterMs = DOLT_LOCK_PROBE_AFTER_MS, lockProbeTimer, onAbandonedAttempt, expectedFailureKinds, checkLandedAfterTimeout }) {
     // `cmd` stays the LOGICAL command (classification, commandBinary, labels);
     // `issued` is the member-bound string, which carries the non-interactive
     // git credential environment (and, on a Windows member, a bounded
     // GOMAXPROCS) -- resolved once per step, not per attempt. The same
     // target builds the lock-holder probe.
     const target = await resolveDoltMemberTarget(member, memberTarget, log);
-    const issued = bdSyncCommandFor(cmd, target);
+    // The heartbeat wrapper keeps a long, silent transfer alive up to
+    // `maxTotalS` (see DOLT_SYNC_MAX_TOTAL_S). The client-side wait must then
+    // outlast total limit + silence limit, or the client would give up at
+    // the silence limit while the member is still heartbeating.
+    const totalLimitS = Number(maxTotalS) > 0 ? Number(maxTotalS) : DOLT_SYNC_MAX_TOTAL_S;
+    const heartbeatS = Math.max(1, Math.min(DOLT_SYNC_HEARTBEAT_S, Math.floor(Number(timeoutS) / 4) || 1));
+    const wrapped = withSyncHeartbeat(cmd, target, { intervalS: heartbeatS, capS: totalLimitS });
+    const issued = wrapped || bdSyncCommandFor(cmd, target);
+    const waitOpts = wrapped ? { timeoutMs: (totalLimitS + Number(timeoutS)) * 1000 + DOLT_SYNC_CLIENT_GRACE_MS } : {};
     let attempt = 0;
     let authHealAttempted = false;
     /** The info the self-heal was invoked with, reported back on a failed retry. */
@@ -1026,7 +1078,7 @@ async function runDoltStep({ command, member, cmd, label, log, maxTransientRetri
         const attemptStartedAt = now();
         // `logicalCommand` lets the beads-scope wrapper classify the unprefixed
         // command (a prefixed D-pull must still drop the shared snapshot).
-        const pending = Promise.resolve(command(issued, { member_name: member, silent: true, failSoft: true, label, timeout_s: timeoutS, logicalCommand: cmd }));
+        const pending = Promise.resolve(command(issued, { member_name: member, silent: true, failSoft: true, label, timeout_s: timeoutS, logicalCommand: cmd, ...waitOpts }));
         const waited = await awaitSyncAttempt({ pending, command, member, target, label, log, attemptStartedAt, now, lockProbeAfterMs, lockProbeTimer });
         if (waited.lockHeld) {
             // The sync command is still waiting on the member; stop waiting
@@ -1038,12 +1090,37 @@ async function runDoltStep({ command, member, cmd, label, log, maxTransientRetri
             log(`[Dolt] ${label} FAILED (lock-held) for member '${member}' -- not retrying while that process holds the lock: ${error}`);
             return { ok: false, output: '', error, kind: 'lock-held', lockHolders: waited.lockHeld, selfHealed: authHealAttempted };
         }
-        const res = waited.res;
+        const res = (wrapped && waited.res && typeof waited.res === 'object')
+            ? { ...waited.res, output: stripSyncHeartbeat(waited.res.output), error: stripSyncHeartbeat(waited.res.error) }
+            : waited.res;
         if (res && res.ok) {
             if (authHealAttempted) log(`[Dolt] self-heal recovered: ${label} succeeded for member '${member}' on the retry after re-provisioning credentials.`);
             return res;
         }
         const rawError = res ? res.error : 'unknown command failure';
+        if (STEP_TIMED_OUT_RE.test(String(rawError || ''))) {
+            // A timed-out push may still have landed (the kill can race the
+            // ref update). Check BEFORE any retry: re-sending a landed push
+            // from zero is exactly the wasted transfer this guards against.
+            if (typeof checkLandedAfterTimeout === 'function') {
+                let landed = null;
+                try {
+                    landed = await checkLandedAfterTimeout();
+                } catch (checkErr) {
+                    if (checkErr && checkErr.name === 'CancelledError') throw checkErr;
+                    log(`[Dolt] ${label} timed out for member '${member}' and whether it landed could not be checked: ${(checkErr && checkErr.message) || checkErr}`);
+                }
+                if (landed) {
+                    log(`[Dolt] ${label} timed out for member '${member}', but the remote shows it landed (${landed.status || 'landed'}); not retrying.`);
+                    return { ok: true, output: res && res.output ? res.output : '', error: null, landedAfterTimeout: true };
+                }
+            }
+            const elapsedS = Math.round((now() - attemptStartedAt) / 1000);
+            if (wrapped && elapsedS >= totalLimitS) {
+                log(`[Dolt] ${label} FAILED (time-limit) for member '${member}': still running after its ${totalLimitS}s total time limit (${elapsedS}s elapsed) -- the transfer is too large or too slow; not retrying. ${DOLT_SYNC_TIME_LIMIT_REMEDY}`);
+                return { ok: false, output: res ? res.output : '', error: surfaceDoltFailureText(rawError), kind: 'time-limit', limitS: totalLimitS, elapsedS, selfHealed: authHealAttempted };
+            }
+        }
         // Same verdict classifyDoltFailure() returns, read once here so a
         // missing-tool failure can also name the binary. Classified on the
         // RAW text; everything surfaced below uses `error`, which names the
@@ -1768,7 +1845,7 @@ export async function doltPullBefore(member, opts = {}) {
     // `maxTransientRetries` is deliberately NOT defaulted here: runDoltStep()
     // must see whether the caller passed it (an explicit value caps both
     // retry ladders; undefined selects each ladder's own default).
-    const { command, log = () => {}, maxTransientRetries, checkSyncRemoteConfigured, skipPull = false, onAuthFailure, sleep, backoffBaseMs, timeoutS, settle, remoteTipFingerprint = true, spawnOutageBudgetMs, now, memberTarget, lockProbeAfterMs, lockProbeTimer, onAbandonedAttempt } = opts;
+    const { command, log = () => {}, maxTransientRetries, checkSyncRemoteConfigured, skipPull = false, onAuthFailure, sleep, backoffBaseMs, timeoutS, maxTotalS, settle, remoteTipFingerprint = true, spawnOutageBudgetMs, now, memberTarget, lockProbeAfterMs, lockProbeTimer, onAbandonedAttempt } = opts;
     if (typeof command !== 'function') {
         throw new Error("doltPullBefore requires an injected command() in opts");
     }
@@ -1814,7 +1891,7 @@ export async function doltPullBefore(member, opts = {}) {
 
     const pull = await runDoltStep({
         command, member, cmd: 'bd dolt pull',
-        label: `D-pull for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now, memberTarget, lockProbeAfterMs, lockProbeTimer, onAbandonedAttempt,
+        label: `D-pull for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs, timeoutS, maxTotalS, spawnOutageBudgetMs, now, memberTarget, lockProbeAfterMs, lockProbeTimer, onAbandonedAttempt,
     });
     if (!pull.ok) {
         if (pull.kind === 'no-remote') {
@@ -2170,7 +2247,7 @@ export async function doltPushAfter(member, opts = {}) {
     // doltPullBefore. `remoteTipFingerprint` is accepted for call-site parity
     // with doltPullBefore but has nothing to switch off on the push side any
     // more: a push never probes and never records (it only forgets).
-    const { command, pushBeads = true, log = () => {}, maxTransientRetries, mutex, sprintId, checkSyncRemoteConfigured, onAuthFailure, sleep, backoffBaseMs, timeoutS, settle, renewIntervalMs = DOLT_MUTEX_RENEW_INTERVAL_MS, spawnOutageBudgetMs, now, memberTarget, lockProbeAfterMs, lockProbeTimer, maxRaceReconciles, random = Math.random, verifyLinks } = opts;
+    const { command, pushBeads = true, log = () => {}, maxTransientRetries, mutex, sprintId, checkSyncRemoteConfigured, onAuthFailure, sleep, backoffBaseMs, timeoutS, maxTotalS, settle, renewIntervalMs = DOLT_MUTEX_RENEW_INTERVAL_MS, spawnOutageBudgetMs, now, memberTarget, lockProbeAfterMs, lockProbeTimer, maxRaceReconciles, random = Math.random, abandonedHoldMs, verifyLinks } = opts;
     // Bounded race-reconcile loop (see doltPushGuarded): cycle count and the
     // jittered wait before each cycle, drawn from the injectable `sleep`.
     const raceMaxReconciles = Number.isInteger(maxRaceReconciles) && maxRaceReconciles > 0 ? maxRaceReconciles : DOLT_PUSH_RACE_MAX_RECONCILES;
@@ -2267,10 +2344,28 @@ export async function doltPushAfter(member, opts = {}) {
             // running on the member and could still publish once the lock
             // frees. Releasing the mutex now would let another writer push
             // concurrently with it, so the mutex (and its lease renewal) is
-            // held until that command ends -- bounded by its own command
-            // timeout -- while this call returns immediately.
-            log(`[Dolt] D-push for member '${member}' stopped waiting for a sync command that is still running on the member; keeping the push mutex until that command ends so it cannot publish concurrently with another writer.`);
-            Promise.allSettled(abandonedAttempts).then(releaseMutex);
+            // held until that command ends -- while this call returns
+            // immediately. BOUNDED: the heartbeat wrapper keeps that command
+            // alive up to the total limit even while bd only waits on the
+            // lock, so the hold is capped at the silence limit + grace (the
+            // bound before the heartbeat existed); past it the mutex is
+            // released with a loud line. A late publish by the abandoned
+            // command is then a remote that moved, which the next push's
+            // landed check and race reconcile already handle.
+            const holdMs = Number(abandonedHoldMs) > 0
+                ? Number(abandonedHoldMs)
+                : (Number(timeoutS) > 0 ? Number(timeoutS) : DOLT_STEP_TIMEOUT_S) * 1000 + DOLT_SYNC_CLIENT_GRACE_MS;
+            log(`[Dolt] D-push for member '${member}' stopped waiting for a sync command that is still running on the member; keeping the push mutex until that command ends (at most ${Math.round(holdMs / 1000)}s) so it cannot publish concurrently with another writer.`);
+            let holdTimer = null;
+            const bounded = new Promise((resolve) => {
+                holdTimer = setTimeout(() => {
+                    log(`[Dolt] D-push for member '${member}': the abandoned sync command is STILL running on the member after ${Math.round(holdMs / 1000)}s (blocked behind the beads lock holder named above); releasing the push mutex now so other writers are not blocked. That command may still publish once the lock frees -- stop the lock holder on that member.`);
+                    resolve();
+                }, holdMs);
+                if (holdTimer && typeof holdTimer.unref === 'function') holdTimer.unref();
+            });
+            Promise.race([Promise.allSettled(abandonedAttempts), bounded])
+                .then(() => { clearTimeout(holdTimer); return releaseMutex(); });
         } else {
             await releaseMutex();
         }
@@ -2315,6 +2410,18 @@ export async function doltPushAfter(member, opts = {}) {
     }
 
     /**
+     * runDoltStep's checkLandedAfterTimeout for every push step: after a
+     * timed-out push and before any retry, did the push land anyway? Reads
+     * the CURRENT landedCheck (re-read before each re-push). Returns the
+     * verdict when it landed ('moved') or the remote already has everything
+     * ('up-to-date'), else null (retry as before).
+     */
+    async function pushLandedAfterTimeout() {
+        const verdict = await checkDoltPushLanded(member, { command, check: landedCheck });
+        return verdict.status === 'moved' || verdict.status === 'up-to-date' ? verdict : null;
+    }
+
+    /**
      * A push step reported success. Decide whether it actually landed (see
      * "D-push landed check" above) before logging it as landed or returning
      * success. A push that provably did not land is retried once; if it still
@@ -2327,7 +2434,8 @@ export async function doltPushAfter(member, opts = {}) {
             log(`[Dolt] ${label} reported success but the push did NOT land: ${verdict.why}. Retrying the push once.`);
             const retry = await runDoltStep({
                 command, member, cmd: 'bd dolt push',
-                label: `D-push retry after an unlanded push for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now, memberTarget, lockProbeAfterMs, lockProbeTimer, onAbandonedAttempt,
+                label: `D-push retry after an unlanded push for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs, timeoutS, maxTotalS, spawnOutageBudgetMs, now, memberTarget, lockProbeAfterMs, lockProbeTimer, onAbandonedAttempt,
+                checkLandedAfterTimeout: pushLandedAfterTimeout,
             });
             const typedRetryError = retry.ok ? null : typedStepError(member, 'push retry after an unlanded push', retry);
             if (typedRetryError) {
@@ -2379,7 +2487,7 @@ export async function doltPushAfter(member, opts = {}) {
                 // A clean working set answers "Nothing to commit." with exit 0.
                 const commit = await runDoltStep({
                     command, member, cmd: DOLT_COMMIT_MERGED_WORKING_SET_CMD,
-                    label: `D-push commit of the merged working set for '${member}'`, log, maxTransientRetries, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now, memberTarget, lockProbeAfterMs, lockProbeTimer, onAbandonedAttempt,
+                    label: `D-push commit of the merged working set for '${member}'`, log, maxTransientRetries, sleep, backoffBaseMs, timeoutS, maxTotalS, spawnOutageBudgetMs, now, memberTarget, lockProbeAfterMs, lockProbeTimer, onAbandonedAttempt,
                 });
                 if (!commit.ok) {
                     const typed = typedStepError(member, 'commit of the merged working set before push', commit);
@@ -2412,8 +2520,8 @@ export async function doltPushAfter(member, opts = {}) {
     }
     let push = await runDoltStep({
         command, member, cmd: 'bd dolt push',
-        label: `D-push for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now, memberTarget, lockProbeAfterMs, lockProbeTimer, onAbandonedAttempt,
-        expectedFailureKinds: ['diverged'],
+        label: `D-push for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs, timeoutS, maxTotalS, spawnOutageBudgetMs, now, memberTarget, lockProbeAfterMs, lockProbeTimer, onAbandonedAttempt,
+        expectedFailureKinds: ['diverged'], checkLandedAfterTimeout: pushLandedAfterTimeout,
     });
     if (push.ok) {
         return await confirmPushLanded({ ok: true, member, pushed: true, reconciled: false }, `D-push for member '${member}'`);
@@ -2504,7 +2612,7 @@ export async function doltPushAfter(member, opts = {}) {
         if (delayMs > 0) await raceSleep(delayMs);
         const reconcile = await runDoltStep({
             command, member, cmd: 'bd dolt pull',
-            label: `D-push reconcile pull for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now, memberTarget, lockProbeAfterMs, lockProbeTimer, onAbandonedAttempt,
+            label: `D-push reconcile pull for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs, timeoutS, maxTotalS, spawnOutageBudgetMs, now, memberTarget, lockProbeAfterMs, lockProbeTimer, onAbandonedAttempt,
         });
         if (!reconcile.ok) {
             if (reconcile.kind === 'diverged') {
@@ -2535,8 +2643,8 @@ export async function doltPushAfter(member, opts = {}) {
         landedCheck = await beginDoltPushLandedCheck(member, { command, log });
         push = await runDoltStep({
             command, member, cmd: 'bd dolt push',
-            label: `D-push re-push after reconcile for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now, memberTarget, lockProbeAfterMs, lockProbeTimer, onAbandonedAttempt,
-            expectedFailureKinds: ['diverged'],
+            label: `D-push re-push after reconcile for '${member}'`, log, maxTransientRetries, onAuthFailure, sleep, backoffBaseMs, timeoutS, maxTotalS, spawnOutageBudgetMs, now, memberTarget, lockProbeAfterMs, lockProbeTimer, onAbandonedAttempt,
+            expectedFailureKinds: ['diverged'], checkLandedAfterTimeout: pushLandedAfterTimeout,
         });
         if (push.ok) {
             return await confirmPushLanded({ ok: true, member, pushed: true, reconciled: true }, `D-push re-push after reconcile for member '${member}'`);
@@ -2599,7 +2707,7 @@ export async function doltPushAfter(member, opts = {}) {
 
         const secondReconcile = await runDoltStep({
             command, member, cmd: 'bd dolt pull',
-            label: `D-push second reconcile pull for '${member}'`, log, maxTransientRetries, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now, memberTarget, lockProbeAfterMs, lockProbeTimer, onAbandonedAttempt,
+            label: `D-push second reconcile pull for '${member}'`, log, maxTransientRetries, sleep, backoffBaseMs, timeoutS, maxTotalS, spawnOutageBudgetMs, now, memberTarget, lockProbeAfterMs, lockProbeTimer, onAbandonedAttempt,
         });
         if (!secondReconcile.ok) {
             if (secondReconcile.kind === 'diverged') {
@@ -2625,7 +2733,8 @@ export async function doltPushAfter(member, opts = {}) {
         landedCheck = await beginDoltPushLandedCheck(member, { command, log });
         push = await runDoltStep({
             command, member, cmd: 'bd dolt push',
-            label: `D-push second re-push after reconcile for '${member}'`, log, maxTransientRetries, sleep, backoffBaseMs, timeoutS, spawnOutageBudgetMs, now, memberTarget, lockProbeAfterMs, lockProbeTimer, onAbandonedAttempt,
+            label: `D-push second re-push after reconcile for '${member}'`, log, maxTransientRetries, sleep, backoffBaseMs, timeoutS, maxTotalS, spawnOutageBudgetMs, now, memberTarget, lockProbeAfterMs, lockProbeTimer, onAbandonedAttempt,
+            checkLandedAfterTimeout: pushLandedAfterTimeout,
         });
         if (push.ok) {
             return await confirmPushLanded({ ok: true, member, pushed: true, reconciled: true }, `D-push second re-push after reconcile for member '${member}'`);
@@ -2755,6 +2864,9 @@ export function clearDegradedSyncRecords(member) {
 export function classifySyncError(err) {
     if (err instanceof DoltDivergedError) return 'diverged';
     if (err instanceof DoltUnrelatedHistoryError) return 'unrelated-history';
+    // Its raw text is a timeout, which would re-derive as 'transient'; the
+    // total time limit is not transient (the same transfer hits it again).
+    if (err instanceof DoltSyncTimeLimitError) return 'time-limit';
     const raw = err && err.doltOutput ? err.doltOutput : (err && err.message) || '';
     const kind = classifyDoltFailure(raw);
     return kind === 'unknown' && !(err instanceof DoltSyncError) ? 'error' : kind;
@@ -2800,6 +2912,9 @@ export const NEUTRAL_KIND_MAP = Object.freeze({
     // has no environment-fault kind, and 'store-unreachable' would misreport a
     // reachable store, so it maps to 'unknown' -- explicitly, not by fallback.
     'missing-tool': 'unknown',
+    // A sync that ran out of its total time limit: the store is reachable but
+    // too large/slow to transfer; no neutral kind fits, so 'unknown' explicitly.
+    'time-limit': 'unknown',
     unknown: 'unknown',
     error: 'unknown',
 });
@@ -2963,7 +3078,8 @@ async function runDegradable(run, ctx) {
  * `command` (required), `log`, `maxTransientRetries`, `onAuthFailure`,
  * `checkSyncRemoteConfigured`, `sleep`, `backoffBaseMs`, `timeoutS` (defaults
  * to DOLT_STEP_TIMEOUT_S -- override only for a call site with a known-
- * different Dolt DB size/latency profile).
+ * different Dolt DB size/latency profile), `maxTotalS` (total time limit of
+ * one sync attempt, defaults to DOLT_SYNC_MAX_TOTAL_S).
  *
  * @param {string} member
  * @param {{ command: Function, readinessGate?: boolean, fatal?: boolean, onDegraded?: Function, log?: Function, maxTransientRetries?: number, checkSyncRemoteConfigured?: Function, skipRefresh?: boolean, onAuthFailure?: Function, sleep?: Function, backoffBaseMs?: number }} opts
