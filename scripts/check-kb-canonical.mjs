@@ -13,9 +13,10 @@
  *
  *   - envelope: exactly the keys version, provenance, entries and (optional,
  *     never empty) demotions; version is the current format version (3)
- *   - provenance: branch (a string or null); the legacy keys commit and
- *     entry_count are accepted but their values are not validated (nothing
- *     reads them, and a plain merge leaves them stale)
+ *   - provenance: branch (a string or null); the legacy keys commit (a
+ *     non-empty string or null) and entry_count (an integer >= 0) are
+ *     type-checked like the schema, but entry_count is NOT required to equal
+ *     entries.length (nothing reads it, and a plain merge leaves it stale)
  *   - entries: each an object with a non-empty string id, a known type and
  *     confidence, a non-empty title and summary; ids unique and sorted
  *   - demotions (tombstones): each {id, at, reason} with a known reason --
@@ -127,6 +128,8 @@ export function validateBibleText(raw) {
             }
             if (!Object.prototype.hasOwnProperty.call(prov, 'branch')) add('provenance-key', 'provenance has no branch');
             else if (prov.branch !== null && !isNonEmptyString(prov.branch)) add('provenance', 'provenance.branch is not a non-empty string or null');
+            if (Object.prototype.hasOwnProperty.call(prov, 'commit') && prov.commit !== null && !isNonEmptyString(prov.commit)) add('provenance', 'provenance.commit is not a non-empty string or null');
+            if (Object.prototype.hasOwnProperty.call(prov, 'entry_count') && !(Number.isInteger(prov.entry_count) && prov.entry_count >= 0)) add('provenance', 'provenance.entry_count is not an integer >= 0');
         }
     }
 

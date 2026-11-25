@@ -66,14 +66,18 @@ describe('check-kb-canonical: valid bibles', () => {
     expect(problemsOf(noTombstones)).toEqual([]);
   });
 
-  it('accepts the legacy provenance keys without validating their values', () => {
+  it('type-checks the legacy provenance keys but accepts stale values', () => {
     const doc = valid();
     doc.provenance = { commit: 'f'.repeat(40), branch: 'main', entry_count: 3 };
     expect(problemsOf(doc)).toEqual([]);
     doc.provenance = { commit: 'not-a-sha', branch: 'main', entry_count: 7 };
     expect(problemsOf(doc)).toEqual([]);
-    doc.provenance = { commit: 12, branch: 'main', entry_count: 'x' };
+    doc.provenance = { commit: null, branch: 'main', entry_count: 0 };
     expect(problemsOf(doc)).toEqual([]);
+    doc.provenance = { commit: 12, branch: 'main', entry_count: 'x' };
+    expect(problemsOf(doc).length).toBeGreaterThanOrEqual(2);
+    doc.provenance = { commit: '', branch: 'main', entry_count: -1 };
+    expect(problemsOf(doc).length).toBeGreaterThanOrEqual(2);
   });
 
   it('passes after a plain git merge leaves a stale legacy entry_count', () => {
