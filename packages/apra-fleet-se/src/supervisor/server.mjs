@@ -43,7 +43,7 @@ import http from 'node:http';
 import { toBeadsSummary } from './beads-identity.mjs';
 import { checkMutatingRequest, checkRequestHost, parseAllowedHosts } from '@apralabs/apra-fleet-workflow/viewer/request-guard';
 import {
-    AUTH_MODE_NONE, AUTH_MODE_TRUSTED_FRONT, LOCAL_IDENTITY, actorOf, authorizeRoute, createAuthenticator, parseJwks, validateAuthConfig,
+    AUTH_MODE_NONE, AUTH_MODE_TRUSTED_FRONT, AuthConfigError, LOCAL_IDENTITY, actorOf, authorizeRoute, createAuthenticator, parseJwks, validateAuthConfig,
 } from './auth.mjs';
 
 /**
@@ -613,12 +613,18 @@ export function createSupervisor(deps = {}) {
         validateAuthConfig(authConfig, host);
         if (authMode === AUTH_MODE_TRUSTED_FRONT) {
             log(`[supervisor] auth: ${AUTH_MODE_TRUSTED_FRONT} (issuer ${JSON.stringify(authConfig.issuer)}, audience ${JSON.stringify(authConfig.audience || 'fleet-supervisor')}, JWKS ${JSON.stringify(authConfig.jwksPath)})`);
+            // An unusable key file at startup would leave the supervisor up but
+            // refusing every remote request; refuse to start instead, naming the
+            // file and the fix. (A later hot-reload failure keeps the last good keys.)
+            const jwksFix = 'Fix: point --front-jwks / FLEET_SUPERVISOR_FRONT_JWKS at a readable JWKS file (a JSON object with a "keys" array) that holds the public EC P-256 key of the front.';
+            let jwksKeys;
             try {
-                if (parseJwks(fs.readFileSync(authConfig.jwksPath, 'utf8')).size === 0) {
-                    logError(`[supervisor] WARNING: front JWKS file '${authConfig.jwksPath}' holds no EC P-256 key; every signed request will be refused until it does`);
-                }
+                jwksKeys = parseJwks(fs.readFileSync(authConfig.jwksPath, 'utf8'));
             } catch (err) {
-                logError(`[supervisor] WARNING: front JWKS file '${authConfig.jwksPath}' cannot be loaded (${err && err.code ? err.code : (err && err.message) || 'error'}); every signed request will be refused until it can`);
+                throw new AuthConfigError(`front JWKS file '${authConfig.jwksPath}' cannot be loaded (${err && err.code ? err.code : (err && err.message) || 'error'}); refusing to start. ${jwksFix}`);
+            }
+            if (jwksKeys.size === 0) {
+                throw new AuthConfigError(`front JWKS file '${authConfig.jwksPath}' holds no EC P-256 key; refusing to start. ${jwksFix}`);
             }
         }
         // Start seams first so the API never serves before its collaborators

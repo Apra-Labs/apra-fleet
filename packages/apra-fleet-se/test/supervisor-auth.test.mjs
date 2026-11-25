@@ -483,6 +483,29 @@ describe('admin shutdown (dedicated supervisor instance)', () => {
     });
 });
 
+describe('trusted-front refuses to start on an unusable key file', () => {
+    const cases = [
+        ['missing file', (d) => path.join(d, 'absent.jwks.json'), /ENOENT/],
+        ['unreadable (a directory)', (d) => d, /EISDIR|EPERM|EACCES/],
+        ['invalid JSON', (d) => { const f = path.join(d, 'bad.json'); fs.writeFileSync(f, '{ not json'); return f; }, /JSON/],
+        ['no EC P-256 key', (d) => { const f = path.join(d, 'empty.json'); fs.writeFileSync(f, JSON.stringify({ keys: [] })); return f; }, /no EC P-256 key/],
+    ];
+    for (const [name, mk, why] of cases) {
+        test(`${name}: start() rejects, names the file and the fix, and nothing serves`, async () => {
+            const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'sup-auth-badkey-'));
+            const jwksPath = mk(dir);
+            const sup = createSupervisor({ port: 0, logger: silent, auth: { mode: 'trusted-front', jwksPath, issuer: ISS } });
+            try {
+                await assert.rejects(sup.start(), (e) => e instanceof AuthConfigError && e.message.includes(jwksPath) && /refusing to start/.test(e.message) && /--front-jwks/.test(e.message) && why.test(e.message));
+                assert.ok(!sup.port, 'no port was bound');
+            } finally {
+                await sup.stop('test').catch(() => {});
+                await fsp.rm(dir, { recursive: true, force: true });
+            }
+        });
+    }
+});
+
 describe('none mode (default) is unchanged', () => {
     let supervisor; let port; let dir; let ledger;
     before(async () => {

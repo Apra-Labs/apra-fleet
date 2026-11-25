@@ -373,7 +373,7 @@ Procedure:
    ```
 
    Add `--front-audience <aud>` only if the front does not use `fleet-supervisor`. Check that
-   the log shows `[supervisor] auth: trusted-front (...)` and no JWKS WARNING.
+   the log shows `[supervisor] auth: trusted-front (...)` and and no error. The supervisor refuses to start if the JWKS file is unreadable, invalid or holds no EC P-256 key.
 4. **Verify locally**, on the supervisor's machine:
 
    ```bash
@@ -475,8 +475,14 @@ Any front MUST:
    never copied to another machine. Give the supervisor only the public JWKS file.
 8. Run on the same machine as the supervisor and be the only network path to it.
 
-A front SHOULD also protect its own session cookie against cross-site requests, rate-limit, and
-log sign-ins.
+9. Protect its own session cookie against cross-site requests (`SameSite=Lax` or `Strict`, plus CSRF
+   protection on every mutating route) and answer no permissive CORS preflight (no
+   `Access-Control-Allow-Origin` for a foreign origin, and no credentials for one). The supervisor
+   ignores `Origin`, `Referer` and `Sec-Fetch-*` on a forwarded request, so the front is the only
+   cross-site defence: a cross-site page that can make the browser send the cookie can otherwise
+   drive the supervisor as the signed-in user.
+
+A front SHOULD also rate-limit and log sign-ins.
 
 ## Security notes
 
