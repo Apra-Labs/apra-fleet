@@ -186,4 +186,45 @@ describe('dolt CLI install step wiring (apra-fleet-ire.4)', () => {
     // Install must still reach and print the final Beads step, i.e. it did not hang/abort.
     expect(logs).toContain('Installing Beads task tracker...');
   });
+
+  describe('shadowing PATH dolt', () => {
+    const run = async (probePathDolt: any) => {
+      makeFsMock(true);
+      const downloadAndExtractDolt = vi.fn();
+      const verifyDolt = vi.fn().mockResolvedValue({ version: '2.2.0', serverOk: true });
+      _setDoltStepDeps({ downloadAndExtractDolt, verifyDolt, probePathDolt } as any);
+      await runInstall([]);
+      return {
+        downloadAndExtractDolt,
+        warns: warnSpy.mock.calls.map(c => c.join(' ')).join('\n'),
+        logs: logSpy.mock.calls.map(c => c.join(' ')).join('\n'),
+      };
+    };
+
+    it('warns with both versions, both locations and the fix, carries it in the summary, and never touches the PATH copy', async () => {
+      const probePathDolt = vi.fn().mockReturnValue({ location: '/home/u/bin/dolt', version: '2.1.9' });
+      const { warns, logs, downloadAndExtractDolt } = await run(probePathDolt);
+      expect(probePathDolt).toHaveBeenCalledWith(DOLT_PATH);
+      expect(warns).toContain('[!] Dolt on PATH differs');
+      expect(warns).toContain('2.1.9');
+      expect(warns).toContain('2.2.0');
+      expect(warns).toContain('/home/u/bin/dolt');
+      expect(warns).toContain('remove or update');
+      expect(logs).toMatch(/Dolt:\s+2\.2\.0 \(WARNING: PATH dolt 2\.1\.9/);
+      expect(downloadAndExtractDolt).not.toHaveBeenCalled();
+      for (const fn of [fs.rmSync, fs.copyFileSync, fs.writeFileSync, fs.renameSync, fs.unlinkSync]) {
+        for (const call of vi.mocked(fn).mock.calls) expect(String(call[0])).not.toContain('/home/u/bin/dolt');
+      }
+    });
+
+    it('prints no shadowing warning when there is no other dolt on PATH, or it matches the pin', async () => {
+      for (const probe of [null, { location: '/usr/local/bin/dolt', version: '2.2.4' }]) {
+        warnSpy.mockClear();
+        logSpy.mockClear();
+        const { warns, logs } = await run(vi.fn().mockReturnValue(probe));
+        expect(warns).not.toContain('Dolt on PATH differs');
+        expect(logs).toMatch(/Dolt:\s+2\.2\.0\s*$/m);
+      }
+    });
+  });
 });
