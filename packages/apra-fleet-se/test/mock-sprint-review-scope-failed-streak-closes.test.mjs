@@ -178,9 +178,14 @@ for (const [label, causeMessage] of [
                 'develop must reach the streak attribution step',
             );
             const unpublished = scenario.tasks[0].id;
-            for (const r of developReviews(scenario)) {
-                check(!reviewScopeIds(r).includes(unpublished), `unpublished close leaked into review: ${JSON.stringify(reviewScopeIds(r))}`);
-            }
+            // Never in a develop round's scope; the close is on the shared DB,
+            // so the catch-up review before Final Review covers it exactly once.
+            const covering = developReviews(scenario).filter((r) => reviewScopeIds(r).includes(unpublished));
+            assert.equal(covering.length, 1, `unpublished close must be reviewed once, by the catch-up only: ${covering.length}`);
+            check(
+                scenario.logs.some((m) => m.includes('catch-up') && m.includes('reviewing them before Final Review') && m.includes(unpublished)),
+                'the one review covering the unpublished close must be the catch-up review',
+            );
         });
     });
 }

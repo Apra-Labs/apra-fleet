@@ -660,7 +660,17 @@ const VCS_AUTH_PATH = path.join(__dirname, '../fleet-sprint/vcs-auth.mjs');
 // createVcsAuthPreflightCallback) added two more, both carrying member_name:
 // its own origin read (to derive the REST probe's repository) and the
 // member-side username= line read of the labelled helper -- 8.
-const EXPECTED_VCS_AUTH_COMMAND_COUNT = 8;
+//
+// The per-channel credential judgement (git channel through only the
+// labelled helper) split the git probe into the host-chain probe (providers
+// without a credentialProbe) and the labelled probe, and added the member
+// home read the labelled probe's helper path is built from, all carrying
+// member_name -- 10.
+//
+// The Sprint Setup provider-match check (assertPrMemberProviderMatchesRepo)
+// added the sprint origin read on the git-capable member, carrying
+// member_name -- 11.
+const EXPECTED_VCS_AUTH_COMMAND_COUNT = 11;
 
 test('every command() call site in vcs-auth.mjs passes member_name or member_id', () => {
     const { sites, violations } = checkPath(VCS_AUTH_PATH);

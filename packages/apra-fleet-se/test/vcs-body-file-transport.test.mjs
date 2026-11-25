@@ -185,7 +185,7 @@ describe('(2) a Windows PowerShell member publishes a 20k-char final review', ()
         // staged JSON is exactly what the provider received, title and body.
         assert.equal(gh.staged.sends.length, 1);
         assert.equal(gh.staged.sends[0].dest_subdir, VCS_PAYLOAD_SUBDIR);
-        assert.ok(gh.pr.body.startsWith('## Sprint verdict: PASS'), gh.pr.body.slice(0, 80));
+        assert.ok(gh.pr.body.startsWith('<!-- fleet-sprint:pr-block v1 -->\n## Sprint verdict: PASS'), gh.pr.body.slice(0, 80));
         assert.ok(gh.pr.body.includes('finding 000'), 'the reviewer notes reached the staged body');
         assert.equal(gh.pr.title, 'fleet-sprint [PASS]: feat/x');
     });

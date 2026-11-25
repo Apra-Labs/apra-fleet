@@ -53,8 +53,13 @@ layer) dispatches into generically:
   and the PAT as the password (`curl -u :PAT`), matching Azure DevOps'
   documented auth pattern.
 - **Already-exists signal.** GitHub: 422 + "already exists". Azure DevOps:
-  409 + the `TF401179` error code -- treated as the idempotent re-run case
-  (success), not a failure.
+  409 + the `TF401179` error code -- treated as the re-run case (success), not
+  a failure. The existing PR is then updated, but only fleet's engine-marked
+  block of its description is replaced: text outside the block and a
+  human-written title are never changed, an abort's status goes into the
+  block, and fleet text that does not fit the description limit goes to
+  engine-marked PR comments linked from the block (see
+  packages/apra-fleet-se/docs/azure-devops-user-guide.md).
 - **Error vocabulary.** GitHub uses plain-English literals ("Bad
   credentials"). Azure DevOps uses TF-numbered codes:
   - `TF401019` -- repo not found *or* no permission (deliberately ambiguous

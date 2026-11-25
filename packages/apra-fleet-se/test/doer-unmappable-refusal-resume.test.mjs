@@ -1,6 +1,8 @@
-// A doer dispatch refused ONLY tool calls that map to no permission grant
+// (Despite the file name this now covers EVERY role: reverting any role row's
+// retry.unmappableRefusalResume to false makes the policy tests below fail.)
+// A dispatch refused ONLY tool calls that map to no permission grant
 // (e.g. a chained or backgrounded shell command) is resumed ONCE in the same
-// session (retry.unmappableRefusalResume on the doer row), with a notice that
+// session (retry.unmappableRefusalResume on every role row), with a notice that
 // names the refused call(s) and says no grant can ever allow them. The refused
 // reply is never used; a clean reply from the resume is the ladder's result. A
 // second such refusal fails with the existing unmappable remedy text, and a
@@ -11,8 +13,8 @@ import { AgentDispatchError } from '@apralabs/apra-fleet-workflow';
 
 import { dispatchRole, unmappableRefusalResumeNotice } from '../fleet-sprint/dispatch-role.mjs';
 import { MemberPermissionDeniedError } from '../fleet-sprint/errors.mjs';
-import { policyFor } from '../fleet-sprint/role-policies.mjs';
-import { createRecordingCtx, ROLE_CALL_OPTS, BINDINGS } from './helpers/dispatch-role-harness.mjs';
+import { policyFor, ROLE_NAMES } from '../fleet-sprint/role-policies.mjs';
+import { createRecordingCtx, ROLE_CALL_OPTS, BINDINGS, streakValidate, withWaitNotice } from './helpers/dispatch-role-harness.mjs';
 
 const CHAINED = 'npm test > /tmp/t.log 2>&1 &';
 const REFUSED_SESSION = 'doer-session-refused';
@@ -59,10 +61,22 @@ const noProgressHeal = (ctx) => {
     return calls;
 };
 
-test('policy: only the doer row resumes after an unmappable refusal', () => {
-    assert.equal(policyFor('doer').retry.unmappableRefusalResume, true);
-    for (const role of ['planner', 'plan-reviewer', 'reviewer', 'harvester']) {
-        assert.equal(policyFor(role).retry.unmappableRefusalResume, false, role);
+// streak-assignment has no same-session resume secondary (only a semantic-repair
+// re-ask), and nothing withholds its tools. An unmappable refusal there ends
+// through its fallback-value degrade (one bead per streak), tested below.
+const NO_RESUME_SECONDARY = Object.freeze({ 'streak-assignment': 'no resume secondary; degrades to the fallback grouping' });
+
+test('policy: every role row resumes once after an unmappable refusal', () => {
+    for (const role of ROLE_NAMES) {
+        const p = policyFor(role);
+        // 'doer-resume' is the doer's own secondary, not a ladder: it inherits the doer's retry block.
+        if (p.kind !== 'main') { assert.equal(p.retry.unmappableRefusalResume, true, role); continue; }
+        assert.equal(p.retry.unmappableRefusalResume, true, role);
+        if (Object.prototype.hasOwnProperty.call(NO_RESUME_SECONDARY, role)) {
+            assert.notEqual(p.secondary && p.secondary.kind, 'max-turns-resume', role);
+        } else {
+            assert.equal(p.secondary && p.secondary.kind, 'max-turns-resume', `${role} needs a same-session resume secondary`);
+        }
     }
 });
 
@@ -98,7 +112,7 @@ test('the notice is delivered even when the caller prepare() does not place it',
     const out = await dispatchRole(ctx, 'doer', opts);
     assert.equal(out.ok, true);
     assert.ok(rec.dispatches[1].prompt.startsWith(unmappableRefusalResumeNotice([`Bash "${CHAINED}"`])), rec.dispatches[1].prompt);
-    assert.ok(rec.dispatches[1].prompt.endsWith('CALLER PROMPT'));
+    assert.ok(rec.dispatches[1].prompt.endsWith(withWaitNotice('CALLER PROMPT', rec.dispatches[1].options.timeout_s)));
 });
 
 test('a resume refused again fails with the unmappable remedy text, no compose_permissions or rerun advice', async () => {
@@ -137,13 +151,61 @@ test('a grant-mappable refusal is never resumed: the progressive heal re-runs th
     assert.equal(out.resumesIssued, 0);
     assert.equal(heals.length, 1);
     assert.equal(rec.dispatches.length, 2);
-    assert.equal(rec.dispatches[1].prompt, 'FULL DOER STREAK PROMPT', 'the healed re-run is the main dispatch, not a resume');
+    assert.equal(rec.dispatches[1].prompt, withWaitNotice('FULL DOER STREAK PROMPT', rec.dispatches[1].options.timeout_s), 'the healed re-run is the main dispatch, not a resume');
     assert.notEqual(rec.dispatches[1].options.resume, REFUSED_SESSION);
 });
 
-test('a non-doer role (plan-reviewer) still fails at once on an unmappable refusal', async () => {
-    const { ctx, rec } = createRecordingCtx({ responses: [refused(UNMAPPABLE), { verdict: 'APPROVED', notes: 'ok' }], members: { 'plan-reviewer': 'dev' } });
-    noProgressHeal(ctx);
-    await assert.rejects(dispatchRole(ctx, 'plan-reviewer', { bindings: BINDINGS, ...ROLE_CALL_OPTS['plan-reviewer'] }), MemberPermissionDeniedError);
-    assert.equal(rec.dispatches.length, 1);
+const nonDoerCase = (role, member, extra = {}) => ({
+    role,
+    member,
+    opts: { bindings: BINDINGS, ...ROLE_CALL_OPTS[role], ...extra },
+});
+const NON_DOER = [
+    nonDoerCase('planner', 'planner', { resumeArg: false }),
+    nonDoerCase('deployer', 'deployer'),
+    nonDoerCase('scoped-replan-planner', 'planner'),
+    nonDoerCase('scoped-replan-plan-reviewer', 'plan-reviewer'),
+];
+
+for (const { role, member, opts } of NON_DOER) {
+    const clean = ROLE_CALL_OPTS[role] && (role.endsWith('reviewer') ? { verdict: 'APPROVED', notes: 'ok' } : (role === 'deployer' ? { deployed: true, summary: 'ok' } : 'plan text'));
+    test(`${role}: an unmappable refusal resumes exactly once in the refused session; no grant is composed`, async () => {
+        const { ctx, rec } = createRecordingCtx({ responses: [refused(UNMAPPABLE, 'sess-' + role), clean], members: { [role]: 'dev' } });
+        const heals = noProgressHeal(ctx);
+        const out = await dispatchRole(ctx, role, opts);
+        assert.equal(out.ok, true);
+        assert.equal(out.resumesIssued, 1);
+        assert.equal(rec.dispatches.length, 2, 'main dispatch + exactly one resume');
+        assert.equal(rec.dispatches[1].options.resume, 'sess-' + role, 'the explicit refused session id, never resume true');
+        assert.ok(rec.dispatches[1].prompt.startsWith(unmappableRefusalResumeNotice([`Bash "${CHAINED}"`])), rec.dispatches[1].prompt);
+        assert.equal(heals.length, 1, 'the hook is consulted once and grants nothing');
+        assert.ok(heals.every((h) => !h.grants), 'no grant is requested from the resume path');
+        void member;
+    });
+
+    test(`${role}: a second unmappable refusal throws MemberPermissionDeniedError naming the refused call`, async () => {
+        const { ctx, rec } = createRecordingCtx({ responses: [refused(UNMAPPABLE, 'sess-a'), refused(UNMAPPABLE, 'sess-b'), clean], members: { [role]: 'dev' } });
+        noProgressHeal(ctx);
+        await assert.rejects(dispatchRole(ctx, role, opts), (err) => {
+            assert.ok(err instanceof MemberPermissionDeniedError, String(err));
+            assert.ok(err.message.includes(CHAINED), err.message);
+            assert.equal(err.details.unmappable, true);
+            return true;
+        });
+        assert.equal(rec.dispatches.length, 2, 'one resume, never a third call');
+    });
+}
+
+test('streak-assignment (no resume secondary, fallback-value degrade) falls back to one-bead-per-streak on an unmappable refusal', async () => {
+    const { ctx, rec } = createRecordingCtx({ responses: [refused(UNMAPPABLE), { streaks: [['bead-1']] }], members: { 'streak-assignment': 'dev' } });
+    const heals = noProgressHeal(ctx);
+    const out = await dispatchRole(ctx, 'streak-assignment', { bindings: BINDINGS, ...ROLE_CALL_OPTS['streak-assignment'], validate: streakValidate });
+    assert.equal(out.ok, false);
+    assert.equal(out.degraded, true);
+    assert.equal(out.value, null, 'no value is fabricated');
+    assert.equal(rec.dispatches.length, 1, 'no resume, no re-ask');
+    assert.equal(heals.every((h) => !h.grants), true, 'no grant is composed on this path');
+    assert.equal(out.validation.usedFallback, true, JSON.stringify(out.validation));
+    assert.deepEqual(out.validation.streaks, [['bead-1'], ['bead-2']], 'one bead per streak');
+    assert.ok(rec.logs.some((l) => /Streak Assignment: unmappable refusal on member '[^']+'.*Bash.*deterministic fallback/s.test(l)), JSON.stringify(rec.logs));
 });

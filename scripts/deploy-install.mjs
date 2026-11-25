@@ -11,6 +11,12 @@
 //   --launchagent   macOS only: launchctl bootout (|| true), install, then
 //                   launchctl kickstart -k when the installer reports
 //                   "registration skipped". Hard-fails on any other platform.
+//   --member-host-check   print MEMBER-HOST when <data dir>/member-install.json exists,
+//                   else FULL-HOST; exit 0 (no install). Data dir resolved in JS
+//                   (APRA_FLEET_DATA_DIR, else <home>/.apra-fleet/data).
+//   --verify-member-host  after a member-host install: marker version must equal the
+//                   installed binary's --version and /health must answer on the
+//                   marker-recorded port (7523 if none); exit 1 on any mismatch.
 //   --llm <name>    appended to `install --force` (no bare `--` needed; PowerShell
 //                   may drop it).
 //   anything after `--` is appended to `install --force` (e.g. `-- --llm agy`).
@@ -38,6 +44,52 @@ export const IGNORE_RUNNING_SPRINTS = '--ignore-running-sprints';
 /** Mirrors src/paths.ts FLEET_DIR + member-access-secret.ts MEMBER_ACCESS_SECRET_FILE. */
 export function memberAccessKeyPath(env = process.env, home = os.homedir()) {
   return path.join(env.APRA_FLEET_DATA_DIR ?? path.join(home, '.apra-fleet', 'data'), 'member-access.key');
+}
+
+/** Mirrors src/paths.ts FLEET_DIR + member-install marker file name. */
+export function memberMarkerPath(env = process.env, home = os.homedir()) {
+  return path.join(env.APRA_FLEET_DATA_DIR ?? path.join(home, '.apra-fleet', 'data'), 'member-install.json');
+}
+
+export function installedBinaryPath(platform = process.platform, home = os.homedir()) {
+  return path.join(home, '.apra-fleet', 'bin', platform === 'win32' ? 'apra-fleet.exe' : 'apra-fleet');
+}
+
+export function memberHostCheck(exists = (f) => fs.existsSync(f), env = process.env, home = os.homedir()) {
+  return exists(memberMarkerPath(env, home)) ? 'MEMBER-HOST' : 'FULL-HOST';
+}
+
+/** Returns { ok, lines }. Every dependency is injectable for tests. */
+export async function verifyMemberHost({
+  env = process.env, home = os.homedir(), platform = process.platform,
+  readFile = (f) => fs.readFileSync(f, 'utf8'),
+  binaryVersion = (bin) => {
+    const r = spawnSync(bin, ['--version'], { encoding: 'utf8' });
+    return r.status === 0 ? String(r.stdout).trim() : null;
+  },
+  health = async (port) => {
+    try { return (await fetch(`http://localhost:${port}/health`)).ok; } catch { return false; }
+  },
+} = {}) {
+  const lines = [];
+  const markerFile = memberMarkerPath(env, home);
+  let marker;
+  try { marker = JSON.parse(readFile(markerFile)); } catch {
+    return { ok: false, lines: [`FAIL: member-install.json missing or unreadable at ${markerFile}`] };
+  }
+  const rawVersion = binaryVersion(installedBinaryPath(platform, home));
+  // `--version` prints 3 lines: "apra-fleet <ver>", "  Mode: ...", "  Binary: ...".
+  const installed = rawVersion === null ? null
+    : (String(rawVersion).split(/\r?\n/)[0] ?? '').trim().replace(/^apra-fleet\s+/i, '').trim();
+  const port = Number.isInteger(marker?.port) ? marker.port : 7523;
+  let ok = true;
+  if (installed === null) { ok = false; lines.push('FAIL: installed apra-fleet --version did not run'); }
+  else if (installed.replace(/^v/, '') !== String(marker?.version ?? '').replace(/^v/, '')) {
+    ok = false; lines.push(`FAIL: marker version ${marker?.version} != installed ${installed}`);
+  } else lines.push(`OK: marker version ${marker.version} == installed ${installed}`);
+  if (await health(port)) lines.push(`OK: /health answers on port ${port}`);
+  else { ok = false; lines.push(`FAIL: no /health answer on port ${port}`); }
+  return { ok, lines };
 }
 
 export function installArgs(extra, memberKeyExists) {
@@ -85,12 +137,14 @@ export function assertMacOS(platform) {
 }
 
 export function parseArgs(argv) {
-  const out = { launchagent: false, printPath: false, extra: [] };
+  const out = { launchagent: false, printPath: false, memberHostCheck: false, verifyMemberHost: false, extra: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--') { out.extra = argv.slice(i + 1); break; }
     if (a === '--launchagent') out.launchagent = true;
     else if (a === '--print-path') out.printPath = true;
+    else if (a === '--member-host-check') out.memberHostCheck = true;
+    else if (a === '--verify-member-host') out.verifyMemberHost = true;
     else if (a === '--llm') {
       const v = argv[++i];
       if (v === undefined) throw new DeployInstallError('--llm requires a value');
@@ -118,6 +172,12 @@ export async function main(argv, {
   run = runInstaller,
 } = {}) {
   const args = parseArgs(argv);
+  if (args.memberHostCheck) { process.stdout.write(`${memberHostCheck()}\n`); return 0; }
+  if (args.verifyMemberHost) {
+    const r = await verifyMemberHost();
+    process.stdout.write(`${r.lines.join('\n')}\n`);
+    return r.ok ? 0 : 1;
+  }
   const installer = installerPath(platform, arch);
   if (args.printPath) { process.stdout.write(`${installer}\n`); return 0; }
   if (args.launchagent) assertMacOS(platform);

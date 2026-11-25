@@ -101,7 +101,7 @@ describe('busy is released after every tool exit path', () => {
   it('long_running execute_command launch success -> idle', async () => {
     const m = makeTestAgent({ os: 'linux' });
     addAgent(m);
-    mockExecCommand.mockResolvedValue({ stdout: '12345\n', stderr: '', code: 0 });
+    mockExecCommand.mockResolvedValue({ stdout: 'TASK_PID:12345\nFLEET_TASK_READY\n', stderr: '', code: 0 });
     const r = await executeCommand({ member_id: m.id, command: 'sleep 100', long_running: true, timeout_s: 5 });
     expect(String(typeof r === 'string' ? r : r.text)).toContain('Task launched');
     expect(readMemberStatus(m.id)).toBe('idle');

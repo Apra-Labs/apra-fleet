@@ -72,6 +72,14 @@ function buildMockCommand({ originUrl, credentialFiles, prResponder, findRespond
         if (findResponder && /^curl(?:\.exe)? -sS -X GET\b/.test(cmd) && /\/pullrequests\?searchCriteria\./.test(cmd)) {
             return ok(findResponder(cmd));
         }
+        // Read-by-id (the list truncates descriptions): answers with the
+        // matching entry of the scenario's own find response.
+        const getById = /^curl(?:\.exe)? -sS -X GET\b[\s\S]*\/pullrequests\/(\d+)\?api-version=/.exec(cmd);
+        if (findResponder && getById) {
+            const [found] = String(findResponder(cmd)).split('\n');
+            const pr = (JSON.parse(found).value || []).find((p) => String(p.pullRequestId) === getById[1]);
+            return ok(pr ? `${JSON.stringify(pr)}\n200` : `${JSON.stringify({ message: 'not found' })}\n404`);
+        }
         if (updateResponder && /^curl(?:\.exe)? -sS -X PATCH\b/.test(cmd) && /\/pullrequests\/\d+\?api-version=/.test(cmd)) {
             return ok(updateResponder(cmd));
         }
@@ -248,7 +256,7 @@ test('finalizeAbort (Azure DevOps): an existing PR is found and rewritten to the
     check(!!patched && /\/pullrequests\/777\?api-version=7\.1$/.test(patched.url), `Expected a PATCH of PR 777, got: ${JSON.stringify(patched)}`);
     check(patched.payload.title === `fleet-sprint [ABORTED]: ${branch}`, `Expected the ABORTED title, got: ${patched.payload.title}`);
     check(
-        patched.payload.description.startsWith('## Sprint verdict: ABORTED')
+        patched.payload.description.startsWith('<!-- fleet-sprint:pr-block v1 -->\n## Sprint verdict: ABORTED')
             && patched.payload.description.includes('- `run-earlier` (2026-09-30T08:00Z): PASS'),
         `Expected the rewritten description with the earlier run carried forward, got: ${patched.payload.description}`,
     );

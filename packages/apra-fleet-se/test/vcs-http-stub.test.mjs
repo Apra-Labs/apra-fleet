@@ -342,7 +342,7 @@ test('github: a real curl against the stub parses a 201 body whose own lines con
     assertNoStagedBodyLeft(calls);
 });
 
-test('github: the -w trailer wins even when the response body is unparseable and its LAST line is itself a status-looking number', async (t) => {
+test('github: the -w trailer wins even when the response body is unparseable and its LAST line is itself a status-looking number (a typed unmapped failure, not auth)', async (t) => {
     if (!(await canRunRealCurl(t))) return;
 
     // Not JSON, and ends with a bare "401". curl appends "\n201" after it, so
@@ -360,7 +360,11 @@ test('github: the -w trailer wins even when the response body is unparseable and
         stub, provider: 'github', remoteUrl: GITHUB_REMOTE, member: nextMember('gh-trailer'), calls,
     });
 
-    assert.equal(result.ok, true, 'a 2xx trailer is success even when the body cannot be parsed');
+    // A 2xx whose body maps to no PR is a typed unexpected-response
+    // failure (never ok:true with prUrl null) -- and still not an auth one.
+    assert.equal(result.ok, false, 'a 2xx whose body identifies no PR is not a success');
+    assert.equal(result.reason, 'pr-response-unmapped');
+    assert.match(result.error, /HTTP 201/, 'the failure names the real (trailer) status');
     assert.equal(result.authFailure, false, 'the body\'s trailing 401 must not be mistaken for the HTTP status');
     assert.equal(result.prUrl, null, 'an unparseable body yields no PR URL rather than a guess');
     assert.equal(stub.requests.length, 1, 'no retry: nothing was classified as an auth failure');
@@ -525,7 +529,7 @@ test('azure-devops: a real 409 TF401179 is read as idempotent success with the e
     assert.equal(stub.requests.length, 1, 'an already-exists 409 must not be retried');
 });
 
-test('azure-devops: a non-JSON sign-in page is reported as a plain failure with the body text, never as a success', async (t) => {
+test('azure-devops: a non-JSON sign-in page is an auth failure naming the status, never a success', async (t) => {
     if (!(await canRunRealCurl(t))) return;
 
     const stub = await stubFor(t, () => ({
@@ -540,10 +544,13 @@ test('azure-devops: a non-JSON sign-in page is reported as a plain failure with 
     });
 
     // 203 IS inside the provider's declared 2xx success range, so this is the
-    // shape that makes an unparseable body dangerous: the call "succeeds" but
-    // carries no PR. Pinned as-is (ok:true, prUrl:null) so a future change to
-    // that contract is a visible diff here rather than a silent one in prod.
-    assert.equal(result.ok, true);
+    // shape that made an unparseable body dangerous: the call "succeeded" but
+    // carried no PR. The provider-neutral rule now reads an HTML sign-in page
+    // as an auth failure (vcs-providers/index.mjs unmappedPrResponseFailure).
+    assert.equal(result.ok, false);
+    assert.equal(result.authFailure, true);
+    assert.equal(result.reason, 'pr-response-sign-in');
+    assert.match(result.error, /HTTP 203/);
     assert.equal(result.prUrl, null, 'no PR id/URL can be read out of a sign-in page');
     assert.equal(stub.requests.length, 1);
 });

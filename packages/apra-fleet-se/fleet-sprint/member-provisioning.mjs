@@ -51,6 +51,7 @@ import { ApraFleet } from '@apralabs/apra-fleet-client';
 import { resultText } from './mcp-result.mjs';
 import { MemberPermissionConfigError } from './errors.mjs';
 import { FILE_PROBE_PRESENT, FILE_PROBE_ABSENT } from './se-posix.mjs';
+import { PROCESS_KILL_REFUSED, isProcessKillCall, isProcessKillGrant } from './process-kill-rules.mjs';
 
 /**
  * Guards every "resume" re-dispatch below against spawning a second
@@ -190,7 +191,15 @@ export function createDeployPermissionsProvisioner(opts = {}) {
                 cachedPrefixes = null;
             } else {
                 const section = res.output.split(/^## Permissions/m)[1]?.split(/^## /m)[0] ?? '';
-                const prefixes = [...section.matchAll(/^-\s*`([^`]+)`/gm)].map(m => m[1]);
+                const declared = [...section.matchAll(/^-\s*`([^`]+)`/gm)].map(m => m[1]);
+                // Process-killing commands are never granted (compose_permissions
+                // refuses them and would refuse the whole batch): drop them
+                // here, loudly, so every other declared grant still lands.
+                const refused = declared.filter(p => isProcessKillGrant(p));
+                if (refused.length) {
+                    log(`[deploy-permissions] REFUSED (${PROCESS_KILL_REFUSED}) deploy.md grant(s) ${refused.join(', ')}: process-killing commands are never granted to a member, which may share its host with the fleet server and other sprints. Stop only processes this run started, by the pid it recorded (e.g. a pidfile the target's own scripts write). The other declared grants are still provisioned.`);
+                }
+                const prefixes = declared.filter(p => !isProcessKillGrant(p));
                 cachedPrefixes = prefixes.length ? prefixes : null;
             }
         } catch (err) {
@@ -433,7 +442,8 @@ export const PERMISSION_HEAL_LADDER_CAP = 2;
 
 // A grant payload with any of these can chain or substitute another command,
 // so it is never in policy whatever the composed list says (compose_permissions
-// refuses the same set as NEVER_AUTO_GRANT).
+// refuses the same set as NEVER_AUTO_GRANT). Process-killing grants are never
+// in policy either (isProcessKillGrant, the same set compose refuses).
 const GRANT_CHAIN_RE = /[|;&`<>]|\$\(/;
 
 /** Splits `Tool(payload)`; a bare tool name has payload null. */
@@ -481,6 +491,7 @@ function bashRuleCovers(rule, wanted) {
 export function grantWithinPolicy(grant, policy) {
     const g = splitRule(grant);
     if (g.payload !== null && GRANT_CHAIN_RE.test(g.payload)) return false;
+    if (isProcessKillGrant(grant)) return false;
     for (const raw of policy || []) {
         const r = splitRule(raw);
         if (r.tool !== g.tool) continue;
@@ -518,7 +529,13 @@ const describeCall = (d) => (d.target ? `${d.action} "${d.target}"` : d.action);
  *                 grant may override (only acceptEdits-mode sessions -- e.g.
  *                 a model without auto support -- are healed), or the
  *                 provider marked the denial cause 'policy_deny' (a tool the
- *                 member's own config denies on purpose), in any mode;
+ *                 member's own config denies on purpose), in any mode, or
+ *                 every refused call is a process-killing command (typed
+ *                 reason process_kill_refused, also returned as `refused`
+ *                 with the rules in `refusedRules`): no heal is spent and
+ *                 no compose_permissions call is made. A process-killing
+ *                 call refused alongside other calls is dropped from the
+ *                 heal (logged); the other calls heal as usual;
  *   no_progress   a call was refused again although a landed grant covers
  *                 it (the grant did not take: something overrides it), a
  *                 call maps to no grant, or a needed grant is outside the
@@ -595,8 +612,24 @@ export function createPermissionDenialHeal(opts = {}) {
             return { healed: false, step, composeRole, grants: [], rejectedGrants, reason };
         };
 
-        const items = denial && Array.isArray(denial.denials) ? denial.denials : [];
-        const what = items.length ? items.map(describeCall).join(', ') : ((denial && denial.actions.join(', ')) || 'unknown actions');
+        const allItems = denial && Array.isArray(denial.denials) ? denial.denials : [];
+        const what = allItems.length ? allItems.map(describeCall).join(', ') : ((denial && denial.actions.join(', ')) || 'unknown actions');
+
+        // Process-killing calls are never granted (parity with
+        // compose_permissions, which refuses them and denies them in every
+        // composed config). When they are the only refused calls, stop
+        // without spending a heal, a compose call or a re-dispatch; otherwise
+        // heal only the other calls.
+        const killCalls = allItems.filter((d) => isProcessKillCall(d));
+        const items = allItems.filter((d) => !isProcessKillCall(d));
+        if (killCalls.length) {
+            const rules = [...new Set(killCalls.flatMap((d) => (Array.isArray(d.suggestedGrants) && d.suggestedGrants.length ? d.suggestedGrants : [describeCall(d)])))];
+            log(`[permission-heal] REFUSED (${PROCESS_KILL_REFUSED}) member '${member}' (${role}): ${killCalls.map(describeCall).join(', ')} -- ${rules.join(', ')} ${rules.length === 1 ? 'is a process-killing command' : 'are process-killing commands'}, never granted to a member, which may share its host with the fleet server and other sprints.`);
+            if (items.length === 0) {
+                const res = stop('not_healable', `${PROCESS_KILL_REFUSED}: ${killCalls.map(describeCall).join(', ')} ${killCalls.length === 1 ? 'is a process-killing command' : 'are process-killing commands'} (${rules.join(', ')}), which is never granted and is denied by the member's own permission config. The role must stop only processes it started, by the pid it recorded, and report a resource problem instead of killing other processes.`);
+                return { ...res, refused: PROCESS_KILL_REFUSED, refusedRules: rules };
+            }
+        }
 
         if (denial && denial.cause === 'policy_deny') {
             return stop('not_healable', `${what} was refused by a deny rule the member's own permission config carries on purpose (a tool outside the member's allowlist); no grant is ever added for that.`);

@@ -190,6 +190,65 @@ export function createDispatchAccounting(deps = {}) {
         }
     }
 
+    /**
+     * The per-dispatch tier fields, and the one log line every dispatch emits.
+     * A WARN follows when the resolved tier differs from the requested one, or
+     * a tier was requested and the result carries none -- never silent. When
+     * the dispatch carries an escalated bead and the member resolved it to a
+     * LOWER tier than requested (it has no model for the escalated tier), a
+     * second WARN names the event tier.escalation_unavailable: the redo ran,
+     * but not at the escalated tier. The workflow prices the dispatch at the
+     * resolved tier.
+     */
+    function tierRecord({ index, memberName, role, requestedTier, tierContext, resolved, failed = false }) {
+        const ctx = tierContext && typeof tierContext === 'object' ? tierContext : {};
+        const requested = typeof requestedTier === 'string' && requestedTier ? requestedTier : null;
+        const resolvedTier = resolved && typeof resolved.resolved_tier === 'string' ? resolved.resolved_tier : null;
+        const resolvedModel = resolved && typeof resolved.resolved_model === 'string' ? resolved.resolved_model : null;
+        const beadIds = Array.isArray(ctx.beadIds) ? ctx.beadIds.map(String) : [];
+        const tierReasons = ctx.tierReasons && typeof ctx.tierReasons === 'object' ? { ...ctx.tierReasons } : {};
+        const escalations = Array.isArray(ctx.escalations)
+            ? ctx.escalations.filter((e) => e && e.from && e.to).map((e) => ({ id: e.id ? String(e.id) : null, from: String(e.from), to: String(e.to) }))
+            : [];
+        // A tier name is only comparable to a tier name; a literal model id as
+        // the request is not a tier request.
+        const tierRequested = requested === 'cheap' || requested === 'standard' || requested === 'premium';
+        let mismatch = null;
+        // A dispatch that threw never produced a result, so a missing
+        // resolved_tier is expected there and is not a mismatch.
+        const dispatchFailed = failed === true && resolvedTier === null;
+        if (dispatchFailed) mismatch = null;
+        else if (tierRequested && resolvedTier === null) mismatch = 'no-resolved-tier';
+        else if (tierRequested && resolvedTier !== requested) mismatch = 'tier-differs';
+        const who = memberName ? String(memberName) : '(unknown member)';
+        const parts = [
+            `role=${role || '(none)'}`,
+            `member=${who}`,
+            `beads=${beadIds.length ? beadIds.join(',') : '-'}`,
+            `requested_tier=${requested || '-'}`,
+            `resolved_tier=${resolvedTier || '-'}`,
+            `resolved_model=${resolvedModel || '-'}`,
+        ];
+        if (dispatchFailed) parts.push('dispatch failed, no result');
+        const reasonEntries = Object.entries(tierReasons).filter(([, v]) => v);
+        if (reasonEntries.length) parts.push(`tierReason=${reasonEntries.map(([k, v]) => `${k}:${String(v).replace(/\s+/g, ' ').trim()}`).join('; ')}`);
+        if (escalations.length) parts.push(`escalation=${escalations.map((e) => `${e.id ? `${e.id} ` : ''}${e.from}->${e.to}`).join(', ')}`);
+        log(`[tier] dispatch ${index}: ${parts.join(' ')}`);
+        if (mismatch) {
+            const got = resolvedTier === null ? 'the result carries no resolved_tier' : "it resolved to '" + resolvedTier + "'";
+            log(`[tier] WARN: dispatch ${index} to member '${who}' requested tier '${requested}' but ${got} (requested=${requested}, resolved=${resolvedTier || 'none'}).`);
+        }
+        const escalationUnavailable = mismatch === 'tier-differs' && escalations.length > 0
+            && TIER_ORDER.indexOf(resolvedTier) >= 0 && TIER_ORDER.indexOf(resolvedTier) < TIER_ORDER.indexOf(requested);
+        if (escalationUnavailable) {
+            log(`[tier] WARN tier.escalation_unavailable: dispatch ${index} redoes escalated bead(s) ` +
+                `${escalations.map((e) => e.id || '?').join(', ')} at '${requested}', but member '${who}' has no ${requested} model ` +
+                `and ran it at '${resolvedTier}' (${resolvedModel || 'unknown model'}). The escalation did not take effect; ` +
+                `register a ${requested} model on the member (model_tiers) for escalation to work.`);
+        }
+        return { requested, resolved: resolvedTier, resolvedModel, beadIds, tierReasons, escalations, mismatch, escalationUnavailable };
+    }
+
     function resolveRecord(memberName) {
         try {
             return typeof memberOf === 'function' ? memberOf(memberName) : null;
@@ -208,7 +267,7 @@ export function createDispatchAccounting(deps = {}) {
          * snapshots and record the per-dispatch counts. `fn`'s result or
          * error passes through unchanged.
          */
-        async around({ memberName, role, label } = {}, fn) {
+        async around({ memberName, role, label, requestedTier, tierContext, resolved } = {}, fn) {
             const index = ++seq;
             const startedAt = now();
             const record = memberName ? resolveRecord(memberName) : null;
@@ -217,8 +276,12 @@ export function createDispatchAccounting(deps = {}) {
             else if (typeof memberCall !== 'function') skipReason = 'no member session available to read session_stats';
             else if (!record || !(record.id || record.member_id)) skipReason = `no member record for '${memberName}'`;
             const before = skipReason ? null : await readSnapshot(record, memberName, 'before');
+            let threw = false;
             try {
                 return await fn();
+            } catch (err) {
+                threw = true;
+                throw err;
             } finally {
                 const after = skipReason ? null : await readSnapshot(record, memberName, 'after');
                 const delta = skipReason
@@ -229,6 +292,11 @@ export function createDispatchAccounting(deps = {}) {
                     try { toolsReason = memberToolsReason(getMemberInit(memberName)); } catch { /* informational only */ }
                     if (toolsReason) delta.reason = toolsReason;
                 }
+                const tier = tierRecord({
+                    index, memberName, role, requestedTier, tierContext,
+                    resolved: typeof resolved === 'function' ? resolved() : null,
+                    failed: threw,
+                });
                 store.push({
                     index,
                     member: memberName ? String(memberName) : '(unknown member)',
@@ -239,6 +307,7 @@ export function createDispatchAccounting(deps = {}) {
                     kb: delta.kb,
                     code: delta.code,
                     reason: delta.reason,
+                    tier,
                 });
                 publish();
             }
@@ -267,4 +336,42 @@ export function formatDispatchToolCalls(records) {
         lines.push(`- member '${t.member}': ${t.dispatches} dispatch(es), kb_* calls: ${formatCount(t.kb)}, code_* calls: ${formatCount(t.code)}${unknown}.`);
     }
     return lines;
+}
+
+const TIER_ORDER = ['cheap', 'standard', 'premium'];
+
+/**
+ * Sprint-summary counts from the per-dispatch tier fields: dispatches per
+ * requested tier, escalations and mismatches. Pure.
+ */
+export function tierCounts(records) {
+    const perTier = { cheap: 0, standard: 0, premium: 0, other: 0, none: 0 };
+    let escalations = 0;
+    let mismatches = 0;
+    let escalationUnavailable = 0;
+    for (const r of Array.isArray(records) ? records : []) {
+        const t = r && r.tier;
+        if (!t) continue;
+        if (t.requested && TIER_ORDER.includes(t.requested)) perTier[t.requested]++;
+        else if (t.requested) perTier.other++;
+        else perTier.none++;
+        if (Array.isArray(t.escalations)) escalations += t.escalations.length;
+        if (t.mismatch) mismatches++;
+        if (t.escalationUnavailable) escalationUnavailable++;
+    }
+    return { perTier, escalations, mismatches, escalationUnavailable };
+}
+
+/** Text lines for the sprint summary's tier section. Pure. */
+export function formatTierSummary(records) {
+    const c = tierCounts(records);
+    return [
+        `- Dispatches by requested tier: cheap ${c.perTier.cheap}, standard ${c.perTier.standard}, premium ${c.perTier.premium}` +
+            `${c.perTier.other ? `, literal model ${c.perTier.other}` : ''}${c.perTier.none ? `, no tier ${c.perTier.none}` : ''}.`,
+        `- Escalations: ${c.escalations}.`,
+        `- Tier mismatches (resolved tier differs from the request, or none reported): ${c.mismatches}.`,
+        ...(c.escalationUnavailable
+            ? [`- Escalated redos that ran below their escalated tier (tier.escalation_unavailable): ${c.escalationUnavailable}.`]
+            : []),
+    ];
 }

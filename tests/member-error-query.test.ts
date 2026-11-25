@@ -46,7 +46,7 @@ describe('queryMemberToolErrors', () => {
     const r = await queryMemberToolErrors(member, 42, { timeoutMs: 5000 }, d);
     expect(r).toEqual({ available: true, sinceSeconds: 42, total: 1, entries: [entry] });
     expect(d.cmds).toHaveLength(1);
-    const cmd = d.cmds[0];
+    const cmd = decodePowerShellEncodedCommand(d.cmds[0]);
     // origin session: the member's server leaves out the engine's own calls.
     expect(cmd).toContain(`'{"member":"${member.id}","since_seconds":42,"origin":"session"}'`);
     expect(cmd).toContain(`'/home/u/.apra-fleet/bin/apra-fleet' 'call' '--member' '${member.id}' 'query_errors' '--args-file'`);
@@ -105,7 +105,7 @@ describe('queryMemberToolErrors', () => {
     const member = makeTestAgent({ friendlyName: 'meq-args', os: 'linux', fleetMcp: AVAILABLE });
     const d = deps(async () => callResult({ total: 0, entries: [] }));
     await Promise.all([queryMemberToolErrors(member, 10, { timeoutMs: 5000 }, d), queryMemberToolErrors(member, 20, { timeoutMs: 5000 }, d)]);
-    const paths = d.cmds.map(c => /> '([^']+)'/.exec(c)?.[1]);
+    const paths = d.cmds.map(c => /> '([^']+)'/.exec(decodePowerShellEncodedCommand(c))?.[1]);
     expect(paths[0]).toMatch(new RegExp(`query-errors-args-${member.id}-[0-9a-f]+\\.json$`));
     expect(paths[0]).not.toBe(paths[1]);
   });

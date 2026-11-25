@@ -182,7 +182,8 @@ function installDeps(opts: { arch?: string; download?: MemberFleetInstallDeps['d
   let installed = opts.installed ?? null;
   const d = {
     installs: 0,
-    exec: async (_a: unknown, command: string) => {
+    exec: async (_a: unknown, raw: string) => {
+      const command = decodePowerShellEncodedCommand(raw);
       if (command.includes('--version')) return ok(installed ? `apra-fleet ${installed}\n` : `${NO_INSTALL_SENTINEL}\n`);
       if (command.includes('uname -m')) return ok(`${opts.arch ?? 'x86_64'}\n`);
       if (command.includes('member-install.json')) return ok('');
@@ -303,7 +304,7 @@ describe('fleetInstallWarning', () => {
 // Tool level: update_member / register_member succeed and print the WARNING
 // ---------------------------------------------------------------------------
 
-const plain = (cmd: string): string => (cmd.includes('-EncodedCommand') ? decodePowerShellEncodedCommand(cmd) : cmd);
+const plain = (cmd: string): string => decodePowerShellEncodedCommand(cmd);
 
 function toolDeps(installed: string | null, marker = true, download?: MemberFleetMcpDeps['downloadReleaseAsset'], installsVersion?: string): MemberFleetMcpDeps {
   const ok = (stdout: string): SSHExecResult => ({ stdout, stderr: '', code: 0 });

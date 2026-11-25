@@ -11,7 +11,7 @@
 // core's src/os/windows.ts wrapPowerShellEncoded(), not a reuse of it: this
 // package cannot import core.
 
-import { assertSafeRelativePath, assertSafeExcludePattern, assertSafeFileLine, FILE_PROBE_PRESENT, FILE_PROBE_ABSENT } from './se-posix.mjs';
+import { assertSafeRelativePath, assertSafeExcludePattern, assertSafeFileLine, FILE_PROBE_PRESENT, FILE_PROBE_ABSENT, SePosixCommands, isEmbeddableHome, posixSingleQuote } from './se-posix.mjs';
 
 /**
  * PowerShell command primitives for a Windows member.
@@ -227,6 +227,60 @@ export class SeWindowsCommands {
    */
   gitLsRemoteProbe() {
     return this.wrapForMember("$env:GIT_TERMINAL_PROMPT='0'; $env:GCM_INTERACTIVE='never'; git ls-remote origin HEAD");
+  }
+
+  /**
+   * PowerShell twin of SePosixCommands.memberHomeProbe: prints
+   * %USERPROFILE% with no trailing newline.
+   * @returns {string}
+   */
+  memberHomeProbe() {
+    return this.wrapForMember('[Console]::Out.Write($env:USERPROFILE)');
+  }
+
+  /**
+   * A PowerShell member's home for a git helper path: a drive path or UNC
+   * share, in git's forward-slash form (as core's gitCredentialEnvPrefix
+   * registers it).
+   * @param {string} home
+   * @returns {string}
+   */
+  gitHelperHome(home) {
+    const h = String(home ?? '').replace(/[\r\n]+$/, '');
+    if (!/^([A-Za-z]:[\\/]|\\\\)/.test(h) || !isEmbeddableHome(h)) {
+      throw new Error(`Refusing to build a labelled git probe for unusable member home '${h}' (expected a Windows drive or UNC path with no '$', backtick, double quote or control character).`);
+    }
+    return h.replace(/\\/g, '/').replace(/\/+$/, '');
+  }
+
+  /**
+   * @param {string} label
+   * @param {string} [memberId]
+   * @returns {string}
+   */
+  credentialHelperFileName(label, memberId) {
+    return SePosixCommands.prototype.credentialHelperFileName.call(this, label, memberId);
+  }
+
+  /**
+   * PowerShell twin of SePosixCommands.gitLsRemoteLabelledProbe: the helper
+   * list is reset and only the labelled helper is named, prompting is off.
+   * The environment is set with Set-Item/Remove-Item on the Env: drive (the
+   * envelope is a fresh powershell, so nothing persists), so the script reads
+   * no variable; every argument is a PowerShell single-quoted literal.
+   * @param {string} label
+   * @param {string} [memberId]
+   * @param {string} home
+   * @returns {{ command: string, descriptor: string }}
+   */
+  gitLsRemoteLabelledProbe(label, memberId, home) {
+    const descriptor = `${this.gitHelperHome(home)}/${this.credentialHelperFileName(label, memberId)}`;
+    const psq = (s) => `'${String(s).replace(/'/g, "''")}'`;
+    const helperArg = psq(`credential.helper=!${posixSingleQuote(descriptor)}`);
+    const script = "Set-Item -Path Env:GIT_TERMINAL_PROMPT -Value '0'; Set-Item -Path Env:GCM_INTERACTIVE -Value 'never'; "
+      + 'Remove-Item -Path Env:GIT_ASKPASS, Env:SSH_ASKPASS -ErrorAction SilentlyContinue; '
+      + `git -c 'credential.helper=' -c 'core.askPass=' -c ${helperArg} ls-remote origin HEAD`;
+    return { command: this.wrapForMember(script), descriptor };
   }
 
   /**

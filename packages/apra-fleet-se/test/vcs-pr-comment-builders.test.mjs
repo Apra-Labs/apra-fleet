@@ -6,6 +6,7 @@ import {
     buildListCommentsCommand,
     buildUpdateCommentCommand,
     buildDeleteCommentCommand,
+    commentWebUrlFor,
 } from '../fleet-sprint/vcs-module.mjs';
 import { POSIX_PAYLOAD_PATH, WINDOWS_PAYLOAD_PATH, posixDataBinaryArg } from './helpers/vcs-payload-test.mjs';
 
@@ -155,7 +156,7 @@ describe('bitbucket PR comment builders (PR comments API)', () => {
 
     test('list-comments: GET .../comments with pagelen/fields; skips deleted and inline comments', () => {
         const built = buildListCommentsCommand(p);
-        const fields = encodeURIComponent('next,values.id,values.content.raw,values.deleted,values.inline');
+        const fields = encodeURIComponent('next,values.id,values.content.raw,values.deleted,values.inline,values.links.html.href');
         assert.equal(built.command, ['curl -sS -X GET', AUTH, "-H 'Accept: application/json'", `-w '${W}'`, '-D -',
             `'${BB_BASE}/comments?pagelen=100&fields=${fields}'`].join(' '));
         assertCommandHygiene(built);
@@ -166,6 +167,8 @@ describe('bitbucket PR comment builders (PR comments API)', () => {
             { id: 'x', content: { raw: 'bad id' } },
         ] };
         assert.deepEqual(built.mapResponse(body), [{ id: '21', body: 'engine chunk', ref: { id: 21 } }]);
+        const linked = { values: [{ id: 24, content: { raw: 'c' }, links: { html: { href: 'https://bitbucket.org/acme/widgets/pull-requests/9#comment-24' } } }] };
+        assert.deepEqual(built.mapResponse(linked), [{ id: '24', body: 'c', ref: { id: 24 }, webUrl: 'https://bitbucket.org/acme/widgets/pull-requests/9#comment-24' }]);
     });
 
     test('update-comment: PUT .../comments/{id} with the staged { content: { raw } }', () => {
@@ -220,5 +223,40 @@ describe('every provider: Windows members, typed errors and the VCSModule surfac
         assert.equal(VCSModule.buildUpdateCommentCommand, buildUpdateCommentCommand);
         assert.equal(VCSModule.buildDeleteCommentCommand, buildDeleteCommentCommand);
         assert.throws(() => buildListCommentsCommand({ provider: 'dolt', pull_request_id: 7, token: TOKEN }), /ERROR: VCSModule: provider "dolt" does not yet implement action "list-comments"/);
+    });
+});
+
+describe('commentWebUrlFor: the browser link of an overflow comment', () => {
+    const GH_PR = 'https://github.com/acme/widgets/pull/42';
+    const BB_PR = 'https://bitbucket.org/acme/widgets/pull-requests/9';
+    const ADO_PR = 'https://dev.azure.com/acme/proj/_git/widgets/pullrequest/7';
+
+    test('github: html_url from the create/update response or a list item, else the PR #issuecomment anchor', () => {
+        assert.equal(commentWebUrlFor('github', { response: { id: 5, html_url: `${GH_PR}#issuecomment-5` }, prUrl: GH_PR }), `${GH_PR}#issuecomment-5`);
+        assert.equal(commentWebUrlFor('github', { response: { id: '6', body: 'x', ref: { id: 6 }, webUrl: `${GH_PR}#issuecomment-6` } }), `${GH_PR}#issuecomment-6`);
+        assert.equal(commentWebUrlFor('github', { response: { id: 7 }, prUrl: GH_PR }), `${GH_PR}#issuecomment-7`);
+        assert.equal(commentWebUrlFor('github', { response: {}, ref: { id: 8 }, prUrl: GH_PR }), `${GH_PR}#issuecomment-8`);
+        assert.equal(commentWebUrlFor('github', { response: { id: 7 } }), null, 'no PR URL and no html_url -> no link');
+    });
+
+    test('bitbucket: links.html.href, else the PR #comment anchor', () => {
+        assert.equal(commentWebUrlFor('bitbucket', { response: { id: 3, links: { html: { href: `${BB_PR}#comment-3` } } }, prUrl: BB_PR }), `${BB_PR}#comment-3`);
+        assert.equal(commentWebUrlFor('bitbucket', { response: { id: 4 }, prUrl: BB_PR }), `${BB_PR}#comment-4`);
+    });
+
+    test('azure-devops: built from the PR web URL and the thread id (create response = thread; update = comment, thread from ref)', () => {
+        const thread = { id: 31, comments: [{ id: 1, parentCommentId: 0 }] };
+        assert.equal(commentWebUrlFor('azure-devops', { response: thread, prUrl: ADO_PR }), `${ADO_PR}?_a=overview&discussionId=31`);
+        assert.equal(commentWebUrlFor('azure-devops', { response: { id: 1, content: 'x' }, ref: { threadId: 32, commentId: 1 }, prUrl: ADO_PR }), `${ADO_PR}?_a=overview&discussionId=32`);
+        assert.equal(commentWebUrlFor('azure-devops', { response: { id: 1, content: 'x' }, prUrl: ADO_PR }), null, 'a comment object alone does not name its thread');
+        assert.equal(commentWebUrlFor('azure-devops', { response: thread, prUrl: null }), null);
+    });
+
+    test('an unsafe or oversized link is never returned; a provider with no hook answers null', () => {
+        assert.equal(commentWebUrlFor('github', { response: { html_url: 'https://x.example/a b' } }), null);
+        assert.equal(commentWebUrlFor('github', { response: { html_url: 'https://x.example/{{secret.T}}' } }), null);
+        assert.equal(commentWebUrlFor('github', { response: { html_url: 'javascript:alert(1)' } }), null);
+        assert.equal(commentWebUrlFor('github', { response: { html_url: `https://x.example/${'a'.repeat(400)}` } }), null);
+        assert.equal(commentWebUrlFor('dolt', { response: { html_url: 'https://x.example/a' } }), null);
     });
 });

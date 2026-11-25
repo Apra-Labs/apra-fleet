@@ -89,6 +89,17 @@
 //                          anything else (assertSafeRelativePath /
 //                          assertSafeFileLine in se-posix.mjs); gitbash
 //                          inherits the POSIX strings.
+//   memberHomeProbe        vcs-auth.mjs VCS preflight: prints the member home
+//                          in the form git uses for a helper path (POSIX
+//                          $HOME, gitbash `cygpath -m`, PowerShell
+//                          USERPROFILE), so the probe below is built with a
+//                          JavaScript-resolved absolute path.
+//   gitLsRemoteLabelledProbe vcs-auth.mjs VCS preflight git channel: a
+//                          non-interactive `git ls-remote origin HEAD` with
+//                          the helper list reset and ONLY the fleet-labelled
+//                          helper file named (member-scoped or legacy), so a
+//                          host credential manager cannot answer for a dead
+//                          fleet helper. No shell expansion in the string.
 //
 // Deliberately NOT included, so this stays an interface rather than a
 // catalogue:

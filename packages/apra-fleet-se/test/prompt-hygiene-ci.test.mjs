@@ -44,7 +44,7 @@ describe('role prompts and schema', () => {
         const t = norm(fs.readFileSync(path.join(ROOT, 'apra-pm/agents/plan-reviewer.md'), 'utf8'));
         assert.match(t, /\*\*No CI-status criterion\*\*/);
         assert.match(t, /CI-status criterion on any bead is CHANGES_NEEDED/);
-        assert.match(t, /all thirteen criteria/);
+        assert.match(t, /all fourteen criteria/);
     });
     test('reviewer-output.json has no bead ids or target-specific names', () => {
         const t = fs.readFileSync(path.join(ROOT, 'apra-pm/agents/schemas/reviewer-output.json'), 'utf8');

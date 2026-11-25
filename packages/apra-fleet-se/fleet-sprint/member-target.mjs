@@ -45,9 +45,13 @@ export function clearMemberOsCache() {
 // whose record carries no `shell` (or an unrecognized one) resolves to '' --
 // getSeCommands() treats that as the PowerShell implementation, matching what
 // every Windows member was assumed to be before shells were recorded.
-// @param {{ fleetApi?: object, member: string, log?: Function }} opts
+// `unresolved` overrides what a failed lookup degrades to (default: POSIX
+// 'linux'). A caller whose command string must not assume any shell -- the bd
+// Dolt sync, whose POSIX form is a NAME=value prefix a PowerShell member
+// cannot run -- passes { os: '', shell: '' } to get the bare command instead.
+// @param {{ fleetApi?: object, member: string, log?: Function, unresolved?: { os: string, shell: string } }} opts
 // @returns {Promise<{ os: string, shell: string }>}
-export async function resolveMemberTarget({ fleetApi, member, log = () => {} }) {
+export async function resolveMemberTarget({ fleetApi, member, log = () => {}, unresolved = { os: 'linux', shell: '' } }) {
     if (memberOsCache.has(member)) return memberOsCache.get(member);
     try {
         if (!fleetApi || typeof fleetApi.memberDetail !== 'function') {
@@ -76,8 +80,9 @@ export async function resolveMemberTarget({ fleetApi, member, log = () => {} }) 
         }
         throw new Error('member_detail response carried no "os" field');
     } catch (err) {
-        log(`Could not resolve OS for member '${member}' from member_detail (${err && err.message ? err.message : err}); assuming POSIX ('linux') for member-bound command construction.`);
-        return { os: 'linux', shell: '' };
+        const assumed = unresolved.os ? "POSIX ('" + unresolved.os + "')" : 'an unknown OS (bare commands)';
+        log(`Could not resolve OS for member '${member}' from member_detail (${err && err.message ? err.message : err}); assuming ` + assumed + ' for member-bound command construction.');
+        return { os: unresolved.os, shell: unresolved.shell };
     }
 }
 

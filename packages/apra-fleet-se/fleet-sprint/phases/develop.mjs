@@ -61,12 +61,17 @@ import { buildStreakAssignmentPrompt, buildDoerPrompt } from '../prompts.mjs';
 import {
     selectStreaks, groupStreaksFromLaneMetadata, streakRequiredTier,
     resolveWorklistTierPolicy, hasContextHeadroomForResume, assignDoerWorklists,
+    splitLanesByTier, laneTier, formatLaneSplitLog,
 } from '../worklists.mjs';
+import { reproducesPrePolicyTiers } from '../tier-policy.mjs';
+import {
+    effectiveBeadTier, beadWasEscalated, isVerifyFailureOutcome, applyEscalations, ESCALATION_REASONS,
+} from '../tier-escalation.mjs';
 import { isPostDispatchSyncFailure, MemberPermissionDeniedError, PERMISSION_DENIED_DISPATCH_REASON } from '../errors.mjs';
 import { isPermissionScopePostDispatchSyncFailure } from '../dispatch-failure.mjs';
 import { policyFor } from '../role-policies.mjs';
 import { CLAIMED_ELSEWHERE_REASON } from '../orphan-reclaim.mjs';
-import { openBlocksDependents } from '../beads-scope.mjs';
+import { openBlocksDependents, LIVE_EVIDENCE_LABEL } from '../beads-scope.mjs';
 import { classifyBlockedReport, VERIFY_NO_CHANGE_KIND, VERIFY_NO_CHANGE_REASON } from '../set-aside.mjs';
 import { NEEDS_DECISION, validateDecisionRequest, recordPendingDecision } from '../decisions.mjs';
 
@@ -124,8 +129,22 @@ export async function runDevelopPhase({
     verifyDoerStreakClosed,
     normalizeTierToken,
     kbQueryTerms,
+    // The run's resolved tier policy (tier-policy.mjs, held on the run
+    // context). Absent or quality: today's doer pricing (first-bead pick,
+    // required-tier max in packed rounds). balanced/economy: single-tier lanes
+    // (see the split below) and the lane's own tier.
+    tierPolicy = null,
 }) {
     phase(`Develop C${cycle} R${devRounds}`);
+    const singleTierLanes = !reproducesPrePolicyTiers(tierPolicy);
+    // One-step tier escalations held for the run (../tier-escalation.mjs).
+    const escalations = sprintState.tierEscalations || (sprintState.tierEscalations = new Map());
+    // A bead's tier for lane splitting and doer pricing: its escalated tier
+    // when it was escalated, else its declared model. An escalated bead
+    // anchors its own sub-lane, so it runs at its escalated tier alone when
+    // its lane-mates were not escalated.
+    const beadTier = (b) => effectiveBeadTier(b, escalations);
+    const escalatedBead = (b) => beadWasEscalated(b, escalations);
 
     // --- Permission-scope publish-blocked carry-over (apra-fleet-2wdc.4) ---
     // A permission-scope post-dispatch sync failure (runStreakTurn's
@@ -210,33 +229,43 @@ export async function runDevelopPhase({
     // the doer closed an earlier bead as blocked and stopped), so a bead the
     // doer never named is never set aside: nothing is set aside and the
     // existing left-open retry applies.
+    //
+    // Beads the report names in `liveEvidenceIds` are handled first and are
+    // never set aside: see applyLiveEvidenceMarker below. A named bead whose
+    // marker label write failed is set aside here, ahead of the blockedIds
+    // ladder, so it is never re-dispatched to a doer that would only report
+    // it live again.
     const recordDoerBlocked = async ({ report, unclosedIds, streakIds, doerMember }) => {
+        const { labelled: liveIds, failed: labelFailed } = await applyLiveEvidenceMarker({ report, unclosedIds, streakIds });
+        const labelFailedById = new Map(labelFailed.map((f) => [f.id, f.error]));
         const hasField = Array.isArray(report.blockedIds);
-        const reported = hasField ? report.blockedIds.map(String) : [];
-        let blockedIds;
-        if (hasField && reported.length === 0) {
+        const reported = hasField
+            ? report.blockedIds.map(String).filter((id) => !liveIds.includes(id) && !labelFailedById.has(id))
+            : [];
+        let blockedIds = [];
+        if (liveIds.length > 0 && unclosedIds.every((id) => liveIds.includes(id))) {
+            blockedIds = [];
+        } else if (hasField && reported.length === 0) {
             log(
                 `Doer streak [${streakIds.join(', ')}] reported BLOCKED with an empty blockedIds -- no bead was left open ` +
                 'because of the block, so nothing is set aside; the open beads stay eligible for the next round.'
             );
-            return;
         } else if (reported.length > 0) {
             blockedIds = reported.filter((id) => unclosedIds.includes(id));
             const ignored = reported.filter((id) => !unclosedIds.includes(id));
             if (ignored.length > 0) {
                 log(`Doer streak [${streakIds.join(', ')}] reported blockedIds not open in this streak (ignored): ${ignored.join(', ')}.`);
             }
-        } else if (streakIds.length === 1 && unclosedIds.length === 1) {
+        } else if (streakIds.length === 1 && unclosedIds.length === 1 && liveIds.length === 0 && labelFailed.length === 0) {
             blockedIds = [...unclosedIds];
-        } else {
+        } else if (labelFailed.length === 0) {
             log(
                 `Doer streak [${streakIds.join(', ')}] reported BLOCKED with ${unclosedIds.length} bead(s) still open ` +
                 'and no blockedIds naming which -- cannot tell blocked from not reached, so nothing is set aside; ' +
                 'the open beads stay eligible for the next round.'
             );
-            return;
         }
-        if (blockedIds.length === 0) return;
+        if (blockedIds.length === 0 && labelFailed.length === 0) return;
         const where = { cycle, round: devRounds };
         // The doer's own notes are carried verbatim (whitespace-collapsed,
         // never shortened) so the stall report says what to fix; they are
@@ -264,11 +293,21 @@ export async function runDevelopPhase({
             scopeBeads = (await bdListScoped('')).map((b) => (b && closedNow.has(b.id) ? { ...b, status: 'closed' } : b));
             if (typeof fetchAllBeadsShared === 'function') allBeads = await fetchAllBeadsShared();
         }
-        const decision = classifyBlockedReport({
-            blockedIds, scopeBeads, allBeads, doctorBlockedIds, waitingIds,
-        });
+        const decision = blockedIds.length > 0
+            ? classifyBlockedReport({ blockedIds, scopeBeads, allBeads, doctorBlockedIds, waitingIds })
+            : { wait: [], setAside: [] };
         const fresh = [];
         const waitedNow = [];
+        for (const [id, error] of labelFailedById) {
+            if (doctorBlockedIds.has(id)) continue;
+            doctorBlockedIds.set(id, {
+                kind: 'blocked', blockedBy: id,
+                reason: `${doerReason} -- the doer reported it needs live integration evidence, but writing the ` +
+                    `${LIVE_EVIDENCE_LABEL} label failed (${error}); fix the bd write and label it so the Integration Test phase verifies it`,
+                ...where,
+            });
+            fresh.push(id);
+        }
         for (const w of decision.wait) {
             waitingIds.set(w.id, { on: [...w.on], ...where });
             waitedNow.push(w.id);
@@ -308,6 +347,68 @@ export async function runDevelopPhase({
             `other open bead(s) of streak [${streakIds.join(', ')}] return to the ready pool. Entries: ` +
             JSON.stringify(Object.fromEntries([...fresh, ...freshDependents].map((id) => [id, doctorBlockedIds.get(id)])))
         );
+    };
+
+    // A doer that must refuse a bead because its acceptance needs LIVE
+    // integration evidence (doers never manufacture it) names that bead in
+    // the report's structured `liveEvidenceIds` (never parsed from notes).
+    // Each named bead that is assigned to this streak, still open and in the
+    // sprint scope gets the live-evidence marker label (LIVE_EVIDENCE_LABEL)
+    // through the wrapped command, which drops the beads snapshot; it is NOT
+    // set aside as doer-BLOCKED and neither are its dependents. From the next
+    // classification on it is a verify target for the Integration Test phase
+    // (classifyVerifySet) and readyLeafBeads() never offers it to a doer
+    // again. A run without integ-test-playbook.md or deploy.md carries it over
+    // with a typed reason at Cycle Evaluation. Any other named id is ignored
+    // with a log line. Returns { labelled, failed }: the ids that got the
+    // marker, and { id, error } for each whose label write failed.
+    const applyLiveEvidenceMarker = async ({ report, unclosedIds, streakIds }) => {
+        if (!Array.isArray(report.liveEvidenceIds) || report.liveEvidenceIds.length === 0) return { labelled: [], failed: [] };
+        const named = [...new Set(report.liveEvidenceIds.map(String))];
+        let scopeIds = null;
+        if (typeof bdListScoped === 'function') {
+            scopeIds = new Set((await bdListScoped('')).map((b) => b && b.id));
+        }
+        const accepted = [];
+        const ignored = [];
+        for (const id of named) {
+            if (!streakIds.includes(id)) ignored.push(`${id} (not assigned to this streak)`);
+            else if (!unclosedIds.includes(id)) ignored.push(`${id} (not open)`);
+            else if (scopeIds && !scopeIds.has(id)) ignored.push(`${id} (not in the sprint scope)`);
+            else accepted.push(id);
+        }
+        if (ignored.length > 0) {
+            log(`Doer streak [${streakIds.join(', ')}] reported liveEvidenceIds the engine ignores: ${ignored.join(', ')}.`);
+        }
+        if (accepted.length === 0) return { labelled: [], failed: [] };
+        // A failed label write is logged and returned in `failed`; the
+        // caller sets that bead aside (it must not go back to a doer).
+        const labelled = [];
+        const failed = [];
+        await gitSync.withOpenSyncBracket(async () => {
+            for (const id of accepted) {
+                try {
+                    await command(`bd update ${id} --add-label ${LIVE_EVIDENCE_LABEL}`, { member_name: backlogMember, silent: true });
+                    labelled.push(id);
+                } catch (err) {
+                    failed.push({ id, error: err && err.message ? err.message : String(err) });
+                    log(
+                        `Doer live-evidence C${cycle} R${devRounds}: could not label bead ${id} ${LIVE_EVIDENCE_LABEL} ` +
+                        `(streak [${streakIds.join(', ')}]): ${err && err.message ? err.message : err} -- set aside as doer-BLOCKED instead.`
+                    );
+                }
+            }
+        });
+        if (labelled.length === 0) return { labelled, failed };
+        // The engine just mutated beads in its own clone: D-push so every
+        // member sees the marker.
+        await gitSync.syncBeadsAfter(backlogMember, { pushBeads: true });
+        log(
+            `Doer live-evidence C${cycle} R${devRounds}: bead(s) [${labelled.join(', ')}] need live integration evidence ` +
+            `(reported by the doer of streak [${streakIds.join(', ')}]) -- labelled ${LIVE_EVIDENCE_LABEL} and routed to ` +
+            'the Integration Test phase as verify target(s); not set aside as doer-BLOCKED and never dispatched to a doer again.'
+        );
+        return { labelled, failed };
     };
 
     // Records a doer NEEDS-DECISION report (../decisions.mjs): the named
@@ -472,6 +573,21 @@ export async function runDevelopPhase({
         log(`Streak Assignment: using one-bead-per-streak fallback (${reason}).`);
     }
     } // end LLM-fallback branch (no lane metadata)
+    // --- Single-tier lanes (balanced/economy) ---------------------------
+    // A lane whose implementation beads declare different tiers is split
+    // into consecutive single-tier segments in lane order (worklists.mjs
+    // splitLanesByTier): no doer dispatch ever runs a cheap bead at a
+    // premium lane-mate's tier. [test] and untiered beads ride the tier of
+    // the implementation bead before them. Only the first segment runs this
+    // round; the rest of the lane is held and re-forms next round, so the
+    // segments run strictly in order, never beside each other and never past
+    // a segment that left a bead open (an escalated bead's successors wait
+    // for its redo). quality keeps mixed lanes and today's pricing.
+    if (singleTierLanes) {
+        const split = splitLanesByTier(streaks, { tierOf: beadTier, pinned: escalatedBead });
+        for (const entry of split.splits) log(formatLaneSplitLog(entry));
+        streaks = split.streaks;
+    }
     // Title lookup for the assignedBeadIds sort below. Doer dispatches
     // run in `parallel`, so the order their outcomes are recorded in is
     // completion order -- correctly non-deterministic. The Review
@@ -522,6 +638,7 @@ export async function runDevelopPhase({
     const worklistPacking = assignDoerWorklists(streaks, doerPool.length, {
         effortBudget: validated.worklistEffortBudget,
         tierHomogeneous,
+        ...(singleTierLanes ? { streakTier: (s) => laneTier(s, beadTier, escalatedBead) } : {}),
     });
     if (worklistPacking.packed) {
         const fmtStreak = (s) => `(${s.map((b) => b.id).join(', ')})`;
@@ -630,6 +747,26 @@ export async function runDevelopPhase({
                 } else {
                     snapshotAfter = await readBranchSnapshot(doerMember);
                 }
+            },
+            // Bead ids, each premium bead's tierReason and any escalation, for
+            // the per-dispatch tier log line (read lazily: the claim narrows
+            // actualBeadIds inside the dispatch bracket).
+            tierContext: () => {
+                const claimed = new Set(actualBeadIds.map(String));
+                const beads = streak.filter((b) => claimed.has(String(b.id)));
+                const tierReasons = {};
+                const escalationList = [];
+                for (const b of beads) {
+                    const reason = b.metadata && b.metadata.tierReason;
+                    if (reason && beadTier(b) === 'premium') tierReasons[b.id] = reason;
+                    if (escalatedBead(b)) {
+                        const held = escalations.get(String(b.id));
+                        const from = (held && held.from) || (b.metadata && b.metadata.tierEscalatedFrom);
+                        const to = beadTier(b);
+                        if (from && to) escalationList.push({ id: b.id, from, to });
+                    }
+                }
+                return { beadIds: [...claimed], tierReasons, escalations: escalationList };
             },
             onSessionId: (id, meta) => {
                 if (!worklistCtx) return;
@@ -763,16 +900,26 @@ export async function runDevelopPhase({
                 // not a verified actual.
                 const streakModels = [...new Set(actualBeadIds.map((id) => modelByBeadId.get(id)).filter(Boolean))];
                 let doerModel = streakModels[0];
-                // In a PACKED worklist round a streak must never dispatch
-                // below its REQUIRED tier (the max of its beads' declared
-                // models) -- override the first-bead pick with that tier.
-                // The non-packed (streaks <= doers) path keeps the
-                // first-bead behavior.
-                if (packed) {
+                if (singleTierLanes) {
+                    // balanced/economy: the lane is single-tier (split
+                    // above), so the dispatch runs at the lane's tier -- no
+                    // first-bead pick and no rounding up to the max. A lane
+                    // naming no tier at all (e.g. a literal provider model
+                    // id) passes its declared model through unchanged.
+                    doerModel = laneTier(streak, beadTier, escalatedBead) || streakModels[0];
+                } else if (packed) {
+                    // quality: in a PACKED worklist round a streak must never
+                    // dispatch below its REQUIRED tier (the max of its beads'
+                    // declared models) -- override the first-bead pick with
+                    // that tier. The non-packed (streaks <= doers) path keeps
+                    // the first-bead behavior.
                     const requiredTier = streakRequiredTier(streak);
                     if (requiredTier) doerModel = requiredTier;
                 }
-                if (streakModels.length > 1) {
+                // tierOverrides.doerDefault: the tier of a dispatch whose beads
+                // declare none (unset in every preset: the member default).
+                if (!doerModel && tierPolicy && tierPolicy.doerDefault) doerModel = tierPolicy.doerDefault;
+                if (!singleTierLanes && streakModels.length > 1) {
                     log(`Doer streak ${streakScope()} spans beads with different declared models (${streakModels.join(', ')}) -- pricing this dispatch as '${doerModel}'.`);
                 }
 
@@ -1061,6 +1208,10 @@ export async function runDevelopPhase({
         if (unclosedIds.length > 0) {
             log(`Doer streak [${actualBeadIds.join(', ')}] reported status '${report ? report.status : 'unknown'}' but bead(s) still open: ${unclosedIds.join(', ')} -- treating streak as FAILED.`);
         }
+        if (report && report.status !== 'BLOCKED'
+            && Array.isArray(report.liveEvidenceIds) && report.liveEvidenceIds.length > 0) {
+            log(`Doer streak [${actualBeadIds.join(', ')}] named liveEvidenceIds [${report.liveEvidenceIds.join(', ')}] with status '${report.status}' -- ignored; they are honoured only on a BLOCKED report.`);
+        }
         if (leftOpenReason === 'blocked' && unclosedIds.length > 0) {
             await recordDoerBlocked({ report, unclosedIds, streakIds: actualBeadIds, doerMember });
         }
@@ -1173,6 +1324,29 @@ export async function runDevelopPhase({
     }, { continueOnError: true });
 
     log(`Develop C${cycle} R${devRounds} streak outcomes: ${JSON.stringify(streakOutcomes.map((o) => ({ beadIds: o.beadIds, outcome: o.outcome })))}`);
+
+    // One-step tier escalation on a verify failure (../tier-escalation.mjs):
+    // a bead a doer session ran on and returned from with the bead still open
+    // (failureReason 'left-open', no dispatch error) is redone one tier up.
+    // Usage-limit stops and every infra/dispatch/sync failure carry a
+    // dispatch error and never escalate. balanced/economy only. Only the
+    // FIRST still-open bead of the streak (in streak order) is the one the
+    // doer failed on; a later open bead may simply not have been reached (a
+    // doer stops its lane once a bead stays open), so it does not escalate.
+    const verifyFailedIds = new Set(streakOutcomes
+        .filter(isVerifyFailureOutcome)
+        .map((o) => (o.beadIds || []).find((id) => (o.unclosedIds || []).includes(id)))
+        .filter((id) => id !== undefined)
+        .map(String));
+    if (singleTierLanes && verifyFailedIds.size > 0) {
+        const applied = await gitSync.withOpenSyncBracket(() => applyEscalations({
+            beads: currentReady.filter((b) => verifyFailedIds.has(String(b.id))),
+            policy: tierPolicy, escalations, reason: ESCALATION_REASONS.VERIFY_FAILURE,
+            command, member: backlogMember, log,
+        }));
+        // The engine just wrote bead metadata in its own clone: D-push.
+        if (applied.length > 0) await gitSync.syncBeadsAfter(backlogMember, { pushBeads: true });
+    }
 
     // The two values the Review phase (still inline in runner.js, in this same
     // round loop iteration) reads out of this round -- see the return shape in

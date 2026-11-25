@@ -1788,7 +1788,7 @@ const PLAN_REVIEW_SCHEMA = {
           },
           "kind": {
             "type": "string",
-            "description": "Which quality criterion failed, as a closed vocabulary mirroring the numbered criteria in the prose contract's Step 2. Use other only when no listed kind fits, and explain it in detail.",
+            "description": "Which quality criterion failed, as a closed vocabulary mirroring the numbered criteria in the prose contract's Step 2. tier_cap, tier_reason, tier_split and lane_tier are the model tier policy criterion: premium cap exceeded, a premium bead with a missing or invalid tierReason or a bead with an uncited hard-criterion signal, a premium bead with separable non-hard work, and a lane whose work beads carry mixed tiers. Use other only when no listed kind fits, and explain it in detail.",
             "enum": [
               "coverage",
               "missing_test_task",
@@ -1801,6 +1801,10 @@ const PLAN_REVIEW_SCHEMA = {
               "ready_work",
               "model_metadata",
               "lane_cohesion",
+              "tier_cap",
+              "tier_reason",
+              "tier_split",
+              "lane_tier",
               "other"
             ]
           },
@@ -1922,6 +1926,13 @@ const DOER_STATUS_SCHEMA = {
     "blockedIds": {
       "type": "array",
       "description": "With status BLOCKED: the assigned bead ids you left open BECAUSE of the block -- not ids you merely did not reach (e.g. same-lane stop rule). The engine sets these beads, and every open bead depending on them, aside for the rest of the run. Optional -- omitted on a single-bead assignment it means that bead; omit or send [] with status VERIFY.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "liveEvidenceIds": {
+      "type": "array",
+      "description": "With status BLOCKED: the assigned bead ids you left open because their acceptance needs evidence from a LIVE integration run against the deployed build (doers never produce it). The engine labels each such bead as a verification-only bead and routes it to the integration-test runner instead of setting it aside; it is never dispatched to a doer again. Do not also list these ids in blockedIds. Optional -- omit or send [] when no bead needs live evidence.",
       "items": {
         "type": "string"
       }
@@ -2384,6 +2395,55 @@ const PLANNER_SCHEMA = {
       "description": "Task-level bead ids created or updated this round.",
       "items": {
         "type": "string"
+      }
+    },
+    "decision": {
+      "type": "object",
+      "description": "Optional. Send it only when a finding needs an operator decision that no change you can make in the repository or in beads can settle, and nothing in the bead, its parent or the code says which alternative to take. Same shape as the doer and reviewer NEEDS-DECISION decision. The orchestrator files it for an operator verbatim (never truncated) as a separate decision bead, sets the named work bead aside for the rest of the run without re-dispatching it, and keeps working other ready beads. Never add a human label to the work bead yourself: answering a bead with the human-respond command closes it.",
+      "required": [
+        "beadId",
+        "question",
+        "options",
+        "recommendation"
+      ],
+      "properties": {
+        "beadId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The one open work bead id that cannot go on until the decision is made."
+        },
+        "question": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The full question, self-contained: what was found, why it blocks the bead, and what must be decided. An operator reads only this and the options."
+        },
+        "options": {
+          "type": "array",
+          "minItems": 2,
+          "description": "At least two concrete alternatives, each with a short stable id (for example \"a\", \"b\") and its full text: what it means and what it costs.",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "text"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "text": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "recommendation": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The option id you recommend, followed by why."
+        }
       }
     },
     "kb_captures": {

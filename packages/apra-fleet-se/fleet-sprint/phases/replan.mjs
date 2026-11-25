@@ -62,9 +62,10 @@ import { applyPlannerDecision, decisionSetAsideList, namedFindingIds, onlyDecisi
  * Runs the in-cycle scoped Replan phase for ONE develop round.
  *
  * @param {object} state Explicit phase state; see this file's header.
- * @returns {Promise<void>} Nothing: the only outputs are the in-place
- *   mutations of `replanIds`/`replannedThisCycle` described in the header,
- *   which runner.js's round loop reads back off its own bindings.
+ * @returns {Promise<{approved: boolean, plannerOk: boolean}>} The round loop
+ *   ignores it: its outputs are the in-place mutations of
+ *   `replanIds`/`replannedThisCycle` described in the header. The
+ *   premium-cap gate reads it only to report the scoped review's verdict.
  */
 export async function runReplanPhase({
     // Presentation + dispatch seams.
@@ -103,10 +104,30 @@ export async function runReplanPhase({
     sprintState = null,
     bdListScoped = null,
     extractContestedBeadIds = () => [],
+    // The run's held tier policy (tier-policy.mjs): its premiumCapPct goes
+    // into both scoped prompts. Null adds no cap text.
+    tierPolicy = null,
+    // PREMIUM-CAP REPLAN (tier-cap.mjs runPremiumCapGate): when set, this pass
+    // is the gate's scoped re-plan of the over-cap premium beads, not a
+    // reviewer-flagged criteria defect: { premiumIds, mustMove, capPct,
+    // allowed, total, attempt, maxReplans }. The same two scoped dispatches
+    // run with the premium-cap clauses instead of the defective-criteria
+    // ones; eligibleReplan/replanIds/replannedThisCycle/perBeadFeedback are
+    // then unused, and the phase label is `Replan C{cycle} premium-cap {n}`.
+    premiumCap = null,
 }) {
-    const replanScopeIds = eligibleReplan.map((b) => b.id);
-    phase(`Replan C${cycle} R${devRounds}`);
-    log(
+    const premiumCapPct = tierPolicy ? tierPolicy.premiumCapPct : null;
+    const capReplan = premiumCap && Array.isArray(premiumCap.premiumIds) && premiumCap.premiumIds.length > 0 ? premiumCap : null;
+    const replanScopeIds = capReplan ? [...capReplan.premiumIds] : eligibleReplan.map((b) => b.id);
+    phase(`Replan C${cycle} ${capReplan ? `premium-cap ${capReplan.attempt}` : `R${devRounds}`}`);
+    if (capReplan) {
+        log(
+            `[fleet-sprint] premium-cap scoped replan ${capReplan.attempt} of ${capReplan.maxReplans}: the plan marks ` +
+            `${replanScopeIds.length} premium bead(s) (${replanScopeIds.join(', ')}) against a cap of ${capReplan.allowed} of ` +
+            `${capReplan.total} (${capReplan.capPct}%) -- dispatching a SCOPED planner + plan-review pass asking to move at ` +
+            `least ${capReplan.mustMove} to a lower tier.`
+        );
+    } else log(
         `[fleet-sprint] in-cycle scoped replan: reviewer flagged bead(s) ${replanScopeIds.join(', ')} as ` +
         `having defective acceptance criteria -- dispatching a SCOPED planner + plan-review pass for their ` +
         `subtree THIS cycle (replan round R${devRounds}) instead of deferring to the next cycle, then ` +
@@ -115,7 +136,7 @@ export async function runReplanPhase({
     // Guard: mark up front so a SECOND replan flag for the same bead
     // this cycle is refused (see the reviewer fold-in below), whatever
     // the outcome of this pass.
-    for (const id of replanScopeIds) replannedThisCycle.add(id);
+    if (!capReplan) for (const id of replanScopeIds) replannedThisCycle.add(id);
 
     // The code-reviewer findings that TRIGGERED this scoped replan, sourced
     // from perBeadFeedback, one section per DISTINCT notes text. review.mjs
@@ -133,7 +154,7 @@ export async function runReplanPhase({
     // REPLAN_FINDINGS_MAX_LENGTH.
     /** @type {Map<string, string[]>} trimmed notes text -> bead ids it applies to */
     const idsByNotes = new Map();
-    for (const id of replanScopeIds) {
+    for (const id of (capReplan ? [] : replanScopeIds)) {
         const notes = perBeadFeedback.get(id);
         if (typeof notes !== 'string' || notes.trim().length === 0) continue;
         const key = notes.trim();
@@ -178,6 +199,8 @@ export async function runReplanPhase({
             // resurface here too.
             rejectedNewTasksToResubmit: pendingRejectedNewTasks,
             verifyExcluded: verifySetThisCycle,
+            premiumCapPct,
+            premiumCapReplan: capReplan,
         }),
         label: 'Scoped Replan Plan (interactive)',
         roleLabel: 'Scoped Replan Plan',
@@ -212,7 +235,7 @@ export async function runReplanPhase({
         // approval, and never an abort, the same discipline as the
         // main plan loop.
         const scopedReviewOutcome = await dispatchRole(dispatchCtx, 'scoped-replan-plan-reviewer', {
-            prompt: buildPlanReviewerPrompt({ targetIssues, goal: validated.goal, replanScope: replanScopeIds, verifyExcluded: verifySetThisCycle, decisionSetAside: decisionSetAsideList(sprintState) }),
+            prompt: buildPlanReviewerPrompt({ targetIssues, goal: validated.goal, replanScope: replanScopeIds, verifyExcluded: verifySetThisCycle, decisionSetAside: decisionSetAsideList(sprintState), premiumCapPct, premiumCapReplan: capReplan }),
             label: 'Scoped Replan Review',
             roleLabel: 'Scoped Replan Review',
         });
@@ -232,7 +255,11 @@ export async function runReplanPhase({
         }
     }
 
-    if (scopedReplanApproved) {
+    if (capReplan) {
+        // The gate recounts the beads itself; approval is only reported.
+        log(`[fleet-sprint] premium-cap scoped replan ${capReplan.attempt}: plan-review ${scopedReplanApproved ? 'APPROVED' : 'did NOT approve'} ` +
+            `the re-plan of ${replanScopeIds.join(', ')}; the premium-cap gate recounts the premium beads next.`);
+    } else if (scopedReplanApproved) {
         // The planner re-scoped the flagged bead(s) and the
         // plan-reviewer approved the amendment -- clear them from
         // replanIds so the NEXT loop iteration re-dispatches them to a
@@ -253,4 +280,5 @@ export async function runReplanPhase({
     // (apra-fleet-417.2.1); behavior is identical.
     await gitSync.syncBeadsAfter(backlogMember, { pushBeads: true });
     await updateDashboard();
+    return { approved: scopedReplanApproved, plannerOk: scopedPlannerOk };
 }

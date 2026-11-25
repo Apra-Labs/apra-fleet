@@ -12,6 +12,7 @@ import {
 } from '../fleet-sprint/runner.js';
 import { resolveRoleMapWithWarnings, buildRunnerArgs } from '../bin/cli.mjs';
 import { defaultMockCallTool, MOCK_MEMBER_WORK_FOLDER, isVcsPayloadStagingCommand, withStagedBody } from './helpers/mock-sprint-harness.mjs';
+import { synthesizeToolVersion } from './helpers/bd-replay.mjs';
 
 // Unit + mock-level tests for apra-fleet-unw.14: the CLI->runner argument
 // contract (validateArgs/validateIssueId/validateBranchName), and proof
@@ -441,13 +442,17 @@ function buildSpyFleetApi(overrides = {}) {
             if (/^bd where --json$/.test(opts.command)) {
                 return mockCmdResult(0, JSON.stringify({ database_path: '/spy/.beads/dolt', path: '/spy/.beads', prefix: 'bd', schema_version: 1 }));
             }
-            if (/^bd list --all --limit 0 --json$/.test(opts.command)) {
+            // The sprint-start bd/dolt version pin probes: answer with the
+            // engine's own pins so the check passes.
+            const toolVersion = synthesizeToolVersion(opts.command);
+            if (toolVersion) return mockCmdResult(0, toolVersion.stdout);
+            const byIdRead = /^bd list --all --limit 0 --json --id "([^"]+)"$/.exec(opts.command);
+            if (byIdRead || /^bd list --all --limit 0 --json --brief$/.test(opts.command)) {
                 // The target itself must be visible in the snapshot (the engine
                 // refuses TARGET_NOT_VISIBLE otherwise); scope still excludes it.
-                return mockCmdResult(0, JSON.stringify([
-                    ...JSON.parse(allBeadsJson),
-                    { id: 'bd-1', status: 'open', title: 'Target' },
-                ]));
+                // The snapshot's by-id text read is answered from the same rows.
+                const rows = [...JSON.parse(allBeadsJson), { id: 'bd-1', status: 'open', title: 'Target' }];
+                return mockCmdResult(0, JSON.stringify(byIdRead ? rows.filter((b) => byIdRead[1].split(',').includes(b.id)) : rows));
             }
             if (/^bd list .*--ready/.test(opts.command)) {
                 // The first TWO ready-list calls return one bead so the
@@ -620,8 +625,9 @@ describe('runner.js mock-level execution', () => {
         // The beads identity precondition's three per-member probes (`bd
         // where --json`, `bd config get sync.remote --json`, `git remote
         // get-url origin`) precede even that gate; skip them first.
-        // Exactly three: this is a single-member sprint.
-        const IDENTITY_PROBES = ['bd where --json', 'bd config get sync.remote --json', 'git remote get-url origin'];
+        // Exactly three: this is a single-member sprint. The bd/dolt version
+        // pin probes (`bd --version`, `dolt version`) run before them.
+        const IDENTITY_PROBES = ['bd --version', 'dolt version', 'bd where --json', 'bd config get sync.remote --json', 'git remote get-url origin'];
         const identityEnd = IDENTITY_PROBES.length;
         assert.deepStrictEqual(spy.commandLog.slice(0, identityEnd), IDENTITY_PROBES, 'the beads identity probes must open the command log');
         // The backlog member's VCS-credential preflight (ensureVcsAuthFresh,
@@ -818,9 +824,10 @@ describe('runner.js mock-level execution', () => {
         // alongside `bd dolt *` for the same reason.
         // `bd where` is the beads identity precondition's per-member probe
         // (it deliberately runs on EVERY physical member, not just the
-        // orchestrator), excluded for the same reason.
+        // orchestrator), excluded for the same reason -- as is `bd --version`,
+        // the sprint-start version pin probe, which also runs on every member.
         const bdDispatches = spy.dispatchLog.filter((d) => d.command.startsWith('bd ')
-            && !d.command.startsWith('bd dolt') && !d.command.startsWith('bd config get sync.remote') && !d.command.startsWith('bd where'));
+            && !d.command.startsWith('bd dolt') && !d.command.startsWith('bd config get sync.remote') && !d.command.startsWith('bd where') && d.command !== 'bd --version');
         assert.ok(bdDispatches.length > 0, 'expected at least one `bd` command() dispatch');
         for (const { command, member_name } of bdDispatches) {
             assert.strictEqual(member_name, 'member-x', `expected command "${command}" to dispatch to 'member-x', got '${member_name}'`);
@@ -899,7 +906,7 @@ describe('runner.js mock-level execution', () => {
         // the per-member D-push bracket (Issue 31 pre-gate), see above.
         // `bd where` (per-member beads identity probe) excluded, see above.
         const bdDispatches = spy.dispatchLog.filter((d) => d.command.startsWith('bd ')
-            && !d.command.startsWith('bd dolt') && !d.command.startsWith('bd config get sync.remote') && !d.command.startsWith('bd where'));
+            && !d.command.startsWith('bd dolt') && !d.command.startsWith('bd config get sync.remote') && !d.command.startsWith('bd where') && d.command !== 'bd --version');
         assert.ok(bdDispatches.length > 0, 'expected at least one `bd` command() dispatch');
         for (const { command, member_name } of bdDispatches) {
             assert.strictEqual(member_name, 'member-y', `expected command "${command}" to dispatch to 'member-y', got '${member_name}'`);

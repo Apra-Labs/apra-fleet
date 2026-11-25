@@ -57,7 +57,7 @@ function entryFor(agent: Agent): Record<string, unknown> {
 }
 
 function text(cmd: string): string {
-  return cmd.includes('-EncodedCommand') ? decodePowerShellEncodedCommand(cmd) : cmd;
+  return decodePowerShellEncodedCommand(cmd);
 }
 
 function deps(world: World, local?: { connect: (id: string) => Promise<MemberSession> }): MemberFleetMcpDeps {
@@ -90,6 +90,7 @@ function deps(world: World, local?: { connect: (id: string) => Promise<MemberSes
       if (c.includes("'call'") && c.includes("'version'")) {
         return ok(JSON.stringify({ content: [{ type: 'text', text: `apra-fleet ${world.installed}` }] }));
       }
+      if (c.includes('command -v bd')) return ok('bd version 1.3.0'+String.fromCharCode(10));
       if (c.includes('--version')) {
         return ok(world.installed ? `apra-fleet ${world.installed}\n` : `${NO_INSTALL_SENTINEL}\n`);
       }

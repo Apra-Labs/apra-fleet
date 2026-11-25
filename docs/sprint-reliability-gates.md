@@ -120,6 +120,33 @@ Design record for sprint-engine hardening around work that gets stranded mid-run
   mid-run exit shares the "integration can run this cycle" condition with the deploy
   step, so a single transient deploy failure in that state ends the sprint without
   a redeploy retry, bypassing the deploy retry cycle budget. Tracked as a follow-up.
+  Blocked-bead detection (`findVerifyBlockedBeads`) counts the union of a bead's own
+  `blocks` edges and those of every ancestor, found by walking `.parent` up the full
+  chain (cycle-guarded), because a feature-to-feature edge declared on a parent holds
+  its children back too. The dep-remove hint names the bead that actually carries the
+  edge. Every call site, pre-sprint and mid-run, must pass the full bead snapshot plus
+  an authoritative set of closed ids; a stub list of closed ids hides inherited edges.
+  Planners therefore point cross-feature dependencies at the producing task, and the
+  plan-reviewer flags a `blocks` edge onto a bead that has children.
+- **Live-evidence leaves.** A childless bead labelled `needs-live-evidence` is a
+  verify target in `classifyVerifySet` once it has no unmet prerequisite, and is never
+  handed to a doer. A doer that finds a bead is deployed-product proof, not code, sets
+  the label through its `liveEvidenceIds` report field instead of a BLOCKED set-aside;
+  the engine honours only ids that are streak-assigned, open and in scope, so a doer
+  cannot label arbitrary beads. When the run has no integ playbook or no deploy
+  runbook, the leaf is carried over as `needs-external-evidence` with a typed reason
+  and the verdict is FAIL, not a stall. A parent still stays verify-ineligible while
+  any unrelated child is open; that rule is unchanged.
+- **Refusal resume on every role.** Every dispatched role row sets
+  `retry.unmappableRefusalResume`; the resume happens at most once and only for a
+  refused dispatch that reported a session id and whose row has a resume secondary.
+  The tool-less streak-assignment pass has the flag but no same-session resume
+  secondary, so a refusal there degrades to the fallback assignment (one bead per
+  streak) instead of ending the run. See architecture.md for the permission-refusal flow.
+- **Open-children hold is reported.** A parent stays verify-ineligible while any
+  child is open (deliberate). `classifyVerifySet` returns those entries with the
+  holding children (`heldBy`), and the Route log and Final Review notes name them so
+  a held parent is never silent.
 - **Review scope.** The reviewer's scope is the union of beads the engine verified
   as closed, minus beads whose publish was blocked or whose post-dispatch sync
   failed. A failed streak that still closed beads is therefore reviewed.

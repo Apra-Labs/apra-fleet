@@ -158,13 +158,22 @@ export class SprintPlanRejectedError extends WorkflowError {
 export class StalledSprintError extends WorkflowError {
     /**
      * @param {string} message
-     * @param {{ staleCycles?: number, closedCountHistory?: number[], highWaterClosedCount?: number, thrashIds?: string[], blockerIds?: string[], blockerReasons?: Record<string, string>, setAside?: object[], waited?: object[], cycle?: number, details?: object, cause?: unknown }} [opts]
+     * @param {{ staleCycles?: number, closedCountHistory?: number[], highWaterClosedCount?: number, thrashIds?: string[], blockerIds?: string[], blockerReasons?: Record<string, string>, setAside?: object[], waited?: object[], cycle?: number,
+     *   closedThisRun?: Array<{ id: string, title?: string }>, openAtGoalIds?: string[], deferredAtGoal?: string[], reopenedThenClosed?: string[],
+     *   lastReview?: { verdict: string, notes?: string, site?: string, cycle?: unknown }|null, details?: object, cause?: unknown }} [opts]
+     *   closedThisRun / openAtGoalIds / deferredAtGoal / reopenedThenClosed /
+     *   lastReview: what the [ABORTED] PR body reports about the run's work;
+     *   kept in details only when given.
      */
     constructor(message, opts = {}) {
         const { staleCycles = null, closedCountHistory = [], highWaterClosedCount = null, thrashIds = [], blockerIds = [], blockerReasons = {}, setAside = [], waited = [], cycle, details, cause } = opts;
+        const work = {};
+        for (const k of ['closedThisRun', 'openAtGoalIds', 'deferredAtGoal', 'reopenedThenClosed', 'lastReview']) {
+            if (opts[k] !== undefined) work[k] = opts[k];
+        }
         super(message, {
             code: 'SPRINT_STALLED',
-            details: { staleCycles, closedCountHistory, highWaterClosedCount, thrashIds, blockerIds, blockerReasons, setAside, cycle, ...details },
+            details: { staleCycles, closedCountHistory, highWaterClosedCount, thrashIds, blockerIds, blockerReasons, setAside, cycle, ...work, ...details },
             cause,
         });
         this.staleCycles = staleCycles;
@@ -367,6 +376,45 @@ export class DoltSyncError extends WorkflowError {
     }
 }
 
+/**
+ * The failure class a Dolt sync that ended on a VCS CREDENTIAL failure is
+ * logged under. Infrastructure, not a review outcome: the remote refused (or
+ * could not ask for) the member's git credential, so no read of the shared
+ * beads state happened at all.
+ */
+export const DOLT_CREDENTIAL_FAILURE_CLASS = 'dolt-sync-credentials';
+
+/**
+ * The remedy every credential-class Dolt sync failure names. Works for a
+ * local member (which has no fleet-provisioned credential to re-mint) and a
+ * remote member alike: bd's git runs with terminal prompts and credential
+ * manager dialogs disabled, so the credential must answer without prompting.
+ */
+export const DOLT_CREDENTIAL_REMEDY =
+    'Remedy: on that member, configure a git credential for the beads Dolt remote that answers without prompting '
+    + '(a stored credential or credential helper -- bd runs git with terminal prompts and credential manager dialogs disabled), '
+    + 'or, for a remote member, re-provision its VCS auth with provision_vcs_auth; then re-run.';
+
+/**
+ * True when `err` (or an error on its `cause` chain) is a DoltSyncError the
+ * sync layer classified as a VCS credential failure (`details.kind === 'auth'`
+ * -- including a non-interactive prompt refusal such as "terminal prompts
+ * disabled" or "could not read Username"). A divergence is never one: it is a
+ * different class (DoltDivergedError), and a non-credential sync failure
+ * carries no 'auth' kind.
+ *
+ * @param {unknown} err
+ * @returns {boolean}
+ */
+export function isDoltCredentialFailure(err) {
+    const seen = new Set();
+    for (let e = err; e && typeof e === 'object' && !seen.has(e); e = e.cause) {
+        seen.add(e);
+        if (e instanceof DoltSyncError && e.details && e.details.kind === 'auth') return true;
+    }
+    return false;
+}
+
 /** Stable error code of DoltWindowsSpawnLimitError. */
 export const DOLT_WINDOWS_SPAWN_LIMIT_CODE = 'DOLT_WINDOWS_SPAWN_LIMIT';
 
@@ -410,6 +458,36 @@ export class DoltLockHeldError extends DoltSyncError {
         super(message, { ...opts, details: { kind: 'lock-held', ...opts.details } });
         this.name = 'DoltLockHeldError';
         this.code = DOLT_BEADS_LOCK_HELD_CODE;
+    }
+}
+
+/** The failure kind DoltPushRaceError carries in details.kind. */
+export const DOLT_PUSH_RACE_KIND = 'remote-race';
+
+/**
+ * A D-push that kept losing the race to other writers on the shared remote:
+ * every push was rejected non-fast-forward, every reconcile pull in between
+ * merged cleanly, the bounded reconcile loop ran out of cycles, and the
+ * deterministic settle (when wired) did not recover it. Its message names the
+ * race; details.kind is 'remote-race' and details.attempts the number of
+ * reconcile cycles run.
+ *
+ * A DoltDivergedError subtype on purpose: a push that stays rejected after
+ * clean pulls cannot be told apart from a wedged clone, so every existing
+ * divergence handler (BEADS_SYNC_CONFLICT terminal reason, conflict-dump
+ * capture, degraded 'diverged' outcome) still applies, and it keeps the
+ * DOLT_DIVERGED code those handlers key on. A caller that wants the finer
+ * reason reads `kind` / details.kind.
+ */
+export class DoltPushRaceError extends DoltDivergedError {
+    /**
+     * @param {string} message
+     * @param {{ member?: string|null, doltOutput?: string|null, operation?: string|null, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(message, opts = {}) {
+        super(message, { ...opts, details: { kind: DOLT_PUSH_RACE_KIND, ...opts.details } });
+        this.name = 'DoltPushRaceError';
+        this.kind = DOLT_PUSH_RACE_KIND;
     }
 }
 
@@ -1004,6 +1082,12 @@ export const BEADS_IDENTITY_FAILURE_REASONS = Object.freeze({
     // expected beads remote -- dispatching would hand the role a database
     // that does not hold the sprint's issues, so refuse up front.
     BEADS_SETUP_FAILED: 'BEADS_SETUP_FAILED',
+    // A beads-touching member runs a bd (or dolt) outside the engine's pinned
+    // major.minor, or one whose version cannot be read. A newer bd migrates
+    // the shared beads remote one way on its first bootstrap/pull, locking
+    // out every older clone, so refuse before any beads mutation on any
+    // member.
+    VERSION_MISMATCH: 'VERSION_MISMATCH',
 });
 
 /**
@@ -1016,7 +1100,9 @@ export const BEADS_IDENTITY_FAILURE_REASONS = Object.freeze({
  * installed or not on PATH (reason MISSING_TOOL), so every later bd command
  * there would fail too, or (reason BEADS_SETUP_FAILED) when a beads-reading
  * member had no database / no sync.remote and setting it up from the
- * expected remote failed. Any other probe that fails or cannot be parsed is a
+ * expected remote failed, or (reason VERSION_MISMATCH) when a member's bd or
+ * dolt is outside the engine's pinned major.minor (checked on every member
+ * before any of the above). Any other probe that fails or cannot be parsed is a
  * logged warning, never this error.
  *
  * A WorkflowError so main()'s terminal record names the reason, but

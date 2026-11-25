@@ -71,6 +71,21 @@ import {
 } from '../abort.mjs';
 import { applyReviewerDecision, reviewerReopenEntries } from '../decisions.mjs';
 import { nextLastBuildFailing } from '../red-build-integ-gate.mjs';
+import { roleTier, reproducesPrePolicyTiers } from '../tier-policy.mjs';
+import { applyEscalations, roundHasPremiumOrEscalated, ESCALATION_REASONS } from '../tier-escalation.mjs';
+
+// The round's `bd show --json` text as bead objects. Tolerant: an unreadable
+// read gives no beads (the round then reviews at its non-premium tier and
+// escalates nothing) rather than failing the review it only prices.
+function parseBeadList(raw) {
+    try {
+        const parsed = JSON.parse(raw || '[]');
+        return Array.isArray(parsed) ? parsed : [];
+    } catch {
+        return [];
+    }
+}
+import { BudgetExceededError } from '@apralabs/apra-fleet-workflow';
 
 /**
  * The bead ids a round's Review covers: the union of every streak outcome's
@@ -93,6 +108,44 @@ export function reviewScopeBeadIds(streakOutcomes) {
         for (const id of Array.isArray(o.closedIds) ? o.closedIds : []) seen.add(id);
     }
     return [...seen];
+}
+
+/**
+ * Adds `ids` to the sprint's review-scope ledger (sprintState.reviewedScopeIds,
+ * see ../sprint-state.mjs), creating it when a caller's sprint state predates
+ * it. Called by every Review round, the catch-up round included, before the
+ * reviewer is dispatched: a bead that ENTERED a review round's scope is in the
+ * ledger whatever that round concluded.
+ *
+ * @param {object|undefined} sprintState
+ * @param {Iterable<string>} ids
+ */
+export function recordReviewedScope(sprintState, ids) {
+    if (!sprintState) return;
+    if (!(sprintState.reviewedScopeIds instanceof Set)) sprintState.reviewedScopeIds = new Set();
+    for (const id of ids || []) sprintState.reviewedScopeIds.add(String(id));
+}
+
+/**
+ * The bead ids a catch-up review must cover: dispatched by THIS sprint
+ * (`workedOnIds` -- so a bead closed before the sprint started, or never
+ * dispatched by it, is never pulled in), closed NOW in the sprint's scope
+ * (`closedIds`, read from the scoped closed list after a D-pull), and never in
+ * any review round's scope (`reviewedIds`, the ledger). Sorted for a
+ * deterministic prompt.
+ *
+ * @param {{ workedOnIds?: Iterable<string>, closedIds?: Iterable<string>, reviewedIds?: Iterable<string> }} o
+ * @returns {string[]}
+ */
+export function catchUpReviewBeadIds({ workedOnIds, closedIds, reviewedIds } = {}) {
+    const closed = new Set([...(closedIds || [])].map(String));
+    const reviewed = new Set([...(reviewedIds || [])].map(String));
+    const out = new Set();
+    for (const raw of workedOnIds || []) {
+        const id = String(raw);
+        if (closed.has(id) && !reviewed.has(id)) out.add(id);
+    }
+    return [...out].sort();
 }
 
 /**
@@ -169,9 +222,17 @@ export async function runReviewPhase({
     createChildBeadWithAllocatedId,
     trackRejectedNewTaskForResurfacing,
     clearResubmittedNewTask,
+    // The run's resolved tier policy (../tier-policy.mjs): prices the round's
+    // review and decides whether a reopen escalates (../tier-escalation.mjs).
+    tierPolicy = null,
+    // Optional phase/site label override; the catch-up round
+    // (runReviewCatchUpPhase) passes its own. Defaults to the round label.
+    phaseLabel,
 }) {
     // --- Review: self-contained, schema-validated, orchestrator-applied ---
-    phase(`Review C${cycle} R${devRounds}`);
+    const reviewLabel = phaseLabel || `Review C${cycle} R${devRounds}`;
+    if (phaseLabel) phase(phaseLabel);
+    else phase(`Review C${cycle} R${devRounds}`);
     // Sort by (title, id) -- not raw outcome-recording order -- so this
     // evidence-gathering step is deterministic. See the readyTitleById
     // comment just above.
@@ -202,12 +263,32 @@ export async function runReviewPhase({
     if (assignedBeadIds.length === 0) {
         log(`Develop C${cycle} R${devRounds}: all streaks this round failed with no beadIds assigned -- skipping Review dispatch (nothing to review: no bead was verified closed this round). Failed-streak beads remain ready for the next Develop round.`);
     } else {
+    // The review-scope ledger: these ids entered a review round's scope, so
+    // the catch-up review before Final Review never covers them again.
+    recordReviewedScope(sprintState, assignedBeadIds);
     // dispatchReview() applies the shared contract-violation
     // retry-once-then-throw rule (see its own doc comment and
     // ReviewerContractViolationError) -- a CHANGES_NEEDED verdict with
     // both reopenIds and newTasks empty is self-contradictory and must
     // never be treated as an ordinary "more work needed" round.
-    const verdict = await dispatchReview({ beadIds: assignedBeadIds, acceptanceCriteriaJson });
+    // The round's beads as `bd show` read them (metadata included), for the
+    // review tier and the reopen escalation below.
+    const roundBeads = parseBeadList(acceptanceCriteriaJson);
+    // Direct callers may hold no sprint state; escalation is then off anyway
+    // (no tier policy), so a throwaway map serves.
+    const escalations = sprintState
+        ? (sprintState.tierEscalations || (sprintState.tierEscalations = new Map()))
+        : new Map();
+    // Review tier: under balanced/economy premium only when the round holds a
+    // premium or escalated bead, else standard; quality is premium always.
+    const roundTier = tierPolicy
+        ? roleTier(tierPolicy, 'reviewer-round', { hasPremiumOrEscalated: roundHasPremiumOrEscalated(roundBeads, escalations) })
+        : undefined;
+    if (roundTier && !reproducesPrePolicyTiers(tierPolicy)) {
+        log(`[tier-policy] Review C${cycle} R${devRounds}: reviewer round tier ${roundTier} (${tierPolicy.name}; ` +
+            `${roundTier === 'premium' ? 'the round holds a premium or escalated bead' : 'no premium or escalated bead in the round'}).`);
+    }
+    const verdict = await dispatchReview({ beadIds: assignedBeadIds, acceptanceCriteriaJson, roundTier });
     // KB trust pipeline Phase 2: the reviewer decides, the engine
     // executes. Reviewer is the ONLY role whose kb_promotions are
     // honoured. apra-fleet-3swo.5.7: performed by the 'reviewer' row's
@@ -219,6 +300,9 @@ export async function runReviewPhase({
     // completion requires this to be exactly 'APPROVED', not just
     // an empty ready-bead list.
     lastReviewVerdict = verdict.verdict;
+    // The last Review/Re-Review verdict and notes of the run (kept across
+    // cycles, unlike lastReviewVerdict): a stall abort names it.
+    if (sprintState) sprintState.lastReview = { verdict: verdict.verdict, notes: typeof verdict.notes === 'string' ? verdict.notes : '', site: 'Review', cycle };
     // Sticky red-build flag (../red-build-integ-gate.mjs): gates the
     // Integration Test dispatch until a later review reports the build green.
     lastBuildFailing = nextLastBuildFailing(lastBuildFailing, verdict);
@@ -266,6 +350,19 @@ export async function runReviewPhase({
         },
         onSkippedBelowGoal: ({ id }) => skippedBelowGoalIds.push(id),
     }));
+    // One-step tier escalation (../tier-escalation.mjs): every bead the
+    // reviewer reopened through reopenIds is redone one tier up, once per
+    // bead per sprint (balanced/economy only). A NEEDS-DECISION reopen is not
+    // a quality verdict and never escalates. Written before the D-push below.
+    const reviewerReopened = new Set((Array.isArray(verdict.reopenIds) ? verdict.reopenIds : [])
+        .filter((id) => typeof id === 'string' && reopenedIds.has(id)));
+    if (reviewerReopened.size > 0) {
+        await applyEscalations({
+            beads: roundBeads.filter((b) => b && reviewerReopened.has(String(b.id))),
+            policy: tierPolicy, escalations, reason: ESCALATION_REASONS.REOPEN,
+            command, member: backlogMember, log,
+        });
+    }
     // A NEEDS-DECISION verdict: record the decision for an operator and set
     // the named bead aside -- see ../decisions.mjs. A closed bead was
     // reopened just above, through the same guarded reopen call
@@ -273,7 +370,7 @@ export async function runReviewPhase({
     await applyReviewerDecision({
         verdict, scopeIds: assignedBeadIds, reopenedIds, sprintState, command,
         member: backlogMember, bdListScoped, cycle, round: devRounds,
-        site: `Review C${cycle} R${devRounds}`, log,
+        site: reviewLabel, log,
     });
     // Fold this round's reviewer `replanIds` (absent/undefined on
     // verdicts that do not use it, so a no-op then) into the cycle's
@@ -374,7 +471,7 @@ export async function runReviewPhase({
         inGoalNewTaskCount,
         skippedReopenIds: (verdict.reopenIds || []).filter((id) => typeof id === 'string' && !reopenedIds.has(id)),
         goal: validated.goal,
-        site: `Review C${cycle} R${devRounds}`,
+        site: reviewLabel,
         bdListScoped, log,
         createTask: (task) => persistNewTaskBestEffort({
             command, member: backlogMember, parentId: targetIssues[0],
@@ -402,7 +499,7 @@ export async function runReviewPhase({
         pendingDecisionCount: sprintState && sprintState.pendingDecisions instanceof Map ? sprintState.pendingDecisions.size : 0,
     });
     if (belowGoalOnlySkippedIds) {
-        log(`Review C${cycle} R${devRounds}: CHANGES_NEEDED named only reopenIds below this sprint's goal ${validated.goal}, all skipped (${belowGoalOnlySkippedIds.join(', ')}), with no in-goal newTask, no failing build and no pending decision -- treated as APPROVED for the exit decision; the skipped bead(s) are carried over.`);
+        log(`${reviewLabel}: CHANGES_NEEDED named only reopenIds below this sprint's goal ${validated.goal}, all skipped (${belowGoalOnlySkippedIds.join(', ')}), with no in-goal newTask, no failing build and no pending decision -- treated as APPROVED for the exit decision; the skipped bead(s) are carried over.`);
     }
 
     // The orchestrator just MUTATED beads (reopens + newTask creates) in
@@ -412,4 +509,108 @@ export async function runReviewPhase({
     } // end assignedBeadIds.length > 0 (Review dispatch + orchestrator-applied transitions)
 
     return { lastReviewVerdict, reviewedThisCycle, pendingRejectedNewTasks, lastBuildFailing, belowGoalOnlySkippedIds };
+}
+
+/**
+ * The CATCH-UP review before the Final Review verdict is dispatched: reviews
+ * every bead this sprint dispatched that is closed now but never entered any
+ * review round's scope (catchUpReviewBeadIds). A streak whose beads were
+ * still open at attribution is marked FAILED and contributes nothing to its
+ * round's scope, and a close behind a failed publish is skipped by
+ * reviewScopeBeadIds -- when such a close lands later its code would
+ * otherwise reach the sprint's PR with no review at all.
+ *
+ * Called by phases/final-review.mjs (through runner.js's injected
+ * `reviewCatchUp` closure) right AFTER Final Review's own D-pull and its
+ * fresh scoped closed-list read, whose ids arrive as `closedIds`: this phase
+ * issues no read of its own, so a sprint with nothing to catch up pays no
+ * extra command at all. With catch-up ids it runs ONE runReviewPhase round
+ * over exactly those ids, so its verdict/reopen/newTask handling applies
+ * unchanged. When no review can run (the run's budget is spent), it reopens
+ * those beads instead -- never passing them to Final Review unreviewed --
+ * logs the decision and D-pushes the reopens.
+ *
+ * @param {object} state Explicit phase state: the runReviewPhase inputs that
+ *   are not per-round, plus `closedIds` (in-scope closed bead ids, freshly
+ *   read after a D-pull) and `budget` (the workflow run's budget).
+ * @returns {Promise<{
+ *   catchUpIds: string[], ran: boolean, reviewed: boolean, reopenedIds: string[],
+ *   lastReviewVerdict: string|undefined, pendingRejectedNewTasks: object[],
+ *   lastBuildFailing: boolean,
+ * }>} `ran` is true when this phase reviewed or reopened anything (the
+ *   caller's counts are then stale and must be re-read).
+ */
+export async function runReviewCatchUpPhase({
+    phase, log, command,
+    cycle, validated, targetIssues, backlogMember,
+    gitSync, sprintState,
+    closedIds,
+    rejectedNewTasks,
+    lastReviewVerdict, pendingRejectedNewTasks, lastBuildFailing = false,
+    budget,
+    dispatchReview, bdListScoped, goalMax, workedOnIds, recordReopen,
+    childIdAllocator, sprintMutexId,
+    computeChildFloor, createChildBeadWithAllocatedId,
+    trackRejectedNewTaskForResurfacing, clearResubmittedNewTask,
+    titleById = new Map(),
+    tierPolicy = null,
+}) {
+    const ledger = sprintState && sprintState.reviewedScopeIds instanceof Set ? sprintState.reviewedScopeIds : new Set();
+    const unchanged = { catchUpIds: [], ran: false, reviewed: false, reopenedIds: [], lastReviewVerdict, pendingRejectedNewTasks, lastBuildFailing };
+    const catchUpIds = catchUpReviewBeadIds({ workedOnIds, closedIds, reviewedIds: ledger });
+    if (catchUpIds.length === 0) return unchanged;
+
+    const label = `Review C${cycle} catch-up`;
+    const budgetSpent = !!(budget && budget.total !== null && budget.total !== undefined
+        && typeof budget.remaining === 'function' && budget.remaining() <= 0);
+    if (!budgetSpent) {
+        log(`${label}: ${catchUpIds.length} bead(s) this sprint dispatched closed outside any reviewed round (${catchUpIds.join(', ')}) -- reviewing them before Final Review.`);
+        try {
+            const out = await runReviewPhase({
+                phase, log, command,
+                cycle, validated, targetIssues, backlogMember,
+                gitSync, sprintState,
+                // Post-loop: no further develop round consumes these.
+                replanIds: new Set(), replannedThisCycle: new Set(), perBeadFeedback: new Map(),
+                rejectedNewTasks,
+                devRounds: 0,
+                streakOutcomes: [{ beadIds: catchUpIds, closedIds: catchUpIds }],
+                readyTitleById: titleById,
+                lastReviewVerdict, reviewedThisCycle: false, pendingRejectedNewTasks, lastBuildFailing,
+                dispatchReview, bdListScoped, goalMax, workedOnIds, recordReopen,
+                childIdAllocator, sprintMutexId,
+                computeChildFloor, createChildBeadWithAllocatedId,
+                trackRejectedNewTaskForResurfacing, clearResubmittedNewTask,
+                phaseLabel: label,
+                tierPolicy,
+            });
+            return {
+                catchUpIds, ran: true, reviewed: true, reopenedIds: [],
+                lastReviewVerdict: out.lastReviewVerdict,
+                pendingRejectedNewTasks: out.pendingRejectedNewTasks,
+                lastBuildFailing: out.lastBuildFailing,
+            };
+        } catch (err) {
+            if (!(err instanceof BudgetExceededError)) throw err;
+            log(`${label}: the review could not run (${err.message}).`);
+        }
+    }
+
+    // No review can run: reopen instead, so these beads are never passed to
+    // Final Review as done without a review.
+    log(`${label}: no review can run (the run's budget is spent) -- reopening ${catchUpIds.join(', ')} instead, so they are not passed to Final Review unreviewed.`);
+    const reopenedIds = await applyGuardedReopens({
+        entries: catchUpIds,
+        bdListScoped, goalMax, goal: validated.goal, log, command,
+        member: backlogMember,
+        workedOnIds,
+        logPrefix: 'Catch-up review reopen',
+        buildReopenCommand: ({ id }) => ({
+            cmd: `bd update ${id} --status=open`,
+            label: `Reopen ${id}: closed outside any reviewed round and no review could run`,
+        }),
+        onReopened: ({ id }) => { if (typeof recordReopen === 'function') recordReopen(id); },
+    });
+    if (reopenedIds.length > 0) await gitSync.syncBeadsAfter(backlogMember, { pushBeads: true });
+    return { ...unchanged, catchUpIds, ran: reopenedIds.length > 0, reopenedIds };
 }

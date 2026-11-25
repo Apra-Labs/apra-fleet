@@ -121,8 +121,16 @@ export const KB_INJECTION_KINDS = Object.freeze(['wrapper', 'prompt-builder', 'n
  *                 ONLY by a policy that sets `classifiesSyncFailures`.
  *   'unknown'  -- anything else, recognised ONLY by a policy that sets
  *                 `classifiesUnrecognisedErrors` (the regression catch-all).
+ *   'credential' -- a sync-bracket error a policy names in
+ *                 `extraDispatchErrors` that the sync layer classified as a
+ *                 VCS CREDENTIAL failure (errors.mjs isDoltCredentialFailure).
+ *                 Never degraded and never in any `degrade.classes`: a
+ *                 credential the member cannot present is an infrastructure
+ *                 fault no retry fixes, and a value fabricated over it would
+ *                 read as a role outcome. The engine logs it as a typed line
+ *                 naming the class and the remedy, then rethrows.
  */
-export const ERROR_CLASSES = Object.freeze(['schema', 'dispatch', 'infra', 'sync', 'unknown']);
+export const ERROR_CLASSES = Object.freeze(['schema', 'dispatch', 'infra', 'sync', 'unknown', 'credential']);
 
 /**
  * Steps the engine runs on the DEGRADE path -- i.e. once per attempt that
@@ -131,9 +139,11 @@ export const ERROR_CLASSES = Object.freeze(['schema', 'dispatch', 'infra', 'sync
  * distinction is load-bearing: the per-round reviewer must drop its round
  * session when a round FAILS, and must NOT drop it when the round succeeds.
  *
- *   'clear-round-session' -- do not let a failed round's session be resumed
+ * No step is registered today: reviewers start a fresh session every round,
+ * so a failed round leaves nothing to clear. The vocabulary stays so a future
+ * degrade-only step has a place to be declared.
  */
-export const DEGRADE_STEPS = Object.freeze(['clear-round-session']);
+export const DEGRADE_STEPS = Object.freeze([]);
 
 /** How a failed ladder degrades once its attempts are spent. */
 export const DEGRADE_KINDS = Object.freeze([
@@ -184,7 +194,6 @@ export const PRE_DISPATCH_STEPS_IN_BRACKET = Object.freeze(['claim-beads-batched
  *   'verify-streak-closed'     -- confirm which beads really closed
  *   'kb-apply'                 -- apply the report's KB work
  *   'reviewer-contract-guard'  -- reject a self-contradictory reviewer verdict
- *   'clear-round-session'      -- do not let a failed round's session be resumed
  *   'select-streaks-validate'  -- validate the returned grouping before trusting it
  */
 export const POST_RESULT_STEPS = Object.freeze([
@@ -192,7 +201,6 @@ export const POST_RESULT_STEPS = Object.freeze([
     'verify-streak-closed',
     'kb-apply',
     'reviewer-contract-guard',
-    'clear-round-session',
     'select-streaks-validate',
 ]);
 
@@ -211,8 +219,12 @@ const runtimeMember = (binding) => ({ kind: 'runtime', binding });
 
 const fixedTier = (key) => ({ kind: 'fixed', key });
 const perBeadTier = (binding) => ({ kind: 'per-bead', binding });
-/** The resume of an already-priced dispatch passes no tier of its own. */
+/** The resume of an already-priced dispatch continues on that dispatch's tier. */
 const INHERITED_TIER = { kind: 'inherited' };
+// 'inherited' is resolved by the engine against the MAIN dispatch's tier (the
+// tier it was actually priced at), never to 'no tier': a missing model on
+// execute_prompt runs on the server default. A row with no tier at all would
+// need model null, and none exists.
 
 /** A turn budget of `base` (a runner constant), optionally doubled. */
 const turns = (base, multiplier, value) => ({
@@ -653,6 +665,7 @@ const planner = policy('planner', {
         skipPreDispatchSyncOnNoMutation: true,
         maxTurnsResume: true,
         resumeAttempts: 1,
+        unmappableRefusalResume: true,
         turnEscalation: 'double',
     }),
     // The planner is the ONLY role whose exhausted ladder is fatal: there is
@@ -707,6 +720,7 @@ const planReviewer = policy('plan-reviewer', {
         authSelfHeal: true,
         maxTurnsResume: true,
         resumeAttempts: 1,
+        unmappableRefusalResume: true,
         turnEscalation: 'double',
     }),
     degrade: degrade({
@@ -737,7 +751,9 @@ const scopedReplanPlanner = policy('scoped-replan-planner', {
     ladderAnchor: "label: 'Scoped Replan Plan (interactive)'",
     member: roleMember('planner'),
     agentType: 'planner',
-    model: fixedTier('planner'),
+    // Its own tier key, so tierOverrides can pin the re-planner apart from
+    // the planner (every preset gives it the planner's tier).
+    model: fixedTier('re-planner'),
     schema: null,
     // A scoped re-plan is a fresh, single-purpose instruction: it carries the
     // reviewer's scope in its own prompt and must not inherit the interactive
@@ -753,9 +769,24 @@ const scopedReplanPlanner = policy('scoped-replan-planner', {
     ),
     kbInjection: 'wrapper',
     // A single bounded attempt: no retry ladder and no resume of its own.
-    retry: retry({ usageLimitPause: true, attempts: 1, authSelfHeal: true }),
+    retry: retry({ usageLimitPause: true, attempts: 1, authSelfHeal: true, unmappableRefusalResume: true }),
     degrade: degrade({ kind: 'defer-to-next-cycle', rethrowsUnrecognisedErrors: false }),
     postResult: ['invalidate-beads-cache'],
+});
+// Exists ONLY so an unmappable permission refusal can be resumed in the same
+// session (retry.unmappableRefusalResume): maxTurnsResume stays false, so a
+// turn-exhausted scoped re-plan is never resumed -- the ladder stays one attempt.
+scopedReplanPlanner.secondary = secondary(scopedReplanPlanner, 'scoped-replan-planner', 'max-turns-resume', {
+    ladderAnchor: 'Continue your scoped re-plan exactly where you left off',
+    maxTurns: turns('SCOPED_REPLAN_PLANNER_MAX_TURNS', 1, 500),
+    watchdog: watchdog(
+        ['Scoped Replan Plan (resume)'],
+        'Same interactive session, continued after a refusal no permission grant can allow: the resumed '
+        + 'dispatch carries the identical alive-but-silent risk as the main scoped re-plan dispatch.'
+    ),
+    resumeArg: SAME_SESSION_RESUME,
+    // Reached only after a refusal report, when no live session exists to kill.
+    preDispatch: [],
 });
 
 const scopedReplanPlanReviewer = policy('scoped-replan-plan-reviewer', {
@@ -778,8 +809,16 @@ const scopedReplanPlanReviewer = policy('scoped-replan-plan-reviewer', {
         + 'safe non-approval rather than needing a second, independent kill-path.'
     ),
     kbInjection: 'wrapper',
-    retry: retry({ usageLimitPause: true, attempts: 1, authSelfHeal: true }),
+    retry: retry({ usageLimitPause: true, attempts: 1, authSelfHeal: true, unmappableRefusalResume: true }),
     degrade: degrade({ kind: 'non-approval', rethrowsUnrecognisedErrors: false }),
+});
+// Resume-only secondary for an unmappable refusal; see scopedReplanPlanner above.
+scopedReplanPlanReviewer.secondary = secondary(scopedReplanPlanReviewer, 'scoped-replan-plan-reviewer', 'max-turns-resume', {
+    ladderAnchor: 'Continue your scoped review exactly where you left off',
+    maxTurns: turns('SCOPED_REPLAN_REVIEWER_MAX_TURNS', 1, 500),
+    resumeArg: SAME_SESSION_RESUME,
+    // Reached only after a refusal report, when no live session exists to kill.
+    preDispatch: [],
 });
 
 const streakAssignment = policy('streak-assignment', {
@@ -815,7 +854,7 @@ const streakAssignment = policy('streak-assignment', {
         + 'Left disarmed: inherited, and lower-risk than the bracketed roles for that reason.'
     ),
     kbInjection: 'none',
-    retry: retry({ usageLimitPause: true, attempts: 1, authSelfHeal: true, semanticRepairReAsks: 1 }),
+    retry: retry({ usageLimitPause: true, attempts: 1, authSelfHeal: true, semanticRepairReAsks: 1, unmappableRefusalResume: true }),
     degrade: degrade({
         kind: 'fallback-value',
         synthesized: { grouping: 'one-bead-per-streak' },
@@ -899,7 +938,11 @@ const reviewer = policy('reviewer', {
     agentType: 'reviewer',
     model: fixedTier('reviewer'),
     schema: 'reviewerVerdict',
-    resumeArg: roundSessionResume('reviewer'),
+    // Every review round starts a FRESH session (resume false): a cross-round
+    // resume carried 200k+ tokens of context into rounds 2-3. Prior-round
+    // findings reach the fresh session through the prompt instead. The
+    // max-turns resume below is an in-dispatch continuation, unaffected.
+    resumeArg: FRESH_SESSION_RESUME,
     bracket: bracketed(false, null),
     timeouts: budgets('DISPATCH_INACTIVITY_TIMEOUT_S', 'DISPATCH_TIMEOUT_S'),
     maxTurns: turns('BASE_REVIEWER_MAX_TURNS', 1, 500),
@@ -917,6 +960,7 @@ const reviewer = policy('reviewer', {
         authSelfHeal: true,
         maxTurnsResume: true,
         resumeAttempts: 1,
+        unmappableRefusalResume: true,
         turnEscalation: 'double',
         // The SAME two-attempt budget covers both ways a round can fail: an
         // infrastructure failure, and a schema-valid verdict the contract
@@ -944,12 +988,11 @@ const reviewer = policy('reviewer', {
         // transient infrastructure reasons as the dispatch, so it degrades
         // identically. A REAL divergence (GitDivergedError / DoltDivergedError
         // -- deliberately NOT listed) still propagates: that is a branch
-        // integrity problem, not a blip.
+        // integrity problem, not a blip. So does a DoltSyncError the sync
+        // layer classified as a VCS CREDENTIAL failure: the engine files it
+        // under the 'credential' class, logs it with its remedy and rethrows
+        // it, never fabricating a verdict over it.
         extraDispatchErrors: ['GitSyncError', 'DoltSyncError'],
-        // On FAILURE only. A failed round's session must not be resumed by the
-        // next round; a SUCCESSFUL round's must, which is exactly why this is
-        // a degrade step rather than a postResult one.
-        steps: ['clear-round-session'],
     }),
     postResult: ['reviewer-contract-guard', 'kb-apply'],
 });
@@ -998,6 +1041,7 @@ const finalReview = policy('final-review', {
         rethrowsUnhealedNonRetryable: true,
         maxTurnsResume: true,
         resumeAttempts: 1,
+        unmappableRefusalResume: true,
         turnEscalation: 'double',
     }),
     degrade: degrade({
@@ -1060,6 +1104,7 @@ const deployer = policy('deployer', {
         authSelfHeal: true,
         maxTurnsResume: true,
         resumeAttempts: 1,
+        unmappableRefusalResume: true,
         turnEscalation: 'double',
     }),
     degrade: degrade({
@@ -1128,6 +1173,7 @@ const integTestRunner = policy('integ-test-runner', {
         authSelfHeal: true,
         maxTurnsResume: true,
         resumeAttempts: 1,
+        unmappableRefusalResume: true,
         turnEscalation: 'double',
         infraResumeAttempts: 1,
     }),
@@ -1205,6 +1251,7 @@ const regressionTestRunner = policy('regression-test-runner', {
         skipRedispatchOnPostDispatchSyncFailure: true,
         maxTurnsResume: true,
         resumeAttempts: 1,
+        unmappableRefusalResume: true,
         turnEscalation: 'double',
     }),
     // The only load-bearing catch-all in the table: this phase is
@@ -1284,6 +1331,7 @@ const harvester = policy('harvester', {
         authSelfHeal: true,
         maxTurnsResume: true,
         resumeAttempts: 1,
+        unmappableRefusalResume: true,
         turnEscalation: 'double',
     }),
     // Fabricates NOTHING: by this point the sprint's verdict is already

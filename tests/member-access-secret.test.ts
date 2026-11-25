@@ -66,7 +66,7 @@ vi.mock('../src/cli/install.js', async (importOriginal) => {
 
 const SECRET = 'e3'.repeat(32); // a well-formed 64-hex secret, easy to grep for
 const ok = (stdout = ''): SSHExecResult => ({ stdout, stderr: '', code: 0 });
-const plain = (c: string): string => (c.includes('-EncodedCommand') ? decodePowerShellEncodedCommand(c) : c);
+const plain = (c: string): string => decodePowerShellEncodedCommand(c);
 
 /** Every command must be free of the secret, in every encoding the scanner knows. */
 function expectNoSecretIn(commands: string[], secret = SECRET): void {

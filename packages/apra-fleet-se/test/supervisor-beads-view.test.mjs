@@ -26,6 +26,8 @@ import {
     invalidateSyncRemoteCache,
 } from '../fleet-sprint/dolt-sync.mjs';
 import { createLedger } from '../src/supervisor/ledger.mjs';
+import { BEADS_VERSION, DOLT_VERSION, TOOL_VERSION_PROBES } from '../fleet-sprint/tool-version-pin.mjs';
+import { withPinnedVersions, offPinMinor, answerVersionProbe } from './helpers/pinned-tool-versions.mjs';
 
 const MEMBER = 'backlog-proj';
 const REPO_ROOT = path.join(os.tmpdir(), 'beads-view-test-repo-root');
@@ -65,10 +67,12 @@ function deferred() {
  * repeats); a string entry is a failure with that error text.
  */
 function fakeMember({ syncRemote = 'git+https://example.test/org/beads.git', tip = SHA_A, pullResults = [{ ok: true, output: '' }] } = {}) {
-    const state = { tip, syncRemote, pulls: 0, lsRemotes: 0, calls: [] };
+    const state = { tip, syncRemote, pulls: 0, lsRemotes: 0, calls: [], bdVersion: BEADS_VERSION, doltVersion: DOLT_VERSION };
     const queue = [...pullResults];
     async function command(cmd, opts = {}) {
         state.calls.push({ cmd, opts });
+        if (cmd === TOOL_VERSION_PROBES.bd) return { ok: true, output: `bd version ${state.bdVersion}\n` };
+        if (cmd === TOOL_VERSION_PROBES.dolt) return { ok: true, output: `dolt version ${String(state.doltVersion).replace(/^v/, '')}\n` };
         if (cmd.startsWith('bd config get sync.remote')) {
             return { ok: true, output: JSON.stringify({ key: 'sync.remote', value: state.syncRemote }) };
         }
@@ -354,7 +358,7 @@ describe('cached beads view: single in-flight and non-blocking reads', () => {
         let pulls = 0;
         let t = 1_000_000;
         const view = createBeadsView({
-            backlogMember: readyMember(), command: async () => ({ ok: true, output: '' }), repoRoot: REPO_ROOT, logger: QUIET,
+            backlogMember: readyMember(), command: withPinnedVersions(async () => ({ ok: true, output: '' })), repoRoot: REPO_ROOT, logger: QUIET,
             now: () => t,
             doltPullBefore: async () => { pulls += 1; await gate.promise; return { ok: true, member: MEMBER }; },
             listAllBeads: async () => [{ id: 'r' }],
@@ -385,6 +389,8 @@ describe('cached beads view: execute_command adapter', () => {
         const requests = [];
         const resolveConnection = async () => ({ mode: 'http', url: 'http://127.0.0.1:1/mcp' });
         const executeFleetCommand = async (req) => {
+            const probe = answerVersionProbe(req.command);
+            if (probe) return { ok: true, output: `Exit code: 0\n${probe.output}`, exitCode: 0, stdout: probe.output, stderr: '' };
             requests.push(req);
             if (req.command.startsWith('bd config get sync.remote')) {
                 return { ok: true, output: 'Exit code: 0\n{"value":"git+https://example.test/x.git"}', exitCode: 0, stdout: '{"value":"git+https://example.test/x.git"}', stderr: '' };
@@ -465,7 +471,7 @@ describe('cached beads view: freshForLaunch', () => {
         let maxActive = 0;
         let calls = 0;
         const view = createBeadsView({
-            backlogMember: readyMember(), command: async () => ({ ok: true, output: '' }), repoRoot: REPO_ROOT, logger: QUIET,
+            backlogMember: readyMember(), command: withPinnedVersions(async () => ({ ok: true, output: '' })), repoRoot: REPO_ROOT, logger: QUIET,
             doltPullBefore: async () => ({ ok: true, member: MEMBER }),
             listAllBeads: async () => {
                 const i = calls;
@@ -496,7 +502,7 @@ describe('cached beads view: freshForLaunch', () => {
         // alive); here nothing else is pending, so an unref'd timer would let
         // the event loop drain before it fires. Inject a referenced one.
         const view = createBeadsView({
-            backlogMember: readyMember(), command: async () => ({ ok: true, output: '' }), repoRoot: REPO_ROOT, logger: QUIET,
+            backlogMember: readyMember(), command: withPinnedVersions(async () => ({ ok: true, output: '' })), repoRoot: REPO_ROOT, logger: QUIET,
             doltPullBefore: async () => ({ ok: true, member: MEMBER }),
             listAllBeads: async () => { calls += 1; await gate.promise; return [{ id: 'late' }]; },
             setTimeout: (fn, ms) => ({ handle: setTimeout(fn, ms) }),
@@ -521,7 +527,7 @@ describe('cached beads view: freshForLaunch', () => {
     ]) {
         test(`rejects with a reason for a ${label} backlog member`, async () => {
             const list = fakeList();
-            const view = createBeadsView({ backlogMember: handle, command: async () => ({ ok: true, output: '' }), repoRoot: REPO_ROOT, listAllBeads: list.listAllBeads, logger: QUIET });
+            const view = createBeadsView({ backlogMember: handle, command: withPinnedVersions(async () => ({ ok: true, output: '' })), repoRoot: REPO_ROOT, listAllBeads: list.listAllBeads, logger: QUIET });
             await assert.rejects(view.freshForLaunch({ timeoutMs: 5_000 }), (err) => {
                 assert.ok(err instanceof BeadsViewUnavailableError);
                 assert.match(err.reason, /backlog member not ready/);

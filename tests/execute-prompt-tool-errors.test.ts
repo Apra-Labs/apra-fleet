@@ -51,7 +51,7 @@ const DISPATCH_MS = 42_500;
 /** The window the member is asked for: 43 s elapsed (rounded up) plus 5 s of start slack. */
 const WINDOW_S = 48;
 
-const decoded = (c: string) => (c.startsWith('powershell -EncodedCommand ') ? decodePowerShellEncodedCommand(c) : c);
+const decoded = decodePowerShellEncodedCommand;
 const isQuery = (c: string) => decoded(c).includes("'query_errors'");
 const isMain = (c: string) => decoded(c).includes('--output-format json');
 const queryCmds = () => mockExecCommand.mock.calls.map(c => c[0]).filter(isQuery);
@@ -121,7 +121,7 @@ describe('execute_prompt toolErrors', () => {
     expect(sc.response).toBe('ok');
     expect(sc.toolErrors).toEqual({ available: true, sinceSeconds: WINDOW_S, total: 1, entries: [entry] });
     expect(queryCmds()).toHaveLength(1);
-    expect(queryCmds()[0]).toContain(`"since_seconds":${WINDOW_S}`);
+    expect(decoded(queryCmds()[0])).toContain(`"since_seconds":${WINDOW_S}`);
   });
 
   it('an older member install without query_errors: the dispatch succeeds and toolErrors says unavailable', async () => {
