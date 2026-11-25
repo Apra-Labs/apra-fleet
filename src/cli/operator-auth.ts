@@ -473,11 +473,11 @@ async function operatorAuthGithub(flags: Record<string, string | true>, d: Retur
       git(['config', '--global', '--fixed-value', '--unset-all', OPERATOR_HELPER_KEY, existing.helper]);
       d.stdout(`Removed the fleet git-credential helper (label '${label}') from ${OPERATOR_HELPER_KEY}.\n`);
     }
-    // The reset entry this command put in front goes too, once nothing but
-    // resets is left on the key (the same rule as the legacy migration).
+    // The reset entry this command put in front goes too; every other value
+    // keeps its order.
     const rest = gitGetAll(OPERATOR_HELPER_KEY);
-    if (existing.resetAdded && rest.length > 0 && rest.every(v => v === '')) {
-      rewriteGlobalKey(OPERATOR_HELPER_KEY, []);
+    if (existing.resetAdded && rest[0] === '') {
+      rewriteGlobalKey(OPERATOR_HELPER_KEY, rest.slice(1));
       d.stdout(`Removed the empty reset entry it added to ${OPERATOR_HELPER_KEY}.\n`);
     }
     delete records.github[label];
