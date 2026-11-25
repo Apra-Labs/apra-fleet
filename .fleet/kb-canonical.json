@@ -3526,6 +3526,29 @@
       }
     },
     {
+      "id": "c48ab613-3c68-4d50-8a2c-eef12c3f4eef",
+      "type": "learning",
+      "title": "install-force tests must pin windowsExecutable and bridge execFileSync for tasklist/powershell",
+      "summary": "install-guard.ts runs tasklist and powershell on win32 through execFileSync with an absolute path from windowsExecutable. tests/install-force.test.ts mocks node:fs, so the resolver must be mocked with fixed deps, and execFileSync forwarded to the execSync fakes.",
+      "symbols": [
+        "getRunningApraFleetProcesses",
+        "windowsExecutable",
+        "resolveWindowsExecutable"
+      ],
+      "source_files": [
+        "tests/install-force.test.ts",
+        "src/cli/install-guard.ts",
+        "src/os/windows-executable.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-25T21:10:39.800Z",
+      "source_file_hashes": {
+        "src/cli/install-guard.ts": "bf21b887fcac428afc4214d1c8de2c038ad65e23",
+        "src/os/windows-executable.ts": "31722fab66aacfdfa1c34e20d5b58c8f436a90dd",
+        "tests/install-force.test.ts": "f0b5116b00a7c1a9d44b9d2d247e223eb4e87b64"
+      }
+    },
+    {
       "id": "c4fb3b10-577e-46a8-8ddb-bde2844b57c7",
       "type": "knowledge",
       "title": "lookupServerSecret is the server-side secret lookup that keeps expired records",
