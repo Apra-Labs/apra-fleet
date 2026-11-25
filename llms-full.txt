@@ -3542,6 +3542,14 @@ The next push can then silently revert other clones' links. Defences:
   pulls. A conflicted pre-dispatch pull that `bd` auto-merges can leave merged
   dependency rows uncommitted, and the later fast-forward push neither commits
   nor verifies on that path.
+- Known gap: the `blocks`-edge restore only treats an edge as a deliberate
+  removal when the engine's own command wrapper issued the `bd dep remove`.
+  Removals an agent makes in its own session (the planner retargeting an edge
+  or breaking a cycle) are not recorded, so the next snapshot or pre-push
+  verification can re-add them: a retarget is silently undone, and a
+  re-added cycle edge is refused by `bd`, which stops the push. The intended
+  fix is to restore only links that a pull dropped (diff the link set before
+  and after the pull), not links that merely vanished from a snapshot.
 
 ### Flattened-remote recovery
 
