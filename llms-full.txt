@@ -3591,6 +3591,11 @@ clone's last sync (the newest record both sides hold identically). A closed
 bead changed after that point still refuses. Removing a label, dependency or
 comment cannot be told apart from another clone's add, so it is not counted.
 
+Sprint launch also pulls every non-backlog member that already has a beads DB,
+through the same health gate and recovery. This pull is fatal: a clone that has
+diverged aborts the launch rather than self-healing at its first dispatch
+pull, so reconcile such a clone (see the conflict runbook) before launching.
+
 ---
 
 See [the PM skill](../packages/apra-fleet-se/apra-pm/skills/pm/SKILL.md) for the full PM skill reference.
