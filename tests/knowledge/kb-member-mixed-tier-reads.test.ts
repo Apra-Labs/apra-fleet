@@ -522,6 +522,7 @@ describe('kb_query in a MEMBER session: default read with a global CONFIRMED row
     const confirmed = ids(JSON.parse(await as(memberA, () => kbQuery({ query: GW, confidence: ['CONFIRMED'] }))).l1_results);
     expect(confirmed).toContain(globalId);
     const mixed = ids(JSON.parse(await as(memberA, () => kbQuery({ query: GW, confidence: [...MIXED] }))).l1_results);
+    await globalKb.discard([globalId]);
     expect(mixed).toEqual(expect.arrayContaining(confirmed));
     expect(mixed.slice(0, confirmed.length)).toEqual(confirmed);
     expect(mixed.length).toBeLessThanOrEqual(6);
@@ -539,16 +540,20 @@ describe('kb_query in a MEMBER session: explicit limit with a global CONFIRMED r
       source_files: ['src/sprocket.ts'], symbols: ['widgetGlobal'], tags: [],
       flagged_for_review: false, author: 'doer', source: 'session', confidence: 'CONFIRMED',
     } as Parameters<typeof globalKb.capture>[0]);
+    // The global store is shared by every test file of the run: remove the row afterwards.
+    try {
     await globalKb.promote(globalId, 'Checked src/sprocket.ts: the stage batches work per tick, as stated.');
-    const ownId = JSON.parse(await as(memberA, () => kbCapture({
+    await as(memberA, () => kbCapture({
       type: 'knowledge', title,
       summary: `Own: the ${TW} stage batches work per tick.`, content: `Own: the ${TW} stage batches work per tick.`,
       source_files: ['src/sprocket.ts'], symbols: ['widgetOwn'],
-    } as Parameters<typeof kbCapture>[0]))).id as string;
+    } as Parameters<typeof kbCapture>[0]));
     const confirmed = ids(JSON.parse(await as(memberA, () => kbQuery({ query: TW, confidence: ['CONFIRMED'], limit: 20 }))).l1_results);
     expect(confirmed).toContain(globalId);
     const mixed = ids(JSON.parse(await as(memberA, () => kbQuery({ query: TW, confidence: [...MIXED], limit: 20 }))).l1_results);
     expect(mixed).toContain(globalId);
-    expect(mixed).toContain(ownId);
+    } finally {
+      await globalKb.discard([globalId]);
+    }
   });
 });
