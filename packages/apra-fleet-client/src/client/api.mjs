@@ -373,6 +373,16 @@
  */
 
 /**
+ * structuredContent of a failed send_files / receive_files call. The MCP result then has
+ * isError true and its text is the human message; a full success is a plain text result with
+ * no isError and no structuredContent.
+ * @typedef {Object} TransferFailureStructuredContent
+ * @property {"transfer-failed"} error
+ * @property {"failed" | "partial" | "path-blocked" | "invalid-input" | "member-unavailable"} reason - failed: no file succeeded or the transfer threw; partial: some files failed; path-blocked: dest_subdir/remote_path outside the work folder; invalid-input: null bytes, basename collision, unreadable source, substitution failure; member-unavailable: member lookup/auth/key check failed
+ * @property {string} [detail] - the human text
+ */
+
+/**
  * @typedef {Object} RegisterMemberOptions
  * @property {string} friendly_name - Human-friendly name for this member (required)
  * @property {string} work_folder - Working directory on the target machine (required). For remote members, must be a fully-qualified/absolute path -- "~" and relative paths are rejected. A folder may hold at most one LLM member and one LLM-less (llm_provider none) member.
@@ -1411,7 +1421,8 @@ export class ApraFleet {
     }
 
     /**
-     * Transfer local files to a member.
+     * Transfer local files to a member. A failed, partial or refused transfer has isError true
+     * with a {@link TransferFailureStructuredContent}.
      * @param {SendFilesOptions} options
      */
     async sendFiles(options) {
@@ -1419,7 +1430,8 @@ export class ApraFleet {
     }
 
     /**
-     * Download files from a member to a local directory.
+     * Download files from a member to a local directory. A failed, partial or refused transfer
+     * has isError true with a {@link TransferFailureStructuredContent}.
      * @param {ReceiveFilesOptions} options
      */
     async receiveFiles(options) {
