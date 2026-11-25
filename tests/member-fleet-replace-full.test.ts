@@ -16,13 +16,13 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { makeTestAgent, decodePowerShellEncodedCommand } from './test-helpers.js';
 import type { Agent, SSHExecResult } from '../src/types.js';
 import {
   ensureMemberFleetInstall, buildReplaceFullInstallPlan, REPLACE_FULL_INSTALL, FLEET_MCP_FIX, ReleaseDownloadError,
-  buildSelfRegisterCommand, buildSelfRemoveCommand, buildMemberCallCommand,
+  buildSelfRegisterCommand, buildSelfRemoveCommand, buildMemberCallCommand, buildExeLockProbe, buildManualInstallSteps,
   type MemberFleetInstallDeps,
 } from '../src/services/member-fleet-install.js';
 import { updateMemberSchema } from '../src/tools/update-member.js';
@@ -624,5 +624,120 @@ describe('re-judge 2: the supervisor check uses the staged binary and sees what 
     const detail = (r as { detail: string }).detail;
     expect(detail).toContain('E-FLEET-SE-RUNNING');
     expect(detail).toContain('/api/shutdown -H "Content-Type: application/json"');
+  });
+});
+
+describe('d05q: a Windows member whose installed exe is held by another process is refused before the uninstall', () => {
+  const planFor = (p: Platform) => {
+    const ps = p.shell === 'powershell5';
+    const exe = p.os === 'windows' ? 'apra-fleet.exe' : 'apra-fleet';
+    const sepc = ps ? '\\' : '/';
+    return buildReplaceFullInstallPlan({
+      home: p.home, targetOs: p.os, shell: (p.shell ?? 'bash') as never, provider: 'claude',
+      installerPath: `${p.home}${sepc}.apra-fleet${sepc}staging${sepc}${exe}`, stamp: STAMP,
+    });
+  };
+
+  for (const p of [WINDOWS, GITBASH]) {
+    const label = p.shell ?? p.os;
+    const ps = p.shell === 'powershell5';
+    const sepc = ps ? '\\' : '/';
+    const installed = `${p.home}${sepc}.apra-fleet${sepc}bin${sepc}apra-fleet.exe`;
+
+    it(`${label}: the removability probe runs after the backup and before the uninstall, which still runs the BACKUP binary`, () => {
+      const plan = planFor(p);
+      const names = plan.steps.map(st => st.name);
+      expect(names.indexOf('exe-check')).toBe(names.indexOf('backup') + 1);
+      expect(names.indexOf('uninstall')).toBe(names.indexOf('exe-check') + 1);
+      const probe = plan.steps.find(st => st.name === 'exe-check')!.command;
+      const decoded = ps ? decodePowerShellEncodedCommand(probe) : decodeEnvelope(probe);
+      // Probes the INSTALLED exe (the one the uninstall must delete), read-write and exclusive, never modifying it.
+      expect(decoded).toContain(`'${installed}'`);
+      if (ps) expect(decoded).toContain(`[System.IO.File]::Open('${installed}', 'Open', 'ReadWrite', 'None')`);
+      else {
+        expect(decoded).toContain(`( exec 3<>'${installed}' )`);
+        expect(decoded).toContain(`if [ -f '${installed}' ]`);
+      }
+      for (const bad of ['Remove-Item', 'rm ', 'Move-Item', 'mv ', 'Set-Content', 'Out-File']) expect(decoded, bad).not.toContain(bad);
+      const un = plan.steps.find(st => st.name === 'uninstall')!.command;
+      expect(ps ? decodePowerShellEncodedCommand(un) : decodeEnvelope(un)).toContain(`'${plan.backupDir}${sepc}apra-fleet.exe' uninstall --force --yes`);
+      expect(plan.rollbackFor['exe-check']).toEqual(plan.rollbackFor.backup);
+    });
+
+    it(`${label}: probe reports the exe locked -> typed exe-locked, the uninstall/move/install never run, detail names the backup and the restart`, async () => {
+      const h = harness(p, { exeLocked: true });
+      const r = await ensureMemberFleetInstall(agentFor(p), h.deps, { replaceFull: true });
+      expect(r).toMatchObject({ state: 'unavailable', reason: 'exe-locked', version: OLD });
+      expect(h.events.filter(e => !e.startsWith('transfer:'))).toEqual(['supervisor-check', 'stop', 'stop-check', 'backup', 'exe-check']);
+      // exec spy: no uninstall, data move or install command reached the member.
+      expect(h.log.some(c => c.includes('uninstall --force --yes'))).toBe(false);
+      expect(h.log.some(c => c.includes('data.replaced-'))).toBe(false);
+      expect(h.log.some(c => c.includes("'install' '--llm'"))).toBe(false);
+      const detail = (r as { detail: string }).detail;
+      expect(detail).toContain('step 1b');
+      expect(detail).toContain('is in use by another process');
+      expect(detail).toContain('Nothing was uninstalled');
+      expect(detail).toContain(`.apra-fleet-replace-backup-${STAMP}`);
+      expect(detail).toContain(`'${installed}' start`);
+    });
+  }
+
+  it('non-Windows members get no exe-check step', () => {
+    for (const p of [LINUX, MACOS]) expect(planFor(p).steps.map(st => st.name)).not.toContain('exe-check');
+  });
+
+  it('fail-closed: a check that prints no FREE tag, exits non-zero, or cannot run refuses with exe-locked before the uninstall', async () => {
+    const outcomes: Array<() => Promise<SSHExecResult>> = [
+      async () => ({ stdout: 'something else\n', stderr: '', code: 0 }),
+      async () => ({ stdout: '', stderr: 'powershell broke', code: 1 }),
+      async () => { throw new Error('Command timed out'); },
+    ];
+    for (const outcome of outcomes) {
+      const h = harness(WINDOWS);
+      const exec = h.deps.exec;
+      h.deps.exec = async (a, raw, t) => {
+        if (stepOf(decodePowerShellEncodedCommand(raw)) === 'exe-check') { h.events.push('exe-check'); return outcome(); }
+        return exec(a, raw, t);
+      };
+      const r = await ensureMemberFleetInstall(agentFor(WINDOWS), h.deps, { replaceFull: true });
+      expect(r).toMatchObject({ state: 'unavailable', reason: 'exe-locked' });
+      expect(h.events).not.toContain('uninstall');
+      expect(h.events.at(-1)).toBe('exe-check');
+    }
+  });
+
+  it('exe-locked points at the owner steps and has a fix line', () => {
+    expect(FLEET_MCP_FIX['exe-locked']).toContain('replace-full');
+    expect(buildManualInstallSteps({ home: WINDOWS.home, targetOs: 'windows', shell: 'powershell5' as never, provider: 'claude', arch: 'x64', orchestratorVersion: ORCH, reason: 'exe-locked' }))
+      .toContain('follow the owner steps in the reason above');
+  });
+});
+
+/** A small system exe: a running copy is mapped by Windows exactly as the member's running apra-fleet.exe is. */
+const PING = process.platform === 'win32' ? path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'PING.EXE') : null;
+
+describe.skipIf(!hasPs || !PING || !fs.existsSync(PING))('d05q: the emitted PowerShell probe detects a really running exe (Windows only)', () => {
+  it('LOCKED while a copy runs, FREE once it exits, FREE when absent; the exe is unchanged', { timeout: 120_000 }, async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-d05q-'));
+    try {
+      const exe = path.join(dir, 'apra-fleet.exe');
+      fs.copyFileSync(PING!, exe);
+      const before = fs.readFileSync(exe);
+      const runProbe = (p: string) => spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', decodePowerShellEncodedCommand(buildExeLockProbe(p, 'windows', 'powershell5' as never))], { encoding: 'utf8' }).stdout;
+      const child = spawn(exe, ['-n', '60', '127.0.0.1'], { stdio: 'ignore', windowsHide: true });
+      const exited = new Promise<void>(resolve => child.once('exit', () => resolve()));
+      try {
+        await new Promise<void>((resolve, reject) => { child.once('spawn', () => resolve()); child.once('error', reject); });
+        expect(runProbe(exe)).toContain('__APRA_FLEET_EXE_LOCKED__');
+      } finally {
+        child.kill();
+        await exited;
+      }
+      expect(runProbe(exe)).toContain('__APRA_FLEET_EXE_FREE__');
+      expect(runProbe(path.join(dir, 'missing.exe'))).toContain('__APRA_FLEET_EXE_FREE__');
+      expect(fs.readFileSync(exe).equals(before)).toBe(true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
