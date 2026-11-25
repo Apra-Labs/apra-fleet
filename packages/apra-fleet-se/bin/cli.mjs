@@ -620,12 +620,19 @@ export function attachViewerErrorHandler(server, port, opts = {}) {
 // launch leaves no reservation behind. Exported so the ordering is unit-
 // testable without a live server.
 export async function reserveThenAlign({ sprintReservation, align } = {}) {
-    const { held } = await sprintReservation.reserveForLaunch();
+    const { held, holders = {} } = await sprintReservation.reserveForLaunch();
     if (held.length > 0) {
+        const detail = held.map((m) => {
+            const owner = holders[m];
+            const who = owner ? `sprint '${owner}'` : 'another sprint (holder id unknown)';
+            const cmds = [`member_reservation {"member_name":"${m}","action":"force_release"}`];
+            if (owner) cmds.push(`curl -s -X POST http://localhost:8787/api/reservations/${encodeURIComponent(owner)}/force-release -H "Content-Type: application/json" -d '{}' (if that sprint is a supervisor sprint)`);
+            return `  - ${m}: held by ${who}. Release: ${cmds.join(' ; or ')}`;
+        }).join('\n');
         return {
             ok: false,
             reserved: false,
-            message: `member(s) ${held.join(', ')} are reserved by another running sprint, so no member was aligned or changed. Wait for that sprint to finish or release its reservation (member_reservation), then launch again.`,
+            message: `member(s) ${held.join(', ')} are reserved by another running sprint, so no member was aligned or changed. Wait for that sprint to finish or release its reservation, then launch again:\n${detail}`,
         };
     }
     let topology;
@@ -640,6 +647,22 @@ export async function reserveThenAlign({ sprintReservation, align } = {}) {
         return { ...(topology || { ok: false, message: 'launch alignment returned no result' }), reserved: false };
     }
     return { ...topology, reserved: true };
+}
+
+// A synchronous throw from viewer construction happens AFTER the members were
+// reserved: release them (best-effort, logged) and exit non-zero instead of
+// leaving them reserved. `exit` is injectable for tests.
+export async function createViewerOrRelease({ create, sprintReservation, closeTransport = async () => {}, exit = (code) => process.exit(code) } = {}) {
+    try {
+        return create();
+    } catch (err) {
+        console.error(`Error: dashboard viewer failed to start: ${err && err.message ? err.message : err}`);
+        await sprintReservation.releaseAll()
+            .catch((e) => console.error('[member-reservation] release on viewer throw failed:', e && e.message ? e.message : e));
+        await closeTransport();
+        exit(1);
+        return undefined;
+    }
 }
 
 export async function reReserveOnResume({ sprintReservation, resyncMember, requestPause, log = () => {} } = {}) {
@@ -1062,7 +1085,7 @@ async function main() {
     const workflow = new FleetWorkflow(fleetApi);
     const engine = new WorkflowEngine(workflow);
 
-    const server = createDashboardViewer(workflow, {
+    const server = await createViewerOrRelease({ sprintReservation, closeTransport: closeFleetTransport, create: () => createDashboardViewer(workflow, {
         port: viewerPort,
         name: 'Fleet-Sprint',
         // kbCodeIntelExtension: its own tab (per-member, per-dispatch kb_* and
@@ -1098,7 +1121,7 @@ async function main() {
         // viewer's state.args stays optional/null for any other workflow
         // that doesn't pass launchArgs, and no existing state key changes.
         launchArgs: { members: validMembers, targetIssues, goal },
-    });
+    }) });
 
     // apra-fleet-unw2.16, N14 (e): the viewer port was hardcoded with no
     // `error` handler on `server.listen()`, so a port collision crashed the
