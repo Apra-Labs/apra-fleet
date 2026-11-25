@@ -35,6 +35,13 @@
 //   - a link comes off the record when it is deliberately re-added: present
 //     in a read of a clone whose previous read (no pull in between) lacked
 //     it, or re-added by this run (`bd dep add`, `bd update --parent`).
+//   - every clone gets a baseline before an agent can edit it: each fresh
+//     backlog snapshot is noted as a read of the backlog clone (so a
+//     planner whose pre-dispatch pull was skipped still has one), and a
+//     beads-pushing dispatch whose clone has no baseline yet (its pull was
+//     skipped or could not be bracketed) reads it before the agent runs.
+//     A first read with no baseline can only set one, so without this a
+//     removal made before it would go unrecorded and be restored.
 //   - GAP: a removal made on a clone the engine never reads (an operator
 //     checkout outside the run) is not on the record; when a sprint member
 //     pulls it, it is restored.
@@ -482,6 +489,8 @@ export function createParentLinkLedger() {
         findVanishedLinks: (member, allBeads) => owedMissing(member, allBeads),
         /** Whether `member` owes any link (a conflicted pull on its clone dropped one not yet restored). */
         hasOwedLinks: (member) => (pullLosses.get(member)?.size ?? 0) > 0,
+        /** Whether `member`'s clone has a read the next one is compared with (its baseline). */
+        hasBaseline: (member) => lastRead.has(member),
         /** Whether any id is in the run's scope -- pulls are only compared once it is. */
         hasScope: () => knownScope.size > 0,
         /** Every recorded blocks edge -- diagnostics/tests. */

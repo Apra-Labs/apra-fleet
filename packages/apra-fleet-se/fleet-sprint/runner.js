@@ -2154,6 +2154,9 @@ async function runSprintCycle(context) {
         // Verify-before-push (invariant H5, parent-link-guard.mjs): every
         // D-push restores links a reconcile pull dropped before re-pushing.
         verifyLinks: (member) => beadsScope.verifyLinksBeforePush(member),
+        // Link baseline before a beads-pushing agent edits its clone (see
+        // beadsScope.ensureLinkBaseline): no command when one already exists.
+        ensureLinkBaseline: (member) => beadsScope.ensureLinkBaseline(member),
     });
     // Local alias so this file's dispatch brackets keep their existing shape:
     // withGitSync member, pushCode, dispatch thunk, options.

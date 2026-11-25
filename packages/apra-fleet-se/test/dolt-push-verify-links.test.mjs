@@ -34,6 +34,7 @@ import {
 import { createBeadsScope } from '../fleet-sprint/beads-scope.mjs';
 import { parseBdJson } from '../fleet-sprint/runner.js';
 import { ParentLinkRestoreError } from '../fleet-sprint/parent-link-guard.mjs';
+import { createSyncBrackets, createGitSync } from '../fleet-sprint/git-sync.mjs';
 
 const NON_FAST_FORWARD_STDERR =
     'error: failed to push some refs to origin/main\n'
@@ -377,6 +378,11 @@ async function buildTwoClones() {
         if (up) { db.beads.find((b) => b.id === up[1]).parent = up[2]; return OK; }
         const add = /^bd dep add (\S+) (\S+)$/.exec(cmd);
         if (add) {
+            // bd refuses an edge whose reverse already exists (a cycle).
+            const reverse = db.beads.find((b) => b.id === add[2]);
+            if ((reverse.dependencies || []).some((d) => d.depends_on_id === add[1])) {
+                return { ok: false, output: '', error: 'Error: adding dependency would create a cycle' };
+            }
             const bead = db.beads.find((b) => b.id === add[1]);
             bead.dependencies = [...(bead.dependencies || []), { issue_id: add[1], depends_on_id: add[2], type: 'blocks' }];
             return OK;
@@ -424,4 +430,87 @@ test('cross clone: clone X removes one blocks edge and retargets another, pushes
     assert.deepEqual(remoteBlockers('X'), [], 'the removed edge is not on the remote');
     assert.deepEqual(remoteBlockers('C'), ['X'], 'only the retargeted edge is on the remote');
     assert.ok(!h.logs.some((l) => l.startsWith('ERROR')), h.logs.join('\n'));
+});
+
+// ---------------------------------------------------------------------------
+// Baselines: every clone has a read to compare with before an agent edits it.
+// ---------------------------------------------------------------------------
+
+const twoCloneOpts = (h, extra = {}) => ({
+    command: h.command,
+    log: (m) => h.logs.push(m),
+    checkSyncRemoteConfigured: async () => true,
+    remoteTipFingerprint: false,
+    sleep: async () => {},
+    verifyLinks: (member) => h.scope.verifyLinksBeforePush(member),
+    ...extra,
+});
+const twoCloneTrace = (h) => h.calls.map((c) => `${c.member}: ${c.cmd}`).join('\n');
+const remoteBlockersOf = (h, id) => (h.remote.beads.find((b) => b.id === id).dependencies || []).map((d) => d.depends_on_id).sort();
+
+test('backlog planner whose first pull is skipped breaks a cycle and pushes; a doer clone then pulls and pushes -- nothing is restored, no ParentLinkRestoreError', async () => {
+    // The backlog clone (clone-y) got no pull bracket: the launch gate pulled
+    // before the scope was known and the first planner's pull is skipped.
+    // Its only earlier read is the fresh snapshot buildTwoClones took.
+    const h = await buildTwoClones();
+    const pulled = await doltPullBefore('clone-y', twoCloneOpts(h, { skipPull: true }));
+    assert.equal(pulled.skipped, true);
+    // The planner reverses X blocked-by Y into Y blocked-by X (a cycle-break).
+    const y = h.clones['clone-y'].beads;
+    y.find((b) => b.id === 'X').dependencies = [];
+    y.find((b) => b.id === 'Y').dependencies = [{ issue_id: 'Y', depends_on_id: 'X', type: 'blocks' }];
+    await doltPushAfter('clone-y', twoCloneOpts(h));
+    // A doer member pulls the planner's push (present before, missing after) and pushes.
+    await doltPullBefore('clone-x', twoCloneOpts(h));
+    await doltPushAfter('clone-x', twoCloneOpts(h));
+
+    assert.equal(h.calls.filter((c) => /^bd dep add|^bd update \S+ --parent /.test(c.cmd)).length, 0, twoCloneTrace(h));
+    assert.deepEqual(remoteBlockersOf(h, 'X'), [], 'the reversed edge is not brought back');
+    assert.deepEqual(remoteBlockersOf(h, 'Y'), ['X']);
+    assert.ok(!h.logs.some((l) => l.startsWith('ERROR')), h.logs.join('\n'));
+});
+
+test('a member with no baseline gets one before its agent runs (ensureLinkBaseline); its removal is then not restored by another clone', async () => {
+    const h = await buildTwoClones();
+    // clone-x's pull is skipped (no bracket, no read): the dispatch bracket
+    // reads it before the agent runs.
+    await doltPullBefore('clone-x', twoCloneOpts(h, { skipPull: true }));
+    h.calls.length = 0;
+    assert.deepEqual(await h.scope.ensureLinkBaseline('clone-x'), { read: true });
+    assert.deepEqual(h.calls.map((c) => `${c.member}: ${c.cmd.split(' ').slice(0, 3).join(' ')}`), ['clone-x: bd list --all'], twoCloneTrace(h));
+    // A second call issues nothing: the clone already has a baseline.
+    h.calls.length = 0;
+    assert.deepEqual(await h.scope.ensureLinkBaseline('clone-x'), { read: false });
+    assert.equal(h.calls.length, 0);
+    // The agent on clone-x removes X blocked-by Y and pushes; the backlog clone pulls and pushes.
+    h.clones['clone-x'].beads.find((b) => b.id === 'X').dependencies = [];
+    await doltPushAfter('clone-x', twoCloneOpts(h));
+    await doltPullBefore('clone-y', twoCloneOpts(h));
+    await doltPushAfter('clone-y', twoCloneOpts(h));
+    await h.scope.fetchAllBeadsShared();
+
+    assert.equal(h.calls.filter((c) => /^bd dep add|^bd update \S+ --parent /.test(c.cmd)).length, 0, twoCloneTrace(h));
+    assert.deepEqual(remoteBlockersOf(h, 'X'), []);
+    assert.ok(!h.logs.some((l) => l.startsWith('ERROR')), h.logs.join('\n'));
+});
+
+test('the dispatch bracket asks for a link baseline before a beads-pushing agent runs, and not for a read-only one', async () => {
+    const seen = [];
+    const order = [];
+    const gitSync = createGitSync({
+        brackets: createSyncBrackets(),
+        command: async () => OK,
+        log: () => {},
+        branch: 'b',
+        syncMemberBefore: async () => {},
+        syncMemberAfterOrdered: async () => { order.push('sync-after'); },
+        isNoMutationDispatchFailure: () => false,
+        ensureLinkBaseline: async (member) => { seen.push(member); order.push('baseline'); return { read: true }; },
+    });
+    await gitSync.withGitSync('m1', false, async () => { order.push('dispatch'); }, { pushBeads: true, needsVcsAuth: false, skipPreDispatchSync: true });
+    assert.deepEqual(seen, ['m1']);
+    assert.deepEqual(order, ['baseline', 'dispatch', 'sync-after']);
+    seen.length = 0;
+    await gitSync.withGitSync('m2', false, async () => {}, { pushBeads: false, needsVcsAuth: false, skipPreDispatchSync: true });
+    assert.deepEqual(seen, [], 'a read-only dispatch pushes no beads, so it needs no baseline');
 });

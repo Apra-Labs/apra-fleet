@@ -352,7 +352,7 @@ export async function withGitSync(ctx, member, pushCode, dispatchFn, { pushBeads
     const {
         brackets, command, log, branch, baseBranch, args, agent, doltPushMutex, sprintId,
         onAuthFailure, resolveMemberProvider, ensureVcsAuthFresh, warnWorkflowsPermissionMissing,
-        syncMemberBefore, syncMemberAfterOrdered, isNoMutationDispatchFailure, verifyLinks,
+        syncMemberBefore, syncMemberAfterOrdered, isNoMutationDispatchFailure, verifyLinks, ensureLinkBaseline,
     } = ctx;
     // (apra-fleet-p2to.4.1) The WHOLE withGitSync bracket -- pre-dispatch
     // G-pull/D-pull, the dispatch itself, and post-dispatch G-push/D-push
@@ -426,6 +426,13 @@ export async function withGitSync(ctx, member, pushCode, dispatchFn, { pushBeads
         // lets the sync be retried on its own and, if it still fails, surfaced
         // as a typed PostDispatchSyncError no retry caller may answer by
         // redispatching.
+        // Link baseline (parent-link-guard.mjs): a beads-pushing agent's
+        // clone must have a read the engine compares its pre-push read with,
+        // or a link the agent removes is never recorded as deliberate and
+        // another clone's pull comparison restores it. The pre-dispatch pull
+        // bracket normally sets it; this reads the clone only when that pull
+        // was skipped or unbracketed and no earlier read exists. Never throws.
+        if (pushBeads && typeof ensureLinkBaseline === 'function') await ensureLinkBaseline(member);
         let dispatchThrew = null;
         let dispatchResult;
         try {

@@ -122,6 +122,14 @@ The next push can then silently revert other clones' links. Defences:
   pull comparison on any clone restores a link on the record; a link comes
   off it when it is deliberately re-added. This costs one `bd list` read per
   push while the sprint scope is known.
+- A read can only be compared with an earlier read of the same clone, so
+  every clone gets a baseline before an agent edits it. Each fresh scope
+  snapshot counts as a read of the backlog clone (its launch pull runs before
+  the scope is known, and the first planner's pull is skipped). A dispatch
+  that pushes beads, on a clone with no baseline yet (its pull was skipped or
+  its pull could not be bracketed), reads that clone once before the agent
+  runs. A read that overlaps a pull on the same clone is not used as a
+  baseline.
 - Before a push publishes a reconcile pull, the engine commits the merged
   working set and runs a link verification (both parent-child and `blocks`
   edges must survive). The same commit and verification run before the

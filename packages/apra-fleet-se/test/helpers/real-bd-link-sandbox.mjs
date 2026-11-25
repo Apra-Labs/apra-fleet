@@ -185,9 +185,10 @@ export async function remoteLinks(sb, name) {
     return linksOf(sb, dir);
 }
 
-export const pullOptsFor = (eng) => ({
+export const pullOptsFor = (eng, extra = {}) => ({
     command: eng.command,
     log: (m) => eng.logs.push(m),
     sleep: async () => {},
     remoteTipFingerprint: false,
+    ...extra,
 });

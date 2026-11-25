@@ -1070,6 +1070,15 @@ export function createBeadsScope(opts = {}) {
     // the snapshot (clause (b) above), so the first beads read after every
     // D-pull is a fresh snapshot and restores what that pull owes.
     const parentLinks = createParentLinkLedger();
+    // member -> count of `bd dolt pull`s started on that clone (and whether
+    // one is in flight). A read is only noted as a baseline/agent-removal
+    // read when no pull on that clone started or ran while it was taken: a
+    // read that straddles a pull would compare pre-pull rows with the
+    // post-pull baseline and mistake links the pull brought in for removals.
+    const pullEpochs = new Map();
+    const pullsInFlight = new Map();
+    const pullEpochOf = (member) => pullEpochs.get(member) ?? 0;
+    const readUnraced = (member, epoch) => pullEpochOf(member) === epoch && (pullsInFlight.get(member) ?? 0) === 0;
 
     /** Drop the shared snapshot. Cheap and idempotent. */
     function invalidateAllBeadsCache() { allBeadsSnapshot = null; }
@@ -1104,14 +1113,21 @@ export function createBeadsScope(opts = {}) {
                 : cmdStr;
             const mutating = isBeadsMutatingCommand(logical);
             const pullMember = cmdOpts && cmdOpts.member_name;
-            const isPull = typeof logical === 'string' && BD_DOLT_PULL_RE.test(logicalBdCommand(logical)) && parentLinks.hasScope();
-            const bracket = isPull ? await readLinksBeforePull(rawCommand, pullMember) : null;
+            const anyPull = typeof logical === 'string' && BD_DOLT_PULL_RE.test(logicalBdCommand(logical));
+            const isPull = anyPull && parentLinks.hasScope();
+            if (anyPull) {
+                pullEpochs.set(pullMember, pullEpochOf(pullMember) + 1);
+                pullsInFlight.set(pullMember, (pullsInFlight.get(pullMember) ?? 0) + 1);
+            }
             let result;
             let settled = false;
+            let bracket = null;
             try {
+                bracket = isPull ? await readLinksBeforePull(rawCommand, pullMember) : null;
                 result = await rawCommand(cmdStr, cmdOpts);
                 settled = true;
             } finally {
+                if (anyPull) pullsInFlight.set(pullMember, (pullsInFlight.get(pullMember) ?? 1) - 1);
                 // A pull that could not be bracketed (or threw) leaves no
                 // trustworthy baseline: the clone's next read only sets one.
                 if (isPull && (!bracket || !settled)) parentLinks.forgetRead(pullMember);
@@ -1192,6 +1208,42 @@ export function createBeadsScope(opts = {}) {
         }
     }
 
+    /** Note one read of `member`'s clone in the ledger, logging every link newly put on the agent-removal record. */
+    function noteCloneRead(member, rows) {
+        for (const edge of parentLinks.noteRead(member, rows)) {
+            log(`[beads-links] member '${member}' removed the ${describeEdge(edge)} on purpose; it is not restored by any clone's pull for the rest of this run.`);
+        }
+    }
+
+    /**
+     * BASELINE BEFORE AN AGENT EDITS (parent-link-guard.mjs): the dispatch
+     * bracket calls this right before a beads-pushing agent runs. When the
+     * member's clone has no link baseline yet -- its pre-dispatch pull was
+     * skipped, or could not be bracketed -- it reads the clone now, so a
+     * link the agent removes is recorded at its push instead of being
+     * mistaken for a pull loss on another clone. A clone that already has a
+     * baseline issues no command. Never throws: a failed read only WARNs.
+     *
+     * @param {string} member
+     * @returns {Promise<{ read: boolean }>}
+     */
+    async function ensureLinkBaseline(member) {
+        if (!parentLinks.hasScope() || !command || parentLinks.hasBaseline(member)) return { read: false };
+        const epoch = pullEpochOf(member);
+        let rows;
+        try {
+            const beads = parseBdJson(await command(FULL_DB_BRIEF_FETCH_CMD, { member_name: member, silent: true }), FULL_DB_BRIEF_FETCH_CMD);
+            rows = Array.isArray(beads) ? beads : [];
+        } catch (err) {
+            log(`WARN: could not read the beads links of member '${member}' before its dispatch (${(err && err.message) || err}); ` +
+                'links the agent removes there are not recorded, so another clone may restore them after pulling its push.');
+            return { read: false };
+        }
+        if (!readUnraced(member, epoch)) return { read: false };
+        noteCloneRead(member, rows);
+        return { read: true };
+    }
+
     /**
      * Wrap the raw `phase()` seam so clause (a) of the invalidation contract
      * holds: a new step never inherits the previous step's snapshot.
@@ -1230,12 +1282,20 @@ export function createBeadsScope(opts = {}) {
         }
         if (!allBeadsInFlight) {
             const allLabel = FULL_DB_BRIEF_FETCH_CMD;
-            allBeadsInFlight = command(allLabel, { member_name: getBacklogMember(), silent: true })
+            const readMember = getBacklogMember();
+            const epoch = pullEpochOf(readMember);
+            allBeadsInFlight = command(allLabel, { member_name: readMember, silent: true })
                 .then((raw) => parseBdJson(raw, allLabel))
                 .then((beads) => restoreVanishedParentLinks(beads))
                 .then((beads) => hydrateScopeText(beads))
                 .then((beads) => {
                     parentLinks.observe(beads, scopeOf(beads).scopeIds);
+                    // A fresh snapshot is a read of the backlog clone: it sets
+                    // that clone's link baseline (the launch gate's pull runs
+                    // before the scope is known, and the first planner's
+                    // pre-dispatch pull is skipped, so no pull bracket sets one)
+                    // and records links removed there since its previous read.
+                    if (readUnraced(readMember, epoch)) noteCloneRead(readMember, Array.isArray(beads) ? beads : []);
                     allBeadsSnapshot = { beads };
                     return beads;
                 })
@@ -1415,9 +1475,7 @@ export function createBeadsScope(opts = {}) {
             throw new ParentLinkRestoreError(message, { edges: [], cause: err });
         }
         const rows = Array.isArray(beads) ? beads : [];
-        for (const edge of parentLinks.noteRead(member, rows)) {
-            log(`[beads-links] member '${member}' removed the ${describeEdge(edge)} on purpose; it is not restored by any clone's pull for the rest of this run.`);
-        }
+        noteCloneRead(member, rows);
         if (!owes) return { checked: true, restored: [] };
         const vanished = parentLinks.findVanishedLinks(member, rows);
         if (vanished.length === 0) {
@@ -1550,6 +1608,7 @@ export function createBeadsScope(opts = {}) {
         liveEvidenceLeafIds,
         readyLeafBeads,
         verifyLinksBeforePush,
+        ensureLinkBaseline,
         /** Every bead the run's link ledger records as a parent -- diagnostics/tests. */
         knownParentIds: () => parentLinks.knownParentIds(),
     };

@@ -48,12 +48,16 @@
 // reversal (cycle-break) on A survive A's reconciled push, with no
 // ParentLinkRestoreError; (2) a reparent on A reaches the remote; (4) a
 // removal and a retarget A pushed are not restored when B pulls them through
-// the engine pull path and pushes (the run-wide agent-removal record). Each
+// the engine pull path and pushes (the run-wide agent-removal record); (5) a
+// planner on the backlog clone whose first pull was skipped breaks a cycle,
+// and B's pull and push do not bring the old edge back. Each
 // is checked on a FRESH clone of the remote. Falsifiability: with
 // parent-link-guard.mjs and beads-scope.mjs reverted to before the
 // pull-bracket change, (1) fails (bd refuses the re-added X blocked-by Y as a
 // cycle); with only the agent-removal record disabled, (4) fails (B restores
-// both edges) -- checked locally once.
+// both edges); with the backlog snapshot not noted as a read of the backlog
+// clone, (5) fails (B re-adds X blocked-by Y, bd refuses it as a cycle) --
+// checked locally once.
 //
 // Hermetic: HOME, USERPROFILE, GIT_CONFIG_GLOBAL and TMPDIR point into one
 // temp sandbox, removed afterwards; no network. Skips (with the reason) when
@@ -342,5 +346,34 @@ describe('agent link changes survive the link guard against real bd', { skip: SK
         assert.ok(!onRemote.blocks.has(`${ids.X}>${ids.Y}`), 'the removed edge X blocked-by Y is not on the remote');
         assert.ok(!onRemote.blocks.has(`${ids.W}>${ids.Y}`), 'the original target of the retargeted edge is not on the remote');
         assert.ok(onRemote.blocks.has(`${ids.W}>${ids.Z}`), 'the retargeted edge W blocked-by Z is on the remote');
+    });
+
+    test('(5) no-baseline planner: the backlog clone A skips its first pull, breaks a cycle and pushes; B pulls through the engine and pushes -- nothing is restored', { timeout: budget }, async () => {
+        const { sb, ids } = await buildAgentScenario();
+        sandboxes.push(sb.root);
+        // The planner runs on the backlog clone A. Its only earlier engine
+        // read is the fresh snapshot (the launch gate pulled before the scope
+        // was known), and its first pre-dispatch pull is skipped.
+        const eng = await engineFor(sb, ids, { backlog: 'A' });
+        await eng.scope.fetchAllBeadsShared();
+        eng.calls.length = 0;
+        const skipped = await doltPullBefore('A', pullOptsFor(eng, { skipPull: true }));
+        assert.equal(skipped.skipped, true, JSON.stringify(skipped));
+
+        // The planner breaks a cycle: X blocked-by Y becomes Y blocked-by X.
+        await runOrThrow(sb, `bd dep remove ${ids.X} ${ids.Y}`, sb.dirs.A);
+        await runOrThrow(sb, `bd dep add ${ids.Y} ${ids.X}`, sb.dirs.A);
+        await doltPushAfter('A', pushOptsFor(eng));
+
+        // A doer on B pulls it (present before, missing after) and pushes.
+        await doltPullBefore('B', pullOptsFor(eng));
+        const res = await doltPushAfter('B', pushOptsFor(eng));
+        assert.equal(res.ok, true, JSON.stringify(res));
+        assert.deepEqual(restoresIn(eng), [], traceOf(eng));
+        assert.ok(!eng.logs.some((l) => l.startsWith('ERROR')), eng.logs.join('\n'));
+
+        const onRemote = await remoteLinks(sb, 'fresh5');
+        assert.ok(onRemote.blocks.has(`${ids.Y}>${ids.X}`), 'the reversed edge Y blocked-by X is on the remote');
+        assert.ok(!onRemote.blocks.has(`${ids.X}>${ids.Y}`), 'the original edge X blocked-by Y is not brought back');
     });
 });

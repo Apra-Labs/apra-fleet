@@ -26,6 +26,10 @@ import {
     createParentLinkLedger, parseRunEdgeChange, ParentLinkRestoreError,
 } from '../fleet-sprint/parent-link-guard.mjs';
 
+// Lines other than the informational record of a deliberate removal (a
+// snapshot is a read of the backlog clone, so it notes such removals).
+const problemLogs = (h) => h.logs.filter((l) => !l.startsWith('[beads-links] '));
+
 /**
  * A createBeadsScope over an in-memory bead table. `bd update <c> --parent
  * <p>` and `bd dep remove <c> <p>` really change the table; `failRestore`
@@ -185,7 +189,7 @@ describe('parent-link guard: vanished parent-child links', () => {
         h.phase('Route C2');
         await h.scope.fetchAllBeadsShared();
         assert.deepEqual(h.commandLog.filter((c) => /^bd update \S+ --parent /.test(c)), ['bd update leaf-a1 --parent feat-b']);
-        assert.equal(h.logs.length, 0, h.logs.join('\n'));
+        assert.equal(problemLogs(h).length, 0, h.logs.join('\n'));
         // feat-a's only child was moved away by this run: feat-a is no longer a parent.
         assert.ok(!h.scope.knownParentIds().has('feat-a'), [...h.scope.knownParentIds()].join(','));
         assert.ok(h.scope.knownParentIds().has('feat-b'));
@@ -333,7 +337,7 @@ describe('parent-link guard: stranded parents', () => {
         assert.ok(!(await h.scope.decomposedParentIds()).has('feat-a'));
         assert.ok((await h.scope.decomposedParentIds()).has('feat-b'));
         assert.deepEqual(h.commandLog.filter((c) => /^bd update \S+ --parent /.test(c)), []);
-        assert.equal(h.logs.length, 0, h.logs.join('\n'));
+        assert.equal(problemLogs(h).length, 0, h.logs.join('\n'));
     });
 
     test('ledger: a moved child releases its old parent only when no other recorded child points at it', () => {
@@ -503,7 +507,7 @@ describe('parent-link guard: agent link changes are never reverted', () => {
         h.phase('Plan C1 R2');
         const after = await h.scope.fetchAllBeadsShared();
         assert.deepEqual(restoreCmds(h), [], h.commandLog.join('\n'));
-        assert.equal(h.logs.length, 0, h.logs.join('\n'));
+        assert.equal(problemLogs(h).length, 0, h.logs.join('\n'));
         const x = after.find((b) => b.id === 'task-x');
         assert.deepEqual(x.dependencies.map((d) => d.depends_on_id), ['task-z'], 'the snapshot carries the retargeted edge only');
         // Still kept after a later (clean or conflicted) pull: it is forgotten, not owed.
