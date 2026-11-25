@@ -12,7 +12,7 @@ import { kbList } from '../../src/tools/kb-list.js';
 import { kbSessionPrime } from '../../src/tools/kb-session-prime.js';
 import { kbContext } from '../../src/tools/kb-context.js';
 import { kbPromote } from '../../src/tools/kb-promote.js';
-import { getKbProviders } from '../../src/services/knowledge/kb-providers.js';
+import { getKbProviders, getGlobalKbProvider } from '../../src/services/knowledge/kb-providers.js';
 import { requireSqliteProject } from '../../src/services/knowledge/require-sqlite-project.js';
 import { computeFileHash } from '../../src/services/knowledge/file-hash.js';
 import { makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from '../test-helpers.js';
@@ -189,10 +189,11 @@ describe('kb_query in a MEMBER session with a mixed tier list', () => {
 });
 
 describe('kb_list in a MEMBER session with a mixed tier list', () => {
-  it('returns the bible CONFIRMED entries and the caller\'s own captures, never another member\'s, in id order', async () => {
+  it('returns the bible CONFIRMED entries and the caller\'s own captures, never another member\'s, bible half first', async () => {
     const out = JSON.parse(await as(memberA, () => kbList({ confidence: [...MIXED] })));
     const got = ids(out.results);
-    expect(got).toEqual([...BIBLE_IDS(), e2, aCtxF2].sort());
+    // Bible half first (id order), then the caller's own captures (id order).
+    expect(got).toEqual([...BIBLE_IDS().sort(), ...[e2, aCtxF2].sort()]);
     expect(got).not.toContain(e3);
     expect(got).not.toContain(bCtxF3);
     expect(out.total).toBe(5);
@@ -216,12 +217,13 @@ describe('kb_list in a MEMBER session with a mixed tier list', () => {
 
   it('honours limit on the merged list', async () => {
     const out = JSON.parse(await as(memberA, () => kbList({ confidence: [...MIXED], limit: 2 })));
-    expect(ids(out.results)).toEqual([...BIBLE_IDS(), e2, aCtxF2].sort().slice(0, 2));
+    // limit applies after the bible-first merge: the first two bible entries.
+    expect(ids(out.results)).toEqual(BIBLE_IDS().sort().slice(0, 2));
   });
 
   it('member B sees its own capture and the bible, not A\'s', async () => {
     const out = JSON.parse(await as(memberB, () => kbList({ confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'] })));
-    expect(ids(out.results)).toEqual([...BIBLE_IDS(), e3, bCtxF3].sort());
+    expect(ids(out.results)).toEqual([...BIBLE_IDS().sort(), ...[e3, bCtxF3].sort()]);
   });
 });
 
@@ -439,6 +441,84 @@ describe('MEMBER mixed-tier reads keep the caller\'s own CONFIRMED-in-DB capture
     expect(out.missing).toEqual([F5]);
     // The default member read agrees.
     expect(JSON.parse(await as(memberA, () => kbContext({ files: [F4, F5] })))).toEqual(out);
+  });
+});
+
+describe('MEMBER mixed-tier reads with a limit are a superset of the CONFIRMED-only read', () => {
+  // An own INFERRED capture whose id sorts before every bible id: under an
+  // id-sorted merge it would push bible entries out of a limited result.
+  let firstOwn: string;
+  beforeAll(async () => {
+    firstOwn = '!first-own-capture';
+    const db = requireSqliteProject((await getKbProviders(repo)).project, 'test');
+    await db.capture({
+      type: 'knowledge', title: 'Sprocketmix zero own fact',
+      summary: `Sprocketmix zero: the ${WORD} stage batches work per tick.`,
+      content: `Sprocketmix zero: the ${WORD} stage batches work per tick, observed in src/sprocket.ts.`,
+      source_files: ['src/sprocket.ts'], symbols: ['sprocketZero'],
+      tags: [`member:${memberA}`], flagged_for_review: false, author: 'doer', source: 'session', confidence: 'INFERRED',
+    } as Parameters<typeof db.capture>[0], { preferredId: firstOwn } as never);
+  });
+
+  it('the fixture id really sorts before every bible id', () => {
+    for (const id of BIBLE_IDS()) expect(firstOwn < id).toBe(true);
+  });
+
+  it('kb_list: for N in {1, 2, bible size} the mixed result contains the CONFIRMED-only result', async () => {
+    for (const n of [1, 2, BIBLE_IDS().length]) {
+      const confirmed = ids(JSON.parse(await as(memberA, () => kbList({ confidence: ['CONFIRMED'], limit: n }))).results);
+      const mixedOut = JSON.parse(await as(memberA, () => kbList({ confidence: [...MIXED], limit: n })));
+      const mixed = ids(mixedOut.results);
+      expect(mixed).toEqual(expect.arrayContaining(confirmed));
+      expect(mixed.slice(0, confirmed.length)).toEqual(confirmed);
+      expect(mixed).not.toContain(e3);
+      expect(mixed).not.toContain(bCtxF3);
+    }
+  });
+
+  it('kb_query: with an explicit limit the mixed result contains the CONFIRMED-only result', async () => {
+    for (const n of [1, 2, BIBLE_IDS().length]) {
+      const confirmed = ids(JSON.parse(await as(memberA, () => kbQuery({ query: WORD, confidence: ['CONFIRMED'], limit: n }))).l1_results);
+      const mixed = ids(JSON.parse(await as(memberA, () => kbQuery({ query: WORD, confidence: [...MIXED], limit: n }))).l1_results);
+      expect(mixed).toEqual(expect.arrayContaining(confirmed));
+      expect(mixed).not.toContain(e3);
+    }
+  });
+
+  it('a member with zero captures gets the bible CONFIRMED entries for a limited mixed kb_list', async () => {
+    const out = JSON.parse(await as(memberC, () => kbList({ confidence: [...MIXED], limit: 2 })));
+    expect(ids(out.results)).toEqual(BIBLE_IDS().sort().slice(0, 2));
+    expect(ids(out.results)).not.toContain(firstOwn);
+  });
+});
+
+describe('kb_query in a MEMBER session: default read with a global CONFIRMED row and many own captures', () => {
+  const GW = 'gizmoquuxmix';
+  it('the mixed default result contains every row of the CONFIRMED-only result', async () => {
+    const globalKb = await getGlobalKbProvider();
+    const { id: globalId } = await globalKb.capture({
+      type: 'knowledge', title: `Gizmoquux global confirmed fact ${RUN}`,
+      summary: `The ${GW} stage is confirmed globally.`, content: `The ${GW} stage is confirmed globally.`,
+      source_files: ['src/sprocket.ts'], symbols: ['gizmoGlobal'], tags: [],
+      flagged_for_review: false, author: 'doer', source: 'session', confidence: 'CONFIRMED',
+    } as Parameters<typeof globalKb.capture>[0]);
+    await globalKb.promote(globalId, 'Checked src/sprocket.ts: the stage batches work per tick, as stated.');
+    // More own captures than the member default cap (6).
+    for (let i = 0; i < 8; i++) {
+      await as(memberA, () => kbCapture({
+        type: 'knowledge', title: `Gizmoquux own capture ${i} ${RUN}`,
+        summary: `Own ${i}: the ${GW} stage batches work per tick.`,
+        content: `Own ${i}: the ${GW} stage batches work per tick.`,
+        source_files: ['src/sprocket.ts'], symbols: [`gizmoOwn${i}`],
+      } as Parameters<typeof kbCapture>[0]));
+    }
+    const confirmed = ids(JSON.parse(await as(memberA, () => kbQuery({ query: GW, confidence: ['CONFIRMED'] }))).l1_results);
+    expect(confirmed).toContain(globalId);
+    const mixed = ids(JSON.parse(await as(memberA, () => kbQuery({ query: GW, confidence: [...MIXED] }))).l1_results);
+    await globalKb.discard([globalId]);
+    expect(mixed).toEqual(expect.arrayContaining(confirmed));
+    expect(mixed.slice(0, confirmed.length)).toEqual(confirmed);
+    expect(mixed.length).toBeLessThanOrEqual(6);
   });
 });
 

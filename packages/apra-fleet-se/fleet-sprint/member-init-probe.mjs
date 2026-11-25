@@ -680,8 +680,8 @@ export function createMemberInitProbe(opts = {}) {
 }
 
 /**
- * The per-member verified lookup the sprint context exposes
- * (context.isMemberVerified): true only for a member whose init record says
+ * The per-member verified lookup (not read by the KNOWLEDGE BANK injection,
+ * which is on for every member): true only for a member whose init record says
  * verified. A member with no init record is unverified. `getRecords` is read
  * on every call so a later refresh of the records is seen.
  *

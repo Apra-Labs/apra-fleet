@@ -640,21 +640,25 @@ or a member `kb_query` `own_scope` read when the server does not list `demote`, 
 the KB server does not list in `GET /api/kb/capabilities` or answers 404/501;
 the message names the route and nothing is changed), `E-KB-HTTP-PROJECT-MISMATCH` (the configured KB server serves a
 different project; nothing is read or written), `E-KB-HTTP-UNREACHABLE`
-(the KB server cannot be reached, or answered 429 or 503; nothing is queued,
-no read is answered from a local store or the bible, and the code is
-retryable: the caller decides whether to repeat the call) and
-`E-KB-HTTP-SERVER-ERROR` (the KB server answered with another 5xx: for a
-capture, invalidate, feedback, promote or demote whether it took effect is
-unknown, so it is neither retried nor queued; for a query, context, prime or
-list nothing was read).
+(the KB server cannot be reached, answered a write 429 or 503, or answered a
+query, context, prime or list read 429 or any 5xx; nothing is queued, no read
+is answered from a local store or the bible, and the code is retryable: the
+caller decides whether to repeat the call. A 429 message says the server rate
+limited the request and names the `Retry-After` value when the answer carried
+one) and `E-KB-HTTP-SERVER-ERROR` (the KB server answered a capture,
+invalidate, feedback, promote or demote with another 5xx: whether it took
+effect is unknown, so it is neither retried nor queued; a read never raises
+it).
 
 `E-KB-HTTP-AUTH` is thrown by `kb_capture`, `kb_invalidate`,
-`kb_query`, `kb_context`, `kb_session_prime`, `kb_list` and `kb_promote` when the remote (HTTP) KB takes
-its token from a named fleet secret (`kb_setup` token `{{secret.NAME}}`) and that
-secret is missing, expired, or still rejected (HTTP 401) after one re-read and
-retry. The message names the secret and the reason, never the value. Nothing
-is queued. Fix: `apra-fleet secret --set NAME --persist -y` -- the next call uses it, no
-restart.
+`kb_query`, `kb_context`, `kb_session_prime`, `kb_list` and `kb_promote` when the remote (HTTP) KB
+token is not accepted. For a token from a named fleet secret (`kb_setup` token
+`{{secret.NAME}}`): the secret is missing, expired, or still rejected (HTTP 401)
+after one re-read and retry; fix: `apra-fleet secret --set NAME --persist -y`
+-- the next call uses it, no restart. For a literal token stored in the KB
+config: the server answered HTTP 401 (reason `rejected`, no retry); fix: run
+`kb_setup` again with a token the server accepts. The message names the secret
+(if any) and the reason, never the value. Nothing is queued.
 
 `kb_import` in a member session without the kb_maintainer grant fails with
 `E-KB-MAINTAINER-REQUIRED` and imports nothing when: it names an explicit

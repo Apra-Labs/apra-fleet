@@ -310,10 +310,28 @@ and never shows another member's unconfirmed captures. One difference follows
 from the store, not the split: on the server the member's own promoted capture
 is part of the CONFIRMED set, so it arrives in the CONFIRMED half (and counts
 toward `kb_session_prime`'s cold-seed threshold). Any other non-sqlite per-repo
-KB is refused with a typed error naming the tool. Known limits: with a `limit`, a mixed `kb_list` sorts by id before
-limiting, so it is not guaranteed to be a superset of the CONFIRMED-only list at
-the same limit (`kb_query` keeps the bible half first). The tool descriptions, the memory-contract bindings and spec, and a
+KB is refused with a typed error naming the tool. Ordering invariant: `mergeSplitById` does not re-sort by id. The
+bible (CONFIRMED) half comes first, then the member's own captures not already in
+it, and a `limit` is applied after the merge, so a limited mixed `kb_list` or
+`kb_query` result starts with (is a superset of) the limited CONFIRMED-only
+result. A member `kb_query` with no explicit limit is ordered bible view rows,
+then global CONFIRMED rows (title de-duplicated against the view, exactly the
+CONFIRMED-only set), then the member's own repo captures, then its own global
+captures, and the cap (6) is applied last, so the mixed result still contains
+every CONFIRMED-only row. The tool descriptions, the memory-contract bindings and spec, and a
 wording test must all describe this scope together.
+
+**Member `flagged_only` and the global KB.** The global half of a member
+`kb_query({flagged_only: true})` is passed through `filterOtherMembersUnconfirmed`
+(`kb-self.ts`), which drops non-CONFIRMED entries tagged with another member's
+`member:<id>`. CONFIRMED, untagged and the caller's own entries stay. FULL
+sessions are not filtered. `kb_capture` tags a member's global capture with its
+owner tag, so the filter covers every member capture.
+
+**Sprint KB injection.** The engine injects the KB block into every dispatched
+member's prompt, verified or not, remote or local. The block is always fetched
+from the kb_maintainer member, so a non-maintainer remote member still receives
+the project knowledge.
 
 ### Member-session tool calls
 
@@ -1036,9 +1054,13 @@ Every method in the `MemoryProvider` interface is classified as one of:
   or 503 answering a request is also `E-KB-HTTP-UNREACHABLE`: the server
   refused it before handling it. Any other 5xx answering a write (capture,
   invalidate, feedback, promote, demote) is `E-KB-HTTP-SERVER-ERROR`: the
-  write may have been applied, so it is neither retried nor queued. Any other
-  5xx answering a read (query, context, prime, list) is
-  `E-KB-HTTP-SERVER-ERROR` too, never a raw HTTP error. Nothing is ever answered from a
+  write may have been applied, so it is neither retried nor queued. Any 5xx
+  answering a read (query, context, prime, list) is `E-KB-HTTP-UNREACHABLE`:
+  a read writes nothing, so it is safe to repeat. A 429 message says the
+  server rate limited the request and names the `Retry-After` value when the
+  answer carried one (it does not suggest starting the server). A 401 is
+  `E-KB-HTTP-AUTH` for a literal token too (see [Token rejected
+  (401)](#token-rejected-401)). Nothing is ever answered from a
   local store or the checkout bible: the server is the source of truth.
 - **local** -- no remote route; answers without any local store.
 - **unsupported** -- returns a documented refusal or throws a typed error.
@@ -1049,12 +1071,12 @@ The provider holds no local store at all.
 |--------|---|---|
 | init | local | Nothing to open. |
 | capture | remote | Posts entry to server. On connection error, `E-KB-HTTP-UNREACHABLE`; on a 429/503 answer, `E-KB-HTTP-UNREACHABLE`; on any other 5xx, `E-KB-HTTP-SERVER-ERROR`. Never queued. |
-| query | remote | Retrieves entries from server. On connection error, `E-KB-HTTP-UNREACHABLE`; on a 429/503 answer, `E-KB-HTTP-UNREACHABLE`; on any other 5xx, `E-KB-HTTP-SERVER-ERROR`. |
-| context | remote | Retrieves file context from server. On connection error, `E-KB-HTTP-UNREACHABLE`; on a 429/503 answer, `E-KB-HTTP-UNREACHABLE`; on any other 5xx, `E-KB-HTTP-SERVER-ERROR`. |
+| query | remote | Retrieves entries from server. On connection error, or a 429 or any 5xx answer, `E-KB-HTTP-UNREACHABLE` (retryable). |
+| context | remote | Retrieves file context from server. On connection error, or a 429 or any 5xx answer, `E-KB-HTTP-UNREACHABLE` (retryable). |
 | invalidate | remote | Invalidates files on server. On connection error, `E-KB-HTTP-UNREACHABLE`; on a 429/503 answer, `E-KB-HTTP-UNREACHABLE`; on any other 5xx, `E-KB-HTTP-SERVER-ERROR`. Never queued. |
 | discard | unsupported | Throws E-KB-HTTP-UNSUPPORTED (id-level discard not supported). Use kb_invalidate with files instead. |
 | getLinked | local | No remote route: returns no linked entries. |
-| prime | remote | Retrieves primed context from server. On connection error, `E-KB-HTTP-UNREACHABLE`; on a 429/503 answer, `E-KB-HTTP-UNREACHABLE`; on any other 5xx, `E-KB-HTTP-SERVER-ERROR`. `kb_session_prime` does not cold-seed from the checkout bible under http. |
+| prime | remote | Retrieves primed context from server. On connection error, or a 429 or any 5xx answer, `E-KB-HTTP-UNREACHABLE` (retryable). `kb_session_prime` does not cold-seed from the checkout bible under http. |
 | promote | remote | POST /api/kb/promote with `{id, reason}`. On connection error, `E-KB-HTTP-UNREACHABLE` naming the server URL; on a 429/503 answer, `E-KB-HTTP-UNREACHABLE`; on any other 5xx, `E-KB-HTTP-SERVER-ERROR`. Sent by id with no list lookup first: the server refuses an unknown, superseded or out-of-scope id itself. The bundled `kb-server` answers an unknown id 404 with code `ENTRY_NOT_FOUND`, and that body code is required: such a 404 rejects as `Entry not found: <id>` followed by the server's answer, and a 404 without it (a server that does not serve promote, such as `kb-server` from v0.4.4) is `E-KB-HTTP-UNSUPPORTED` naming the promote route, with the remediation to upgrade the KB server; any other refusal (non-2xx, including problem+json) rejects with the HTTP status plus the server's text and code. |
 | feedback | remote | POST /api/kb/feedback with `{id, reason, role}`; returns the server response unchanged. On connection error, `E-KB-HTTP-UNREACHABLE`; on a 429/503 answer, `E-KB-HTTP-UNREACHABLE`; on any other 5xx, `E-KB-HTTP-SERVER-ERROR`. Never queued. |
 | demote | remote (optional route) | POST /api/kb/demote with `{id, reason, evidence_files}` -> `{id, previous_confidence, new_confidence}`, sent by id only when `GET /api/kb/capabilities` lists `demote`; otherwise (or on a 404/501 from the route) `E-KB-HTTP-UNSUPPORTED` naming the route, and nothing is changed. The server enforces which ids the caller may demote; a 404 whose body code says the entry is unknown rejects as `Entry not found: <id>`. A MEMBER `kb_query` `own_scope` read (which exists to find what may be demoted) is refused the same way when the server does not list `demote`. |
@@ -1079,8 +1101,9 @@ the capabilities route is assumed to serve every route but demote. Any other
 failed capabilities read is typed: a 5xx or 429 is `E-KB-HTTP-UNREACHABLE`
 (the caller's request was never sent), another status but 401 and a 409
 project mismatch is `E-KB-HTTP-UNSUPPORTED` naming the capabilities read. A
-429 or 503 answering a request itself is `E-KB-HTTP-UNREACHABLE` naming the
-status; any other 5xx is `E-KB-HTTP-SERVER-ERROR` naming the status. Nothing
+429 or 503 answering a request itself, or any 5xx answering a read, is
+`E-KB-HTTP-UNREACHABLE` naming the status; any other 5xx answering a write is
+`E-KB-HTTP-SERVER-ERROR` naming the status. Nothing
 is queued in either case. A 404 or 501
 from an optional route is also `E-KB-HTTP-UNSUPPORTED` (a 404 whose body code is
 `ENTRY_NOT_FOUND` / `E-ENTRY-NOT-FOUND` stays "entry not found"). The bundled
@@ -1352,8 +1375,9 @@ feedback-downvoted, and invalidated entries stay retired by design -- see
 
 **Symptom**: KB server returns 401 for all requests.
 
-**Literal token**: the token in the client config must match the server's
-token. Regenerate on the server:
+**Literal token**: the error is `E-KB-HTTP-AUTH` with reason `rejected` (no
+retry: the stored value cannot change). The token in the client config must
+match the server's token. Regenerate on the server:
 ```bash
 node dist/index.js kb-server --generate-token
 ```
