@@ -2506,10 +2506,34 @@ so plain git anywhere on that user got the fleet token. After the upgrade:
 - gh: a local member, and a member sharing its host user, no longer logs gh in by
   default (`metadata.ghCliAuth` says so); pass `gh_login: true` to opt in.
 
-To keep host git (your shell, cron, hooks) using a member's fleet token, register
-that member's own helper file in the global config yourself. Fleet rewrites the
-file in place on every re-provision, so token refreshes reach it; it never
-touches this entry. POSIX (Linux, macOS):
+To keep host git and dolt (your shell, cron, hooks) authenticated, run the
+supported command once:
+
+```bash
+apra-fleet operator-auth github
+```
+
+It replaces fleet's stale legacy helper value on the global key with a
+refreshing on-demand helper (`apra-fleet git-credential`), mints a fresh App
+token whenever git asks, and is idempotent. No hourly 401.
+
+#### Operator credentials
+
+`gh` has no helper hook. For gh in your shell or unattended automation, set
+`GH_TOKEN` from a fresh token per invocation:
+
+```bash
+GH_TOKEN=$(apra-fleet operator-auth token) gh pr list
+```
+
+A gh login made by `provision_vcs_auth` (`gh_login: true`) is a snapshot and is not
+refreshed.
+
+Alternative (manual, not refreshing beyond the member's own 1-hour token file):
+register a member's own helper file in the global config yourself. Fleet rewrites
+the file in place on every re-provision, but it only holds the member's token,
+which for a GitHub App expires after about 1 hour, so this recipe stops working
+between re-provisions. Fleet never touches this entry. POSIX (Linux, macOS):
 
 ```bash
 git config --global --add credential.https://github.com.helper \
