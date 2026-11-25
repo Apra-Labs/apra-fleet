@@ -203,7 +203,9 @@ async function splitQuery(split: MemberSplitRead, raw: KbQueryInput, shape: Read
   // read returns (view rows, then global CONFIRMED rows de-duped by title), so
   // those come first; the member's own captures only fill what is left under the
   // cap. An explicit limit keeps the per-side merge above.
-  const seenTitles = new Set(projectL1.map(e => e.title));
+  // An explicit limit de-duplicates the global CONFIRMED half against the bible
+  // view only, never against the member's own captures (as the default path does).
+  const seenTitles = new Set(viewL1.map(e => e.title));
   let allL1 = [...projectL1, ...globalL1.filter(e => !seenTitles.has(e.title))];
   if (shape.memberDefault) {
     const confirmedHead = [...viewL1, ...globalConfirmedL1.filter(e => !viewL1.some(v => v.title === e.title))];

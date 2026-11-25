@@ -527,3 +527,28 @@ describe('kb_query in a MEMBER session: default read with a global CONFIRMED row
     expect(mixed.length).toBeLessThanOrEqual(6);
   });
 });
+
+describe('kb_query in a MEMBER session: explicit limit with a global CONFIRMED row sharing a title with an own capture', () => {
+  const TW = 'widgetzorbmix';
+  it('keeps the global CONFIRMED row, de-duplicated only against the bible view', async () => {
+    const title = `Widgetzorb shared title ${RUN}`;
+    const globalKb = await getGlobalKbProvider();
+    const { id: globalId } = await globalKb.capture({
+      type: 'knowledge', title,
+      summary: `The ${TW} stage is confirmed globally.`, content: `The ${TW} stage is confirmed globally.`,
+      source_files: ['src/sprocket.ts'], symbols: ['widgetGlobal'], tags: [],
+      flagged_for_review: false, author: 'doer', source: 'session', confidence: 'CONFIRMED',
+    } as Parameters<typeof globalKb.capture>[0]);
+    await globalKb.promote(globalId, 'Checked src/sprocket.ts: the stage batches work per tick, as stated.');
+    const ownId = JSON.parse(await as(memberA, () => kbCapture({
+      type: 'knowledge', title,
+      summary: `Own: the ${TW} stage batches work per tick.`, content: `Own: the ${TW} stage batches work per tick.`,
+      source_files: ['src/sprocket.ts'], symbols: ['widgetOwn'],
+    } as Parameters<typeof kbCapture>[0]))).id as string;
+    const confirmed = ids(JSON.parse(await as(memberA, () => kbQuery({ query: TW, confidence: ['CONFIRMED'], limit: 20 }))).l1_results);
+    expect(confirmed).toContain(globalId);
+    const mixed = ids(JSON.parse(await as(memberA, () => kbQuery({ query: TW, confidence: [...MIXED], limit: 20 }))).l1_results);
+    expect(mixed).toContain(globalId);
+    expect(mixed).toContain(ownId);
+  });
+});
