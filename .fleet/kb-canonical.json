@@ -3628,6 +3628,23 @@
       "updated_at": "2026-09-29T06:13:15.856Z"
     },
     {
+      "id": "d024a05b-a637-4c43-9d55-5dd93fa3daea",
+      "type": "learning",
+      "title": "Git Bash mangles schtasks /Switch args unless MSYS_NO_PATHCONV=1",
+      "summary": "Under Git for Windows bash, 'schtasks.exe /Query /TN x' fails with \"Invalid argument/option - 'C:/Program Files/Git/Query'\" because MSYS turns /Query into a path; prefixing MSYS_NO_PATHCONV=1 fixes it. Member commands for Git Bash members that call schtasks must set it.",
+      "symbols": [
+        "buildSupervisorStop"
+      ],
+      "source_files": [
+        "src/services/member-fleet-install.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-25T18:33:04.247Z",
+      "source_file_hashes": {
+        "src/services/member-fleet-install.ts": "b99e198cb76f618b1b2f2b5b989ade1a97b71059"
+      }
+    },
+    {
       "id": "d1963b85-b03a-4da7-85c0-ce433768c615",
       "type": "knowledge",
       "title": "scaledTimeout treats an empty APRA_FLEET_TEST_CONCURRENCY exactly like unset: unscaled base budget",
