@@ -1,9 +1,23 @@
 import { describe, it, expect } from 'vitest';
 import vm from 'node:vm';
-import { stripComments } from '../scripts/lib/strip-comments.mjs';
+import { stripComments, countLines } from '../scripts/lib/strip-comments.mjs';
+
+// ECMAScript line terminators U+2028 / U+2029, built so this file stays ASCII.
+const LS = String.fromCharCode(0x2028);
+const PS = String.fromCharCode(0x2029);
+const CR = 13;
+const LF = 10;
 
 function lineCount(s: string): number {
-  return s.split(/\r\n|\r|\n|2028|2029/).length;
+  // Independent of countLines on purpose, so a broken shared helper cannot
+  // make both sides of the comparison agree. CRLF counts once.
+  let n = 1;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c === CR && s.charCodeAt(i + 1) === LF) continue;
+    if (c === LF || c === CR || c === 0x2028 || c === 0x2029) n++;
+  }
+  return n;
 }
 
 /** Parse as a classic script (shebang allowed by wrapping check), throws on error. */
@@ -120,6 +134,25 @@ describe('stripComments', () => {
     const out = strip(src);
     expect(out).toBe('\r\n\r\n\r\nvar x = 1;\r\nvar y = 2;\r\n');
     expect(out.replace(/\r\n/g, '')).not.toMatch(/[\r\n]/);
+  });
+
+  it('keeps U+2028 / U+2029 line terminators inside a multi-line block comment', () => {
+    const src = 'var a = 1;/* x' + LS + 'y' + PS + 'z */var b = 2;\n';
+    expect(lineCount(src)).toBe(4);
+    const out = strip(src);
+    expect(out).toBe('var a = 1;' + LS + PS + 'var b = 2;\n');
+  });
+
+  it('ends a // comment at U+2028', () => {
+    const src = 'var a = 1; // c' + LS + 'var b = 2;\n';
+    expect(strip(src)).toBe('var a = 1;' + LS + 'var b = 2;\n');
+  });
+
+  it('countLines counts CRLF once and LS/PS, and ignores the digits 2028/2029', () => {
+    expect(countLines('a\r\nb\rc\nd' + LS + 'e' + PS + 'f')).toBe(6);
+    const src = '// fixed in 2028 and 2029\nvar a = 1;\n';
+    expect(countLines(src)).toBe(3);
+    expect(countLines(stripComments(src))).toBe(countLines(src));
   });
 
   it('does not touch comment-free input', () => {

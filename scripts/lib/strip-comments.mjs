@@ -35,8 +35,24 @@ export const KEEP_COMMENT_PATTERNS = [
 
 const LEGAL_RE = /@license|@preserve|@copyright/;
 
+// ECMAScript LineTerminator: LF, CR, LINE SEPARATOR (U+2028), PARAGRAPH
+// SEPARATOR (U+2029). Built with fromCharCode so this file stays ASCII.
+const LS = String.fromCharCode(0x2028);
+const PS = String.fromCharCode(0x2029);
+const LINE_SPLIT_RE = new RegExp('\r\n|[\r\n' + LS + PS + ']');
+
 function isLineTerminatorChar(ch) {
-  return ch === '\n' || ch === '\r' || ch === '2028' || ch === '2029';
+  return ch === '\n' || ch === '\r' || ch === LS || ch === PS;
+}
+
+/**
+ * Number of lines in `s` as ECMAScript counts them (CRLF is one terminator).
+ * Shared by the pack script and the tests so they agree with the stripper.
+ * @param {string} s
+ * @returns {number}
+ */
+export function countLines(s) {
+  return s.split(LINE_SPLIT_RE).length;
 }
 
 function shouldKeep(text, range) {
