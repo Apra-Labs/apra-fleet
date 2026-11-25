@@ -91,6 +91,21 @@ describe('system tools resolve to System32 on win32 (planted files in cwd/PATH a
     expect(firstProgram(h.execFileSync)).toEqual([`${SYS32}\\tasklist.exe`]);
   });
 
+  it('install-guard: getRunningApraFleetProcesses runs System32 tasklist.exe with no cmd.exe string command', async () => {
+    setPlatform('win32');
+    h.execFileSync.mockImplementation((file: string) => (
+      /tasklist/i.test(file) ? '"apra-fleet.exe","4242","Console","1","10,000 K"\r\n' : '4242|C:\\x\\apra-fleet.exe\r\n'
+    ));
+    const { getRunningApraFleetProcesses } = await import('../src/cli/install-guard.js');
+    expect(getRunningApraFleetProcesses()).toEqual([{ pid: 4242, exePath: 'C:\\x\\apra-fleet.exe' }]);
+    expect(h.execFileSync.mock.calls[0]).toEqual([
+      `${SYS32}\\tasklist.exe`, ['/FI', 'IMAGENAME eq apra-fleet.exe', '/NH', '/FO', 'CSV'], expect.anything(),
+    ]);
+    // The Get-Process lookup is an absolute powershell.exe too, never a bare name.
+    expect(String(h.execFileSync.mock.calls[1][0])).toMatch(/^[A-Z]:\\.*\\powershell\.exe$/i);
+    expect(h.execSync).not.toHaveBeenCalled();
+  });
+
   it('owner-only-fs: the default whoami is System32 whoami.exe', async () => {
     h.execFileSync.mockReturnValue('CORP\\alice\r\n');
     vi.resetModules();
@@ -231,6 +246,24 @@ describe('apra-fleet start: server working folder', () => {
     vi.doUnmock('../src/services/service-notice.js');
     vi.doUnmock('../src/paths.js');
   }, 20_000);
+
+  it('Windows Run-key fallback: the default detached launch starts in the data dir (else home), never the CLI folder', async () => {
+    vi.resetModules();
+    const { WindowsServiceManager, detachedLaunchCwd } = await import('../src/services/service-manager/windows.js');
+    const dataDir = path.join(sandbox, 'runkey-data');
+    fs.mkdirSync(dataDir, { recursive: true });
+    expect(detachedLaunchCwd(dataDir)).toBe(dataDir);
+    expect(detachedLaunchCwd(path.join(sandbox, 'missing-data'))).toBe(os.homedir());
+
+    h.spawn.mockReturnValue({ unref: () => {} });
+    const noTask = () => { throw new Error('not found'); };
+    await new WindowsServiceManager(noTask, path.join(sandbox, 'c.bat'), { runReg: () => '', stoppedByUser: () => false, env: {} }).start();
+    expect(h.spawn).toHaveBeenCalledTimes(1);
+    const opts = h.spawn.mock.calls[0][2] as { cwd?: string; detached?: boolean };
+    expect(opts.detached).toBe(true);
+    expect(opts.cwd).toBe(detachedLaunchCwd());
+    expect(opts.cwd).not.toBe(process.cwd());
+  });
 });
 
 describe('uninstall: cmd.exe shell for its run() steps', () => {
