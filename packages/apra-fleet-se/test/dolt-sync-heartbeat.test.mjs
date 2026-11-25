@@ -215,6 +215,26 @@ test('every sync wire form carries the stalled-transfer abort env', () => {
     assert.equal(classifyDoltFailureText('error: RPC failed; curl 28 Operation too slow. Less than 1000 bytes/sec transferred the last 300 seconds'), 'transient');
 });
 
+// A real `bd dolt push` against a stalling HTTP remote (captured live): git's
+// low-speed abort arrives inside dolt's "could not be accessed" wrapper.
+const DOLT_WRAPPED_STALL = "Error: push to origin/main: Error 1105: failed to get remote db; the remote: origin 'git+http://127.0.0.1:18763/remote.git' could not be accessed; fatal: unable to access 'http://127.0.0.1:18763/remote.git/': Operation too slow. Less than 1000 bytes/sec transferred the last 300 seconds\n"
+    + 'hint: dolt does not support interactive credential prompts\n'
+    + 'hint: configure git credentials (credential helper, token) for HTTPS remotes\n'
+    + 'hint: run `ssh-add <key>` to pre-load your key for SSH remotes\n'
+    + 'hint: ensure non-interactive auth is configured for GCM\n';
+
+test('a stalled transfer aborted by git inside dolt\'s remote wrapper is transient, not remote-unreachable', async () => {
+    assert.equal(classifyDoltFailureText(DOLT_WRAPPED_STALL), 'transient');
+    assert.equal(classifyDoltFailureText(DOLT_WRAPPED_STALL.replace('Operation too slow. Less than 1000 bytes/sec transferred the last 300 seconds', 'curl 28 timeout')), 'transient');
+    // A genuinely dead remote keeps its verdict.
+    assert.equal(classifyDoltFailureText("Error 1105: failed to get remote db; the remote: origin 'git+http://127.0.0.1:1/x.git' could not be accessed"), 'remote-unreachable');
+    // Through the bracket: retried by the transient ladder, then lands.
+    const { command, calls } = fakeCommand({ tips: [TIP_A, TIP_B], pushes: [{ ok: false, output: '', error: DOLT_WRAPPED_STALL }, { ok: true, output: '' }] });
+    const outcome = await doltPushAfter('m1', { command, checkSyncRemoteConfigured: async () => true, memberTarget: LINUX, lockProbeAfterMs: 0, sleep: async () => {} });
+    assert.equal(calls.push.length, 2);
+    assert.equal(outcome.pushed, true);
+});
+
 const HAS_GIT = spawnSync('git', ['--version']).status === 0;
 
 /** git ls-remote against a local HTTP server driven by `serve(res)`, with the
