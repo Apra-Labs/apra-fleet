@@ -57,7 +57,16 @@ async function makeController(cwd) {
     return { controller, ledger, spawned };
 }
 
-test('unpushed beads: launch refused with the push remedy, then accepted after commit + push (real bd)', async () => {
+// bd's push to a local file remote fails on the windows-latest CI runner
+// ("update_ref failed for ref 'refs/dolt/blobstore/origin/...'", Error 1105)
+// although it works on a Windows dev box; the refusal/accept logic is covered
+// by supervisor-launch-beads-pushed-preflight.test.mjs (injected probe) and by
+// scenario 2 below (real bd, no remote). Skipped only for Windows CI.
+const SKIP_WIN_CI_PUSH = (process.platform === 'win32' && process.env.CI)
+    ? 'real bd cannot push to a local file remote on the windows-latest runner (update_ref on refs/dolt/blobstore)'
+    : false;
+
+test('unpushed beads: launch refused with the push remedy, then accepted after commit + push (real bd)', { skip: SKIP_WIN_CI_PUSH }, async () => {
     const fx = await createBeadsFixture();
     cleanups.push(fx.cleanup);
     const remote = await bareRemote();
