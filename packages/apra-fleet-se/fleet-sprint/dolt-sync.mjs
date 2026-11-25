@@ -1678,22 +1678,20 @@ const SAFE_DOLT_BRANCH_RE = /^[A-Za-z0-9._/-]+$/;
  * remotes/origin/<branch> against it. Transport-agnostic: `runBd` runs one bd
  * command line (e.g. `bd vc status --json`) wherever the clone lives and
  * resolves `{ ok, output, error? }` (or the raw output text). Never throws.
- * Uncommitted working-set changes reported by `bd vc status` count as pending.
+ * `bd vc status --json` (bd 1.3.0) reports no working-set state, so only
+ * committed-but-unpushed changes are detected; the remedy commits first.
  * @param {(cmd: string, label: string) => Promise<{ok?: boolean, output?: string, error?: string}|string>} runBd
  * @returns {Promise<{ pending: boolean|null, why?: string }>}
  */
 export async function readUnpushedWith(runBd) {
     let branch = null;
-    let uncommitted = false;
     try {
         const res = await runBd('bd vc status --json', 'branch read');
         if (res && res.ok !== false) {
             const parsed = JSON.parse(String((typeof res === 'object' ? res.output : res) || ''));
             if (parsed && typeof parsed.branch === 'string') branch = parsed.branch;
-            uncommitted = hasUncommittedChanges(parsed);
         }
     } catch { /* unknown branch -> inconclusive below */ }
-    if (uncommitted) return { pending: true, why: 'uncommitted working-set changes' };
     if (!branch || !SAFE_DOLT_BRANCH_RE.test(branch)) return { pending: null, why: 'could not read the clone\'s Dolt branch' };
     let res;
     try {
@@ -1704,22 +1702,6 @@ export async function readUnpushedWith(runBd) {
     if (!res || res.ok === false) return { pending: null, why: `bd diff failed: ${res ? res.error : 'no result'}` };
     const pending = parseBdDiffPending(typeof res === 'object' ? res.output : res);
     return pending === null ? { pending: null, why: 'bd diff output was not recognized' } : { pending };
-}
-
-/**
- * Does a parsed `bd vc status --json` report uncommitted working-set changes?
- * Accepts the field spellings bd uses (`uncommitted`, `changes`, `staged`,
- * `working`, `dirty`): a non-empty array, a positive number or `true`.
- */
-export function hasUncommittedChanges(parsed) {
-    if (!parsed || typeof parsed !== 'object') return false;
-    for (const key of ['uncommitted', 'changes', 'staged', 'working', 'dirty']) {
-        const v = parsed[key];
-        if (v === true) return true;
-        if (typeof v === 'number' && v > 0) return true;
-        if (Array.isArray(v) && v.length > 0) return true;
-    }
-    return false;
 }
 
 async function readUnpushedDoltChanges(member, { command }) {

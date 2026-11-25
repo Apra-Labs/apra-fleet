@@ -575,9 +575,12 @@ function normalizeLlmAuthHealOutcome(result) {
  * when the heal healed (the caller retries). When it did not, the heal is
  * TERMINAL for this ladder: logs the cause and remedy, then throws
  * LlmAuthSelfHealFailedError -- no success log, no backoff wait, no further
- * attempt, on every ladder that enables authSelfHeal.
+ * attempt. Only ladders that abort on a non-retryable error (the role is
+ * required for correctness) throw; with `throwOnFail: false` (degrading
+ * ladders) it logs loudly and resolves false so the caller ends the ladder
+ * and degrades as before.
  */
-async function healLlmAuthOrThrow(ctx, { member, roleLabel, err }) {
+async function healLlmAuthOrThrow(ctx, { member, roleLabel, err, throwOnFail = true }) {
     const outcome = normalizeLlmAuthHealOutcome(await ctx.onLlmAuthFailure({
         member, label: `${roleLabel} dispatch`, error: err.message,
     }));
@@ -585,6 +588,7 @@ async function healLlmAuthOrThrow(ctx, { member, roleLabel, err }) {
     const message = `${roleLabel} dispatch threw a non-retryable error (auth): ${err.message} -- `
         + `LLM auth self-heal failed for member '${member}': ${outcome.cause}. Not retrying. Remedy: ${outcome.remedy}.`;
     ctx.log(message);
+    if (!throwOnFail) return false;
     throw new LlmAuthSelfHealFailedError(message, {
         member,
         roleLabel,
@@ -1396,11 +1400,15 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
             // self-heals an unhealed LLM-auth failure, because the SAME member
             // is dispatched again later in the cycle and would otherwise walk
             // into the identical wall. A heal that did NOT heal is terminal
-            // here too: healLlmAuthOrThrow throws the typed error before the
-            // generic backoff ladder below can spend another attempt on it.
+            // here too: the ladder ends (no generic backoff attempt) and degrades.
             if (!completedButSyncFailed && !retry.abortOnNonRetryable && retry.authSelfHeal
                 && isAuthDispatchError(err) && typeof ctx.onLlmAuthFailure === 'function') {
-                await healLlmAuthOrThrow(ctx, { member, roleLabel, err });
+                // A degrading ladder never aborts the sprint on a failed heal:
+                // the failure is logged loudly, the ladder spends no further
+                // attempt, and it degrades exactly as it did before.
+                if (!(await healLlmAuthOrThrow(ctx, { member, roleLabel, err, throwOnFail: false }))) {
+                    healRetryIsFinal = true;
+                }
             }
 
             // RUN-level control signals are not failures of this role at all,

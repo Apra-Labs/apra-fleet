@@ -9,7 +9,9 @@
 import { readUnpushedWith } from '../../fleet-sprint/dolt-sync.mjs';
 import { execBdAsync } from './lib/exec-bd.mjs';
 
-export const UNPUSHED_BEADS_REMEDY = 'bd dolt commit && bd dolt push';
+// Two steps, not one `&&` line: Windows PowerShell 5.1 rejects `&&`. If the
+// clone is BEHIND its remote-tracking ref, `bd dolt pull` comes first.
+export const UNPUSHED_BEADS_REMEDY = 'run `bd dolt commit`, then `bd dolt push` (run `bd dolt pull` first if the clone is behind its remote)';
 
 const BD_PREFIX = /^bd\s+/;
 
@@ -36,5 +38,5 @@ export function createBeadsPushedProbe({ cwd, execBd = execBdAsync }) {
 
 export function unpushedBeadsMessage() {
     return `launch refused: the supervisor's local beads clone holds changes not pushed to the Dolt remote, so the target member would plan from stale scope. ` +
-        `Run \`${UNPUSHED_BEADS_REMEDY}\` in the supervisor's beads folder, then relaunch.`;
+        `In the supervisor's beads folder, ${UNPUSHED_BEADS_REMEDY}; then relaunch.`;
 }

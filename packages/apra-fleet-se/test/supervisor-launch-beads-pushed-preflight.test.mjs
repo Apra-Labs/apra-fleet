@@ -7,7 +7,7 @@ import { createLedger, LEDGER_FILENAME } from '../src/supervisor/ledger.mjs';
 import { createHistory, HISTORY_FILENAME } from '../src/supervisor/history.mjs';
 import { createSprintController } from '../src/supervisor/api.mjs';
 import { createBeadsPushedProbe } from '../src/supervisor/beads-pushed-check.mjs';
-import { readUnpushedWith, hasUncommittedChanges } from '../fleet-sprint/dolt-sync.mjs';
+import { readUnpushedWith } from '../fleet-sprint/dolt-sync.mjs';
 
 const LAUNCH = { issue: 'PROJ-1', members: ['alice'], branch: 'feat/x', base: 'main' };
 
@@ -31,7 +31,8 @@ test('unpushed beads: launch is refused 409 with the push remedy; no spawn, no r
     try {
         await assert.rejects(() => t.controller.launch({ ...LAUNCH }), (err) => {
             assert.equal(err.statusCode ?? err.status, 409);
-            assert.match(err.message, /bd dolt commit && bd dolt push/);
+            assert.match(err.message, /`bd dolt commit`, then `bd dolt push`/);
+            assert.ok(!err.message.includes('&&'), 'the remedy must be shell-neutral');
             return true;
         });
         assert.equal(t.spawned.length, 0);
@@ -64,14 +65,6 @@ test('a throwing probe is inconclusive, never a refusal', async () => {
         const res = await t.controller.launch({ ...LAUNCH });
         assert.match(res.beadsPushWarning, /boom/);
     } finally { await t.cleanup(); }
-});
-
-test('readUnpushedWith: uncommitted working-set changes count as unpushed', async () => {
-    const run = async (cmd) => (cmd.startsWith('bd vc status')
-        ? { ok: true, output: JSON.stringify({ branch: 'main', uncommitted: [{ table: 'issues' }] }) }
-        : { ok: false, error: 'must not diff' });
-    assert.deepEqual((await readUnpushedWith(run)).pending, true);
-    assert.equal(hasUncommittedChanges({ branch: 'main' }), false);
 });
 
 test('probe runs bd vc status then bd diff in the given cwd', async () => {

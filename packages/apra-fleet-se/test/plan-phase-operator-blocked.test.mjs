@@ -114,3 +114,15 @@ test('genuine rejection (reviewer CHANGES_NEEDED on unheld beads for 3 rounds) s
     await assert.rejects(h.run(), (err) => err instanceof SprintPlanRejectedError);
     assert.equal(h.rec.dispatches.length, 6);
 });
+
+test('planner BLOCKED that carries a decision while other work is unheld does not stop the cycle', async () => {
+    const decision = { beadId: 'x-1', question: NOTES, options: [{ id: 'a', text: 'eu-west' }, { id: 'b', text: 'us-east' }], recommendation: 'a: closest to users' };
+    const withDecision = JSON.stringify({ status: 'BLOCKED', notes: NOTES, decision });
+    const ok = { verdict: 'APPROVED', notes: 'ok', taskAssignments: [] };
+    const h = harness({ responses: [withDecision, ok], scope: SCOPE });
+    const out = await h.run();
+    assert.equal(out.lastVerdict.verdict, 'APPROVED', 'the plan went on to the reviewer instead of pausing');
+    assert.equal(h.rec.dispatches.length, 2, 'planner, then plan-reviewer');
+    assert.equal(h.bd.commands.filter((c) => c.startsWith('bd create')).length, 1, 'the decision is still filed once');
+    assert.ok(h.logs.some((l) => l.includes('planning continues with the rest')), h.logs.join('\n'));
+});

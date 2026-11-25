@@ -52,7 +52,6 @@ import {
     sentinelNotePolicies,
 } from './helpers/dispatch-role-harness.mjs';
 import { dispatchRole } from '../fleet-sprint/dispatch-role.mjs';
-import { LlmAuthSelfHealFailedError } from '../fleet-sprint/errors.mjs';
 import { PLANNING_LADDERS } from './helpers/planning-ladders.mjs';
 import { EXECUTION_INLINE_LADDERS, EXECUTION_ENGINE_DISPATCHES } from './helpers/execution-ladders.mjs';
 
@@ -786,10 +785,11 @@ describe('execution-role dispatch: retry and degrade ladders', () => {
         assert.deepStrictEqual(p.degrade.neverSynthesizes, [true], 'deployed:true is what no degrade path may ever fabricate.');
         assert.strictEqual(p.degrade.verdictField, 'deployed', 'The deployer answers in `deployed`, not `verdict`.');
 
-        // A heal that does not heal is terminal (apra-fleet-3b8p.1): the typed
-        // error propagates instead of degrading to deployed:false.
+        // A heal that does not heal ends the ladder but never aborts the
+        // sprint: it logs loudly and degrades.
         const authRun = createRecordingCtx({ responses: [authError()] });
-        await assert.rejects(() => dispatchRole(authRun.ctx, 'deployer', ROLE_CALL_OPTS.deployer), LlmAuthSelfHealFailedError);
+        await dispatchRole(authRun.ctx, 'deployer', ROLE_CALL_OPTS.deployer);
+        assert.ok(authRun.rec.logs.some((m) => /LLM auth self-heal failed/.test(m)), 'a failed heal is logged loudly');
         assert.strictEqual(
             authRun.rec.authHeals.length,
             1,
@@ -1102,10 +1102,11 @@ describe('execution-role dispatch: retry and degrade ladders', () => {
             );
         }
 
-        // A heal that does not heal is terminal (apra-fleet-3b8p.1): the typed
-        // error propagates rather than proceeding without a report.
+        // A failed heal ends the ladder but never aborts the sprint: it logs
+        // loudly and proceeds without a report.
         const authRun = createRecordingCtx({ responses: [authError()] });
-        await assert.rejects(() => dispatchRole(authRun.ctx, 'harvester', ROLE_CALL_OPTS.harvester), LlmAuthSelfHealFailedError);
+        await dispatchRole(authRun.ctx, 'harvester', ROLE_CALL_OPTS.harvester);
+        assert.ok(authRun.rec.logs.some((m) => /LLM auth self-heal failed/.test(m)), 'a failed heal is logged loudly');
         assert.strictEqual(
             authRun.rec.authHeals.length,
             1,

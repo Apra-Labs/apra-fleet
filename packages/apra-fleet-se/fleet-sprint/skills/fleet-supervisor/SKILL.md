@@ -356,8 +356,8 @@ start with no login (`loginctl enable-linger <username>`).
 ## 1. Before you launch a sprint
 
 1. Unpushed local beads changes: the launch refuses (HTTP 409) and names the
-   remedy (`bd dolt commit && bd dolt push` in the supervisor's beads
-   folder); run it, then relaunch.
+   remedy (run `bd dolt commit`, then `bd dolt push`, in the supervisor's
+   beads folder; `bd dolt pull` first if the clone is behind); then relaunch.
 2. Check no conflicting sprint is already running: `GET /api/sprints`.
 3. Multi-member sprints align their members to the sprint base
    automatically at launch (WIP preserved in a named stash, one `[Align]`

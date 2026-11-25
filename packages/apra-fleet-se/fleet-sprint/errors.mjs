@@ -730,6 +730,7 @@ export class LlmAuthSelfHealFailedError extends WorkflowError {
             details: { member, roleLabel, healReason: reason, healCause, remedy, ...details },
             cause,
         });
+        this.name = 'LlmAuthSelfHealFailedError';
         this.member = member;
         this.roleLabel = roleLabel;
         this.reason = reason;

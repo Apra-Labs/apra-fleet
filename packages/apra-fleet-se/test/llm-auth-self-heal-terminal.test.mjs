@@ -10,7 +10,8 @@ import { createRecordingCtx, authError, ROLE_CALL_OPTS } from './helpers/dispatc
 // whose post-deploy auth test FAILS (reason deployed_unverified) is a failed
 // heal. The dispatch ladder must end at once with the typed error -- no
 // "self-heal succeeded" line, no backoff wait, no second dispatch -- on a
-// ladder with abortOnNonRetryable (planner) and on one without (reviewer).
+// ladder with abortOnNonRetryable (planner: typed error) and on one without
+// (reviewer: loud log, degrades -- never aborts the sprint).
 
 const AUTH_LINE = 'Auth test: FAILED -- OAuth token revoked';
 
@@ -66,14 +67,12 @@ describe('LLM auth self-heal: a failed post-provision auth test is terminal', ()
         assert.ok(!rec.logs.some((m) => /waiting [\d.]+s before retry attempt/.test(m)), `no backoff wait, logs: ${JSON.stringify(rec.logs)}`);
     });
 
-    test('ladder WITHOUT abortOnNonRetryable (reviewer): typed error, no generic retry follows', async () => {
+    test('ladder WITHOUT abortOnNonRetryable (reviewer): loud log, no generic retry, degrades without throwing', async () => {
         const { ctx, rec, provision } = ctxWithRealHeal([authError(), 'never reached'], UNVERIFIED);
-        await assert.rejects(
-            () => dispatchRole(ctx, 'reviewer', ROLE_CALL_OPTS.reviewer),
-            (err) => assertTypedHealFailure(err, rec.dispatches[0].member),
-        );
+        await dispatchRole(ctx, 'reviewer', ROLE_CALL_OPTS.reviewer);
         assert.equal(rec.dispatches.length, 1, 'no generic retry after a failed heal');
         assert.equal(provision.calls.filter((c) => c.name === 'provision_llm_auth').length, 1);
+        assert.ok(rec.logs.some((m) => /LLM auth self-heal failed/.test(m) && /OAuth token revoked/.test(m)), 'failed heal logged loudly');
         assert.ok(!rec.logs.some((m) => /self-heal succeeded/.test(m)));
         assert.ok(!rec.logs.some((m) => /waiting [\d.]+s before retry attempt/.test(m)));
     });
@@ -88,9 +87,9 @@ describe('LLM auth self-heal: a failed post-provision auth test is terminal', ()
         assert.ok(rec.logs.some((m) => /LLM auth self-heal succeeded -- retrying/.test(m)));
     });
 
-    test('a bare boolean false from an injected callback is a failed heal too (typed error, no retry)', async () => {
+    test('a bare boolean false from an injected callback is a failed heal too (planner: typed error, no retry)', async () => {
         const { ctx, rec } = createRecordingCtx({ responses: [authError(), 'never reached'], healed: false });
-        await assert.rejects(() => dispatchRole(ctx, 'reviewer', ROLE_CALL_OPTS.reviewer), LlmAuthSelfHealFailedError);
+        await assert.rejects(() => dispatchRole(ctx, 'planner', ROLE_CALL_OPTS.planner), (e) => e instanceof LlmAuthSelfHealFailedError && e.name === 'LlmAuthSelfHealFailedError');
         assert.equal(rec.dispatches.length, 1);
     });
 });

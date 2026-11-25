@@ -61,14 +61,14 @@ test('unpushed beads: launch refused with the push remedy, then accepted after c
     const fx = await createBeadsFixture();
     cleanups.push(fx.cleanup);
     const remote = await bareRemote();
-    await bd(`dolt remote add origin git+file://${remote}`, fx.dir);
+    await bd(`dolt remote add origin git+file:///${remote.split(path.sep).join('/').replace(/^[/]/, '')}`, fx.dir);
     await bd('dolt push', fx.dir);
     const t = await makeController(fx.dir);
 
     await bd('create "unpushed work" -t task -p 2 --silent', fx.dir);
     await assert.rejects(() => t.controller.launch({ ...LAUNCH }), (err) => {
         assert.equal(err.statusCode ?? err.status, 409);
-        assert.match(err.message, /bd dolt commit && bd dolt push/);
+        assert.match(err.message, /`bd dolt commit`, then `bd dolt push`/);
         return true;
     });
     assert.equal(t.spawned.length, 0, 'no child spawned');

@@ -821,7 +821,7 @@ export function createSprintController(deps = {}) {
                 throw new ApiError(409, unpushedBeadsMessage(), 'beads');
             }
             if (!outcome || outcome.pending !== false) {
-                beadsPushWarning = `could not verify that the local beads clone is pushed (${(outcome && outcome.why) || 'unknown reason'}); launching anyway -- if scope looks stale on the target member, run \`${UNPUSHED_BEADS_REMEDY}\` in the supervisor's beads folder.`;
+                beadsPushWarning = `could not verify that the local beads clone is pushed (${(outcome && outcome.why) || 'unknown reason'}); launching anyway -- if scope looks stale on the target member, in the supervisor's beads folder ${UNPUSHED_BEADS_REMEDY}.`;
                 console.warn(`[supervisor] WARNING: ${beadsPushWarning}`);
             }
         }

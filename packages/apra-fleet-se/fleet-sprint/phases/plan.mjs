@@ -304,7 +304,22 @@ export async function runPlanPhase({
         // pause channel (or a filed decision bead) it ends with the typed
         // blocked-on-operator error, never a plan rejection.
         const plannerReport = plannerOutcome ? parsePlannerReport(plannerOutcome.value) : null;
-        if (plannerReport && plannerReport.status === 'BLOCKED') {
+        // Exception: the planner also carried a usable decision (applied above:
+        // the work bead is set aside) and other open, unheld work remains in
+        // scope. That decision does not block the rest, so the cycle goes on
+        // exactly as before; a later cycle pauses once only held work is left.
+        let blockedButOtherWorkRemains = false;
+        if (plannerReport && plannerReport.status === 'BLOCKED' && plannerRecorded && typeof bdListScoped === 'function') {
+            const scopeBeads = await bdListScoped('');
+            const { heldIds, gateIds } = operatorHeldBeadIds(scopeBeads, sprintState, typeof fetchAllBeads === 'function' ? await fetchAllBeads() : null);
+            const unheldOpen = (Array.isArray(scopeBeads) ? scopeBeads : [])
+                .filter((b) => b && b.status !== 'closed' && !heldIds.has(String(b.id)) && !gateIds.has(String(b.id)));
+            if (unheldOpen.length > 0) {
+                blockedButOtherWorkRemains = true;
+                log(`[fleet-sprint] Plan C${cycle} R${planningRounds}: planner reported BLOCKED with a decision recorded, but ${unheldOpen.length} open bead(s) are not held by it; planning continues with the rest.`);
+            }
+        }
+        if (plannerReport && plannerReport.status === 'BLOCKED' && !blockedButOtherWorkRemains) {
             const site = `Plan C${cycle} R${planningRounds}`;
             let record = plannerRecorded;
             if (!record) {
