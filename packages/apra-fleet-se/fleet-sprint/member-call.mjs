@@ -334,10 +334,13 @@ export function createMemberCall(deps = {}) {
                 kbMaintainerVerdicts.set(memberId, 'unsupported');
                 throw fleetTooOldError(member, 'it answered unknown option --kb-maintainer');
             }
-            // The flag was accepted (no option was rejected): a definite verdict
-            // even after an inconclusive probe, so the member is not re-probed.
-            if (spec.kbMaintainer === true && !/unknown option/.test(resultText(res))) kbMaintainerVerdicts.set(memberId, 'supported');
-            return parseRemoteOutput(res, what);
+            // Cache 'supported' only after the call actually succeeded (the output
+            // parsed without throwing): a failure for another reason (command not
+            // found, transport error, non-JSON output) proves nothing about the flag,
+            // so the member is probed again next time.
+            const parsed = parseRemoteOutput(res, what);
+            if (spec.kbMaintainer === true) kbMaintainerVerdicts.set(memberId, 'supported');
+            return parsed;
         } finally {
             // Even after a failed send_files: a partial delivery may have landed.
             await deleteRemoteArgsFile(member, cmds, argsPath);
