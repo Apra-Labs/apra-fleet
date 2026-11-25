@@ -54,7 +54,7 @@ import { createDashboard, registerDashboardRoutes } from '../src/supervisor/dash
 import { createBeadsPushedProbe } from '../src/supervisor/beads-pushed-check.mjs';
 import { createSprintController, registerSprintRoutes, defaultMemberOverlapGuard, ApiError } from '../src/supervisor/api.mjs';
 import { createScopeGuard, formatScopeConflict, formatMissingRoots } from '../src/supervisor/scope-overlap.mjs';
-import { listFleetMembers, executeFleetCommand, registerFleetMember, updateFleetMember } from '../src/supervisor/fleet-members.mjs';
+import { listFleetMembers, executeFleetCommand, registerFleetMember, updateFleetMember, releaseFleetMemberReservation } from '../src/supervisor/fleet-members.mjs';
 import { ensureBacklogMember, BacklogMemberRefusedError } from '../src/supervisor/backlog-member.mjs';
 import { BeadsViewUnavailableError, createBeadsView, createBeadsViewCommand, createLaunchRowsFetcher, createSnapshotRowsReader } from '../src/supervisor/beads-view.mjs';
 import { createDoltOrphanSweep, normalizeMsysPathForPlatform } from '../src/supervisor/dolt-orphan-sweep.mjs';
@@ -204,8 +204,11 @@ export function createLaunchScopeGuard({ ledger, beadsView, launchFetchOpts }) {
  * @returns {(ctx: { members: string[], issueRoots: string[] }) => Promise<void>}
  */
 export function composeBeforeLaunch({ memberOverlapGuard, scopeGuard }) {
-    return async ({ members, issueRoots }) => {
-        await memberOverlapGuard({ members, issueRoots });
+    return async ({ members, issueRoots, membersList }) => {
+        // membersList: launch()'s one member-list read (with any stale
+        // reservation it just released cleared), so the guard judges the same
+        // view instead of re-reading the fleet server.
+        await memberOverlapGuard({ members, issueRoots, membersList });
         let scopeResult;
         try {
             scopeResult = await scopeGuard.checkLaunch(issueRoots);
@@ -542,7 +545,14 @@ export async function serveMain(argv = process.argv.slice(2), deps = {}) {
     // HERE -- createReconciler()'s own default is a safe no-op (see
     // reconcile.mjs's module doc) so nothing outside this production entry
     // point can accidentally send a real signal to an arbitrary pid.
-    const reconciler = createReconciler({ ledger, history, killPid });
+    // The fleet-server collaborators let force-release clear a holder id that
+    // has no ledger entry but still holds members on the fleet server.
+    const releaseMemberReservation = ({ member, holder }) => releaseFleetMemberReservation({ member, holder, resolveConnection: resolveFleetServerConnection });
+    const reconciler = createReconciler({
+        ledger, history, killPid,
+        listMembers: () => listFleetMembers({ resolveConnection: resolveFleetServerConnection }),
+        releaseMemberReservation,
+    });
     // eft.4.5: re-adopts still-live children by PID at startup (see below),
     // registering their recovered --viewer-port with the spawner seam so
     // they are tracked/watchdog-monitored/HTTP-proxyable exactly like a
@@ -710,6 +720,7 @@ export async function serveMain(argv = process.argv.slice(2), deps = {}) {
         beadsIdentity,
         backlogMember,
         checkBeadsPushed: createBeadsPushedProbe({ cwd: repoRoot }),
+        releaseMemberReservation,
     });
     registerSprintRoutes(supervisor, sprintController);
 

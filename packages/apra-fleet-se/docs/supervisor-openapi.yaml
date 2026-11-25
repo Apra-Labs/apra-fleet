@@ -537,6 +537,19 @@ paths:
                       Non-fatal launch warnings, e.g. the roleMap used the
                       deprecated "orchestrator" key instead of "backlog".
                       Empty when there is nothing to warn about.
+                  staleReservationsReleased:
+                    type: array
+                    description: >
+                      Present only when the launch released fleet-server
+                      reservations whose holder this supervisor's history
+                      records as ended (stale-holder rule in
+                      supervisor-api.md).
+                    items:
+                      type: object
+                      properties:
+                        member: { type: string }
+                        holder: { type: string }
+                        event: { type: string }
                   buildVersionWarning:
                     type: string
                     nullable: true
@@ -576,7 +589,13 @@ paths:
             incarnation of this issue root ended with a deterministic,
             unaddressed terminal reason and overrideRelaunchGate was not
             true) or the eft.5.2 member-overlap guard (field "members": the
-            member union intersects another active reservation).
+            member union intersects another active reservation). A holder
+            with no ledger entry here (fleet-server-only) is named with its
+            recovery: POST /api/reservations/<holder>/force-release, or the
+            per-member member_reservation force_release form. Such a holder
+            is released before the guard (and never causes a 409) only when
+            this supervisor's history records it as ended -- see
+            supervisor-api.md "Stale server-side reservations".
           content:
             application/json:
               schema: { $ref: "#/components/schemas/FieldError" }
@@ -678,8 +697,15 @@ paths:
         Releases BOTH ledger axes (members + issueRoots) atomically, best-
         effort kills the reservation's still-live child (SIGKILL, in the
         production wiring; a kill failure never blocks the release), and
-        records a FORCE_RELEASED history event. Only touches this
-        supervisor's own local ledger -- see supervisor-api.md.
+        records a FORCE_RELEASED history event. When the ledger has NO
+        entry for sprintId but fleet-server members carry reservedBy ==
+        sprintId (for example an older version's branch-name holder, or a
+        dead sprint launched directly from the CLI), those member
+        reservations are released instead (conditional on that holder), a
+        FORCE_RELEASED history event is recorded, and audit carries
+        serverOnly true and releasedMembers. 404 only when neither the
+        ledger nor any member holds the id -- see supervisor-api.md
+        "Stale server-side reservations".
       parameters:
         - in: path
           name: sprintId
@@ -714,14 +740,27 @@ paths:
                       recorded), and branch/base/goal (each null for
                       legacy entries) -- captured before release so a
                       dashboard Restart control can re-POST /api/sprints
-                      without a separate lookup.
+                      without a separate lookup. For a fleet-server-only
+                      holder: serverOnly (true), releasedMembers (the
+                      members released) and, when the fleet server refused
+                      any release, failedMembers [{member, error}].
+                    properties:
+                      serverOnly: { type: boolean }
+                      releasedMembers: { type: array, items: { type: string } }
+                      failedMembers:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            member: { type: string }
+                            error: { type: string }
         "400":
           description: missing sprintId in path
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "404":
-          description: no live reservation for this sprint id
+          description: neither the ledger nor any fleet-server member holds this id
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }

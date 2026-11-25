@@ -201,6 +201,14 @@ short-circuits before anything downstream runs:
      reservation made by some OTHER means (e.g. a workflow/cli-launched
      sprint that reserved directly via the fleet's `member_reservation`
      tool and never touched this ledger at all).
+   A conflict whose holder has NO ledger entry here (a fleet-server-only
+   holder) gets the recovery appended to its part of the `409` message: the
+   holder id, `POST /api/reservations/<holder>/force-release`, and the
+   per-member `member_reservation {"member_name":"<m>","action":"force_release"}`
+   form. Before this guard runs, `launch()` releases a fleet-server-only
+   holder that the stale-holder rule (see "Stale server-side reservations"
+   below) proves dead, so such a holder never blocks the launch; the `201`
+   response then carries `staleReservationsReleased: [{member, holder, event}]`.
    This check runs strictly BEFORE `ledger.claim()`, so a rejected launch
    never touches the ledger -- byte-identical, no partial claim.
 4. **Issue-scope overlap guard** (`createScopeGuard().checkLaunch()` in
@@ -322,11 +330,44 @@ These are two different operator actions, easy to confuse:
   enough of the original launch (`branch`, `base`, `goal`, `childPid`,
   whether the kill landed) that a dashboard "Restart" control can replay the
   same `POST /api/sprints` request without a separate lookup.
-- Force-release **only touches this supervisor's own local ledger** -- it
-  does not reach into a different tracking mechanism the fleet server might
-  have (that's the same server-side `reservedBy` record `GET /api/members`
-  and the member-overlap guard already consult independently) -- so if a
-  reservation is wedged on BOTH axes independently, check both.
+- For an id WITH a ledger entry, force-release touches only this
+  supervisor's own ledger (the child, when it exits, releases its own
+  fleet-server reservations).
+- For an id with NO ledger entry, force-release looks the id up on the fleet
+  server instead: every member whose `reservedBy` equals the id exactly is
+  released (`member_reservation` action `release` with `sprint_id` = the id,
+  so a member someone else re-reserved meanwhile is never cleared), a
+  `force-released` history event is recorded with those members, and the
+  response is `200` with `audit.serverOnly: true` and
+  `audit.releasedMembers` (plus `audit.failedMembers` for any release the
+  fleet server refused). This is how an older-version holder written as a
+  branch name, or a dead sprint launched directly from the CLI, is cleared.
+  It is still `404` when neither the ledger nor any member holds the id.
+
+## Stale server-side reservations
+
+A member's fleet-server `reservedBy` can outlive its sprint (a child that
+died before releasing, or an older version that wrote the branch name as
+the holder). The rule `launch()` applies (`isProvablyDeadHolder()` in
+`src/supervisor/api.mjs`):
+
+- A holder with a ledger entry here is a live sprint of this supervisor and
+  is NEVER released by a launch.
+- A holder with no ledger entry is released ONLY when this supervisor's
+  history records a terminal or release event for exactly that id
+  (`child-exited`, `finished`, `launch-failed`, `auto-released`,
+  `aborted-by-restart`, `force-released`). The release is logged loudly
+  (`STALE RESERVATION RELEASED`, naming member and holder).
+- Any other holder -- including one in the branch-name form, or a sprint
+  launched directly from the CLI, which is live but never in this ledger --
+  is NOT released: absence from the ledger alone never proves a holder
+  dead. The launch keeps the `409`, which names the holder and the recovery
+  (force-release route for that holder id, or the per-member
+  `member_reservation` force-release). After the operator runs it, the same
+  launch succeeds.
+
+Supervisor startup does not run this pass (the fleet server may not be
+reachable yet); it runs at each launch for the requested members only.
 
 ## Dolt-push mutex and child-id allocator: why they exist, and why no 409s
 

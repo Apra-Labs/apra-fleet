@@ -666,7 +666,8 @@ describe('api -- apra-fleet-eft.5.2 member-axis overlap check (default beforeLau
                 && err.status === 409
                 && err.message === formatMemberConflict([
                     { sprintId: 's1', members: ['alice'] },
-                    { sprintId: 's2', members: ['carol'] },
+                    // s2 has no ledger entry: its part names the recovery.
+                    { sprintId: 's2', members: ['carol'], serverOnly: true },
                 ]),
         );
     });

@@ -180,10 +180,86 @@ function unreservableMemberNamesFromList(raw) {
  * @returns {string}
  */
 export function formatMemberConflict(conflicts) {
-    const parts = conflicts.map(
-        (c) => `sprint '${c.sprintId}' already claims [${c.members.join(', ')}]`,
-    );
+    const parts = conflicts.map((c) => {
+        const head = `sprint '${c.sprintId}' already claims [${c.members.join(', ')}]`;
+        return c.serverOnly ? `${head} (${serverOnlyHolderRecovery(c.sprintId, c.members)})` : head;
+    });
     return `member overlap rejects launch: ${parts.join('; ')}`;
+}
+
+/**
+ * Recovery text for a holder that only the fleet server knows about (no
+ * ledger entry in this supervisor). Such a holder may be a live sprint launched
+ * directly through the CLI, so it is never released automatically unless the
+ * stale-holder rule (isProvablyDeadHolder) proves it dead; the operator gets the
+ * exact commands instead.
+ * @param {string} holderId
+ * @param {string[]} members
+ * @returns {string}
+ */
+export function serverOnlyHolderRecovery(holderId, members) {
+    const perMember = members
+        .map((m) => `member_reservation {"member_name":"${m}","action":"force_release"}`)
+        .join(' ; ');
+    return `held on the fleet server by '${holderId}', which is not a sprint of this supervisor and may still be running ` +
+        `(for example a sprint launched directly from the CLI). If that sprint is gone, release it with ` +
+        `POST /api/reservations/${encodeURIComponent(holderId)}/force-release, or per member: ${perMember}`;
+}
+
+/**
+ * A copy of a listMembers()-shaped result with `reservedBy` cleared on every
+ * member whose stale reservation was just released, so the overlap guard
+ * judges the post-release state without a second fleet read.
+ * @param {object|object[]} raw
+ * @param {Array<{ member: string, holder: string }>} released
+ * @returns {{ members: object[] }}
+ */
+function withoutReleasedHolders(raw, released) {
+    const list = Array.isArray(raw) ? raw : (raw && Array.isArray(raw.members) ? raw.members : []);
+    const byMember = new Map(released.map((r) => [r.member, r.holder]));
+    return {
+        members: list.map((m) => (m && typeof m === 'object' && byMember.has(m.name) && m.reservedBy === byMember.get(m.name)
+            ? { ...m, reservedBy: null }
+            : m)),
+    };
+}
+
+/**
+ * History events that prove a sprint id is no longer running: this
+ * supervisor launched it and recorded its end (exit, finish, launch failure)
+ * or released its reservation.
+ */
+const DEAD_HOLDER_EVENTS = new Set([
+    HISTORY_EVENTS.ABORTED_BY_RESTART,
+    HISTORY_EVENTS.FORCE_RELEASED,
+    HISTORY_EVENTS.AUTO_RELEASED,
+    HISTORY_EVENTS.CHILD_EXITED,
+    HISTORY_EVENTS.FINISHED,
+    HISTORY_EVENTS.LAUNCH_FAILED,
+]);
+
+/**
+ * The stale-holder rule (docs/supervisor-api.md "Stale server-side
+ * reservations"). A fleet-server reservation holder is provably dead ONLY
+ * when (1) this supervisor's ledger holds no entry for it AND (2) this
+ * supervisor's history records a terminal or release event for exactly that
+ * id. Absence from the ledger alone proves nothing: a sprint launched
+ * directly through the CLI is live but never in this ledger, and an
+ * older-version holder written as a branch name has no history either. Both
+ * keep the 409 with the recovery commands instead.
+ * @param {string} holderId
+ * @param {{ get: (id: string) => object|undefined }} ledger
+ * @param {{ forSprint?: (id: string) => object[] }} history
+ * @returns {{ dead: boolean, event?: string }}
+ */
+export function isProvablyDeadHolder(holderId, ledger, history) {
+    if (typeof holderId !== 'string' || holderId.length === 0) return { dead: false };
+    if (ledger.get(holderId)) return { dead: false };
+    if (!history || typeof history.forSprint !== 'function') return { dead: false };
+    let events;
+    try { events = history.forSprint(holderId); } catch { return { dead: false }; }
+    const hit = (events ?? []).filter((e) => e && DEAD_HOLDER_EVENTS.has(e.event)).pop();
+    return hit ? { dead: true, event: hit.event } : { dead: false };
 }
 
 /**
@@ -238,7 +314,9 @@ export function defaultMemberOverlapGuard(ledger, listMembers) {
             conflictsBySprint.get(sprintId).add(member);
         };
 
+        const ledgerIds = new Set();
         for (const reservation of ledger.list()) {
+            ledgerIds.add(reservation.sprintId);
             for (const m of (reservation.members ?? [])) {
                 if (requestSet.has(m)) addConflict(reservation.sprintId, m);
             }
@@ -268,7 +346,14 @@ export function defaultMemberOverlapGuard(ledger, listMembers) {
 
         if (conflictsBySprint.size > 0) {
             const conflicts = [...conflictsBySprint.entries()]
-                .map(([sprintId, members]) => ({ sprintId, members: [...members].sort() }))
+                .map(([sprintId, members]) => ({
+                    sprintId,
+                    members: [...members].sort(),
+                    // A holder only the fleet server knows: the message names
+                    // the recovery (it may be a live CLI sprint, so it is never
+                    // released here).
+                    ...(ledgerIds.has(sprintId) ? {} : { serverOnly: true }),
+                }))
                 .sort((a, b) => a.sprintId.localeCompare(b.sprintId));
             throw new ApiError(409, formatMemberConflict(conflicts), 'members');
         }
@@ -448,6 +533,10 @@ export function defaultBuildVersion() {
  *     launch()): degraded -> 503 with the reason; member list unreadable ->
  *     503; absent backlog role -> injected; a different member -> 400.
  *     Absent (tests, older wiring) -> today's unpinned behaviour.
+ *   releaseMemberReservation?: ({ member: string, holder: string }) => Promise<{ ok: boolean, error?: string }>,
+ *     Releases one member's fleet-server reservation, conditional on its
+ *     holder. launch() calls it only for a holder isProvablyDeadHolder()
+ *     proves dead; absent -> no server-side reservation is ever released.
  * }} deps
  */
 // Every top-level key POST /api/sprints accepts (incl. aliases issue/target_issue,
@@ -481,6 +570,10 @@ export function createSprintController(deps = {}) {
     // Absent (tests, older wiring) -> no unpushed-beads check.
     const checkBeadsPushed = typeof deps.checkBeadsPushed === 'function' ? deps.checkBeadsPushed : null;
     const backlogMemberHandle = deps.backlogMember && typeof deps.backlogMember.get === 'function' ? deps.backlogMember : null;
+    // ({ member, holder }) => Promise<{ ok: boolean, error?: string }>: releases
+    // one member's fleet-server reservation, conditional on `holder`. Absent ->
+    // launch never releases a server-side reservation.
+    const releaseMemberReservation = typeof deps.releaseMemberReservation === 'function' ? deps.releaseMemberReservation : null;
     const beadsSummaryForLaunch = () => {
         if (!beadsIdentity || typeof beadsIdentity.get !== 'function') return null;
         try {
@@ -851,8 +944,18 @@ export function createSprintController(deps = {}) {
             }
         }
 
+        // Stale server-side reservations: a requested member whose fleet-server
+        // holder is not a ledger sprint is released ONLY when the stale-holder
+        // rule (isProvablyDeadHolder) proves that holder dead; otherwise the
+        // overlap guard below keeps the 409 and names the recovery. A ledger
+        // holder (a live sprint of this supervisor) is never touched here.
+        const staleReleased = await releaseProvablyDeadHolders(union, membersListRaw);
+        const guardMembersList = staleReleased.length > 0
+            ? withoutReleasedHolders(membersListRaw, staleReleased)
+            : membersListRaw;
+
         // eft.5.2 seam: reject overlapping launches (409) BEFORE spawning a child.
-        await beforeLaunch({ members: union, issueRoots, membersList: membersListRaw });
+        await beforeLaunch({ members: union, issueRoots, membersList: guardMembersList });
 
         // apra-fleet-k7b.1: generate the sprintId BEFORE spawning (not after,
         // as before) so it can be forwarded into the child's own argv as
@@ -952,7 +1055,44 @@ export function createSprintController(deps = {}) {
             buildVersionWarning,
             ...(beadsPushWarning ? { beadsPushWarning } : {}),
             warnings: beadsPushWarning ? [...aliasWarnings, beadsPushWarning] : aliasWarnings,
+            ...(staleReleased.length > 0 ? { staleReservationsReleased: staleReleased } : {}),
         };
+    }
+
+    /**
+     * Release each requested member's fleet-server reservation whose holder
+     * the stale-holder rule proves dead. Needs both the member list read and
+     * the injected releaseMemberReservation; without either nothing is
+     * released (the overlap guard then reports the holder). Each release is
+     * conditional on the holder (action "release" with sprint_id = holder), so
+     * a member another sprint re-reserved in between is never cleared.
+     * @returns {Promise<Array<{ member: string, holder: string, event: string }>>}
+     */
+    async function releaseProvablyDeadHolders(union, raw) {
+        if (!releaseMemberReservation || raw === undefined) return [];
+        const list = Array.isArray(raw) ? raw : (raw && Array.isArray(raw.members) ? raw.members : []);
+        const wanted = new Set(union);
+        const released = [];
+        for (const m of list) {
+            if (!m || typeof m !== 'object' || !m.name || !m.reservedBy || m.unreservable) continue;
+            if (!wanted.has(m.name)) continue;
+            const verdict = isProvablyDeadHolder(m.reservedBy, ledger, history);
+            if (!verdict.dead) continue;
+            let out;
+            try {
+                // eslint-disable-next-line no-await-in-loop -- one fleet call per member, serialized.
+                out = await releaseMemberReservation({ member: m.name, holder: m.reservedBy });
+            } catch (err) {
+                out = { ok: false, error: err && err.message ? err.message : String(err) };
+            }
+            if (out && out.ok) {
+                console.warn(`[supervisor] STALE RESERVATION RELEASED: member '${m.name}' was held on the fleet server by '${m.reservedBy}', which this supervisor's history records as ended ('${verdict.event}') and which holds no ledger entry.`);
+                released.push({ member: m.name, holder: m.reservedBy, event: verdict.event });
+            } else {
+                console.error(`[supervisor] could not release stale reservation of member '${m.name}' held by '${m.reservedBy}': ${(out && out.error) || 'unknown error'}`);
+            }
+        }
+        return released;
     }
 
     // Additive list-row fields for a sprint that already reached a terminal
