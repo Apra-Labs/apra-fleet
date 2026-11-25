@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "dfb66cdb8c3edd97b3eeef1c6639abb5e8450e2a",
     "branch": "main",
-    "entry_count": 222
+    "entry_count": 223
   },
   "entries": [
     {
@@ -3057,6 +3057,29 @@
         "tests/helpers/file-kb-data-dir.ts": "d1a573362a85d638ce4aa40dc964a76b90a2cae3",
         "tests/setup.ts": "3b840d57c8d34ed1517efe3b4c57a70c0fc85ee1",
         "vitest.config.ts": "9a6bf830af480f30786052e44c2feb951c8abbee"
+      }
+    },
+    {
+      "id": "a4e858b3-f95a-4c33-8779-13e811856f7a",
+      "type": "knowledge",
+      "title": "Link-guard reads that overlap a pull on the same clone are discarded as baselines",
+      "summary": "beads-scope.mjs counts pulls per member (pullEpochs, pullsInFlight), bumped for every bd dolt pull even before the scope is known. A snapshot read or ensureLinkBaseline read is noted only when no pull on that clone started or ran while it was taken (readUnraced).",
+      "symbols": [
+        "createBeadsScope",
+        "ensureLinkBaseline",
+        "fetchAllBeadsShared",
+        "noteRead",
+        "notePull"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/beads-scope.mjs",
+        "packages/apra-fleet-se/fleet-sprint/parent-link-guard.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-25T14:20:04.383Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/beads-scope.mjs": "dbbf833b9ff1c0927b4354c41cbdb08b19945032",
+        "packages/apra-fleet-se/fleet-sprint/parent-link-guard.mjs": "e5e420c466fabc4cfc513e891e3b1697844c007c"
       }
     },
     {
