@@ -785,13 +785,20 @@ describe('execution-role dispatch: retry and degrade ladders', () => {
         assert.deepStrictEqual(p.degrade.neverSynthesizes, [true], 'deployed:true is what no degrade path may ever fabricate.');
         assert.strictEqual(p.degrade.verdictField, 'deployed', 'The deployer answers in `deployed`, not `verdict`.');
 
+        // A heal that does not heal ends the ladder but never aborts the
+        // sprint: it logs loudly and degrades.
         const authRun = createRecordingCtx({ responses: [authError()] });
         await dispatchRole(authRun.ctx, 'deployer', ROLE_CALL_OPTS.deployer);
+        assert.ok(authRun.rec.logs.some((m) => /LLM auth self-heal failed/.test(m)), 'a failed heal is logged loudly');
         assert.strictEqual(
             authRun.rec.authHeals.length,
             1,
             "An auth failure self-heals so the next cycle's deploy is not walled off identically."
         );
+        const healedDeploy = createRecordingCtx({ responses: [authError()], healed: true });
+        const healedDeployOutcome = await dispatchRole(healedDeploy.ctx, 'deployer', ROLE_CALL_OPTS.deployer);
+        assert.strictEqual(healedDeploy.rec.authHeals.length, 1);
+        assert.strictEqual(healedDeployOutcome.value.deployed, false, 'A healed auth failure on the single-attempt ladder still degrades.');
 
         const unrecognised = createRecordingCtx({ responses: [new TypeError('not a dispatch failure at all')] });
         await assert.rejects(
@@ -1095,13 +1102,19 @@ describe('execution-role dispatch: retry and degrade ladders', () => {
             );
         }
 
+        // A failed heal ends the ladder but never aborts the sprint: it logs
+        // loudly and proceeds without a report.
         const authRun = createRecordingCtx({ responses: [authError()] });
         await dispatchRole(authRun.ctx, 'harvester', ROLE_CALL_OPTS.harvester);
+        assert.ok(authRun.rec.logs.some((m) => /LLM auth self-heal failed/.test(m)), 'a failed heal is logged loudly');
         assert.strictEqual(
             authRun.rec.authHeals.length,
             1,
             'The harvester still self-heals an auth failure: the same member and credentials are reused by the NEXT sprint.'
         );
+        const healedHarvest = createRecordingCtx({ responses: [authError()], healed: true });
+        await dispatchRole(healedHarvest.ctx, 'harvester', ROLE_CALL_OPTS.harvester);
+        assert.strictEqual(healedHarvest.rec.authHeals.length, 1, 'A healed auth failure on the single-attempt ladder still proceeds without a report.');
 
         const unrecognised = createRecordingCtx({ responses: [new TypeError('not a dispatch failure at all')] });
         await assert.rejects(

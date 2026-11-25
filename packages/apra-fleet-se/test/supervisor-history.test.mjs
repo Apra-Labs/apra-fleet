@@ -243,6 +243,13 @@ describe('history -- isDeterministicTerminalReason() (apra-fleet-gey.2)', () => 
         );
     });
 
+    test('false for BLOCKED_ON_OPERATOR -- an operator answering the decision is what unblocks a relaunch', () => {
+        assert.equal(
+            isDeterministicTerminalReason({ sprintId: 's1', event: HISTORY_EVENTS.FINISHED, terminalReason: 'BLOCKED_ON_OPERATOR' }),
+            false,
+        );
+    });
+
     test('false for a FINISHED record with no terminalReason at all', () => {
         assert.equal(isDeterministicTerminalReason({ sprintId: 's1', event: HISTORY_EVENTS.FINISHED, terminalReason: null }), false);
     });

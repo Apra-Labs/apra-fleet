@@ -4,6 +4,7 @@ import { isTypedAbortError, isNoMutationDispatchFailure } from '../fleet-sprint/
 import {
     StalledSprintError,
     SprintPlanRejectedError,
+    SprintBlockedOnOperatorError,
     ReviewerContractViolationError,
     GitSyncError,
     DoltSyncError,
@@ -53,6 +54,12 @@ const ROWS = [
     {
         label: 'SprintPlanRejectedError',
         build: () => new SprintPlanRejectedError('plan rejected'),
+        isAbort: true,
+        isNoMutation: false,
+    },
+    {
+        label: 'SprintBlockedOnOperatorError',
+        build: () => new SprintBlockedOnOperatorError('waiting on an operator'),
         isAbort: true,
         isNoMutation: false,
     },
