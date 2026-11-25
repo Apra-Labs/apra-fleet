@@ -49,9 +49,53 @@ const PROBE_PROMPT = 'Reply with the single word: ok.';
 const PROBE_TIMEOUT_S = 60;
 
 /** The default injected sleep: a non-blocking timer that keeps the event loop
- * (and the viewer's /state endpoint) responsive while the sprint is paused. */
-function defaultSleep(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+ * (and the viewer's /state endpoint) responsive while the sprint is paused.
+ * An optional AbortSignal cancels it: the timer is cleared and the promise
+ * resolves at once, so a wait cut short leaves no pending timer behind. */
+function defaultSleep(ms, { signal } = {}) {
+    return new Promise((resolve) => {
+        if (signal && signal.aborted) { resolve(); return; }
+        const onAbort = () => { clearTimeout(timer); resolve(); };
+        const timer = setTimeout(() => {
+            if (signal) signal.removeEventListener('abort', onAbort);
+            resolve();
+        }, ms);
+        if (signal) signal.addEventListener('abort', onAbort, { once: true });
+    });
+}
+
+/** The pause-end promise of a requestPause() return value, or null when the
+ * caller's requestPause returns no handle (older engines, test mocks). */
+function pauseEndedOf(handle) {
+    const ended = handle && handle.ended;
+    return ended && typeof ended.then === 'function' ? ended : null;
+}
+
+/**
+ * Waits `waitMs` on the injected sleep, racing it against an operator RESUME
+ * of the pause (the pause-end handle settling with outcome 'resume'). Resolves
+ * { wake: 'timer' } or { wake: 'resume', reason }. A 'stop' outcome does not
+ * end this wait (the stop surfaces on the probe as before); it is recorded on
+ * the returned `pauseEnd` box for callers that act on it.
+ */
+async function waitOrOperatorResume(sleep, waitMs, ended) {
+    if (!ended) {
+        await sleep(waitMs);
+        return { wake: 'timer', pauseEnd: null };
+    }
+    const box = { pauseEnd: null };
+    const cancel = new AbortController();
+    const resumed = ended.then((end) => {
+        box.pauseEnd = end || null;
+        return end && end.outcome === 'resume' ? end : new Promise(() => {});
+    });
+    const timer = Promise.resolve(sleep(waitMs, { signal: cancel.signal })).then(() => null);
+    const winner = await Promise.race([resumed, timer]);
+    // Clear a still-pending default timer: nothing may keep the process alive
+    // once the wait is over.
+    cancel.abort();
+    if (winner) return { wake: 'resume', reason: winner.reason, pauseEnd: box.pauseEnd };
+    return { wake: 'timer', pauseEnd: box.pauseEnd };
 }
 
 /**
@@ -59,10 +103,13 @@ function defaultSleep(ms) {
  * retry.usageLimitPause is set.
  *
  * @param {object} deps
- * @param {(reason: string, opts?: { resumeAt?: string, source?: string }) => (void|Promise<void>)} deps.requestPause
+ * @param {(reason: string, opts?: { resumeAt?: string, source?: string }) => any} deps.requestPause
  *   engine cooperative-pause primitive (script-facing, apra-fleet-hzeb.3): pausing
  *   releases member reservations, the watchdog reads PAUSED, and the dashboard
- *   shows the expected resume time.
+ *   shows the expected resume time. It may return (or resolve to) a pause-end
+ *   handle `{ ended: Promise<{ outcome: 'resume'|'stop', reason }> }`: an
+ *   operator resume settling it ends the wait at once and goes straight to
+ *   the probe. Returning nothing keeps the plain timed wait.
  * @param {(reason: string) => Promise<void>} deps.requestResume
  *   engine resume primitive; its pre-resume hook re-reserves + resyncs the
  *   member as a HARD BARRIER before the probe dispatch runs.
@@ -74,8 +121,9 @@ function defaultSleep(ms) {
  *   USAGE_LIMIT_REPROBE_BACKOFF_MS); each falls back to
  *   USAGE_LIMIT_BUDGET_DEFAULTS.
  * @param {() => number} [deps.now] injected epoch-ms clock (default Date.now).
- * @param {(ms: number) => Promise<void>} [deps.sleep] injected timer (default a
- *   real non-blocking setTimeout).
+ * @param {(ms: number, opts?: { signal?: AbortSignal }) => Promise<void>} [deps.sleep]
+ *   injected timer (default a real non-blocking setTimeout that the optional
+ *   signal cancels).
  * @returns {(args: { member: string, roleLabel: string, signal: object|null,
  *   sessionId?: string|null, tier?: string }) =>
  *   Promise<{ resumed: true } | { resumed: false, error: Error }>}
@@ -155,18 +203,35 @@ export function createUsageLimitPauseController({
             // guarantees this runs OUTSIDE any git-sync bracket, so the
             // clean-state pause guard engages the pause here rather than
             // deferring it forever.
-            await requestPause(
+            const pauseHandle = await requestPause(
                 `usage limit on member ${member} (${roleLabel})`,
                 { ...(lastResumeAt ? { resumeAt: lastResumeAt } : {}), source: 'usage_limit' }
             );
-            // Sleep on the injected timer (never a blocking loop). A cooperative
-            // stop taken here surfaces on the next resume/probe below and is
-            // propagated, never swallowed.
-            await sleep(waitMs);
-            waitedMs += waitMs;
-            // Resume: the engine's pre-resume hook re-reserves + resyncs the
-            // member (a MemberReservationResumeError propagates as today).
-            await requestResume(`usage limit wait elapsed on member ${member} (${roleLabel})`);
+            // Sleep on the injected timer (never a blocking loop), raced
+            // against an operator resume of this pause when requestPause
+            // returned a pause-end handle. A cooperative stop taken here
+            // surfaces on the next resume/probe below and is propagated, never
+            // swallowed.
+            const waitStartedAt = now();
+            const waited = await waitOrOperatorResume(sleep, waitMs, pauseEndedOf(pauseHandle));
+            if (waited.wake === 'resume') {
+                // The operator resumed the run during the wait: the cause may
+                // be fixed, so probe now instead of sleeping on to the
+                // provider's resume time. The operator's resume already ran
+                // the pre-resume hook (re-reserve + resync), so no own
+                // requestResume here. The probe still decides: one that still
+                // sees the usage limit re-enters this loop.
+                waitedMs += Math.min(Math.max(now() - waitStartedAt, 0), waitMs);
+                log(
+                    `usage limit wait on member ${member} (${roleLabel}) woken by operator resume` +
+                    (waited.reason ? ` (${waited.reason})` : '') + ' -- probing now.'
+                );
+            } else {
+                waitedMs += waitMs;
+                // Resume: the engine's pre-resume hook re-reserves + resyncs the
+                // member (a MemberReservationResumeError propagates as today).
+                await requestResume(`usage limit wait elapsed on member ${member} (${roleLabel})`);
+            }
 
             // Probe before trusting the clock: one real dispatch to the same
             // member at the same tier.

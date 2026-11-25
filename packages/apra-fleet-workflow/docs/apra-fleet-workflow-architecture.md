@@ -313,6 +313,18 @@ supersedes a pause outright: it rejects every parked call with a
 `CancelledError` instead of leaving it blocked forever, so a paused run tears
 down the same way a cancelled one does rather than hanging.
 
+**Pause-end handle.** `requestPause()` returns `{ ended }`, a promise that
+resolves exactly once (it never rejects) when that pause ends: with
+`{ outcome: 'resume', reason }` once `requestResume()` has cleared it (after
+the pre-resume hook succeeded -- a rejecting hook leaves it pending), or
+`{ outcome: 'stop', reason }` when `requestStop()` tears it down. A script
+waiting on its own timer during a pause races that timer against `ended` to
+wake as soon as an operator resumes or stops the run. Calling `requestPause()`
+while a pause is already pending changes nothing and returns that same
+pending pause's handle; a pause requested after the run was stopped gets a
+handle already settled as `stop`. Callers that ignore the return value see no
+change.
+
 **Why deferred rather than immediate.** An immediate pause (block the very
 next call, whatever state it interrupts) would let a workflow's own
 multi-step sync sequence (e.g. pull, dispatch, push) get parked halfway

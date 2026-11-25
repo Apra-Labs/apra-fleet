@@ -317,6 +317,131 @@ describe('usage-limit controller: cooperative stop propagation', () => {
     });
 });
 
+/**
+ * A requestPause that returns a pause-end handle the test settles itself,
+ * modelling the engine's: each call records the pause and returns a fresh
+ * handle whose `ended` resolves when the test calls `end(outcome, reason)`.
+ */
+function handleRequestPause(rec) {
+    const handles = [];
+    const requestPause = (reason, opts) => {
+        rec.pauses.push({ reason, opts });
+        let resolve;
+        const ended = new Promise((r) => { resolve = r; });
+        handles.push({ end: (outcome, why) => resolve({ outcome, reason: why }) });
+        return { ended };
+    };
+    return { requestPause, handles };
+}
+
+const tick = () => new Promise((r) => setImmediate(r));
+async function until(cond, what) {
+    for (let i = 0; i < 200; i += 1) {
+        if (cond()) return;
+        await tick();
+    }
+    assert.fail(`timed out waiting for ${what}`);
+}
+
+// GUARDS: the operator-resume wake -- the controller races its wait against
+// the pause-end handle requestPause returns, so a dashboard /resume during the
+// wait probes at once instead of sleeping on to the provider's resume time.
+describe('usage-limit controller: operator resume wakes the wait', () => {
+    const neverSleep = () => new Promise(() => {});
+    const signal = { resumeAt: isoAt(T0 + HOUR), resumeAtSource: 'parsed' };
+
+    test('an operator resume during a never-ending wait probes at once, without its own requestResume, and logs the wake reason', async () => {
+        const { deps, rec } = recordingDeps({ agentResponses: ['ok'] });
+        const { requestPause, handles } = handleRequestPause(rec);
+        deps.requestPause = requestPause;
+        deps.sleep = neverSleep;
+        const controller = createUsageLimitPauseController(deps);
+
+        const run = controller({ member: 'bob', roleLabel: 'Doer streak [bead-1]', signal });
+        await until(() => handles.length === 1, 'the first pause');
+        assert.equal(rec.probes.length, 0, 'no probe before the resume');
+        handles[0].end('resume', 'Resume requested via dashboard /resume endpoint');
+
+        assert.deepEqual(await run, { resumed: true });
+        assert.equal(rec.probes.length, 1, 'the probe ran on the operator resume');
+        assert.equal(rec.resumes.length, 0, 'no own requestResume: the operator resume already ran the pre-resume hook');
+        assert.ok(
+            rec.logs.some((m) => m.includes('woken by operator resume') && m.includes('Resume requested via dashboard /resume endpoint')),
+            JSON.stringify(rec.logs)
+        );
+    });
+
+    test('after an operator-resume wake, a probe still reporting usage_limit re-enters the wait (second requestPause)', async () => {
+        const { deps, rec } = recordingDeps({
+            agentResponses: [usageLimitError({ signal: { resumeAt: isoAt(T0 + HOUR), resumeAtSource: 'parsed' } }), 'ok'],
+        });
+        const { requestPause, handles } = handleRequestPause(rec);
+        deps.requestPause = requestPause;
+        deps.sleep = neverSleep;
+        const controller = createUsageLimitPauseController(deps);
+
+        const run = controller({ member: 'bob', roleLabel: 'Reviewer', signal });
+        await until(() => handles.length === 1, 'the first pause');
+        handles[0].end('resume', 'operator');
+        await until(() => handles.length === 2, 'the second pause after the failed probe');
+        assert.equal(rec.pauses.length, 2, 'the run paused again');
+        assert.equal(rec.probes.length, 1);
+        handles[1].end('resume', 'operator again');
+
+        assert.deepEqual(await run, { resumed: true });
+        assert.equal(rec.probes.length, 2);
+        assert.equal(rec.resumes.length, 0);
+    });
+
+    test('a stop outcome on the handle does not wake the wait as a resume (no probe, no wake log)', async () => {
+        const { deps, rec } = recordingDeps({ agentResponses: ['ok'] });
+        const { requestPause, handles } = handleRequestPause(rec);
+        deps.requestPause = requestPause;
+        let releaseSleep;
+        deps.sleep = () => new Promise((r) => { releaseSleep = r; });
+        const controller = createUsageLimitPauseController(deps);
+
+        const run = controller({ member: 'bob', roleLabel: 'Reviewer', signal });
+        await until(() => handles.length === 1 && releaseSleep, 'the pause');
+        handles[0].end('stop', 'operator stop');
+        await tick(); await tick();
+        assert.equal(rec.probes.length, 0, 'a stop is not an operator resume');
+        releaseSleep();
+        await run;
+        assert.ok(!rec.logs.some((m) => m.includes('woken by operator resume')), JSON.stringify(rec.logs));
+        assert.equal(rec.resumes.length, 1, 'the timer path still calls its own requestResume');
+    });
+
+    test('when requestPause returns undefined the controller behaves as before: timed wait, own requestResume, then probe', async () => {
+        const { deps, rec } = recordingDeps({ agentResponses: ['ok'] });
+        const controller = createUsageLimitPauseController(deps);
+        const outcome = await controller({ member: 'bob', roleLabel: 'Reviewer', signal });
+        assert.deepEqual(outcome, { resumed: true });
+        assert.deepEqual(rec.sleeps, [HOUR], 'one full timed wait');
+        assert.equal(rec.resumes.length, 1, 'own requestResume after the wait');
+        assert.equal(rec.probes.length, 1);
+        assert.ok(!rec.logs.some((m) => m.includes('woken by operator resume')));
+    });
+
+    test('with the real default sleep, an operator wake clears the pending one-hour wait timer', async () => {
+        // Real default sleep (no deps.sleep) with a one-hour wait: if the
+        // pending timer were not cleared on wake this test process would keep
+        // an hour-long timer alive. We check the active timer handles directly.
+        const { deps, rec } = recordingDeps({ agentResponses: ['ok'] });
+        const { requestPause, handles } = handleRequestPause(rec);
+        deps.requestPause = requestPause;
+        delete deps.sleep;
+        const controller = createUsageLimitPauseController(deps);
+        const timersBefore = process.getActiveResourcesInfo().filter((r) => r === 'Timeout').length;
+        const run = controller({ member: 'bob', roleLabel: 'Reviewer', signal });
+        await until(() => handles.length === 1, 'the pause');
+        assert.equal(process.getActiveResourcesInfo().filter((r) => r === 'Timeout').length, timersBefore + 1, 'the wait timer is pending');
+        handles[0].end('resume', 'operator');
+        assert.deepEqual(await run, { resumed: true });
+        assert.equal(process.getActiveResourcesInfo().filter((r) => r === 'Timeout').length, timersBefore, 'the wait timer was cleared on wake');
+    });
+});
+
 // ---------------------------------------------------------------------------
 // 2. dispatchRole HOOK unit tests (real engine, recording ctx, stub controller).
 //

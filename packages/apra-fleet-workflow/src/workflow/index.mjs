@@ -524,6 +524,14 @@ export class FleetWorkflow extends EventEmitter {
         this._preResumeHook = null;
         this._inFlight = 0;
         this._pauseWaiters = [];
+        //   _pauseEnd       : the pause-end handle requestPause() returned for
+        //                     the CURRENT pause (requested or engaged), or null
+        //                     when no pause is pending. requestResume() settles
+        //                     it as 'resume' (after the pre-resume hook) and
+        //                     requestStop() as 'stop'; either way it is then
+        //                     cleared, so the next requestPause() starts a new
+        //                     handle. See _settlePauseEnd().
+        this._pauseEnd = null;
     }
 
     // Returns the active per-run store (see runStorage above), or
@@ -615,6 +623,10 @@ export class FleetWorkflow extends EventEmitter {
         for (const waiter of waiters) {
             waiter.reject(new CancelledError(`[Workflow Error] ${reason}`));
         }
+        // The current pause (if any) ended by a stop: tell whoever holds its
+        // pause-end handle, so a script waiting on a timer can tell a stop
+        // from a resume.
+        this._settlePauseEnd('stop', reason);
         for (const controller of this._activeControllers.values()) {
             controller.abort(new CancelledError(`[Workflow Error] ${reason}`));
         }
@@ -704,10 +716,28 @@ export class FleetWorkflow extends EventEmitter {
      *   informational to the engine, which does not interpret or act on
      *   them. Omitting `opts` is fully backwards compatible with existing
      *   single-arg callers.
+     * @returns {{ ended: Promise<{ outcome: 'resume' | 'stop', reason: string }> }}
+     *   A pause-end handle. `ended` RESOLVES (never rejects) exactly once,
+     *   when this pause ends: `outcome: 'resume'` once requestResume() has
+     *   cleared it (after its pre-resume hook succeeded -- a rejecting hook
+     *   leaves the pause, and the handle, pending), or `outcome: 'stop'` when
+     *   requestStop() tears it down. `reason` is the resume/stop reason. This
+     *   lets a script that waits on its own timer during the pause wake as
+     *   soon as an operator resumes or stops the run. Callers that ignore the
+     *   return value behave exactly as before.
+     *   Called while a pause is already requested or engaged, requestPause()
+     *   still changes nothing (no new event, the first pause's reason/opts
+     *   stand) and returns the handle of that SAME pending pause, which ends
+     *   when that pause ends. Called after requestStop() aborted the current
+     *   run, the pause is still recorded as today but the returned handle is
+     *   already settled with `outcome: 'stop'`.
      */
     requestPause(reason = 'Workflow run paused via requestPause()', opts = {}) {
-        if (this._paused || this._pauseRequested) return;
+        if (this._paused || this._pauseRequested) {
+            return this._pauseEndHandle();
+        }
         this._pauseRequested = true;
+        this._newPauseEnd();
         this.emit('pause:requested', this._pauseEventPayload({
             reason,
             resumeAt: opts.resumeAt ?? null,
@@ -717,6 +747,41 @@ export class FleetWorkflow extends EventEmitter {
         // pause engages right now; otherwise it engages later as in-flight
         // work drains (_exitActivity) or the guard opens (setPauseGuard).
         this._maybeEngagePause();
+        return this._pauseEndHandle();
+    }
+
+    // (pause-end handle) The handle of the current pending pause, created on
+    // demand. A pause requested after requestStop() already aborted the
+    // current run can never be meaningfully resumed, so its handle is
+    // returned already settled as ended by that stop.
+    _pauseEndHandle() {
+        const pauseEnd = this._pauseEnd || this._newPauseEnd();
+        const signal = this._currentSignal();
+        if (signal && signal.aborted) {
+            const why = signal.reason && signal.reason.message ? signal.reason.message : 'run already stopped';
+            this._settlePauseEnd('stop', why);
+        }
+        return pauseEnd.handle;
+    }
+
+    // (pause-end handle) Creates the deferred behind the handle requestPause()
+    // returns and makes it the current pause's. Its promise only ever
+    // resolves, so an ignored handle can never raise an unhandled rejection,
+    // and an unsettled one holds no timer (it cannot keep a process alive).
+    _newPauseEnd() {
+        let resolve;
+        const ended = new Promise((r) => { resolve = r; });
+        this._pauseEnd = { resolve, handle: { ended } };
+        return this._pauseEnd;
+    }
+
+    // (pause-end handle) Settles the current pause's handle once and clears
+    // it. A no-op when no pause is pending.
+    _settlePauseEnd(outcome, reason) {
+        const pauseEnd = this._pauseEnd;
+        if (!pauseEnd) return;
+        this._pauseEnd = null;
+        pauseEnd.resolve({ outcome, reason });
     }
 
     /**
@@ -754,6 +819,7 @@ export class FleetWorkflow extends EventEmitter {
         for (const waiter of waiters) {
             waiter.resolve();
         }
+        this._settlePauseEnd('resume', reason);
         this.emit('resumed', this._pauseEventPayload({ reason }));
     }
 
