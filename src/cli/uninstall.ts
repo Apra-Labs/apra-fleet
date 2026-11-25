@@ -1,10 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { execSync, spawn } from 'node:child_process';
+import { execFileSync, execSync, spawn } from 'node:child_process';
 import * as readlinePromises from 'node:readline/promises';
 import { serverVersion } from '../version.js';
 import { windowsExecutable } from '../os/windows-executable.js';
+import { planEnv, windowsCommand } from '../os/windows-command.js';
 import type { LlmProvider } from '../types.js';
 import { isApraFleetRunning } from './install.js';
 import { getServiceManager } from '../services/service-manager/index.js';
@@ -31,6 +32,25 @@ import {
 } from './config.js';
 import { BUILTIN_WORKFLOW_NAMES } from './workflow-assets.js';
 import { claudePluginsDir, isApraFleetStatusLine, uninstallClaudeMod } from './claude-mod.js';
+
+/**
+ * Remove the apra-fleet MCP registration via the Claude CLI. On win32 claude is
+ * resolved to an absolute path over absolute PATH entries only and started with
+ * argv, never as a command string through cmd.exe (which would search the
+ * current folder first, so a planted claude.cmd there would run). Throws when
+ * claude cannot be resolved or fails; the caller treats that as "nothing to remove".
+ */
+export function removeClaudeMcpServer(): void {
+  const args = ['mcp', 'remove', 'apra-fleet', '--scope', 'user'];
+  const plan = process.platform === 'win32' ? windowsCommand('claude') : null;
+  if (!plan) {
+    run('claude mcp remove apra-fleet --scope user', { stdio: 'ignore' });
+    return;
+  }
+  execFileSync(plan.file, [...plan.args, ...args], {
+    stdio: 'ignore', windowsHide: true, shell: plan.shell, env: planEnv(plan),
+  });
+}
 
 function run(cmd: string, opts?: Record<string, unknown>): void {
   const shellOpt = process.platform === 'win32' ? { shell: windowsExecutable('cmd.exe') } : {};
@@ -588,7 +608,7 @@ Options:
         console.log(`  - Removing MCP server via Claude CLI`);
         if (!dryRun) {
           try {
-            run('claude mcp remove apra-fleet --scope user', { stdio: 'ignore' });
+            removeClaudeMcpServer();
             anythingRemoved = true;
           } catch { /* already removed or not found */ }
         }

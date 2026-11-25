@@ -21,6 +21,13 @@ const FAKE_POWERSHELL = 'C:/Windows/System32/WindowsPowerShell/v1.0/powershell.e
 vi.mock('../src/os/windows-executable.js', () => ({
   windowsExecutable: (name: string) => (name === 'powershell.exe' ? FAKE_POWERSHELL : name),
 }));
+const FAKE_CLAUDE = 'C:/Users/x/AppData/Roaming/npm/claude.exe';
+vi.mock('../src/os/windows-command.js', () => ({
+  windowsCommand: (name: string) => (name === 'claude'
+    ? { kind: 'exe', file: FAKE_CLAUDE, args: [], shell: false, source: FAKE_CLAUDE, env: { NoDefaultCurrentDirectoryInExePath: '1' } }
+    : null),
+  planEnv: (plan: { env: Record<string, string> }) => ({ ...plan.env }),
+}));
 vi.mock('../src/cli/install.js', () => ({
   isApraFleetRunning: vi.fn().mockReturnValue(false),
 }));
@@ -174,10 +181,19 @@ describe('uninstall', () => {
     
     await runUninstall(['--yes']);
     
-    expect(execSync).toHaveBeenCalledWith(
-      expect.stringContaining('claude mcp remove apra-fleet'),
-      expect.any(Object)
-    );
+    if (process.platform === 'win32') {
+      // absolute program + argv, never a command string through cmd.exe
+      expect(execFileSync).toHaveBeenCalledWith(
+        FAKE_CLAUDE,
+        ['mcp', 'remove', 'apra-fleet', '--scope', 'user'],
+        expect.objectContaining({ shell: false }),
+      );
+    } else {
+      expect(execSync).toHaveBeenCalledWith(
+        expect.stringContaining('claude mcp remove apra-fleet'),
+        expect.any(Object)
+      );
+    }
   });
 
   it('removes only specific skills if requested', async () => {
