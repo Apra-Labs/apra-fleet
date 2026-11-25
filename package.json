@@ -66,6 +66,7 @@
     "check:kb-canonical": "node scripts/check-kb-canonical.mjs",
     "gen:openapi": "npm run gen:openapi --workspace=@apralabs/fleet-api-contract",
     "dist-pm": "node scripts/dist-pm.mjs",
+    "pack:stripped": "node scripts/pack-stripped.mjs",
     "build:sea": "node scripts/build-sea.mjs",
     "build:sea-config": "node scripts/gen-sea-config.mjs",
     "build:sea-package": "node scripts/package-sea.mjs",

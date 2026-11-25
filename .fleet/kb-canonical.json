@@ -1,9 +1,7 @@
 {
   "version": 3,
   "provenance": {
-    "commit": "dfb66cdb8c3edd97b3eeef1c6639abb5e8450e2a",
-    "branch": "main",
-    "entry_count": 218
+    "branch": "main"
   },
   "entries": [
     {
@@ -116,30 +114,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:15.988Z"
-    },
-    {
-      "id": "0b87931a-f912-416c-b03e-5fd4c26ac6ee",
-      "type": "knowledge",
-      "title": "execute_prompt resolved_tier/resolved_model are attached by a wrapper around executePromptCore",
-      "summary": "executePrompt is now a thin wrapper: executePromptCore writes into a mutable PromptResolution object after model resolution, and the wrapper merges resolved_tier/resolved_model into structuredContent of any returned object result. Early returns before resolution and thrown errors carry neither field.",
-      "symbols": [
-        "executePrompt",
-        "executePromptCore",
-        "PromptResolution",
-        "resolveModelForTier"
-      ],
-      "source_files": [
-        "src/tools/execute-prompt.ts",
-        "tests/execute-prompt-resolved-tier.test.ts",
-        "packages/apra-fleet-client/src/client/api.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-11-24T03:19:38.005Z",
-      "source_file_hashes": {
-        "packages/apra-fleet-client/src/client/api.mjs": "ed0eefe7dfe92f0145638204f3fcaf69eb35308b",
-        "src/tools/execute-prompt.ts": "2cdef64e525797cb388accb76fac8e7f8e7ce50d",
-        "tests/execute-prompt-resolved-tier.test.ts": "00e75945d536faaf095126af2c944a8c259a3203"
-      }
     },
     {
       "id": "0c2d907a-bee5-4324-b61e-6ee0e2bc4b74",
@@ -637,6 +611,25 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:13.625Z"
+    },
+    {
+      "id": "264002c2-36bd-4fbe-997e-518d5174abf8",
+      "type": "learning",
+      "title": "Build U+2028/U+2029 with String.fromCharCode in shipped scripts",
+      "summary": "strip-comments.mjs builds the line separator chars with String.fromCharCode(0x2028/0x2029) so the file stays ASCII. Backslash-u escapes written through the agent edit path landed as raw characters or bare digits, so check the bytes after writing any escape.",
+      "symbols": [
+        "countLines",
+        "isLineTerminatorChar",
+        "stripComments"
+      ],
+      "source_files": [
+        "scripts/lib/strip-comments.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-25T10:54:32.317Z",
+      "source_file_hashes": {
+        "scripts/lib/strip-comments.mjs": "4d0dff7d00fd1fdf2d8fc46d8ddca2e87ca2a164"
+      }
     },
     {
       "id": "266d51a9-b30a-4d52-bf4c-97f26de518d7",
@@ -3206,6 +3199,26 @@
       }
     },
     {
+      "id": "b6f81e56-5051-4387-8fb4-96b2a897b36a",
+      "type": "learning",
+      "title": "auto-sprint.js is a script body: compile it as an AsyncFunction, not node --check",
+      "summary": "The shipped auto-sprint.js uses top-level await and top-level return, and its only export is export const meta on line 1. node --check rejects it even when the code is valid. apra-pm/test/auto-sprint-whole-file-parse.test.mjs compiles the whole file as an async function body.",
+      "symbols": [
+        "logWorktreeRefusals",
+        "compileWorkflowBody"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/apra-pm/.claude/workflows/auto-sprint.js",
+        "packages/apra-fleet-se/apra-pm/test/auto-sprint-whole-file-parse.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-25T10:54:32.220Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/apra-pm/.claude/workflows/auto-sprint.js": "25beed97d8956ef3638e47828fc2a6e47d264730",
+        "packages/apra-fleet-se/apra-pm/test/auto-sprint-whole-file-parse.test.mjs": "1eed66ad08264ab9224b03f89c8b44f47650dcac"
+      }
+    },
+    {
       "id": "b7ec6763-407e-4ca3-8cf7-91183e33e39f",
       "type": "knowledge",
       "title": "Bitbucket git helper uses fixed username x-bitbucket-api-token-auth; verification is REST Bearer plus git ls-remote",
@@ -4785,6 +4798,15 @@
     }
   ],
   "demotions": [
+    {
+      "id": "0b87931a-f912-416c-b03e-5fd4c26ac6ee",
+      "at": "2026-11-25T11:39:18.465Z",
+      "reason": "withdrawn",
+      "note": "At HEAD, src/tools/execute-prompt.ts has no executePromptCore. The wrapper executePrompt (about line 716) calls executePromptImpl (line 741) with a PromptResolution object. The entry names a function that does not exist, so a lookup by that symbol fails.",
+      "evidence_files": [
+        "src/tools/execute-prompt.ts"
+      ]
+    },
     {
       "id": "a098caf8-263f-4b72-b5a7-55fc3d290a07",
       "at": "2026-11-18T03:14:58.284Z",
