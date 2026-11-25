@@ -1498,6 +1498,8 @@ export function createDashboardViewer(workflow, opts = {}) {
             // (run-summary.mjs) -- no tree, no string table, no raw
             // extension data. Never calls any summarize() hook.
             res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate' });
+            // elapsedMs is live: recompute the O(1) core fields on read.
+            refreshSummary();
             res.end(JSON.stringify(state.summary));
         } else if (req.url.startsWith('/state')) {
             // apra-fleet-eft.27.1: GET /state is the RECURRING poll endpoint
