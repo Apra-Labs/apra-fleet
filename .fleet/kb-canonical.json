@@ -51,6 +51,29 @@
       }
     },
     {
+      "id": "09bc449f-56ba-47df-8b8a-8f68ea94ae83",
+      "type": "learning",
+      "title": "An empty helper on credential.<url>.helper resets system and global credential.helper",
+      "summary": "Git builds the credential helper list across system then global config, over both credential.helper and the URL-scoped key. An empty value on the URL-scoped key resets the list, so a system helper such as Git Credential Manager is skipped for that host. operator-auth github relies on this: it puts the reset entry first.",
+      "symbols": [
+        "operatorAuthGithub",
+        "effectiveHelpersAhead",
+        "posixLegacyHelperUnset"
+      ],
+      "source_files": [
+        "src/cli/operator-auth.ts",
+        "src/os/linux.ts",
+        "tests/operator-auth-legacy-helper.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-25T06:19:38.680Z",
+      "source_file_hashes": {
+        "src/cli/operator-auth.ts": "7fab7f59b37cc951071fce79915688780ca80d0c",
+        "src/os/linux.ts": "1ee4cec7322a0fc89b5c1e8be9e9dfe20aa31178",
+        "tests/operator-auth-legacy-helper.test.ts": "6746fd69fc357250e3615d6dc297003f372f9266"
+      }
+    },
+    {
       "id": "0b6a7734-3224-4b5e-b407-6353af651e29",
       "type": "learning",
       "title": "Generic-boundary guard scans fleet-sprint runtime strings, so error messages must not cite apra-fleet source paths",
