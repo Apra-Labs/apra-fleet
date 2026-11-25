@@ -51,12 +51,7 @@ const DISPATCH_MS = 42_500;
 /** The window the member is asked for: 43 s elapsed (rounded up) plus 5 s of start slack. */
 const WINDOW_S = 48;
 
-const decoded = (c: string) => {
-  if (c.startsWith('powershell -EncodedCommand ')) return decodePowerShellEncodedCommand(c);
-  // POSIX member commands travel as base64 + eval (wrapPosixEncoded).
-  const m = /^s=\$\(echo ([A-Za-z0-9+/=]+) \| base64 -d\)/.exec(c);
-  return m ? Buffer.from(m[1], 'base64').toString('utf8') : c;
-};
+const decoded = decodePowerShellEncodedCommand;
 const isQuery = (c: string) => decoded(c).includes("'query_errors'");
 const isMain = (c: string) => decoded(c).includes('--output-format json');
 const queryCmds = () => mockExecCommand.mock.calls.map(c => c[0]).filter(isQuery);

@@ -16,7 +16,7 @@ import { KB_CONFIG_PATH } from '../src/services/knowledge/kb-config.js';
 import { provisionKbAuth, provisionKbAuthSchema, ProvisionKbAuthToolError, refreshAtFor } from '../src/tools/provision-kb-auth.js';
 import { addAgent, getAgent, updateAgent } from '../src/services/registry.js';
 import type { Agent, SSHExecResult } from '../src/types.js';
-import { backupAndResetRegistry, makeTestAgent, makeTestLocalAgent, restoreRegistry } from './test-helpers.js';
+import { backupAndResetRegistry, makeTestAgent, makeTestLocalAgent, restoreRegistry, decodePowerShellEncodedCommand } from './test-helpers.js';
 
 const RUN = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
 const TOKEN = `kbtok-CANARY-${RUN}`;
@@ -38,8 +38,7 @@ let answers: { version: string; marker: number; push: SSHExecResult; kbSetup: SS
 let readyHook: (a: Agent) => Agent;
 
 function decode(cmd: string): string {
-  const m = /^powershell -EncodedCommand (\S+)$/.exec(cmd);
-  return m ? Buffer.from(m[1], 'base64').toString('utf16le') : cmd;
+  return decodePowerShellEncodedCommand(cmd);
 }
 
 function answer(text: string): SSHExecResult {
