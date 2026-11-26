@@ -661,6 +661,7 @@ export async function syncMemberAfter(member, opts = {}) {
  *   resolveMemberProvider?: (member: string) => Promise<string|undefined>,
  *   args?: { callTool?: Function },
  *   sprintState?: object,
+ *   verifyLinks?: (member: string) => Promise<unknown>,
  * }} opts
  * @returns {Promise<{ ok: true, member: string, gPush: object, dPush: object }>}
  */
@@ -668,7 +669,7 @@ export async function syncMemberAfterOrdered(member, opts = {}) {
     const {
         command, pushCode = true, pushBeads = true, log = () => {},
         mutex, sprintId, branch, maxTransientRetries = 1, remote = 'origin',
-        agent, resolveConflictModel, onAuthFailure, resolveMemberProvider, args, sprintState,
+        agent, resolveConflictModel, onAuthFailure, resolveMemberProvider, args, sprintState, verifyLinks,
     } = opts;
 
     let gPush;
@@ -707,7 +708,9 @@ export async function syncMemberAfterOrdered(member, opts = {}) {
     // keeps the pre-shell-aware default.
     const shell = await resolveSettleShell({ args, member, log, sprintState });
     const settle = buildSettleCallback(member, { command, log, shell });
-    const dPush = await DoltSync.syncAfter(member, { command, pushBeads, log, mutex, sprintId, onAuthFailure, fatal: true, settle });
+    // verifyLinks: doltPushAfter's verify-before-push hook (invariant H5,
+    // parent-link-guard.mjs) -- undefined leaves the push path unchanged.
+    const dPush = await DoltSync.syncAfter(member, { command, pushBeads, log, mutex, sprintId, onAuthFailure, fatal: true, settle, verifyLinks });
     return { ok: true, member, gPush, dPush };
 }
 

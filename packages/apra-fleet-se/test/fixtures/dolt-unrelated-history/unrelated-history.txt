@@ -1,0 +1,34 @@
+# Verbatim output of `bd dolt pull` on a clone whose Dolt history shares no
+# common ancestor with the shared remote (independent `bd init`).
+# Control: after bd flatten --force + bd dolt remote reset-data origin --yes on
+# another clone, a bootstrapped clone's pull exited 0 (flatten keeps the root commit).
+# bd: bd version 1.3.0 (f45b249ce)
+# dolt: dolt version 2.0.1
+# exit status: 1
+# Re-record: node test/fixtures/dolt-unrelated-history/record-unrelated-history.mjs
+# Everything below the "---" line is the raw stderr then stdout.
+---
+Error: merge origin/main: Error 1105: no common ancestor
+
+Local and remote Dolt histories have diverged.
+This means the local database and the remote have independent commit
+histories with no common merge base.
+
+Recovery options:
+
+  1. Keep remote, discard local (recommended if remote is authoritative):
+       bd bootstrap              # re-clone from remote
+
+  2. Keep local, overwrite remote (if local is authoritative):
+       bd dolt push --force       # force-push local history to remote
+
+  3. Manual recovery (re-initialize local database):
+       rm -rf .beads/dolt         # delete local Dolt database
+       bd bootstrap              # re-clone from remote
+
+Tip: This usually happens when multiple agents independently initialize
+databases and push to the same remote. Use 'bd bootstrap' to clone an
+existing remote instead of 'bd init' to avoid divergent histories.
+
+[stdout]
+Pulling from Dolt remote...

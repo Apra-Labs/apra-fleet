@@ -1,21 +1,23 @@
 // =============================================================================
-// End-to-end guard: a beads merge outside the sprint silently drops the
-// parent-child rows of the sprint's tree mid-run.
+// End-to-end guard: a parent-child change an AGENT makes on its own clone,
+// outside the engine's command path and with no beads pull in between, is
+// never reverted by the parent-link guard.
 //
 // Root: a bug bead. Under it two intermediate parents (run once with
 // feature-type and once with task-type intermediates), each with leaf tasks.
-// During Develop round 1 -- after the doer closed its leaves -- the harness
-// removes every parent-child link of the tree directly in the backlog clone,
-// outside the engine's command path, the way an auto-resolved merge pulled by
-// any clone would. Nothing in the run removed those links.
+// During Develop round 1 -- after the doer closed its leaves -- the doer
+// reparents the second leaf from the first intermediate to the second one,
+// straight in the backlog clone. Only a link a beads PULL dropped is a
+// restore candidate (fleet-sprint/parent-link-guard.mjs); this one vanished
+// between two reads with no pull, so it was removed on purpose.
 //
-// Before the fix the engine's scope then held only the root: the root was
-// dispatched to a doer as a leaf, nothing was verify-routed, the closed count
-// stopped moving and the run ended in StalledSprintError.
+// Before the fix the engine "restored" every recorded link that vanished from
+// a snapshot, so the reparent was silently undone (and a reversed blocks edge
+// re-added would be refused by bd as a cycle, stopping the sprint).
 //
 // Asserted:
-//   - an ERROR line names each lost child/parent edge;
-//   - every edge is present in the backlog DB at the end;
+//   - no ERROR line restores (or reverts) any parent-child link;
+//   - the moved leaf is under its new parent in the backlog DB at the end;
 //   - the root is never dispatched to a doer;
 //   - both intermediates are verify-routed and the run finishes PASS.
 // =============================================================================
@@ -37,7 +39,7 @@ const verifyIdsOf = (prompt) => {
 const errText = (run) => (run.error ? `${run.error.constructor.name}: ${run.error.message}` : 'none');
 
 async function runVanishedLinks(tag, intermediateType) {
-    const tree = { root: null, intermediates: [], leaves: [], edges: [] };
+    const tree = { root: null, intermediates: [], leaves: [], edges: [], moved: null };
     const doerAssigned = [];
     const integVerifyIds = [];
     let dropped = false;
@@ -54,11 +56,11 @@ async function runVanishedLinks(tag, intermediateType) {
             closed.push(id);
         }
         if (!dropped) {
-            // The external merge: every parent-child link of the tree is gone
-            // from the backlog clone. Issued straight against the DB, never
-            // through the engine's command path.
+            // The agent's own change: the second leaf moves to the second
+            // intermediate (both intermediates keep a child). Issued straight against the DB, never through the
+            // engine's command path, and with no beads pull around it.
             dropped = true;
-            for (const { child } of tree.edges) await rc(`bd update ${child} --parent ""`, td);
+            await rc(`bd update ${tree.moved.child} --parent ${tree.moved.to}`, td);
         }
         return report({ status: 'VERIFY', closedIds: closed, notes: closed.length ? 'Closed.' : 'Nothing to change.' });
     };
@@ -102,30 +104,29 @@ async function runVanishedLinks(tag, intermediateType) {
                 tree.edges.push({ child: tasks[i].id, parent: placement[i] });
             }
             tree.edges.push({ child: first, parent: epicBead.id }, { child: second, parent: epicBead.id });
+            tree.moved = { child: tasks[1].id, from: first, to: second };
         },
     });
     return { run, tree, doerAssigned, integVerifyIds, dropped: () => dropped };
 }
 
 for (const [intermediateType, tag] of [['feature', 'vlinkfeat'], ['task', 'vlinktask']]) {
-    test(`${intermediateType}-type intermediates: dropped parent-child rows are restored, the root is never a leaf, the run finishes PASS`, { timeout: 300000 }, async () => {
-        await withScenarioMarkers(`vanished parent links ${intermediateType}`, async () => {
+    test(`${intermediateType}-type intermediates: an agent reparent is not reverted, the root is never a leaf, the run finishes PASS`, { timeout: 300000 }, async () => {
+        await withScenarioMarkers(`agent reparent kept ${intermediateType}`, async () => {
             const { run, tree, doerAssigned, integVerifyIds, dropped } = await runVanishedLinks(tag, intermediateType);
             const logs = run.logs;
             const dump = () => logs.filter((l) => /^ERROR|Route C|evaluation|Goal priority|stall/i.test(l)).join('\n');
 
-            assert.ok(dropped(), 'the harness dropped the parent-child rows during Develop round 1');
-            for (const { child, parent } of tree.edges) {
-                assert.ok(
-                    logs.some((l) => l.startsWith('ERROR: parent-child link vanished') && l.includes(`'${child}' is no longer a child of '${parent}'`)),
-                    `an ERROR names the lost edge ${child} -> ${parent}:\n${dump()}`,
-                );
-                assert.equal(run.finalBeadsById.get(child) && run.finalBeadsById.get(child).parent, parent,
-                    `the edge ${child} -> ${parent} is back in the backlog DB`);
+            assert.ok(dropped(), 'the doer reparented the leaf during Develop round 1');
+            assert.ok(!logs.some((l) => /^ERROR: parent-child link (vanished|reverted)/.test(l)), `no link is restored:\n${dump()}`);
+            const { child, to } = tree.moved;
+            assert.equal(run.finalBeadsById.get(child) && run.finalBeadsById.get(child).parent, to,
+                `the moved leaf ${child} stays under its new parent ${to}`);
+            for (const edge of tree.edges.filter((e) => e.child !== child)) {
+                assert.equal(run.finalBeadsById.get(edge.child) && run.finalBeadsById.get(edge.child).parent, edge.parent,
+                    `the untouched edge ${edge.child} -> ${edge.parent} is still in the backlog DB`);
             }
             assert.ok(!doerAssigned.includes(tree.root), `the root ${tree.root} is never dispatched to a doer: ${JSON.stringify(doerAssigned)}`);
-            // Verify-routed at either classification point: a cycle-top Route
-            // line, or the Integ Test verify set (verification-closure).
             for (const id of tree.intermediates) {
                 const routed = integVerifyIds.includes(id) || logs.some((l) => /^Route C\d+: /.test(l) && l.includes(id));
                 assert.ok(routed, `${id} is verify-routed (integ verify set ${JSON.stringify(integVerifyIds)}):\n${dump()}`);

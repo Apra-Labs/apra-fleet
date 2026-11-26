@@ -101,7 +101,12 @@ const fail = (error) => ({ ok: false, output: '', error });
 // -----------------------------------------------------------------------------
 const REAL_DOLT_AUTH_ID = 'dolt/auth/could-not-read-username-prompts-disabled';
 const REAL_DOLT_AUTH = stderrText(REAL_DOLT_AUTH_ID);
-const REAL_DOLT_DIVERGED = stderrText('dolt/diverged/push-no-common-ancestor');
+const REAL_DOLT_UNRELATED = stderrText('dolt/unrelated-history/push-no-common-ancestor');
+// Ordinary mergeable-conflict text (real bd output quoted in the beads
+// conflict-resolution playbook). The recorded corpus no longer carries a
+// 'diverged' sample: its only one was the no-common-ancestor push, which is
+// now the distinct 'unrelated-history' kind.
+const ORDINARY_DIVERGED = 'Error: merge origin/main: merge conflicts in issues require operator resolution; merge aborted and working set restored';
 const REAL_DOLT_TRANSIENT_REFUSED = stderrText('dolt/transient/connection-refused');
 const REAL_DOLT_NO_REMOTE = stderrText('dolt/no-remote/pull-with-no-remote-configured');
 const REAL_DOLT_EMPTY_REMOTE = stderrText('dolt/empty-remote/pull-git-remote-without-dolt-data');
@@ -153,7 +158,7 @@ test('the recorded dolt corpus covers every bucket classifyDoltFailure can retur
     // this fails until record-vcs-stderr.mjs grows a recipe that provokes it.
     assert.deepEqual(
         recordedKinds('dolt'),
-        ['auth', 'diverged', 'empty-remote', 'no-remote', 'remote-unreachable', 'transient', 'unknown'],
+        ['auth', 'empty-remote', 'no-remote', 'remote-unreachable', 'transient', 'unknown', 'unrelated-history'],
         'every classifyDoltFailure verdict needs at least one recorded real-dolt sample',
     );
 });
@@ -166,17 +171,11 @@ test('classifyDoltFailure: recorded divergence is never softened to unknown or h
         assert.notEqual(got, 'auth', `${provenance(s)}: diverged read as auth would fire a pointless credential self-heal`);
         assert.equal(got, 'diverged', provenance(s));
     }
-    // The load-bearing line is NOT the first one. Pin that explicitly so a
-    // future "just log the first line" change fails here rather than in
-    // production.
-    const div = stderrSample('dolt/diverged/push-no-common-ancestor');
-    const firstLine = div.stderr.split('\n').find((l) => l.includes('Error 1105'));
-    assert.equal(
-        classifyDoltFailure(firstLine),
-        'unknown',
-        `${provenance(div)}: precondition -- the Error 1105 line alone classifies as unknown, so the verdict depends on NOT truncating`,
-    );
-    assert.equal(classifyDoltFailure(div.stderr), 'diverged', `${provenance(div)}: the full recorded output must classify diverged`);
+    assert.equal(classifyDoltFailure(ORDINARY_DIVERGED), 'diverged');
+    // The recorded independent-history push carries its own kind: its text also
+    // says "have diverged", so that kind is checked before diverged.
+    const unrelated = stderrSample('dolt/unrelated-history/push-no-common-ancestor');
+    assert.equal(classifyDoltFailure(unrelated.stderr), 'unrelated-history', provenance(unrelated));
 });
 
 test('classifyDoltFailure: recorded transient output is never hardened into diverged', () => {
@@ -220,7 +219,8 @@ test('classifyDoltFailure: credential-style outputs classify as a new "auth" kin
     assert.equal(classifyDoltFailure('remote: Authentication failed'), 'auth');
     // Divergence must never be misclassified as auth -- asserted against the
     // RECORDED divergence, not a hand-typed approximation of one.
-    assert.equal(classifyDoltFailure(REAL_DOLT_DIVERGED), 'diverged');
+    assert.equal(classifyDoltFailure(ORDINARY_DIVERGED), 'diverged');
+    assert.equal(classifyDoltFailure(REAL_DOLT_UNRELATED), 'unrelated-history');
     // Transient stays transient, unaffected.
     assert.equal(classifyDoltFailure(REAL_DOLT_TRANSIENT_REFUSED), 'transient');
 });

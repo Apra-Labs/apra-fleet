@@ -190,7 +190,8 @@ describe('Windows spawn-limit exhaustion is a typed error', () => {
 // and the kept transient retry.
 // ---------------------------------------------------------------------------
 
-const DIVERGED = stderrText('dolt/diverged/push-no-common-ancestor');
+// Ordinary mergeable conflict (the recorded no-common-ancestor push is its own kind now).
+const DIVERGED = 'Error: merge origin/main: merge conflicts in issues require operator resolution; merge aborted and working set restored';
 
 describe('every recorded sync command, through the push reconcile ladder', () => {
     for (const row of EXPECTED) {

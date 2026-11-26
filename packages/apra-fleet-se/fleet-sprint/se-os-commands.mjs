@@ -89,6 +89,14 @@
 //                          anything else (assertSafeRelativePath /
 //                          assertSafeFileLine in se-posix.mjs); gitbash
 //                          inherits the POSIX strings.
+//   listDirectory / renamePath / copyFileIfPresent / readFile /
+//   removeDirectory        beads-flatten-recovery.mjs: finds a recovery
+//                          backup of .beads, moves .beads aside and back
+//                          (renamePath refuses a missing source or an
+//                          existing destination), carries the beads config
+//                          files over, reads `bd export` files and drops a
+//                          discarded fresh clone by its generated name.
+//                          Same path validation as the primitives above.
 //   memberHomeProbe        vcs-auth.mjs VCS preflight: prints the member home
 //                          in the form git uses for a helper path (POSIX
 //                          $HOME, gitbash `cygpath -m`, PowerShell

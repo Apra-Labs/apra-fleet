@@ -352,7 +352,7 @@ export async function withGitSync(ctx, member, pushCode, dispatchFn, { pushBeads
     const {
         brackets, command, log, branch, baseBranch, args, agent, doltPushMutex, sprintId,
         onAuthFailure, resolveMemberProvider, ensureVcsAuthFresh, warnWorkflowsPermissionMissing,
-        syncMemberBefore, syncMemberAfterOrdered, isNoMutationDispatchFailure,
+        syncMemberBefore, syncMemberAfterOrdered, isNoMutationDispatchFailure, verifyLinks, ensureLinkBaseline,
     } = ctx;
     // (apra-fleet-p2to.4.1) The WHOLE withGitSync bracket -- pre-dispatch
     // G-pull/D-pull, the dispatch itself, and post-dispatch G-push/D-push
@@ -426,6 +426,13 @@ export async function withGitSync(ctx, member, pushCode, dispatchFn, { pushBeads
         // lets the sync be retried on its own and, if it still fails, surfaced
         // as a typed PostDispatchSyncError no retry caller may answer by
         // redispatching.
+        // Link baseline (parent-link-guard.mjs): a beads-pushing agent's
+        // clone must have a read the engine compares its pre-push read with,
+        // or a link the agent removes is never recorded as deliberate and
+        // another clone's pull comparison restores it. The pre-dispatch pull
+        // bracket normally sets it; this reads the clone only when that pull
+        // was skipped or unbracketed and no earlier read exists. Never throws.
+        if (pushBeads && typeof ensureLinkBaseline === 'function') await ensureLinkBaseline(member);
         let dispatchThrew = null;
         let dispatchResult;
         try {
@@ -462,7 +469,7 @@ export async function withGitSync(ctx, member, pushCode, dispatchFn, { pushBeads
                         await syncMemberAfterOrdered(member, {
                             command, pushCode, pushBeads, log, branch,
                             mutex: doltPushMutex, sprintId, agent, onAuthFailure,
-                            resolveMemberProvider, args,
+                            resolveMemberProvider, args, verifyLinks,
                         });
                         syncErr = null;
                         break;
@@ -510,10 +517,16 @@ export function postDispatchSyncMessage(member, syncErr) {
  * the pause guard is registered before any dispatch can happen) or a
  * `setPauseGuard` for this factory to create one from.
  */
+// `deps.verifyLinks(member)` (optional; runner.js wires
+// beadsScope.verifyLinksBeforePush) is threaded to EVERY D-push this module
+// issues -- the dispatch bracket's post-dispatch sync and the standalone
+// syncBeadsAfter/pushBeadsAfter -- so doltPushAfter can hold invariant H5:
+// an in-scope parent-child or blocks link this run did not remove is never
+// absent from what a beads push publishes (see parent-link-guard.mjs).
 export function createGitSync(deps = {}) {
     const brackets = deps.brackets ?? createSyncBrackets({ setPauseGuard: deps.setPauseGuard });
     const ctx = { ...deps, brackets };
-    const { command, log, branch, doltPushMutex, sprintId, onAuthFailure, resolveMemberProvider, syncMemberBefore, syncMemberAfter } = ctx;
+    const { command, log, branch, doltPushMutex, sprintId, onAuthFailure, resolveMemberProvider, syncMemberBefore, syncMemberAfter, verifyLinks } = ctx;
     /**
      * A standalone bracketed G-push through runner.js's syncMemberAfter().
      * This is what closes the Publish-PR git-push hole: that site used to
@@ -562,7 +575,7 @@ export function createGitSync(deps = {}) {
         syncBeadsAfter: (memberName, options = {}) => brackets.withOpenSyncBracket(
             async () => {
                 await ensureBeadsMemberAuth(memberName);
-                return DoltSync.syncAfter(memberName, { command, log, mutex: doltPushMutex, sprintId, onAuthFailure, ...options });
+                return DoltSync.syncAfter(memberName, { command, log, mutex: doltPushMutex, sprintId, onAuthFailure, verifyLinks, ...options });
             },
         ),
         /**
@@ -589,7 +602,7 @@ export function createGitSync(deps = {}) {
         pushBeadsAfter: (memberName, options = {}) => brackets.withOpenSyncBracket(
             async () => {
                 await ensureBeadsMemberAuth(memberName);
-                return DoltSync.syncAfter(memberName, { command, log, mutex: doltPushMutex, sprintId, onAuthFailure, ...options });
+                return DoltSync.syncAfter(memberName, { command, log, mutex: doltPushMutex, sprintId, onAuthFailure, verifyLinks, ...options });
             },
         ),
         /**
