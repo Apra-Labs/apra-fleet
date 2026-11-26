@@ -711,6 +711,27 @@ function createBranchWithdrawnEntries({ command, baseBranch, bibleFile = '.fleet
 }
 export { createBranchWithdrawnEntries };
 
+// Factory for kbWork's baseBibleIds callback: the entry ids the bible carries
+// at a commit (a plain `git show <commit>:<bible>` on the maintainer). A
+// missing bible is an empty set; an unreadable one is null.
+function createBaseBibleIds({ command, bibleFile = '.fleet/kb-canonical.json' }) {
+    return async (memberName, baseCommit) => {
+        if (typeof baseCommit !== 'string' || !/^[0-9a-f]{7,64}$/i.test(baseCommit)) return null;
+        const ls = await command(`git ls-tree --name-only ${baseCommit} -- ${bibleFile}`, { member_name: memberName, silent: true, failSoft: true });
+        if (!ls || !ls.ok) return null;
+        if (String(ls.output || '').trim() === '') return new Set();
+        const res = await command(`git show ${baseCommit}:${bibleFile}`, { member_name: memberName, silent: true, failSoft: true });
+        if (!res || !res.ok) return null;
+        try {
+            const doc = JSON.parse(String(res.output || ''));
+            return new Set((doc && Array.isArray(doc.entries) ? doc.entries : []).filter((e) => e && typeof e.id === 'string').map((e) => e.id));
+        } catch {
+            return null;
+        }
+    };
+}
+export { createBaseBibleIds };
+
 // The PR body's "KB changes on merge" report at publish and at abort:
 // kbWork.kbChangesOnMerge() (this run's verdicts plus the withdrawn tombstones
 // the branch carries), else kbChangesReport() for a kbWork without it. A throw
@@ -1860,6 +1881,7 @@ async function runSprintCycle(context) {
         // routes must then include `withdraw`).
         listTools: kbListTools,
         branchWithdrawals,
+        baseBibleIds: context.baseBibleIds ?? createBaseBibleIds({ command }),
         // D6 in-sprint ping-pong guard (promotionCandidates): re-hash a
         // candidate's cited files on demand to tell "basis unchanged since
         // the demotion" from "basis moved on" -- see createCurrentFileHashes.
