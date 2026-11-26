@@ -52,6 +52,51 @@ candidate read, catching hashes made stale by later commits in the same sprint.
 predicate; non-qualifying entries are reported separately, and `fleet_status`
 does not advise a bible commit when nothing qualifies.
 
+## Post-harvest recheck
+
+Invariant: every bible entry a branch owns (absent from the base bible, or
+different there) carries `source_file_hashes` equal to its cited files'
+content at the head that merges.
+
+The final-head recheck runs before the harvest phase, and the harvester's docs
+commits come after it. So the harvest phase re-checks the sprint's merged ids
+once more, after its own bible commit (`recheckSprintBible('post-harvest
+head', { noReviewLeft: true })` in `phases/harvest.mjs`). This is the last KB
+step before Publish PR, and nothing that changes the tree runs after it. No
+review is left at that point, so a drifted entry cannot be re-verified. It is
+dropped from the branch bible (a withdrawal, committed in the same call) with a
+WARN that names the id and its changed files. The KB entry itself is neither
+deleted nor demoted. A drifted hash is never kept, and an entry is re-stamped
+only on a re-verification. If the recheck cannot reach `kb_bible_commit` (no
+maintainer, a busy maintainer, a failed pull or push), a WARN names the
+unchecked ids and says to run the drift check below. Like every bible commit,
+the recheck is a no-op after a FAIL verdict.
+
+## Base merges: the local drift check
+
+Merging the base branch into a KB branch can change a cited file of an entry
+the branch owns. The engine is not involved in that merge, so check it locally:
+
+    npm run check:kb-bible-drift -- --base origin/main
+
+The check reads the bible committed at HEAD and the one committed at `--base`.
+It takes the entries the branch owns and hashes their cited files at HEAD the
+same way `kb_bible_commit` does (the git blob id of `HEAD:<path>`). It exits 1
+and names each drifted entry and file (`changed`, `absent` or `no_basis`).
+Entries that are identical to the base bible are never reported or touched.
+
+To re-stamp after a base merge, first re-verify each named entry's claim
+against the files at HEAD. Then use one of these:
+
+1. Preferred: on the machine whose KB holds the entry, run `kb_promote` on it
+   (this re-stamps its basis at HEAD), then `kb_bible_commit {ids: [<id>]}`.
+2. Run `npm run check:kb-bible-drift -- --base origin/main --restamp <id>[,<id>]`
+   for exactly the ids you re-verified. It rewrites only their
+   `source_file_hashes` in the work-tree bible. Review the diff and commit it.
+
+Withdraw an entry whose claim no longer holds; do not re-stamp it. Re-run the
+check: it exits 0 once every owned entry matches HEAD.
+
 ## Merge driver resilience
 
 The bible merge driver is invoked through a POSIX `sh` guard. If the recorded

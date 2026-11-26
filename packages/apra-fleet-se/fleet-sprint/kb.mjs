@@ -2306,22 +2306,35 @@ export function createKbWorkClient(opts = {}) {
         },
         /**
          * Re-check, at the branch's current head, every bible entry this
-         * sprint's bible commits merged. Call it after the sprint's last code
-         * commit and before the final review: the ids are re-sent to
+         * sprint's bible commits merged. The ids are re-sent to
          * kb_bible_commit (which G-pulls first), so an entry whose cited
          * files changed after it was committed comes back as a basis_mismatch
-         * skip and is offered to the final reviewer for re-verification
-         * (CONFIRM: re-stamped and re-merged with the fresh basis; refusal or
-         * no verdict within the retry bound: withdrawn from the branch bible
-         * with a WARN). An entry that still matches merges unchanged, so
-         * nothing drifted means no new bible commit. Ids withdrawn this
-         * sprint are not re-sent. A no-op once any bible commit is sealed.
-         * Never throws.
+         * skip. An entry that still matches merges unchanged, so nothing
+         * drifted means no new bible commit. Ids withdrawn this sprint are not
+         * re-sent. A no-op once any bible commit is sealed. Never throws.
+         *
+         * Two call sites, told apart by `noReviewLeft`:
+         *
+         *   - before the final review (default): a drifted entry is offered
+         *     to the final reviewer for re-verification (CONFIRM: re-stamped
+         *     and re-merged with the fresh basis; refusal or no verdict:
+         *     withdrawn from the branch bible with a WARN).
+         *   - after the sprint's LAST tree-changing commit (the harvest
+         *     round's bible commit), with noReviewLeft: true: no reviewer can
+         *     re-verify anything any more, so a drifted entry is dropped from
+         *     the branch bible at once (dropFromBible: a WARN naming it and
+         *     its changed files; the KB entry itself is neither deleted nor
+         *     demoted) and the withdrawal is committed in the same call. A
+         *     drifted hash is never kept and never re-stamped without a
+         *     re-verification. When a repository's re-check could not reach
+         *     kb_bible_commit at all, a WARN says the branch bible was not
+         *     re-checked and may carry a drifted basis.
          * @param {string} [label]
-         * @returns {Promise<{ checked: number, drifted: string[] }>}
+         * @param {{ noReviewLeft?: boolean }} [opts]
+         * @returns {Promise<{ checked: number, drifted: string[], dropped: string[], unchecked: string[] }>}
          */
-        async recheckSprintBible(label = 'final head') {
-            const out = { checked: 0, drifted: [] };
+        async recheckSprintBible(label = 'final head', { noReviewLeft = false } = {}) {
+            const out = { checked: 0, drifted: [], dropped: [], unchecked: [] };
             if (!active || sealedReason || confirmationsSealedReason) return out;
             for (const [repo, ids] of [...sprintMerged]) {
                 const recheck = [...ids].filter((id) => !withdrawnIds.has(id));
@@ -2330,12 +2343,46 @@ export function createKbWorkClient(opts = {}) {
                 for (const id of recheck) confirmations.get(repo).add(id);
                 out.checked += recheck.length;
                 log(`[kb-work] ${label}: re-checking ${recheck.length} bible entr(ies) this sprint committed for ${repo} against the branch head: ${recheck.join(', ')}`);
+                const droppedBefore = droppedFromBible.length;
                 await serialize(repo, () => commitRepo(repo));
-                const drifted = [...(reverifyPending.get(repo) || new Map()).keys()].filter((id) => recheck.includes(id));
-                out.drifted.push(...drifted);
-                log(drifted.length > 0
-                    ? `[kb-work] ${label}: ${drifted.length} bible entr(ies) for ${repo} drifted after this sprint committed them and are offered to the final reviewer for re-verification: ${drifted.join(', ')}`
-                    : `[kb-work] ${label}: every bible entry this sprint committed for ${repo} still matches the branch head`);
+                const inRecheck = (id) => recheck.includes(id);
+                const drifted = [...(reverifyPending.get(repo) || new Map()).keys()].filter(inRecheck);
+                // An id whose retries ran out during this very call was
+                // already dropped inside commitRepo.
+                const droppedNow = droppedFromBible.slice(droppedBefore).filter((d) => d.repo === repo && inRecheck(d.id)).map((d) => d.id);
+                out.drifted.push(...drifted, ...droppedNow);
+                const unchecked = [...(confirmations.get(repo) || [])].filter((id) => inRecheck(id) && !drifted.includes(id));
+                if (!noReviewLeft) {
+                    log(drifted.length > 0
+                        ? `[kb-work] ${label}: ${drifted.length} bible entr(ies) for ${repo} drifted after this sprint committed them and are offered to the final reviewer for re-verification: ${drifted.join(', ')}`
+                        : `[kb-work] ${label}: every bible entry this sprint committed for ${repo} still matches the branch head`);
+                    continue;
+                }
+                for (const id of drifted) {
+                    const r = (reverifyPending.get(repo) || new Map()).get(id);
+                    dropFromBible(repo, id, `its cited files changed after this sprint committed it to the bible (${label}) and no review is left to re-verify it`, r ? r.changed_files : []);
+                }
+                out.dropped.push(...drifted, ...droppedNow);
+                if (withdrawalsPending.has(repo) && !sealedReason) await serialize(repo, () => commitRepo(repo));
+                if (unchecked.length > 0) {
+                    // The re-check never reached kb_bible_commit (no
+                    // maintainer, maintainer busy, a failed G-pull/G-push):
+                    // nothing tells whether these drifted. Leave them out of
+                    // the queue so the end-of-run pending warning does not
+                    // call them unpublished confirmations -- they are already
+                    // on the branch bible.
+                    const pending = confirmations.get(repo);
+                    if (pending) { for (const id of unchecked) pending.delete(id); if (pending.size === 0) confirmations.delete(repo); }
+                    out.unchecked.push(...unchecked);
+                    log(`[kb-work] WARN: ${label}: could not re-check ${unchecked.length} bible entr(ies) this sprint committed for ${repo} against the branch head (kb_bible_commit was not reached -- see the lines above): ${unchecked.join(', ')}. The branch bible may carry a drifted basis for them; run the repository's bible drift check against the base branch before merging and re-stamp or drop each entry it names.`);
+                }
+                const stillPending = (withdrawalsPending.get(repo) || new Map());
+                const notWithdrawn = [...drifted, ...droppedNow].filter((id) => stillPending.has(id));
+                if (notWithdrawn.length > 0) {
+                    log(`[kb-work] WARN: ${label}: the withdrawal of ${notWithdrawn.length} drifted bible entr(ies) for ${repo} did not reach a pushed bible commit: ${notWithdrawn.join(', ')}. The branch bible still carries them with a drifted basis; run the repository's bible drift check against the base branch before merging.`);
+                } else if (drifted.length + droppedNow.length === 0 && unchecked.length === 0) {
+                    log(`[kb-work] ${label}: every bible entry this sprint committed for ${repo} still matches the branch head`);
+                }
             }
             return out;
         },

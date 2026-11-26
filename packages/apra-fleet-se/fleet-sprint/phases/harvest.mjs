@@ -257,5 +257,17 @@ export async function runHarvestPhase({
     if (kbWork && typeof kbWork.commitRound === 'function') {
         await kbWork.commitRound('harvest');
     }
+    // The very last KB step before Publish PR: the harvester's commits (and
+    // the harvest bible commit above) are the sprint's last tree-changing
+    // commits, and they land AFTER the final review's re-check, so a docs
+    // edit to a file one of this sprint's own bible entries cites would leave
+    // that entry's recorded basis drifted at the pushed head. Re-check them
+    // here. No review is left to re-verify a drifted entry, so each one is
+    // dropped from the branch bible with a WARN naming it and its changed
+    // files (the KB entry itself is neither deleted nor demoted). Nothing
+    // tree-changing runs after this.
+    if (kbWork && typeof kbWork.recheckSprintBible === 'function') {
+        await kbWork.recheckSprintBible('post-harvest head', { noReviewLeft: true });
+    }
     return { costAnalysis };
 }
