@@ -229,8 +229,10 @@ describe('OsCommands via getOsCommands', () => {
       // Profile line carries the fleet marker the default unsetEnv matches.
       expect(linux.persistEnvFileContent('MY_VAR', 'value')).toBe('export MY_VAR="value" # apra-fleet-managed\n');
       const linuxCmd = linux.persistEnvFromFile('MY_VAR', '/home/u/.apra-fleet-persist-1');
-      expect(linuxCmd).toContain(`cat '/home/u/.apra-fleet-persist-1' >> ~/.bashrc`);
-      expect(linuxCmd).toContain(`cat '/home/u/.apra-fleet-persist-1' >> ~/.profile`);
+      // The value goes to the owner-only env file; the profiles get only a path-only source line.
+      expect(linuxCmd).toContain(`cat '/home/u/.apra-fleet-persist-1' > "$HOME/.apra-fleet/env/.MY_VAR.tmp"`);
+      expect(linuxCmd).not.toMatch(/cat [^;&|]*>> ~\//);
+      for (const f of ['.bashrc', '.profile']) expect(linuxCmd).toContain(`>> ~/${f}`);
       expect(linuxCmd).toContain(`rm -f '/home/u/.apra-fleet-persist-1'`);
       expect(linuxCmd).not.toContain('value');
 
@@ -246,14 +248,15 @@ describe('OsCommands via getOsCommands', () => {
 
     it('generates unsetenv commands for each OS', () => {
       const linuxCmds = linux.unsetEnv('MY_VAR');
-      expect(linuxCmds.length).toBe(3);
+      expect(linuxCmds.length).toBe(4);
       expect(linuxCmds[0]).toContain('sed');
-      expect(linuxCmds[2]).toContain('unset MY_VAR');
+      expect(linuxCmds[2]).toBe('rm -f "$HOME/.apra-fleet/env/MY_VAR"');
+      expect(linuxCmds[3]).toContain('unset MY_VAR');
 
       const macosCmds = macos.unsetEnv('MY_VAR');
-      expect(macosCmds.length).toBe(5);
+      expect(macosCmds.length).toBe(6);
       expect(macosCmds.some(c => c.includes('.zshenv'))).toBe(true);
-      expect(macosCmds[4]).toContain('unset MY_VAR');
+      expect(macosCmds[5]).toContain('unset MY_VAR');
 
       const winCmds = windows.unsetEnv('MY_VAR');
       expect(winCmds[0]).toContain('SetEnvironmentVariable');

@@ -212,7 +212,7 @@ export async function removeMember(input: RemoveMemberInput): Promise<string> {
           }
         }
         if (unsetVars.length > 0 && isPosixShellMember(agent)) {
-          notes.push(`Only fleet-marked export lines (# ${FLEET_ENV_MARKER}) for ${unsetVars.join(', ')} were removed from the member's shell profiles; an unmarked export line for these names (written by hand, or by an older apra-fleet release) may remain -- check the profiles and remove it by hand if it is no longer wanted`);
+          notes.push(`The owner-only env files and fleet-marked profile lines (# ${FLEET_ENV_MARKER}) for ${unsetVars.join(', ')} were removed from the member; an unmarked export line for these names (written by hand, or by an older apra-fleet release) may remain -- check the profiles and remove it by hand if it is no longer wanted`);
         }
 
         // VCS auth revoke: remove every git credential helper the member holds.

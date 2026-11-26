@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { makeTestAgent, makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
+import { makeTestAgent, makeTestLocalAgent, backupAndResetRegistry, restoreRegistry, decodePowerShellEncodedCommand } from './test-helpers.js';
 import { addAgent, getAgent } from '../src/services/registry.js';
 import { encryptPassword, decryptPassword } from '../src/utils/crypto.js';
 import {
@@ -13,7 +13,7 @@ import { getProvider } from '../src/providers/index.js';
 import { LinuxCommands } from '../src/os/linux.js';
 import { WindowsCommands } from '../src/os/windows.js';
 import type { SSHExecResult } from '../src/types.js';
-import { FLEET_ENV_MARKER, unsetEnvSedExpr } from '../src/os/os-commands.js';
+import { FLEET_ENV_MARKER, unsetEnvSedExpr, envSourceLine, envSourceLineSedExpr } from '../src/os/os-commands.js';
 import { findRealBash } from './helpers/real-bash.js';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -190,16 +190,16 @@ describe('provisionAuth credential kinds', () => {
     expect(text).not.toContain('FAKE');
 
     const cmds = cmdsSent();
-    expect(cmds).toContain(`sed -i '/export ANTHROPIC_API_KEY=/d' ~/.bashrc 2>/dev/null || true`);
-    expect(cmds).toContain(`sed -i '/export ANTHROPIC_API_KEY=/d' ~/.profile 2>/dev/null || true`);
+    expect(cmds).toContain(`sed -i -e '/export ANTHROPIC_API_KEY=/d' -e '${envSourceLineSedExpr('ANTHROPIC_API_KEY')}' ~/.bashrc 2>/dev/null || true`);
+    expect(cmds).toContain(`sed -i -e '/export ANTHROPIC_API_KEY=/d' -e '${envSourceLineSedExpr('ANTHROPIC_API_KEY')}' ~/.profile 2>/dev/null || true`);
     // Persisted via a staged profile line and a path-only command, never inline.
     const persist = stagedFiles.find(f => f.path.includes('.apra-fleet-persist-'))!;
     expect(persist.content).toBe(`export CLAUDE_CODE_OAUTH_TOKEN="${FAKE_OAUTH}" # apra-fleet-managed\n`);
-    expect(cmds.some(c => c.includes(`cat '${persist.path}' >> ~/.bashrc`))).toBe(true);
+    expect(cmds.some(c => c.includes(`cat '${persist.path}' > "$HOME/.apra-fleet/env/.CLAUDE_CODE_OAUTH_TOKEN.tmp"`))).toBe(true);
     expect(stagedFiles.some(f => f.content.includes('export ANTHROPIC_API_KEY='))).toBe(false);
     expect(cmds.some(c => c.includes(FAKE_OAUTH))).toBe(false);
     // Stale file moved before the auth test, so the test exercises the env token alone.
-    const mvIdx = cmds.findIndex(c => c.includes('mv -f'));
+    const mvIdx = cmds.findIndex(c => c.includes('mv -f') && c.includes('.fleet-superseded'));
     const testIdx = cmds.findIndex(isAuthTest);
     expect(mvIdx).toBeGreaterThanOrEqual(0);
     expect(mvIdx).toBeLessThan(testIdx);
@@ -362,7 +362,7 @@ describe('provisionAuth credential kinds', () => {
     const { structuredContent } = await provisionAuth({ member_id: member.id, api_key: 'sk-openai-FAKE' });
     expect(structuredContent.credentialLabel).toBe('OPENAI_API_KEY');
     const cmds = cmdsSent();
-    expect(cmds.some(c => c.includes('mv -f') || c.includes('.credentials.json'))).toBe(false);
+    expect(cmds.some(c => c.includes('.fleet-superseded') || c.includes('.credentials.json'))).toBe(false);
     expect(cmds.some(c => c.includes('ANTHROPIC_API_KEY') || c.includes('CLAUDE_CODE_OAUTH_TOKEN'))).toBe(false);
   });
 
@@ -379,7 +379,7 @@ describe('provisionAuth credential kinds', () => {
 // calls remove EVERY export line for the name (marked or not), unlike
 // remove_member, which removes only fleet-marked lines.
 describe('provisionAuth profile cleanup removes every export line for the name', () => {
-  const allForm = (name: string, f: string) => `sed -i '${unsetEnvSedExpr(name, { all: true })}' ~/${f} 2>/dev/null || true`;
+  const allForm = (name: string, f: string) => `sed -i -e '${unsetEnvSedExpr(name, { all: true })}' -e '${envSourceLineSedExpr(name)}' ~/${f} 2>/dev/null || true`;
   const markedForm = (name: string) => unsetEnvSedExpr(name);
 
   beforeEach(() => {
@@ -418,7 +418,7 @@ describe('provisionAuth profile cleanup removes every export line for the name',
       const idx = cmds.indexOf(allForm('ANTHROPIC_API_KEY', f));
       expect(idx).toBeGreaterThanOrEqual(0);
       expect(idx).toBeLessThan(persistIdx);
-      expect(cmds[persistIdx]).toContain(`sed -i '${unsetEnvSedExpr('CLAUDE_CODE_OAUTH_TOKEN', { all: true })}' ~/${f}`);
+      expect(cmds[persistIdx]).toContain(`sed -i -e '${unsetEnvSedExpr('CLAUDE_CODE_OAUTH_TOKEN', { all: true })}' -e '${envSourceLineSedExpr('CLAUDE_CODE_OAUTH_TOKEN')}' ~/${f}`);
     }
     for (const name of ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN']) {
       expect(cmds.some(c => c.includes(markedForm(name)))).toBe(false);
@@ -433,10 +433,12 @@ describe('provisionAuth profile cleanup removes every export line for the name',
   const bash = findRealBash();
   const rotOs = process.platform === 'darwin' ? 'macos' : 'linux';
   const rotFiles = rotOs === 'macos' ? ['.bashrc', '.zshrc', '.zshenv', '.profile'] : ['.bashrc', '.profile'];
-  it.skipIf(!bash.path)(`rotation over a legacy unmarked export leaves exactly one marked line (${rotOs} member)`, async () => {
+  // Also the upgrade migration: an older release left the key as a (marked or
+  // unmarked) export in every profile; the next provision_llm_auth moves it out.
+  it.skipIf(!bash.path)(`migration: re-provisioning over legacy profile exports leaves no key in any profile (${rotOs} member)`, async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-rotation-'));
     try {
-      const legacy = 'export CLAUDE_CODE_OAUTH_TOKEN="sk-ant-oat01-OLDFAKE"';
+      const legacy = `export CLAUDE_CODE_OAUTH_TOKEN="sk-ant-oat01-OLDFAKE"\nexport CLAUDE_CODE_OAUTH_TOKEN="sk-ant-oat01-OLDFAKE2" # ${FLEET_ENV_MARKER}`;
       for (const f of rotFiles) fs.writeFileSync(path.join(home, f), `# owner\n${legacy}\nexport KEEP=1\n`);
       const member = makeTestAgent({ friendlyName: 'rotate', os: rotOs });
       addAgent(member);
@@ -456,14 +458,61 @@ describe('provisionAuth profile cleanup removes every export line for the name',
       }
 
       for (const f of rotFiles) {
-        const lines = fs.readFileSync(path.join(home, f), 'utf-8').split('\n').filter(l => l.includes('export CLAUDE_CODE_OAUTH_TOKEN='));
-        expect(lines, f).toEqual([`export CLAUDE_CODE_OAUTH_TOKEN="${FAKE_OAUTH}" # ${FLEET_ENV_MARKER}`]);
-        expect(fs.readFileSync(path.join(home, f), 'utf-8')).toContain('export KEEP=1');
+        const body = fs.readFileSync(path.join(home, f), 'utf-8');
+        expect(body, f).not.toContain('FAKE');
+        expect(body, f).toBe(`# owner\nexport KEEP=1\n${envSourceLine('CLAUDE_CODE_OAUTH_TOKEN')}\n`);
       }
+      expect(fs.readFileSync(path.join(home, '.apra-fleet', 'env', 'CLAUDE_CODE_OAUTH_TOKEN'), 'utf-8'))
+        .toBe(`export CLAUDE_CODE_OAUTH_TOKEN="${FAKE_OAUTH}" # ${FLEET_ENV_MARKER}\n`);
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
     }
   });
+});
+
+// No member-bound command carries the key, raw or decoded (POSIX base64+eval
+// envelopes, PowerShell -EncodedCommand, any other embedded base64 run), and
+// on a POSIX member no profile append reads the staged secret file.
+describe('provisionAuth api_key: the key is in no command string', () => {
+  const KEY = 'sk-ant-api03-FAKEKEYSCAN5y8u';
+  beforeEach(() => {
+    backupAndResetRegistry();
+    vi.clearAllMocks();
+    stagedFiles.length = 0;
+    mockTestConnection.mockResolvedValue({ ok: true, latencyMs: 5 });
+    mockExecCommand.mockResolvedValue(ok());
+  });
+  afterEach(() => restoreRegistry());
+
+  const decodedForms = (c: string): string[] => {
+    const out = [c, decodePowerShellEncodedCommand(c)];
+    for (const m of c.match(/[A-Za-z0-9+/]{16,}={0,2}/g) ?? []) {
+      const b = Buffer.from(m, 'base64');
+      out.push(b.toString('utf8'), b.toString('utf16le'));
+    }
+    return out;
+  };
+
+  for (const [label, over] of [
+    ['linux', { os: 'linux' }], ['macos', { os: 'macos' }],
+    ['windows gitbash', { os: 'windows', shell: 'gitbash' }], ['windows powershell', { os: 'windows' }],
+  ] as const) {
+    it(`${label} member`, async () => {
+      const member = makeTestAgent({ friendlyName: `scan-${label.replace(' ', '-')}`, ...over } as any);
+      addAgent(member);
+      await provisionAuth({ member_id: member.id, api_key: KEY });
+      const cmds = cmdsSent();
+      expect(cmds.length).toBeGreaterThan(0);
+      for (const c of cmds) for (const form of decodedForms(c)) expect(form).not.toContain(KEY);
+      const persist = stagedFiles.find(f => f.path.includes('.apra-fleet-persist-'))!;
+      expect(persist).toBeDefined();
+      if (over.os !== 'windows' || (over as any).shell === 'gitbash') {
+        // The staged file goes only into the owner-only env file, never onto a profile.
+        expect(cmds.some(c => c.includes(`cat '${persist.path}' >> `))).toBe(false);
+        expect(cmds.some(c => c.includes(`cat '${persist.path}' > "$HOME/.apra-fleet/env/.ANTHROPIC_API_KEY.tmp"`))).toBe(true);
+      }
+    });
+  }
 });
 
 // provision_llm_auth records what it delivered (Agent.llmAuthDelivered) --
