@@ -107,4 +107,12 @@ export function versionToken(s: string): string | undefined {
   return /\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?/.exec(s)?.[0];
 }
 
+/** True when version token a is newer than b by major.minor.patch (prerelease tags ignored). */
+export function isNewerVersion(a: string, b: string): boolean {
+  const pa = a.split(/[.-]/).slice(0, 3).map(Number);
+  const pb = b.split(/[.-]/).slice(0, 3).map(Number);
+  for (let i = 0; i < 3; i++) if (pa[i] !== pb[i]) return pa[i] > pb[i];
+  return false;
+}
+
 export const UP_TO_DATE_RE = /up[ -]to[ -]date|already (the )?(latest|installed)/i;

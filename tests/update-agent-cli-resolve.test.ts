@@ -29,7 +29,12 @@ function fakeMember(opts: { path: string; versions: [string, string]; updateOut?
   let probes = 0;
   mockExecCommand.mockImplementation(async (cmd) => {
     if (isProbe(cmd)) return ok(`${opts.path}\n${opts.versions[probes++ === 0 ? 0 : 1]}`);
-    if (/npm view /.test(cmd)) return ok(opts.latest ?? '');
+    if (/npm view /.test(cmd)) {
+      // latest undefined -> the registry is unreachable (npm's real failure shape).
+      return opts.latest === undefined
+        ? { stdout: '', stderr: 'npm error code ENOTFOUND\nnpm error network request failed', code: 1 }
+        : ok(opts.latest);
+    }
     return ok(opts.updateOut ?? '');
   });
 }
@@ -54,9 +59,9 @@ describe('update_llm_cli multi-install resolution', () => {
   it('an unchanged resolved binary is a failure naming the resolved and the updated path', async () => {
     const m = makeTestAgent({ friendlyName: 'noop', os: 'linux' });
     addAgent(m);
-    fakeMember({ path: '/opt/custom/claude', versions: ['2.1.274', '2.1.274'] });
-    // resolved is not native and the provider has an npm package -> npm target,
-    // so make the updater report nothing and keep the version: still a failure.
+    fakeMember({ path: '/opt/custom/claude', versions: ['2.1.274', '2.1.274'], latest: '2.1.286' });
+    // resolved is not native and the provider has an npm package -> npm target;
+    // the updater reports nothing, the version stays behind latest: a failure.
     const report = await updateAgentCli({ member_id: m.id });
     expect(report).toContain('\u274C noop');
     expect(report).toContain('/opt/custom/claude');
@@ -90,6 +95,18 @@ describe('update_llm_cli multi-install resolution', () => {
     expect(updateCmd()).toContain('npm install -g @anthropic-ai/claude-code@latest');
     expect(report).toContain('\u2705 npmcur');
     expect(report).toContain('Already up to date');
+  });
+
+  it('an npm-global binary is up to date when the latest version cannot be checked', async () => {
+    const m = makeTestAgent({ friendlyName: 'npmoff', os: 'linux' });
+    addAgent(m);
+    fakeMember({
+      path: '/usr/local/bin/claude', versions: ['2.1.286 (Claude Code)', '2.1.286 (Claude Code)'],
+      updateOut: 'changed 1 package in 2s',
+    });
+    const report = await updateAgentCli({ member_id: m.id });
+    expect(report).toContain(String.fromCodePoint(0x2705) + ' npmoff');
+    expect(report).toContain('Already up to date (latest could not be checked)');
   });
 
   it('an npm-global binary still behind the latest version after npm exits 0 is a failure', async () => {

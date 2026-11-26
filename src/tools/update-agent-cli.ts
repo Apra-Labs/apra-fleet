@@ -9,7 +9,7 @@ import type { Agent, SSHExecResult } from '../types.js';
 import type { AgentStrategy } from '../services/strategy.js';
 import type { OsCommands } from '../os/os-commands.js';
 import {
-  buildProbeCommand, parseProbe, buildUpdatePlan, UP_TO_DATE_RE, versionToken,
+  buildProbeCommand, parseProbe, buildUpdatePlan, UP_TO_DATE_RE, versionToken, isNewerVersion,
 } from '../services/llm-cli-resolver.js';
 
 /**
@@ -154,16 +154,21 @@ async function updateSingleAgent(agent: Agent, installIfMissing: boolean): Promi
     if (!result.installed && result.oldVersion === result.newVersion) {
       let current = UP_TO_DATE_RE.test(updateOutput);
       let targetNote = '';
+      let upToDateNote = '';
       if (!current && resolvedPath && updateExit === 0 && targetVersionCommand) {
-        // npm prints 'changed 1 package' for a reinstall of the same version,
-        // so compare the resolved binary against the version the update installs.
+        // The update targeted the resolved binary and exited 0, and npm prints
+        // 'changed 1 package' for a reinstall of the same version: that is
+        // up to date unless the registry shows a newer version. An unreadable
+        // registry (offline, proxy, rate limit) must not fail a current CLI.
         let target: string | undefined;
         try {
           const t = await strategy.execCommand(targetVersionCommand, 30000);
           if (t.code === 0) target = versionToken(t.stdout);
-        } catch { /* target unknown -> not proven current */ }
-        current = target !== undefined && target === versionToken(result.newVersion);
-        targetNote = target ? ` Latest version is ${target}.` : ' The latest version could not be read.';
+        } catch { /* target unknown */ }
+        const have = versionToken(result.newVersion);
+        current = target === undefined || have === undefined || !isNewerVersion(target, have);
+        if (target === undefined) upToDateNote = ' (latest could not be checked)';
+        else targetNote = ` Latest version is ${target}.`;
       }
       if (resolvedPath && !current) {
         // Unchanged binary on PATH and not proven current: the update changed
@@ -174,7 +179,7 @@ async function updateSingleAgent(agent: Agent, installIfMissing: boolean): Promi
           `but the update targeted ${updatedPath}. The resolved binary and the updated installation differ or the update was a no-op.` +
           targetNote;
       } else {
-        result.error = 'Already up to date';
+        result.error = `Already up to date${upToDateNote}`;
       }
     }
   } catch (err: any) {

@@ -40,11 +40,12 @@ update plan targeting that install, and verifies the version afterwards.
 
 An npm-global install prints `changed 1 package` on a no-op reinstall, never
 "up to date". So when the plan targets the resolved npm-global binary, the
-update exits 0 and the version is unchanged, the tool reads the target with
-`npm view <pkg>@latest version` and reports "Already up to date" only if the
-resolved binary's `--version` equals it. Otherwise (behind latest, latest
-unreadable, or a non-resolved target) it is a typed failure naming the
-resolved path, the updated install and the latest version when known.
+update exits 0 and the version is unchanged, it is "Already up to date". The
+tool still reads `npm view <pkg>@latest version`: a newer latest than the
+resolved binary's `--version` is a typed failure naming both versions; an
+unreadable registry (offline, proxy, rate limit) stays up to date with
+"(latest could not be checked)". A plan that did not target the resolved
+binary is a failure unless the updater says it is up to date.
 
 ## Pre-sprint check mixes cached and fresh bead reads (fixed)
 
