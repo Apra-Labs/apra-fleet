@@ -619,6 +619,15 @@ function createSprintChangedFiles({ command, pullGitBefore, baseBranch, branch, 
 }
 export { createSprintChangedFiles };
 
+// Every member-bound git command with a `<ref>:<path>` argument goes through
+// here: Git Bash (MSYS) would rewrite `origin/main:.fleet/x.json` into
+// `origin\main;.fleet\x.json`, so the member's SE builder decides
+// (gitRefPathCommand). No resolver (unit-test seam): the bare command.
+async function gitRefPathCmd(memberShell, memberName, gitCommand) {
+    if (typeof memberShell !== 'function') return gitCommand;
+    return (await memberShell(memberName)).gitRefPathCommand(gitCommand);
+}
+
 // Factory for kbWork.demotionCandidates()'s branchWithdrawals callback: the
 // entries an EARLIER final review on this sprint branch withdrew, so a
 // relaunched sprint's final review can hold (restore) one. A withdrawal is a
@@ -647,9 +656,10 @@ export { createSprintChangedFiles };
 //   baseBranch: string,
 //   bibleFile?: string,
 //   log?: Function,
+//   memberShell?: (memberName: string) => Promise<{ gitRefPathCommand: (cmd: string) => string }>,
 // }} opts
 // @returns {(memberName: string) => Promise<object[]>}
-function createBranchWithdrawnEntries({ command, baseBranch, bibleFile = '.fleet/kb-canonical.json', log = () => {} }) {
+function createBranchWithdrawnEntries({ command, baseBranch, bibleFile = '.fleet/kb-canonical.json', log = () => {}, memberShell }) {
     const parseDoc = (res) => {
         if (!res || !res.ok) return null;
         try {
@@ -664,7 +674,7 @@ function createBranchWithdrawnEntries({ command, baseBranch, bibleFile = '.fleet
     // One maintainer's rows: { ok, rows, error }. `strict` tells a failed
     // HEAD read from a branch with no bible (see .read below).
     async function readCarried(memberName, strict) {
-        const headCmd = `git show HEAD:${bibleFile}`;
+        const headCmd = await gitRefPathCmd(memberShell, memberName, `git show HEAD:${bibleFile}`);
         const headRes = await command(headCmd, { member_name: memberName, silent: true, failSoft: true });
         const head = parseDoc(headRes);
         if (!head && strict) {
@@ -676,7 +686,7 @@ function createBranchWithdrawnEntries({ command, baseBranch, bibleFile = '.fleet
         }
         const tombstones = withdrawnOf(head);
         if (tombstones.length === 0) return { ok: true, rows: [] };
-        const baseCmd = `git show origin/${baseBranch}:${bibleFile}`;
+        const baseCmd = await gitRefPathCmd(memberShell, memberName, `git show origin/${baseBranch}:${bibleFile}`);
         const baseRes = await command(baseCmd, { member_name: memberName, silent: true, failSoft: true });
         const base = parseDoc(baseRes);
         if (!base) log(`[kb-work] no readable bible from '${baseCmd}' on '${memberName}' -- every withdrawn tombstone on the sprint branch counts as this branch's own`);
@@ -714,13 +724,13 @@ export { createBranchWithdrawnEntries };
 // Factory for kbWork's baseBibleIds callback: the entry ids the bible carries
 // at a commit (a plain `git show <commit>:<bible>` on the maintainer). A
 // missing bible is an empty set; an unreadable one is null.
-function createBaseBibleIds({ command, bibleFile = '.fleet/kb-canonical.json' }) {
+function createBaseBibleIds({ command, bibleFile = '.fleet/kb-canonical.json', memberShell }) {
     return async (memberName, baseCommit) => {
         if (typeof baseCommit !== 'string' || !/^[0-9a-f]{7,64}$/i.test(baseCommit)) return null;
         const ls = await command(`git ls-tree --name-only ${baseCommit} -- ${bibleFile}`, { member_name: memberName, silent: true, failSoft: true });
         if (!ls || !ls.ok) return null;
         if (String(ls.output || '').trim() === '') return new Set();
-        const res = await command(`git show ${baseCommit}:${bibleFile}`, { member_name: memberName, silent: true, failSoft: true });
+        const res = await command(await gitRefPathCmd(memberShell, memberName, `git show ${baseCommit}:${bibleFile}`), { member_name: memberName, silent: true, failSoft: true });
         if (!res || !res.ok) return null;
         try {
             const doc = JSON.parse(String(res.output || ''));
@@ -1865,10 +1875,17 @@ async function runSprintCycle(context) {
     });
     // Entries an earlier final review on this branch withdrew (a relaunch's
     // final review can hold -- restore -- one). See createBranchWithdrawnEntries.
+    // The maintainer's SE builder for the bible reads' `<ref>:<path>` commands
+    // (a gitbash member needs MSYS_NO_PATHCONV=1). An unresolved member stays
+    // POSIX: the bare command, byte-identical to before (no fleet client: no lookup).
+    const bibleReadShell = sprintState.fleetApi
+        ? async (member) => getSeCommands(await resolveMemberTarget({ fleetApi: sprintState.fleetApi, member, log }))
+        : undefined;
     const branchWithdrawals = context.branchWithdrawals ?? createBranchWithdrawnEntries({
         command,
         baseBranch: validated.baseBranch,
         log,
+        memberShell: bibleReadShell,
     });
     const currentFileHashes = context.currentFileHashes ?? createCurrentFileHashes({ command, log });
     const kbWork = context.kbWork ?? createKbWorkClient({
@@ -1881,7 +1898,7 @@ async function runSprintCycle(context) {
         // routes must then include `withdraw`).
         listTools: kbListTools,
         branchWithdrawals,
-        baseBibleIds: context.baseBibleIds ?? createBaseBibleIds({ command }),
+        baseBibleIds: context.baseBibleIds ?? createBaseBibleIds({ command, memberShell: bibleReadShell }),
         // D6 in-sprint ping-pong guard (promotionCandidates): re-hash a
         // candidate's cited files on demand to tell "basis unchanged since
         // the demotion" from "basis moved on" -- see createCurrentFileHashes.
