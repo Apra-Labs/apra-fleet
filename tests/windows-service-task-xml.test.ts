@@ -203,7 +203,14 @@ describe('WindowsServiceManager lifecycle', () => {
     const launcher = launcherPathFor(wrapper);
     expect(path.isAbsolute(launcher)).toBe(true);
     expect(path.dirname(launcher)).toBe(dir);
-    expect(launcher).not.toContain('\\');
+    if (process.platform === 'win32') {
+      // A real Windows tmp dir is C:\...\Temp, so backslashes are expected there; it must
+      // still be drive-rooted, never a cwd-relative '\tmp\...' style path.
+      expect(launcher).toMatch(/^[A-Za-z]:\\/);
+    } else {
+      // On POSIX a backslash means path.win32 was applied to a POSIX tmp wrapper -- the leak.
+      expect(launcher).not.toContain('\\');
+    }
   });
 
   it('launcherPathFor keeps the launcher beside the wrapper for POSIX and Windows paths', () => {
