@@ -8,9 +8,6 @@ import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import type { Agent, SSHExecResult } from '../types.js';
 import type { AgentStrategy } from '../services/strategy.js';
 import type { OsCommands } from '../os/os-commands.js';
-import {
-  buildProbeCommand, parseProbe, buildUpdatePlan, UP_TO_DATE_RE, versionToken, isNewerVersion,
-} from '../services/llm-cli-resolver.js';
 
 /**
  * Budgets for the CLI install/update command. Both run under the FLEET_PID
@@ -99,19 +96,9 @@ async function updateSingleAgent(agent: Agent, installIfMissing: boolean): Promi
 
   try {
     // Get current version
-    // Resolve the binary exactly as dispatch does (member's own shell + PATH
-    // prefix) and read its version in one probe, so the update can target and
-    // verify THAT installation.
-    const probeCmd = buildProbeCommand(cmds, provider, getAgentOS(agent), getAgentShell(agent)) ?? cmds.agentVersion(provider);
-    const vBefore = await strategy.execCommand(probeCmd, 15000);
-    const before = parseProbe(vBefore.stdout);
-    const cliFound = vBefore.code === 0 && before.version.length > 0;
-    result.oldVersion = cliFound ? before.version : 'not installed';
-    const resolvedPath = before.resolvedPath;
-    let updatedPath: string | undefined;
-    let updateOutput = '';
-    let targetVersionCommand: string | undefined;
-    let updateExit: number | undefined;
+    const vBefore = await strategy.execCommand(cmds.agentVersion(provider), 15000);
+    const cliFound = vBefore.code === 0 && vBefore.stdout.trim().length > 0;
+    result.oldVersion = cliFound ? vBefore.stdout.trim() : 'not installed';
 
     if (!cliFound && !installIfMissing) {
       result.error = `${provider.name} CLI not found — use install_if_missing: true to install`;
@@ -130,57 +117,23 @@ async function updateSingleAgent(agent: Agent, installIfMissing: boolean): Promi
       }
       result.installed = true;
     } else {
-      const plan = buildUpdatePlan(cmds, provider, resolvedPath);
-      updatedPath = plan.updatedPath;
-      if (plan.targetsResolved) targetVersionCommand = plan.targetVersionCommand;
-      const updateResult = await runCliStep(strategy, cmds, 'update', plan.command, UPDATE_INACTIVITY_TIMEOUT_MS, INSTALL_MAX_TOTAL_MS);
+      const updateResult = await runCliStep(strategy, cmds, 'update', cmds.updateAgent(provider), UPDATE_INACTIVITY_TIMEOUT_MS, INSTALL_MAX_TOTAL_MS);
       if ('timeoutError' in updateResult) {
         result.error = updateResult.timeoutError;
         return result;
       }
-      updateOutput = `${updateResult.stdout}\n${updateResult.stderr}`;
-      updateExit = updateResult.code;
       if (updateResult.code !== 0) {
         result.error = updateResult.stderr || 'Update command failed';
       }
     }
 
-    // Get new version from the same resolved binary
-    const vAfter = await strategy.execCommand(probeCmd, 15000);
-    const after = parseProbe(vAfter.stdout);
-    result.newVersion = after.version || 'unknown';
+    // Get new version
+    const vAfter = await strategy.execCommand(cmds.agentVersion(provider), 15000);
+    result.newVersion = vAfter.stdout.trim() || 'unknown';
     result.success = true;
 
     if (!result.installed && result.oldVersion === result.newVersion) {
-      let current = UP_TO_DATE_RE.test(updateOutput);
-      let targetNote = '';
-      let upToDateNote = '';
-      if (!current && resolvedPath && updateExit === 0 && targetVersionCommand) {
-        // The update targeted the resolved binary and exited 0, and npm prints
-        // 'changed 1 package' for a reinstall of the same version: that is
-        // up to date unless the registry shows a newer version. An unreadable
-        // registry (offline, proxy, rate limit) must not fail a current CLI.
-        let target: string | undefined;
-        try {
-          const t = await strategy.execCommand(targetVersionCommand, 30000);
-          if (t.code === 0) target = versionToken(t.stdout);
-        } catch { /* target unknown */ }
-        const have = versionToken(result.newVersion);
-        current = target === undefined || have === undefined || !isNewerVersion(target, have);
-        if (target === undefined) upToDateNote = ' (latest could not be checked)';
-        else targetNote = ` Latest version is ${target}.`;
-      }
-      if (resolvedPath && !current) {
-        // Unchanged binary on PATH and not proven current: the update changed
-        // some other installation, or nothing.
-        result.success = false;
-        result.error =
-          `Update did not change the CLI the member runs: ${resolvedPath} still reports ${result.newVersion}, ` +
-          `but the update targeted ${updatedPath}. The resolved binary and the updated installation differ or the update was a no-op.` +
-          targetNote;
-      } else {
-        result.error = `Already up to date${upToDateNote}`;
-      }
+      result.error = 'Already up to date';
     }
   } catch (err: any) {
     result.error = err.message;

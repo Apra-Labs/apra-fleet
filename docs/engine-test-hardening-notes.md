@@ -1,7 +1,7 @@
 # Cross-platform kill, align result and test-budget notes
 
 Durable design notes on a set of hardening changes to timeout kill, member
-alignment, CLI updating and slow-runner test budgets.
+alignment, the pre-sprint check and slow-runner test budgets.
 
 ## Git Bash timeout kill walks the MSYS process tree
 
@@ -31,21 +31,6 @@ Invariants:
 `isError`/`reason` only on preflight and dispatch failures, never on the
 success path, so a preflight-offline member no longer reads as "no origin
 remote". A genuine missing origin (exit code 2) stays distinct.
-
-## update_llm_cli resolves, updates and verifies the PATH-resolved CLI
-
-`update_llm_cli` resolves the CLI binary the member's PATH actually runs
-(POSIX and PowerShell, including multi-install and nvm layouts), builds an
-update plan targeting that install, and verifies the version afterwards.
-
-An npm-global install prints `changed 1 package` on a no-op reinstall, never
-"up to date". So when the plan targets the resolved npm-global binary, the
-update exits 0 and the version is unchanged, it is "Already up to date". The
-tool still reads `npm view <pkg>@latest version`: a newer latest than the
-resolved binary's `--version` is a typed failure naming both versions; an
-unreadable registry (offline, proxy, rate limit) stays up to date with
-"(latest could not be checked)". A plan that did not target the resolved
-binary is a failure unless the updater says it is up to date.
 
 ## Pre-sprint check mixes cached and fresh bead reads (fixed)
 
