@@ -107,7 +107,9 @@ async function realRun(o) {
   const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
   const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
   const client = new Client({ name: 'member-host-harness', version: '1.0.0' });
-  await client.connect(new StdioClientTransport({ command: orchBin, args: [], env }));
+  // Same args install writes into the MCP config. A SEA binary run with no
+  // args is the installer, not the MCP server.
+  await client.connect(new StdioClientTransport({ command: orchBin, args: ['run', '--transport', 'stdio'], env }));
   const call = async (name, args) => {
     const r = await client.callTool({ name, arguments: args });
     const text = (r.content ?? []).map(c => c.text ?? '').join('\n');
@@ -144,7 +146,9 @@ async function realRun(o) {
     }
     const sshOpts = ['-i', info.keyPath, '-o', 'StrictHostKeyChecking=no', '-o', `UserKnownHostsFile=${path.join(sb.keyDir, 'known_hosts')}`, '-o', 'IdentitiesOnly=yes'];
     const put = run('scp', [...sshOpts, local, `${info.user}@127.0.0.1:baseline-installer.exe`]);
-    const installArgs = ['install', ...baselineInstallArgs(pass)].join(' ');
+    // --force: RFS installs over RB's restored install, which may have left a
+    // server running (the refusal's own remedy). No supervisor runs yet.
+    const installArgs = ['install', ...baselineInstallArgs(pass), '--force'].join(' ');
     const r = put.code === 0 ? await exec(`chmod +x "$HOME/baseline-installer.exe" && "$HOME/baseline-installer.exe" ${installArgs}`, 600) : { isError: true, text: put.out };
     rec(pass, `${pass.toLowerCase()}-baseline-installed`, `baseline ${installArgs}`, r.isError ? 1 : 0, '', r.text.slice(-200));
   };
