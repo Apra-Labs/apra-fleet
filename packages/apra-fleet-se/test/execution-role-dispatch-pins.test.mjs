@@ -27,7 +27,13 @@ import {
     regressionReport,
     harvesterReport,
 } from '../fleet-sprint/contracts.mjs';
-import { KB_SELF_INJECTING_ROLES } from '../fleet-sprint/runner.js';
+import { KB_SELF_INJECTING_ROLES, KB_BLOCK_ROLES } from '../fleet-sprint/runner.js';
+
+/** Where a persona's KNOWLEDGE BANK block comes from, per runner.js agent() and kb.mjs. */
+function kbSourceOf(role) {
+    if (KB_SELF_INJECTING_ROLES.has(role)) return 'prompt-builder';
+    return KB_BLOCK_ROLES.has(role) ? 'wrapper' : 'none';
+}
 import { policyFor, ROLE_POLICIES, PRE_DISPATCH_STEPS_IN_BRACKET } from '../fleet-sprint/role-policies.mjs';
 import {
     driveEngineDispatch,
@@ -236,12 +242,11 @@ describe('execution-role dispatch ladders: per-dispatch pins', () => {
             const agentType = merged.get('agentType') ?? null;
             assert.strictEqual(agentType, pin.agentType, `${pin.name} must pass agentType=${pin.agentType}.`);
             const role = agentType.replace(/^['"]|['"]$/g, '');
-            const fromWrapper = !KB_SELF_INJECTING_ROLES.has(role);
             assert.strictEqual(
-                fromWrapper,
-                !['doer', 'reviewer'].includes(role),
+                kbSourceOf(role),
+                ['doer', 'reviewer'].includes(role) ? 'prompt-builder' : 'none',
                 `${pin.name}: doer and reviewer place their own KNOWLEDGE BANK block from their prompt builders; every ` +
-                `other execution role receives it from the agent() wrapper.`
+                `other execution role (deployer, the test runners, harvester) gets no block.`
             );
 
             // --- returnable verdicts --------------------------------------------
@@ -389,6 +394,11 @@ describe('execution-role dispatch: cross-cutting invariants', () => {
             [...KB_SELF_INJECTING_ROLES].sort(),
             ['doer', 'reviewer'],
             'Exactly the doer and reviewer place their own knowledge block; a role added to the set without updating its prompt builder gets none.'
+        );
+        assert.deepStrictEqual(
+            [...KB_BLOCK_ROLES].sort(),
+            ['doer', 'plan-reviewer', 'planner', 'reviewer'],
+            'Only planner, plan-reviewer, doer and reviewer receive a knowledge block; deployer, the test runners and harvester get none.'
         );
         // The three self-injecting prompt builders really do carry the block.
         for (const builderCall of ['buildDoerPrompt({', 'buildReviewerPrompt({', 'buildFinalVerdictPrompt({']) {
@@ -1299,16 +1309,16 @@ describe('execution-role dispatch ladders: per-dispatch pins (engine-served)', (
 
             // --- KB knowledge injection -----------------------------------------
             assert.strictEqual(o.agentType ?? null, pin.agentType, `${pin.name} must pass agentType=${pin.agentType}.`);
-            const fromWrapper = !KB_SELF_INJECTING_ROLES.has(pin.agentType);
+            const kbSource = kbSourceOf(pin.agentType);
             assert.strictEqual(
-                fromWrapper,
-                !['doer', 'reviewer'].includes(pin.agentType),
+                kbSource,
+                ['doer', 'reviewer'].includes(pin.agentType) ? 'prompt-builder' : 'none',
                 `${pin.name}: doer and reviewer place their own KNOWLEDGE BANK block from their prompt builders; every ` +
-                'other execution role receives it from the agent() wrapper.'
+                'other execution role (deployer, the test runners, harvester) gets no block.'
             );
             assert.strictEqual(
                 policyFor(pin.role).kbInjection,
-                fromWrapper ? 'wrapper' : 'prompt-builder',
+                kbSource,
                 `${pin.name}: the policy's kbInjection field must agree with where the block really comes from.`
             );
 

@@ -9,6 +9,8 @@
 //   - otherwise read the injected KNOWLEDGE BANK block;
 //   - if a tool call fails, use the block if the prompt has one, otherwise
 //     continue without KB -- never report the dispatch blocked over it.
+// A dispatched persona outside kb.mjs KB_BLOCK_ROLES gets no block, so its
+// prompt must instead say to continue without KB and never mention one.
 // and must never instruct kb_feedback, a direct kb_capture call, repo_path on a
 // kb_* call, or a tool name outside the shared member allowlist.
 //
@@ -21,7 +23,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { kbKnowledgeBlock } from '../fleet-sprint/kb.mjs';
+import { kbKnowledgeBlock, KB_BLOCK_ROLES } from '../fleet-sprint/kb.mjs';
+import { allDispatchPolicies } from '../fleet-sprint/role-policies.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AGENTS_DIR = path.join(__dirname, '..', 'apra-pm', 'agents');
@@ -99,6 +102,13 @@ const DEFERRED_LOAD_RE = /If the `kb_\*`\/`code_\*` tools are listed only as def
 const blockOtherwiseRe = (heading) => new RegExp(`Otherwise, read the injected "${heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}" block`);
 const FALLBACK_RE = /If a KB or code tool call fails, use that block if your prompt has one; otherwise continue without KB\./;
 const NEVER_BLOCKED_RE = /never report this dispatch as blocked because of it/;
+// Roles outside the engine's KNOWLEDGE BANK block roles (role-policies
+// kbInjection 'none' with a persona): no block to read, continue without KB.
+const NO_BLOCK_FALLBACK_RE = /Otherwise, or if a KB or code tool call fails, continue without KB -- this role gets no KNOWLEDGE BANK block in its dispatch prompt\./;
+const INJECTED_BLOCK_MENTION_RE = /read the injected|use that block|otherwise the block|or the injected block/i;
+const NO_BLOCK_FILES = new Set(
+    allDispatchPolicies().filter((p) => p.kbInjection === 'none' && p.agentType).map((p) => `${p.agentType}.md`)
+);
 
 // Forbidden instructions.
 // Token starts use a lookbehind, not \b: in mcp__server__kb_feedback the "_"
@@ -120,13 +130,19 @@ const TOOL_NAME_RE = /(?<![A-Za-z0-9])((?:kb|code)_[a-z][a-z_]*)\b/g;
  * Every Step 0 contract violation in one role prompt's content.
  * @returns {string[]} human-readable violations (empty = conforming)
  */
-function step0Violations(content, { heading, allowed, outputFields }) {
+function step0Violations(content, { heading, allowed, outputFields, noBlock = false }) {
     const v = [];
     const flat = collapse(content);
     if (!TOOLS_WHEN_PRESENT_RE.test(flat)) v.push('missing tools-when-present instruction');
     if (!NO_DISCOVERY_NO_SCOPE_RE.test(flat)) v.push('missing no-discovery / no-scope-argument instruction');
-    if (!blockOtherwiseRe(heading).test(flat)) v.push(`missing block-otherwise instruction naming "${heading}"`);
-    if (!FALLBACK_RE.test(flat)) v.push('missing conditional fallback (use the block if present, otherwise continue without KB)');
+    if (noBlock) {
+        // A role the engine sends no KNOWLEDGE BANK block must not be told to read one.
+        if (INJECTED_BLOCK_MENTION_RE.test(flat)) v.push('tells a no-block role to read an injected KNOWLEDGE BANK block');
+        if (!NO_BLOCK_FALLBACK_RE.test(flat)) v.push('missing continue-without-KB fallback for a no-block role');
+    } else {
+        if (!blockOtherwiseRe(heading).test(flat)) v.push(`missing block-otherwise instruction naming "${heading}"`);
+        if (!FALLBACK_RE.test(flat)) v.push('missing conditional fallback (use the block if present, otherwise continue without KB)');
+    }
     if (!NEVER_BLOCKED_RE.test(flat)) v.push('missing never-report-blocked instruction');
     // Claude Code may defer MCP tools behind its tool-search tool even when the
     // session config asks for them to be always loaded (older CLI, per-folder
@@ -186,10 +202,24 @@ test('the shared member allowlist is imported, not copied, and is non-empty', ()
 for (const file of coveredRoleFiles(AGENTS_DIR)) {
     test(`${file}: conforms to the Step 0 contract`, () => {
         const content = fs.readFileSync(path.join(AGENTS_DIR, file), 'utf8');
-        const violations = step0Violations(content, contractContext());
+        const violations = step0Violations(content, { ...contractContext(), noBlock: NO_BLOCK_FILES.has(file) });
         assert.deepEqual(violations, [], `${file} violates the Step 0 contract:\n- ${violations.join('\n- ')}`);
     });
 }
+
+test('no-block role prompts are exactly the dispatched personas outside KB_BLOCK_ROLES', () => {
+    const dispatched = new Set(allDispatchPolicies().map((p) => p.agentType).filter(Boolean));
+    const expected = [...dispatched].filter((r) => !KB_BLOCK_ROLES.has(r)).map((r) => `${r}.md`).sort();
+    assert.deepEqual([...NO_BLOCK_FILES].sort(), expected);
+    assert.deepEqual(expected, ['deployer.md', 'harvester.md', 'integ-test-runner.md', 'regression-test-runner.md']);
+});
+
+test('a no-block role prompt that still says to read the injected block fails the contract', () => {
+    const content = fs.readFileSync(path.join(AGENTS_DIR, 'planner.md'), 'utf8');
+    const v = step0Violations(content, { ...contractContext(), noBlock: true });
+    assert.ok(v.some((x) => /tells a no-block role to read an injected/.test(x)), JSON.stringify(v));
+    assert.ok(v.some((x) => /missing continue-without-KB fallback/.test(x)), JSON.stringify(v));
+});
 
 // ---------------------------------------------------------------------------
 // Non-vacuity: the checker must reject what it exists to reject.
