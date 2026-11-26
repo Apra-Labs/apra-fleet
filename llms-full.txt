@@ -62,7 +62,7 @@ One control plane. Any device. Any model. Any workflow. Any domain.
 
 | Pillar | Concretely |
 |---|---|
-| **Any device** | Register any Windows / macOS / Linux machine (local or over SSH) as a fleet member in one command. Cloud members auto-start on demand. Windows members are fully supported for dispatch, command execution, and background long-running tasks (launched detached via WMI). Windows spawns resolve commands by absolute path only, and install, replace-full and uninstall refuse cleanly when the installed exe is locked. |
+| **Any device** | Register any Windows / macOS / Linux machine (local or over SSH) as a fleet member in one command. Cloud members auto-start on demand. Windows members are fully supported for dispatch, command execution, and background long-running tasks (launched detached via WMI). Windows spawns resolve commands by absolute path only, install refuses while an apra-fleet server runs from the install prefix, and replace-full and uninstall refuse before removing anything when they detect another process holding the installed exe ([what is detected](docs/install.md#what-the-automated-replace-full-does-on-windows-and-with-a-supervisor)). |
 | **Any model** | Claude, Codex, Copilot, Antigravity, local models (any OpenAI-compatible endpoint via OpenCode) -- mixed freely. Tier-based routing (cheap / standard / premium) keeps cost governance built in. Cross-provider review is a quality mechanism: a different model, with different blind spots, checks every change. |
 | **Any workflow** | Workflows are durable programs, not prompt chains: multi-hour, resumable, observable, with member reservations and atomic state. Write your own; ship it to the fleet. |
 | **Any domain** | Not just software development. The pattern fits wherever work decomposes into agent-sized pieces that need orchestration and an audit trail: nightly retail replenishment (reconcile inventory deltas, draft purchase orders for sign-off), logistics exception handling (triage a delayed shipment, re-book, notify), healthcare intake (summarize referrals, check completeness, route), back-office runs (invoice matching, compliance evidence collection). Software engineering is the vertical running today -- your domain is a workflow away. |
@@ -1694,11 +1694,16 @@ following so the manual steps above are not needed in the common cases:
 
 - **Locked installed exe.** On Windows an installed `apra-fleet.exe` that a
   running process has open cannot be deleted. Replace-full probes it up front
-  (step 1b, refusal reason `exe-locked`) and `apra-fleet uninstall` probes it
+  (step 1b, refusal reason `exe-locked`) and `apra-fleet uninstall` checks it
   with retries before removing anything; both refuse with exit 1 and remedies
   while nothing has been deleted. Step 2 still runs from the backup copy of the
-  binary. The probe opens the file read-write with no sharing, which fails with
-  EBUSY / a sharing violation while any process runs the image.
+  binary. When uninstall runs from elsewhere, the probe opens the file
+  read-write with no sharing, which fails with EBUSY / a sharing violation
+  while any process runs the image. When uninstall runs from the installed exe
+  itself (the usual case), that probe cannot tell its own handle from another's,
+  so it instead refuses (`E-UNINSTALL-EXE-IN-USE`, naming the pids) when another
+  `apra-fleet.exe` process runs that same path; a holder that is not an
+  `apra-fleet.exe` process, or whose path cannot be read, is not detected there.
 - **Idle supervisor.** An idle fleet-sprint supervisor is stopped in step 0
   (the `ApraFleetSupervisor` scheduled task is ended, or the Linux user unit is
   stopped, then `POST /api/shutdown` and a wait), checked again, and restarted

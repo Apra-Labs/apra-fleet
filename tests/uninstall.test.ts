@@ -1153,6 +1153,53 @@ describe('uninstall', () => {
         expect(process.exit).not.toHaveBeenCalled();
       });
 
+      it('self-uninstall while ANOTHER process runs the same exe: E-UNINSTALL-EXE-IN-USE naming its pid, nothing removed', async () => {
+        Object.defineProperty(process, 'execPath', { value: exePath, configurable: true });
+        const runningProcesses = vi.fn(() => [
+          { pid: 4321, exePath: exePath.toUpperCase() },
+          { pid: 999, exePath: path.join(os.tmpdir(), 'other', 'apra-fleet.exe') },
+        ]);
+        const remove = vi.fn();
+        const spawnDetached = vi.fn();
+        const sleep = vi.fn();
+        const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+        await expect(runUninstall(['--yes'], { platform: 'win32', runningProcesses, remove, spawnDetached, sleep })).rejects.toThrow('exit');
+
+        expect(process.exit).toHaveBeenCalledWith(1);
+        expect(runningProcesses).toHaveBeenCalledTimes(3);
+        expect(sleep).toHaveBeenCalledTimes(2);
+        assertNothingRemoved(remove);
+        expect(spawnDetached).not.toHaveBeenCalled();
+        const err = errSpy.mock.calls.map(c => c.join(' ')).join('\n');
+        expect(err).toContain('E-UNINSTALL-EXE-IN-USE');
+        expect(err).toContain('pid 4321');
+        expect(err).not.toContain('999');
+        expect(err).toContain('Nothing was uninstalled');
+      });
+
+      it('self-uninstall: our own pid, our parent, other exes and unresolved paths do not block; a holder that exits does not either', async () => {
+        Object.defineProperty(process, 'execPath', { value: exePath, configurable: true });
+        let calls = 0;
+        const runningProcesses = vi.fn(() => [
+          { pid: process.pid, exePath },
+          { pid: process.ppid, exePath },
+          { pid: 999, exePath: path.join(os.tmpdir(), 'other', 'apra-fleet.exe') },
+          { pid: 1000, exePath: null },
+          ...(++calls === 1 ? [{ pid: 4321, exePath }] : []),
+        ]);
+        const { remove, removed } = failing({ [exePath]: 'EPERM' });
+        const spawnDetached = vi.fn();
+        vi.spyOn(console, 'error').mockImplementation(() => {});
+
+        await runUninstall(['--yes'], { platform: 'win32', runningProcesses, remove, spawnDetached, sleep: () => {} });
+
+        expect(runningProcesses).toHaveBeenCalledTimes(2);
+        expect(process.exit).not.toHaveBeenCalled();
+        expect(spawnDetached).toHaveBeenCalledTimes(1);
+        for (const p of [doltPath, config.HOOKS_DIR, config.SCRIPTS_DIR]) expect(removed).toContain(p);
+      });
+
       it.each([
         ['linux', ['--yes']],
         ['win32', ['--yes', '--dry-run']],

@@ -553,11 +553,16 @@ following so the manual steps above are not needed in the common cases:
 
 - **Locked installed exe.** On Windows an installed `apra-fleet.exe` that a
   running process has open cannot be deleted. Replace-full probes it up front
-  (step 1b, refusal reason `exe-locked`) and `apra-fleet uninstall` probes it
+  (step 1b, refusal reason `exe-locked`) and `apra-fleet uninstall` checks it
   with retries before removing anything; both refuse with exit 1 and remedies
   while nothing has been deleted. Step 2 still runs from the backup copy of the
-  binary. The probe opens the file read-write with no sharing, which fails with
-  EBUSY / a sharing violation while any process runs the image.
+  binary. When uninstall runs from elsewhere, the probe opens the file
+  read-write with no sharing, which fails with EBUSY / a sharing violation
+  while any process runs the image. When uninstall runs from the installed exe
+  itself (the usual case), that probe cannot tell its own handle from another's,
+  so it instead refuses (`E-UNINSTALL-EXE-IN-USE`, naming the pids) when another
+  `apra-fleet.exe` process runs that same path; a holder that is not an
+  `apra-fleet.exe` process, or whose path cannot be read, is not detected there.
 - **Idle supervisor.** An idle fleet-sprint supervisor is stopped in step 0
   (the `ApraFleetSupervisor` scheduled task is ended, or the Linux user unit is
   stopped, then `POST /api/shutdown` and a wait), checked again, and restarted

@@ -30,6 +30,7 @@ import {
   PROVIDER_STANDARD_MODELS,
   ProviderInstallConfig
 } from './config.js';
+import { getRunningApraFleetProcesses, type RunningApraFleetProcess } from './install-guard.js';
 import { BUILTIN_WORKFLOW_NAMES } from './workflow-assets.js';
 import { claudePluginsDir, isApraFleetStatusLine, uninstallClaudeMod } from './claude-mod.js';
 
@@ -339,6 +340,8 @@ export interface UninstallDeps {
    * Never modifies the file. Default: an exclusive read-write open, closed at once.
    */
   probeLocked?: (p: string) => NodeJS.ErrnoException | null;
+  /** Other running apra-fleet processes with their exe paths. Default: getRunningApraFleetProcesses. */
+  runningProcesses?: () => RunningApraFleetProcess[];
 }
 
 const REMOVE_ATTEMPTS = 3;
@@ -563,10 +566,35 @@ Options:
   // host half-uninstalled: service, workflows, skills and settings gone, the
   // exe still there. Probed after the --force stop, which releases the
   // server's handle, and retried briefly while that process exits. When the
-  // locked exe is this process itself, the deferred delete below handles it.
+  // exe is the one this process runs from, the open probe cannot tell our own
+  // handle from another's, so any OTHER process running the same exe is
+  // looked up by path instead; the deferred delete below handles our own.
   const platform = deps.platform ?? process.platform;
   if (!dryRun && isFullUninstall && platform === 'win32') {
     const exe = installedWindowsExe();
+    if (fs.existsSync(exe) && sameWin32Path(exe, process.execPath)) {
+      const running = deps.runningProcesses ?? getRunningApraFleetProcesses;
+      const sleep = deps.sleep ?? defaultSleep;
+      let others: number[] = [];
+      for (let i = 0; i < REMOVE_ATTEMPTS; i++) {
+        others = running()
+          .filter(p => p.pid !== process.pid && p.pid !== process.ppid && p.exePath !== null && sameWin32Path(p.exePath, exe))
+          .map(p => p.pid);
+        if (others.length === 0) break;
+        if (i < REMOVE_ATTEMPTS - 1) sleep(LOCK_RETRY_MS);
+      }
+      if (others.length > 0) {
+        console.error(`\nError E-UNINSTALL-EXE-IN-USE: ${exe} is also run by another process (pid ${others.join(', pid ')}), so it cannot be removed.`);
+        console.error('  Nothing was uninstalled: no service, workflow, skill, hook or setting was touched.');
+        if (serverRunning) console.error('  The apra-fleet server was stopped above; bring it back with: apra-fleet start');
+        console.error('  The likely holder is an apra-fleet server or fleet-sprint supervisor started from that exe. Stop it, then re-run the uninstall:');
+        console.error(`    - by pid:         taskkill /PID ${others.join(' /PID ')}`);
+        console.error('    - the supervisor: stop its sprints, then POST /api/shutdown on its port (Content-Type application/json, body {}),');
+        console.error(`                      and if it runs as the ${SUPERVISOR_WINDOWS_TASK_NAME} scheduled task: schtasks /End /TN ${SUPERVISOR_WINDOWS_TASK_NAME}`);
+        process.exit(1);
+        return;
+      }
+    }
     if (fs.existsSync(exe) && !sameWin32Path(exe, process.execPath)) {
       const probe = deps.probeLocked ?? defaultProbeLocked;
       const sleep = deps.sleep ?? defaultSleep;
