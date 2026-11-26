@@ -186,6 +186,13 @@ vi.mock('ssh2', () => ({
   }),
 }));
 
+// Host-independent: windowsExecutable resolves to a fixed absolute System32 path (as it does on win32).
+vi.mock('../src/os/windows-executable.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/os/windows-executable.js')>()),
+  windowsExecutable: (name: string) => `C:\\Windows\\System32\\${name.replace(/\.exe$/i, '')}.exe`,
+}));
+const TASKKILL_EXE = 'C:\\Windows\\System32\\taskkill.exe';
+
 // --- Pinned kill strings for the other shells (byte-identical to before) ---
 
 const POSIX_KILL_9200 = '_fleet_kill_tree() { for _fleet_child in $(pgrep -P "$1" 2>/dev/null); do _fleet_kill_tree "$_fleet_child"; done; kill -9 "$1" 2>/dev/null; }; _fleet_kill_tree 9200; true';
@@ -348,7 +355,7 @@ describe('Local path: a timed-out command on a local Windows member gets a whole
       if (call.file === GITBASH_SHELL) {
         expect(call.args[0]).toBe('-c');
         actions.push(...runGitBashKill(call.args[1], procs));
-      } else if (call.file === 'taskkill.exe') {
+      } else if (call.file === TASKKILL_EXE) {
         expect(call.args.slice(0, 3)).toEqual(['/F', '/T', '/PID']);
         actions.push({ kind: 'taskkill', winpid: Number(call.args[3]) });
       } else {
@@ -380,7 +387,7 @@ describe('Local path: a timed-out command on a local Windows member gets a whole
   it('PowerShell local member: only the direct taskkill.exe /F /T, exactly as before', async () => {
     setPlatform('win32');
     await driveLocal(localAgent({ shell: 'powershell' }), 'inactivity', 'FLEET_PID:9200\n');
-    expect(cp.execFileCalls).toEqual([{ file: 'taskkill.exe', args: ['/F', '/T', '/PID', '9100'] }]);
+    expect(cp.execFileCalls).toEqual([{ file: TASKKILL_EXE, args: ['/F', '/T', '/PID', '9100'] }]);
     expect(cp.execSyncCalls).toEqual([]);
   });
 
