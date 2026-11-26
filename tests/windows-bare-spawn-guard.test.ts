@@ -15,10 +15,16 @@ import { fileURLToPath } from 'node:url';
 const SRC_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'src');
 
 const BUG_PROGRAMS = 'claude|npx|agy|taskkill|tasklist|schtasks|whoami|cmd';
-const SPAWN_FNS = 'spawn|spawnSync|exec|execSync|execFile|execFileSync|spawnFn|spawnDetached';
+// run/runCommand/runCmd/sh are run()-style wrappers that hand a command STRING to a shell.
+const SPAWN_FNS = 'spawn|spawnSync|exec|execSync|execFile|execFileSync|spawnFn|spawnDetached|run|runCommand|runCmd|sh';
 
+// \s spans newlines, so a call split as `spawn(` NEWLINE `'npx'` is matched too (the regex
+// runs on the whole comment-stripped source, not line by line). A command string whose
+// first token is a guarded program (`execSync('claude mcp remove ...')`) matches because
+// a space after the program name satisfies the negative lookahead.
 const BARE_PROGRAM_RE = new RegExp(
   `\\b(?:${SPAWN_FNS})\\s*\\(\\s*(['"\`])(?:${BUG_PROGRAMS})(?:\\.exe|\\.cmd)?(?![\\w.-])`,
+  'g',
 );
 // shell: true, a win32-conditional shell option, or a literal cmd.exe shell.
 const SHELL_OPT_RE = /\bshell\s*:\s*(?:true\b|process\.platform\b|isWin\w*|['"`]cmd(?:\.exe)?['"`])/;
@@ -37,6 +43,13 @@ const ALLOWLIST: AllowEntry[] = [
   { file: 'cli/install.ts', reason: 'out of scope this sprint (open PRs); the cmd.exe/claude/tasklist/taskkill sites are tracked separately (djez.1.4)' },
   { file: 'cli/beads-install.ts', reason: 'npm and bd resolution with shell:true belongs to a separate bd/npm resolution follow-up; npm/bd are not ga85 programs' },
   { file: 'cli/dolt-install.ts', reason: 'dolt version with a win32 shell option: dolt is not a ga85 program' },
+  {
+    file: 'cli/uninstall.ts',
+    // Anchored on the 4-space indent of the `if (!plan) {` fallback inside removeClaudeMcpServer, so the
+    // same call restored at the old call-site depth (the pre-fix shape) is NOT allowed.
+    line: /^ {4}run\('claude mcp remove/,
+    reason: 'fallback reached only when windowsCommand() is not used, i.e. off win32 (POSIX has no cwd search); win32 always runs an absolute plan via execFileSync',
+  },
   {
     file: 'tools/register-member.ts',
     line: /spawnFn\(\s*'claude'.*shell:\s*true/,
@@ -58,17 +71,30 @@ function stripComments(text: string): string {
 
 export function scanSource(relFile: string, source: string, allowlist: AllowEntry[] = ALLOWLIST): Finding[] {
   const out: Finding[] = [];
-  const lines = stripComments(source).split('\n');
+  const stripped = stripComments(source);
+  const lines = stripped.split('\n');
   const allowed = allowlist.filter(a => a.file === relFile);
+  const isAllowed = (text: string) => allowed.some(a => !a.line || a.line.test(text));
+  const seen = new Set<string>();
+  const add = (line: number, text: string, kind: Finding['kind']) => {
+    const key = `${line}:${kind}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ file: `src/${relFile}`, line, text: text.trim(), kind });
+  };
+  // bare programs: whole-text match so calls split across lines are caught
+  for (const m of stripped.matchAll(BARE_PROGRAM_RE)) {
+    const startLine = stripped.slice(0, m.index).split('\n').length;
+    const endLine = startLine + (m[0].match(/\n/g)?.length ?? 0);
+    const spanned = lines.slice(startLine - 1, endLine);
+    if (spanned.some(isAllowed)) continue;
+    add(startLine, spanned.join(' '), 'bare-program');
+  }
   lines.forEach((text, i) => {
-    let kind: Finding['kind'] | null = null;
-    if (BARE_PROGRAM_RE.test(text)) kind = 'bare-program';
-    else if (SHELL_OPT_RE.test(text)) kind = 'shell-option';
-    if (!kind) return;
-    if (allowed.some(a => !a.line || a.line.test(text))) return;
-    out.push({ file: `src/${relFile}`, line: i + 1, text: text.trim(), kind });
+    if (seen.has(`${i + 1}:bare-program`)) return; // one finding per line, bare-program wins
+    if (SHELL_OPT_RE.test(text) && !isAllowed(text)) add(i + 1, text, 'shell-option');
   });
-  return out;
+  return out.sort((a, b) => a.line - b.line);
 }
 
 function listTsFiles(dir: string): string[] {
@@ -99,7 +125,8 @@ describe('windows bare-name spawn guard', () => {
       const p = path.join(SRC_DIR, a.file);
       expect(fs.existsSync(p), `${a.file} missing`).toBe(true);
       const hits = scanSource(a.file, fs.readFileSync(p, 'utf8'), []);
-      const used = hits.filter(h => !a.line || a.line.test(h.text));
+      const rawLines = fs.readFileSync(p, 'utf8').split('\n');
+      const used = hits.filter(h => !a.line || a.line.test(rawLines[h.line - 1] ?? h.text));
       expect(used.length, `allowlist entry for ${a.file} matches nothing: ${a.reason}`).toBeGreaterThan(0);
     }
   });
@@ -123,5 +150,48 @@ describe('windows bare-name spawn guard', () => {
       "spawn('git', ['status']);",
     ].join('\n');
     expect(scanSource('fixture.ts', ok)).toEqual([]);
+  });
+
+  it('flags a command string (execSync / exec / run wrapper) whose first token is a guarded program', () => {
+    for (const src of [
+      "execSync('claude mcp remove apra-fleet --scope user');",
+      'exec(`npx -y gitnexus analyze`);',
+      "run('taskkill /F /PID 1', { stdio: 'ignore' });",
+      "            run('claude mcp remove apra-fleet --scope user', { stdio: 'ignore' });",
+    ]) {
+      expect(scanSource('fixture.ts', src).map(f => f.kind), src).toEqual(['bare-program']);
+    }
+  });
+
+  it('flags a multi-line bare spawn (spawn( NEWLINE npx) with the call line', () => {
+    const src = ['const a = 1;', 'const child = spawn(', "  'npx',", '  args,', ');'].join('\n');
+    expect(scanSource('fixture.ts', src).map(f => `${f.line}:${f.kind}`)).toEqual(['2:bare-program']);
+    expect(scanSource('fixture.ts', "execFileSync(\n  'cmd.exe',\n  a);").length).toBe(1);
+  });
+
+  it('does not flag absolute-path or resolved calls in either shape', () => {
+    const ok = [
+      "run(`${windowsExecutable('taskkill')} /F`);",
+      "execFileSync(plan.file, [...plan.args, 'mcp']);",
+      'spawn(',
+      "  windowsExecutable('npx'),",
+      '  args,',
+      ');',
+      "execSync('git status');",
+      "run('C:\\\\tools\\\\claude.exe mcp remove');",
+    ].join('\n');
+    expect(scanSource('fixture.ts', ok)).toEqual([]);
+  });
+
+  it('reverting the uninstall fix (run with the claude command string at the call site) is reported', () => {
+    const rel = 'cli/uninstall.ts';
+    const real = fs.readFileSync(path.join(SRC_DIR, rel), 'utf8');
+    expect(scanSource(rel, real)).toEqual([]);
+    const reverted = real.replace(
+      /^( *)removeClaudeMcpServer\(\);$/m,
+      "$1run('claude mcp remove apra-fleet --scope user', { stdio: 'ignore' });",
+    );
+    expect(reverted).not.toBe(real);
+    expect(scanSource(rel, reverted).map(f => f.kind)).toEqual(['bare-program']);
   });
 });
