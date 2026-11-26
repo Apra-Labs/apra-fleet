@@ -5413,7 +5413,7 @@
       "confidence": "CONFIRMED",
       "updated_at": "2026-11-26T07:42:24.871Z",
       "source_file_hashes": {
-        "src/cli/uninstall.ts": "7d231079b7f1de79587dd0d44dc170ead35c6e82",
+        "src/cli/uninstall.ts": "715191cb9f877de91ccd6dab1f073773b7ae71b7",
         "src/services/member-fleet-install.ts": "ff30b7965f24260207cd2fa0bfaa7a7eeb869da2"
       }
     },
