@@ -94,9 +94,9 @@
       "confidence": "CONFIRMED",
       "updated_at": "2026-11-26T01:37:04.615Z",
       "source_file_hashes": {
-        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "36fe5f6a4d6585b36c3a990f94ece3cd19e552d7",
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "57624219376581c27437a27de93060c601762909",
         "packages/apra-fleet-se/fleet-sprint/phases/harvest.mjs": "e65be936ab5b368d02c320d0d9a9013d6374e986",
-        "packages/apra-fleet-se/test/mock-sprint-kb-post-harvest-recheck.test.mjs": "e70f2e8cbaa0583bfcfc8620b7cea25f8f50ad1f"
+        "packages/apra-fleet-se/test/mock-sprint-kb-post-harvest-recheck.test.mjs": "278226fb5cdacdc1263ce024d322beab577cbe16"
       }
     },
     {
@@ -1881,6 +1881,29 @@
       "updated_at": "2026-09-29T06:13:11.708Z"
     },
     {
+      "id": "5d5b2883-cd63-43e3-9c4b-cd2f446350d2",
+      "type": "knowledge",
+      "title": "A post-harvest drop of an entry this branch alone added is removed with no tombstone",
+      "summary": "After recheckSprintBible(noReviewLeft) commits a drift withdrawal, liftOwnTombstones reads the bible at the merge-base (createBaseBibleIds in runner.js) and queues a restore for each dropped id the base bible does not carry, so the withdrawn tombstone does not block that id from re-merging later. An id the base carries keeps its withdrawal. An unreadable base keeps every withdrawal.",
+      "symbols": [
+        "liftOwnTombstones",
+        "createBaseBibleIds",
+        "recheckSprintBible"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/test/mock-sprint-kb-post-harvest-recheck.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-26T03:02:16.392Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "57624219376581c27437a27de93060c601762909",
+        "packages/apra-fleet-se/fleet-sprint/runner.js": "25b525dce4a2beecb3fc330db99ca430c51323a7",
+        "packages/apra-fleet-se/test/mock-sprint-kb-post-harvest-recheck.test.mjs": "278226fb5cdacdc1263ce024d322beab577cbe16"
+      }
+    },
+    {
       "id": "602e5074-1727-414a-ae5d-1dc07a9b3698",
       "type": "knowledge",
       "title": "Viewer extensions can render a header banner visible on every tab via extension-banner-<id>",
@@ -2028,27 +2051,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:16.498Z"
-    },
-    {
-      "id": "672c4940-eacd-46fa-8786-9c1a52b61c2a",
-      "type": "knowledge",
-      "title": "Post-harvest bible recheck reports unreachable maintainer ids as unchecked, not pending",
-      "summary": "With noReviewLeft, recheckSprintBible removes ids that never reached kb_bible_commit from the confirmations queue and reports them in out.unchecked with a WARN to run the drift check. This keeps the end-of-run pending-confirmations warning from calling them unpublished, since they are already on the branch bible.",
-      "symbols": [
-        "recheckSprintBible",
-        "dropFromBible",
-        "commitRepo"
-      ],
-      "source_files": [
-        "packages/apra-fleet-se/fleet-sprint/kb.mjs",
-        "packages/apra-fleet-se/fleet-sprint/phases/harvest.mjs"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-11-26T01:53:45.916Z",
-      "source_file_hashes": {
-        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "36fe5f6a4d6585b36c3a990f94ece3cd19e552d7",
-        "packages/apra-fleet-se/fleet-sprint/phases/harvest.mjs": "e65be936ab5b368d02c320d0d9a9013d6374e986"
-      }
     },
     {
       "id": "6818e92f-0227-4a50-9054-b130f6f88cae",
@@ -2663,30 +2665,6 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:08:33.761Z"
-    },
-    {
-      "id": "8675d0b2-fcfb-4d8c-8060-ed99d46b53b9",
-      "type": "knowledge",
-      "title": "check-kb-bible-drift: branch-owned bible entries vs base, hashed as kb_bible_commit does",
-      "summary": "scripts/check-kb-bible-drift.mjs (npm run check:kb-bible-drift -- --base <ref>) compares the bible committed at HEAD with the one at the base ref. An entry is branch-owned if the base lacks it or has a different version. Owned entries whose cited files' HEAD blob ids differ from source_file_hashes make it exit 1; --restamp <ids> rewrites only those named entries' hashes.",
-      "symbols": [
-        "findOwnedDrift",
-        "ownedEntries",
-        "restampEntries",
-        "headBlobIds"
-      ],
-      "source_files": [
-        "scripts/check-kb-bible-drift.mjs",
-        "tests/check-kb-bible-drift.test.ts",
-        "docs/kb-bible-correctness.md"
-      ],
-      "confidence": "CONFIRMED",
-      "updated_at": "2026-11-26T01:37:01.028Z",
-      "source_file_hashes": {
-        "docs/kb-bible-correctness.md": "4ee28d7b0a43557a857d8d7492e619b74ba6e869",
-        "scripts/check-kb-bible-drift.mjs": "bd70d4a97450f0953529165e742ed58fbf6250a9",
-        "tests/check-kb-bible-drift.test.ts": "47dd3dae7251df7d5771910bea5cda86f083e45f"
-      }
     },
     {
       "id": "86ae8b43-42ad-4606-a961-2755421723be",
@@ -3607,6 +3585,32 @@
       }
     },
     {
+      "id": "b306ff5c-dfd4-42a4-8834-2ed573d0fae6",
+      "type": "knowledge",
+      "title": "check-kb-bible-drift: owned entries judged against the merge-base, one-line restamp, git-decided uncommitted, run in CI",
+      "summary": "scripts/check-kb-bible-drift.mjs compares the bible committed at HEAD with the one at merge-base(HEAD, --base). An entry is branch-owned if that base bible lacks it or has a different version, so a base that moved after the last merge never makes the branch own entries it did not touch. Owned entries whose cited files' HEAD blob ids differ from source_file_hashes make it exit 1 and print the exact --restamp command; --restamp refuses only when git diff HEAD shows a real change to the bible (CRLF checkouts are fine) and writes LF exporter format. ci.yml runs it on pull requests.",
+      "symbols": [
+        "findOwnedDrift",
+        "mergeBaseOf",
+        "restampEntries",
+        "formatDrift"
+      ],
+      "source_files": [
+        "scripts/check-kb-bible-drift.mjs",
+        "tests/check-kb-bible-drift.test.ts",
+        "docs/kb-bible-correctness.md",
+        ".github/workflows/ci.yml"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-26T03:02:15.851Z",
+      "source_file_hashes": {
+        ".github/workflows/ci.yml": "8a0230d43278672242beb16b2f791637f074ee24",
+        "docs/kb-bible-correctness.md": "0104d331dbce99b14153f5602dd5878d04f20a7c",
+        "scripts/check-kb-bible-drift.mjs": "0b0423ce7773e3a76f42345a83390ef2b95d694b",
+        "tests/check-kb-bible-drift.test.ts": "356a20cd29b4e6e29d22310bcf12d2971cfd0c7d"
+      }
+    },
+    {
       "id": "b417d1be-a8d5-4662-9b71-97c5f851dbc0",
       "type": "knowledge",
       "title": "kb_import keeps bible ids on every AUDN path; duplicates resolve via bible_id_aliases",
@@ -4046,6 +4050,26 @@
         "packages/apra-fleet-se/fleet-sprint/kb.mjs": "41f6e273087e48bc4a34fbbe77b3cbfb59ac66e9",
         "packages/apra-fleet-se/fleet-sprint/phases/final-review.mjs": "1b26c88531cfa3021e26a2d3ccf72db71e73b969",
         "packages/apra-fleet-se/test/kb-bible-commit-round.test.mjs": "58fa49455f60d0f2c72910a2552ff7333e708528"
+      }
+    },
+    {
+      "id": "cbb5d879-53de-42b9-a5f2-d75e223682ef",
+      "type": "knowledge",
+      "title": "Post-harvest bible recheck reports unreachable maintainer ids as unchecked with a generic WARN",
+      "summary": "With noReviewLeft, recheckSprintBible removes ids that never reached kb_bible_commit from the confirmations queue and reports them in out.unchecked with a WARN saying the entries may carry a drifted basis and need re-checking before the branch merges. The WARN names no repository-specific script (the engine is generic). Removing them keeps the end-of-run pending-confirmations warning from calling them unpublished, since they are already on the branch bible.",
+      "symbols": [
+        "recheckSprintBible",
+        "commitRepo"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/harvest.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-26T03:02:15.310Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "57624219376581c27437a27de93060c601762909",
+        "packages/apra-fleet-se/fleet-sprint/phases/harvest.mjs": "e65be936ab5b368d02c320d0d9a9013d6374e986"
       }
     },
     {
