@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { getOsCommands } from '../src/os/index.js';
-import { pidWrapGitBash, resolveGitBashPath } from '../src/os/windows-gitbash.js';
+import { pidWrapGitBash, gitBashTreeKill, resolveGitBashPath } from '../src/os/windows-gitbash.js';
 import { getProvider } from '../src/providers/index.js';
 import { isPidAlive } from '../src/utils/pid-helpers.js';
 import { isRemoteProcessAlive } from '../src/services/orphan-recovery.js';
@@ -21,6 +21,9 @@ const promptOpts = {
   unattended: 'auto', model: 'opus', maxTurns: 10,
 } as const;
 
+// The subshell keeps a builtin tail so bash never exec-optimizes the command
+// away from the winpid the marker reports (see pidWrapGitBash).
+const GITBASH_TAIL = String.raw`_fleet_rc=$?; exit $_fleet_rc; }`;
 const GITBASH_EMIT = String.raw`_fleet_wpid=; { read -r _fleet_wpid < "/proc/$_fleet_pid/winpid"; } 2>/dev/null; if [ -n "$_fleet_wpid" ]; then printf 'FLEET_PID:%s\n' "$_fleet_wpid"; fi; `;
 
 describe('Git Bash FLEET_PID emit (unit)', () => {
@@ -28,14 +31,14 @@ describe('Git Bash FLEET_PID emit (unit)', () => {
 
   it('wrapPidCapture emits the Windows pid read from /proc/<msys-pid>/winpid, never $! itself', () => {
     const cmd = gitbash.wrapPidCapture('echo hi');
-    expect(cmd).toBe(String.raw`{ echo hi; } & _fleet_pid=$!; ${GITBASH_EMIT}wait "$_fleet_pid"; exit $?`);
+    expect(cmd).toBe(String.raw`{ echo hi; ${GITBASH_TAIL} & _fleet_pid=$!; ${GITBASH_EMIT}wait "$_fleet_pid"; exit $?`);
     expect(cmd).toBe(pidWrapGitBash('echo hi'));
     expect(cmd).not.toContain(String.raw`printf 'FLEET_PID:%s\n' "$_fleet_pid"`);
   });
 
   it('buildAgentPromptCommand (the other emit path) emits the same Windows pid form', () => {
     const cmd = gitbash.buildAgentPromptCommand(claude, promptOpts as never);
-    expect(cmd).toContain(String.raw`; } & _fleet_pid=$!; ${GITBASH_EMIT}wait "$_fleet_pid"; exit $?`);
+    expect(cmd).toContain(String.raw`; ${GITBASH_TAIL} & _fleet_pid=$!; ${GITBASH_EMIT}wait "$_fleet_pid"; exit $?`);
     expect(cmd.endsWith(String.raw`${GITBASH_EMIT}wait "$_fleet_pid"; exit $?`)).toBe(true);
     expect(cmd).not.toContain(String.raw`printf 'FLEET_PID:%s\n' "$_fleet_pid"`);
   });
@@ -45,8 +48,9 @@ describe('Git Bash FLEET_PID emit (unit)', () => {
     expect(gitbash.wrapPidCapture('x')).toContain(String.raw`printf 'FLEET_PID:%s\n'`);
   });
 
-  it('killPid output is unchanged', () => {
-    expect(gitbash.killPid(4242)).toBe('taskkill //F //T //PID 4242 >/dev/null 2>&1; true');
+  it('killPid walks the MSYS tree, then still ends with the original taskkill /T of the pid', () => {
+    expect(gitbash.killPid(4242)).toBe(gitBashTreeKill(4242));
+    expect(gitbash.killPid(4242).endsWith('; taskkill //F //T //PID 4242 >/dev/null 2>&1; true')).toBe(true);
   });
 });
 
