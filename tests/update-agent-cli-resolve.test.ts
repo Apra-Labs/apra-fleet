@@ -25,14 +25,16 @@ const ok = (stdout: string): SSHExecResult => ({ stdout, stderr: '', code: 0 });
 const isProbe = (c: string) => /command -v claude|Get-Command claude/.test(c);
 
 /** Fake member: probe prints the resolved path then the version; update is scripted. */
-function fakeMember(opts: { path: string; versions: [string, string]; updateOut?: string }) {
+function fakeMember(opts: { path: string; versions: [string, string]; updateOut?: string; latest?: string }) {
   let probes = 0;
   mockExecCommand.mockImplementation(async (cmd) => {
     if (isProbe(cmd)) return ok(`${opts.path}\n${opts.versions[probes++ === 0 ? 0 : 1]}`);
+    if (/npm view /.test(cmd)) return ok(opts.latest ?? '');
     return ok(opts.updateOut ?? '');
   });
 }
-const updateCmd = () => mockExecCommand.mock.calls.map((c) => c[0]).find((c) => !isProbe(c))!;
+const isUpdate = (c: string) => !isProbe(c) && !/npm view /.test(c);
+const updateCmd = () => mockExecCommand.mock.calls.map((c) => c[0]).find(isUpdate)!;
 
 describe('update_llm_cli multi-install resolution', () => {
   beforeEach(() => { backupAndResetRegistry(); vi.clearAllMocks(); });
@@ -70,6 +72,37 @@ describe('update_llm_cli multi-install resolution', () => {
     expect(report).toContain('\u2705 cur');
     expect(report).toContain('Already up to date');
     expect(updateCmd()).toContain('claude update');
+  });
+
+  // npm prints 'changed 1 package' when it reinstalls the version already
+  // installed; it never says "up to date". Real npm output, both shells.
+  it.each([
+    { os: 'linux', shell: undefined, path: '/home/u/.nvm/versions/node/v22.0.0/bin/claude' },
+    { os: 'windows', shell: 'powershell5', path: 'C:\\Users\\u\\AppData\\Roaming\\npm\\claude.cmd' },
+  ])('an npm-global binary already at the latest version is up to date ($os)', async ({ os, shell, path }) => {
+    const m = makeTestAgent({ friendlyName: 'npmcur', os, shell } as any);
+    addAgent(m);
+    fakeMember({
+      path, versions: ['2.1.286 (Claude Code)', '2.1.286 (Claude Code)'],
+      updateOut: '\nchanged 1 package in 2s\n', latest: '2.1.286\n',
+    });
+    const report = await updateAgentCli({ member_id: m.id });
+    expect(updateCmd()).toContain('npm install -g @anthropic-ai/claude-code@latest');
+    expect(report).toContain('\u2705 npmcur');
+    expect(report).toContain('Already up to date');
+  });
+
+  it('an npm-global binary still behind the latest version after npm exits 0 is a failure', async () => {
+    const m = makeTestAgent({ friendlyName: 'npmold', os: 'linux' });
+    addAgent(m);
+    fakeMember({
+      path: '/usr/local/bin/claude', versions: ['2.1.274 (Claude Code)', '2.1.274 (Claude Code)'],
+      updateOut: 'changed 1 package in 2s', latest: '2.1.286',
+    });
+    const report = await updateAgentCli({ member_id: m.id });
+    expect(report).toContain('\u274C npmold');
+    expect(report).toContain('Latest version is 2.1.286');
+    expect(report).not.toContain('Already up to date');
   });
 
   it('builds POSIX probe syntax for a POSIX member and PowerShell syntax for a PowerShell member', async () => {

@@ -69,6 +69,12 @@ export interface UpdatePlan {
   updatedPath: string;
   /** True when the command targets the installation at resolvedPath. */
   targetsResolved: boolean;
+  /**
+   * Member command printing the version the update installs (npm plans only).
+   * npm prints 'changed 1 package' even when that version is already installed,
+   * so an unchanged binary is "already up to date" only if it equals this.
+   */
+  targetVersionCommand?: string;
 }
 
 /**
@@ -86,9 +92,19 @@ export function buildUpdatePlan(
   if (!resolvedPath) return { command: defaultCmd, updatedPath: nativeNominal, targetsResolved: false };
   if (pkg && !isNativeInstall(resolvedPath)) {
     const prefix = prefixOf(defaultCmd, provider.updateCommand()) ?? '';
-    return { command: `${prefix}npm install -g ${pkg}@latest 2>&1`, updatedPath: `${resolvedPath} (npm global ${pkg})`, targetsResolved: true };
+    return {
+      command: `${prefix}npm install -g ${pkg}@latest 2>&1`,
+      updatedPath: `${resolvedPath} (npm global ${pkg})`,
+      targetsResolved: true,
+      targetVersionCommand: `${prefix}npm view ${pkg}@latest version`,
+    };
   }
   return { command: defaultCmd, updatedPath: nativeNominal, targetsResolved: isNativeInstall(resolvedPath) };
+}
+
+/** First semver-like token in a version string ('2.1.286 (Claude Code)' -> '2.1.286'). */
+export function versionToken(s: string): string | undefined {
+  return /\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?/.exec(s)?.[0];
 }
 
 export const UP_TO_DATE_RE = /up[ -]to[ -]date|already (the )?(latest|installed)/i;
