@@ -38,13 +38,13 @@ remote". A genuine missing origin (exit code 2) stays distinct.
 (POSIX and PowerShell, including multi-install and nvm layouts), builds an
 update plan targeting that install, and verifies the version afterwards.
 
-Known gap to preserve in design: when the plan targets the resolved binary and
-the updater exits 0, an unchanged version means "already current". Success must
-not depend on the updater's output text matching `UP_TO_DATE_RE`: a globally
-npm-installed CLI prints `changed 1 package` on a no-op reinstall, which that
-regex does not match, so a current member is wrongly reported as failed. Only a
-non-resolved target or a non-zero exit should be a failure. Verification should
-compare the PATH-resolved binary's version rather than infer from output.
+An npm-global install prints `changed 1 package` on a no-op reinstall, never
+"up to date". So when the plan targets the resolved npm-global binary, the
+update exits 0 and the version is unchanged, the tool reads the target with
+`npm view <pkg>@latest version` and reports "Already up to date" only if the
+resolved binary's `--version` equals it. Otherwise (behind latest, latest
+unreadable, or a non-resolved target) it is a typed failure naming the
+resolved path, the updated install and the latest version when known.
 
 ## Pre-sprint check mixes cached and fresh bead reads (open defect)
 
