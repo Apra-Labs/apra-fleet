@@ -57,6 +57,16 @@ export class SeWindowsCommands {
   }
 
   /**
+   * A git command carrying a `<ref>:<path>` argument. Identity: PowerShell
+   * hands arguments to git.exe unconverted.
+   * @param {string} gitCommand
+   * @returns {string}
+   */
+  gitRefPathCommand(gitCommand) {
+    return String(gitCommand);
+  }
+
+  /**
    * A path under the MEMBER's home directory, expanded ON THE MEMBER.
    * `$env:USERPROFILE` rather than a JavaScript-resolved home path is
    * deliberate and is the one shell expansion this layer permits: core's
