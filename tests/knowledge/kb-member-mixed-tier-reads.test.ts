@@ -12,7 +12,7 @@ import { kbList } from '../../src/tools/kb-list.js';
 import { kbSessionPrime } from '../../src/tools/kb-session-prime.js';
 import { kbContext } from '../../src/tools/kb-context.js';
 import { kbPromote } from '../../src/tools/kb-promote.js';
-import { getKbProviders } from '../../src/services/knowledge/kb-providers.js';
+import { getKbProviders, getGlobalKbProvider } from '../../src/services/knowledge/kb-providers.js';
 import { requireSqliteProject } from '../../src/services/knowledge/require-sqlite-project.js';
 import { computeFileHash } from '../../src/services/knowledge/file-hash.js';
 import { makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from '../test-helpers.js';
@@ -186,20 +186,14 @@ describe('kb_query in a MEMBER session with a mixed tier list', () => {
     expect(ids(three.l1_results).sort()).toEqual(['bible-e1', dup, e2].sort());
   });
 
-  it('expand_related keeps the per-repo half owner-tag filtered', async () => {
-    const out = JSON.parse(await as(memberA, () => kbQuery({ query: WORD, confidence: [...MIXED], expand_related: true })));
-    expect(Array.isArray(out.related_claims)).toBe(true);
-    for (const e of out.related_claims as Array<{ confidence: string; tags: string[] }>) {
-      expect(e.confidence === 'CONFIRMED' || e.tags.includes(`member:${memberA}`)).toBe(true);
-    }
-  });
 });
 
 describe('kb_list in a MEMBER session with a mixed tier list', () => {
-  it('returns the bible CONFIRMED entries and the caller\'s own captures, never another member\'s, in id order', async () => {
+  it('returns the bible CONFIRMED entries and the caller\'s own captures, never another member\'s, bible half first', async () => {
     const out = JSON.parse(await as(memberA, () => kbList({ confidence: [...MIXED] })));
     const got = ids(out.results);
-    expect(got).toEqual([...BIBLE_IDS(), e2, aCtxF2].sort());
+    // Bible half first (id order), then the caller's own captures (id order).
+    expect(got).toEqual([...BIBLE_IDS().sort(), ...[e2, aCtxF2].sort()]);
     expect(got).not.toContain(e3);
     expect(got).not.toContain(bCtxF3);
     expect(out.total).toBe(5);
@@ -223,12 +217,13 @@ describe('kb_list in a MEMBER session with a mixed tier list', () => {
 
   it('honours limit on the merged list', async () => {
     const out = JSON.parse(await as(memberA, () => kbList({ confidence: [...MIXED], limit: 2 })));
-    expect(ids(out.results)).toEqual([...BIBLE_IDS(), e2, aCtxF2].sort().slice(0, 2));
+    // limit applies after the bible-first merge: the first two bible entries.
+    expect(ids(out.results)).toEqual(BIBLE_IDS().sort().slice(0, 2));
   });
 
   it('member B sees its own capture and the bible, not A\'s', async () => {
     const out = JSON.parse(await as(memberB, () => kbList({ confidence: ['CONFIRMED', 'INFERRED', 'UNVERIFIED'] })));
-    expect(ids(out.results)).toEqual([...BIBLE_IDS(), e3, bCtxF3].sort());
+    expect(ids(out.results)).toEqual([...BIBLE_IDS().sort(), ...[e3, bCtxF3].sort()]);
   });
 });
 
@@ -446,5 +441,151 @@ describe('MEMBER mixed-tier reads keep the caller\'s own CONFIRMED-in-DB capture
     expect(out.missing).toEqual([F5]);
     // The default member read agrees.
     expect(JSON.parse(await as(memberA, () => kbContext({ files: [F4, F5] })))).toEqual(out);
+  });
+});
+
+describe('MEMBER mixed-tier reads with a limit are a superset of the CONFIRMED-only read', () => {
+  // An own INFERRED capture whose id sorts before every bible id: under an
+  // id-sorted merge it would push bible entries out of a limited result.
+  let firstOwn: string;
+  beforeAll(async () => {
+    firstOwn = '!first-own-capture';
+    const db = requireSqliteProject((await getKbProviders(repo)).project, 'test');
+    await db.capture({
+      type: 'knowledge', title: 'Sprocketmix zero own fact',
+      summary: `Sprocketmix zero: the ${WORD} stage batches work per tick.`,
+      content: `Sprocketmix zero: the ${WORD} stage batches work per tick, observed in src/sprocket.ts.`,
+      source_files: ['src/sprocket.ts'], symbols: ['sprocketZero'],
+      tags: [`member:${memberA}`], flagged_for_review: false, author: 'doer', source: 'session', confidence: 'INFERRED',
+    } as Parameters<typeof db.capture>[0], { preferredId: firstOwn } as never);
+  });
+
+  it('the fixture id really sorts before every bible id', () => {
+    for (const id of BIBLE_IDS()) expect(firstOwn < id).toBe(true);
+  });
+
+  it('kb_list: for N in {1, 2, bible size} the mixed result contains the CONFIRMED-only result', async () => {
+    for (const n of [1, 2, BIBLE_IDS().length]) {
+      const confirmed = ids(JSON.parse(await as(memberA, () => kbList({ confidence: ['CONFIRMED'], limit: n }))).results);
+      const mixedOut = JSON.parse(await as(memberA, () => kbList({ confidence: [...MIXED], limit: n })));
+      const mixed = ids(mixedOut.results);
+      expect(mixed).toEqual(expect.arrayContaining(confirmed));
+      expect(mixed.slice(0, confirmed.length)).toEqual(confirmed);
+      expect(mixed).not.toContain(e3);
+      expect(mixed).not.toContain(bCtxF3);
+    }
+  });
+
+  it('kb_query: with an explicit limit the mixed result contains the CONFIRMED-only result', async () => {
+    for (const n of [1, 2, BIBLE_IDS().length]) {
+      const confirmed = ids(JSON.parse(await as(memberA, () => kbQuery({ query: WORD, confidence: ['CONFIRMED'], limit: n }))).l1_results);
+      const mixed = ids(JSON.parse(await as(memberA, () => kbQuery({ query: WORD, confidence: [...MIXED], limit: n }))).l1_results);
+      expect(mixed).toEqual(expect.arrayContaining(confirmed));
+      expect(mixed).not.toContain(e3);
+    }
+  });
+
+  it('a member with zero captures gets the bible CONFIRMED entries for a limited mixed kb_list', async () => {
+    const out = JSON.parse(await as(memberC, () => kbList({ confidence: [...MIXED], limit: 2 })));
+    expect(ids(out.results)).toEqual(BIBLE_IDS().sort().slice(0, 2));
+    expect(ids(out.results)).not.toContain(firstOwn);
+  });
+});
+
+describe('kb_query in a MEMBER session: default read with a global CONFIRMED row and many own captures', () => {
+  const GW = 'gizmoquuxmix';
+  it('the mixed default result contains every row of the CONFIRMED-only result', async () => {
+    const globalKb = await getGlobalKbProvider();
+    const { id: globalId } = await globalKb.capture({
+      type: 'knowledge', title: `Gizmoquux global confirmed fact ${RUN}`,
+      summary: `The ${GW} stage is confirmed globally.`, content: `The ${GW} stage is confirmed globally.`,
+      source_files: ['src/sprocket.ts'], symbols: ['gizmoGlobal'], tags: [],
+      flagged_for_review: false, author: 'doer', source: 'session', confidence: 'CONFIRMED',
+    } as Parameters<typeof globalKb.capture>[0]);
+    await globalKb.promote(globalId, 'Checked src/sprocket.ts: the stage batches work per tick, as stated.');
+    // More own captures than the member default cap (6).
+    for (let i = 0; i < 8; i++) {
+      await as(memberA, () => kbCapture({
+        type: 'knowledge', title: `Gizmoquux own capture ${i} ${RUN}`,
+        summary: `Own ${i}: the ${GW} stage batches work per tick.`,
+        content: `Own ${i}: the ${GW} stage batches work per tick.`,
+        source_files: ['src/sprocket.ts'], symbols: [`gizmoOwn${i}`],
+      } as Parameters<typeof kbCapture>[0]));
+    }
+    const confirmed = ids(JSON.parse(await as(memberA, () => kbQuery({ query: GW, confidence: ['CONFIRMED'] }))).l1_results);
+    expect(confirmed).toContain(globalId);
+    const mixed = ids(JSON.parse(await as(memberA, () => kbQuery({ query: GW, confidence: [...MIXED] }))).l1_results);
+    await globalKb.discard([globalId]);
+    expect(mixed).toEqual(expect.arrayContaining(confirmed));
+    expect(mixed.slice(0, confirmed.length)).toEqual(confirmed);
+    expect(mixed.length).toBeLessThanOrEqual(6);
+  });
+});
+
+// expand_related on a MEMBER mixed-tier read: the per-repo half is owner-tag
+// filtered, so the related claims are the caller's own linked entries, never
+// another member's. The fixture seeds REAL refines edges (AUDN: same symbol and
+// file, different content, links the new entry to its predecessor) so
+// related_claims is non-empty and a leak would show. A bible entry can carry no
+// edge here: the checkout bible view imports verbatim, with no AUDN and no links.
+describe('kb_query expand_related in a MEMBER session with a mixed tier list', () => {
+  const WORD3 = 'cogwheel';
+  const SYM = 'cogwheelShared';
+  const FILE = 'src/cogwheel.ts';
+  // Only aTop's content carries this word: the query hits aTop alone, so its
+  // linked entries are NOT among the hits (relatedClaims never echoes a hit).
+  const TOP_WORD = 'zephyrflange';
+  let aBase: string; // A's INFERRED capture (linked to by A's top hit)
+  let aTop: string; // A's second capture on the same symbol: refines aBase
+  let aConf: string; // A's capture promoted to CONFIRMED in the per-repo DB, refined by aTop2
+  let aTop2: string;
+  let bLinked: string; // B's INFERRED capture on the same symbol: refines an A entry
+
+  const cap = async (member: string, title: string, content: string): Promise<string> => {
+    const out = JSON.parse(await as(member, () => kbCapture({
+      type: 'knowledge', title, summary: `${title}: the ${WORD3} stage meshes on each tick.`,
+      content, source_files: [FILE], symbols: [SYM],
+    } as Parameters<typeof kbCapture>[0])));
+    return out.id as string;
+  };
+
+  beforeAll(async () => {
+    fs.writeFileSync(path.join(repo, 'src', 'cogwheel.ts'), 'export const cog = 1;\n');
+    aBase = await cap(memberA, 'Cogwheel alpha base fact', `Cogwheel alpha base fact: the ${WORD3} stage meshes each tick, first observation.`);
+    aTop = await cap(memberA, `Cogwheel alpha follow-up fact ${TOP_WORD}`, `Cogwheel alpha follow-up fact: the ${WORD3} stage meshes each tick, second observation.`);
+    bLinked = await cap(memberB, 'Cogwheel bravo foreign fact', `Cogwheel bravo foreign fact: the ${WORD3} stage meshes each tick, bravo observation.`);
+    const db = requireSqliteProject((await getKbProviders(repo)).project, 'test');
+    // Assert the edges really exist, so the test cannot pass on an empty graph.
+    const raw = (db as unknown as { getDb(): { prepare(s: string): { all(): Array<{ from_id: string; to_id: string }>; run(...a: string[]): unknown } } }).getDb();
+    // AUDN links one new entry to one predecessor; pin B's foreign entry to the
+    // top hit explicitly, so a leak of another member's edge would show.
+    raw.prepare("INSERT OR IGNORE INTO links (from_id, to_id, link_type) VALUES (?, ?, 'refines')").run(bLinked, aTop);
+    raw.prepare("INSERT OR IGNORE INTO links (from_id, to_id, link_type) VALUES (?, ?, 'refines')").run(aTop, aBase);
+    const links = raw.prepare("SELECT from_id, to_id FROM links WHERE link_type = 'refines'").all();
+    const edge = (x: string, y: string) => links.some(l => (l.from_id === x && l.to_id === y) || (l.from_id === y && l.to_id === x));
+    expect(edge(aTop, aBase)).toBe(true);
+    expect(edge(aTop, bLinked)).toBe(true);
+  });
+
+  const related = async (member: string) => {
+    const out = JSON.parse(await as(member, () => kbQuery({ query: member === memberA ? TOP_WORD : WORD3, confidence: [...MIXED], expand_related: true, limit: 20 })));
+    return { l1: ids(out.l1_results), related: out.related_claims as Array<{ id: string; confidence: string; tags?: string[] }> };
+  };
+
+  it('returns the caller\'s own linked entries and never another member\'s', async () => {
+    const { l1, related: rel } = await related(memberA);
+    expect(l1).toEqual([aTop]);
+    // Non-vacuous: the graph has edges, so related_claims has the own entries.
+    expect(rel.length).toBeGreaterThan(0);
+    expect(ids(rel)).toEqual(expect.arrayContaining([aBase]));
+    expect(ids(rel)).not.toContain(bLinked);
+    for (const e of rel) expect(e.confidence === 'CONFIRMED' || e.tags?.includes(`member:${memberA}`)).toBe(true);
+  });
+
+  it('member B never sees member A\'s linked entries', async () => {
+    const { related: rel } = await related(memberB);
+    // B's hits are its own capture; its link to A's top hit is A's entry, filtered out.
+    expect(ids(rel)).not.toContain(aBase);
+    expect(ids(rel)).not.toContain(aTop);
   });
 });

@@ -189,9 +189,44 @@ export class SqliteProvider implements MemoryProvider {
     this.repoPath = repoPath;
   }
 
+  /**
+   * Run one `ALTER TABLE ... ADD COLUMN <col> ...` migration. Only SQLite's
+   * "duplicate column name" error is ignored (the column already exists: the
+   * normal re-open case). Any other failure (locked/busy, read-only, disk I/O)
+   * throws an Error naming the DB path, the column and the sqlite cause, so a
+   * DB that cannot be migrated fails at open instead of later as "no such column".
+   */
+  private addColumnIfMissing(sql: string): void {
+    try {
+      this.db!.exec(sql);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (/duplicate column name/i.test(message)) return;
+      const col = /ADD COLUMN\s+(\w+)/i.exec(sql)?.[1] ?? sql;
+      throw new Error(`KB database ${path.resolve(this.dbPath)}: schema migration failed adding column ${col}: ${message}`);
+    }
+  }
+
+  /**
+   * Open the database and bring its schema up to date. A failure at any step
+   * (open, pragmas, schema, migration: locked/busy, read-only, disk I/O) throws
+   * an Error naming the DB file path and the underlying cause, and leaves the
+   * provider closed so a later init() retries instead of silently succeeding.
+   */
   async init(): Promise<void> {
     if (this.db !== null) return;
+    try {
+      await this.initUnchecked();
+    } catch (err) {
+      try { (this.db as DatabaseSync | null)?.close(); } catch { /* already unusable */ }
+      this.db = null;
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes(path.resolve(this.dbPath))) throw err;
+      throw new Error(`KB database ${path.resolve(this.dbPath)}: could not be opened or migrated: ${message}`);
+    }
+  }
 
+  private async initUnchecked(): Promise<void> {
     const dir = path.dirname(this.dbPath);
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
@@ -273,9 +308,7 @@ export class SqliteProvider implements MemoryProvider {
     `);
 
     // Migration: add scope column to existing DBs
-    try {
-      this.db.exec("ALTER TABLE entries ADD COLUMN scope TEXT NOT NULL DEFAULT 'project'");
-    } catch {}
+    this.addColumnIfMissing("ALTER TABLE entries ADD COLUMN scope TEXT NOT NULL DEFAULT 'project'");
 
     // T2.2 (F3 PART A, revised D3): additive column storing a JSON map of
     // source_file -> content hash captured AT CAPTURE TIME, for ALL entry
@@ -283,9 +316,7 @@ export class SqliteProvider implements MemoryProvider {
     // to '{}' (no basis) and are treated fresh/unknown, never falsely stale
     // (D1/D3 no-mass-migration). This is the freshness basis checkFreshness
     // compares against at prime() time.
-    try {
-      this.db.exec("ALTER TABLE entries ADD COLUMN source_file_hashes TEXT NOT NULL DEFAULT '{}'");
-    } catch {}
+    this.addColumnIfMissing("ALTER TABLE entries ADD COLUMN source_file_hashes TEXT NOT NULL DEFAULT '{}'");
 
     // Why a row was retired (superseded_at set): 'superseded' (a contradiction
     // loser, or replaced by a capture naming it in supersedes) or 'invalidated'
@@ -293,9 +324,7 @@ export class SqliteProvider implements MemoryProvider {
     // the two apart, and kb_bible_commit reports the reason for each bible
     // entry it removes. Internal only: never surfaced on KBEntry. Rows retired
     // before this column existed read NULL and count as 'superseded'.
-    try {
-      this.db.exec('ALTER TABLE entries ADD COLUMN retired_reason TEXT');
-    } catch {}
+    this.addColumnIfMissing('ALTER TABLE entries ADD COLUMN retired_reason TEXT');
 
     // Legacy bible import (v1/v2 entry, or a v3 entry without a valid carried
     // map): source_file_hashes then holds THIS clone's file hashes, a
@@ -304,9 +333,7 @@ export class SqliteProvider implements MemoryProvider {
     // mechanical contradiction win (getSourceFileBases / reconcile prefilter
     // read it as no basis). Internal only: never surfaced on KBEntry. Existing
     // rows default to 0.
-    try {
-      this.db.exec('ALTER TABLE entries ADD COLUMN local_basis_only INTEGER NOT NULL DEFAULT 0');
-    } catch {}
+    this.addColumnIfMissing('ALTER TABLE entries ADD COLUMN local_basis_only INTEGER NOT NULL DEFAULT 0');
 
     // kb_demote (CONFIRMED -> INFERRED): demoted_at records WHEN trust was
     // withdrawn, demoted_basis_hashes the sha256 of each cited source file AS
@@ -318,21 +345,15 @@ export class SqliteProvider implements MemoryProvider {
     // guarded-ALTER pattern as scope/source_file_hashes above: it runs on a
     // fresh DB (the columns are not in CREATE TABLE) and is a caught no-op on
     // a DB that already has them.
-    try {
-      this.db.exec('ALTER TABLE entries ADD COLUMN demoted_at TEXT');
-    } catch {}
-    try {
-      this.db.exec("ALTER TABLE entries ADD COLUMN demoted_basis_hashes TEXT NOT NULL DEFAULT '{}'");
-    } catch {}
+    this.addColumnIfMissing('ALTER TABLE entries ADD COLUMN demoted_at TEXT');
+    this.addColumnIfMissing("ALTER TABLE entries ADD COLUMN demoted_basis_hashes TEXT NOT NULL DEFAULT '{}'");
 
     // The updated_at a bible carried for an entry this clone imported (capture
     // opts.carriedUpdatedAt): when the exporting clone promoted it. Tombstones
     // are judged against it (getBibleTrustTimes), never against the local
     // import time. Internal only: never surfaced on KBEntry. NULL on every row
     // that was not imported, and on rows imported before the column existed.
-    try {
-      this.db.exec('ALTER TABLE entries ADD COLUMN bible_updated_at TEXT');
-    } catch {}
+    this.addColumnIfMissing('ALTER TABLE entries ADD COLUMN bible_updated_at TEXT');
 
     // kb_import trust anchor: git blob ids of bibles the maintainer side wrote
     // or imported (kb_bible_commit and FULL / kb_maintainer kb_import). A
