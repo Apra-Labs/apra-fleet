@@ -339,6 +339,18 @@ async function kbImportOverHttp(
   return report;
 }
 
+/**
+ * The hash-verified blob id of the own bible committed at HEAD, when `bytes`
+ * are that bible (line endings normalized for the comparison only); null when
+ * there is no committed copy or the bytes differ from it.
+ */
+async function committedOwnBibleMatching(repoAnchor: string, bytes: Buffer): Promise<string | null> {
+  const committed = await readCommittedBibleBlob(repoAnchor, 'HEAD');
+  if (committed === null) return null;
+  const lf = (t: string) => t.replace(/\r\n/g, '\n');
+  return lf(committed.text) === lf(bytes.toString('utf-8')) ? committed.blobId : null;
+}
+
 export async function kbImport(input: KbImportInput, anchor?: KbAnchor): Promise<string> {
   const resolved = resolveKbAnchor(anchor);
   const repoAnchor = requireLocalFolder(resolved.folder);
@@ -461,18 +473,36 @@ export async function kbImport(input: KbImportInput, anchor?: KbAnchor): Promise
   }
 
   // A FULL or kb_maintainer session is trusted to import at bible confidence,
-  // so the bible it just imported becomes trusted for member sessions too:
-  // record the blob id the bytes would have as this repo's committed own
-  // bible: the hash-verified blob id for a `ref` read, else the in-process id
-  // of the exact file bytes parsed (no `git hash-object` on the path, so no
-  // re-read and no member-configured clean filter decides the id). This is
+  // so the bible it just imported becomes trusted for member sessions too --
+  // but only a COMMITTED bible: the hash-verified blob id for a `ref` read,
+  // else (a file read) HEAD's hash-verified blob id when the file holds
+  // exactly that bible (no `git hash-object` on the path, so no re-read and no
+  // member-configured clean filter decides the id). This is
   // also how a hub that never saw a bible (fresh hub, bible merged from
   // elsewhere) is seeded: the engine's sprint-start priming imports the base
   // branch's bible through the kb_maintainer session with `ref`. A member
   // session without the grant never records (it only reads the record).
+  //
+  // A file read (no `ref`) is trusted ONLY when its bytes are the bible
+  // committed at HEAD: the work-tree file is writable by a doer sharing the
+  // maintainer folder, so a hand edit made before this import (e.g. before
+  // the engine's sprint-start priming) must not become trusted for every
+  // member. The id recorded is HEAD's hash-verified blob id (equal content,
+  // line endings normalized for autocrlf checkouts); a file that differs from
+  // HEAD, or has no committed copy, is still imported at bible confidence by
+  // this grant session but records nothing (logged).
   if (!lacksGrant) {
-    const blobId = committedSource ? committedSource.blobId : await bibleBytesBlobId(repoAnchor, fileBytes!);
-    provider.recordTrustedBibleBlob(blobId, 'kb_import');
+    if (committedSource) {
+      provider.recordTrustedBibleBlob(committedSource.blobId, 'kb_import');
+    } else {
+      const head = await committedOwnBibleMatching(repoAnchor, fileBytes!);
+      if (head !== null) provider.recordTrustedBibleBlob(head, 'kb_import');
+      else {
+        logWarn('kb_import', 'no trusted bible blob recorded: the imported file (' + biblePath + ', blob '
+          + await bibleBytesBlobId(repoAnchor, fileBytes!) + ') is not the ' + OWN_BIBLE_REL
+          + ' committed at HEAD; pass ref to seed trust from a committed bible');
+      }
+    }
   }
 
   // After the entry loop, run freshnessSweep() (T1.3) so imported entries whose

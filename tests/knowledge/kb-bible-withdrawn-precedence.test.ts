@@ -202,7 +202,9 @@ describe('kb_bible_commit: an unreadable base bible is reported (sqlite)', () =>
 
     // The branch carries a valid bible: entries y and z, and a withdrawn tombstone for z.
     git(clone, ['checkout', '--quiet', '-b', 'feat/broken-base']);
-    fs.rmSync(biblePath());
+    // kb_bible_commit builds from the bible committed at HEAD: drop the broken one in a commit.
+    git(clone, ['rm', '--quiet', BIBLE_REL]);
+    git(clone, ['commit', '--quiet', '-m', 'drop broken bible']);
     await kbBibleCommit({ ids: [y, z], ...base(brokenBase) }, { folder: clone });
     await kbBibleCommit({ ids: [], withdrawals: [{ id: z, note: NOTE, evidence_files: EVIDENCE }], ...base(brokenBase) }, { folder: clone });
     const tombstones = readBible().demotions;

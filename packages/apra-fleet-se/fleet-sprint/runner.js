@@ -60,7 +60,7 @@ import { resolveMemberTarget, resolveMemberOs, clearMemberOsCache } from './memb
 import { createMemberCall, buildRemoteCallCommand, MemberCallError, MEMBER_CALL_ARGS_DIR } from './member-call.mjs';
 import { createDispatchAccounting } from './dispatch-accounting.mjs';
 import { lowerQuality, logLowerQualityWarn } from './lower-quality.mjs';
-import { createMemberInitProbe, createMemberVerifiedLookup, MEMBER_INIT_LOG_PREFIX, MEMBER_INIT_STATE_NAMESPACE } from './member-init-probe.mjs';
+import { createMemberInitProbe, MEMBER_INIT_LOG_PREFIX, MEMBER_INIT_STATE_NAMESPACE } from './member-init-probe.mjs';
 import { createSprintState, sprintScopedFleetApi, resolveSettleShellWith } from './sprint-state.mjs';
 // apra-fleet-3swo.6.10: the per-member git/dolt sync brackets, moved verbatim
 // out of this file into ./member-sync.mjs (see that module's header for the
@@ -1734,8 +1734,8 @@ async function runSprintCycle(context) {
     // uses; the orchestrator callTool only reads member_detail. Never blocks:
     // a probe that throws leaves every member unverified and the sprint goes
     // on. Records land in sprint state (sprintState.memberInit), on the
-    // context (context.memberInit + context.isMemberVerified, read by the
-    // KNOWLEDGE BANK injection) and in the published viewer state.
+    // context (context.memberInit) and in the published viewer state. The
+    // KNOWLEDGE BANK injection does not read them: it is on for every member.
     // context.memberInitProbe is the test seam.
     const kbListTools = canMemberCall
         ? (member) => {
@@ -1773,7 +1773,6 @@ async function runSprintCycle(context) {
     }
     sprintState.memberInit.splice(0, sprintState.memberInit.length, ...memberInitRecords);
     context.memberInit = sprintState.memberInit;
-    context.isMemberVerified = createMemberVerifiedLookup(() => sprintState.memberInit);
     // Banner WARN at init (the per-member WARN lines come from the probe).
     logLowerQualityWarn(log, MEMBER_INIT_LOG_PREFIX, sprintState.memberInit, 'init');
     if (typeof publishState === 'function') {
@@ -1890,15 +1889,13 @@ async function runSprintCycle(context) {
     // handler can seal the bible commit: an aborted sprint commits nothing
     // further to the bible.
     context.kbWork = kbWork;
-    // Engine-side KNOWLEDGE BANK injection: skipped for a member whose own
-    // fleet MCP was verified at sprint init (context.isMemberVerified, set by
-    // the init probe above), applied to every other member.
+    // Engine-side KNOWLEDGE BANK injection: applied to every dispatched member
+    // (the maintainer is the knowledge source; a member's own KB is not primed).
     if (typeof validated.goal === 'string' && validated.goal.trim() && !isPriorityTierToken(validated.goal.trim())) {
         kbSprintContext.goals = [validated.goal.trim()];
     }
     kbInjection = context.kbInjection ?? createKbInjection({
         kbWork,
-        isMemberVerified: (name) => (typeof context.isMemberVerified === 'function' ? context.isMemberVerified(name) : false),
         // Deploy targets: the file paths named in the runbook the role follows
         // (deploy.md for the deployer, the playbooks for the test runners).
         deployTargets: async (memberName, role) => {
@@ -2679,8 +2676,10 @@ async function runSprintCycle(context) {
         // so the one holding this sprint's captures -- and best-effort: a
         // cold KB must not fail the review.
         const kbCandidates = await kbWork.promotionCandidates(reviewerPool[0]);
-        if (kbCandidates.length > 0) {
-            log(`[kb-work] offering ${kbCandidates.length} INFERRED entr(ies) to the reviewer for promotion.`);
+        // Re-verification rows (reverify: true) are logged by kbWork itself.
+        const kbInferredCount = kbCandidates.filter((e) => !(e && e.reverify === true)).length;
+        if (kbInferredCount > 0) {
+            log(`[kb-work] offering ${kbInferredCount} INFERRED entr(ies) to the reviewer for promotion.`);
         }
         // No demotion candidates here: they are offered at the FINAL review
         // only (see phases/final-review.mjs and kbWork.demotionCandidates).

@@ -1,8 +1,8 @@
 import { existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { LinuxCommands, posixLegacyHelperUnset } from './linux.js';
-import { wrapPowerShellEncoded } from './windows.js';
-import { escapeDoubleQuoted, escapeShellArg, escapeBatchMetachars, escapePowerShellArgInner, sanitizeSessionId } from '../utils/shell-escape.js';
+import { wrapPowerShellEncoded, fleetProcessCheckPs } from './windows.js';
+import { escapeDoubleQuoted, escapeShellArg, escapeBatchMetachars } from '../utils/shell-escape.js';
 import { isWindowsPosixUname } from '../utils/platform.js';
 import { gitBashCandidates } from './git-bash-candidates.js';
 import { gitCredentialHelperStem } from './os-commands.js';
@@ -186,35 +186,11 @@ export class WindowsGitBashCommands extends LinuxCommands {
   override fleetProcessCheck(folder: string, sessionId?: string, processName?: string): string {
     // See the class doc comment: the only override that hops to PowerShell,
     // and it does so as a single bash-safe `powershell -EncodedCommand` call.
-    //
-    // The script is written here rather than delegated to
-    // WindowsCommands.fleetProcessCheck for two reasons, both verified live
-    // against PowerShell 5.1 on 2026-08-22: that version joins its statements
-    // with '; ', which makes `; elseif` a parse error ("The term 'elseif' is
-    // not recognized"), and it reads $_.CommandLine off Get-Process objects,
-    // which is always $null on 5.1. Win32_Process is the supported way to get
-    // a command line, and single quotes plus .Contains() keep the interpolated
-    // values literal (no regex metacharacter surprises).
+    // The script is the one WindowsCommands runs (fleetProcessCheckPs: the
+    // Win32_Process read, the single if/elseif/else statement PS 5.1 needs,
+    // and the fleet-marker plus owner match), joined with newlines here.
     if (processName === '') return "echo 'idle'";
-    const pname = processName ?? 'claude';
-    if (!/^[A-Za-z0-9._-]+$/.test(pname)) throw new Error('Invalid process name: ' + pname);
-    const psLiteral = (s: string) => escapePowerShellArgInner(s);
-    const matches = [`$_.CommandLine.Contains('${psLiteral(folder)}')`];
-    if (sessionId) matches.push(`$_.CommandLine.Contains('${psLiteral(sanitizeSessionId(sessionId))}')`);
-    const script = [
-      // PS 5.1 emits its "Preparing modules for first use" progress records to
-      // stderr as CLIXML on a first CIM call; harmless but noisy in logs.
-      `$ProgressPreference = 'SilentlyContinue'`,
-      `$procs = @(Get-CimInstance Win32_Process -Filter "Name LIKE '${pname}%'" -ErrorAction SilentlyContinue)`,
-      `if ($procs.Count -eq 0) {`,
-      `  echo 'idle'`,
-      `} elseif ($procs | Where-Object { $_.CommandLine -and (${matches.join(' -or ')}) }) {`,
-      `  echo 'fleet-busy'`,
-      `} else {`,
-      `  echo 'other-busy'`,
-      `}`,
-    ].join('\n');
-    return wrapPowerShellEncoded(script);
+    return wrapPowerShellEncoded(fleetProcessCheckPs(folder, sessionId, processName ?? 'claude').join('\n'));
   }
 
   // --- Generic agent CLI ---

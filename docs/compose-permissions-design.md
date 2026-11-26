@@ -82,6 +82,13 @@ SSH):
    Any mismatch fails the call; the ledger is updated only after every file
    landed.
 
+In grant mode, if the existing Claude settings file is missing, empty,
+unparseable, or has no allow list, the base role, stack and ledger profile is
+written first and the grants are merged onto it, so a reactive grant never
+leaves a member with a grants-only permission set. The response states that
+the base profile was seeded. A failed read is indistinguishable from a missing
+file, so a transient read failure can reseed over a file that held extra grants.
+
 Provider-specific warnings (for example grants a provider cannot express) are
 returned under `Warnings:` in the result. After delivery, workspace trust is
 seeded for providers that need it (Claude).

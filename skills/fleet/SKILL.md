@@ -88,9 +88,9 @@ network access for commands that use it:
 
 | Policy | Behaviour |
 |--------|-----------|
-| `'allow'` (default) | No restriction |
-| `'deny'` | Commands invoking network tools (curl, wget, ssh, git push, etc.) are blocked |
-| `'confirm'` | OOB prompt before the network call is allowed |
+| `'allow'` | No restriction |
+| `'deny'` | Commands invoking network tools (curl, wget, ssh, scp, sftp, rsync, nc, http, fetch, Invoke-WebRequest, Invoke-RestMethod) or the git network subcommands `push`, `pull`, `fetch`, `clone`, `ls-remote`, `remote update` (also as `git.exe`, quoted, via `&`, or after global options such as `git -C dir push`) are blocked; `restart_command` is checked the same way. Local git (`status`, `log`, `commit`, `diff`, `add`) is not |
+| `'confirm'` (default) | OOB prompt before a network tool in `command` runs (unattended: blocked). The git-subcommand and `restart_command` checks are deny-only |
 
 ## Member Identification
 
@@ -125,6 +125,8 @@ Before dispatching any work:
 2. Member must have completed onboarding  -  see `onboarding.md`
 
 Do not dispatch to a busy member. If busy, wait or re-check `member_detail`.
+
+`member_detail` names why a member is busy: `session.statusSource` is `in-flight-dispatch` (a fleet dispatch from this server is running) or `fleet-process` (a fleet-launched CLI process for this member is alive on the host), with `session.busyPid`. To confirm a `fleet-process` busy by hand, probe that pid with `execute_command` on the member (POSIX: `ps -o pid=,args= -p <pid>`; Windows: `Get-CimInstance Win32_Process -Filter "ProcessId=<pid>" | Select-Object ProcessId,CommandLine`): a fleet dispatch's command line names `.fleet-task.md`. Other processes of the same CLI name (your own interactive session in that folder) never count as busy.
 
 ## File Transfer
 

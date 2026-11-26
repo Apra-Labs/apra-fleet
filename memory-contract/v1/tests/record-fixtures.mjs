@@ -658,11 +658,18 @@ await recordHappy('kb_stats', 'happy', {
 });
 
 // --- kb_capabilities (SQLite) ----------------------------------------------
+// fleet_build (the answering fleet server's own build) is volatile and not
+// part of the KB server's capabilities body: compared without it.
+function withoutFleetBuild(caps) {
+  if (!caps || typeof caps !== 'object') return caps;
+  const { fleet_build: _build, ...rest } = caps;
+  return rest;
+}
 // The local implementation's answer: every route, withdraw and demote
 // included -- the same value the sample kb-server answers.
 {
   const caps = parseEnvelopeText(await recordHappy('kb_capabilities', 'happy', {}));
-  if (JSON.stringify(caps) !== JSON.stringify(KB_SERVER_CAPABILITIES) || !caps?.routes?.includes('withdraw')) {
+  if (JSON.stringify(withoutFleetBuild(caps)) !== JSON.stringify(KB_SERVER_CAPABILITIES) || !caps?.routes?.includes('withdraw')) {
     failures++;
     console.log(`  [FAIL] kb_capabilities/happy is not the sample kb-server's capabilities answer: ${JSON.stringify(caps)}`);
   }
@@ -1263,7 +1270,7 @@ await recordNonErrorOutcome('kb_capture', 'non-error-confidence-clamped', {
 // GET /api/kb/capabilities body, passed through unchanged.
 {
   const caps = parseEnvelopeText(await withSession('HTTP_A', () => recordHappy('kb_capabilities', 'http-happy', {})));
-  if (JSON.stringify(caps) !== JSON.stringify(KB_SERVER_CAPABILITIES)) {
+  if (JSON.stringify(withoutFleetBuild(caps)) !== JSON.stringify(KB_SERVER_CAPABILITIES)) {
     failures++;
     console.log(`  [FAIL] kb_capabilities/http-happy is not the sample kb-server's capabilities answer: ${JSON.stringify(caps)}`);
   }

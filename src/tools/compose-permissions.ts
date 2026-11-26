@@ -1043,6 +1043,17 @@ function memberMcpFailureResult(failure: string, projectFolder: string | undefin
  *  file the grant path merges into. Missing or non-JSON content reads as an
  *  empty allow list. */
 async function readClaudeSettingsLocal(agent: Agent, strategy: ReturnType<typeof getStrategy>, agentShell: MemberShell | undefined): Promise<any> {
+  return (await readClaudeSettingsLocalState(agent, strategy, agentShell)).settings;
+}
+
+/** Why a claude member's settings.local.json cannot supply an existing allow
+ *  list: no file (or an empty one), non-JSON content, or JSON without a
+ *  permissions.allow array. */
+type ClaudeSettingsGap = 'missing' | 'unparseable' | 'no_allow_list';
+
+/** readClaudeSettingsLocal plus the reason the allow list is absent, so the
+ *  grant path can tell "nothing to merge into" from "an existing list". */
+async function readClaudeSettingsLocalState(agent: Agent, strategy: ReturnType<typeof getStrategy>, agentShell: MemberShell | undefined): Promise<{ settings: any; gap: ClaudeSettingsGap | null }> {
   const isWindowsAgent = (agent.os ?? 'linux') === 'windows';
   const absSettingsPath = resolveRemotePath(agent.workFolder, '.claude/settings.local.json', isWindowsAgent, agentShell);
   // Branched on the member's SHELL, not just its OS: a gitbash Windows
@@ -1050,10 +1061,16 @@ async function readClaudeSettingsLocal(agent: Agent, strategy: ReturnType<typeof
   const readResult = isPosixShell(isWindowsAgent, agentShell)
     ? await strategy.execCommand(`cat ${quotePosixPath(absSettingsPath)} 2>/dev/null || echo "{}"`, LOCAL_FS_OP_TIMEOUT_MS)
     : await strategy.execCommand(`Get-Content -Raw ${quotePwshPath(absSettingsPath.replace(/\//g, '\\'))} -ErrorAction SilentlyContinue`, LOCAL_FS_OP_TIMEOUT_MS);
+  const text = (readResult.stdout ?? '').trim();
+  // A missing file reads as '{}' (POSIX fallback) or as nothing (PowerShell).
+  if (text === '') return { settings: { permissions: { allow: [] } }, gap: 'missing' };
   try {
-    return JSON.parse(readResult.stdout.trim());
+    const parsed = JSON.parse(text);
+    if (isPlainObject(parsed) && Object.keys(parsed).length === 0) return { settings: parsed, gap: 'missing' };
+    const hasAllow = isPlainObject(parsed) && isPlainObject((parsed as any).permissions) && Array.isArray((parsed as any).permissions.allow);
+    return { settings: parsed, gap: hasAllow ? null : 'no_allow_list' };
   } catch {
-    return { permissions: { allow: [] } };
+    return { settings: { permissions: { allow: [] } }, gap: 'unparseable' };
   }
 }
 
@@ -1153,6 +1170,7 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
     }
 
     let allow: string[];
+    let reseedNote = '';
     const droppedGrants: string[] = [];
 
     if (provider.name === 'claude') {
@@ -1161,8 +1179,24 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
       // wholesale (see deepMerge doc comment), so an `allow` computed from the
       // wrong file here would silently discard every pre-existing grant in the
       // real settings.local.json once the write lands at the correct path.
-      const current = await readClaudeSettingsLocal(agent, strategy, agentShell);
-      const existingAllow = new Set<string>(current?.permissions?.allow ?? []);
+      const { settings: current, gap } = await readClaudeSettingsLocalState(agent, strategy, agentShell);
+      let existingAllow: Set<string>;
+      if (gap) {
+        // No existing allow list to merge into: merging only the grants would
+        // silently strip the member's base role profile. Seed from the same
+        // compose the proactive path delivers, then merge the grants.
+        const seedStacks = await detectStacks(agent, input.project_folder ? path.basename(input.project_folder) : undefined);
+        const seedAllow = input.tags?.length
+          ? composeFromTags(profilesDir, mode, input.tags, seedStacks, ledger, droppedGrants)
+          : compose(profilesDir, mode, seedStacks, ledger, droppedGrants);
+        existingAllow = new Set<string>(seedAllow);
+        const cause = gap === 'missing' ? 'settings.local.json is missing or empty'
+          : gap === 'unparseable' ? 'settings.local.json is not valid JSON'
+          : 'settings.local.json has no permissions.allow list';
+        reseedNote = `\n  Base profile re-seeded (${mode}, cause: ${gap}): ${cause}, so the ${mode === 'doer' ? 'base-dev' : 'base-reviewer'} role profile (${seedAllow.length} rules) was written together with the grants.`;
+      } else {
+        existingAllow = new Set<string>(current?.permissions?.allow ?? []);
+      }
       for (const p of expanded) existingAllow.add(p);
       allow = withoutProcessKillGrants(existingAllow, droppedGrants);
     } else {
@@ -1229,7 +1263,7 @@ export async function composePermissions(input: ComposePermissionsInput): Promis
 
     const warningsBlock = deliveryWarnings.length > 0 ? `\n  Warnings:\n    ${deliveryWarnings.join('\n    ')}` : '';
     const memberMcpLine = memberMcp.note ? `\n  ${memberMcp.note}` : '';
-    return `✅ Granted ${[...expanded].length} permissions on "${agent.friendlyName}" (${provider.name}):\n  ${[...expanded].join('\n  ')}${agyNote}${memberMcpLine}${warningsBlock}`;
+    return `✅ Granted ${[...expanded].length} permissions on "${agent.friendlyName}" (${provider.name}):\n  ${[...expanded].join('\n  ')}${agyNote}${reseedNote}${memberMcpLine}${warningsBlock}`;
   }
 
   // Proactive compose mode

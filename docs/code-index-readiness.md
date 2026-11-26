@@ -48,6 +48,13 @@ healthy index has one row per id, and one incremental run on a repo of about
 reproduce it). `tests/code-index-corrupt-real-gitnexus.test.ts` proves this
 against a real index, nightly.
 
+When the integrity check itself cannot run, a not-found answer is reported as
+unverified rather than as genuinely absent: `index_integrity` carries
+`checked: false` with reason `check_failed` (the query threw or returned an
+error result) or `check_unreadable` (the output could not be parsed), the
+confidence is LOW, and a warning is added. No rebuild is scheduled in this
+case, and the behaviour for an index judged corrupt is unchanged.
+
 ## indexedCommit
 
 Every `code_*` result carries `indexedCommit` (applied centrally by

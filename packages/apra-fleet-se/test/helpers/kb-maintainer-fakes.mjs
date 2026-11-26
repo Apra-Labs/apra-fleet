@@ -2,6 +2,8 @@
 // surface createKbMaintainerSelector (fleet-sprint/kb-maintainer.mjs) exposes
 // to createKbWorkClient, built from plain maps instead of member probes.
 
+import { REQUIRED_MAINTAINER_BIBLE_RULES } from '../../fleet-sprint/kb.mjs';
+
 /**
  * @param {{
  *   repoOf: Record<string, string>,          member name -> repository
@@ -48,9 +50,15 @@ export const currentServerListTools = async () => ({
 /** Every contract route: what kb_capabilities answers for a local SQLite KB. */
 export const ALL_KB_ROUTES = Object.freeze(['capture', 'query', 'promote', 'context', 'prime', 'invalidate', 'feedback', 'list', 'demote', 'withdraw']);
 
-/** A kb_capabilities answer (a tool result) listing `routes`. */
-export function kbCapabilitiesResult(routes = ALL_KB_ROUTES) {
-    return { content: [{ type: 'text', text: JSON.stringify({ contract: 'v1', routes: [...routes], branch_aware: false }) }] };
+/**
+ * The fleet_build a CURRENT apra-fleet server reports in kb_capabilities: its
+ * bible rules revision meets the engine's bible-commit build gate.
+ */
+export const CURRENT_FLEET_BUILD = Object.freeze({ version: 'v0.0.0-test', bible_rules: REQUIRED_MAINTAINER_BIBLE_RULES });
+
+/** A kb_capabilities answer (a tool result) listing `routes`, from a server reporting `fleetBuild` (null: none). */
+export function kbCapabilitiesResult(routes = ALL_KB_ROUTES, fleetBuild = CURRENT_FLEET_BUILD) {
+    return { content: [{ type: 'text', text: JSON.stringify({ contract: 'v1', routes: [...routes], branch_aware: false, ...(fleetBuild ? { fleet_build: { ...fleetBuild } } : {}) }) }] };
 }
 
 /**

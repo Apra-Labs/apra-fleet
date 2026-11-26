@@ -456,6 +456,8 @@ describe('the required contract operations work over http: capture, query, conte
       id,
       confidence_before: 'INFERRED',
       confidence_after: 'CONFIRMED',
+      // This stub's reply carries no basis_stamped: said explicitly.
+      basis_stamp_unsupported: expect.stringMatching(/^E-KB-HTTP-UNSUPPORTED: /),
     });
     expect(lastPromoteBody).toEqual({ id, reason });
   });
