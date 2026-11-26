@@ -5,7 +5,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import path from 'node:path';
-import { installBeads, bdPinWarning, BEADS_NPM_PACKAGE, describeExecFailure, type BeadsInstallDeps } from '../src/cli/beads-install.js';
+import { installBeads, bdPinWarning, beadsLinkLossWarning, BEADS_NPM_PACKAGE, describeExecFailure, type BeadsInstallDeps } from '../src/cli/beads-install.js';
 import { BEADS_VERSION } from '../src/cli/beads-pin.js';
 import { parseVersionLine, checkPinnedVersion } from '../src/cli/version-pin.js';
 import {
@@ -323,6 +323,33 @@ describe('fleet-side bd status on a remote member', () => {
     const ps = decodePowerShellEncodedCommand(buildBeadsProbe('C:\\Users\\k\\.apra-fleet\\bin\\bd.exe', 'windows', 'powershell5' as any));
     expect(ps).toContain("Test-Path -LiteralPath 'C:\\Users\\k\\.apra-fleet\\bin\\bd.exe'");
     expect(ps).not.toContain('$env:USERPROFILE');
+  });
+});
+
+describe('beadsLinkLossWarning (conflicted-pull link loss)', () => {
+  it('an affected bd (1.3.0) yields the warning, and installBeads itself still succeeds', () => {
+    const { deps } = fake({ onPath: true });
+    const r = installBeads(BIN, deps);
+    expect(r.state).toBe('present');
+    const w = beadsLinkLossWarning(r)!;
+    expect(w).toContain('1.3.0');
+    expect(w).toContain('blocks links');
+    expect(w).toContain('verified before push');
+  });
+
+  it('an installed (not just present) affected bd warns too', () => {
+    const { deps } = fake();
+    const r = installBeads(BIN, deps);
+    expect(r.state).toBe('installed');
+    expect(beadsLinkLossWarning(r)).not.toBeNull();
+  });
+
+  it('an unaffected version prints nothing new', () => {
+    expect(beadsLinkLossWarning({ state: 'present', version: 'bd version 1.4.0 (x)', location: 'path' })).toBeNull();
+  });
+
+  it('missing / mismatch results produce no link-loss line (their own reports speak)', () => {
+    expect(beadsLinkLossWarning({ state: 'missing', reason: 'r', fix: 'f' })).toBeNull();
   });
 });
 

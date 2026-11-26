@@ -23,6 +23,41 @@ actual conflicting content before deciding, or when settle isn't wired for the
 context you're in (e.g. resolving conflicts in the orchestrator's own local
 checkout rather than against a registered fleet member).
 
+## Caveat: a conflicted pull can drop links (bd below 1.4.0)
+
+On bd versions below 1.4.0 (including the supported 1.3.x pin; the fixed
+version is taken from the project's operational note and is unverified against
+the beads release notes, so treat every version below it as affected), a plain
+`bd dolt pull` that hits a merge conflict auto-resolves and commits only the
+tables it resolved. Tables that merged cleanly -- notably `dependencies` --
+keep the LOCAL copy, so the next push silently reverts links other clones
+added. What can be lost: `parent-child` edges (an issue silently becomes a
+root-level issue) and `blocks` edges (ordering between issues disappears, so
+blocked work can look ready).
+
+A second shape of the same loss, reproduced on bd 1.3.0: a conflicted pull
+that auto-merges leaves the merged links in the clone's working set
+UNCOMMITTED. `bd list` and `bd show` on that clone still show every link, but
+`bd dolt push` publishes only the commit, so the links vanish on every other
+clone. Reading the links cannot detect this; committing the working set first
+prevents it.
+
+fleet-sprint warns at sprint launch and the installer warns at install when bd
+is in this range, and before every push that follows a pull inside its push
+path it commits the merged working set and verifies (and restores) links.
+After any conflicted pull you run by hand, and before you push:
+
+```bash
+bd dolt commit                      # commit the merged working set (prints "Nothing to commit." when clean)
+bd list --parent <root-id> --json   # every expected child still listed
+bd show <id>                        # PARENT / DEPENDS ON / BLOCKS sections intact
+bd blocked                          # expected blocks edges still present
+```
+
+If a link is missing, re-add it (`bd dep add <issue> <depends-on>`, or recreate
+the parent link) before pushing, and avoid manual pulls while sprints are
+writing.
+
 ## 0. Find the real data directory -- never hardcode it
 
 ```bash
