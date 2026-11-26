@@ -130,7 +130,7 @@ If a user registers an agent with a `friendly_name` containing a single quote (e
 
 ---
 
-### M4. API Key Logged in Shell Profiles in Plaintext - RESOLVED
+### M4. API Key Logged in Shell Profiles in Plaintext - MITIGATED (existing members: one provision_llm_auth)
 
 **File:** `src/os/linux.ts:87-93`
 
@@ -155,7 +155,7 @@ When an API key is provisioned via the `api_key` parameter, it is written **in p
 
 **Recommendation:** Consider using a dedicated config file with restricted permissions, or environment variable injection at runtime rather than persisting to shell profiles.
 
-**Resolution:** POSIX members (Linux, macOS, Windows Git Bash) keep the key in `~/.apra-fleet/env/<NAME>`, created owner-only (0600, dir 0700). The shell profiles hold only a path-only line that sources it. Dispatches get the key per command from the encrypted registry and never read it. Migration: the next `provision_llm_auth` removes the old `export` lines and writes the new form. Cloud start and sprint self-heal run it automatically. A member that is never re-provisioned keeps its old lines until `provision_llm_auth {member_id}` runs; with no `api_key` it re-deploys the stored key. Windows PowerShell members are unchanged: the key is a User env var under HKCU, which only that user, SYSTEM and Administrators can read.
+**Resolution (new provisioning):** On Linux and macOS members the key lives in `~/.apra-fleet/env/<NAME>`, created owner-only (0600, dir 0700). Windows Git Bash members use the same file, but there chmod has no effect: the file relies on the user-profile ACL. The shell profiles hold only a line that sources the file and carries just its path. Dispatches get the key from the encrypted registry for each command and never read the file. Existing members keep the old profile `export` lines until the next `provision_llm_auth`. To migrate one, run `provision_llm_auth {member_id}` once; without `api_key` it re-deploys the stored key. Cloud start and sprint self-heal after an auth failure also re-provision, but they do not cover a working static member. Windows PowerShell members are unchanged: the key is a User env var under HKCU, which only that user, SYSTEM and Administrators can read.
 
 ---
 

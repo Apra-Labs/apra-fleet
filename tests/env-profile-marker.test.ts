@@ -238,6 +238,18 @@ describe('persisted key stays out of shared shell profiles', () => {
     }
   });
 
+  for (const [label, cmds, run, profiles] of [['linux', linux, RUN_GNU, PROFILES], ['macos', macos, RUN_BSD, MAC_PROFILES]] as const) {
+    it.skipIf(!run)(`${label}: a profile without a trailing newline keeps its last line across two provisions`, () => {
+      const home = tempHome();
+      for (const f of profiles) fs.writeFileSync(path.join(home, f), '# owner\nalias x=y');
+      runInHome(home, cmds.persistEnvFromFile('MY_KEY', stage(home)));
+      runInHome(home, cmds.persistEnvFromFile('MY_KEY', stage(home)));
+      for (const f of profiles) {
+        expect(fs.readFileSync(path.join(home, f), 'utf-8'), f).toBe(`# owner\nalias x=y\n${envSourceLine('MY_KEY')}\n`);
+      }
+    });
+  }
+
   it.skipIf(!RUN_GNU)('unsetEnv (remove_member default) removes the env file, the source line and an older release\'s marked export', () => {
     const home = tempHome();
     runInHome(home, linux.persistEnvFromFile('MY_KEY', stage(home)));

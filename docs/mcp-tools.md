@@ -475,12 +475,14 @@ The correct env var name is automatically determined from the member's
 | AGY | `ANTIGRAVITY_API_KEY` |
 | OpenCode | none (auth is handled by the OpenCode CLI itself) |
 
-**Where the key lives on the member:** POSIX members (Linux, macOS, Windows
-Git Bash) get `~/.apra-fleet/env/<ENV_VAR>`, owner-only (0600, dir 0700).
-`~/.bashrc` and `~/.profile` (on macOS also `~/.zshrc` and `~/.zshenv`) only
-source it and never hold the key. Windows PowerShell members get a User env
-var. Re-provisioning a member set up by an older release removes the
-`export` lines that release wrote into its profiles.
+**Where the key lives on the member:** Linux and macOS members get
+`~/.apra-fleet/env/<ENV_VAR>`, owner-only (0600, dir 0700). Windows Git Bash
+members get the same file, protected by the user-profile ACL instead (chmod
+has no effect on NTFS). `~/.bashrc` and `~/.profile` (on macOS also
+`~/.zshrc` and `~/.zshenv`) only source it and never hold the key. Windows
+PowerShell members get a User env var. A member provisioned by an older
+release keeps the key in its profiles until the next `provision_llm_auth`;
+run `provision_llm_auth {member_id}` once to migrate it.
 
 ### `provision_vcs_auth`
 

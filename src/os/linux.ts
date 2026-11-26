@@ -329,7 +329,8 @@ export class LinuxCommands implements OsCommands {
   // delivery of that var, and this is also the migration of a key an older
   // release wrote into the profile) and any earlier source line, and get one
   // path-only source line. Nothing changes when the staged file is missing or
-  // the install fails.
+  // the install fails. A profile whose last line has no newline gets one
+  // first, so the source line never fuses onto (and later deletes) it.
   persistEnvFromFile(name: string, filePath: string): string {
     if (!/^[A-Z_][A-Z0-9_]*$/i.test(name)) throw new Error('Invalid env var name: ' + name);
     const q = escapeShellArg(filePath);
@@ -340,7 +341,7 @@ export class LinuxCommands implements OsCommands {
     const sedArgs = `-e '${unsetEnvSedExpr(name, { all: true })}' -e '${envSourceLineSedExpr(name)}'`;
     const line = `'${envSourceLine(name)}'`;
     const profiles = this.envProfileFiles()
-      .map(f => `{ ${this.sedInPlace()} ${sedArgs} ${f} 2>/dev/null || true; printf '%s\\n' ${line} >> ${f}; }`)
+      .map(f => `{ ${this.sedInPlace()} ${sedArgs} ${f} 2>/dev/null || true; [ -s ${f} ] && [ -n "$(tail -c1 ${f})" ] && echo >> ${f}; printf '%s\\n' ${line} >> ${f}; }`)
       .join(' && ');
     return `test -f ${q} && ${install} && ${profiles}; _fleet_rc=$?; rm -f ${q}; exit $_fleet_rc`;
   }
