@@ -1,9 +1,9 @@
 {
   "version": 3,
   "provenance": {
-    "commit": "dadecbe482b5ec2398e5e8683c37a0c6cc897324",
+    "commit": "9e5f0f6c3d96c6a10d2fcd27b672ad1cd5fbbcb8",
     "branch": "main",
-    "entry_count": 229
+    "entry_count": 232
   },
   "entries": [
     {
@@ -76,6 +76,29 @@
         "packages/apra-fleet-se/fleet-sprint/fatal-diagnostics.mjs": "22de2445e0a64427b585d8bccafc3d4e8275e24b",
         "packages/apra-fleet-se/fleet-sprint/kb.mjs": "d34eb19cf8772e37109a45ab3a3546eef7477017",
         "packages/apra-fleet-se/fleet-sprint/runner.js": "b046204308612a6300f176700ed70407b59bcc2b"
+      }
+    },
+    {
+      "id": "07c5e12d-1258-41fa-a032-84160f084e9d",
+      "type": "knowledge",
+      "title": "Harvest phase re-checks the sprint's own bible entries and drops drifted ones",
+      "summary": "After the harvest round's bible commit, phases/harvest.mjs calls kbWork.recheckSprintBible('post-harvest head', { noReviewLeft: true }). Drifted sprint-merged ids are dropped through dropFromBible (withdrawal committed in the same call, WARN), because no review is left to re-verify them. The final-head recheck before the final review is kept.",
+      "symbols": [
+        "recheckSprintBible",
+        "dropFromBible",
+        "runHarvestPhase"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/harvest.mjs",
+        "packages/apra-fleet-se/test/mock-sprint-kb-post-harvest-recheck.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-26T01:37:04.615Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "36fe5f6a4d6585b36c3a990f94ece3cd19e552d7",
+        "packages/apra-fleet-se/fleet-sprint/phases/harvest.mjs": "e65be936ab5b368d02c320d0d9a9013d6374e986",
+        "packages/apra-fleet-se/test/mock-sprint-kb-post-harvest-recheck.test.mjs": "e70f2e8cbaa0583bfcfc8620b7cea25f8f50ad1f"
       }
     },
     {
@@ -2552,6 +2575,30 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:08:33.761Z"
+    },
+    {
+      "id": "8675d0b2-fcfb-4d8c-8060-ed99d46b53b9",
+      "type": "knowledge",
+      "title": "check-kb-bible-drift: branch-owned bible entries vs base, hashed as kb_bible_commit does",
+      "summary": "scripts/check-kb-bible-drift.mjs (npm run check:kb-bible-drift -- --base <ref>) compares the bible committed at HEAD with the one at the base ref. An entry is branch-owned if the base lacks it or has a different version. Owned entries whose cited files' HEAD blob ids differ from source_file_hashes make it exit 1; --restamp <ids> rewrites only those named entries' hashes.",
+      "symbols": [
+        "findOwnedDrift",
+        "ownedEntries",
+        "restampEntries",
+        "headBlobIds"
+      ],
+      "source_files": [
+        "scripts/check-kb-bible-drift.mjs",
+        "tests/check-kb-bible-drift.test.ts",
+        "docs/kb-bible-correctness.md"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-26T01:37:01.028Z",
+      "source_file_hashes": {
+        "docs/kb-bible-correctness.md": "4ee28d7b0a43557a857d8d7492e619b74ba6e869",
+        "scripts/check-kb-bible-drift.mjs": "bd70d4a97450f0953529165e742ed58fbf6250a9",
+        "tests/check-kb-bible-drift.test.ts": "47dd3dae7251df7d5771910bea5cda86f083e45f"
+      }
     },
     {
       "id": "86ae8b43-42ad-4606-a961-2755421723be",
