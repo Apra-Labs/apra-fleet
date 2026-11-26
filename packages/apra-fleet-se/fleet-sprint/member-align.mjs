@@ -58,8 +58,9 @@ export function launchAlignStashMessage(branch) {
  * soft result alignMembersToBase() consumes:
  *   { ok, output, error, unreachable }
  * `ok` comes from the command's real exit code (commandResultToSoftGit), never
- * from isError alone. `unreachable` is true when no exit code exists at all
- * (the call threw, or the tool reported an error without running the command):
+ * from isError alone. `unreachable` is true when no exit code exists at all, or
+ * the tool reported a dispatch-level failure (isError + reason/exitCode -1), i.e.
+ * the call threw or the command never ran:
  * the member itself could not be reached, which is a different cause and fix
  * from a git failure.
  * @param {any} res - the execute_command result (ignored when `thrown` is set)
@@ -75,6 +76,12 @@ export function toAlignCommandResult(res, thrown) {
     const hasExitCode =
         (res && res.structuredContent && typeof res.structuredContent.exitCode === 'number') ||
         /Exit code:\s*-?\d+/.test(soft.stdout || '');
+    // A structured dispatch-level failure (preflight_offline, transport_error, timeout, ...)
+    // carries exitCode -1 plus isError and a reason: the command never ran, so it is not a
+    // git failure even though an exit code exists. A real git exit code (>= 0) stays a git failure.
+    const sc = res && res.structuredContent;
+    const dispatchFailed = !!sc && sc.isError === true &&
+        (typeof sc.exitCode !== 'number' || sc.exitCode < 0 || typeof sc.reason === 'string');
     const stdout = res && res.structuredContent && typeof res.structuredContent.stdout === 'string'
         ? res.structuredContent.stdout
         : soft.stdout;
@@ -82,7 +89,7 @@ export function toAlignCommandResult(res, thrown) {
         ok: soft.ok,
         output: stdout || '',
         error: soft.ok ? null : (soft.error || 'unknown error'),
-        unreachable: !soft.ok && !hasExitCode,
+        unreachable: !soft.ok && (!hasExitCode || dispatchFailed),
     };
 }
 
