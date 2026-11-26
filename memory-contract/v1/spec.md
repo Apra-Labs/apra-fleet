@@ -112,7 +112,7 @@ mutates anything and never bumps `use_count`.
 
 - Under an http KB provider it sends `GET /api/kb/capabilities` (same auth,
   `X-KB-Project` and `X-Repository*` headers as every route, on every call)
-  and returns the server's body UNCHANGED: route names fleet does not call
+  and returns the server's body UNCHANGED (plus `fleet_build`, below): route names fleet does not call
   and extra fields are kept, unlike the normalized view fleet keeps for route
   gating. The one exception: a `query_filters` that is not an array of
   strings is dropped (the server honours no filter, section 2.9.1), so the
@@ -135,6 +135,15 @@ mutates anything and never bumps `use_count`.
 - The tool's presence is itself a feature signal: a caller that finds
   `kb_capabilities` in the tool list talks to a fleet server new enough to
   report what its KB serves, without probing individual routes.
+- Both answers also carry fleet's own `fleet_build` field,
+  `{version, bible_rules}`: the build of the fleet server answering (not of
+  the KB server). `version` is the server's version string; `bible_rules` is
+  an integer revision of the bible format and `kb_bible_commit` rules that
+  build implements, raised with every such change. Under an http KB provider
+  it is added to the server's body (overwriting a field of that name). A
+  caller about to run `kb_bible_commit` on a member compares `bible_rules`
+  with the revision it requires and refuses a lower or missing one, since a
+  version string cannot order two builds of one core version.
 
 ### 2.3 `CodeIntelligenceProvider` interface methods (`methods.json` ids C-1..C-9)
 
@@ -240,7 +249,29 @@ out-of-scope id itself. A server answers an unknown id with 404 and body
 `code` `ENTRY_NOT_FOUND` (the code an optional id route such as `demote` needs,
 section 2.9.1). Promote is a required route, so fleet reports any 404 from it,
 whatever its code, as `E-ENTRY-NOT-FOUND`, thrown as `Entry not found: <id>` followed by the server's answer; any other refusal is
-thrown with its HTTP status and the server's title/code/detail. `kb_invalidate` takes exactly one of `files` or `ids`; `ids` discards
+thrown with its HTTP status and the server's title/code/detail.
+`kb_promote` basis rule: in a git work tree every promote stamps the entry's
+stored source-file basis from the cited repo-relative files at the HEAD commit
+(git blob ids, the same read the bible basis predicate uses), so the basis
+records what the promoter verified rather than what was on disk at capture
+time. A cited file with no blob at HEAD (`absent_at_head`) or whose work-tree
+content differs from HEAD (`uncommitted_edit`) is not stamped: it keeps its
+previous basis hash and is listed in `unstamped_files`, so an uncommitted edit
+never enters the basis and an entry captured against uncommitted work is still
+admitted by `kb_bible_commit` once that content is committed. The reply adds
+`basis_stamped`, `previous_basis_files_changed` (stamped files whose stored
+basis was missing or differed) and `unstamped_files`. Promoting an
+already-CONFIRMED entry is an explicit re-verification: confidence,
+`promoted_at` and `source` are kept, and a basis that drifted from HEAD (or was
+only a local freshness basis) is re-stamped with a re-verification note,
+reported as `rebased: true`; a basis that already matches changes nothing
+(`rebased: false`). It needs the same access as any promote (the kb_maintainer
+grant in a member session). Outside a git work tree, or with an anchor absent
+on the host, the basis is left as is (`basis_stamped: false`). Under the http
+provider the server's `basis_stamped`/`rebased`/`previous_basis_files_changed`/
+`unstamped_files` are passed through; a reply with no `basis_stamped` adds
+`basis_stamp_unsupported`, an `E-KB-HTTP-UNSUPPORTED` message stating the basis
+was not re-based. `kb_invalidate` takes exactly one of `files` or `ids`; `ids` discards
 the entries (sets `superseded_at`, never deletes) and returns
 `{discarded, not_found, already_discarded}`. In a member session without the
 kb_maintainer grant neither form retires a CONFIRMED entry (section 2.5a): the
@@ -363,9 +394,13 @@ A MEMBER session is served an explicit tool list
   bible locally, import it, and reset the commit away with nothing ever
   pushed. The import is therefore gated on a trust anchor OUTSIDE the
   checkout: the hub-side per-repo KB records the git blob id of every bible
-  the maintainer side wrote or imported (`kb_bible_commit`, and `kb_import`
-  from a FULL session or the kb_maintainer session; a member session without
-  the grant never records). When the committed bible's blob id is not
+  the maintainer side committed or imported from a committed copy
+  (`kb_bible_commit`, for the blob it committed when HEAD holds exactly the
+  bytes it wrote -- no commit, nothing recorded; and `kb_import` from a FULL
+  session or the kb_maintainer session, for a `ref` read or for a file whose
+  bytes are the bible committed at HEAD -- a work-tree or explicit-path file
+  that differs from HEAD is imported but never recorded; a member session
+  without the grant never records). When the committed bible's blob id is not
   recorded the call fails with `E-KB-MAINTAINER-REQUIRED` (the message names
   the unrecorded blob id) and nothing is imported -- a refusal, not a clamp,
   so no row is written that could later shadow the genuine entry's id. The
@@ -393,8 +428,8 @@ A MEMBER session is served an explicit tool list
   remote-tracking ref is as fresh as the member's last fetch and lives in the
   member-writable `.git` (the grant is a routing guard, not a security
   boundary against a process on the member's host). FULL sessions and the
-  kb_maintainer session without `ref` are otherwise unchanged (they read the
-  named or work-tree file).
+  kb_maintainer session without `ref` read the named or work-tree file, and
+  record it as trusted only when it equals the bible committed at HEAD.
 - Under an http project KB, `kb_invalidate {ids}` (id-level discard) is refused
   with `E-KB-HTTP-UNSUPPORTED` (thrown): the http provider has no discard
   operation, and nothing is discarded, on the remote or in the local fallback
@@ -478,12 +513,24 @@ NOT in the file (section 2.8, merge-friendly layout).
   `basis_mismatch` and any existing bible entry for it is left unchanged. A
   live CONFIRMED id that cites no source file has no checkable basis and is
   skipped with its own reason `no_source_files` (never `basis_mismatch`),
-  likewise leaving any existing bible entry unchanged. It makes a local commit scoped to
+  likewise leaving any existing bible entry unchanged. A `basis_mismatch` skip
+  carries `changed_files: [{path, reason}]`, one item per cited or basis file
+  behind the mismatch: `changed` (its basis hash differs from its content at
+  HEAD), `absent` (no blob at HEAD, or a path that is not repo-relative) or
+  `no_basis` (cited, with no stored hash). Re-verifying the entry through
+  `kb_promote` re-stamps its basis at HEAD (see the `kb_promote` basis rule). It makes a local commit scoped to
   the bible path (identity `pm-kb`) and never pushes. Nothing merged and
   nothing removed, or an unchanged entry set, makes no write and no commit. Re-running with
   the same ids after resetting to a newer HEAD re-merges at entry level, so a
-  rejected push can be retried with no manual merge. An existing bible that
-  cannot be parsed is refused (thrown), never overwritten. Under a non-SQLite
+  rejected push can be retried with no manual merge. The existing bible is
+  the one COMMITTED at HEAD (`HEAD:./.fleet/kb-canonical.json`, bytes hashed
+  in-process against the blob id; no committed copy reads as an empty bible),
+  never the work-tree file: a work-tree bible that differs from HEAD is
+  ignored (logged as a warning naming the file) and overwritten when the call
+  writes, so an uncommitted hand edit never reaches the commit or the trust
+  record. Outside a git work tree the file on disk is the base (and nothing is
+  committed). An existing bible that cannot be parsed is refused (thrown),
+  never overwritten. Under a non-SQLite
   (http) project KB there is no local store to build a bible from, so the call
   is skipped before any KB read, write or git commit (the bible file itself may be read, leniently: an
   unparseable one is logged and counted as 0, never thrown over): it returns `bible_skipped:
@@ -828,8 +875,9 @@ every project KB call and fleet keeps no second copy:
   to it. `getLinked` and `relatedClaims` have no remote route and answer
   empty (`related_claims` is then empty, as for any graph miss).
 - A server that cannot be reached is `E-KB-HTTP-UNREACHABLE`, and a token the
-  server refuses is `E-KB-HTTP-AUTH` (section 3.3a). Both are thrown; neither
-  is ever answered from a local store.
+  server refuses (a named fleet secret or a literal token stored in the KB
+  config) is `E-KB-HTTP-AUTH` (section 3.3a). Both are thrown; neither is
+  ever answered from a local store.
 
 #### 2.9.1 Routes and capabilities
 
@@ -889,14 +937,24 @@ client:
   `E-KB-HTTP-UNREACHABLE` naming the request and the status: both refuse a
   request before handling it (rate limiting, a restarting server, a gateway
   with no backend), so the identical request is safe to repeat. Fleet's own
-  `kb serve` answers 429 above its per-IP request rate;
+  `kb serve` answers 429 above its per-IP request rate. A 429 (here or on the
+  capabilities read) is reported as rate limiting, not as an unreachable
+  server: the message says the server rate limited the request, names the
+  `Retry-After` value when the answer carried one, and does not suggest
+  starting the server;
 - turns any other 5xx answering a write itself (capture, invalidate with
   files, feedback, promote, demote, withdraw) into `E-KB-HTTP-SERVER-ERROR` naming the
   request and the status, never a raw HTTP error. The request reached the
   server, so whether the write took effect is unknown: it is not retried;
 - turns any other 5xx answering a read (query, context, prime, list) into
-  `E-KB-HTTP-SERVER-ERROR` naming the request and the status, never a raw
-  HTTP error; nothing is answered from a local store or the bible instead;
+  `E-KB-HTTP-UNREACHABLE` naming the request and the status, never a raw
+  HTTP error: a read writes nothing, so the identical read is safe to
+  repeat. Nothing is answered from a local store or the bible instead;
+- turns a 401 answering a request into `E-KB-HTTP-AUTH` (reason `rejected`),
+  never a raw HTTP error. A token from a named fleet secret is re-read and
+  the request sent once more first; a literal token stored in the KB config
+  is not retried (its value cannot change), and its remediation names
+  `kb_setup`, not a fleet secret;
 - queues no write. A write that fails for any reason is thrown to the
   caller, who owns the retry (section 3.3a);
 - turns a 404 or 501 from any optional route into `E-KB-HTTP-UNSUPPORTED`
@@ -1079,16 +1137,18 @@ into structured results at the provider boundary (third kind in 3.2). `retryable
 "retrying the identical request unchanged can succeed"; fixing a path or
 supplying a missing reason is a new request, not a retry.
 
-`E-KB-HTTP-AUTH` (remote KB whose token is a named fleet secret) is the one
-code that clears once something outside the request changes -- the operator
-updates the secret, and the identical request then succeeds. It is still
-`retryable: false`: retrying it unchanged before that update fails the same
-way, and the provider has already done its one retry (re-read the secret, send
-once more) before raising it.
+`E-KB-HTTP-AUTH` (remote KB whose token is a named fleet secret, or a literal
+token stored in the KB config) is the one code that clears once something
+outside the request changes -- the operator updates the secret or re-runs
+`kb_setup` with a new token, and the identical request then succeeds. It is
+still `retryable: false`: retrying it unchanged before that update fails the
+same way, and for a named secret the provider has already done its one retry
+(re-read the secret, send once more) before raising it.
 
 `E-KB-HTTP-UNREACHABLE` (the KB server cannot be reached, its capabilities
-read answered a 5xx or 429 so the request was never sent, or it answered the
-request itself with 429 or 503, which refuse a request before handling it) is
+read answered a 5xx or 429 so the request was never sent, it answered a write
+itself with 429 or 503, which refuse a request before handling it, or it
+answered a read itself with 429 or any 5xx, and a read writes nothing) is
 the one transient
 failure in this surface that reaches the caller, and it is `retryable: true`:
 the identical request succeeds once the server answers again. It is thrown
@@ -1097,14 +1157,16 @@ truth, and answering from a local store or the checkout bible would hide the
 outage (section 2.9). The provider queues nothing behind it, so the caller
 owns the retry (3.3a).
 
-`E-KB-HTTP-SERVER-ERROR` (the server answered a request itself with a 5xx
-other than 503) is `retryable: false`: a write may already have been applied,
-so repeating the identical request could apply it twice.
+`E-KB-HTTP-SERVER-ERROR` (the server answered a write itself with a 5xx
+other than 503) is `retryable: false`: the write may already have been
+applied, so repeating the identical request could apply it twice. A read
+never raises it.
 
 ### 3.3a Remote KB auth and outage failures are thrown; the caller owns the retry
 
-`E-KB-HTTP-AUTH`, `E-KB-HTTP-UNREACHABLE` and `E-KB-HTTP-SERVER-ERROR` are
-`surfaced: thrown` on every tool that reaches the remote provider. The
+`E-KB-HTTP-AUTH` and `E-KB-HTTP-UNREACHABLE` are `surfaced: thrown` on every
+tool that reaches the remote provider, and `E-KB-HTTP-SERVER-ERROR` on every
+tool that writes through it. The
 provider queues nothing: a write (`kb_capture`, `kb_invalidate`,
 `kb_feedback`, `kb_promote`, `kb_demote`) that fails is thrown, and a read
 (`kb_query`, `kb_context`, `kb_session_prime`, `kb_list`) is thrown with no
@@ -1112,7 +1174,7 @@ local fallback: a silently degraded answer would hide the failure. One owner
 retries, the caller: the sprint engine keeps its own KB write queued on
 `E-KB-HTTP-UNREACHABLE` and on `E-KB-HTTP-AUTH` (the server never handled
 the write, and the identical write succeeds once the server answers or the
-secret is fixed) and repeats it on its next flush; an interactive or agent
+token is fixed) and repeats it on its next flush; an interactive or agent
 caller decides for itself. `kb_harvest` captures many learnings in one
 call, so a failed capture does not stop it: it attempts every learning, logs
 each failure, and reports how many captures failed (`entries_failed`); when

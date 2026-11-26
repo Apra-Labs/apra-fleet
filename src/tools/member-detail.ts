@@ -3,7 +3,10 @@ import { z } from 'zod';
 import { getStrategy } from '../services/strategy.js';
 import { getOsCommands } from '../os/index.js';
 import { getProvider } from '../providers/index.js';
-import { getAgentOS, getAgentShell } from '../utils/agent-helpers.js';
+import { getAgentOS, getAgentShell, getStoredPid } from '../utils/agent-helpers.js';
+import { inFlightAgents } from '../services/in-flight-agents.js';
+import { parseFleetProcessCheck } from '../services/session-status.js';
+import { probeLlmAuthStatus } from '../services/llm-auth-label.js';
 import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import { updateAgent } from '../services/registry.js';
 import type { Agent } from '../types.js';
@@ -183,47 +186,18 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
   try {
     const versionResult = await strategy.execCommand(cmds.agentVersion(provider), 10000);
     cli.version = versionResult.stdout.trim();
-    // Strip provider prefix: "Claude Code 2.1.92" → "2.1.92"
+    // Strip provider prefix: "Claude Code 2.1.92" -> "2.1.92"
     const vMatch = String(cli.version).match(/(\d+\.\d+\.\d+.*)$/);
     if (vMatch) cli.version = vMatch[1];
   } catch {
     cli.version = 'unknown';
   }
 
-  let oauthFilesExist = false;
-  const oauthFiles = provider.oauthCredentialFiles?.();
-  if (oauthFiles && oauthFiles.length > 0) {
-    try {
-      // Check for the first file, assuming if it's there, the others are too.
-      const credResult = await strategy.execCommand(cmds.credentialFileCheck(oauthFiles[0].remotePath), 10000);
-      if (credResult.stdout.trim() === 'found') {
-        oauthFilesExist = true;
-      }
-    } catch { /* ignore */ }
-  }
-
-  let apiKeyExists = false;
-  // Every credential kind counts (e.g. CLAUDE_CODE_OAUTH_TOKEN as well as ANTHROPIC_API_KEY).
-  const authVars = provider.authEnvVarNames?.() ?? (provider.authEnvVar ? [provider.authEnvVar] : []);
-  for (const envVar of authVars) {
-    try {
-      const apiKeyResult = await strategy.execCommand(cmds.apiKeyCheck(envVar), 10000);
-      if (apiKeyResult.stdout.trim().length > 5) {
-        apiKeyExists = true;
-        break;
-      }
-    } catch { /* ignore */ }
-  }
-
-  if (apiKeyExists && oauthFilesExist) {
-    cli.auth = 'api-key (WARNING: OAuth also present — API key takes precedence)';
-  } else if (apiKeyExists) {
-    cli.auth = 'api-key';
-  } else if (oauthFilesExist) {
-    cli.auth = 'oauth';
-  } else {
-    cli.auth = 'none';
-  }
+  // Same label list_members reports (see llm-auth-label.ts); with more than
+  // one credential source authNote names the one the CLI uses.
+  const authStatus = await probeLlmAuthStatus(provider, cmds, (c, t) => strategy.execCommand(c, t), 10000);
+  cli.auth = authStatus.label;
+  cli.authNote = authStatus.precedenceNote;
   result.llmProvider = agent.llmProvider ?? 'claude';
   if (agent.llmProvider === 'agy') {
     // The member's own agy project (--project <id>); null until provisioned.
@@ -243,7 +217,23 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
     lastLlmActivityAt: agent.lastLlmActivityAt ?? null,
   };
 
-  if (agent.llmProvider === 'none' || !provider.processName) {
+  // Busy has two sources, reported in session.statusSource with the pid that
+  // produced it (session.busyPid, null when none was captured):
+  //   'in-flight-dispatch' -- this server has an execute_prompt running for the
+  //                           member (inFlightAgents; pid = the stored dispatch pid);
+  //   'fleet-process'      -- the member-side probe found a fleet-launched CLI
+  //                           process (fleetProcessCheck: dispatch marker plus this
+  //                           member's session id or quoted work folder), e.g. a
+  //                           dispatch started by another fleet server.
+  // Both are null when the member is not busy. Unrelated processes of the
+  // same CLI name never count as busy.
+  session.statusSource = null;
+  session.busyPid = null;
+  if (inFlightAgents.has(agent.id)) {
+    session.status = 'busy';
+    session.statusSource = 'in-flight-dispatch';
+    session.busyPid = getStoredPid(agent.id) ?? null;
+  } else if (agent.llmProvider === 'none' || !provider.processName) {
     session.status = 'idle';
   } else {
     try {
@@ -251,13 +241,12 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
         cmds.fleetProcessCheck(agent.workFolder, agent.sessionId, provider.processName),
         10000,
       );
-      const output = busyCheck.stdout.trim().toLowerCase();
-      if (output.includes('fleet-busy')) {
+      const probe = parseFleetProcessCheck(busyCheck.stdout);
+      if (probe.state === 'fleet-busy') {
         session.status = 'busy';
-        if (agent.lastLlmActivityAt) {
-          session.idleSecs = Math.round((Date.now() - new Date(agent.lastLlmActivityAt).getTime()) / 1000);
-        }
-      } else if (output.includes('other-busy')) {
+        session.statusSource = 'fleet-process';
+        session.busyPid = probe.pid ?? null;
+      } else if (probe.state === 'other-busy') {
         session.status = `idle (unrelated ${provider.name} processes running)`;
       } else {
         session.status = 'idle';
@@ -265,6 +254,9 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
     } catch {
       session.status = 'unknown';
     }
+  }
+  if (session.status === 'busy' && agent.lastLlmActivityAt) {
+    session.idleSecs = Math.round((Date.now() - new Date(agent.lastLlmActivityAt).getTime()) / 1000);
   }
   result.session = session;
 
@@ -320,7 +312,7 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
       branch = branchName;
       updateAgent(agent.id, { lastBranch: branch });
     }
-  } catch { /* not a git repo — ignore */ }
+  } catch { /* not a git repo -- ignore */ }
 
   if (branch) {
     result.branch = branch;
@@ -344,9 +336,10 @@ export async function memberDetail(input: MemberDetailInput): Promise<string> {
 
   // Compact: pack key info into a few lines
   const connStatus = 'online';
-  const authStr = Array.isArray(cli.auth) ? (cli.auth as string[]).join(', ') : String(cli.auth);
+  const authStr = String(cli.auth) + (cli.authNote ? ` (${String(cli.authNote)})` : '');
   const sessId = agent.sessionId ? agent.sessionId.substring(0, 8) + '...' : 'none';
-  const sessStatus = String(session.status ?? 'unknown');
+  const sessStatus = String(session.status ?? 'unknown')
+    + (session.statusSource ? ` via ${session.statusSource}${session.busyPid != null ? ` pid=${session.busyPid}` : ''}` : '');
 
   const icon = agent.icon ?? DEFAULT_ICON;
   const userStr = agent.username ? ` | user=${agent.username}` : '';

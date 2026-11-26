@@ -347,10 +347,14 @@ describe('KB write routing: KB server unreachable (E-KB-HTTP-UNREACHABLE)', () =
 describe('KB write routing: KB server token refused (E-KB-HTTP-AUTH)', () => {
     const AUTH_TEXT = 'E-KB-HTTP-AUTH: the KB server rejected the token from fleet secret "kb-token" (HTTP 401), also on one retry after re-reading the secret. '
         + 'Remediation: apra-fleet secret --set kb-token --persist -y (the next KB call uses the new value; no restart needed)';
+    // A literal token stored in the KB config, answered 401: same code, no secret named.
+    const LITERAL_AUTH_TEXT = 'E-KB-HTTP-AUTH: the KB server rejected the literal token stored in the KB config (HTTP 401). '
+        + 'Remediation: run kb_setup again with a token the KB server accepts, which replaces the token stored in the KB config (the next KB call uses it)';
 
     for (const [shape, fail] of [
         ['a resolved isError result', () => ({ isError: true, content: [{ type: 'text', text: AUTH_TEXT }] })],
         ['a thrown E-TOOL error', () => { throw new MemberCallError('E-TOOL', AUTH_TEXT, { tool: 'kb_capture' }); }],
+        ['a literal-token isError result', () => ({ isError: true, content: [{ type: 'text', text: LITERAL_AUTH_TEXT }] })],
     ]) {
         test(`${shape} keeps that write and the rest queued, in order; the next flush applies them`, async () => {
             let expired = false;

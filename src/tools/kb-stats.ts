@@ -4,6 +4,29 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getSelfReadKb, type KbAnchor } from '../services/knowledge/kb-self.js';
 import { isSqliteProject } from '../services/knowledge/require-sqlite-project.js';
+import {
+  partitionProjectBibleCandidates, findHashDriftedBibleEntries, type BibleDisqualification,
+} from '../services/knowledge/bible-basis-filter.js';
+
+const HASH_DRIFT_ID_CAP = 20;
+
+export interface BibleNotExportable {
+  count: number;
+  reasons: { basis_missing: number; basis_mismatched: number; file_absent: number; path_outside_repo: number };
+}
+export interface BibleHashDrifted { count: number; ids: string[]; unhashed: number }
+export interface BibleStats {
+  present: boolean;
+  entries: number;
+  drift: number;
+  not_exportable: BibleNotExportable;
+  hash_drifted: BibleHashDrifted;
+}
+
+function emptyNotExportable(): BibleNotExportable {
+  return { count: 0, reasons: { basis_missing: 0, basis_mismatched: 0, file_absent: 0, path_outside_repo: 0 } };
+}
+
 
 // T2.1 (F5, D4): kb_stats -- a read-only aggregation tool, following the
 // kb_list no-bump pattern (SqliteProvider.stats() never touches use_count/
@@ -66,22 +89,44 @@ export async function kbStats(input: KbStatsInput, anchor?: KbAnchor): Promise<s
   // DEGRADES rather than failing fast, so it asks the type question with the
   // non-throwing isSqliteProject guard. Catching requireSqliteProject's throw
   // as a type test would also swallow any unrelated error on that path.
-  let bible: { present: boolean; entries: number; drift: number } | { computable: false; reason: string };
+  let bible: BibleStats | { computable: false; reason: string };
 
   const project = providers.project;
   if (!isSqliteProject(project)) {
     bible = { computable: false, reason: 'bible drift is not computable over a remote HTTP provider' };
   } else {
-    bible = { present: false, entries: 0, drift: 0 };
+    bible = { present: false, entries: 0, drift: 0, not_exportable: emptyNotExportable(), hash_drifted: { count: 0, ids: [], unhashed: 0 } };
     try {
       const liveConfirmed = await project.list({ confidence: ['CONFIRMED'] });
-      const liveUpdatedAts = liveConfirmed.map(e => e.promoted_at || e.created_at);
+      const repoPath = localDirOrNull(resolved.folder);
+
+      // Drift only counts entries that would pass the export basis predicate
+      // (the same one kb_export / kb_bible_commit use): an entry that can never
+      // qualify must not count as drift forever. Non-qualifying entries are
+      // reported in not_exportable. When the folder is not a git work tree the
+      // predicate cannot run; fall back to counting every live CONFIRMED entry.
+      let driftCandidates = liveConfirmed;
+      let notExportable = emptyNotExportable();
+      if (repoPath) {
+        try {
+          const bases = project.getSourceFileBases(liveConfirmed.map(e => e.id));
+          const { qualifying, rejected } = await partitionProjectBibleCandidates(liveConfirmed, bases, repoPath);
+          driftCandidates = qualifying;
+          for (const r of rejected) {
+            const key = (r.reason === 'not_confirmed' ? 'basis_missing' : r.reason) as Exclude<BibleDisqualification, 'not_confirmed'>;
+            notExportable.reasons[key]++;
+            notExportable.count++;
+          }
+        } catch {
+          // Not a git work tree / git unavailable: keep the all-entries fallback.
+        }
+      }
+      const liveUpdatedAts = driftCandidates.map(e => e.promoted_at || e.created_at);
       // Degraded-safe fallback shared by every "can't use the bible file" path
       // below (absent, unreadable, malformed JSON, non-array shape): drift
-      // equals ALL live CONFIRMED entries per D5, never silently lost to 0.
-      bible = { present: false, entries: 0, drift: liveConfirmed.length };
+      // equals ALL qualifying live CONFIRMED entries per D5, never lost to 0.
+      bible = { present: false, entries: 0, drift: driftCandidates.length, not_exportable: notExportable, hash_drifted: { count: 0, ids: [], unhashed: 0 } };
 
-      const repoPath = localDirOrNull(resolved.folder);
       const biblePath = repoPath ? path.join(repoPath, '.fleet', 'kb-canonical.json') : null;
 
       if (biblePath && fs.existsSync(biblePath)) {
@@ -107,9 +152,23 @@ export async function kbStats(input: KbStatsInput, anchor?: KbAnchor): Promise<s
               if (typeof updatedAt === 'string' && (!newest || updatedAt > newest)) newest = updatedAt;
             }
             const drift = newest === null
-              ? liveConfirmed.length
+              ? driftCandidates.length
               : liveUpdatedAts.filter(u => u > (newest as string)).length;
-            bible = { present: true, entries: entries.length, drift };
+            // l0y9: bible-vs-code drift -- committed entries whose carried
+            // hashes no longer match the cited files at HEAD.
+            let hashDrifted: BibleHashDrifted = { count: 0, ids: [], unhashed: 0 };
+            if (repoPath) {
+              try {
+                const r = await findHashDriftedBibleEntries(
+                  entries.filter(e => e && typeof (e as { id?: unknown }).id === 'string') as { id: string; source_file_hashes?: Record<string, string> }[],
+                  repoPath,
+                );
+                hashDrifted = { count: r.drifted.length, ids: r.drifted.slice(0, HASH_DRIFT_ID_CAP), unhashed: r.unhashed };
+              } catch {
+                // Not a git work tree: hash drift is not measurable, report 0.
+              }
+            }
+            bible = { present: true, entries: entries.length, drift, not_exportable: notExportable, hash_drifted: hashDrifted };
           }
         } catch {
           // Malformed/unreadable bible file: leave the absent-shape fallback

@@ -58,3 +58,49 @@ test('a process-killing deploy.md grant is never requested; it is logged as refu
     assert.ok(refused.includes('Bash(taskkill:*)') && refused.includes('Bash(pkill -f app)'), refused);
     assert.ok(logs.some((l) => l.includes('ensured')), logs.join('\n'));
 });
+
+function buildWith(deployMd) {
+    const logs = [];
+    const calls = [];
+    const command = async () => ({ ok: true, output: deployMd });
+    const callTool = async (name, args) => {
+        calls.push({ name, args });
+        return { content: [{ type: 'text', text: 'Permissions composed OK' }] };
+    };
+    const ensure = createDeployPermissionsProvisioner({ callTool, command, log: (l) => logs.push(l) });
+    return { ensure, logs, calls };
+}
+
+test('a Permissions section with no valid bullet warns (file, section, expected shape) and grants nothing', async () => {
+    const { ensure, logs, calls } = buildWith('# Deploy\n\n## Permissions\n\n* Bash(x)\n- Bash(y)\n\n## Steps\n');
+    await ensure('dev1');
+    assert.equal(calls.length, 0, 'compose_permissions not called');
+    const warns = logs.filter((l) => l.includes('WARNING'));
+    assert.equal(warns.length, 1, logs.join('\n'));
+    assert.ok(warns[0].includes('deploy.md') && warns[0].includes('## Permissions'), warns[0]);
+    assert.ok(warns[0].includes('backtick'), warns[0]);
+    assert.ok(warns[0].includes('* Bash(x)') && warns[0].includes('- Bash(y)'), warns[0]);
+});
+
+test('a mixed Permissions section grants the valid bullet and names the invalid line', async () => {
+    const { ensure, logs, calls } = buildWith('# Deploy\n\n## Permissions\n\n- `Bash(ok:*)`\n- Bash(bad)\n\n## Steps\n');
+    await ensure('dev1');
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0].args.grant, ['Bash(ok:*)']);
+    const warn = logs.find((l) => l.includes('WARNING'));
+    assert.ok(warn && warn.includes('- Bash(bad)'), logs.join('\n'));
+});
+
+test('no Permissions heading stays silent and makes no call', async () => {
+    const { ensure, logs, calls } = buildWith('# Deploy\n\n## Steps\n\n- do it\n');
+    await ensure('dev1');
+    assert.equal(calls.length, 0);
+    assert.equal(logs.some((l) => l.includes('WARNING')), false, logs.join('\n'));
+});
+
+test('a fully valid Permissions section grants without a warning', async () => {
+    const { ensure, logs, calls } = buildWith('# Deploy\n\n## Permissions\n\n- `Bash(npm run build:*)`\n\n## Steps\n');
+    await ensure('dev1');
+    assert.equal(calls.length, 1);
+    assert.equal(logs.some((l) => l.includes('WARNING')), false, logs.join('\n'));
+});

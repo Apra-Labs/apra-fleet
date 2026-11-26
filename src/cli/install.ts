@@ -28,7 +28,7 @@ import { transformAgentForOpenCode, transformAgentForAgy, transformAgentForClaud
 import { FLEET_DIR } from '../paths.js';
 import { extractWorkflowSubsystemAssets } from './workflow-assets.js';
 import { downloadAndExtractDolt, verifyDolt } from './dolt-install.js';
-import { installBeads, beadsMismatchLines, type BeadsInstallDeps, type BeadsInstallResult } from './beads-install.js';
+import { installBeads, beadsMismatchLines, beadsLinkLossWarning, type BeadsInstallDeps, type BeadsInstallResult } from './beads-install.js';
 import { DOLT_VERSION } from './dolt-install.js';
 import { checkPinnedVersion } from './version-pin.js';
 import {
@@ -2319,6 +2319,9 @@ ${manualStopHint(pidsAfterStop)}
     // (set after every other step finishes); a member install completes.
     for (const line of beadsMismatchLines(beadsResult, installHostName())) console.warn(`  [!] ${line}`);
   }
+  // Non-fatal: a bd in the pinned minor can still be in the conflicted-pull link-loss range.
+  const linkLoss = beadsLinkLossWarning(beadsResult);
+  if (linkLoss) console.warn(`  [!] ${linkLoss}`);
 
   // --- KB + code intelligence setup step ---
   // Only runs when the installer is invoked from inside a git repository.

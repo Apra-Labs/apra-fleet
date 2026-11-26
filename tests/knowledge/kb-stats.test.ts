@@ -8,6 +8,10 @@ import { kbStats } from '../../src/tools/kb-stats.js';
 import * as kbProvidersModule from '../../src/services/knowledge/kb-providers.js';
 import { vi } from 'vitest';
 import type { KBEntryInput } from '../../src/services/knowledge/types.js';
+import { execFileSync } from 'node:child_process';
+import { kbBibleCommit } from '../../src/tools/kb-bible-commit.js';
+import { kbHealthCompactLine } from '../../src/tools/check-status.js';
+import { commitWorkTree } from '../helpers/commit-work-tree.js';
 
 function makeInput(overrides: Partial<KBEntryInput> = {}): KBEntryInput {
   return {
@@ -203,7 +207,7 @@ describe('kb_stats tool: bible drift (T2.1, D5)', () => {
     await provider.promote(a.id, 'test fixture: verified against the seeded tree');
 
     const result = JSON.parse(await kbStats({}, { folder: tmpDir }));
-    expect(result.bible).toEqual({ present: false, entries: 0, drift: 1 });
+    expect(result.bible).toMatchObject({ present: false, entries: 0, drift: 1 });
   });
 
   it('bible present, current -> drift 0', async () => {
@@ -224,7 +228,7 @@ describe('kb_stats tool: bible drift (T2.1, D5)', () => {
     );
 
     const result = JSON.parse(await kbStats({}, { folder: tmpDir }));
-    expect(result.bible).toEqual({ present: true, entries: 1, drift: 0 });
+    expect(result.bible).toMatchObject({ present: true, entries: 1, drift: 0 });
   });
 
   it('bible present with drift -> a newer live CONFIRMED entry not yet in the bible counts as drift', async () => {
@@ -259,7 +263,7 @@ describe('kb_stats tool: bible drift (T2.1, D5)', () => {
     fs.writeFileSync(path.join(fleetDir, 'kb-canonical.json'), 'not valid json{{{');
 
     const result = JSON.parse(await kbStats({}, { folder: tmpDir }));
-    expect(result.bible).toEqual({ present: false, entries: 0, drift: 1 });
+    expect(result.bible).toMatchObject({ present: false, entries: 0, drift: 1 });
   });
 
   it('invalid repo path degrades to bible absent rather than throwing', async () => {
@@ -268,7 +272,7 @@ describe('kb_stats tool: bible drift (T2.1, D5)', () => {
     await provider.promote(a.id, 'test fixture: verified against the seeded tree');
 
     const result = JSON.parse(await kbStats({}, { folder: path.join(tmpDir, 'does-not-exist') }));
-    expect(result.bible).toEqual({ present: false, entries: 0, drift: 1 });
+    expect(result.bible).toMatchObject({ present: false, entries: 0, drift: 1 });
   });
 
   it('merges provider stats sections alongside bible', async () => {
@@ -301,5 +305,143 @@ describe('kb_stats tool: bible drift (T2.1, D5)', () => {
     });
     expect(result.bible.drift).toBeUndefined();
     httpProvider.dispose();
+  });
+});
+
+// 6ejt.8 / l0y9: drift counts only export-qualifying entries; hash_drifted
+// measures committed bible vs code at HEAD. Real git repo + real predicate.
+describe('kb_stats tool: export-qualifying drift and hash drift (real git repo)', () => {
+  let root: string;
+  let repo: string;
+  const BASE = { baseBranch: 'main', baseCommit: 'a'.repeat(40) };
+  const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+  function write(rel: string, body: string): void {
+    fs.mkdirSync(path.dirname(path.join(repo, rel)), { recursive: true });
+    fs.writeFileSync(path.join(repo, rel), body);
+  }
+
+  async function confirmed(title: string, files: string[]): Promise<string> {
+    const { id } = await provider.capture(makeInput({ title, summary: 'S ' + title, symbols: ['sym' + title], source_files: files }));
+    await provider.promote(id, 'test fixture: verified');
+    await provider.promote(id, 'test fixture: verified');
+    return id;
+  }
+
+  async function stats(): Promise<any> {
+    return JSON.parse(await kbStats({}, { folder: repo })).bible;
+  }
+
+  beforeEach(async () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-stats-git-'));
+    repo = path.join(root, 'repo');
+    fs.mkdirSync(repo);
+    execFileSync('git', ['init', '--quiet', '-b', 'main'], { cwd: repo });
+    execFileSync('git', ['config', 'user.name', 'test'], { cwd: repo });
+    execFileSync('git', ['config', 'user.email', 'test@example.invalid'], { cwd: repo });
+    execFileSync('git', ['config', 'commit.gpgsign', 'false'], { cwd: repo });
+    write('README.md', 'seed\n');
+    commitWorkTree(repo, 'seed');
+    provider.close();
+    provider = new SqliteProvider(path.join(root, 'kb.sqlite'), repo);
+    await provider.init();
+    vi.spyOn(kbProvidersModule, 'getKbProviders').mockResolvedValue({
+      project: provider, global: provider, projectSlug: 'test',
+    } as any);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    // Nested afterEach runs before the outer one, so close the provider here:
+    // Windows cannot unlink an open kb.sqlite. The outer close is a no-op then.
+    provider.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  async function setupCommittedThenNonExportable(): Promise<{ good: string }> {
+    write('src/a.ts', 'a1\n');
+    write('src/b.ts', 'b1\n');
+    const good = await confirmed('Good', ['src/a.ts']);
+    commitWorkTree(repo);
+    const r = JSON.parse(await kbBibleCommit({ ids: [good], ...BASE }, { folder: repo }));
+    expect(r.merged).toEqual([good]);
+    await sleep(10);
+    // mismatched: cited file edited and committed after capture
+    await confirmed('Mismatched', ['src/b.ts']);
+    // missing basis: stored basis removed
+    const noBasis = await confirmed('NoBasis', ['src/a.ts']);
+    (provider as any).getDb().prepare("UPDATE entries SET source_file_hashes = '{}' WHERE id = ?").run(noBasis);
+    write('src/b.ts', 'b2\n');
+    commitWorkTree(repo);
+    return { good };
+  }
+
+  it('after kb commit, only non-exportable CONFIRMED entries remain: drift 0 and not_exportable counts them; fleet_status does not advise kb commit', async () => {
+    await setupCommittedThenNonExportable();
+    const bible = await stats();
+    expect(bible.present).toBe(true);
+    expect(bible.drift).toBe(0);
+    expect(bible.not_exportable.count).toBe(2);
+    expect(bible.not_exportable.reasons.basis_missing).toBe(1);
+    expect(bible.not_exportable.reasons.basis_mismatched).toBe(1);
+
+    const line = kbHealthCompactLine({
+      scope: 'test', totals: { total: 3, by_confidence: { CONFIRMED: 3 } }, stale: 0, flagged: 0, superseded: 0,
+      retrieval: { entries_retrieved: 0, total_uses: 0, hit_rate: null }, promote_ratio: null, bible,
+    } as never);
+    expect(line).not.toContain('kb commit');
+    expect(line).toContain('2 CONFIRMED entries not exportable');
+  });
+
+  it('a qualifying CONFIRMED entry absent from the bible counts as drift 1 and fleet_status advises kb commit', async () => {
+    const { good } = await setupCommittedThenNonExportable();
+    await sleep(10);
+    write('src/c.ts', 'c1\n');
+    const fresh = await confirmed('Fresh', ['src/c.ts']);
+    commitWorkTree(repo);
+    expect(fresh).not.toBe(good);
+
+    const bible = await stats();
+    expect(bible.drift).toBe(1);
+    const line = kbHealthCompactLine({
+      scope: 'test', totals: { total: 4, by_confidence: { CONFIRMED: 4 } }, stale: 0, flagged: 0, superseded: 0,
+      retrieval: { entries_retrieved: 0, total_uses: 0, hit_rate: null }, promote_ratio: null, bible,
+    } as never);
+    expect(line).toContain('run apra-fleet kb commit');
+  });
+
+  async function commitBible3(): Promise<string[]> {
+    write('src/a.ts', 'a1\n');
+    write('src/b.ts', 'b1\n');
+    const ids = [
+      await confirmed('A1', ['src/a.ts']),
+      await confirmed('A2', ['src/a.ts']),
+      await confirmed('B1', ['src/b.ts']),
+    ];
+    commitWorkTree(repo);
+    const r = JSON.parse(await kbBibleCommit({ ids, ...BASE }, { folder: repo }));
+    expect(r.merged.length).toBe(3);
+    return ids;
+  }
+
+  it('hash_drifted counts bible entries whose cited file changed at HEAD, not entries on unchanged files', async () => {
+    const ids = await commitBible3();
+    write('src/a.ts', 'a2\n');
+    commitWorkTree(repo);
+    const bible = await stats();
+    expect(bible.hash_drifted.count).toBe(2);
+    expect([...bible.hash_drifted.ids].sort()).toEqual([ids[0], ids[1]].sort());
+  });
+
+  it('an uncommitted edit to a cited file does not change hash_drifted', async () => {
+    await commitBible3();
+    write('src/a.ts', 'uncommitted\n');
+    expect((await stats()).hash_drifted.count).toBe(0);
+  });
+
+  it('all bible entries matching HEAD -> hash_drifted 0', async () => {
+    await commitBible3();
+    const bible = await stats();
+    expect(bible.hash_drifted).toEqual({ count: 0, ids: [], unhashed: 0 });
   });
 });

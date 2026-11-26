@@ -561,6 +561,9 @@ describe('the cold seed omits a bible id this clone no longer trusts', () => {
       entries: [LIVE, INFERRED, STALE, SUPERSEDED, FLAGGED, TOMBSTONED, NO_ROW].map(bibleEntry),
       demotions: [{ id: TOMBSTONED, at: '2026-03-03T00:00:00.000Z', reason: 'demoted' }],
     }), 'utf-8');
+    // The cold seed reads only the bible committed at HEAD.
+    git(cloneB, ['add', '.fleet/kb-canonical.json']);
+    git(cloneB, ['commit', '--quiet', '-m', 'bible', '--', '.fleet/kb-canonical.json']);
   });
 
   it('case 1: a bible id whose local row is INFERRED is omitted', async () => {

@@ -10,6 +10,8 @@ import { getProvider } from './code-intelligence.js';
 import type { KBEntry, MemoryProvider } from '../services/knowledge/types.js';
 import type { SqliteProvider } from '../services/knowledge/sqlite-provider.js';
 import { FLEET_DIR } from '../paths.js';
+import { OWN_BIBLE_REL, readCommittedBibleBlob } from '../services/knowledge/bible-blob-id.js';
+import { logWarn } from '../utils/log-helpers.js';
 
 export const kbSessionPrimeSchema = z.object({
   confidence: z.array(z.enum(['CONFIRMED', 'INFERRED', 'UNVERIFIED'])).min(1).optional()
@@ -105,6 +107,41 @@ function canonicalMatchesHints(
 function localDirOrNull(folder: string): string | null {
   if (!fs.existsSync(folder) || !fs.statSync(folder).isDirectory()) return null;
   return folder;
+}
+
+/**
+ * The project bible text the cold-seed may use: the .fleet/kb-canonical.json
+ * committed at HEAD, hash-verified against its blob id. null (seed nothing)
+ * when there is no committed copy or the bytes fail verification -- each
+ * logged when a bible exists, naming the reason. A work-tree file that
+ * differs from the committed copy is never used (logged).
+ */
+async function committedColdSeedBible(repoRoot: string): Promise<string | null> {
+  const worktreePath = path.join(repoRoot, '.fleet', 'kb-canonical.json');
+  let worktree: string | null = null;
+  try { worktree = fs.readFileSync(worktreePath, 'utf-8'); } catch { worktree = null; }
+  let committed: { blobId: string; text: string } | null;
+  try {
+    committed = await readCommittedBibleBlob(repoRoot, 'HEAD');
+  } catch (err) {
+    logWarn('kb_session_prime', 'bible cold-seed skipped: the committed ' + OWN_BIBLE_REL
+      + ' failed verification: ' + (err instanceof Error ? err.message : String(err)));
+    return null;
+  }
+  if (committed === null) {
+    if (worktree !== null) {
+      logWarn('kb_session_prime', 'bible cold-seed skipped: ' + OWN_BIBLE_REL
+        + ' has no committed copy at HEAD (unborn HEAD, untracked file, or not a git work tree); the work-tree file is never seeded: ' + worktreePath);
+    }
+    return null;
+  }
+  const lf = (t: string) => t.replace(/\r\n/g, '\n');
+  if (worktree === null || lf(worktree) !== lf(committed.text)) {
+    logWarn('kb_session_prime', 'bible cold-seed reads the ' + OWN_BIBLE_REL + ' committed at HEAD (blob '
+      + committed.blobId + '): the work-tree file ' + (worktree === null ? 'is missing' : 'differs from it and is ignored')
+      + ': ' + worktreePath);
+  }
+  return committed.text;
 }
 
 // T3.5 (F9c, D8): `via` param added, defaulting to 'canonical-bible' so the
@@ -397,12 +434,18 @@ async function primeFrom(
   // exactly as built above (same contract as the neighbor block).
   // Never under an http project provider: the KB server is the source of
   // truth there, and the checkout bible is not read.
+  //
+  // COMMITTED ONLY (committedColdSeedBible): the bible is read as committed
+  // at HEAD (git blob, bytes hash-verified in-process), never the work-tree
+  // file -- bible entries reach prompts as CONFIRMED, and the work tree is
+  // writable by any agent sharing the folder. No committed copy, or a failed
+  // verification, seeds nothing (logged); a differing work-tree file is
+  // ignored (logged) and the committed copy is seeded.
   if (ownerTag === undefined && !(providers.project instanceof HttpKbProvider) && (result.top_entries ?? []).length < COLD_KB_MAX) {
     try {
       const repoRoot = localDirOrNull(resolved.folder);
-      const canonicalPath = repoRoot ? path.join(repoRoot, '.fleet', 'kb-canonical.json') : null;
-      if (canonicalPath && fs.existsSync(canonicalPath)) {
-        const raw = fs.readFileSync(canonicalPath, 'utf-8');
+      const raw = repoRoot ? await committedColdSeedBible(repoRoot) : null;
+      if (raw !== null) {
         const parsedBible = JSON.parse(raw) as unknown;
         const entries = bibleEntries(parsedBible);
         // The bible's EXPLICIT demotion tombstones, via the one shared reader.

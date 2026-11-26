@@ -85,13 +85,36 @@ function getOrCreateToken(): string {
   return token;
 }
 
-function generateNewToken(): string {
-  if (!fs.existsSync(TOKEN_DIR)) {
-    fs.mkdirSync(TOKEN_DIR, { recursive: true });
-  }
+/**
+ * `kb-server --generate-token`: write a fresh encrypted token to the token file
+ * (creating its folder), and return the token and the absolute path written.
+ * Never binds a port or opens the KB provider. A failure (folder not creatable,
+ * file not writable) throws an Error naming the path and the reason, and leaves
+ * no partial file behind (the write goes to a temp file, then a rename).
+ */
+export function generateNewToken(tokenPath: string = TOKEN_PATH): { token: string; path: string } {
+  const abs = path.resolve(tokenPath);
+  const tmp = `${abs}.${process.pid}.tmp`;
   const token = crypto.randomBytes(32).toString('hex');
-  fs.writeFileSync(TOKEN_PATH, encryptPassword(token), { mode: 0o600 });
-  return token;
+  try {
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(tmp, encryptPassword(token), { mode: 0o600 });
+    fs.renameSync(tmp, abs);
+  } catch (err) {
+    try { fs.rmSync(tmp, { force: true }); } catch { /* best effort */ }
+    const e = err as NodeJS.ErrnoException;
+    throw new Error(`cannot write KB server token file ${abs}: ${e.code ? `${e.code}: ` : ''}${e.message}`);
+  }
+  return { token, path: abs };
+}
+
+/** CLI entry for --generate-token: refuses --token-file, writes the file, prints token and path. */
+export function runGenerateToken(tokenFile?: string): void {
+  if (tokenFile) {
+    throw new Error('--generate-token cannot be combined with --token-file: the token comes from the file');
+  }
+  const { token, path: written } = generateNewToken();
+  process.stdout.write(`KB server token: ${token}\nToken file written: ${written}\n`);
 }
 
 // --- Helpers ---
@@ -165,8 +188,9 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
     serverToken = readTokenFile(tokenFile);
   }
   if (generateToken) {
-    const token = generateNewToken();
-    process.stderr.write(`KB server token: ${token}\n`);
+    // --generate-token is a one-shot step handled by runGenerateToken (the CLI
+    // exits after it); it must never fall through into serving.
+    throw new Error('--generate-token does not start the server: use runGenerateToken');
   }
 
   if (!tokenFile) serverToken = getOrCreateToken();
@@ -357,7 +381,8 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
         return jsonResponse(res, 200, { results, total: results.length });
       }
 
-      // POST /api/kb/promote  {id, reason} -> {id, previous_confidence, new_confidence}
+      // POST /api/kb/promote  {id, reason} -> {id, previous_confidence, new_confidence,
+      //   basis_stamped?, rebased?, previous_basis_files_changed?, unstamped_files?}
       // Same reply shape as the kb_promote tool. An unknown id is 404
       // ENTRY_NOT_FOUND (the code an optional id route such as demote needs
       // for "entry unknown" rather than "route not served"); any
@@ -377,6 +402,10 @@ export async function startKbServer(port: number, generateToken: boolean, dbPath
             id: result.id,
             previous_confidence: result.confidence_before,
             new_confidence: result.confidence_after,
+            ...(result.basis_stamped !== undefined ? { basis_stamped: result.basis_stamped } : {}),
+            ...(result.rebased !== undefined ? { rebased: result.rebased } : {}),
+            ...(result.previous_basis_files_changed !== undefined ? { previous_basis_files_changed: result.previous_basis_files_changed } : {}),
+            ...(result.unstamped_files !== undefined ? { unstamped_files: result.unstamped_files } : {}),
           });
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
@@ -624,7 +653,8 @@ Run the shared knowledge-base HTTP server for the repo in the current directory.
 
 Options:
   --port <n>            Port to listen on, integer 1-65535 (default 7878)
-  --generate-token      Generate and print a fresh bearer token
+  --generate-token      Write a fresh bearer token to <fleet dir>/knowledge/kb-server.token,
+                        print it and that path, and exit (does not start the server)
   --db <path>           Serve the KB database at <path>
   --token-file <path>   Read/write the bearer token at <path>
   --help, -h            Show this help and exit`;

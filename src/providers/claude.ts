@@ -876,6 +876,12 @@ export class ClaudeProvider implements ProviderAdapter {
     return [...CLAUDE_AUTH_ENV_VARS];
   }
 
+  // CLAUDE_CODE_OAUTH_TOKEN holds a `claude setup-token` OAuth token, not an
+  // API key; every other Claude auth var (ANTHROPIC_API_KEY) is an API key.
+  authEnvVarKind(name: string): 'api-key' | 'oauth-token' {
+    return name === 'CLAUDE_CODE_OAUTH_TOKEN' ? 'oauth-token' : 'api-key';
+  }
+
   authTokenKindWarning(token: string): string | null {
     const t = token.trim();
     if (t.startsWith(CLAUDE_OAUTH_TOKEN_PREFIX) || t.startsWith(CLAUDE_API_KEY_PREFIX)) return null;

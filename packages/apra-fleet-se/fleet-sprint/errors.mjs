@@ -76,6 +76,7 @@ export const VCS_FAILURE_KINDS = Object.freeze({
     NO_REMOTE: 'NO_REMOTE',
     EMPTY_REMOTE: 'EMPTY_REMOTE',
     REMOTE_UNREACHABLE: 'REMOTE_UNREACHABLE',
+    UNRELATED_HISTORY: 'UNRELATED_HISTORY',
     UNSUPPORTED_OPERATION: 'UNSUPPORTED_OPERATION',
     MISSING_TOOL: 'MISSING_TOOL',
     UNKNOWN: 'UNKNOWN',
@@ -517,6 +518,82 @@ export class DoltWindowsSpawnLimitError extends DoltSyncError {
     }
 }
 
+/** Stable error code of DoltUnrelatedHistoryError. */
+export const DOLT_UNRELATED_HISTORY_CODE = 'DOLT_UNRELATED_HISTORY';
+
+/** The failure kind DoltUnrelatedHistoryError carries in details.kind. */
+export const DOLT_UNRELATED_HISTORY_KIND = 'unrelated-history';
+
+/**
+ * A D-pull/D-push whose beads clone and the shared remote have NO common
+ * ancestor (independent histories: e.g. a clone created with its own `bd init`,
+ * or a remote whose history was rewritten). Not an ordinary divergence: a
+ * settle (merge) needs a common ancestor, so none is attempted. The raw output
+ * is in `doltOutput`; details.kind is 'unrelated-history' and details.operation
+ * is 'pull' | 'push'. A DoltSyncError subtype, so every existing DoltSyncError
+ * handler still applies -- and it is deliberately NOT a DoltDivergedError, so
+ * nothing treats it as a settle-able conflict.
+ */
+export class DoltUnrelatedHistoryError extends DoltSyncError {
+    /**
+     * @param {string} message
+     * @param {{ member?: string|null, doltOutput?: string|null, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(message, opts = {}) {
+        super(message, { ...opts, details: { kind: DOLT_UNRELATED_HISTORY_KIND, ...opts.details } });
+        this.name = 'DoltUnrelatedHistoryError';
+        this.code = DOLT_UNRELATED_HISTORY_CODE;
+    }
+}
+
+/** Stable error code of BeadsFlattenRecoveryRefusedError. */
+export const BEADS_FLATTEN_RECOVERY_REFUSED_CODE = 'BEADS_FLATTEN_RECOVERY_REFUSED';
+
+/** Stable error code of BeadsFlattenRecoveryFailedError. */
+export const BEADS_FLATTEN_RECOVERY_FAILED_CODE = 'BEADS_FLATTEN_RECOVERY_FAILED';
+
+/**
+ * The automatic recovery of a clone whose shared beads remote shares no
+ * history with it (beads-flatten-recovery.mjs) found local work the rewritten
+ * remote does not hold, so it REFUSED: the clone was put back exactly as it
+ * was and nothing was replayed. `details.localOnly` lists
+ * `{ id, kind, reason, localUpdatedAt?, freshUpdatedAt?, items?, unverified? }`
+ * (kind: absent | changed | dependency | label | comment | deleted),
+ * `details.exportPath` the
+ * pre-recovery export of the clone. A DoltSyncError subtype (kind
+ * 'unrelated-history'), so every existing DoltSyncError handler applies.
+ */
+export class BeadsFlattenRecoveryRefusedError extends DoltSyncError {
+    /**
+     * @param {string} message
+     * @param {{ member?: string|null, doltOutput?: string|null, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(message, opts = {}) {
+        super(message, { ...opts, details: { kind: DOLT_UNRELATED_HISTORY_KIND, ...opts.details } });
+        this.name = 'BeadsFlattenRecoveryRefusedError';
+        this.code = BEADS_FLATTEN_RECOVERY_REFUSED_CODE;
+    }
+}
+
+/**
+ * The automatic recovery of an unrelated-history clone failed on a step
+ * (export, rename, bootstrap, ...). Every step after the clone's .beads was
+ * moved aside is undone before this is thrown; `details.step` names the
+ * failed step and `details.restored` whether the original .beads is back in
+ * place. A DoltSyncError subtype (kind 'unrelated-history').
+ */
+export class BeadsFlattenRecoveryFailedError extends DoltSyncError {
+    /**
+     * @param {string} message
+     * @param {{ member?: string|null, doltOutput?: string|null, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(message, opts = {}) {
+        super(message, { ...opts, details: { kind: DOLT_UNRELATED_HISTORY_KIND, ...opts.details } });
+        this.name = 'BeadsFlattenRecoveryFailedError';
+        this.code = BEADS_FLATTEN_RECOVERY_FAILED_CODE;
+    }
+}
+
 /** Stable error code of DoltLockHeldError. */
 export const DOLT_BEADS_LOCK_HELD_CODE = 'DOLT_BEADS_LOCK_HELD';
 
@@ -537,6 +614,29 @@ export class DoltLockHeldError extends DoltSyncError {
         super(message, { ...opts, details: { kind: 'lock-held', ...opts.details } });
         this.name = 'DoltLockHeldError';
         this.code = DOLT_BEADS_LOCK_HELD_CODE;
+    }
+}
+
+/** Stable error code of DoltSyncTimeLimitError. */
+export const DOLT_SYNC_TIME_LIMIT_CODE = 'DOLT_SYNC_TIME_LIMIT';
+
+/**
+ * A D-pull/D-push that was still running when its total time limit ran out
+ * (the heartbeat that keeps a long, silent transfer alive stops at the limit,
+ * then the silence timeout ends it). Not retried: the transfer is too large or
+ * too slow, and the same transfer would hit the same limit again. details.kind
+ * is 'time-limit'; details.limitS / details.elapsedS carry the numbers. A
+ * DoltSyncError subtype, so every existing DoltSyncError handler still applies.
+ */
+export class DoltSyncTimeLimitError extends DoltSyncError {
+    /**
+     * @param {string} message
+     * @param {{ member?: string|null, doltOutput?: string|null, details?: object, cause?: unknown }} [opts]
+     */
+    constructor(message, opts = {}) {
+        super(message, { ...opts, details: { kind: 'time-limit', ...opts.details } });
+        this.name = 'DoltSyncTimeLimitError';
+        this.code = DOLT_SYNC_TIME_LIMIT_CODE;
     }
 }
 

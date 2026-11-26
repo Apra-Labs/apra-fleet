@@ -805,6 +805,35 @@
       }
     },
     {
+      "id": "29487f1f-2037-47f2-b8e0-a66db49ba41e",
+      "type": "knowledge",
+      "title": "kb_bible_commit builds from the bible committed at HEAD and trusts only the blob it committed",
+      "summary": "In a git work tree, kbBibleCommit reads its base bible from HEAD via readCommittedBibleBlob (hash-checked; none committed = empty bible), never the work-tree file. A differing work-tree bible is ignored (logged) and overwritten on write. It records a trusted blob only after a commit, and only when HEAD's blob equals the id of the bytes written.",
+      "symbols": [
+        "kbBibleCommit",
+        "readCommitBaseDocument",
+        "committedOwnBibleMatching",
+        "parseBibleDocumentText",
+        "BIBLE_RULES_REVISION"
+      ],
+      "source_files": [
+        "src/tools/kb-bible-commit.ts",
+        "src/tools/kb-import.ts",
+        "src/tools/kb-export.ts",
+        "src/services/knowledge/bible-rules.ts",
+        "tests/knowledge/kb-bible-commit-worktree-drift.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-22T15:32:12.109Z",
+      "source_file_hashes": {
+        "src/services/knowledge/bible-rules.ts": "6be475869f42004dae5c10598680d0d9f20fcfc4",
+        "src/tools/kb-bible-commit.ts": "a65c27f1551df51f6891d36c7d04ed72d6803d36",
+        "src/tools/kb-export.ts": "c6a6f23af469cc8969864b46bdb8f8ac637de6b7",
+        "src/tools/kb-import.ts": "ea4858060b85621ef8d18eb7fb31c34d678a73a7",
+        "tests/knowledge/kb-bible-commit-worktree-drift.test.ts": "f12fe59c582f5253ae6df30d78a584007951cc0f"
+      }
+    },
+    {
       "id": "2b244307-8635-4406-904f-6a2290d54490",
       "type": "learning",
       "title": "check-generic-boundary tokenizer treats slash-star inside a template literal as a comment",
@@ -940,6 +969,37 @@
       }
     },
     {
+      "id": "2f7f24ab-95d6-4b13-acf7-5f0b27b963a9",
+      "type": "knowledge",
+      "title": "Engine refuses kb_bible_commit unless the maintainer's kb_capabilities fleet_build.bible_rules is high enough",
+      "summary": "kb_capabilities carries fleet_build {version, bible_rules}. createKbWorkClient.commitRepo reads it on the kb_maintainer before every bible commit and refuses a revision below REQUIRED_MAINTAINER_BIBLE_RULES, a missing one, or an unreadable answer, keeping the queue and logging a WARNING.",
+      "symbols": [
+        "BIBLE_RULES_REVISION",
+        "fleetBuild",
+        "REQUIRED_MAINTAINER_BIBLE_RULES",
+        "fleetBuildOf",
+        "maintainerBuildGap",
+        "commitRepo",
+        "kbCapabilitiesResult"
+      ],
+      "source_files": [
+        "src/services/knowledge/bible-rules.ts",
+        "src/tools/kb-capabilities.ts",
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs",
+        "packages/apra-fleet-se/test/helpers/kb-maintainer-fakes.mjs",
+        "tests/knowledge/kb-capabilities-tool.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-22T10:49:16.367Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "41f6e273087e48bc4a34fbbe77b3cbfb59ac66e9",
+        "packages/apra-fleet-se/test/helpers/kb-maintainer-fakes.mjs": "9d6fd51813a107db9ef86f14bd3698a5b3a548e8",
+        "src/services/knowledge/bible-rules.ts": "6be475869f42004dae5c10598680d0d9f20fcfc4",
+        "src/tools/kb-capabilities.ts": "8d4680b17b5894d503df0ae1b5c0724181dc586f",
+        "tests/knowledge/kb-capabilities-tool.test.ts": "fc9167f427872ee36e10da00cd4bd26edaa18c2d"
+      }
+    },
+    {
       "id": "2ffc0a85-7607-49d0-9e9a-f3ca9b8cfbb4",
       "type": "learning",
       "title": "execute_command's input schema is not zod .strict(), unlike execute_prompt's, so a removed field silently strips instead of rejecting",
@@ -974,6 +1034,26 @@
         "packages/apra-fleet-se/apra-pm/agents/schemas/doer-output.json": "58fffe7c86aa875100bc8b66769c43a462cc3111",
         "packages/apra-fleet-se/apra-pm/test/auto-sprint-schemas-drift.test.mjs": "eaca88fa5ff10f41b4acd11099776d9e78415b0e",
         "packages/apra-fleet-se/test/golden-transcript.test.mjs": "9ec222f8856aa6a5935b49d144ae6caf2fd05ee9"
+      }
+    },
+    {
+      "id": "31c92717-bded-496b-8a7b-a5f511e028f3",
+      "type": "learning",
+      "title": "New fleet-sprint modules must be registered in guarded-modules.mjs",
+      "summary": "guarded-modules-coverage.test.mjs fails when any *.mjs/*.js under packages/apra-fleet-se/fleet-sprint/ is not listed in GUARDED_MODULES or GUARD_REGISTRATION_EXEMPT, so add a new module there in the same change.",
+      "symbols": [
+        "GUARDED_MODULES",
+        "GUARD_REGISTRATION_EXEMPT"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/guarded-modules.mjs",
+        "packages/apra-fleet-se/test/guarded-modules-coverage.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-22T10:49:19.979Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/guarded-modules.mjs": "3d8ee9355d2eb103d8f45df98dc553b6c51df32b",
+        "packages/apra-fleet-se/test/guarded-modules-coverage.test.mjs": "c38865f8485acc15aefb765864ba60822b3d81c7"
       }
     },
     {
@@ -1488,6 +1568,33 @@
       }
     },
     {
+      "id": "4ebfe1d3-32ca-45a2-a65b-2a87a0eb0451",
+      "type": "knowledge",
+      "title": "Health gate lists the backlog work folder every launch for a beads recovery backup",
+      "summary": "preflightBeadsHealthGate with flattenRecovery (runner.js passes memberSeCommands) first runs listDirectory('.') on the backlog member to restore a .beads.flatten-pending-* backup left by an interrupted recovery. That adds one `ls -1A -- '.'` before the gate's bd commands in every launch transcript.",
+      "symbols": [
+        "preflightBeadsHealthGate",
+        "restoreLeftoverFlattenBackup",
+        "verifyBeadsIdentity",
+        "setupMemberBeads",
+        "repair"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/dolt-sync.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/fleet-sprint/beads-identity-check.mjs",
+        "packages/apra-fleet-se/fleet-sprint/beads-flatten-recovery.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-25T07:54:02.692Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/beads-flatten-recovery.mjs": "39912907f01b3ab84f8b3ce1c240cce6c949bcdc",
+        "packages/apra-fleet-se/fleet-sprint/beads-identity-check.mjs": "b9fafdb63bc1601d2143235bb8cb4f7f006facd1",
+        "packages/apra-fleet-se/fleet-sprint/dolt-sync.mjs": "7357a8441d315941600b8819411869a289c08644",
+        "packages/apra-fleet-se/fleet-sprint/runner.js": "76de259a5916a4f8f229844f55f17dead831427e"
+      }
+    },
+    {
       "id": "4f62e71d-0544-49f1-863f-6bbc503604ac",
       "type": "knowledge",
       "title": "Exec-level rolling timeout is per-provider via ProviderAdapter.execTimeoutSource()",
@@ -1945,6 +2052,51 @@
       "updated_at": "2026-09-29T06:13:16.498Z"
     },
     {
+      "id": "6818e92f-0227-4a50-9054-b130f6f88cae",
+      "type": "learning",
+      "title": "Any bd invocation writes ~/.beads/eventsData under the invoking HOME",
+      "summary": "Even `bd version` records an event file under $HOME/.beads/eventsData, and bd's background event writer can recreate files after the directory is removed. Tests that must leave nothing outside their sandbox should detect bd by scanning PATH, not by running it under the real HOME.",
+      "symbols": [
+        "bdAvailable"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/dolt-push-verify-links-real-bd.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-25T08:30:23.491Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/test/dolt-push-verify-links-real-bd.test.mjs": "b8c2ddc4015cb728ae913a45e243e8c55847fe5a"
+      }
+    },
+    {
+      "id": "686dfe22-5326-404b-a658-22ed83e96fa6",
+      "type": "knowledge",
+      "title": "LLM auth label is shared by list_members and member_detail via llm-auth-label.ts",
+      "summary": "probeLlmAuthStatus checks every provider auth env var plus the OAuth credentials file and labels them 'none' or '+'-joined api-key/oauth-token/oauth-login. Each env var's kind comes from ProviderAdapter.authEnvVarKind (default api-key); member_detail adds llm_cli.authNote for precedence.",
+      "symbols": [
+        "probeLlmAuthStatus",
+        "providerAuthEnvVars",
+        "llmAuthStatusFromSources",
+        "authEnvVarKind"
+      ],
+      "source_files": [
+        "src/services/llm-auth-label.ts",
+        "src/providers/provider.ts",
+        "src/providers/claude.ts",
+        "src/tools/list-members.ts",
+        "src/tools/member-detail.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-25T22:06:19.637Z",
+      "source_file_hashes": {
+        "src/providers/claude.ts": "417e719fddbfed263a66df866a0f4615f4d490f1",
+        "src/providers/provider.ts": "dd7656404f9e0dc1e0d95929107a82a3dec0b9fa",
+        "src/services/llm-auth-label.ts": "e316b8cd8a46d5b1d1b04f8262aac61d1e59f63f",
+        "src/tools/list-members.ts": "20baa7f0ca045b74633625124bee250588f1d622",
+        "src/tools/member-detail.ts": "06705529e2382c19e42012d8479ca9d9c11457f0"
+      }
+    },
+    {
       "id": "6a23848a-42af-47cf-aacb-678b0936dd74",
       "type": "knowledge",
       "title": "Member kb_query without limit returns 6 slim rows and no L2; own_scope exempt",
@@ -2075,6 +2227,31 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:41.271Z"
+    },
+    {
+      "id": "71d667c4-47e0-4b6a-baa3-893c712f4251",
+      "type": "knowledge",
+      "title": "Member replace-full backup layout and which rollback step is supervisor-guarded",
+      "summary": "replace-full backs up into <home>/.apra-fleet-replace-backup-<stamp>/ (data/, fleet.key only if present, old binary). In the documented rollback only the reinstall (install) refuses with E-FLEET-SE-RUNNING; uninstall has no fleet-sprint guard.",
+      "symbols": [
+        "buildReplaceFullInstallPlan",
+        "guardedReinstallCommand",
+        "rollbackCommand"
+      ],
+      "source_files": [
+        "src/services/member-fleet-install.ts",
+        "src/cli/install.ts",
+        "src/cli/uninstall.ts",
+        "tests/integration/member-host/lib/rollback.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-25T08:30:19.934Z",
+      "source_file_hashes": {
+        "src/cli/install.ts": "75a80d49fce97454f64a4d4dd134516bf0305966",
+        "src/cli/uninstall.ts": "22699f50d66aa7bff10e2c65bc04c11374de8ac3",
+        "src/services/member-fleet-install.ts": "ee70ed7181753b307c2108a45dd9b0fea6003705",
+        "tests/integration/member-host/lib/rollback.mjs": "1ac14f76b11c130fd8838b2be97f91c5e0e09c4e"
+      }
     },
     {
       "id": "75c4aab8-77f1-4f45-89aa-fe89a173ec6b",
@@ -2706,6 +2883,30 @@
       }
     },
     {
+      "id": "91012fab-e16a-43d9-8233-aec2bd5090f8",
+      "type": "knowledge",
+      "title": "kb_session_prime cold-seed reads only the bible committed at HEAD",
+      "summary": "The project-bible cold-seed in kbSessionPrime gets its text from committedColdSeedBible: readCommittedBibleBlob(repoRoot, 'HEAD'), hash-checked. No committed copy or a failed verification seeds nothing (logWarn names the reason). A work-tree file that differs from HEAD is ignored and the committed copy is seeded.",
+      "symbols": [
+        "committedColdSeedBible",
+        "kbSessionPrime",
+        "readCommittedBibleBlob",
+        "buildView"
+      ],
+      "source_files": [
+        "src/tools/kb-session-prime.ts",
+        "tests/knowledge/kb-session-prime.test.ts",
+        "src/services/knowledge/member-bible-view.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-22T15:32:08.449Z",
+      "source_file_hashes": {
+        "src/services/knowledge/member-bible-view.ts": "dcc07c3ed11bccf65f2472d7a3e913fe879f51a6",
+        "src/tools/kb-session-prime.ts": "42304d0bf9c0e9fbc4bdf4997cd4beaa98708326",
+        "tests/knowledge/kb-session-prime.test.ts": "fe05ca2b1fbbdbc27bb524328646ed433aaef35c"
+      }
+    },
+    {
       "id": "919a3f50-dcb3-4ee9-91d1-767fd503a3b8",
       "type": "knowledge",
       "title": "A directly launched sprint's deployer self-id is the branch name, not a ledger uuid",
@@ -2725,6 +2926,29 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:33.791Z"
+    },
+    {
+      "id": "92bedcfe-94f0-41c8-837a-4e834da8427f",
+      "type": "learning",
+      "title": "Mock-sprint KB fakes: seed INFERRED entries inside the sprint and answer the bibleUnpushed git probe",
+      "summary": "promotionCandidates only offers INFERRED entries whose created_at is at or after the sprint start, so a fake KB entry seeded before runDevelopLoopScenario is never offered. A kb_bible_commit answering committed:false goes through bibleUnpushed (git status/log/diff), so a mock must answer those commands or the skip handling never runs.",
+      "symbols": [
+        "bibleUnpushed",
+        "bibleAttempt",
+        "promotionCandidates"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/git-sync.mjs",
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs",
+        "packages/apra-fleet-se/test/mock-sprint-kb-final-head-recheck.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-22T20:36:30.978Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/git-sync.mjs": "b1b25cc3f8cab5fe95a04d339c25962a16b20268",
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "41f6e273087e48bc4a34fbbe77b3cbfb59ac66e9",
+        "packages/apra-fleet-se/test/mock-sprint-kb-final-head-recheck.test.mjs": "310f907df46b9d3f661f9240ccfc4f6afcacc40e"
+      }
     },
     {
       "id": "93bbfb5a-0681-45d2-9024-ecf14c44a479",
@@ -2798,6 +3022,52 @@
       "updated_at": "2026-09-30T23:07:12.100Z"
     },
     {
+      "id": "976bb7cc-ec9b-400f-88c6-69cdab551bb3",
+      "type": "knowledge",
+      "title": "bd --db <dir> leaves <dir>.gate.lock beside the directory (embedded mode)",
+      "summary": "On bd 1.3.0 embedded mode, any `bd --db <dir> ...` call (even --readonly history) creates a lock file named `<dir>.gate.lock` next to the directory. Flatten recovery deletes it after its history checks, and pickLeftoverBackup only accepts exact <prefix><stamp> names so the lock is never taken for a backup.",
+      "symbols": [
+        "recoverFlattenedClone",
+        "pickLeftoverBackup",
+        "BD_DB_LOCK_SUFFIX"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/beads-flatten-recovery.mjs",
+        "packages/apra-fleet-se/test/beads-flatten-recovery-real-bd.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-25T10:45:13.390Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/beads-flatten-recovery.mjs": "85ee0163d92ed5288b25a1d4bef3a5b7711ed4dd",
+        "packages/apra-fleet-se/test/beads-flatten-recovery-real-bd.test.mjs": "cb9acc0d73068a5228f477fa468af585ae6e5e6d"
+      }
+    },
+    {
+      "id": "981c940f-28c3-41cb-87bb-36156857ea97",
+      "type": "knowledge",
+      "title": "KB http provider: read 5xx is UNREACHABLE, SERVER-ERROR is writes-only",
+      "summary": "HttpKbProvider.answeredError maps any 5xx/429 answering a read (query, context, prime, list) to E-KB-HTTP-UNREACHABLE; only a write's non-503 5xx is E-KB-HTTP-SERVER-ERROR. A 429 carries rateLimit {retryAfter} and a rate-limited message.",
+      "symbols": [
+        "HttpKbProvider.answeredError",
+        "KbHttpUnreachableError",
+        "KbHttpServerError",
+        "serverUnavailableError",
+        "retryAfterOf"
+      ],
+      "source_files": [
+        "src/services/knowledge/http-provider.ts",
+        "memory-contract/v1/taxonomy.json",
+        "tests/knowledge/kb-http-error-mapping.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-25T10:28:28.076Z",
+      "source_file_hashes": {
+        "memory-contract/v1/taxonomy.json": "c884fff3dbdf3132cadc13761a5c0c70c0a58642",
+        "src/services/knowledge/http-provider.ts": "5aaf24d42386d2f516a193e307ced2132159af5b",
+        "tests/knowledge/kb-http-error-mapping.test.ts": "8cd14c4e56834bfd554a12eae8e93ab0530bc69d"
+      }
+    },
+    {
       "id": "98dd92b2-2606-4baa-8d60-fd3cd3dc78a0",
       "type": "knowledge",
       "title": "A role's member expression in role-policies.mjs is not role-unique, so it cannot identify a ladder",
@@ -2817,6 +3087,53 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:32.234Z"
+    },
+    {
+      "id": "9a125191-7853-43a6-ae23-30ac3e5680a6",
+      "type": "knowledge",
+      "title": "Bible merge driver string is guarded against a stale install path",
+      "summary": "buildBibleMergeDriverCommand registers a POSIX sh guard: it checks every recorded path with [ -f ], runs the CLI, and on missing paths or sh exit 126/127 falls back to git merge-file with conflict markers plus a message naming kb_setup, then exits 1. installBibleMergeDriver re-registers a differing driver and returns repairedFrom.",
+      "symbols": [
+        "buildBibleMergeDriverCommand",
+        "installBibleMergeDriver",
+        "BIBLE_MERGE_DRIVER_STALE_MESSAGE"
+      ],
+      "source_files": [
+        "src/cli/kb-merge-driver.ts",
+        "src/tools/kb-setup.ts",
+        "tests/knowledge/kb-bible-merge-driver.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-22T11:07:00.549Z",
+      "source_file_hashes": {
+        "src/cli/kb-merge-driver.ts": "cb44162c5dfe39b177f783dc8e8526e25a8bdd59",
+        "src/tools/kb-setup.ts": "d1e12f8ea1553555a5613c6ec33cec2b6a318067",
+        "tests/knowledge/kb-bible-merge-driver.test.ts": "36b5005e32482dfebae733bcc242fded39f8ca85"
+      }
+    },
+    {
+      "id": "9a70c23f-e8d3-4155-b681-a031d7db6b4e",
+      "type": "knowledge",
+      "title": "Link guard needs a per-clone baseline read before an agent edits",
+      "summary": "The agent-removal record in parent-link-guard.mjs only records a removal when the clone has an earlier read (lastRead). Fresh backlog snapshots and beadsScope.ensureLinkBaseline (called by withGitSync before a dispatch that pushes beads) set that baseline.",
+      "symbols": [
+        "createParentLinkLedger",
+        "createBeadsScope",
+        "ensureLinkBaseline",
+        "withGitSync"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/parent-link-guard.mjs",
+        "packages/apra-fleet-se/fleet-sprint/beads-scope.mjs",
+        "packages/apra-fleet-se/fleet-sprint/git-sync.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-25T13:59:29.295Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/beads-scope.mjs": "dbbf833b9ff1c0927b4354c41cbdb08b19945032",
+        "packages/apra-fleet-se/fleet-sprint/git-sync.mjs": "26b8aee7190d9af80079474027b48001db8f4362",
+        "packages/apra-fleet-se/fleet-sprint/parent-link-guard.mjs": "e5e420c466fabc4cfc513e891e3b1697844c007c"
+      }
     },
     {
       "id": "9af40daa-2521-430a-a529-7db25d27da87",
@@ -3010,6 +3327,29 @@
       }
     },
     {
+      "id": "a4e858b3-f95a-4c33-8779-13e811856f7a",
+      "type": "knowledge",
+      "title": "Link-guard reads that overlap a pull on the same clone are discarded as baselines",
+      "summary": "beads-scope.mjs counts pulls per member (pullEpochs, pullsInFlight), bumped for every bd dolt pull even before the scope is known. A snapshot read or ensureLinkBaseline read is noted only when no pull on that clone started or ran while it was taken (readUnraced).",
+      "symbols": [
+        "createBeadsScope",
+        "ensureLinkBaseline",
+        "fetchAllBeadsShared",
+        "noteRead",
+        "notePull"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/beads-scope.mjs",
+        "packages/apra-fleet-se/fleet-sprint/parent-link-guard.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-25T14:20:04.383Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/beads-scope.mjs": "dbbf833b9ff1c0927b4354c41cbdb08b19945032",
+        "packages/apra-fleet-se/fleet-sprint/parent-link-guard.mjs": "e5e420c466fabc4cfc513e891e3b1697844c007c"
+      }
+    },
+    {
       "id": "a6233f92-cd94-427c-aaaa-62a0d70f49b2",
       "type": "knowledge",
       "title": "Engine appends a wait-limit block to doer/reviewer/runner prompts, so prompt pins must use withWaitNotice",
@@ -3127,6 +3467,30 @@
         "packages/apra-fleet-se/fleet-sprint/member-provisioning.mjs": "0dffb028188c744e0bcc172691eb9fc79bfb354b",
         "scripts/check-ascii-only.mjs": "41b4a29f5da8bab14176874fe7ae5e973f7e2d56",
         "tests/ascii-only-gate.test.ts": "c039aafa21aff35c2f4d50769bb8f72c91be7674"
+      }
+    },
+    {
+      "id": "aab21b69-5485-43fd-b9f3-9bf4fa0f62bb",
+      "type": "knowledge",
+      "title": "kb_promote stamps the basis at HEAD but keeps the old hash for dirty or untracked files",
+      "summary": "SqliteProvider.promote stamps source_file_hashes from the git blob at HEAD only for cited files whose work-tree content equals HEAD. A file with an uncommitted edit or no blob at HEAD keeps its previous basis hash and is reported in unstamped_files, so a capture against uncommitted work is admitted once committed.",
+      "symbols": [
+        "promote",
+        "headBasisFor",
+        "reviveAfterRestamp",
+        "describeBasisDrift"
+      ],
+      "source_files": [
+        "src/services/knowledge/sqlite-provider.ts",
+        "src/services/knowledge/bible-basis-filter.ts",
+        "tests/knowledge/kb-bible-commit.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-22T20:36:34.512Z",
+      "source_file_hashes": {
+        "src/services/knowledge/bible-basis-filter.ts": "a06bae05cb1825115cf8249b10257975abe6c674",
+        "src/services/knowledge/sqlite-provider.ts": "c8f57fb87eb24391e03c2806936b60bc937c159f",
+        "tests/knowledge/kb-bible-commit.test.ts": "7c0e78838b793e3591784074e8d3ca9f8e077840"
       }
     },
     {
@@ -3636,6 +4000,32 @@
       }
     },
     {
+      "id": "cb356223-9df5-49ca-a74f-b179a35866e0",
+      "type": "knowledge",
+      "title": "basis_mismatch bible skips are re-verified by the next reviewer, not just retried",
+      "summary": "createKbWorkClient records each kb_bible_commit basis_mismatch skip in reverifyPending and offers it to the next reviewer as a reverify:true row (rendered by kbPromotionBlock as its own block). kb_promotions re-stamps via kb_promote; kb_discards drops via dropFromBible without kb_invalidate.",
+      "symbols": [
+        "createKbWorkClient",
+        "kbPromotionBlock",
+        "kbReverifyBlock",
+        "dropFromBible",
+        "recheckSprintBible",
+        "expireReverification"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/final-review.mjs",
+        "packages/apra-fleet-se/test/kb-bible-commit-round.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-22T20:36:27.365Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "41f6e273087e48bc4a34fbbe77b3cbfb59ac66e9",
+        "packages/apra-fleet-se/fleet-sprint/phases/final-review.mjs": "1b26c88531cfa3021e26a2d3ccf72db71e73b969",
+        "packages/apra-fleet-se/test/kb-bible-commit-round.test.mjs": "58fa49455f60d0f2c72910a2552ff7333e708528"
+      }
+    },
+    {
       "id": "cc085797-4b47-455d-9357-fbbb267281ed",
       "type": "knowledge",
       "title": "runSprintCycle now hosts zero inline phase bodies, and that is mechanically pinned rather than described",
@@ -4135,6 +4525,36 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:11.365Z"
+    },
+    {
+      "id": "e17a51a4-db1f-4c33-86eb-a0b94c7e5caf",
+      "type": "knowledge",
+      "title": "fleetProcessCheck counts a process as fleet-busy only with the dispatch marker plus session id or quoted folder",
+      "summary": "The member busy probe matches same-name CLI processes whose command line has FLEET_TASK_PROMPT_FILE (.fleet-task.md) AND the session id or the work folder in quotes. A dispatched CLI's own command line has no folder (cwd is set by cd); only its wrapper shell does. Output is idle | other-busy | fleet-busy <pid>; read it with parseFleetProcessCheck.",
+      "symbols": [
+        "fleetProcessCheck",
+        "fleetProcessCheckPs",
+        "FLEET_TASK_PROMPT_FILE",
+        "parseFleetProcessCheck"
+      ],
+      "source_files": [
+        "src/os/linux.ts",
+        "src/os/windows.ts",
+        "src/os/windows-gitbash.ts",
+        "src/os/os-commands.ts",
+        "src/services/session-status.ts",
+        "src/tools/member-detail.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-25T22:06:23.175Z",
+      "source_file_hashes": {
+        "src/os/linux.ts": "2b4ca3d832d20e44c6a8396ff5808c940a9d069f",
+        "src/os/os-commands.ts": "2d9c7a63807f22ff8873d95152151046aed7979e",
+        "src/os/windows-gitbash.ts": "17cabf7b3a6752ee12ee99c36af3f2c2ee4ffc14",
+        "src/os/windows.ts": "d5647a86c4632c326188c7a2b28efb9263eed6f2",
+        "src/services/session-status.ts": "246616c246cb70bf2ff9d52ad507c0b31b874d6a",
+        "src/tools/member-detail.ts": "06705529e2382c19e42012d8479ca9d9c11457f0"
+      }
     },
     {
       "id": "e19d301e-f47d-498b-af86-5125b119256f",

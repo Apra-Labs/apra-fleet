@@ -560,7 +560,16 @@ const NOT_FOUND_ERROR = /^(?:Target|Symbol) '([\s\S]*)' not found\.?$/;
 // difference covers all three.
 export const INDEX_ID_UNIQUENESS_QUERY = 'MATCH (n) RETURN count(n) AS total, count(DISTINCT n.id) AS distinct_ids';
 
-export interface IndexIntegrity {
+export type IndexIntegrity = CorruptIndexIntegrity | UncheckedIndexIntegrity;
+
+/** The integrity check could not run, so a not-found answer is unverified. */
+export interface UncheckedIndexIntegrity {
+  checked: false;
+  /** Why the uniqueness query gave no usable answer. */
+  reason: 'check_failed' | 'check_unreadable';
+}
+
+export interface CorruptIndexIntegrity {
   corrupt: true;
   /** Rows in the index beyond one per distinct id: overwritten symbols. */
   damaged_rows: number;
@@ -594,17 +603,19 @@ function splitPayload(result: unknown): { payload: Record<string, unknown>; suff
 }
 
 /** Rows beyond one per distinct id in `repo`'s index, or null when it cannot be read. */
-async function damagedRows(repo: string): Promise<number | null> {
+async function damagedRows(repo: string): Promise<number | UncheckedIndexIntegrity['reason']> {
   let result: unknown;
   try {
     result = await callGitNexus('cypher', { query: INDEX_ID_UNIQUENESS_QUERY, repo });
-  } catch { return null; }
+  } catch { return 'check_failed'; }
+  // callGitNexus reports a failed call as an error result, not a throw.
+  if (isErrorResult(result)) return 'check_failed';
   const payload = extractCypherPayload(result);
-  if (!payload) return null;
+  if (!payload) return 'check_unreadable';
   const row = parseMarkdownTable(payload.markdown)[0];
-  if (!row || row.total === undefined || row.distinct_ids === undefined) return null;
+  if (!row || row.total === undefined || row.distinct_ids === undefined) return 'check_unreadable';
   const n = Number(row.total) - Number(row.distinct_ids);
-  return Number.isFinite(n) ? n : null;
+  return Number.isFinite(n) ? n : 'check_unreadable';
 }
 
 /**
@@ -619,7 +630,24 @@ export async function flagCorruptIndexNotFound(result: unknown, repo: unknown): 
   const name = notFoundName(result);
   if (name === null) return result;
   const damaged = await damagedRows(repo);
-  if (damaged === null || damaged <= 0) return result;
+  if (typeof damaged === 'string') {
+    // The check did not run: do not claim the symbol is absent, and do not
+    // schedule a rebuild on no evidence.
+    const unchecked: IndexIntegrity = { checked: false, reason: damaged };
+    const uparts = splitPayload(result) as NonNullable<ReturnType<typeof splitPayload>>;
+    const uwarning = `[code-intelligence] NOT FOUND UNVERIFIED: '${name}' was not found, but the index integrity check could not run (${damaged === 'check_failed' ? 'the check query failed' : 'the check returned no readable result'}), ` +
+      'so this is NOT evidence that the symbol does not exist. Confirm with a text search for this symbol.';
+    const upatched = { ...uparts.payload, index_integrity: unchecked, confidence: 'LOW' };
+    return {
+      ...(result as Record<string, unknown>),
+      content: [
+        { ...uparts.first, text: JSON.stringify(upatched, null, 2) + uparts.suffix },
+        ...uparts.content.slice(1),
+        { type: 'text', text: uwarning },
+      ],
+    };
+  }
+  if (damaged <= 0) return result;
 
   const rebuild = scheduleIndexBuild(repo);
   const integrity: IndexIntegrity = { corrupt: true, damaged_rows: damaged, rebuild };

@@ -242,7 +242,7 @@ MCP tools that ship with the KB:
 | `kb_invalidate` | Mark files stale immediately (also called by the git hook), or discard own entries by `ids` |
 | `kb_promote` | Advance confidence: UNVERIFIED -> INFERRED -> CONFIRMED (FULL session, or the sprint's kb_maintainer member session only) |
 | `kb_demote` | Withdraw trust: lower a CONFIRMED entry back to INFERRED (the one reversible rung; never a ladder in its own direction) |
-| `kb_capabilities` | Report what the project KB serves: `{contract, routes, branch_aware, query_filters?}` (the KB server's GET /api/kb/capabilities body for http KBs; read-only) |
+| `kb_capabilities` | Report what the project KB serves: `{contract, routes, branch_aware, query_filters?}` (the KB server's GET /api/kb/capabilities body for http KBs; read-only), plus `fleet_build` `{version, bible_rules}` of the answering fleet server |
 | `kb_harvest` | Extract learnings from a session transcript (auto-fires after execute_prompt) |
 | `kb_export` | Additively merge live CONFIRMED entries whose cited files still match their recorded hashes into `.fleet/kb-canonical.json` -- the git-shareable team bible (FULL session only) |
 | `kb_bible_commit` | Merge confirmed entry ids into the bible (format v3, per-entry file hashes), remove superseded or invalidated entries, and commit locally with base-branch provenance (used by the sprint kb_maintainer); `withdrawals` records a reviewer's withdrawal as a bible tombstone (no local row change; applied by `kb_import` only once merged) and `restore_ids` undoes one (`ids` never clears a withdrawn tombstone; `demoted_ids` tombstones only ids the base bible carries); on an http KB project entries are skipped (`bible_skipped: true`) but withdrawals are still written as tombstones; a withdrawn tombstone outranks a demotion, an id is never both an entry and a tombstone, and an unreadable base bible is reported as `base_bible_error`. To apply merged withdrawals from the CLI run `apra-fleet kb import --ref refs/remotes/origin/main --base-branch main` after fetching |
@@ -287,6 +287,9 @@ session's own repo, including linked worktrees and custom `core.hooksPath`)
 and registers the knowledge bible merge driver in that clone (local merges of
 `.fleet/kb-canonical.json` resolve by entry id; see
 [packages/apra-fleet-se/docs/kb-canonical-merge.md](packages/apra-fleet-se/docs/kb-canonical-merge.md));
+the driver runs through a POSIX `sh` guard, so if its recorded binary path has
+moved the merge falls back to `git merge-file` with a message naming `kb_setup`,
+and re-running `kb_setup` re-registers a stale driver (reporting `repairedFrom`);
 it does not scope the config. On a shared fleet server, treat
 `kb_setup --remote` as a change for all of its users.
 
@@ -1123,6 +1126,12 @@ One-time setup and maintenance. Provision auth (copy OAuth credentials or deploy
 
 **[Observability](mcp-tools.md#4-observability-tools)**  -- `fleet_status`, `member_detail`
 Two-layer monitoring. `fleet_status` gives a quick summary table across all members with fleet-aware busy detection (distinguishes between Claude processes serving this member vs unrelated Claude activity). `member_detail` drills into one member with connectivity, CLI version, session state, and system resource metrics.
+
+`member_detail` reports a session as busy only from an in-flight dispatch (`inFlightAgents`) or from a fleet-launched process: one whose argv carries the `.fleet-task.md` marker plus either the session id or the member's work folder. An unrelated process with the same name, or a stale pid, never makes a member busy. `session.statusSource` and `session.busyPid` name the signal behind a busy reading. The Windows probe is a single encoded PowerShell command; the Claude CLI's argv has no work folder on Windows, so there a dispatch is matched by session id only (dispatches from this server are still covered by in-flight detection).
+
+The LLM auth label shown by `list_members` and `member_detail` comes from one shared helper. It joins `api-key`, `oauth-token` and `oauth-login` with `+` in a fixed order, checks every auth env var a provider declares (not just the first found), and filters out empty var names. Providers classify a var via the optional `ProviderAdapter.authEnvVarKind`.
+
+`execute_command` with `network_policy=deny` blocks git network subcommands (push, pull, fetch, clone, ls-remote, remote update; also spelled `git.exe`/`git.cmd`, quoted, via the PowerShell `&` operator, or after global options such as `-C`) and also checks `restart_command`. Local git stays allowed. These two checks are deny-only: `confirm` (the default policy) still prompts only for a network tool in `command`, exactly as before, so upgrading users see no new prompts. This is a best-effort heuristic: `git submodule update --remote` and git aliases are not covered.
 
 ## Cross-Platform Support
 
@@ -3523,6 +3532,87 @@ sync entirely, so multi-writer coordination is a correctness requirement, not
 a performance nicety. See `packages/apra-fleet-se/docs/architecture.md`'s
 "Dolt sync discipline" section for the full mechanism and its conflict
 recovery ladder.
+
+### Link preservation on conflicted pulls
+
+On the pinned `bd` (1.3.x), a conflicted `bd dolt pull` auto-resolves and
+commits only the tables it resolved; cleanly merged tables (notably the
+dependency table holding parent-child and `blocks` edges) keep the local copy.
+The next push can then silently revert other clones' links. Defences:
+
+- Every engine `bd dolt pull` is bracketed: the pulling clone's in-scope
+  parent-child and `blocks` links are read just before and just after it. A
+  link present before and missing after (both endpoints still present) is
+  owed by that clone and restored before its next push (and, on the backlog
+  clone, on the next scope read). A link that disappeared between two reads
+  with no pull in between was removed on purpose (an agent retargeting an
+  edge, breaking a cycle or reparenting a bead) and is never restored.
+- Because `bd` reports a pull conflict only on stderr, a clean pull carrying
+  another clone's deliberate removal looks like a lossy one. So before every
+  push the engine also reads the pushing clone and records each link it lost
+  since its previous read with no pull in between, in a run-wide
+  agent-removal record shared by all members. Links the engine removes
+  through its own `bd dep remove` / `bd update --parent` go on it too. No
+  pull comparison on any clone restores a link on the record; a link comes
+  off it when it is deliberately re-added. This costs one `bd list` read per
+  push while the sprint scope is known.
+- A read can only be compared with an earlier read of the same clone, so
+  every clone gets a baseline before an agent edits it. Each fresh scope
+  snapshot counts as a read of the backlog clone (its launch pull runs before
+  the scope is known, and the first planner's pull is skipped). A dispatch
+  that pushes beads, on a clone with no baseline yet (its pull was skipped or
+  its pull could not be bracketed), reads that clone once before the agent
+  runs. A read that overlaps a pull on the same clone is not used as a
+  baseline.
+- Before a push publishes a reconcile pull, the engine commits the merged
+  working set and runs a link verification (both parent-child and `blocks`
+  edges must survive). The same commit and verification run before the
+  first push of a member whose pre-dispatch or launch pull merged remote
+  changes, even when that push fast-forwards. A failed restore issues no
+  push and leaves the member owing a verification before its next first
+  push.
+- `apra-fleet install` and sprint launch print a warning while the pinned `bd`
+  is a version that can drop links. The install-side and engine-side version
+  constants are kept in step by a test. Until a fixed `bd` is verified, the
+  warning prints on every install and launch.
+- Known gap: a removal made on a clone the engine never reads (an operator
+  checkout outside the sprint) is not on the agent-removal record, so when a
+  sprint member pulls it, the engine restores the link. Re-remove it from a
+  sprint member, or make the change before the sprint starts. A blocks
+  restore that bd refuses as a cycle (the edge was reversed) is logged as a
+  WARN and dropped from tracking; it does not stop the run.
+
+### Flattened-remote recovery
+
+If the shared Dolt remote is rebuilt with a flattened history, a clone's pull
+and push classify as unrelated-history (checked before diverged). The launch
+health gate, member setup and repair automatically re-bootstrap such a clone:
+export, read back with a count check, rename the old clone (never delete),
+seed config, dry-run bootstrap that must plan a sync, bootstrap, export the
+fresh clone and compare. Any failure after the rename restores the original,
+and a backup left by a crash is restored first. A clone holding work that is
+absent from the remote is refused intact, never overwritten. The comparison
+is a full record diff, because the failing pull has already moved the
+remote-tracking ref and `bd diff` ignores labels. An unpushed bead or field
+change, dependency add, label add or comment add refuses the recovery, and so
+does a delete of a bead the remote still holds (a remote-only id the old
+clone's own history knew; one read-only `bd --db` probe per such id). The
+refusal names the kind of work found. Closed beads the remote pruned before
+the rebuild are not local work when their last change is older than the
+clone's last sync (the newest record both sides hold identically). A closed
+bead changed after that point still refuses. Removing a label, dependency or
+comment cannot be told apart from another clone's add, so it is not counted.
+
+Sprint launch also pulls every non-backlog member that already has a beads DB,
+through the same health gate and recovery. A diverged clone is settled there
+exactly as at its first dispatch pull; only a divergence settle cannot resolve
+stops the launch.
+
+Windows members: dolt keeps a git cache of the remote deep inside `.beads`,
+so with a long workFolder `bd bootstrap` (setup and recovery) can fail on the
+260-character path limit. The setup/recovery error then says so; the fix is
+`git config --global core.longpaths true` on that member (or a shorter
+workFolder). A discarded clone is deleted with a long-path-safe removal.
 
 ---
 

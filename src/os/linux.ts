@@ -1,6 +1,6 @@
 import { execSync } from 'node:child_process';
 import type { OsCommands, ProviderAdapter, PromptOptions, UnsetEnvOptions } from './os-commands.js';
-import { escapeDoubleQuoted, escapeGrepPattern, sanitizeSessionId, GIT_LS_REMOTE_OK_MARKER, FLEET_ENV_MARKER, unsetEnvSedExpr, gitCredentialHelperStem, groupGitCredentialHelpers, gitHelperParamWord } from './os-commands.js';
+import { escapeDoubleQuoted, escapeGrepPattern, sanitizeSessionId, GIT_LS_REMOTE_OK_MARKER, FLEET_ENV_MARKER, FLEET_TASK_PROMPT_FILE, unsetEnvSedExpr, gitCredentialHelperStem, groupGitCredentialHelpers, gitHelperParamWord } from './os-commands.js';
 import type { GitCredentialHelperRegistration } from './os-commands.js';
 import { escapeShellArg } from '../utils/shell-escape.js';
 import { assertAuthorizedKeyMatch } from './ssh-key-match.js';
@@ -142,15 +142,22 @@ export class LinuxCommands implements OsCommands {
     // or folder names that contain the process name as a substring (e.g. fleet-agy).
     // Note: use POSIX [[:space:]] instead of \s because BSD/macOS pgrep -f does not support \s.
     const bracketName = `(^|/|[[:space:]])[${pname[0]}]${pname.slice(1)}([[:space:]]|$)`;
-    const folderPattern = escapeGrepPattern(folder);
-    const fleetMatch = sessionId
-      ? `grep -E "(${folderPattern}|${escapeGrepPattern(sanitizeSessionId(sessionId))})"`
-      : `grep "${folderPattern}"`;
+    // A candidate counts as fleet-launched only when its argv carries the
+    // dispatch marker (the prompt file every execute_prompt instruction names)
+    // AND it belongs to this member: the session id, or the work folder as the
+    // dispatch wrapper quotes it (`cd "<folder>" && ...`). The closing quote
+    // anchors the folder, so /x/repo never matches /x/repo-wt; the marker
+    // keeps an operator's own CLI in the same folder (or a provider helper
+    // carrying the workspace path) out of fleet-busy.
+    const owners = [`\\"${escapeGrepPattern(folder)}\\"`];
+    if (sessionId) owners.push(escapeGrepPattern(sanitizeSessionId(sessionId)));
+    const marker = escapeGrepPattern(FLEET_TASK_PROMPT_FILE);
 
     return `AGENT_PIDS=$(pgrep -f "${bracketName}" 2>/dev/null); `
       + `if [ -z "$AGENT_PIDS" ]; then echo "idle"; `
-      + `else CMDLINES=$(ps -o args= -p $AGENT_PIDS 2>/dev/null); `
-      + `if echo "$CMDLINES" | ${fleetMatch} > /dev/null 2>&1; then echo "fleet-busy"; `
+      + `else FLEET_PID=$(ps -o pid=,args= -p "$(echo $AGENT_PIDS | tr ' ' ',')" 2>/dev/null `
+      + `| grep "${marker}" | grep -E "(${owners.join('|')})" | awk 'NR==1{print $1}'); `
+      + `if [ -n "$FLEET_PID" ]; then echo "fleet-busy $FLEET_PID"; `
       + `else echo "other-busy"; fi; fi`;
   }
 

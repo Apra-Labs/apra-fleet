@@ -446,7 +446,7 @@ export function codeIntelligenceCompactLine(health: CodeIntelligenceHealth): str
 // widening `computable`/`reason` onto the first branch) is what makes an
 // unconditional `bible.drift` read a compile error instead of `undefined`.
 export type KbHealthBible =
-  | { present: boolean; entries: number; drift: number }
+  | { present: boolean; entries: number; drift: number; not_exportable?: { count: number }; hash_drifted?: { count: number } }
   | { computable: false; reason: string };
 
 /** Per-scope KB numbers (the kb_stats shape). */
@@ -708,8 +708,15 @@ export async function kbHealthSummary(opts: KbHealthOptions = {}): Promise<KbHea
 // (nothing anomalous to report) or not computed for an expected reason.
 function bibleDriftFragment(bible: KbHealthBible): string {
   if (!('drift' in bible)) return SILENT_BIBLE_REASONS.has(bible.reason) ? '' : ` | bible: ${bible.reason}`;
-  if (bible.drift <= 0) return '';
-  return ` | bible: ${bible.drift} promotions behind (auto-commit may have failed -- run apra-fleet kb commit)`;
+  // drift counts only entries that pass the export basis predicate, so advising
+  // kb commit is always actionable. Non-exportable entries are mentioned
+  // without that advice (committing cannot publish them).
+  const notExportable = bible.not_exportable?.count ?? 0;
+  const notExportableNote = notExportable > 0
+    ? ` | bible: ${notExportable} CONFIRMED entries not exportable (basis missing or mismatched at HEAD; committing cannot publish them)`
+    : '';
+  if (bible.drift <= 0) return notExportableNote;
+  return ` | bible: ${bible.drift} promotions behind (auto-commit may have failed -- run apra-fleet kb commit)` + notExportableNote;
 }
 
 /** Render one compact KB health line for a single scope, labeled `kb[<scope>]` when a label is given. */

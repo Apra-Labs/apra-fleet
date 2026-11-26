@@ -57,7 +57,9 @@ export async function kbList(input: KbListInput, anchor?: KbAnchor): Promise<str
   // MEMBER mixed-tier request (CONFIRMED plus another tier): CONFIRMED from
   // the checkout bible view, plus every requested tier from the per-repo DB,
   // own captures only (kb-self.ts getMemberSplitRead). Merged by id (bible copy
-  // wins), re-sorted into list()'s id order, then limited. Under an http
+  // wins), bible half first then own captures not in it (each in list()'s id
+  // order, like kb_query), then limited -- so a limited mixed result begins with
+  // the limited CONFIRMED-only result. Under an http
   // project provider both halves are the KB server's list route (the own half
   // owner-tagged); the bible is not used.
   const split = await getMemberSplitRead(anchor, confidence, 'kb_list');
@@ -66,10 +68,7 @@ export async function kbList(input: KbListInput, anchor?: KbAnchor): Promise<str
       split.bible.project.list({ ...filters, confidence: split.bible.tiers }),
       split.own.project.list({ ...filters, confidence: split.own.tiers, owner_tag: split.own.ownerTag }),
     ]);
-    entries = mergeSplitById(fromBible, fromOwn, {
-      order: (a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
-      limit: input.limit,
-    });
+    entries = mergeSplitById(fromBible, fromOwn, { limit: input.limit });
   } else {
     // MEMBER session -> the checkout bible view (kb-self.ts getSelfReadKb).
     // A request naming only INFERRED/UNVERIFIED goes to the per-repo DB, own

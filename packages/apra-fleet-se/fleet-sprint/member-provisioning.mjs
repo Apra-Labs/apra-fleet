@@ -190,8 +190,25 @@ export function createDeployPermissionsProvisioner(opts = {}) {
             if (!res.ok || !res.output) {
                 cachedPrefixes = null;
             } else {
-                const section = res.output.split(/^## Permissions/m)[1]?.split(/^## /m)[0] ?? '';
+                const afterHeading = res.output.split(/^## Permissions/m)[1];
+                const section = afterHeading?.split(/^## /m)[0] ?? '';
                 const declared = [...section.matchAll(/^-\s*`([^`]+)`/gm)].map(m => m[1]);
+                if (afterHeading !== undefined) {
+                    // The first segment is the rest of the heading line itself.
+                    const invalidLines = section.split(/\r?\n/).slice(1)
+                        .map(l => l.trim())
+                        .filter(l => l !== '' && !/^-\s*`[^`]+`/.test(l));
+                    if (declared.length === 0 || invalidLines.length) {
+                        const shape = 'a "-" bullet whose first non-space character is a backtick-quoted permission, e.g. - `Bash(npm run build:*)`';
+                        const named = invalidLines.length
+                            ? ` Ignored line(s) that are not valid bullets: ${invalidLines.map(l => JSON.stringify(l)).join('; ')}.`
+                            : '';
+                        const lead = declared.length === 0
+                            ? "WARNING: deploy.md's '## Permissions' section yielded no permission grants, so nothing will be auto-provisioned."
+                            : "WARNING: deploy.md's '## Permissions' section has lines that are not valid permission bullets.";
+                        log(`[deploy-permissions] ${lead} Expected shape: ${shape}.${named}`);
+                    }
+                }
                 // Process-killing commands are never granted (compose_permissions
                 // refuses them and would refuse the whole batch): drop them
                 // here, loudly, so every other declared grant still lands.
