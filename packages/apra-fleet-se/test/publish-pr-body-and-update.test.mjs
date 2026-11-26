@@ -643,7 +643,9 @@ describe('Publish PR: a relaunch rewrites the existing PR for the new verdict', 
     test('a raised PR logs its URL and "<sprint-branch> -> <base-branch>"; the update line names both too', async () => {
         const gh = fakeGitHub();
         const first = await publish({ gh, verdict: 'PASS', notes: 'ok', runId: 'run-log-1', member: 'pub-log' });
-        assert.ok(first.logs.some((m) => m.includes('https://github.com/acme/widgets/pull/42') && m.includes('feat/x -> main')), JSON.stringify(first.logs));
+        // Matched as a whole token (ends at whitespace, a period or the line end), not a substring.
+        const PR_URL_TOKEN = /(^|\s)https:\/\/github\.com\/acme\/widgets\/pull\/42(\s|\.|$)/;
+        assert.ok(first.logs.some((m) => PR_URL_TOKEN.test(m) && m.includes('feat/x -> main')), JSON.stringify(first.logs));
         const second = await publish({ gh, verdict: 'PASS', notes: 'ok', runId: 'run-log-2', member: 'pub-log' });
         assert.ok(second.logs.some((m) => m.includes('already exists') && m.includes('feat/x') && m.includes("-> 'main'")), JSON.stringify(second.logs));
     });

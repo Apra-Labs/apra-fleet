@@ -920,7 +920,7 @@ export function normalizeRecommendationForVerdict(verdictResult) {
 // state (extension namespace `sprint-analysis`), whether the run was launched
 // from the CLI or a supervisor; a supervisor also serves it as the
 // GET /api/sprints/<id> `analysis` field.
-export const ANALYSIS_POINTER_LINE = '- **Analysis:** kept in the run record (`sprint-analysis` in the persisted run state; via a supervisor, `GET /api/sprints/<id>` `analysis`).';
+export const ANALYSIS_POINTER_LINE = '- **Analysis:** in the run state (`sprint-analysis`; supervisor: `GET /api/sprints/<id>`).';
 
 export function buildSprintPrBody({
     verdict, goal, branch, baseBranch, runId, now = new Date(),
