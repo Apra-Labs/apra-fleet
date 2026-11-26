@@ -384,17 +384,24 @@ export function proxyChildState(port, opts = {}) {
     const host = opts.host ?? '127.0.0.1';
     const timeoutMs = Number.isInteger(opts.timeoutMs) ? opts.timeoutMs : 2000;
     return new Promise((resolve, reject) => {
+        // Whole-request deadline, as in proxyChildSummary below.
+        const deadline = setTimeout(() => {
+            reject(new Error('child /state timed out'));
+            req.destroy();
+        }, timeoutMs);
+        deadline.unref?.();
         const req = http.request({ host, port, path: '/state', method: 'GET', timeout: timeoutMs }, (res) => {
             const chunks = [];
             res.on('data', (c) => chunks.push(c));
             res.on('end', () => {
+                clearTimeout(deadline);
                 const body = Buffer.concat(chunks).toString('utf-8');
                 try { resolve(body.length ? JSON.parse(body) : {}); }
                 catch (err) { reject(new Error(`child /state returned invalid JSON: ${err.message}`)); }
             });
         });
         req.on('timeout', () => { req.destroy(new Error('child /state timed out')); });
-        req.on('error', reject);
+        req.on('error', (err) => { clearTimeout(deadline); reject(err); });
         req.end();
     });
 }
@@ -1276,7 +1283,17 @@ export function createSprintController(deps = {}) {
                 // `state` stays in the default response (a documented,
                 // required field before the summary existed), resolved so it
                 // never carries a lean ref marker or the _strings table.
-                const [runSummary, rawState] = await Promise.all([proxySummary(port), proxyState(port)]);
+                let runSummary;
+                let rawState;
+                try {
+                    [runSummary, rawState] = await Promise.all([proxySummary(port), proxyState(port)]);
+                } catch (err) {
+                    // The child did not answer: a clear 504 (timed out) or
+                    // 502 (unreachable), never a bare 500.
+                    const msg = err && err.message ? err.message : String(err);
+                    if (/timed out|ETIMEDOUT/i.test(msg)) throw new ApiError(504, `sprint '${id}' child did not answer in time (${msg}); its process may be suspended or overloaded`);
+                    throw new ApiError(502, `sprint '${id}' child could not be reached (${msg})`);
+                }
                 // pendingDecisions (full, untruncated) and the run state while
                 // paused for a decision, lifted from the child's decisions summary.
                 const { pendingDecisions, decisionState } = decisionsFromChildState({ summary: runSummary });

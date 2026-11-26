@@ -348,7 +348,11 @@ These are two different operator actions, easy to confuse:
 
 A member's fleet-server `reservedBy` can outlive its sprint (a child that
 died before releasing, or an older version that wrote the branch name as
-the holder). The rule `launch()` applies (`isProvablyDeadHolder()` in
+the holder). A child this supervisor spawns reserves its members, and
+dispatches, under its `--run-id` (this supervisor's sprint id), so the
+holder id matches the ledger and history; a direct CLI launch uses the
+branch name (`sprintIdentity()` in `fleet-sprint/coordination.mjs`). The
+rule `launch()` applies (`isProvablyDeadHolder()` in
 `src/supervisor/api.mjs`):
 
 - A holder with a ledger entry here is a live sprint of this supervisor and
@@ -471,6 +475,10 @@ and round are parsed by the supervisor from the fleet-sprint phase title, so
 the workflow core never learns fleet-sprint vocabulary. `maxCycles` and the PR
 branches come from the ledger reservation, which records the launch's
 `maxCycles`, `branch` and `base`.
+
+A live sprint whose child does not answer gets `504` (timed out, e.g. a
+suspended process) or `502` (unreachable), naming the sprint, never a bare
+`500`. `GET /api/sprints` instead keeps the row with its run fields `null`.
 
 No lean `{ "$ref": n }` marker and no `_strings` table appear anywhere in the
 response. A live sprint's response carries the child's state tree as `state`,

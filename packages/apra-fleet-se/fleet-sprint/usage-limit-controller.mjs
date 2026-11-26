@@ -36,7 +36,7 @@
 // ensureCloudReady (src/tools/execute-prompt.ts) transparently restarts it
 // on the probe dispatch above, so this is logged but given no special
 // handling here.
-import { CancelledError } from '@apralabs/apra-fleet-workflow';
+import { CancelledError, isErrorLogged } from '@apralabs/apra-fleet-workflow';
 import { isUsageLimitDispatchError, usageLimitOf, UsageLimitWaitExhaustedError } from './errors.mjs';
 import { USAGE_LIMIT_BUDGET_DEFAULTS } from './role-policies.mjs';
 import { createModelReporter } from './model-log.mjs';
@@ -53,6 +53,12 @@ export const PROBE_ERROR_LOG_MAX_CHARS = 300;
 export const PROBE_ERROR_TRUNCATION_MARKER = '...[truncated]';
 
 function boundedProbeError(err) {
+    // The workflow already wrote this failure's text to the log at the
+    // dispatch site: name its kind only, so the payload appears once.
+    if (isErrorLogged(err)) {
+        const kind = err.details && err.details.reason ? err.details.reason : (err.name || 'error');
+        return `${kind}; its text is in the [Agent API Error] line above`;
+    }
     const text = String(err && err.message ? err.message : err);
     return text.length > PROBE_ERROR_LOG_MAX_CHARS
         ? text.slice(0, PROBE_ERROR_LOG_MAX_CHARS) + PROBE_ERROR_TRUNCATION_MARKER

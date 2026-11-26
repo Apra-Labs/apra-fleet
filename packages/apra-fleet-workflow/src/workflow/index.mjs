@@ -3,11 +3,11 @@ import { EventEmitter } from 'events';
 import { randomUUID } from 'crypto';
 import { AsyncLocalStorage } from 'async_hooks';
 import { calculateCost } from './pricing.mjs';
-import { WorkflowError, MemberNotFoundError, AgentOutputError, AgentDispatchError, CommandError, FleetTransportError, BudgetExceededError, CancelledError } from './errors.mjs';
+import { WorkflowError, MemberNotFoundError, AgentOutputError, AgentDispatchError, CommandError, FleetTransportError, BudgetExceededError, CancelledError, boundedLogText, markErrorLogged, isErrorLogged } from './errors.mjs';
 import { hashText, computeActivityKey } from './journal.mjs';
 import { fleetToolFailureOf, commandFailureOf } from '@apralabs/apra-fleet-client';
 
-export { WorkflowError, MemberNotFoundError, AgentOutputError, AgentDispatchError, CommandError, FleetTransportError, BudgetExceededError, CancelledError } from './errors.mjs';
+export { WorkflowError, MemberNotFoundError, AgentOutputError, AgentDispatchError, CommandError, FleetTransportError, BudgetExceededError, CancelledError, AGENT_ERROR_LOG_MAX_CHARS, AGENT_ERROR_LOG_TRUNCATION_MARKER, boundedLogText, markErrorLogged, isErrorLogged } from './errors.mjs';
 
 const ajv = new Ajv({ strict: false });
 
@@ -1419,7 +1419,7 @@ export class FleetWorkflow extends EventEmitter {
                 // applies on top of this.
                 if (structured && structured.isError) {
                     const text = result && result.content && result.content.length > 0 ? result.content[0].text : '';
-                    console.error(`[Agent API Error]`, text);
+                    console.error(`[Agent API Error]`, boundedLogText(text));
                     // apra-fleet-202.3: a dispatch that FAILED (isError) but still
                     // reported real input/output tokens really did consume that
                     // spend -- carry its usage/cost onto the activity record (as
@@ -1443,7 +1443,7 @@ export class FleetWorkflow extends EventEmitter {
                     // result forwards its permissionDenied block the same way, and
                     // dispatched:false (nothing was sent to the member) is kept so a
                     // caller can tell a setup-time failure from one where the agent ran.
-                    throw new AgentDispatchError(`[Workflow Error] Agent dispatch failed (${structured.reason || 'unknown'}): ${text}`, { details: { text, reason: structured.reason, member: opts.member_name || opts.member_id, ...(structured.usageLimit ? { usageLimit: structured.usageLimit } : {}), ...(structured.permissionDenied ? { permissionDenied: structured.permissionDenied } : {}), ...(structured.sessionId ? { sessionId: structured.sessionId } : {}), ...(reportedModel ? { model: reportedModel, modelSource: reportedModelSource } : {}), ...(structured.dispatched === false ? { dispatched: false } : {}) } });
+                    throw markErrorLogged(new AgentDispatchError(`[Workflow Error] Agent dispatch failed (${structured.reason || 'unknown'}): ${text}`, { details: { text, reason: structured.reason, member: opts.member_name || opts.member_id, ...(structured.usageLimit ? { usageLimit: structured.usageLimit } : {}), ...(structured.permissionDenied ? { permissionDenied: structured.permissionDenied } : {}), ...(structured.sessionId ? { sessionId: structured.sessionId } : {}), ...(reportedModel ? { model: reportedModel, modelSource: reportedModelSource } : {}), ...(structured.dispatched === false ? { dispatched: false } : {}) } }));
                 }
 
                 // A fleet TOOL/TRANSPORT failure that carries no
@@ -1463,9 +1463,9 @@ export class FleetWorkflow extends EventEmitter {
                     const memberLabel = opts.member_name || opts.member_id;
                     const text = toolFailure.text || 'no error text reported';
                     const transportMsg = `transport failure dispatching to member '${memberLabel}': ${text}`;
-                    console.error(`[Agent API Error]`, transportMsg);
+                    console.error(`[Agent API Error]`, boundedLogText(transportMsg));
                     this.emit('activity:end', { ...activityMeta, error: transportMsg, duration, usage: result.usage, cost, success: false });
-                    throw new AgentDispatchError(`[Workflow Error] Agent dispatch failed (transport_failure): ${transportMsg}`, { details: { text, reason: 'transport_failure', signal: toolFailure.source, member: memberLabel } });
+                    throw markErrorLogged(new AgentDispatchError(`[Workflow Error] Agent dispatch failed (transport_failure): ${transportMsg}`, { details: { text, reason: 'transport_failure', signal: toolFailure.source, member: memberLabel } }));
                 }
 
                 // apra-fleet-eft.78.3: surface the resumable session id
@@ -1523,9 +1523,9 @@ export class FleetWorkflow extends EventEmitter {
                     // member is not a schema problem, so it is never retried
                     // through the repair loop.
                     if (text.startsWith('Member "') && text.includes('" not found.')) {
-                        console.error(`[Agent API Error]`, text);
+                        console.error(`[Agent API Error]`, boundedLogText(text));
                         this.emit('activity:end', { ...activityMeta, error: text, duration, success: false });
-                        throw new MemberNotFoundError(`[Workflow Error] ${text}`, { details: { text, member: opts.member_name || opts.member_id } });
+                        throw markErrorLogged(new MemberNotFoundError(`[Workflow Error] ${text}`, { details: { text, member: opts.member_name || opts.member_id } }));
                     }
 
                     // Empty-response detection (observed live, apra-fleet-eft.14):
@@ -1561,9 +1561,9 @@ export class FleetWorkflow extends EventEmitter {
                             .replace(/^session: \S+\s*$/mu, '');
                     if (cleanText.trim() === '') {
                         const emptyMsg = `execute_prompt returned an empty response (display wrapper only, no LLM output) from member '${opts.member_name || opts.member_id}'.`;
-                        console.error(`[Agent API Error]`, emptyMsg);
+                        console.error(`[Agent API Error]`, boundedLogText(emptyMsg));
                         this.emit('activity:end', { ...activityMeta, error: emptyMsg, output: text, duration, usage: result.usage, cost, success: false });
-                        throw new AgentDispatchError(`[Workflow Error] Agent dispatch failed (empty_response): ${emptyMsg}`, { details: { text, reason: 'empty_response', member: opts.member_name || opts.member_id } });
+                        throw markErrorLogged(new AgentDispatchError(`[Workflow Error] Agent dispatch failed (empty_response): ${emptyMsg}`, { details: { text, reason: 'empty_response', member: opts.member_name || opts.member_id } }));
                     }
 
                     if (!opts.schema) {
@@ -1599,7 +1599,7 @@ export class FleetWorkflow extends EventEmitter {
                         // later repair (as most of these do) -- the failure
                         // was only ever visible by separately querying the
                         // dashboard's structured activity data.
-                        console.error(`[Agent API Error]`, repairMsg);
+                        console.error(`[Agent API Error]`, boundedLogText(repairMsg));
                         this.emit('activity:end', { ...activityMeta, error: repairMsg, output: text, duration, usage: result.usage, cost, success: false });
                         // apra-fleet-dnri: always re-derive from
                         // `initialPrompt`, never from `currentPrompt` --
@@ -1645,7 +1645,9 @@ export class FleetWorkflow extends EventEmitter {
                 this.emit('activity:end', { ...activityMeta, duration, success: false });
                 throw new AgentOutputError(`[Workflow Error] agent() received an empty content response from the fleet API.`, { details: { result } });
             } catch (error) {
-                console.error(`[Agent API Error]`, error.message || error);
+                // Written once: a failure already logged at its own site
+                // above is not printed again here.
+                if (!isErrorLogged(error)) console.error(`[Agent API Error]`, boundedLogText(error && error.message ? error.message : error));
                 if (error instanceof WorkflowError) {
                     // activity:end for typed errors was already emitted at
                     // the throw site above (with the richer, attempt-scoped

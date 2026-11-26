@@ -18,6 +18,7 @@ import {
 import { beadsExtension, kbCodeIntelExtension, decisionsExtension } from '../fleet-sprint/viewer-extensions.mjs';
 import { DECISION_PAUSE_SOURCE } from '../fleet-sprint/decision-wait.mjs';
 import { validateIssueId, validateBranchName, validateBranchPair, createMemberReservationClient, resyncReacquiredMember, commandResultToSoftGit } from '../fleet-sprint/runner.js';
+import { sprintIdentity } from '../fleet-sprint/coordination.mjs';
 import { normalizeRole } from '../fleet-sprint/contracts.mjs';
 import { prepareLaunchTopology, toAlignCommandResult } from '../fleet-sprint/member-align.mjs';
 import { ROLE_BACKLOG, resolveBacklogRoleAlias, selectBacklogMember, formatBacklogSelection } from '../fleet-sprint/backlog-role.mjs';
@@ -269,6 +270,17 @@ Options:
  * @param {string[]} argv - argv slice (no node/script entries), e.g. `process.argv.slice(2)`
  * @returns {{ values: object, positionals: string[] }}
  */
+/**
+ * The holder id this sprint reserves its members under on the fleet server
+ * (coordination.mjs sprintIdentity): the supervisor's sprint id when it
+ * forwarded --run-id, else the branch. The runner dispatches under the same id.
+ * @param {{ 'run-id'?: string, branch?: string }} values parsed CLI values
+ * @returns {string}
+ */
+export function memberReservationHolder(values = {}) {
+    return sprintIdentity({ runId: values['run-id'], branch: values.branch });
+}
+
 export function parseCliArgs(argv) {
     try {
         return parseArgs({ args: argv, options: buildOptionsSpec(), strict: true, allowPositionals: false });
@@ -624,11 +636,13 @@ export function attachViewerErrorHandler(server, port, opts = {}) {
 const DEFAULT_SUPERVISOR_PORT = 8787;
 
 /**
- * The force-release command printed in the launch refusal. Uses the
- * supervisor URL this run was given (--service-url) or the default port with
- * a note, `curl.exe` on Windows (PowerShell aliases `curl` to
- * Invoke-WebRequest), and no request body (the route takes an empty one), so
- * it pastes unchanged into cmd.exe, PowerShell and POSIX shells.
+ * The supervisor commands printed in the launch refusal for a holder sprint:
+ * stop it (a running supervisor sprint), or force-release its reservation
+ * (a wedged or gone sprint; for a supervisor sprint this also kills its
+ * child). Uses the supervisor URL this run was given (--service-url) or the
+ * default port with a note, `curl.exe` on Windows (PowerShell aliases `curl`
+ * to Invoke-WebRequest), and no request body (both routes take an empty one),
+ * so each pastes unchanged into cmd.exe, PowerShell and POSIX shells.
  * @param {string} owner
  * @param {{ serviceUrl?: string, platform?: string }} [opts]
  * @returns {string}
@@ -637,8 +651,11 @@ export function forceReleaseCommand(owner, { serviceUrl, platform = process.plat
     const curl = platform === 'win32' ? 'curl.exe' : 'curl';
     const configured = typeof serviceUrl === 'string' && serviceUrl.trim().length > 0;
     const base = configured ? serviceUrl.trim().replace(/\/+$/, '') : `http://localhost:${DEFAULT_SUPERVISOR_PORT}`;
-    const portNote = configured ? '' : `; use the supervisor's --port if it is not ${DEFAULT_SUPERVISOR_PORT}`;
-    return `${curl} -s -X POST ${base}/api/reservations/${encodeURIComponent(owner)}/force-release -H "Content-Type: application/json" (if that sprint is a supervisor sprint${portNote})`;
+    const portNote = configured ? '' : ` (use the supervisor's --port if it is not ${DEFAULT_SUPERVISOR_PORT})`;
+    const id = encodeURIComponent(owner);
+    const header = '-H "Content-Type: application/json"';
+    return `if that sprint is a supervisor sprint${portNote}, stop it with ${curl} -s -X POST ${base}/api/sprints/${id}/stop ${header}` +
+        `, or if it is wedged or gone, ${curl} -s -X POST ${base}/api/reservations/${id}/force-release ${header}`;
 }
 
 export async function reserveThenAlign({ sprintReservation, align, serviceUrl, platform } = {}) {
@@ -1059,7 +1076,9 @@ async function main() {
     const sprintReservation = createMemberReservationClient({
         callTool: (name, args) => mcpClient.callTool(name, args),
         members: validMembers,
-        sprintId: branchName,
+        // Same identity the runner dispatches under (sprintMutexId): the
+        // supervisor's sprint id when it forwarded --run-id, else the branch.
+        sprintId: memberReservationHolder(values),
         log: (msg) => console.log(msg),
     });
     // Ctrl-C between the reserve and the sprint's own SIGINT handler (below)
@@ -1124,10 +1143,9 @@ async function main() {
         // files instead of one relaunch silently overwriting the prior
         // incarnation's history. A direct/standalone CLI launch (no
         // supervisor, so no --run-id) falls back to branchName exactly as
-        // before this flag existed -- still the SAME opaque per-sprint
-        // identity used for member reservation (`sprintId: branchName`
-        // below) and the runner's own dolt-mutex/allocator stamping
-        // (sprintMutexId, fleet-sprint/runner.js).
+        // before this flag existed. The member reservation and the runner's
+        // dispatch/dolt-mutex/allocator identity (sprintMutexId) use the same
+        // rule (coordination.mjs sprintIdentity).
         runId: effectiveRunId,
         // BOUNDARY-COMPAT/user-facing convention (apra-fleet-eft.37.1): core's
         // crash-net snapshot defaults are domain-neutral (workflow-logs/run_)

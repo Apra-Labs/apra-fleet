@@ -157,12 +157,13 @@ describe('launch reservation hygiene (viewer throw, holder in refusal)', () => {
             serviceUrl: 'http://127.0.0.1:9911/',
             platform: 'win32',
         });
+        assert.match(res.message, /curl\.exe -s -X POST http:\/\/127\.0\.0\.1:9911\/api\/sprints\/sprint-xyz\/stop -H "Content-Type: application\/json"/);
         assert.match(res.message, /curl\.exe -s -X POST http:\/\/127\.0\.0\.1:9911\/api\/reservations\/sprint-xyz\/force-release -H "Content-Type: application\/json"/);
         assert.doesNotMatch(res.message, /localhost:8787/);
         assert.doesNotMatch(res.message, /-d '/);
 
         const posix = forceReleaseCommand('a/b', { platform: 'linux' });
-        assert.match(posix, /^curl -s -X POST http:\/\/localhost:8787\/api\/reservations\/a%2Fb\/force-release /);
+        assert.match(posix, /curl -s -X POST http:\/\/localhost:8787\/api\/reservations\/a%2Fb\/force-release /);
         assert.match(posix, /--port if it is not 8787/);
     });
 });

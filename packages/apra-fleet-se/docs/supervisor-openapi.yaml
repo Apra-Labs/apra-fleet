@@ -708,6 +708,16 @@ paths:
                         type: object
                         nullable: true
                         description: the run's result from the terminal state (status, verdict, notes, warnings)
+        "502":
+          description: the live sprint's child could not be reached
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "504":
+          description: the live sprint's child did not answer in time (e.g. a suspended process)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "404":
           description: no sprint with this id is live or in history
           content:

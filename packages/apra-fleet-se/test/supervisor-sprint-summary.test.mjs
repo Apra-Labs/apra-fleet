@@ -245,3 +245,69 @@ describe('GET /api/sprints with a hung child', () => {
         }
     });
 });
+
+describe('GET /api/sprints/:id when the child does not answer', () => {
+    async function trickleServer() {
+        const sockets = new Set();
+        const srv = http.createServer((req, res) => {
+            res.writeHead(200, { 'content-type': 'application/json' });
+            res.write(' ');
+            const t = setInterval(() => { res.write(' '); }, 200);
+            req.socket.on('close', () => clearInterval(t));
+        });
+        srv.on('connection', (sk) => { sockets.add(sk); sk.on('close', () => sockets.delete(sk)); });
+        await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+        return {
+            port: srv.address().port,
+            close: async () => { for (const sk of sockets) sk.destroy(); await new Promise((r) => srv.close(r)); },
+        };
+    }
+
+    async function byIdAgainst(childPort) {
+        const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'sprint-summary-byid-'));
+        dirs.push(dir);
+        const ledger = createLedger({ filePath: path.join(dir, LEDGER_FILENAME), now: () => STARTED_AT });
+        await ledger.start();
+        const history = createHistory({ filePath: path.join(dir, HISTORY_FILENAME), now: () => STARTED_AT });
+        await history.start();
+        await ledger.claim('hung-2', { members: ['alice'], issueRoots: ['R1'], childPid: 4243 });
+        // Default (real HTTP) child proxies.
+        const controller = createSprintController({
+            ledger, history,
+            spawner: { spawnSprint: async () => ({ pid: 4243, port: childPort }) },
+            listMembers: () => ({ members: [] }),
+            getBacklog: () => ({}),
+            hasTerminalState: () => null,
+            resolvePort: (pid) => (pid === 4243 ? childPort : undefined),
+            getBuildVersion: () => null,
+        });
+        const supervisor = createSupervisor({ port: 0, logger: { log() {}, error() {} } });
+        registerSprintRoutes(supervisor, controller);
+        const res = mockRes();
+        const t0 = Date.now();
+        await supervisor.handleRequest(mockReq('GET', '/api/sprints/hung-2'), res);
+        return { status: res.statusCode, json: JSON.parse(res.body), took: Date.now() - t0 };
+    }
+
+    test('a child that never finishes answering -> 504 naming the sprint, not a 500', async () => {
+        const hung = await trickleServer();
+        try {
+            const out = await byIdAgainst(hung.port);
+            assert.equal(out.status, 504, JSON.stringify(out.json));
+            assert.match(out.json.error, /sprint 'hung-2' child did not answer in time/);
+            assert.ok(out.took < scaledTimeout(4000), `took ${out.took}ms`);
+        } finally {
+            await hung.close();
+        }
+    });
+
+    test('a child port with nothing listening -> 502 naming the sprint', async () => {
+        const tmp = http.createServer();
+        await new Promise((r) => tmp.listen(0, '127.0.0.1', r));
+        const closedPort = tmp.address().port;
+        await new Promise((r) => tmp.close(r));
+        const out = await byIdAgainst(closedPort);
+        assert.equal(out.status, 502, JSON.stringify(out.json));
+        assert.match(out.json.error, /sprint 'hung-2' child could not be reached/);
+    });
+});

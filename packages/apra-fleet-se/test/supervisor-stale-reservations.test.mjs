@@ -8,6 +8,9 @@ import { createLedger, LEDGER_FILENAME } from '../src/supervisor/ledger.mjs';
 import { createHistory, HISTORY_FILENAME, HISTORY_EVENTS } from '../src/supervisor/history.mjs';
 import { createReconciler } from '../src/supervisor/reconcile.mjs';
 import { createSprintController, ApiError, isProvablyDeadHolder } from '../src/supervisor/api.mjs';
+import { buildSprintArgv } from '../src/supervisor/spawner.mjs';
+import { parseCliArgs, memberReservationHolder } from '../bin/cli.mjs';
+import { sprintIdentity } from '../fleet-sprint/coordination.mjs';
 
 // Stale fleet-server member reservations: the launch-time release rule
 // (isProvablyDeadHolder) and force-release of a holder id that only the fleet
@@ -267,5 +270,67 @@ describe('stale reservations -- a force-release proves the holder dead only when
         assert.deepEqual(isProvablyDeadHolder('nochild', ledger, history), { dead: false });
         assert.deepEqual(isProvablyDeadHolder('server', ledger, history), { dead: false });
         assert.deepEqual(isProvablyDeadHolder('exitedThenFailed', ledger, history), { dead: true, event: HISTORY_EVENTS.CHILD_EXITED });
+    });
+});
+
+describe('stale reservations -- the holder id a supervisor-spawned child really writes', () => {
+    // The child's fleet-server holder id, derived from the argv this
+    // supervisor's spawner builds, through the child's own argument parsing.
+    const childHolderId = (spawnOpts) =>
+        memberReservationHolder(parseCliArgs(buildSprintArgv({ ...spawnOpts, viewerPort: 9301 })).values);
+
+    test('sprintIdentity: run id wins, then branch, then a constant', () => {
+        assert.equal(sprintIdentity({ runId: 'R1-x', branch: 'feat/x' }), 'R1-x');
+        assert.equal(sprintIdentity({ runId: undefined, branch: 'feat/x' }), 'feat/x');
+        assert.equal(sprintIdentity({ runId: '', branch: 'feat/x' }), 'feat/x');
+        assert.equal(sprintIdentity({}), 'sprint');
+    });
+
+    test('the child reserves under the supervisor sprint id, not the branch; a direct CLI launch keeps the branch', () => {
+        assert.equal(childHolderId({ issue: 'R1', members: 'alice', branch: 'feat/r1', base: 'main', runId: 'sup-7' }), 'sup-7');
+        assert.equal(childHolderId({ issue: 'R1', members: 'alice', branch: 'feat/r1', base: 'main' }), 'feat/r1');
+    });
+
+    test('a kill -9 child (exit recorded, reservation auto-released) holding its members under its real holder id: the relaunch releases them (201)', async () => {
+        const dir = await tmpDir();
+        const fleet = fakeFleet([{ name: 'alice', reservedBy: null }, { name: 'bob', reservedBy: null }]);
+        const sys = await build(dir, fleet);
+        const first = await sys.controller.launch(launchBody(['alice', 'bob'], 'R1'));
+        // What the child wrote on the fleet server, from its real argv.
+        const holder = childHolderId(sys.spawned[0]);
+        assert.equal(holder, first.sprintId);
+        for (const m of fleet.members) m.reservedBy = holder;
+        // kill -9: the watchdog records the exit and releases the ledger entry;
+        // the dead child never released its fleet-server reservations.
+        await sys.history.record({ sprintId: first.sprintId, event: HISTORY_EVENTS.CHILD_EXITED, exitCode: 137 });
+        await sys.ledger.release(first.sprintId);
+        await sys.history.record({ sprintId: first.sprintId, event: HISTORY_EVENTS.AUTO_RELEASED });
+
+        const warn = captureConsole('warn');
+        let out;
+        try { out = await sys.controller.launch(launchBody(['alice', 'bob'], 'R2')); } finally { warn.restore(); }
+        assert.equal(sys.spawned.length, 2);
+        assert.deepEqual(out.staleReservationsReleased.map((r) => r.holder), [holder, holder]);
+        assert.deepEqual(fleet.members.map((m) => m.reservedBy), [null, null]);
+    });
+
+    test('a direct CLI sprint on the SAME branch as a dead supervisor sprint (holder = branch name) still gets a 409', async () => {
+        const dir = await tmpDir();
+        const fleet = fakeFleet([{ name: 'alice', reservedBy: null }]);
+        const sys = await build(dir, fleet);
+        const first = await sys.controller.launch(launchBody(['alice'], 'R1'));
+        await sys.history.record({ sprintId: first.sprintId, event: HISTORY_EVENTS.CHILD_EXITED, exitCode: 137 });
+        await sys.ledger.release(first.sprintId);
+        // A CLI sprint launched directly on the same branch holds alice.
+        const cliHolder = memberReservationHolder(parseCliArgs(['--issue', 'R1', '--members', 'alice', '--branch', 'feat/r1', '--base', 'main']).values);
+        assert.equal(cliHolder, 'feat/r1');
+        fleet.members[0].reservedBy = cliHolder;
+
+        await assert.rejects(
+            () => sys.controller.launch(launchBody(['alice'], 'R2')),
+            (err) => err instanceof ApiError && err.status === 409 && err.message.includes("'feat/r1'"),
+        );
+        assert.deepEqual(fleet.calls, []);
+        assert.equal(fleet.members[0].reservedBy, 'feat/r1');
     });
 });

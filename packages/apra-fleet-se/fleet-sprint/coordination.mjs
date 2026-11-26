@@ -14,14 +14,31 @@
 // would not resolve in the shipped layout.
 //
 // `sprintId`/`sprint_id` on every client here is the SAME opaque sprint-
-// identity token (derived in runner.js from the sprint's branch name, see
-// sprintMutexId) -- it is passed through verbatim by every client below,
+// identity token (sprintIdentity() below: the run id when the launcher gave
+// one, else the branch name) -- it is passed through verbatim by every client below,
 // never re-derived, reformatted, prefixed or namespaced, so a dispatch and
 // the reservation/mutex/allocator calls that gate it always agree on who
 // "this sprint" is.
 
 import { resultText } from './mcp-result.mjs';
 import { MemberReservationResumeError, SupervisorUnreachableError } from './errors.mjs';
+
+/**
+ * The one sprint identity used for member reservations, dispatch sprint_id,
+ * the dolt push mutex and the child-id allocator: the incarnation-unique run
+ * id when the launcher supplied one (a supervisor forwards its own sprint id
+ * as --run-id), else the branch name (a direct CLI launch, as before). Using
+ * the run id keeps a supervisor sprint's fleet-server reservation holder equal
+ * to its ledger/history id, so a dead child's holder can be proven dead, and
+ * keeps two sprints on the same branch from sharing one reservation.
+ * @param {{ runId?: string|null, branch?: string|null }} opts
+ * @returns {string}
+ */
+export function sprintIdentity({ runId, branch } = {}) {
+    if (typeof runId === 'string' && runId.length > 0) return runId;
+    if (typeof branch === 'string' && branch.length > 0) return branch;
+    return 'sprint';
+}
 
 // ---------------------------------------------------------------------------
 // Bounded wait for the supervisor service URL (acquire / allocate only).

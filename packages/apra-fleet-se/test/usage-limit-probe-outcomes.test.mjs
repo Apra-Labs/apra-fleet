@@ -1,7 +1,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { AgentDispatchError, CancelledError } from '@apralabs/apra-fleet-workflow';
+import { AgentDispatchError, CancelledError, markErrorLogged } from '@apralabs/apra-fleet-workflow';
 
 import {
     createUsageLimitPauseController,
@@ -89,5 +89,15 @@ describe('usage-limit re-probe outcomes', () => {
         const payloadChars = (hits[0].match(/PAYLOAD/g) || []).length * 'PAYLOAD'.length;
         assert.ok(payloadChars <= PROBE_ERROR_LOG_MAX_CHARS, `${payloadChars} payload chars in the line`);
         assert.ok(r.logs.join('\n').length < PROBE_ERROR_LOG_MAX_CHARS + 1000, 'whole log stays bounded');
+    });
+
+    test('a probe failure the workflow already logged is named by kind only: its payload is not repeated', async () => {
+        const payload = 'PAYLOAD'.repeat(200);
+        const r = await run(() => { throw markErrorLogged(dispatchError('nonzero_exit', payload)); });
+        assert.deepEqual(r.value, { resumed: true });
+        assert.equal(r.logs.filter((m) => m.includes('PAYLOAD')).length, 0, JSON.stringify(r.logs));
+        const line = inconclusive(r.logs);
+        assert.equal(line.length, 1);
+        assert.ok(line[0].includes('nonzero_exit'), line[0]);
     });
 });
