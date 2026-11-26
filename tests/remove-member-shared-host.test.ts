@@ -7,7 +7,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { makeTestAgent, makeTestLocalAgent, backupAndResetRegistry, restoreRegistry } from './test-helpers.js';
 import { addAgent } from '../src/services/registry.js';
 import { getOsCommands } from '../src/os/index.js';
-import { unsetEnvSedExpr, FLEET_ENV_MARKER } from '../src/os/os-commands.js';
+import { unsetEnvSedExpr, envSourceLineSedExpr, FLEET_ENV_MARKER } from '../src/os/os-commands.js';
 import { getProvider } from '../src/providers/index.js';
 import type { Agent, SSHExecResult } from '../src/types.js';
 import fs from 'node:fs';
@@ -164,8 +164,9 @@ describe('removeMember - host+user sharer leaves credentials in place', () => {
 
     const result = await removeMember({ member_id: member.id });
 
-    const markedOnly = `sed -i '${unsetEnvSedExpr('ANTHROPIC_API_KEY')}' ~/.bashrc 2>/dev/null || true`;
+    const markedOnly = `sed -i -e '${unsetEnvSedExpr('ANTHROPIC_API_KEY')}' -e '${envSourceLineSedExpr('ANTHROPIC_API_KEY')}' ~/.bashrc 2>/dev/null || true`;
     expect(sent()).toContain(markedOnly);
+    expect(sent()).toContain('rm -f "$HOME/.apra-fleet/env/ANTHROPIC_API_KEY"');
     expect(sent().some(c => c.includes(unsetEnvSedExpr('ANTHROPIC_API_KEY', { all: true })))).toBe(false);
     expect(result).toContain('unmarked export line');
     expect(result).toContain('ANTHROPIC_API_KEY');

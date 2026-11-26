@@ -130,7 +130,7 @@ If a user registers an agent with a `friendly_name` containing a single quote (e
 
 ---
 
-### M4. API Key Logged in Shell Profiles in Plaintext
+### M4. API Key Logged in Shell Profiles in Plaintext - RESOLVED
 
 **File:** `src/os/linux.ts:87-93`
 
@@ -154,6 +154,8 @@ When an API key is provisioned via the `api_key` parameter, it is written **in p
 **Impact:** API keys persist indefinitely in plaintext shell profiles on remote machines.
 
 **Recommendation:** Consider using a dedicated config file with restricted permissions, or environment variable injection at runtime rather than persisting to shell profiles.
+
+**Resolution:** POSIX members (Linux, macOS, Windows Git Bash) keep the key in `~/.apra-fleet/env/<NAME>`, created owner-only (0600, dir 0700). The shell profiles hold only a path-only line that sources it. Dispatches get the key per command from the encrypted registry and never read it. Migration: the next `provision_llm_auth` removes the old `export` lines and writes the new form. Cloud start and sprint self-heal run it automatically. A member that is never re-provisioned keeps its old lines until `provision_llm_auth {member_id}` runs; with no `api_key` it re-deploys the stored key. Windows PowerShell members are unchanged: the key is a User env var under HKCU, which only that user, SYSTEM and Administrators can read.
 
 ---
 
@@ -278,7 +280,7 @@ All are covered by dedicated tests in `tests/shell-escape.test.ts` including inj
 3. ~~**Sanitize `friendlyName`** before embedding in shell commands during SSH key deployment (M3)~~ - RESOLVED
 4. ~~**Migrate legacy static salt** passwords and remove hardcoded fallback (M2)~~ - RESOLVED
 5. ~~**Add output size limits** to prevent OOM from large command output (M5)~~ - RESOLVED
-6. **Consider alternative API key storage** instead of appending to shell profiles (M4)
+6. ~~**Consider alternative API key storage** instead of appending to shell profiles (M4)~~ - RESOLVED
 7. **Document the encryption threat model** so users understand the protection boundaries (M1)
 8. **Add `npm audit`** to CI pipeline for automated dependency vulnerability scanning
 
