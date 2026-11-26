@@ -46,7 +46,7 @@ resolved binary's `--version` equals it. Otherwise (behind latest, latest
 unreadable, or a non-resolved target) it is a typed failure naming the
 resolved path, the updated install and the latest version when known.
 
-## Pre-sprint check mixes cached and fresh bead reads (open defect)
+## Pre-sprint check mixes cached and fresh bead reads (fixed)
 
 The pre-sprint check in the sprint runner takes the ready list and the
 not-done list as fresh `bd list` reads, but derives the verify-routing set from
@@ -56,10 +56,11 @@ another process (for example a second sprint sharing the same epic) leaves the
 snapshot stale. Result: nothing is ready, the root is not routed to verify, and
 the check throws DEADLOCKED naming only the root.
 
-Required fix shape: when nothing is ready, invalidate the cached snapshot and
-classify the verify set again on a fresh read after the not-done read and
-before declaring a deadlock, so routing and readiness are judged from the same
-moment. A change confined to the beads-scope module cannot close the gap.
+Fix: before declaring a deadlock, the check invalidates the cached snapshot and
+classifies the verify set again on a fresh read taken after the not-done read,
+so routing and readiness agree (closes only add, so that snapshot sees every
+close the not-done read saw). Pinned by
+`packages/apra-fleet-se/test/mock-sprint-pre-sprint-concurrent-close.test.mjs`.
 Related: when a real server already holds the supervisor port, the client
 auto-start waits its full timeout though `start` exits non-zero at once; it
 should fail fast.

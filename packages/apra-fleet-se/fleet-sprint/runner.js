@@ -3094,7 +3094,7 @@ async function runSprintCycle(context) {
     // parent (or a target bead that is itself all-children-closed). Computed
     // once here and reused below so the "nothing to do" diagnostics never
     // misreport this as a deadlock.
-    const preSprintVerifyIds = initialBeads.length === 0
+    let preSprintVerifyIds = initialBeads.length === 0
         ? classifyVerifySet(await fetchAllBeadsShared(), targetIssues).verifyIds
         : [];
     if (preSprintVerifyIds.length > 0) {
@@ -3217,6 +3217,21 @@ async function runSprintCycle(context) {
             }
 
             if (initialBeads.length === 0) {
+                // apra-fleet-pel2: the verify routing above came from the
+                // run's cached snapshot, which another process's `bd close`
+                // never invalidates; the fresh notDoneBeads read can already
+                // see those closes (e.g. a concurrent sprint closing the last
+                // child of a shared parent). Re-classify on a snapshot taken
+                // after that read so routing and readiness agree before
+                // calling this a deadlock.
+                invalidateAllBeadsCache();
+                preSprintVerifyIds = classifyVerifySet(await fetchAllBeadsShared(), targetIssues).verifyIds;
+                if (preSprintVerifyIds.length > 0) {
+                    log(`Pre-sprint validation: no ready leaf beads, but ${preSprintVerifyIds.length} bead(s) are implementation-complete and routed to verify: ${preSprintVerifyIds.join(', ')}. Proceeding as a verify-only sprint.`);
+                }
+            }
+
+            if (initialBeads.length === 0 && preSprintVerifyIds.length === 0) {
                 const diagnostics = notDoneBeads.map((b) => {
                     const blockers = unmetBlockers(b);
                     return blockers.length > 0
