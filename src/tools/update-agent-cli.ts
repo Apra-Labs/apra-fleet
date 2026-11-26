@@ -8,6 +8,9 @@ import { memberIdentifier, resolveMember } from '../utils/resolve-member.js';
 import type { Agent, SSHExecResult } from '../types.js';
 import type { AgentStrategy } from '../services/strategy.js';
 import type { OsCommands } from '../os/os-commands.js';
+import {
+  buildProbeCommand, parseProbe, buildUpdatePlan, UP_TO_DATE_RE,
+} from '../services/llm-cli-resolver.js';
 
 /**
  * Budgets for the CLI install/update command. Both run under the FLEET_PID
@@ -96,9 +99,17 @@ async function updateSingleAgent(agent: Agent, installIfMissing: boolean): Promi
 
   try {
     // Get current version
-    const vBefore = await strategy.execCommand(cmds.agentVersion(provider), 15000);
-    const cliFound = vBefore.code === 0 && vBefore.stdout.trim().length > 0;
-    result.oldVersion = cliFound ? vBefore.stdout.trim() : 'not installed';
+    // Resolve the binary exactly as dispatch does (member's own shell + PATH
+    // prefix) and read its version in one probe, so the update can target and
+    // verify THAT installation.
+    const probeCmd = buildProbeCommand(cmds, provider, getAgentOS(agent), getAgentShell(agent)) ?? cmds.agentVersion(provider);
+    const vBefore = await strategy.execCommand(probeCmd, 15000);
+    const before = parseProbe(vBefore.stdout);
+    const cliFound = vBefore.code === 0 && before.version.length > 0;
+    result.oldVersion = cliFound ? before.version : 'not installed';
+    const resolvedPath = before.resolvedPath;
+    let updatedPath: string | undefined;
+    let updateOutput = '';
 
     if (!cliFound && !installIfMissing) {
       result.error = `${provider.name} CLI not found — use install_if_missing: true to install`;
@@ -117,23 +128,36 @@ async function updateSingleAgent(agent: Agent, installIfMissing: boolean): Promi
       }
       result.installed = true;
     } else {
-      const updateResult = await runCliStep(strategy, cmds, 'update', cmds.updateAgent(provider), UPDATE_INACTIVITY_TIMEOUT_MS, INSTALL_MAX_TOTAL_MS);
+      const plan = buildUpdatePlan(cmds, provider, resolvedPath);
+      updatedPath = plan.updatedPath;
+      const updateResult = await runCliStep(strategy, cmds, 'update', plan.command, UPDATE_INACTIVITY_TIMEOUT_MS, INSTALL_MAX_TOTAL_MS);
       if ('timeoutError' in updateResult) {
         result.error = updateResult.timeoutError;
         return result;
       }
+      updateOutput = `${updateResult.stdout}\n${updateResult.stderr}`;
       if (updateResult.code !== 0) {
         result.error = updateResult.stderr || 'Update command failed';
       }
     }
 
-    // Get new version
-    const vAfter = await strategy.execCommand(cmds.agentVersion(provider), 15000);
-    result.newVersion = vAfter.stdout.trim() || 'unknown';
+    // Get new version from the same resolved binary
+    const vAfter = await strategy.execCommand(probeCmd, 15000);
+    const after = parseProbe(vAfter.stdout);
+    result.newVersion = after.version || 'unknown';
     result.success = true;
 
     if (!result.installed && result.oldVersion === result.newVersion) {
-      result.error = 'Already up to date';
+      if (resolvedPath && !UP_TO_DATE_RE.test(updateOutput)) {
+        // Unchanged binary on PATH and the updater did not say it was current:
+        // the update changed some other installation, or nothing.
+        result.success = false;
+        result.error =
+          `Update did not change the CLI the member runs: ${resolvedPath} still reports ${result.newVersion}, ` +
+          `but the update targeted ${updatedPath}. The resolved binary and the updated installation differ or the update was a no-op.`;
+      } else {
+        result.error = 'Already up to date';
+      }
     }
   } catch (err: any) {
     result.error = err.message;
