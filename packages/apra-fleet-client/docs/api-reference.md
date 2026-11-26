@@ -356,7 +356,7 @@ Calls `execute_command` -- runs a shell command on a member. Same
 
 | Field | Type | Notes |
 |---|---|---|
-| `command` | `string` | The shell command to execute. Multi-line commands and heredocs are supported; on POSIX members (linux, macos, windows Git Bash) the whole command runs inside the member work folder (or `run_from`), and a syntax error in it is reported as `eval: line N: ...` on stderr. |
+| `command` | `string` | (A referenced `{{secret.NAME}}` with `network_policy: deny` blocks the call when `command` or `restart_command` uses a network tool (curl, wget, ssh, scp, sftp, rsync, nc, netcat, http, fetch, Invoke-WebRequest, Invoke-RestMethod) or a git network subcommand: `push`, `pull`, `fetch`, `clone`, `ls-remote`, `remote update`, also as `git.exe`, quoted, via `&`, or after global options such as `git -C dir push`; local git such as `status`/`log`/`commit`/`diff` is allowed. `confirm` (the default) asks for approval only when `command` itself uses one of the network tools; the git-subcommand and `restart_command` checks are deny-only.) The shell command to execute. Multi-line commands and heredocs are supported; on POSIX members (linux, macos, windows Git Bash) the whole command runs inside the member work folder (or `run_from`), and a syntax error in it is reported as `eval: line N: ...` on stderr. |
 | `long_running` | `boolean?` | Run as a background task. Supported on linux and windows (windows launches detached via `Invoke-CimMethod Win32_Process.Create`, session 0); darwin gets an advisory warning only. |
 | `max_retries` | `number?` | Max crash retries (long-running only). |
 | `member_id` | `string?` | UUID of the member. |
@@ -377,6 +377,16 @@ the unit tests -- calling with no arguments sends an empty object, not
 |---|---|---|
 | `format` | `"compact" \| "json"?` | Output format. |
 | `tags` | `string[]?` | Filter members by tags (AND semantics). |
+
+Each member's `llm_auth` (compact: `llm-auth=`) is `N/A` for local and relay
+members, `offline` when the member cannot be reached, or the credential label
+`member_detail` reports as `llm_cli.auth` (below): `none`, or the sources
+present joined with `+` in this fixed order -- `api-key` (an API-key env var),
+`oauth-token` (an OAuth/setup-token env var, e.g. Claude's
+`CLAUDE_CODE_OAUTH_TOKEN`), `oauth-login` (the provider's OAuth credentials
+file). Examples: `oauth-token`, `api-key+oauth-login`,
+`oauth-token+oauth-login`. A provider that does not classify its env vars
+(`authEnvVarKind`) reports each as `api-key`.
 
 #### `fleetSnapshot()`
 
@@ -432,6 +442,24 @@ session (`session.id`, the current session ID or `null`), work folder
 | `refresh` | `boolean?` | Re-probe the member's own apra-fleet MCP now and record the new `fleetMcp` status. Without it the recorded status is returned and nothing is probed. |
 
 `fleetMcp` (`{state, reason?, version?, checkedAt, detail?, unverified?, fleetInstalledAt?, installFailure?, beads?, port?, portSource?, replacedFullInstall?, manualInstall?, sameCoreFallback?}` or `null`) is the last recorded status of the member's own apra-fleet MCP server; `fleetInstalledAt` is the ISO 8601 time this fleet's own install last succeeded on the member (absent if it never did). `installFailure` (`{reason, detail?}`) is set when a requested upgrade failed before the member was touched and the older install stayed in use (also named in `detail`; `fleetMcpFix` then carries the upgrade fix even when `available`). `fleetMcpFix` (`string` or `null`) is a one-line operator fix, present when `fleetMcp` is `unavailable` or `unverified` and `null` when the member's KB/code tools are usable; the text output prints it as a `fleetMcp fix:` line. `beads` (`{state: "missing"|"broken"|"version-mismatch", detail, fix}`) is present only when the bd CLI is not usable on a remote member (neither on its PATH nor in `<home>/.apra-fleet/bin`), or runs but is off the pinned major.minor (`version-mismatch`, `E-BD-VERSION-MISMATCH`; re-probed on every refresh); it is independent of `state`, and the text output prints it as `bd=` and `bd fix:` lines. `port` is the remote member install's port from its member-install marker (`portSource` `"marker"`, or `"default"` when the install recorded none). `replacedFullInstall` (`{previousVersion, removed, backupPath}`) is set by the probe that replaced a full install with a member install (`fleet_install` `"replace-full"`): the replaced version, what was removed or moved, and the timestamped backup directory on the member. `manualInstall` (`string`) is set when a requested apra-fleet install/upgrade on the member did not happen (any install reason, e.g. `no-matching-release`): the OS-correct manual steps (anonymous release download URL, SHA-256 check against the release SHA256SUMS, member-mode install, then `update_member`). `sameCoreFallback` (`{tag, wantedBuild, why}`) is set when no release carries the exact orchestrator build and the member had no apra-fleet or an older core, so the signed stable release of the same core was installed instead (a NOTICE in the register/update result); never across cores.
+
+`llm_cli.auth` is the same credential label `list_members` reports as
+`llm_auth` (`none`, or `+`-joined `api-key` / `oauth-token` / `oauth-login`, in
+that order). `llm_cli.authNote` names the source the CLI uses when more than one
+is present (e.g. `api-key takes precedence over oauth-login`), `null` otherwise;
+the compact output prints it in parentheses after `auth=`.
+
+`session.status` is `busy`, `idle`, `idle (unrelated <cli> processes running)` or `unknown`
+(probe failed). `session.statusSource` names the signal that produced `busy` and is `null`
+otherwise: `"in-flight-dispatch"` (this server has an `execute_prompt` running for the member) or
+`"fleet-process"` (the member-side probe found a fleet-launched CLI process: its command line
+carries the dispatch prompt file `.fleet-task.md` plus the member's session id or its quoted work
+folder -- e.g. a dispatch started by another fleet server). `session.busyPid` is the pid behind
+that signal (the stored dispatch pid, or the matched process), `null` when none was captured.
+Processes of the same CLI name that fleet did not launch (an operator's own session in the work
+folder, a sibling folder sharing the path prefix, a provider helper carrying the workspace path)
+never make a member busy. The compact output prints it as `session=<id> (busy via <source>
+pid=<pid>)`. `list_members` reports no busy state; use `member_detail` or `fleet_status`.
 
 Returns a plain multi-line text summary for `"compact"`, or the structured
 `MemberDetailResult` object for `"json"` -- `server_version`, `name`, `icon`,
@@ -899,6 +927,13 @@ order. Options: `member_id?`, `member_name?`, `role?`
 `grant_reason?`, `dry_run?`. `dry_run: true` returns the composed allow list
 (role/tags + detected stacks, + the ledger when `project_folder` is given) as
 JSON text `{"dry_run":true,"mode","stacks","allow"}` and writes nothing.
+For a claude member, `grant` mode merges the grants into the existing
+`.claude/settings.local.json` allow list; when that file is missing/empty,
+not valid JSON, or has no `permissions.allow` list, the base role profile
+(`base-dev`/`base-reviewer`, plus detected stacks and ledger) is re-seeded
+first and the grants are merged onto it, and the response says so (a
+`Base profile re-seeded (... cause: missing|unparseable|no_allow_list)`
+line) instead of silently writing a grant-only allow list.
 Provide at least one of `role` or `tags`; `tags` containing
 `"doer"`/`"reviewer"` sets the primary mode and wins over `role`. Each
 `grant` entry is checked against the `NEVER_AUTO_GRANT` denylist, which is
@@ -1032,7 +1067,11 @@ node ids are not unique (an incremental analyze corrupted it) carries
 `index_integrity` (`{ corrupt: true, damaged_rows, rebuild }`, where `rebuild` is
 `{ started: true }` or `{ started: false, reason, detail? }`, plus `pause` when
 `reason` is `paused`) and `confidence: 'LOW'`,
-plus a warning text. A flagged "not found" does NOT prove the symbol is absent:
+plus a warning text. When the integrity check itself could not run (its query
+threw, or returned nothing readable), a not-found answer instead carries
+`index_integrity: { checked: false, reason: 'check_failed' | 'check_unreadable' }`,
+`confidence: 'LOW'` and an `NOT FOUND UNVERIFIED` warning, and no rebuild is
+started. A flagged "not found" does NOT prove the symbol is absent:
 use a text search, and retry once `codeStatus()` reports the index ready.
 Extract all of these with `parseToolJson()`.
 

@@ -515,9 +515,21 @@
  * @property {CodeIntelStatus|null} [codeIntel] - Whether code intelligence (code_* tools) can run for this member,
  *   with the cause and remedy when it cannot (e.g. npx/node missing from the apra-fleet service PATH). null for
  *   remote members: their code tools run on the member host, not on this server.
- * @property {Object} [llm_cli] - LLM CLI info: { version, auth }
+ * @property {Object} [llm_cli] - LLM CLI info: { version, auth, authNote }. auth names the
+ *   credential sources present: "none", or a "+"-joined list in this fixed order of "api-key" (an
+ *   API-key env var), "oauth-token" (an OAuth/setup-token env var, e.g. CLAUDE_CODE_OAUTH_TOKEN),
+ *   "oauth-login" (the provider's OAuth credentials file) -- e.g. "oauth-token",
+ *   "api-key+oauth-login". Same value as list_members llm_auth. authNote: with more than one source,
+ *   which one the CLI uses (e.g. "api-key takes precedence over oauth-login"); null otherwise.
  * @property {Object|string} [tokenUsage] - Cumulative token usage, or "compute only" for llmProvider "none"
- * @property {Object} [session] - Session info: { id, lastActivity, lastLlmActivityAt, status, idleSecs }
+ * @property {Object} [session] - Session info: { id, lastActivity, lastLlmActivityAt, status,
+ *   statusSource, busyPid, idleSecs }. status is "busy", "idle", "idle (unrelated <cli> processes
+ *   running)" or "unknown". statusSource names the signal that produced busy and is null otherwise:
+ *   "in-flight-dispatch" (this server has an execute_prompt running for the member; busyPid = its
+ *   stored dispatch pid) or "fleet-process" (the member-side probe found a fleet-launched CLI process
+ *   -- argv carries the dispatch prompt file plus this member's session id or quoted work folder;
+ *   busyPid = the matched pid). busyPid is null when no pid was captured. Processes of the same CLI
+ *   name that fleet did not launch never make a member busy.
  * @property {Object} [resources] - System resource snapshot: { cpu, memory, disk, gpu }
  * @property {string} [branch] - Current git branch in `folder`, when it is a git repo
  * @property {Object} [cloud] - Cloud instance details, for cloud-backed members only
@@ -1398,7 +1410,9 @@ export class ApraFleet {
     }
 
     /**
-     * List all fleet members and their current status.
+     * List all fleet members and their current status. Each member's llm_auth is "N/A" (local and
+     * relay members), "offline", or the credential label member_detail reports as llm_cli.auth
+     * ("none", or "+"-joined "api-key" / "oauth-token" / "oauth-login").
      * @param {ListMembersOptions} [options]
      */
     async listMembers(options = {}) {

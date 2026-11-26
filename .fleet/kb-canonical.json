@@ -1,7 +1,9 @@
 {
   "version": 3,
   "provenance": {
-    "branch": "main"
+    "commit": "dadecbe482b5ec2398e5e8683c37a0c6cc897324",
+    "branch": "main",
+    "entry_count": 229
   },
   "entries": [
     {
@@ -1978,6 +1980,34 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:16.498Z"
+    },
+    {
+      "id": "686dfe22-5326-404b-a658-22ed83e96fa6",
+      "type": "knowledge",
+      "title": "LLM auth label is shared by list_members and member_detail via llm-auth-label.ts",
+      "summary": "probeLlmAuthStatus checks every provider auth env var plus the OAuth credentials file and labels them 'none' or '+'-joined api-key/oauth-token/oauth-login. Each env var's kind comes from ProviderAdapter.authEnvVarKind (default api-key); member_detail adds llm_cli.authNote for precedence.",
+      "symbols": [
+        "probeLlmAuthStatus",
+        "providerAuthEnvVars",
+        "llmAuthStatusFromSources",
+        "authEnvVarKind"
+      ],
+      "source_files": [
+        "src/services/llm-auth-label.ts",
+        "src/providers/provider.ts",
+        "src/providers/claude.ts",
+        "src/tools/list-members.ts",
+        "src/tools/member-detail.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-25T22:06:19.637Z",
+      "source_file_hashes": {
+        "src/providers/claude.ts": "417e719fddbfed263a66df866a0f4615f4d490f1",
+        "src/providers/provider.ts": "dd7656404f9e0dc1e0d95929107a82a3dec0b9fa",
+        "src/services/llm-auth-label.ts": "e316b8cd8a46d5b1d1b04f8262aac61d1e59f63f",
+        "src/tools/list-members.ts": "20baa7f0ca045b74633625124bee250588f1d622",
+        "src/tools/member-detail.ts": "06705529e2382c19e42012d8479ca9d9c11457f0"
+      }
     },
     {
       "id": "6a23848a-42af-47cf-aacb-678b0936dd74",
@@ -4315,6 +4345,36 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:11.365Z"
+    },
+    {
+      "id": "e17a51a4-db1f-4c33-86eb-a0b94c7e5caf",
+      "type": "knowledge",
+      "title": "fleetProcessCheck counts a process as fleet-busy only with the dispatch marker plus session id or quoted folder",
+      "summary": "The member busy probe matches same-name CLI processes whose command line has FLEET_TASK_PROMPT_FILE (.fleet-task.md) AND the session id or the work folder in quotes. A dispatched CLI's own command line has no folder (cwd is set by cd); only its wrapper shell does. Output is idle | other-busy | fleet-busy <pid>; read it with parseFleetProcessCheck.",
+      "symbols": [
+        "fleetProcessCheck",
+        "fleetProcessCheckPs",
+        "FLEET_TASK_PROMPT_FILE",
+        "parseFleetProcessCheck"
+      ],
+      "source_files": [
+        "src/os/linux.ts",
+        "src/os/windows.ts",
+        "src/os/windows-gitbash.ts",
+        "src/os/os-commands.ts",
+        "src/services/session-status.ts",
+        "src/tools/member-detail.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-25T22:06:23.175Z",
+      "source_file_hashes": {
+        "src/os/linux.ts": "2b4ca3d832d20e44c6a8396ff5808c940a9d069f",
+        "src/os/os-commands.ts": "2d9c7a63807f22ff8873d95152151046aed7979e",
+        "src/os/windows-gitbash.ts": "17cabf7b3a6752ee12ee99c36af3f2c2ee4ffc14",
+        "src/os/windows.ts": "d5647a86c4632c326188c7a2b28efb9263eed6f2",
+        "src/services/session-status.ts": "246616c246cb70bf2ff9d52ad507c0b31b874d6a",
+        "src/tools/member-detail.ts": "06705529e2382c19e42012d8479ca9d9c11457f0"
+      }
     },
     {
       "id": "e19d301e-f47d-498b-af86-5125b119256f",

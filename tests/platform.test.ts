@@ -291,7 +291,13 @@ describe('OsCommands via getOsCommands', () => {
   });
 
   describe('fleet process check', () => {
-    for (const [name, cmds] of all) {
+    // Windows emits one powershell -EncodedCommand blob; assert on its script.
+    const decoded = (cmd: string): string => {
+      const m = /^powershell -EncodedCommand ([A-Za-z0-9+/=]+)$/.exec(cmd);
+      return m ? Buffer.from(m[1], 'base64').toString('utf16le') : cmd;
+    };
+    for (const [name, rawCmds] of all) {
+      const cmds = { fleetProcessCheck: (...a: Parameters<typeof rawCmds.fleetProcessCheck>) => decoded(rawCmds.fleetProcessCheck(...a)) };
       it(`${name}: contains fleet-busy, other-busy, idle`, () => {
         const cmd = cmds.fleetProcessCheck('/home/user/project');
         expect(cmd).toContain('fleet-busy');
@@ -664,9 +670,12 @@ describe('injection prevention', () => {
     expect(cmd).toContain('\\$');
     expect(cmd).toContain('\\(');
 
-    const winCmd = windows.fleetProcessCheck('C:\\Users\\dev"&whoami&"project');
-    expect(winCmd).toContain('""');
-    expect(winCmd).toContain('^&');
+    // Windows: the probe is one -EncodedCommand blob (no exec-shell parsing of
+    // the folder); inside it the folder sits in a PowerShell single-quoted literal.
+    const winCmd = windows.fleetProcessCheck("C:\\Users\\dev\"&whoami&'project");
+    expect(winCmd).toMatch(/^powershell -EncodedCommand [A-Za-z0-9+/=]+$/);
+    const script = Buffer.from(winCmd.split(' ')[2], 'base64').toString('utf16le');
+    expect(script).toContain(`Contains('"C:\\Users\\dev"&whoami&''project"')`);
   });
 
   it('escapes injection in persisted env values and staged file paths', () => {
