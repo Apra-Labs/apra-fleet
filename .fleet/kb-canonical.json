@@ -77,6 +77,28 @@
       }
     },
     {
+      "id": "0908c35d-f0cb-4032-87c6-9dfd30bbc306",
+      "type": "learning",
+      "title": "Node's npx.cmd is not npm cmd-shim shaped; resolveWindowsCommand runs it under absolute cmd.exe",
+      "summary": "The npx.cmd shipped with Node.js runs npm-prefix.js to find an upgraded npm's npx-cli.js, so it has no single wrapped-script line. Global npm bins (cmd-shim) do; only those are run as node plus script.",
+      "symbols": [
+        "npmShimScript",
+        "resolveWindowsCommand",
+        "spawnAnalyze",
+        "npxArgsForShell"
+      ],
+      "source_files": [
+        "src/os/windows-command.ts",
+        "src/tools/code-intelligence-reindex.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-26T05:46:16.854Z",
+      "source_file_hashes": {
+        "src/os/windows-command.ts": "1a1f98839965437764bdef5aab7612390b35a8d1",
+        "src/tools/code-intelligence-reindex.ts": "0ead0c5657808ddd0679e42e4128df529b320898"
+      }
+    },
+    {
       "id": "099b211c-923b-44d6-8767-8c8c741dbc20",
       "type": "knowledge",
       "title": "Description cap keeps only the trailing hidden blocks and cuts text before them",
@@ -2354,6 +2376,26 @@
         "src/services/knowledge/kb-http-auth-state.ts": "caa54601c749b6cb0dba9bf0744cc67a414bc2a3",
         "src/tools/check-status.ts": "628e81e903e65081d280760877203d0f112dfb63",
         "tests/fleet-status-kb-credential.test.ts": "ec21f04276fc4abfa383fa32c7e9f30c848042d5"
+      }
+    },
+    {
+      "id": "830a1104-a10e-421a-8daf-9de90a3f8240",
+      "type": "learning",
+      "title": "cmd.exe honours NoDefaultCurrentDirectoryInExePath from its own env",
+      "summary": "Setting NoDefaultCurrentDirectoryInExePath=1 in a spawned cmd.exe's env stops cmd.exe searching its cwd for bare command names. A planted x.cmd in the cwd ran with the variable unset and was 'not recognized' with it set (verified on Windows 10).",
+      "symbols": [
+        "resolveWindowsCommand",
+        "NO_CWD_EXE_SEARCH_ENV"
+      ],
+      "source_files": [
+        "src/os/windows-command.ts",
+        "tests/ga85-shims-no-cwd-lookup.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-26T05:46:16.738Z",
+      "source_file_hashes": {
+        "src/os/windows-command.ts": "1a1f98839965437764bdef5aab7612390b35a8d1",
+        "tests/ga85-shims-no-cwd-lookup.test.ts": "431eee923a8a99e32dd342dfa74aae3970eaf714"
       }
     },
     {
