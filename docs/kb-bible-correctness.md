@@ -68,7 +68,17 @@ dropped from the branch bible (a withdrawal, committed in the same call) with a
 WARN that names the id and its changed files. An id the base bible does not
 carry (this branch alone added it) is then removed with no tombstone (a
 follow-up restore), so a later sprint can capture it again; an id the base
-carries keeps its withdrawal. The KB entry itself is neither deleted nor demoted. A drifted hash is never kept, and an entry is re-stamped
+carries keeps its withdrawal. The KB entry itself is neither deleted nor demoted.
+The restore counts as done only when `kb_bible_commit` lists the id in its
+restored answer; otherwise the engine logs it as not performed and keeps the
+withdrawal and its tombstone (this fails closed, and the tombstone then blocks a
+re-capture of that id after the merge). If the base bible cannot be read (no
+merge-base commit, a non-Set answer, or an error), every withdrawal is kept and
+the log names the maintainer, the repo, the reason and the kept ids. A
+withdrawal is reported as withdrawn only when it is neither still queued nor
+refused by the tool; otherwise the end-of-run report says it is not in a pushed
+bible commit.
+A drifted hash is never kept, and an entry is re-stamped
 only on a re-verification. If the recheck cannot reach `kb_bible_commit` (no
 maintainer, a busy maintainer, a failed pull or push), a WARN names the
 unchecked ids and says they need re-checking before the branch merges (the
