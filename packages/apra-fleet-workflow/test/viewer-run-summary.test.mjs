@@ -18,7 +18,7 @@ import { backfillExtensionSummaries } from '../src/viewer/run-summary.mjs';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const DEBOUNCE_MS = 200;
-const PINNED_KEYS = ['summaryVersion', 'runId', 'status', 'phase', 'pause', 'terminalReason', 'updatedAt', 'endedAt', 'stats', 'extensions'].sort();
+const PINNED_KEYS = ['summaryVersion', 'runId', 'status', 'startedAt', 'elapsedMs', 'durationMs', 'phase', 'pause', 'terminalReason', 'updatedAt', 'endedAt', 'stats', 'extensions'].sort();
 
 let tmpDir;
 let origCwd;
@@ -433,5 +433,48 @@ describe('viewer run summary (GET /state?summary=1)', () => {
         for (const word of ['beads', 'sprint', 'computeSprintProgress', 'closed', 'required', 'goalMax']) {
             assert.ok(!new RegExp(`\\b${word}\\b`, 'i').test(src), `run-summary.mjs must not mention '${word}'`);
         }
+    });
+});
+
+describe('viewer run summary timing (startedAt / elapsedMs / durationMs)', () => {
+    test('running: ISO startedAt, elapsedMs > 0 and growing between reads; at end elapsedMs equals durationMs', async () => {
+        await withViewer([], async (wf, port) => {
+            const a = await httpGetJson(port, '/state?summary=1');
+            assert.strictEqual(typeof a.body.startedAt, 'string');
+            assert.ok(!Number.isNaN(Date.parse(a.body.startedAt)));
+            assert.match(a.body.startedAt, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+            await new Promise((r) => setTimeout(r, 30));
+            const b = await httpGetJson(port, '/state?summary=1');
+            await new Promise((r) => setTimeout(r, 30));
+            const c = await httpGetJson(port, '/state?summary=1');
+            assert.ok(b.body.elapsedMs > 0, 'elapsedMs > 0 while running');
+            assert.ok(c.body.elapsedMs > b.body.elapsedMs, 'elapsedMs grows between reads');
+            assert.strictEqual(b.body.durationMs, b.body.elapsedMs);
+            wf.emit('end', { status: 'completed', result: {} });
+            await new Promise((r) => setTimeout(r, 30));
+            const d = await httpGetJson(port, '/state?summary=1');
+            const e = await httpGetJson(port, '/state?summary=1');
+            assert.strictEqual(d.body.status, 'completed');
+            assert.ok(d.body.durationMs > 0);
+            assert.strictEqual(d.body.elapsedMs, d.body.durationMs);
+            assert.strictEqual(e.body.elapsedMs, d.body.elapsedMs, 'frozen once ended');
+            assert.strictEqual(e.body.startedAt, a.body.startedAt);
+        });
+    });
+
+    test('summary payload is never lean-encoded: no ref marker, no _strings, even though startedAt repeats in state', async () => {
+        await withViewer([], async (wf, port) => {
+            wf.emit('state', { namespace: 'x', data: { items: [1] } });
+            const s = await httpGetJson(port, '/state?summary=1');
+            const raw = JSON.stringify(s.body);
+            assert.ok(!raw.includes('_strings'));
+            assert.ok(!raw.includes('$ref'));
+            assert.strictEqual(typeof s.body.startedAt, 'string');
+            assert.ok(!Number.isNaN(Date.parse(s.body.startedAt)));
+            // startedAt also appears in the raw state (state.startedAt and the
+            // first phase's phaseStartedAt) -- the dedupe case that leaks.
+            const full = await httpGetJson(port, '/state');
+            assert.ok(JSON.stringify(full.body).includes('_strings'));
+        });
     });
 });

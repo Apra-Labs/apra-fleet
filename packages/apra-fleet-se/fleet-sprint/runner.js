@@ -215,7 +215,7 @@ import { runPublishPrPhase } from './phases/publish-pr.mjs';
 import {
     createHttpDoltPushMutexClient, createHttpChildIdAllocatorClient,
     createMcpDoltPushMutexClient, createMcpChildIdAllocatorClient,
-    createMemberReservationClient,
+    createMemberReservationClient, sprintIdentity,
 } from './coordination.mjs';
 // The KB work concern: the per-dispatch kb_query read, kb_captures/kb_promotions vetting and forwarding, and the
 // canonical-bible publish. Moved verbatim out of runner.js
@@ -1216,9 +1216,14 @@ async function runSprintCycle(context) {
     });
     const phase = beadsScope.wrapPhase(rawPhase);
 
-    // A stable per-sprint id for mutex fairness/introspection: the sprint branch
-    // is unique per concurrent sprint on the shared remote.
-    const sprintMutexId = (args && args.branch) ? String(args.branch) : 'sprint';
+    // The sprint identity (coordination.mjs sprintIdentity): the run id when
+    // the launcher gave one, else the branch. It must equal the holder id the
+    // launcher reserved members under (bin/cli.mjs), or every dispatch is
+    // refused as coming from another sprint.
+    const sprintMutexId = sprintIdentity({
+        runId: (args && typeof args.run_id === 'string') ? args.run_id : null,
+        branch: (args && args.branch) ? String(args.branch) : null,
+    });
 
     // Every agent() dispatch carries sprint_id -- the same opaque sprint-identity
     // token members are reserved under (bin/cli.mjs) -- so the server can
@@ -5080,7 +5085,7 @@ async function runSprintCycle(context) {
         setAside: collectSetAsideEntries(sprintState),
         waited: collectWaitEntries(sprintState),
         kbWork,
-        command, memberSeCommands,
+        command, memberSeCommands, publishState,
         computeBranchSlug, buildAnalysisText, buildCostAnalysis,
     });
 

@@ -423,6 +423,9 @@ One sprint (live state, or its terminal record if it finished/crashed):
 ```bash
 curl -s http://localhost:8787/api/sprints/<sprintId>
 ```
+The top level carries `status`, `phase`, `cycle`, `maxCycles`, `round`,
+`startedAt`, `elapsedMs`, `cost`, `tokens`, `pause`, `prSourceBranch` and
+`prTargetBranch`; the full run state tree is under `state`.
 
 Sprint-scoped dashboard (per-role activity, bead DAG, cost, PR link):
 `http://localhost:<port>` (the `port` from the launch response).

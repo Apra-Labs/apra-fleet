@@ -144,3 +144,31 @@ export class CancelledError extends WorkflowError {
         super(message, { code: 'CANCELLED', ...opts });
     }
 }
+
+// Console logging of agent() failures. Each failure's text is written to the
+// console once, at the site that first sees it, and cut to
+// AGENT_ERROR_LOG_MAX_CHARS (the full text stays on the error's message and
+// details, and in the activity record). The error is then marked, so a caller
+// further up can tell its text is already in the log and print only its kind.
+export const AGENT_ERROR_LOG_MAX_CHARS = 300;
+export const AGENT_ERROR_LOG_TRUNCATION_MARKER = '...[truncated]';
+const LOGGED = Symbol.for('apra-fleet-workflow.errorLogged');
+
+/** `text` cut to AGENT_ERROR_LOG_MAX_CHARS, with the marker when cut. */
+export function boundedLogText(text, max = AGENT_ERROR_LOG_MAX_CHARS) {
+    const s = String(text ?? '');
+    return s.length > max ? s.slice(0, max) + AGENT_ERROR_LOG_TRUNCATION_MARKER : s;
+}
+
+/** Marks `err` as already written to the log; returns it. */
+export function markErrorLogged(err) {
+    if (err && typeof err === 'object') {
+        try { Object.defineProperty(err, LOGGED, { value: true, enumerable: false, configurable: true }); } catch { /* frozen: leave unmarked */ }
+    }
+    return err;
+}
+
+/** True when `err`'s text was already written to the log (markErrorLogged). */
+export function isErrorLogged(err) {
+    return !!(err && typeof err === 'object' && err[LOGGED] === true);
+}

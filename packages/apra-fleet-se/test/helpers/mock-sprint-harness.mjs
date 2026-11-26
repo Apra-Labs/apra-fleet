@@ -2284,6 +2284,8 @@ export async function runDevelopLoopScenario(tag, {
     // separate scenario runs against the exact SAME branch to simulate a
     // re-run of finalization.
     gitGhFailurePattern, gitGhFailureMessage, prExistsState, branchOverride,
+    // Optional args.run_id (a supervisor forwards its sprint id as --run-id).
+    runIdOverride,
     // Existing-PR update path record store -- see buildMockFleetApi's
     // `prRecordState` option comment.
     prRecordState,
@@ -2479,6 +2481,7 @@ export async function runDevelopLoopScenario(tag, {
                 base_branch: 'main',
                 goal,
                 max_cycles: maxCycles,
+                ...(runIdOverride !== undefined ? { run_id: runIdOverride } : {}),
                 ...(dispatchTimeoutS !== undefined ? { dispatch_timeout_s: dispatchTimeoutS } : {}),
                 // apra-fleet-3swo.7.18: same executeCommand-threading as
                 // runOnce() above, for the default (no per-scenario callTool
