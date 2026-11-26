@@ -151,3 +151,41 @@ shared helper rather than reintroducing a private copy -- multiple
 independently-maintained copies of the same predicate is exactly the kind
 of thing that silently diverges over time even when each copy starts out
 correct.
+
+## Windows spawns never search the current folder
+
+Windows resolves a bare command name (`claude`, `npx`, `tasklist`) against the
+current directory before PATH, so a planted `claude.cmd` or `agy.exe` in a work
+folder would run with the server's privileges. The rule for `src/`:
+
+- `src/os/windows-command.ts` resolves a command by searching only absolute
+  PATH entries (PATHEXT order), never the current folder. An npm `.cmd` shim is
+  run as `node` on its target script instead of through `cmd.exe`.
+- System tools (`taskkill`, `tasklist`, `schtasks`, `whoami`) resolve to
+  System32 by absolute path; a relative `ComSpec` is ignored.
+- Spawns use argv, not a command string, and never `shell: true`.
+- The server launched by `apra-fleet start`, and its Run-key autostart fallback,
+  run with the data directory as cwd, never the folder the CLI was run in. A
+  FULL session whose client offers no MCP roots therefore fails with
+  `E-SELF-NOT-A-REPO` naming the data dir instead of falling back to that folder.
+- A guard test (`windows-bare-spawn-guard`) fails on bare-name spawns and
+  `shell:true` in `src/`. Known allowlisted gaps: the installer's own spawns in
+  `src/cli/install.ts`, and a bare `reg` spawn in the Windows service manager.
+- `execBdSync` (scripts/lib/exec-bd.mjs) resolves `bd` in PATH then PATHEXT
+  order, as the member shell would, and logs its choice once; the async variant
+  is not yet covered.
+
+## Failure reporting contracts added alongside
+
+- `send_files` / `receive_files` failures return `isError` with
+  `structuredContent {error: 'transfer-failed', reason, detail}`; callers that
+  check `isError` now stop instead of continuing after a silent failed transfer.
+- `register_member` refuses a remote member with key auth and no `key_path`
+  before any SSH attempt.
+- The client auto-start reports a probe that could not run as
+  `AUTOSTART_PROBE_FAILED` with its cause, and only a launched start consumes
+  the start budget.
+- The fresh-install verdict takes the expected version from `--expect-version`,
+  the version recorded by report-only, or `version.json` -- never from the
+  candidate; an unknown version is INCONCLUSIVE and checks compare the version
+  core only.
