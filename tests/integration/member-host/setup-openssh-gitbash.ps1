@@ -41,8 +41,30 @@ New-Item -Path 'HKLM:\SOFTWARE\OpenSSH' -Force | Out-Null
 New-ItemProperty -Path 'HKLM:\SOFTWARE\OpenSSH' -Name DefaultShell -Value $bash -PropertyType String -Force | Out-Null
 
 # 3. Throwaway member user (random password, never printed)
-Add-Type -AssemblyName System.Web
-$pw = [System.Web.Security.Membership]::GeneratePassword(24, 4)
+# System.Web does not exist under pwsh 7 (.NET Core), so build it from
+# RandomNumberGenerator, which works in Windows PowerShell 5.1 and pwsh 7.
+# 24 chars: at least one upper, lower and digit, and 4 symbols (local
+# password complexity); symbols exclude quotes, backtick, $ and backslash.
+$rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+function Get-RandomIndex([int]$n) {
+  # Rejection sampling: no modulo bias.
+  $b = New-Object byte[] 1
+  $limit = 256 - (256 % $n)
+  do { $rng.GetBytes($b) } while ($b[0] -ge $limit)
+  [int]($b[0] % $n)
+}
+$upper = 'ABCDEFGHJKLMNPQRSTUVWXYZ'; $lower = 'abcdefghijkmnopqrstuvwxyz'
+$digit = '23456789'; $symbol = '!#%*+-=?@_'
+$classes = @($upper, $lower, $digit, $symbol, $symbol, $symbol, $symbol)
+$all = $upper + $lower + $digit
+$chars = New-Object System.Collections.Generic.List[char]
+foreach ($c in $classes) { $chars.Add($c[(Get-RandomIndex $c.Length)]) }
+while ($chars.Count -lt 24) { $chars.Add($all[(Get-RandomIndex $all.Length)]) }
+for ($i = $chars.Count - 1; $i -gt 0; $i--) {
+  $j = Get-RandomIndex ($i + 1); $t = $chars[$i]; $chars[$i] = $chars[$j]; $chars[$j] = $t
+}
+$rng.Dispose()
+$pw = -join $chars
 $sec = ConvertTo-SecureString $pw -AsPlainText -Force
 if (-not (Get-LocalUser -Name $MemberUser -ErrorAction SilentlyContinue)) {
   New-LocalUser -Name $MemberUser -Password $sec -PasswordNeverExpires -AccountNeverExpires | Out-Null
