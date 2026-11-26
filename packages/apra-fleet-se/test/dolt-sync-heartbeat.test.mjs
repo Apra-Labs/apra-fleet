@@ -192,8 +192,15 @@ test('the product kill path (OsCommands.killPid) on a heartbeating sync leaves n
         const killCmd = cmds.killPid(child.pid);
         if (IS_WIN) spawnSync('cmd.exe', ['/d', '/s', '/c', killCmd], { stdio: 'ignore' });
         else spawnSync('bash', ['-c', killCmd], { stdio: 'ignore' });
-        await new Promise((r) => setTimeout(r, 1000));
-        const left = [child.pid, ...tree].filter(alive);
+        // Termination is asynchronous (taskkill /F /T on Windows): poll the tree
+        // until it is gone or the deadline passes, then assert on what remains.
+        const everyPid = [child.pid, ...tree];
+        const deadline = Date.now() + 10_000;
+        let left = everyPid.filter(alive);
+        while (left.length > 0 && Date.now() < deadline) {
+            await new Promise((r) => setTimeout(r, 100));
+            left = everyPid.filter(alive);
+        }
         assert.deepEqual(left, [], `no process of the killed sync tree remains (tree ${[child.pid, ...tree].join(',')})`);
     } finally {
         fs.rmSync(dir, { recursive: true, force: true });
