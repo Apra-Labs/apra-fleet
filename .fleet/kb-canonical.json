@@ -4241,7 +4241,7 @@
       "confidence": "CONFIRMED",
       "updated_at": "2026-11-25T18:33:04.247Z",
       "source_file_hashes": {
-        "src/services/member-fleet-install.ts": "b99e198cb76f618b1b2f2b5b989ade1a97b71059"
+        "src/services/member-fleet-install.ts": "ff30b7965f24260207cd2fa0bfaa7a7eeb869da2"
       }
     },
     {
