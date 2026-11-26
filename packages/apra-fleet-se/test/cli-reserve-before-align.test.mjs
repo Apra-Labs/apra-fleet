@@ -1,7 +1,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { reserveThenAlign } from '../bin/cli.mjs';
+import { reserveThenAlign, createViewerOrRelease, forceReleaseCommand } from '../bin/cli.mjs';
 import { createMemberReservationClient } from '../fleet-sprint/coordination.mjs';
 
 // Launch alignment stashes WIP and switches branches on members, so a launch
@@ -18,7 +18,7 @@ function fakeServer(owners = {}) {
         const owner = owners[args.member_name];
         if (args.action === 'reserve') {
             if (owner && owner !== args.sprint_id) {
-                return { content: [{ type: 'text', text: `[-] reserved by ${owner}` }], structuredContent: { ok: false, outcome: 'already_reserved_by_other' } };
+                return { content: [{ type: 'text', text: `[-] reserved by ${owner}` }], structuredContent: { ok: false, outcome: 'already_reserved_by_other', ownerSprintId: owner } };
             }
             owners[args.member_name] = args.sprint_id;
             return { content: [{ type: 'text', text: '[OK] reserved' }], structuredContent: { ok: true, outcome: owner ? 'reservation_refreshed' : 'reserved' } };
@@ -106,5 +106,64 @@ describe('reserveThenAlign (launch reserves members before aligning them)', () =
             align: async () => ({ ok: true }),
         });
         assert.equal(res.ok, true);
+    });
+});
+
+describe('launch reservation hygiene (viewer throw, holder in refusal)', () => {
+    test('a synchronous viewer throw releases every reservation and exits non-zero', async () => {
+        const server = fakeServer();
+        const sprintReservation = client(server, ['alice', 'bob']);
+        await sprintReservation.reserveForLaunch();
+        assert.deepEqual(Object.keys(server.owners).sort(), ['alice', 'bob']);
+        let exitCode;
+        await createViewerOrRelease({
+            sprintReservation,
+            create: () => { throw new Error('viewer boom'); },
+            exit: (c) => { exitCode = c; },
+        });
+        assert.equal(exitCode, 1);
+        assert.deepEqual(server.owners, {});
+    });
+
+    test('a viewer that constructs fine is returned and nothing is released', async () => {
+        const server = fakeServer();
+        const sprintReservation = client(server, ['alice']);
+        await sprintReservation.reserveForLaunch();
+        const v = await createViewerOrRelease({ sprintReservation, create: () => ({ ok: 1 }), exit: () => assert.fail('no exit') });
+        assert.deepEqual(v, { ok: 1 });
+        assert.deepEqual(server.owners, { alice: 'feat/sprint' });
+    });
+
+    test('refusal names each holder sprint id and a copy-pasteable release command', async () => {
+        const server = fakeServer({ bob: 'feat/other', carol: 'sprint-xyz' });
+        const res = await reserveThenAlign({
+            sprintReservation: client(server, ['alice', 'bob', 'carol']),
+            align: async () => ({ ok: true }),
+        });
+        assert.equal(res.ok, false);
+        assert.match(res.message, /bob: held by sprint 'feat\/other'/);
+        assert.match(res.message, /member_reservation \{"member_name":"bob","action":"force_release"\}/);
+        assert.match(res.message, /carol: held by sprint 'sprint-xyz'/);
+        assert.match(res.message, /member_reservation \{"member_name":"carol","action":"force_release"\}/);
+        assert.match(res.message, /\/api\/reservations\/sprint-xyz\/force-release/);
+        assert.doesNotMatch(res.message, /alice/);
+    });
+
+    test('the release command uses the configured supervisor URL, curl.exe on Windows, and no shell-quoted body', async () => {
+        const server = fakeServer({ bob: 'sprint-xyz' });
+        const res = await reserveThenAlign({
+            sprintReservation: client(server, ['bob']),
+            align: async () => ({ ok: true }),
+            serviceUrl: 'http://127.0.0.1:9911/',
+            platform: 'win32',
+        });
+        assert.match(res.message, /curl\.exe -s -X POST http:\/\/127\.0\.0\.1:9911\/api\/sprints\/sprint-xyz\/stop -H "Content-Type: application\/json"/);
+        assert.match(res.message, /curl\.exe -s -X POST http:\/\/127\.0\.0\.1:9911\/api\/reservations\/sprint-xyz\/force-release -H "Content-Type: application\/json"/);
+        assert.doesNotMatch(res.message, /localhost:8787/);
+        assert.doesNotMatch(res.message, /-d '/);
+
+        const posix = forceReleaseCommand('a/b', { platform: 'linux' });
+        assert.match(posix, /curl -s -X POST http:\/\/localhost:8787\/api\/reservations\/a%2Fb\/force-release /);
+        assert.match(posix, /--port if it is not 8787/);
     });
 });

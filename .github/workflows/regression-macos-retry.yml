@@ -1,0 +1,45 @@
+name: Regression - retry macOS-only failures once
+
+# Companion of regression.yml (see its header). When a regression run finishes
+# as failure or cancelled on its FIRST attempt and every failed or cancelled job
+# ran on a macOS runner, rerun the failed jobs once (`gh run rerun --failed`).
+# The rerun is attempt 2, so this workflow never retries again.
+#
+# Fork-safe: it never checks out or executes code from the triggering run, and
+# only reads job metadata through the API. It runs from the default branch's
+# copy of this file with a token limited to actions: write on this workflow.
+on:
+  workflow_run:
+    workflows: ['Regression - install/upgrade proof']
+    types: [completed]
+
+permissions:
+  actions: write
+
+jobs:
+  retry-macos:
+    name: retry macOS-only failures (once)
+    if: >-
+      github.event.workflow_run.run_attempt == 1 &&
+      (github.event.workflow_run.conclusion == 'failure' || github.event.workflow_run.conclusion == 'cancelled')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RUN_ID: ${{ github.event.workflow_run.id }}
+    steps:
+      - name: Rerun failed jobs when every one of them ran on macOS
+        shell: bash
+        run: |
+          set -euo pipefail
+          jobs_json="$(gh api --paginate "repos/${GH_REPO}/actions/runs/${RUN_ID}/jobs?filter=latest&per_page=100" --jq '.jobs[]' | jq -s '.')"
+          bad="$(echo "$jobs_json" | jq '[.[] | select(.conclusion == "failure" or .conclusion == "cancelled" or .conclusion == "timed_out")] | length')"
+          non_mac="$(echo "$jobs_json" | jq '[.[] | select(.conclusion == "failure" or .conclusion == "cancelled" or .conclusion == "timed_out") | select(((.labels // []) | map(ascii_downcase) | any(startswith("macos"))) | not)] | length')"
+          echo "failed or cancelled jobs: $bad, of which not on macOS: $non_mac"
+          if [ "$bad" -eq 0 ] || [ "$non_mac" -ne 0 ]; then
+            echo "Not retrying: nothing failed, or a failed job did not run on macOS."
+            exit 0
+          fi
+          gh run rerun "$RUN_ID" --failed
+          echo "Requested one rerun of the failed macOS jobs of run $RUN_ID."

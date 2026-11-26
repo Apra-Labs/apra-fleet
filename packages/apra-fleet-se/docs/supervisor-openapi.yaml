@@ -338,8 +338,15 @@ paths:
                 properties:
                   sprints:
                     type: array
+                    description: >
+                      Each row carries every SprintSummary field (pulled from
+                      the child's GET /state?summary=1, or its persisted
+                      terminal state; null when the child cannot be reached)
+                      plus the reservation fields below.
                     items:
                       type: object
+                      allOf:
+                        - $ref: "#/components/schemas/SprintSummary"
                       required: [sprintId, members, issueRoots, childPid, port]
                       properties:
                         sprintId: { type: string }
@@ -370,8 +377,20 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
+              description: >
+                Unknown top-level keys are rejected with 400 naming the field
+                (before any spawn or ledger claim); a sprint/CLI argument the
+                API does not take (e.g. azdevops_pat_secret_name) gets a
+                message saying the launch API does not accept it.
               required: [issue, branch, base, members]
               properties:
+                target_issue: { type: string, description: "alias of issue" }
+                base_branch: { type: string, description: "alias of base" }
+                kbDemotionLoop: { type: string, enum: ["on", "off"] }
+                decisionNotify:
+                  description: decision-notify config (object or JSON string); see supervisor-api.md
+                  oneOf: [ { type: object }, { type: string } ]
                 issue:
                   type: string
                   description: >
@@ -525,6 +544,19 @@ paths:
                       Non-fatal launch warnings, e.g. the roleMap used the
                       deprecated "orchestrator" key instead of "backlog".
                       Empty when there is nothing to warn about.
+                  staleReservationsReleased:
+                    type: array
+                    description: >
+                      Present only when the launch released fleet-server
+                      reservations whose holder this supervisor's history
+                      records as ended (stale-holder rule in
+                      supervisor-api.md).
+                    items:
+                      type: object
+                      properties:
+                        member: { type: string }
+                        holder: { type: string }
+                        event: { type: string }
                   buildVersionWarning:
                     type: string
                     nullable: true
@@ -536,7 +568,9 @@ paths:
                       the launch.
         "400":
           description: >
-            request-shape validation failed, including (field roleMap) a
+            request-shape validation failed, including an unknown top-level
+            field (field = the key; azdevops_pat_secret_name says the launch
+            API does not accept it) and (field roleMap) a
             roleMap that gives both "backlog" and the deprecated
             "orchestrator" key with different values, the "@path" file
             form, or a backlog role (or its alias) naming a member other
@@ -562,7 +596,14 @@ paths:
             incarnation of this issue root ended with a deterministic,
             unaddressed terminal reason and overrideRelaunchGate was not
             true) or the eft.5.2 member-overlap guard (field "members": the
-            member union intersects another active reservation).
+            member union intersects another active reservation). A holder
+            with no ledger entry here (fleet-server-only) is named with its
+            recovery: POST /api/reservations/<holder>/force-release, or the
+            per-member member_reservation force_release form. Such a holder
+            is released before the guard (and never causes a 409) only when
+            this supervisor's history records it as ended (a force-released
+            event counts only with killed: true, never serverOnly) -- see
+            supervisor-api.md "Stale server-side reservations".
           content:
             application/json:
               schema: { $ref: "#/components/schemas/FieldError" }
@@ -580,9 +621,20 @@ paths:
   /api/sprints/{id}:
     get:
       tags: [sprints]
-      summary: Live child state if the sprint is running, else its historical record
+      summary: Stable sprint summary (live, terminal, or from history)
+      description: >
+        Every response carries the SprintSummary fields at the top level
+        (see supervisor-api.md "GET /api/sprints/:id: the summary shape"). No
+        lean ref marker and no _strings table appear in the response. A live
+        sprint also carries the child's state tree as `state`, resolved (ref
+        markers expanded); ?full=1 is accepted and returns the same.
       parameters:
         - $ref: "#/components/parameters/SprintId"
+        - in: query
+          name: full
+          required: false
+          schema: { type: string, enum: ["1", "true"] }
+          description: accepted for compatibility; the live state tree is always returned resolved
       responses:
         "200":
           description: OK
@@ -591,14 +643,45 @@ paths:
               schema:
                 oneOf:
                   - type: object
-                    required: [sprintId, live, state]
+                    description: live sprint
+                    allOf:
+                      - $ref: "#/components/schemas/SprintSummary"
+                    required: [sprintId, live, state, pendingDecisions]
                     properties:
                       sprintId: { type: string }
                       live: { type: boolean, enum: [true] }
+                      pendingDecisions: { type: array, items: { type: object } }
+                      decisionState: { type: string }
+                      runState: { type: string }
                       state:
                         type: object
-                        description: proxied verbatim from the child's own GET /state
+                        description: the child's GET /state with every ref marker resolved and no _strings table
                   - type: object
+                    description: ended sprint whose reservation is still held
+                    allOf:
+                      - $ref: "#/components/schemas/SprintSummary"
+                    required: [sprintId, live, terminal, state]
+                    properties:
+                      live: { type: boolean, enum: [false] }
+                      terminal: { type: boolean, enum: [true] }
+                      state: { type: object, description: the persisted terminal run state }
+                      resultStatus: { type: string }
+                      warnings: { type: array, items: { type: string } }
+                      analysis:
+                        type: object
+                        nullable: true
+                        description: the sprint-analysis text from the persisted terminal run state ({text, generatedAt}); null for runs that predate it
+                        properties:
+                          text: { type: string }
+                          generatedAt: { type: string, nullable: true }
+                      result:
+                        type: object
+                        nullable: true
+                        description: the run's result from the terminal state (status, verdict, notes, warnings)
+                  - type: object
+                    description: sprint known only from history (status is the latest history event name)
+                    allOf:
+                      - $ref: "#/components/schemas/SprintSummary"
                     required: [sprintId, live, history, latest]
                     properties:
                       sprintId: { type: string }
@@ -614,6 +697,27 @@ paths:
                         type: array
                         items: { type: string }
                         description: present when non-empty; the reasons behind success-with-warnings
+                      analysis:
+                        type: object
+                        nullable: true
+                        description: present when the persisted terminal run state still exists after the ledger release: the sprint-analysis text ({text, generatedAt}); null for runs that predate it
+                        properties:
+                          text: { type: string }
+                          generatedAt: { type: string, nullable: true }
+                      result:
+                        type: object
+                        nullable: true
+                        description: the run's result from the terminal state (status, verdict, notes, warnings)
+        "502":
+          description: the live sprint's child could not be reached
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "504":
+          description: the live sprint's child did not answer in time (e.g. a suspended process)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "404":
           description: no sprint with this id is live or in history
           content:
@@ -653,6 +757,45 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /api/sprints/{id}/decisions/{decisionId}:
+    post:
+      tags: [sprints]
+      summary: Answer a pending decision (proxied to the child)
+      description: >
+        Returns once the child has recorded the answer. A 504 (child did not
+        answer in time) or 502 (child unreachable) does not mean the answer was
+        lost: it may already be recorded; check GET /api/sprints/{id}
+        pendingDecisions before retrying.
+      parameters:
+        - $ref: "#/components/parameters/SprintId"
+        - { name: decisionId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [answer]
+              properties:
+                answer: { type: string }
+      responses:
+        "200":
+          description: answer recorded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sprintId: { type: string }
+                  decisionId: { type: string }
+                  status: { type: string }
+                  released: { type: array, items: { type: string } }
+        "400": { description: bad body or answer, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "404": { description: unknown sprint or no such pending decision, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "409": { description: no reachable child, or unexpected child failure, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "502": { description: child unreachable (connection refused/reset); the answer may already be recorded, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "504": { description: child did not answer in time; the answer may already be recorded, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
   # ---------------------------------------------------------------------
   # Reservation force-release (reconcile.mjs)
   # ---------------------------------------------------------------------
@@ -664,8 +807,15 @@ paths:
         Releases BOTH ledger axes (members + issueRoots) atomically, best-
         effort kills the reservation's still-live child (SIGKILL, in the
         production wiring; a kill failure never blocks the release), and
-        records a FORCE_RELEASED history event. Only touches this
-        supervisor's own local ledger -- see supervisor-api.md.
+        records a FORCE_RELEASED history event. When the ledger has NO
+        entry for sprintId but fleet-server members carry reservedBy ==
+        sprintId (for example an older version's branch-name holder, or a
+        dead sprint launched directly from the CLI), those member
+        reservations are released instead (conditional on that holder), a
+        FORCE_RELEASED history event is recorded, and audit carries
+        serverOnly true and releasedMembers. 404 only when neither the
+        ledger nor any member holds the id -- see supervisor-api.md
+        "Stale server-side reservations".
       parameters:
         - in: path
           name: sprintId
@@ -700,14 +850,27 @@ paths:
                       recorded), and branch/base/goal (each null for
                       legacy entries) -- captured before release so a
                       dashboard Restart control can re-POST /api/sprints
-                      without a separate lookup.
+                      without a separate lookup. For a fleet-server-only
+                      holder: serverOnly (true), releasedMembers (the
+                      members released) and, when the fleet server refused
+                      any release, failedMembers [{member, error}].
+                    properties:
+                      serverOnly: { type: boolean }
+                      releasedMembers: { type: array, items: { type: string } }
+                      failedMembers:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            member: { type: string }
+                            error: { type: string }
         "400":
           description: missing sprintId in path
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "404":
-          description: no live reservation for this sprint id
+          description: neither the ledger nor any fleet-server member holds this id
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -1209,6 +1372,31 @@ components:
       required: true
       schema: { type: string }
   schemas:
+    SprintSummary:
+      type: object
+      description: >
+        The stable top-level sprint summary (src/supervisor/sprint-summary.mjs).
+        Every field is always present; null when unknown.
+      required: [sprintId, live, status, phase, phaseKind, cycle, maxCycles, round, startedAt, elapsedMs, durationMs, cost, tokens, pause, prSourceBranch, prTargetBranch]
+      properties:
+        sprintId: { type: string }
+        live: { type: boolean, description: "true while a running child answered for this sprint" }
+        status: { type: [string, "null"], description: "the run status (running, completed, failed, ...); for a sprint known only from history, the latest history event name" }
+        phase: { type: [string, "null"], description: "current (or last) phase title, e.g. Develop C1 R2" }
+        phaseKind: { type: [string, "null"], description: "the phase title's name part in kebab case, e.g. develop, final-review, ensure-sprint-branch" }
+        cycle: { type: [integer, "null"], description: "the C<n> number in the phase title" }
+        maxCycles: { type: [integer, "null"], description: "the launch's maxCycles; null when the launch did not set it (engine default applies)" }
+        round: { type: [integer, "null"], description: "the R<n> number in the phase title" }
+        startedAt: { type: [string, "null"], format: date-time, description: "ISO-8601 run start" }
+        elapsedMs: { type: [number, "null"], description: "live milliseconds since start while running; the final duration once ended" }
+        durationMs: { type: [number, "null"], description: "equal to elapsedMs" }
+        cost: { type: [number, "null"], description: "total cost so far (USD)" }
+        tokens: { type: [number, "null"], description: "total tokens so far" }
+        pause:
+          type: [object, "null"]
+          description: "the run's pause state {status, reason, since, phase, group, resumeAt}"
+        prSourceBranch: { type: [string, "null"], description: "the sprint branch (ledger branch)" }
+        prTargetBranch: { type: [string, "null"], description: "the PR target (ledger base)" }
     Error:
       type: object
       required: [error]
@@ -1279,3 +1467,5 @@ components:
         logPath: { type: string, nullable: true, description: meaningful only for event=child-exited }
         terminalReason: { type: string, nullable: true, description: meaningful only for event=finished; the engine's own terminalReason verbatim }
         verdict: { type: string, nullable: true, description: meaningful only for event=finished }
+        killed: { type: boolean, description: "event=force-released only, present when the entry had a child pid: whether the kill landed. Only killed: true lets a later launch treat the holder as dead" }
+        serverOnly: { type: boolean, description: "event=force-released only: the holder was known only to the fleet server and nothing was killed" }

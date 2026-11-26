@@ -99,6 +99,87 @@ a performance nicety. See `packages/apra-fleet-se/docs/architecture.md`'s
 "Dolt sync discipline" section for the full mechanism and its conflict
 recovery ladder.
 
+### Link preservation on conflicted pulls
+
+On the pinned `bd` (1.3.x), a conflicted `bd dolt pull` auto-resolves and
+commits only the tables it resolved; cleanly merged tables (notably the
+dependency table holding parent-child and `blocks` edges) keep the local copy.
+The next push can then silently revert other clones' links. Defences:
+
+- Every engine `bd dolt pull` is bracketed: the pulling clone's in-scope
+  parent-child and `blocks` links are read just before and just after it. A
+  link present before and missing after (both endpoints still present) is
+  owed by that clone and restored before its next push (and, on the backlog
+  clone, on the next scope read). A link that disappeared between two reads
+  with no pull in between was removed on purpose (an agent retargeting an
+  edge, breaking a cycle or reparenting a bead) and is never restored.
+- Because `bd` reports a pull conflict only on stderr, a clean pull carrying
+  another clone's deliberate removal looks like a lossy one. So before every
+  push the engine also reads the pushing clone and records each link it lost
+  since its previous read with no pull in between, in a run-wide
+  agent-removal record shared by all members. Links the engine removes
+  through its own `bd dep remove` / `bd update --parent` go on it too. No
+  pull comparison on any clone restores a link on the record; a link comes
+  off it when it is deliberately re-added. This costs one `bd list` read per
+  push while the sprint scope is known.
+- A read can only be compared with an earlier read of the same clone, so
+  every clone gets a baseline before an agent edits it. Each fresh scope
+  snapshot counts as a read of the backlog clone (its launch pull runs before
+  the scope is known, and the first planner's pull is skipped). A dispatch
+  that pushes beads, on a clone with no baseline yet (its pull was skipped or
+  its pull could not be bracketed), reads that clone once before the agent
+  runs. A read that overlaps a pull on the same clone is not used as a
+  baseline.
+- Before a push publishes a reconcile pull, the engine commits the merged
+  working set and runs a link verification (both parent-child and `blocks`
+  edges must survive). The same commit and verification run before the
+  first push of a member whose pre-dispatch or launch pull merged remote
+  changes, even when that push fast-forwards. A failed restore issues no
+  push and leaves the member owing a verification before its next first
+  push.
+- `apra-fleet install` and sprint launch print a warning while the pinned `bd`
+  is a version that can drop links. The install-side and engine-side version
+  constants are kept in step by a test. Until a fixed `bd` is verified, the
+  warning prints on every install and launch.
+- Known gap: a removal made on a clone the engine never reads (an operator
+  checkout outside the sprint) is not on the agent-removal record, so when a
+  sprint member pulls it, the engine restores the link. Re-remove it from a
+  sprint member, or make the change before the sprint starts. A blocks
+  restore that bd refuses as a cycle (the edge was reversed) is logged as a
+  WARN and dropped from tracking; it does not stop the run.
+
+### Flattened-remote recovery
+
+If the shared Dolt remote is rebuilt with a flattened history, a clone's pull
+and push classify as unrelated-history (checked before diverged). The launch
+health gate, member setup and repair automatically re-bootstrap such a clone:
+export, read back with a count check, rename the old clone (never delete),
+seed config, dry-run bootstrap that must plan a sync, bootstrap, export the
+fresh clone and compare. Any failure after the rename restores the original,
+and a backup left by a crash is restored first. A clone holding work that is
+absent from the remote is refused intact, never overwritten. The comparison
+is a full record diff, because the failing pull has already moved the
+remote-tracking ref and `bd diff` ignores labels. An unpushed bead or field
+change, dependency add, label add or comment add refuses the recovery, and so
+does a delete of a bead the remote still holds (a remote-only id the old
+clone's own history knew; one read-only `bd --db` probe per such id). The
+refusal names the kind of work found. Closed beads the remote pruned before
+the rebuild are not local work when their last change is older than the
+clone's last sync (the newest record both sides hold identically). A closed
+bead changed after that point still refuses. Removing a label, dependency or
+comment cannot be told apart from another clone's add, so it is not counted.
+
+Sprint launch also pulls every non-backlog member that already has a beads DB,
+through the same health gate and recovery. A diverged clone is settled there
+exactly as at its first dispatch pull; only a divergence settle cannot resolve
+stops the launch.
+
+Windows members: dolt keeps a git cache of the remote deep inside `.beads`,
+so with a long workFolder `bd bootstrap` (setup and recovery) can fail on the
+260-character path limit. The setup/recovery error then says so; the fix is
+`git config --global core.longpaths true` on that member (or a shorter
+workFolder). A discarded clone is deleted with a long-path-safe removal.
+
 ---
 
 See [the PM skill](../packages/apra-fleet-se/apra-pm/skills/pm/SKILL.md) for the full PM skill reference.

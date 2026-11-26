@@ -430,6 +430,11 @@ export const GUARDED_MODULES = [
     // (pure constants + version parsing, no command() or agent() site).
     'beads-identity.mjs',
     'beads-identity-check.mjs',
+    // The flattened-remote clone recovery: ONE member_name-bearing command()
+    // site (its runner), no agent(), no dolt pull/push of its own (those stay
+    // in dolt-sync.mjs); member file-system commands come from the SE
+    // command primitives.
+    'beads-flatten-recovery.mjs',
     'tool-version-pin.mjs',
     // The sprint-start token-usage memory sweep: TWO member_name-bearing
     // command() sites (the memory list and the per-key forget), no agent(),

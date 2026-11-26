@@ -1,11 +1,31 @@
 {
   "version": 3,
   "provenance": {
-    "commit": "dadecbe482b5ec2398e5e8683c37a0c6cc897324",
+    "commit": "7b7d91ee900870c839aefef3bb38c32459257d49",
     "branch": "main",
-    "entry_count": 229
+    "entry_count": 222
   },
   "entries": [
+    {
+      "id": "006297dc-eb50-4cc8-bc88-29d35a766bf3",
+      "type": "knowledge",
+      "title": "Viewer page embeds shouldSuppressToggle via Function.toString",
+      "summary": "The run viewer HTML template inlines shouldSuppressToggle from header-selection.mjs using .toString(), so that module must stay self-contained, with no imports, module-scope references or backticks.",
+      "symbols": [
+        "shouldSuppressToggle",
+        "HTML_TEMPLATE"
+      ],
+      "source_files": [
+        "packages/apra-fleet-workflow/src/viewer/header-selection.mjs",
+        "packages/apra-fleet-workflow/src/viewer/index.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-25T20:25:53.680Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-workflow/src/viewer/header-selection.mjs": "9c7d6b8b6cc39944555a79372fdb6c32fd43be1c",
+        "packages/apra-fleet-workflow/src/viewer/index.mjs": "22ca76fef5bd9b54cfdcdd6ac5c65db4f2a44351"
+      }
+    },
     {
       "id": "0077b24d-29fe-4f72-94df-0cd6a9e65f90",
       "type": "knowledge",
@@ -556,6 +576,29 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:28.024Z"
+    },
+    {
+      "id": "21942bb3-3265-47f3-965f-d9096c07c73b",
+      "type": "knowledge",
+      "title": "Usage-limit wait ends at once on a stop via the pause-end handle",
+      "summary": "waitOrOperatorResume in usage-limit-controller.mjs wakes on the pause-end handle with outcome 'resume' OR 'stop'. On 'stop' (including a handle already settled when the wait starts), the controller logs the stop and throws CancelledError, with no requestResume, no probe and no second pause.",
+      "symbols": [
+        "waitOrOperatorResume",
+        "createUsageLimitPauseController",
+        "CancelledError"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/usage-limit-controller.mjs",
+        "packages/apra-fleet-se/test/supervisor-stop-usage-limit-pause.test.mjs",
+        "packages/apra-fleet-workflow/src/workflow/engine.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-25T22:48:34.993Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/usage-limit-controller.mjs": "431096fa4c3fd906dddacaf1c9bf12953f70d7af",
+        "packages/apra-fleet-se/test/supervisor-stop-usage-limit-pause.test.mjs": "98125038ce9be65aa315d0e5b7f427be162148a7",
+        "packages/apra-fleet-workflow/src/workflow/engine.mjs": "987aaa26996e8dc801cbec51694e1f11eaf2e1cd"
+      }
     },
     {
       "id": "22cad4f1-29e2-4152-9d70-984238357238",
@@ -1525,6 +1568,33 @@
       }
     },
     {
+      "id": "4ebfe1d3-32ca-45a2-a65b-2a87a0eb0451",
+      "type": "knowledge",
+      "title": "Health gate lists the backlog work folder every launch for a beads recovery backup",
+      "summary": "preflightBeadsHealthGate with flattenRecovery (runner.js passes memberSeCommands) first runs listDirectory('.') on the backlog member to restore a .beads.flatten-pending-* backup left by an interrupted recovery. That adds one `ls -1A -- '.'` before the gate's bd commands in every launch transcript.",
+      "symbols": [
+        "preflightBeadsHealthGate",
+        "restoreLeftoverFlattenBackup",
+        "verifyBeadsIdentity",
+        "setupMemberBeads",
+        "repair"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/dolt-sync.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/fleet-sprint/beads-identity-check.mjs",
+        "packages/apra-fleet-se/fleet-sprint/beads-flatten-recovery.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-25T07:54:02.692Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/beads-flatten-recovery.mjs": "39912907f01b3ab84f8b3ce1c240cce6c949bcdc",
+        "packages/apra-fleet-se/fleet-sprint/beads-identity-check.mjs": "b9fafdb63bc1601d2143235bb8cb4f7f006facd1",
+        "packages/apra-fleet-se/fleet-sprint/dolt-sync.mjs": "7357a8441d315941600b8819411869a289c08644",
+        "packages/apra-fleet-se/fleet-sprint/runner.js": "76de259a5916a4f8f229844f55f17dead831427e"
+      }
+    },
+    {
       "id": "4f62e71d-0544-49f1-863f-6bbc503604ac",
       "type": "knowledge",
       "title": "Exec-level rolling timeout is per-provider via ProviderAdapter.execTimeoutSource()",
@@ -1982,6 +2052,23 @@
       "updated_at": "2026-09-29T06:13:16.498Z"
     },
     {
+      "id": "6818e92f-0227-4a50-9054-b130f6f88cae",
+      "type": "learning",
+      "title": "Any bd invocation writes ~/.beads/eventsData under the invoking HOME",
+      "summary": "Even `bd version` records an event file under $HOME/.beads/eventsData, and bd's background event writer can recreate files after the directory is removed. Tests that must leave nothing outside their sandbox should detect bd by scanning PATH, not by running it under the real HOME.",
+      "symbols": [
+        "bdAvailable"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/test/dolt-push-verify-links-real-bd.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-25T08:30:23.491Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/test/dolt-push-verify-links-real-bd.test.mjs": "b8c2ddc4015cb728ae913a45e243e8c55847fe5a"
+      }
+    },
+    {
       "id": "686dfe22-5326-404b-a658-22ed83e96fa6",
       "type": "knowledge",
       "title": "LLM auth label is shared by list_members and member_detail via llm-auth-label.ts",
@@ -2140,6 +2227,31 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:41.271Z"
+    },
+    {
+      "id": "71d667c4-47e0-4b6a-baa3-893c712f4251",
+      "type": "knowledge",
+      "title": "Member replace-full backup layout and which rollback step is supervisor-guarded",
+      "summary": "replace-full backs up into <home>/.apra-fleet-replace-backup-<stamp>/ (data/, fleet.key only if present, old binary). In the documented rollback only the reinstall (install) refuses with E-FLEET-SE-RUNNING; uninstall has no fleet-sprint guard.",
+      "symbols": [
+        "buildReplaceFullInstallPlan",
+        "guardedReinstallCommand",
+        "rollbackCommand"
+      ],
+      "source_files": [
+        "src/services/member-fleet-install.ts",
+        "src/cli/install.ts",
+        "src/cli/uninstall.ts",
+        "tests/integration/member-host/lib/rollback.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-25T08:30:19.934Z",
+      "source_file_hashes": {
+        "src/cli/install.ts": "75a80d49fce97454f64a4d4dd134516bf0305966",
+        "src/cli/uninstall.ts": "22699f50d66aa7bff10e2c65bc04c11374de8ac3",
+        "src/services/member-fleet-install.ts": "ee70ed7181753b307c2108a45dd9b0fea6003705",
+        "tests/integration/member-host/lib/rollback.mjs": "1ac14f76b11c130fd8838b2be97f91c5e0e09c4e"
+      }
     },
     {
       "id": "75c4aab8-77f1-4f45-89aa-fe89a173ec6b",
@@ -2910,6 +3022,27 @@
       "updated_at": "2026-09-30T23:07:12.100Z"
     },
     {
+      "id": "976bb7cc-ec9b-400f-88c6-69cdab551bb3",
+      "type": "knowledge",
+      "title": "bd --db <dir> leaves <dir>.gate.lock beside the directory (embedded mode)",
+      "summary": "On bd 1.3.0 embedded mode, any `bd --db <dir> ...` call (even --readonly history) creates a lock file named `<dir>.gate.lock` next to the directory. Flatten recovery deletes it after its history checks, and pickLeftoverBackup only accepts exact <prefix><stamp> names so the lock is never taken for a backup.",
+      "symbols": [
+        "recoverFlattenedClone",
+        "pickLeftoverBackup",
+        "BD_DB_LOCK_SUFFIX"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/beads-flatten-recovery.mjs",
+        "packages/apra-fleet-se/test/beads-flatten-recovery-real-bd.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-25T10:45:13.390Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/beads-flatten-recovery.mjs": "85ee0163d92ed5288b25a1d4bef3a5b7711ed4dd",
+        "packages/apra-fleet-se/test/beads-flatten-recovery-real-bd.test.mjs": "cb9acc0d73068a5228f477fa468af585ae6e5e6d"
+      }
+    },
+    {
       "id": "981c940f-28c3-41cb-87bb-36156857ea97",
       "type": "knowledge",
       "title": "KB http provider: read 5xx is UNREACHABLE, SERVER-ERROR is writes-only",
@@ -2976,6 +3109,30 @@
         "src/cli/kb-merge-driver.ts": "cb44162c5dfe39b177f783dc8e8526e25a8bdd59",
         "src/tools/kb-setup.ts": "d1e12f8ea1553555a5613c6ec33cec2b6a318067",
         "tests/knowledge/kb-bible-merge-driver.test.ts": "36b5005e32482dfebae733bcc242fded39f8ca85"
+      }
+    },
+    {
+      "id": "9a70c23f-e8d3-4155-b681-a031d7db6b4e",
+      "type": "knowledge",
+      "title": "Link guard needs a per-clone baseline read before an agent edits",
+      "summary": "The agent-removal record in parent-link-guard.mjs only records a removal when the clone has an earlier read (lastRead). Fresh backlog snapshots and beadsScope.ensureLinkBaseline (called by withGitSync before a dispatch that pushes beads) set that baseline.",
+      "symbols": [
+        "createParentLinkLedger",
+        "createBeadsScope",
+        "ensureLinkBaseline",
+        "withGitSync"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/parent-link-guard.mjs",
+        "packages/apra-fleet-se/fleet-sprint/beads-scope.mjs",
+        "packages/apra-fleet-se/fleet-sprint/git-sync.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-25T13:59:29.295Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/beads-scope.mjs": "dbbf833b9ff1c0927b4354c41cbdb08b19945032",
+        "packages/apra-fleet-se/fleet-sprint/git-sync.mjs": "26b8aee7190d9af80079474027b48001db8f4362",
+        "packages/apra-fleet-se/fleet-sprint/parent-link-guard.mjs": "e5e420c466fabc4cfc513e891e3b1697844c007c"
       }
     },
     {
@@ -3167,6 +3324,29 @@
         "tests/helpers/file-kb-data-dir.ts": "d1a573362a85d638ce4aa40dc964a76b90a2cae3",
         "tests/setup.ts": "3b840d57c8d34ed1517efe3b4c57a70c0fc85ee1",
         "vitest.config.ts": "9a6bf830af480f30786052e44c2feb951c8abbee"
+      }
+    },
+    {
+      "id": "a4e858b3-f95a-4c33-8779-13e811856f7a",
+      "type": "knowledge",
+      "title": "Link-guard reads that overlap a pull on the same clone are discarded as baselines",
+      "summary": "beads-scope.mjs counts pulls per member (pullEpochs, pullsInFlight), bumped for every bd dolt pull even before the scope is known. A snapshot read or ensureLinkBaseline read is noted only when no pull on that clone started or ran while it was taken (readUnraced).",
+      "symbols": [
+        "createBeadsScope",
+        "ensureLinkBaseline",
+        "fetchAllBeadsShared",
+        "noteRead",
+        "notePull"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/beads-scope.mjs",
+        "packages/apra-fleet-se/fleet-sprint/parent-link-guard.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-25T14:20:04.383Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/beads-scope.mjs": "dbbf833b9ff1c0927b4354c41cbdb08b19945032",
+        "packages/apra-fleet-se/fleet-sprint/parent-link-guard.mjs": "e5e420c466fabc4cfc513e891e3b1697844c007c"
       }
     },
     {
@@ -4700,6 +4880,28 @@
       "updated_at": "2026-09-29T06:08:07.865Z"
     },
     {
+      "id": "efd17735-0e4a-4113-843b-723972e1808d",
+      "type": "knowledge",
+      "title": "Sprint analysis text is persisted via the sprint-analysis run-state namespace",
+      "summary": "runHarvestPhase publishes { text, generatedAt } under the sprint-analysis namespace through an optional publishState dep that runner.js passes at the runHarvestPhase call site.",
+      "symbols": [
+        "runHarvestPhase",
+        "SPRINT_ANALYSIS_STATE_NAMESPACE"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/phases/harvest.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/test/mock-sprint-analysis-persisted.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-25T22:48:33.576Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/phases/harvest.mjs": "0f7c718e4c96493acc044d868c6032211cf94d62",
+        "packages/apra-fleet-se/fleet-sprint/runner.js": "7f45d28961e8d0252642625b1ac49b8d9be008ab",
+        "packages/apra-fleet-se/test/mock-sprint-analysis-persisted.test.mjs": "7e7b6cac58d8a7063a71acccb6d0c653e2695f72"
+      }
+    },
+    {
       "id": "f1e8458e-ed03-4638-a074-284148d52d41",
       "type": "learning",
       "title": "Stale local dist/agents/schemas fails the se staleness guard, not the branch",
@@ -5090,6 +5292,15 @@
       "note": "At HEAD, src/tools/execute-prompt.ts has no executePromptCore. The wrapper executePrompt (about line 716) calls executePromptImpl (line 741) with a PromptResolution object. The entry names a function that does not exist, so a lookup by that symbol fails.",
       "evidence_files": [
         "src/tools/execute-prompt.ts"
+      ]
+    },
+    {
+      "id": "0f5c5b8d-e923-454f-b869-9c205cffc1dc",
+      "at": "2026-11-25T23:13:31.990Z",
+      "reason": "withdrawn",
+      "note": "The summary's last clause is false: waitOrOperatorResume in usage-limit-controller.mjs now wakes on a 'stop' outcome of the pause-end handle too, logs the stop and throws CancelledError (entry 21942bb3 states the current behaviour).",
+      "evidence_files": [
+        "packages/apra-fleet-se/fleet-sprint/usage-limit-controller.mjs"
       ]
     },
     {

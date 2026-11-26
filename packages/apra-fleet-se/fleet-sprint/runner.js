@@ -215,7 +215,7 @@ import { runPublishPrPhase } from './phases/publish-pr.mjs';
 import {
     createHttpDoltPushMutexClient, createHttpChildIdAllocatorClient,
     createMcpDoltPushMutexClient, createMcpChildIdAllocatorClient,
-    createMemberReservationClient,
+    createMemberReservationClient, sprintIdentity,
 } from './coordination.mjs';
 // The KB work concern: the per-dispatch kb_query read, kb_captures/kb_promotions vetting and forwarding, and the
 // canonical-bible publish. Moved verbatim out of runner.js
@@ -1216,9 +1216,14 @@ async function runSprintCycle(context) {
     });
     const phase = beadsScope.wrapPhase(rawPhase);
 
-    // A stable per-sprint id for mutex fairness/introspection: the sprint branch
-    // is unique per concurrent sprint on the shared remote.
-    const sprintMutexId = (args && args.branch) ? String(args.branch) : 'sprint';
+    // The sprint identity (coordination.mjs sprintIdentity): the run id when
+    // the launcher gave one, else the branch. It must equal the holder id the
+    // launcher reserved members under (bin/cli.mjs), or every dispatch is
+    // refused as coming from another sprint.
+    const sprintMutexId = sprintIdentity({
+        runId: (args && typeof args.run_id === 'string') ? args.run_id : null,
+        branch: (args && args.branch) ? String(args.branch) : null,
+    });
 
     // Every agent() dispatch carries sprint_id -- the same opaque sprint-identity
     // token members are reserved under (bin/cli.mjs) -- so the server can
@@ -2062,6 +2067,9 @@ async function runSprintCycle(context) {
         // Built per member OS/shell (member_detail via resolveMemberTarget,
         // which degrades to POSIX and logs when the member cannot be resolved).
         memberShell: memberSeCommands,
+        // The launch pull settles a diverged clone the same way the first
+        // pre-dispatch pull does (git-sync.mjs), so it never stops the launch.
+        settleFor: async (member) => buildSettleCallback(member, { command, log, shell: await resolveSettleShell({ args, member, log, sprintState }) }),
     });
 
     // Member permission-config preflight: every dispatch member's composed
@@ -2149,6 +2157,12 @@ async function runSprintCycle(context) {
         onAuthFailure, resolveMemberProvider: resolveMemberVcsProvider, ensureVcsAuthFresh,
         warnWorkflowsPermissionMissing,
         syncMemberBefore, syncMemberAfter, syncMemberAfterOrdered, isNoMutationDispatchFailure,
+        // Verify-before-push (invariant H5, parent-link-guard.mjs): every
+        // D-push restores links a reconcile pull dropped before re-pushing.
+        verifyLinks: (member) => beadsScope.verifyLinksBeforePush(member),
+        // Link baseline before a beads-pushing agent edits its clone (see
+        // beadsScope.ensureLinkBaseline): no command when one already exists.
+        ensureLinkBaseline: (member) => beadsScope.ensureLinkBaseline(member),
     });
     // Local alias so this file's dispatch brackets keep their existing shape:
     // withGitSync member, pushCode, dispatch thunk, options.
@@ -2865,7 +2879,11 @@ async function runSprintCycle(context) {
     });
 
     const preflightSettleShell = await resolveSettleShell({ args, member: backlogMember, log, sprintState });
-    await gitSync.syncBeadsBefore(backlogMember, { readinessGate: true, settle: buildSettleCallback(backlogMember, { command, log, shell: preflightSettleShell }) });
+    // flattenRecovery: a clone whose beads remote was flattened (no common
+    // ancestor) is re-bootstrapped here, loudly, keeping a backup -- or the
+    // launch is refused when the clone holds unpushed work
+    // (beads-flatten-recovery.mjs). Commands built per member OS/shell.
+    await gitSync.syncBeadsBefore(backlogMember, { readinessGate: true, flattenRecovery: memberSeCommands, settle: buildSettleCallback(backlogMember, { command, log, shell: preflightSettleShell }) });
 
     // =======================
     // 0. Git Setup: ensure the sprint branch exists off base_branch
@@ -5067,7 +5085,7 @@ async function runSprintCycle(context) {
         setAside: collectSetAsideEntries(sprintState),
         waited: collectWaitEntries(sprintState),
         kbWork,
-        command, memberSeCommands,
+        command, memberSeCommands, publishState,
         computeBranchSlug, buildAnalysisText, buildCostAnalysis,
     });
 

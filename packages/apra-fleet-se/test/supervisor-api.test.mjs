@@ -9,6 +9,7 @@ import { createLedger, LEDGER_FILENAME } from '../src/supervisor/ledger.mjs';
 import { createHistory, HISTORY_FILENAME, HISTORY_EVENTS } from '../src/supervisor/history.mjs';
 import { createSpawner } from '../src/supervisor/spawner.mjs';
 import { createSupervisor } from '../src/supervisor/server.mjs';
+import { buildSprintSummary, runSummaryFromState } from '../src/supervisor/sprint-summary.mjs';
 import {
     createSprintController,
     registerSprintRoutes,
@@ -666,7 +667,8 @@ describe('api -- apra-fleet-eft.5.2 member-axis overlap check (default beforeLau
                 && err.status === 409
                 && err.message === formatMemberConflict([
                     { sprintId: 's1', members: ['alice'] },
-                    { sprintId: 's2', members: ['carol'] },
+                    // s2 has no ledger entry: its part names the recovery.
+                    { sprintId: 's2', members: ['carol'], serverOnly: true },
                 ]),
         );
     });
@@ -824,12 +826,23 @@ describe('api -- GET /api/sprints and /api/sprints/:id', () => {
             ledger, history, spawner: recordingSpawner([]),
             listMembers: () => ({}), getBacklog: () => ({}),
             resolvePort: (pid) => (pid === 42 ? 9200 : undefined),
+            proxySummary: async () => ({ status: 'running', phase: 'Develop C1 R2', startedAt: '2026-11-25T00:00:00.000Z', elapsedMs: 5, durationMs: 5, stats: { totalCost: 1.5, totalTokens: 10 } }),
             proxyState: async (port) => ({ port, status: 'running', tree: [] }),
         });
+        // Default: the stable summary plus the (pre-existing) state tree.
         const out = await controller.getSprint('s1');
         assert.equal(out.live, true);
+        assert.equal(out.status, 'running');
+        assert.equal(out.phaseKind, 'develop');
+        assert.equal(out.cycle, 1);
+        assert.equal(out.round, 2);
+        assert.equal(out.cost, 1.5);
         assert.equal(out.state.status, 'running');
         assert.equal(out.state.port, 9200);
+        // ?full=1 keeps working and returns the same state tree.
+        const fullOut = await controller.getSprint('s1', { full: true });
+        assert.equal(fullOut.state.status, 'running');
+        assert.equal(fullOut.state.port, 9200);
         await fsp.rm(dir, { recursive: true, force: true });
     });
 
@@ -889,7 +902,10 @@ describe('api -- GET /api/sprints and /api/sprints/:id', () => {
             proxyState: async (port) => { proxyStateCalled = true; return { port, status: 'running', tree: [] }; },
         });
         const out = await controller.getSprint('s1');
-        assert.deepEqual(out, { sprintId: 's1', live: false, terminal: true, state: terminalState });
+        assert.deepEqual(out, {
+            ...buildSprintSummary({ sprintId: 's1', live: false, runSummary: runSummaryFromState(terminalState), reservation: ledger.get('s1') }),
+            sprintId: 's1', live: false, terminal: true, state: terminalState, analysis: null, result: null,
+        });
         assert.equal(resolvePortCalled, false, 'resolvePort must not be called once hasTerminalState reports terminal');
         assert.equal(proxyStateCalled, false, 'proxyState must not be called (no doomed proxy into a closed port)');
         await fsp.rm(dir, { recursive: true, force: true });
@@ -904,11 +920,12 @@ describe('api -- GET /api/sprints and /api/sprints/:id', () => {
             listMembers: () => ({}), getBacklog: () => ({}),
             hasTerminalState: () => null,
             resolvePort: (pid) => (pid === 42 ? 9200 : undefined),
+            proxySummary: async () => ({ status: 'running' }),
             proxyState: async (port) => ({ port, status: 'running', tree: [] }),
         });
         const out = await controller.getSprint('s1');
         assert.equal(out.live, true);
-        assert.equal(out.state.status, 'running');
+        assert.equal(out.status, 'running');
         await fsp.rm(dir, { recursive: true, force: true });
     });
 

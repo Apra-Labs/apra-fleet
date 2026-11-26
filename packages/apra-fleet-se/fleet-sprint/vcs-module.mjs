@@ -672,13 +672,14 @@ export function toGitVerdict(kind) {
  * dolt auth literal, including the publickey-refusal one; see dolt.mjs).
  *
  * @param {string} kind - a VCS_FAILURE_KINDS member
- * @returns {'no-remote'|'empty-remote'|'remote-unreachable'|'auth'|'diverged'|'transient'|'missing-tool'|'unknown'}
+ * @returns {'no-remote'|'empty-remote'|'remote-unreachable'|'unrelated-history'|'auth'|'diverged'|'transient'|'missing-tool'|'unknown'}
  */
 export function toDoltVerdict(kind) {
     switch (kind) {
         case VCS_FAILURE_KINDS.NO_REMOTE: return 'no-remote';
         case VCS_FAILURE_KINDS.EMPTY_REMOTE: return 'empty-remote';
         case VCS_FAILURE_KINDS.REMOTE_UNREACHABLE: return 'remote-unreachable';
+        case VCS_FAILURE_KINDS.UNRELATED_HISTORY: return 'unrelated-history';
         case VCS_FAILURE_KINDS.DIVERGED: return 'diverged';
         case VCS_FAILURE_KINDS.AUTH_EXPIRED:
         case VCS_FAILURE_KINDS.AUTH_DENIED: return 'auth';
