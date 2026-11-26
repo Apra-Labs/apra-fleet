@@ -3,7 +3,7 @@
   "provenance": {
     "commit": "9e5f0f6c3d96c6a10d2fcd27b672ad1cd5fbbcb8",
     "branch": "main",
-    "entry_count": 232
+    "entry_count": 233
   },
   "entries": [
     {
@@ -2003,6 +2003,27 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-29T06:13:16.498Z"
+    },
+    {
+      "id": "672c4940-eacd-46fa-8786-9c1a52b61c2a",
+      "type": "knowledge",
+      "title": "Post-harvest bible recheck reports unreachable maintainer ids as unchecked, not pending",
+      "summary": "With noReviewLeft, recheckSprintBible removes ids that never reached kb_bible_commit from the confirmations queue and reports them in out.unchecked with a WARN to run the drift check. This keeps the end-of-run pending-confirmations warning from calling them unpublished, since they are already on the branch bible.",
+      "symbols": [
+        "recheckSprintBible",
+        "dropFromBible",
+        "commitRepo"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs",
+        "packages/apra-fleet-se/fleet-sprint/phases/harvest.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-26T01:53:45.916Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/kb.mjs": "36fe5f6a4d6585b36c3a990f94ece3cd19e552d7",
+        "packages/apra-fleet-se/fleet-sprint/phases/harvest.mjs": "e65be936ab5b368d02c320d0d9a9013d6374e986"
+      }
     },
     {
       "id": "686dfe22-5326-404b-a658-22ed83e96fa6",
