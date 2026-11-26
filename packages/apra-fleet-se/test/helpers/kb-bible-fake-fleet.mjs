@@ -27,7 +27,9 @@ export function createFakeFleet() {
     // The bible at the merge-base commit (id -> basis): what a restore re-adds and what `git show <base>:<bible>` reads.
     const baseEntries = new Map();
     const bibleCommits = [];        // every kb_bible_commit that changed the bible
-    const fleetState = { unpushedBible: false }; // a local bible commit not pushed yet
+    // unpushedBible: a local bible commit not pushed yet. failBibleCommit: every kb_bible_commit fails
+    // (a maintainer whose bible commit cannot be reached). refuseBiblePush: the maintainer's git push is rejected.
+    const fleetState = { unpushedBible: false, failBibleCommit: false, refuseBiblePush: false };
 
     const kbOf = (id) => { if (!kbs.has(id)) kbs.set(id, []); return kbs.get(id); };
     const checkoutOf = (name) => { if (!checkouts.has(name)) checkouts.set(name, new Map()); return checkouts.get(name); };
@@ -73,6 +75,7 @@ export function createFakeFleet() {
                 return out;
             }
             case 'kb_bible_commit': {
+                if (fleetState.failBibleCommit) fail('maintainer unreachable: kb_bible_commit could not run');
                 const before = bibleState();
                 const merged = [];
                 const skipped = [];
@@ -179,6 +182,7 @@ export function buildOnCommand(fleet, { changedFiles }) {
         if (/^git show a{40}:/.test(ev.command)) return mockCmdResult(0, JSON.stringify({ entries: [...fleet.baseEntries.keys()].map((id) => ({ id })) }), '');
         // The bible is a local-only commit between a committing
         // kb_bible_commit and the next push; the work tree is always clean.
+        if (/^git push\b/.test(ev.command) && fleet.fleetState.refuseBiblePush && fleet.fleetState.unpushedBible) return mockCmdResult(1, '', '! [rejected] (fetch first)');
         if (/^git push\b/.test(ev.command)) fleet.fleetState.unpushedBible = false;
         if (/^git log -m --name-only --pretty=format: /.test(ev.command)) return mockCmdResult(0, fleet.fleetState.unpushedBible ? `${BIBLE_FILE}\n` : '', '');
         if (/^git status --porcelain --untracked-files=all -- /.test(ev.command)) return mockCmdResult(0, '', '');

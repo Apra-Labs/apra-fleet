@@ -36,7 +36,7 @@ const BASE_ID = 'aaaa1111-kb-base-owned-report-claim';
  * CITED at v1. The harvester then publishes CITED at `harvestVersion`
  * (2: its docs commit edits the cited file; 1: it does not).
  */
-async function runHarvestSprint(label, { harvestVersion, entryId = ENTRY_ID }) {
+async function runHarvestSprint(label, { harvestVersion, entryId = ENTRY_ID, afterHarvest = () => {} }) {
     const fleet = createFakeFleet();
     fleet.published.set(CITED, 1);
     fleet.bible.entries.set(BASE_ID, { [CITED]: 1 });
@@ -66,6 +66,7 @@ async function runHarvestSprint(label, { harvestVersion, entryId = ENTRY_ID }) {
     const harvesterHandler = async () => {
         harvested = true;
         fleet.published.set(CITED, harvestVersion);
+        afterHarvest(fleet);
         return { content: [{ text: JSON.stringify({ status: 'OK', notes: 'Harvested docs.' }) }] };
     };
     const finalReviewHandler = async () => ({ content: [{ text: JSON.stringify({ verdict: 'PASS', notes: 'All goal beads closed.' }) }] });
@@ -155,6 +156,38 @@ describe('mock sprint: the sprint\'s own bible entries are re-checked after the 
             assert.deepEqual(fleet.bible.entries.get(ENTRY_ID), { [CITED]: 1 });
             assert.deepEqual(owned().map(([id]) => id), [ENTRY_ID]);
             assert.ok(!r.logs.some((l) => /WARN: dropping /.test(l)), kbLog(r));
+        });
+    });
+
+    test('the maintainer cannot be reached at the post-harvest recheck -> the run does not fail; the entry is reported as unchecked with a generic WARN and is not called unpublished', { timeout: scaledTimeout(240000, { concurrency: TEST_CONCURRENCY }) }, async () => {
+        await withScenarioMarkers('kb post-harvest recheck unreachable', async () => {
+            const { r, fleet } = await runHarvestSprint('postharvestunreachable', { harvestVersion: 1, afterHarvest: (f) => { f.fleetState.failBibleCommit = true; } });
+            assert.equal(r.error, null, `sprint error: ${r.error && r.error.message}`);
+            assert.ok(fleet.bibleCommits.length >= 1 && fleet.bibleCommits[0].merged.includes(ENTRY_ID), `sanity: the review-round bible commit merged the entry; log:\n${kbLog(r)}`);
+            const warn = r.logs.find((l) => /\[kb-work\] WARN: post-harvest head: could not re-check /.test(l));
+            assert.ok(warn, kbLog(r));
+            assert.ok(warn.includes(ENTRY_ID), 'the WARN names the entry');
+            assert.match(warn, /re-check each one against the branch head before this branch merges/);
+            assert.ok(!/\.mjs|npm |node scripts/.test(warn), `the WARN names no repository-specific script: ${warn}`);
+            // out.unchecked has it and out.dropped does not: no drop, no withdrawal.
+            assert.ok(!r.logs.some((l) => /WARN: dropping /.test(l) && l.includes(ENTRY_ID)), kbLog(r));
+            assert.ok(fleet.bibleCommits.every((c) => !c.withdrawn.includes(ENTRY_ID)), 'nothing was withdrawn');
+            // Already on the branch bible, so not an unpublished confirmation.
+            assert.ok(!r.logs.some((l) => /confirmation\(s\) for .* are not in a pushed bible commit/.test(l) && l.includes(ENTRY_ID)), kbLog(r));
+        });
+    });
+
+    test('the harvester edits the cited file and the withdrawal push is refused -> the entry is reported as not pushed, never as withdrawn; the run does not fail', { timeout: scaledTimeout(240000, { concurrency: TEST_CONCURRENCY }) }, async () => {
+        await withScenarioMarkers('kb post-harvest recheck push refused', async () => {
+            const { r, fleet } = await runHarvestSprint('postharvestpushrefused', { harvestVersion: 2, afterHarvest: (f) => { f.fleetState.refuseBiblePush = true; } });
+            assert.equal(r.error, null, `sprint error: ${r.error && r.error.message}`);
+            assert.ok(fleet.bibleCommits.some((c) => c.withdrawn.includes(ENTRY_ID)), `sanity: the withdrawal was attempted; log:\n${kbLog(r)}`);
+            const warn = r.logs.find((l) => /did not reach a pushed bible commit/.test(l));
+            assert.ok(warn && warn.includes(ENTRY_ID), kbLog(r));
+            assert.ok(!/\.mjs|npm |node scripts/.test(warn), `the WARN names no repository-specific script: ${warn}`);
+            assert.ok(!r.logs.some((l) => l.includes(ENTRY_ID) && /added to the branch bible by this sprint alone/.test(l)), 'no "removed with no tombstone" claim for an unpushed withdrawal');
+            assert.ok(!r.logs.some((l) => l.includes(ENTRY_ID) && /withdrawn by this run/.test(l)), kbLog(r));
+            assert.ok(r.logs.some((l) => /withdrawal\(s\) for .* are not in a pushed bible commit/.test(l) && l.includes(ENTRY_ID)), 'the end-of-run warning reports the withdrawal as not pushed');
         });
     });
 });
