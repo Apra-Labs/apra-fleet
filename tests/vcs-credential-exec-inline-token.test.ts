@@ -72,8 +72,9 @@ function dispatchedCommand(): string {
   const wrapped = call[0] as string;
   const posix = /^\{ ([\s\S]*); \} & _fleet_pid=\$!; printf 'FLEET_PID:%s\\n' "\$_fleet_pid"; wait "\$_fleet_pid"; exit \$\?$/.exec(wrapped);
   if (posix) return posix[1];
-  // Git Bash member: same subshell, but the marker carries the Windows pid.
-  const gb = /^\{ ([\s\S]*); \} & _fleet_pid=\$!; /.exec(wrapped);
+  // Git Bash member: same subshell plus a builtin tail (it keeps the
+  // subshell from exec-ing the command), and the marker carries the Windows pid.
+  const gb = /^\{ ([\s\S]*); _fleet_rc=\$\?; exit \$_fleet_rc; \} & _fleet_pid=\$!; /.exec(wrapped);
   if (gb && pidWrapGitBash(gb[1]) === wrapped) return gb[1];
   const psh = /^Write-Output "FLEET_PID:\$pid"; ([\s\S]*)$/.exec(wrapped);
   if (psh) return psh[1];

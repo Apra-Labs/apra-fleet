@@ -1,5 +1,25 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import http from 'node:http';
+
+// The real opener spawn is recorded, never run (no browser opens on the test host).
+const { spawnMock, resolveFail } = vi.hoisted(() => ({
+  spawnMock: vi.fn(() => ({ on: () => {}, unref: () => {} })),
+  resolveFail: { error: null as Error | null },
+}));
+vi.mock('node:child_process', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('node:child_process')>()),
+  spawn: spawnMock,
+}));
+// Host-independent: windowsExecutable resolves to a fixed absolute System32 path (as it does on win32),
+// or throws when a test sets resolveFail.error.
+vi.mock('../src/os/windows-executable.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/os/windows-executable.js')>()),
+  windowsExecutable: (name: string) => {
+    if (resolveFail.error) throw resolveFail.error;
+    return `C:\\Windows\\System32\\${name.replace(/\.exe$/i, '')}.exe`;
+  },
+}));
+
 import { launchAuthWeb } from '../src/services/auth-web.js';
 
 interface Resp { status: number; body: string }
@@ -136,6 +156,8 @@ describe('auth-web (local browser credential UI)', () => {
       else process.env.SESSIONNAME = origSession;
       if (origSshTty === undefined) delete process.env.SSH_TTY;
       else process.env.SSH_TTY = origSshTty;
+      resolveFail.error = null;
+      spawnMock.mockClear();
     });
 
     it('returns unavailable on headless Windows (SESSIONNAME != Console)', () => {
@@ -146,11 +168,32 @@ describe('auth-web (local browser credential UI)', () => {
       if (handle.kind === 'launched') handle.close();
     });
 
-    it('launches on interactive Windows (SESSIONNAME == Console)', () => {
+    it('launches on interactive Windows (SESSIONNAME == Console) via the absolute cmd.exe start', async () => {
       setPlatform('win32');
       process.env.SESSIONNAME = 'Console';
       const handle = launchAuthWeb('m', 'password', 'Enter password for m', () => ({ ok: true }));
       expect(handle.kind).toBe('launched');
+      try {
+        await vi.waitFor(() => expect(spawnMock).toHaveBeenCalledTimes(1));
+        const [cmd, args] = spawnMock.mock.calls[0] as unknown as [string, string[]];
+        expect(cmd).toBe('C:\\Windows\\System32\\cmd.exe');
+        expect(args.slice(0, 3)).toEqual(['/c', 'start', '']);
+        expect(args[3]).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/[0-9a-f]{64}$/);
+      } finally {
+        if (handle.kind === 'launched') handle.close();
+      }
+    });
+
+    it('falls back to unavailable (manual instruction) when cmd.exe cannot be resolved, without throwing', () => {
+      setPlatform('win32');
+      process.env.SESSIONNAME = 'Console';
+      resolveFail.error = new Error('cmd.exe not found (searched 0 PATH entries)');
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const handle = launchAuthWeb('m', 'password', 'Enter password for m', () => ({ ok: true }));
+      expect(handle.kind).toBe('unavailable');
+      expect(spawnMock).not.toHaveBeenCalled();
+      expect(errSpy.mock.calls.map(c => c.join(' ')).join('\n')).toContain('cmd.exe not found');
+      errSpy.mockRestore();
       if (handle.kind === 'launched') handle.close();
     });
 

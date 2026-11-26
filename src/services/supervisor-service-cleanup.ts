@@ -179,7 +179,7 @@ export function findSupervisorRegistrations(): SupervisorRegistration[] {
   } else if (platform === 'win32') {
     let xml: string | null = null;
     try {
-      const raw = execFileSync('schtasks', ['/Query', '/TN', SUPERVISOR_WINDOWS_TASK_NAME, '/XML'], QUIET);
+      const raw = execFileSync(windowsExecutable('schtasks'), ['/Query', '/TN', SUPERVISOR_WINDOWS_TASK_NAME, '/XML'], QUIET);
       xml = raw == null ? null : decodeSchtasks(raw as Buffer | string);
     } catch {
       xml = null; // task not registered
@@ -280,7 +280,7 @@ function removeWindows(reg: SupervisorRegistration, failures: string[]): void {
   }
   for (const pid of pids) {
     try {
-      execFileSync('taskkill', ['/F', '/T', '/PID', String(pid)], QUIET);
+      execFileSync(windowsExecutable('taskkill'), ['/F', '/T', '/PID', String(pid)], QUIET);
     } catch (err) {
       const status = (err as { status?: number }).status;
       const text = errText(err);
@@ -289,7 +289,7 @@ function removeWindows(reg: SupervisorRegistration, failures: string[]): void {
     }
   }
   try {
-    execFileSync('schtasks', ['/Delete', '/TN', reg.name, '/F'], QUIET);
+    execFileSync(windowsExecutable('schtasks'), ['/Delete', '/TN', reg.name, '/F'], QUIET);
   } catch (err) {
     failures.push(`schtasks /Delete /TN ${reg.name} /F failed: ${errText(err)}`);
   }

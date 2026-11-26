@@ -64,6 +64,7 @@
     "contract:generate": "node memory-contract/v1/generate-contract.mjs",
     "contract:check": "node memory-contract/v1/generate-contract.mjs --check",
     "check:kb-canonical": "node scripts/check-kb-canonical.mjs",
+    "check:kb-bible-drift": "node scripts/check-kb-bible-drift.mjs",
     "gen:openapi": "npm run gen:openapi --workspace=@apralabs/fleet-api-contract",
     "dist-pm": "node scripts/dist-pm.mjs",
     "pack:stripped": "node scripts/pack-stripped.mjs",

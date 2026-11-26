@@ -157,6 +157,43 @@ export function warnIfLargeBdOutput(args, out, warn = console.warn) {
  * @returns {string|null}
  */
 export function resolveWindowsBdScript(deps = {}) {
+    const found = resolveWindowsBdCommand(deps);
+    return found && found.kind === 'script' ? found.path : null;
+}
+
+// Once-per-process guard for the "which bd did we pick" log line.
+let bdResolutionLogged = false;
+
+/** Test hook: forget that the resolution was logged. */
+export function resetBdResolutionLogForTests() {
+    bdResolutionLogged = false;
+}
+
+/**
+ * Resolves `bd` on Windows exactly the way the member's shell does: walk the
+ * absolute PATH entries in order (empty and relative entries are skipped) and,
+ * inside each directory, try the PATHEXT-ordered candidates `bd.exe`/`bd.com`
+ * then `bd.cmd`; the FIRST hit wins. A later npm `bd.cmd` shim therefore never
+ * shadows an earlier `bd.exe`, so a member cannot silently run two bd versions.
+ *
+ *   - `{ kind: 'exe', path }`    -> exec it directly (shell: false).
+ *   - `{ kind: 'script', path }` -> the `bin/bd.js` an npm shim wraps; run it with node.
+ *   - `null`                     -> not win32 / nothing usable on PATH.
+ *
+ * A `bd.cmd` whose content is not npm-shim-shaped is skipped (as before).
+ * The chosen path and its `bd --version` are logged once per process.
+ *
+ * @param {{
+ *   env?: NodeJS.ProcessEnv,
+ *   platform?: NodeJS.Platform,
+ *   existsFn?: (p: string) => boolean,
+ *   readFileFn?: (p: string, enc: string) => string,
+ *   execFileSyncFn?: typeof nodeExecFileSync,
+ *   log?: (msg: string) => void,
+ * }} [deps]
+ * @returns {{ kind: 'exe'|'script', path: string }|null}
+ */
+export function resolveWindowsBdCommand(deps = {}) {
     const env = deps.env ?? process.env;
     const platform = deps.platform ?? process.platform;
     const existsFn = deps.existsFn ?? existsSync;
@@ -166,30 +203,59 @@ export function resolveWindowsBdScript(deps = {}) {
     // Deliberately path.win32, not the bare `path` import: this function
     // models Windows PATH/path semantics (';'-delimited, '\'-separated) even
     // when `platform: 'win32'` is injected on a host actually running
-    // POSIX (e.g. these unit tests on macOS/ubuntu CI runners) -- the bare
-    // `path` module's `.delimiter`/`.join` follow process.platform, NOT the
-    // injected `platform` param, so using it here silently breaks PATH
-    // splitting (a Windows PATH entry's drive-letter colon, e.g. 'C:\Users\
-    // ...', gets misread as a second POSIX PATH entry split on ':') and path
-    // joining (POSIX '/' separators) on any non-Windows host -- exactly the
-    // failure this comment fixed (apra-fleet CI regression: 'expected null'
-    // on macos-latest/ubuntu-latest, where resolveWindowsBdScript is only
-    // ever exercised via this injectable-platform test path).
-    const pathDirs = String(env.PATH ?? env.Path ?? '').split(path.win32.delimiter).filter(Boolean);
+    // POSIX -- the bare `path` module follows process.platform, NOT the
+    // injected `platform` param, which breaks PATH splitting and joining.
+    const pathDirs = String(env.PATH ?? env.Path ?? '').split(path.win32.delimiter)
+        .filter((d) => d && path.win32.isAbsolute(d));
+    const pathExts = String(env.PATHEXT ?? env.Pathext ?? '.COM;.EXE;.BAT;.CMD').split(';')
+        .map((e) => e.trim().toLowerCase())
+        .filter((e) => e === '.exe' || e === '.com' || e === '.cmd');
+    if (pathExts.length === 0) pathExts.push('.com', '.exe', '.cmd');
     for (const dir of pathDirs) {
-        const cmdPath = path.win32.join(dir, 'bd.cmd');
-        if (!existsFn(cmdPath)) continue;
-        let content;
-        try {
-            content = readFileFn(cmdPath, 'utf-8');
-        } catch {
-            continue;
+        for (const ext of pathExts) {
+            const candidate = path.win32.join(dir, `bd${ext}`);
+            if (!existsFn(candidate)) continue;
+            let found = null;
+            if (ext === '.cmd') {
+                let content;
+                try {
+                    content = readFileFn(candidate, 'utf-8');
+                } catch {
+                    continue;
+                }
+                const match = content.match(/"%dp0%\\([^"]+\.js)"\s*%\*/);
+                if (!match) continue;
+                found = { kind: 'script', path: path.win32.join(dir, match[1]) };
+            } else {
+                found = { kind: 'exe', path: candidate };
+            }
+            logBdResolutionOnce(found, candidate, deps);
+            return found;
         }
-        const match = content.match(/"%dp0%\\([^"]+\.js)"\s*%\*/);
-        if (!match) continue;
-        return path.win32.join(dir, match[1]);
     }
     return null;
+}
+
+/** Logs the resolved bd and its version once per process; never throws. */
+function logBdResolutionOnce(found, shown, deps) {
+    if (bdResolutionLogged) return;
+    bdResolutionLogged = true;
+    const log = deps.log ?? ((m) => console.error(m));
+    let version = 'unknown';
+    try {
+        const run = deps.execFileSyncFn ?? nodeExecFileSync;
+        const out = found.kind === 'exe'
+            ? run(found.path, ['--version'], { encoding: 'utf-8', shell: false, windowsHide: true, timeout: 15000 })
+            : run(process.execPath, [found.path, '--version'], { encoding: 'utf-8', shell: false, windowsHide: true, timeout: 15000 });
+        version = String(out).trim().split('\n')[0] || 'unknown';
+    } catch {
+        // version stays 'unknown'
+    }
+    try {
+        log(`[exec-bd] using bd at ${shown} (${found.kind}): ${version}`);
+    } catch {
+        // A broken logger must never break a bd invocation.
+    }
 }
 
 /**
@@ -205,16 +271,24 @@ export function resolveWindowsBdScript(deps = {}) {
  * @param {string[]} args - argv passed to `bd` (e.g. ['dolt', 'remote', 'list', '--json'])
  * @param {import('node:child_process').ExecFileSyncOptions} [options] - forwarded as-is (cwd, encoding, stdio, ...).
  * @param {typeof nodeExecFileSync} [execFileSyncImpl] - injectable for tests (same signature as `node:child_process`'s `execFileSync`); defaults to the real one.
- * @param {typeof resolveWindowsBdScript} [resolveWindowsBd] - injectable for tests, so the win32-only resolution path is exercisable/deterministic on any host platform.
+ * @param {typeof resolveWindowsBdCommand} [resolveWindowsBd] - injectable for tests (may also return the legacy script-path string), so the win32-only resolution path is exercisable/deterministic on any host platform.
  * @returns {Buffer|string}
  */
-export function execBdSync(args, options = {}, execFileSyncImpl = nodeExecFileSync, resolveWindowsBd = resolveWindowsBdScript) {
+export function execBdSync(args, options = {}, execFileSyncImpl = nodeExecFileSync, resolveWindowsBd = resolveWindowsBdCommand) {
     if (!Array.isArray(args)) {
         throw new TypeError('execBdSync requires args to be an array of strings');
     }
-    const scriptPath = resolveWindowsBd();
-    if (scriptPath) {
-        const out = execFileSyncImpl(process.execPath, [scriptPath, ...args], { maxBuffer: BD_MAX_BUFFER_BYTES, windowsHide: true, ...options, shell: false });
+    // A resolver may return a plain string (the npm-shim script, legacy shape)
+    // or { kind: 'exe'|'script', path }.
+    const resolved = resolveWindowsBd();
+    const found = typeof resolved === 'string' ? { kind: 'script', path: resolved } : resolved;
+    if (found && found.kind === 'exe') {
+        const out = execFileSyncImpl(found.path, args, { maxBuffer: BD_MAX_BUFFER_BYTES, windowsHide: true, ...options, shell: false });
+        warnIfLargeBdOutput(args, out);
+        return out;
+    }
+    if (found && found.path) {
+        const out = execFileSyncImpl(process.execPath, [found.path, ...args], { maxBuffer: BD_MAX_BUFFER_BYTES, windowsHide: true, ...options, shell: false });
         warnIfLargeBdOutput(args, out);
         return out;
     }

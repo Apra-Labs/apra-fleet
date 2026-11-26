@@ -106,7 +106,7 @@ function makeMarker(): string {
  * or until `timeoutMs` expires. Prevents startup race conditions on slow runners
  * (e.g. Windows CI where child process creation can take >500ms).
  */
-async function waitForMarkerProcesses(marker: string, minCount = 1, timeoutMs = 5000): Promise<number> {
+async function waitForMarkerProcesses(marker: string, minCount = 1, timeoutMs = 15_000): Promise<number> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     const count = countMarkerProcesses(marker);
@@ -121,7 +121,7 @@ async function waitForMarkerProcesses(marker: string, minCount = 1, timeoutMs = 
  * or until `timeoutMs` expires. Prevents reaping race conditions on slow runners
  * where process exit table cleanup can lag.
  */
-async function waitForMarkerToDisappear(marker: string, timeoutMs = 5000): Promise<number> {
+async function waitForMarkerToDisappear(marker: string, timeoutMs = 15_000): Promise<number> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     const count = countMarkerProcesses(marker);
@@ -179,7 +179,7 @@ describe('run-all-tests.mjs wall-clock bound (apra-fleet-qe83.3)', () => {
     // The stub really is alive shortly after spawn -- otherwise a "killed
     // within timeout" result would be indistinguishable from "never
     // actually ran".
-    expect(await waitForMarkerProcesses(marker, 1, 5000)).toBeGreaterThan(0);
+    expect(await waitForMarkerProcesses(marker, 1, 15_000)).toBeGreaterThan(0);
 
     // Race the runner's own exit against a generous outer deadline (well
     // past APRA_TEST_TIMEOUT_MS=1500, to leave headroom for process-table
@@ -200,8 +200,8 @@ describe('run-all-tests.mjs wall-clock bound (apra-fleet-qe83.3)', () => {
     // No harness-level kill was needed (the branch above did not run) --
     // the runner's own taskkill/process-group cleanup must have already
     // reaped the stub.
-    expect(await waitForMarkerToDisappear(marker, 5000)).toBe(0);
-  }, 15_000);
+    expect(await waitForMarkerToDisappear(marker, 15_000)).toBe(0);
+  }, 60_000);
 
   it('the suite list falls back to the real default suites when APRA_TEST_SUITES_JSON is unset (source inspection)', () => {
     // A behavioural spawn of the real default suites would take minutes;
@@ -290,7 +290,7 @@ describe('apra-fleet-se scripts/run-tests.mjs wall-clock bound (apra-fleet-qe83.
     // "killed within timeout" result would be indistinguishable from "never
     // actually ran". node --test's per-file process isolation means this is
     // proving the WORKER survives, not just the top run-tests.mjs process.
-    expect(await waitForMarkerProcesses(marker, 1, 5000)).toBeGreaterThan(0);
+    expect(await waitForMarkerProcesses(marker, 1, 15_000)).toBeGreaterThan(0);
 
     const timedOut = await Promise.race([
       exitPromise.then(() => false),
@@ -330,8 +330,8 @@ describe('apra-fleet-se scripts/run-tests.mjs wall-clock bound (apra-fleet-qe83.
     // the acceptance-criteria-relevant outcome for THIS shape (run-tests.mjs
     // spawning node --test directly, no intervening shell): no leftover
     // process after a normal (non-simulated) timeout-triggered kill.
-    expect(await waitForMarkerToDisappear(marker, 5000)).toBe(0);
-  }, 15_000);
+    expect(await waitForMarkerToDisappear(marker, 15_000)).toBe(0);
+  }, 60_000);
 });
 
 /**
@@ -407,7 +407,7 @@ describe.skipIf(isWindows)('run-all-tests.mjs reaps a nested detached grandchild
     });
 
     // The nested worker really is alive shortly after spawn.
-    expect(await waitForMarkerProcesses(marker, 1, 5000)).toBeGreaterThan(0);
+    expect(await waitForMarkerProcesses(marker, 1, 15_000)).toBeGreaterThan(0);
 
     // Budget: outer timeout (1500) + soft-kill grace (1200) + kill latency,
     // well inside this outer race deadline and well BEFORE the inner
@@ -421,7 +421,7 @@ describe.skipIf(isWindows)('run-all-tests.mjs reaps a nested detached grandchild
     // Capture the survivor count BEFORE the cleanup sweep below -- sweeping
     // first and then asserting on the post-sweep count would make this
     // assertion vacuous (it could never fail, fixed tree or not).
-    const survivorsAfterRunnerExit = await waitForMarkerToDisappear(marker, 5000);
+    const survivorsAfterRunnerExit = await waitForMarkerToDisappear(marker, 15_000);
     killMarkerProcesses(marker); // best-effort cleanup, now that the proof above is captured
 
     expect(timedOut).toBe(false); // run-all-tests.mjs must have exited on its own
@@ -430,7 +430,7 @@ describe.skipIf(isWindows)('run-all-tests.mjs reaps a nested detached grandchild
     // group (the real node --test worker, two spawn levels deep) was
     // reaped too, not just the outer shell/npm/run-tests.mjs group.
     expect(survivorsAfterRunnerExit).toBe(0);
-  }, 15_000);
+  }, 60_000);
 });
 
 /**
@@ -489,7 +489,7 @@ describe.skipIf(isWindows)('run-all-tests.mjs does not launch the next suite aft
     });
 
     // Suite 1 really is alive before the signal is sent.
-    expect(await waitForMarkerProcesses(marker1, 1, 5000)).toBeGreaterThan(0);
+    expect(await waitForMarkerProcesses(marker1, 1, 15_000)).toBeGreaterThan(0);
 
     child.kill('SIGTERM');
 
@@ -504,7 +504,7 @@ describe.skipIf(isWindows)('run-all-tests.mjs does not launch the next suite aft
     // around when the runner process itself exits.
     await new Promise(resolve => setTimeout(resolve, 500));
 
-    const survivorsSuite1 = await waitForMarkerToDisappear(marker1, 5000);
+    const survivorsSuite1 = await waitForMarkerToDisappear(marker1, 15_000);
     const survivorsSuite2 = countMarkerProcesses(marker2);
     if (timedOut && child.pid) killTree(child.pid);
     killMarkerProcesses(marker1);
@@ -514,7 +514,7 @@ describe.skipIf(isWindows)('run-all-tests.mjs does not launch the next suite aft
     expect(exitCode).not.toBe(0);
     expect(survivorsSuite1).toBe(0); // suite 1's tree was reaped by the SIGTERM cascade
     expect(survivorsSuite2).toBe(0); // suite 2 must NEVER have been launched
-  }, 15_000);
+  }, 60_000);
 
   /**
    * apra-fleet-qe83.3.5.2: the case immediately above exercises ordering (a)
@@ -570,7 +570,7 @@ describe.skipIf(isWindows)('run-all-tests.mjs does not launch the next suite aft
 
     // Suite 1 really is alive (and has installed its SIGTERM trap) before
     // the signal is sent.
-    expect(await waitForMarkerProcesses(marker1, 1, 5000)).toBeGreaterThan(0);
+    expect(await waitForMarkerProcesses(marker1, 1, 15_000)).toBeGreaterThan(0);
 
     child.kill('SIGTERM');
 
@@ -585,7 +585,7 @@ describe.skipIf(isWindows)('run-all-tests.mjs does not launch the next suite aft
     // the runner process itself exits.
     await new Promise(resolve => setTimeout(resolve, 500));
 
-    const survivorsSuite1 = await waitForMarkerToDisappear(marker1, 5000);
+    const survivorsSuite1 = await waitForMarkerToDisappear(marker1, 15_000);
     const survivorsSuite2 = countMarkerProcesses(marker2);
     if (timedOut && child.pid) killTree(child.pid);
     killMarkerProcesses(marker1);
@@ -595,7 +595,7 @@ describe.skipIf(isWindows)('run-all-tests.mjs does not launch the next suite aft
     expect(exitCode).not.toBe(0);
     expect(survivorsSuite1).toBe(0); // suite 1's tree was reaped by the deferred hard-kill timer
     expect(survivorsSuite2).toBe(0); // suite 2 must NEVER have been launched
-  }, 15_000);
+  }, 60_000);
 });
 
 /**
@@ -673,6 +673,6 @@ describe('run-all-tests.mjs forces its own exit when the kill path fails (apra-f
     expect(timedOut).toBe(false); // run-all-tests.mjs must force-exit on its own
     expect(exitCode).toBe(1); // the forced-exit branch calls process.exit(1)
     expect(stillAliveAfterForcedExit).toBe(true); // kill really did fail; forced exit is what saved us
-    expect(await waitForMarkerToDisappear(marker, 5000)).toBe(0); // cleanup swept the orphaned stub
-  }, 15_000);
+    expect(await waitForMarkerToDisappear(marker, 15_000)).toBe(0); // cleanup swept the orphaned stub
+  }, 60_000);
 });

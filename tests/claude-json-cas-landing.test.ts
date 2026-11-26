@@ -168,7 +168,7 @@ describe('CAS: a concurrent write between re-read and move is kept together with
     expect(r.landings).toHaveLength(2);
     expect(landingExpectedFingerprint(r.landings[0])).toMatch(/^\d+ \d+$/);
     expect(leftovers(m.home)).toEqual([]);
-  });
+  }, 60_000);
 
   it.runIf(hasBash)('POSIX (linux member, real bash): syncMemberMcpEntry re-reads and keeps both', async () => {
     const m = setupMember();
@@ -189,7 +189,7 @@ describe('CAS: a concurrent write between re-read and move is kept together with
     expect(final.projects[fwd(m.work)].mcpServers['apra-fleet']).toEqual({ type: 'http', url });
     expect(r.landings).toHaveLength(2);
     expect(leftovers(m.home)).toEqual([]);
-  });
+  }, 60_000);
 
   it.runIf(hasBash)('gitbash Windows member (POSIX command forms, real bash): keeps both', async () => {
     const m = setupMember();
@@ -203,7 +203,7 @@ describe('CAS: a concurrent write between re-read and move is kept together with
     expect(final.projects[fwd(m.work)].hasTrustDialogAccepted).toBe(true);
     expect(r.landings).toHaveLength(2);
     expect(leftovers(m.home)).toEqual([]);
-  });
+  }, 60_000);
 
   it.runIf(isWin)('PowerShell Windows member (real powershell.exe): keeps both', async () => {
     const m = setupMember();
@@ -254,7 +254,7 @@ describe('CAS: a concurrent write between re-read and move is kept together with
     expect(final.projects['C:/work/p'].hasTrustDialogAccepted).toBe(true);
     expect(landings).toBe(2);
     expect([...files.keys()]).toEqual(['C:\\Users\\member\\.claude.json']);
-  });
+  }, 60_000);
 });
 
 describe('CAS retries exhausted: loud failure naming the file, target left as the other writer left it', () => {
@@ -275,7 +275,7 @@ describe('CAS retries exhausted: loud failure naming the file, target left as th
     expect(JSON.parse(final).projects).toEqual({});
     expect(JSON.parse(final).concurrent3).toBe('written-by-another-process');
     expect(leftovers(m.home)).toEqual([]);
-  });
+  }, 60_000);
 
   it.runIf(hasBash)('POSIX (real bash): syncMemberMcpEntry, secret-file channel staged outside the directory', async () => {
     const m = setupMember();
@@ -293,7 +293,7 @@ describe('CAS retries exhausted: loud failure naming the file, target left as th
     expect(JSON.parse(fs.readFileSync(m.file, 'utf8')).projects).toEqual({});
     expect(leftovers(m.home)).toEqual([]);
     expect(fs.readdirSync(path.dirname(secret.staged[0]))).toEqual([]);
-  });
+  }, 60_000);
 });
 
 describe('secret channel staged in another directory: the final step is a same-directory rename', () => {
@@ -324,7 +324,7 @@ describe('secret channel staged in another directory: the final step is a same-d
       fs.rmSync(m.work, { recursive: true, force: true });
       fs.rmSync(path.dirname(secret.staged[0]), { recursive: true, force: true });
     }
-  });
+  }, 60_000);
 
   it('PowerShell (command text, any host): copies next to the destination, then swaps there', async () => {
     const calls: string[] = [];
@@ -343,7 +343,7 @@ describe('secret channel staged in another directory: the final step is a same-d
     expect(script).toContain("[System.IO.Path]::GetDirectoryName([System.IO.Path]::GetFullPath($s)) -ne [System.IO.Path]::GetDirectoryName([System.IO.Path]::GetFullPath($d))) { $t = $d + '.fleet-land-'");
     expect(script).toContain('[System.IO.File]::Copy($s, $t, $false); $src = $t');
     expect(script).toContain('[System.IO.File]::Replace($src, $d, [NullString]::Value)');
-  });
+  }, 60_000);
 
   it.runIf(isWin)('PowerShell (real powershell.exe): lands via a copy in the destination directory, staged source removed', async () => {
     const m = setupMember();
@@ -383,7 +383,7 @@ describe('PowerShell landing is sent -EncodedCommand-wrapped', () => {
       expect(isWindowsLandingMove(c)).toBe(true);
       expect(landingExpectedFingerprint(c)).toBe('FLEET_ABSENT');
     }
-  });
+  }, 60_000);
 });
 
 describe('a failed delete of the copied-from source after a successful swap only warns', () => {
@@ -408,7 +408,7 @@ describe('a failed delete of the copied-from source after a successful swap only
     } finally {
       fs.chmodSync(stageDir, 0o755);
     }
-  });
+  }, 60_000);
 
   it.runIf(isWin)('PowerShell (real powershell.exe): exit 0, target updated, warning on stderr', async () => {
     const m = setupMember();

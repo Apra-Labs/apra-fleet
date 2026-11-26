@@ -78,7 +78,7 @@ describe('receiveFiles', () => {
       local_dest_dir: tmpDir,
     });
 
-    expect(result).toContain('resolves outside member work_folder');
+    expect((result as any).text).toContain('resolves outside member work_folder');
   });
 
   it('Null byte in remote_path', async () => {
@@ -88,7 +88,7 @@ describe('receiveFiles', () => {
       local_dest_dir: tmpDir,
     });
 
-    expect(result).toContain('null bytes are not allowed');
+    expect((result as any).text).toContain('null bytes are not allowed');
   });
 
   describe('Windows remote member path validation (#146)', () => {
@@ -125,7 +125,7 @@ describe('receiveFiles', () => {
         remote_paths: ['..\\escape.txt'],
         local_dest_dir: tmpDir,
       });
-      expect(result).toContain('resolves outside member work_folder');
+      expect((result as any).text).toContain('resolves outside member work_folder');
     });
 
     it('rejects absolute Windows path outside workFolder', async () => {
@@ -134,7 +134,7 @@ describe('receiveFiles', () => {
         remote_paths: ['C:\\Users\\other\\secret.txt'],
         local_dest_dir: tmpDir,
       });
-      expect(result).toContain('resolves outside member work_folder');
+      expect((result as any).text).toContain('resolves outside member work_folder');
     });
   });
 });

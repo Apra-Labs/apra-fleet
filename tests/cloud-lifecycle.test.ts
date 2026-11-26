@@ -209,6 +209,6 @@ describe('send-files: ensureCloudReady wiring', () => {
     mockEnsureCloudReady.mockRejectedValueOnce(new Error('Instance terminated'));
 
     const result = await sendFiles({ member_id: member.id, local_paths: ['/tmp/test.txt'] });
-    expect(result).toContain('Instance terminated');
+    expect((result as any).text).toContain('Instance terminated');
   });
 });

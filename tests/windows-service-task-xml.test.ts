@@ -19,6 +19,11 @@ const { mockGracefulStop, order } = vi.hoisted(() => ({
   mockGracefulStop: vi.fn<(fallback?: (pid: number) => void) => Promise<boolean>>(),
   order: [] as string[],
 }));
+// Host-independent: windowsExecutable resolves to a fixed absolute System32 path (as it does on win32).
+vi.mock('../src/os/windows-executable.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/os/windows-executable.js')>()),
+  windowsExecutable: (name: string) => `C:/Windows/System32/${name.replace(/\.exe$/i, '')}.exe`,
+}));
 vi.mock('../src/services/service-manager/index.js', () => ({
   gracefulStopByServerJson: mockGracefulStop,
 }));
@@ -194,6 +199,23 @@ describe('WindowsServiceManager lifecycle', () => {
     const leaked = fs.readdirSync(process.cwd()).filter(n => !cwdBefore.includes(n));
     for (const n of leaked) fs.rmSync(path.join(process.cwd(), n), { recursive: true, force: true });
     expect(leaked).toEqual([]);
+    // Backslash-named leftovers ('\\tmp\\fleet-wintask-XXXX\\apra-fleet-service.js') are
+    // cwd-relative files, so check by name too, independent of the before-snapshot.
+    expect(fs.readdirSync(process.cwd()).filter(n => n.includes('fleet-wintask'))).toEqual([]);
+  });
+
+  it('launcherPathFor keeps a real tmp-dir wrapper absolute and inside that dir (never a cwd-relative backslash path)', () => {
+    const launcher = launcherPathFor(wrapper);
+    expect(path.isAbsolute(launcher)).toBe(true);
+    expect(path.dirname(launcher)).toBe(dir);
+    if (process.platform === 'win32') {
+      // A real Windows tmp dir is C:\...\Temp, so backslashes are expected there; it must
+      // still be drive-rooted, never a cwd-relative '\tmp\...' style path.
+      expect(launcher).toMatch(/^[A-Za-z]:\\/);
+    } else {
+      // On POSIX a backslash means path.win32 was applied to a POSIX tmp wrapper -- the leak.
+      expect(launcher).not.toContain('\\');
+    }
   });
 
   it('launcherPathFor keeps the launcher beside the wrapper for POSIX and Windows paths', () => {
@@ -257,8 +279,8 @@ describe('WindowsServiceManager lifecycle', () => {
     await mgr().start();
     const enableAt = order.indexOf('schtasks /change /tn ApraFleet /enable');
     expect(enableAt).toBeGreaterThanOrEqual(0);
-    expect(spawned).toEqual([['schtasks', ['/run', '/tn', 'ApraFleet']]]);
-    expect(enableAt).toBeLessThan(order.indexOf('spawn schtasks /run /tn ApraFleet'));
+    expect(spawned).toEqual([['C:/Windows/System32/schtasks.exe', ['/run', '/tn', 'ApraFleet']]]);
+    expect(enableAt).toBeLessThan(order.indexOf('spawn C:/Windows/System32/schtasks.exe /run /tn ApraFleet'));
   });
 
   it('query reports a disabled task as stopped by the user', async () => {
@@ -303,7 +325,7 @@ describe('WindowsServiceManager lifecycle', () => {
       // register() itself must leave no launcher behind, or start() would use wscript.
       expect(fs.existsSync(launcherPathFor(wrapper))).toBe(false);
       await mgr().start();
-      expect(spawned).toEqual([['cmd.exe', ['/d', '/s', '/c', `""${wrapper}""`]]]);
+      expect(spawned).toEqual([['C:/Windows/System32/cmd.exe', ['/d', '/s', '/c', `""${wrapper}""`]]]);
       expect(verbatim).toEqual([true]);
       warn.mockRestore();
     });
@@ -317,7 +339,7 @@ describe('WindowsServiceManager lifecycle', () => {
       expect(fs.existsSync(launcherPathFor(wrapper))).toBe(false);
       spawned.length = 0; verbatim.length = 0;
       await mgr().start();
-      expect(spawned).toEqual([['cmd.exe', ['/d', '/s', '/c', `""${wrapper}""`]]]);
+      expect(spawned).toEqual([['C:/Windows/System32/cmd.exe', ['/d', '/s', '/c', `""${wrapper}""`]]]);
       warn.mockRestore();
     });
 

@@ -16,13 +16,13 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { makeTestAgent, decodePowerShellEncodedCommand } from './test-helpers.js';
 import type { Agent, SSHExecResult } from '../src/types.js';
 import {
   ensureMemberFleetInstall, buildReplaceFullInstallPlan, REPLACE_FULL_INSTALL, FLEET_MCP_FIX, ReleaseDownloadError,
-  buildSelfRegisterCommand, buildSelfRemoveCommand, buildMemberCallCommand,
+  buildSelfRegisterCommand, buildSelfRemoveCommand, buildMemberCallCommand, buildExeLockProbe, buildManualInstallSteps, buildSupervisorStop,
   type MemberFleetInstallDeps,
 } from '../src/services/member-fleet-install.js';
 import { updateMemberSchema } from '../src/tools/update-member.js';
@@ -43,11 +43,17 @@ function agentFor(p: Platform): Agent {
 }
 
 type MarkerMode = 'absent' | 'present' | 'timeout';
-type Step = 'supervisor-check' | 'stop' | 'stop-check' | 'backup' | 'uninstall' | 'supervisor' | 'move-data' | 'install';
+type Step = 'supervisor-check' | 'supervisor-stop' | 'supervisor-recheck' | 'supervisor-restart' | 'stop' | 'stop-check' | 'backup' | 'exe-check' | 'uninstall' | 'supervisor' | 'move-data' | 'install';
 
 /** Classify a decoded member command as one of the replacement's destructive steps. */
 function stepOf(c: string): Step | null {
+  // A Git Bash member runs the supervisor stop through a nested powershell.exe -EncodedCommand.
+  const nested = /powershell\.exe -NoProfile -NonInteractive -EncodedCommand (\S+)/.exec(c);
+  const inner = nested ? Buffer.from(nested[1], 'base64').toString('utf16le') : c;
+  if (inner.includes('__APRA_FLEET_SUPERVISOR_VIA__')) return 'supervisor-stop';
+  if (inner.includes('schtasks.exe /Run') || c.includes('systemctl --user start fleet-supervisor')) return 'supervisor-restart';
   if (/' 'fleet-se-check'/.test(c)) return 'supervisor-check';
+  if (c.includes('__APRA_FLEET_EXE_LOCKED__')) return 'exe-check';
   if (/apra-fleet(\.exe)?' stop(;|$| )/.test(c)) return 'stop';
   if (/apra-fleet(\.exe)?' status(;|$| )/.test(c)) return 'stop-check';
   if (c.includes('.apra-fleet-replace-backup-') && c.includes('fleet.key') && !c.includes('uninstall')) return 'backup';
@@ -58,25 +64,35 @@ function stepOf(c: string): Step | null {
   return null;
 }
 
-function harness(p: Platform, opts: { marker?: MarkerMode; failStep?: Step; serverStaysUp?: boolean; supervisorLine?: string } = {}) {
+function harness(p: Platform, opts: { marker?: MarkerMode; failStep?: Step; serverStaysUp?: boolean; supervisorLine?: string; exeLocked?: boolean; supervisorSurvivesStop?: boolean; supervisorVia?: 'task' | 'unit' | 'manual'; supervisorGone?: boolean } = {}) {
   const log: string[] = [];
   const events: string[] = [];
-  const w = { installed: OLD as string | null, marker: opts.marker ?? 'absent' as MarkerMode };
+  const w = { installed: OLD as string | null, marker: opts.marker ?? 'absent' as MarkerMode, checks: 0, supervisorUp: true };
+  const via = opts.supervisorVia ?? (p.os === 'windows' ? 'task' : p.os === 'linux' ? 'unit' : 'manual');
   const ok = (stdout: string): SSHExecResult => ({ stdout, stderr: '', code: 0 });
   const deps: MemberFleetInstallDeps = {
     exec: async (_a, raw) => {
       const c = decodePowerShellEncodedCommand(raw);
       log.push(c);
-      const step = stepOf(c);
+      let step = stepOf(c);
+      // The re-check after the supervisor stop is the same fleet-se-check command.
+      if (step === 'supervisor-check' && w.checks++ > 0) step = 'supervisor-recheck';
       if (step) {
         events.push(step);
         if (step === opts.failStep) return { stdout: '', stderr: `${step} broke`, code: 1 };
         // The installed (old) binary's status never carries a Supervisor line; the staged fleet-se-check does the detecting.
-        if (step === 'supervisor-check') return ok('FLEET_SE_CHECK ok\n' + (opts.supervisorLine ?? ''));
+        if (step === 'supervisor-check' || step === 'supervisor-recheck') {
+          const lines = (opts.supervisorLine ?? '').split('\n').filter(l => w.supervisorUp || !l.startsWith('FLEET_SE supervisor ')).join('\n');
+          return ok('FLEET_SE_CHECK ok\n' + lines);
+        }
+        if (step === 'supervisor-stop') { w.supervisorUp = !!opts.supervisorSurvivesStop; return ok(`__APRA_FLEET_SUPERVISOR_VIA__ ${via}\n`); }
+        if (step === 'exe-check') return ok(opts.exeLocked ? '__APRA_FLEET_EXE_LOCKED__ The process cannot access the file because it is being used by another process.\n' : '__APRA_FLEET_EXE_FREE__\n');
         if (step === 'stop-check') return ok(opts.serverStaysUp ? 'apra-fleet status\n  State:    running\n' : 'apra-fleet status\n  State:    stopped\n');
         if (step === 'uninstall') w.installed = null;
         if (step === 'install') { w.installed = ORCH; w.marker = 'present'; return ok('installed'); }
-        if (step === 'supervisor') return ok('__APRA_FLEET_SUPERVISOR_MOVED__\n');
+        // supervisorGone models the old uninstall having already deleted the task / unit file.
+        if (step === 'supervisor') return ok(opts.supervisorGone ? '' : '__APRA_FLEET_SUPERVISOR_MOVED__\n');
+        if (step === 'supervisor-restart' && opts.supervisorGone) return ok('__APRA_FLEET_SUPERVISOR_GONE__\n');
         return ok('');
       }
       if (c.includes('member-install.json')) {
@@ -100,7 +116,7 @@ function harness(p: Platform, opts: { marker?: MarkerMode; failStep?: Step; serv
   return { deps, log, events, w };
 }
 
-const destructive = (events: string[]) => events.filter(e => !e.startsWith('transfer:') && e !== 'stop' && e !== 'stop-check' && e !== 'supervisor-check');
+const destructive = (events: string[]) => events.filter(e => !e.startsWith('transfer:') && e !== 'stop' && e !== 'stop-check' && e !== 'supervisor-check' && e !== 'exe-check');
 
 describe('replace-full: full command sequence per OS', () => {
   it('linux: stage, backup (data + fleet.key), uninstall, supervisor stop/disable, move data, member install', async () => {
@@ -204,7 +220,9 @@ describe('replace-full: a failure after the uninstall names the step and the rol
     expect(detail).toContain(`if [ -d '${aside}' ]; then rm -rf '${LINUX.home}/.apra-fleet/data' && mv '${aside}' '${LINUX.home}/.apra-fleet/data'; else`);
     expect(detail).toContain(`cp -R '${backupDir}/data' '${LINUX.home}/.apra-fleet/data'`);
     expect(detail).toContain(`cp '${backupDir}/fleet.key' '${LINUX.home}/.apra-fleet/fleet.key'`);
-    expect(detail).toContain('systemctl --user enable --now fleet-supervisor');
+    // Re-enabled before the reinstall but not started there (a running supervisor makes the old install refuse).
+    expect(detail).toContain('systemctl --user enable fleet-supervisor');
+    expect(detail).not.toContain('enable --now');
     expect(detail).toContain(`chmod +x '${backupDir}/apra-fleet' && '${backupDir}/apra-fleet' install --llm claude --force`);
   });
 
@@ -579,17 +597,16 @@ describe('d05q: step 2 uninstalls with the BACKUP copy of the binary', () => {
   }
 });
 
-describe('9hyz: a running fleet-sprint supervisor on the member refuses before anything is stopped', () => {
-  const UP = 'FLEET_SE supervisor pid=16028 port=8788\n';
+describe('9hyz: a live fleet-sprint sprint on the member refuses before anything is stopped', () => {
+  const LIVE = 'FLEET_SE supervisor pid=16028 port=8788\nFLEET_SE sprint pid=16100 id=s7\n';
   for (const p of [LINUX, WINDOWS, GITBASH]) {
-    it(`${p.shell ?? p.os}: Supervisor UP -> typed fleet-se-running, no stop/backup/uninstall, names the port and the shutdown call`, async () => {
-      const h = harness(p, { supervisorLine: UP });
+    it(`${p.shell ?? p.os}: supervisor with a live sprint -> typed fleet-se-running, no supervisor stop/stop/backup/uninstall`, async () => {
+      const h = harness(p, { supervisorLine: LIVE });
       const r = await ensureMemberFleetInstall(agentFor(p), h.deps, { replaceFull: true });
       expect(r).toMatchObject({ state: 'unavailable', reason: 'fleet-se-running', version: OLD });
       expect(h.events.filter(e => !e.startsWith('transfer:'))).toEqual(['supervisor-check']);
       const detail = (r as { detail: string }).detail;
-      expect(detail).toContain('http://localhost:8788/api/shutdown');
-      expect(detail).toContain('Content-Type: application/json');
+      expect(detail).toContain('FLEET_SE sprint pid=16100 id=s7');
       expect(detail).toContain('Nothing was stopped, removed or backed up');
       expect(FLEET_MCP_FIX['fleet-se-running']).toContain('/api/shutdown');
     });
@@ -612,7 +629,7 @@ describe('re-judge 2: the supervisor check uses the staged binary and sees what 
     expect(h.events.filter(e => !e.startsWith('transfer:'))).toEqual(['supervisor-check']);
     const detail = (r as { detail: string }).detail;
     expect(detail).toContain('FLEET_SE sprint pid=9 id=s1');
-    expect(detail).toContain('systemctl --user stop fleet-supervisor');
+    expect(detail).toContain('Let its sprints finish');
     expect(h.log.find(c => stepOf(c) === 'supervisor-check')).toContain(`'${LINUX.home}/.apra-fleet/staging/apra-fleet' 'fleet-se-check'`);
   });
 
@@ -622,5 +639,326 @@ describe('re-judge 2: the supervisor check uses the staged binary and sees what 
     const detail = (r as { detail: string }).detail;
     expect(detail).toContain('E-FLEET-SE-RUNNING');
     expect(detail).toContain('/api/shutdown -H "Content-Type: application/json"');
+  });
+});
+
+describe('d05q: a Windows member whose installed exe is held by another process is refused before the uninstall', () => {
+  const planFor = (p: Platform) => {
+    const ps = p.shell === 'powershell5';
+    const exe = p.os === 'windows' ? 'apra-fleet.exe' : 'apra-fleet';
+    const sepc = ps ? '\\' : '/';
+    return buildReplaceFullInstallPlan({
+      home: p.home, targetOs: p.os, shell: (p.shell ?? 'bash') as never, provider: 'claude',
+      installerPath: `${p.home}${sepc}.apra-fleet${sepc}staging${sepc}${exe}`, stamp: STAMP,
+    });
+  };
+
+  for (const p of [WINDOWS, GITBASH]) {
+    const label = p.shell ?? p.os;
+    const ps = p.shell === 'powershell5';
+    const sepc = ps ? '\\' : '/';
+    const installed = `${p.home}${sepc}.apra-fleet${sepc}bin${sepc}apra-fleet.exe`;
+
+    it(`${label}: the removability probe runs after the backup and before the uninstall, which still runs the BACKUP binary`, () => {
+      const plan = planFor(p);
+      const names = plan.steps.map(st => st.name);
+      expect(names.indexOf('exe-check')).toBe(names.indexOf('backup') + 1);
+      expect(names.indexOf('uninstall')).toBe(names.indexOf('exe-check') + 1);
+      const probe = plan.steps.find(st => st.name === 'exe-check')!.command;
+      const decoded = ps ? decodePowerShellEncodedCommand(probe) : decodeEnvelope(probe);
+      // Probes the INSTALLED exe (the one the uninstall must delete), read-write and exclusive, never modifying it.
+      expect(decoded).toContain(`'${installed}'`);
+      if (ps) expect(decoded).toContain(`[System.IO.File]::Open('${installed}', 'Open', 'ReadWrite', 'None')`);
+      else {
+        expect(decoded).toContain(`( exec 3<>'${installed}' )`);
+        expect(decoded).toContain(`if [ -f '${installed}' ]`);
+      }
+      for (const bad of ['Remove-Item', 'rm ', 'Move-Item', 'mv ', 'Set-Content', 'Out-File']) expect(decoded, bad).not.toContain(bad);
+      const un = plan.steps.find(st => st.name === 'uninstall')!.command;
+      expect(ps ? decodePowerShellEncodedCommand(un) : decodeEnvelope(un)).toContain(`'${plan.backupDir}${sepc}apra-fleet.exe' uninstall --force --yes`);
+      expect(plan.rollbackFor['exe-check']).toEqual(plan.rollbackFor.backup);
+    });
+
+    it(`${label}: probe reports the exe locked -> typed exe-locked, the uninstall/move/install never run, detail names the backup and the restart`, async () => {
+      const h = harness(p, { exeLocked: true });
+      const r = await ensureMemberFleetInstall(agentFor(p), h.deps, { replaceFull: true });
+      expect(r).toMatchObject({ state: 'unavailable', reason: 'exe-locked', version: OLD });
+      expect(h.events.filter(e => !e.startsWith('transfer:'))).toEqual(['supervisor-check', 'stop', 'stop-check', 'backup', 'exe-check']);
+      // exec spy: no uninstall, data move or install command reached the member.
+      expect(h.log.some(c => c.includes('uninstall --force --yes'))).toBe(false);
+      expect(h.log.some(c => c.includes('data.replaced-'))).toBe(false);
+      expect(h.log.some(c => c.includes("'install' '--llm'"))).toBe(false);
+      const detail = (r as { detail: string }).detail;
+      expect(detail).toContain('step 1b');
+      expect(detail).toContain('is in use by another process');
+      expect(detail).toContain('Nothing was uninstalled');
+      expect(detail).toContain(`.apra-fleet-replace-backup-${STAMP}`);
+      expect(detail).toContain(`'${installed}' start`);
+    });
+  }
+
+  it('non-Windows members get no exe-check step', () => {
+    for (const p of [LINUX, MACOS]) expect(planFor(p).steps.map(st => st.name)).not.toContain('exe-check');
+  });
+
+  it('fail-closed: a check that prints no FREE tag, exits non-zero, or cannot run refuses with exe-locked before the uninstall', async () => {
+    const outcomes: Array<() => Promise<SSHExecResult>> = [
+      async () => ({ stdout: 'something else\n', stderr: '', code: 0 }),
+      async () => ({ stdout: '', stderr: 'powershell broke', code: 1 }),
+      async () => { throw new Error('Command timed out'); },
+    ];
+    for (const outcome of outcomes) {
+      const h = harness(WINDOWS);
+      const exec = h.deps.exec;
+      h.deps.exec = async (a, raw, t) => {
+        if (stepOf(decodePowerShellEncodedCommand(raw)) === 'exe-check') { h.events.push('exe-check'); return outcome(); }
+        return exec(a, raw, t);
+      };
+      const r = await ensureMemberFleetInstall(agentFor(WINDOWS), h.deps, { replaceFull: true });
+      expect(r).toMatchObject({ state: 'unavailable', reason: 'exe-locked' });
+      expect(h.events).not.toContain('uninstall');
+      expect(h.events.at(-1)).toBe('exe-check');
+    }
+  });
+
+  it('exe-locked points at the owner steps and has a fix line', () => {
+    expect(FLEET_MCP_FIX['exe-locked']).toContain('replace-full');
+    expect(buildManualInstallSteps({ home: WINDOWS.home, targetOs: 'windows', shell: 'powershell5' as never, provider: 'claude', arch: 'x64', orchestratorVersion: ORCH, reason: 'exe-locked' }))
+      .toContain('follow the owner steps in the reason above');
+  });
+});
+
+/** A small system exe: a running copy is mapped by Windows exactly as the member's running apra-fleet.exe is. */
+const PING = process.platform === 'win32' ? path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'PING.EXE') : null;
+
+describe.skipIf(!hasPs || !PING || !fs.existsSync(PING))('d05q: the emitted PowerShell probe detects a really running exe (Windows only)', () => {
+  it('LOCKED while a copy runs, FREE once it exits, FREE when absent; the exe is unchanged', { timeout: 120_000 }, async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-d05q-'));
+    try {
+      const exe = path.join(dir, 'apra-fleet.exe');
+      fs.copyFileSync(PING!, exe);
+      const before = fs.readFileSync(exe);
+      const runProbe = (p: string) => spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', decodePowerShellEncodedCommand(buildExeLockProbe(p, 'windows', 'powershell5' as never))], { encoding: 'utf8' }).stdout;
+      const child = spawn(exe, ['-n', '60', '127.0.0.1'], { stdio: 'ignore', windowsHide: true });
+      const exited = new Promise<void>(resolve => child.once('exit', () => resolve()));
+      try {
+        await new Promise<void>((resolve, reject) => { child.once('spawn', () => resolve()); child.once('error', reject); });
+        expect(runProbe(exe)).toContain('__APRA_FLEET_EXE_LOCKED__');
+      } finally {
+        child.kill();
+        await exited;
+      }
+      expect(runProbe(exe)).toContain('__APRA_FLEET_EXE_FREE__');
+      expect(runProbe(path.join(dir, 'missing.exe'))).toContain('__APRA_FLEET_EXE_FREE__');
+      expect(fs.readFileSync(exe).equals(before)).toBe(true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 9hyz: an idle supervisor is stopped in step 0 and restarted after; rollbacks
+// stop it first and restart it last
+// ---------------------------------------------------------------------------
+
+describe('9hyz: an idle fleet-sprint supervisor is stopped in step 0 and restarted after a successful replacement', () => {
+  const IDLE = 'FLEET_SE supervisor pid=16028 port=8788\n';
+  /** Commands the fake member received, decoded, with a nested powershell.exe -EncodedCommand decoded too. */
+  const flat = (log: string[]) => log.map(c => {
+    const m = /powershell\.exe -NoProfile -NonInteractive -EncodedCommand (\S+)/.exec(c);
+    return m ? `${c}\n${Buffer.from(m[1], 'base64').toString('utf16le')}` : c;
+  });
+  const steps = (h: ReturnType<typeof harness>) => h.events.filter(e => !e.startsWith('transfer:'));
+
+  for (const p of [WINDOWS, GITBASH]) {
+    const label = p.shell ?? p.os;
+    it(`${label}: the ApraFleetSupervisor task is ended before the server stop, the replacement proceeds, and the task is run again after the version check`, async () => {
+      const h = harness(p, { supervisorLine: IDLE });
+      const r = await ensureMemberFleetInstall(agentFor(p), h.deps, { replaceFull: true });
+      expect(r).toMatchObject({ state: 'available', installed: true, version: ORCH });
+      expect(steps(h)).toEqual(['supervisor-check', 'supervisor-stop', 'supervisor-recheck', 'stop', 'stop-check', 'backup', 'exe-check', 'uninstall', 'move-data', 'install', 'supervisor-restart']);
+      const cmds = flat(h.log);
+      const stop = cmds.find(c => c.includes('__APRA_FLEET_SUPERVISOR_VIA__') && c.includes('Get-ScheduledTask'))!;
+      expect(stop).toContain("Get-ScheduledTask -TaskName 'ApraFleetSupervisor'");
+      expect(stop).toContain("schtasks.exe /End /TN 'ApraFleetSupervisor'");
+      expect(stop).toContain("Invoke-RestMethod -Method Post -Uri 'http://localhost:8788/api/shutdown' -ContentType 'application/json' -Body '{}'");
+      expect(stop).toContain("'http://localhost:8788/api/health'");
+      // The task is ended BEFORE the graceful shutdown (it would respawn the supervisor).
+      expect(stop.indexOf('schtasks.exe /End')).toBeLessThan(stop.indexOf('/api/shutdown'));
+      const restartCmd = flat([h.log.find(c => stepOf(c) === 'supervisor-restart')!])[0];
+      expect(restartCmd).toContain("Get-ScheduledTask -TaskName 'ApraFleetSupervisor'");
+      expect(restartCmd).toContain("schtasks.exe /Run /TN 'ApraFleetSupervisor'");
+      if (r.state !== 'available') throw new Error('unreachable');
+      expect(r.replaced?.notes).toEqual(['the idle fleet-sprint supervisor (port 8788) was stopped in step 0 and restarted after the install (the ApraFleetSupervisor scheduled task)']);
+      // No POSIX expansion of a path in any member-bound command.
+      for (const c of h.log) { expect(c).not.toContain('$HOME'); expect(c).not.toContain('~/'); }
+    });
+  }
+
+  it('linux: the fleet-supervisor user unit is stopped in step 0 and put back, enabled and started after', async () => {
+    const h = harness(LINUX, { supervisorLine: IDLE });
+    const r = await ensureMemberFleetInstall(agentFor(LINUX), h.deps, { replaceFull: true });
+    expect(r).toMatchObject({ state: 'available', installed: true });
+    expect(steps(h)).toEqual(['supervisor-check', 'supervisor-stop', 'supervisor-recheck', 'stop', 'stop-check', 'backup', 'uninstall', 'supervisor', 'move-data', 'install', 'supervisor-restart']);
+    const stop = h.log.find(c => stepOf(c) === 'supervisor-stop')!;
+    expect(stop).toContain('systemctl --user is-active --quiet fleet-supervisor');
+    expect(stop).toContain('systemctl --user stop fleet-supervisor');
+    expect(stop).toContain(`curl -s -m 10 -o /dev/null -X POST 'http://localhost:8788/api/shutdown' -H 'Content-Type: application/json' -d '{}'`);
+    expect(stop.indexOf('systemctl --user stop')).toBeLessThan(stop.indexOf('/api/shutdown'));
+    const backupDir = `${LINUX.home}/.apra-fleet-replace-backup-${STAMP}`;
+    const unit = `${LINUX.home}/.config/systemd/user/fleet-supervisor.service`;
+    expect(h.log.find(c => stepOf(c) === 'supervisor-restart')).toBe(
+      `if [ -f '${backupDir}/fleet-supervisor.service' ] && [ ! -f '${unit}' ]; then mkdir -p '${LINUX.home}/.config/systemd/user' && mv '${backupDir}/fleet-supervisor.service' '${unit}'; fi; ` +
+      `if [ -f '${unit}' ]; then systemctl --user daemon-reload && systemctl --user enable fleet-supervisor && systemctl --user start fleet-supervisor; ` +
+      `else printf '%s\\n' '__APRA_FLEET_SUPERVISOR_GONE__'; fi`);
+    if (r.state !== 'available') throw new Error('unreachable');
+    expect(r.replaced?.notes?.[0]).toContain('stopped in step 0 and restarted after the install (the fleet-supervisor user unit)');
+    // The unit file went back, so it is not reported as moved into the backup.
+    expect(r.replaced?.removed.join(' ')).not.toContain('unit file moved into the backup');
+  });
+
+  for (const p of [WINDOWS, GITBASH]) {
+    it(`${p.shell ?? p.os}: the old uninstall deleted the ApraFleetSupervisor task, so no restart is claimed; the note says the supervisor went away with the full install`, async () => {
+      const h = harness(p, { supervisorLine: IDLE, supervisorGone: true });
+      const r = await ensureMemberFleetInstall(agentFor(p), h.deps, { replaceFull: true });
+      expect(r).toMatchObject({ state: 'available', installed: true });
+      if (r.state !== 'available') throw new Error('unreachable');
+      const restartCmd = flat([h.log.find(c => stepOf(c) === 'supervisor-restart')!])[0];
+      // The restart is guarded by the task's existence, never a bare run of a deleted task.
+      expect(restartCmd).toContain("if ($t) { schtasks.exe /Run");
+      const notes = r.replaced?.notes ?? [];
+      expect(notes).toHaveLength(1);
+      expect(notes[0]).toContain('was NOT restarted');
+      expect(notes[0]).toContain('no longer exists');
+      expect(notes[0]).toContain('does not carry fleet-sprint');
+      expect(notes[0]).not.toContain('warning');
+      expect(notes[0]).not.toMatch(/schtasks/);
+    });
+  }
+
+  it('linux: the old uninstall already deleted the unit file, so step 3 moves nothing and no restart is claimed', async () => {
+    const h = harness(LINUX, { supervisorLine: IDLE, supervisorGone: true });
+    const r = await ensureMemberFleetInstall(agentFor(LINUX), h.deps, { replaceFull: true });
+    expect(r).toMatchObject({ state: 'available', installed: true });
+    if (r.state !== 'available') throw new Error('unreachable');
+    const restartCmd = h.log.find(c => stepOf(c) === 'supervisor-restart')!;
+    expect(restartCmd).toContain("if [ -f '" + `${LINUX.home}/.config/systemd/user/fleet-supervisor.service` + "' ]; then systemctl --user daemon-reload");
+    expect(r.replaced?.notes?.[0]).toContain('was NOT restarted');
+    expect(r.replaced?.notes?.[0]).toContain('no longer exists');
+    expect(r.replaced?.removed.join(' ')).not.toContain('unit file moved into the backup');
+  });
+
+  it('a failed restart is a warning with the exact command, not a failed replacement', async () => {
+    const h = harness(WINDOWS, { supervisorLine: IDLE, failStep: 'supervisor-restart' });
+    const r = await ensureMemberFleetInstall(agentFor(WINDOWS), h.deps, { replaceFull: true });
+    expect(r).toMatchObject({ state: 'available', installed: true });
+    if (r.state !== 'available') throw new Error('unreachable');
+    expect(r.replaced?.notes?.[0]).toMatch(/^warning: .*restarting it \(the ApraFleetSupervisor scheduled task\) failed \(exited 1: supervisor-restart broke\); restart it on the member with: .*schtasks\.exe \/Run \/TN 'ApraFleetSupervisor'/);
+  });
+
+  it('a supervisor started by hand is stopped but not restarted by a guessed command; the note says so', async () => {
+    const h = harness(MACOS, { supervisorLine: IDLE });
+    const r = await ensureMemberFleetInstall(agentFor(MACOS), h.deps, { replaceFull: true });
+    expect(r).toMatchObject({ state: 'available', installed: true });
+    expect(steps(h)).not.toContain('supervisor-restart');
+    if (r.state !== 'available') throw new Error('unreachable');
+    expect(r.replaced?.notes?.[0]).toContain('started by hand');
+  });
+
+  it('a supervisor still up after the stop refuses with fleet-se-running before the server stop or any backup, naming its restart', async () => {
+    const h = harness(WINDOWS, { supervisorLine: IDLE, supervisorSurvivesStop: true });
+    const r = await ensureMemberFleetInstall(agentFor(WINDOWS), h.deps, { replaceFull: true });
+    expect(r).toMatchObject({ state: 'unavailable', reason: 'fleet-se-running', version: OLD });
+    expect(steps(h)).toEqual(['supervisor-check', 'supervisor-stop', 'supervisor-recheck']);
+    const detail = (r as { detail: string }).detail;
+    expect(detail).toContain('step 0 (verify the fleet-sprint supervisor is down)');
+    expect(detail).toContain('The member server was not stopped and nothing was removed or backed up');
+    expect(detail).toContain("Bring the supervisor back with: ");
+    expect(detail).toContain("schtasks.exe /Run /TN 'ApraFleetSupervisor'");
+  });
+
+  it('a live sprint refuses before the supervisor stop: no stop, shutdown, backup or uninstall command is sent', async () => {
+    const h = harness(WINDOWS, { supervisorLine: IDLE + 'FLEET_SE sprint pid=16100 id=s7\n' });
+    const r = await ensureMemberFleetInstall(agentFor(WINDOWS), h.deps, { replaceFull: true });
+    expect(r).toMatchObject({ state: 'unavailable', reason: 'fleet-se-running' });
+    expect(steps(h)).toEqual(['supervisor-check']);
+    for (const c of flat(h.log)) {
+      for (const bad of ['/api/shutdown', 'schtasks', "apra-fleet.exe' stop", '.apra-fleet-replace-backup-', 'uninstall']) expect(c, bad).not.toContain(bad);
+    }
+  });
+
+  for (const p of [WINDOWS, LINUX]) {
+    it(`${p.shell ?? p.os}: install fails -> the printed rollback starts with the supervisor stop and ends with its restart, around the backup-binary reinstall; the fleet runs none of it`, async () => {
+      const h = harness(p, { supervisorLine: IDLE, failStep: 'install' });
+      const r = await ensureMemberFleetInstall(agentFor(p), h.deps, { replaceFull: true });
+      expect(r).toMatchObject({ state: 'unavailable', reason: 'replace-failed' });
+      const plan = buildReplaceFullInstallPlan({
+        home: p.home, targetOs: p.os, shell: (p.shell ?? 'bash') as never, provider: 'claude',
+        installerPath: 'unused', stamp: STAMP, supervisor: { port: '8788', via: p.os === 'windows' ? 'task' : 'unit' },
+      });
+      const seq = plan.rollbackFor.install;
+      const detail = (r as { detail: string }).detail;
+      expect(detail).toContain(`run on the member: ${seq.join('; ')}.`);
+      expect(seq[0]).toContain('__APRA_FLEET_SUPERVISOR_VIA__');
+      expect(seq[0]).toContain('/api/shutdown');
+      expect(seq.at(-1)).toBe(plan.supervisorRestart!.manual);
+      const reinstall = seq.findIndex(l => l.includes(`apra-fleet${p.os === 'windows' ? '.exe' : ''}' install --llm claude --force`));
+      expect(reinstall).toBeGreaterThan(0);
+      expect(reinstall).toBeLessThan(seq.length - 1);
+      expect(detail).toContain('Run them in this order');
+      // exec spy: the replacement stopped at the failed install; no rollback command and no restart ran.
+      expect(steps(h).at(-1)).toBe('install');
+      expect(h.log.some(c => c.includes('install --llm claude --force'))).toBe(false);
+    });
+  }
+});
+
+describe('9hyz: buildReplaceFullInstallPlan with a stopped supervisor', () => {
+  const FROM_UNINSTALL = ['uninstall', 'supervisor', 'move-data', 'install', 'verify'] as const;
+  const BEFORE_UNINSTALL = ['supervisor-stop', 'supervisor-recheck', 'stop', 'stop-check', 'backup', 'exe-check'] as const;
+  for (const [p, via] of [[WINDOWS, 'task'], [GITBASH, 'task'], [LINUX, 'unit']] as const) {
+    it(`${p.shell ?? p.os}: every rollback from the uninstall on has the stop first and the restart last; earlier ones end with the restart`, () => {
+      const plan = buildReplaceFullInstallPlan({
+        home: p.home, targetOs: p.os, shell: (p.shell ?? 'bash') as never, provider: 'claude', installerPath: 'unused', stamp: STAMP, supervisor: { port: '8788', via },
+      });
+      const stop = buildSupervisorStop(p.os, (p.shell ?? 'bash') as never, '8788').manual;
+      expect(plan.supervisorRestart).not.toBeNull();
+      for (const step of FROM_UNINSTALL) {
+        const seq = plan.rollbackFor[step];
+        expect(seq[0], step).toBe(stop);
+        expect(seq.at(-1), step).toBe(plan.supervisorRestart!.manual);
+        expect(seq.filter(l => l === stop), step).toHaveLength(1);
+      }
+      for (const step of BEFORE_UNINSTALL) {
+        const seq = plan.rollbackFor[step];
+        expect(seq.at(-1), step).toBe(plan.supervisorRestart!.manual);
+        expect(seq, step).not.toContain(stop);
+      }
+      expect(plan.rollbackFor['supervisor-check']).toEqual([]);
+      // Stop and re-check come right after the check, before the server stop.
+      expect(plan.steps.map(s => s.name).slice(0, 4)).toEqual(['supervisor-check', 'supervisor-stop', 'supervisor-recheck', 'stop']);
+      // No step re-enables AND starts the linux unit before the reinstall.
+      for (const seq of Object.values(plan.rollbackFor)) expect(seq.join('\n')).not.toContain('enable --now');
+    });
+  }
+
+  it('without a supervisor the plan and rollbacks carry no supervisor stop or restart', () => {
+    const plan = buildReplaceFullInstallPlan({ home: WINDOWS.home, targetOs: 'windows', shell: 'powershell5' as never, provider: 'claude', installerPath: 'unused', stamp: STAMP });
+    expect(plan.supervisorRestart).toBeNull();
+    expect(plan.steps.map(s => s.name)).not.toContain('supervisor-stop');
+    for (const seq of Object.values(plan.rollbackFor)) expect(seq.join('\n')).not.toContain('__APRA_FLEET_SUPERVISOR_VIA__');
+  });
+});
+
+describe.skipIf(!hasPs)('9hyz: the supervisor stop/restart lines PowerShell members get parse', () => {
+  it('stop and restart in steps and rollbacks', { timeout: 120_000 }, () => {
+    const plan = buildReplaceFullInstallPlan({
+      home: WINDOWS.home, targetOs: 'windows', shell: 'powershell5' as never, provider: 'claude',
+      installerPath: `${WINDOWS.home}\\.apra-fleet\\staging\\apra-fleet.exe`, stamp: STAMP, supervisor: { port: '8788', via: 'task' },
+    });
+    const lines = new Set([...plan.rollbackFor.uninstall, plan.supervisorRestart!.manual]);
+    for (const line of lines) expect(psParseErrors(line), line).toEqual([]);
+    for (const s of plan.steps.filter(st => st.name.startsWith('supervisor'))) expect(psParseErrors(decodePowerShellEncodedCommand(s.command)), s.name).toEqual([]);
   });
 });

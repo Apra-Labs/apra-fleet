@@ -61,6 +61,24 @@ function directSpawn(): void {
     detached: true,
     windowsHide: true,
     stdio: ['ignore', logFd, logFd],
+    // Never the folder 'apra-fleet start' was run from: a bare-name lookup in
+    // the server would search it first. The data dir is ensured owner-only above.
+    //
+    // process.cwd() in the server (audited for this change):
+    //  - kb-self selectFullSessionFolder: a FULL session whose client offers no
+    //    MCP roots falls back to the server's working folder. Under start that
+    //    is now the data dir, so it fails E-SELF-NOT-A-REPO with a cause that
+    //    names the data dir (it used to scope to the folder start ran in).
+    //  - kb-providers / project-slug default `cwd ?? process.cwd()`: server
+    //    tool paths pass an explicit folder; the default is for CLI use.
+    //  - CLI-only (unaffected): install.ts KB step, watch.ts, kb-server.ts.
+    // Service-managed launches set no working directory of their own: the
+    // Windows task starts in %windir%\System32, a systemd user unit in the
+    // user's home, a launchd agent in /. None is a folder another user can
+    // plant in, and adding one would change installed definitions that
+    // drift checks compare. The Windows Run-key fallback, launched from the
+    // CLI, now starts in the data dir (service-manager/windows.ts).
+    cwd: FLEET_DIR,
   });
   child.unref();
   fs.closeSync(logFd);

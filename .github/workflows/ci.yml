@@ -161,6 +161,17 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: node scripts/check-kb-canonical.mjs
 
+      # Fails a pull request that carries a bible entry whose cited files
+      # changed after the entry was verified (typically after the base branch
+      # was merged in). Judges only the entries this PR adds or changes, read
+      # against the merge-base: entries inherited from the base branch are never
+      # reported, however their files moved. The PR checkout is the merge of the
+      # PR into its base, so this gates the tree that would land. Ubuntu-only;
+      # fetch-depth 0 makes origin/<base_ref> available.
+      - name: Check the knowledge bible entries this PR owns against their cited files
+        if: matrix.os == 'ubuntu-latest' && github.event_name == 'pull_request'
+        run: node scripts/check-kb-bible-drift.mjs --base origin/${{ github.base_ref }}
+
       # Runs the real contract:generate write path (not --check) and diffs
       # against committed output, catching drift a --check-mode bug might
       # miss. OS-agnostic generator -> ubuntu-only, same as llms-full.txt above.

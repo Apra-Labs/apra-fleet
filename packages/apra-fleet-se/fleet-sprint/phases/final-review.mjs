@@ -308,6 +308,9 @@ export async function runFinalReviewPhase({
     // back as a basis_mismatch skip and is offered to the final reviewer for
     // re-verification next to the promotion candidates (re-stamped and
     // re-merged on CONFIRM, withdrawn from the branch bible otherwise).
+    // The harvest phase re-checks them once more after the sprint's last
+    // tree-changing commit (phases/harvest.mjs), where a drifted entry can
+    // no longer be re-verified and is dropped instead.
     if (typeof kbWork.recheckSprintBible === 'function') await kbWork.recheckSprintBible('final head');
     const finalKbCandidates = await kbWork.promotionCandidates(getMemberForRole('reviewer'));
     // Re-verification rows (reverify: true) are logged by kbWork itself.

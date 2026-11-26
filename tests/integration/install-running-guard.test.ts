@@ -29,13 +29,30 @@ import path from 'node:path';
 import os from 'node:os';
 import http from 'node:http';
 import type { Server } from 'node:http';
-import { execSync } from 'node:child_process';
-import { classifyRunningServer, isUnderInstallPrefix } from '../../src/cli/install-guard.js';
+import { execSync, execFileSync } from 'node:child_process';
+import { classifyRunningServer, getRunningApraFleetProcesses, isUnderInstallPrefix } from '../../src/cli/install-guard.js';
 import { isApraFleetRunning } from '../../src/cli/install.js';
 
 vi.mock('node:child_process', async (importOriginal) => {
   const original = await importOriginal<typeof import('node:child_process')>();
-  return { ...original, execSync: vi.fn() };
+  return { ...original, execSync: vi.fn(), execFileSync: vi.fn() };
+});
+
+// install-guard.ts runs tasklist/powershell on win32 through execFileSync with an
+// absolute path from windowsExecutable(). Pin the resolver to a fixed System32
+// so the lookup is host-independent; resolution logic itself stays real.
+vi.mock('../../src/os/windows-executable.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/os/windows-executable.js')>();
+  return {
+    ...actual,
+    windowsExecutable: (name: string) => actual.resolveWindowsExecutable(name, {
+      platform: process.platform,
+      pathValue: 'C:\\Windows\\System32',
+      pathext: '.EXE',
+      isFile: (p: string) => /^C:\\Windows\\System32\\/i.test(p),
+      systemRoot: 'C:\\Windows',
+    }),
+  };
 });
 
 const originalDataDir = process.env.APRA_FLEET_DATA_DIR;
@@ -78,6 +95,17 @@ function closeServer(server: Server): Promise<void> {
  * running process at all when `exePath` is null.
  */
 function mockGlobalProcessDetection(exePath: string | null) {
+  // win32 branch: answer execFileSync by the basename of the (absolute) program.
+  vi.mocked(execFileSync).mockImplementation(((file: string) => {
+    const name = String(file).split(/[\\/]/).pop()!.replace(/\.exe$/i, '').toLowerCase();
+    if (!/^[A-Za-z]:[\\/]/.test(String(file))) {
+      throw new Error(`${name} must be spawned by absolute path, got: ${file}`);
+    }
+    if (exePath === null) return '' as any;
+    if (name === 'tasklist') return '"apra-fleet.exe","999999","Console","1","14,000 K"\n' as any;
+    if (name === 'powershell') return `999999|${exePath}\n` as any;
+    return '' as any;
+  }) as any);
   vi.mocked(execSync).mockImplementation((cmd: any) => {
     const c = cmd.toString();
     if (exePath === null) {
@@ -154,6 +182,11 @@ describe('install running-process guard is scoped to the install target - integr
     mockGlobalProcessDetection('/opt/unrelated-prefix/bin/apra-fleet');
 
     expect(isApraFleetRunning()).toBe(true);
+    // Guard against a vacuous pass: the detector really sees the process, and
+    // it is outside the install prefix.
+    const procs = getRunningApraFleetProcesses();
+    expect(procs).toEqual([{ pid: 999999, exePath: '/opt/unrelated-prefix/bin/apra-fleet' }]);
+    expect(isUnderInstallPrefix(procs[0].exePath, installPrefixDir)).toBe(false);
 
     const scope = classifyRunningServer(installPrefixDir);
 

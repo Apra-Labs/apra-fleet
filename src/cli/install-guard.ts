@@ -38,7 +38,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { execSync } from 'node:child_process';
+import { execFileSync, execSync } from 'node:child_process';
+import { windowsExecutable } from '../os/windows-executable.js';
 import { FULL_INSTALL_PORT_FILE, validPort } from '../paths.js';
 import { isPidAlive, isApraFleetProcess } from '../utils/process-utils.js';
 
@@ -70,6 +71,20 @@ function runCapture(cmd: string): string | null {
 }
 
 /**
+ * runCapture without a shell, for win32: the program is resolved by
+ * windowsExecutable (System32 / absolute PATH entries only), never looked up
+ * by cmd.exe in the folder install/uninstall runs from. A resolver failure
+ * is treated like a failed command (null), same as runCapture.
+ */
+function runFileCapture(program: string, args: string[]): string | null {
+  try {
+    return execFileSync(windowsExecutable(program), args, { encoding: 'utf-8', stdio: 'pipe', windowsHide: true }) as unknown as string;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * PID of a live server recorded in the data dir this install targets, or null.
  * Read-only: unlike checkRunningInstance() this never deletes server.json.
  */
@@ -89,7 +104,7 @@ export function getRunningApraFleetProcesses(): RunningApraFleetProcess[] {
   const currentPid = process.pid;
 
   if (process.platform === 'win32') {
-    const out = runCapture('tasklist /FI "IMAGENAME eq apra-fleet.exe" /NH /FO CSV') ?? '';
+    const out = runFileCapture('tasklist', ['/FI', 'IMAGENAME eq apra-fleet.exe', '/NH', '/FO', 'CSV']) ?? '';
     const pids: number[] = [];
     for (const line of out.split('\n')) {
       const match = line.match(/"apra-fleet\.exe","(\d+)"/);
@@ -99,8 +114,9 @@ export function getRunningApraFleetProcesses(): RunningApraFleetProcess[] {
 
     // Get-Process (no nested quoting, unlike a CIM -Filter) yields "<pid>|<path>".
     const paths = new Map<number, string>();
-    const psOut = runCapture(
-      'powershell -NoProfile -Command "Get-Process apra-fleet | ForEach-Object { $_.Id.ToString() + \'|\' + $_.Path }"',
+    const psOut = runFileCapture(
+      'powershell.exe',
+      ['-NoProfile', '-Command', "Get-Process apra-fleet | ForEach-Object { $_.Id.ToString() + '|' + $_.Path }"],
     ) ?? '';
     for (const line of psOut.split('\n')) {
       const [pidText, ...rest] = line.trim().split('|');

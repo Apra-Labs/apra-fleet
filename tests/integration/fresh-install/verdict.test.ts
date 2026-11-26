@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
-import { evaluateStep, evaluatePass, summarize, parseResults, renderMarkdown, STATUS, expand } from './lib/verdict.mjs';
+import { evaluateStep, evaluatePass, summarize, finalVerdict, parseResults, renderMarkdown, STATUS, expand } from './lib/verdict.mjs';
+import { resolveVersionVars, repoVersionCore, versionCoreOf } from './lib/versions.mjs';
 
 const checklist = {
   passes: {
@@ -38,8 +39,10 @@ describe('fresh-install verdict logic', () => {
     expect(evaluateStep(checklist.passes.A.steps[1], rec('A2', 'ERR timeout'), { vars }).status).toBe(STATUS.FAIL);
   });
 
-  it('treats an unset placeholder as unchecked rather than failing', () => {
-    expect(evaluateStep(checklist.passes.A.steps[0], rec('A1', 0, '', 'anything'), { vars: {} }).status).toBe(STATUS.PASS);
+  it('an unset placeholder is INCONCLUSIVE (never satisfied), naming the unknown var', () => {
+    const r = evaluateStep(checklist.passes.A.steps[0], rec('A1', 0, '', 'anything'), { vars: {} });
+    expect(r.status).toBe(STATUS.INCONCLUSIVE);
+    expect(r.reason).toContain('expectVersion is unknown');
     expect(expand('^${expectVersion}$', vars)).toBe('^v0\\.4\\.3_78cefd$');
   });
 
@@ -107,5 +110,72 @@ describe('fresh-install verdict logic', () => {
         }
       }
     }
+  });
+});
+
+// apra-fleet-95sp: the expected version never comes from the candidate; an
+// unknown expected/baseline version is INCONCLUSIVE (exit 3), never PASS.
+describe('fresh-install version vars', () => {
+  const cl = {
+    passes: {
+      A: { title: 'a', steps: [{ id: 'A01', title: 'version', expect: { exit: 0, observed: '^${expectVersion}$' } }] },
+      U: { title: 'u', steps: [{ id: 'U02', title: 'baseline', expect: { exit: 0, observed: '^${baselineVersion}$' } }] },
+    },
+  };
+  const passFor = (pass: string, records: unknown[], vars: Record<string, unknown>) =>
+    evaluatePass({ checklist: cl, pass, platform: 'linux', driver: 'docker', records: records as never, vars: vars as never });
+
+  it('unknown expectVersion -> INCONCLUSIVE, exit 3, reason names expectVersion', () => {
+    const p = passFor('A', [rec('A01', 0, '', 'v0.4.6_abc')], { expectVersion: null, baselineVersion: null });
+    expect(p.verdict).toBe('INCONCLUSIVE');
+    const f = finalVerdict([p]);
+    expect([f.verdict, f.exitCode]).toEqual(['INCONCLUSIVE', 3]);
+    expect(f.inconclusive.join(' ')).toContain('expectVersion is unknown');
+  });
+
+  it('unknown baselineVersion for an upgrade pass -> INCONCLUSIVE naming baselineVersion', () => {
+    const p = passFor('U', [rec('U02', 0, '', 'v0.4.3_x')], { expectVersion: '0.4.6', baselineVersion: null });
+    const f = finalVerdict([p]);
+    expect([f.verdict, f.exitCode]).toEqual(['INCONCLUSIVE', 3]);
+    expect(f.inconclusive.join(' ')).toContain('baselineVersion is unknown');
+  });
+
+  it('a real FAIL still outranks INCONCLUSIVE', () => {
+    const p = passFor('A', [rec('A01', 1, '', 'v0.4.6_abc')], { expectVersion: '0.4.6' });
+    expect(finalVerdict([p]).exitCode).toBe(1);
+  });
+
+  it('omitted --expect-version: core from version.json; another core fails A01, the same core passes', () => {
+    const { vars, note } = resolveVersionVars({ repoVersion: repoVersionCore(() => '{"version":"0.4.6"}'), needBase: false });
+    expect(vars.expectVersion).toBe('0.4.6');
+    expect(note).toContain('version.json');
+    expect(passFor('A', [rec('A01', 0, '', 'v0.4.6_abc123')], vars).verdict).toBe('PASS');
+    const bad = passFor('A', [rec('A01', 0, '', 'v0.4.7_abc123')], vars);
+    expect(bad.verdict).toBe('FAIL');
+    expect(bad.steps[0].status).toBe(STATUS.FAIL);
+  });
+
+  it('the candidate is never a source: no version.json and no flag -> unknown', () => {
+    const { vars } = resolveVersionVars({ repoVersion: repoVersionCore(() => { throw new Error('missing'); }), needBase: false });
+    expect(vars.expectVersion).toBeNull();
+  });
+
+  it('--expect-version wins over version.json', () => {
+    expect(resolveVersionVars({ expectVersionArg: 'v0.4.9_aaa', repoVersion: '0.4.6', needBase: false }).vars.expectVersion).toBe('v0.4.9_aaa');
+  });
+
+  it('report-only reuses expectVersion and baselineVersion recorded in report.json', () => {
+    const prior = { expectVersion: 'v0.4.5_deadbe', baselineVersion: 'v0.4.3_95435e' };
+    const { vars, note } = resolveVersionVars({ repoVersion: '0.4.6', pinnedBaseline: null, needBase: true, reportOnly: true, priorVars: prior });
+    expect(vars).toEqual(prior);
+    expect(note).toContain('recorded report.json');
+    // not report-only: priorVars ignored
+    expect(resolveVersionVars({ repoVersion: '0.4.6', needBase: true, reportOnly: false, priorVars: prior }).vars)
+      .toEqual({ expectVersion: '0.4.6', baselineVersion: null });
+  });
+
+  it('versionCoreOf extracts the core', () => {
+    expect(versionCoreOf('v0.4.6_abc')).toBe('0.4.6');
+    expect(versionCoreOf(null)).toBeNull();
   });
 });
