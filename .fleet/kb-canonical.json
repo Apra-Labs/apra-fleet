@@ -460,6 +460,21 @@
       "updated_at": "2026-09-25T22:26:39.994Z"
     },
     {
+      "id": "1a178b20-9b85-42a0-91f1-80aa1453b41e",
+      "type": "learning",
+      "title": "Real-bd supervisor push test fails on Windows from MAX_PATH, not lock contention",
+      "summary": "supervisor-launch-beads-pushed-real-bd.test.mjs fails deterministically on Windows: bd dolt push cannot create the refs/dolt/blobstore lock file under %TEMP% because dolt's git-remote-cache path exceeds MAX_PATH ('Filename too long').",
+      "symbols": [],
+      "source_files": [
+        "packages/apra-fleet-se/test/supervisor-launch-beads-pushed-real-bd.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-26T08:44:06.596Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/test/supervisor-launch-beads-pushed-real-bd.test.mjs": "5c95f75aa97740c1ee50dc5f0ab61cc1d33f32be"
+      }
+    },
+    {
       "id": "1a9e0a10-395b-412f-a5ff-1360ae529877",
       "type": "knowledge",
       "title": "bd create is only allowed in beads-children.mjs; its command() count is pinned",
@@ -2889,26 +2904,21 @@
       }
     },
     {
-      "id": "a05ff689-9610-4624-ac2f-301d91e83846",
-      "type": "knowledge",
-      "title": "exec-bd helpers resolve bd through the npm Windows shim; shell:true paths remain on Windows",
-      "summary": "Two drifted near-duplicate exec-bd helpers resolve bd on Windows via npm's generated bd.cmd shim; when no shim exists, execBdSync falls back to a shell:true invocation with no argument validation, and execBdAsync always uses shell:true behind assertSafeArgs.",
-      "symbols": [
-        "resolveWindowsBdScript",
-        "execBdSync",
-        "execBdAsync",
-        "assertSafeArgs",
-        "BIN_DIR"
-      ],
+      "id": "9edc90a4-c98e-4031-b81d-89bba6345409",
+      "type": "learning",
+      "title": "run-all-tests enumeration test inherits APRA_TEST_SUITES_JSON from the caller env",
+      "summary": "tests/run-all-tests-suite-enumeration.test.ts asserts the 5 default suites, but scripts/run-all-tests.mjs reads APRA_TEST_SUITES_JSON at import time, so running vitest through run-all-tests with that override set makes 3 enumeration tests fail spuriously.",
+      "symbols": [],
       "source_files": [
-        "scripts/lib/exec-bd.mjs",
-        "packages/apra-fleet-se/src/supervisor/lib/exec-bd.mjs",
-        "src/cli/install.ts",
-        "src/cli/config.ts",
-        "scripts/sandbox-seed-beads.mjs"
+        "tests/run-all-tests-suite-enumeration.test.ts",
+        "scripts/run-all-tests.mjs"
       ],
       "confidence": "CONFIRMED",
-      "updated_at": "2026-09-29T06:13:16.248Z"
+      "updated_at": "2026-11-26T08:44:06.494Z",
+      "source_file_hashes": {
+        "scripts/run-all-tests.mjs": "bfa7ff7a8eba998363f061237c9934491ce0e637",
+        "tests/run-all-tests-suite-enumeration.test.ts": "6b869932251561145575443ff2d70652ba73b787"
+      }
     },
     {
       "id": "a1a279ec-5537-4820-a23a-c9a7737f2507",
@@ -4908,6 +4918,16 @@
       "note": "At HEAD, src/tools/execute-prompt.ts has no executePromptCore. The wrapper executePrompt (about line 716) calls executePromptImpl (line 741) with a PromptResolution object. The entry names a function that does not exist, so a lookup by that symbol fails.",
       "evidence_files": [
         "src/tools/execute-prompt.ts"
+      ]
+    },
+    {
+      "id": "a05ff689-9610-4624-ac2f-301d91e83846",
+      "at": "2026-11-26T08:44:07.820Z",
+      "reason": "withdrawn",
+      "note": "At HEAD, resolveWindowsBdCommand in scripts/lib/exec-bd.mjs walks absolute PATH entries in PATHEXT order and returns an earlier bd.exe (kind exe, run with shell:false) ahead of an npm bd.cmd shim. The entry says bd is resolved via the npm shim, with a shell:true fallback whenever no shim exists. Both statements are out of date after this sprint's c0sz change.",
+      "evidence_files": [
+        "scripts/lib/exec-bd.mjs",
+        "packages/apra-fleet-se/src/supervisor/lib/exec-bd.mjs"
       ]
     },
     {
