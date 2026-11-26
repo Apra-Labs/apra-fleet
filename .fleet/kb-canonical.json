@@ -1,9 +1,31 @@
 {
   "version": 3,
   "provenance": {
-    "branch": "main"
+    "commit": "7b7d91ee900870c839aefef3bb38c32459257d49",
+    "branch": "main",
+    "entry_count": 222
   },
   "entries": [
+    {
+      "id": "006297dc-eb50-4cc8-bc88-29d35a766bf3",
+      "type": "knowledge",
+      "title": "Viewer page embeds shouldSuppressToggle via Function.toString",
+      "summary": "The run viewer HTML template inlines shouldSuppressToggle from header-selection.mjs using .toString(), so that module must stay self-contained, with no imports, module-scope references or backticks.",
+      "symbols": [
+        "shouldSuppressToggle",
+        "HTML_TEMPLATE"
+      ],
+      "source_files": [
+        "packages/apra-fleet-workflow/src/viewer/header-selection.mjs",
+        "packages/apra-fleet-workflow/src/viewer/index.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-25T20:25:53.680Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-workflow/src/viewer/header-selection.mjs": "9c7d6b8b6cc39944555a79372fdb6c32fd43be1c",
+        "packages/apra-fleet-workflow/src/viewer/index.mjs": "22ca76fef5bd9b54cfdcdd6ac5c65db4f2a44351"
+      }
+    },
     {
       "id": "0077b24d-29fe-4f72-94df-0cd6a9e65f90",
       "type": "knowledge",
@@ -577,6 +599,29 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-09-25T22:26:28.024Z"
+    },
+    {
+      "id": "21942bb3-3265-47f3-965f-d9096c07c73b",
+      "type": "knowledge",
+      "title": "Usage-limit wait ends at once on a stop via the pause-end handle",
+      "summary": "waitOrOperatorResume in usage-limit-controller.mjs wakes on the pause-end handle with outcome 'resume' OR 'stop'. On 'stop' (including a handle already settled when the wait starts), the controller logs the stop and throws CancelledError, with no requestResume, no probe and no second pause.",
+      "symbols": [
+        "waitOrOperatorResume",
+        "createUsageLimitPauseController",
+        "CancelledError"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/usage-limit-controller.mjs",
+        "packages/apra-fleet-se/test/supervisor-stop-usage-limit-pause.test.mjs",
+        "packages/apra-fleet-workflow/src/workflow/engine.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-25T22:48:34.993Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/usage-limit-controller.mjs": "431096fa4c3fd906dddacaf1c9bf12953f70d7af",
+        "packages/apra-fleet-se/test/supervisor-stop-usage-limit-pause.test.mjs": "98125038ce9be65aa315d0e5b7f427be162148a7",
+        "packages/apra-fleet-workflow/src/workflow/engine.mjs": "987aaa26996e8dc801cbec51694e1f11eaf2e1cd"
+      }
     },
     {
       "id": "22cad4f1-29e2-4152-9d70-984238357238",
@@ -4927,6 +4972,28 @@
       "updated_at": "2026-09-29T06:08:07.865Z"
     },
     {
+      "id": "efd17735-0e4a-4113-843b-723972e1808d",
+      "type": "knowledge",
+      "title": "Sprint analysis text is persisted via the sprint-analysis run-state namespace",
+      "summary": "runHarvestPhase publishes { text, generatedAt } under the sprint-analysis namespace through an optional publishState dep that runner.js passes at the runHarvestPhase call site.",
+      "symbols": [
+        "runHarvestPhase",
+        "SPRINT_ANALYSIS_STATE_NAMESPACE"
+      ],
+      "source_files": [
+        "packages/apra-fleet-se/fleet-sprint/phases/harvest.mjs",
+        "packages/apra-fleet-se/fleet-sprint/runner.js",
+        "packages/apra-fleet-se/test/mock-sprint-analysis-persisted.test.mjs"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-25T22:48:33.576Z",
+      "source_file_hashes": {
+        "packages/apra-fleet-se/fleet-sprint/phases/harvest.mjs": "0f7c718e4c96493acc044d868c6032211cf94d62",
+        "packages/apra-fleet-se/fleet-sprint/runner.js": "7f45d28961e8d0252642625b1ac49b8d9be008ab",
+        "packages/apra-fleet-se/test/mock-sprint-analysis-persisted.test.mjs": "7e7b6cac58d8a7063a71acccb6d0c653e2695f72"
+      }
+    },
+    {
       "id": "f1e8458e-ed03-4638-a074-284148d52d41",
       "type": "learning",
       "title": "Stale local dist/agents/schemas fails the se staleness guard, not the branch",
@@ -5317,6 +5384,15 @@
       "note": "At HEAD, src/tools/execute-prompt.ts has no executePromptCore. The wrapper executePrompt (about line 716) calls executePromptImpl (line 741) with a PromptResolution object. The entry names a function that does not exist, so a lookup by that symbol fails.",
       "evidence_files": [
         "src/tools/execute-prompt.ts"
+      ]
+    },
+    {
+      "id": "0f5c5b8d-e923-454f-b869-9c205cffc1dc",
+      "at": "2026-11-25T23:13:31.990Z",
+      "reason": "withdrawn",
+      "note": "The summary's last clause is false: waitOrOperatorResume in usage-limit-controller.mjs now wakes on a 'stop' outcome of the pause-end handle too, logs the stop and throws CancelledError (entry 21942bb3 states the current behaviour).",
+      "evidence_files": [
+        "packages/apra-fleet-se/fleet-sprint/usage-limit-controller.mjs"
       ]
     },
     {

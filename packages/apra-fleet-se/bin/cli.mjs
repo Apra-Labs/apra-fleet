@@ -18,6 +18,7 @@ import {
 import { beadsExtension, kbCodeIntelExtension, decisionsExtension } from '../fleet-sprint/viewer-extensions.mjs';
 import { DECISION_PAUSE_SOURCE } from '../fleet-sprint/decision-wait.mjs';
 import { validateIssueId, validateBranchName, validateBranchPair, createMemberReservationClient, resyncReacquiredMember, commandResultToSoftGit } from '../fleet-sprint/runner.js';
+import { sprintIdentity } from '../fleet-sprint/coordination.mjs';
 import { normalizeRole } from '../fleet-sprint/contracts.mjs';
 import { prepareLaunchTopology, toAlignCommandResult } from '../fleet-sprint/member-align.mjs';
 import { ROLE_BACKLOG, resolveBacklogRoleAlias, selectBacklogMember, formatBacklogSelection } from '../fleet-sprint/backlog-role.mjs';
@@ -269,6 +270,17 @@ Options:
  * @param {string[]} argv - argv slice (no node/script entries), e.g. `process.argv.slice(2)`
  * @returns {{ values: object, positionals: string[] }}
  */
+/**
+ * The holder id this sprint reserves its members under on the fleet server
+ * (coordination.mjs sprintIdentity): the supervisor's sprint id when it
+ * forwarded --run-id, else the branch. The runner dispatches under the same id.
+ * @param {{ 'run-id'?: string, branch?: string }} values parsed CLI values
+ * @returns {string}
+ */
+export function memberReservationHolder(values = {}) {
+    return sprintIdentity({ runId: values['run-id'], branch: values.branch });
+}
+
 export function parseCliArgs(argv) {
     try {
         return parseArgs({ args: argv, options: buildOptionsSpec(), strict: true, allowPositionals: false });
@@ -619,13 +631,47 @@ export function attachViewerErrorHandler(server, port, opts = {}) {
 // every reservation again when alignment refuses or throws, so a refused
 // launch leaves no reservation behind. Exported so the ordering is unit-
 // testable without a live server.
-export async function reserveThenAlign({ sprintReservation, align } = {}) {
-    const { held } = await sprintReservation.reserveForLaunch();
+// The supervisor's default port (src/supervisor/server.mjs DEFAULT_SERVICE_PORT),
+// used in the refusal text only when this run was not given --service-url.
+const DEFAULT_SUPERVISOR_PORT = 8787;
+
+/**
+ * The supervisor commands printed in the launch refusal for a holder sprint:
+ * stop it (a running supervisor sprint), or force-release its reservation
+ * (a wedged or gone sprint; for a supervisor sprint this also kills its
+ * child). Uses the supervisor URL this run was given (--service-url) or the
+ * default port with a note, `curl.exe` on Windows (PowerShell aliases `curl`
+ * to Invoke-WebRequest), and no request body (both routes take an empty one),
+ * so each pastes unchanged into cmd.exe, PowerShell and POSIX shells.
+ * @param {string} owner
+ * @param {{ serviceUrl?: string, platform?: string }} [opts]
+ * @returns {string}
+ */
+export function forceReleaseCommand(owner, { serviceUrl, platform = process.platform } = {}) {
+    const curl = platform === 'win32' ? 'curl.exe' : 'curl';
+    const configured = typeof serviceUrl === 'string' && serviceUrl.trim().length > 0;
+    const base = configured ? serviceUrl.trim().replace(/\/+$/, '') : `http://localhost:${DEFAULT_SUPERVISOR_PORT}`;
+    const portNote = configured ? '' : ` (use the supervisor's --port if it is not ${DEFAULT_SUPERVISOR_PORT})`;
+    const id = encodeURIComponent(owner);
+    const header = '-H "Content-Type: application/json"';
+    return `if that sprint is a supervisor sprint${portNote}, stop it with ${curl} -s -X POST ${base}/api/sprints/${id}/stop ${header}` +
+        `, or if it is wedged or gone, ${curl} -s -X POST ${base}/api/reservations/${id}/force-release ${header}`;
+}
+
+export async function reserveThenAlign({ sprintReservation, align, serviceUrl, platform } = {}) {
+    const { held, holders = {} } = await sprintReservation.reserveForLaunch();
     if (held.length > 0) {
+        const detail = held.map((m) => {
+            const owner = holders[m];
+            const who = owner ? `sprint '${owner}'` : 'another sprint (holder id unknown)';
+            const cmds = [`member_reservation {"member_name":"${m}","action":"force_release"}`];
+            if (owner) cmds.push(forceReleaseCommand(owner, { serviceUrl, platform }));
+            return `  - ${m}: held by ${who}. Release: ${cmds.join(' ; or ')}`;
+        }).join('\n');
         return {
             ok: false,
             reserved: false,
-            message: `member(s) ${held.join(', ')} are reserved by another running sprint, so no member was aligned or changed. Wait for that sprint to finish or release its reservation (member_reservation), then launch again.`,
+            message: `member(s) ${held.join(', ')} are reserved by another running sprint, so no member was aligned or changed. Wait for that sprint to finish or release its reservation, then launch again:\n${detail}`,
         };
     }
     let topology;
@@ -640,6 +686,22 @@ export async function reserveThenAlign({ sprintReservation, align } = {}) {
         return { ...(topology || { ok: false, message: 'launch alignment returned no result' }), reserved: false };
     }
     return { ...topology, reserved: true };
+}
+
+// A synchronous throw from viewer construction happens AFTER the members were
+// reserved: release them (best-effort, logged) and exit non-zero instead of
+// leaving them reserved. `exit` is injectable for tests.
+export async function createViewerOrRelease({ create, sprintReservation, closeTransport = async () => {}, exit = (code) => process.exit(code) } = {}) {
+    try {
+        return create();
+    } catch (err) {
+        console.error(`Error: dashboard viewer failed to start: ${err && err.message ? err.message : err}`);
+        await sprintReservation.releaseAll()
+            .catch((e) => console.error('[member-reservation] release on viewer throw failed:', e && e.message ? e.message : e));
+        await closeTransport();
+        exit(1);
+        return undefined;
+    }
 }
 
 export async function reReserveOnResume({ sprintReservation, resyncMember, requestPause, log = () => {} } = {}) {
@@ -1014,7 +1076,9 @@ async function main() {
     const sprintReservation = createMemberReservationClient({
         callTool: (name, args) => mcpClient.callTool(name, args),
         members: validMembers,
-        sprintId: branchName,
+        // Same identity the runner dispatches under (sprintMutexId): the
+        // supervisor's sprint id when it forwarded --run-id, else the branch.
+        sprintId: memberReservationHolder(values),
         log: (msg) => console.log(msg),
     });
     // Ctrl-C between the reserve and the sprint's own SIGINT handler (below)
@@ -1028,7 +1092,7 @@ async function main() {
             });
     };
     process.once('SIGINT', onLaunchSigint);
-    const topology = await reserveThenAlign({ sprintReservation, align: () => prepareLaunchTopology({
+    const topology = await reserveThenAlign({ sprintReservation, serviceUrl, align: () => prepareLaunchTopology({
         members: topologyMembers,
         mode: syncedMode ? 'synced' : 'legacy',
         baseBranch,
@@ -1062,7 +1126,7 @@ async function main() {
     const workflow = new FleetWorkflow(fleetApi);
     const engine = new WorkflowEngine(workflow);
 
-    const server = createDashboardViewer(workflow, {
+    const server = await createViewerOrRelease({ sprintReservation, closeTransport: closeFleetTransport, create: () => createDashboardViewer(workflow, {
         port: viewerPort,
         name: 'Fleet-Sprint',
         // kbCodeIntelExtension: its own tab (per-member, per-dispatch kb_* and
@@ -1079,10 +1143,9 @@ async function main() {
         // files instead of one relaunch silently overwriting the prior
         // incarnation's history. A direct/standalone CLI launch (no
         // supervisor, so no --run-id) falls back to branchName exactly as
-        // before this flag existed -- still the SAME opaque per-sprint
-        // identity used for member reservation (`sprintId: branchName`
-        // below) and the runner's own dolt-mutex/allocator stamping
-        // (sprintMutexId, fleet-sprint/runner.js).
+        // before this flag existed. The member reservation and the runner's
+        // dispatch/dolt-mutex/allocator identity (sprintMutexId) use the same
+        // rule (coordination.mjs sprintIdentity).
         runId: effectiveRunId,
         // BOUNDARY-COMPAT/user-facing convention (apra-fleet-eft.37.1): core's
         // crash-net snapshot defaults are domain-neutral (workflow-logs/run_)
@@ -1098,7 +1161,7 @@ async function main() {
         // viewer's state.args stays optional/null for any other workflow
         // that doesn't pass launchArgs, and no existing state key changes.
         launchArgs: { members: validMembers, targetIssues, goal },
-    });
+    }) });
 
     // apra-fleet-unw2.16, N14 (e): the viewer port was hardcoded with no
     // `error` handler on `server.listen()`, so a port collision crashed the

@@ -268,6 +268,35 @@ async function callFleetMemberTool(toolName, invoke, { resolveConnection, logger
 }
 
 /**
+ * Release one member's fleet-server reservation over a short-lived
+ * connection, CONDITIONAL on its holder: member_reservation action "release"
+ * with sprint_id = holder only clears the reservation while `holder` still
+ * owns it, so a member another sprint re-reserved meanwhile is never cleared.
+ * Success is read from the tool's structured `ok`/`outcome`
+ * (MemberReservationFields); a "released" result is ok. Never throws.
+ * @param {{ member: string, holder: string, resolveConnection: Function, logger?: object }} opts
+ * @returns {Promise<{ ok: boolean, outcome?: string|null, output?: string, error?: string, unavailable?: boolean }>}
+ */
+export async function releaseFleetMemberReservation(opts = {}) {
+    const { member, holder, ...deps } = opts;
+    if (!member || !holder) throw new TypeError('releaseFleetMemberReservation requires a member and a holder');
+    let structured = null;
+    const out = await callFleetMemberTool('member_reservation', async (api) => {
+        const res = await api.memberReservation({ member_name: member, action: 'release', sprint_id: holder });
+        structured = res && res.structuredContent && typeof res.structuredContent.ok === 'boolean' ? res.structuredContent : null;
+        return res;
+    }, deps);
+    if (!structured) {
+        // No structured half: fall back to the tool's '[-]' failure prefix.
+        if (out.ok && String(out.output ?? '').trimStart().startsWith('[-]')) return { ok: false, error: out.output };
+        return out;
+    }
+    return structured.ok
+        ? { ok: true, outcome: structured.outcome ?? null, output: out.output }
+        : { ok: false, outcome: structured.outcome ?? null, error: out.output || out.error || `member_reservation release refused (${structured.outcome})` };
+}
+
+/**
  * register_member over a short-lived connection. `options` is the
  * register_member input (friendly_name, member_type, work_folder, ...).
  * @param {{ options: object, resolveConnection: Function, logger?: object }} opts

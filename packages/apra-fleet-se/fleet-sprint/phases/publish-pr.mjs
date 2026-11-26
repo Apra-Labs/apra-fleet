@@ -475,10 +475,12 @@ export async function runPublishPrPhase({
                 }
             } else if (prResult.alreadyExists) {
                 if (prResult.updated) {
-                    log(`Publish PR: a PR for branch '${validated.branch}' already exists -- updated its fleet block (and its title, when fleet wrote it) to this run's verdict (${finalVerdictLabel})${prResult.prUrl ? `: ${prResult.prUrl}` : ''}.`);
+                    log(`Publish PR: a PR for branch '${validated.branch}' -> '${validated.baseBranch}' already exists -- updated its fleet block (and its title, when fleet wrote it) to this run's verdict (${finalVerdictLabel})${prResult.prUrl ? `: ${prResult.prUrl}` : ''}.`);
                 } else {
-                    log(`[Publish PR] WARNING: a PR for branch '${validated.branch}' already exists but could NOT be updated to this run's verdict (${finalVerdictLabel}) -- its title/body may still show an earlier run's verdict; update it by hand. Cause: ${prResult.updateError || '(unknown)'}`);
+                    log(`[Publish PR] WARNING: a PR for branch '${validated.branch}' -> '${validated.baseBranch}' already exists but could NOT be updated to this run's verdict (${finalVerdictLabel}) -- its title/body may still show an earlier run's verdict; update it by hand. Cause: ${prResult.updateError || '(unknown)'}`);
                 }
+            } else {
+                log(`Publish PR: raised a PR ${validated.branch} -> ${validated.baseBranch}${prResult.prUrl ? `: ${prResult.prUrl}` : ''}.`);
             }
         }
     }

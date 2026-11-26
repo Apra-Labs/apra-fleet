@@ -108,7 +108,15 @@ one with no role. Unsigned loopback callers get the local operator as above.
 `launch()` in `api.mjs` runs these checks strictly in order; any failure
 short-circuits before anything downstream runs:
 
-1. **Request-shape validation** (`validateLaunchRequest`) -- `issue` is
+1. **Request-shape validation** (`validateLaunchRequest`) -- first, the body's
+   top-level keys are checked against one explicit allowlist (`issue`,
+   `target_issue`, `branch`, `base`, `base_branch`, `members`, `goal`,
+   `maxCycles`, `allowMissingMembers`, `requirementsFile`, `roleMap`, `budget`,
+   `phases`, `kbDemotionLoop`, `tierPolicy`, `tierOverrides`, `decisionNotify`,
+   `overrideRelaunchGate`); any other key -> `400` naming it (field = the key).
+   A known sprint/CLI argument the API does not take (e.g.
+   `azdevops_pat_secret_name`) gets a message saying the launch API does not
+   accept it. Then `issue` is
    comma-split by `splitIssueIds()` (trim, drop empties) and then EACH id is
    validated with `validateIssueId`; `branch`/`base` via `validateBranchName`
    (both imported from `fleet-sprint/runner.js` -- the SAME regexes the CLI
@@ -193,6 +201,14 @@ short-circuits before anything downstream runs:
      reservation made by some OTHER means (e.g. a workflow/cli-launched
      sprint that reserved directly via the fleet's `member_reservation`
      tool and never touched this ledger at all).
+   A conflict whose holder has NO ledger entry here (a fleet-server-only
+   holder) gets the recovery appended to its part of the `409` message: the
+   holder id, `POST /api/reservations/<holder>/force-release`, and the
+   per-member `member_reservation {"member_name":"<m>","action":"force_release"}`
+   form. Before this guard runs, `launch()` releases a fleet-server-only
+   holder that the stale-holder rule (see "Stale server-side reservations"
+   below) proves dead, so such a holder never blocks the launch; the `201`
+   response then carries `staleReservationsReleased: [{member, holder, event}]`.
    This check runs strictly BEFORE `ledger.claim()`, so a rejected launch
    never touches the ledger -- byte-identical, no partial claim.
 4. **Issue-scope overlap guard** (`createScopeGuard().checkLaunch()` in
@@ -314,11 +330,54 @@ These are two different operator actions, easy to confuse:
   enough of the original launch (`branch`, `base`, `goal`, `childPid`,
   whether the kill landed) that a dashboard "Restart" control can replay the
   same `POST /api/sprints` request without a separate lookup.
-- Force-release **only touches this supervisor's own local ledger** -- it
-  does not reach into a different tracking mechanism the fleet server might
-  have (that's the same server-side `reservedBy` record `GET /api/members`
-  and the member-overlap guard already consult independently) -- so if a
-  reservation is wedged on BOTH axes independently, check both.
+- For an id WITH a ledger entry, force-release touches only this
+  supervisor's own ledger (the child, when it exits, releases its own
+  fleet-server reservations).
+- For an id with NO ledger entry, force-release looks the id up on the fleet
+  server instead: every member whose `reservedBy` equals the id exactly is
+  released (`member_reservation` action `release` with `sprint_id` = the id,
+  so a member someone else re-reserved meanwhile is never cleared), a
+  `force-released` history event is recorded with those members, and the
+  response is `200` with `audit.serverOnly: true` and
+  `audit.releasedMembers` (plus `audit.failedMembers` for any release the
+  fleet server refused). This is how an older-version holder written as a
+  branch name, or a dead sprint launched directly from the CLI, is cleared.
+  It is still `404` when neither the ledger nor any member holds the id.
+
+## Stale server-side reservations
+
+A member's fleet-server `reservedBy` can outlive its sprint (a child that
+died before releasing, or an older version that wrote the branch name as
+the holder). A child this supervisor spawns reserves its members, and
+dispatches, under its `--run-id` (this supervisor's sprint id), so the
+holder id matches the ledger and history; a direct CLI launch uses the
+branch name (`sprintIdentity()` in `fleet-sprint/coordination.mjs`). The
+rule `launch()` applies (`isProvablyDeadHolder()` in
+`src/supervisor/api.mjs`):
+
+- A holder with a ledger entry here is a live sprint of this supervisor and
+  is NEVER released by a launch.
+- A holder with no ledger entry is released ONLY when this supervisor's
+  history records a terminal or release event for exactly that id
+  (`child-exited`, `finished`, `launch-failed`, `auto-released`,
+  `aborted-by-restart`, or a `force-released` whose event records
+  `killed: true`). The release is logged loudly
+  (`STALE RESERVATION RELEASED`, naming member and holder).
+- A `force-released` event alone does not prove the holder dead: one whose
+  kill failed (`killed: false`, e.g. EPERM), that had no child to kill
+  (`killed` absent), or that released a fleet-server-only holder
+  (`serverOnly: true`, nothing killed; a live CLI sprint re-reserves under
+  the same id) keeps the `409`.
+- Any other holder -- including one in the branch-name form, or a sprint
+  launched directly from the CLI, which is live but never in this ledger --
+  is NOT released: absence from the ledger alone never proves a holder
+  dead. The launch keeps the `409`, which names the holder and the recovery
+  (force-release route for that holder id, or the per-member
+  `member_reservation` force-release). After the operator runs it, the same
+  launch succeeds.
+
+Supervisor startup does not run this pass (the fleet server may not be
+reachable yet); it runs at each launch for the requested members only.
 
 ## Dolt-push mutex and child-id allocator: why they exist, and why no 409s
 
@@ -383,6 +442,58 @@ block, or no fleet client) is logged once at launch and recorded `failed` per
 decision without a repeated warning. See
 `docs/fleet-sprint-set-aside.md`.
 
+## GET /api/sprints/:id: the summary shape
+
+Every `GET /api/sprints/:id` response, and every `GET /api/sprints` row,
+carries the same stable top-level fields (`src/supervisor/sprint-summary.mjs`,
+`SprintSummary` in the OpenAPI file). Each is always present, `null` when
+unknown:
+
+| Field | Meaning | Source |
+|---|---|---|
+| `sprintId` | the sprint id | ledger / request |
+| `live` | `true` while a running child answered for this sprint | supervisor |
+| `status` | run status (`running`, `completed`, `failed`, ...); for a sprint known only from history, the latest history event name | child summary |
+| `phase` | current (or last) phase title, e.g. `Develop C1 R2` | child summary |
+| `phaseKind` | the title's name part in kebab case (`develop`, `final-review`, `ensure-sprint-branch`) | parsed from `phase` |
+| `cycle` | the `C<n>` number in the title | parsed from `phase` |
+| `maxCycles` | the launch's `maxCycles`; `null` when the launch did not set it (the engine default applies) | ledger |
+| `round` | the `R<n>` number in the title | parsed from `phase` |
+| `startedAt` | ISO-8601 run start (a plain string) | child summary |
+| `elapsedMs` | live milliseconds since start while running (recomputed on every read); the final duration once ended | child summary |
+| `durationMs` | equal to `elapsedMs` | child summary |
+| `cost` | total cost so far (USD) | child summary |
+| `tokens` | total tokens so far | child summary |
+| `pause` | `{status, reason, since, phase, group, resumeAt}` | child summary |
+| `prSourceBranch` | the sprint branch | ledger `branch` |
+| `prTargetBranch` | the PR target branch | ledger `base` |
+
+Where these come from (design choice): the child's small run summary
+(`GET /state?summary=1`, never lean-encoded) for a live sprint, or the summary
+persisted in the terminal run state for one that ended. The phase kind, cycle
+and round are parsed by the supervisor from the fleet-sprint phase title, so
+the workflow core never learns fleet-sprint vocabulary. `maxCycles` and the PR
+branches come from the ledger reservation, which records the launch's
+`maxCycles`, `branch` and `base`.
+
+A live sprint whose child does not answer gets `504` (timed out, e.g. a
+suspended process) or `502` (unreachable), naming the sprint, never a bare
+`500`. `GET /api/sprints` instead keeps the row with its run fields `null`.
+
+No lean `{ "$ref": n }` marker and no `_strings` table appear anywhere in the
+response. A live sprint's response carries the child's state tree as `state`,
+with every ref marker resolved and no `_strings` table. `?full=1` (or
+`full=true`) is accepted and returns the same response.
+
+Backward compatibility: the pre-existing top-level fields are unchanged
+(`live`, `state`, `pendingDecisions`, `decisionState`, `runState`;
+`terminal`, `state`, `resultStatus`, `warnings` on the terminal branch;
+`history`, `latest`, `resultStatus`, `warnings` on the history branch). The
+summary fields are added alongside them; the live `state` now arrives with its
+ref markers resolved into plain values. `GET /api/sprints` rows keep `members`, `issueRoots`, `childPid`,
+`tierPolicy`, `tierOverrides`, `port`, `verdict` and `prNotOpened`; a row
+whose child cannot be reached keeps those with its run fields `null`.
+
 ## GET /api/sprints/:id: `resultStatus` and `warnings` (finished sprints)
 
 A finished sprint's own result status and warnings are lifted to the top level
@@ -396,6 +507,16 @@ reason (e.g. `PR not opened: VCS auth failure ... auth-failure`). The verdict
 is unchanged (a PASS stays PASS) and `success-with-warnings` is a success, not
 a failure. `warnings` is omitted when empty. Terminal sprints are not listed
 by `GET /api/sprints` (live only); read them by id.
+
+## GET /api/sprints/:id: `analysis` and `result` (finished sprints)
+
+A finished sprint also returns `analysis` and `result` from its persisted
+terminal run state, both while the ledger reservation is held and after it is
+released (the history branch reads the same `old_runs/<runId>.json`).
+`analysis` is `{text, generatedAt}` (the `sprint-analysis` extension
+namespace) or `null` for older runs without it; it is never an error. `result`
+is the run's result object (status, verdict, notes, warnings). Both are
+additive: no existing field changes.
 
 ## Pending decisions
 
@@ -417,7 +538,10 @@ A sprint that is waiting on an operator decision (see
   `400` (field `body` or `answer`): body not an object, or `answer` missing,
   empty or too long (also a child-side rejection of the answer). `404`: unknown
   sprint, or no pending decision with that id. `409`: the sprint has no
-  reachable child, or the child answered with an unexpected failure.
+  reachable child, or the child answered with an unexpected failure. `504`:
+  the child did not answer in time; `502`: the child could not be reached
+  (connection refused/reset). For both, the answer may already be recorded:
+  check `GET /api/sprints/:id` `pendingDecisions` before retrying.
 - `POST /sprints/:id/live/extensions/:extId/actions/:actionId` is the generic
   proxy route to the child's extension action endpoint (the dashboard uses it
   for the decisions `answer` action).
