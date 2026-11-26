@@ -671,6 +671,9 @@ export function createKbWorkClient(opts = {}) {
         // what the offer and the PR body use (the plain read answers [] on
         // a failed read).
         branchWithdrawals,
+        // (memberName, baseCommit) => Promise<Set<string>|null>: the entry ids
+        // the bible at `baseCommit` carries (null: unreadable -> withdrawals kept).
+        baseBibleIds,
         // D6 in-sprint ping-pong guard's disk-hash read --
         // (memberName: string, files: string[]) => Promise<Record<string, string>>,
         // the CURRENT sha256 of each file in `files` on `memberName`'s own
@@ -1390,6 +1393,50 @@ export function createKbWorkClient(opts = {}) {
             : `kb_query {query: ${JSON.stringify(detail && detail.title ? detail.title : id)}, confidence: ["CONFIRMED"]} on maintainer '${maintainer}'`;
         log(`[kb-work] WARN: dropping ${id}${title} from the bible queue for ${repo}: ${why}; cited files changed since its basis: ${describeDrift(changedFiles)}. The entry is NOT deleted or demoted -- it stays CONFIRMED in maintainer '${maintainer}''s local KB; retrieve it with ${hint}${withdrawNote}`);
         droppedFromBible.push({ repo, id, why, changed_files: changedFiles.map((f) => ({ ...f })), maintainer, withdrawn });
+    }
+
+    /**
+     * After a post-harvest drop was committed as a withdrawal: an id the
+     * BASE bible does not carry was added by this branch alone, so its
+     * tombstone would block that id from ever re-merging (withdrawn_tombstone)
+     * once the branch lands. Undo the tombstone with a restore (the entry
+     * stays out of the bible; the base has none to re-add) so the id can be
+     * re-captured later. An id the base bible carries keeps its withdrawal.
+     * When the base bible cannot be read, every withdrawal is kept. Never throws.
+     */
+    async function liftOwnTombstones(repo, ids) {
+        if (typeof baseBibleIds !== 'function' || ids.length === 0 || sealedReason) return;
+        const pending = withdrawalsPending.get(repo);
+        const done = [...new Set(ids)].filter((id) => withdrawnIds.has(id) && !(pending && pending.has(id)));
+        if (done.length === 0) return;
+        const sel = selector();
+        const target = sel && typeof sel.getKbMaintainer === 'function' ? sel.getKbMaintainer(repo) : null;
+        if (!target || !target.member) return;
+        let baseIds = null;
+        try {
+            const base = typeof bibleBase === 'function' ? await bibleBase(target.member) : null;
+            baseIds = base && base.baseCommit ? await baseBibleIds(target.member, base.baseCommit) : null;
+        } catch (err) {
+            log(`[kb-work] could not read the base bible on maintainer '${target.member}' (non-fatal; the withdrawal(s) are kept): ${errText(err)}`);
+        }
+        if (!(baseIds instanceof Set)) return;
+        const own = done.filter((id) => !baseIds.has(id));
+        if (own.length === 0) return;
+        if (!restoresPending.has(repo)) restoresPending.set(repo, new Set());
+        for (const id of own) restoresPending.get(repo).add(id);
+        await serialize(repo, () => commitRepo(repo));
+        const stillRestoring = restoresPending.get(repo);
+        const rec = recordFor(repo);
+        const det = detailFor(rec);
+        for (const id of own) {
+            if (stillRestoring && stillRestoring.has(id)) continue;
+            rec.verdicts.delete(id);
+            det.notes.delete(id);
+            det.admitted.delete(id);
+            det.restoredDone.delete(id);
+            for (const d of droppedFromBible) if (d.repo === repo && d.id === id) d.withdrawn = false;
+            log(`[kb-work] ${id} was added to the branch bible by this sprint alone: it is removed with no tombstone, so a later sprint can capture it again`);
+        }
     }
 
     /**
@@ -2364,6 +2411,7 @@ export function createKbWorkClient(opts = {}) {
                 }
                 out.dropped.push(...drifted, ...droppedNow);
                 if (withdrawalsPending.has(repo) && !sealedReason) await serialize(repo, () => commitRepo(repo));
+                await liftOwnTombstones(repo, [...drifted, ...droppedNow]);
                 if (unchecked.length > 0) {
                     // The re-check never reached kb_bible_commit (no
                     // maintainer, maintainer busy, a failed G-pull/G-push):
@@ -2374,12 +2422,12 @@ export function createKbWorkClient(opts = {}) {
                     const pending = confirmations.get(repo);
                     if (pending) { for (const id of unchecked) pending.delete(id); if (pending.size === 0) confirmations.delete(repo); }
                     out.unchecked.push(...unchecked);
-                    log(`[kb-work] WARN: ${label}: could not re-check ${unchecked.length} bible entr(ies) this sprint committed for ${repo} against the branch head (kb_bible_commit was not reached -- see the lines above): ${unchecked.join(', ')}. The branch bible may carry a drifted basis for them; run the repository's bible drift check against the base branch before merging and re-stamp or drop each entry it names.`);
+                    log(`[kb-work] WARN: ${label}: could not re-check ${unchecked.length} bible entr(ies) this sprint committed for ${repo} against the branch head (kb_bible_commit was not reached -- see the lines above): ${unchecked.join(', ')}. The branch bible may carry a drifted basis for them (a cited file changed after the entry was verified); re-check each one against the branch head before this branch merges.`);
                 }
                 const stillPending = (withdrawalsPending.get(repo) || new Map());
                 const notWithdrawn = [...drifted, ...droppedNow].filter((id) => stillPending.has(id));
                 if (notWithdrawn.length > 0) {
-                    log(`[kb-work] WARN: ${label}: the withdrawal of ${notWithdrawn.length} drifted bible entr(ies) for ${repo} did not reach a pushed bible commit: ${notWithdrawn.join(', ')}. The branch bible still carries them with a drifted basis; run the repository's bible drift check against the base branch before merging.`);
+                    log(`[kb-work] WARN: ${label}: the withdrawal of ${notWithdrawn.length} drifted bible entr(ies) for ${repo} did not reach a pushed bible commit: ${notWithdrawn.join(', ')}. The branch bible still carries them with a drifted basis (a cited file changed after the entry was verified); re-check or remove each one before this branch merges.`);
                 } else if (drifted.length + droppedNow.length === 0 && unchecked.length === 0) {
                     log(`[kb-work] ${label}: every bible entry this sprint committed for ${repo} still matches the branch head`);
                 }

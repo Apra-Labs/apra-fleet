@@ -24,6 +24,8 @@ export function createFakeFleet() {
     const published = new Map();    // file -> version on the remote branch
     const events = [];
     const bible = { entries: new Map(), tombstones: new Set() }; // id -> basis {file: version}
+    // The bible at the merge-base commit (id -> basis): what a restore re-adds and what `git show <base>:<bible>` reads.
+    const baseEntries = new Map();
     const bibleCommits = [];        // every kb_bible_commit that changed the bible
     const fleetState = { unpushedBible: false }; // a local bible commit not pushed yet
 
@@ -94,10 +96,14 @@ export function createFakeFleet() {
                     bible.tombstones.add(w.id);
                 }
                 const restored = (args.restore_ids || []).filter((i) => bible.tombstones.has(i));
+                for (const i of restored) {
+                    bible.tombstones.delete(i);
+                    if (baseEntries.has(i)) bible.entries.set(i, { ...baseEntries.get(i) });
+                }
                 // Unchanged content (bases included) is a no-op: no commit.
                 const committed = bibleState() !== before;
                 if (committed) {
-                    bibleCommits.push({ ids: [...(args.ids || [])], merged, withdrawn });
+                    bibleCommits.push({ ids: [...(args.ids || [])], merged, withdrawn, restored });
                     fleetState.unpushedBible = true;
                 }
                 return { path: BIBLE_FILE, merged, demoted: [], withdrawn, restored, skipped, removed: [], entry_count: bible.entries.size, committed };
@@ -107,7 +113,7 @@ export function createFakeFleet() {
     }
 
     return {
-        kbs, checkouts, published, events, bible, bibleCommits, fleetState, kbOf, checkoutOf, memberTool,
+        kbs, checkouts, published, events, bible, baseEntries, bibleCommits, fleetState, kbOf, checkoutOf, memberTool,
         seedEntry(memberName, entry) {
             kbOf(memberUuid(memberName)).push({ tags: [ownTag(memberUuid(memberName))], confidence: 'INFERRED', superseded_at: null, basis: {}, ...entry });
         },
@@ -169,6 +175,8 @@ export function buildOnCommand(fleet, { changedFiles }) {
         if (/^git rev-parse HEAD\s*$/.test(ev.command)) return mockCmdResult(0, 'b'.repeat(40), '');
         if (/^git diff --name-only \S+\.\.\.\S+\s*$/.test(ev.command)) return mockCmdResult(0, changedFiles.map((f) => `${f}\n`).join(''), '');
         if (/^git merge-base HEAD origin\//.test(ev.command)) return mockCmdResult(0, 'a'.repeat(40), '');
+        if (/^git ls-tree --name-only a{40} -- /.test(ev.command)) return mockCmdResult(0, fleet.baseEntries.size > 0 ? `${BIBLE_FILE}\n` : '', '');
+        if (/^git show a{40}:/.test(ev.command)) return mockCmdResult(0, JSON.stringify({ entries: [...fleet.baseEntries.keys()].map((id) => ({ id })) }), '');
         // The bible is a local-only commit between a committing
         // kb_bible_commit and the next push; the work tree is always clean.
         if (/^git push\b/.test(ev.command)) fleet.fleetState.unpushedBible = false;

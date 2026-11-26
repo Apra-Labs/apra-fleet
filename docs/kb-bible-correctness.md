@@ -65,11 +65,14 @@ head', { noReviewLeft: true })` in `phases/harvest.mjs`). This is the last KB
 step before Publish PR, and nothing that changes the tree runs after it. No
 review is left at that point, so a drifted entry cannot be re-verified. It is
 dropped from the branch bible (a withdrawal, committed in the same call) with a
-WARN that names the id and its changed files. The KB entry itself is neither
-deleted nor demoted. A drifted hash is never kept, and an entry is re-stamped
+WARN that names the id and its changed files. An id the base bible does not
+carry (this branch alone added it) is then removed with no tombstone (a
+follow-up restore), so a later sprint can capture it again; an id the base
+carries keeps its withdrawal. The KB entry itself is neither deleted nor demoted. A drifted hash is never kept, and an entry is re-stamped
 only on a re-verification. If the recheck cannot reach `kb_bible_commit` (no
 maintainer, a busy maintainer, a failed pull or push), a WARN names the
-unchecked ids and says to run the drift check below. Like every bible commit,
+unchecked ids and says they need re-checking before the branch merges (the
+drift check below, and the CI step, cover them). Like every bible commit,
 the recheck is a no-op after a FAIL verdict.
 
 ## Base merges: the local drift check
@@ -79,11 +82,17 @@ the branch owns. The engine is not involved in that merge, so check it locally:
 
     npm run check:kb-bible-drift -- --base origin/main
 
-The check reads the bible committed at HEAD and the one committed at `--base`.
-It takes the entries the branch owns and hashes their cited files at HEAD the
+The check reads the bible committed at HEAD and the one committed at the
+merge-base of HEAD and `--base` (so a base that moved on after your last merge
+does not make you own its entries). It takes the entries the branch owns and hashes their cited files at HEAD the
 same way `kb_bible_commit` does (the git blob id of `HEAD:<path>`). It exits 1
 and names each drifted entry and file (`changed`, `absent` or `no_basis`).
 Entries that are identical to the base bible are never reported or touched.
+The failure message prints the exact `--restamp` command for the drifted ids.
+
+CI runs the same check on every pull request (`ci.yml`, ubuntu job,
+`--base origin/<base branch>`) against the PR merge checkout. It fails only on
+entries the PR itself adds or changes, never on entries inherited from the base.
 
 To re-stamp after a base merge, first re-verify each named entry's claim
 against the files at HEAD. Then use one of these:

@@ -11,12 +11,16 @@
  * leave the entry with a drifted basis. This check finds those, locally:
  *
  *   - the branch bible is read as committed at HEAD, the base bible as
- *     committed at --base (default origin/main; a base with no bible is an
- *     empty bible);
- *   - the branch OWNS an entry when its id is absent from the base bible, or
+ *     committed at the MERGE-BASE of HEAD and --base (default origin/main; a
+ *     base with no bible is an empty bible). The merge-base is the base
+ *     branch as this branch last saw it, so a base branch that moved on
+ *     after the branch's last merge never makes the branch own an entry it
+ *     did not touch -- and in a pull request's merge checkout (the base tip
+ *     merged in) the merge-base is the base tip itself;
+ *   - the branch OWNS an entry when its id is absent from that base bible, or
  *     present there with different content. Entries identical to the base
  *     bible are never reported, re-stamped or dropped -- they are the base
- *     branch's to keep current;
+ *     branch's to keep current, however their cited files moved;
  *   - each owned entry's cited files are hashed at HEAD exactly as
  *     kb_bible_commit hashes them (the git blob id of HEAD:<path>), and the
  *     entry is reported when any hash differs, the file is absent at HEAD, or
@@ -106,6 +110,22 @@ function canonical(value) {
     return JSON.stringify(value);
 }
 
+/**
+ * The commit to read the base bible at: the merge-base of HEAD and `base`
+ * (the base tip itself when HEAD contains it), else `base` when the two
+ * histories share nothing. An unknown `base` is passed through so
+ * readBibleAt reports it.
+ */
+export function mergeBaseOf(root, base) {
+    if (!gitOk(root, ['rev-parse', '--verify', '--quiet', `${base}^{commit}`])) return base;
+    try {
+        const sha = git(root, ['merge-base', 'HEAD', base]).trim();
+        return /^[0-9a-f]{40,64}$/.test(sha) ? sha : base;
+    } catch {
+        return base;
+    }
+}
+
 /** Entries of `head` the branch owns: absent from `base`, or present there with different content. */
 export function ownedEntries(head, base) {
     const baseById = new Map(entriesOf(base).map((e) => [e.id, canonical(e)]));
@@ -144,7 +164,7 @@ export function headBlobIds(root, files) {
 export function findOwnedDrift(root, { base = DEFAULT_BASE, biblePath = DEFAULT_BIBLE_PATH } = {}) {
     const head = readBibleAt(root, 'HEAD', biblePath);
     if (!head) return { bible: false, owned: 0, drifted: [] };
-    const baseDoc = readBibleAt(root, base, biblePath);
+    const baseDoc = readBibleAt(root, mergeBaseOf(root, base), biblePath);
     const owned = ownedEntries(head, baseDoc);
     const cited = [...new Set(owned.flatMap((e) => (Array.isArray(e.source_files) ? e.source_files : [])))];
     const current = headBlobIds(root, cited);
@@ -178,8 +198,10 @@ export function restampEntries(root, ids, { base = DEFAULT_BASE, biblePath = DEF
     if (wanted.length === 0) throw new DriftCheckError('--restamp needs at least one entry id');
     const headRaw = git(root, ['show', `HEAD:${biblePath}`]);
     const file = path.join(root, biblePath);
-    const workRaw = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null;
-    if (workRaw !== headRaw) throw new DriftCheckError(`${biblePath} has uncommitted changes -- commit or discard them before re-stamping`);
+    // Git decides "uncommitted", not a byte compare: with core.autocrlf the
+    // work-tree copy is CRLF while the committed blob is LF, and that is no
+    // change at all.
+    if (!gitOk(root, ['diff', '--quiet', 'HEAD', '--', biblePath])) throw new DriftCheckError(`${biblePath} has uncommitted changes -- commit or discard them before re-stamping`);
     const { drifted } = findOwnedDrift(root, { base, biblePath });
     const byId = new Map(drifted.map((d) => [d.id, d]));
     for (const id of wanted) {
@@ -196,17 +218,23 @@ export function restampEntries(root, ids, { base = DEFAULT_BASE, biblePath = DEF
         for (const f of [...e.source_files].sort()) basis[f] = current[f];
         e.source_file_hashes = basis;
     }
+    // Exporter format (LF), as check-kb-canonical requires; git applies
+    // core.autocrlf itself on commit.
     fs.writeFileSync(file, exporterSerialization(doc));
     return wanted;
 }
 
 export function formatDrift(base, drifted) {
+    const fixable = drifted.filter((d) => d.files.every((f) => f.reason !== 'absent')).map((d) => d.id);
+    const gone = drifted.filter((d) => d.files.some((f) => f.reason === 'absent')).map((d) => d.id);
     return [
         `KB BIBLE DRIFT: ${drifted.length} bible entr${drifted.length === 1 ? 'y' : 'ies'} this branch owns (vs ${base}) no longer match their cited files at HEAD:`,
         ...drifted.map((d) => `  ${d.id}${d.title ? ` "${d.title}"` : ''}: ${d.files.map((f) => `${f.path} (${f.reason})`).join(', ')}`),
-        'Re-verify each claim at HEAD, then re-stamp it (kb_promote + kb_bible_commit on the KB that holds it, or',
-        '  node scripts/check-kb-bible-drift.mjs --base ' + base + ' --restamp <id>[,<id>...] and commit the bible),',
-        'or withdraw it if the claim no longer holds. See docs/kb-bible-correctness.md.',
+        'Merge the base branch into this branch, re-verify each claim at HEAD, then re-stamp the entries whose claim still holds',
+        '(kb_promote + kb_bible_commit on the KB that holds them, or the one-line command below) and commit the bible;',
+        'withdraw an entry whose claim no longer holds. See docs/kb-bible-correctness.md.',
+        ...(fixable.length > 0 ? [`Re-stamp (after re-verifying): node scripts/check-kb-bible-drift.mjs --base ${base} --restamp ${fixable.join(',')}`] : []),
+        ...(gone.length > 0 ? [`Cite a file absent at HEAD (withdraw, do not re-stamp): ${gone.join(',')}`] : []),
     ].join('\n');
 }
 

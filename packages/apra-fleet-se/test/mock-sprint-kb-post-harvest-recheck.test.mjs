@@ -36,17 +36,18 @@ const BASE_ID = 'aaaa1111-kb-base-owned-report-claim';
  * CITED at v1. The harvester then publishes CITED at `harvestVersion`
  * (2: its docs commit edits the cited file; 1: it does not).
  */
-async function runHarvestSprint(label, { harvestVersion }) {
+async function runHarvestSprint(label, { harvestVersion, entryId = ENTRY_ID }) {
     const fleet = createFakeFleet();
     fleet.published.set(CITED, 1);
     fleet.bible.entries.set(BASE_ID, { [CITED]: 1 });
     const baseBible = new Map([...fleet.bible.entries].map(([id, basis]) => [id, JSON.stringify(basis)]));
+    for (const [id, basis] of fleet.bible.entries) fleet.baseEntries.set(id, { ...basis });
     let doerCalls = 0;
     const doerHandler = async ({ opts, tempDir, runCmd: run }) => {
         doerCalls += 1;
         if (doerCalls === 1) {
             fleet.seedEntry('maint', {
-                id: ENTRY_ID, type: 'knowledge', title: 'Report dates are rendered in UTC', summary: 'The report formatter converts every date to UTC.',
+                id: entryId, type: 'knowledge', title: 'Report dates are rendered in UTC', summary: 'The report formatter converts every date to UTC.',
                 source_files: [CITED], created_at: new Date().toISOString(),
             });
         }
@@ -55,10 +56,10 @@ async function runHarvestSprint(label, { harvestVersion }) {
         return { content: [{ text: JSON.stringify({ status: 'VERIFY', closedIds: ids, notes: 'done' }) }] };
     };
     const reviewerHandler = async ({ opts }) => {
-        const offered = opts.prompt.includes(`"id": "${ENTRY_ID}"`);
+        const offered = opts.prompt.includes(`"id": "${entryId}"`);
         return { content: [{ text: JSON.stringify({
             verdict: 'APPROVED', notes: 'Approved.', reopenIds: [], newTasks: [],
-            ...(offered ? { kb_promotions: [{ id: ENTRY_ID, reason: `verified against ${CITED}:21, every date goes through toUTC` }] } : {}),
+            ...(offered ? { kb_promotions: [{ id: entryId, reason: `verified against ${CITED}:21, every date goes through toUTC` }] } : {}),
         }) }] };
     };
     let harvested = false;
@@ -102,14 +103,16 @@ describe('mock sprint: the sprint\'s own bible entries are re-checked after the 
             // The drifted entry took the drop path: out of the bible, a WARN
             // naming it and the changed file.
             assert.ok(!fleet.bible.entries.has(ENTRY_ID), 'the final branch bible no longer carries the drifted entry');
-            assert.ok(fleet.bible.tombstones.has(ENTRY_ID), 'it was withdrawn by a bible commit');
+            assert.ok(!fleet.bible.tombstones.has(ENTRY_ID), 'the branch added it, so no tombstone is left: a later sprint can capture it again');
+            assert.ok(fleet.bibleCommits.some((c) => c.withdrawn.includes(ENTRY_ID)), 'it was withdrawn by a bible commit first');
             const warn = r.logs.find((l) => /\[kb-work\] WARN: dropping /.test(l) && l.includes(ENTRY_ID));
             assert.ok(warn, kbLog(r));
             assert.ok(warn.includes(CITED), 'the WARN names the changed cited file');
             assert.match(warn, /post-harvest head/);
             assert.match(warn, /no review is left to re-verify it/);
             const lastCommit = fleet.bibleCommits[fleet.bibleCommits.length - 1];
-            assert.deepEqual(lastCommit.withdrawn, [ENTRY_ID], 'the withdrawal is the last bible commit of the sprint');
+            assert.deepEqual(lastCommit.restored, [ENTRY_ID], 'the tombstone is lifted by the last bible commit of the sprint');
+            assert.ok(r.logs.some((l) => l.includes(ENTRY_ID) && /added to the branch bible by this sprint alone/.test(l)), kbLog(r));
 
             // Never deleted or demoted locally.
             const row = fleet.kbOf(memberUuid('maint')).find((e) => e.id === ENTRY_ID);
@@ -128,6 +131,17 @@ describe('mock sprint: the sprint\'s own bible entries are re-checked after the 
                 assert.ok(!(c.args.withdrawals || []).some((w) => w.id === BASE_ID), `the base entry is never withdrawn: ${JSON.stringify(c.args)}`);
             }
             assert.ok(!r.logs.some((l) => l.includes(BASE_ID)), 'the base entry is never named in the run log');
+        });
+    });
+
+    test('the drifted entry is one the BASE bible carries -> its withdrawal (tombstone) is kept', { timeout: scaledTimeout(240000, { concurrency: TEST_CONCURRENCY }) }, async () => {
+        await withScenarioMarkers('kb post-harvest recheck base entry', async () => {
+            const { r, fleet } = await runHarvestSprint('postharvestbase', { harvestVersion: 2, entryId: BASE_ID });
+            assert.equal(r.error, null, `sprint error: ${r.error && r.error.message}`);
+            assert.ok(r.logs.some((l) => /\[kb-work\] WARN: dropping /.test(l) && l.includes(BASE_ID)), kbLog(r));
+            assert.ok(fleet.bible.tombstones.has(BASE_ID), 'the base-carried id keeps its withdrawal');
+            assert.ok(!fleet.bible.entries.has(BASE_ID));
+            assert.ok(fleet.bibleCommits.every((c) => !c.restored.includes(BASE_ID)), 'no restore for an id the base bible carries');
         });
     });
 
