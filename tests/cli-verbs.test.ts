@@ -394,7 +394,7 @@ describe('runStop', () => {
       killSpy.mockImplementation(() => true); // kill(pid, 0) succeeds -> alive
     }
     function forceKillCalls(): number {
-      const taskkills = vi.mocked(execFileSync).mock.calls.filter((c) => c[0] === 'taskkill').length;
+      const taskkills = vi.mocked(execFileSync).mock.calls.filter((c) => /(^|[\\/])taskkill(\.exe)?$/i.test(String(c[0]))).length;
       const sigkills = killSpy.mock.calls.filter((c: unknown[]) => c[1] === 'SIGKILL').length;
       return taskkills + sigkills;
     }

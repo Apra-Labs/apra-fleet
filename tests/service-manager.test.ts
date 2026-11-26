@@ -15,6 +15,14 @@ vi.mock('node:os', () => ({
     userInfo: () => ({ username: 'mockuser' }),
   },
 }));
+// node:fs is mocked, so on a Windows host the real windowsExecutable finds no
+// System32 file and throws. These tests assert argv and call order, not the
+// resolution: the name passes through unchanged here, as it does off win32.
+// The absolute-path contract is covered by tests/ga85-systools-absolute-paths.test.ts.
+vi.mock('../src/os/windows-executable.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/os/windows-executable.js')>()),
+  windowsExecutable: (name: string) => name,
+}));
 vi.mock('../src/services/service-manager/index.js', () => ({
   gracefulStopByServerJson: mockGracefulStop,
 }));

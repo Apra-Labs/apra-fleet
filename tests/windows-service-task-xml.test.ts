@@ -19,6 +19,11 @@ const { mockGracefulStop, order } = vi.hoisted(() => ({
   mockGracefulStop: vi.fn<(fallback?: (pid: number) => void) => Promise<boolean>>(),
   order: [] as string[],
 }));
+// Host-independent: windowsExecutable resolves to a fixed absolute System32 path (as it does on win32).
+vi.mock('../src/os/windows-executable.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/os/windows-executable.js')>()),
+  windowsExecutable: (name: string) => `C:/Windows/System32/${name.replace(/\.exe$/i, '')}.exe`,
+}));
 vi.mock('../src/services/service-manager/index.js', () => ({
   gracefulStopByServerJson: mockGracefulStop,
 }));
@@ -274,8 +279,8 @@ describe('WindowsServiceManager lifecycle', () => {
     await mgr().start();
     const enableAt = order.indexOf('schtasks /change /tn ApraFleet /enable');
     expect(enableAt).toBeGreaterThanOrEqual(0);
-    expect(spawned).toEqual([['schtasks', ['/run', '/tn', 'ApraFleet']]]);
-    expect(enableAt).toBeLessThan(order.indexOf('spawn schtasks /run /tn ApraFleet'));
+    expect(spawned).toEqual([['C:/Windows/System32/schtasks.exe', ['/run', '/tn', 'ApraFleet']]]);
+    expect(enableAt).toBeLessThan(order.indexOf('spawn C:/Windows/System32/schtasks.exe /run /tn ApraFleet'));
   });
 
   it('query reports a disabled task as stopped by the user', async () => {
@@ -320,7 +325,7 @@ describe('WindowsServiceManager lifecycle', () => {
       // register() itself must leave no launcher behind, or start() would use wscript.
       expect(fs.existsSync(launcherPathFor(wrapper))).toBe(false);
       await mgr().start();
-      expect(spawned).toEqual([['cmd.exe', ['/d', '/s', '/c', `""${wrapper}""`]]]);
+      expect(spawned).toEqual([['C:/Windows/System32/cmd.exe', ['/d', '/s', '/c', `""${wrapper}""`]]]);
       expect(verbatim).toEqual([true]);
       warn.mockRestore();
     });
@@ -334,7 +339,7 @@ describe('WindowsServiceManager lifecycle', () => {
       expect(fs.existsSync(launcherPathFor(wrapper))).toBe(false);
       spawned.length = 0; verbatim.length = 0;
       await mgr().start();
-      expect(spawned).toEqual([['cmd.exe', ['/d', '/s', '/c', `""${wrapper}""`]]]);
+      expect(spawned).toEqual([['C:/Windows/System32/cmd.exe', ['/d', '/s', '/c', `""${wrapper}""`]]]);
       warn.mockRestore();
     });
 

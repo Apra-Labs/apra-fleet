@@ -5,6 +5,7 @@
 // GitNexusProvider from gitnexus.ts, so anything gitnexus.ts needs at module
 // load time must live outside code-intelligence.ts).
 import { execFileSync, spawn, type ChildProcess } from 'child_process';
+import { planEnv, windowsCommand, type WindowsCommandPlan } from '../os/windows-command.js';
 import {
   closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, writeFileSync,
 } from 'fs';
@@ -368,9 +369,31 @@ export function spawnAnalyze(repoPath: string, opts: { auto?: boolean } = {}): S
   // Keep the index dir out of `git status` before analyze creates it.
   ensureLocalGitExcluded(repoPath, GITNEXUS_REPO_ARTIFACTS);
 
+  // win32: never the bare name under shell:true -- cmd.exe would look for
+  // npx.cmd in the repo (cwd) first. Resolve an absolute plan instead
+  // (src/os/windows-command.ts); off win32 the spawn is unchanged.
+  let plan: WindowsCommandPlan | null;
+  try {
+    plan = windowsCommand('npx');
+  } catch (err) {
+    try { closeSync(fd); } catch { /* ignore */ }
+    const detail = err instanceof Error ? err.message : String(err);
+    logError('code-intelligence-reindex', `cannot resolve npx for background reindex of ${repoPath}: ${detail}`);
+    return { started: false, reason: 'npx-not-found', detail };
+  }
+
   let child: ChildProcess;
   try {
-    child = spawn('npx', npxArgsForShell(GITNEXUS_ANALYZE_ARGS, process.platform === 'win32'), {
+    child = plan ? spawn(plan.file, [...plan.args, ...npxArgsForShell(GITNEXUS_ANALYZE_ARGS, plan.shell !== false)], {
+      cwd: repoPath,
+      // Same console handling as below: non-detached + windowsHide gives the
+      // whole tree one hidden console.
+      detached: false,
+      windowsHide: true,
+      stdio: ['ignore', fd, fd],
+      shell: plan.shell,
+      env: planEnv(plan),
+    }) : spawn('npx', npxArgsForShell(GITNEXUS_ANALYZE_ARGS, process.platform === 'win32'), {
       cwd: repoPath,
       // win32: NOT detached. A detached child has no console, so the
       // node/git processes the cmd.exe shell starts each open a visible,

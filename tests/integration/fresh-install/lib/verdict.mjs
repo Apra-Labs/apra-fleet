@@ -14,12 +14,32 @@ export const STATUS = Object.freeze({
   WARN: 'WARN',          // advisory step that did not meet expectation
   NA: 'N/A',
   ENV: 'ENV-LIMITED',    // failed only because of a documented environment limit
+  INCONCLUSIVE: 'INCONCLUSIVE', // needs an expected/baseline version that is unknown: proves nothing
 });
 
-/** Replace ${name} placeholders from vars; unknown names are left untouched. */
+/**
+ * Replace ${name} placeholders from vars; unknown names are left untouched.
+ * A version var that is a bare core ("0.4.6", derived from version.json) matches
+ * any build of that core ("v0.4.6_abc123"): cores are compared, not suffixes.
+ */
 export function expand(pattern, vars = {}) {
-  return String(pattern).replace(/\$\{(\w+)\}/g, (m, k) =>
-    vars[k] === undefined || vars[k] === null ? m : escapeRegex(String(vars[k])));
+  return String(pattern).replace(/\$\{(\w+)\}/g, (m, k) => {
+    if (vars[k] === undefined || vars[k] === null) return m;
+    const v = String(vars[k]);
+    if (/Version$/.test(k) && /^v?\d+\.\d+\.\d+$/.test(v)) return `v?${escapeRegex(v.replace(/^v/, ''))}(_[0-9a-f]+)?`;
+    return escapeRegex(v);
+  });
+}
+
+/** Names of ${vars} used by `rule` that have no value (null/undefined). */
+export function unknownVars(rule, vars = {}) {
+  const out = new Set();
+  for (const f of ['keyline', 'observed']) {
+    for (const m of String(rule?.[f] ?? '').matchAll(/\$\{(\w+)\}/g)) {
+      if (vars[m[1]] === undefined || vars[m[1]] === null) out.add(m[1]);
+    }
+  }
+  return [...out];
 }
 
 function escapeRegex(s) {
@@ -76,6 +96,9 @@ export function evaluateStep(step, rec, { platform, driver, vars = {} } = {}) {
   if (step.na && ruleMatches(step.na, rec, vars)) {
     return { status: STATUS.NA, reason: step.na.reason ?? 'not served by this build' };
   }
+  // An expectation whose version is unknown cannot be checked: INCONCLUSIVE, never satisfied.
+  const unknown = unknownVars(step.expect, vars);
+  if (unknown.length) return { status: STATUS.INCONCLUSIVE, reason: `${unknown.join(', ')} is unknown, so this check cannot be evaluated` };
   if (ruleMatches(step.expect ?? {}, rec, vars)) return { status: STATUS.PASS, reason: '' };
   for (const env of step.envLimited ?? []) {
     if ((!env.platforms || env.platforms.includes(platform))
@@ -131,7 +154,12 @@ export function evaluatePass({ checklist, pass, platform, driver, records = [], 
     };
   });
   const failed = steps.filter(s => s.status === STATUS.FAIL);
-  const verdict = driverError || failed.length > 0 ? STATUS.FAIL : STATUS.PASS;
+  const inconclusiveSteps = steps.filter(s => s.status === STATUS.INCONCLUSIVE);
+  const verdict = driverError || failed.length > 0 ? STATUS.FAIL : inconclusiveSteps.length ? STATUS.INCONCLUSIVE : STATUS.PASS;
+  const unknownNames = [...new Set(inconclusiveSteps.flatMap(s => unknownVars(stepsFor(checklist, pass, platform).find(x => x.id === s.id)?.expect, vars)))];
+  const inconclusive = inconclusiveSteps.length
+    ? [`${platform}/${pass}: ${unknownNames.join(', ')} is unknown; INCONCLUSIVE steps: ${inconclusiveSteps.map(s => s.id).join(', ')}`]
+    : [];
   return {
     pass,
     platform,
@@ -139,6 +167,7 @@ export function evaluatePass({ checklist, pass, platform, driver, records = [], 
     informational,
     driverError: driverError ? asciiOnly(driverError) : null,
     verdict,
+    inconclusive,
     blocking: verdict === STATUS.FAIL && !informational,
     counts: countBy(steps.map(s => s.status)),
     steps,
@@ -164,7 +193,9 @@ export function summarize(passResults) {
  */
 export function finalVerdict(passResults, inconclusiveReasons = []) {
   const s = summarize(passResults);
-  const inconclusive = inconclusiveReasons.map(asciiOnly);
+  // An unknown expected/baseline version surfaces here from the passes themselves.
+  const fromPasses = passResults.filter(p => !p.informational).flatMap(p => p.inconclusive ?? []);
+  const inconclusive = [...inconclusiveReasons, ...fromPasses].map(asciiOnly);
   if (s.exitCode) return { verdict: 'FAIL', exitCode: 1, blocking: s.blocking, inconclusive };
   if (inconclusive.length) return { verdict: 'INCONCLUSIVE', exitCode: 3, blocking: [], inconclusive };
   return { verdict: 'PASS', exitCode: 0, blocking: [], inconclusive };

@@ -43,7 +43,7 @@ export function processCommandLine(pid: number): string | null {
 export function processImageName(pid: number): string | null {
   if (!Number.isInteger(pid) || pid <= 0) return null;
   try {
-    const out = execFileSync('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'],
+    const out = execFileSync(windowsExecutable('tasklist'), ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'],
       { encoding: 'utf8', stdio: 'pipe', windowsHide: true, timeout: 10_000 });
     return parseTasklistImage(String(out), pid);
   } catch {

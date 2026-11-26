@@ -126,8 +126,8 @@ describe('send_files -- substitution surface tests (p, p2)', () => {
       substitutions: { 'secret.github_pat': 'value' },
     });
 
-    expect(result).toContain('invalid substitutions');
-    expect(result).toContain('secret.github_pat');
+    expect((result as any).text).toContain('invalid substitutions');
+    expect((result as any).text).toContain('secret.github_pat');
     expect(mockTransferFiles).not.toHaveBeenCalled();
     // readFileSync should not have been called for our source file
     const readCallsForOurFile = readSpy.mock.calls.filter(
@@ -148,9 +148,9 @@ describe('send_files -- substitution surface tests (p, p2)', () => {
       substitutions: { branch: 'feat/x' }, // base_branch missing
     });
 
-    expect(result).toContain('send_files: substitution failed');
-    expect(result).toContain('base_branch');
-    expect(result).not.toContain('feat/x'); // value must not appear in error
+    expect((result as any).text).toContain('send_files: substitution failed');
+    expect((result as any).text).toContain('base_branch');
+    expect((result as any).text).not.toContain('feat/x'); // value must not appear in error
     expect(mockTransferFiles).not.toHaveBeenCalled();
   });
 

@@ -42,8 +42,8 @@ describe('sendFiles - basename collision detection', () => {
       local_paths: ['/a/dir/report.txt', '/b/dir/report.txt'],
     });
 
-    expect(result).toContain('[ERR]');
-    expect(result).toContain('report.txt');
+    expect((result as any).text).toContain('[ERR]');
+    expect((result as any).text).toContain('report.txt');
     expect(mockTransferFiles).not.toHaveBeenCalled();
   });
 
@@ -56,8 +56,8 @@ describe('sendFiles - basename collision detection', () => {
       local_paths: ['/a/log.txt', '/b/unique.txt', '/c/log.txt'],
     });
 
-    expect(result).toContain('[ERR]');
-    expect(result).toContain('log.txt');
+    expect((result as any).text).toContain('[ERR]');
+    expect((result as any).text).toContain('log.txt');
     expect(mockTransferFiles).not.toHaveBeenCalled();
   });
 

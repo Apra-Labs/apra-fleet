@@ -11,6 +11,7 @@ import { isContainedInWorkFolder } from '../utils/platform.js';
 import { LogScope } from '../utils/log-helpers.js';
 import { validateSubstitutionKeys, applySubstitutions } from '../services/substitution-engine.js';
 import type { Agent } from '../types.js';
+import { transferFailure, type TransferFailure } from './transfer-failure.js';
 
 export const sendFilesSchema = z.object({
   ...memberIdentifier,
@@ -30,25 +31,25 @@ export const sendFilesSchema = z.object({
 
 export type SendFilesInput = z.infer<typeof sendFilesSchema>;
 
-export async function sendFiles(input: SendFilesInput, extra?: any): Promise<string> {
+export async function sendFiles(input: SendFilesInput, extra?: any): Promise<string | TransferFailure> {
   // Validate substitution keys FIRST -- before any file I/O, before setting busy.
   // Satisfies the invariant: key rejection has zero side effects.
   if (input.substitutions !== undefined) {
     const keyCheck = validateSubstitutionKeys('send_files', input.substitutions);
-    if (!keyCheck.ok) return keyCheck.error;
+    if (!keyCheck.ok) return transferFailure(keyCheck.error, 'invalid-input');
   }
 
   const agentOrError = resolveMember(input.member_id, input.member_name);
-  if (typeof agentOrError === 'string') return agentOrError;
+  if (typeof agentOrError === 'string') return transferFailure(agentOrError, 'member-unavailable');
   let agent: Agent;
   try {
     agent = await ensureCloudReady(agentOrError as Agent); // auto-start if stopped
   } catch (err: any) {
-    return `Failed to upload files to "${(agentOrError as Agent).friendlyName}": ${err.message}`;
+    return transferFailure(`Failed to upload files to "${(agentOrError as Agent).friendlyName}": ${err.message}`, 'member-unavailable');
   }
 
   if (input.dest_subdir?.includes('\0')) {
-    return `[ERR] Invalid dest_subdir: null bytes are not allowed.`;
+    return transferFailure(`[ERR] Invalid dest_subdir: null bytes are not allowed.`, 'invalid-input');
   }
 
   // Path security: verify dest_subdir stays within work_folder
@@ -58,12 +59,12 @@ export async function sendFiles(input: SendFilesInput, extra?: any): Promise<str
       const resolved = path.resolve(agent.workFolder, input.dest_subdir);
       const workFolderNorm = path.resolve(agent.workFolder);
       if (resolved !== workFolderNorm && !resolved.startsWith(workFolderNorm + path.sep)) {
-        return 'dest_subdir resolves outside member work_folder -- write blocked';
+        return transferFailure('dest_subdir resolves outside member work_folder -- write blocked', 'path-blocked');
       }
       resolvedPath = resolved;
     } else {
       if (!isContainedInWorkFolder(agent.workFolder, input.dest_subdir)) {
-        return 'dest_subdir resolves outside member work_folder -- write blocked';
+        return transferFailure('dest_subdir resolves outside member work_folder -- write blocked', 'path-blocked');
       }
       const normWorkFolder = agent.workFolder.replace(/\\/g, '/').replace(/\/$/, '');
       const normSubdir = input.dest_subdir.replace(/\\/g, '/');
@@ -85,7 +86,7 @@ export async function sendFiles(input: SendFilesInput, extra?: any): Promise<str
     }
   }
   if (collisionLines.length > 0) {
-    return `[ERR] Basename collision: these files share a name and would overwrite each other at destination:\n${collisionLines.join('\n')}`;
+    return transferFailure(`[ERR] Basename collision: these files share a name and would overwrite each other at destination:\n${collisionLines.join('\n')}`, 'invalid-input');
   }
 
   // Substitution phase: read files, apply engine, write temp files.
@@ -99,7 +100,7 @@ export async function sendFiles(input: SendFilesInput, extra?: any): Promise<str
     try {
       fileContents = input.local_paths.map(p => fs.readFileSync(p, 'utf-8'));
     } catch (err: any) {
-      return `send_files: failed to read source file: ${err.message}`;
+      return transferFailure(`send_files: failed to read source file: ${err.message}`, 'invalid-input');
     }
 
     const subInputs = input.local_paths.map((p, i) => ({
@@ -108,7 +109,7 @@ export async function sendFiles(input: SendFilesInput, extra?: any): Promise<str
     }));
 
     const result = applySubstitutions('send_files', subInputs, input.substitutions);
-    if (!result.ok) return result.error;
+    if (!result.ok) return transferFailure(result.error, 'invalid-input');
 
     // Write transformed content to temp dir preserving basenames; transfer those paths.
     try {
@@ -124,7 +125,7 @@ export async function sendFiles(input: SendFilesInput, extra?: any): Promise<str
       if (tempDir) {
         try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch { /* best-effort */ }
       }
-      return `send_files: failed to prepare substituted files: ${err.message}`;
+      return transferFailure(`send_files: failed to prepare substituted files: ${err.message}`, 'invalid-input');
     }
   } else {
     // No substitutions: heuristic warning check (best-effort -- skip if file is unreadable).
@@ -180,12 +181,13 @@ export async function sendFiles(input: SendFilesInput, extra?: any): Promise<str
       scope.ok(`${result.success.length} file(s)`);
 
     releaseBusy();
+    if (result.failed.length > 0) return transferFailure(output, result.success.length > 0 ? 'partial' : 'failed');
     return output;
   } catch (err: any) {
     const isOffline = agent.agentType !== 'local' && !!(err.message && /ssh|network|econnrefused|ehostunreach|connection timed out/i.test(err.message));
     releaseBusy(isOffline ? 'offline' : 'idle');
     scope.abort(err.message);
-    return `Failed to upload files to "${agent.friendlyName}": ${err.message}`;
+    return transferFailure(`Failed to upload files to "${agent.friendlyName}": ${err.message}`, 'failed');
   } finally {
     releaseBusy();
     if (tempDir) {

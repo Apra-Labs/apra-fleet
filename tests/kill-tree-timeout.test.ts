@@ -7,6 +7,12 @@ vi.mock('node:child_process', async (importOriginal) => {
   return { ...actual, execFileSync: vi.fn(), execSync: vi.fn() };
 });
 
+// Host-independent: windowsExecutable resolves to a fixed absolute System32 path (as it does on win32).
+vi.mock('../src/os/windows-executable.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/os/windows-executable.js')>()),
+  windowsExecutable: (name: string) => `C:\\Windows\\System32\\${name.replace(/\.exe$/i, '')}.exe`,
+}));
+
 import { execFileSync, execSync } from 'node:child_process';
 import { killLocalProcessTree, KILL_TREE_TIMEOUT_MS } from '../src/services/strategy.js';
 
@@ -27,13 +33,13 @@ describe('killLocalProcessTree', () => {
     expect(KILL_TREE_TIMEOUT_MS).toBeLessThanOrEqual(10_000);
   });
 
-  it('on Windows calls taskkill.exe directly (no shell) with a timeout and windowsHide', () => {
+  it('on Windows calls the absolute System32 taskkill.exe directly (no shell) with a timeout and windowsHide', () => {
     setPlatform('win32');
     killLocalProcessTree(4242, 'ignored on windows', 'C:\\Program Files\\Git\\bin\\bash.exe');
     expect(execSync).not.toHaveBeenCalled();
     expect(execFileSync).toHaveBeenCalledTimes(1);
     const [file, args, opts] = vi.mocked(execFileSync).mock.calls[0] as [string, string[], Record<string, unknown>];
-    expect(file).toBe('taskkill.exe');
+    expect(file).toBe('C:\\Windows\\System32\\taskkill.exe');
     expect(args).toEqual(['/F', '/T', '/PID', '4242']);
     expect(opts.timeout).toBe(KILL_TREE_TIMEOUT_MS);
     expect(opts.windowsHide).toBe(true);

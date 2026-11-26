@@ -8,6 +8,7 @@ import { ensureCloudReady } from '../services/cloud/lifecycle.js';
 import { isContainedInWorkFolder } from '../utils/platform.js';
 import { LogScope } from '../utils/log-helpers.js';
 import type { Agent } from '../types.js';
+import { transferFailure, type TransferFailure } from './transfer-failure.js';
 
 export const receiveFilesSchema = z.object({
   ...memberIdentifier,
@@ -24,30 +25,30 @@ export const receiveFilesSchema = z.object({
 
 export type ReceiveFilesInput = z.infer<typeof receiveFilesSchema>;
 
-export async function receiveFiles(input: ReceiveFilesInput, extra?: any): Promise<string> {
+export async function receiveFiles(input: ReceiveFilesInput, extra?: any): Promise<string | TransferFailure> {
   const agentOrError = resolveMember(input.member_id, input.member_name);
-  if (typeof agentOrError === 'string') return agentOrError;
+  if (typeof agentOrError === 'string') return transferFailure(agentOrError, 'member-unavailable');
   let agent: Agent;
   try {
     agent = await ensureCloudReady(agentOrError as Agent); // auto-start if stopped
   } catch (err: any) {
-    return `Failed to download files from "${(agentOrError as Agent).friendlyName}": ${err.message}`;
+    return transferFailure(`Failed to download files from "${(agentOrError as Agent).friendlyName}": ${err.message}`, 'member-unavailable');
   }
 
   // Path security: verify each remote_path stays within work_folder
   for (const remotePath of input.remote_paths) {
     if (remotePath.includes('\0')) {
-      return `⛔ Invalid remote_path: null bytes are not allowed.`;
+      return transferFailure(`⛔ Invalid remote_path: null bytes are not allowed.`, 'invalid-input');
     }
     if (agent.agentType === 'local') {
       const resolved = path.resolve(agent.workFolder, remotePath);
       const workFolderNorm = path.resolve(agent.workFolder);
       if (resolved !== workFolderNorm && !resolved.startsWith(workFolderNorm + path.sep)) {
-        return `remote_path "${remotePath}" resolves outside member work_folder — read blocked`;
+        return transferFailure(`remote_path "${remotePath}" resolves outside member work_folder — read blocked`, 'path-blocked');
       }
     } else {
       if (!isContainedInWorkFolder(agent.workFolder, remotePath)) {
-        return `remote_path "${remotePath}" resolves outside member work_folder — read blocked`;
+        return transferFailure(`remote_path "${remotePath}" resolves outside member work_folder — read blocked`, 'path-blocked');
       }
     }
   }
@@ -90,12 +91,13 @@ export async function receiveFiles(input: ReceiveFilesInput, extra?: any): Promi
       scope.ok(`${result.success.length} file(s)`);
 
     releaseBusy();
+    if (result.failed.length > 0) return transferFailure(output, result.success.length > 0 ? 'partial' : 'failed');
     return output;
   } catch (err: any) {
     const isOffline = agent.agentType !== 'local' && !!(err.message && /ssh|network|econnrefused|ehostunreach|connection timed out/i.test(err.message));
     releaseBusy(isOffline ? 'offline' : 'idle');
     scope.abort(err.message);
-    return `Failed to download files from "${agent.friendlyName}": ${err.message}`;
+    return transferFailure(`Failed to download files from "${agent.friendlyName}": ${err.message}`, 'failed');
   } finally {
     releaseBusy();
   }

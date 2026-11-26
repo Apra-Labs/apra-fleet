@@ -132,7 +132,13 @@ export type FleetInstallUnavailableReason =
   /** replace-full refused before anything changed: a fleet-sprint supervisor
    *  is running on the member (an install over it would refuse mid-way, and a
    *  rollback could be refused by E-FLEET-SE-RUNNING). */
-  | 'fleet-se-running';
+  | 'fleet-se-running'
+  /** replace-full refused before the uninstall: another process holds the
+   *  member's installed Windows executable open, so the uninstall could not
+   *  delete it and would leave the install half-removed. Nothing was
+   *  uninstalled; the server stopped in step 0 is restarted by the detail's
+   *  commands. */
+  | 'exe-locked';
 
 /** What the probe observed about the member's current install. */
 export type MemberFleetProbe =
@@ -895,8 +901,38 @@ export function buildFullInstallReplaceHint(opts: {
  *  (full) install with a member install. Never implied by "auto". */
 export const REPLACE_FULL_INSTALL = 'replace-full';
 
+/** Tags the Windows exe-check step prints: the installed exe can be deleted, or another process holds it. */
+export const EXE_FREE_SENTINEL = '__APRA_FLEET_EXE_FREE__';
+export const EXE_LOCKED_SENTINEL = '__APRA_FLEET_EXE_LOCKED__';
+
+/**
+ * Windows member: whether the installed exe at `bin` can be deleted, decided
+ * before the uninstall. Windows maps a running executable, so an exclusive
+ * read-write open fails with a sharing violation while any process runs it --
+ * exactly when its deletion fails. The open neither truncates nor changes the
+ * file. Prints EXE_FREE_SENTINEL (also when the exe is absent: nothing to
+ * delete) or EXE_LOCKED_SENTINEL plus the reason, and exits 0 either way.
+ * A Git Bash member opens it read-write with the shell's own redirection
+ * (`3<>`, guarded by `[ -f ]` because it would create a missing file).
+ */
+export function buildExeLockProbe(bin: string, targetOs: TargetOS, shell: MemberShell): string {
+  const ps = psQuote(bin);
+  const px = posixQuote(bin);
+  return memberCommandFor(targetOs, shell, {
+    posix:
+      `if [ -f ${px} ]; then if ( exec 3<>${px} ) 2>/dev/null; then printf '%s\\n' '${EXE_FREE_SENTINEL}'; ` +
+      `else printf '%s\\n' '${EXE_LOCKED_SENTINEL} the file is open in another process'; fi; else printf '%s\\n' '${EXE_FREE_SENTINEL}'; fi`,
+    powershell:
+      `if (Test-Path -LiteralPath ${ps} -PathType Leaf) { try { $s = [System.IO.File]::Open(${ps}, 'Open', 'ReadWrite', 'None'); $s.Close(); Write-Output '${EXE_FREE_SENTINEL}' } ` +
+      `catch { Write-Output ('${EXE_LOCKED_SENTINEL} ' + $_.Exception.Message) } } else { Write-Output '${EXE_FREE_SENTINEL}' }`,
+  });
+}
+
 /** Tag the linux supervisor step prints when it moved a unit file into the backup. */
 export const SUPERVISOR_MOVED_SENTINEL = '__APRA_FLEET_SUPERVISOR_MOVED__';
+
+/** Tag the supervisor restart prints when the task / unit file it would start no longer exists. */
+export const SUPERVISOR_GONE_SENTINEL = '__APRA_FLEET_SUPERVISOR_GONE__';
 
 /** What a successful replacement removed and where the backup is. */
 export interface ReplacedFullInstall {
@@ -906,9 +942,27 @@ export interface ReplacedFullInstall {
   removed: string[];
   /** Timestamped backup directory on the member (data/ and fleet.key). */
   backupPath: string;
+  /** Further outcomes the owner should know about (e.g. the fleet-sprint
+   *  supervisor stopped in step 0 and restarted, or how to restart it). */
+  notes?: string[];
 }
 
-export type ReplaceStepName = 'supervisor-check' | 'stop' | 'stop-check' | 'backup' | 'uninstall' | 'supervisor' | 'move-data' | 'install';
+export type ReplaceStepName =
+  | 'supervisor-check' | 'supervisor-stop' | 'supervisor-recheck'
+  | 'stop' | 'stop-check' | 'backup' | 'exe-check' | 'uninstall' | 'supervisor' | 'move-data' | 'install';
+
+/** How the idle fleet-sprint supervisor stopped in step 0 was running: under
+ *  the Windows scheduled task, under the linux user unit, or started by hand. */
+export type SupervisorRunVia = 'task' | 'unit' | 'manual';
+
+/** Tag the step-0 supervisor stop prints, followed by a SupervisorRunVia. */
+export const SUPERVISOR_VIA_SENTINEL = '__APRA_FLEET_SUPERVISOR_VIA__';
+
+/** The idle supervisor found by step 0: its port, and once stopped, how it ran. */
+export interface ReplaceSupervisor {
+  port: string;
+  via?: SupervisorRunVia;
+}
 
 export interface ReplaceFullInstallPlan {
   backupDir: string;
@@ -917,13 +971,92 @@ export interface ReplaceFullInstallPlan {
   steps: Array<{ name: ReplaceStepName; command: string }>;
   /** Rollback commands, in order, per failed step (empty for a backup failure):
    *  data/ is left in place before step 4 completes, restored from dataAside
-   *  after it, and the (possibly torn) backup copy is only a last resort. */
+   *  after it, and the (possibly torn) backup copy is only a last resort.
+   *  With an idle supervisor stopped in step 0, every sequence from the
+   *  uninstall on begins with the supervisor stop (so the old binary's install
+   *  guard, E-FLEET-SE-RUNNING, cannot refuse the reinstall) and ends with its
+   *  restart; earlier ones end with the restart. */
   rollbackFor: Record<ReplaceStepName | 'verify', string[]>;
+  /** The supervisor restart, run after a successful install and version check
+   *  (wrapped for the member's shell), and its plain form for the owner; null
+   *  when no supervisor was stopped or it was started by hand. */
+  supervisorRestart: { command: string; manual: string } | null;
 }
 
 /** Path-safe UTC stamp (no ':'): 20261006T143000Z. */
 export function replaceBackupStamp(d: Date): string {
   return d.toISOString().replace(/\.\d+Z$/, 'Z').replace(/[-:]/g, '');
+}
+
+/** The Windows scheduled task a fleet-sprint supervisor auto-starts under
+ *  (same name as SUPERVISOR_WINDOWS_TASK_NAME in supervisor-service-cleanup). */
+export const SUPERVISOR_TASK_NAME = 'ApraFleetSupervisor';
+/** The linux systemd --user unit a fleet-sprint supervisor auto-starts under. */
+const SUPERVISOR_UNIT = 'fleet-supervisor';
+
+/** A member command in its wrapped (sent) and plain (owner-runnable) forms. */
+interface MemberCommandForms { command: string; manual: string }
+
+function memberForms(targetOs: TargetOS, shell: MemberShell, posixForm: string, psForm: string): MemberCommandForms {
+  return { command: memberCommandFor(targetOs, shell, { posix: posixForm, powershell: psForm }), manual: isPosixShell(targetOs, shell) ? posixForm : psForm };
+}
+
+/**
+ * Stop the idle fleet-sprint supervisor listening on `port`, tolerant of every
+ * part failing (the re-check that follows decides). Order: first whatever
+ * would respawn it -- the Windows scheduled task (schtasks /End) or the linux
+ * user unit (systemctl --user stop) when it is what runs it -- then the
+ * graceful POST /api/shutdown, then wait (up to 30s) until /api/health stops
+ * answering. Prints SUPERVISOR_VIA_SENTINEL and how it ran (task | unit |
+ * manual), so the restart can bring it back the same way. A Git Bash member
+ * runs the PowerShell form through powershell.exe -EncodedCommand (task
+ * state needs Get-ScheduledTask). Never ends a session it is pasted into.
+ */
+export function buildSupervisorStop(targetOs: TargetOS, shell: MemberShell, port: string): MemberCommandForms {
+  const base = `http://localhost:${port}/api`;
+  const ps =
+    `$via = 'manual'; try { $t = Get-ScheduledTask -TaskName '${SUPERVISOR_TASK_NAME}' -ErrorAction Stop; if ([string]$t.State -eq 'Running') { $via = 'task'; schtasks.exe /End /TN '${SUPERVISOR_TASK_NAME}' | Out-Null } } catch {}; ` +
+    `Write-Output ('${SUPERVISOR_VIA_SENTINEL} ' + $via); ` +
+    `try { Invoke-RestMethod -Method Post -Uri '${base}/shutdown' -ContentType 'application/json' -Body '{}' -TimeoutSec 10 | Out-Null } catch {}; ` +
+    `for ($i = 0; $i -lt 30; $i++) { try { Invoke-WebRequest -UseBasicParsing -Uri '${base}/health' -TimeoutSec 2 | Out-Null; Start-Sleep -Seconds 1 } catch { break } }; ` +
+    `$global:LASTEXITCODE = 0`;
+  const posix = targetOs === 'windows'
+    ? `powershell.exe -NoProfile -NonInteractive -EncodedCommand ${Buffer.from(ps, 'utf16le').toString('base64')}`
+    : `via=manual; if command -v systemctl >/dev/null 2>&1 && systemctl --user is-active --quiet ${SUPERVISOR_UNIT} 2>/dev/null; then via=unit; systemctl --user stop ${SUPERVISOR_UNIT} || true; fi; ` +
+      `printf '%s\\n' "${SUPERVISOR_VIA_SENTINEL} $via"; ` +
+      `curl -s -m 10 -o /dev/null -X POST '${base}/shutdown' -H 'Content-Type: application/json' -d '{}' || true; ` +
+      `i=0; while [ "$i" -lt 30 ] && curl -s -m 2 -o /dev/null '${base}/health'; do sleep 1; i=$((i+1)); done; true`;
+  return memberForms(targetOs, shell, posix, ps);
+}
+
+/**
+ * Restart the supervisor the way step 0 found it: run the scheduled task, or
+ * put the user unit file back (step 3 moved it into the backup), re-enable and
+ * start it. Null for one started by hand (no generic way to restart it) and
+ * on a platform with neither.
+ */
+function buildSupervisorRestart(
+  targetOs: TargetOS, shell: MemberShell, via: SupervisorRunVia | undefined, unit: string, backupUnit: string, unitDir: string,
+): MemberCommandForms | null {
+  if (via === 'task' && targetOs === 'windows') {
+    // The old binary's uninstall deletes this task (and workflows/, which a
+    // member install does not bring back) when the supervisor ran from the
+    // installed tree, so the task may be gone: say so instead of failing.
+    const ps =
+      `$t = Get-ScheduledTask -TaskName '${SUPERVISOR_TASK_NAME}' -ErrorAction SilentlyContinue; ` +
+      `if ($t) { schtasks.exe /Run /TN '${SUPERVISOR_TASK_NAME}' } else { Write-Output '${SUPERVISOR_GONE_SENTINEL}'; $global:LASTEXITCODE = 0 }`;
+    return memberForms(targetOs, shell,
+      `powershell.exe -NoProfile -NonInteractive -EncodedCommand ${Buffer.from(ps, 'utf16le').toString('base64')}`,
+      ps);
+  }
+  if (via === 'unit' && targetOs === 'linux' && isPosixShell(targetOs, shell)) {
+    const restore =
+      `if [ -f ${posixQuote(backupUnit)} ] && [ ! -f ${posixQuote(unit)} ]; then mkdir -p ${posixQuote(unitDir)} && mv ${posixQuote(backupUnit)} ${posixQuote(unit)}; fi; ` +
+      `if [ -f ${posixQuote(unit)} ]; then systemctl --user daemon-reload && systemctl --user enable ${SUPERVISOR_UNIT} && systemctl --user start ${SUPERVISOR_UNIT}; ` +
+      `else printf '%s\\n' '${SUPERVISOR_GONE_SENTINEL}'; fi`;
+    return memberForms(targetOs, shell, restore, restore);
+  }
+  return null;
 }
 
 /**
@@ -933,10 +1066,14 @@ export function replaceBackupStamp(d: Date): string {
  *   supervisor-check -- the STAGED binary's read-only `fleet-se-check`, which runs
  *                 the install guard's own detection (supervisor /api/health on the
  *                 default and logged ports, live sprint locks), so it sees
- *                 supervisors too old to write a heartbeat. A running supervisor
- *                 or sprint refuses the replacement before anything is stopped
- *                 (fleet-se-running); its stop and restart depend on how the
- *                 owner started it, so they stay manual;
+ *                 supervisors too old to write a heartbeat. A live sprint
+ *                 refuses the replacement before anything is stopped
+ *                 (fleet-se-running);
+ *   supervisor-stop, supervisor-recheck -- only with `supervisor` (an idle
+ *                 supervisor the check found): stop it (buildSupervisorStop),
+ *                 then re-run the check; still running refuses before anything
+ *                 destructive. It stays stopped through backup, uninstall and
+ *                 install, and supervisorRestart brings it back afterwards;
  *   stop       -- the installed binary's own `stop`, then `status` must not report
  *                 the server running (a live server makes the backup torn and
  *                 the install guard refuse); failing either is a typed
@@ -960,8 +1097,10 @@ export function buildReplaceFullInstallPlan(opts: {
   provider: LlmProvider;
   installerPath: string;
   stamp: string;
+  /** The idle supervisor step 0 found (and, once stopped, how it ran). */
+  supervisor?: ReplaceSupervisor;
 }): ReplaceFullInstallPlan {
-  const { home, targetOs, shell, provider, installerPath, stamp } = opts;
+  const { home, targetOs, shell, provider, installerPath, stamp, supervisor } = opts;
   const posix = isPosixShell(targetOs, shell);
   const j = (...parts: string[]) => memberJoin(targetOs, shell, home, ...parts);
   const data = j('.apra-fleet', 'data');
@@ -981,8 +1120,15 @@ export function buildReplaceFullInstallPlan(opts: {
   // non-zero $LASTEXITCODE: a failed copy, move or uninstall is a failed step.
   const cmd = (posixForm: string, psForm: string) => memberCommandFor(targetOs, shell, { posix: posixForm, powershell: psForm });
 
+  const supervisorCheck = buildInstallCommandFor(installerPath, ['fleet-se-check'], targetOs, shell);
+  const supervisorStop = supervisor ? buildSupervisorStop(targetOs, shell, supervisor.port) : null;
+  const unitDir = j('.config', 'systemd', 'user');
+  const supervisorRestart = supervisor ? buildSupervisorRestart(targetOs, shell, supervisor.via, unit, backupUnit, unitDir) : null;
   const steps: ReplaceFullInstallPlan['steps'] = [
-    { name: 'supervisor-check', command: buildInstallCommandFor(installerPath, ['fleet-se-check'], targetOs, shell) },
+    { name: 'supervisor-check', command: supervisorCheck },
+    ...(supervisorStop
+      ? [{ name: 'supervisor-stop' as const, command: supervisorStop.command }, { name: 'supervisor-recheck' as const, command: supervisorCheck }]
+      : []),
     { name: 'stop', command: cmd(`${q(bin)} stop`, `& ${q(bin)} stop`) },
     { name: 'stop-check', command: cmd(`${q(bin)} status`, `& ${q(bin)} status`) },
     {
@@ -992,6 +1138,7 @@ export function buildReplaceFullInstallPlan(opts: {
         `New-Item -ItemType Directory -Force -Path ${q(backupDir)} | Out-Null; Copy-Item -Recurse -LiteralPath ${q(data)} -Destination ${q(backupData)}; Copy-Item -LiteralPath ${q(bin)} -Destination ${q(backupBin)}; if (Test-Path -LiteralPath ${q(key)} -PathType Leaf) { Copy-Item -LiteralPath ${q(key)} -Destination ${q(backupKey)} }`,
       ),
     },
+    ...(targetOs === 'windows' ? [{ name: 'exe-check' as const, command: buildExeLockProbe(bin, targetOs, shell) }] : []),
     {
       name: 'uninstall',
       command: cmd(
@@ -1023,8 +1170,12 @@ export function buildReplaceFullInstallPlan(opts: {
   // be torn. From step 5 on, data/ was moved aside AFTER the server stopped, so
   // that consistent copy is the source; the backup is a last resort used only
   // when the aside copy is gone.
+  // The unit file goes back and is re-enabled BEFORE the reinstall but NOT
+  // started there: a running supervisor makes the old binary's install refuse
+  // (E-FLEET-SE-RUNNING). A supervisor step 0 stopped is started by the
+  // restart that ends the sequence.
   const unitRestore = targetOs === 'linux' && posix
-    ? [`if [ -f ${q(backupUnit)} ]; then mkdir -p ${q(j('.config', 'systemd', 'user'))} && mv ${q(backupUnit)} ${q(unit)} && systemctl --user daemon-reload && systemctl --user enable --now fleet-supervisor; fi`]
+    ? [`if [ -f ${q(backupUnit)} ]; then mkdir -p ${q(unitDir)} && mv ${q(backupUnit)} ${q(unit)} && systemctl --user daemon-reload && systemctl --user enable ${SUPERVISOR_UNIT}; fi`]
     : [];
   // An SEA binary is its own installer: reinstall the PREVIOUS version from the
   // copy step 1 took (uninstall deleted the original; the staged installer is the
@@ -1045,18 +1196,27 @@ export function buildReplaceFullInstallPlan(opts: {
     ...unitRestore,
     reinstall,
   ];
+  // With a supervisor stopped in step 0: every sequence ends with its restart
+  // (the server first -- the supervisor talks to it), and from the uninstall on
+  // it also begins with the stop, so one started meanwhile cannot make the
+  // reinstall refuse. The order matters.
+  const thenSupervisor = (seq: string[]) => (supervisorRestart ? [...seq, supervisorRestart.manual] : seq);
+  const aroundSupervisor = (seq: string[]) => thenSupervisor(supervisorStop ? [supervisorStop.manual, ...seq] : seq);
   const rollbackFor: ReplaceFullInstallPlan['rollbackFor'] = {
     'supervisor-check': [],
-    stop: [restart],
-    'stop-check': [restart],
-    backup: [restart],
-    uninstall: dataInPlace,
-    supervisor: dataInPlace,
-    'move-data': dataInPlace,
-    install: dataFromAside,
-    verify: dataFromAside,
+    'supervisor-stop': thenSupervisor([]),
+    'supervisor-recheck': thenSupervisor([]),
+    stop: thenSupervisor([restart]),
+    'stop-check': thenSupervisor([restart]),
+    backup: thenSupervisor([restart]),
+    'exe-check': thenSupervisor([restart]),
+    uninstall: aroundSupervisor(dataInPlace),
+    supervisor: aroundSupervisor(dataInPlace),
+    'move-data': aroundSupervisor(dataInPlace),
+    install: aroundSupervisor(dataFromAside),
+    verify: aroundSupervisor(dataFromAside),
   };
-  return { backupDir, dataAside, steps, rollbackFor };
+  return { backupDir, dataAside, steps, rollbackFor, supervisorRestart };
 }
 
 /** Run `<binary> <args>` on the member (chmod +x first on POSIX). */
@@ -1067,17 +1227,25 @@ function buildInstallCommandFor(binary: string, args: string[], targetOs: Target
   });
 }
 
+/** The port a `FLEET_SE supervisor ... port=<n>` line names, else the supervisor default. */
+function supervisorPortOf(statusLine: string): string {
+  return /port[ =](\d{1,5})/.exec(statusLine)?.[1] ?? '8787';
+}
+
 /** The manual graceful stop of the supervisor named by a status line (port when it shows one, else the default). */
 function supervisorStopHint(statusLine: string): string {
-  const port = /port[ =](\d{1,5})/.exec(statusLine)?.[1] ?? '8787';
+  const port = supervisorPortOf(statusLine);
   return `curl -X POST http://localhost:${port}/api/shutdown -H "Content-Type: application/json" -d "{}"`;
 }
 
 const REPLACE_STEP_LABEL: Record<ReplaceStepName, string> = {
   'supervisor-check': 'step 0 (check for a running fleet-sprint supervisor)',
+  'supervisor-stop': 'step 0 (stop the idle fleet-sprint supervisor)',
+  'supervisor-recheck': 'step 0 (verify the fleet-sprint supervisor is down)',
   stop: 'step 0 (stop the member server)',
   'stop-check': 'step 0 (verify the member server is down)',
   backup: 'step 1 (back up data and fleet.key)',
+  'exe-check': 'step 1b (check that no other process holds the installed Windows executable)',
   uninstall: 'step 2 (uninstall with the backup copy of the installed binary)',
   supervisor: 'step 3 (stop and disable the fleet-supervisor user unit)',
   'move-data': 'step 4 (move data aside)',
@@ -1141,32 +1309,63 @@ async function replaceFullInstall(
   const installerPath = memberJoin(targetOs, shell, stagingDir, anyBasename(localPath));
 
   const stamp = replaceBackupStamp(deps.now ? deps.now() : new Date());
-  const plan = buildReplaceFullInstallPlan({ home, targetOs, shell, provider, installerPath, stamp });
+  const planOpts = { home, targetOs, shell, provider, installerPath, stamp };
+  // Rebuilt once step 0 found an idle supervisor (adds its stop and re-check
+  // right after the check, wraps the rollbacks) and again once the stop said
+  // how it ran (the restart). Steps after the check keep their order, so the
+  // loop below continues at the same index.
+  let supervisor: ReplaceSupervisor | undefined;
+  let supervisorLine = '';
+  let plan = buildReplaceFullInstallPlan(planOpts);
   let supervisorMoved = false;
   const binForHint = memberBinPath(home, targetOs, shell);
+  /** Owner note when the stopped supervisor has no generic restart (started by hand). */
+  const manualRestartNote = () => (supervisor && !plan.supervisorRestart
+    ? ` The fleet-sprint supervisor stopped in step 0 was ${supervisor.via ? 'started by hand' : 'possibly stopped'}, so no command here restarts it: start it again the way it was started.`
+    : '');
   const failedAt = (name: ReplaceStepName | 'verify', why: string): MemberFleetInstallResult => {
     const label = name === 'verify' ? 'the version check after step 5' : REPLACE_STEP_LABEL[name];
     if (name === 'supervisor-check') {
       return {
         state: 'unavailable', reason: 'fleet-se-running', version: previousVersion,
-        detail: `replacing the full install was refused at ${label}: ${why}. Nothing was stopped, removed or backed up. Stop its sprints and the supervisor on the member, then run update_member {member_id, fleet_install: "replace-full"} again, and restart the supervisor afterwards: ${supervisorStopHint(why)}${targetOs === 'linux' ? '. If it is the fleet-supervisor user unit, systemctl --user stop fleet-supervisor stops it (step 3 of this replacement cannot be reached while it is up)' : ''}`,
+        detail: `replacing the full install was refused at ${label}: ${why}. Nothing was stopped, removed or backed up. Let its sprints finish (or stop them) on the member, then run update_member {member_id, fleet_install: "replace-full"} again; an idle supervisor is stopped before the replacement and restarted after it`,
+      };
+    }
+    if (name === 'supervisor-stop' || name === 'supervisor-recheck') {
+      const back = plan.rollbackFor[name].length > 0 ? ` Bring the supervisor back with: ${plan.rollbackFor[name].join('; ')}.` : manualRestartNote();
+      return {
+        state: 'unavailable', reason: 'fleet-se-running', version: previousVersion,
+        detail: `replacing the full install was refused at ${label}: ${why}. The member server was not stopped and nothing was removed or backed up.${back} Stop the supervisor by hand (its sprints first, then ${supervisorStopHint(supervisorLine)}), then run update_member {member_id, fleet_install: "replace-full"} again`,
       };
     }
     if (name === 'stop' || name === 'stop-check') {
       return {
         state: 'unavailable', reason: 'stop-failed', version: previousVersion,
-        detail: `replacing the full install was refused at ${label}: ${why}. Nothing was removed or backed up; the apra-fleet ${previousVersion} full install is unchanged (if its server is down, bring it back with: ${plan.rollbackFor[name].join('; ')}). Stop the member's apra-fleet server by hand (${binForHint} stop, and check ${binForHint} status), then run update_member {member_id, fleet_install: "replace-full"} again`,
+        detail: `replacing the full install was refused at ${label}: ${why}. Nothing was removed or backed up; the apra-fleet ${previousVersion} full install is unchanged (if its server is down, bring it back with: ${plan.rollbackFor[name].join('; ')}).${manualRestartNote()} Stop the member's apra-fleet server by hand (${binForHint} stop, and check ${binForHint} status), then run update_member {member_id, fleet_install: "replace-full"} again`,
       };
     }
+    if (name === 'exe-check') {
+      return {
+        state: 'unavailable', reason: 'exe-locked', version: previousVersion,
+        detail: `replacing the full install was refused at ${label}: ${why}. Nothing was uninstalled or removed; the apra-fleet ${previousVersion} full install is intact and the backup taken in step 1 is at ${plan.backupDir}. Its server was stopped in step 0; bring it back with: ${plan.rollbackFor[name].join('; ')}.${manualRestartNote()} Another process (a server or fleet-sprint supervisor started from ${binForHint}) holds the executable, so its uninstall could not delete it; stop that process, then run update_member {member_id, fleet_install: "replace-full"} again`,
+      };
+    }
+    const supervisorOrder = supervisor
+      ? ` Run them in this order: the first command stops the fleet-sprint supervisor (the old binary's install refuses with E-FLEET-SE-RUNNING while one runs)${plan.supervisorRestart ? ' and the last restarts it' : ''}.${manualRestartNote()}`
+      : ` If the reinstall is refused with E-FLEET-SE-RUNNING, a fleet-sprint supervisor was started meanwhile: stop its sprints, then it (${supervisorStopHint('')}), and rerun the reinstall`;
     const detail = name === 'backup'
-      ? `replacing the full install failed at ${label}: ${why}. Nothing was removed and the apra-fleet ${previousVersion} full install is intact, but its server was stopped in step 0; bring it back with: ${plan.rollbackFor[name].join('; ')}`
-      : `replacing the full install failed at ${label}: ${why}. The backup is at ${plan.backupDir}. To roll back (reinstalls apra-fleet ${previousVersion} from the backup copy of its binary, not the newly staged installer), run on the member: ${plan.rollbackFor[name].join('; ')}. If the reinstall is refused with E-FLEET-SE-RUNNING, a fleet-sprint supervisor was started meanwhile: stop its sprints, then it (${supervisorStopHint('')}), and rerun the reinstall`;
+      ? `replacing the full install failed at ${label}: ${why}. Nothing was removed and the apra-fleet ${previousVersion} full install is intact, but its server was stopped in step 0; bring it back with: ${plan.rollbackFor[name].join('; ')}${manualRestartNote()}`
+      : `replacing the full install failed at ${label}: ${why}. The backup is at ${plan.backupDir}. To roll back (reinstalls apra-fleet ${previousVersion} from the backup copy of its binary, not the newly staged installer), run on the member: ${plan.rollbackFor[name].join('; ')}.${supervisorOrder}`;
     return { state: 'unavailable', reason: 'replace-failed', detail, version: previousVersion };
   };
-  for (const step of plan.steps) {
+  const fleetSeLines = (stdout: string) => stdout.split(/\r?\n/).map(l => l.trim()).filter(l => /^FLEET_SE (supervisor|sprint) /.test(l));
+  for (let i = 0; i < plan.steps.length; i++) {
+    const step = plan.steps[i];
     let r: SSHExecResult;
     try {
-      r = await deps.exec(agent, step.command, step.name === 'install' || step.name === 'uninstall' ? INSTALL_TIMEOUT_MS : MEMBER_CALL_TIMEOUT_MS);
+      // The supervisor stop may wait up to ~100s for the port to close.
+      const long = step.name === 'install' || step.name === 'uninstall' || step.name === 'supervisor-stop';
+      r = await deps.exec(agent, step.command, long ? INSTALL_TIMEOUT_MS : MEMBER_CALL_TIMEOUT_MS);
     } catch (err: unknown) {
       // The supervisor check is advisory: a status that cannot run is caught by step 0's own check.
       if (step.name === 'supervisor-check') continue;
@@ -1177,10 +1376,33 @@ async function replaceFullInstall(
       return failedAt(step.name, `exited ${r.code}: ${(r.stderr.trim() || r.stdout.trim()).slice(-400)}`);
     }
     if (step.name === 'supervisor-check') {
-      const found = r.stdout.split(/\r?\n/).map(l => l.trim()).filter(l => /^FLEET_SE (supervisor|sprint) /.test(l));
-      if (found.length > 0) {
+      const found = fleetSeLines(r.stdout);
+      // A live sprint refuses up front; an idle supervisor is stopped next.
+      if (found.some(l => l.startsWith('FLEET_SE sprint '))) {
         return failedAt(step.name, `fleet-sprint work is running on the member (${found.join('; ')})`);
       }
+      const idle = found.find(l => l.startsWith('FLEET_SE supervisor '));
+      if (idle) {
+        supervisorLine = idle;
+        supervisor = { port: supervisorPortOf(idle) };
+        plan = buildReplaceFullInstallPlan({ ...planOpts, supervisor });
+      }
+    }
+    if (step.name === 'supervisor-stop' && supervisor) {
+      const tag = r.stdout.split(/\r?\n/).map(l => l.trim()).find(l => l.startsWith(SUPERVISOR_VIA_SENTINEL));
+      const via = tag?.slice(SUPERVISOR_VIA_SENTINEL.length).trim();
+      supervisor = { ...supervisor, via: via === 'task' || via === 'unit' ? via : 'manual' };
+      plan = buildReplaceFullInstallPlan({ ...planOpts, supervisor });
+    }
+    if (step.name === 'supervisor-recheck') {
+      const still = fleetSeLines(r.stdout);
+      if (still.length > 0) return failedAt(step.name, `fleet-sprint work still runs on the member after the supervisor stop (${still.join('; ')})`);
+    }
+    if (step.name === 'exe-check' && !r.stdout.includes(EXE_FREE_SENTINEL)) {
+      const tagged = r.stdout.split(/\r?\n/).map(l => l.trim()).find(l => l.startsWith(EXE_LOCKED_SENTINEL));
+      return failedAt(step.name, tagged
+        ? `the installed executable ${binForHint} is in use by another process (${tagged.slice(EXE_LOCKED_SENTINEL.length).trim() || 'locked'})`
+        : `the check could not confirm that ${binForHint} can be deleted (it printed: ${r.stdout.trim().slice(-200) || '<empty>'})`);
     }
     if (step.name === 'stop-check' && !/State:\s+stopped/i.test(r.stdout)) {
       return failedAt(step.name, `the server is not reported stopped after stop (status said: ${r.stdout.trim().slice(-200) || '<empty>'})`);
@@ -1193,14 +1415,42 @@ async function replaceFullInstall(
     const seen = after.kind === 'installed' ? `reports ${after.version}` : after.kind === 'probe-failed' ? after.detail : after.kind;
     return failedAt('verify', `after install the member ${seen}; expected >= ${orchestratorVersion}`);
   }
+  // Bring the supervisor stopped in step 0 back the way it ran. A failed
+  // restart is a warning with the exact command, never a failed replacement.
+  const notes: string[] = [];
+  let unitRestored = false;
+  if (supervisor) {
+    const how = supervisor.via === 'task' ? `the ${SUPERVISOR_TASK_NAME} scheduled task` : supervisor.via === 'unit' ? `the ${SUPERVISOR_UNIT} user unit` : '';
+    if (plan.supervisorRestart) {
+      let failure: string | null = null;
+      let rrStdout = '';
+      try {
+        const rr = await deps.exec(agent, plan.supervisorRestart.command, MEMBER_CALL_TIMEOUT_MS);
+        rrStdout = rr.stdout ?? '';
+        if (rr.code !== 0) failure = `exited ${rr.code}: ${(rr.stderr.trim() || rr.stdout.trim()).slice(-300)}`;
+      } catch (err: unknown) {
+        failure = err instanceof Error ? err.message : String(err);
+      }
+      if (failure === null && rrStdout.includes(SUPERVISOR_GONE_SENTINEL)) {
+        notes.push(`the idle fleet-sprint supervisor (port ${supervisor.port}) was stopped in step 0 and was NOT restarted: ${how} no longer exists. The full install's uninstall removed it together with the installed fleet-sprint (workflows/), and a member install does not carry fleet-sprint, so the supervisor went away with the full install. Nothing to run here; install fleet-sprint on this member again only if a supervisor is wanted`);
+      } else if (failure === null) {
+        unitRestored = supervisor.via === 'unit';
+        notes.push(`the idle fleet-sprint supervisor (port ${supervisor.port}) was stopped in step 0 and restarted after the install (${how})`);
+      } else {
+        notes.push(`warning: the idle fleet-sprint supervisor (port ${supervisor.port}) was stopped in step 0, but restarting it (${how}) failed (${failure}); restart it on the member with: ${plan.supervisorRestart.manual}`);
+      }
+    } else {
+      notes.push(`the idle fleet-sprint supervisor (port ${supervisor.port}) was stopped in step 0; it was started by hand (not by a scheduled task or user unit), so start it again the way it was started`);
+    }
+  }
   const removed = [
     `the apra-fleet ${previousVersion} full install (uninstalled with its own binary)`,
-    ...(supervisorMoved ? [`the fleet-supervisor user unit (stopped, disabled, unit file moved into the backup)`] : []),
+    ...(supervisorMoved && !unitRestored ? [`the fleet-supervisor user unit (stopped, disabled, unit file moved into the backup)`] : []),
     `its data directory (moved aside to ${plan.dataAside})`,
   ];
   return {
     state: 'available', version: after.version, installed: true, source: source.kind, binPath,
-    replaced: { previousVersion, removed, backupPath: plan.backupDir },
+    replaced: { previousVersion, removed, backupPath: plan.backupDir, ...(notes.length > 0 ? { notes } : {}) },
     ...(sameCoreFallback ? { sameCoreFallback } : {}),
   };
 }
@@ -1394,7 +1644,7 @@ export function buildManualInstallSteps(opts: {
 }): string {
   const { home, targetOs, shell, provider, arch, orchestratorVersion, reason } = opts;
   const finish = 'then on the orchestrator run update_member {member_id, fleet_install: "auto"} so the fleet self-registers the member into that install and verifies it';
-  if (reason === 'full-install-running' || reason === 'replace-failed' || reason === 'stop-failed' || reason === 'fleet-se-running') {
+  if (reason === 'full-install-running' || reason === 'replace-failed' || reason === 'stop-failed' || reason === 'fleet-se-running' || reason === 'exe-locked') {
     return `follow the owner steps in the reason above, ${finish}.`;
   }
   if (!home || reason === 'home-unresolved' || reason === 'probe-failed') {
@@ -1707,7 +1957,8 @@ export const FLEET_MCP_FIX: Record<FleetMcpUnavailableReason | FleetMcpProviderR
   'full-install-running': 'The member apra-fleet install has no member-install marker (a full install, or a member install older than the marker), so the fleet leaves it alone; its owner replaces it with a member install using the steps in the detail (back up data and fleet.key, uninstall with the installed binary, run the staged current installer with install --member), then update_member {member_id, fleet_install: "auto"} -- or opts in to the fleet doing it with update_member {member_id, fleet_install: "replace-full"}.',
   'transfer-failed': 'Check file transfer to the member works (disk space, permissions), then run update_member with fleet_install "auto".',
   'install-failed': 'Run the apra-fleet installer on the member by hand and read its error, then member_detail with refresh:true.',
-  'fleet-se-running': 'A fleet-sprint supervisor is running on the member, so the full install was left untouched; stop its sprints, then the supervisor (POST /api/shutdown with Content-Type application/json and body {}), run update_member {member_id, fleet_install: "replace-full"} again, then restart the supervisor.',
+  'fleet-se-running': 'Fleet-sprint work is running on the member (a live sprint, or a supervisor that did not stop), so the full install was left untouched; let the sprints finish or stop them (an idle supervisor is stopped and restarted by the replacement itself; one that will not stop: POST /api/shutdown with Content-Type application/json and body {}), then run update_member {member_id, fleet_install: "replace-full"} again.',
+  'exe-locked': 'Another process on the Windows member (an apra-fleet server or fleet-sprint supervisor started from the installed executable) holds that executable, so the full install was left installed; restart its server with the command in the detail if needed, stop that process, then run update_member {member_id, fleet_install: "replace-full"} again.',
   'stop-failed': 'The member apra-fleet server could not be stopped, so the full install was left untouched; stop it on the member with the installed binary (stop, then status), then run update_member {member_id, fleet_install: "replace-full"} again.',
   'replace-failed': 'The full-install replacement stopped at the step named in the detail; run the rollback commands in the detail (if listed; they restore the consistent data copy, the backup only as a last resort), fix the cause, then run update_member {member_id, fleet_install: "replace-full"} again.',
   'install-unverified': 'Run update_member {member_id, fleet_install: "auto"} to upgrade apra-fleet on the member to the orchestrator version, then member_detail with refresh:true.',
@@ -2215,7 +2466,7 @@ type Unavailable = (reason: FleetMcpUnavailableReason, detail?: string, extra?: 
  * older install there is intact and stays in use (reported, never silent).
  */
 const INSTALL_FAIL_CLOSED: ReadonlySet<string> = new Set([
-  'install-failed', 'install-unverified', 'full-install-running', 'probe-failed', 'home-unresolved', 'replace-failed', 'stop-failed', 'fleet-se-running',
+  'install-failed', 'install-unverified', 'full-install-running', 'probe-failed', 'home-unresolved', 'replace-failed', 'stop-failed', 'fleet-se-running', 'exe-locked',
 ]);
 
 /** One line naming a failed upgrade and the older install still in use. */
@@ -2320,7 +2571,7 @@ async function probeRemote(
   };
   const upgradeNote = installFailure ? installFailureNote(installFailure, version) : undefined;
   const replaceNote = replaced
-    ? `replaced the apra-fleet ${replaced.previousVersion} full install with a member install ${version}; removed: ${replaced.removed.join('; ')}; backup at ${replaced.backupPath}`
+    ? `replaced the apra-fleet ${replaced.previousVersion} full install with a member install ${version}; removed: ${replaced.removed.join('; ')}; backup at ${replaced.backupPath}${replaced.notes?.length ? `; ${replaced.notes.join('; ')}` : ''}`
     : undefined;
   // Set once the member's port is resolved (step 2c): the port fields and the
   // note about it ride on every later outcome, like a failed upgrade.

@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
+import { windowsExecutable } from '../os/windows-executable.js';
 
 /**
  * Owner-only file-system helpers for the server's data dir and logs.
@@ -34,7 +35,7 @@ function defaultExecFile(file: string, args: string[]): void {
 }
 
 function defaultWhoami(): string {
-  return execFileSync('whoami', [], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true, timeout: 15_000 });
+  return execFileSync(windowsExecutable('whoami'), [], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true, timeout: 15_000 });
 }
 
 let cachedWindowsUser: string | undefined;

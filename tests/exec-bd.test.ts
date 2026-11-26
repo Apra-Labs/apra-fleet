@@ -6,6 +6,8 @@ import {
   execBdSync,
   execBdAsync,
   resolveWindowsBdScript,
+  resolveWindowsBdCommand,
+  resetBdResolutionLogForTests,
   warnIfLargeBdOutput,
   BD_MAX_BUFFER_BYTES,
   BD_LARGE_OUTPUT_WARN_BYTES,
@@ -349,5 +351,64 @@ describe('exec-bd maxBuffer', () => {
     expect(warnIfLargeBdOutput(['list'], Buffer.alloc(10))).toBe(10);
     const broken = () => { throw new Error('logger exploded'); };
     expect(() => warnIfLargeBdOutput(['list'], Buffer.alloc(BD_LARGE_OUTPUT_WARN_BYTES + 1), broken)).not.toThrow();
+  });
+});
+
+// apra-fleet-c0sz: PATH-order resolution, exactly like the member shell.
+// (Paths are built with SEP so no backslash escaping is needed.)
+describe('resolveWindowsBdCommand / execBdSync PATH order (injected win32)', () => {
+  const SEP = String.fromCharCode(92);
+  const w = (...parts: string[]) => parts.join(SEP);
+  const SHIM = '"%_prog%"  "%dp0%' + w('', 'node_modules', '@beads', 'bd', 'bin', 'bd.js') + '" %*';
+  const A = w('C:', 'a');
+  const B = w('C:', 'b');
+  const mk = (present: string[], pathVar: string) => {
+    const logs: string[] = [];
+    const versionCalls: Array<{ cmd: string; args: string[] }> = [];
+    const deps = {
+      env: { PATH: pathVar, PATHEXT: '.COM;.EXE;.BAT;.CMD' },
+      platform: 'win32' as const,
+      existsFn: (p: string) => present.includes(p),
+      readFileFn: () => SHIM,
+      execFileSyncFn: ((cmd: string, args: string[]) => { versionCalls.push({ cmd, args }); return 'bd version 9.9.9'; }) as never,
+      log: (m: string) => { logs.push(m); },
+    };
+    return { deps, logs, versionCalls };
+  };
+
+  it('bd.exe in an earlier dir beats a later bd.cmd', () => {
+    resetBdResolutionLogForTests();
+    const { deps } = mk([w(A, 'bd.exe'), w(B, 'bd.cmd')], `${A};${B}`);
+    expect(resolveWindowsBdCommand(deps)).toEqual({ kind: 'exe', path: w(A, 'bd.exe') });
+  });
+
+  it('bd.cmd in an earlier dir beats a later bd.exe (shim script run via node)', () => {
+    resetBdResolutionLogForTests();
+    const { deps } = mk([w(A, 'bd.cmd'), w(B, 'bd.exe')], `${A};${B}`);
+    expect(resolveWindowsBdCommand(deps)).toEqual({ kind: 'script', path: w(A, 'node_modules', '@beads', 'bd', 'bin', 'bd.js') });
+  });
+
+  it('empty and relative PATH entries are ignored', () => {
+    resetBdResolutionLogForTests();
+    const { deps } = mk(['bd.exe', w('rel', 'bd.exe'), w(B, 'bd.exe')], `;rel;.;${B}`);
+    expect(resolveWindowsBdCommand(deps)).toEqual({ kind: 'exe', path: w(B, 'bd.exe') });
+  });
+
+  it('execBdSync execs the exe directly, shell:false, and logs the resolution once across calls', () => {
+    resetBdResolutionLogForTests();
+    const { deps, logs, versionCalls } = mk([w(A, 'bd.exe'), w(B, 'bd.cmd')], `${A};${B}`);
+    const calls: Array<{ cmd: string; args: string[]; opts: Record<string, unknown> }> = [];
+    const fake = ((cmd: string, args: string[], opts: Record<string, unknown>) => { calls.push({ cmd, args, opts }); return 'ok'; }) as never;
+    const resolver = () => resolveWindowsBdCommand(deps);
+    execBdSync(['list'], {}, fake, resolver);
+    execBdSync(['show', 'x'], {}, fake, resolver);
+    execBdSync(['ready'], {}, fake, resolver);
+    expect(calls.map((c) => c.cmd)).toEqual([w(A, 'bd.exe'), w(A, 'bd.exe'), w(A, 'bd.exe')]);
+    expect(calls[0].args).toEqual(['list']);
+    expect(calls[0].opts.shell).toBe(false);
+    expect(logs.length).toBe(1);
+    expect(logs[0]).toContain(w(A, 'bd.exe'));
+    expect(logs[0]).toContain('9.9.9');
+    expect(versionCalls.length).toBe(1);
   });
 });

@@ -26,6 +26,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { evaluatePass, finalVerdict, parseResults, renderMarkdown } from './lib/verdict.mjs';
 import { HOST_OPT_IN_FLAG, hostRefusal, platformOf, selectDriver } from './lib/host.mjs';
+import { repoVersionCore, resolveVersionVars } from './lib/versions.mjs';
 import { baselineAsset, baselineStaleness, newestBaselineTag, releaseAssetUrl, resolveLatestRelease } from './lib/baseline.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -169,7 +170,17 @@ async function main() {
   const inconclusive = [];
   const startedAt = new Date().toISOString();
   const needBase = o.passList.some(p => p === 'U' || p === 'U2');
-  const vars = { expectVersion: o.expectVersion ?? null, baselineVersion: needBase ? (pins.baselines[o.baselineVersion]?.version ?? null) : null };
+  let priorVars = null;
+  if (o.reportOnly) {
+    try { priorVars = JSON.parse(fs.readFileSync(path.join(o.out, 'report.json'), 'utf8')).vars ?? null; } catch { /* none recorded */ }
+  }
+  const { vars, note: versionNote } = resolveVersionVars({
+    expectVersionArg: o.expectVersion ?? null,
+    repoVersion: repoVersionCore(() => fs.readFileSync(path.join(HERE, '..', '..', '..', 'version.json'), 'utf8')),
+    pinnedBaseline: pins.baselines[o.baselineVersion]?.version ?? null,
+    needBase, reportOnly: !!o.reportOnly, priorVars,
+  });
+  notes.push(versionNote);
   const driverErrors = {};
   let baseline = null;
   if (needBase) {
@@ -186,12 +197,6 @@ async function main() {
       if (o.driver === 'docker') linuxDocker = await import('./drivers/linux-docker.mjs');
       if (o.driver === 'host') host = await import('./drivers/host.mjs');
       if (o.driver === 'docker') docker = linuxDocker.ensureDocker(log);
-      if (!vars.expectVersion) {
-        vars.expectVersion = o.driver === 'docker'
-          ? linuxDocker.probeVersion(path.resolve(o.binary))
-          : (/v\d+\.\d+\.\d+_[0-9a-f]+/.exec(sh(path.resolve(o.binary), ['--version'], 60000).out)?.[0] ?? null);
-        notes.push(`Expected version derived from the candidate's own --version: ${vars.expectVersion ?? 'UNKNOWN'} (pass --expect-version to pin it).`);
-      }
       if (host) {
         const { dropped } = host.boxEnv(() => {});
         notes.push(`Host driver: ran on this disposable machine with its real home (no HOME redirect: the service managers use the account's real home). CI markers removed from the box env; PATH entries holding node/npm dropped: ${dropped.join(path.delimiter) || 'none'}.`);

@@ -143,18 +143,46 @@ describe('maybeScheduleReindex()', () => {
     expect(started).toBe(true);
     expect(mockSpawn).toHaveBeenCalledTimes(1);
     const [cmd, args, options] = mockSpawn.mock.calls[0] as [string, string[], Record<string, unknown>];
-    expect(cmd).toBe('npx');
-    // On win32 spawn runs through cmd.exe (shell: true), where an unquoted `>=`
-    // is a redirection, so the version-range spec is double-quoted there.
-    const spec = process.platform === 'win32' ? '"gitnexus@>=1.6.5"' : 'gitnexus@>=1.6.5';
+    // win32: the sandbox npx.cmd (not npm cmd-shim shaped) runs by ABSOLUTE
+    // path under the ABSOLUTE cmd.exe, where an unquoted `>=` is a
+    // redirection, so the version-range spec is double-quoted there.
+    const isWin = process.platform === 'win32';
+    expect(cmd).toBe(isWin ? `"${sandbox.bin}\\npx.cmd"` : 'npx');
+    const spec = isWin ? '"gitnexus@>=1.6.5"' : 'gitnexus@>=1.6.5';
     expect(args).toEqual(['-y', spec, 'analyze', '--index-only', '--force']);
     expect(options.cwd).toBe('/repo/path');
     // win32: non-detached so the cmd.exe tree shares one hidden console.
-    expect(options.detached).toBe(process.platform !== 'win32');
+    expect(options.detached).toBe(!isWin);
     expect(options.windowsHide).toBe(true);
     expect(options.stdio).toEqual(['ignore', expect.any(Number), expect.any(Number)]);
-    expect(options.shell).toBe(process.platform === 'win32');
+    if (isWin) {
+      expect(options.shell).toMatch(/^[A-Za-z]:\\.*\\cmd\.exe$/i);
+      expect((options.env as Record<string, string>).NoDefaultCurrentDirectoryInExePath).toBe('1');
+    } else {
+      expect(options.shell).toBe(false);
+    }
     expect(fakeChild.unref).toHaveBeenCalledTimes(1);
+  });
+
+  it('an npx the Windows resolver cannot find -> npx-not-found with the searched locations, no spawn', async () => {
+    vi.doMock('../src/os/windows-command.js', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('../src/os/windows-command.js')>();
+      return {
+        ...actual,
+        windowsCommand: () => { throw new actual.WindowsCommandNotFoundError('npx', ['C:\\only\\dir']); },
+      };
+    });
+    try {
+      const { spawnAnalyze } = await import('../src/tools/code-intelligence-reindex.js');
+      const out = spawnAnalyze('/repo/notfound');
+      expect(out.started).toBe(false);
+      expect(out.reason).toBe('npx-not-found');
+      expect(out.detail).toContain('E-WINDOWS-COMMAND-NOT-FOUND');
+      expect(out.detail).toContain('C:\\only\\dir');
+      expect(mockSpawn).not.toHaveBeenCalled();
+    } finally {
+      vi.doUnmock('../src/os/windows-command.js');
+    }
   });
 
   it('single-flight: a second call while the first is still running does not spawn again', async () => {
