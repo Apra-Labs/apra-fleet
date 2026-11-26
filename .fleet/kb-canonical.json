@@ -4810,6 +4810,27 @@
       }
     },
     {
+      "id": "fa5f0db1-aadd-48b6-9e2b-8b2332a1ad13",
+      "type": "knowledge",
+      "title": "Windows running-exe lock probe: exclusive read-write open fails exactly when unlink would",
+      "summary": "On Windows a running executable's image is mapped, so opening it read-write exclusively fails with EBUSY or a sharing violation while any process runs it, the same condition that makes unlink fail with EPERM. uninstall.ts and replace-full's exe-check use this read-write open as a check that does not change the file.",
+      "symbols": [
+        "defaultProbeLocked",
+        "buildExeLockProbe",
+        "installedWindowsExe"
+      ],
+      "source_files": [
+        "src/cli/uninstall.ts",
+        "src/services/member-fleet-install.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-26T07:42:24.871Z",
+      "source_file_hashes": {
+        "src/cli/uninstall.ts": "7d231079b7f1de79587dd0d44dc170ead35c6e82",
+        "src/services/member-fleet-install.ts": "ff30b7965f24260207cd2fa0bfaa7a7eeb869da2"
+      }
+    },
+    {
       "id": "fbf058a3-a2de-45e1-b97f-ec58b048cbc4",
       "type": "knowledge",
       "title": "Same-session resume in dispatchRole is the explicit failed session id, never resume true",
