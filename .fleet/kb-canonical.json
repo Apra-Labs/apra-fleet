@@ -1,9 +1,7 @@
 {
   "version": 3,
   "provenance": {
-    "commit": "7b7d91ee900870c839aefef3bb38c32459257d49",
-    "branch": "main",
-    "entry_count": 222
+    "branch": "main"
   },
   "entries": [
     {
@@ -117,7 +115,7 @@
       "updated_at": "2026-11-26T01:37:04.615Z",
       "source_file_hashes": {
         "packages/apra-fleet-se/fleet-sprint/kb.mjs": "57624219376581c27437a27de93060c601762909",
-        "packages/apra-fleet-se/fleet-sprint/phases/harvest.mjs": "e65be936ab5b368d02c320d0d9a9013d6374e986",
+        "packages/apra-fleet-se/fleet-sprint/phases/harvest.mjs": "4b963d0ba2163f7f72998723a3cf777597aef4d7",
         "packages/apra-fleet-se/test/mock-sprint-kb-post-harvest-recheck.test.mjs": "278226fb5cdacdc1263ce024d322beab577cbe16"
       }
     },
@@ -1944,7 +1942,7 @@
       "updated_at": "2026-11-26T03:02:16.392Z",
       "source_file_hashes": {
         "packages/apra-fleet-se/fleet-sprint/kb.mjs": "57624219376581c27437a27de93060c601762909",
-        "packages/apra-fleet-se/fleet-sprint/runner.js": "25b525dce4a2beecb3fc330db99ca430c51323a7",
+        "packages/apra-fleet-se/fleet-sprint/runner.js": "be16f5c287cf5539e543d83216d0794e5d3faee5",
         "packages/apra-fleet-se/test/mock-sprint-kb-post-harvest-recheck.test.mjs": "278226fb5cdacdc1263ce024d322beab577cbe16"
       }
     },
@@ -4114,7 +4112,7 @@
       "updated_at": "2026-11-26T03:02:15.310Z",
       "source_file_hashes": {
         "packages/apra-fleet-se/fleet-sprint/kb.mjs": "57624219376581c27437a27de93060c601762909",
-        "packages/apra-fleet-se/fleet-sprint/phases/harvest.mjs": "e65be936ab5b368d02c320d0d9a9013d6374e986"
+        "packages/apra-fleet-se/fleet-sprint/phases/harvest.mjs": "4b963d0ba2163f7f72998723a3cf777597aef4d7"
       }
     },
     {
