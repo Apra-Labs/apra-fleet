@@ -324,7 +324,10 @@ export async function execCommand(
   // child_process, an ssh2 exec channel closing has no effect on the far
   // side) -- apra-fleet-kwx fixed this for LocalStrategy via a local
   // child.pid tree-kill; killRemoteTree below is the same fix for the SSH
-  // path, using the marker PID instead of a local handle.
+  // path, using the marker PID instead of a local handle. On a Git Bash
+  // member killPid walks the MSYS /proc tree from that pid rather than relying
+  // on taskkill /T alone, which MSYS exec defeats (root cause and fix:
+  // gitBashTreeKill in src/os/windows-gitbash.ts).
   let capturedPid: number | undefined;
   function killRemoteTree() {
     if (capturedPid === undefined || !client) return;
