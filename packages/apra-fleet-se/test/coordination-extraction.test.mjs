@@ -206,3 +206,28 @@ describe('sprintMutexId for a fixed branch matches the identity the supervisor r
         });
     });
 });
+
+// A supervisor forwards its own sprint id as --run-id. The runner's dispatch
+// sprint_id and the launcher's member-reservation holder must both be that
+// id (coordination.mjs sprintIdentity), so the fleet-server holder equals the
+// supervisor's ledger/history id; without a run id both fall back to the branch.
+describe('sprint identity follows the run id when the launcher gives one', () => {
+    const FIXED_BRANCH = 'feat/run-id-identity';
+    const RUN_ID = 'R1-run-id-identity-0001';
+
+    test('with args.run_id every real dispatch carries the run id as sprint_id, not the branch', async () => {
+        await withScenarioMarkers('dispatch sprint_id follows run_id', async () => {
+            const result = await runDevelopLoopScenario('runididentity', {
+                members: ['local'],
+                taskSpecs: [{ title: 'Task: dispatch identity follows the run id regression work' }],
+                maxCycles: 1,
+                branchOverride: FIXED_BRANCH,
+                runIdOverride: RUN_ID,
+            });
+            assert.ok(!result.error, `scenario should not abort: ${result.error ? result.error.message : ''}`);
+            assert.ok(result.dispatched.length > 0, 'expected at least one dispatched call to inspect');
+            const wrong = result.dispatched.filter((d) => d.sprintId !== RUN_ID);
+            assert.equal(wrong.length, 0, `every dispatch must carry sprint_id '${RUN_ID}', found: ${JSON.stringify(wrong.map((d) => d.sprintId))}`);
+        });
+    });
+});

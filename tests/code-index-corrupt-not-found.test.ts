@@ -236,3 +236,60 @@ describe('an .mjs symbol answering not found from a corrupt index (ids not uniqu
     }
   });
 });
+
+/** A fake gitnexus child whose id probe is broken in the given way. */
+function fakeGitnexusBrokenCheck(answer: unknown, mode: 'throws' | 'no_row'): void {
+  mockCallTool.mockImplementation(async ({ name, arguments: args }: { name: string; arguments: Record<string, unknown> }) => {
+    if (name === 'cypher' && args.query === INDEX_ID_UNIQUENESS_QUERY) {
+      if (mode === 'throws') throw new Error('cypher exploded'); // callGitNexus turns this into an error result
+      return { content: [{ type: 'text', text: JSON.stringify({ markdown: 'no table here', row_count: 0 }) }] };
+    }
+    if (name === 'impact' || name === 'context') return answer;
+    throw new Error(`unexpected gitnexus call ${name}`);
+  });
+}
+
+describe('a not-found answer when the index integrity check cannot run', () => {
+  const cases: Array<['throws' | 'no_row', string]> = [['throws', 'check_failed'], ['no_row', 'check_unreadable']];
+
+  for (const [mode, reason] of cases) {
+    it(`code_impact (${mode}): marked unverified, confidence LOW, warning appended, no rebuild`, async () => {
+      const repo = newRepo();
+      fakeGitnexusBrokenCheck(impactNotFound(MJS.name), mode);
+      const out = await handleCodeImpact({ target: MJS.name, direction: 'upstream' }, { repo, memberId: 'm' });
+      const payload = payloadOf(out);
+      expect(payload.error).toBe(`Target '${MJS.name}' not found`);
+      expect(payload.index_integrity).toEqual({ checked: false, reason });
+      expect(payload.confidence).toBe('LOW');
+      const texts = textsOf(out);
+      expect(texts).toContain(`NOT FOUND UNVERIFIED: '${MJS.name}' was not found`);
+      expect(texts).toContain('text search');
+      expect(texts).not.toContain('INDEX CORRUPT');
+      expect(schedule).not.toHaveBeenCalled();
+    });
+
+    it(`code_context (${mode}): marked unverified, confidence LOW, warning appended, no rebuild`, async () => {
+      const repo = newRepo();
+      fakeGitnexusBrokenCheck(contextNotFound(MJS.name), mode);
+      const out = await handleCodeContext({ name: MJS.name }, { repo, memberId: 'm' });
+      const payload = payloadOf(out);
+      expect(payload.index_integrity).toEqual({ checked: false, reason });
+      expect(payload.confidence).toBe('LOW');
+      expect(textsOf(out)).toContain('NOT FOUND UNVERIFIED');
+      expect(schedule).not.toHaveBeenCalled();
+    });
+  }
+
+  it('a found answer passes through unchanged even though the check would fail', async () => {
+    const repo = newRepo();
+    fakeGitnexusBrokenCheck(impactFound(), 'throws');
+    const impact = await handleCodeImpact({ target: MJS.name, direction: 'upstream' }, { repo, memberId: 'm' }) as Record<string, unknown>;
+    expect(payloadOf(impact).index_integrity).toBeUndefined();
+    expect(impact.confidence).toBeUndefined();
+    fakeGitnexusBrokenCheck(contextFound(), 'no_row');
+    const ctx = await handleCodeContext({ name: MJS.name }, { repo, memberId: 'm' }) as Record<string, unknown>;
+    expect(payloadOf(ctx).index_integrity).toBeUndefined();
+    expect(ctx.confidence).toBeUndefined();
+    expect(schedule).not.toHaveBeenCalled();
+  });
+});

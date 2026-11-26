@@ -102,6 +102,10 @@ ${m.KB_SERVER_USAGE}`);
         console.log(m.KB_SERVER_USAGE);
         process.exit(0);
       }
+      if (opts.generateToken) {
+        m.runGenerateToken(opts.tokenFile);
+        process.exit(0);
+      }
       await m.startKbServer(opts.port, opts.generateToken, opts.dbPath, opts.tokenFile);
     })
     .catch(err => { logError('cli', `kb-server failed: ${err.message}`); process.exit(1); });

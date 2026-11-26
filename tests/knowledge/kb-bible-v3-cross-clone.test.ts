@@ -157,7 +157,7 @@ describe('bible v3 basis across clones', () => {
 
     const commitRes = JSON.parse(await kbBibleCommit({ ids: [id], baseBranch: 'main', baseCommit: headOf(cloneB) }, { folder: cloneB }));
     expect(commitRes.merged).toEqual([]);
-    expect(commitRes.skipped).toEqual([{ id, reason: 'basis_mismatch' }]);
+    expect(commitRes.skipped).toEqual([{ id, reason: 'basis_mismatch', changed_files: [{ path: 'src/cited.ts', reason: 'changed' }] }]);
     expect(commitRes.committed).toBe(false);
     expect(fs.existsSync(path.join(cloneB, BIBLE_REL))).toBe(false);
   });

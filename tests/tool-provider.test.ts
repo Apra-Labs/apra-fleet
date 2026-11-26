@@ -307,6 +307,11 @@ describe('updateAgentCli — provider install/update', () => {
 
 /** Checks that a command references a process name, accounting for Linux's
  *  bracket-escape trick where `claude` becomes `[c]laude`. */
+function decodePs(cmd: string): string {
+  const m = /^powershell -EncodedCommand ([A-Za-z0-9+/=]+)$/.exec(cmd);
+  return m ? Buffer.from(m[1], 'base64').toString('utf16le') : cmd;
+}
+
 function commandReferencesProcess(cmd: string, name: string): boolean {
   return cmd.includes(name) || cmd.includes(`[${name[0]}]${name.slice(1)}`);
 }
@@ -329,8 +334,8 @@ describe('fleetProcessCheck — processName per provider', () => {
     });
 
     it(`windows: fleetProcessCheck uses "${processName}" for ${provider}`, () => {
-      const cmd = windows.fleetProcessCheck('C:\\work', undefined, processName);
-      expect(cmd).toContain(processName);
+      const cmd = decodePs(windows.fleetProcessCheck('C:\\work', undefined, processName));
+      expect(cmd).toContain(`Name LIKE '${processName}%'`);
     });
   }
 
@@ -340,8 +345,8 @@ describe('fleetProcessCheck — processName per provider', () => {
   });
 
   it('windows: defaults to claude when no processName given', () => {
-    const cmd = windows.fleetProcessCheck('C:\\work');
-    expect(cmd).toContain('claude');
+    const cmd = decodePs(windows.fleetProcessCheck('C:\\work'));
+    expect(cmd).toContain("Name LIKE 'claude%'");
   });
 
   it('handles empty processName (none provider) safely across platforms', () => {

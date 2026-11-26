@@ -340,6 +340,83 @@ export class SeWindowsCommands {
   wrapPowerShellScript(script) {
     return String(script);
   }
+
+  /**
+   * PowerShell twin of SePosixCommands.listDirectory: entry names one per
+   * line, hidden entries included. Literal path only. Read-only.
+   * @param {string} relPath validated
+   * @returns {string}
+   */
+  listDirectory(relPath) {
+    const p = assertSafeRelativePath(relPath, 'directory path');
+    return this.wrapForMember(`Get-ChildItem -LiteralPath '${p}' -Force -Name`);
+  }
+
+  /**
+   * PowerShell twin of SePosixCommands.renamePath: throws (exit 1, nothing
+   * changed) when the source is missing or the destination exists.
+   * @param {string} fromRel validated
+   * @param {string} toRel validated
+   * @returns {string}
+   */
+  renamePath(fromRel, toRel) {
+    const from = assertSafeRelativePath(fromRel, 'rename source');
+    const to = assertSafeRelativePath(toRel, 'rename destination');
+    return this.wrapForMember(
+      `if (-not (Test-Path -LiteralPath '${from}')) { throw 'rename source is missing: ${from}' }; `
+      + `if (Test-Path -LiteralPath '${to}') { throw 'rename destination already exists: ${to}' }; `
+      + `Move-Item -LiteralPath '${from}' -Destination '${to}'`,
+    );
+  }
+
+  /**
+   * PowerShell twin of SePosixCommands.copyFileIfPresent.
+   * @param {string} fromRel validated
+   * @param {string} toRel validated
+   * @returns {string}
+   */
+  copyFileIfPresent(fromRel, toRel) {
+    const from = assertSafeRelativePath(fromRel, 'copy source');
+    const to = assertSafeRelativePath(toRel, 'copy destination');
+    return this.wrapForMember(`if (Test-Path -LiteralPath '${from}') { Copy-Item -LiteralPath '${from}' -Destination '${to}' -Force }`);
+  }
+
+  /**
+   * PowerShell twin of SePosixCommands.readFile.
+   * @param {string} relPath validated
+   * @returns {string}
+   */
+  readFile(relPath) {
+    const p = assertSafeRelativePath(relPath, 'file path');
+    return this.wrapForMember(`Get-Content -LiteralPath '${p}' -Raw`);
+  }
+
+  /**
+   * PowerShell twin of SePosixCommands.removeDirectory. A directory goes
+   * through `rd /s /q` on its `\\?\` form: a bd clone holds dolt's
+   * git-remote-cache paths that pass MAX_PATH (260) once the clone sits
+   * under a longer name (e.g. a flatten-recovery discard), and Windows
+   * PowerShell 5.1's Remove-Item fails on those. A file (bd's
+   * `.gate.lock`) uses Remove-Item. Throws when the path is still there.
+   * @param {string} relPath validated
+   * @returns {string}
+   */
+  removeDirectory(relPath) {
+    const p = assertSafeRelativePath(relPath, 'directory path');
+    if (p === '.' || p.split('/').every((s) => s === '.' || s === '')) {
+      throw new Error(`Refusing to build a member command that removes the work folder itself ('${relPath}').`);
+    }
+    return this.wrapForMember(
+      `if (Test-Path -LiteralPath '${p}') { `
+      + `if (Test-Path -LiteralPath '${p}' -PathType Container) { `
+      + `$full = (Resolve-Path -LiteralPath '${p}').ProviderPath; `
+      + `if ($full.StartsWith('\\\\')) { $long = '\\\\?\\UNC\\' + $full.Substring(2) } else { $long = '\\\\?\\' + $full }; `
+      + `cmd /d /c rd /s /q "$long" `
+      + `} else { Remove-Item -LiteralPath '${p}' -Force }; `
+      + `if (Test-Path -LiteralPath '${p}') { throw 'could not remove: ${p}' }; `
+      + `$global:LASTEXITCODE = 0 }`,
+    );
+  }
 }
 
 export default SeWindowsCommands;

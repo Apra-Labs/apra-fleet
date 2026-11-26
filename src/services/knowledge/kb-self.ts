@@ -382,6 +382,29 @@ export function memberOwnerTag(anchor?: KbAnchor): string | undefined {
   return memberId === undefined ? undefined : `member:${memberId}`;
 }
 
+/**
+ * Drop, in a MEMBER session, every non-CONFIRMED entry carrying a member:<id>
+ * tag other than the caller's own. Untagged entries (FULL-session captures),
+ * the caller's own tagged entries and every CONFIRMED entry stay. A FULL
+ * session or explicit-anchor caller (memberOwnerTag undefined) is unfiltered.
+ * This is a relevance filter, not access control: it keeps one member's
+ * unvalidated captures from being served to another member as knowledge.
+ * Used for reads of the global KB, which is shared by every member and so is
+ * not narrowed by the checkout bible view.
+ */
+export function filterOtherMembersUnconfirmed<T extends { confidence: string; tags?: readonly string[] }>(
+  entries: readonly T[],
+  anchor?: KbAnchor,
+): T[] {
+  const own = memberOwnerTag(anchor);
+  if (own === undefined) return [...entries];
+  return entries.filter(e => {
+    if (e.confidence === 'CONFIRMED') return true;
+    const memberTags = (e.tags ?? []).filter(t => t.startsWith('member:'));
+    return memberTags.length === 0 || memberTags.includes(own);
+  });
+}
+
 /** KB providers for a read-only kb_* call, plus the anchor they were resolved from. */
 export interface SelfReadKb {
   providers: KbProviders;
@@ -406,7 +429,9 @@ export interface SelfReadKb {
  * passing an explicit KbAnchor, a MEMBER request that explicitly names the
  * INFERRED or UNVERIFIED tier (a bible carries the CONFIRMED set, so those
  * tiers are not the view's to answer), and a MEMBER request that opts into
- * `opts.ownScope` (see below). The global KB is unchanged either way. Both of
+ * `opts.ownScope` (see below). The global KB is unchanged either way, except that a MEMBER flagged_only
+ * kb_query drops other members' non-CONFIRMED entries from it
+ * (filterOtherMembersUnconfirmed). Both of
  * those last two MEMBER cases carry `ownerTag`: the caller sees only its own
  * captures.
  *

@@ -62,6 +62,8 @@ export const GUARDED_MODULES = [
     'mcp-result.mjs',
     'member-target.mjs',
     'member-call.mjs',
+    // The tolerant tools/list / JSON reader member-call and kb.mjs share.
+    'tools-list.mjs',
     // File-based VCS request-body transport: stages bodies with send_files
     // and dispatches the git-exclude / delete commands for them.
     'vcs-payload.mjs',
@@ -428,6 +430,11 @@ export const GUARDED_MODULES = [
     // (pure constants + version parsing, no command() or agent() site).
     'beads-identity.mjs',
     'beads-identity-check.mjs',
+    // The flattened-remote clone recovery: ONE member_name-bearing command()
+    // site (its runner), no agent(), no dolt pull/push of its own (those stay
+    // in dolt-sync.mjs); member file-system commands come from the SE
+    // command primitives.
+    'beads-flatten-recovery.mjs',
     'tool-version-pin.mjs',
     // The sprint-start token-usage memory sweep: TWO member_name-bearing
     // command() sites (the memory list and the per-key forget), no agent(),

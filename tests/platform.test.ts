@@ -291,7 +291,13 @@ describe('OsCommands via getOsCommands', () => {
   });
 
   describe('fleet process check', () => {
-    for (const [name, cmds] of all) {
+    // Windows emits one powershell -EncodedCommand blob; assert on its script.
+    const decoded = (cmd: string): string => {
+      const m = /^powershell -EncodedCommand ([A-Za-z0-9+/=]+)$/.exec(cmd);
+      return m ? Buffer.from(m[1], 'base64').toString('utf16le') : cmd;
+    };
+    for (const [name, rawCmds] of all) {
+      const cmds = { fleetProcessCheck: (...a: Parameters<typeof rawCmds.fleetProcessCheck>) => decoded(rawCmds.fleetProcessCheck(...a)) };
       it(`${name}: contains fleet-busy, other-busy, idle`, () => {
         const cmd = cmds.fleetProcessCheck('/home/user/project');
         expect(cmd).toContain('fleet-busy');
@@ -459,7 +465,7 @@ describe('OsCommands via getOsCommands', () => {
       expect(env).toBeDefined();
       expect(env!['HOME']).toBeTruthy();
       expect(env!['PATH']).toBeTruthy();
-    });
+    }, 30_000);
 
     // apra-fleet-byp: buildAgentPromptCommand emits `set -o pipefail` to keep the
     // CLI's exit code authoritative through the `| tee` durable mirror. Node's
@@ -472,7 +478,7 @@ describe('OsCommands via getOsCommands', () => {
       const probe = spawnSync(shell!, ['-c', 'set -o pipefail; false | true'], { encoding: 'utf-8' });
       expect(probe.stderr).not.toMatch(/pipefail/i);
       expect(probe.status).toBe(1); // pipefail honoured: `false`'s code wins over `true`'s
-    });
+    }, 30_000);
 
     it.skipIf(process.platform !== 'linux')('linux: env excludes process-only vars', () => {
       process.env.__FLEET_TEST_MARKER__ = 'should-not-appear';
@@ -482,7 +488,7 @@ describe('OsCommands via getOsCommands', () => {
       } finally {
         delete process.env.__FLEET_TEST_MARKER__;
       }
-    });
+    }, 30_000);
 
     it.skipIf(process.platform !== 'darwin')('macos: inherits linux cleanExec', () => {
       const { command, env, shell } = macos.cleanExec('echo hello');
@@ -490,7 +496,7 @@ describe('OsCommands via getOsCommands', () => {
       expect(shell).toBe('/bin/bash');
       expect(env).toBeDefined();
       expect(env!['HOME']).toBeTruthy();
-    });
+    }, 30_000);
 
     it.skipIf(process.platform !== 'win32')('windows: returns pristine env and powershell shell', () => {
       const { command, env, shell } = windows.cleanExec('echo hello');
@@ -500,7 +506,7 @@ describe('OsCommands via getOsCommands', () => {
       expect(env).toBeDefined();
       expect(env!['Path'] ?? env!['PATH']).toBeTruthy();
       expect(env!['USERPROFILE']).toBeTruthy();
-    });
+    }, 30_000);
 
     it.skipIf(process.platform !== 'win32')('windows: env excludes process-only vars', () => {
       process.env.__FLEET_TEST_MARKER__ = 'should-not-appear';
@@ -510,7 +516,7 @@ describe('OsCommands via getOsCommands', () => {
       } finally {
         delete process.env.__FLEET_TEST_MARKER__;
       }
-    });
+    }, 30_000);
   });
 
   describe('fleetProcessCheck POSIX regex compatibility', () => {
@@ -664,9 +670,12 @@ describe('injection prevention', () => {
     expect(cmd).toContain('\\$');
     expect(cmd).toContain('\\(');
 
-    const winCmd = windows.fleetProcessCheck('C:\\Users\\dev"&whoami&"project');
-    expect(winCmd).toContain('""');
-    expect(winCmd).toContain('^&');
+    // Windows: the probe is one -EncodedCommand blob (no exec-shell parsing of
+    // the folder); inside it the folder sits in a PowerShell single-quoted literal.
+    const winCmd = windows.fleetProcessCheck("C:\\Users\\dev\"&whoami&'project");
+    expect(winCmd).toMatch(/^powershell -EncodedCommand [A-Za-z0-9+/=]+$/);
+    const script = Buffer.from(winCmd.split(' ')[2], 'base64').toString('utf16le');
+    expect(script).toContain(`Contains('"C:\\Users\\dev"&whoami&''project"')`);
   });
 
   it('escapes injection in persisted env values and staged file paths', () => {

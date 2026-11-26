@@ -27,8 +27,8 @@
  * installer can print both and the summary can name them.
  */
 import path from 'node:path';
-import { BEADS_PACKAGE, BEADS_VERSION } from './beads-pin.js';
-import { checkPinnedVersion, type PinCheck } from './version-pin.js';
+import { BEADS_PACKAGE, BEADS_VERSION, bdConflictedPullAffected, bdConflictedPullWarningText } from './beads-pin.js';
+import { checkPinnedVersion, parseVersionLine, type PinCheck } from './version-pin.js';
 
 /** The ONE pin (src/cli/beads-pin.ts) -- never a second literal here. */
 export const BEADS_NPM_PACKAGE = BEADS_PACKAGE;
@@ -217,4 +217,16 @@ export function bdPinWarning(exec: BeadsInstallDeps['exec'], host: string): stri
   if (check.ok) return null;
   const lines = beadsMismatchLines(mismatch(check, 'path', '') as Extract<BeadsInstallResult, { state: 'version-mismatch' }>, host);
   return `  Warning:  ${lines.join(' ')}`;
+}
+
+/**
+ * The [!] line for a bd that satisfies the pin but is in the affected range
+ * for the conflicted-pull link loss; null otherwise. Non-fatal: the caller
+ * prints it and the install still succeeds.
+ */
+export function beadsLinkLossWarning(r: BeadsInstallResult): string | null {
+  if (r.state !== 'present' && r.state !== 'installed') return null;
+  const v = parseVersionLine(r.version);
+  if (!v || !bdConflictedPullAffected(v)) return null;
+  return bdConflictedPullWarningText(v);
 }

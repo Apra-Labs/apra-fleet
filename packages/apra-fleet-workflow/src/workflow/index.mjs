@@ -3,11 +3,11 @@ import { EventEmitter } from 'events';
 import { randomUUID } from 'crypto';
 import { AsyncLocalStorage } from 'async_hooks';
 import { calculateCost } from './pricing.mjs';
-import { WorkflowError, MemberNotFoundError, AgentOutputError, AgentDispatchError, CommandError, FleetTransportError, BudgetExceededError, CancelledError } from './errors.mjs';
+import { WorkflowError, MemberNotFoundError, AgentOutputError, AgentDispatchError, CommandError, FleetTransportError, BudgetExceededError, CancelledError, boundedLogText, markErrorLogged, isErrorLogged } from './errors.mjs';
 import { hashText, computeActivityKey } from './journal.mjs';
 import { fleetToolFailureOf, commandFailureOf } from '@apralabs/apra-fleet-client';
 
-export { WorkflowError, MemberNotFoundError, AgentOutputError, AgentDispatchError, CommandError, FleetTransportError, BudgetExceededError, CancelledError } from './errors.mjs';
+export { WorkflowError, MemberNotFoundError, AgentOutputError, AgentDispatchError, CommandError, FleetTransportError, BudgetExceededError, CancelledError, AGENT_ERROR_LOG_MAX_CHARS, AGENT_ERROR_LOG_TRUNCATION_MARKER, boundedLogText, markErrorLogged, isErrorLogged } from './errors.mjs';
 
 const ajv = new Ajv({ strict: false });
 
@@ -524,6 +524,14 @@ export class FleetWorkflow extends EventEmitter {
         this._preResumeHook = null;
         this._inFlight = 0;
         this._pauseWaiters = [];
+        //   _pauseEnd       : the pause-end handle requestPause() returned for
+        //                     the CURRENT pause (requested or engaged), or null
+        //                     when no pause is pending. requestResume() settles
+        //                     it as 'resume' (after the pre-resume hook) and
+        //                     requestStop() as 'stop'; either way it is then
+        //                     cleared, so the next requestPause() starts a new
+        //                     handle. See _settlePauseEnd().
+        this._pauseEnd = null;
     }
 
     // Returns the active per-run store (see runStorage above), or
@@ -615,6 +623,10 @@ export class FleetWorkflow extends EventEmitter {
         for (const waiter of waiters) {
             waiter.reject(new CancelledError(`[Workflow Error] ${reason}`));
         }
+        // The current pause (if any) ended by a stop: tell whoever holds its
+        // pause-end handle, so a script waiting on a timer can tell a stop
+        // from a resume.
+        this._settlePauseEnd('stop', reason);
         for (const controller of this._activeControllers.values()) {
             controller.abort(new CancelledError(`[Workflow Error] ${reason}`));
         }
@@ -704,10 +716,28 @@ export class FleetWorkflow extends EventEmitter {
      *   informational to the engine, which does not interpret or act on
      *   them. Omitting `opts` is fully backwards compatible with existing
      *   single-arg callers.
+     * @returns {{ ended: Promise<{ outcome: 'resume' | 'stop', reason: string }> }}
+     *   A pause-end handle. `ended` RESOLVES (never rejects) exactly once,
+     *   when this pause ends: `outcome: 'resume'` once requestResume() has
+     *   cleared it (after its pre-resume hook succeeded -- a rejecting hook
+     *   leaves the pause, and the handle, pending), or `outcome: 'stop'` when
+     *   requestStop() tears it down. `reason` is the resume/stop reason. This
+     *   lets a script that waits on its own timer during the pause wake as
+     *   soon as an operator resumes or stops the run. Callers that ignore the
+     *   return value behave exactly as before.
+     *   Called while a pause is already requested or engaged, requestPause()
+     *   still changes nothing (no new event, the first pause's reason/opts
+     *   stand) and returns the handle of that SAME pending pause, which ends
+     *   when that pause ends. Called after requestStop() aborted the current
+     *   run, the pause is still recorded as today but the returned handle is
+     *   already settled with `outcome: 'stop'`.
      */
     requestPause(reason = 'Workflow run paused via requestPause()', opts = {}) {
-        if (this._paused || this._pauseRequested) return;
+        if (this._paused || this._pauseRequested) {
+            return this._pauseEndHandle();
+        }
         this._pauseRequested = true;
+        this._newPauseEnd();
         this.emit('pause:requested', this._pauseEventPayload({
             reason,
             resumeAt: opts.resumeAt ?? null,
@@ -717,6 +747,41 @@ export class FleetWorkflow extends EventEmitter {
         // pause engages right now; otherwise it engages later as in-flight
         // work drains (_exitActivity) or the guard opens (setPauseGuard).
         this._maybeEngagePause();
+        return this._pauseEndHandle();
+    }
+
+    // (pause-end handle) The handle of the current pending pause, created on
+    // demand. A pause requested after requestStop() already aborted the
+    // current run can never be meaningfully resumed, so its handle is
+    // returned already settled as ended by that stop.
+    _pauseEndHandle() {
+        const pauseEnd = this._pauseEnd || this._newPauseEnd();
+        const signal = this._currentSignal();
+        if (signal && signal.aborted) {
+            const why = signal.reason && signal.reason.message ? signal.reason.message : 'run already stopped';
+            this._settlePauseEnd('stop', why);
+        }
+        return pauseEnd.handle;
+    }
+
+    // (pause-end handle) Creates the deferred behind the handle requestPause()
+    // returns and makes it the current pause's. Its promise only ever
+    // resolves, so an ignored handle can never raise an unhandled rejection,
+    // and an unsettled one holds no timer (it cannot keep a process alive).
+    _newPauseEnd() {
+        let resolve;
+        const ended = new Promise((r) => { resolve = r; });
+        this._pauseEnd = { resolve, handle: { ended } };
+        return this._pauseEnd;
+    }
+
+    // (pause-end handle) Settles the current pause's handle once and clears
+    // it. A no-op when no pause is pending.
+    _settlePauseEnd(outcome, reason) {
+        const pauseEnd = this._pauseEnd;
+        if (!pauseEnd) return;
+        this._pauseEnd = null;
+        pauseEnd.resolve({ outcome, reason });
     }
 
     /**
@@ -754,6 +819,7 @@ export class FleetWorkflow extends EventEmitter {
         for (const waiter of waiters) {
             waiter.resolve();
         }
+        this._settlePauseEnd('resume', reason);
         this.emit('resumed', this._pauseEventPayload({ reason }));
     }
 
@@ -1353,7 +1419,7 @@ export class FleetWorkflow extends EventEmitter {
                 // applies on top of this.
                 if (structured && structured.isError) {
                     const text = result && result.content && result.content.length > 0 ? result.content[0].text : '';
-                    console.error(`[Agent API Error]`, text);
+                    console.error(`[Agent API Error]`, boundedLogText(text));
                     // apra-fleet-202.3: a dispatch that FAILED (isError) but still
                     // reported real input/output tokens really did consume that
                     // spend -- carry its usage/cost onto the activity record (as
@@ -1377,7 +1443,7 @@ export class FleetWorkflow extends EventEmitter {
                     // result forwards its permissionDenied block the same way, and
                     // dispatched:false (nothing was sent to the member) is kept so a
                     // caller can tell a setup-time failure from one where the agent ran.
-                    throw new AgentDispatchError(`[Workflow Error] Agent dispatch failed (${structured.reason || 'unknown'}): ${text}`, { details: { text, reason: structured.reason, member: opts.member_name || opts.member_id, ...(structured.usageLimit ? { usageLimit: structured.usageLimit } : {}), ...(structured.permissionDenied ? { permissionDenied: structured.permissionDenied } : {}), ...(structured.sessionId ? { sessionId: structured.sessionId } : {}), ...(reportedModel ? { model: reportedModel, modelSource: reportedModelSource } : {}), ...(structured.dispatched === false ? { dispatched: false } : {}) } });
+                    throw markErrorLogged(new AgentDispatchError(`[Workflow Error] Agent dispatch failed (${structured.reason || 'unknown'}): ${text}`, { details: { text, reason: structured.reason, member: opts.member_name || opts.member_id, ...(structured.usageLimit ? { usageLimit: structured.usageLimit } : {}), ...(structured.permissionDenied ? { permissionDenied: structured.permissionDenied } : {}), ...(structured.sessionId ? { sessionId: structured.sessionId } : {}), ...(reportedModel ? { model: reportedModel, modelSource: reportedModelSource } : {}), ...(structured.dispatched === false ? { dispatched: false } : {}) } }));
                 }
 
                 // A fleet TOOL/TRANSPORT failure that carries no
@@ -1397,9 +1463,9 @@ export class FleetWorkflow extends EventEmitter {
                     const memberLabel = opts.member_name || opts.member_id;
                     const text = toolFailure.text || 'no error text reported';
                     const transportMsg = `transport failure dispatching to member '${memberLabel}': ${text}`;
-                    console.error(`[Agent API Error]`, transportMsg);
+                    console.error(`[Agent API Error]`, boundedLogText(transportMsg));
                     this.emit('activity:end', { ...activityMeta, error: transportMsg, duration, usage: result.usage, cost, success: false });
-                    throw new AgentDispatchError(`[Workflow Error] Agent dispatch failed (transport_failure): ${transportMsg}`, { details: { text, reason: 'transport_failure', signal: toolFailure.source, member: memberLabel } });
+                    throw markErrorLogged(new AgentDispatchError(`[Workflow Error] Agent dispatch failed (transport_failure): ${transportMsg}`, { details: { text, reason: 'transport_failure', signal: toolFailure.source, member: memberLabel } }));
                 }
 
                 // apra-fleet-eft.78.3: surface the resumable session id
@@ -1457,9 +1523,9 @@ export class FleetWorkflow extends EventEmitter {
                     // member is not a schema problem, so it is never retried
                     // through the repair loop.
                     if (text.startsWith('Member "') && text.includes('" not found.')) {
-                        console.error(`[Agent API Error]`, text);
+                        console.error(`[Agent API Error]`, boundedLogText(text));
                         this.emit('activity:end', { ...activityMeta, error: text, duration, success: false });
-                        throw new MemberNotFoundError(`[Workflow Error] ${text}`, { details: { text, member: opts.member_name || opts.member_id } });
+                        throw markErrorLogged(new MemberNotFoundError(`[Workflow Error] ${text}`, { details: { text, member: opts.member_name || opts.member_id } }));
                     }
 
                     // Empty-response detection (observed live, apra-fleet-eft.14):
@@ -1495,9 +1561,9 @@ export class FleetWorkflow extends EventEmitter {
                             .replace(/^session: \S+\s*$/mu, '');
                     if (cleanText.trim() === '') {
                         const emptyMsg = `execute_prompt returned an empty response (display wrapper only, no LLM output) from member '${opts.member_name || opts.member_id}'.`;
-                        console.error(`[Agent API Error]`, emptyMsg);
+                        console.error(`[Agent API Error]`, boundedLogText(emptyMsg));
                         this.emit('activity:end', { ...activityMeta, error: emptyMsg, output: text, duration, usage: result.usage, cost, success: false });
-                        throw new AgentDispatchError(`[Workflow Error] Agent dispatch failed (empty_response): ${emptyMsg}`, { details: { text, reason: 'empty_response', member: opts.member_name || opts.member_id } });
+                        throw markErrorLogged(new AgentDispatchError(`[Workflow Error] Agent dispatch failed (empty_response): ${emptyMsg}`, { details: { text, reason: 'empty_response', member: opts.member_name || opts.member_id } }));
                     }
 
                     if (!opts.schema) {
@@ -1533,7 +1599,7 @@ export class FleetWorkflow extends EventEmitter {
                         // later repair (as most of these do) -- the failure
                         // was only ever visible by separately querying the
                         // dashboard's structured activity data.
-                        console.error(`[Agent API Error]`, repairMsg);
+                        console.error(`[Agent API Error]`, boundedLogText(repairMsg));
                         this.emit('activity:end', { ...activityMeta, error: repairMsg, output: text, duration, usage: result.usage, cost, success: false });
                         // apra-fleet-dnri: always re-derive from
                         // `initialPrompt`, never from `currentPrompt` --
@@ -1579,7 +1645,9 @@ export class FleetWorkflow extends EventEmitter {
                 this.emit('activity:end', { ...activityMeta, duration, success: false });
                 throw new AgentOutputError(`[Workflow Error] agent() received an empty content response from the fleet API.`, { details: { result } });
             } catch (error) {
-                console.error(`[Agent API Error]`, error.message || error);
+                // Written once: a failure already logged at its own site
+                // above is not printed again here.
+                if (!isErrorLogged(error)) console.error(`[Agent API Error]`, boundedLogText(error && error.message ? error.message : error));
                 if (error instanceof WorkflowError) {
                     // activity:end for typed errors was already emitted at
                     // the throw site above (with the richer, attempt-scoped

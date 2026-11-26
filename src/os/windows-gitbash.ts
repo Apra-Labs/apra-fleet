@@ -1,8 +1,8 @@
 import { existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { LinuxCommands, posixLegacyHelperUnset } from './linux.js';
-import { wrapPowerShellEncoded } from './windows.js';
-import { escapeDoubleQuoted, escapeShellArg, escapeBatchMetachars, escapePowerShellArgInner, sanitizeSessionId } from '../utils/shell-escape.js';
+import { wrapPowerShellEncoded, fleetProcessCheckPs } from './windows.js';
+import { escapeDoubleQuoted, escapeShellArg, escapeBatchMetachars } from '../utils/shell-escape.js';
 import { isWindowsPosixUname } from '../utils/platform.js';
 import { gitBashCandidates } from './git-bash-candidates.js';
 import { gitCredentialHelperStem } from './os-commands.js';
@@ -109,10 +109,66 @@ export function resolveGitBashPath(deps: ResolveGitBashPathDeps = {}): string {
  * back to the MSYS pid would reintroduce the wrong-process kill; with no pid
  * captured the timeout kill is simply skipped, same as a command that never
  * printed one. `wait` keeps the MSYS pid: it is bash's job id.
+ *
+ * The `_fleet_rc=$?; exit $_fleet_rc` tail keeps the subshell a live bash for
+ * the command's whole run. Without it bash exec-optimizes the subshell's last
+ * command, and when that command is itself an MSYS program (sh.exe, bash.exe)
+ * the Cygwin exec starts it as a NEW Windows process and the forked subshell
+ * exits. The winpid read above could then name a process already gone, and
+ * killPid could not find the command's root in /proc by that winpid. With the
+ * tail, the winpid always names a live bash whose MSYS pid is the root of the
+ * command's MSYS tree (see gitBashTreeKill). The exit status is unchanged.
  */
 export function pidWrapGitBash(cmd: string): string {
-  return `{ ${cmd}; } & _fleet_pid=$!; _fleet_wpid=; { read -r _fleet_wpid < "/proc/$_fleet_pid/winpid"; } 2>/dev/null; `
+  return `{ ${cmd}; _fleet_rc=$?; exit $_fleet_rc; } & _fleet_pid=$!; _fleet_wpid=; { read -r _fleet_wpid < "/proc/$_fleet_pid/winpid"; } 2>/dev/null; `
     + `if [ -n "$_fleet_wpid" ]; then printf 'FLEET_PID:%s\\n' "$_fleet_wpid"; fi; wait "$_fleet_pid"; exit $?`;
+}
+
+/**
+ * The Git Bash process-tree kill for a command whose root has Windows pid
+ * `pid` (the FLEET_PID winpid, or a local member's child.pid).
+ *
+ * ROOT CAUSE this fixes (orphaned sh.exe + PING.EXE after a timeout kill on
+ * Git Bash members, remote and local, while PowerShell members were clean):
+ * `taskkill /T` walks the WINDOWS parent chain, and MSYS breaks that chain.
+ * When an MSYS process execs another MSYS program (bash fork -> exec sh.exe),
+ * the Cygwin runtime starts the program as a new Windows process and the
+ * forked process exits. The exec'd process keeps its MSYS pid and MSYS parent,
+ * but its Windows parent is now a dead pid. taskkill builds its tree from the
+ * Windows ParentProcessId links, so everything below that exec point (sh.exe,
+ * and the fork stub that is the Windows parent of a native child such as
+ * PING.EXE) is outside the tree it kills. An exec of a NATIVE program keeps
+ * the stub alive as the native's Windows parent, which is why the earlier live
+ * test (bash -> node.exe) passed while the real run (bash -> sh.exe ->
+ * PING.EXE) left orphans. The forked subshell exec-ing its last command also
+ * made the FLEET_PID winpid itself name a dead process (see pidWrapGitBash).
+ *
+ * The fix walks the MSYS tree, which exec does not break: /proc/<pid>/ppid is
+ * the MSYS parent and /proc/<pid>/winpid the current Windows pid. The script
+ * (1) snapshots every /proc entry, (2) takes the MSYS pid(s) whose winpid is
+ * `pid` as the root, (3) adds descendants by ppid until nothing new is found,
+ * (4) runs `taskkill //F //T` on each member's winpid while the native
+ * Windows sub-trees below them are still intact (native -> native links are
+ * never broken), (5) `kill -9`s the MSYS pids, and (6) runs the original
+ * `taskkill //F //T //PID <pid>`. Builtins only besides taskkill, and nothing
+ * outside the root's descendants is touched. Written for any bash 3.2+ (no
+ * associative arrays). The doubled slashes stop MSYS path-mangling the
+ * switches; every kill swallows "already gone", and the script ends `true`.
+ */
+export function gitBashTreeKill(pid: number): string {
+  const root = String(pid);
+  return [
+    '_fk_r=' + root + '; _fk_t=; _fk_s=" "',
+    'for _fk_d in /proc/[0-9]*; do [ -d "$_fk_d" ] || continue; _fk_p=${_fk_d##*/}; _fk_a=; _fk_w=; '
+      + '{ read -r _fk_a < "$_fk_d/ppid"; } 2>/dev/null; { read -r _fk_w < "$_fk_d/winpid"; } 2>/dev/null; '
+      + '_fk_t="$_fk_t $_fk_p:$_fk_a:$_fk_w"; if [ "$_fk_w" = "$_fk_r" ]; then _fk_s="$_fk_s$_fk_p "; fi; done',
+    '_fk_n=1; while [ "$_fk_n" = 1 ]; do _fk_n=0; for _fk_e in $_fk_t; do _fk_p=${_fk_e%%:*}; _fk_a=${_fk_e#*:}; _fk_a=${_fk_a%%:*}; '
+      + 'case "$_fk_s" in *" $_fk_p "*) ;; *) if [ -n "$_fk_a" ]; then case "$_fk_s" in *" $_fk_a "*) _fk_s="$_fk_s$_fk_p "; _fk_n=1;; esac; fi;; esac; done; done',
+    'for _fk_e in $_fk_t; do _fk_p=${_fk_e%%:*}; _fk_w=${_fk_e##*:}; '
+      + 'case "$_fk_s" in *" $_fk_p "*) if [ -n "$_fk_w" ]; then taskkill //F //T //PID "$_fk_w" >/dev/null 2>&1; fi;; esac; done',
+    'for _fk_p in $_fk_s; do kill -9 "$_fk_p" 2>/dev/null; done',
+    'taskkill //F //T //PID ' + root + ' >/dev/null 2>&1; true',
+  ].join('; ');
 }
 
 /**
@@ -186,35 +242,11 @@ export class WindowsGitBashCommands extends LinuxCommands {
   override fleetProcessCheck(folder: string, sessionId?: string, processName?: string): string {
     // See the class doc comment: the only override that hops to PowerShell,
     // and it does so as a single bash-safe `powershell -EncodedCommand` call.
-    //
-    // The script is written here rather than delegated to
-    // WindowsCommands.fleetProcessCheck for two reasons, both verified live
-    // against PowerShell 5.1 on 2026-08-22: that version joins its statements
-    // with '; ', which makes `; elseif` a parse error ("The term 'elseif' is
-    // not recognized"), and it reads $_.CommandLine off Get-Process objects,
-    // which is always $null on 5.1. Win32_Process is the supported way to get
-    // a command line, and single quotes plus .Contains() keep the interpolated
-    // values literal (no regex metacharacter surprises).
+    // The script is the one WindowsCommands runs (fleetProcessCheckPs: the
+    // Win32_Process read, the single if/elseif/else statement PS 5.1 needs,
+    // and the fleet-marker plus owner match), joined with newlines here.
     if (processName === '') return "echo 'idle'";
-    const pname = processName ?? 'claude';
-    if (!/^[A-Za-z0-9._-]+$/.test(pname)) throw new Error('Invalid process name: ' + pname);
-    const psLiteral = (s: string) => escapePowerShellArgInner(s);
-    const matches = [`$_.CommandLine.Contains('${psLiteral(folder)}')`];
-    if (sessionId) matches.push(`$_.CommandLine.Contains('${psLiteral(sanitizeSessionId(sessionId))}')`);
-    const script = [
-      // PS 5.1 emits its "Preparing modules for first use" progress records to
-      // stderr as CLIXML on a first CIM call; harmless but noisy in logs.
-      `$ProgressPreference = 'SilentlyContinue'`,
-      `$procs = @(Get-CimInstance Win32_Process -Filter "Name LIKE '${pname}%'" -ErrorAction SilentlyContinue)`,
-      `if ($procs.Count -eq 0) {`,
-      `  echo 'idle'`,
-      `} elseif ($procs | Where-Object { $_.CommandLine -and (${matches.join(' -or ')}) }) {`,
-      `  echo 'fleet-busy'`,
-      `} else {`,
-      `  echo 'other-busy'`,
-      `}`,
-    ].join('\n');
-    return wrapPowerShellEncoded(script);
+    return wrapPowerShellEncoded(fleetProcessCheckPs(folder, sessionId, processName ?? 'claude').join('\n'));
   }
 
   // --- Generic agent CLI ---
@@ -385,11 +417,11 @@ export class WindowsGitBashCommands extends LinuxCommands {
   }
 
   override killPid(pid: number): string {
-    // taskkill /T kills the whole process tree, which is what LinuxCommands
-    // hand-rolls with pgrep -P (absent from Git bash). The doubled slashes stop
-    // MSYS from path-mangling the switches; taskkill exits non-zero when the
-    // pid is already gone, so swallow that the way LinuxCommands does.
-    return `taskkill //F //T //PID ${pid} >/dev/null 2>&1; true`;
+    // taskkill /T alone is not enough on Git Bash: MSYS exec breaks the
+    // Windows parent chain it walks, orphaning sh.exe and its native child.
+    // gitBashTreeKill walks the MSYS /proc tree first -- see its doc comment
+    // for the root cause.
+    return gitBashTreeKill(pid);
   }
 
   // --- GPU activity ---

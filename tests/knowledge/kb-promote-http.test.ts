@@ -188,7 +188,12 @@ describe('HttpKbProvider.promote', () => {
     });
     requests.length = 0;
     const result = await provider.promote(id, REASON);
-    expect(result).toEqual({ id, confidence_before: 'INFERRED', confidence_after: 'CONFIRMED' });
+    // This server's reply carries no basis_stamped, so the result says
+    // explicitly that the basis was not re-stamped at HEAD.
+    expect(result).toEqual({
+      id, confidence_before: 'INFERRED', confidence_after: 'CONFIRMED',
+      basis_stamp_unsupported: expect.stringMatching(/^E-KB-HTTP-UNSUPPORTED: re-stamping the source-file basis at HEAD/),
+    });
     expect(requests).toHaveLength(1);
     expect(requests[0].method).toBe('POST');
     expect(requests[0].url).toBe('/api/kb/promote');
@@ -286,6 +291,7 @@ describe('kb_promote in a MEMBER session', () => {
     const out = await runWithSessionMember(a.id, () => kbPromote({ id: captured.id, reason: REASON }));
     expect(JSON.parse(out)).toEqual({
       id: captured.id, previous_confidence: 'INFERRED', new_confidence: 'CONFIRMED',
+      basis_stamp_unsupported: expect.stringMatching(/^E-KB-HTTP-UNSUPPORTED: /),
     });
     expect(requests.filter(r => r.url.startsWith('/api/kb/list'))).toHaveLength(0);
     const promote = requests.filter(r => r.url === '/api/kb/promote');
@@ -359,7 +365,8 @@ describe('kb_promote in a MEMBER session', () => {
       .rejects.toThrow(/not found/i);
 
     const own = JSON.parse(await runWithSessionMember(a.id, () => kbPromote({ id: captured.id, reason: REASON })));
-    expect(own).toEqual({ id: captured.id, previous_confidence: 'INFERRED', new_confidence: 'CONFIRMED' });
+    expect(own).toMatchObject({ id: captured.id, previous_confidence: 'INFERRED', new_confidence: 'CONFIRMED' });
+    expect(own.basis_stamp_unsupported).toBeUndefined();
     expect(requests).toHaveLength(0);
   });
 });

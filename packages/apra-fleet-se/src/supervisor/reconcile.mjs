@@ -141,6 +141,11 @@ export function createReconciler(deps = {}) {
     // an accidental default.
     const kill = deps.killPid ?? (() => false);
     const now = deps.now ?? (() => new Date().toISOString());
+    // Optional fleet-server collaborators for force-releasing a holder id that
+    // has no ledger entry (see forceReleaseServerOnly). Absent -> such an id
+    // 404s exactly as before.
+    const listMembers = typeof deps.listMembers === 'function' ? deps.listMembers : null;
+    const releaseMemberReservation = typeof deps.releaseMemberReservation === 'function' ? deps.releaseMemberReservation : null;
     // apra-fleet-k7b.2: ISO-timestamp-prefix every log line from this module.
     const logger = withTimestamps(deps.logger ?? console);
     const log = (...a) => logger.log?.(...a);
@@ -206,7 +211,7 @@ export function createReconciler(deps = {}) {
         }
         const entry = ledger.get(sprintId);
         if (!entry) {
-            throw new SprintNotFoundError(sprintId);
+            return forceReleaseServerOnly(sprintId, audit);
         }
         const childPid = entry.childPid ?? null;
         const killed = childPid != null ? kill(childPid) : null;
@@ -226,8 +231,66 @@ export function createReconciler(deps = {}) {
             at: now(),
             ...(entry.launchedBy ? { launchedBy: entry.launchedBy } : {}),
             ...(audit.actor ? { stoppedBy: audit.actor } : {}),
+            // Recorded so the launch-time stale-holder rule can tell a
+            // confirmed kill from a failed one (EPERM) or no child at all.
+            ...(typeof killed === 'boolean' ? { killed } : {}),
         });
         return { ...recorded, childPid, killed, branch, base, goal };
+    }
+
+    /**
+     * Force-release of a holder id this ledger does not know, but that the
+     * fleet server still records as `reservedBy` on one or more members (for
+     * example an older version that wrote the branch name as the holder, or a
+     * dead sprint launched directly from the CLI). This is an explicit
+     * operator action, so every member whose holder is exactly `sprintId` is
+     * released (conditional on that holder) and a FORCE_RELEASED history event
+     * is recorded. Throws SprintNotFoundError when no member carries the id,
+     * when the fleet member list or release collaborators are not wired, or
+     * when the member list could not be read.
+     */
+    async function forceReleaseServerOnly(sprintId, audit) {
+        if (!listMembers || !releaseMemberReservation) throw new SprintNotFoundError(sprintId);
+        const raw = await listMembers();
+        const list = Array.isArray(raw) ? raw : (raw && Array.isArray(raw.members) ? raw.members : []);
+        const held = list
+            .filter((m) => m && typeof m === 'object' && m.name && m.reservedBy === sprintId)
+            .map((m) => m.name);
+        if (held.length === 0) throw new SprintNotFoundError(sprintId);
+        const released = [];
+        const failed = [];
+        for (const member of held) {
+            let out;
+            try {
+                // eslint-disable-next-line no-await-in-loop -- one fleet call per member, serialized.
+                out = await releaseMemberReservation({ member, holder: sprintId });
+            } catch (err) {
+                out = { ok: false, error: err && err.message ? err.message : String(err) };
+            }
+            if (out && out.ok) released.push(member);
+            else failed.push({ member, error: (out && out.error) || 'unknown error' });
+        }
+        (logger.warn ?? logger.log)?.(`[reconcile] force-release of fleet-server-only holder '${sprintId}': released [${released.join(', ')}]${failed.length ? `, failed [${failed.map((f) => `${f.member}: ${f.error}`).join('; ')}]` : ''}`);
+        const recorded = await history.record({
+            sprintId,
+            event: HISTORY_EVENTS.FORCE_RELEASED,
+            reason: audit.reason ?? 'force-released by operator (fleet-server reservation with no ledger entry)',
+            by: audit.by ?? null,
+            members: released,
+            issueRoots: [],
+            at: now(),
+            ...(audit.actor ? { stoppedBy: audit.actor } : {}),
+            // Nothing was killed: the holder may be a live CLI sprint that
+            // re-reserves, so this event never proves the holder dead.
+            serverOnly: true,
+        });
+        return {
+            ...recorded,
+            childPid: null, killed: null, branch: null, base: null, goal: null,
+            serverOnly: true,
+            releasedMembers: released,
+            ...(failed.length ? { failedMembers: failed } : {}),
+        };
     }
 
     return {

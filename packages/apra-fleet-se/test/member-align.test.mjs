@@ -262,6 +262,32 @@ test('unreachable member reported by the tool without an exit code is classified
     assertNoMemberMoved(issued);
 });
 
+test('preflight-offline structured result (isError, reason, exitCode -1) is unreachable, not a missing origin remote', async () => {
+    const offline = toAlignCommandResult({ isError: true, structuredContent: { isError: true, reason: 'preflight_offline', exitCode: -1, stdout: '', stderr: 'member offline' } });
+    assert.equal(offline.unreachable, true);
+    const { runGit } = fakeRunner({ overrides: (cmd, member) => (member === 'm2' ? offline : undefined) });
+    const res = await alignMembersToBase({ members: ['m1', 'm2'], baseBranch: BASE, branch: SPRINT, runGit });
+    assert.match(res.message, /member 'm2': member unreachable/);
+    assert.doesNotMatch(res.message, /no 'origin' remote/);
+});
+
+test('a thrown transport error is also unreachable, never a missing origin remote', async () => {
+    const thrown = toAlignCommandResult(undefined, new Error('socket hang up'));
+    const { runGit } = fakeRunner({ overrides: (cmd, member) => (member === 'm2' ? thrown : undefined) });
+    const res = await alignMembersToBase({ members: ['m1', 'm2'], baseBranch: BASE, branch: SPRINT, runGit });
+    assert.match(res.message, /member 'm2': member unreachable/);
+    assert.doesNotMatch(res.message, /no 'origin' remote/);
+});
+
+test('a real git exit code 2 with No such remote origin is the missing-origin cause, not unreachable', async () => {
+    const missing = toAlignCommandResult({ structuredContent: { exitCode: 2, stdout: '', stderr: "error: No such remote 'origin'" }, content: [{ type: 'text', text: "Exit code: 2\nerror: No such remote 'origin'" }] });
+    assert.equal(missing.unreachable, false);
+    const { runGit } = fakeRunner({ overrides: (cmd, member) => (member === 'm2' && cmd === 'git remote get-url origin' ? missing : undefined) });
+    const res = await alignMembersToBase({ members: ['m1', 'm2'], baseBranch: BASE, branch: SPRINT, runGit });
+    assert.match(res.message, /no 'origin' remote/);
+    assert.doesNotMatch(res.message, /member unreachable/);
+});
+
 test('fetch auth failure (classified via classifyGitFailure): refusal names member, cause and fix; no member moved', async () => {
     const authErr = "remote: Invalid username or password.\nfatal: Authentication failed for 'https://git.example.test/acme/widgets.git/'";
     assert.equal(classifyGitFailure(authErr), 'auth', 'fixture error text must classify as auth');

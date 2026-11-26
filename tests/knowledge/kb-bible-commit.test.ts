@@ -7,6 +7,8 @@ import { SqliteProvider } from '../../src/services/knowledge/sqlite-provider.js'
 import { kbBibleCommit } from '../../src/tools/kb-bible-commit.js';
 import { kbExport } from '../../src/tools/kb-export.js';
 import { kbImport } from '../../src/tools/kb-import.js';
+import { kbPromote } from '../../src/tools/kb-promote.js';
+import { isToolInScope, memberToolScope } from '../../src/services/tool-scope.js';
 import * as kbProvidersModule from '../../src/services/knowledge/kb-providers.js';
 import type { KBEntryInput } from '../../src/services/knowledge/types.js';
 
@@ -175,7 +177,11 @@ describe('kb_bible_commit', () => {
 
   it('refuses to overwrite an unreadable bible', async () => {
     const a = await confirmed(provider, 'Alpha');
+    // The base is the bible committed at HEAD, so the unreadable one is committed.
+    fs.mkdirSync(path.join(clone, '.fleet'), { recursive: true });
     fs.writeFileSync(path.join(clone, BIBLE_REL), '{ not json');
+    git(clone, ['add', BIBLE_REL]);
+    git(clone, ['commit', '-q', '-m', 'unreadable bible']);
     await expect(kbBibleCommit({ ids: [a], baseBranch: 'main', baseCommit: 'c' }, { folder: clone }))
       .rejects.toThrow(/refusing to overwrite/);
     expect(fs.readFileSync(path.join(clone, BIBLE_REL), 'utf-8')).toBe('{ not json');
@@ -321,5 +327,151 @@ describe('capture -> promote -> bible commit -> export round trip (basis filter)
     for (const id of ['kb-existing-1', 'kb-existing-2']) {
       expect(bases.get(id)).toBeNull();
     }
+  });
+});
+
+// kb_promote stamps the source-file basis from the cited files at HEAD, and a
+// promote of an already-CONFIRMED entry with a drifted basis re-stamps it
+// (rebased), so a reviewer re-verification turns a basis_mismatch skip into a
+// merge. A basis_mismatch skip names the files behind it (changed_files).
+describe('kb_promote basis stamp at HEAD and kb_bible_commit changed_files', () => {
+  const REASON = 'test fixture: re-read src/a.ts at HEAD and the claim holds';
+
+  function headBlob(rel: string): string {
+    return git(clone, ['rev-parse', 'HEAD:' + rel]).trim();
+  }
+
+  function commitFile(rel: string, body: string, msg: string): string {
+    fs.writeFileSync(path.join(clone, rel), body);
+    git(clone, ['add', rel]);
+    git(clone, ['commit', '--quiet', '-m', msg]);
+    return git(clone, ['rev-parse', 'HEAD']).trim();
+  }
+
+  it('promoting an entry whose cited file changed since capture stores the HEAD hash; kb_bible_commit then merges it', async () => {
+    const { id } = await provider.capture(makeInput({ title: 'Stamped at promote', symbols: ['stampSym'] }));
+    const captureBasis = provider.getSourceFileBases([id]).get(id);
+    const head = commitFile('src/a.ts', 'export const a = 2;\n', 'change a after capture');
+    expect(captureBasis?.['src/a.ts']).not.toBe(headBlob('src/a.ts'));
+
+    const res = await provider.promote(id, REASON);
+    expect(res.confidence_after).toBe('CONFIRMED');
+    expect(res.basis_stamped).toBe(true);
+    expect(res.previous_basis_files_changed).toEqual(['src/a.ts']);
+    expect(provider.getSourceFileBases([id]).get(id)).toEqual({ 'src/a.ts': headBlob('src/a.ts') });
+
+    const round = JSON.parse(await kbBibleCommit({ ids: [id], baseBranch: 'main', baseCommit: head }, { folder: clone }));
+    expect(round.skipped).toEqual([]);
+    expect(round.merged).toEqual([id]);
+  });
+
+  it('a drifted CONFIRMED entry is skipped with changed_files, re-verified via kb_promote (rebased), then merged', async () => {
+    fs.writeFileSync(path.join(clone, 'src', 'b.ts'), 'export const b = 1;\n');
+    commitFile('src/b.ts', 'export const b = 1;\n', 'add b');
+    const id = await confirmed(provider, 'Drifter');
+    const gone = (await provider.capture(makeInput({
+      title: 'Cites a file deleted later', summary: 'Deleted file entry', symbols: ['goneSym'], source_files: ['src/b.ts'],
+    }))).id;
+    await provider.promote(gone, REASON);
+
+    const head1 = commitFile('src/a.ts', 'export const a = 3;\n', 'change a after promote');
+    git(clone, ['rm', '--quiet', 'src/b.ts']);
+    git(clone, ['commit', '--quiet', '-m', 'delete b']);
+    const head2 = git(clone, ['rev-parse', 'HEAD']).trim();
+    expect(head2).not.toBe(head1);
+
+    const first = JSON.parse(await kbBibleCommit({ ids: [id, gone], baseBranch: 'main', baseCommit: head2 }, { folder: clone }));
+    expect(first.merged).toEqual([]);
+    expect(first.skipped).toEqual(expect.arrayContaining([
+      { id, reason: 'basis_mismatch', changed_files: [{ path: 'src/a.ts', reason: 'changed' }] },
+      { id: gone, reason: 'basis_mismatch', changed_files: [{ path: 'src/b.ts', reason: 'absent' }] },
+    ]));
+
+    const re = JSON.parse(await kbPromote({ id, reason: REASON }, { folder: clone }));
+    expect(re).toMatchObject({
+      id, previous_confidence: 'CONFIRMED', new_confidence: 'CONFIRMED',
+      basis_stamped: true, rebased: true, previous_basis_files_changed: ['src/a.ts'],
+    });
+    expect(provider.getSourceFileBases([id]).get(id)).toEqual({ 'src/a.ts': headBlob('src/a.ts') });
+    const row = (await provider.query({ ids: [id] })).results[0];
+    expect(row.content).toContain('[Re-verified at HEAD, basis re-stamped: ' + REASON);
+
+    // A second re-verification against the same HEAD has nothing to re-stamp.
+    const again = JSON.parse(await kbPromote({ id, reason: REASON }, { folder: clone }));
+    expect(again).toMatchObject({ basis_stamped: false, rebased: false, previous_basis_files_changed: [] });
+
+    // A file absent at HEAD cannot be re-stamped: it is reported and keeps its basis.
+    fs.writeFileSync(path.join(clone, 'src', 'b.ts'), 'export const b = 1;\n'); // untracked again
+    const goneBasis = provider.getSourceFileBases([gone]).get(gone);
+    const goneRe = await provider.promote(gone, REASON);
+    expect(goneRe).toMatchObject({ basis_stamped: false, rebased: false, unstamped_files: [{ path: 'src/b.ts', reason: 'absent_at_head' }] });
+    expect(provider.getSourceFileBases([gone]).get(gone)).toEqual(goneBasis);
+    fs.rmSync(path.join(clone, 'src', 'b.ts'));
+
+    const second = JSON.parse(await kbBibleCommit({ ids: [id], baseBranch: 'main', baseCommit: head2 }, { folder: clone }));
+    expect(second.skipped).toEqual([]);
+    expect(second.merged).toEqual([id]);
+  });
+
+  it('a stale drifted CONFIRMED entry is revived by the re-stamp so the next kb_bible_commit merges it', async () => {
+    const id = await confirmed(provider, 'StaleDrifter');
+    const head = commitFile('src/a.ts', 'export const a = 4;\n', 'change a');
+    await provider.freshnessSweep();
+    expect((await provider.query({ ids: [id], include_stale: true })).results[0]?.stale).toBe(true);
+
+    const re = await provider.promote(id, REASON);
+    expect(re.rebased).toBe(true);
+    const round = JSON.parse(await kbBibleCommit({ ids: [id], baseBranch: 'main', baseCommit: head }, { folder: clone }));
+    expect(round.merged).toEqual([id]);
+  });
+
+  it('a re-stamp attempt without the kb_maintainer grant is refused and the basis is unchanged', async () => {
+    const id = await confirmed(provider, 'Guarded');
+    commitFile('src/a.ts', 'export const a = 5;\n', 'change a');
+    const basisBefore = provider.getSourceFileBases([id]).get(id);
+    const contentBefore = (await provider.query({ ids: [id] })).results[0].content;
+
+    // A member session is served kb_promote only with the kb_maintainer grant.
+    expect(isToolInScope('kb_promote', memberToolScope('m-1', false, true, false))).toBe(false);
+    expect(isToolInScope('kb_promote', memberToolScope('m-1', false, true, true))).toBe(true);
+    // And a member's own-scope promote of an entry it did not capture is the
+    // same not-found as an unknown id, with nothing written.
+    await expect(provider.promote(id, REASON, { ownerTag: 'member:someone-else' })).rejects.toThrow(/Entry not found/);
+
+    expect(provider.getSourceFileBases([id]).get(id)).toEqual(basisBefore);
+    expect(basisBefore?.['src/a.ts']).not.toBe(headBlob('src/a.ts'));
+    expect((await provider.query({ ids: [id] })).results[0].content).toBe(contentBefore);
+  });
+
+  it('an uncommitted edit to the cited file does not affect the stamped basis', async () => {
+    // Two cited files: b.ts is clean at HEAD (stamped), a.ts carries an
+    // uncommitted edit (never stamped: its work-tree content stays out).
+    commitFile('src/b.ts', 'export const b = 1;\n', 'add b');
+    const { id } = await provider.capture(makeInput({ title: 'Dirty tree', symbols: ['dirtySym'], source_files: ['src/a.ts', 'src/b.ts'] }));
+    const head = commitFile('src/b.ts', 'export const b = 2;\n', 'change b after capture');
+    const aCommitted = headBlob('src/a.ts');
+    fs.writeFileSync(path.join(clone, 'src', 'a.ts'), 'export const a = 999; // uncommitted\n');
+    const aDisk = git(clone, ['hash-object', 'src/a.ts']).trim();
+    expect(aDisk).not.toBe(aCommitted);
+
+    const res = await provider.promote(id, REASON);
+    expect(res.basis_stamped).toBe(true);
+    expect(res.previous_basis_files_changed).toEqual(['src/b.ts']);
+    expect(res.unstamped_files).toEqual([{ path: 'src/a.ts', reason: 'uncommitted_edit' }]);
+    const basis = provider.getSourceFileBases([id]).get(id)!;
+    expect(basis).toEqual({ 'src/a.ts': aCommitted, 'src/b.ts': headBlob('src/b.ts') });
+    expect(basis['src/a.ts']).not.toBe(aDisk);
+
+    // The stamped basis matches HEAD, so the bible admits it despite the dirty file.
+    const round = JSON.parse(await kbBibleCommit({ ids: [id], baseBranch: 'main', baseCommit: head }, { folder: clone }));
+    expect(round.merged).toEqual([id]);
+
+    // A cited file that exists only on disk (never committed) is reported, not stamped.
+    fs.writeFileSync(path.join(clone, 'src', 'new.ts'), 'export const n = 1;\n');
+    const fresh = (await provider.capture(makeInput({
+      title: 'Uncommitted file', summary: 'Cites a new file', symbols: ['newSym'], source_files: ['src/new.ts'],
+    }))).id;
+    const freshRes = await provider.promote(fresh, REASON);
+    expect(freshRes).toMatchObject({ confidence_after: 'CONFIRMED', basis_stamped: false, unstamped_files: [{ path: 'src/new.ts', reason: 'absent_at_head' }] });
   });
 });

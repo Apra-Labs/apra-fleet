@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import net from 'node:net';
 import { EventEmitter } from 'node:events';
 import { createDashboardViewer } from '@apralabs/apra-fleet-workflow/viewer';
 import { createDecisionsExtension } from '../fleet-sprint/viewer-extensions.mjs';
@@ -148,5 +149,50 @@ describe('answer route with a slow resume/apply', () => {
     test('an unknown decision id still returns 404 and an empty answer 400, synchronously', async () => {
         await assert.rejects(() => controller.answerDecision('s1', 'decision-nope', { answer: 'a' }), (e) => e instanceof ApiError && e.status === 404);
         await assert.rejects(() => controller.answerDecision('s1', 'decision-slow-paused', { answer: '  ' }), (e) => e instanceof ApiError && e.status === 400);
+    });
+
+    // Controller whose proxy talks to an arbitrary port with a short timeout.
+    const controllerFor = (targetPort, timeoutMs) => {
+        const ledger = createLedger({ filePath: path.join(tmpDir, `ledger-${targetPort}.json`) });
+        return ledger.start().then(async () => {
+            await ledger.claim('s2', { members: ['b'], issueRoots: ['R'], childPid: 43 });
+            const history = createHistory({ filePath: path.join(tmpDir, `history-${targetPort}.json`) });
+            await history.start();
+            return createSprintController({
+                ledger, history,
+                spawner: createSpawner({ basePort: 9100, isPortAvailable: async () => true, dataDir: 'x', fs: { mkdirSync() {}, openSync() { return 1; }, closeSync() {} }, spawn: () => ({ pid: 1, on() {}, unref() {} }) }),
+                listMembers: () => ({}), getBacklog: () => ({}),
+                resolvePort: (pid) => (pid === 43 ? targetPort : undefined),
+                proxyAction: (p, ext, act, payload) => proxyChildAction(p, ext, act, payload, { timeoutMs }),
+            });
+        });
+    };
+
+    test('a child that accepts the connection but never responds: 504 ApiError saying how to check the answer', async () => {
+        const sockets = [];
+        const silent = net.createServer((s) => { sockets.push(s); s.on('error', () => {}); });
+        await new Promise((r) => silent.listen(0, '127.0.0.1', r));
+        try {
+            const c = await controllerFor(silent.address().port, 150);
+            await assert.rejects(() => c.answerDecision('s2', 'd1', { answer: 'a' }), (e) => {
+                assert.ok(e instanceof ApiError, 'typed ApiError, not a plain Error');
+                assert.equal(e.status, 504);
+                assert.match(e.message, /GET \/api\/sprints\/s2/);
+                assert.match(e.message, /pendingDecisions/);
+                return true;
+            });
+        } finally {
+            for (const s of sockets) s.destroy();
+            await new Promise((r) => silent.close(r));
+        }
+    });
+
+    test('a refused connection: 502 ApiError', async () => {
+        const probe = net.createServer();
+        await new Promise((r) => probe.listen(0, '127.0.0.1', r));
+        const closedPort = probe.address().port;
+        await new Promise((r) => probe.close(r));
+        const c = await controllerFor(closedPort, 500);
+        await assert.rejects(() => c.answerDecision('s2', 'd1', { answer: 'a' }), (e) => e instanceof ApiError && e.status === 502 && /pendingDecisions/.test(e.message));
     });
 });

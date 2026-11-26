@@ -52,8 +52,22 @@ export const KILL_TREE_TIMEOUT_MS = 10_000;
  * shell-free call sidesteps it for every Windows shell flavour). Elsewhere the
  * member's own killPid string runs through the shell cleanExec resolved.
  * Best-effort: errors, including the timeout, are swallowed.
+ *
+ * `msysTreeKillCommand` (Git Bash members on a Windows host only): taskkill /T
+ * alone misses every process below an MSYS exec, because exec breaks the
+ * Windows parent chain taskkill walks (root cause: gitBashTreeKill in
+ * src/os/windows-gitbash.ts). The command walks the MSYS /proc tree instead
+ * and runs FIRST, through the member's own bash, while the tree is intact;
+ * the direct taskkill.exe then runs exactly as for every other shell.
  */
-export function killLocalProcessTree(pid: number, posixKillCommand: string, shell?: string): void {
+export function killLocalProcessTree(pid: number, posixKillCommand: string, shell?: string, msysTreeKillCommand?: string): void {
+  if (process.platform === 'win32' && msysTreeKillCommand && shell) {
+    try {
+      execFileSync(shell, ['-c', msysTreeKillCommand], {
+        stdio: 'ignore', windowsHide: true, timeout: KILL_TREE_TIMEOUT_MS,
+      });
+    } catch { /* best-effort; the direct taskkill below still runs */ }
+  }
   try {
     if (process.platform === 'win32') {
       execFileSync(windowsExecutable('taskkill.exe'), ['/F', '/T', '/PID', String(pid)], {
@@ -235,6 +249,8 @@ class LocalStrategy implements AgentStrategy {
 
   private async execCommandInner(command: string, timeoutMs: number, maxTotalMs: number | undefined, onPidCaptured: ((pid: number) => void) | undefined, abortSignal: AbortSignal | undefined, onCommandFile: (p: string) => void): Promise<SSHExecResult> {
     let pidExtracted = false;
+    // FLEET_PID marker value, once seen (the Git Bash tree kill roots at it).
+    let capturedPid: number | undefined;
     const result = await new Promise<SSHExecResult>((resolve, reject) => {
       const agentShell = getAgentShell(this.agent);
       const cmds = getOsCommands(getAgentOS(this.agent), agentShell);
@@ -266,7 +282,15 @@ class LocalStrategy implements AgentStrategy {
         // gets around to running taskkill, child.kill('SIGKILL') has often
         // already terminated the wrapper, and taskkill can't traverse from
         // an already-dead PID, silently leaving descendants running.
-        killLocalProcessTree(child.pid, cmds.killPid(child.pid), shell);
+        // Git Bash: also walk the MSYS tree from the command's own root (the
+        // FLEET_PID winpid, a live bash) and from child.pid -- see
+        // killLocalProcessTree. child.pid may be the Git-for-Windows launcher,
+        // which is not an MSYS process, so the FLEET_PID root is what finds
+        // the command's MSYS descendants. Other shells pass nothing extra.
+        const msysTreeKill = agentShell === 'gitbash'
+          ? [capturedPid, child.pid].filter((p): p is number => p !== undefined).map((p) => cmds.killPid(p)).join('; ')
+          : undefined;
+        killLocalProcessTree(child.pid, cmds.killPid(child.pid), shell, msysTreeKill);
       }
 
       let settled = false;
@@ -326,6 +350,7 @@ class LocalStrategy implements AgentStrategy {
           const m = /^FLEET_PID:(\d+)\r?$/m.exec(chunk);
           if (m) {
             const pid = parseInt(m[1], 10);
+            capturedPid = pid;
             setStoredPid(this.agent.id, pid);
             onPidCaptured?.(pid);
             chunk = chunk.replace(/^FLEET_PID:\d+\r?(?:\n|$)/m, '');

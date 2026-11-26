@@ -84,7 +84,8 @@ async function captureInferred(title: string): Promise<string> {
 async function confirmedEntry(title: string): Promise<string> {
   const id = await captureInferred(title);
   const promoted = await call('POST', '/api/kb/promote', { id, reason: PROMOTE_REASON });
-  expect(promoted.body).toEqual({ id, previous_confidence: 'INFERRED', new_confidence: 'CONFIRMED' });
+  // The reply also carries the basis-stamp fields (basis_stamped, ...).
+  expect(promoted.body).toMatchObject({ id, previous_confidence: 'INFERRED', new_confidence: 'CONFIRMED' });
   return id;
 }
 

@@ -101,7 +101,12 @@ describe('kb-server promote and tag filter', () => {
     const id = await captureTagged([]);
     const res = await request('POST', '/api/kb/promote', { body: { id, reason: PROMOTE_REASON } });
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ id, previous_confidence: 'INFERRED', new_confidence: 'CONFIRMED' });
+    expect(res.body).toMatchObject({ id, previous_confidence: 'INFERRED', new_confidence: 'CONFIRMED' });
+    // The provider's basis-stamp report rides along, so HttpKbProvider never
+    // flags this server as unable to re-stamp.
+    expect(typeof res.body.basis_stamped).toBe('boolean');
+    expect(Object.keys(res.body).every(k => ['id', 'previous_confidence', 'new_confidence', 'basis_stamped', 'rebased',
+      'previous_basis_files_changed', 'unstamped_files'].includes(k))).toBe(true);
   });
 
   it('GET /api/kb/capabilities answers {contract, routes, branch_aware} behind the same auth as every route', async () => {
@@ -302,7 +307,7 @@ describe('kb-server promote and tag filter', () => {
       // No fleet-side owner-tag gate: this server has no per-member scope, so
       // a known id promotes whatever ownerTag the caller carries.
       await expect(provider.promote(id, PROMOTE_REASON, { ownerTag: `member:${crypto.randomUUID()}` }))
-        .resolves.toEqual({ id, confidence_before: 'INFERRED', confidence_after: 'CONFIRMED' });
+        .resolves.toMatchObject({ id, confidence_before: 'INFERRED', confidence_after: 'CONFIRMED', basis_stamped: expect.any(Boolean) });
     } finally {
       provider.dispose();
     }

@@ -21,7 +21,7 @@ import {
     DOLT_LOCK_PROBE_AFTER_MS,
 } from '../fleet-sprint/dolt-sync.mjs';
 import { DoltLockHeldError, DoltSyncError, DOLT_BEADS_LOCK_HELD_CODE } from '../fleet-sprint/errors.mjs';
-import { bdSyncCommandFor } from '../fleet-sprint/bd-sync-command.mjs';
+import { bdSyncCommandFor, unwrapSyncHeartbeat } from '../fleet-sprint/bd-sync-command.mjs';
 
 // ---------------------------------------------------------------------------
 // Probe command strings per member OS/shell
@@ -129,7 +129,8 @@ function silentMember({ target, probeOutput }) {
     const calls = [];
     let release = null;
     const probe = buildLockHolderProbe(target);
-    const command = async (cmd, opts) => {
+    const command = async (wire, opts) => {
+        const cmd = unwrapSyncHeartbeat(wire); // the bd command inside the heartbeat wrapper
         calls.push(cmd);
         if (cmd.includes('bd config get sync.remote')) return { ok: true, output: JSON.stringify({ value: SYNC_REMOTE }), error: null };
         if (cmd === probe) return { ok: true, output: probeOutput, error: null };
@@ -269,7 +270,8 @@ describe('lock-holder watchdog on a silent D-pull', () => {
         const target = { os: 'linux', shell: '' };
         const timer = fakeTimer();
         const calls = [];
-        const command = async (cmd) => {
+        const command = async (wire) => {
+            const cmd = unwrapSyncHeartbeat(wire);
             calls.push(cmd);
             if (cmd.includes('bd config get sync.remote')) return { ok: true, output: JSON.stringify({ value: SYNC_REMOTE }), error: null };
             return { ok: true, output: '', error: null };

@@ -426,11 +426,11 @@ function recordDolt(scratch, versions) {
     quiet('bd create "seed from B" -t task', at(projB));
     quiet('bd dolt commit -m seed-b', at(projB));
     add(
-        'dolt/diverged/push-no-common-ancestor',
-        'diverged',
+        'dolt/unrelated-history/push-no-common-ancestor',
+        'unrelated-history',
         'bd dolt push   (two clones with independent Dolt histories, remote already advanced)',
         capture('bd dolt push', at(projB)),
-        'the "have diverged" token that earns the diverged verdict is on the FOURTH line -- truncating this output to its first line flips the verdict to unknown',
+        'independent histories: "no common ancestor" is on the FIRST line, but the text also says "have diverged" -- unrelated-history must be checked before diverged',
     );
 
     return samples;

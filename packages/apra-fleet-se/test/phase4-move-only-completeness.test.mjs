@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { scaledTimeout } from './helpers/scaled-timeout.mjs';
 
 // =============================================================================
 // What is left of the Phase 4 gate, and why.
@@ -60,7 +61,15 @@ const __filename_self = fileURLToPath(import.meta.url);
 // spawn one such child per changed runner.js importer (65+ candidates), so
 // even ONE reintroduced spawn blows well past this budget.
 const FILE_START_MS = Date.now();
-const DURATION_BUDGET_MS = 3000;
+// The wall-clock budget is a secondary signal: the primary, load-insensitive guard is the
+// structural spawn-target scan in section (4) below (this gate may only ever spawn `git`).
+// Under `--test-concurrency` load a fixed 3000ms budget flaked (3075ms observed on a loaded CI
+// runner, ~130ms standalone), so the budget is scaled by the run's declared test concurrency
+// (x3 when APRA_FLEET_TEST_CONCURRENCY > 1; unscaled for a raw standalone `node --test`, where
+// there is no contention). Concurrency is passed explicitly so an unset or empty env stays 1.
+// 3x (9000ms) still sits far below the deleted probe's cost (65+ node --test children at
+// several hundred ms each), so a reintroduced subprocess probe still fails it.
+const DURATION_BUDGET_MS = scaledTimeout(3000, { concurrency: process.env.APRA_FLEET_TEST_CONCURRENCY || 1 });
 
 describe('(4) the downstream suites this gate relies on are wired into the same run', () => {
     // apra-fleet-j918.3.1 deleted the meta-check that used to live here -- it

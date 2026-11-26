@@ -2,6 +2,7 @@ import type { Agent } from '../../types.js';
 import { getStrategy } from '../strategy.js';
 import { getOsCommands } from '../../os/index.js';
 import { getAgentOS, getAgentShell } from '../../utils/agent-helpers.js';
+import { parseFleetProcessCheck } from '../session-status.js';
 
 export type ActivityStatus = 'busy-gpu' | 'busy-process' | 'idle' | 'unknown';
 
@@ -56,8 +57,9 @@ export async function checkMemberActivity(agent: Agent): Promise<ActivityStatus>
       cmds.fleetProcessCheck(agent.workFolder),
       ACTIVITY_TIMEOUT_MS,
     );
-    const status = result.stdout.trim();
-    if (status === 'fleet-busy' || status === 'other-busy') return 'busy-process';
+    // `fleet-busy <pid>` carries the matched pid; parse rather than compare exactly.
+    const { state } = parseFleetProcessCheck(result.stdout);
+    if (state === 'fleet-busy' || state === 'other-busy') return 'busy-process';
   } catch {
     return 'unknown'; // cannot check → safe default: don't stop
   }
