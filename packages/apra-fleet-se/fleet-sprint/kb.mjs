@@ -1338,6 +1338,18 @@ export function createKbWorkClient(opts = {}) {
         : 'none named by kb_bible_commit');
 
     /**
+     * A droppedFromBible row as reported: `withdrawn` is true only once the
+     * withdrawal reached a pushed bible commit the tool admitted; a withdrawal
+     * still queued or not admitted is `withdrawalNotPushed` instead.
+     */
+    function droppedView(d) {
+        const queued = d.withdrawn && (withdrawalsPending.get(d.repo) || new Map()).has(d.id);
+        const rec = offeringRecord.get(d.repo);
+        const refused = d.withdrawn && !!rec && detailFor(rec).notAdmitted.has(d.id);
+        return { ...d, changed_files: d.changed_files.map((f) => ({ ...f })), withdrawn: d.withdrawn && !queued && !refused, withdrawalNotPushed: !!(queued || refused) };
+    }
+
+    /**
      * Drop a CONFIRMED id from the bible queue after a reviewer refused its
      * re-verification, or after the bounded retries ran out. Never deletes or
      * demotes the entry: it stays in the maintainer's local KB. When this
@@ -1413,23 +1425,39 @@ export function createKbWorkClient(opts = {}) {
         const target = sel && typeof sel.getKbMaintainer === 'function' ? sel.getKbMaintainer(repo) : null;
         if (!target || !target.member) return;
         let baseIds = null;
+        let unreadable = '';
         try {
             const base = typeof bibleBase === 'function' ? await bibleBase(target.member) : null;
-            baseIds = base && base.baseCommit ? await baseBibleIds(target.member, base.baseCommit) : null;
+            if (!base || !base.baseCommit) {
+                unreadable = 'no base commit could be determined for the sprint branch';
+            } else {
+                baseIds = await baseBibleIds(target.member, base.baseCommit);
+                if (!(baseIds instanceof Set)) unreadable = `the bible at base commit ${base.baseCommit} could not be read`;
+            }
         } catch (err) {
-            log(`[kb-work] could not read the base bible on maintainer '${target.member}' (non-fatal; the withdrawal(s) are kept): ${errText(err)}`);
+            unreadable = errText(err);
         }
-        if (!(baseIds instanceof Set)) return;
+        if (!(baseIds instanceof Set)) {
+            log(`[kb-work] could not read the base bible on maintainer '${target.member}' for ${repo} (${unreadable}); the ${done.length} withdrawal(s) are kept, with their tombstones: ${done.join(', ')}`);
+            return;
+        }
         const own = done.filter((id) => !baseIds.has(id));
         if (own.length === 0) return;
         if (!restoresPending.has(repo)) restoresPending.set(repo, new Set());
         for (const id of own) restoresPending.get(repo).add(id);
-        await serialize(repo, () => commitRepo(repo));
+        const result = await serialize(repo, () => commitRepo(repo));
         const stillRestoring = restoresPending.get(repo);
+        const restoredByTool = new Set(result && Array.isArray(result.restoredIds) ? result.restoredIds : []);
         const rec = recordFor(repo);
         const det = detailFor(rec);
         for (const id of own) {
             if (stillRestoring && stillRestoring.has(id)) continue;
+            if (!restoredByTool.has(id)) {
+                // The call succeeded but kb_bible_commit did not list the id as
+                // restored: its tombstone stays and the withdrawal stays recorded.
+                log(`[kb-work] the restore of ${id} for ${repo} was not performed by kb_bible_commit on maintainer '${target.member}': its withdrawal tombstone stays in the branch bible`);
+                continue;
+            }
             rec.verdicts.delete(id);
             det.notes.delete(id);
             det.admitted.delete(id);
@@ -1446,7 +1474,7 @@ export function createKbWorkClient(opts = {}) {
      * bibleAttempt). Once confirmations are sealed (a FAIL verdict) `ids` is
      * empty but withdrawals and restores still commit. Never throws; ids that
      * do not reach a pushed commit stay pending for the next round.
-     * @returns {Promise<{ committed: number, pending: number }>}
+     * @returns {Promise<{ committed: number, pending: number, restoredIds?: string[] }>} restoredIds: the ids the tool listed as restored by this call
      */
     async function commitRepo(repo) {
         const pending = confirmations.get(repo);
@@ -1578,7 +1606,7 @@ export function createKbWorkClient(opts = {}) {
                     ? `; ${withdrawnCount} withdrawal(s) and ${restoredCount} restore(s)${restoredIdList(restoredIds)} ${outcome.pushed ? 'committed and pushed' : 'already in the bible -- nothing to push'}`
                     : '';
                 log(`[kb-work] kb_bible_commit skipped the entry merge for ${repo} on maintainer '${maintainer}': ${reason} -- ${ids.length} confirmation(s) dropped from the bible queue${tombstoneNote}.`);
-                return { committed: outcome.pushed ? withdrawnCount + restoredCount : 0, pending: heldConfirmations };
+                return { committed: outcome.pushed ? withdrawnCount + restoredCount : 0, pending: heldConfirmations, restoredIds };
             }
             // The call succeeded: whatever retirements the maintainer held were
             // removed by it (kb_bible_commit drops them at every call).
@@ -1663,6 +1691,7 @@ export function createKbWorkClient(opts = {}) {
             return {
                 committed: outcome.pushed ? merged + withdrawnCount + restoredCount : 0,
                 pending: confirmationsLeft + (withdrawalsPending.get(repo) || new Map()).size + (restoresPending.get(repo) || new Set()).size,
+                restoredIds,
             };
         } finally {
             inFlight.delete(maintainer);
@@ -2310,7 +2339,7 @@ export function createKbWorkClient(opts = {}) {
             return {
                 repos,
                 sealedReason: sealedReason || confirmationsSealedReason,
-                dropped: droppedFromBible.map((d) => ({ ...d, changed_files: d.changed_files.map((f) => ({ ...f })) })),
+                dropped: droppedFromBible.map(droppedView),
             };
         },
         /**
@@ -2322,7 +2351,7 @@ export function createKbWorkClient(opts = {}) {
          * withdrawal was queued to take it out again.
          */
         droppedConfirmations() {
-            return droppedFromBible.map((d) => ({ ...d, changed_files: d.changed_files.map((f) => ({ ...f })) }));
+            return droppedFromBible.map(droppedView);
         },
         /**
          * The sprint's last review has run: no later reviewer can re-verify

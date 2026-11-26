@@ -280,7 +280,8 @@ function kbBibleLines(unpublished) {
                     ? d.changed_files.map((f) => `${f.path} (${f.reason})`).join(', ')
                     : 'none named';
                 return `- ${d.repo}: ${d.id} on maintainer '${d.maintainer}' -- ${d.why}; changed files: ${files}`
-                    + `${d.withdrawn ? '; withdrawn from the branch bible' : ''}.`;
+                    + `${d.withdrawn ? '; withdrawn from the branch bible' : ''}`
+                    + `${d.withdrawalNotPushed ? '; its withdrawal is NOT in a pushed bible commit -- the branch bible still carries it' : ''}.`;
             }),
         );
     }
