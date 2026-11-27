@@ -37,7 +37,7 @@ export function createKbInjection(opts = {}) {
          * The KNOWLEDGE BANK block (a 0/1-element array) for one dispatch.
          * @param {{ role: string, member: string, context?: object, captureChannel?: boolean }} d
          */
-        async blockFor({ role, member, context = {}, captureChannel = true }) {
+        async blockFor({ role, member, context = {}, captureChannel = true, excludeIds }) {
             if (!member || !kbWork || typeof kbWork.knowledgeFor !== 'function') return [];
             const ctx = { ...context };
             if (!ctx.diffFiles && typeof opts.diffFiles === 'function' && /^(reviewer|harvester)$/.test(role)) {
@@ -53,7 +53,7 @@ export function createKbInjection(opts = {}) {
             }
             const hints = roleHints(role, ctx);
             const { entries, source } = await kbWork.knowledgeFor(member, hints);
-            return kbKnowledgeBlock(entries, { captureChannel, source, reportEmpty: true });
+            return kbKnowledgeBlock(entries, { captureChannel, source, reportEmpty: true, excludeIds });
         },
     };
 }
