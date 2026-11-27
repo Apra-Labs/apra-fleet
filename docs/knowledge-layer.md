@@ -336,6 +336,15 @@ and the engine does no KB read for them. The block is always fetched
 from the kb_maintainer member, so a non-maintainer remote member still receives
 the project knowledge.
 
+Block shape (`kbKnowledgeBlock`): at most 12 CONFIRMED, undisputed entries in
+relevance order, rendered as one line of compact JSON inside the untrusted-data
+fence. Each row is `{id, title, summary, source_files}` -- no `confidence`
+(always CONFIRMED). `summary` is capped at 300 chars, cut on a word boundary
+and ending in `...`; `source_files` lists the first 3 files plus a
+`"+N more"` string when more exist. There is no lookup by id; a role with kb
+tools can find the full entry with a `kb_query` on its title, passing a `limit`
+(a member read without one returns slim rows and no content).
+
 ### Member-session tool calls
 
 A member session sees a reduced tool list. The allowlist lives in one

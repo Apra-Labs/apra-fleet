@@ -56,6 +56,42 @@ const ROLE_DOER = kbRoleConst('doer');
  */
 export const KB_MAX_KNOWLEDGE_ENTRIES = 12;
 
+/** Longest summary the knowledge block carries; longer ones are cut on a word boundary and end in "...". */
+export const KB_BLOCK_SUMMARY_MAX = 300;
+
+/** Source files listed per knowledge-block entry; the rest are counted in a trailing "+N more" item. */
+export const KB_BLOCK_SOURCE_FILES_MAX = 3;
+
+/**
+ * A summary capped at `max` chars (the "..." included), cut at the last
+ * whitespace before the cap. A summary with no usable break (one long token)
+ * is cut mid-word rather than overrunning the cap. Non-strings pass through.
+ *
+ * @param {unknown} summary
+ * @param {number} [max]
+ * @returns {unknown}
+ */
+export function capKbBlockSummary(summary, max = KB_BLOCK_SUMMARY_MAX) {
+    if (typeof summary !== 'string' || summary.length <= max) return summary;
+    const room = summary.slice(0, max - 3);
+    const brk = room.search(/\s\S*$/);
+    const cut = brk > max / 2 ? room.slice(0, brk) : room;
+    return cut.trimEnd() + '...';
+}
+
+/**
+ * The first `max` source files, followed by a "+N more" string when N more
+ * exist. Non-arrays pass through.
+ *
+ * @param {unknown} files
+ * @param {number} [max]
+ * @returns {unknown}
+ */
+export function trimKbBlockSourceFiles(files, max = KB_BLOCK_SOURCE_FILES_MAX) {
+    if (!Array.isArray(files) || files.length <= max) return files;
+    return [...files.slice(0, max), `+${files.length - max} more`];
+}
+
 /**
  * The injection rule for every engine-built knowledge block: only CONFIRMED
  * entries that sit outside any unresolved contradiction reach a role prompt.
@@ -3351,16 +3387,20 @@ export function kbKnowledgeBlock(entries, { captureChannel = true, source = 'pri
         + 'in your notes rather than bending your work to fit the entry.\n'
         + 'You do not need a kb_* tool to read these entries; they do not replace any kb_* lookup '
         + 'your role instructions call for. '
+        + 'A summary ending in "..." is cut short and a "+N more" item counts source files not '
+        + 'listed; if you have kb_query, a query on the entry title with a limit set can find the '
+        + 'full entry.\n'
         + captureLine
+        // Compact on purpose: no indentation, no confidence (always CONFIRMED
+        // here), capped summary, trimmed file list. Selection and order above
+        // are untouched.
         + wrapUntrustedBlock(label, JSON.stringify(
             injectable.map((e) => ({
-                confidence: e.confidence,
+                id: e.id,
                 title: e.title,
-                summary: e.summary,
-                source_files: e.source_files,
-            })),
-            null,
-            2
+                summary: capKbBlockSummary(e.summary),
+                source_files: trimKbBlockSourceFiles(e.source_files),
+            }))
         )),
     ];
 }
