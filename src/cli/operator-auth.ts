@@ -245,7 +245,7 @@ function defaultIo(io: OperatorIo): Required<Omit<OperatorIo, 'selfCommand'>> & 
 function spawnChild(command: string, args: string[], env: NodeJS.ProcessEnv,
   onStdout: (chunk: Buffer | string) => void, onStderr: (chunk: Buffer | string) => void): Promise<number> {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ['inherit', 'pipe', 'pipe'], env, shell: false });
+    const child = spawn(command, args, { stdio: ['inherit', 'pipe', 'pipe'], env, shell: false, windowsHide: true });
     child.stdout?.on('data', onStdout);
     child.stderr?.on('data', onStderr);
     child.on('error', err => reject(new OperatorAuthError(`apra-fleet: could not start '${command}': ${err.message}`)));
