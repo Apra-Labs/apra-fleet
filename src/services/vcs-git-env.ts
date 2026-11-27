@@ -28,6 +28,7 @@ import { isSafeGitCredentialScope } from '../os/os-commands.js';
 import { getAgentOS, getAgentShell } from '../utils/agent-helpers.js';
 import { listVcsCredentials } from './vcs-credential-record.js';
 import { logWarn } from '../utils/log-helpers.js';
+import { OPERATOR_SCOPE_URL, hasOperatorGithubCredential } from './operator-auth-record.js';
 
 /** The helpers to register for a member, in the order git should try them. */
 export function vcsGitHelperRegistrations(agent: Agent): GitCredentialHelperRegistration[] {
@@ -47,16 +48,35 @@ export function vcsGitHelperRegistrations(agent: Agent): GitCredentialHelperRegi
 }
 
 /**
+ * Scopes whose inherited helper list a member command must reset without
+ * registering anything: the operator's own GitHub helper
+ * (`apra-fleet operator-auth github`) sits on the global
+ * credential.https://github.com.helper key of THIS host, so a local member's
+ * git would otherwise fall through to it and silently push with the
+ * operator's installation-wide token. Only local members share that global
+ * config, and only once the operator helper is set up (before that, nothing
+ * changes for upgrading hosts). Skipped when the member's own helpers already
+ * reset exactly that scope.
+ */
+export function operatorIsolationResets(agent: Agent, helpers: GitCredentialHelperRegistration[]): string[] {
+  if (agent.agentType !== 'local') return [];
+  if (helpers.some(h => h.scopeUrl === OPERATOR_SCOPE_URL)) return [];
+  return hasOperatorGithubCredential() ? [OPERATOR_SCOPE_URL] : [];
+}
+
+/**
  * The statement to prepend to a member command so git uses this member's own
- * credential helpers; '' when the member has none. A record that cannot be
+ * credential helpers -- and never the operator's (operatorIsolationResets);
+ * '' when there is nothing to register or reset. A record that cannot be
  * expressed safely (it never can once recorded: provision_vcs_auth validates
  * the scope URL first) is logged and yields '' rather than a broken command.
  */
 export function vcsGitEnvPrefix(agent: Agent, cmds?: OsCommands): string {
   const helpers = vcsGitHelperRegistrations(agent);
-  if (helpers.length === 0) return '';
+  const resets = operatorIsolationResets(agent, helpers);
+  if (helpers.length === 0 && resets.length === 0) return '';
   try {
-    return (cmds ?? getOsCommands(getAgentOS(agent), getAgentShell(agent))).gitCredentialEnvPrefix(helpers, agent.id);
+    return (cmds ?? getOsCommands(getAgentOS(agent), getAgentShell(agent))).gitCredentialEnvPrefix(helpers, agent.id, resets);
   } catch (err) {
     logWarn('vcs_git_env', `git credential helpers not registered for this command: ${err instanceof Error ? err.message : String(err)}`, agent);
     return '';

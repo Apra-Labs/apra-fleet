@@ -10,6 +10,10 @@ import {
   _resetDoltStepDeps,
 } from '../src/cli/install.js';
 
+// Every seam call stubs the PATH dolt probe (no shadowing dolt) unless the test
+// passes its own, so no test reaches the host's real `where`/`which dolt`.
+const setDoltDeps = (o: any) => _setDoltStepDeps({ probePathDolt: () => null, ...o });
+
 // apra-fleet-ire.4 -- vitest coverage for how install.ts's dolt CLI install
 // step (wired in apra-fleet-ire.3) behaves end-to-end: graceful degradation
 // on a download failure, idempotence (zero download calls) when a working
@@ -92,7 +96,7 @@ describe('dolt CLI install step wiring (apra-fleet-ire.4)', () => {
   it('degrades gracefully: a download failure warns (not throws) and the summary reports "not available"', async () => {
     const downloadAndExtractDolt = vi.fn().mockRejectedValue(new Error('network unreachable'));
     const verifyDolt = vi.fn();
-    _setDoltStepDeps({ downloadAndExtractDolt, verifyDolt } as any);
+    setDoltDeps({ downloadAndExtractDolt, verifyDolt } as any);
 
     await expect(runInstall([])).resolves.toBeUndefined();
 
@@ -110,7 +114,7 @@ describe('dolt CLI install step wiring (apra-fleet-ire.4)', () => {
     makeFsMock(true); // a dolt binary already exists at DOLT_PATH
     const downloadAndExtractDolt = vi.fn();
     const verifyDolt = vi.fn().mockResolvedValue({ version: '2.2.0', serverOk: true });
-    _setDoltStepDeps({ downloadAndExtractDolt, verifyDolt } as any);
+    setDoltDeps({ downloadAndExtractDolt, verifyDolt } as any);
 
     await runInstall([]);
 
@@ -128,7 +132,7 @@ describe('dolt CLI install step wiring (apra-fleet-ire.4)', () => {
     const verifyDolt = vi.fn()
       .mockRejectedValueOnce(new Error('dolt: command not found')) // initial already-installed check fails
       .mockResolvedValueOnce({ version: '2.2.0', serverOk: true }); // post-(re)download check succeeds
-    _setDoltStepDeps({ downloadAndExtractDolt, verifyDolt } as any);
+    setDoltDeps({ downloadAndExtractDolt, verifyDolt } as any);
 
     await runInstall([]);
 
@@ -140,7 +144,7 @@ describe('dolt CLI install step wiring (apra-fleet-ire.4)', () => {
   });
 
   it('prints contiguous [n/total] step labels with the dolt step included', async () => {
-    _setDoltStepDeps({
+    setDoltDeps({
       downloadAndExtractDolt: vi.fn().mockResolvedValue(DOLT_PATH),
       verifyDolt: vi.fn().mockResolvedValue({ version: '2.2.0', serverOk: true }),
     } as any);
@@ -173,7 +177,7 @@ describe('dolt CLI install step wiring (apra-fleet-ire.4)', () => {
   it('never fails the install, and never leaves the step counter mid-sequence, when verifyDolt itself rejects', async () => {
     const downloadAndExtractDolt = vi.fn().mockResolvedValue(DOLT_PATH);
     const verifyDolt = vi.fn().mockRejectedValue(new Error('dolt sql-server crashed'));
-    _setDoltStepDeps({ downloadAndExtractDolt, verifyDolt } as any);
+    setDoltDeps({ downloadAndExtractDolt, verifyDolt } as any);
 
     await expect(runInstall([])).resolves.toBeUndefined();
 
@@ -185,5 +189,46 @@ describe('dolt CLI install step wiring (apra-fleet-ire.4)', () => {
     expect(logs).toMatch(/Dolt:\s+not available/);
     // Install must still reach and print the final Beads step, i.e. it did not hang/abort.
     expect(logs).toContain('Installing Beads task tracker...');
+  });
+
+  describe('shadowing PATH dolt', () => {
+    const run = async (probePathDolt: any) => {
+      makeFsMock(true);
+      const downloadAndExtractDolt = vi.fn();
+      const verifyDolt = vi.fn().mockResolvedValue({ version: '2.2.0', serverOk: true });
+      setDoltDeps({ downloadAndExtractDolt, verifyDolt, probePathDolt } as any);
+      await runInstall([]);
+      return {
+        downloadAndExtractDolt,
+        warns: warnSpy.mock.calls.map(c => c.join(' ')).join('\n'),
+        logs: logSpy.mock.calls.map(c => c.join(' ')).join('\n'),
+      };
+    };
+
+    it('warns with both versions, both locations and the fix, carries it in the summary, and never touches the PATH copy', async () => {
+      const probePathDolt = vi.fn().mockReturnValue({ location: '/home/u/bin/dolt', version: '2.1.9' });
+      const { warns, logs, downloadAndExtractDolt } = await run(probePathDolt);
+      expect(probePathDolt).toHaveBeenCalledWith(DOLT_PATH);
+      expect(warns).toContain('[!] Dolt on PATH differs');
+      expect(warns).toContain('2.1.9');
+      expect(warns).toContain('2.2.0');
+      expect(warns).toContain('/home/u/bin/dolt');
+      expect(warns).toContain('remove or update');
+      expect(logs).toMatch(/Dolt:\s+2\.2\.0 \(WARNING: PATH dolt 2\.1\.9/);
+      expect(downloadAndExtractDolt).not.toHaveBeenCalled();
+      for (const fn of [fs.rmSync, fs.copyFileSync, fs.writeFileSync, fs.renameSync, fs.unlinkSync]) {
+        for (const call of vi.mocked(fn).mock.calls) expect(String(call[0])).not.toContain('/home/u/bin/dolt');
+      }
+    });
+
+    it('prints no shadowing warning when there is no other dolt on PATH, or it matches the pin', async () => {
+      for (const probe of [null, { location: '/usr/local/bin/dolt', version: '2.2.4' }]) {
+        warnSpy.mockClear();
+        logSpy.mockClear();
+        const { warns, logs } = await run(vi.fn().mockReturnValue(probe));
+        expect(warns).not.toContain('Dolt on PATH differs');
+        expect(logs).toMatch(/Dolt:\s+2\.2\.0\s*$/m);
+      }
+    });
   });
 });

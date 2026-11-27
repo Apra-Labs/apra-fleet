@@ -164,6 +164,29 @@
       }
     },
     {
+      "id": "09bc449f-56ba-47df-8b8a-8f68ea94ae83",
+      "type": "learning",
+      "title": "An empty helper on credential.<url>.helper resets system and global credential.helper",
+      "summary": "Git builds the credential helper list across system then global config, over both credential.helper and the URL-scoped key. An empty value on the URL-scoped key resets the list, so a system helper such as Git Credential Manager is skipped for that host. operator-auth github relies on this: it puts the reset entry first.",
+      "symbols": [
+        "operatorAuthGithub",
+        "effectiveHelpersAhead",
+        "posixLegacyHelperUnset"
+      ],
+      "source_files": [
+        "src/cli/operator-auth.ts",
+        "src/os/linux.ts",
+        "tests/operator-auth-legacy-helper.test.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-25T06:19:38.680Z",
+      "source_file_hashes": {
+        "src/cli/operator-auth.ts": "51efe16a4c628838251b10e2e184cf100684918f",
+        "src/os/linux.ts": "1cafc003b3d76b86af2a5b8fb95712ef661754c2",
+        "tests/operator-auth-legacy-helper.test.ts": "5a63982057fa20f6818ce5950494fc1b6e4228a4"
+      }
+    },
+    {
       "id": "0b6a7734-3224-4b5e-b407-6353af651e29",
       "type": "learning",
       "title": "Generic-boundary guard scans fleet-sprint runtime strings, so error messages must not cite apra-fleet source paths",
@@ -5136,6 +5159,32 @@
       ],
       "confidence": "CONFIRMED",
       "updated_at": "2026-10-06T17:05:07.548Z"
+    },
+    {
+      "id": "f33afbfc-238f-4f6d-bf1c-80e8a4b8bd9e",
+      "type": "knowledge",
+      "title": "Operator git-credential helper mints App tokens from files, no server needed",
+      "summary": "src/cli/operator-auth.ts provides apra-fleet git-credential and operator-auth github/exec. It mints GitHub App installation tokens from FLEET_DIR/git-config.json plus the stored PEM, with no running fleet server, and caches them owner-only until 5 minutes before expiry.",
+      "symbols": [
+        "runGitCredential",
+        "runOperatorAuth",
+        "getOperatorToken",
+        "operatorHelperValue",
+        "powershellLegacyHelperUnset",
+        "posixLegacyHelperUnset"
+      ],
+      "source_files": [
+        "src/cli/operator-auth.ts",
+        "src/os/windows.ts",
+        "src/os/linux.ts"
+      ],
+      "confidence": "CONFIRMED",
+      "updated_at": "2026-11-25T05:15:00.958Z",
+      "source_file_hashes": {
+        "src/cli/operator-auth.ts": "51efe16a4c628838251b10e2e184cf100684918f",
+        "src/os/linux.ts": "1cafc003b3d76b86af2a5b8fb95712ef661754c2",
+        "src/os/windows.ts": "bb9ba216b35323e462931ad393db763a66ff58c4"
+      }
     },
     {
       "id": "f3a5a58e-1d41-4ddd-8705-2b4e1985deab",

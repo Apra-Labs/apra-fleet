@@ -209,9 +209,12 @@ export interface OsCommands {
    * given fleet helpers for their scopes, through the GIT_CONFIG_PARAMETERS
    * environment variable (the form `git -c` itself uses). Per scope an empty
    * value first resets the inherited helper list, then the helpers follow in
-   * the given order -- git uses the first that answers. '' for no helpers.
+   * the given order -- git uses the first that answers. `resetScopes` are
+   * scopes that get ONLY the empty reset value, placed before every helper
+   * group (an empty value clears the whole list built so far, so a reset after
+   * a member group would wipe it). '' for no helpers and no resets.
    */
-  gitCredentialEnvPrefix(helpers: GitCredentialHelperRegistration[], memberId: string): string;
+  gitCredentialEnvPrefix(helpers: GitCredentialHelperRegistration[], memberId: string, resetScopes?: string[]): string;
   /**
    * Runs the credential helper gitCredentialHelperWrite() deployed, so its
    * `password=<token>` line reaches stdout (apra-fleet-3swo.7.3). `path` is the
@@ -429,6 +432,20 @@ export function groupGitCredentialHelpers(helpers: GitCredentialHelperRegistrati
  * Returns one GIT_CONFIG_PARAMETERS word for a helper at `<home>/<file>`,
  * given `home2` (the twice-escaped home, as the member shell expands it).
  */
+/**
+ * The GIT_CONFIG_PARAMETERS words that only reset `scopes` (validated like a
+ * helper scope), in order. Each needs no escaping inside the member shell's
+ * double quotes.
+ */
+export function gitResetParamWords(scopes: string[] | undefined): string[] {
+  return (scopes ?? []).map(scopeUrl => {
+    if (!isSafeGitCredentialScope(scopeUrl)) {
+      throw new Error(`Refusing to reset git credential helpers for unsafe scope URL '${scopeUrl}'.`);
+    }
+    return `'credential.${scopeUrl}.helper='`;
+  });
+}
+
 export function gitHelperParamWord(scopeUrl: string, home2: string, file: string): string {
   return `'credential.${scopeUrl}.helper=!'\\''${home2}/${file}'\\'''`;
 }

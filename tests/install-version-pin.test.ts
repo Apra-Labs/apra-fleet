@@ -13,6 +13,10 @@ import {
 import { BEADS_VERSION, BEADS_PACKAGE } from '../src/cli/beads-pin.js';
 import { DOLT_VERSION } from '../src/cli/dolt-install.js';
 
+// Every seam call stubs the PATH dolt probe (no shadowing dolt), so no test
+// reaches the host's real `where`/`which dolt`.
+const setDoltDeps = (o: any) => _setDoltStepDeps({ probePathDolt: () => null, ...o });
+
 // The installer's bd / dolt version pin, through runInstall: os/fs/child_process
 // are mocked (in-memory, fake HOME under /mock), so nothing real is installed,
 // downloaded or written. bd answers through the mocked execFileSync; the Dolt
@@ -78,7 +82,7 @@ beforeEach(() => {
   _setSeaOverride(false);
   _setManifestOverride({ version: '0.1.0', hooks: {}, scripts: {}, skills: {}, fleetSkills: {}, agents: {}, workflows: {} } as any);
   process.env.APRA_FLEET_ENABLE_DOLT_INSTALL = '1';
-  _setDoltStepDeps({
+  setDoltDeps({
     downloadAndExtractDolt: vi.fn().mockResolvedValue(DOLT_PATH),
     verifyDolt: vi.fn().mockResolvedValue({ version: PINNED_DOLT, serverOk: true }),
   } as any);
@@ -146,7 +150,7 @@ describe('install: dolt version pin', () => {
     const verifyDolt = vi.fn()
       .mockResolvedValueOnce({ version: '2.1.0', serverOk: true })
       .mockResolvedValueOnce({ version: PINNED_DOLT, serverOk: true });
-    _setDoltStepDeps({ downloadAndExtractDolt, verifyDolt } as any);
+    setDoltDeps({ downloadAndExtractDolt, verifyDolt } as any);
     await runInstall([]);
     expect(downloadAndExtractDolt).toHaveBeenCalledTimes(1);
     expect(downloadAndExtractDolt).toHaveBeenCalledWith(BIN_DIR);
@@ -157,7 +161,7 @@ describe('install: dolt version pin', () => {
 
   it('a failed replacement reports found/expected/fix loudly, never a silent skip', async () => {
     existing.add(DOLT_PATH);
-    _setDoltStepDeps({
+    setDoltDeps({
       downloadAndExtractDolt: vi.fn().mockRejectedValue(new Error('network unreachable')),
       verifyDolt: vi.fn().mockResolvedValue({ version: '2.1.0', serverOk: true }),
     } as any);
@@ -177,7 +181,7 @@ describe('install: dolt version pin', () => {
 
   it('a downloaded dolt that still reports another major.minor is a loud mismatch', async () => {
     existing.add(DOLT_PATH);
-    _setDoltStepDeps({
+    setDoltDeps({
       downloadAndExtractDolt: vi.fn().mockResolvedValue(DOLT_PATH),
       verifyDolt: vi.fn().mockResolvedValue({ version: '2.1.0', serverOk: true }),
     } as any);

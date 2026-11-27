@@ -55,11 +55,20 @@ describe('isRetryable', () => {
 });
 
 describe('authErrorAdvice', () => {
-  it('includes member name, /login, and provision_llm_auth', () => {
-    const advice = authErrorAdvice('my-member');
+  it('remote: includes member name, /login, and provision_llm_auth', () => {
+    for (const advice of [authErrorAdvice('my-member'), authErrorAdvice('my-member', 'remote')]) {
+      expect(advice).toContain('my-member');
+      expect(advice).toContain('/login');
+      expect(advice).toContain('provision_llm_auth');
+    }
+  });
+
+  it('local: names an interactive login on this host and never mentions provision_llm_auth', () => {
+    const advice = authErrorAdvice('my-member', 'local');
     expect(advice).toContain('my-member');
-    expect(advice).toContain('/login');
-    expect(advice).toContain('provision_llm_auth');
+    expect(advice).toContain('interactively');
+    expect(advice).toContain('on this host');
+    expect(advice).not.toContain('provision_llm_auth');
   });
 });
 

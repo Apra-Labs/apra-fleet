@@ -558,6 +558,8 @@ async function runDegradeSteps(ctx, policy, err, errorClass) {
  * must say so explicitly before a dispatch is retried on it.
  * @param {unknown} result
  */
+const DEFAULT_LLM_AUTH_HEAL_CAUSE = 'provision_llm_auth did not heal the LLM auth failure';
+
 function normalizeLlmAuthHealOutcome(result) {
     if (result === true) return { healed: true };
     if (result && typeof result === 'object' && result.healed === true) return { healed: true };
@@ -565,7 +567,7 @@ function normalizeLlmAuthHealOutcome(result) {
     return {
         healed: false,
         reason: typeof o.reason === 'string' && o.reason ? o.reason : 'not_healed',
-        cause: typeof o.cause === 'string' && o.cause ? o.cause : 'provision_llm_auth did not heal the LLM auth failure',
+        cause: typeof o.cause === 'string' && o.cause ? o.cause : DEFAULT_LLM_AUTH_HEAL_CAUSE,
         remedy: typeof o.remedy === 'string' && o.remedy ? o.remedy : LLM_AUTH_SELF_HEAL_REMEDY,
     };
 }
@@ -585,6 +587,12 @@ async function healLlmAuthOrThrow(ctx, { member, roleLabel, err, throwOnFail = t
         member, label: `${roleLabel} dispatch`, error: err.message,
     }));
     if (outcome.healed) return true;
+    // provision_llm_auth skips local members, so a local member's remedy (and
+    // the default cause) never tells the operator to run it.
+    if (await resolveKindSafe(ctx, member) === 'local') {
+        outcome.remedy = llmAuthFixText('local');
+        if (outcome.cause === DEFAULT_LLM_AUTH_HEAL_CAUSE) outcome.cause = 'the LLM auth failure was not healed';
+    }
     const message = `${roleLabel} dispatch threw a non-retryable error (auth): ${err.message} -- `
         + `LLM auth self-heal failed for member '${member}': ${outcome.cause}. Not retrying. Remedy: ${outcome.remedy}.`;
     ctx.log(message);
@@ -646,6 +654,23 @@ async function healLlmAuthOrThrow(ctx, { member, roleLabel, err, throwOnFail = t
  *                    attempts:number, resumesIssued:number,
  *                    stepResults:Record<string,any>, validation:any}>}
  */
+const LLM_AUTH_HEAL_FAILED_MARKER = 'LLM auth heal failed';
+
+/** The LLM-auth fix wording for a member kind. provision_llm_auth skips local members, so it is remote-only. */
+export function llmAuthFixText(memberKind) {
+    return memberKind === 'local'
+        ? 'log in again interactively in the LLM CLI on this host (for Claude: /login); or provision an API key'
+        : 're-login on the source machine with /login, then provision_llm_auth; or provision an API key';
+}
+
+async function resolveKindSafe(ctx, member) {
+    try {
+        return typeof ctx.memberKind === 'function' ? await ctx.memberKind(member) : 'remote';
+    } catch {
+        return 'remote';
+    }
+}
+
 export async function dispatchRole(ctx, roleName, opts = {}) {
     // Destructured so this module's ONE dispatch reads `agent(` -- the literal
     // token dispatch-safety-guard.mjs and inline-ladder-guard.mjs scan for. A
@@ -1379,17 +1404,18 @@ export async function dispatchRole(ctx, roleName, opts = {}) {
                         continue;
                     }
                 }
+                const authFix = llmAuthFixText(await resolveKindSafe(ctx, member));
                 ctx.log(
                     `${roleLabel} dispatch threw a non-retryable error (auth/trust): ${err.message}. Aborting ` +
-                    `retries -- fix member '${member}' credentials/trust and re-run (for an LLM auth failure: re-login on the source machine with /login, then provision_llm_auth; or provision an API key).`
+                    `retries -- fix member '${member}' credentials/trust and re-run (for an LLM auth failure: ${authFix}).`
                 );
                 // A ladder whose own failure legitimately fails the whole
                 // sprint propagates instead of degrading: with the dispatch
                 // channel walled off there is no judgement to fabricate.
                 if (retry.rethrowsUnhealedNonRetryable) {
                     if (isAuthDispatchError(err) && err && typeof err.message === 'string'
-                        && !err.message.includes('provision_llm_auth')) {
-                        err.message += ` [LLM auth heal failed for member '${member}': re-login on the source machine with /login, then provision_llm_auth; or provision an API key]`;
+                        && !err.message.includes(LLM_AUTH_HEAL_FAILED_MARKER)) {
+                        err.message += ` [${LLM_AUTH_HEAL_FAILED_MARKER} for member '${member}': ${authFix}]`;
                     }
                     throw err;
                 }

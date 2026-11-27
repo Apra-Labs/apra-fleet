@@ -1,6 +1,6 @@
 import { execSync } from 'node:child_process';
 import type { OsCommands, ProviderAdapter, PromptOptions, UnsetEnvOptions } from './os-commands.js';
-import { escapeDoubleQuoted, escapeGrepPattern, sanitizeSessionId, GIT_LS_REMOTE_OK_MARKER, FLEET_ENV_MARKER, FLEET_TASK_PROMPT_FILE, unsetEnvSedExpr, envSourceLine, envSourceLineSedExpr, FLEET_ENV_DIR, gitCredentialHelperStem, groupGitCredentialHelpers, gitHelperParamWord } from './os-commands.js';
+import { escapeDoubleQuoted, escapeGrepPattern, sanitizeSessionId, GIT_LS_REMOTE_OK_MARKER, FLEET_ENV_MARKER, FLEET_TASK_PROMPT_FILE, unsetEnvSedExpr, envSourceLine, envSourceLineSedExpr, FLEET_ENV_DIR, gitCredentialHelperStem, groupGitCredentialHelpers, gitHelperParamWord, gitResetParamWords } from './os-commands.js';
 import type { GitCredentialHelperRegistration } from './os-commands.js';
 import { escapeShellArg } from '../utils/shell-escape.js';
 import { assertAuthorizedKeyMatch } from './ssh-key-match.js';
@@ -412,13 +412,16 @@ export class LinuxCommands implements OsCommands {
     return '';
   }
 
-  gitCredentialEnvPrefix(helpers: GitCredentialHelperRegistration[], memberId: string): string {
+  gitCredentialEnvPrefix(helpers: GitCredentialHelperRegistration[], memberId: string, resetScopes?: string[]): string {
     const groups = groupGitCredentialHelpers(helpers, memberId);
-    if (groups.length === 0) return '';
+    const resets = gitResetParamWords(resetScopes);
+    if (groups.length === 0) {
+      return resets.length === 0 ? '' : `export GIT_CONFIG_PARAMETERS="${resets.join(' ')}"; `;
+    }
     // _fleet_gh is the member home, single-quote-escaped twice (see
     // gitHelperParamWord). The words sit in the member shell's double quotes
     // so ${_fleet_gh} expands; inside them '\'' is literal text.
-    const words: string[] = [];
+    const words: string[] = [...resets];
     for (const g of groups) {
       words.push(`'credential.${g.scopeUrl}.helper='`);
       for (const stem of g.stems) {

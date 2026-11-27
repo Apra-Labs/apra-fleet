@@ -86,6 +86,39 @@ export async function resolveMemberTarget({ fleetApi, member, log = () => {}, un
     }
 }
 
+// memberName -> 'local' | 'remote', cached like the OS/shell: a member's kind
+// never changes mid-sprint. Resolved from member_detail's `type`; an
+// unresolvable kind degrades to 'remote' (the historical wording) and is not
+// cached.
+const memberKindCache = new Map();
+
+export function clearMemberKindCache() {
+    memberKindCache.clear();
+}
+
+// @param {{ fleetApi?: object, member: string, log?: Function }} opts
+// @returns {Promise<'local'|'remote'>}
+export async function resolveMemberKind({ fleetApi, member, log = () => {} }) {
+    if (memberKindCache.has(member)) return memberKindCache.get(member);
+    try {
+        if (!fleetApi || typeof fleetApi.memberDetail !== 'function') throw new Error('no fleetApi.memberDetail() injected');
+        const res = await fleetApi.memberDetail({ member_name: member, format: 'json' });
+        const text = typeof res === 'string'
+            ? res
+            : (res && Array.isArray(res.content) && res.content[0] && typeof res.content[0].text === 'string') ? res.content[0].text : '';
+        const parsed = JSON.parse(text);
+        const type = parsed && typeof parsed.type === 'string' ? parsed.type.trim().toLowerCase() : '';
+        if (type === 'local' || type === 'remote') {
+            memberKindCache.set(member, type);
+            return type;
+        }
+        throw new Error('member_detail response carried no "type" field');
+    } catch (err) {
+        log(`Could not resolve the kind (local/remote) of member '${member}' from member_detail (${err && err.message ? err.message : err}); assuming remote for auth-failure wording.`);
+        return 'remote';
+    }
+}
+
 // Back-compat wrapper: existing callers (and tests) that only need the OS
 // string keep working unchanged. Resolves and caches both os and shell (see
 // resolveMemberTarget above); callers that also need the shell (e.g. the VCS

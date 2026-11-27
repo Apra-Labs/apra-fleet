@@ -56,7 +56,7 @@ import {
 } from './git-topology.mjs';
 import { getSeCommands } from './se-os-commands.mjs';
 import { resultText, toolErrorText } from './mcp-result.mjs';
-import { resolveMemberTarget, resolveMemberOs, clearMemberOsCache } from './member-target.mjs';
+import { resolveMemberTarget, resolveMemberOs, clearMemberOsCache, resolveMemberKind } from './member-target.mjs';
 import { createMemberCall, buildRemoteCallCommand, MemberCallError, MEMBER_CALL_ARGS_DIR } from './member-call.mjs';
 import { createDispatchAccounting } from './dispatch-accounting.mjs';
 import { lowerQuality, logLowerQualityWarn } from './lower-quality.mjs';
@@ -2301,6 +2301,12 @@ async function runSprintCycle(context) {
         getMemberForRole,
         memberSessionGuard,
         onLlmAuthFailure,
+        // 'local' | 'remote' for a member: picks the right LLM-auth fix wording.
+        memberKind: (member) => resolveMemberKind({
+            fleetApi: (args && typeof args.callTool === 'function') ? sprintScopedFleetApi({ callTool: args.callTool, log }) : undefined,
+            member,
+            log,
+        }),
         // apra-fleet-hzeb.4.2: the usage-limit pause/resume/re-probe hook the
         // engine arms for a role whose retry.usageLimitPause is set.
         onUsageLimit,
