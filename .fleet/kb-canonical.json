@@ -181,9 +181,9 @@
       "confidence": "CONFIRMED",
       "updated_at": "2026-11-25T06:19:38.680Z",
       "source_file_hashes": {
-        "src/cli/operator-auth.ts": "7fab7f59b37cc951071fce79915688780ca80d0c",
-        "src/os/linux.ts": "1ee4cec7322a0fc89b5c1e8be9e9dfe20aa31178",
-        "tests/operator-auth-legacy-helper.test.ts": "6746fd69fc357250e3615d6dc297003f372f9266"
+        "src/cli/operator-auth.ts": "1ffc346cbd2e42a404fa8b554bf9fec982031c4b",
+        "src/os/linux.ts": "1cafc003b3d76b86af2a5b8fb95712ef661754c2",
+        "tests/operator-auth-legacy-helper.test.ts": "5a63982057fa20f6818ce5950494fc1b6e4228a4"
       }
     },
     {
@@ -5181,9 +5181,9 @@
       "confidence": "CONFIRMED",
       "updated_at": "2026-11-25T05:15:00.958Z",
       "source_file_hashes": {
-        "src/cli/operator-auth.ts": "03c4210ea2178b8bab0d5e4bcf297dbd33e5fd6d",
-        "src/os/linux.ts": "1ee4cec7322a0fc89b5c1e8be9e9dfe20aa31178",
-        "src/os/windows.ts": "12bc6ebbbe03b86a1816d47968e90863162b970b"
+        "src/cli/operator-auth.ts": "1ffc346cbd2e42a404fa8b554bf9fec982031c4b",
+        "src/os/linux.ts": "1cafc003b3d76b86af2a5b8fb95712ef661754c2",
+        "src/os/windows.ts": "bb9ba216b35323e462931ad393db763a66ff58c4"
       }
     },
     {
