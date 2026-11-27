@@ -28,7 +28,7 @@ import {
   QUOTE_LED_CASES, verifyEcho, memberWorkFolder, baselineInstallArgs, supervisorStartCommand, supervisorStartOutcome,
   CHECK_BIN, NODE_PATH_COMMAND, SUPERVISOR_COPY_DIR, wmiLaunchCommand, launchedPid, standInSprintCommandLine,
   sprintLockCommand, sprintStopCommand, fleetSeCheckCommand, waitSupervisorUpCommand, supervisorStopCommand,
-  parseFleetSe, idleSupervisorStoppedNote,
+  parseFleetSe, idleSupervisorStoppedNote, launchFailureLine,
 } from './lib/commands.mjs';
 import { PASS_IDS, REFUSAL_CODE, compareSnapshots, planPasses, resolveBaseline } from './lib/scenarios.mjs';
 import { assertInside, resolveSandbox, sandboxEnv } from './lib/sandbox.mjs';
@@ -131,7 +131,7 @@ async function realRun(o) {
   const reg = await call('register_member', {
     friendly_name: 'member-host', member_type: 'remote', host: '127.0.0.1', port: info.port ?? 22,
     username: info.user, auth_type: 'key', key_path: info.keyPath, work_folder: memberWorkFolder(info), llm_provider: 'claude',
-    fleet_install: 'skip',
+    fleet_install: 'skip', vcs_provider: 'none',
   });
   const idMatch = /([0-9a-f]{8}-[0-9a-f-]{27})/i.exec(reg.text);
   if (reg.isError || !idMatch) throw new Error(`register_member failed: ${reg.text.slice(0, 300)}`);
@@ -265,7 +265,7 @@ async function realRun(o) {
             const f = parseFleetSe(w.stdout);
             rec('RFS', 'rfs-sprint-started', 'stand-in sprint + lock, fleet-se-check', f.sprints.includes(sprintPid) ? 0 : 1, '', tail(out(w)));
           } else {
-            rec('RFS', 'rfs-sprint-started', 'stand-in sprint launch', 1, '', tail(out(l)));
+            rec('RFS', 'rfs-sprint-started', 'stand-in sprint launch', 1, '', launchFailureLine(out(l)));
           }
         }
         // Taken with everything running, right before the refused attempt.

@@ -368,6 +368,9 @@ describe('member-host baseline install and supervisor start (RFS / RBS)', () => 
     expect(supervisorStartOutcome('LAUNCHED rc=0 pid=5\r\n', seen)).toMatchObject({ exit: 0 });
     expect(supervisorStartOutcome('LAUNCHED rc=0 pid=5', 'FLEET_SE_CHECK ok\n').exit).toBe(1); // died with the session
     expect(supervisorStartOutcome('LAUNCHED rc=9 pid=0', seen).exit).toBe(1);
+    // A refused WMI call reports the PowerShell message line, not its CategoryInfo tail.
+    const denied = 'Invoke-CimMethod : Access denied\n+ CategoryInfo : PermissionDenied\n+ FullyQualifiedErrorId : HRESULT 0x80041003\n';
+    expect(supervisorStartOutcome(denied).observed).toBe('Invoke-CimMethod : Access denied');
   });
 
   it('parses fleet-se-check and recognizes the replace-full idle-supervisor note', () => {

@@ -169,8 +169,20 @@ export function supervisorStartOutcome(launchText, checkText = '') {
   const found = parseFleetSe(checkText).supervisor;
   return {
     exit: pid && found ? 0 : 1,
-    observed: pid ? `launched pid ${pid}; fleet-se-check: ${found ? `supervisor pid=${found.pid} port=${found.port}` : String(checkText ?? '').trim().slice(-200) || '(none)'}` : t.trim().slice(-200),
+    observed: pid ? `launched pid ${pid}; fleet-se-check: ${found ? `supervisor pid=${found.pid} port=${found.port}` : String(checkText ?? '').trim().slice(-200) || '(none)'}` : launchFailureLine(t),
   };
+}
+
+/**
+ * Why a wmiLaunchCommand printed no pid: the PowerShell error MESSAGE line
+ * (the tail of a PowerShell error is CategoryInfo / FullyQualifiedErrorId,
+ * which hides it), else the LAUNCHED line with its WMI return code, else the tail.
+ */
+export function launchFailureLine(text) {
+  const lines = String(text ?? '').replace(/\r/g, '').split('\n').map(l => l.trim()).filter(Boolean);
+  const pick = lines.find(l => /^LAUNCHED rc=/.test(l))
+    ?? lines.find(l => /Invoke-CimMethod|denied|not recognized|cannot|error/i.test(l) && !/^(\+|CategoryInfo|FullyQualifiedErrorId)/.test(l));
+  return (pick ?? lines.slice(-3).join(' | ') ?? '').slice(0, 300) || '(no output)';
 }
 
 /** A long-lived stand-in for a running sprint (no LLM): node idling, its command line tagged as fleet-sprint. */
