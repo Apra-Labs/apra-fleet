@@ -1,0 +1,151 @@
+[
+  {
+    "id": "b306ff5c-dfd4-42a4-8834-2ed573d0fae6",
+    "type": "knowledge",
+    "title": "check-kb-bible-drift: owned entries judged against the merge-base, one-line restamp, git-decided uncommitted, run in CI",
+    "summary": "scripts/check-kb-bible-drift.mjs compares the bible committed at HEAD with the one at merge-base(HEAD, --base). An entry is branch-owned if that base bible lacks it or has a different version, so a base that moved after the last merge never makes the branch own entries it did not touch. Owned entries whose cited files' HEAD blob ids differ from source_file_hashes make it exit 1 and print the exact --restamp command; --restamp refuses only when git diff HEAD shows a real change to the bible (CRLF checkouts are fine) and writes LF exporter format. ci.yml runs it on pull requests.",
+    "source_files": [
+      "scripts/check-kb-bible-drift.mjs",
+      "tests/check-kb-bible-drift.test.ts",
+      "docs/kb-bible-correctness.md",
+      ".github/workflows/ci.yml"
+    ],
+    "confidence": "CONFIRMED"
+  },
+  {
+    "id": "a3fdac5d-31b6-4b87-9456-10d813aa095b",
+    "type": "knowledge",
+    "title": "Only roles with a kb-apply post-result step have their kb_captures recorded; the KB block no longer promises it to others",
+    "summary": "A dispatched role kb_captures output is applied only if its role-policies.mjs row lists kb-apply in postResult; planner, plan-reviewer, scoped-replan roles, deployer, integ-test-runner and regression-test-runner have none. The agent() wrapper now passes captureChannel=agentTypeAppliesKbCaptures(agentType) to kbKnowledgeBlock, so those roles are told to note findings in their own report instead of being promised the orchestrator records kb_captures; a persona shared across rows counts as no channel unless every row has kb-apply.",
+    "source_files": [
+      "packages/apra-fleet-se/fleet-sprint/role-policies.mjs",
+      "packages/apra-fleet-se/fleet-sprint/kb.mjs",
+      "packages/apra-fleet-se/fleet-sprint/runner.js",
+      "src/providers/claude.ts",
+      "packages/apra-fleet-se/apra-pm/agents/planner.md"
+    ],
+    "confidence": "CONFIRMED"
+  },
+  {
+    "id": "cbb5d879-53de-42b9-a5f2-d75e223682ef",
+    "type": "knowledge",
+    "title": "Post-harvest bible recheck reports unreachable maintainer ids as unchecked with a generic WARN",
+    "summary": "With noReviewLeft, recheckSprintBible removes ids that never reached kb_bible_commit from the confirmations queue and reports them in out.unchecked with a WARN saying the entries may carry a drifted basis and need re-checking before the branch merges. The WARN names no repository-specific script (the engine is generic). Removing them keeps the end-of-run pending-confirmations warning from calling them unpublished, since they are already on the branch bible.",
+    "source_files": [
+      "packages/apra-fleet-se/fleet-sprint/kb.mjs",
+      "packages/apra-fleet-se/fleet-sprint/phases/harvest.mjs"
+    ],
+    "confidence": "CONFIRMED"
+  },
+  {
+    "id": "7fe61086-2df7-44bf-9d40-a16d6081c1f5",
+    "type": "learning",
+    "title": "Setup shell's $$ is unsafe to record for liveness checks under Git Bash on Windows",
+    "summary": "scripts/sandbox-lock.mjs's acquire CLI previously recorded the Setup shell's self-reported $$, which under Git Bash on Windows is an MSYS-internal pid invisible to defaultDeps.isAlive's native process.kill(pid,0) check -- fixed by having the CLI record its own process.ppid instead, since the CLI process is itself a direct child of the Setup shell and process.ppid always resolves in the native OS pid namespace.",
+    "source_files": [
+      "scripts/sandbox-lock.mjs",
+      "tests/sandbox-lock.test.ts",
+      "regression-test-playbook.md"
+    ],
+    "confidence": "CONFIRMED"
+  },
+  {
+    "id": "8313d623-f215-45d8-86d0-ec5683c9e197",
+    "type": "knowledge",
+    "title": "New fleet-sprint *.mjs/*.js files must be registered in GUARDED_MODULES or the apra-fleet-se suite fails",
+    "summary": "Every *.mjs/*.js file under packages/apra-fleet-se/fleet-sprint/ (recursive) must be listed in GUARDED_MODULES or GUARD_REGISTRATION_EXEMPT in fleet-sprint/guarded-modules.mjs. guarded-modules-coverage.test.mjs enforces this. A miss makes CI's \"Run tests\" exit 1 while every vitest and node --test summary still shows 0 failures; the only visible signal is the line \"> apra-fleet-se suite FAILED (exit 1)\".",
+    "source_files": [
+      "packages/apra-fleet-se/fleet-sprint/guarded-modules.mjs",
+      "packages/apra-fleet-se/test/guarded-modules-coverage.test.mjs",
+      "scripts/run-all-tests.mjs"
+    ],
+    "confidence": "CONFIRMED"
+  },
+  {
+    "id": "1be49eaa-30f9-4ae0-917e-5b98d3d37eeb",
+    "type": "knowledge",
+    "title": "bd prints literal JSON null, not [], for an empty dolt remote list",
+    "summary": "`bd dolt remote list --json` emits the JSON literal null when no Dolt remotes are configured. parseDoltRemoteList maps that to [] before its non-array guard, so an unwired repo reads as \"no remotes\" rather than a parse error; every other non-array shape still throws. Without the null branch, checkDoltRemoteAbsent returns ok:false (\"could not parse\") for a repo that is simply not wired to a Dolt remote.",
+    "source_files": [
+      "scripts/check-sandbox-sync-remote.mjs",
+      "tests/check-sandbox-sync-remote.test.ts"
+    ],
+    "confidence": "CONFIRMED"
+  },
+  {
+    "id": "71323701-67db-4aa8-b7ce-858fb5e2aea7",
+    "type": "knowledge",
+    "title": "Member mixed-tier KB read: bible half first, per-side limit, own CONFIRMED excluded",
+    "summary": "getMemberSplitRead (kb-self.ts) splits a MEMBER tier list naming CONFIRMED plus another tier: CONFIRMED from the checkout bible view plus untagged global, other tiers from the per-repo DB plus global with owner tag member:<uuid>. kb_query merges bible-first per side (project, global) and limits per side, so l1_results can exceed limit; own CONFIRMED rows in the per-repo DB are never returned.",
+    "source_files": [
+      "src/services/knowledge/kb-self.ts",
+      "src/tools/kb-query.ts",
+      "src/tools/kb-list.ts"
+    ],
+    "confidence": "CONFIRMED"
+  },
+  {
+    "id": "e8eef38a-b7e3-45e4-b6e5-87941d2a40e8",
+    "type": "knowledge",
+    "title": "Lane order ignores containers: lowerOrderLaneMates is the single lane-mate rule",
+    "summary": "beads-scope.mjs lowerOrderLaneMates computes a bead's open lower-order lane-mates (same metadata.streak, lower finite streakOrder) and never counts a container (any bead that is the .parent of another bead in the list, per containerIdsOf). unmetPrerequisites, partitionReadyByGoal and worklists.mjs holdBackByLaneOrder all call it; classifyBlockedReport inherits it via unmetPrerequisites.",
+    "source_files": [
+      "packages/apra-fleet-se/fleet-sprint/beads-scope.mjs",
+      "packages/apra-fleet-se/fleet-sprint/worklists.mjs",
+      "packages/apra-fleet-se/fleet-sprint/runner.js",
+      "packages/apra-fleet-se/test/lane-container-order.test.mjs",
+      "packages/apra-fleet-se/test/mock-sprint-lane-container-order.test.mjs"
+    ],
+    "confidence": "CONFIRMED"
+  },
+  {
+    "id": "5d5b2883-cd63-43e3-9c4b-cd2f446350d2",
+    "type": "knowledge",
+    "title": "A post-harvest drop of an entry this branch alone added is removed with no tombstone",
+    "summary": "After recheckSprintBible(noReviewLeft) commits a drift withdrawal, liftOwnTombstones reads the bible at the merge-base (createBaseBibleIds in runner.js) and queues a restore for each dropped id the base bible does not carry, so the withdrawn tombstone does not block that id from re-merging later. An id the base carries keeps its withdrawal. An unreadable base keeps every withdrawal.",
+    "source_files": [
+      "packages/apra-fleet-se/fleet-sprint/kb.mjs",
+      "packages/apra-fleet-se/fleet-sprint/runner.js",
+      "packages/apra-fleet-se/test/mock-sprint-kb-post-harvest-recheck.test.mjs"
+    ],
+    "confidence": "CONFIRMED"
+  },
+  {
+    "id": "96a63862-eb7a-43f3-8352-4cd686412d43",
+    "type": "knowledge",
+    "title": "gitRepos is an access list; only a single URL-shaped entry is a usable origin",
+    "summary": "agent.gitRepos is declared optional string[] and usually holds bare \"Owner/Repo\" access identifiers, not clone URLs. knownRepoRemoteUrl (in src/services/member-remote-url.ts, re-exported from execute-prompt.ts) returns a URL only when gitRepos has EXACTLY one entry AND it is URL-shaped (contains \"://\" or starts with \"git@\"); anything else yields undefined rather than a guessed URL.",
+    "source_files": [
+      "src/services/member-remote-url.ts",
+      "src/types.ts",
+      "src/tools/execute-prompt.ts"
+    ],
+    "confidence": "CONFIRMED"
+  },
+  {
+    "id": "459915a7-6ad2-455e-b2a9-49fed209c415",
+    "type": "knowledge",
+    "title": "kb_query files/symbols cited filter is a hard SQL filter gated by query_filters over http",
+    "summary": "kb_query files/symbols are a hard filter (cited-filter.ts) applied in SqliteProvider.query next to the tag filter. HttpKbProvider forwards them only when GET /api/kb/capabilities lists them in the optional query_filters field and otherwise throws E-KB-HTTP-UNSUPPORTED before sending. kb_query re-applies the filter (entryCites) only to answers from non-SQLite providers.",
+    "source_files": [
+      "src/services/knowledge/cited-filter.ts",
+      "src/services/knowledge/sqlite-provider.ts",
+      "src/services/knowledge/http-provider.ts",
+      "src/commands/kb-server.ts",
+      "src/tools/kb-query.ts"
+    ],
+    "confidence": "CONFIRMED"
+  },
+  {
+    "id": "b417d1be-a8d5-4662-9b71-97c5f851dbc0",
+    "type": "knowledge",
+    "title": "kb_import keeps bible ids on every AUDN path; duplicates resolve via bible_id_aliases",
+    "summary": "Under importMode, SqliteProvider.capture stores linked ('update') and flagged imports under the bible id when it is free. A bible entry deduplicated ('none') records a bible_id_aliases row pointing at the local row that absorbed it. applyTombstoneToRow resolves through that alias when no row has the id, so kb_import tombstones and POST /api/kb/withdraw reach the row.",
+    "source_files": [
+      "src/services/knowledge/sqlite-provider.ts",
+      "src/services/knowledge/bible-import.ts",
+      "tests/knowledge/kb-import-audn-ids-tombstone.test.ts"
+    ],
+    "confidence": "CONFIRMED"
+  }
+]
