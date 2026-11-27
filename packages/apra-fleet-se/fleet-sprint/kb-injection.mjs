@@ -2,7 +2,9 @@
 // Engine-side KNOWLEDGE BANK injection (parent bug apra-fleet-b4g.18).
 //
 // The block is injected into every dispatched member's prompt -- local or
-// remote, the repository's kb_maintainer or not, fleet-MCP-verified or not.
+// remote, the repository's kb_maintainer or not, fleet-MCP-verified or not --
+// for the roles in kb.mjs KB_BLOCK_ROLES only (planner, plan-reviewer, doer,
+// reviewer); no other role's dispatch calls blockFor.
 // Priming (kb.mjs primeAll) imports the bible and reads only on each
 // repository's kb_maintainer, so a member's own KB is not primed and a
 // non-maintainer member (notably a remote one on another host) would otherwise

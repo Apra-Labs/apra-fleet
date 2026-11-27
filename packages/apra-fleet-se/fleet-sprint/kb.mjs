@@ -3271,6 +3271,17 @@ export function createKbPrimingClient(opts = {}) {
 export const KB_SELF_INJECTING_ROLES = Object.freeze(new Set([ROLE_DOER, ROLE_REVIEWER]));
 
 /**
+ * The only roles that receive the KNOWLEDGE BANK block: planner,
+ * plan-reviewer, doer and reviewer (per-round reviews and the final review).
+ * Every other dispatch -- deployer, the test runners, harvester, and any role
+ * added later -- gets no block and triggers no KB read for one. An allowlist,
+ * so a new role is excluded by default.
+ */
+export const KB_BLOCK_ROLES = Object.freeze(new Set([
+    kbRoleConst('planner'), kbRoleConst('plan-reviewer'), ROLE_DOER, ROLE_REVIEWER,
+]));
+
+/**
  * FTS terms for a dispatch's kb_query, drawn from what the engine already
  * holds: the beads being worked and their ids.
  *

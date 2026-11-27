@@ -67,7 +67,7 @@ this install's secret gets 401. Consequences:
 |---|---|
 | Claude | LOCAL scope (keyed by work folder) in `~/.claude.json`, or `$CLAUDE_CONFIG_DIR/.claude.json`; the path is probed on the member, never shell-expanded |
 | OpenCode | `<workFolder>/opencode.json`, which is added to `.git/info/exclude` so it never dirties the checkout |
-| agy | no entry (no per-project MCP support); the member is reported `unverified` and gets the injected KB block instead |
+| agy | no entry (no per-project MCP support); the member is reported `unverified` and gets the injected KB block instead, in the planner, plan-reviewer, doer and reviewer roles only |
 
 ### Role agents must grant the member tools
 
@@ -223,7 +223,8 @@ probes, so it stays cheap.
 - Provider, transport and OS differences live in the install service and
   provider adapters; handlers see one `FleetMcpStatus`.
 - `unverified` means "treat as no KB tools": the dispatch layer falls back to
-  the injected KB block.
+  the injected KB block, which only the planner, plan-reviewer, doer and
+  reviewer roles get.
 - Any change to the member tools surface must update the client package and the
   memory-contract in the same change.
 

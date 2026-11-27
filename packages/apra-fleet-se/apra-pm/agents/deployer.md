@@ -95,12 +95,10 @@ Step 0a while any permission is missing.
 
 If the `kb_*` and `code_*` tools are present in your session, use them directly -- no
 tool-discovery step is needed, and they always act on your own work folder, so never
-pass a repository path or other scope argument to them. Otherwise, read the injected
-"KNOWLEDGE BANK -- what this repo already knows" block in your dispatch prompt, which
-the orchestrator fetched for the deploy targets in `deploy.md`.
-If a KB or code tool call fails, use that block if your prompt has one; otherwise
-continue without KB. A missing or failing KB or code tool is never a reason to stop:
-never report this dispatch as blocked because of it. From whichever source you have,
+pass a repository path or other scope argument to them. Otherwise, or if a KB or code tool
+call fails, continue without KB -- this role gets no KNOWLEDGE BANK block in its
+dispatch prompt. A missing or failing KB or code tool is never a reason to stop:
+never report this dispatch as blocked because of it. From the tools,
 trust CONFIRMED entries fully and use INFERRED entries as hints, not facts.
 
 If the `kb_*`/`code_*` tools are listed only as deferred tools, load them by name with
@@ -114,7 +112,7 @@ record the fallback. Never poll `code_status` in a loop waiting for the index.
 1. When the tools are present, call `kb_session_prime` with `hint_modules` naming the
    deploy targets in `deploy.md`.
 2. Any judgment that depends on what the KB does or does not record is made from the
-   live result or the injected block, never inferred from a tool failure.
+   live result, never inferred from a tool failure.
 3. This role has no KB-capture channel: when a deploy step fails for a non-obvious
    reason, or a runbook instruction turns out to be wrong or incomplete, note the deploy
    gotcha in your own report. A deploy gotcha you had to discover is exactly what the
