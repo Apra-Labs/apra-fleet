@@ -3387,20 +3387,23 @@ export function kbKnowledgeBlock(entries, { captureChannel = true, source = 'pri
         + 'in your notes rather than bending your work to fit the entry.\n'
         + 'You do not need a kb_* tool to read these entries; they do not replace any kb_* lookup '
         + 'your role instructions call for. '
-        + 'A summary ending in "..." is cut short and a "+N more" item counts source files not '
-        + 'listed; if you have kb_query, a query on the entry title with a limit set can find the '
-        + 'full entry.\n'
+        + 'A summary ending in "..." was cut short and carries its id; if you have kb_query, '
+        + 'query it with the entry title to read the full entry. "+N more" counts unlisted '
+        + 'source files.\n'
         + captureLine
         // Compact on purpose: no indentation, no confidence (always CONFIRMED
-        // here), capped summary, trimmed file list. Selection and order above
-        // are untouched.
+        // here), capped summary, trimmed file list, and an id only on a row
+        // whose summary was cut. Selection and order above are untouched.
         + wrapUntrustedBlock(label, JSON.stringify(
-            injectable.map((e) => ({
-                id: e.id,
-                title: e.title,
-                summary: capKbBlockSummary(e.summary),
-                source_files: trimKbBlockSourceFiles(e.source_files),
-            }))
+            injectable.map((e) => {
+                const summary = capKbBlockSummary(e.summary);
+                return {
+                    ...(summary !== e.summary ? { id: e.id } : {}),
+                    title: e.title,
+                    summary,
+                    source_files: trimKbBlockSourceFiles(e.source_files),
+                };
+            })
         )),
     ];
 }

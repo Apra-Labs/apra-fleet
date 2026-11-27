@@ -13,8 +13,8 @@ import {
     KB_BLOCK_SOURCE_FILES_MAX,
 } from '../fleet-sprint/kb.mjs';
 
-// The KNOWLEDGE BANK block renders compact JSON: id, title, capped summary,
-// trimmed source_files, no confidence. Which entries appear, and in what
+// The KNOWLEDGE BANK block renders compact JSON: title, capped summary,
+// trimmed source_files; no id, no confidence. Which entries appear, and in what
 // order, is unchanged: CONFIRMED-and-undisputed filter, then the 12 cap.
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -34,26 +34,37 @@ function blockEntries(block) {
 const noise = (id, confidence, extra = {}) => ({ id, title: 'title ' + id, summary: 's', confidence, source_files: ['a.ts'], ...extra });
 
 describe('compact KNOWLEDGE BANK block', () => {
-    test('same entries, same order, same ids as the selection rule (filter, then cap)', () => {
-        const many = [...REAL, ...REAL.map((e) => ({ ...e, id: `${e.id}-2` }))];
+    test('same entries, same order as the selection rule (filter, then cap)', () => {
+        const many = [...REAL, ...REAL.map((e) => ({ ...e, id: e.id + '-2', title: e.title + ' (copy)' }))];
         const input = [
             noise('i1', 'INFERRED'), many[0], noise('f1', 'CONFIRMED', { flagged_for_review: true }),
             ...many.slice(1, 5), noise('u1', 'UNVERIFIED'), noise('x1', 'CONFIRMED', { contradiction_of: 'y' }),
             ...many.slice(5),
         ];
-        const expected = input.filter(isInjectableKbEntry).slice(0, KB_MAX_KNOWLEDGE_ENTRIES).map((e) => e.id);
+        const expected = input.filter(isInjectableKbEntry).slice(0, KB_MAX_KNOWLEDGE_ENTRIES).map((e) => e.title);
         assert.equal(expected.length, KB_MAX_KNOWLEDGE_ENTRIES);
+        assert.equal(new Set(input.map((e) => e.title)).size, input.length, 'titles identify entries');
         const [block] = kbKnowledgeBlock(input, { source: 'query' });
-        const rendered = blockEntries(block);
-        assert.deepEqual(rendered.map((e) => e.id), expected);
-        assert.deepEqual(rendered.map((e) => e.title), expected.map((id) => input.find((e) => e.id === id).title));
+        assert.deepEqual(blockEntries(block).map((e) => e.title), expected);
     });
 
-    test('rows carry id, title, summary, source_files only -- no confidence', () => {
-        for (const row of blockEntries(kbKnowledgeBlock(REAL)[0])) {
-            assert.deepEqual(Object.keys(row), ['id', 'title', 'summary', 'source_files']);
-        }
-        assert.ok(!kbKnowledgeBlock(REAL)[0].includes('"confidence"'));
+    test('rows carry title, summary, source_files -- plus id exactly when the summary was cut; never confidence', () => {
+        // Mix cut and uncut rows: half the real entries keep a short summary.
+        const mixed = REAL.map((e, i) => (i % 2 ? { ...e, summary: e.summary.slice(0, 120) } : e));
+        const [block] = kbKnowledgeBlock(mixed);
+        const rows = blockEntries(block);
+        let withId = 0;
+        rows.forEach((row, i) => {
+            const cut = mixed[i].summary.length > KB_BLOCK_SUMMARY_MAX;
+            assert.deepEqual(Object.keys(row), cut ? ['id', 'title', 'summary', 'source_files'] : ['title', 'summary', 'source_files']);
+            if (cut) { withId++; assert.equal(row.id, mixed[i].id); assert.ok(row.summary.endsWith('...')); }
+        });
+        assert.ok(withId > 0 && withId < rows.length, 'the fixture has both cut and uncut rows');
+        mixed.forEach((e) => {
+            const hits = block.split(e.id).length - 1;
+            assert.equal(hits, e.summary.length > KB_BLOCK_SUMMARY_MAX ? 1 : 0, 'id appears exactly on its cut row');
+        });
+        assert.ok(!block.includes('"confidence"'));
     });
 
     test('summaries are capped on a word boundary and end with "..."', () => {
@@ -61,7 +72,7 @@ describe('compact KNOWLEDGE BANK block', () => {
         let cut = 0;
         rows.forEach((row, i) => {
             const full = REAL[i].summary;
-            assert.ok(row.summary.length <= KB_BLOCK_SUMMARY_MAX, `${row.id}: ${row.summary.length}`);
+            assert.ok(row.summary.length <= KB_BLOCK_SUMMARY_MAX, row.title + ': ' + row.summary.length);
             if (full.length <= KB_BLOCK_SUMMARY_MAX) { assert.equal(row.summary, full); return; }
             cut++;
             assert.ok(row.summary.endsWith('...'));
@@ -97,13 +108,13 @@ describe('compact KNOWLEDGE BANK block', () => {
         assert.equal(REAL.length, KB_MAX_KNOWLEDGE_ENTRIES);
         const [block] = kbKnowledgeBlock(REAL, { source: 'query' });
         // Was 10414 chars as pretty JSON with confidence and full summaries/files.
-        assert.ok(block.length <= 8500, `block is ${block.length} chars`);
+        assert.ok(block.length <= 8400, `block is ${block.length} chars`);
     });
 
     test('the header explains the truncation markers', () => {
         const [block] = kbKnowledgeBlock(REAL);
         assert.ok(block.startsWith('KNOWLEDGE BANK -- what this repo already knows.'));
-        assert.match(block, /A summary ending in "\.\.\." is cut short/);
-        assert.match(block, /"\+N more" item counts source files not listed/);
+        assert.ok(block.includes('A summary ending in "..." was cut short and carries its id; if you have kb_query, '
+            + 'query it with the entry title to read the full entry. "+N more" counts unlisted source files.'));
     });
 });

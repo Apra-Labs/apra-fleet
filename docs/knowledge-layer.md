@@ -338,12 +338,11 @@ the project knowledge.
 
 Block shape (`kbKnowledgeBlock`): at most 12 CONFIRMED, undisputed entries in
 relevance order, rendered as one line of compact JSON inside the untrusted-data
-fence. Each row is `{id, title, summary, source_files}` -- no `confidence`
+fence. Each row is `{title, summary, source_files}` -- no `confidence`
 (always CONFIRMED). `summary` is capped at 300 chars, cut on a word boundary
-and ending in `...`; `source_files` lists the first 3 files plus a
-`"+N more"` string when more exist. There is no lookup by id; a role with kb
-tools can find the full entry with a `kb_query` on its title, passing a `limit`
-(a member read without one returns slim rows and no content).
+and ending in `...`; only such a cut row also carries the entry `id`.
+`source_files` lists the first 3 files plus a `"+N more"` string when more
+exist.
 
 ### Member-session tool calls
 
